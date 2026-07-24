@@ -1231,3 +1231,143 @@ def test_authors_edit_sets_byline_with_affiliation(
         {"name": "Doe, Jane", "affiliation": "MIT", "ror": "https://ror.org/x"},
         {"name": "Roe, John"},
     ]
+
+
+# ---------------------------------------------------------------------------
+# scaffold — paper-writing pipeline rung 4 (docs/design/
+# paper-writing-pipeline.md §"Document classes"): edit(kind='draft',
+# scaffold=…) lays down a genre's standard section skeleton via the shared
+# precis.draft.scaffolds table (see also tests/test_draft_scaffold.py for
+# the store-level scaffold_sections behavior).
+# ---------------------------------------------------------------------------
+
+
+def test_scaffold_edit_book(draft: DraftHandler, hub: Hub) -> None:
+    proj = _proj(hub)
+    draft.put(id="bk", title="A Book", project=proj)
+    r = draft.edit(id="bk", scaffold="book")
+    assert "scaffolded 8 sections on bk (book)" in r.body
+    ro = _order(hub, "bk")
+    assert [c.text for c in ro[1:]] == [
+        "Preface",
+        "Introduction",
+        "Background",
+        "Chapter 1",
+        "Chapter 2",
+        "Chapter 3",
+        "Conclusion",
+        "Bibliography",
+    ]
+
+
+def test_scaffold_edit_summary(draft: DraftHandler, hub: Hub) -> None:
+    proj = _proj(hub)
+    draft.put(id="sm", title="A Summary", project=proj)
+    r = draft.edit(id="sm", scaffold="summary")
+    assert "scaffolded 4 sections on sm (summary)" in r.body
+    ro = _order(hub, "sm")
+    assert [c.text for c in ro[1:]] == [
+        "Summary",
+        "Key Points",
+        "Details",
+        "References",
+    ]
+
+
+def test_scaffold_edit_unknown_class(draft: DraftHandler, hub: Hub) -> None:
+    proj = _proj(hub)
+    draft.put(id="bad", title="T", project=proj)
+    with pytest.raises(BadInput, match="unknown scaffold class") as ei:
+        draft.edit(id="bad", scaffold="screenplay")
+    assert "book" in (ei.value.next or "") and "paper" in (ei.value.next or "")
+
+
+def test_scaffold_edit_by_chunk_handle(draft: DraftHandler, hub: Hub) -> None:
+    # scaffold is a draft-level op — a ¶handle inside the draft resolves to
+    # its owning draft, same as authors=/not_abbrev= (``_resolve_draft_any``).
+    proj = _proj(hub)
+    draft.put(id="via-chunk", title="T", project=proj)
+    title_handle = _order(hub, "via-chunk")[0].handle
+    r = draft.edit(id="¶" + title_handle, scaffold="report")
+    assert "scaffolded 5 sections on via-chunk (report)" in r.body
+
+
+# ---------------------------------------------------------------------------
+# get(project=…) — reverse lookup (paper-writing pipeline rung 4;
+# backlog_draft_by_project): the draft(s) bound to a project todo via the
+# draft-of link.
+# ---------------------------------------------------------------------------
+
+
+def test_get_by_project_returns_bound_draft_outline(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    proj = _proj(hub)
+    draft.put(id="pd", title="Project Draft", project=proj)
+    by_id = draft.get(id="pd").body
+    by_project = draft.get(project=proj).body
+    assert by_project == by_id
+
+
+def test_get_by_project_no_draft_raises_not_found(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    proj = _proj(hub)
+    with pytest.raises(NotFound, match="no draft bound"):
+        draft.get(project=proj)
+
+
+def test_get_id_and_project_together_is_bad_input(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    proj = _proj(hub)
+    draft.put(id="pd2", title="T", project=proj)
+    with pytest.raises(BadInput, match="id= or project="):
+        draft.get(id="pd2", project=proj)
+
+
+# ---------------------------------------------------------------------------
+# Wire-level: edit(kind='draft', scaffold=…) / get(kind='draft', project=…)
+# through precis.tools.core — mirrors test_mermaid.py's
+# test_mcp_edit_tool_persists_vocab_and_notes / test_chunk_review.py's
+# test_mcp_edit_tool_records_review pattern. Regression guard: a param
+# missing from the tools/core.py wire signature is silently dropped before
+# reaching the handler even though the handler itself accepts it.
+# ---------------------------------------------------------------------------
+
+
+def test_mcp_edit_tool_scaffolds_draft(
+    monkeypatch, hub: Hub, runtime_with_store
+) -> None:
+    import precis.tools.core as core
+
+    monkeypatch.setattr(core, "_runtime", runtime_with_store)
+
+    proj = _proj(hub)
+    draft = DraftHandler(hub=hub)
+    draft.put(id="wire-scaffold", title="T", project=proj)
+
+    out = core.edit(kind="draft", id="wire-scaffold", scaffold="summary")
+    assert isinstance(out, str) and "scaffolded 4 sections" in out
+    ro = _order(hub, "wire-scaffold")
+    assert [c.text for c in ro[1:]] == [
+        "Summary",
+        "Key Points",
+        "Details",
+        "References",
+    ]
+
+
+def test_mcp_get_tool_looks_up_draft_by_project(
+    monkeypatch, hub: Hub, runtime_with_store
+) -> None:
+    import precis.tools.core as core
+
+    monkeypatch.setattr(core, "_runtime", runtime_with_store)
+
+    proj = _proj(hub)
+    draft = DraftHandler(hub=hub)
+    draft.put(id="wire-project", title="Wired", project=proj)
+
+    out = core.get(kind="draft", project=proj)
+    assert isinstance(out, str) and "Wired" in out and "wire-project" in out

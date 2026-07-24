@@ -108,16 +108,19 @@ substitution to one part of the document.
 ## Find a project's draft
 
 A draft carries **no `project:` tag** — that tag lives on the project
-*todo*, and the draft is bound to it 1:1 by a `draft-of` link. So:
+*todo*, and the draft is bound to it 1:1 by a `draft-of` link.
+`get(kind='draft', project=…)` is the reverse lookup — resolves the
+project todo and returns the bound draft's outline directly (a list, if
+somehow more than one is bound):
 
 ```python
 get(kind="draft")  # list ALL drafts (no project filter yet)
-get(kind="todo", id="<project>", view="links")  # → follow the draft-of link to the slug
+get(kind="draft", project="<project-todo-id>")  # → that project's draft outline
 ```
 
-To go project → draft, resolve the project todo and follow its
-`draft-of` link. (The planner prompt also tells an editor agent which
-draft it is in, so this is rarely needed mid-edit.)
+`project=` and `id=` are mutually exclusive — pass one or the other.
+(The planner prompt also tells an editor agent which draft it is in, so
+this is rarely needed mid-edit.)
 
 ## Addressing — universal handles, never numbers
 
@@ -167,6 +170,28 @@ put(
 
 `at` places the new chunk (all parts optional): `{'first'|'last': True}`,
 `{'into': 'dc<id>'}`, `{'before'|'after': 'dc<id>'}`.
+
+## Scaffold — lay down a genre's standard sections
+
+`edit(kind='draft', scaffold=<class>)` appends a document class's standard
+section skeleton after whatever is already there (styled headings, ready
+to fill) — the same table the web `/drafts/new` genre picker uses:
+
+```python
+edit(kind="draft", id="nanotrans", scaffold="paper")
+# → styled headings: Abstract, Introduction, Related Work, Methods,
+#   Results, Discussion, Conclusion
+```
+
+Classes: `paper`, `patent`, `report`, `review` (survey), `manufacturing`,
+`book` (multi-chapter monograph — Preface, Introduction, Background,
+Chapter 1-3, Conclusion, Bibliography), `summary` (short digest, distinct
+from the comprehensive `review` — Summary, Key Points, Details,
+References). An unknown class raises `BadInput` listing the valid ones.
+`id` may be the draft slug or any `dc<id>`/`¶handle` inside it (resolves
+to the owning draft, like `authors=`). Scaffolding never overwrites or
+reorders existing sections — it only appends; re-scaffolding a draft that
+already has sections adds a second copy, so scaffold once, early.
 
 ## Byline — authors & affiliations
 

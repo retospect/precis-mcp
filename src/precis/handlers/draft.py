@@ -27,6 +27,7 @@ import re
 from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
+from precis.draft.scaffolds import SCAFFOLDS as _SCAFFOLDS
 from precis.errors import BadInput, NotFound
 from precis.format import toon
 from precis.handlers._link_tag_ops import (
@@ -329,8 +330,21 @@ class DraftHandler(Handler):
         view: str | None = None,
         extent: str | None = None,
         targets: list[str] | None = None,
+        project: str | int | None = None,
         **_kw: Any,
     ) -> Response:
+        if project is not None:
+            # Reverse lookup (paper-writing pipeline rung 4,
+            # docs/design/paper-writing-pipeline.md §Gap-analysis —
+            # backlog_draft_by_project): the draft(s) bound to a project
+            # todo via the ``draft-of`` link create_draft() mints.
+            if id is not None:
+                raise BadInput(
+                    "get(kind='draft') accepts id= or project=, not both",
+                    next="get(kind='draft', project=<todo-id>)  # OR "
+                    "get(kind='draft', id='<slug>')",
+                )
+            return self._render_by_project(project)
         if id is None or (isinstance(id, str) and id.strip() in ("", "/")):
             return self._render_list()
         s = str(id).strip()
@@ -1097,6 +1111,7 @@ class DraftHandler(Handler):
         lang: str | None = None,
         review: str | None = None,
         verdict: str = "approved",
+        scaffold: str | None = None,
         dry_run: bool | str = False,
         **_kw: Any,
     ) -> Response:
@@ -1146,6 +1161,32 @@ class DraftHandler(Handler):
             ref = self._resolve_draft_any(id)
             self.store.add_abbrev_ignore(ref.id, tokens)
             return Response(body=f"marked not-an-abbrev: {', '.join(tokens)}")
+        # ``scaffold`` is a draft-level op (paper-writing pipeline rung 4,
+        # docs/design/paper-writing-pipeline.md §"Document classes"): lays
+        # down a genre's standard section skeleton (ADR 0037 step 4), the
+        # same table the web ``/drafts/new`` picker uses — id is the slug
+        # (or any handle in the draft), not a single chunk.
+        if scaffold is not None:
+            _reject_dry_run("scaffold")
+            sections = _SCAFFOLDS.get(scaffold)
+            if sections is None:
+                raise BadInput(
+                    f"unknown scaffold class {scaffold!r}",
+                    next=f"scaffold= one of {sorted(_SCAFFOLDS)}",
+                )
+            ref = self._resolve_draft_any(id)
+            handles = self.store.scaffold_sections(ref.id, sections)
+            new_chunks = [self.store.get_draft_chunk(h) for h in handles]
+            self._attribute_touch([c.chunk_id for c in new_chunks if c is not None])
+            if not handles:
+                return Response(body=f"{scaffold} scaffold is empty — nothing added")
+            n = len(handles)
+            return Response(
+                body=(
+                    f"scaffolded {n} section{'' if n == 1 else 's'} on "
+                    f"{ref.slug or ref.id} ({scaffold}): {' '.join(handles)}"
+                )
+            )
         # ``sub`` is a draft-level regex substitution (vi ``:%s/a/b/``) — id is
         # the *scope* (a slug for the whole draft, or a dc<id> for one
         # section/chunk), not a single chunk. Dry-run by default; apply=True
@@ -1777,6 +1818,32 @@ class DraftHandler(Handler):
         if ref is None:
             raise NotFound(f"project todo {pid} not found")
         return ref.id
+
+    def _render_by_project(self, project: str | int) -> Response:
+        """``get(kind='draft', project=…)`` — the draft(s) bound to a
+        project todo via the ``draft-of`` link (``create_draft()`` mints
+        it 1:1 at creation). One bound draft → its outline (same shape as
+        ``get(kind='draft', id='<slug>')``); several → a listing; none →
+        ``NotFound`` (mirrors ``_resolve_project``'s "project not found")."""
+        pid = self._resolve_project(project)
+        links = self.store.links_for(pid, direction="in", relation="draft-of")
+        refs = []
+        for link in links:
+            ref = self.store.get_ref(kind="draft", id=link.src_ref_id)
+            if ref is not None:
+                refs.append(ref)
+        if not refs:
+            raise NotFound(
+                f"no draft bound to project {pid} (draft-of link)",
+                next=f"put(kind='draft', id='<slug>', title='…', project={pid})",
+            )
+        if len(refs) == 1:
+            ref = refs[0]
+            return self._render_outline(str(ref.slug or ref.id), ref)
+        lines = [f"{len(refs)} draft(s) bound to project {pid}:\n"]
+        for ref in refs:
+            lines.append(f"- {ref.slug or ref.id}: {ref.title}")
+        return Response(body="\n".join(lines))
 
     def _render_list(self) -> Response:
         return render_slug_ref_list(

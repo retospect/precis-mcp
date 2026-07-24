@@ -355,6 +355,11 @@ def get(
     view: str | None = None,
     q: str | None = None,
     args: dict[str, Any] | None = None,
+    # draft (see precis-draft-help): reverse lookup — the draft(s) bound
+    # to a project todo via the ``draft-of`` link. Mutually exclusive
+    # with id=. Declared at the verb level so strict-schema MCP clients
+    # don't strip it.
+    project: str | int | None = None,
 ) -> str:
     """Read a ref or compute a value.
 
@@ -363,6 +368,7 @@ def get(
     query for compute-style kinds. `args=` is a dict of typed extras
     for views that need them (callgraph, runtrace, ...); reserved
     keys (`kind`, `id`, `view`, `q`) inside `args=` are rejected.
+    `project=` (draft only) looks up by owning project todo instead of id=.
 
     Full reference: get(kind='skill', id='precis-get-help'), or
     search(kind='skill', q='reading a paper') for a topical lookup.
@@ -373,6 +379,8 @@ def get(
         if err is not None:
             return err
         payload["__extras__"] = dict(args)
+    if project is not None:
+        payload["project"] = project
 
     # ``_dispatch`` returns ``str`` on success and ``CallToolResult``
     # with ``isError=True`` on failure. We propagate both verbatim;
@@ -850,6 +858,11 @@ def edit(
     # verdict= is free text (default 'approved').
     review: str | None = None,
     verdict: str = "approved",
+    # draft scaffold (paper-writing pipeline rung 4, see precis-draft-help):
+    # scaffold='paper'|'patent'|'report'|'review'|'manufacturing'|'book'|
+    # 'summary' lays down that genre's standard section skeleton on this
+    # draft. Draft-level — id is the slug (or any handle in the draft).
+    scaffold: str | None = None,
     # diagram kinds (mermaid/figure, ADR 0057, see precis-mermaid-help):
     # vocab= rewrites the shared vocabulary doc, notes= the implementation
     # notes doc; viewbox='x y w h' sets the canvas bounds (figure only —
@@ -906,6 +919,7 @@ def edit(
         "regen": regen,
         "review": review,
         "verdict": verdict,
+        "scaffold": scaffold,
         "vocab": vocab,
         "notes": notes,
         "viewbox": viewbox,

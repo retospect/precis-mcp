@@ -109,11 +109,17 @@ def test_tools_list_under_byte_budget() -> None:
     three new optional params. The verb description was left unchanged
     (the new detail rides in the param comments, not the docstring), so
     this is schema-side growth only — same as the 06-28 bump.
+
+    2026-07-24: cap raised from 17 KB → 18 KB to absorb the paper-writing
+    pipeline rung 4 kwargs (``docs/design/paper-writing-pipeline.md``
+    §"Document classes"/§Gap-analysis): ``scaffold=`` on ``edit`` and
+    ``project=`` on ``get`` (draft only), each with a short param-level
+    comment. Schema-side growth only — same shape as the prior bumps.
     """
     serialised = json.dumps(_tools_list_wire_shape(), separators=(",", ":"))
     size = len(serialised.encode("utf-8"))
-    assert size < 17 * 1024, (
-        f"tools/list wire-shape JSON is {size} bytes (cap: 16 KB). "
+    assert size < 18 * 1024, (
+        f"tools/list wire-shape JSON is {size} bytes (cap: 18 KB). "
         "Investigate which verb description or schema grew. The "
         "per-verb description cap (1 KB) is the easier diff to "
         "spot; bump that test's verbosity if needed."
