@@ -578,10 +578,6 @@ quests paused 2026-07-16). Remaining:
   from `docs/mission.md` + live research programs; re-activate quests and flip
   `PRECIS_QUEST_LOOP_ENABLED` on the melchior agent worker. Real `struct_relax`
   GPU lane on spark must be live for dispatched sims to run, not just queue.
-- **Dream nomination-prompt tilt** *(feature, deferred).* Inject active-quest
-  context so the dream reasons about what to nominate. Deferred: dream agent is
-  gated off in prod (`PRECIS_DREAM_AGENT` unset). Owner: `workers/dream_agent.py`
-  + `data/prompts/dream-prompt.md`.
 
 ### Quest-optimization workstream (live quest 164903 — Pd catalyst NO→NH₃)
 
@@ -1131,8 +1127,8 @@ ship+deploy proven end-to-end).
   Real look-at-prod-and-fix-forward is just the next review-gated proposal
   today, not an active post-deploy check.
 - **Deferred (ADR-filed):** groomer write-side (the `whatneedsdoing` half),
-  automated `ready`-on-gripes, a doc-freshness ship judge, a durable
-  `agentlog` record per tick, `sandbox_run` job-type isolation.
+  automated `ready`-on-gripes, a doc-freshness ship judge, `sandbox_run`
+  job-type isolation.
 
 ## 🟠 Worker liveness + observability
 
