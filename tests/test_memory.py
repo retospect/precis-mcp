@@ -200,6 +200,38 @@ def test_create_emits_memory_body_chunk(handler: MemoryHandler) -> None:
     assert title == ("CO2 reduction on Cu",)
 
 
+def test_create_attributes_touch_when_agentlog_env_set(
+    handler: MemoryHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A memory create attributes its body chunk to the current run when
+    ``PRECIS_CURRENT_AGENTLOG`` is set — so a dream's own memories walk
+    back to the tick that wrote them (Slice B)."""
+    from precis import agentlog
+
+    log_id = agentlog.open_log(handler.store, source="dream", title="t")
+    monkeypatch.setenv(agentlog.ENV_VAR, str(log_id))
+
+    handler.put(text="a dream-spawned memory")
+
+    links = handler.store.links_for(log_id, direction="out", relation="touched")
+    assert len(links) == 1
+
+
+def test_create_no_touch_and_no_error_without_agentlog_env(
+    handler: MemoryHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No ``PRECIS_CURRENT_AGENTLOG`` (a normal agent/console create) is a
+    silent no-op — no link, no error."""
+    monkeypatch.delenv("PRECIS_CURRENT_AGENTLOG", raising=False)
+    r = handler.put(text="an ordinary memory")
+    assert "created memory me" in r.body
+    with handler.store.pool.connection() as conn:
+        n = conn.execute(
+            "SELECT count(*) FROM links WHERE relation = 'touched'"
+        ).fetchone()[0]
+    assert n == 0
+
+
 def test_create_derives_title_when_omitted(handler: MemoryHandler) -> None:
     """Omitting title= derives one from the body's first line (capped 80)."""
     body = "Copper facets steer CO2RED selectivity.\n\nThe (100) face favours…"

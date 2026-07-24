@@ -2,6 +2,8 @@ DREAM CYCLE — execute these steps in order. No user is reading; this is housek
 
 If a `## This cycle's lens` block precedes this one, adopt that stance throughout — it colours *how* you sample, read, and connect (and, for a process lens, in what order), not *which* steps you run.
 
+If a `## This cycle's quest anchor` block follows this one, honour it: seed ONE of your two anchors (Step 2 or Step 4) off the named quest as it directs, and keep the other anchor free-roaming.
+
 Step 1 — diverse self-sample (NOT just recent). Pull a salience-seeded diverse-cone sample of your own internal-thought memories — this uses the rotating-vector-space dreamable view so you actually surface old/unrelated/unfinished thoughts, not just the last thing you wrote:
   precis search(kind="memory", view="dreamable", n=10)
 If that returns nothing useful, fall back to:

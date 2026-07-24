@@ -131,6 +131,58 @@ def test_second_call_hits_cache(handler: _FakeCacheKindAsMath) -> None:
     assert handler.fetch_calls == ["population of ireland"]
 
 
+def test_miss_attributes_touch_when_agentlog_env_set(
+    handler: _FakeCacheKindAsMath, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fresh-ref (miss) fetch attributes its chunks to the current run
+    when ``PRECIS_CURRENT_AGENTLOG`` is set — the dream→websearch
+    provenance edge (Slice B)."""
+    from precis import agentlog
+
+    log_id = agentlog.open_log(handler.store, source="dream", title="t")
+    monkeypatch.setenv(agentlog.ENV_VAR, str(log_id))
+
+    handler.get(q="population of Ireland")
+
+    links = handler.store.links_for(log_id, direction="out", relation="touched")
+    assert len(links) == 1
+
+
+def test_cache_hit_does_not_attribute_touch(
+    handler: _FakeCacheKindAsMath, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cache HIT wrote nothing new this call, so it must not attribute —
+    only the original fetch/miss branch touches."""
+    from precis import agentlog
+
+    monkeypatch.delenv(agentlog.ENV_VAR, raising=False)
+    handler.get(q="population of Ireland")  # miss, no agentlog open yet
+
+    log_id = agentlog.open_log(handler.store, source="dream", title="t")
+    monkeypatch.setenv(agentlog.ENV_VAR, str(log_id))
+    handler.get(q="population of Ireland")  # hit
+
+    links = handler.store.links_for(log_id, direction="out", relation="touched")
+    assert len(links) == 0
+
+
+def test_miss_no_touch_and_no_error_without_agentlog_env(
+    handler: _FakeCacheKindAsMath, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No ``PRECIS_CURRENT_AGENTLOG`` (a console call / a normal agent
+    session) is a silent no-op — no link, no error."""
+    from precis import agentlog
+
+    monkeypatch.delenv(agentlog.ENV_VAR, raising=False)
+    resp = handler.get(q="population of Ireland")
+    assert "population of ireland" in resp.body
+    with handler.store.pool.connection() as conn:
+        n = conn.execute(
+            "SELECT count(*) FROM links WHERE relation = 'touched'"
+        ).fetchone()[0]
+    assert n == 0
+
+
 def test_canonicalization_collapses_variants(handler: _FakeCacheKindAsMath) -> None:
     """Whitespace + case variants share a cache row."""
     handler.get(q="Population of Ireland")

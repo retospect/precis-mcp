@@ -33,6 +33,11 @@ Inputs (env):
 * ``PRECIS_DREAM_PROCESS_PROB`` — fraction of cycles that hold a
   multi-phase PROCESS lens (Disney) instead of a single-stance persona.
   Default 0.15.
+* ``PRECIS_DREAM_QUEST_ANCHOR`` — default-ON nudge that names a randomly
+  chosen active quest and asks the dream to seed one of its two anchors
+  off it, keeping the other free-roaming. ``=0`` disables it.
+* ``PRECIS_DREAM_QUEST_ANGLE`` — the ``angle=`` value suggested for that
+  quest-seeded search. Default 0.5.
 
 Gating: ``PRECIS_DREAM_AGENT=1`` (env). The pass is explicit-only
 on the CLI (``--only dream_agent``) AND env-gated, mirroring the
@@ -51,12 +56,13 @@ import logging
 import os
 import secrets
 from pathlib import Path
+from typing import Any
 
 from precis.store import Store
 from precis.utils import handle_registry
 from precis.utils.dream_seed import load_lenses, render_lens_block
 from precis.utils.env import env_flag
-from precis.utils.llm.router import LlmRequest, Tier, dispatch, resolve_model
+from precis.utils.llm.router import LlmRequest, LlmResult, Tier, dispatch, resolve_model
 from precis.utils.load_gate import skip_if_high_load
 from precis.utils.oracle_lens import draw_lens_entry, render_lens_block_from_draw
 from precis.utils.working_set_render import render_working_set
@@ -71,6 +77,10 @@ _DEFAULT_DREAM_LENS = "sci"
 # Fraction of cycles that hold a multi-phase PROCESS lens (Disney) instead
 # of a single-stance persona. The rest draw a persona from the oracle.
 _DEFAULT_PROCESS_LENS_PROB = 0.15
+
+# The angle= suggested for the quest-anchor nudge's seeded search: adjacent-
+# to the quest, not on-the-nose (angle=0 would just be its nearest matches).
+_DEFAULT_QUEST_ANGLE = 0.5
 
 log = logging.getLogger(__name__)
 
@@ -114,8 +124,34 @@ def run_dream_pass(store: Store) -> BatchResult:
             "dream_agent: no dream prompt available (override + packaged both failed); skipping"
         )
         return BatchResult(handler="dream_agent", claimed=0, ok=0, failed=0)
-    prompt = _apply_lens(prompt, store)
+    prompt, lens_id = _apply_lens(prompt, store)
     prompt = _apply_fisheye(prompt, store)
+    prompt, quest_anchor = _apply_quest_anchor(prompt, store)
+
+    # Mint a durable per-tick provenance node (kind='agentlog') carrying the
+    # full assembled prompt + lens/quest metadata, mirroring plan_tick
+    # (job_types/plan_tick.py). Its id threads onto the subprocess env below
+    # so every chunk the dream writes (a websearch fetch, a memory create)
+    # attributes back to this run via `touch_from_env` (a `touched` link) —
+    # this is Slice B's "whodunnit" fix. Best-effort: a provenance failure
+    # must never sink the dream pass.
+    from precis import agentlog
+
+    model_pin = os.environ.get("PRECIS_DREAM_AGENT_MODEL")
+    log_id: int | None = None
+    try:
+        log_id = agentlog.open_log(
+            store,
+            source="dream",
+            title="dream tick",
+            model=model_pin,
+            prompt=prompt,
+            meta_extra={"lens": lens_id, "quest_anchor": quest_anchor},
+        )
+    except Exception:
+        log.warning("dream_agent: failed to open agentlog", exc_info=True)
+    env_overlay = {agentlog.ENV_VAR: str(log_id)} if log_id is not None else None
+
     # Routed through the LLM seam (ADR 0046 unit 4b): CLOUD_SUPER + tools,
     # so ``PRECIS_LLM_BACKEND`` can move the whole dream pass onto an OSS
     # model. ``model=`` keeps the per-pass ``PRECIS_DREAM_AGENT_MODEL`` pin
@@ -126,7 +162,7 @@ def run_dream_pass(store: Store) -> BatchResult:
             source="dream",
             prompt=prompt,
             tools_needed=True,
-            model=os.environ.get("PRECIS_DREAM_AGENT_MODEL"),
+            model=model_pin,
             system_prompt=soul_path,
             mcp_config=mcp_path,
             max_turns=_DEFAULT_MAX_TURNS,
@@ -137,10 +173,26 @@ def run_dream_pass(store: Store) -> BatchResult:
             # Stream-json gets us cost/turns from the result event.
             output_format="stream-json",
             extra_args=("--verbose",),
+            env_overlay=env_overlay,
         )
     )
+
+    def _finalize(status: str) -> None:
+        if log_id is None:
+            return
+        try:
+            agentlog.finalize_log(
+                store,
+                log_id=log_id,
+                status=status,
+                meta_extra=_result_meta(res),
+            )
+        except Exception:
+            log.warning("dream_agent: failed to finalize agentlog", exc_info=True)
+
     if res.error:
         log.error("dream_agent: claude agent failed: %s", res.error)
+        _finalize(res.terminal_reason or "error")
         return BatchResult(handler="dream_agent", claimed=1, ok=0, failed=1)
     log.info(
         "dream_agent: dispatch ok cost=$%.4f duration=%.1fs turns=%s final_text_len=%d",
@@ -149,8 +201,24 @@ def run_dream_pass(store: Store) -> BatchResult:
         res.turns_used,
         len(res.text or ""),
     )
-    _ = store  # reserved for future event-log writes
+    _finalize("ok")
     return BatchResult(handler="dream_agent", claimed=1, ok=1, failed=0)
+
+
+def _result_meta(res: LlmResult) -> dict[str, Any]:
+    """The tick-end telemetry stamped onto the agentlog at finalize —
+    ``LlmResult``'s cost / turn / token counters, so a dream tick's
+    provenance node carries the same numbers the log line does today."""
+    return {
+        "cost_usd": res.cost_usd,
+        "turns": res.turns_used,
+        "duration_s": res.duration_s,
+        "input_tokens": res.input_tokens,
+        "output_tokens": res.output_tokens,
+        "cache_read_tokens": res.cache_read_tokens,
+        "cache_creation_tokens": res.cache_creation_tokens,
+        "terminal_reason": res.terminal_reason,
+    }
 
 
 # ── helpers ────────────────────────────────────────────────────────
@@ -188,16 +256,20 @@ def _load_prompt() -> str | None:
         return None
 
 
-def _apply_lens(prompt: str, store: Store) -> str:
+def _apply_lens(prompt: str, store: Store) -> tuple[str, str | None]:
     """Prepend this cycle's lens block to the dream directive.
 
     Best-effort: any failure leaves the prompt unchanged, so a missing
-    oracle corpus or seed file never fails the pass.
+    oracle corpus or seed file never fails the pass. Returns
+    ``(prompt, lens_id)`` — the lens id (``process:<id>`` /
+    ``oracle:<slug>~<pos>``) rides along so the tick's agentlog node
+    (Slice B) can record which lens ran, without re-drawing it.
     """
-    block = _select_lens_block(store)
-    if block is None:
-        return prompt
-    return block + "\n" + prompt
+    selected = _select_lens_block(store)
+    if selected is None:
+        return prompt, None
+    block, lens_id = selected
+    return block + "\n" + prompt, lens_id
 
 
 #: The dream's fisheye eye-draw (ADR 0051): a **kind-diverse** sample of fresh
@@ -317,21 +389,91 @@ def _apply_fisheye(prompt: str, store: Store) -> str:
     )
 
 
-def _select_lens_block(store: Store) -> str | None:
+def _dream_quest_anchor_enabled() -> bool:
+    """Default-ON; ``PRECIS_DREAM_QUEST_ANCHOR=0`` disables the quest nudge
+    without a redeploy."""
+    return os.environ.get("PRECIS_DREAM_QUEST_ANCHOR", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def _dream_quest_angle() -> float:
+    """The ``angle=`` value suggested for the quest-seeded anchor —
+    ``PRECIS_DREAM_QUEST_ANGLE`` (default 0.5). Unset or a bad value falls
+    back to the default."""
+    raw = os.environ.get("PRECIS_DREAM_QUEST_ANGLE")
+    if raw is None:
+        return _DEFAULT_QUEST_ANGLE
+    try:
+        return float(raw)
+    except ValueError:
+        return _DEFAULT_QUEST_ANGLE
+
+
+def _apply_quest_anchor(prompt: str, store: Store) -> tuple[str, str | None]:
+    """Append a nudge naming a randomly-chosen active quest, asking the
+    dream to seed ONE of its two anchors off it while keeping the other
+    free-roaming (the "let's try 2a" quest-nudge).
+
+    Best-effort + flag-gated: default-ON, and any failure (or no active
+    quests) leaves the prompt unchanged — a dormant quest board never
+    starves the dream of its usual free sampling. Returns
+    ``(prompt, quest_handle)`` — the chosen quest's ``quest:<id>`` handle
+    (or ``None`` when no anchor was applied), threaded out so the tick's
+    agentlog node (Slice B) can record which quest it nudged toward
+    without a second, re-randomizing draw."""
+    if not _dream_quest_anchor_enabled():
+        return prompt, None
+    try:
+        from precis.quest.allocator import active_quest_ids
+
+        ids = active_quest_ids(store)
+        if not ids:
+            return prompt, None
+        qid = ids[secrets.randbelow(len(ids))]
+        ref = store.get_ref(kind="quest", id=qid)
+        if ref is None:
+            return prompt, None
+        angle = _dream_quest_angle()
+    except Exception:
+        log.exception("dream_agent: quest-anchor draw failed; dreaming without it")
+        return prompt, None
+    log.info("dream_agent: quest_anchor=quest:%s~%s", ref.id, ref.slug)
+    quest_handle = f"quest:{ref.id}"
+    return (
+        f"{prompt}\n\n"
+        f"## This cycle's quest anchor: {ref.title}  (quest:{ref.id})\n\n"
+        "Make ONE of your two anchors (Step 2 or Step 4) a diverse-cone sample "
+        f'seeded off this quest:  search(like="quest:{ref.id}", angle={angle}, n=8)\n'
+        'If that errors "has no embedding yet", fall back to:\n'
+        f'  search(q="{ref.title}", angle={angle}, n=8)\n'
+        "Keep your OTHER anchor FREE-ROAMING — do NOT quest-lock both. The wild,\n"
+        "cross-domain leg is required; this is a nudge toward the quest, not a fence.",
+        quest_handle,
+    )
+
+
+def _select_lens_block(store: Store) -> tuple[str, str] | None:
     """This cycle's lens: usually a persona drawn from the oracle under
     the ``sci`` lens (50% scientists / 50% evenly across the rest), and
     occasionally a multi-phase PROCESS lens (Disney) instead.
 
-    Returns the rendered ``## This cycle's lens`` block, or ``None`` to
-    run unlensed.
+    Returns ``(rendered ## This cycle's lens block, lens_id)``, or ``None``
+    to run unlensed. ``lens_id`` (``process:<id>`` / ``oracle:<slug>~<pos>``)
+    is the same string logged below, threaded out so the tick's agentlog
+    node (Slice B) can record it without a second, re-randomizing draw.
     """
     # Occasionally hold a sequential process instead of a single stance.
     if _coin(_process_lens_prob()):
         processes = load_lenses()
         if processes:
             lens = processes[secrets.randbelow(len(processes))]
-            log.info("dream_agent: lens=process:%s", lens.get("id"))
-            return render_lens_block(lens)
+            lens_id = f"process:{lens.get('id')}"
+            log.info("dream_agent: lens=%s", lens_id)
+            return render_lens_block(lens), lens_id
 
     # Default: draw a persona stance from the oracle under the dream lens.
     try:
@@ -342,8 +484,9 @@ def _select_lens_block(store: Store) -> str | None:
     if draw is None:
         log.info("dream_agent: no oracle traditions loaded; running unlensed")
         return None
-    log.info("dream_agent: lens=oracle:%s~%s", draw.ref.slug, draw.block.pos)
-    return render_lens_block_from_draw(draw)
+    lens_id = f"oracle:{draw.ref.slug}~{draw.block.pos}"
+    log.info("dream_agent: lens=%s", lens_id)
+    return render_lens_block_from_draw(draw), lens_id
 
 
 def _dream_lens_names() -> list[str]:

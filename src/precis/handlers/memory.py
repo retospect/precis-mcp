@@ -305,7 +305,7 @@ class MemoryHandler(NumericRefHandler):
             # Body → memory_body chunk at pos 0, written *before* the tag
             # redirect below (which appends any overflow chunk at the next
             # free ord), so the body always sits at ord 0.
-            self.store.insert_blocks(
+            body_blocks = self.store.insert_blocks(
                 ref.id,
                 [BlockInsert(pos=0, text=body, meta={"chunk_kind": _BODY_KIND})],
                 conn=conn,
@@ -335,6 +335,14 @@ class MemoryHandler(NumericRefHandler):
                 )
             if self.autolink_mentions:
                 self._sync_mention_links(ref.id, body, conn=conn)
+        # Attribute the new memory's body chunk to the current agent run
+        # (Slice B provenance) — a no-op unless PRECIS_CURRENT_AGENTLOG is
+        # set (e.g. the dream pass), so a dream's own memories walk back to
+        # the tick that wrote them. After the tx above commits, so the
+        # attribution query sees the just-inserted chunk row.
+        from precis import agentlog
+
+        agentlog.touch_from_env(self.store, chunk_ids=[b.id for b in body_blocks])
         return self._with_first_line_nudge(self._render_create_ack(ref.id), title)
 
     def _create_ack_next_hints(self, ref_id: int) -> list[tuple[str, str]]:

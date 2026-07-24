@@ -508,6 +508,7 @@ class CacheBackedHandler(Handler):
             cache_meta=result.meta,
         )
         self._apply_tag_ops_if_any(ref.id, tags, untags)
+        self._attribute_touch(ref.id)
         return self._render(ref, cache, hit=False)
 
     # ── refresh / tag helpers ─────────────────────────────────────────
@@ -572,6 +573,29 @@ class CacheBackedHandler(Handler):
             ref_id,
             tags=tags,
             untags=untags,
+        )
+
+    def _attribute_touch(self, ref_id: int) -> None:
+        """Attribute a freshly-created cache ref's chunks to the current
+        agent run (Slice B provenance).
+
+        A no-op unless ``PRECIS_CURRENT_AGENTLOG`` is set (the runner
+        threads it onto the ``claude -p`` subprocess env — e.g. the dream
+        pass, ``dream_agent.py``); an operator console call or a test that
+        didn't open a log just skips attribution. Best-effort — never
+        fails the fetch. Called only on the fetch/miss branch that just
+        created ``ref_id`` — never on a cache hit, which wrote nothing new
+        this call."""
+        from precis import agentlog
+
+        # Fast-path out before the extra list_blocks_for_ref round-trip: on the
+        # common path (any ordinary fetch with PRECIS_CURRENT_AGENTLOG unset) no
+        # run is attributing, so there is nothing to touch and no reason to query.
+        if agentlog.current_from_env() is None:
+            return
+        agentlog.touch_from_env(
+            self.store,
+            chunk_ids=[b.id for b in self.store.list_blocks_for_ref(ref_id)],
         )
 
     def _recover_key(self, ref: Ref, cache: CacheEntry) -> str | None:

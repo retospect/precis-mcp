@@ -10,6 +10,7 @@ from precis.store import Store
 from precis.utils.claude_agent import AgentResult, ClaudeAgentError
 from precis.workers.dream_agent import (
     _apply_fisheye,
+    _apply_quest_anchor,
     _gate_enabled,
     _load_prompt,
     run_dream_pass,
@@ -43,6 +44,53 @@ def test_apply_fisheye_appends_kind_diverse_draw(
 def test_apply_fisheye_noop_on_empty_corpus(store: Store) -> None:
     # no memories/papers/patents → prompt unchanged (never a spurious block)
     assert _apply_fisheye("D", store) == "D"
+
+
+def test_apply_quest_anchor_injects_block_naming_active_quest(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When an active quest exists, the nudge appends a block naming it,
+    seeding one anchor via `like="quest:<id>"` while keeping the other free."""
+    from types import SimpleNamespace
+    from typing import cast
+
+    from precis.quest import allocator
+    from precis.store import Ref
+
+    monkeypatch.delenv("PRECIS_DREAM_QUEST_ANCHOR", raising=False)
+    monkeypatch.setattr(allocator, "active_quest_ids", lambda s: [42])
+    fake_ref = cast(
+        Ref, SimpleNamespace(id=42, slug="catalyst-quest", title="Catalyst Quest")
+    )
+    monkeypatch.setattr(store, "get_ref", lambda **kw: fake_ref)
+
+    out, quest_handle = _apply_quest_anchor("DREAM DIRECTIVE", store)
+    assert "DREAM DIRECTIVE" in out
+    assert "This cycle's quest anchor: Catalyst Quest  (quest:42)" in out
+    assert 'like="quest:42"' in out
+    assert "FREE-ROAMING" in out
+    assert "not a fence" in out
+    assert quest_handle == "quest:42"
+
+
+def test_apply_quest_anchor_noop_when_no_active_quests(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis.quest import allocator
+
+    monkeypatch.delenv("PRECIS_DREAM_QUEST_ANCHOR", raising=False)
+    monkeypatch.setattr(allocator, "active_quest_ids", lambda s: [])
+    assert _apply_quest_anchor("DREAM DIRECTIVE", store) == ("DREAM DIRECTIVE", None)
+
+
+def test_apply_quest_anchor_noop_when_disabled(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis.quest import allocator
+
+    monkeypatch.setenv("PRECIS_DREAM_QUEST_ANCHOR", "0")
+    monkeypatch.setattr(allocator, "active_quest_ids", lambda s: [42])
+    assert _apply_quest_anchor("DREAM DIRECTIVE", store) == ("DREAM DIRECTIVE", None)
 
 
 def test_pass_skips_when_gate_off(
@@ -195,6 +243,126 @@ def test_pass_counts_failure_on_dispatch_error(
     assert result.failed == 1
 
 
+# ── Slice B: agentlog provenance node per tick ───────────────────────
+
+
+def test_run_dream_pass_opens_and_finalizes_agentlog(
+    store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A tick mints an agentlog node (source='dream') carrying lens +
+    quest_anchor metadata, threads its id via ``env_overlay`` onto the
+    dispatched ``LlmRequest``, and stamps cost/turn telemetry at finalize."""
+    from precis import agentlog
+    from precis.workers import dream_agent as da
+
+    prompt_path = tmp_path / "dream-prompt.md"
+    prompt_path.write_text("DREAM CYCLE.")
+    monkeypatch.setenv("PRECIS_DREAM_AGENT", "1")
+    monkeypatch.setenv("PRECIS_DREAM_PROMPT_PATH", str(prompt_path))
+    monkeypatch.delenv("PRECIS_DREAM_AGENT_MODEL", raising=False)
+
+    # Pin the lens/quest-anchor draws so the metadata is deterministic —
+    # the threading itself is exercised by the lens/quest-anchor unit tests.
+    monkeypatch.setattr(da, "_apply_lens", lambda p, s: (p, "oracle:scientists~2"))
+    monkeypatch.setattr(da, "_apply_fisheye", lambda p, s: p)
+    monkeypatch.setattr(da, "_apply_quest_anchor", lambda p, s: (p, "quest:7"))
+
+    opened: dict = {}
+    real_open_log = agentlog.open_log
+
+    def _fake_open_log(store_arg, **kw):
+        log_id = real_open_log(store_arg, **kw)
+        opened["kwargs"] = kw
+        opened["log_id"] = log_id
+        return log_id
+
+    monkeypatch.setattr(agentlog, "open_log", _fake_open_log)
+
+    finalized: dict = {}
+    real_finalize_log = agentlog.finalize_log
+
+    def _fake_finalize_log(store_arg, **kw):
+        finalized.update(kw)
+        return real_finalize_log(store_arg, **kw)
+
+    monkeypatch.setattr(agentlog, "finalize_log", _fake_finalize_log)
+
+    captured: dict = {}
+
+    def _fake(*args, **kw) -> AgentResult:
+        captured["env_overlay"] = kw.get("env_overlay")
+        return AgentResult(
+            final_text="dreamed.", cost_usd=0.05, duration_s=12.5, turns_used=4
+        )
+
+    monkeypatch.setattr("precis.utils.llm.router.call_claude_agent", _fake)
+
+    result = run_dream_pass(store)
+    assert result.claimed == 1 and result.ok == 1
+
+    # open_log: source + lens/quest_anchor metadata.
+    assert opened["kwargs"]["source"] == "dream"
+    assert opened["kwargs"]["meta_extra"] == {
+        "lens": "oracle:scientists~2",
+        "quest_anchor": "quest:7",
+    }
+    log_id = opened["log_id"]
+
+    # env_overlay threads PRECIS_CURRENT_AGENTLOG onto the dispatched request.
+    assert captured["env_overlay"] == {agentlog.ENV_VAR: str(log_id)}
+
+    # finalize_log: status + cost/turn telemetry.
+    assert finalized["log_id"] == log_id
+    assert finalized["status"] == "ok"
+    meta_extra = finalized["meta_extra"]
+    assert meta_extra["cost_usd"] == 0.05
+    assert meta_extra["turns"] == 4
+    assert meta_extra["duration_s"] == 12.5
+
+    ref = store.get_ref(kind="agentlog", id=log_id)
+    assert ref is not None
+    assert ref.meta["source"] == "dream"
+    assert ref.meta["status"] == "ok"
+    assert ref.meta["cost_usd"] == 0.05
+    assert ref.meta["lens"] == "oracle:scientists~2"
+    assert ref.meta["quest_anchor"] == "quest:7"
+
+
+def test_run_dream_pass_finalizes_agentlog_on_dispatch_error(
+    store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed dispatch still finalizes the tick's agentlog node — the
+    provenance record must not be left dangling on a failure."""
+    from precis import agentlog
+
+    prompt_path = tmp_path / "dream-prompt.md"
+    prompt_path.write_text("dream.")
+    monkeypatch.setenv("PRECIS_DREAM_AGENT", "1")
+    monkeypatch.setenv("PRECIS_DREAM_PROMPT_PATH", str(prompt_path))
+
+    opened: dict = {}
+    real_open_log = agentlog.open_log
+
+    def _fake_open_log(store_arg, **kw):
+        log_id = real_open_log(store_arg, **kw)
+        opened["log_id"] = log_id
+        return log_id
+
+    monkeypatch.setattr(agentlog, "open_log", _fake_open_log)
+
+    def _err(*a, **kw):
+        raise ClaudeAgentError("bad", stdout="", stderr="model died")
+
+    monkeypatch.setattr("precis.utils.llm.router.call_claude_agent", _err)
+    result = run_dream_pass(store)
+    assert result.claimed == 1 and result.failed == 1
+
+    ref = store.get_ref(kind="agentlog", id=opened["log_id"])
+    assert ref is not None
+    assert ref.meta.get("status") is not None
+    assert ref.meta.get("ended_at")
+
+
 # ── lens selection (persona-from-oracle + process fallback) ─────────
 
 
@@ -235,9 +403,11 @@ def test_select_lens_block_process_branch(
         raise AssertionError("oracle draw should be skipped in process branch")
 
     monkeypatch.setattr(da, "draw_lens_entry", _boom)
-    block = da._select_lens_block(store)
-    assert block is not None
+    result = da._select_lens_block(store)
+    assert result is not None
+    block, lens_id = result
     assert "Disney creativity strategy" in block
+    assert lens_id.startswith("process:")
 
 
 def test_select_lens_block_oracle_branch(
@@ -265,10 +435,12 @@ def test_select_lens_block_oracle_branch(
         from_favoured=True,
     )
     monkeypatch.setattr(da, "draw_lens_entry", lambda *a, **kw: fake)
-    block = da._select_lens_block(store)
-    assert block is not None
+    result = da._select_lens_block(store)
+    assert result is not None
+    block, lens_id = result
     assert block.startswith("## This cycle's lens: Shannon")
     assert "Take Shannon's stance." in block
+    assert lens_id == "oracle:scientists~6"
 
 
 def test_apply_lens_unlensed_when_no_oracle(
@@ -279,4 +451,4 @@ def test_apply_lens_unlensed_when_no_oracle(
     monkeypatch.setenv("PRECIS_DREAM_PROCESS_PROB", "0")
     monkeypatch.setattr(da, "draw_lens_entry", lambda *a, **kw: None)
     out = da._apply_lens("DIRECTIVE", store)
-    assert out == "DIRECTIVE"
+    assert out == ("DIRECTIVE", None)

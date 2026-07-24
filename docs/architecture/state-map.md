@@ -363,7 +363,12 @@ executor's (`claude_inproc` plan_tick, etc.).
   `quota_check:auth` alert (+ one-shot `notify_critical_alert`) so a
   stale/revoked OAuth token pages instead of silently 401-ing every
   agentic call for a day; auth recovering auto-resolves it.
-* `dream_agent` keeps its own 15-min cadence via `dream-pass.sh`,
+* `dream_agent` keeps its own 15-min cadence via `dream-pass.sh`
+  (each tick now injects a per-cycle **quest-anchor** nudge — a random
+  active quest seeds one of the two anchors, `angle≈0.5`, other leg stays
+  free; `PRECIS_DREAM_QUEST_ANCHOR`/`_ANGLE` — and opens a `kind='agentlog'`
+  provenance node whose id rides `env_overlay` so its spawned websearch /
+  memory refs attribute back via `touched`),
   and `cron-tick` is the fourth daemon — post-ADR-0061 it fires due
   `level:recurring` ticks (queue-mode spawn or `meta.deliver` push)
   via `run_schedule_pass`, not the retired `kind='cron'` engine. Each
@@ -966,7 +971,9 @@ The master kinds table lives in the `precis-overview` skill.
   read via `AlertHandler`/`/alerts`. **Not embedded.** Skill: `precis-alert-help`.
 - **`agentlog`** — per-run attribution record (prompt + model + `touched` links
   to every chunk a run wrote), **not embedded**; `precis.agentlog` write side,
-  sweeper GCs past `PRECIS_AGENTLOG_RETENTION_DAYS`. Skill: `precis-agentlog-help`.
+  sweeper GCs past `PRECIS_AGENTLOG_RETENTION_DAYS`. The `touch_from_env` hook now
+  fires on cache-backed (websearch/web/perplexity) + memory writes too, not just
+  draft; `dream_agent` ticks open one. Skill: `precis-agentlog-help`.
 - **`job` substrate** — `meta.job_type`+`meta.executor`, `STATUS:` tag,
   forensics as `job_event`/`job_summary`/`job_result` chunks; `claude_inproc`
   executor; `fix_gripe` is the reference job_type. The `claude_docker`
