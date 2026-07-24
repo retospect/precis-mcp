@@ -257,6 +257,112 @@ class TestHarvest:
         assert step.ruled_out == 0
         assert not any(str(t).startswith("ruled-out:") for t in store.tags_for(sid))
 
+    def test_infra_relax_failure_with_hub_retries_once(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ADR 0064 §C: given a hub, a candidate's first infra failure gets its
+        relax re-dispatched (via ``dispatch_relax``, same cell), the retry
+        counter set to 1, and it is NOT ruled out — this is the actual fix for
+        "infra failure laundered into dry"."""
+        from precis.store import Tag
+
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert sid is not None
+        job = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="struct_relax",
+            meta={"job_type": "struct_relax", "failure_class": "infra"},
+            parent_id=sid,
+        )
+        store.add_tag(job.id, Tag.closed("STATUS", "failed"), set_by="system")
+
+        calls: list[dict[str, Any]] = []
+
+        def _fake_relax(
+            _s: Any, structure_ref_id: int, *, hub: Any = None, cell: Any = None
+        ) -> str:
+            calls.append(
+                {"structure_ref_id": structure_ref_id, "hub": hub, "cell": cell}
+            )
+            return f"relax[ml] dispatched for {structure_ref_id}"
+
+        monkeypatch.setattr(compute_mod, "dispatch_relax", _fake_relax)
+
+        hub = object()
+        step = compute_mod.harvest_measures(store, qid, hub=hub, relax_cell="inplane")
+        assert step.ruled_out == 0
+        assert not any(str(t).startswith("ruled-out:") for t in store.tags_for(sid))
+        assert len(calls) == 1
+        assert calls[0] == {"structure_ref_id": sid, "hub": hub, "cell": "inplane"}
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta.get("quest_infra_retries") == 1
+
+    def test_infra_relax_failure_second_time_files_a_gripe_not_a_third_dispatch(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A second consecutive infra failure (retry already used) files a
+        bounded gripe instead of retrying again — never rules the candidate
+        out (still no physical verdict), and a subsequent harvest doesn't
+        re-file (dedup on the structure id)."""
+        from precis.store import Tag
+
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.stamp_ref_meta(sid, {"quest_infra_retries": 1})  # already retried once
+        job = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="struct_relax",
+            meta={"job_type": "struct_relax", "failure_class": "infra"},
+            parent_id=sid,
+        )
+        store.add_tag(job.id, Tag.closed("STATUS", "failed"), set_by="system")
+
+        dispatch_calls: list[int] = []
+
+        def _fake_dispatch_relax(_s: Any, sid: int, **_kw: Any) -> str:
+            dispatch_calls.append(sid)
+            return "relax[ml]"
+
+        monkeypatch.setattr(compute_mod, "dispatch_relax", _fake_dispatch_relax)
+
+        gripe_calls: list[dict[str, Any]] = []
+
+        class _FakeGripeHandler:
+            def __init__(self, *, hub: Any) -> None:
+                self.hub = hub
+
+            def put(self, *, text: str, tags: list[str] | None = None) -> None:
+                gripe_calls.append({"text": text, "tags": tags})
+
+        monkeypatch.setattr("precis.handlers.gripe.GripeHandler", _FakeGripeHandler)
+
+        hub = object()
+        step = compute_mod.harvest_measures(store, qid, hub=hub)
+        assert step.ruled_out == 0
+        assert not any(str(t).startswith("ruled-out:") for t in store.tags_for(sid))
+        assert dispatch_calls == []  # no third dispatch
+        assert len(gripe_calls) == 1
+        assert f"quest {qid}" in gripe_calls[0]["text"]
+        assert (
+            f"structure:{sid}" in gripe_calls[0]["text"]
+            or str(sid) in gripe_calls[0]["text"]
+        )
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta.get("quest_infra_retries") == 2
+
+        # a re-harvest while still failed does not re-file (dedup)
+        step2 = compute_mod.harvest_measures(store, qid, hub=hub)
+        assert step2.ruled_out == 0
+        assert len(gripe_calls) == 1  # unchanged
+
 
 # ── frontier over the store ───────────────────────────────────────────
 

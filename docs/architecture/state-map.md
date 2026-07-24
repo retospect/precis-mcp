@@ -853,9 +853,22 @@ The master kinds table lives in the `precis-overview` skill.
   so a full reaction-network NEB can't lease-expire mid-run. A **failed/paused**
   tick (transient LLM 400/502, breaker/quota pause) backs off on the heartbeat and
   **retries** — a failure counts toward `PRECIS_QUEST_TICK_MAX_FAILURES` (default
-  5 consecutive) after which the loop rests; a pause retries free. Only a
-  *successful* tick that proposes nothing new runs `Done` (graduated / out of
-  ideas). Reaction (slab) candidates relax the box **in-plane** (`cell="inplane"`
+  5 consecutive) after which the loop rests; a pause retries free. A
+  *successful* tick that dispatches nothing splits on whether the model
+  **engaged** (wrote logbook / rewrote dossier / proposed / pinned a ledger
+  direction): an *engaged* dry tick is evidence of exhaustion →
+  `PRECIS_QUEST_TICK_MAX_DRY` (3); a **punt** (produced nothing) is just a flaky
+  slice → the larger `PRECIS_QUEST_TICK_MAX_PUNT` (8) before resting (ADR 0064
+  §dry). **RC2 self-rest:** `_dispatch` checks the quest's liveness (the same
+  `active_quest_ids` STATUS:active filter the reconciler uses) at the top of
+  *every* slice and `Done(success=True)`s the moment the quest is non-active —
+  so an awaiting loop winds down on its next heartbeat, not only via the dry
+  budget (the reconciler still never cancels a loop). **Infra ≠ dry (ADR 0064
+  §C):** a candidate whose relax failed `failure_class='infra'` is re-dispatched
+  **once** (`meta.quest_infra_retries`) so it goes non-terminal and the loop
+  *awaits* it instead of drifting dry; a 2nd infra failure files a
+  `quest-infra-failure` gripe and stops — never ruled out (no physical verdict).
+  Reaction (slab) candidates relax the box **in-plane** (`cell="inplane"`
   — a/b + γ free, c-axis/vacuum pinned) so stability is judged on a relaxed slab
   (`quest/compute.py`; the `relax` op's variable-cell mode in `structure/relax.py`).
   **Loop existence is reconciled, not allocated**: the old rung-4d

@@ -51,11 +51,14 @@ slice reaches. Reap terminalizes to ``STATUS:cancelled`` — distinct from a rea
 question: this change only recovers *reboot* orphans, never a loop that a real
 error rested.
 
-**Teardown is deferred (out of scope for v1).** A quest that goes
-`dormant`/`abandoned` simply stops being re-minted here; its current loop is
-NOT cancelled — it rests on its own via the dry-tick budget in
-:mod:`precis.workers.job_types.quest_tick` (the loop naturally winds down once
-the quest stops producing new work) rather than being torn down actively.
+**Teardown is no longer purely passive (RC2).** A quest that goes
+`dormant`/`abandoned` stops being re-minted here; this reconciler still does
+NOT cancel its current loop. But :mod:`precis.workers.job_types.quest_tick`'s
+``_dispatch`` now checks the quest's own liveness at the top of every
+slice — the same ``active_quest_ids`` notion this module uses — and
+self-rests (``Done(success=True)``) the moment the quest is non-active, so
+an *awaiting* loop also winds down on its next heartbeat rather than only
+once its dry-tick budget exhausts.
 """
 
 from __future__ import annotations

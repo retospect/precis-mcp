@@ -418,7 +418,49 @@ def _mark_harvested(store: Store, structure_ref_id: int, upto_run_id: int) -> No
         )
 
 
-def harvest_measures(store: Store, quest_id: int, *, by: str = "agent") -> ComputeStep:
+#: How many infra-failure retries a candidate's relax gets before the harvest
+#: stops re-dispatching and files a gripe instead (see ``harvest_measures``).
+#: Not an env dial (ADR 0064 §C) — retry-once-then-gripe is the whole point:
+#: a higher ceiling would let a genuinely wedged executor silently spin.
+_MAX_INFRA_RETRIES = 1
+
+
+def _file_infra_gripe(
+    store: Store,
+    quest_id: int,
+    handle: str,
+    job_meta: dict[str, Any],
+    *,
+    hub: Any,
+) -> None:
+    """File a bounded, visible gripe for a candidate whose relax has now
+    infra-failed twice — never rules the candidate out (still no physical
+    verdict), just surfaces the persistent executor problem for a human."""
+    from precis.handlers.gripe import GripeHandler
+
+    detail = {
+        k: job_meta.get(k)
+        for k in ("failure_class", "error", "note", "job_type")
+        if k in job_meta
+    }
+    GripeHandler(hub=hub).put(
+        text=(
+            f"quest {quest_id} candidate {handle} relax sim infra-failing "
+            "repeatedly (2×) — spark/executor. "
+            f"Latest relax job failure detail: {detail}"
+        ),
+        tags=["quest-infra-failure"],
+    )
+
+
+def harvest_measures(
+    store: Store,
+    quest_id: int,
+    *,
+    by: str = "agent",
+    hub: Any | None = None,
+    relax_cell: str | None = None,
+) -> ComputeStep:
     """Read finished sims back into the logbook + rule out failures.
 
     Every entry this function appends is a **system measurement** (a
@@ -443,11 +485,18 @@ def harvest_measures(store: Store, quest_id: int, *, by: str = "agent") -> Compu
       graph, logged as a `result`, tracked by ``meta.quest_catpath_harvested_upto``;
     * a candidate whose latest relax job **failed for a genuine
       non-convergence reason** gets a one-shot ``ruled-out:relax-failed`` tag +
-      a `dead-end` entry so the proposer stops re-treading it. A failure
-      classed ``failure_class="infra"`` (container/docker/executor died —
-      not a physical verdict on the candidate) does NOT rule it out and stays
-      eligible for retry — otherwise a container hiccup gets laundered into
-      "this material is unstable" in the live dossier.
+      a `dead-end` entry so the proposer stops re-treading it.
+    * a candidate whose latest relax job failed with ``failure_class="infra"``
+      (container/executor died — not a physical verdict) does NOT rule out —
+      otherwise a container hiccup launders into "this material is unstable"
+      in the live dossier. ADR 0064 §C: when ``hub`` is given, the *first*
+      infra failure gets re-dispatched once (``meta.quest_infra_retries``
+      tracks it) so the candidate goes back to non-terminal and the loop
+      *awaits* it instead of drifting dry; a *second* infra failure files a
+      bounded gripe instead of retrying again, and stays retry-eligible in
+      neither sense (no third dispatch, never ruled out). ``hub=None``
+      (dry preview / callers that don't exercise this) preserves the
+      original note-only behaviour.
     """
     from precis.quest.gaps import _live_servers
     from precis.utils import handle_registry
@@ -512,16 +561,38 @@ def harvest_measures(store: Store, quest_id: int, *, by: str = "agent") -> Compu
 
         # Rule out a candidate whose relax job failed for a genuine physical
         # reason (once) — but NOT an infra failure (container/executor died),
-        # which carries no verdict on the candidate and stays retry-eligible.
+        # which carries no verdict on the candidate. An infra failure instead
+        # gets retried once (hub given), then gripes on a second occurrence
+        # (ADR 0064 §C) — see the docstring above.
         already_out = any(str(t).startswith("ruled-out:") for t in store.tags_for(s.id))
         relax_job = _latest_relax_job(store, s.id)
         if not already_out and relax_job is not None and relax_job[0] == "failed":
             _status, job_meta = relax_job
             failure_class = job_meta.get("failure_class")
             if failure_class == "infra":
-                notes.append(
-                    f"infra failure for {handle} (retry-eligible, not ruled out)"
-                )
+                retries = int((s.meta or {}).get("quest_infra_retries", 0) or 0)
+                if hub is None:
+                    notes.append(
+                        f"infra failure for {handle} (retry-eligible, not ruled out)"
+                    )
+                elif retries < _MAX_INFRA_RETRIES:
+                    dispatch_relax(store, s.id, hub=hub, cell=relax_cell)
+                    store.stamp_ref_meta(s.id, {"quest_infra_retries": retries + 1})
+                    notes.append(
+                        f"infra failure for {handle} → re-dispatched "
+                        f"(retry {retries + 1})"
+                    )
+                elif retries < _MAX_INFRA_RETRIES + 1:
+                    _file_infra_gripe(store, quest_id, handle, job_meta, hub=hub)
+                    store.stamp_ref_meta(
+                        s.id, {"quest_infra_retries": _MAX_INFRA_RETRIES + 1}
+                    )
+                    notes.append(f"infra failure persists for {handle} → gripe filed")
+                else:
+                    # Already gripe-filed on a prior harvest — dedup, no re-file.
+                    notes.append(
+                        f"infra failure persists for {handle} (gripe already filed)"
+                    )
             else:
                 store.add_tag(s.id, Tag.open("ruled-out:relax-failed"), set_by="system")
                 append_entry(
@@ -602,7 +673,7 @@ def run_compute_step(
                 if cnote.startswith("catpath["):
                     dispatched += 1
 
-    harvest = harvest_measures(store, quest_id, by=by)
+    harvest = harvest_measures(store, quest_id, by=by, hub=hub, relax_cell=relax_cell)
     notes.extend(harvest.notes)
 
     # Graduate any frontier candidate that has crossed the quest's ceiling

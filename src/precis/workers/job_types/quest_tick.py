@@ -23,12 +23,20 @@ operator asked for — **no new batch is proposed while the previous one is stil
 in flight** (per-quest backpressure), and a slice **defers** rather than piling
 on when spark's compute queue is already deep (starvation gate).
 
-The loop only reaches ``Done`` after ``_max_dry_ticks()`` **consecutive** ticks
-propose nothing new (the quest graduated, or the model is out of ideas) — a
-single dry tick backs off and retries instead, mirroring the failed/paused
-budget (``_max_tick_failures()``), so one punt from the local model can't
-permanently end a perpetual loop. It then rests until a fresh coordinator job
-re-awakens it.
+A slice that dispatches nothing on a successful tick backs off and retries
+rather than resting, mirroring the failed/paused budget
+(``_max_tick_failures()``) — but on one of two budgets, depending on whether
+the model *engaged*: a **genuine dry** tick (wrote to the logbook, rewrote
+the dossier, proposed a candidate, or pinned a ledger direction, but had
+nothing new to dispatch) is real evidence the space may be exhausted, so it
+gets the small ``_max_dry_ticks()`` budget; a **punt** (produced nothing
+substantive at all) isn't evidence of anything but a flaky slice, so it gets
+the larger, more-forgiving ``_max_punt_ticks()`` budget. Only after that many
+*consecutive* ticks of the same flavor does the loop reach ``Done`` and rest
+until a fresh coordinator job re-awakens it. RC2: it also self-rests
+immediately, on any phase, once the quest itself is no longer active (see
+``_dispatch``) — it no longer only winds down passively via the dry/punt
+budgets.
 """
 
 from __future__ import annotations
@@ -38,6 +46,7 @@ import os
 import time
 from typing import Any
 
+from precis.quest.allocator import active_quest_ids
 from precis.workers.executors._yield import Done, WakeWhen, Yield
 from precis.workers.job_types import JobTypeSpec
 
@@ -84,17 +93,32 @@ def _max_tick_failures() -> int:
 
 
 def _max_dry_ticks() -> int:
-    """Consecutive *dry* ticks tolerated before the loop rests (default 3).
+    """Consecutive *genuine dry* ticks tolerated before the loop rests (default 3).
 
-    A dry tick is a *successful* tick that proposed/dispatched zero new sims.
-    A single dry tick isn't proof the quest is out of ideas — the local model
-    can punt on any given slice, and the rotating fallback lit-search that
-    already ran this tick (see ``_fallback_queries``) injects fresh evidence
-    for the *next* propose. So one empty tick backs off and retries rather
-    than ending the loop; only after this many *consecutive* dry ticks does it
-    go ``Done`` and wait to be re-armed by a fresh ``quest_tick`` job.
+    A genuine dry tick is a *successful* tick where the model **engaged**
+    (wrote to the logbook, rewrote the dossier, proposed candidates, or
+    pinned a ledger direction) but dispatched zero new sims — real evidence
+    the space may be exhausted. This is the small, unforgiving budget; a
+    *punt* (the model produced nothing at all) uses the larger
+    ``_max_punt_ticks`` instead (see there for why the two are split). Only
+    after this many *consecutive* genuine-dry ticks does the loop go
+    ``Done`` and wait to be re-armed by a fresh ``quest_tick`` job.
     """
     return _env_int("PRECIS_QUEST_TICK_MAX_DRY", 3, lo=1, hi=1000)
+
+
+def _max_punt_ticks() -> int:
+    """Consecutive *punt* ticks tolerated before the loop rests (default 8).
+
+    A punt is a successful tick where the model produced **nothing
+    substantive** at all (no logbook entries, no dossier rewrite, no
+    proposals, no pinned ledger direction) — a flaky slice, not evidence the
+    quest is out of ideas. That's weaker evidence than a *genuine dry* tick
+    (the model engaged but had nothing new to dispatch — see
+    ``_max_dry_ticks``), so a punt gets a higher, more-forgiving ceiling
+    before the loop rests.
+    """
+    return _env_int("PRECIS_QUEST_TICK_MAX_PUNT", 8, lo=1, hi=1000)
 
 
 def _force_acquire_enabled() -> bool:
@@ -211,17 +235,36 @@ def _carry_budgets(state: dict[str, Any]) -> dict[str, Any]:
     actually ran (starvation gate / backpressure).
 
     A defer is not a tick outcome, so it must reset neither the consecutive-
-    *failed* nor the consecutive-*dry* budget; otherwise recurring defers under
-    node-wide queue load would silently zero a quest's streak and a genuinely
-    out-of-ideas quest could never reach its rest condition. (A *productive*
-    tick deliberately rebuilds fresh state without these — that reset is
-    correct; a *failed* tick carries only ``tick_failures`` — a failure legit-
-    imately breaks a dry streak, and vice versa.)
+    *failed*, consecutive-*dry*, nor consecutive-*punt* budget; otherwise
+    recurring defers under node-wide queue load would silently zero a
+    quest's streak and a genuinely out-of-ideas quest could never reach its
+    rest condition. (A *productive* tick deliberately rebuilds fresh state
+    without these — that reset is correct; a *failed* tick carries only
+    ``tick_failures`` — a failure legitimately breaks a dry/punt streak, and
+    vice versa.)
     """
     return {
         "tick_failures": int(state.get("tick_failures") or 0),
         "dry_ticks": int(state.get("dry_ticks") or 0),
+        "punt_ticks": int(state.get("punt_ticks") or 0),
     }
+
+
+def _quest_status(store: Any, quest_id: int) -> str:
+    """The quest's own STATUS tag value — "deleted" when the quest is gone,
+    "unknown" when present but untagged. Only used to annotate a RC2
+    self-rest report; the routing decision itself is ``active_quest_ids``
+    (see ``_dispatch``)."""
+    try:
+        ref = store.get_ref(kind="quest", id=quest_id)
+    except Exception:
+        return "unknown"
+    if ref is None or getattr(ref, "deleted_at", None) is not None:
+        return "deleted"
+    for t in store.tags_for(quest_id):
+        if getattr(t, "namespace", None) == "STATUS":
+            return str(t.value)
+    return "unknown"
 
 
 def _dispatch(ctx: Any, spec: Any) -> Any:
@@ -232,6 +275,23 @@ def _dispatch(ctx: Any, spec: Any) -> Any:
             summary="quest loop cancelled by request",
             success=False,
             summary_meta={"cancelled": True},
+        )
+    params = (ctx.meta or {}).get("params") or {}
+    quest_id = int(params["quest_id"])  # schema-required
+    # RC2: a loop whose quest is no longer active self-rests here — BEFORE
+    # routing to await/tick — so an *awaiting* loop also rests on its next
+    # heartbeat, not only once its dry-tick budget winds it down passively.
+    # ``active_quest_ids`` is the same STATUS:active filter the reconciler
+    # (:mod:`precis.quest.loop`) uses to decide "does this quest still get a
+    # loop", so the two never disagree.
+    if quest_id not in set(active_quest_ids(ctx.store)):
+        status = _quest_status(ctx.store, quest_id)
+        return Done(
+            summary=(
+                f"quest {quest_id} no longer active ({status}) — loop self-resting"
+            ),
+            success=True,
+            summary_meta={"self_rested": True, "quest_status": status},
         )
     if (state.get("phase") or "tick") == "await":
         return _phase_await(ctx, state)
@@ -257,10 +317,12 @@ def _phase_await(ctx: Any, state: dict[str, Any]) -> Any:
             # Carry the consecutive-failure count across the await hop so a run of
             # transient failures can eventually rest the loop (a success resets it).
             "tick_failures": int(state.get("tick_failures") or 0),
-            # Same for consecutive *dry* ticks (a success with zero new
-            # proposals) — a productive tick rebuilds state fresh, so it
-            # naturally resets to 0.
+            # Same for consecutive *dry* / *punt* ticks (a success with zero
+            # new proposals, split by whether the model engaged) — a
+            # productive tick rebuilds state fresh, so both naturally reset
+            # to 0.
             "dry_ticks": int(state.get("dry_ticks") or 0),
+            "punt_ticks": int(state.get("punt_ticks") or 0),
         },
     )
 
@@ -445,19 +507,63 @@ def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
     if pending:
         return _await_yield({"slice_count": slice_count}, pending)
 
-    # Nothing dispatched on a *successful* tick — graduated / no proposals / a
-    # local-model punt. Same shape as the failed/paused budget above: a single
-    # dry tick backs off and retries (the fallback lit-search above already
-    # injected fresh evidence for the next propose); only N *consecutive* dry
-    # ticks rest the loop. This subsumes "genuinely out of ideas" — no separate
-    # graduation special-case needed.
+    # Nothing dispatched on a *successful* tick — graduated / no proposals /
+    # a local-model punt. Split on whether the model actually *engaged* this
+    # slice (wrote to the logbook, rewrote the dossier, proposed a
+    # candidate, or pinned a ledger direction): engaged-but-nothing-new is
+    # real evidence the space may be exhausted (genuine dry, small budget);
+    # producing nothing at all is not (a punt, larger budget) — see
+    # ``_max_dry_ticks`` / ``_max_punt_ticks``. Same shape as the
+    # failed/paused budget above: a single empty tick backs off and retries
+    # (the fallback lit-search above already injected fresh evidence for the
+    # next propose); only N *consecutive* ticks of the same flavor rest the
+    # loop. This subsumes "genuinely out of ideas" — no separate graduation
+    # special-case needed.
+    engaged = bool(
+        getattr(outcome, "logbook_added", 0)
+        or getattr(outcome, "dossier_rewritten", False)
+        or getattr(outcome, "proposals", 0)
+        or getattr(outcome, "ledger_added", 0)
+    )
+    if not engaged:
+        punts = int(state.get("punt_ticks") or 0) + 1
+        if punts >= _max_punt_ticks():
+            return Done(
+                summary=(
+                    f"quest {quest_id} loop resting after {punts} consecutive "
+                    f"empty punt(s) (last: {status}, no logbook/dossier/"
+                    "proposals/ledger output). Re-armed by a fresh quest_tick "
+                    "coordinator job."
+                ),
+                success=True,
+                summary_meta={
+                    "slices": slice_count,
+                    "punt_ticks": punts,
+                    "last_status": status,
+                },
+            )
+        ctx.append_chunk(
+            "job_event",
+            f"tick #{slice_count}: punt (empty response) — retrying "
+            f"(punt {punts}/{_max_punt_ticks()})",
+        )
+        return Yield(
+            state={
+                "phase": "await",
+                "slice_count": slice_count,
+                "punt_ticks": punts,
+                "child_job_ids": [],
+            },
+            wake_when=WakeWhen("at_time", {"ts": int(time.time() + _heartbeat_s())}),
+        )
+
     dry = int(state.get("dry_ticks") or 0) + 1
     if dry >= _max_dry_ticks():
         return Done(
             summary=(
                 f"quest {quest_id} loop resting after {dry} consecutive dry "
-                f"tick(s) (last: {status}, no new sims dispatched). Re-armed by "
-                "a fresh quest_tick coordinator job."
+                f"tick(s) (last: {status}, engaged, no new sims dispatched). "
+                "Re-armed by a fresh quest_tick coordinator job."
             ),
             success=True,
             summary_meta={
@@ -468,7 +574,7 @@ def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
         )
     ctx.append_chunk(
         "job_event",
-        f"tick #{slice_count}: dry (no new proposals) — backing off "
+        f"tick #{slice_count}: dry (engaged, no new sims) — backing off "
         f"{_heartbeat_s()}s then retrying (dry {dry}/{_max_dry_ticks()})",
     )
     return Yield(

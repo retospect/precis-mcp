@@ -90,6 +90,11 @@ class QuestTickOutcome:
     searches_run: int = 0
     papers_linked: int = 0
     hypotheses_deduped: int = 0
+    # ADR 0064 §A pinned ledger — applied (non-deduped) `ledger_add` entries
+    # this tick. An engagement signal for the coordinator's punt-vs-genuine-
+    # dry split (:mod:`precis.workers.job_types.quest_tick`): a tick that only
+    # pinned a ledger direction still counted as "the model engaged".
+    ledger_added: int = 0
     # Cascade (rung 4c).
     escalated: bool = False
     mode: str = "local"  # "local" | "frontier-review"
@@ -735,6 +740,7 @@ def run_quest_tick(
     # survive the whole-rewrite below. Applied BEFORE `rewrite_dossier` so a
     # same-tick rule-out is pinned even if the fresh narrative drops it
     # (ADR 0064 §A — the structural fix for the catpath dead-3-days spin).
+    ledger_added = 0
     for e in payload.get("ledger_add") or []:
         if not isinstance(e, dict):
             continue
@@ -742,7 +748,8 @@ def run_quest_tick(
         if not text:
             continue
         section = str(e.get("section") or "").strip()
-        dossier_mod.append_ledger_entry(store, quest_id, section, text)
+        if dossier_mod.append_ledger_entry(store, quest_id, section, text):
+            ledger_added += 1
 
     # Rewrite the dossier (the rolling context) if the model produced one.
     md = str(payload.get("dossier_markdown") or "").strip()
@@ -869,6 +876,7 @@ def run_quest_tick(
         searches_run=searches_run,
         papers_linked=papers_linked,
         hypotheses_deduped=deduped,
+        ledger_added=ledger_added,
         escalated=is_review,
         mode="frontier-review" if is_review else "local",
     )

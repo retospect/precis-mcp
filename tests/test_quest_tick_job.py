@@ -3,7 +3,13 @@
 Stubs ``run_quest_tick`` and the two SQL helpers (``_pending_sim_ids`` /
 ``_queued_sim_count``) so the coordinator's scheduling logic is tested without a
 DB: the tick→await→tick cycle, the Yield/Done shapes + wake payloads, the
-per-quest backpressure, and the node-load starvation gate.
+per-quest backpressure, the node-load starvation gate, RC2's active-quest
+self-rest gate, and the punt-vs-genuine-dry budget split.
+
+The autouse ``_default_active_quest`` fixture stubs ``active_quest_ids`` to
+report quest 164903 (the default ``_meta()`` quest id) active, so every test
+that doesn't care about RC2 keeps exercising the tick/await phase machine as
+before; ``TestRC2SelfRest`` overrides it to drive the self-rest gate itself.
 """
 
 from __future__ import annotations
@@ -16,10 +22,25 @@ import pytest
 from precis.workers.executors._yield import Done, Yield
 from precis.workers.job_types import quest_tick as qt
 
+_QUEST_ID = 164903
+
+
+@pytest.fixture(autouse=True)
+def _default_active_quest(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(qt, "active_quest_ids", lambda store: [_QUEST_ID])
+
 
 class _Outcome:
     def __init__(
-        self, status: str = "succeeded", note: str = "ok", *, searches_run: int = 0
+        self,
+        status: str = "succeeded",
+        note: str = "ok",
+        *,
+        searches_run: int = 0,
+        logbook_added: int = 0,
+        dossier_rewritten: bool = False,
+        proposals: int = 0,
+        ledger_added: int = 0,
     ) -> None:
         self.status = status
         self.note = note
@@ -29,6 +50,10 @@ class _Outcome:
         self.graduated = 0
         self.searches_run = searches_run
         self.papers_linked = 0
+        self.logbook_added = logbook_added
+        self.dossier_rewritten = dossier_rewritten
+        self.proposals = proposals
+        self.ledger_added = ledger_added
 
 
 class FakeCtx:
@@ -117,27 +142,68 @@ class TestPhaseTick:
         assert len(calls) == 1 and calls[0]["compute"] is True
         assert calls[0]["tier"] == "local-big"
 
-    def test_nothing_dispatched_on_success_backs_off_and_retries(
+    def test_empty_punt_backs_off_and_retries(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # A single *successful* tick that dispatches nothing is NOT proof the
-        # quest graduated / the model is out of ideas — a local-model punt on
-        # one slice must not permanently end the perpetual loop. It backs off
-        # and retries like the failed/paused budget, bumping dry_ticks.
+        # A successful tick that produced NOTHING substantive (no logbook,
+        # no dossier rewrite, no proposals, no ledger entries) and dispatched
+        # nothing is a *punt* — not evidence the quest is out of ideas. It
+        # backs off and retries, bumping punt_ticks (not dry_ticks).
         _stub_tick(monkeypatch, _Outcome(status="succeeded", note="graduated"))
         _stub_queued(monkeypatch, 0)
         _stub_pending(monkeypatch, [[]])  # idle before AND after → nothing dispatched
         out = qt._dispatch(FakeCtx(_meta()), qt.SPEC)
         assert isinstance(out, Yield)
         assert out.state["phase"] == "await"
+        assert out.state["punt_ticks"] == 1
+        assert "dry_ticks" not in out.state
+        assert out.state["child_job_ids"] == []
+        assert out.wake_when.kind == "at_time"
+
+    def test_punt_tick_rests_after_max_punt_ticks(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _stub_tick(monkeypatch, _Outcome(status="succeeded", note="graduated"))
+        _stub_queued(monkeypatch, 0)
+        _stub_pending(monkeypatch, [[]])
+        state = {
+            "phase": "tick",
+            "slice_count": 9,
+            "punt_ticks": qt._max_punt_ticks() - 1,
+        }
+        out = qt._dispatch(FakeCtx(_meta(state)), qt.SPEC)
+        assert isinstance(out, Done)
+        assert out.success is True
+        assert out.summary_meta.get("punt_ticks") == qt._max_punt_ticks()
+        assert out.summary_meta.get("last_status") == "succeeded"
+
+    def test_engaged_but_nothing_new_backs_off_as_genuine_dry(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The model DID engage (wrote a logbook entry) but dispatched no new
+        # sims — real evidence of exhaustion, so it bumps dry_ticks (the
+        # small budget), not punt_ticks.
+        _stub_tick(
+            monkeypatch,
+            _Outcome(status="succeeded", note="graduated", logbook_added=1),
+        )
+        _stub_queued(monkeypatch, 0)
+        _stub_pending(monkeypatch, [[]])
+        out = qt._dispatch(FakeCtx(_meta()), qt.SPEC)
+        assert isinstance(out, Yield)
+        assert out.state["phase"] == "await"
         assert out.state["dry_ticks"] == 1
+        assert "punt_ticks" not in out.state
         assert out.state["child_job_ids"] == []
         assert out.wake_when.kind == "at_time"
 
     def test_dry_tick_rests_after_max_dry_ticks(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _stub_tick(monkeypatch, _Outcome(status="succeeded", note="graduated"))
+        _stub_tick(
+            monkeypatch,
+            _Outcome(status="succeeded", note="graduated", dossier_rewritten=True),
+        )
         _stub_queued(monkeypatch, 0)
         _stub_pending(monkeypatch, [[]])
         state = {
@@ -154,14 +220,15 @@ class TestPhaseTick:
     def test_productive_tick_after_dry_resets_counter(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # A tick that DOES dispatch sims rebuilds state fresh (no dry_ticks
-        # carried), so the await hop resets the counter to 0.
+        # A tick that DOES dispatch sims rebuilds state fresh (no dry_ticks /
+        # punt_ticks carried), so the await hop resets both counters to 0.
         _stub_tick(monkeypatch, _Outcome())
         _stub_queued(monkeypatch, 0)
         _stub_pending(monkeypatch, [[], [901]])
-        state = {"phase": "tick", "slice_count": 4, "dry_ticks": 2}
+        state = {"phase": "tick", "slice_count": 4, "dry_ticks": 2, "punt_ticks": 3}
         out = qt._dispatch(FakeCtx(_meta(state)), qt.SPEC)
         assert isinstance(out, Yield)
+        assert "punt_ticks" not in out.state
         assert out.state["child_job_ids"] == [901]
         assert "dry_ticks" not in out.state
 
@@ -172,9 +239,13 @@ class TestPhaseAwaitDryTicks:
     ) -> None:
         # Mirrors how tick_failures is carried across the await→tick hop
         # (_phase_await): a dry_ticks=1 in the await state should surface as
-        # dry_ticks=2 if the next tick is dry again (still below the default
-        # budget of 3, so it yields rather than resting).
-        _stub_tick(monkeypatch, _Outcome(status="succeeded", note="graduated"))
+        # dry_ticks=2 if the next (engaged, nothing-new) tick is dry again
+        # (still below the default budget of 3, so it yields rather than
+        # resting).
+        _stub_tick(
+            monkeypatch,
+            _Outcome(status="succeeded", note="graduated", logbook_added=1),
+        )
         _stub_queued(monkeypatch, 0)
         _stub_pending(monkeypatch, [[]])
         state = {
@@ -186,6 +257,25 @@ class TestPhaseAwaitDryTicks:
         out = qt._dispatch(FakeCtx(_meta(state)), qt.SPEC)
         assert isinstance(out, Yield)
         assert out.state["dry_ticks"] == 2
+
+    def test_await_hop_carries_punt_ticks_into_next_tick(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Same cross-hop carry, on the punt_ticks budget: a punt_ticks=1 in
+        # the await state surfaces as punt_ticks=2 if the next tick is an
+        # empty punt again.
+        _stub_tick(monkeypatch, _Outcome(status="succeeded", note="graduated"))
+        _stub_queued(monkeypatch, 0)
+        _stub_pending(monkeypatch, [[]])
+        state = {
+            "phase": "await",
+            "child_job_ids": [],
+            "slice_count": 4,
+            "punt_ticks": 1,
+        }
+        out = qt._dispatch(FakeCtx(_meta(state)), qt.SPEC)
+        assert isinstance(out, Yield)
+        assert out.state["punt_ticks"] == 2
 
     def test_failed_tick_backs_off_and_retries(
         self, monkeypatch: pytest.MonkeyPatch
@@ -259,17 +349,25 @@ class TestPhaseAwaitDryTicks:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # A defer (node queue full) is NOT a tick outcome, so it must not reset
-        # the consecutive-dry / consecutive-failed budgets — else recurring
-        # defers under multi-quest load would zero the streak and an out-of-
-        # ideas quest could never reach its rest condition.
+        # the consecutive-dry / consecutive-punt / consecutive-failed budgets
+        # — else recurring defers under multi-quest load would zero the
+        # streak and an out-of-ideas quest could never reach its rest
+        # condition.
         calls = _stub_tick(monkeypatch, _Outcome())
         _stub_pending(monkeypatch, [[]])  # this quest idle...
         _stub_queued(monkeypatch, qt._max_queued_sims())  # ...but node queue full
-        state = {"phase": "tick", "slice_count": 3, "dry_ticks": 2, "tick_failures": 1}
+        state = {
+            "phase": "tick",
+            "slice_count": 3,
+            "dry_ticks": 2,
+            "punt_ticks": 4,
+            "tick_failures": 1,
+        }
         out = qt._dispatch(FakeCtx(_meta(state)), qt.SPEC)
         assert isinstance(out, Yield)
         assert calls == []  # deferred, no tick ran
         assert out.state["dry_ticks"] == 2  # preserved, not reset to 0
+        assert out.state["punt_ticks"] == 4  # preserved, not reset to 0
         assert out.state["tick_failures"] == 1  # preserved, not reset to 0
 
     def test_backpressure_defer_preserves_giveup_budgets(
@@ -279,11 +377,18 @@ class TestPhaseAwaitDryTicks:
         calls = _stub_tick(monkeypatch, _Outcome())
         _stub_queued(monkeypatch, 0)
         _stub_pending(monkeypatch, [[901]])  # sims already in flight → defer
-        state = {"phase": "tick", "slice_count": 3, "dry_ticks": 2, "tick_failures": 1}
+        state = {
+            "phase": "tick",
+            "slice_count": 3,
+            "dry_ticks": 2,
+            "punt_ticks": 4,
+            "tick_failures": 1,
+        }
         out = qt._dispatch(FakeCtx(_meta(state)), qt.SPEC)
         assert isinstance(out, Yield)
         assert calls == []
         assert out.state["dry_ticks"] == 2
+        assert out.state["punt_ticks"] == 4
         assert out.state["tick_failures"] == 1
 
 
@@ -320,6 +425,79 @@ class TestCancel:
         assert isinstance(out, Done)
         assert out.success is False
         assert out.summary_meta.get("cancelled") is True
+
+
+class TestRC2SelfRest:
+    """RC2: a loop whose quest is no longer active self-rests at the top of
+    ``_dispatch`` — before routing to await/tick, on any phase — via the
+    same ``active_quest_ids`` notion the reconciler uses."""
+
+    def test_active_quest_routes_to_a_tick_as_before(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The autouse fixture already reports _QUEST_ID active; a normal
+        # tick still runs (RC2 didn't change the happy path).
+        calls = _stub_tick(monkeypatch, _Outcome())
+        _stub_queued(monkeypatch, 0)
+        _stub_pending(monkeypatch, [[], [811]])
+        out = qt._dispatch(FakeCtx(_meta()), qt.SPEC)
+        assert isinstance(out, Yield)
+        assert len(calls) == 1
+
+    def test_inactive_quest_self_rests_from_tick_phase(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(qt, "active_quest_ids", lambda store: [])
+        calls = _stub_tick(monkeypatch, _Outcome())
+        ctx = FakeCtx(_meta())
+        ctx.store.get_ref = lambda *, kind, id: SimpleNamespace(
+            deleted_at=None, meta={}
+        )
+        ctx.store.tags_for = lambda ref_id: [
+            SimpleNamespace(namespace="STATUS", value="dormant")
+        ]
+        out = qt._dispatch(ctx, qt.SPEC)
+        assert isinstance(out, Done)
+        assert out.success is True
+        assert out.summary_meta.get("self_rested") is True
+        assert out.summary_meta.get("quest_status") == "dormant"
+        assert calls == []  # did NOT run a tick
+
+    def test_inactive_quest_self_rests_from_await_phase(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # An *awaiting* loop also rests on the next heartbeat, not only once
+        # its dry-tick budget winds down — this is the whole point of RC2.
+        monkeypatch.setattr(qt, "active_quest_ids", lambda store: [])
+        pending_calls: list[Any] = []
+
+        def _fake_pending(store: Any, quest_id: int) -> list[int]:
+            pending_calls.append(quest_id)
+            return [811]
+
+        monkeypatch.setattr(qt, "_pending_sim_ids", _fake_pending)
+        ctx = FakeCtx(_meta({"phase": "await", "child_job_ids": [811]}))
+        ctx.store.get_ref = lambda *, kind, id: SimpleNamespace(
+            deleted_at=None, meta={}
+        )
+        ctx.store.tags_for = lambda ref_id: [
+            SimpleNamespace(namespace="STATUS", value="abandoned")
+        ]
+        out = qt._dispatch(ctx, qt.SPEC)
+        assert isinstance(out, Done)
+        assert out.summary_meta.get("self_rested") is True
+        assert out.summary_meta.get("quest_status") == "abandoned"
+        assert pending_calls == []  # never even re-checked the sim wait set
+
+    def test_deleted_quest_reports_deleted_status(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(qt, "active_quest_ids", lambda store: [])
+        ctx = FakeCtx(_meta())
+        ctx.store.get_ref = lambda *, kind, id: None
+        out = qt._dispatch(ctx, qt.SPEC)
+        assert isinstance(out, Done)
+        assert out.summary_meta.get("quest_status") == "deleted"
 
 
 class TestFallbackLitSearch:

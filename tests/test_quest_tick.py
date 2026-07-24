@@ -334,10 +334,36 @@ class TestQuestTick:
         }
         out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
         assert out.status == "succeeded"
+        assert out.ledger_added == 1
         assert "Cu single-atom — relax fails" in read_ledger(store, qid)
 
         rewrite_dossier(store, qid, "# Understanding v2\n\nSomething else.")
         assert "Cu single-atom — relax fails" in read_ledger(store, qid)
+
+    def test_ledger_added_counts_only_applied_non_deduped_entries(
+        self, store: Any
+    ) -> None:
+        # A dedup-skipped repeat (byte-identical bullet under the same
+        # heading) and a blank-text entry must not inflate the engagement
+        # signal the coordinator's punt-vs-dry split reads.
+        qid = _mk_quest(store, "A striving")
+        payload = {
+            "logbook": [],
+            "ledger_add": [
+                {"section": "tried", "text": "Fe–N4 single-atom sites"},
+                {"section": "tried", "text": "Fe–N4 single-atom sites"},  # dup
+                {"section": "open", "text": "   "},  # blank, skipped
+            ],
+        }
+        out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+        assert out.status == "succeeded"
+        assert out.ledger_added == 1
+
+    def test_ledger_added_zero_when_no_ledger_add(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch({"logbook": []}))
+        assert out.status == "succeeded"
+        assert out.ledger_added == 0
 
 
 class TestModelCannotFabricateResults:
