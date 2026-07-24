@@ -35,6 +35,13 @@ the sweeper) close gripe 50905 — the container is deterministically named
 (``precis-job-<ref_id>``) so it can be found and force-removed by name even
 after its owning job's DB row is gone, rather than holding the GPU
 indefinitely.
+
+**Self-abort.** :func:`_dispatch` also caps the runner call at
+:func:`_relax_timeout_s` (default well under the 6h stale-container
+watchdog), so a GPU-driver-wedged relax self-aborts on its own instead of
+waiting for the watchdog: the container is force-removed and a
+:func:`reset_gpu` (``nvidia-smi --gpu-reset``) is attempted, before the
+nightly-reboot last resort (gripe 171381).
 """
 
 from __future__ import annotations
@@ -122,6 +129,12 @@ _CONTAINER_PREFIX = "precis-job-"
 #: legitimate relax wall-clock. ``PRECIS_DFT_STALE_CONTAINER_HOURS``.
 _STALE_CONTAINER_HOURS_DEFAULT = 6.0
 
+#: Wall-clock cap on the runner call itself (gripe 171381) — kept well under
+#: the 6h stale-container watchdog above so the runner self-aborts BEFORE the
+#: watchdog would reap it, rather than the two racing. Env-overridable for a
+#: genuinely long CPU relax. ``PRECIS_DFT_RELAX_TIMEOUT_S``.
+_RELAX_TIMEOUT_S_DEFAULT = 4 * 3600
+
 
 def _stale_container_hours() -> float:
     raw = os.environ.get("PRECIS_DFT_STALE_CONTAINER_HOURS")
@@ -129,6 +142,14 @@ def _stale_container_hours() -> float:
         return max(0.5, float(raw)) if raw else _STALE_CONTAINER_HOURS_DEFAULT
     except ValueError:
         return _STALE_CONTAINER_HOURS_DEFAULT
+
+
+def _relax_timeout_s() -> float:
+    raw = os.environ.get("PRECIS_DFT_RELAX_TIMEOUT_S")
+    try:
+        return max(60.0, float(raw)) if raw else float(_RELAX_TIMEOUT_S_DEFAULT)
+    except ValueError:
+        return float(_RELAX_TIMEOUT_S_DEFAULT)
 
 
 def _gpu_flags(container_cmd: str) -> list[str]:
@@ -233,6 +254,42 @@ def kill_container(
         return False
 
 
+def reset_gpu(*, node: str | None = None, container_cmd: str = _CONTAINER_CMD) -> bool:
+    """Best-effort ``nvidia-smi --gpu-reset`` on ``node`` (default
+    :data:`_NODE`) — the escalation step between force-removing a wedged
+    container (:func:`kill_container`) and the nightly-reboot last resort,
+    for a relax that self-aborted on the wall-clock cap (gripe 171381).
+
+    Runs locally when this worker *is* ``node``, over ``ssh`` otherwise,
+    mirroring :func:`kill_container`. Never raises: any ``nvidia-smi``/``ssh``
+    failure is logged and swallowed. ``nvidia-smi --gpu-reset`` commonly
+    fails when the GPU is still held by the wedged process or when not
+    root — that's expected, hence best-effort; a persistent wedge still
+    needs the nightly reboot. Returns ``True`` iff the reset was issued and
+    reported success."""
+    target = node or _NODE
+    local = target == os.environ.get("PRECIS_NODE")
+    argv = ["nvidia-smi", "--gpu-reset"]
+    cmd = argv if local else _remote_argv(target, argv)
+    try:
+        res = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=60, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        log.warning("struct_relax: reset_gpu on %s failed", target, exc_info=True)
+        return False
+    if res.returncode != 0:
+        log.warning(
+            "struct_relax: nvidia-smi --gpu-reset on %s rc=%d stderr=%s",
+            target,
+            res.returncode,
+            (res.stderr or "")[:500],
+        )
+        return False
+    log.info("struct_relax: reset GPU on %s", target)
+    return True
+
+
 def _parse_docker_created(raw: str) -> datetime | None:
     """Parse a ``docker ps --format '{{.CreatedAt}}'`` timestamp (e.g.
     ``"2026-07-22 10:15:32 +0000 UTC"``) into an aware ``datetime``. Only the
@@ -324,7 +381,12 @@ def reap_stale_containers(
 
 
 def _default_runner(
-    argv: list[str], *, node: str, in_dir: str, out_dir: str, timeout: int | None = None
+    argv: list[str],
+    *,
+    node: str,
+    in_dir: str,
+    out_dir: str,
+    timeout: float | None = None,
 ) -> tuple[int, str]:
     """Run the container ``argv`` on ``node``; return ``(returncode,
     combined_output)``. When this worker *is* the target node (the node gate
@@ -430,7 +492,34 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     ctx.append_chunk("job_event", f"relax[{fidelity}] on {node}: {' '.join(argv)}")
 
     try:
-        rc, output = RUNNER(argv, node=node, in_dir=in_dir, out_dir=out_dir)
+        rc, output = RUNNER(
+            argv, node=node, in_dir=in_dir, out_dir=out_dir, timeout=_relax_timeout_s()
+        )
+    except subprocess.TimeoutExpired:
+        # GPU-driver-wedged relax — self-abort rather than hang forever (or
+        # wait for the 6h stale-container watchdog to reap it). Kill the
+        # container first (frees the name for a retry), then attempt a GPU
+        # reset (best-effort escalation before the nightly-reboot last
+        # resort). Gripe 171381.
+        log.warning(
+            "struct_relax: relax exceeded %.0fs wall-clock cap — self-aborting",
+            _relax_timeout_s(),
+        )
+        kill_container(structure_ref_id, node=node)
+        reset_gpu(node=node)
+        ctx.append_chunk(
+            "job_event",
+            f"relax[{fidelity}] on {node}: exceeded {_relax_timeout_s():.0f}s "
+            "wall-clock cap — self-aborted (container force-removed, "
+            "nvidia-smi --gpu-reset attempted)",
+        )
+        ctx.record_failure(
+            f"struct_relax: relax exceeded {_relax_timeout_s():.0f}s wall-clock cap — "
+            "self-aborted (container force-removed, nvidia-smi --gpu-reset attempted; "
+            "nightly reboot is the last resort)",
+            failure_class="infra",
+        )
+        return
     except Exception as exc:  # pragma: no cover — defensive
         log.warning("struct_relax: runner raised", exc_info=True)
         ctx.record_failure(f"struct_relax: runner failed: {exc}", failure_class="infra")
@@ -536,4 +625,5 @@ __all__ = [
     "kill_container",
     "load",
     "reap_stale_containers",
+    "reset_gpu",
 ]

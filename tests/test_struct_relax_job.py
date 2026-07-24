@@ -200,6 +200,101 @@ def test_dispatch_failure_records_no_cache_row(structure, tmp_path, monkeypatch)
     assert structure.store.structure_find_cached_run(params["cache_key"]) is None
 
 
+def test_dispatch_self_aborts_on_wall_clock_timeout(structure, tmp_path, monkeypatch):
+    """A GPU-driver-wedged relax must self-abort on the wall-clock cap rather
+    than hang forever — kill the container, attempt a GPU reset, and record
+    an ``infra`` failure (no run-cube row). Gripe 171381."""
+    structure.put(id="pd_pair", text=_PD)
+    params = _build_params(structure)
+    monkeypatch.setattr(struct_relax, "STAGER", lambda rid: _stage(tmp_path, rid))
+
+    def _hanging_runner(
+        argv: list[str],
+        *,
+        node: str,
+        in_dir: str,
+        out_dir: str,
+        timeout: float | None = None,
+    ) -> tuple[int, str]:
+        raise subprocess.TimeoutExpired(cmd=["docker", "run"], timeout=1)
+
+    monkeypatch.setattr(struct_relax, "RUNNER", _hanging_runner)
+
+    call_order: list[str] = []
+    kill_calls: list[tuple[int, str | None]] = []
+    reset_calls: list[str | None] = []
+
+    def _fake_kill_container(
+        ref_id: int, *, node: str | None = None, **kw: Any
+    ) -> bool:
+        call_order.append("kill")
+        kill_calls.append((ref_id, node))
+        return True
+
+    def _fake_reset_gpu(*, node: str | None = None, **kw: Any) -> bool:
+        call_order.append("reset")
+        reset_calls.append(node)
+        return True
+
+    monkeypatch.setattr(struct_relax, "kill_container", _fake_kill_container)
+    monkeypatch.setattr(struct_relax, "reset_gpu", _fake_reset_gpu)
+
+    ctx, events = _fake_ctx(structure.store, params)
+    struct_relax._dispatch(ctx, struct_relax.SPEC)
+
+    assert kill_calls == [(params["structure_ref_id"], struct_relax._NODE)]
+    assert reset_calls == [struct_relax._NODE]
+    assert call_order == ["kill", "reset"]  # container force-removed before GPU reset
+
+    fails = [payload for k, payload in events if k == "fail"]
+    assert len(fails) == 1
+    assert fails[0]["failure_class"] == "infra"
+    assert ("status", "succeeded") not in events
+    assert structure.store.structure_find_cached_run(params["cache_key"]) is None
+
+
+def test_relax_timeout_s_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PRECIS_DFT_RELAX_TIMEOUT_S", raising=False)
+    assert struct_relax._relax_timeout_s() == float(
+        struct_relax._RELAX_TIMEOUT_S_DEFAULT
+    )
+
+    monkeypatch.setenv("PRECIS_DFT_RELAX_TIMEOUT_S", "7200")
+    assert struct_relax._relax_timeout_s() == 7200.0
+
+    monkeypatch.setenv("PRECIS_DFT_RELAX_TIMEOUT_S", "1")  # below the floor
+    assert struct_relax._relax_timeout_s() == 60.0
+
+    monkeypatch.setenv("PRECIS_DFT_RELAX_TIMEOUT_S", "not-a-number")
+    assert struct_relax._relax_timeout_s() == float(
+        struct_relax._RELAX_TIMEOUT_S_DEFAULT
+    )
+
+
+def test_reset_gpu_local_vs_remote(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(struct_relax.subprocess, "run", fake_run)
+
+    monkeypatch.setenv("PRECIS_NODE", "spark")
+    assert struct_relax.reset_gpu(node="spark") is True
+    assert calls[-1] == ["nvidia-smi", "--gpu-reset"]
+
+    monkeypatch.setenv("PRECIS_NODE", "caspar")
+    assert struct_relax.reset_gpu(node="spark") is True
+    assert calls[-1] == ["ssh", "spark", "nvidia-smi --gpu-reset"]
+
+    def raising_run(cmd: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+        raise OSError("nvidia-smi not found")
+
+    monkeypatch.setattr(struct_relax.subprocess, "run", raising_run)
+    assert struct_relax.reset_gpu(node="spark") is False
+
+
 def test_dispatch_infra_failure_is_classed_infra(structure, tmp_path, monkeypatch):
     """The real bug this pins: a runner that dies (container/docker/executor
     failure — no ``result.json`` at all) must be classed ``"infra"``, NOT
