@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
@@ -54,6 +55,7 @@ from precis.structure import (
 from precis.structure import cache as relax_cache
 from precis.structure import relax as run_relax
 from precis.structure.cell import Cell
+from precis.structure.importers import catalysis_hub, get_adapter
 from precis.structure.relax import RelaxResult
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
@@ -182,6 +184,118 @@ def _payload(text: str | None, args: dict[str, Any] | None) -> dict[str, Any]:
     return {}
 
 
+# ── provenance / method-fingerprint guards (ADR 0053 §4, migration 0084) ──
+#
+# An imported design carries a ``struct_runs`` row with ``provenance =
+# 'external'`` and a ``method`` fingerprint (functional/cutoff/spin/…) —
+# it is a faithful mirror of a source dataset entry (OC20/OC22, Materials
+# Project, …), not something we computed. Two consequences live here:
+#
+#   * the design stays read-only (``edit`` and ``put`` refuse — see the
+#     ``_external_provenance`` guard); all work branches via ``derive``.
+#   * an energy delta across two runs is only meaningful when both runs
+#     share a method — mixing functionals/cutoffs, or an external energy
+#     against a differently-modeled computed relax, is a category error,
+#     not a real ΔE. ``guard_energy_comparable`` is the reusable check; no
+#     ΔE surface exists in this handler yet, so it isn't wired to a verb —
+#     a future one (pathway barriers, cross-run energy tables) should call
+#     it before subtracting two energies.
+
+
+def _format_method_fingerprint(method: Mapping[str, Any] | None) -> str:
+    """Compact display of an external run's method fingerprint, e.g.
+    ``PBE/500eV``. ``—`` when there's no fingerprint to show (a computed row,
+    or an external row that somehow recorded none)."""
+    if not method:
+        return "—"
+    parts: list[str] = []
+    if "functional" in method:
+        parts.append(str(method["functional"]))
+    if "cutoff_eV" in method:
+        parts.append(f"{method['cutoff_eV']}eV")
+    if not parts:
+        parts = [f"{k}={v}" for k, v in sorted(method.items())]
+    return "/".join(parts)
+
+
+def _describe_run_method(run: Mapping[str, Any]) -> str:
+    """Human-readable method label for one side of a ΔE comparison error —
+    an external run's fingerprint (``PBE/500eV``), or a computed run's
+    model (``model=mace``)."""
+    if run.get("provenance") == "external":
+        return _format_method_fingerprint(run.get("method"))
+    return f"model={run.get('model') or '?'}"
+
+
+def _method_key(run: Mapping[str, Any]) -> tuple[str, Any]:
+    """The comparability key for a run's energy (ADR 0053 §4): two runs are
+    only safely subtracted for a ΔE when this matches — the same computed
+    model, or an identical external method fingerprint. Provenance alone
+    isn't enough (two 'external' rows from different functionals still
+    collide)."""
+    if run.get("provenance") == "external":
+        method = run.get("method") or {}
+        return ("external", tuple(sorted(method.items())))
+    return ("computed", run.get("model"))
+
+
+def guard_energy_comparable(run_a: Mapping[str, Any], run_b: Mapping[str, Any]) -> None:
+    """Refuse a ΔE across two runs produced by different methods (ADR 0053
+    §4) — mixing functionals/cutoffs, or an external dataset energy against
+    a differently-modeled computed relax, is a category error, not a real
+    energy difference.
+
+    Geometry/graph comparisons (RMSD, bond formed/broken — ``view='diff'``)
+    are method-agnostic and unaffected; this guard is only for scalar
+    energy deltas. Raises :class:`BadInput` on a mismatch, returns silently
+    on a match."""
+    if _method_key(run_a) != _method_key(run_b):
+        raise BadInput(
+            "energies not comparable across methods: "
+            f"{_describe_run_method(run_a)} vs {_describe_run_method(run_b)} "
+            "— this ΔE is a category error",
+            next="compare runs sharing a method/model, or use view='diff' "
+            "for a method-agnostic geometry comparison",
+        )
+
+
+# ── on-demand hydrate from an external catalyst DB (ADR 0053 T6) ──────────
+#
+# ``get(kind='structure', source='catalysis-hub', ...)`` is the "quest
+# worker pokes around and pulls real substrates" surface: resolve a config
+# from the source, first-touch hydrate it via the adapter into an ordinary
+# (searchable, cited) ``structure`` ref through ``store.structure_import``
+# (idempotent — T3), and a repeat lookup by the same ``config_id=`` is a
+# cache hit with no refetch. Only ``catalysis-hub`` (T5) has a fetch layer
+# wired today; a source with a registered *adapter* but no fetch layer
+# raises a clear BadInput rather than silently doing nothing.
+
+#: fetch_config's own filter kwargs, straight off the handler's args=.
+_CATALYSIS_HUB_FILTER_KEYS = ("surface_composition", "facet", "first")
+
+#: Best-effort ``q=`` parse for the common "<adsorbate> on <El><facet>"
+#: phrasing (e.g. "NO on Pd(111)") — only used when no explicit filter arg
+#: is given. Anything fancier is left to a future slice; this is a
+#: convenience, not a query language.
+_CATALYSIS_HUB_Q_RE = re.compile(r"\bon\s+([A-Za-z]{1,2})\s*\(?\s*(\d{1,3})\s*\)?")
+
+
+def _resolve_catalysis_hub_filters(
+    q: str | None, args: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Map the handler's ``q=``/explicit filter args onto ``fetch_config``'s
+    kwargs (``surface_composition=``/``facet=``/``first=``)."""
+    filters: dict[str, Any] = {
+        k: args[k] for k in _CATALYSIS_HUB_FILTER_KEYS if args.get(k) is not None
+    }
+    if not filters and q:
+        m = _CATALYSIS_HUB_Q_RE.search(q)
+        if m:
+            filters["surface_composition"] = m.group(1).capitalize()
+            filters["facet"] = m.group(2)
+    return filters
+
+
 class StructureHandler(Handler):
     spec: ClassVar[KindSpec] = KindSpec(
         kind="structure",
@@ -194,6 +308,10 @@ class StructureHandler(Handler):
             "remove_bond/constrain, plus eye/measure/unmark/remove_measure "
             "markers); get lists designs, shows a TOC (id=slug), or probes "
             "(view='atom|neighborhood|bonds|find|validate|markers', args={...}); "
+            "get(args={'source':'catalysis-hub', 'surface_composition':.., "
+            "'facet':.., 'config_id':..}) on-demand hydrates a config from an "
+            "external catalyst DB (ADR 0053) into a cited, read-only design "
+            "(a repeat call by config_id is a cache hit, no refetch); "
             "link relates designs (rel='derived-from'); delete soft-retires. "
             "Atoms are a<El><n>, addressed st<id>#a<El><n>. "
             "Postgres-canonical, in-memory probes, no pixels. "
@@ -235,6 +353,18 @@ class StructureHandler(Handler):
                 '"b":8.4,"c":24,"pbc":[true,true,false]},"ops":[]}\')',
             )
         slug = str(id).strip()
+        existing = self.store.get_ref(kind="structure", id=slug)
+        if existing is not None and self._external_provenance(existing.id) is not None:
+            # An imported reference config is a read-only mirror (ADR 0053 §5):
+            # `put` targeting its slug would overwrite the geometry in place via
+            # structure_save's existing-branch while the external `struct_runs`
+            # row keeps describing the old atoms — the same bypass `edit` guards.
+            raise BadInput(
+                "this is an imported reference config (provenance:external) "
+                "— derive a variant instead of overwriting it in place",
+                next=f"derive(kind='structure', id={slug!r}, "
+                "to='<new-slug>', ops=[...])",
+            )
         payload = _payload(text, args)
         ops = payload.get("ops") or []
         if "cell" in payload:
@@ -255,7 +385,6 @@ class StructureHandler(Handler):
         else:
             relax_result, dispatch = res, None
         relax_summary = self._relax_summary(relax_result)
-        existing = self.store.get_ref(kind="structure", id=slug)
         version = (int(existing.meta.get("version", 0)) + 1) if existing else 1
         desc = str(payload.get("description") or "").strip()
         ttl = (title or slug).strip() or slug
@@ -300,6 +429,13 @@ class StructureHandler(Handler):
         if id is None or not str(id).strip():
             raise BadInput("edit(kind='structure') requires id= (the design slug)")
         ref = resolve_live_slug_ref(self.store, kind="structure", id=str(id).strip())
+        if self._external_provenance(ref.id) is not None:
+            raise BadInput(
+                "this is an imported reference config (provenance:external) "
+                "— derive a variant instead of editing it in place",
+                next=f"derive(kind='structure', id={ref.slug!r}, "
+                "to='<new-slug>', ops=[...])",
+            )
         op_list = ops
         if op_list is None:
             payload = _payload(text, args)
@@ -392,8 +528,24 @@ class StructureHandler(Handler):
         id: str | int | None = None,
         view: str | None = None,
         args: dict[str, Any] | None = None,
+        source: str | None = None,
+        q: str | None = None,
         **_kw: Any,
     ) -> Response:
+        # ``source=`` — on-demand hydrate from an external catalyst DB (T6).
+        # The MCP ``get`` tool has no top-level ``source=``/query-filter
+        # params yet, so a caller reaches this via
+        # ``get(kind='structure', args={'source': 'catalysis-hub', ...})``
+        # — the dispatcher forwards the whole ``args=`` dict verbatim
+        # because this handler already opts into an ``args`` kwarg (see
+        # ``DispatchMixin._invoke_handler``). A direct Python caller (tests,
+        # a future in-proc dispatch) may also pass ``source=``/``q=``
+        # top-level; both routes are honoured.
+        a = args or {}
+        src = (source or a.get("source") or "").strip() or None
+        if src is not None:
+            query = q if q is not None else a.get("q")
+            return self._get_external(source=src, q=query, args=a)
         if id is None or (isinstance(id, str) and id.strip() in ("", "/")):
             return self._render_list()
         ref = resolve_live_slug_ref(self.store, kind="structure", id=str(id).strip())
@@ -421,6 +573,123 @@ class StructureHandler(Handler):
             )
         return self._render_probe(view, scene, args or {})
 
+    def _get_external(
+        self, *, source: str, q: str | None, args: dict[str, Any]
+    ) -> Response:
+        """On-demand hydrate one (or a filtered set of) external config(s)
+        from ``source`` (ADR 0053 T6). First touch: fetch → adapter →
+        ``store.structure_import`` (idempotent) → render with a citation
+        footer. A caller who names an exact ``config_id=`` gets a
+        network-free cache hit when that config is already imported — the
+        by-id short-circuit checks ``ref_identifiers`` before ever calling
+        the fetch layer. A broad filter-only query (``surface_composition=``/
+        ``facet=``/``q=`` with no ``config_id=``) always refetches — there's
+        no way to know in advance whether the source has new configs
+        matching those filters."""
+        try:
+            adapter_fn = get_adapter(source)
+        except ValueError as exc:
+            raise BadInput(str(exc)) from exc
+
+        config_id = args.get("config_id")
+        if config_id:
+            existing_ref_id = self.store.find_ref_by_identifier(
+                source, str(config_id), kind="structure"
+            )
+            if existing_ref_id is not None:
+                return self._render_hydrated(
+                    [(existing_ref_id, source, str(config_id), None)], cached=True
+                )
+
+        if source != "catalysis-hub":
+            raise BadInput(
+                f"on-demand hydrate has no fetch layer wired for source={source!r} yet",
+                next="known sources: catalysis-hub",
+            )
+        filters = _resolve_catalysis_hub_filters(q, args)
+        try:
+            raw_records = catalysis_hub.fetch_config(**filters)
+        except catalysis_hub.CatalysisHubUnsupported as exc:
+            raise Unsupported(
+                str(exc), next="pip install 'precis-mcp[import]'"
+            ) from exc
+
+        if not raw_records:
+            return Response(
+                body=f"no {source} configs match {filters!r}\n\n"
+                "Next: widen surface_composition=/facet=, or omit filters "
+                "for a broader sweep."
+            )
+
+        imported: list[tuple[int, str, str, dict[str, Any] | None]] = []
+        for raw in raw_records:
+            scene, run, ext_id = adapter_fn(raw)
+            ref_id = self.store.structure_import(scene, run, ext_id)
+            imported.append((ref_id, ext_id.dataset, ext_id.config_id, run.method))
+
+        if config_id:
+            matched = [row for row in imported if row[2] == str(config_id)]
+            if not matched:
+                # The fetch returned configs but none is the requested id —
+                # never silently substitute an unrelated record as if it were
+                # the one asked for (it could feed the wrong substrate to a
+                # quest). Report the miss instead.
+                return Response(
+                    body=f"no {source} config with config_id={config_id!r} in "
+                    f"the fetched set (filters {filters!r} returned "
+                    f"{len(imported)} other config(s))\n\n"
+                    "Next: check the config_id, or omit it to browse the "
+                    "filtered set."
+                )
+            imported = matched
+
+        return self._render_hydrated(imported, cached=False)
+
+    def _render_hydrated(
+        self,
+        rows: list[tuple[int, str, str, dict[str, Any] | None]],
+        *,
+        cached: bool,
+    ) -> Response:
+        """Render on-demand-hydrate result(s) — a full TOC + citation footer
+        for a single config (the common case: a by-id hit, or a filtered
+        fetch that resolved to exactly one record), else a summary table."""
+        if len(rows) == 1:
+            ref_id, dataset, config_id, method = rows[0]
+            ref = self.store.get_ref(kind="structure", id=ref_id)
+            assert ref is not None
+            scene, handles = self.store.structure_load(ref.id)
+            head_verb = "cached" if cached else "hydrated"
+            body = self._toc_response(scene, ref, handles, head_verb=head_verb).body
+            if method is None:
+                method = (self._external_provenance(ref.id) or {}).get("method") or {}
+            doi = method.get("dataset_doi")
+            footer = f"\n\n# source: {dataset} · config {config_id}"
+            if doi:
+                footer += f" · doi:{doi}"
+            return Response(body=body + footer)
+
+        table_rows = []
+        for ref_id, dataset, config_id, method in rows:
+            ref = self.store.get_ref(kind="structure", id=ref_id)
+            handle = handle_registry.try_format("structure", ref_id, chunk=False) or "—"
+            doi = (method or {}).get("dataset_doi") or "—"
+            table_rows.append(
+                {
+                    "handle": handle,
+                    "design": ref.slug if ref else "—",
+                    "dataset": dataset,
+                    "config_id": config_id,
+                    "doi": doi,
+                }
+            )
+        return Response(
+            body=f"# {len(table_rows)} hydrated structure(s)\n"
+            + render_agent_table(
+                table_rows, schema=["handle", "design", "dataset", "config_id", "doi"]
+            )
+        )
+
     def _render_export(self, view: str, scene: Scene, slug: str) -> Response:
         """Emit the geometry as a file format. POSCAR/extXYZ are pure; CIF
         needs ASE (the optional ``[dft]`` extra) — a missing one is Unsupported
@@ -437,8 +706,43 @@ class StructureHandler(Handler):
             )
         return Response(body=export.to_cif(scene))
 
+    def _external_provenance(self, ref_id: int) -> dict[str, Any] | None:
+        """The design's newest external-provenance run, if any (ADR 0053 §4,
+        migration 0084). Non-``None`` means this design mirrors an imported
+        dataset entry (OC20/OC22, Materials Project, …) — it must stay a
+        faithful, read-only reference; all work branches via ``derive``.
+
+        Queried directly against ``struct_runs`` rather than through
+        ``store.structure_runs`` so this guard is correct regardless of
+        whether that helper's own column list has caught up with 0084 yet."""
+        with self.store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT method FROM struct_runs "
+                "WHERE ref_id = %s AND provenance = 'external' "
+                "ORDER BY id DESC LIMIT 1",
+                (ref_id,),
+            ).fetchone()
+        return None if row is None else {"method": row[0] or {}}
+
+    def _runs_provenance(
+        self, run_ids: list[int]
+    ) -> dict[int, tuple[str, dict[str, Any] | None]]:
+        """``{run_id: (provenance, method)}`` for a batch of run ids (ADR
+        0053 §4, migration 0084) — a direct query for the same reason as
+        ``_external_provenance`` above."""
+        if not run_ids:
+            return {}
+        with self.store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT id, provenance, method FROM struct_runs WHERE id = ANY(%s)",
+                (run_ids,),
+            ).fetchall()
+        return {int(rid): (prov, method) for rid, prov, method in rows}
+
     def _render_runs(self, ref: Any) -> Response:
-        """The design's compute history — the fidelity ladder over time (§9)."""
+        """The design's compute history — the fidelity ladder over time (§9),
+        each row labeled with its provenance (``computed`` vs ``external``,
+        ADR 0053 §4) and, for an imported row, its method fingerprint."""
         runs = self.store.structure_runs(ref.id)
         if not runs:
             return Response(
@@ -447,19 +751,28 @@ class StructureHandler(Handler):
                 + str(ref.slug)
                 + "', ops=[{'op':'relax','fidelity':'clean'}])"
             )
-        rows = [
-            {
-                "run": f"r{r['id']}",
-                "fidelity": r["fidelity"],
-                "status": r["status"],
-                "conv": "yes" if r["converged"] else "no",
-                "steps": str(r["n_steps"]),
-                "energy": "—" if r["energy"] is None else f"{r['energy']:.4f}",
-                "max_force": "—" if r["max_force"] is None else f"{r['max_force']:.4f}",
-                "v": str(r["on_version"]),
-            }
-            for r in runs
-        ]
+        prov = self._runs_provenance([r["id"] for r in runs])
+        rows = []
+        for r in runs:
+            provenance, method = prov.get(r["id"], ("computed", None))
+            rows.append(
+                {
+                    "run": f"r{r['id']}",
+                    "fidelity": r["fidelity"],
+                    "status": r["status"],
+                    "conv": "yes" if r["converged"] else "no",
+                    "steps": str(r["n_steps"]),
+                    "energy": "—" if r["energy"] is None else f"{r['energy']:.4f}",
+                    "max_force": "—"
+                    if r["max_force"] is None
+                    else f"{r['max_force']:.4f}",
+                    "v": str(r["on_version"]),
+                    "provenance": provenance,
+                    "method": _format_method_fingerprint(method)
+                    if provenance == "external"
+                    else "—",
+                }
+            )
         return Response(
             body=f"# {ref.slug}: {len(runs)} compute run(s)\n"
             + render_agent_table(
@@ -473,6 +786,8 @@ class StructureHandler(Handler):
                     "energy",
                     "max_force",
                     "v",
+                    "provenance",
+                    "method",
                 ],
             )
         )

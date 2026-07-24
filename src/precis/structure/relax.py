@@ -3,11 +3,14 @@
 `relax` is one verb with a ``fidelity`` rung: ``clean`` (rung 0) is **ours and
 always available** — a pure geometric repair that pushes sub-covalent / overlapping
 atoms apart toward their equilibrium bond length ("fix the stupid bonds", the
-"put bonds in, relax, it fixes itself" of §8.1). Every other rung is a **rented
-backend** (``ff``/``xtb``/``ml``/``dft-fast``/``dft-tight``, ADR §9 table) gated
-behind the ``[dft-ml]`` / ``[dft-gpaw]`` extras — calling one without its backend
-raises :class:`RelaxUnsupported`, surfaced as ``Unsupported`` at the handler,
-never a crash.
+"put bonds in, relax, it fixes itself" of §8.1). ``emt`` (rung 1, ADR 0053) is
+also **ours** — a torch-free ASE-EMT relax gated only behind the light
+``[dft]`` extra (numpy + ASE, no MLIP), whose closed element coverage happens
+to be exactly the fcc catalytic metals a Pd/Cu/Ni screen needs. Every rung
+above that is a **rented backend** (``ff``/``xtb``/``ml``/``dft-fast``/
+``dft-tight``, ADR §9 table) gated behind the ``[dft-ml]`` / ``[dft-gpaw]``
+extras — calling one without its backend raises :class:`RelaxUnsupported`,
+surfaced as ``Unsupported`` at the handler, never a crash.
 
 Rung 0 honours the ``fixed`` constraint (a fixed axis never moves) and returns a
 structured convergence envelope (converged + steps + max displacement + the
@@ -25,7 +28,15 @@ from .scene import Scene
 
 #: Rungs that need a rented backend not bundled here. ``ml`` has a real backend
 #: (ASE + an MLIP, the ``[dft-ml]`` extra); ``ff``/``xtb``/``dft-*`` stay gated.
+#: ``emt`` (rung 1) is deliberately *not* here — it's ours, like ``clean``, just
+#: gated behind the light ``[dft]`` extra instead of always-on.
 _RENTED_RUNGS = {"ff", "xtb", "ml", "dft-fast", "dft-tight"}
+
+#: EMT's built-in interatomic-potential coverage (ASE's ``emt.py`` parameter
+#: table) — a closed set of fcc catalytic metals + light adsorbate elements.
+#: This happens to be exactly the Pd/Cu/Ni catalyst screen's metals; anything
+#: outside it (a lanthanide, a bcc metal, …) needs the ``ml`` rung instead.
+EMT_ELEMENTS = frozenset({"Al", "Ni", "Cu", "Pd", "Ag", "Pt", "Au", "H", "C", "N", "O"})
 
 #: Variable-cell relax modes for an energy rung. ``None`` / ``"fixed"`` relaxes
 #: atoms only (the historical default). ``"inplane"`` frees the in-plane lattice
@@ -98,8 +109,14 @@ def relax(
             "variable-cell relax needs an energy rung (fidelity='ml'); the "
             "'clean' geometry repair has no stress to relax the cell against"
         )
+    if cell_mode is not None and fidelity == "emt":
+        raise RelaxUnsupported(
+            "variable-cell relax isn't supported at rung 'emt' — use fidelity='ml'"
+        )
     if fidelity in ("clean", "0"):
         return _relax_clean(scene, steps=steps, tol=tol)
+    if fidelity == "emt":
+        return _relax_emt(scene, steps=steps, tol=tol)
     if fidelity == "ml":
         return _relax_ml(scene, steps=steps, tol=tol, model=model, cell=cell_mode)
     if fidelity in _RENTED_RUNGS:
@@ -153,6 +170,78 @@ def _relax_clean(scene: Scene, *, steps: int, tol: float) -> RelaxResult:
             break
     return RelaxResult(
         rung="clean", converged=converged, n_steps=n, max_disp=max_disp, curve=curve
+    )
+
+
+def _relax_emt(scene: Scene, *, steps: int, tol: float) -> RelaxResult:
+    """Rung 1: relax on ASE's built-in Effective Medium Theory potential.
+
+    Torch-free — ``numpy + ASE`` only (the light ``[dft]`` extra), no MLIP to
+    install or download. EMT's coverage is the closed fcc-metal parameter
+    table it ships with (:data:`EMT_ELEMENTS`), which happens to be exactly
+    the Pd/Cu/Ni catalyst screen's metals; an out-of-set element raises
+    :class:`RelaxUnsupported` with a legible hint toward the ``ml`` rung,
+    never a stray KeyError from inside ASE. Honours the ``fixed`` bitmask via
+    the same per-axis ``FixCartesian`` constraints as :func:`_relax_ml`. No
+    variable-cell mode — rung 1 is atoms-only, not a DFT-grade stress tensor.
+    """
+    bad = {a.element for a in scene.atoms.values()} - EMT_ELEMENTS
+    if bad:
+        raise RelaxUnsupported(
+            "EMT covers {Al,Ni,Cu,Pd,Ag,Pt,Au,H,C,N,O}; use fidelity='ml'"
+        )
+    if not export.ase_available():
+        raise RelaxUnsupported(
+            "relax rung 'emt' needs ASE — pip install 'precis-mcp[dft]'"
+        )
+    from ase.calculators.emt import EMT
+    from ase.constraints import FixCartesian
+
+    try:
+        from ase.optimize import FIRE as _Optimizer
+    except ImportError:
+        from ase.optimize import BFGS as _Optimizer  # type: ignore[assignment]
+
+    atoms = export._to_ase(scene)
+    labels = list(scene.atoms)
+    before = np.array([scene.cell.frac_to_cart(scene.atoms[la].frac) for la in labels])
+
+    constraints = []
+    for idx, la in enumerate(labels):
+        fixed = scene.atoms[la].fixed
+        if fixed:
+            mask = [bool((fixed >> ax) & 1) for ax in range(3)]
+            constraints.append(FixCartesian(idx, mask=mask))
+    if constraints:
+        atoms.set_constraint(constraints)
+    atoms.calc = EMT()
+
+    curve: list[float] = []
+
+    def _record() -> None:
+        f = atoms.get_forces()
+        curve.append(round(float(np.sqrt((f**2).sum(axis=1).max())), 4))
+
+    opt = _Optimizer(atoms, logfile=None)
+    opt.attach(_record, interval=1)
+    converged = bool(opt.run(fmax=max(tol, 0.05), steps=steps))
+
+    scaled = atoms.get_scaled_positions()
+    for idx, la in enumerate(labels):
+        scene.atoms[la].frac = scene.cell.wrap(np.asarray(scaled[idx], dtype=float))
+    after = np.array([scene.cell.frac_to_cart(scene.atoms[la].frac) for la in labels])
+    max_disp = float(np.linalg.norm(after - before, axis=1).max()) if labels else 0.0
+    forces = atoms.get_forces()
+    max_force = float(np.sqrt((forces**2).sum(axis=1).max()))
+    return RelaxResult(
+        rung="emt",
+        converged=converged,
+        n_steps=int(opt.get_number_of_steps()),
+        max_disp=round(max_disp, 4),
+        curve=curve,
+        energy=float(atoms.get_potential_energy()),
+        max_force=round(max_force, 4),
+        model="emt",
     )
 
 

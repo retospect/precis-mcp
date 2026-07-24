@@ -1,0 +1,45 @@
+{
+  "Equation": "1.0NO(g) + * -> NO*",
+  "chemicalComposition": "Pd8N1O1",
+  "surfaceComposition": "Pd",
+  "facet": "111",
+  "reactants": {"NOgas": 1, "star": 1},
+  "products": {"NOstar": 1},
+  "reactionEnergy": -1.85,
+  "activationEnergy": null,
+  "dftCode": "Quantum ESPRESSO",
+  "dftFunctional": "BEEF-vdW",
+  "username": "suncatuser",
+  "pubId": "MamunHighT2019",
+  "publication": {"doi": "10.1021/acscatal.9b02179"},
+  "name": "NOstar",
+  "system": {
+    "id": 987654,
+    "uniqueId": "PdNO111top-a1b2c3",
+    "energy": -321.456,
+    "InputFile": {
+      "cell": [
+        [5.502, 0.0, 0.0],
+        [2.751, 4.765, 0.0],
+        [0.0, 0.0, 20.0]
+      ],
+      "pbc": [true, true, false],
+      "numbers": [46, 46, 46, 46, 46, 46, 46, 46, 7, 8],
+      "positions": [
+        [0.0, 0.0, 6.0],
+        [2.751, 0.0, 6.0],
+        [1.3755, 2.3825, 6.0],
+        [4.1265, 2.3825, 6.0],
+        [0.917, 1.588, 8.25],
+        [3.668, 1.588, 8.25],
+        [2.293, 3.971, 8.25],
+        [5.044, 3.971, 8.25],
+        [0.917, 1.588, 10.15],
+        [0.917, 1.588, 11.30]
+      ],
+      "constraints": [
+        {"name": "FixAtoms", "kwargs": {"indices": [0, 1, 2, 3]}}
+      ]
+    }
+  }
+}

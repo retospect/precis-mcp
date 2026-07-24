@@ -1,8 +1,12 @@
 # 0053 — Ingesting external DFT catalyst libraries into the `structure` kind
 
-- **Status**: proposed (2026-07-09) · design conversation captured, not
-  yet sliced. Orchestration (§11) + the persistent lens (§10) were folded
-  in 2026-07-10. This ADR records the *decisions*; the source-survey +
+- **Status**: proposed (2026-07-09) · Sequencing steps 0–2 implemented
+  (2026-07-24) — the `emt` rung, the run-cube `method`+`provenance` schema
+  + `structure_import` write path, and the Catalysis-Hub on-demand adapter
+  are shipped (see "Implementation status" below). Steps 3–6 (batch mirror,
+  derivative loop, MLIP fine-tuning, the ensemble pipeline) remain design-
+  only. Orchestration (§11) + the persistent lens (§10) were folded in
+  2026-07-10. This ADR records the *decisions*; the source-survey +
   ETL-pattern exploration belongs in a
   [`docs/design/`](../design/) plan when the first slice is scoped.
 - **Deciders**: Reto + agent
@@ -490,6 +494,9 @@ MLflow/W&B): the engine decides *what runs and when*; precis remembers
   staleness is queryable, *without* a DB rule store.
 
 ## Sequencing
+
+**Implementation status (2026-07-24):** 0/1/2 **done**; 3/4/5/6 **pending**.
+Present-state detail: `docs/architecture/state-map.md` (structure kind).
 
 0. **The `emt` rung** (§8) — independent of the import path and shippable
    first: a `_relax_emt` in `structure/relax.py` (ASE EMT + FIRE, `[dft]`

@@ -329,6 +329,65 @@ def test_relax_cell_mode_needs_an_energy_rung() -> None:
         relax(scene, fidelity="clean", cell="inplane")
 
 
+# -- relax (rung 1, ASE-EMT, ADR 0053 T0) -------------------------------------
+
+
+def _pd_slab() -> Scene:
+    """A small fcc111 2x2x3 Pd slab (ASE-built), imported into a Scene."""
+    pytest.importorskip("ase")
+    from ase.build import fcc111
+
+    atoms = fcc111("Pd", size=(2, 2, 3), vacuum=10.0)
+    cell = Cell(np.asarray(atoms.get_cell()), pbc=tuple(atoms.pbc))
+    scene = Scene(cell=cell)
+    apply_ops(
+        scene,
+        [
+            {"op": "add_atom", "element": sym, "cart": list(map(float, pos))}
+            for sym, pos in zip(atoms.get_chemical_symbols(), atoms.get_positions())
+        ],
+    )
+    return scene
+
+
+def test_relax_emt_converges_and_moves_a_pd_slab() -> None:
+    pytest.importorskip("ase")
+    scene = _pd_slab()
+    before = {la: a.frac.copy() for la, a in scene.atoms.items()}
+    res = relax(scene, fidelity="emt", steps=200, tol=0.05)
+    assert res.rung == "emt"
+    assert res.converged
+    assert res.energy is not None and res.max_force is not None
+    moved = any(
+        not np.allclose(before[la], scene.atoms[la].frac, atol=1e-6)
+        for la in scene.atoms
+    )
+    assert moved
+
+
+def test_relax_emt_respects_fixed() -> None:
+    pytest.importorskip("ase")
+    from precis.structure.scene import FIX_ALL
+
+    scene = _pd_slab()
+    fixed_label = next(iter(scene.atoms))
+    scene.atoms[fixed_label].fixed = FIX_ALL
+    before = scene.atoms[fixed_label].frac.copy()
+    relax(scene, fidelity="emt", steps=50, tol=0.05)
+    assert np.allclose(scene.atoms[fixed_label].frac, before, atol=1e-9)
+
+
+def test_relax_emt_rejects_out_of_set_element() -> None:
+    pytest.importorskip("ase")
+    scene = Scene(cell=_cubic(20.0))
+    apply_ops(scene, [{"op": "add_atom", "element": "Fe", "frac": [0.0, 0.0, 0.0]}])
+    with pytest.raises(RelaxUnsupported) as exc:
+        relax(scene, fidelity="emt")
+    msg = str(exc.value)
+    assert "EMT covers" in msg
+    assert "fidelity='ml'" in msg
+
+
 def test_relax_unknown_cell_mode_raises() -> None:
     scene = Scene(cell=_cubic(10.0))
     apply_ops(scene, [{"op": "add_atom", "element": "Pd", "frac": [0, 0, 0]}])

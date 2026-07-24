@@ -15,7 +15,7 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
-from precis.handlers.structure import StructureHandler
+from precis.handlers.structure import StructureHandler, guard_energy_comparable
 
 _PD = json.dumps(
     {
@@ -418,3 +418,93 @@ def test_energy_rung_with_requester_wires_the_wait(structure, store, no_local_ml
     # The wait is armed on the requester.
     todo_ref = store.get_ref(kind="todo", id=todo_id)
     assert todo_ref.meta["auto_check"] == {"type": "derived_job_succeeded"}
+
+
+# ── T4: provenance guards (ADR 0053 §4, migration 0084) ────────────────────
+
+
+def _insert_external_run(
+    store,
+    ref_id: int,
+    *,
+    method: dict,
+    energy: float = -12.34,
+    fidelity: str = "dft-tight",
+) -> None:
+    """Seed an external-provenance ``struct_runs`` row directly — T3's
+    import path (``structure_import``) isn't necessarily landed yet, so the
+    guard tests seed via raw SQL the way ``tests/test_struct_runs_method_
+    provenance.py`` does."""
+    with store.tx() as conn:
+        conn.execute(
+            "INSERT INTO struct_runs "
+            "(ref_id, fidelity, on_version, energy, provenance, method) "
+            "VALUES (%s, %s, 1, %s, 'external', %s::jsonb)",
+            (ref_id, fidelity, energy, json.dumps(method)),
+        )
+
+
+def test_edit_refuses_an_externally_sourced_design(structure, store):
+    structure.put(id="oc20_slab", text=_PD)
+    ref = store.get_ref(kind="structure", id="oc20_slab")
+    _insert_external_run(store, ref.id, method={"functional": "PBE", "cutoff_eV": 500})
+    with pytest.raises(BadInput, match="derive a variant"):
+        structure.edit(
+            id="oc20_slab",
+            ops=[{"op": "add_atom", "element": "O", "frac": [0.5, 0.5, 0.5]}],
+        )
+    # a purely computed design is unaffected
+    structure.put(id="pd_pair", text=_PD)
+    resp = structure.edit(
+        id="pd_pair",
+        ops=[{"op": "add_atom", "element": "O", "frac": [0.5, 0.5, 0.5]}],
+    )
+    assert "edited" in resp.body
+
+
+def test_put_refuses_overwriting_an_externally_sourced_design(structure, store):
+    structure.put(id="oc20_ext", text=_PD)
+    ref = store.get_ref(kind="structure", id="oc20_ext")
+    _insert_external_run(store, ref.id, method={"functional": "PBE", "cutoff_eV": 500})
+    # re-put on the same slug would overwrite the mirror in place — refuse it
+    with pytest.raises(BadInput, match="derive a variant"):
+        structure.put(id="oc20_ext", text=_PD)
+    # a fresh slug is unaffected
+    resp = structure.put(id="fresh_slab", text=_PD)
+    assert "created" in resp.body
+
+
+def test_runs_view_labels_provenance_and_method(structure, store):
+    structure.put(id="oc20_slab", text=_PD)
+    ref = store.get_ref(kind="structure", id="oc20_slab")
+    _insert_external_run(store, ref.id, method={"functional": "PBE", "cutoff_eV": 500})
+    resp = structure.get(id="oc20_slab", view="runs")
+    assert "external" in resp.body
+    assert "PBE" in resp.body and "500" in resp.body
+
+    # a computed run shows "computed" and no method fingerprint
+    structure.put(id="pd_pair", text=_PD)
+    structure.edit(id="pd_pair", ops=[{"op": "relax", "fidelity": "clean"}])
+    computed_resp = structure.get(id="pd_pair", view="runs")
+    assert "computed" in computed_resp.body
+    assert "PBE" not in computed_resp.body
+
+
+def test_guard_energy_comparable_refuses_a_mismatched_fingerprint():
+    external_pbe = {
+        "provenance": "external",
+        "method": {"functional": "PBE", "cutoff_eV": 500},
+    }
+    computed_mace = {"provenance": "computed", "model": "mace"}
+    with pytest.raises(BadInput, match="category error"):
+        guard_energy_comparable(external_pbe, computed_mace)
+
+
+def test_guard_energy_comparable_allows_a_matching_fingerprint():
+    a = {"provenance": "external", "method": {"functional": "PBE", "cutoff_eV": 500}}
+    b = {"provenance": "external", "method": {"cutoff_eV": 500, "functional": "PBE"}}
+    guard_energy_comparable(a, b)  # no raise
+
+    same_model_a = {"provenance": "computed", "model": "mace"}
+    same_model_b = {"provenance": "computed", "model": "mace"}
+    guard_energy_comparable(same_model_a, same_model_b)  # no raise

@@ -3179,6 +3179,10 @@ external = [
     { name = "wolframalpha" },
     { name = "youtube-transcript-api" },
 ]
+import = [
+    { name = "ase" },
+    { name = "httpx" },
+]
 mermaid = [
     { name = "mermaidx" },
 ]
@@ -3232,6 +3236,7 @@ requires-dist = [
     { name = "aiohttp", marker = "extra == 'asa'", specifier = ">=3.9" },
     { name = "ase", marker = "extra == 'dft'", specifier = ">=3.22" },
     { name = "ase", marker = "extra == 'dft-ml'", specifier = ">=3.22" },
+    { name = "ase", marker = "extra == 'import'", specifier = ">=3.22" },
     { name = "cadquery-ocp-novtk", marker = "extra == 'cad-step'", specifier = ">=7.8" },
     { name = "discord-py", marker = "extra == 'asa'", specifier = ">=2.4" },
     { name = "easyeda2kicad", marker = "extra == 'pcb'", specifier = ">=0.8" },
@@ -3241,6 +3246,7 @@ requires-dist = [
     { name = "habanero", marker = "extra == 'paper'", specifier = ">=2.0" },
     { name = "httpx", marker = "extra == 'edgar'", specifier = ">=0.27" },
     { name = "httpx", marker = "extra == 'external'", specifier = ">=0.27" },
+    { name = "httpx", marker = "extra == 'import'", specifier = ">=0.27" },
     { name = "jinja2", marker = "extra == 'web'", specifier = ">=3.1" },
     { name = "kokoro-onnx", marker = "extra == 'tts'", specifier = ">=0.4" },
     { name = "latex2mathml", marker = "extra == 'docx'", specifier = ">=3.77" },
@@ -3286,7 +3292,7 @@ requires-dist = [
     { name = "wolframalpha", marker = "extra == 'external'", specifier = ">=5.0" },
     { name = "youtube-transcript-api", marker = "extra == 'external'", specifier = ">=1.0" },
 ]
-provides-extras = ["embed", "asa", "asa-slack", "tts", "paper", "docx", "tex", "calc", "dft", "dft-ml", "plot", "external", "patent", "web", "cad-export", "cad-step", "pcb", "edgar", "chem", "mermaid", "all"]
+provides-extras = ["embed", "asa", "asa-slack", "tts", "paper", "docx", "tex", "calc", "dft", "dft-ml", "plot", "external", "patent", "web", "cad-export", "cad-step", "pcb", "edgar", "chem", "mermaid", "import", "all"]
 
 [package.metadata.requires-dev]
 dev = [

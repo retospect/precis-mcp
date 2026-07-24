@@ -29,10 +29,12 @@ from psycopg import Connection
 from psycopg.types.json import Jsonb
 
 from precis.structure.cell import Cell
+from precis.structure.importers import ExternalId, ExternalRun
 from precis.structure.measures import evaluate as _evaluate_measure
 from precis.structure.scene import Atom, Bond, Measure, Scene
 
 _LABEL_RE = re.compile(r"^a([A-Z][a-z]?)(\d+)$")
+_SLUG_UNSAFE_RE = re.compile(r"[^a-z0-9]+")
 
 #: ``refs.meta`` keys ``structure_save`` itself computes fresh every call —
 #: anything else (e.g. ``barrier``/``span``/``quest_harvested_upto``/
@@ -41,6 +43,17 @@ _LABEL_RE = re.compile(r"^a([A-Z][a-z]?)(\d+)$")
 _STRUCTURE_OWNED_META_KEYS = frozenset(
     {"lattice", "pbc", "version", "label_hi", "description", "last_relax"}
 )
+
+
+def _import_slug(dataset: str, config_id: str) -> str:
+    """A deterministic, human-legible design slug for a first-time import.
+
+    Cosmetic only — the *identity* a ``structure_import`` re-import collapses
+    on is the ``ref_identifiers`` row (``id_kind=dataset``, ``id_value=
+    config_id``), not this slug. Non-alnum runs collapse to a single ``-``.
+    """
+    raw = f"{dataset}-{config_id}".strip().lower()
+    return _SLUG_UNSAFE_RE.sub("-", raw).strip("-") or "ext"
 
 
 def _label_hi(scene: Scene) -> dict[str, int]:
@@ -60,6 +73,8 @@ class StructureMixin:
     insert_ref: Any
     get_ref: Any
     _replace_card_combined: Any  # BlocksMixin — the shared card_combined write
+    find_ref_by_identifier: Any  # IdentifiersMixin — external-id collapse
+    insert_ref_identifiers: Any  # IdentifiersMixin — external-id collapse
 
     def structure_save(
         self,
@@ -187,6 +202,154 @@ class StructureMixin:
                     verdict,
                 ),
             )
+
+    # -- external import (ADR 0053 §3) -----------------------------------
+    def structure_import(
+        self,
+        scene: Scene,
+        run: ExternalRun,
+        external_id: ExternalId,
+    ) -> int:
+        """The single write path all three ADR 0053 ingest modes funnel
+        through (on-demand hydrate, batch mirror, derivative anchor) —
+        idempotent on ``external_id``, exactly the ``ref_identifiers``
+        "an external ID collapses to one ref" discipline (AGENTS.md).
+
+        Collapse key: a ``ref_identifiers`` row with ``id_kind=
+        external_id.dataset``, ``id_value=external_id.config_id``. **First**
+        import mints a fresh ``structure`` design (:meth:`structure_save`)
+        under a deterministic-but-cosmetic slug, registers that identifier
+        row, then inserts one ``struct_runs`` row (``provenance='external'``,
+        §5). A **re-import** of the same ``(dataset, config_id)`` reuses that
+        ref — the Scene is rewritten, not duplicated — and *updates* its one
+        external run row in place rather than inserting a second one.
+
+        External and computed rows for one design coexist as distinct rows:
+        migration 0084 narrows ``struct_runs_cache_idx`` to
+        ``provenance='computed'``, so this row can never answer — or be
+        answered by — the compute-cache-fill path in ``structure_find_cached_run``.
+
+        Returns the structure ref's ``ref_id``.
+        """
+        dataset = external_id.dataset.strip().lower()
+        config_id = external_id.config_id.strip()
+        if not dataset or not config_id:
+            raise ValueError(
+                "structure_import needs a non-empty ExternalId(dataset, config_id)"
+            )
+        existing_ref_id = self.find_ref_by_identifier(
+            dataset, config_id, kind="structure"
+        )
+        if existing_ref_id is not None:
+            existing = self.get_ref(kind="structure", id=existing_ref_id)
+            assert existing is not None
+            slug = str(existing.slug)
+            title = existing.title or slug
+            version = int((existing.meta or {}).get("version", 0)) + 1
+        else:
+            slug = _import_slug(dataset, config_id)
+            title = f"{dataset}:{config_id}"
+            version = 1
+        card_text = (
+            f"{title} (imported structure). Composition: "
+            f"{''.join(f'{el}{n}' for el, n in sorted(scene.composition().items()))}; "
+            f"source: {dataset} {config_id}."
+        )
+        ref, created = self.structure_save(
+            slug=slug,
+            title=title,
+            scene=scene,
+            version=version,
+            card_text=card_text,
+            description=f"imported from {dataset} (config {config_id})",
+        )
+        with self.tx() as conn:
+            if created:
+                self.insert_ref_identifiers(
+                    ref.id, [(dataset, config_id, "import")], conn=conn
+                )
+            self._import_run_upsert(
+                conn,
+                ref_id=ref.id,
+                run=run,
+                on_version=version,
+                dataset=dataset,
+                config_id=config_id,
+            )
+        return int(ref.id)
+
+    def _import_run_upsert(
+        self,
+        conn: Connection,
+        *,
+        ref_id: int,
+        run: ExternalRun,
+        on_version: int,
+        dataset: str,
+        config_id: str,
+    ) -> int:
+        """Insert-or-update the *one* external ``struct_runs`` row for
+        ``ref_id`` — never a second one for a re-import of the same design.
+        ``model``/``cache_key`` are labelled distinctly from a computed run
+        (``external:<dataset>``) purely for legibility; the compute cache-fill
+        path is already structurally excluded from ever matching an external
+        row via the ``struct_runs_cache_idx`` provenance predicate (0084)."""
+        model = f"external:{dataset}"
+        cache_key = f"external:{dataset}:{config_id}"
+        geometry = Jsonb(run.final_geometry) if run.final_geometry is not None else None
+        method = Jsonb(run.method)
+        row = conn.execute(
+            "SELECT id FROM struct_runs "
+            "WHERE ref_id = %s AND provenance = 'external' "
+            "ORDER BY id DESC LIMIT 1",
+            (ref_id,),
+        ).fetchone()
+        if row is not None:
+            run_id = int(row[0])
+            conn.execute(
+                "UPDATE struct_runs SET "
+                "on_version = %s, energy = %s, max_force = %s, "
+                "final_geometry = %s, method = %s, model = %s, cache_key = %s, "
+                "status = 'succeeded', converged = TRUE "
+                "WHERE id = %s",
+                (
+                    on_version,
+                    run.energy,
+                    run.max_force,
+                    geometry,
+                    method,
+                    model,
+                    cache_key,
+                    run_id,
+                ),
+            )
+            return run_id
+        inserted = conn.execute(
+            "INSERT INTO struct_runs "
+            "(ref_id, fidelity, status, model, on_version, converged, n_steps, "
+            " energy, max_force, max_disp, params, cache_key, final_geometry, "
+            " provenance, method) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+            (
+                ref_id,
+                "external",
+                "succeeded",
+                model,
+                on_version,
+                True,
+                0,
+                run.energy,
+                run.max_force,
+                None,
+                Jsonb({}),
+                cache_key,
+                geometry,
+                run.provenance,
+                method,
+            ),
+        ).fetchone()
+        assert inserted is not None
+        return int(inserted[0])
 
     # -- read ------------------------------------------------------------
     def structure_load(self, ref_id: int) -> tuple[Scene, dict[str, int]]:
@@ -358,13 +521,20 @@ class StructureMixin:
         envelope, the relaxed ``final_geometry`` (so the caller can write it
         back with zero compute), and the per-step ``curve`` — or ``None`` on a
         miss. The partial index ``struct_runs_cache_idx`` makes this a single
-        index probe."""
+        index probe. ``provenance = 'computed'`` is explicit here (not just
+        implied by the index predicate, 0084) — an index predicate only
+        changes *how* a query is planned, never *what* it returns, so a
+        compute-cache probe must filter it itself or an imported
+        ``provenance='external'`` row (ADR 0053 §4/§5, a different method
+        fingerprint) could silently serve as a false hit for a computed
+        relax request."""
         with self.pool.connection() as conn:
             row = conn.execute(
                 "SELECT id, fidelity, model, converged, n_steps, energy, "
                 "max_force, max_disp, final_geometry, structure_sha "
                 "FROM struct_runs "
                 "WHERE cache_key = %s AND status = 'succeeded' "
+                "AND provenance = 'computed' "
                 "ORDER BY id DESC LIMIT 1",
                 (cache_key,),
             ).fetchone()

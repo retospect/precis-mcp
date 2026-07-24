@@ -1001,6 +1001,33 @@ The master kinds table lives in the `precis-overview` skill.
   `docs/design/structure-roundtrip-eval.md`). `structure_propose` build step
   pinned to CLOUD_MID=sonnet (ties opus at ½ cost; reasoning stays super). Skill:
   `precis-structure-help`.
+  - **External DFT catalyst import (ADR 0053, Sequencing steps 0–2 shipped).**
+    A new fidelity rung `emt` (`structure/relax.py::_relax_emt`) — ASE-EMT +
+    FIRE, torch-free, gated behind the light `[dft]` extra (never `[dft-ml]`,
+    never dispatches to the GPU node), element-guarded to the closed set
+    `{Al,Ni,Cu,Pd,Ag,Pt,Au,H,C,N,O}` (`RelaxUnsupported` outside it). The
+    run-cube (`struct_runs`) gained a `provenance` (`computed`/`external`) +
+    `method` JSONB axis (migration `0084_struct_runs_method_provenance.sql`);
+    the cache-hit partial index is narrowed to `provenance='computed'` so an
+    imported row can never serve a compute cache hit. A pure adapter registry
+    (`structure/importers/__init__.py::register_adapter`/`get_adapter`, IR:
+    `ExternalId`/`ExternalRun`/`Adapter`) feeds the one idempotent write path
+    `store/_structure_ops.py::StructureMixin.structure_import` — keyed on
+    `ref_identifiers (dataset, config_id)`, a re-import updates in place, never
+    duplicates. `handlers/structure.py::StructureHandler.edit` refuses on a
+    `provenance:external` design ("derive a variant instead");
+    `guard_energy_comparable` refuses a cross-method-fingerprint ΔE. First
+    adapter: Catalysis-Hub (`structure/importers/catalysis_hub.py::adapter` +
+    `fetch_config`, SSRF-guarded GraphQL, `[import]` extra) wired to on-demand
+    hydrate — `handlers/structure.py::StructureHandler._get_external` via
+    `get(kind='structure', args={'source':'catalysis-hub', ...})`; a
+    `config_id=` hit short-circuits to a network-free cache read, a broad
+    filter fetches + renders a summary table. Remaining (Sequencing 3–6): the
+    batch-mirror `precis import <source> --filter` CLI; OC20/AQCat25/NCCR
+    adapters; live-GraphQL-field verification against Catalysis-Hub (the
+    adapter's field names are unverified live, per the module docstring);
+    promoting `source=` to a first-class top-level `get` param (today it flows
+    via `args={'source':...}`); MLIP fine-tuning on the imported corpus.
 - **`citation`** — verifier-workflow kind (`text`+`source_handle`+`source_quote`
   +`verifier_confidence`, `link='paper:<slug>'`); tex `\citequote` persists the
   same quote. Skill: `precis-citation-help`.

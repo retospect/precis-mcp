@@ -268,8 +268,14 @@ the design and **every run is recorded** (see `view='runs'`).
 | fidelity | backend | needs | when |
 |----------|---------|-------|------|
 | `clean` (default) | pure geometry repair (ours) | nothing | fix overlaps / sub-covalent bonds — "make the stupid geometry sane" |
+| `emt` | ASE EMT + FIRE (ours, torch-free) | `precis-mcp[dft]` | cheap, real-but-approximate energy/forces on the closed fcc-metal set `{Al,Ni,Cu,Pd,Ag,Pt,Au,H,C,N,O}` — never dispatches to the GPU node |
 | `ml` | ASE + MACE-MP-0 / CHGNet | `precis-mcp[dft-ml]` | cheap, physical pre-relax before any DFT |
 | `ff` · `xtb` · `dft-fast` · `dft-tight` | rented | (later) | progressively more correct |
+
+`emt` (ADR 0053 §8) is ours like `clean`, just gated behind the light `[dft]`
+extra instead of always-on; an element outside its closed set raises
+`Unsupported` with a "use fidelity='ml'" hint rather than a stray error. No
+variable-cell mode.
 
 ```python
 edit(kind="structure", id="pd111", ops=[{"op": "relax", "fidelity": "clean"}])
@@ -321,6 +327,44 @@ edit(
 )
 ```
 
+## Import from an external catalyst DB (ADR 0053)
+
+`get(kind='structure', args={'source': 'catalysis-hub', ...})` hydrates a
+real, DFT-relaxed config from an external library into an ordinary
+`structure` design — a "quest worker pokes around and pulls a real
+substrate" surface, not a separate API.
+
+```python
+get(
+    kind="structure",
+    args={"surface_composition": "Pd", "facet": "111", "source": "catalysis-hub"},
+)  # a filtered fetch — hydrates every match, renders a summary table if >1
+get(
+    kind="structure",
+    args={"config_id": "12345", "source": "catalysis-hub"},
+)  # exact config_id: a network-free cache hit if already imported
+```
+
+- **First touch hydrates, forever after is a cache hit.** The fetch → adapter
+  → `store.structure_import` write path is idempotent on `(dataset,
+  config_id)` (`ref_identifiers`); a repeat `config_id=` lookup never refetches.
+  A broad `surface_composition=`/`facet=`/`q=` filter (no `config_id=`) always
+  refetches — there's no way to know in advance whether new configs match.
+- **Only `catalysis-hub` has a fetch layer wired today** (the network client
+  needs `precis-mcp[import]`); an unregistered source raises `BadInput`
+  naming the known ones. A missing `[import]` extra returns `Unsupported`
+  with the install hint, never a crash.
+- **Imported designs are read-only.** They carry `provenance:external` on
+  their `struct_runs` row; `edit` refuses ("derive a variant instead") —
+  branch off one with `derive(id=<imported-slug>, to=<new-slug>, ops=[...])`.
+  `view='runs'` labels each row's provenance + method fingerprint
+  (functional/cutoff/spin/dataset_doi/facet/...).
+- **Energies are only comparable within one method.** An external run's DFT
+  functional/cutoff differs from a computed rung's model — subtracting across
+  them is a category error, not a real ΔE, so an energy-delta surface must
+  check both runs share a method fingerprint before comparing (geometry/graph
+  reads like `diff` stay method-agnostic).
+
 ## Find a design — `search`
 
 ```python
@@ -367,12 +411,14 @@ magmom/oxidation; a bond graph (order + provenance + periodic image).
 Ops: set_cell / add_atom / set_element / vacancy / displace / add_bond /
 remove_bond / constrain / relax. Probes: atom / neighborhood / bonds / find
 / validate. Nav: line / plane / bonds_through_plane / bonds_in_sphere / path
-/ rings / fragments / diff / pov. Relax: `clean` (pure) + `ml` (MLIP-gated).
-Compute runs recorded with convergence curves. Export: POSCAR / extXYZ /
-CIF. **Deferred (vision):** Wyckoff-orbit TOC, named adsorption sites,
-bulk-insert ops (add_layer / fill / add_chain), persisted named eyes +
-bookmark stack, electronic-field lenses (charge / ESP / spin / Fukui),
-voids/channels, MD/NEB trajectories with per-frame geometry, the
-cross-experiment ensemble cube, external-DB import, GPAW/DFT as a cluster
-job.
+/ rings / fragments / diff / pov. Relax: `clean` (pure) + `emt` (torch-free,
+closed element set) + `ml` (MLIP-gated). Compute runs recorded with
+convergence curves. Export: POSCAR / extXYZ / CIF. **External-DB import**
+(ADR 0053): `catalysis-hub` on-demand hydrate is live; batch mirror + more
+adapters (OC20/AQCat25/NCCR) are follow-ups. **Deferred (vision):**
+Wyckoff-orbit TOC, named adsorption sites, bulk-insert ops (add_layer /
+fill / add_chain), persisted named eyes + bookmark stack, electronic-field
+lenses (charge / ESP / spin / Fukui), voids/channels, MD/NEB trajectories
+with per-frame geometry, the cross-experiment ensemble cube, GPAW/DFT as a
+cluster job.
 ```

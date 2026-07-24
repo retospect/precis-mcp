@@ -704,6 +704,50 @@ rubric → machine-measurable objective vector; the proposer (propose-next-
 candidate) is the crux + least-specified; sub-quest vs achievable-goal boundary
 (revisit if authors keep getting it wrong).
 
+## 🧫 External DFT catalyst import (ADR 0053) — residual slices
+
+Sequencing steps 0–2 shipped 2026-07-24 (`emt` relax rung, `struct_runs`
+method+provenance schema, `structure_import` write path, Catalysis-Hub
+on-demand hydrate — see `docs/architecture/state-map.md`, structure kind).
+Steps 3–6 remain, plus follow-ups surfaced during T6:
+
+- **Batch mirror CLI** *(feature, open — ADR 0053 §3/Sequencing step 3).*
+  `precis import <source> --filter` bulk-mirroring an AQCat25 Pd split
+  through the adapter seam, with a resumable cursor.
+- **More adapters** *(feature, open — ADR 0053 "Out of scope (v1)").*
+  OC20/OC22 LMDB + NCCR/Zenodo tarball adapters; each is "just another
+  adapter" once registered against `structure/importers/`.
+- **Live-verify the Catalysis-Hub GraphQL schema** *(polish, open — owner
+  `structure/importers/catalysis_hub.py`).* The adapter's field names
+  (`reactionEnergy`, `dftFunctional`, `InputFile`, `uniqueId`, ...) are the
+  documented `cathub` schema, hand-verified against docs but never exercised
+  against a live `https://api.catalysis-hub.org/graphql` introspection query
+  — do that before the batch-import CLI depends on it.
+- **Promote `source=` to a first-class MCP `get` param** *(polish, open —
+  owner `tools/core.py`).* Today an on-demand hydrate reaches the handler
+  via `get(kind='structure', args={'source': ...})`; a top-level `source=`
+  would be more discoverable.
+- **Derivative loop + MLIP fine-tuning** *(feature, deferred — ADR 0053 §4/§7,
+  Sequencing steps 4–5).* Wire `derive` off a `provenance:external` anchor
+  to the existing `ml`/`dft` dispatch with a `diff`-vs-baseline; fine-tune
+  the local MLIP rung on the imported corpus (forces are already captured).
+- **`structure_import` isn't atomic end-to-end** *(latent bug, low-probability
+  — owner `store/_structure_ops.py::structure_import`; pre-ship reviewer 2026-07-24).*
+  `structure_save` commits its own tx, then a second `self.tx()` writes
+  `insert_ref_identifiers` + the external run. A crash between the two leaves
+  the ref with **no `ref_identifiers` row**, and on retry `structure_save`
+  finds the orphaned ref by its deterministic slug (`created=False`) so the
+  identifier insert (guarded by `if created`) never fires again → the
+  `(dataset, config_id)` lookup permanently misses. Fold the ref create +
+  identifier + run write into one transaction, or make the identifier insert
+  unconditional/idempotent.
+- **GraphQL filter values interpolated unescaped** *(hygiene, low — owner
+  `structure/importers/catalysis_hub.py::fetch_config`; reviewer 2026-07-24).*
+  `surface_composition`/`facet` are f-string-interpolated into the GraphQL
+  query literal; a value containing `"` alters the query shape. Non-security
+  (target host is the fixed public read-only API), but escape/allowlist before
+  this path takes broader input.
+
 ## 🧪 chem-tools (ADR 0056)
 
 `route` (retrosynth) ships dark behind `PRECIS_CHEM_ENABLED`; slices 1–3 built,
