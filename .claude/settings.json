@@ -13,8 +13,7 @@
       "Bash(ansible-playbook:*)",
       "Bash(ansible:*)",
       "mcp__claude-context"
-    ],
-    "additionalDirectories": ["/Users/reto/work/cluster"]
+    ]
   },
   "hooks": {
     "SessionStart": [
