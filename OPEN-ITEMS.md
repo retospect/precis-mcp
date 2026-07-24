@@ -52,12 +52,6 @@ items are removed (history is `git log`).
   high-water mark.
 
 ---
-## 🧵 ADR 0064 Deliverable B — generalize the dossier owner beyond quest (build deferred)
-- Status: proposal drafted + `ready`-gated (blockers resolved), build deferred · Owner: `src/precis/quest/dossier.py` (+3 callers) · Proposal: `docs/proposals/dossier-owner-generalization.md` · ADR: `docs/decisions/0064-dossier-thinking-substrate-and-paper-projection.md` §B
-- Paper-as-export is already free (the dossier IS a `draft`). The one remaining piece: generalize `dossier.py`'s hardcoded quest owner (`quest_id`→`owner_id`; `store.get_ref(kind="quest",…)`→direct `refs` title read; `meta.dossier_of_quest`→dual-read `dossier_of_owner`) so a non-quest living-review process can own a dossier. Migration-free (the `dossier-of` relation is already owner-agnostic). The proposal has the full spec + acceptance criteria; flip it to `status: ready` when the build is actually scheduled.
-- (RC1 failed-rest backoff+nursery surfacing → shipped `539dc8dd`/ADR 0065; §C catpath infra-retry → shipped `a5cfedab`. Both shipped 2026-07-24, deploy pending — see the `catpath_integration` memory thread.)
-
----
 ## 📄 Elsevier preview-PDF remediation — ~2,800 prod papers, BLOCKED on pilot findings
 - Status: blocked · Severity: feature (data quality, not a bug) · Owner: cluster
   ops (not this dev session — see below) · Test: manual verification of
