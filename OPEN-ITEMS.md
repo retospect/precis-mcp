@@ -829,8 +829,7 @@ while a chunk-level citation (`[pc<id>]`) renders real text
 (`utils/eye_render.py::_render_doc_eye`). Shipped: a soft write-time
 warning (`DraftHandler._whole_paper_cite_hint`) + a read-time "## Hygiene"
 footer on the draft outline surfacing undefined abbreviations and
-whole-paper citations anywhere in the draft (gripe 170259 covers a related
-but distinct stale-sync bug found in the same pass). Deliberately **not**
+whole-paper citations anywhere in the draft. Deliberately **not**
 built: the dedicated pre-pass — a cheap-model tick that reads a section's
 cluster-map-level working set + its `Enhancement`-marked gaps, drills/
 searches the cited papers for the specific supporting chunk, and rewrites
