@@ -121,6 +121,22 @@ def test_validate_view_flags_overlap(structure):
     assert "atom_overlap" in findings.body
 
 
+def test_validate_view_flags_too_long_bond(structure):
+    bad = json.dumps(
+        {
+            "cell": {"a": 10.0, "b": 10.0, "c": 10.0},
+            "ops": [
+                {"op": "add_atom", "element": "O", "frac": [0.0, 0.0, 0.0]},
+                {"op": "add_atom", "element": "H", "frac": [0.4, 0.0, 0.0]},  # 4 Å
+                {"op": "add_bond", "i": "aO1", "j": "aH1", "order": 1},
+            ],
+        }
+    )
+    structure.put(id="longbond_view", text=bad)
+    findings = structure.get(id="longbond_view", view="validate")
+    assert "bond_too_long" in findings.body and "aO1" in findings.body
+
+
 def test_bad_payload_and_missing_atom_raise(structure):
     with pytest.raises(BadInput):
         structure.put(id="nope", text="{not json")
@@ -188,6 +204,175 @@ def test_relax_ml_rung_dispatches_without_a_todo(structure, no_local_mlip):
     structure.put(id="pd_pair", text=_PD)
     resp = structure.edit(id="pd_pair", ops=[{"op": "relax", "fidelity": "ml"}])
     assert "dispatched" in resp.body and "view='runs'" in resp.body
+
+
+# ── pre-flight gate ahead of cloud dispatch (gripe 51393) ──────────────────
+
+
+def _child_jobs2(store, parent_id: int) -> list:
+    """Local twin of the module-level ``_child_jobs`` helper defined further
+    down this file — kept name-distinct so these tests can sit next to the
+    dispatch test they extend without a forward reference."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT meta FROM refs WHERE parent_id = %s AND kind = 'job' "
+            "AND deleted_at IS NULL ORDER BY ref_id",
+            (parent_id,),
+        ).fetchall()
+    return [r[0] for r in rows]
+
+
+def test_dispatch_rejects_clashing_pair_and_mints_no_job(
+    structure, store, no_local_mlip
+):
+    """The hard-reject gate (gripe 51393) runs before anything is staged for
+    the GPU node: a sub-covalent clash raises BadInput naming the atom pair,
+    and no struct_relax job is created."""
+    bad = json.dumps(
+        {
+            "cell": {"a": 10.0, "b": 10.0, "c": 10.0},
+            "ops": [
+                {"op": "add_atom", "element": "H", "frac": [0.0, 0.0, 0.0]},
+                {"op": "add_atom", "element": "H", "frac": [0.03, 0.0, 0.0]},
+            ],
+        }
+    )
+    structure.put(id="clash", text=bad)
+    ref = structure.store.get_ref(kind="structure", id="clash")
+    with pytest.raises(BadInput) as exc:
+        structure.edit(id="clash", ops=[{"op": "relax", "fidelity": "ml"}])
+    assert "aH1" in str(exc.value) and "aH2" in str(exc.value)
+    assert _child_jobs2(store, ref.id) == []
+
+
+def test_dispatch_rejects_over_valent_atom_and_mints_no_job(
+    structure, store, no_local_mlip
+):
+    ops: list[dict] = [{"op": "add_atom", "element": "C", "frac": [0.5, 0.5, 0.5]}]
+    for dx, dy, dz in [
+        (0.09, 0, 0),
+        (-0.09, 0, 0),
+        (0, 0.09, 0),
+        (0, -0.09, 0),
+        (0, 0, 0.09),
+    ]:
+        ops.append(
+            {"op": "add_atom", "element": "H", "frac": [0.5 + dx, 0.5 + dy, 0.5 + dz]}
+        )
+    structure.put(
+        id="overval",
+        text=json.dumps({"cell": {"a": 10.0, "b": 10.0, "c": 10.0}, "ops": ops}),
+    )
+    ref = structure.store.get_ref(kind="structure", id="overval")
+    with pytest.raises(BadInput) as exc:
+        structure.edit(id="overval", ops=[{"op": "relax", "fidelity": "ml"}])
+    assert "aC1" in str(exc.value)
+    assert _child_jobs2(store, ref.id) == []
+
+
+def test_dispatch_rejects_absurd_bond_length_and_mints_no_job(
+    structure, store, no_local_mlip
+):
+    spec = json.dumps(
+        {
+            "cell": {"a": 10.0, "b": 10.0, "c": 10.0},
+            "ops": [
+                {"op": "add_atom", "element": "O", "frac": [0.0, 0.0, 0.0]},
+                {"op": "add_atom", "element": "H", "frac": [0.4, 0.0, 0.0]},  # 4 Å
+                {"op": "add_bond", "i": "aO1", "j": "aH1", "order": 1},
+            ],
+        }
+    )
+    structure.put(id="longbond", text=spec)
+    ref = structure.store.get_ref(kind="structure", id="longbond")
+    with pytest.raises(BadInput) as exc:
+        structure.edit(id="longbond", ops=[{"op": "relax", "fidelity": "ml"}])
+    assert "aO1" in str(exc.value) and "aH1" in str(exc.value)
+    assert _child_jobs2(store, ref.id) == []
+
+
+def test_dispatch_still_succeeds_for_physical_geometry(structure, store, no_local_mlip):
+    """The gate only blocks impossible geometry — an ordinary, physically
+    fine design still dispatches exactly as before (no regression)."""
+    structure.put(id="pd_pair_ok", text=_PD)
+    ref = structure.store.get_ref(kind="structure", id="pd_pair_ok")
+    resp = structure.edit(id="pd_pair_ok", ops=[{"op": "relax", "fidelity": "ml"}])
+    assert "dispatched" in resp.body
+    assert len(_child_jobs2(store, ref.id)) == 1
+
+
+def test_dispatch_preflight_cleans_geometry_before_staging(
+    structure, store, no_local_mlip
+):
+    """A mild clash (below the hard-reject floor) is repaired by a local
+    ``clean`` pre-relax before the POSCAR is staged for the cloud job (gripe
+    51393): the saved design and the dispatched POSCAR both reflect the
+    cleaned geometry, not the as-authored 2.6 Å Pd-Pd."""
+    from precis.structure import export, probe
+
+    structure.put(id="pd_pair_dirty", text=_PD)
+    ref = structure.store.get_ref(kind="structure", id="pd_pair_dirty")
+    structure.edit(id="pd_pair_dirty", ops=[{"op": "relax", "fidelity": "ml"}])
+
+    # write-back: the design itself moved off the as-authored 2.6 Å.
+    scene, _ = structure.store.structure_load(ref.id)
+    assert probe.distance(scene, "aPd1", "aPd2") > 2.65
+
+    # the staged POSCAR is exported from that same cleaned scene, not the
+    # pre-preflight geometry.
+    jobs = _child_jobs2(store, ref.id)
+    assert len(jobs) == 1
+    assert jobs[0]["params"]["poscar"] == export.to_poscar(scene)
+
+    # a run recorded the pre-relax (write-back parity with an ordinary
+    # local 'clean' relax — the run-cube isn't silently skipped).
+    runs = structure.store.structure_runs(ref.id)
+    assert any(r["fidelity"] == "clean" for r in runs)
+
+
+def test_dispatch_cache_hit_after_preflight_short_circuits_no_job(
+    structure, store, no_local_mlip
+):
+    """A design whose *preflight-cleaned* geometry matches an already-
+    completed cached run must be a zero-compute hit — not a fresh cloud
+    dispatch. The early cache lookup runs against the as-authored geometry
+    and can't see this; the post-preflight re-check must (gripe 51393)."""
+    from precis.structure import cache as relax_cache
+    from precis.structure import relax as run_relax
+
+    structure.put(id="pd_pair_cached", text=_PD)
+    ref = structure.store.get_ref(kind="structure", id="pd_pair_cached")
+
+    # What the preflight 'clean' pre-relax will produce: relax a copy of the
+    # same as-authored geometry the same way _preflight_relax does.
+    cleaned_scene, _ = structure.store.structure_load(ref.id)
+    run_relax(cleaned_scene, fidelity="clean", steps=200)
+
+    order = relax_cache.canonical_order(cleaned_scene)
+    key = relax_cache.run_cache_key(
+        cleaned_scene, fidelity="ml", model="mace_mp", params={"steps": 200}
+    )
+    sha = relax_cache.structure_sha(cleaned_scene)
+    structure.store.structure_record_run(
+        ref.id,
+        fidelity="ml",
+        on_version=structure.store.structure_version(ref.id),
+        converged=True,
+        n_steps=9,
+        max_disp=0.01,
+        energy=-5.55,
+        max_force=0.02,
+        model="mace_mp",
+        curve=[0.3, 0.05, 0.01],
+        cache_key=key,
+        structure_sha=sha,
+        final_geometry=relax_cache.serialize_geometry(cleaned_scene, order),
+    )
+
+    resp = structure.edit(id="pd_pair_cached", ops=[{"op": "relax", "fidelity": "ml"}])
+    assert "relax[ml]" in resp.body and "converged" in resp.body
+    assert "dispatched" not in resp.body
+    assert _child_jobs2(store, ref.id) == []
 
 
 def test_nav_views_line_fragments_pov(structure):

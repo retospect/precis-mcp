@@ -224,6 +224,84 @@ def test_validate_flags_over_valence() -> None:
     assert over and over[0].atoms == ["aC1"] and over[0].measured == 5
 
 
+def test_validate_bond_too_long_boundary() -> None:
+    # O-H covalent sum 0.97 Å, ceiling = 1.3× = 1.261 Å.
+    just_inside = Scene(cell=_cubic())
+    apply_ops(
+        just_inside,
+        [
+            {"op": "add_atom", "element": "O", "frac": [0.0, 0.0, 0.0]},
+            {"op": "add_atom", "element": "H", "frac": [0.125, 0.0, 0.0]},  # 1.25 Å
+            {"op": "add_bond", "i": "aO1", "j": "aH1", "order": 1},
+        ],
+    )
+    assert not any(f.rule == "bond_too_long" for f in validate(just_inside))
+
+    just_outside = Scene(cell=_cubic())
+    apply_ops(
+        just_outside,
+        [
+            {"op": "add_atom", "element": "O", "frac": [0.0, 0.0, 0.0]},
+            {"op": "add_atom", "element": "H", "frac": [0.127, 0.0, 0.0]},  # 1.27 Å
+            {"op": "add_bond", "i": "aO1", "j": "aH1", "order": 1},
+        ],
+    )
+    findings = [f for f in validate(just_outside) if f.rule == "bond_too_long"]
+    assert findings and findings[0].atoms == ["aO1", "aH1"]
+    assert "aO1" in findings[0].suggested_fix and "aH1" in findings[0].suggested_fix
+
+
+def test_validate_ignores_inferred_bond_length() -> None:
+    # An auto-detected bond can never actually reach the reject ceiling (its
+    # own detection cutoff is tighter), but pin the provenance filter
+    # directly so a future change to the detection cutoff can't silently
+    # start flagging inferred bonds too.
+    from precis.structure.scene import Bond
+
+    scene = Scene(cell=_cubic())
+    apply_ops(
+        scene,
+        [
+            {"op": "add_atom", "element": "O", "frac": [0.0, 0.0, 0.0]},
+            {"op": "add_atom", "element": "H", "frac": [0.3, 0.0, 0.0]},  # 3 Å
+        ],
+    )
+    scene.bonds.append(Bond(i="aO1", j="aH1", provenance="inferred"))
+    assert not any(f.rule == "bond_too_long" for f in validate(scene))
+
+
+def test_validate_flags_bond_order_exceeding_valence() -> None:
+    scene = Scene(cell=_cubic())
+    apply_ops(
+        scene,
+        [
+            {"op": "add_atom", "element": "O", "frac": [0.0, 0.0, 0.0]},
+            {"op": "add_atom", "element": "C", "frac": [0.1, 0.0, 0.0]},  # 1.0 Å
+            # a triple bond on O — max valence 2, impossible.
+            {"op": "add_bond", "i": "aO1", "j": "aC1", "order": 3},
+        ],
+    )
+    findings = [f for f in validate(scene) if f.rule == "bond_order_exceeds_valence"]
+    assert findings and set(findings[0].atoms) == {"aO1", "aC1"}
+
+
+def test_validate_bond_order_finding_deduped_when_both_endpoints_exceed() -> None:
+    # O (max valence 2) - F (max valence 1): an order-3 bond exceeds BOTH
+    # endpoints' valence, but must still report exactly one finding.
+    scene = Scene(cell=_cubic())
+    apply_ops(
+        scene,
+        [
+            {"op": "add_atom", "element": "O", "frac": [0.0, 0.0, 0.0]},
+            {"op": "add_atom", "element": "F", "frac": [0.1, 0.0, 0.0]},  # 1.0 Å
+            {"op": "add_bond", "i": "aO1", "j": "aF1", "order": 3},
+        ],
+    )
+    findings = [f for f in validate(scene) if f.rule == "bond_order_exceeds_valence"]
+    assert len(findings) == 1
+    assert set(findings[0].atoms) == {"aO1", "aF1"}
+
+
 # -- export (pure formats) ---------------------------------------------------
 
 

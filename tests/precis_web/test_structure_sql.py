@@ -87,10 +87,17 @@ def test_run_count_counts_recorded_runs(seeded):
 
 
 def test_pending_jobs_surfaces_dispatched_relax_and_transitions(store):
-    """A dispatched relax (no local backend) is visible as a pending job with
-    *no* run-cube row yet — the fix for "the button ran, but the page shows
-    nothing". queued→running is reflected; a succeeded job drops out (it now
-    lives as a struct_runs row)."""
+    """A dispatched relax (no local backend) is visible as a pending job while
+    the requested rung's own run-cube row is still missing — the fix for "the
+    button ran, but the page shows nothing". queued→running is reflected; a
+    succeeded job drops out (it now lives as a struct_runs row).
+
+    ``run_count`` is 1 (not 0) right after dispatch: the pre-dispatch hard-
+    reject gate + local ``clean`` pre-relax (gripe 51393) records its own
+    run synchronously, before the GPU node ever sees the geometry — the
+    live-poll baseline (``data-run-count``) is captured *after* this, so the
+    "reload once run_count grows" signal still fires correctly once the
+    *dispatched* rung lands (see the template's ``initialRuns`` comment)."""
     h = StructureHandler(hub=Hub(store=store))
     h.put(id="pend_si2", text=_SI2_RAW)
     ref = resolve_live_slug_ref(store, kind="structure", id="pend_si2")
@@ -101,7 +108,7 @@ def test_pending_jobs_surfaces_dispatched_relax_and_transitions(store):
     job_id = pending[0]["job_id"]
     assert pending[0]["fidelity"] == "dft"
     assert pending[0]["status"] == "queued"
-    assert _run_count(store, ref.id) == 0  # nothing landed yet
+    assert _run_count(store, ref.id) == 1  # the preflight 'clean' pre-relax
 
     store.add_tag(
         job_id,

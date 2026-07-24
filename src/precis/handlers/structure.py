@@ -56,7 +56,11 @@ from precis.structure import cache as relax_cache
 from precis.structure import relax as run_relax
 from precis.structure.cell import Cell
 from precis.structure.importers import catalysis_hub, get_adapter
-from precis.structure.relax import RelaxResult
+
+# NB: ``precis.structure`` re-exports the ``relax`` *function* under that
+# name (see ``run_relax`` above), shadowing the submodule — reach
+# ``EMT_ELEMENTS`` via the submodule path directly.
+from precis.structure.relax import EMT_ELEMENTS, RelaxResult
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
 from precis.utils.search_merge import SearchHit
@@ -88,7 +92,17 @@ class _NeedsDispatch:
     wants to block on it (ADR 0044 compute lane). The job parents on the
     structure regardless; when a requester is named, the dispatch also
     writes a ``requested`` link + a ``derived_job_succeeded`` auto_check so
-    the todo closes on completion / bubbles on failure."""
+    the todo closes on completion / bubbles on failure.
+
+    ``preflight_result`` is the cheap local relax (``clean``, or ``emt`` when
+    opted in) run on the scene before it was staged — a last-resort-cloud
+    guardrail (gripe 51393): mild clashes get repaired for free before the
+    GPU node ever sees the geometry. ``poscar``/``poscar_labels``/
+    ``cache_key``/``structure_sha``/``order`` are all taken from the
+    *post-preflight* scene, so the recorded address matches what's actually
+    dispatched. ``preflight_note`` carries a legible fallback explanation
+    (e.g. ``emt`` requested but unavailable) — ``None`` when nothing needed
+    explaining."""
 
     fidelity: str
     model: str
@@ -101,6 +115,8 @@ class _NeedsDispatch:
     requester_id: int | None
     #: Variable-cell relax mode ('inplane'/'full') or None for atoms-only.
     cell: str | None = None
+    preflight_result: RelaxResult | None = None
+    preflight_note: str | None = None
 
 
 def _poscar_row_labels(scene: Scene) -> list[str]:
@@ -108,6 +124,71 @@ def _poscar_row_labels(scene: Scene) -> list[str]:
     so a relaxed POSCAR's rows map back to labels → canonical rank."""
     order, groups = export._grouped(scene)
     return [a.label for el in order for a in groups[el]]
+
+
+def _format_gate_rejection(findings: list[Any]) -> str:
+    """One BadInput message for every validator finding blocking a cloud
+    relax dispatch (gripe 51393) — names each offending atom pair and why,
+    never just "invalid geometry"."""
+    lines = [
+        f"structure fails the pre-dispatch validator "
+        f"({len(findings)} finding(s)) — refusing to mint a cloud relax job:"
+    ]
+    lines += [f"  [{f.rule}] {f.suggested_fix}" for f in findings]
+    return "\n".join(lines)
+
+
+def _relax_cache_address(
+    scene: Scene, *, fidelity: str, model: str, steps: int, cell_mode: str | None
+) -> tuple[str, str, list[str]]:
+    """The ``(cache_key, structure_sha, canonical_order)`` triple addressing a
+    relax of ``scene`` at this fidelity/model/params (ADR §23.16).
+
+    Called twice on the dispatch-with-no-local-backend path: once over the
+    as-authored scene (the early cache-hit lookup, §23.16) and again over the
+    pre-relax-cleaned scene actually staged for the cloud job (gripe 51393) —
+    so the address that lands on the ``struct_relax`` job / run-cube row
+    always matches the geometry that was really computed."""
+    params: dict[str, Any] = {"steps": steps}
+    if cell_mode is not None:
+        params["cell"] = cell_mode
+    cache_key = relax_cache.run_cache_key(
+        scene, fidelity=fidelity, model=model, params=params
+    )
+    structure_sha = relax_cache.structure_sha(scene)
+    order = relax_cache.canonical_order(scene)
+    return cache_key, structure_sha, order
+
+
+def _preflight_relax(
+    scene: Scene, mode: str, *, steps: int
+) -> tuple[RelaxResult, str | None]:
+    """The cheap local pre-relax that always runs before a heavy relax is
+    staged for cloud dispatch (gripe 51393) — turns cloud compute into a
+    last resort by repairing mild clashes for free first. ``clean`` (rung 0,
+    pure geometry repair) is the default; ``mode='emt'`` opts into ASE's EMT
+    rung instead when the element set is covered and ASE is installed.
+
+    Never raises: an ``emt`` request outside its closed element set, or with
+    no local ASE, falls back to ``clean`` with a legible ``preflight_note``
+    rather than blocking the dispatch."""
+    if mode != "emt":
+        return run_relax(scene, fidelity="clean", steps=steps), None
+    bad = {a.element for a in scene.atoms.values()} - EMT_ELEMENTS
+    if bad:
+        note = (
+            f"preflight='emt' skipped (elements {sorted(bad)} outside EMT's "
+            "coverage) — fell back to 'clean'"
+        )
+        return run_relax(scene, fidelity="clean", steps=steps), note
+    if not export.ase_available():
+        note = "preflight='emt' skipped (ASE not installed) — fell back to 'clean'"
+        return run_relax(scene, fidelity="clean", steps=steps), note
+    try:
+        return run_relax(scene, fidelity="emt", steps=steps), None
+    except RelaxUnsupported as exc:
+        note = f"preflight='emt' failed ({exc}) — fell back to 'clean'"
+        return run_relax(scene, fidelity="clean", steps=steps), note
 
 
 def _as_int_or_none(v: Any) -> int | None:
@@ -380,7 +461,12 @@ class StructureHandler(Handler):
             )
         res = self._run_ops(scene, payload.get("ops", []))
         if isinstance(res, _NeedsDispatch):
-            relax_result: RelaxResult | None = None
+            # The preflight clean/emt pre-relax already ran (mutating
+            # ``scene``) as part of staging the dispatch — carry its result
+            # through the normal relax-summary/run-recording path below so
+            # the pre-relaxed geometry's write-back is indistinguishable
+            # from an ordinary local ``clean`` relax (gripe 51393).
+            relax_result: RelaxResult | None = res.preflight_result
             dispatch: _NeedsDispatch | None = res
         else:
             relax_result, dispatch = res, None
@@ -449,7 +535,10 @@ class StructureHandler(Handler):
         scene, _ = self.store.structure_load(ref.id)
         res = self._run_ops(scene, op_list)
         if isinstance(res, _NeedsDispatch):
-            relax_result: RelaxResult | None = None
+            # See put()'s matching branch: the preflight relax already ran
+            # as part of staging the dispatch, so its result rides the
+            # normal relax-summary/run-recording path (gripe 51393).
+            relax_result: RelaxResult | None = res.preflight_result
             dispatch: _NeedsDispatch | None = res
         else:
             relax_result, dispatch = res, None
@@ -938,33 +1027,17 @@ class StructureHandler(Handler):
             # Only fold ``cell`` into the key when a variable-cell relax is
             # asked for — an atoms-only relax keeps its historical key so the
             # existing run-cube stays a hit (a bare {"steps"} vs {"steps","cell"}).
-            params: dict[str, Any] = {"steps": steps}
-            if cell_mode is not None:
-                params["cell"] = cell_mode
-            cache_key = relax_cache.run_cache_key(
-                scene, fidelity=fidelity, model=model, params=params
+            cache_key, structure_sha, order = _relax_cache_address(
+                scene, fidelity=fidelity, model=model, steps=steps, cell_mode=cell_mode
             )
-            structure_sha = relax_cache.structure_sha(scene)
-            order = relax_cache.canonical_order(scene)
-            hit = self.store.structure_find_cached_run(cache_key)
-            if hit is not None:
-                geom = hit.get("final_geometry")
-                if geom:
-                    relax_cache.apply_geometry(scene, geom)
-                return RelaxResult(
-                    rung=fidelity,
-                    converged=bool(hit["converged"]),
-                    n_steps=int(hit["n_steps"]),
-                    max_disp=float(hit["max_disp"] or 0.0),
-                    curve=list(hit.get("curve") or []),
-                    energy=hit["energy"],
-                    max_force=hit["max_force"],
-                    model=hit["model"],
-                    from_cache=True,
-                    cache_key=cache_key,
-                    structure_sha=structure_sha,
-                    final_geometry=geom,
-                )
+            hit_result = self._cache_hit_result(
+                scene,
+                cache_key=cache_key,
+                structure_sha=structure_sha,
+                fidelity=fidelity,
+            )
+            if hit_result is not None:
+                return hit_result
 
         try:
             res = run_relax(
@@ -980,6 +1053,50 @@ class StructureHandler(Handler):
                     next="relax with fidelity='clean' (geometry repair, "
                     "always available)",
                 ) from exc
+
+            # Hard-reject gate (gripe 51393): cloud dispatch is a last
+            # resort, never a place to burn GPU time on an impossible
+            # geometry. Only the heavy-dispatch branch is gated — a direct
+            # local ``clean``/``emt`` relax above never reaches here, so it
+            # stays free to repair the very geometry this would reject.
+            findings = validate(scene)
+            if findings:
+                raise BadInput(
+                    _format_gate_rejection(findings),
+                    next="fix the flagged atom(s)/bond(s), or run "
+                    "edit(ops=[{'op':'relax','fidelity':'clean'}]) locally "
+                    "first to repair mild clashes before requesting "
+                    f"fidelity={fidelity!r}",
+                ) from exc
+
+            # Always pre-relax locally before staging anything for the cloud
+            # (gripe 51393) — ``clean`` by default, or ``emt`` when the op
+            # opts in and the element set/backend allow it. Mutates ``scene``
+            # in place, so the caller's subsequent ``structure_save`` persists
+            # the cleaned geometry exactly like a normal ``clean`` relax would.
+            preflight_mode = str(ro.get("preflight", "clean"))
+            preflight_result, preflight_note = _preflight_relax(
+                scene, preflight_mode, steps=steps
+            )
+            # The geometry just changed — recompute the address so the
+            # dispatched job / run-cube row is addressed by what's actually
+            # staged, not the pre-preflight input. A design that happens to
+            # preflight-clean onto an already-cached geometry (e.g. another
+            # design's completed relax converged to the same input) must
+            # still be a zero-compute hit here too — the earlier lookup ran
+            # against the as-authored (pre-preflight) geometry and can't
+            # have caught this.
+            cache_key, structure_sha, order = _relax_cache_address(
+                scene, fidelity=fidelity, model=model, steps=steps, cell_mode=cell_mode
+            )
+            hit_result = self._cache_hit_result(
+                scene,
+                cache_key=cache_key,
+                structure_sha=structure_sha,
+                fidelity=fidelity,
+            )
+            if hit_result is not None:
+                return hit_result
             return _NeedsDispatch(
                 fidelity=fidelity,
                 model=model,
@@ -996,6 +1113,8 @@ class StructureHandler(Handler):
                 requester_id=_as_int_or_none(
                     ro.get("requested_by", ro.get("parent_id"))
                 ),
+                preflight_result=preflight_result,
+                preflight_note=preflight_note,
             )
 
         # Cache miss: stamp the content address + relaxed geometry so the next
@@ -1006,6 +1125,38 @@ class StructureHandler(Handler):
             res.structure_sha = structure_sha
             res.final_geometry = relax_cache.serialize_geometry(scene, order)
         return res
+
+    def _cache_hit_result(
+        self, scene: Scene, *, cache_key: str, structure_sha: str, fidelity: str
+    ) -> RelaxResult | None:
+        """The run-cube lookup (ADR §23.16), shared by both cache-check sites
+        in ``_run_ops``: the early check over the as-authored geometry, and
+        the post-preflight re-check over the cleaned geometry (gripe 51393)
+        — a design that preflight-cleans onto an already-cached input must
+        be a zero-compute hit too, not a fresh cloud dispatch.
+
+        On a hit, applies the cached geometry onto ``scene`` and returns the
+        stored envelope as a :class:`RelaxResult`; ``None`` on a miss."""
+        hit = self.store.structure_find_cached_run(cache_key)
+        if hit is None:
+            return None
+        geom = hit.get("final_geometry")
+        if geom:
+            relax_cache.apply_geometry(scene, geom)
+        return RelaxResult(
+            rung=fidelity,
+            converged=bool(hit["converged"]),
+            n_steps=int(hit["n_steps"]),
+            max_disp=float(hit["max_disp"] or 0.0),
+            curve=list(hit.get("curve") or []),
+            energy=hit["energy"],
+            max_force=hit["max_force"],
+            model=hit["model"],
+            from_cache=True,
+            cache_key=cache_key,
+            structure_sha=structure_sha,
+            final_geometry=geom,
+        )
 
     @staticmethod
     def _relax_summary(res: RelaxResult | None) -> dict[str, Any] | None:
@@ -1106,9 +1257,19 @@ class StructureHandler(Handler):
         if nd.requester_id is not None:
             self._wire_requester(nd.requester_id, job_resp.body)
             note = f" (todo #{nd.requester_id} will block on it)"
+        pre = nd.preflight_result
+        preflight_line = (
+            f"# pre-relaxed locally (rung {pre.rung!r}, "
+            f"{'converged' if pre.converged else 'not converged'}) before staging\n"
+            if pre is not None
+            else ""
+        )
+        if nd.preflight_note:
+            preflight_line += f"# {nd.preflight_note}\n"
         return Response(
             body=(
-                f"# relax[{nd.fidelity}] dispatched to the GPU node{note}\n\n"
+                f"# relax[{nd.fidelity}] dispatched to the GPU node{note}\n"
+                f"{preflight_line}\n"
                 f"{job_resp.body}\n\n"
                 f"The run lands in the cache on completion. "
                 f"Poll: get(kind='structure', id='{slug}', view='runs')."

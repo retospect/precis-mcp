@@ -139,7 +139,9 @@ get(..., view="bonds")  # the whole bond list (order · kind · provenance · im
 get(
     ..., view="find", args={"element": "Pd", "undercoordinated": true}
 )  # select atoms by predicate
-get(..., view="validate")  # the DRC gate: overlaps + over-valence + fixes
+get(
+    ..., view="validate"
+)  # the DRC gate: overlaps + over-valence + too-long bonds + fixes
 ```
 
 ### Spatial — the CAD ray / plane, retargeted to atoms (§6.2)
@@ -306,6 +308,15 @@ job to the GPU node and returns immediately. The job parents on the
 requirement is gone). The relaxed geometry lands in the run-cube on
 completion; poll `view='runs'`. An identical relax — same geometry, same
 rung — is a **zero-compute cache hit** (returns synchronously, mints no job).
+
+**Pre-flight gate before the GPU spend.** A dispatch first runs the `validate`
+gate as a **hard reject**: an overlap, over-valence, or impossibly-long declared
+bond raises an error naming the offending atom pair and mints **no** job — fix
+the geometry first. It then runs a cheap local `clean` pre-relax (pass
+`preflight='emt'` for an EMT pre-relax instead) so a mild clash is repaired
+before cloud compute, and re-checks the cache on the cleaned geometry. So the
+GPU is the last resort, not the first thing that runs on bad geometry. (A plain
+local `clean`/`emt` relax to *fix* a clashing structure is never gated.)
 
 ```python
 edit(

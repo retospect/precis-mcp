@@ -1041,6 +1041,14 @@ The master kinds table lives in the `precis-overview` skill.
   `docs/design/structure-roundtrip-eval.md`). `structure_propose` build step
   pinned to CLOUD_MID=sonnet (ties opus at ½ cost; reasoning stays super). Skill:
   `precis-structure-help`.
+  - **Pre-dispatch pre-flight gate (gr51393).** A relax that would dispatch to
+    the GPU (`handlers/structure.py`, the `RelaxUnsupported` branch) first runs
+    `validate()` as a **hard-reject** — overlap / over-valence / impossibly-long
+    declared bond (`validate.py::BOND_LENGTH_FACTOR`=1.3× covalent sum, `declared`
+    bonds only) raises `BadInput` naming the atom pair and mints **no** job — then
+    a local `clean` (default) or opt-in `preflight='emt'` pre-relax, re-checking
+    the cleaned geometry's `cache_key` for a completed run before dispatch. Cloud
+    is last-resort; a plain local `clean`/`emt` edit is never gated.
   - **External DFT catalyst import (ADR 0053, Sequencing steps 0–2 shipped).**
     A new fidelity rung `emt` (`structure/relax.py::_relax_emt`) — ASE-EMT +
     FIRE, torch-free, gated behind the light `[dft]` extra (never `[dft-ml]`,
