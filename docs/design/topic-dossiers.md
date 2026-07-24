@@ -7,6 +7,12 @@ weekly synthesis becomes both a shareable digest and a quiet daily heads-up.
 (integration link, synthesis tick, digest cast, daily lane) remain
 design-of-record — see Status.
 
+> **Extended by `paper-writing-pipeline.md`** — the full authoring pipeline
+> (memoization spine · claims = `citation` + extractor · section-batch weave ·
+> per-`(chunk,checker)` review ledger · gap analysis · build order) that turns
+> a dossier into a maintained long document. Read that for the build plan;
+> this doc holds the ADR 0060 classifier/synthesis-tick core it builds on.
+
 ## The shape
 
 ```
