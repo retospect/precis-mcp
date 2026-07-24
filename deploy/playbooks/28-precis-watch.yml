@@ -1,9 +1,9 @@
 ---
-# 28-precis-watch.yml — Single-node inbox watcher.
+# 28-precis-watch.yml — multi-node inbox watcher.
 # Replaces the legacy `extract_watch` role / 27-extract-watch.yml: same
-# daemon shape (LaunchDaemon on the scheduler node), but the watcher is
-# `precis watch` (v8) writing into precis_prod, not acatome-extract
-# writing into the non-existent `cluster` db.
+# daemon shape (a `com.precis.watch` LaunchDaemon / precis-watch.service),
+# but the watcher is `precis watch` (v8) writing into precis_prod, not
+# acatome-extract writing into the non-existent `cluster` db.
 #
 # Run order: precis_worker (20) must run first — it provisions
 # /opt/precis/venv which precis_watch reuses.
@@ -12,11 +12,18 @@
   # Multiple watchers are correctness-safe: precis_add takes a Postgres
   # advisory lock keyed on pdf_sha256 before invoking Marker, and the
   # file-move path tolerates FileNotFoundError as "another host won the
-  # race". Running on more than one node ~doubles Marker capacity at
-  # the cost of some duplicated NFS chatter + a Marker load each.
+  # race". Each node ~adds a Marker's worth of capacity at the cost of
+  # some duplicated NFS chatter + a persistent surya/torch residency.
+  #
+  # The scheduler node is deliberately EXCLUDED: on its 32G it already
+  # co-hosts the embedder service + a system worker + a llama-server, and
+  # adding the watcher's persistent surya/torch tipped it into ~93% swap
+  # thrash (2026-07-24). The advisory-lock design means the remaining
+  # watchers still cover the inbox — we lose one Marker's parallelism, not
+  # correctness. Re-add the scheduler group here (and bootstrap
+  # com.precis.watch there) if it is later given headroom or sheds a role.
   hosts:
     - gateway
-    - scheduler
     - data
     - inference
   become: true
