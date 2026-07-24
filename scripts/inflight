@@ -56,6 +56,12 @@ BASE=main
 git show-ref --verify --quiet refs/heads/main || BASE=master
 
 HERE=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
+# The PRIMARY (main) working tree is the first `git worktree list` entry.
+# Identify it by POSITION, never by its branch: a primary drifted onto a
+# feature branch is still the primary and must never be bucketed removable
+# (git refuses to `worktree remove` it anyway, but the reaper/cleanup must not
+# even try — and its dry-run must not list it).
+PRIMARY=$(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2; exit}')
 
 trunc() { # trunc <string> <max>
   local s=$1 n=$2
@@ -124,14 +130,14 @@ emit() { # emit <path> <head> <branch> <locked>
   ROWS+=("${mark}${name}|${sess}|${dirtyf}|${verd}|${purp}|${last}")
   # removable = merged into main, clean tree, no live session, not the current wt, not main
   if [ "$verd" = 'merged' ] && [ "$dirtyf" = 'clean' ] \
-     && [[ "$sess" != live#* ]] && [ "$path" != "$HERE" ] && [ "$branch" != "$BASE" ]; then
+     && [[ "$sess" != live#* ]] && [ "$path" != "$HERE" ] && [ "$path" != "$PRIMARY" ]; then
     REMOVABLE+=("$name")
   fi
 
   if [ "$JSON_MODE" = 1 ]; then
     local bucket diffstat
     diffstat=''
-    if [ "$branch" = "$BASE" ]; then bucket='base'
+    if [ "$path" = "$PRIMARY" ] || [ "$branch" = "$BASE" ]; then bucket='base'
     elif [ "$path" = "$HERE" ]; then bucket='self'
     elif [[ "$sess" == live#* ]]; then bucket='live_session'
     elif [ "$dirtyf" != 'clean' ]; then

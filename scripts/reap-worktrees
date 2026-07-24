@@ -27,12 +27,18 @@ command -v git >/dev/null 2>&1 || exit 0
 git rev-parse --git-dir >/dev/null 2>&1 || exit 0
 [ -x scripts/inflight ] || exit 0
 
+# Defense in depth: never remove the PRIMARY working tree, whatever bucket it
+# lands in (inflight already buckets it `base`, but a destructive op earns its
+# own guard — git refuses anyway, we just don't rely on that).
+PRIMARY=$(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2; exit}')
+
 JSON=$(scripts/inflight --json 2>/dev/null) || exit 0
 [ -z "$JSON" ] && exit 0
 
 REAPED=()
 while IFS=$'\t' read -r name path branch; do
     [ -z "$path" ] && continue
+    [ "$path" = "$PRIMARY" ] && continue
     if [ "$DRY_RUN" = 1 ]; then
         REAPED+=("$name")
         continue
