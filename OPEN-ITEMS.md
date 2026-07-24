@@ -706,23 +706,58 @@ candidate) is the crux + least-specified; sub-quest vs achievable-goal boundary
 
 ## 🧫 External DFT catalyst import (ADR 0053) — residual slices
 
-Sequencing steps 0–2 shipped 2026-07-24 (`emt` relax rung, `struct_runs`
-method+provenance schema, `structure_import` write path, Catalysis-Hub
-on-demand hydrate — see `docs/architecture/state-map.md`, structure kind).
-Steps 3–6 remain, plus follow-ups surfaced during T6:
+Sequencing steps 0–2 + a step-3 batch-mirror ingress shipped 2026-07-24 (`emt`
+relax rung, `struct_runs` method+provenance schema, `structure_import` write
+path, Catalysis-Hub on-demand hydrate, **keyless local-`.db` batch-mirror**
+`structure/importers/cathub_db.py` — see `docs/architecture/state-map.md`,
+structure kind). Steps 4–6 remain, plus follow-ups:
 
-- **Batch mirror CLI** *(feature, open — ADR 0053 §3/Sequencing step 3).*
-  `precis import <source> --filter` bulk-mirroring an AQCat25 Pd split
-  through the adapter seam, with a resumable cursor.
+- **Batch-mirror CLI + a live open corpus** *(feature, open — ADR 0053 §3/step 3).*
+  The engine shipped (`cathub_db.batch_import` over a local cathub `.db`, proven
+  end-to-end against the real 196-reaction PengRole2020.db). Remaining: a
+  `precis import <source> --filter` CLI + a resumable cursor, and a first *open*
+  bulk-source adapter (OC20/AQCat25, see "Pivot" below) so the mirror has a live
+  corpus rather than only hand-supplied files.
+- **Richer citation when `dataset_doi` is null** *(polish, low — owner
+  `structure/importers/cathub_db.py`).* Some cathub publications carry no DOI
+  (the `publication.doi` is NULL); the import currently passes only the DOI
+  through the adapter's `method.dataset_doi`. Carry pub title/authors/year as a
+  fallback provenance so a DOI-less imported config still has a legible source.
 - **More adapters** *(feature, open — ADR 0053 "Out of scope (v1)").*
   OC20/OC22 LMDB + NCCR/Zenodo tarball adapters; each is "just another
   adapter" once registered against `structure/importers/`.
-- **Live-verify the Catalysis-Hub GraphQL schema** *(polish, open — owner
-  `structure/importers/catalysis_hub.py`).* The adapter's field names
-  (`reactionEnergy`, `dftFunctional`, `InputFile`, `uniqueId`, ...) are the
-  documented `cathub` schema, hand-verified against docs but never exercised
-  against a live `https://api.catalysis-hub.org/graphql` introspection query
-  — do that before the batch-import CLI depends on it.
+- **Catalysis-Hub GraphQL now requires an API key** *(blocker, open — owner
+  `structure/importers/catalysis_hub.py`; live-verified 2026-07-24).* Verified
+  against the live endpoint: **every keyless request 401s** —
+  `{"message":"Invalid or missing API key. Provide it via the X-API-Key header
+  or as ?api_key=..."}`. This contradicts ADR 0053's "public, key-free" premise.
+  The query *shape* is unchanged (the API root still redirects to a GraphiQL URL
+  carrying the same `reactions{edges{node{...}}}` Relay shape), so the adapter's
+  field names are not the problem — the *fetch* is. The web console's JS bundle
+  ships no embedded key, so a key comes from a registration/login flow, not a
+  public constant. **The cathub pip route hits the same wall:** the public
+  read-only Postgres (`catalysishub.cx2awgo40dih.us-west-2.rds.amazonaws.com`,
+  user `apiuser`, hardcoded pw `ubDwfqPw` in `cathub/config.py`, last touched
+  2025-12-03) is **live and reachable** (dev-container probe resolved
+  `52.41.37.186:5432`) but returns `FATAL: password authentication failed for
+  user "apiuser"` — the "public" password was **rotated** server-side. No
+  separate public S3 download channel exists either (the web frontend's 4 MB JS
+  bundle references only the gated GraphQL). **Verdict: SUNCAT locked down ALL
+  public programmatic access ~late-2025; every Catalysis-Hub channel now needs
+  SUNCAT-issued creds.** So Catalysis-Hub is parked pending creds; the live
+  first-source should **pivot** to a genuinely-open bulk corpus (see next item).
+  If creds are later obtained: thread the key as `X-API-Key` from a precis
+  secret and turn the keyless-401 into a clean actionable error, not a raw
+  `raise_for_status()`.
+- **Pivot first live source to an open bulk corpus** *(decision, open — feeds
+  ADR 0053 batch-mirror step 3).* Verified keyless-reachable 2026-07-24:
+  **OC20** (Meta/fairchem, `dl.fbaipublicfiles.com` S3 — fully anonymous, 200 on
+  metadata; `*N`/`*NO`/`*NH_x` adsorbates on metal surfaces) and **AQCat25**
+  (SandboxAQ HF `SandboxAQ/aqcat25-dataset` — `gated:auto` = HF login + instant
+  click-through; spin-aware, queryable Parquet + ASE `.db` tarballs). Batch-mirror
+  a *filtered* Pd/Cu/Ni×N/O/NH_x slice (few-thousand configs, not millions →
+  embeds/searches cleanly) through the existing adapter seam; write an `oc20` or
+  `aqcat25` adapter as the per-source normaliser. Awaiting Reto's source pick.
 - **Promote `source=` to a first-class MCP `get` param** *(polish, open —
   owner `tools/core.py`).* Today an on-demand hydrate reaches the handler
   via `get(kind='structure', args={'source': ...})`; a top-level `source=`

@@ -1,14 +1,21 @@
 # 0053 — Ingesting external DFT catalyst libraries into the `structure` kind
 
-- **Status**: proposed (2026-07-09) · Sequencing steps 0–2 implemented
-  (2026-07-24) — the `emt` rung, the run-cube `method`+`provenance` schema
-  + `structure_import` write path, and the Catalysis-Hub on-demand adapter
-  are shipped (see "Implementation status" below). Steps 3–6 (batch mirror,
-  derivative loop, MLIP fine-tuning, the ensemble pipeline) remain design-
-  only. Orchestration (§11) + the persistent lens (§10) were folded in
-  2026-07-10. This ADR records the *decisions*; the source-survey +
-  ETL-pattern exploration belongs in a
-  [`docs/design/`](../design/) plan when the first slice is scoped.
+- **Status**: proposed (2026-07-09) · Sequencing steps 0–2 + a step-3
+  batch-mirror ingress implemented (2026-07-24) — the `emt` rung, the
+  run-cube `method`+`provenance` schema + `structure_import` write path, the
+  Catalysis-Hub on-demand adapter, and a **keyless local-`.db` batch-mirror
+  reader** are shipped (see "Implementation status" below). **Access note
+  (2026-07-24):** Catalysis-Hub's *live* channels are all credential-gated
+  now — the GraphQL API returns 401 without an `X-API-Key`, and the "public"
+  `apiuser` Postgres password in `cathub/config.py` was rotated server-side
+  (verified: the host is reachable but auth fails). So the on-demand REST
+  adapter (step 2) is code-complete but **dark** pending a SUNCAT credential;
+  the practical ingress is a cathub **`.db` file** (self-contained, keyless)
+  read locally — which is what `structure/importers/cathub_db.py` does. The
+  first live *open* bulk source should be OC20 (fully anonymous) or AQCat25
+  (one-click HF login); see "Out of scope (v1)". Steps 4–6 (derivative loop,
+  MLIP fine-tuning, ensemble pipeline) remain design-only. Orchestration
+  (§11) + the persistent lens (§10) were folded in 2026-07-10.
 - **Deciders**: Reto + agent
 - **Builds on**:
   - [ADR 0043 — the `structure` kind](./0043-structure-kind-atomistic-ir.md)
@@ -495,7 +502,9 @@ MLflow/W&B): the engine decides *what runs and when*; precis remembers
 
 ## Sequencing
 
-**Implementation status (2026-07-24):** 0/1/2 **done**; 3/4/5/6 **pending**.
+**Implementation status (2026-07-24):** 0/1/2 **done**; 3 **partial** (the
+keyless local-`.db` batch-mirror reader is shipped; the `precis import` CLI +
+resumable cursor + an *open* bulk source adapter remain); 4/5/6 **pending**.
 Present-state detail: `docs/architecture/state-map.md` (structure kind).
 
 0. **The `emt` rung** (§8) — independent of the import path and shippable
@@ -507,8 +516,17 @@ Present-state detail: `docs/architecture/state-map.md` (structure kind).
    `provenance:external` read-only guard on `edit`.
 2. **First adapter — Catalysis-Hub REST** (small, curated, on-demand
    hydrate). Proves the adapter seam + the on-demand mode end to end.
-3. **Batch mirror — an AQCat25 Pd split** through the same adapter seam;
-   `precis import` CLI with `--filter` + a resumable cursor.
+   *Code-complete but dark — the live GraphQL/Postgres are credential-gated
+   (see Status). The reusable win is the pure adapter, which the local-`.db`
+   path (below) drives instead.*
+3. **Batch mirror.** *Shipped:* `structure/importers/cathub_db.py` —
+   `read_cathub_db` + `batch_import` mine a **local cathub `.db`** (keyless,
+   self-contained: relational `reaction` table + embedded ASE `systems` +
+   `publication`) through the *same* `catalysis-hub` adapter, importing the
+   per-reaction product adsorbate system, idempotent on `(dataset,
+   config_id)`. *Remaining:* a `precis import <source> --filter` CLI + a
+   resumable cursor, and a first *open* bulk-source adapter (OC20 anonymous /
+   AQCat25 HF-login) so the batch mirror has a live corpus, not just files.
 4. **Derivative loop** — wire `derive` off a `provenance:external` anchor
    to the existing ADR 0044 `ml`/`dft` dispatch; `diff`-vs-baseline.
 5. **MLIP fine-tuning** (§7) — a separate plan; the import schema already

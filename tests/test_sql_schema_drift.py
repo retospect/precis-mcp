@@ -68,6 +68,18 @@ _NON_PG_QUERIES: frozenset[tuple[str, str]] = frozenset(
     {
         # jlcparts catalog import reads a downloaded sqlite `cache.sqlite3`.
         ("pcb/catalog.py", "SELECT * FROM components"),
+        # ADR 0053 batch mirror reads a local cathub `.db` (sqlite: reaction +
+        # reaction_system + ASE systems + publication) — not the PG schema.
+        ("structure/importers/cathub_db.py", "select pub_id, doi from publication"),
+        (
+            "structure/importers/cathub_db.py",
+            "select id, surface_composition, facet, reactants, products, "
+            "reaction_energy, dft_code, dft_functional, pub_id from reaction",
+        ),
+        (
+            "structure/importers/cathub_db.py",
+            "select name, ase_id, id from reaction_system",
+        ),
     }
 )
 

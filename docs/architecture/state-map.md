@@ -1053,12 +1053,23 @@ The master kinds table lives in the `precis-overview` skill.
     hydrate — `handlers/structure.py::StructureHandler._get_external` via
     `get(kind='structure', args={'source':'catalysis-hub', ...})`; a
     `config_id=` hit short-circuits to a network-free cache read, a broad
-    filter fetches + renders a summary table. Remaining (Sequencing 3–6): the
-    batch-mirror `precis import <source> --filter` CLI; OC20/AQCat25/NCCR
-    adapters; live-GraphQL-field verification against Catalysis-Hub (the
-    adapter's field names are unverified live, per the module docstring);
-    promoting `source=` to a first-class top-level `get` param (today it flows
-    via `args={'source':...}`); MLIP fine-tuning on the imported corpus.
+    filter fetches + renders a summary table. **Live access (verified
+    2026-07-24):** Catalysis-Hub locked down *all* public programmatic access —
+    the GraphQL API 401s without an `X-API-Key`, and the "public" `apiuser`
+    Postgres password in `cathub/config.py` was rotated server-side (host
+    reachable, auth fails). So the on-demand REST path is code-complete but
+    **dark** pending a SUNCAT credential. **Batch-mirror ingress (shipped,
+    keyless):** `structure/importers/cathub_db.py::read_cathub_db` +
+    `batch_import` mine a local cathub `.db` (self-contained SQLite: relational
+    `reaction` table + embedded ASE `systems` + `publication`) through the
+    *same* `catalysis-hub` adapter — importing each reaction's product adsorbate
+    system (skips clean-slab/gas refs), idempotent on `(dataset, config_id)`;
+    needs only ASE (`[import]`), no `cathub` dep and no network. Remaining
+    (Sequencing 3–6): the `precis import <source> --filter` CLI + resumable
+    cursor; a first *open* bulk-source adapter (OC20 anonymous / AQCat25
+    HF-login — both verified keyless-reachable 2026-07-24) so the mirror has a
+    live corpus; promoting `source=` to a first-class top-level `get` param
+    (today via `args={'source':...}`); MLIP fine-tuning on the imported corpus.
 - **`citation`** — verifier-workflow kind (`text`+`source_handle`+`source_quote`
   +`verifier_confidence`, `link='paper:<slug>'`); tex `\citequote` persists the
   same quote. Skill: `precis-citation-help`.

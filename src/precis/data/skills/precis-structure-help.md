@@ -354,6 +354,18 @@ get(
   needs `precis-mcp[import]`); an unregistered source raises `BadInput`
   naming the known ones. A missing `[import]` extra returns `Unsupported`
   with the install hint, never a crash.
+- **The `catalysis-hub` *live* fetch is dark** (verified 2026-07-24): SUNCAT
+  gated all public access — the GraphQL API 401s without an `X-API-Key` and
+  the old public Postgres password is rotated. The on-demand `source=` path is
+  code-complete but needs a SUNCAT credential to reach the network.
+- **Keyless ingress — mine a local cathub `.db`.** A cathub `.db` is a
+  self-contained, credential-free package (relational reactions + embedded ASE
+  structures + citation). `precis.structure.importers.cathub_db.batch_import(
+  store, path, surface_contains=['Pd','Cu','Ni'], facet='111',
+  product_contains=['NO'])` imports each reaction's product adsorbate config as
+  an ordinary `structure` (external run carries the adsorption energy + method
+  fingerprint), idempotent on `(dataset, config_id)`, needs only ASE
+  (`[import]`), no network. This is the "bulk-download-and-mine-local" path.
 - **Imported designs are read-only.** They carry `provenance:external` on
   their `struct_runs` row; `edit` refuses ("derive a variant instead") —
   branch off one with `derive(id=<imported-slug>, to=<new-slug>, ops=[...])`.
@@ -414,8 +426,9 @@ remove_bond / constrain / relax. Probes: atom / neighborhood / bonds / find
 / rings / fragments / diff / pov. Relax: `clean` (pure) + `emt` (torch-free,
 closed element set) + `ml` (MLIP-gated). Compute runs recorded with
 convergence curves. Export: POSCAR / extXYZ / CIF. **External-DB import**
-(ADR 0053): `catalysis-hub` on-demand hydrate is live; batch mirror + more
-adapters (OC20/AQCat25/NCCR) are follow-ups. **Deferred (vision):**
+(ADR 0053): `catalysis-hub` on-demand hydrate is code-complete but dark (live
+API now credential-gated); the keyless path is `cathub_db.batch_import` over a
+local cathub `.db`. Open bulk-source adapters (OC20/AQCat25) are follow-ups. **Deferred (vision):**
 Wyckoff-orbit TOC, named adsorption sites, bulk-insert ops (add_layer /
 fill / add_chain), persisted named eyes + bookmark stack, electronic-field
 lenses (charge / ESP / spin / Fukui), voids/channels, MD/NEB trajectories
