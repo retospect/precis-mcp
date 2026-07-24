@@ -55,3 +55,30 @@ def test_post_clear_redirects(client) -> None:
     )
     assert resp.status_code == 303
     assert resp.headers["location"] == "/status?tab=services&host=melchior"
+
+
+# ── /factory/llm — the cloud-LLM backend live flip (fake-store smoke) ────
+# The write itself (against real app_settings) is covered against real PG in
+# tests/precis_web/test_factory_llm_route.py; here we only check the route
+# wires up + redirects (the FakeStore's SQL is a no-op, same as the other
+# write routes).
+
+
+def test_post_llm_glm_redirects_to_services_tab(client) -> None:
+    resp = client.post("/factory/llm", data={"action": "glm"}, follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/status?tab=services"
+
+
+def test_post_llm_revert_redirects_to_services_tab(client) -> None:
+    resp = client.post(
+        "/factory/llm", data={"action": "revert"}, follow_redirects=False
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/status?tab=services"
+
+
+def test_post_llm_unknown_action_is_a_noop_and_still_redirects(client) -> None:
+    resp = client.post("/factory/llm", data={"action": "bogus"}, follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/status?tab=services"

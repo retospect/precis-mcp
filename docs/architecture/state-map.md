@@ -226,7 +226,12 @@ string via `ServiceSpec.log_handler`), now renders at
 original paths (`POST /factory/prio` / `/factory/model` / `/factory/clear`,
 `src/precis_web/routes/factory.py::set_prio`) — only `GET /factory`
 retired to a redirect; see "Web UI" below for the full merged-surface
-story.
+story. `POST /factory/llm` (`set_llm_backend`, `action=glm|revert`) is the
+fleet-wide cloud-LLM live flip: one click writes the `llm.backend=openai`
++ per-tier `llm.model.<tier>` overrides for the GLM/OpenRouter preset
+(`live_config.GLM_OPENROUTER_PRESET`) the router already reads, or clears
+them back to Claude. Ships dark — inert until `PRECIS_LLM_BASE_URL` +
+`OPENROUTER_API_KEY` are deployed to workers.
 
 **Capability universalization (slice 5).** The *incidental* kind gates —
 a raw-cache dir any host can create, edgar's descriptive User-Agent

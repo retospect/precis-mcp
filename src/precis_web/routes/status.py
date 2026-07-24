@@ -1222,6 +1222,37 @@ def _services_ctx(store: Any, host: str) -> dict[str, Any]:
         "models": models,
         "service_kinds": [k.value for k in ServiceKind],
         "quests": _factory_quests(store),
+        "llm_override": _llm_override_ctx(store),
+    }
+
+
+def _llm_override_ctx(store: Any) -> dict[str, Any]:
+    """The ``/factory`` cloud-LLM live-flip state — backend + per-tier
+    overrides against the GLM/OpenRouter preset, for the Services sub-tab's
+    "Cloud LLM backend" panel. Reads degrade to ``None``/absent exactly as
+    ``budget_settings.get_setting`` does (no store / no row / DB hiccup), so
+    the panel just shows "default" rather than 500ing.
+    """
+    from precis.budget import settings as budget_settings
+    from precis.utils.llm import live_config
+    from precis.utils.llm.router import Tier
+
+    backend_raw = budget_settings.get_setting(store, live_config.BACKEND_KEY)
+    tiers = [
+        {
+            "tier": t.value,
+            "override": budget_settings.get_setting(store, live_config.model_key(t)),
+            "preset": live_config.GLM_OPENROUTER_PRESET[t],
+        }
+        for t in (Tier.CLOUD_SUPER, Tier.CLOUD_MID, Tier.CLOUD_SMALL)
+    ]
+    return {
+        "backend": backend_raw or "anthropic",
+        "is_openai": backend_raw == "openai",
+        "tiers": tiers,
+        "glm_active": backend_raw == "openai"
+        and budget_settings.get_setting(store, live_config.model_key(Tier.CLOUD_SUPER))
+        == "z-ai/glm-5.2",
     }
 
 

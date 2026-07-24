@@ -33,6 +33,8 @@ from typing import Any
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import RedirectResponse
 
+from precis.budget import settings as budget_settings
+from precis.utils.llm import live_config
 from precis.workers.service_config import (
     clear_service_config,
     set_service_model,
@@ -432,3 +434,45 @@ async def clear(
     except Exception:
         log.warning("factory: clear failed", exc_info=True)
     return _redirect(host)
+
+
+def _apply_glm_preset(store: Any) -> None:
+    """Flip the fleet's cloud LLM backend to the GLM/OpenRouter roster.
+
+    Writes ``llm.backend = "openai"`` plus a per-tier model override for
+    each row of :data:`~precis.utils.llm.live_config.GLM_OPENROUTER_PRESET`,
+    then busts the read cache so this process picks the flip up immediately
+    (other processes see it within one TTL). Live-flip only — still needs
+    ``PRECIS_LLM_BASE_URL`` / ``OPENROUTER_API_KEY`` deployed to workers for
+    the OpenAI-compatible transport to actually reach OpenRouter; until
+    then :func:`~precis.utils.llm.router.dispatch` falls back to claude.
+    """
+    budget_settings.set_setting(store, live_config.BACKEND_KEY, "openai")
+    for tier, slug in live_config.GLM_OPENROUTER_PRESET.items():
+        budget_settings.set_setting(store, live_config.model_key(tier), slug)
+    live_config.bust_cache()
+
+
+def _revert_glm_preset(store: Any) -> None:
+    """Clear the GLM/OpenRouter override rows — back to the Claude default."""
+    budget_settings.clear_setting(store, live_config.BACKEND_KEY)
+    for tier in live_config.GLM_OPENROUTER_PRESET:
+        budget_settings.clear_setting(store, live_config.model_key(tier))
+    live_config.bust_cache()
+
+
+@router.post("/llm", response_model=None)
+async def set_llm_backend(
+    request: Request, action: str = Form(...)
+) -> RedirectResponse:
+    """Live-flip the fleet's cloud LLM backend — ``glm`` (OpenRouter roster)
+    or ``revert`` (back to Claude). Any other ``action`` is a no-op."""
+    store = get_store(request)
+    try:
+        if action == "glm":
+            _apply_glm_preset(store)
+        elif action == "revert":
+            _revert_glm_preset(store)
+    except Exception:
+        log.warning("factory: set_llm_backend failed", exc_info=True)
+    return RedirectResponse(url="/status?tab=services", status_code=303)
