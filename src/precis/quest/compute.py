@@ -28,7 +28,7 @@ import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from precis.quest.logbook import append_entry
+from precis.quest.logbook import MEASURED_BY, append_entry
 from precis.store import Tag
 
 if TYPE_CHECKING:
@@ -421,6 +421,18 @@ def _mark_harvested(store: Store, structure_ref_id: int, upto_run_id: int) -> No
 def harvest_measures(store: Store, quest_id: int, *, by: str = "agent") -> ComputeStep:
     """Read finished sims back into the logbook + rule out failures.
 
+    Every entry this function appends is a **system measurement** (a
+    converged relax, a harvested catpath barrier, a ruled-out verdict) — so
+    each is stamped ``by=MEASURED_BY`` ("system"), never the caller's ``by``
+    (the model's own "agent" attribution). That is what makes a real
+    measurement distinguishable from model narration in the logbook: gripes
+    171148/171149 diagnosed a model-fabricated "result" entry (a barrier the
+    model invented, not one catpath measured) reading as indistinguishable
+    ground truth, which made the loop believe the quest was solved and stop
+    proposing candidates. ``by`` is kept in the signature for call-site
+    compat (and used elsewhere in this module, e.g. dispatch notes are not
+    logbook entries) but is no longer used for these measured entries.
+
     For each candidate `structure` serving the quest:
 
     * newly-converged **relax** runs become `result` logbook entries (energy + a
@@ -462,7 +474,7 @@ def harvest_measures(store: Store, quest_id: int, *, by: str = "agent") -> Compu
                     f"{r.get('n_steps')} steps, converged"
                 ),
                 entry_type="result",
-                by=by,
+                by=MEASURED_BY,
                 cost=float(r.get("n_steps") or 0),
             )
             harvested += 1
@@ -492,7 +504,7 @@ def harvest_measures(store: Store, quest_id: int, *, by: str = "agent") -> Compu
                 quest_id,
                 text=f"catpath result for {handle} ({name}): {b_s}",
                 entry_type="result",
-                by=by,
+                by=MEASURED_BY,
             )
             harvested += 1
         if cp_seen > cp_upto:
@@ -517,7 +529,7 @@ def harvest_measures(store: Store, quest_id: int, *, by: str = "agent") -> Compu
                     quest_id,
                     text=f"ruled out {handle} ({name}): relax failed to converge",
                     entry_type="dead-end",
-                    by=by,
+                    by=MEASURED_BY,
                 )
                 ruled_out += 1
                 notes.append(f"ruled-out {handle}")

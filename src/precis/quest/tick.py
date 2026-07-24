@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -192,6 +193,26 @@ def _literature_section(store: Store, quest_id: int) -> str:
     return "\n## Held literature (abstracts)\n" + "\n".join(detail) + "\n"
 
 
+def _ruled_out_handles(store: Store, quest_id: int) -> list[str]:
+    """Handles of live candidates carrying a ``ruled-out:`` tag.
+
+    Surfaced in the frontier section so the model does not re-propose a
+    material the ledger already killed (gripe 171149) — a ruled-out candidate
+    with no converged run would otherwise silently fall into the "awaiting a
+    sim" band below, reading as merely unexplored rather than dead.
+    """
+    from precis.utils import handle_registry
+
+    live = gaps_mod._live_servers(store, quest_id)
+    structures = [s for s in live if s.kind == "structure"]
+    out = []
+    for s in structures:
+        if any(str(t).startswith("ruled-out:") for t in store.tags_for(s.id)):
+            fallback = f"structure:{s.id}"
+            out.append(handle_registry.try_format("structure", s.id) or fallback)
+    return out
+
+
 def _frontier_summary(store: Store, quest_id: int) -> str:
     """A compact rendering of the Pareto frontier for a review prompt."""
     from precis.quest.frontier import quest_frontier
@@ -210,6 +231,9 @@ def _frontier_summary(store: Store, quest_id: int) -> str:
         named = ", ".join(f"{c.handle} {c.name}" for c in fr.unevaluated[:5])
         rest = f" (+{len(fr.unevaluated) - 5} more)" if len(fr.unevaluated) > 5 else ""
         lines.append(f"- awaiting a sim ({len(fr.unevaluated)}): {named}{rest}")
+    ruled_out = _ruled_out_handles(store, quest_id)
+    if ruled_out:
+        lines.append(f"- ruled out (do not re-propose): {', '.join(ruled_out)}")
     return "\n".join(lines)
 
 
@@ -281,6 +305,14 @@ def _reaction_context(quest: Ref) -> str:
         "or set_element + vacancy). Vary composition; do not hand-enumerate "
         "atoms.\n"
     )
+    # Novelty steer (gripe 171149): a stalled loop tended to re-propose the same
+    # handful of adatoms; name the unexplored levers explicitly.
+    novelty = (
+        "\nPropose a composition NOT already in the frontier/beaten/awaiting "
+        "table. Unexplored levers to try: other dopants (Fe, Co, Ag, Au, Rh, "
+        "Ru, Zn), coverage (1–3 adatoms), facet, subsurface vs surface site, "
+        "and co-adsorbed H (H-predosing lowers NO-dissociation barriers).\n"
+    )
     return (
         "\n## Reaction R — this is a catalyst-barrier quest\n"
         f"Every candidate is a **catalyst slab**. catpath places the reactants "
@@ -295,6 +327,7 @@ def _reaction_context(quest: Ref) -> str:
         f"- reference point (propose this verbatim first): `{base}`\n"
         f"- a doped variant (an adatom is the design knob): `{doped}`\n"
         f"{op_menu}"
+        f"{novelty}"
     )
 
 
@@ -381,7 +414,13 @@ no evidence for.
 {frontier}
 (This table is computed fresh at tick time — treat it as ground truth. If it \
 conflicts with a claim in the dossier above, trust this table and correct the \
-dossier.)
+dossier. The frontier table is the ONLY authoritative source of measured \
+barriers. A candidate shown as "awaiting a sim" has an UNKNOWN barrier — you \
+may NOT cite, claim, or rank on a barrier for it. NEVER restate a barrier \
+value from the dossier or logbook; if a dossier claim conflicts with this \
+table, the table wins and you must correct the dossier. You do not emit \
+`result`/`milestone` entries — the system stamps those from simulations; you \
+close a lead with a `dead-end` when the table shows it beaten.)
 {literature}{reaction_context}
 ## Your step
 Do ONE increment of thinking: interpret the state, pick the most promising \
@@ -482,8 +521,6 @@ _HYP_DUP_JACCARD = 0.6
 
 def _sig_tokens(text: str) -> set[str]:
     """Lowercased word tokens ≥4 chars — a cheap topical fingerprint."""
-    import re
-
     return {w for w in re.findall(r"[a-z0-9]+", (text or "").lower()) if len(w) >= 4}
 
 
@@ -501,6 +538,47 @@ def _is_near_dup(text: str, existing: list[str]) -> bool:
         if union and inter / union >= _HYP_DUP_JACCARD:
             return True
     return False
+
+
+#: Entry types the MODEL may author. `result`, `milestone`, `cost` are
+#: SYSTEM-ONLY — stamped by :mod:`precis.quest.compute` (measured facts) or
+#: the tick's own tote accounting, never by the model's narration. A model
+#: "result" is at best an observation, never a trusted measurement (gripes
+#: 171148/171149: a model-fabricated "result" — a barrier it invented, not
+#: one catpath measured — was indistinguishable from a real one and made the
+#: loop believe the quest was solved).
+_MODEL_ALLOWED_ENTRY_TYPES: frozenset[str] = frozenset(
+    {"note", "observation", "hypothesis", "decision", "dead-end", "reflection"}
+)
+
+#: A model-stated numeric barrier claim — e.g. "barrier=0.892 eV" or "0.89 eV"
+#: — must never read as fact; only the frontier table / a system harvest is
+#: authoritative on a barrier value.
+_BARRIER_CLAIM_RE = re.compile(
+    r"barrier\s*[=:]\s*[0-9]*\.?[0-9]+|[0-9]*\.?[0-9]+\s*ev", re.IGNORECASE
+)
+
+_UNVERIFIED_PREFIX = "[unverified model claim] "
+
+
+def _sanitize_model_entry(entry_type: str, text: str) -> tuple[str, str]:
+    """Clamp a model-authored logbook entry to the model-safe vocabulary.
+
+    Two independent guards, applied in order:
+
+    1. **Type clamp** — `result`/`milestone`/`cost` are system-only, so a
+       model emitting one is downgraded to `observation` (the text is kept,
+       just demoted — a model "result" is at best an observation).
+    2. **Barrier-claim scrub** — a model entry whose text states a numeric
+       barrier (``barrier=0.89`` / ``0.89 eV``) gets an ``"[unverified model
+       claim] "`` prefix, so it can never be mistaken for a system-measured
+       fact downstream (the logbook tail, a dossier synthesis, a search hit).
+    """
+    if entry_type not in _MODEL_ALLOWED_ENTRY_TYPES:
+        entry_type = "observation"
+    if _BARRIER_CLAIM_RE.search(text):
+        text = _UNVERIFIED_PREFIX + text
+    return entry_type, text
 
 
 # ── the tick ──────────────────────────────────────────────────────────
@@ -600,6 +678,10 @@ def run_quest_tick(
         if not text:
             continue
         etype = clamp_entry_type(e.get("entry_type"))
+        # The model may only narrate, not measure: `result`/`milestone`/`cost`
+        # clamp to `observation`, and a stated barrier number gets flagged
+        # unverified — see :func:`_sanitize_model_entry` (gripes 171148/171149).
+        etype, text = _sanitize_model_entry(etype, text)
         if etype == "hypothesis" and _is_near_dup(text, open_hyps):
             deduped += 1
             continue

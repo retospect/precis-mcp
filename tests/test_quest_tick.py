@@ -211,6 +211,71 @@ class TestQuestTick:
         assert out.status == "failed" and "not found" in out.note
 
 
+class TestModelCannotFabricateResults:
+    """gripes 171148/171149: a local model proposer fabricated a numeric
+    barrier ("barrier=0.892 eV") inside a `result` logbook entry — the loop
+    treated it as a trusted measurement, believed the quest solved, and
+    stopped proposing candidates (dry ticks). The model may narrate, but only
+    the system (:mod:`precis.quest.compute`) may author a `result` /
+    `milestone` / `cost` entry, and a stated barrier number must always read
+    as unverified."""
+
+    def _logs(self, store: Any, qid: int) -> list[Any]:
+        blocks = store.list_blocks_for_ref(qid)
+        return [b for b in blocks if b.chunk_kind == "quest_log"]
+
+    def test_model_result_with_fabricated_barrier_is_downgraded_and_flagged(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store, "A striving")
+        payload = {
+            "logbook": [
+                {
+                    "entry_type": "result",
+                    "text": "catpath result: barrier=0.892 eV new leader",
+                }
+            ]
+        }
+        run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+        logs = [b for b in self._logs(store, qid) if "barrier=0.892" in b.text]
+        assert len(logs) == 1
+        entry = logs[0]
+        assert entry.meta["entry_type"] == "observation"  # NOT "result"
+        assert entry.text.startswith("[unverified model claim] ")
+        # never counted/treated as a trusted result
+        assert not any(
+            (b.meta or {}).get("entry_type") == "result" for b in self._logs(store, qid)
+        )
+
+    def test_model_milestone_is_clamped_to_observation(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        payload = {"logbook": [{"entry_type": "milestone", "text": "quest solved"}]}
+        run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+        logs = [b for b in self._logs(store, qid) if "quest solved" in b.text]
+        assert len(logs) == 1
+        assert logs[0].meta["entry_type"] == "observation"
+
+    def test_normal_hypothesis_observation_dead_end_pass_through_untouched(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store, "A striving")
+        payload = {
+            "logbook": [
+                {"entry_type": "hypothesis", "text": "Try Fe-N4 sites"},
+                {"entry_type": "observation", "text": "The tail looks stalled"},
+                {"entry_type": "dead-end", "text": "Cu adatom beaten by frontier"},
+            ]
+        }
+        run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(payload))
+        logs = self._logs(store, qid)
+        by_text = {b.text: b.meta["entry_type"] for b in logs}
+        assert by_text["Try Fe-N4 sites"] == "hypothesis"
+        assert by_text["The tail looks stalled"] == "observation"
+        assert by_text["Cu adatom beaten by frontier"] == "dead-end"
+        # none of these carry an eV/barrier claim, so no prefix is added
+        assert not any(t.startswith("[unverified model claim]") for t in by_text)
+
+
 # ── context assembly + view ───────────────────────────────────────────
 
 
@@ -284,6 +349,35 @@ class TestReactionContext:
         assert "set_element" in prompt
         assert "vacancy" in prompt
 
+    def test_reaction_context_steers_toward_novel_dopants(self, store: Any) -> None:
+        # gripe 171149: the loop kept re-proposing the same handful of
+        # adatoms once it believed it had "solved" the quest — the novelty
+        # steer names concrete unexplored levers.
+        from precis.quest.catalyst_seed import seed_catalyst_quest
+
+        qid, created = seed_catalyst_quest(store)
+        assert created
+        quest = store.get_ref(kind="quest", id=qid)
+        prompt = build_tick_prompt(store, quest)
+        assert "NOT already in the frontier" in prompt
+        for dopant in ("Fe", "Co", "Ag", "Au", "Rh", "Ru", "Zn"):
+            assert dopant in prompt
+        assert "co-adsorbed H" in prompt
+
+    def test_prompt_makes_unevaluated_barriers_unciteable(self, store: Any) -> None:
+        # gripes 171148/171149: the frontier caveat must say an "awaiting a
+        # sim" candidate has an UNKNOWN barrier the model may not cite/rank
+        # on, and that the model never emits result/milestone entries itself.
+        from precis.quest.catalyst_seed import seed_catalyst_quest
+
+        qid, created = seed_catalyst_quest(store)
+        assert created
+        quest = store.get_ref(kind="quest", id=qid)
+        prompt = build_tick_prompt(store, quest)
+        assert "UNKNOWN barrier" in prompt
+        assert "may NOT cite, claim, or rank on a barrier" in prompt
+        assert "You do not emit" in prompt and "result" in prompt
+
 
 def _tick_spec(element: str) -> dict[str, Any]:
     return {
@@ -326,6 +420,30 @@ class TestFrontierSummaryNamesUnevaluated:
         assert pending_handle is not None
         assert pending_handle in prompt
         assert "awaiting a sim" in prompt
+
+    def test_ruled_out_candidate_is_named_so_it_is_not_re_proposed(
+        self, store: Any
+    ) -> None:
+        # gripe 171149: a candidate the ledger already killed (a `ruled-out:`
+        # tag, e.g. relax-failed) must be named in the frontier section so the
+        # model does not re-propose it — otherwise it silently reads as merely
+        # "awaiting a sim" (unexplored) rather than dead.
+        from precis.store import Tag
+
+        qid = _mk_quest(store, "A striving")
+        dead = compute_mod.ensure_candidate(
+            store, qid, {"name": "dead candidate", "structure": _tick_spec("Ni")}
+        )
+        assert dead is not None
+        store.add_tag(dead, Tag.open("ruled-out:relax-failed"), set_by="system")
+        quest = store.get_ref(kind="quest", id=qid)
+        prompt = build_tick_prompt(store, quest)
+        from precis.utils import handle_registry
+
+        dead_handle = handle_registry.try_format("structure", dead)
+        assert dead_handle is not None
+        assert dead_handle in prompt
+        assert "ruled out" in prompt
 
 
 class TestReviewLogbookTail:

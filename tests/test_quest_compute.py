@@ -148,6 +148,37 @@ class TestHarvest:
         step2 = compute_mod.harvest_measures(store, qid)
         assert step2.results_harvested == 0
 
+    def test_relax_result_entry_stamped_by_system_not_the_caller_by(
+        self, store: Any
+    ) -> None:
+        # gripes 171148/171149: a system-measured fact must be distinguishable
+        # from model narration in the logbook, so it is ALWAYS stamped
+        # by="system" — regardless of the caller's own `by` (the model's
+        # "agent" attribution passed down from run_quest_tick).
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.structure_record_run(
+            sid,
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=10,
+            max_disp=0.0,
+            energy=-5.0,
+        )
+        compute_mod.harvest_measures(store, qid, by="agent")
+        blocks = store.list_blocks_for_ref(qid)
+        logs = [
+            b
+            for b in blocks
+            if b.chunk_kind == "quest_log"
+            and (b.meta or {}).get("entry_type") == "result"
+        ]
+        assert logs and all(b.meta["by"] == "system" for b in logs)
+
     def test_failed_relax_job_rules_out_candidate(self, store: Any) -> None:
         from precis.store import Tag
 
@@ -168,6 +199,13 @@ class TestHarvest:
         step = compute_mod.harvest_measures(store, qid)
         assert step.ruled_out == 1
         assert any(str(t).startswith("ruled-out:") for t in store.tags_for(sid))
+        dead_ends = [
+            b
+            for b in store.list_blocks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
+            and (b.meta or {}).get("entry_type") == "dead-end"
+        ]
+        assert dead_ends and all(b.meta["by"] == "system" for b in dead_ends)
 
     def test_non_convergence_relax_failure_rules_out_candidate(
         self, store: Any
@@ -552,6 +590,11 @@ class TestCatpathHarvest:
             b for b in store.list_blocks_for_ref(qid) if b.chunk_kind == "quest_log"
         ]
         assert any("barrier=0.7" in b.text for b in logs)
+        assert any(
+            b.meta["by"] == "system"
+            for b in logs
+            if (b.meta or {}).get("entry_type") == "result"
+        )
         # idempotent: the same job is not re-harvested
         assert compute_mod.harvest_measures(store, qid).results_harvested == 0
 
