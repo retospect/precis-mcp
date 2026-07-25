@@ -131,7 +131,10 @@ and angles are **minimum-image** (MIC) — they see across cell walls.
 ```python
 get(
     ..., view="atom", args={"atom": "aPd2"}
-)  # config + neighbour shell + coordination + fixed
+)  # config + neighbour shell + coordination + fixed + per-atom |F| (if a run has forces)
+get(
+    ..., view="atom", args={"atom": "aPd2", "run": 7}
+)  # pin a specific run's per-atom force (else: current-version run, else a cheap EMT estimate)
 get(
     ..., view="neighborhood", args={"center": "aPd2", "radius": 3.0}
 )  # the coordination shell within R Å

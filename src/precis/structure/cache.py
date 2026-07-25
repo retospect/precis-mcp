@@ -126,6 +126,27 @@ def serialize_geometry(scene: Scene, order: list[str]) -> dict[str, Any]:
     }
 
 
+def serialize_forces(
+    forces: dict[str, list[float]],
+) -> tuple[list[str], list[list[float]]]:
+    """Per-atom forces (eV/Å, cartesian) as LABEL-paired parallel lists —
+    ``labels[i]`` names the atom whose vector is ``vectors[i]`` — for storage
+    on a run row (gripe 161576).
+
+    Deliberately **not** canonical-rank-indexed like :func:`serialize_geometry`:
+    canonical rank sorts on fractional position, so a relax that moves an atom
+    across a periodic image boundary can reorder rank between write time and a
+    later read. Re-deriving :func:`canonical_order` at read time to join a
+    rank-indexed array back to atoms would then silently attribute a force to
+    the wrong atom on exactly the periodic same-element slabs (Pd/Cu/Ni) this
+    feature targets. The label is stable identity; rank is not — so labels and
+    vectors are captured together, in one pass over the same dict, and the
+    join at read time is a label lookup, never a re-derived rank."""
+    labels = list(forces)
+    vectors = [list(forces[la]) for la in labels]
+    return labels, vectors
+
+
 def apply_geometry(scene: Scene, geometry: dict[str, Any]) -> None:
     """Write a cached relaxed geometry onto ``scene`` by canonical rank.
 

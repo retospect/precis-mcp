@@ -429,6 +429,211 @@ def test_clean_rung_is_never_cached(structure):
     assert n == 0
 
 
+# -- per-atom forces (gripe 161576) ------------------------------------------
+
+
+def test_migration_0087_columns_exist(structure):
+    """The tail migration applied cleanly — struct_runs carries the new
+    nullable forces/charges columns (the harness auto-applies migrations at
+    fixture setup; this just confirms the columns are queryable)."""
+    with structure.store.pool.connection() as conn:
+        row = conn.execute("SELECT forces, charges FROM struct_runs LIMIT 0").fetchone()
+    assert row is None  # no rows yet — the point is the query didn't error
+
+
+def test_emt_relax_records_per_atom_forces_shown_in_atom_view(structure):
+    """A real 'emt' relax (ASE-EMT, no MACE needed) records a per-atom force
+    array of the right length; view='atom' surfaces |F| for one atom, tagged
+    'computed' (not 'approx')."""
+    pytest.importorskip("ase")
+    structure.put(id="pd_pair_emt", text=_PD)
+    structure.edit(id="pd_pair_emt", ops=[{"op": "relax", "fidelity": "emt"}])
+    ref = structure.store.get_ref(kind="structure", id="pd_pair_emt")
+    runs = structure.store.structure_runs(ref.id)
+    emt_run = next(r for r in runs if r["fidelity"] == "emt")
+    assert emt_run["forces"] is not None
+    vectors = emt_run["forces"]["vectors"]
+    labels = emt_run["forces"]["labels"]
+    assert len(vectors) == 2 and len(labels) == 2  # aPd1, aPd2
+    assert set(labels) == {"aPd1", "aPd2"}  # label-paired (gripe 161576 FIX 1)
+    assert emt_run["forces"]["approx"] is False
+    assert emt_run["forces"]["source"] == "emt"
+
+    atom_view = structure.get(id="pd_pair_emt", view="atom", args={"atom": "aPd1"})
+    assert "|F| =" in atom_view.body
+    assert "computed" in atom_view.body
+    assert "Charges: —" in atom_view.body
+
+
+def test_view_atom_run_arg_selects_a_specific_run(structure):
+    """``run=<id>`` pins the atom-view force readout to one recorded run,
+    not just the latest force-bearing one."""
+    pytest.importorskip("ase")
+    structure.put(id="pd_pair_runs", text=_PD)
+    structure.edit(id="pd_pair_runs", ops=[{"op": "relax", "fidelity": "emt"}])
+    ref = structure.store.get_ref(kind="structure", id="pd_pair_runs")
+    first_run_id = structure.store.structure_runs(ref.id)[0]["id"]
+
+    # a second op-free 'clean' relax records another run (a no-op geometry
+    # repair, since emt already converged the pair) so there's a later run
+    # to disambiguate against.
+    structure.edit(id="pd_pair_runs", ops=[{"op": "relax", "fidelity": "clean"}])
+
+    pinned = structure.get(
+        id="pd_pair_runs",
+        view="atom",
+        args={"atom": "aPd1", "run": first_run_id},
+    )
+    assert f"[r{first_run_id}]" in pinned.body
+
+    with pytest.raises(NotFound):
+        structure.get(
+            id="pd_pair_runs",
+            view="atom",
+            args={"atom": "aPd1", "run": 999999},
+        )
+
+
+def test_clean_relax_on_emt_supported_elements_surfaces_approx_force(structure):
+    """A clean-only design on an EMT-supported element set (Pd) surfaces an
+    approximate per-atom force, clearly labeled — never confused with a real
+    emt/ml relax force."""
+    pytest.importorskip("ase")
+    structure.put(id="pd_pair_clean", text=_PD)
+    structure.edit(id="pd_pair_clean", ops=[{"op": "relax", "fidelity": "clean"}])
+    ref = structure.store.get_ref(kind="structure", id="pd_pair_clean")
+    runs = structure.store.structure_runs(ref.id)
+    clean_run = next(r for r in runs if r["fidelity"] == "clean")
+    assert clean_run["forces"] is not None
+    assert clean_run["forces"]["approx"] is True
+    assert clean_run["forces"]["source"] == "emt"
+
+    atom_view = structure.get(id="pd_pair_clean", view="atom", args={"atom": "aPd1"})
+    assert "|F| =" in atom_view.body
+    assert "approx" in atom_view.body
+
+
+def test_clean_relax_outside_emt_coverage_surfaces_no_forces(structure):
+    """An element set outside EMT's coverage never gets a fabricated force —
+    the clean-run's forces column stays NULL, and view='atom' says so."""
+    unsupported = json.dumps(
+        {
+            "cell": {"a": 10.0, "b": 10.0, "c": 10.0},
+            "ops": [
+                {"op": "add_atom", "element": "Fe", "frac": [0.0, 0.0, 0.0]},
+                {"op": "add_atom", "element": "Fe", "frac": [0.2, 0.0, 0.0]},
+            ],
+        }
+    )
+    structure.put(id="fe_pair", text=unsupported)
+    structure.edit(id="fe_pair", ops=[{"op": "relax", "fidelity": "clean"}])
+    ref = structure.store.get_ref(kind="structure", id="fe_pair")
+    runs = structure.store.structure_runs(ref.id)
+    clean_run = next(r for r in runs if r["fidelity"] == "clean")
+    assert clean_run["forces"] is None
+
+    atom_view = structure.get(id="fe_pair", view="atom", args={"atom": "aFe1"})
+    assert "|F|: unavailable" in atom_view.body
+    assert "Charges: —" in atom_view.body
+
+
+def test_forces_join_is_label_stable_not_rank_derived(structure, monkeypatch):
+    """gripe 161576 FIX 1 regression: the stored forces join is by LABEL,
+    captured together with the vectors at write time — never by re-deriving
+    canonical_order (which sorts on fractional position, and so can reorder
+    across a relax on a periodic same-element slab) at read time. Proven two
+    ways: (1) each atom's displayed |F| matches exactly its own recorded
+    vector, never a neighbor's; (2) the read path never even calls
+    canonical_order, so an adversarial rank flip can't touch it."""
+    pytest.importorskip("ase")
+    from precis.structure import cache as relax_cache
+
+    spec = json.dumps(
+        {
+            "cell": {"a": 10.0, "b": 10.0, "c": 10.0},
+            "ops": [
+                {"op": "add_atom", "element": "Pd", "frac": [0.10, 0.0, 0.0]},
+                {"op": "add_atom", "element": "Pd", "frac": [0.40, 0.0, 0.0]},
+                {"op": "add_atom", "element": "Pd", "frac": [0.70, 0.0, 0.0]},
+            ],
+        }
+    )
+    structure.put(id="pd_trio", text=spec)
+    structure.edit(id="pd_trio", ops=[{"op": "relax", "fidelity": "emt"}])
+    ref = structure.store.get_ref(kind="structure", id="pd_trio")
+    run = next(
+        r for r in structure.store.structure_runs(ref.id) if r["fidelity"] == "emt"
+    )
+    stored = run["forces"]
+    assert stored is not None
+    # Ground truth: label -> vector, exactly as recorded (labels/vectors are
+    # index-paired, so zip is a faithful reconstruction of the write-time map).
+    truth = dict(zip(stored["labels"], stored["vectors"], strict=True))
+    assert {"aPd1", "aPd2", "aPd3"} <= set(truth)
+
+    # Poison canonical_order so the read path fails loudly if it's ever
+    # called — the fix's whole point is that the forces join no longer
+    # depends on it at all.
+    def _boom(scene):
+        raise AssertionError("canonical_order must not run on the forces read path")
+
+    monkeypatch.setattr(relax_cache, "canonical_order", _boom)
+
+    for label in ("aPd1", "aPd2", "aPd3"):
+        resp = structure.get(id="pd_trio", view="atom", args={"atom": label})
+        fx, fy, fz = truth[label]
+        mag = (fx * fx + fy * fy + fz * fz) ** 0.5
+        assert f"{mag:.4f}" in resp.body, f"{label} did not show its own force"
+
+
+def test_view_atom_no_run_arg_ignores_a_stale_older_version_run(structure):
+    """gripe 161576 FIX 2: without an explicit run=, forces must come from a
+    run at the design's CURRENT version — a superseded version's forces never
+    silently surface as if current. It falls through to the on-demand
+    estimate (Pd is EMT-covered) instead of the stale run; the pinned run=
+    selector still answers explicitly with that exact (stale) run."""
+    pytest.importorskip("ase")
+    structure.put(id="pd_pair_stale", text=_PD)
+    structure.edit(id="pd_pair_stale", ops=[{"op": "relax", "fidelity": "emt"}])
+    ref = structure.store.get_ref(kind="structure", id="pd_pair_stale")
+    stale_run_id = structure.store.structure_runs(ref.id)[0]["id"]
+
+    # A further edit bumps the design version with no new force-bearing run
+    # — the emt run above is now stale relative to the current version.
+    structure.edit(
+        id="pd_pair_stale",
+        ops=[{"op": "add_atom", "element": "Pd", "frac": [0.6, 0.0, 0.0]}],
+    )
+    resp = structure.get(id="pd_pair_stale", view="atom", args={"atom": "aPd1"})
+    assert f"[r{stale_run_id}]" not in resp.body  # not silently shown as current
+    assert "on-demand estimate" in resp.body  # falls through (Pd is EMT-covered)
+
+    pinned = structure.get(
+        id="pd_pair_stale",
+        view="atom",
+        args={"atom": "aPd1", "run": stale_run_id},
+    )
+    assert f"[r{stale_run_id}]" in pinned.body  # explicit pin still answers
+
+
+def test_toc_default_view_never_runs_the_live_emt_estimate(structure, monkeypatch):
+    """gripe 161576 FIX 3: the default TOC / per-atom list |F| column is a
+    cheap DB read only — the live EMT single-point estimate runs ONLY for an
+    explicit view='atom', never on a plain get(kind='structure', id=...)."""
+    import precis.handlers.structure as structure_mod
+
+    def _boom(scene):
+        raise AssertionError("estimate_forces_emt must not run on the default TOC")
+
+    monkeypatch.setattr(structure_mod, "estimate_forces_emt", _boom)
+    # Pd is EMT-covered — if the guard failed, this would call _boom and raise.
+    structure.put(
+        id="pd_pair_toc", text=_PD
+    )  # no relax at all — no recorded run either
+    resp = structure.get(id="pd_pair_toc")
+    assert "—" in resp.body  # the |F| column shows the dash, not a live estimate
+
+
 def test_cache_hit_short_circuits_a_gated_rung(structure):
     """A pre-seeded run-cube entry makes the (otherwise gated) ``ml`` rung a
     zero-compute hit — it returns the cached envelope instead of raising
@@ -496,6 +701,50 @@ def test_store_cache_round_trip(structure):
     assert hit["converged"] is True and hit["model"] == "mace_mp"
     assert hit["curve"] == [0.2, 0.03]
     assert hit["final_geometry"] == {"frac": [[0.0, 0.0, 0.0]], "lattice": None}
+    assert hit["forces"] is None  # no forces payload was recorded on this run
+
+
+def test_cache_hit_propagates_forces_onto_the_fresh_run_row(structure):
+    """A cache hit still records a fresh struct_runs row (append-only audit,
+    §9/§12) — its forces payload rides along from the cached run rather than
+    silently going missing."""
+    from precis.structure import cache as relax_cache
+
+    structure.put(id="pd_pair_hitforce", text=_PD)
+    ref = structure.store.get_ref(kind="structure", id="pd_pair_hitforce")
+    scene, _ = structure.store.structure_load(ref.id)
+
+    order = relax_cache.canonical_order(scene)
+    key = relax_cache.run_cache_key(
+        scene, fidelity="ml", model="mace_mp", params={"steps": 200}
+    )
+    sha = relax_cache.structure_sha(scene)
+    forces_payload = {
+        "vectors": [[0.1, 0.0, 0.0], [-0.1, 0.0, 0.0]],
+        "labels": ["aPd1", "aPd2"],
+        "approx": False,
+        "source": "mace_mp",
+    }
+    structure.store.structure_record_run(
+        ref.id,
+        fidelity="ml",
+        on_version=structure.store.structure_version(ref.id),
+        converged=True,
+        n_steps=5,
+        max_disp=0.01,
+        energy=-4.0,
+        max_force=0.1,
+        model="mace_mp",
+        curve=[0.2, 0.05],
+        cache_key=key,
+        structure_sha=sha,
+        final_geometry=relax_cache.serialize_geometry(scene, order),
+        forces=forces_payload,
+    )
+
+    structure.edit(id="pd_pair_hitforce", ops=[{"op": "relax", "fidelity": "ml"}])
+    runs = structure.store.structure_runs(ref.id)
+    assert runs[0]["forces"] == forces_payload  # newest = the fresh hit row
 
 
 def _child_jobs(store, parent_id: int) -> list[dict]:

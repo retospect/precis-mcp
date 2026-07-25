@@ -448,19 +448,27 @@ class StructureMixin:
         cache_key: str | None = None,
         structure_sha: str | None = None,
         final_geometry: dict[str, Any] | None = None,
+        forces: dict[str, Any] | None = None,
+        charges: dict[str, Any] | None = None,
     ) -> int:
         """Record one compute pass + its per-step convergence curve. The curve
         is stored as ``struct_frames`` (energy/force per step); geometry frames
         are MD/NEB-only (§6.9). ``cache_key`` / ``structure_sha`` /
         ``final_geometry`` populate the §23.16 run-cube cache (NULL for the
-        uncached ``clean`` rung). Returns the new ``struct_runs.id``."""
+        uncached ``clean`` rung). ``forces`` (gripe 161576) is the caller-built
+        ``{"vectors": [[fx,fy,fz], ...], "approx": bool, "source": str}``
+        payload, canonical-rank-indexed like ``final_geometry`` — NULL when no
+        force estimate was available. ``charges`` is always NULL today (no
+        backend produces partial charges yet); the param exists so a future
+        charge-bearing rung has a column to write without another migration.
+        Returns the new ``struct_runs.id``."""
         with self.tx() as conn:
             row = conn.execute(
                 "INSERT INTO struct_runs "
                 "(ref_id, fidelity, status, model, on_version, converged, "
                 " n_steps, energy, max_force, max_disp, params, "
-                " cache_key, structure_sha, final_geometry) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+                " cache_key, structure_sha, final_geometry, forces, charges) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
                 (
                     ref_id,
                     fidelity,
@@ -476,6 +484,8 @@ class StructureMixin:
                     cache_key,
                     structure_sha,
                     Jsonb(final_geometry) if final_geometry is not None else None,
+                    Jsonb(forces) if forces is not None else None,
+                    Jsonb(charges) if charges is not None else None,
                 ),
             ).fetchone()
             run_id = int(row[0])
@@ -491,11 +501,14 @@ class StructureMixin:
         return run_id
 
     def structure_runs(self, ref_id: int, *, limit: int = 20) -> list[dict[str, Any]]:
-        """A design's compute history, most-recent first (the fidelity ladder)."""
+        """A design's compute history, most-recent first (the fidelity ladder).
+        ``forces``/``charges`` (gripe 161576) ride along raw (jsonb-decoded
+        dict/``None``) so a renderer can flag which runs carry a per-atom force
+        estimate without a second query."""
         with self.pool.connection() as conn:
             rows = conn.execute(
                 "SELECT id, fidelity, status, model, on_version, converged, "
-                "n_steps, energy, max_force, max_disp, created_at "
+                "n_steps, energy, max_force, max_disp, created_at, forces, charges "
                 "FROM struct_runs WHERE ref_id = %s ORDER BY id DESC LIMIT %s",
                 (ref_id, limit),
             ).fetchall()
@@ -511,6 +524,8 @@ class StructureMixin:
             "max_force",
             "max_disp",
             "created_at",
+            "forces",
+            "charges",
         ]
         return [dict(zip(cols, r, strict=True)) for r in rows]
 
@@ -531,7 +546,7 @@ class StructureMixin:
         with self.pool.connection() as conn:
             row = conn.execute(
                 "SELECT id, fidelity, model, converged, n_steps, energy, "
-                "max_force, max_disp, final_geometry, structure_sha "
+                "max_force, max_disp, final_geometry, structure_sha, forces "
                 "FROM struct_runs "
                 "WHERE cache_key = %s AND status = 'succeeded' "
                 "AND provenance = 'computed' "
@@ -560,10 +575,67 @@ class StructureMixin:
             "max_disp",
             "final_geometry",
             "structure_sha",
+            "forces",
         ]
         out = dict(zip(cols, row, strict=True))
         out["curve"] = curve
         return out
+
+    def structure_run_forces(
+        self,
+        ref_id: int,
+        *,
+        run_id: int | None = None,
+        on_version: int | None = None,
+    ) -> dict[str, Any] | None:
+        """The stored per-atom force payload for one run (gripe 161576) —
+        ``run_id`` pins a specific run (returned regardless of design
+        version — an explicit pin always answers with *that* run's forces);
+        omitted, the *latest* run carrying a non-null ``forces`` column wins
+        (any fidelity, converged or not — a non-converged run's forces are
+        still an informative strain signal), optionally restricted to
+        ``on_version`` (FIX 2: a superseded design version's forces must
+        never surface as if they were current — the caller passes the design's
+        *current* version here for the no-``run_id`` "latest" lookup;
+        ``on_version`` is ignored when ``run_id`` is given).
+
+        Returns ``{"run_id", "fidelity", "vectors", "labels", "approx",
+        "source"}`` (``vectors``/``labels`` may themselves be ``None`` when a
+        *pinned* run recorded none), or ``None`` when ``run_id`` doesn't name
+        a run on this design, or (with no ``run_id``) no matching run has
+        ever recorded forces."""
+        with self.pool.connection() as conn:
+            if run_id is not None:
+                row = conn.execute(
+                    "SELECT id, fidelity, forces FROM struct_runs "
+                    "WHERE id = %s AND ref_id = %s",
+                    (run_id, ref_id),
+                ).fetchone()
+            elif on_version is not None:
+                row = conn.execute(
+                    "SELECT id, fidelity, forces FROM struct_runs "
+                    "WHERE ref_id = %s AND forces IS NOT NULL AND on_version = %s "
+                    "ORDER BY id DESC LIMIT 1",
+                    (ref_id, on_version),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT id, fidelity, forces FROM struct_runs "
+                    "WHERE ref_id = %s AND forces IS NOT NULL "
+                    "ORDER BY id DESC LIMIT 1",
+                    (ref_id,),
+                ).fetchone()
+        if row is None:
+            return None
+        blob = row[2] or {}
+        return {
+            "run_id": int(row[0]),
+            "fidelity": str(row[1]),
+            "vectors": blob.get("vectors"),
+            "labels": blob.get("labels"),
+            "approx": bool(blob.get("approx", False)),
+            "source": blob.get("source"),
+        }
 
     # -- delete ----------------------------------------------------------
     def structure_delete(self, ref_id: int) -> int:

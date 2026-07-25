@@ -16,6 +16,10 @@ Scope, deliberately narrow to stay false-positive-free:
   ``commit-tree`` (``scripts/ship``'s plumbing), NOT cherry-pick/revert.
 - Only when the resolved branch is ``main``/``master``. Commits on any feature
   / ``worktree-*`` / ``docs-*`` branch pass untouched.
+- Only in a repo that actually has the ``scripts/ship`` gate this protects.
+  A sibling repo without it (e.g. ``catpath``, which legitimately ships
+  direct-to-main + ``git push``) has no worktree/ship flow to bypass, so a
+  commit on its ``main`` is not this footgun — it passes untouched.
 - Follows a leading ``cd <path>`` and ``git -C <path>`` so the branch is read
   at the dir the commit actually targets, not just the session cwd.
 
@@ -58,6 +62,20 @@ def _branch(cwd: str) -> str:
         return ""
 
 
+def _repo_root(cwd: str) -> str:
+    """Toplevel of the git repo at ``cwd``; empty string on any failure."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", cwd, "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return out.stdout.strip()
+    except Exception:
+        return ""
+
+
 def _resolve(base: str, path: str) -> str:
     path = os.path.expanduser(
         path.strip()
@@ -86,6 +104,11 @@ def evaluate(command: str, cwd: str) -> str | None:
         # This segment commits. Read the branch at its target dir.
         gc = _GIT_C_RE.search(seg)
         target = _resolve(cur, gc.group(2)) if gc else cur
+        # Only guard a repo that has the scripts/ship gate this protects;
+        # a sibling repo without it (catpath) ships direct-to-main by design.
+        root = _repo_root(target)
+        if not root or not os.path.isfile(os.path.join(root, "scripts", "ship")):
+            continue
         branch = _branch(target)
         if branch in PROTECTED:
             return (

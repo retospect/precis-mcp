@@ -55,6 +55,35 @@ class RelaxUnsupported(RuntimeError):
     """A relax rung whose backend extra isn't installed."""
 
 
+def estimate_forces_emt(scene: Scene) -> dict[str, list[float]] | None:
+    """A cheap, always-available per-atom force *estimate* (gripe 161576).
+
+    "Local only, there's cheap python approximation, we do that" — one ASE-EMT
+    single-point force evaluation (no optimisation), so the ``clean`` rung
+    (which has no calculator of its own) still gives the modeling LLM a
+    qualitative sense of which atoms are under strain, ahead of a real
+    MLIP/DFT relax later. Never fabricates a number: returns ``None`` when the
+    element set falls outside EMT's closed coverage (:data:`EMT_ELEMENTS`),
+    ASE isn't installed, or the single-point evaluation itself errors.
+    """
+    if not scene.atoms:
+        return None
+    if not export.ase_available():
+        return None
+    if {a.element for a in scene.atoms.values()} - EMT_ELEMENTS:
+        return None
+    from ase.calculators.emt import EMT
+
+    try:
+        atoms = export._to_ase(scene)
+        atoms.calc = EMT()
+        raw = atoms.get_forces()
+    except Exception:  # any ASE/EMT failure ⇒ no estimate, not a crash
+        return None
+    labels = list(scene.atoms)
+    return {la: [float(x) for x in raw[idx]] for idx, la in enumerate(labels)}
+
+
 @dataclass
 class RelaxResult:
     """The convergence envelope of a relax (ADR §9/§22-D).
@@ -73,6 +102,20 @@ class RelaxResult:
     energy: float | None = None  # eV (None = undefined: clean rung / failure)
     max_force: float | None = None  # eV/Å (None for the geometry rung)
     model: str | None = None  # the backend that produced it (MLIP name)
+    # ── per-atom forces (gripe 161576) — a *qualitative* "which atoms are
+    # doing the work" signal for the modeling LLM, not physics-grade truth (a
+    # real MLIP/DFT relax runs later). ``forces`` is keyed by design label
+    # (pre-canonicalisation, the compute's own atom order); the handler
+    # re-indexes it to canonical rank for storage, mirroring
+    # ``final_geometry``. ``forces_approx`` marks a cheap EMT single-point
+    # estimate (:func:`estimate_forces_emt`, used when the rung has no
+    # calculator of its own — the ``clean`` geometry repair) so it is never
+    # confused with a real emt/ml relax force.
+    forces: dict[str, list[float]] | None = None
+    forces_approx: bool = False
+    forces_source: str | None = (
+        None  # 'emt' (rung 1, or the clean estimate) or an MLIP name
+    )
     # ── run-cube cache plumbing (ADR §23.16) — populated by the *handler*, not
     # the pure compute: the content address of this relax, and, on a cache hit,
     # the fact that no compute ran. ``relax()`` itself never sets these.
@@ -80,6 +123,17 @@ class RelaxResult:
     cache_key: str | None = None
     structure_sha: str | None = None
     final_geometry: dict | None = None  # type: ignore[type-arg]
+    # Storage-ready ``forces``, set by the handler like ``final_geometry``
+    # above — but LABEL-paired, not canonical-rank-indexed (gripe 161576 FIX
+    # 1): ``forces_labels[i]`` names the atom whose vector is
+    # ``forces_vectors[i]``, captured together from the same raw ``forces``
+    # dict in one pass, so they can never drift apart. A relax that moves an
+    # atom across a periodic image boundary can change canonical rank (which
+    # sorts on fractional position) between write time and a later read —
+    # re-deriving rank at read time would then silently join the wrong
+    # atom's vector. The label is stable; rank is not.
+    forces_labels: list[str] | None = None
+    forces_vectors: list[list[float]] | None = None
 
 
 def relax(
@@ -168,8 +222,20 @@ def _relax_clean(scene: Scene, *, steps: int, tol: float) -> RelaxResult:
         if max_disp < tol:
             converged = True
             break
+    # Rung 0 has no calculator of its own — a cheap EMT single-point estimate
+    # (gripe 161576) gives the LLM a qualitative force sense anyway, on the
+    # geometry this pass just repaired. ``None`` (never fabricated) when the
+    # element set falls outside EMT's coverage or ASE isn't installed.
+    approx_forces = estimate_forces_emt(scene)
     return RelaxResult(
-        rung="clean", converged=converged, n_steps=n, max_disp=max_disp, curve=curve
+        rung="clean",
+        converged=converged,
+        n_steps=n,
+        max_disp=max_disp,
+        curve=curve,
+        forces=approx_forces,
+        forces_approx=approx_forces is not None,
+        forces_source="emt" if approx_forces is not None else None,
     )
 
 
@@ -233,6 +299,9 @@ def _relax_emt(scene: Scene, *, steps: int, tol: float) -> RelaxResult:
     max_disp = float(np.linalg.norm(after - before, axis=1).max()) if labels else 0.0
     forces = atoms.get_forces()
     max_force = float(np.sqrt((forces**2).sum(axis=1).max()))
+    per_atom_forces = {
+        la: [float(x) for x in forces[idx]] for idx, la in enumerate(labels)
+    }
     return RelaxResult(
         rung="emt",
         converged=converged,
@@ -242,6 +311,9 @@ def _relax_emt(scene: Scene, *, steps: int, tol: float) -> RelaxResult:
         energy=float(atoms.get_potential_energy()),
         max_force=round(max_force, 4),
         model="emt",
+        forces=per_atom_forces,
+        forces_approx=False,
+        forces_source="emt",
     )
 
 
@@ -354,6 +426,9 @@ def _relax_ml(
     max_disp = float(np.linalg.norm(after - before, axis=1).max()) if labels else 0.0
     forces = atoms.get_forces()
     max_force = float(np.sqrt((forces**2).sum(axis=1).max()))
+    per_atom_forces = {
+        la: [float(x) for x in forces[idx]] for idx, la in enumerate(labels)
+    }
     return RelaxResult(
         rung="ml",
         converged=converged,
@@ -363,4 +438,7 @@ def _relax_ml(
         energy=float(atoms.get_potential_energy()),
         max_force=round(max_force, 4),
         model=model,
+        forces=per_atom_forces,
+        forces_approx=False,
+        forces_source=model,
     )

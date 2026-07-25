@@ -466,6 +466,97 @@ def test_relax_emt_rejects_out_of_set_element() -> None:
     assert "fidelity='ml'" in msg
 
 
+# -- per-atom forces (gripe 161576) ------------------------------------------
+
+
+def test_relax_emt_records_real_per_atom_forces() -> None:
+    """A real emt relax carries a per-atom force dict, not the cheap estimate."""
+    pytest.importorskip("ase")
+    scene = _pd_slab()
+    res = relax(scene, fidelity="emt", steps=200, tol=0.05)
+    assert res.forces is not None
+    assert set(res.forces) == set(scene.atoms)
+    assert all(len(v) == 3 for v in res.forces.values())
+    assert res.forces_approx is False
+    assert res.forces_source == "emt"
+
+
+def test_relax_ml_records_real_per_atom_forces(monkeypatch) -> None:
+    """Rung 'ml' also carries real per-atom forces, labeled by its own model."""
+    pytest.importorskip("ase")
+    import importlib
+
+    from ase.calculators.emt import EMT
+
+    relax_mod = importlib.import_module("precis.structure.relax")
+    monkeypatch.setattr(relax_mod, "_ml_calculator", lambda model: EMT())
+
+    scene = Scene(cell=_cubic(10.0))
+    apply_ops(scene, [{"op": "add_atom", "element": "Cu", "frac": [0.0, 0.0, 0.0]}])
+    res = relax(scene, fidelity="ml", steps=20, model="mace_mp")
+    assert res.forces is not None
+    assert res.forces_approx is False
+    assert res.forces_source == "mace_mp"
+
+
+def test_estimate_forces_emt_supported_elements() -> None:
+    """The cheap always-available estimate (rung 0 has no calculator) — real
+    numbers for an EMT-covered element set."""
+    pytest.importorskip("ase")
+    from precis.structure.relax import estimate_forces_emt
+
+    scene = Scene(cell=_cubic(10.0))
+    apply_ops(scene, [{"op": "add_atom", "element": "Pd", "frac": [0.0, 0.0, 0.0]}])
+    est = estimate_forces_emt(scene)
+    assert est is not None
+    assert set(est) == {"aPd1"}
+    assert len(est["aPd1"]) == 3
+
+
+def test_estimate_forces_emt_unsupported_elements_is_none() -> None:
+    """Never fabricate: an element outside EMT's closed coverage ⇒ None."""
+    pytest.importorskip("ase")
+    from precis.structure.relax import estimate_forces_emt
+
+    scene = Scene(cell=_cubic(10.0))
+    apply_ops(scene, [{"op": "add_atom", "element": "Fe", "frac": [0.0, 0.0, 0.0]}])
+    assert estimate_forces_emt(scene) is None
+
+
+def test_relax_clean_surfaces_approx_forces_on_supported_elements() -> None:
+    """Rung 'clean' has no calculator of its own, but on an EMT-supported
+    element set it still surfaces a labeled-approximate force estimate."""
+    pytest.importorskip("ase")
+    scene = Scene(cell=_cubic(10.0))
+    apply_ops(
+        scene,
+        [
+            {"op": "add_atom", "element": "Pd", "frac": [0.0, 0.0, 0.0]},
+            {"op": "add_atom", "element": "Pd", "frac": [0.2, 0.0, 0.0]},
+        ],
+    )
+    res = relax(scene, fidelity="clean", steps=50)
+    assert res.forces is not None
+    assert res.forces_approx is True
+    assert res.forces_source == "emt"
+
+
+def test_relax_clean_no_forces_outside_emt_coverage() -> None:
+    """Rung 'clean' on an unsupported element set surfaces no forces at all
+    — never a fabricated number."""
+    scene = Scene(cell=_cubic(10.0))
+    apply_ops(
+        scene,
+        [
+            {"op": "add_atom", "element": "Fe", "frac": [0.0, 0.0, 0.0]},
+            {"op": "add_atom", "element": "Fe", "frac": [0.2, 0.0, 0.0]},
+        ],
+    )
+    res = relax(scene, fidelity="clean", steps=50)
+    assert res.forces is None
+    assert res.forces_approx is False
+
+
 def test_relax_unknown_cell_mode_raises() -> None:
     scene = Scene(cell=_cubic(10.0))
     apply_ops(scene, [{"op": "add_atom", "element": "Pd", "frac": [0, 0, 0]}])

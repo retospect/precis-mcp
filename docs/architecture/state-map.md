@@ -1060,6 +1060,22 @@ The master kinds table lives in the `precis-overview` skill.
     `add_link(merge_meta=True)` — no other link caller's conflict behavior
     changes). `motivated-by` relation is a follow-up (only `cites`/`related-to`
     seeded today; the surface is relation-agnostic).
+  - **Run-scoped per-atom forces (gr161576, mig `0087`).** `struct_runs` gained
+    nullable `forces`/`charges` jsonb. Local EMT/ML relaxes now keep their
+    per-atom force array (was reduced to scalar `max_force` and dropped); the
+    `clean` rung / on-demand path gets a cheap ASE-EMT single-point estimate
+    (`relax.estimate_forces_emt`, closed EMT set only, `approx=true`, never
+    fabricated). Stored **label-paired** (`{"vectors","labels","approx",
+    "source"}`, `cache.serialize_forces`) — NOT canonical-rank-indexed, because
+    rank sorts on position and a periodic-wrap relax reorders it → the read join
+    is a stable-label lookup, never a re-derived rank (would mis-attribute
+    forces on same-element slabs). `view='atom'` shows `|F|` + vector +
+    approx/fidelity label (`run=<id>` pins a run; unpinned = current-version run
+    only, else the estimate); TOC/`view='runs'` show forces from a recorded run
+    only (no live EMT on the default read). `charges` = reserved null slot (no
+    backend produces partial charges). Cloud `struct_relax` writeback leaves
+    both null. Purpose is a qualitative "which atoms are strained" sense for the
+    modeling LLM, not physics-grade truth.
   - **External DFT catalyst import (ADR 0053, Sequencing steps 0–2 shipped).**
     A new fidelity rung `emt` (`structure/relax.py::_relax_emt`) — ASE-EMT +
     FIRE, torch-free, gated behind the light `[dft]` extra (never `[dft-ml]`,

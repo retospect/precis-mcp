@@ -60,7 +60,7 @@ from precis.structure.importers import catalysis_hub, get_adapter
 # NB: ``precis.structure`` re-exports the ``relax`` *function* under that
 # name (see ``run_relax`` above), shadowing the submodule — reach
 # ``EMT_ELEMENTS`` via the submodule path directly.
-from precis.structure.relax import EMT_ELEMENTS, RelaxResult
+from precis.structure.relax import EMT_ELEMENTS, RelaxResult, estimate_forces_emt
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
 from precis.utils.search_merge import SearchHit
@@ -318,6 +318,16 @@ def _format_method_fingerprint(method: Mapping[str, Any] | None) -> str:
     if not parts:
         parts = [f"{k}={v}" for k, v in sorted(method.items())]
     return "/".join(parts)
+
+
+def _describe_run_forces(forces: Mapping[str, Any] | None) -> str:
+    """Compact ``view='runs'`` label for a run's ``forces`` payload (gripe
+    161576) — ``approx (emt)`` for the cheap clean-rung estimate, ``yes
+    (<source>)`` for a real emt/ml relax force, ``—`` when none was recorded."""
+    if not forces or not forces.get("vectors"):
+        return "—"
+    source = forces.get("source") or "?"
+    return f"approx ({source})" if forces.get("approx") else f"yes ({source})"
 
 
 def _describe_run_method(run: Mapping[str, Any]) -> str:
@@ -732,7 +742,7 @@ class StructureHandler(Handler):
                 f"unknown structure view {view!r}",
                 next=f"view= one of {list(_VIEWS)}, or omit for the TOC",
             )
-        return self._render_probe(view, scene, args or {})
+        return self._render_probe(view, scene, args or {}, ref=ref)
 
     def _get_external(
         self, *, source: str, q: str | None, args: dict[str, Any]
@@ -932,6 +942,10 @@ class StructureHandler(Handler):
                     "method": _format_method_fingerprint(method)
                     if provenance == "external"
                     else "—",
+                    # gripe 161576: which runs carry a per-atom force estimate,
+                    # and whether it's a real emt/ml force or the cheap EMT
+                    # approximation (rung 0 has no calculator of its own).
+                    "forces": _describe_run_forces(r.get("forces")),
                 }
             )
         return Response(
@@ -949,6 +963,7 @@ class StructureHandler(Handler):
                     "v",
                     "provenance",
                     "method",
+                    "forces",
                 ],
             )
         )
@@ -1242,6 +1257,16 @@ class StructureHandler(Handler):
             res = run_relax(
                 scene, fidelity=fidelity, steps=steps, model=model, cell=cell_mode
             )
+            # Per-atom forces (gripe 161576), label-paired for storage (FIX 1
+            # — never canonical-rank-indexed, see serialize_forces) —
+            # regardless of ``cached_rung``/convergence, so a 'clean' rung's
+            # cheap EMT estimate, and a non-converged emt/ml relax's real
+            # forces, both persist (a strain signal is still informative when
+            # a run didn't converge).
+            if res.forces is not None:
+                res.forces_labels, res.forces_vectors = relax_cache.serialize_forces(
+                    res.forces
+                )
         except RelaxUnsupported as exc:
             # No local backend for this energy rung. If the caller named a
             # parent todo we dispatch it to the GPU node (§23.12); otherwise
@@ -1277,6 +1302,13 @@ class StructureHandler(Handler):
             preflight_result, preflight_note = _preflight_relax(
                 scene, preflight_mode, steps=steps
             )
+            # gripe 161576: label-pair the preflight's own forces (a real
+            # local clean/emt pass) for storage — same as an ordinary
+            # standalone relax above (FIX 1: never canonical-rank-indexed).
+            if preflight_result.forces is not None:
+                preflight_result.forces_labels, preflight_result.forces_vectors = (
+                    relax_cache.serialize_forces(preflight_result.forces)
+                )
             # The geometry just changed — recompute the address so the
             # dispatched job / run-cube row is addressed by what's actually
             # staged, not the pre-preflight input. A design that happens to
@@ -1342,6 +1374,10 @@ class StructureHandler(Handler):
         geom = hit.get("final_geometry")
         if geom:
             relax_cache.apply_geometry(scene, geom)
+        # gripe 161576: a cache hit still records a fresh struct_runs row
+        # below (append-only audit truth) — carry the cached run's forces
+        # payload through so that row isn't silently force-less.
+        forces_blob = hit.get("forces") or {}
         return RelaxResult(
             rung=fidelity,
             converged=bool(hit["converged"]),
@@ -1355,6 +1391,10 @@ class StructureHandler(Handler):
             cache_key=cache_key,
             structure_sha=structure_sha,
             final_geometry=geom,
+            forces_labels=forces_blob.get("labels"),
+            forces_vectors=forces_blob.get("vectors"),
+            forces_approx=bool(forces_blob.get("approx", False)),
+            forces_source=forces_blob.get("source"),
         )
 
     @staticmethod
@@ -1384,6 +1424,19 @@ class StructureHandler(Handler):
         cache_key, so the cube stays append-only and internally consistent."""
         if res is None:
             return
+        forces_payload = None
+        if res.forces_vectors is not None:
+            # gripe 161576: {"vectors", "labels", "approx", "source"} —
+            # labels[i] <-> vectors[i] (FIX 1: the read-side join is by
+            # label, never a re-derived canonical rank). approx=true is the
+            # cheap clean-rung EMT single-point estimate, never confused with
+            # a real emt/ml relax force (approx=false).
+            forces_payload = {
+                "vectors": res.forces_vectors,
+                "labels": res.forces_labels,
+                "approx": res.forces_approx,
+                "source": res.forces_source,
+            }
         self.store.structure_record_run(
             ref_id,
             fidelity=res.rung,
@@ -1398,6 +1451,10 @@ class StructureHandler(Handler):
             cache_key=res.cache_key,
             structure_sha=res.structure_sha,
             final_geometry=res.final_geometry,
+            forces=forces_payload,
+            # charges: always None today — no backend produces partial
+            # charges yet (never fabricated); the column exists for a future
+            # charge-bearing rung (DFT+Bader).
             params={"cached": True} if res.from_cache else None,
         )
 
@@ -1547,6 +1604,11 @@ class StructureHandler(Handler):
                 f"\n# relax[{lr.get('rung')}]: {state} in {lr.get('n_steps')} steps "
                 f"(max move {lr.get('max_disp')} Å)"
             )
+        # gripe 161576: a compact |F| (eV/Å) column — a cheap DB read from a
+        # recorded run at the CURRENT design version only (FIX 2); never the
+        # live EMT estimate here (FIX 3 — that's view='atom'-only). '—' when
+        # no such run exists (never fabricated).
+        force_mags = self._force_magnitudes(scene, ref)
         rows = []
         for label, atom in scene.atoms.items():
             rows.append(
@@ -1556,13 +1618,14 @@ class StructureHandler(Handler):
                     "frac": ",".join(f"{x:.3f}" for x in atom.frac),
                     "coord": probe.coordination(scene, label),
                     "fixed": "yes" if atom.fixed else "no",
+                    "|F|": force_mags.get(label, "—"),
                 }
             )
         body = (
             head
             + "\n"
             + render_agent_table(
-                rows, schema=["atom", "element", "frac", "coord", "fixed"]
+                rows, schema=["atom", "element", "frac", "coord", "fixed", "|F|"]
             )
         )
         prov_rows = paper_provenance_rows(self.store, ref.id)
@@ -1572,7 +1635,136 @@ class StructureHandler(Handler):
             )
         return Response(body=body)
 
-    def _render_probe(self, view: str, scene: Scene, args: dict[str, Any]) -> Response:
+    # ── per-atom forces (gripe 161576) — a qualitative "which atoms are
+    # doing the work" signal for the modeling LLM, not physics-grade truth (a
+    # real MLIP/DFT relax runs later). Local-only: no cloud/container contract
+    # change — the struct_relax cloud writeback leaves these columns NULL.
+
+    def _resolve_forces(
+        self,
+        scene: Scene,
+        ref: Any,
+        *,
+        run_id: int | None = None,
+        allow_estimate: bool = False,
+    ) -> dict[str, Any] | None:
+        """Per-atom forces for this design, keyed by **label** — from a
+        stored run (``run_id`` pins one regardless of design version; omitted,
+        the *latest* run recorded at the design's *current* version, FIX 2:
+        a superseded version's forces never silently surface as if current),
+        or — only when ``allow_estimate`` (view='atom' explicitly, never the
+        default TOC/list read, FIX 3) — a cheap on-demand ASE-EMT single-point
+        estimate when no current-version run has one. ``None`` when nothing
+        is available: a pinned ``run_id`` that doesn't exist (or recorded
+        none), or no stored run and either estimation is disallowed here or
+        the element set falls outside EMT's coverage — never fabricated.
+
+        The join is by **label** (FIX 1), never a re-derived canonical rank:
+        a relax can move an atom across a periodic image boundary, changing
+        canonical rank (which sorts on fractional position) between write
+        time and this read — re-deriving rank here would then silently
+        attribute a force to the wrong atom. The stored ``forces`` payload
+        already pairs labels with vectors at write time
+        (:func:`precis.structure.cache.serialize_forces`), so this method
+        never calls ``canonical_order``.
+
+        Returns ``{"by_label": {label: [fx,fy,fz]}, "approx": bool, "source":
+        str|None, "run": str|None}`` (``run`` is ``None`` for an on-demand
+        estimate, since it was never persisted). An atom in ``scene`` missing
+        from ``by_label`` (added since that run) is simply absent — callers
+        check membership, never a bare index."""
+        on_version = int((ref.meta or {}).get("version", 0))
+        hit = self.store.structure_run_forces(
+            ref.id, run_id=run_id, on_version=on_version
+        )
+        if run_id is not None and hit is None:
+            return None  # no such run on this design
+        labels = hit.get("labels") if hit else None
+        vectors = hit.get("vectors") if hit else None
+        approx = bool(hit.get("approx")) if hit else False
+        source = hit.get("source") if hit else None
+        run_label = f"r{hit['run_id']}" if hit else None
+        if labels is None or vectors is None:
+            if run_id is not None:
+                return None  # the pinned run exists but recorded no forces
+            if not allow_estimate:
+                return None  # TOC/list path (FIX 3): never run live physics
+            est = estimate_forces_emt(scene)
+            if est is None:
+                return None  # no current-version run, and outside EMT's coverage
+            labels, vectors = relax_cache.serialize_forces(est)
+            approx, source, run_label = True, "emt", None
+        by_label = dict(zip(labels, vectors, strict=True))
+        return {
+            "by_label": by_label,
+            "approx": approx,
+            "source": source,
+            "run": run_label,
+        }
+
+    @staticmethod
+    def _parse_run_arg(run_arg: Any) -> int | None:
+        """``run=`` accepts a bare id or the ``r<id>`` display form."""
+        if run_arg is None:
+            return None
+        try:
+            return int(str(run_arg).lstrip("rR"))
+        except ValueError:
+            raise BadInput(
+                f"run={run_arg!r} is not a run id (try 'r12' or 12)"
+            ) from None
+
+    def _atom_force_line(
+        self, scene: Scene, ref: Any, label: str, args: dict[str, Any]
+    ) -> tuple[str | None, str | None]:
+        """One ``view='atom'`` line: ``|F|`` + vector for ``label``, joined
+        from :meth:`_resolve_forces` (the live EMT estimate IS allowed here —
+        an explicit ``view='atom'`` read, FIX 3) — or a ``(None, note)``
+        explaining why no estimate is available."""
+        run_id = self._parse_run_arg(args.get("run"))
+        resolved = self._resolve_forces(scene, ref, run_id=run_id, allow_estimate=True)
+        if resolved is None:
+            if run_id is not None:
+                raise NotFound(
+                    f"no run r{run_id} on this structure with forces recorded"
+                )
+            return None, (
+                "|F|: unavailable (no force-bearing run at the current design "
+                "version, and this element set is outside EMT's "
+                "cheap-estimate coverage)"
+            )
+        if label not in resolved["by_label"]:
+            return None, "|F|: unavailable (this atom was added since that run)"
+        fx, fy, fz = resolved["by_label"][label]
+        mag = (fx * fx + fy * fy + fz * fz) ** 0.5
+        tag = "approx" if resolved["approx"] else "computed"
+        src = f", {resolved['source']}" if resolved["source"] else ""
+        run_note = (
+            f" [{resolved['run']}]" if resolved["run"] else " [on-demand estimate]"
+        )
+        return (
+            f"|F| = {mag:.4f} eV/Å (vector {fx:.3f},{fy:.3f},{fz:.3f}) "
+            f"— {tag}{src}{run_note}",
+            None,
+        )
+
+    def _force_magnitudes(self, scene: Scene, ref: Any) -> dict[str, str]:
+        """Compact ``{label: '|F|'}`` for the TOC atom table's ``|F|`` column
+        (gripe 161576) — a cheap DB read only, from a recorded run at the
+        current design version; ``allow_estimate`` stays False (FIX 3: the
+        live EMT estimate never runs on the default read). ``{}`` when
+        nothing is available (renders '—' per atom)."""
+        resolved = self._resolve_forces(scene, ref)
+        if resolved is None:
+            return {}
+        out: dict[str, str] = {}
+        for label, (fx, fy, fz) in resolved["by_label"].items():
+            out[label] = f"{(fx * fx + fy * fy + fz * fz) ** 0.5:.3f}"
+        return out
+
+    def _render_probe(
+        self, view: str, scene: Scene, args: dict[str, Any], *, ref: Any
+    ) -> Response:
         if view == "atom":
             label = str(args.get("atom") or "").split("#")[-1]
             if label not in scene.atoms:
@@ -1584,6 +1776,17 @@ class StructureHandler(Handler):
                 f"· coord {probe.coordination(scene, label)} · "
                 f"fixed={'yes' if atom.fixed else 'no'}"
             )
+            # gripe 161576: per-atom force readout — |F| + vector, joined from
+            # a run's stored ``forces`` BY LABEL (``run=`` pins one), or a
+            # cheap on-demand EMT estimate when no current-version run
+            # carries one (the live estimate is only ever computed here, an
+            # explicit view='atom' — never on the default TOC, FIX 3).
+            force_line, force_note = self._atom_force_line(scene, ref, label, args)
+            if force_line:
+                head += "\n" + force_line
+            head += "\nCharges: — (no backend produces partial charges yet)"
+            if force_note:
+                head += "\n" + force_note
             rows = [
                 {
                     "neighbor": n.label,
