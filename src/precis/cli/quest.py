@@ -63,6 +63,15 @@ def add_parser(subparsers: Any) -> None:
         help="LLM tier for the weave/title-judgment calls (default cloud-mid — "
         "the mid agentic rung; see --tier on `quest tick` for the full set).",
     )
+    w.add_argument(
+        "--max-sections",
+        type=int,
+        default=None,
+        help="Cap how many section batches (Maintain + newly-scaffolded Make "
+        "sections combined) this one tick weaves — a cost/latency valve for a "
+        "bounded first run. Unset = weave every section this tick; papers left "
+        "over stay unintegrated for the next tick (no state lost).",
+    )
     w.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
     d = qsub.add_parser("dossier", help="Print a quest's dossier.")
@@ -159,7 +168,9 @@ def _cmd_weave(store: Store, args: argparse.Namespace) -> None:
     client = DispatchClient(
         tier=Tier(args.tier), source="quest_weave", tools_needed=True
     )
-    result = weave_tick(store, client, args.id, dry_run=args.dry_run)
+    result = weave_tick(
+        store, client, args.id, dry_run=args.dry_run, max_sections=args.max_sections
+    )
 
     if not result.get("ok"):
         print(f"quest {args.id}: weave tick failed — {result.get('error')}")

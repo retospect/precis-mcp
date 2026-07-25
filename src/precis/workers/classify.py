@@ -116,13 +116,17 @@ def _classify_one(client: Any, axis: dict, row: dict) -> str | None:
 # ---- DB: claim + enrich (gold-parity context) -------------------------
 
 
-def _claim(conn, *, limit: int) -> list[dict]:
-    sql = """
+def _claim(conn, *, limit: int, ref_ids: list[int] | None = None) -> list[dict]:
+    """``ref_ids`` optionally restricts the claim to specific refs (targeted
+    backfill / tests); ``None`` sweeps the whole corpus (unchanged behaviour)."""
+    ref_filter = "AND c.ref_id = ANY(%(ref_ids)s)" if ref_ids else ""
+    sql = f"""
     WITH cand AS (
       SELECT c.chunk_id, c.ref_id, c.ord, c.text, c.section_path
       FROM chunks c JOIN refs r ON r.ref_id = c.ref_id
       WHERE r.kind = 'paper' AND r.deleted_at IS NULL
         AND c.ord >= 0 AND c.chunk_kind = 'paragraph' AND length(c.text) > 120
+        {ref_filter}
         AND NOT EXISTS (SELECT 1 FROM chunk_tags ct JOIN tags t ON t.tag_id = ct.tag_id
                         WHERE ct.chunk_id = c.chunk_id AND t.namespace = %(ns)s)
         AND NOT EXISTS (SELECT 1 FROM chunk_claims cl
@@ -135,9 +139,10 @@ def _claim(conn, *, limit: int) -> list[dict]:
     )
     SELECT chunk_id, ref_id, ord, text, section_path FROM cand
     """
-    rows = conn.execute(
-        sql, {"ns": OUTPUT_NAMESPACE, "art": ARTIFACT, "limit": limit}
-    ).fetchall()
+    params: dict[str, Any] = {"ns": OUTPUT_NAMESPACE, "art": ARTIFACT, "limit": limit}
+    if ref_ids:
+        params["ref_ids"] = list(ref_ids)
+    rows = conn.execute(sql, params).fetchall()
     return [
         {
             "chunk_id": r[0],
@@ -187,6 +192,7 @@ def run_classify_pass(
     client: Any,
     batch_size: int = 16,
     escalate_client: Any | None = None,
+    ref_ids: list[int] | None = None,
 ) -> dict:
     """One claim→classify→write cycle. Returns {claimed, ok, failed}.
 
@@ -198,12 +204,16 @@ def run_classify_pass(
     identical judgment on the identical model twice, which is a no-op
     disguised as a re-judge — the env knob would gate *whether* to
     "escalate" without ever changing *which* model runs.
+
+    ``ref_ids`` optionally restricts the claim to specific refs (targeted
+    backfill / tests, mirroring ``classify_topics``); ``None`` sweeps the
+    whole corpus (unchanged behaviour).
     """
     junk_axis = _load_axis("junk")
     role3_axis = _load_axis("role3")
 
     with store.pool.connection() as conn:
-        rows = _claim(conn, limit=batch_size)
+        rows = _claim(conn, limit=batch_size, ref_ids=ref_ids)
         _enrich(conn, rows)
         conn.commit()
     if not rows:

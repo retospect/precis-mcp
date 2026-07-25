@@ -26,6 +26,7 @@ from precis.cli import (
     add,
     anki_sync,
     cast,
+    classify,
     cron,
     db,
     draft,
@@ -223,6 +224,10 @@ def main() -> None:
         quest.run(args)
         return
 
+    if args.cmd == "classify":
+        classify.run(args)
+        return
+
     if args.cmd == "llm":
         llm.run(args)
         return
@@ -290,6 +295,7 @@ def _build_parser() -> argparse.ArgumentParser:
     cron.add_parser(sub)
     cast.add_parser(sub)
     quest.add_parser(sub)
+    classify.add_parser(sub)
     llm.add_parser(sub)
     heartbeat.add_parser(sub)
     service.add_parser(sub)

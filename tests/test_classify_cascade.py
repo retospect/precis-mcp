@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from precis.workers.classify import run_classify_pass
-from tests.workers._helpers import seed_chunks
+from tests.workers._helpers import seed_chunk, seed_chunks, seed_ref
 
 
 class _FakeClient:
@@ -94,3 +94,59 @@ def test_no_escalate_client_leaves_the_base_verdict(store: Any) -> None:
             "WHERE t.namespace = 'ROLE3'"
         ).fetchone()
     assert row is not None and row[0] == "own"
+
+
+def _role3_tags(store: Any, ref_id: int) -> list[str]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT t.value FROM chunk_tags ct "
+            "JOIN tags t ON t.tag_id = ct.tag_id "
+            "JOIN chunks c ON c.chunk_id = ct.chunk_id "
+            "WHERE c.ref_id = %s AND t.namespace = 'ROLE3'",
+            (ref_id,),
+        ).fetchall()
+    return [r[0] for r in rows]
+
+
+def test_ref_ids_scopes_the_claim_to_the_named_papers(store: Any) -> None:
+    """``ref_ids`` restricts the claim to specific refs — a sibling paper
+    outside the scope must be left completely untouched (targeted backfill,
+    mirroring ``classify_topics``'s ``ref_ids`` scoping)."""
+    ref_a = seed_ref(store, title="paper A")
+    seed_chunk(store, ref_id=ref_a, text=_PROSE, ord=0)
+    ref_b = seed_ref(store, title="paper B")
+    seed_chunk(store, ref_id=ref_b, text=_PROSE, ord=0)
+
+    class _CascadeClient(_FakeClient):
+        def complete(self, messages: list[dict[str, str]]) -> Any:
+            from types import SimpleNamespace
+
+            self.calls += 1
+            val = "not_junk" if self.calls % 2 == 1 else "own"
+            return SimpleNamespace(text=f'{{"value": "{val}"}}', total_tokens=5)
+
+    client = _CascadeClient("unused")
+    result = run_classify_pass(store, client=client, batch_size=10, ref_ids=[ref_a])
+
+    assert result["claimed"] == 1
+    assert result["ok"] == 1
+    assert _role3_tags(store, ref_a) == ["own"]
+    assert _role3_tags(store, ref_b) == []  # untouched — outside scope
+
+
+def test_ref_ids_none_matches_global_unscoped_behaviour(store: Any) -> None:
+    """``ref_ids=None`` (the default) must sweep every paper, unchanged."""
+    seed_chunks(store, [_PROSE])
+
+    class _CascadeClient(_FakeClient):
+        def complete(self, messages: list[dict[str, str]]) -> Any:
+            from types import SimpleNamespace
+
+            self.calls += 1
+            val = "not_junk" if self.calls == 1 else "own"
+            return SimpleNamespace(text=f'{{"value": "{val}"}}', total_tokens=5)
+
+    client = _CascadeClient("unused")
+    result = run_classify_pass(store, client=client, batch_size=10, ref_ids=None)
+    assert result["claimed"] == 1
+    assert result["ok"] == 1

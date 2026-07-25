@@ -636,9 +636,13 @@ values + prompt + few-shot + `applies_when`); gold sets + accuracy live in
   ref-pass like `llm_summarize`; `chunk_claims` artifact
   `classify:cascade-v<CLASSIFY_VERSION>`, idempotent, reversible),
   registered in `cli/worker.py` **default-OFF** (`PRECIS_CLASSIFY_ENABLED=1`
-  / `--only classify`). Manual backfill + eval: `scripts/classify/classify
-  --cascade` (dry-run default; `--commit` to write). Full design:
-  `docs/design/chunk-classifier-cascade.md`.
+  / `--only classify`). Global FIFO sweep by default; `run_classify_pass`
+  takes optional `ref_ids=` to scope to named papers, driven by `precis
+  classify role3 --cites-of <draft> | --topic <slug> | --ref-ids <csv>`
+  (runs to completion over the resolved set — targeted single-dossier
+  backfill, mirrors `classify_topics`' `ref_ids` scoping). Manual backfill +
+  eval: `scripts/classify/classify --cascade` (dry-run default; `--commit` to
+  write). Full design: `docs/design/chunk-classifier-cascade.md`.
 
 ### Topic-dossier classifier (ADR 0060 cascade) — classifier slice built
 
