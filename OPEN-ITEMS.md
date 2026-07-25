@@ -699,46 +699,6 @@ quests paused 2026-07-16). Remaining:
   `PRECIS_QUEST_LOOP_ENABLED` on the melchior agent worker. Real `struct_relax`
   GPU lane on spark must be live for dispatched sims to run, not just queue.
 
-### Quest hub v2 — UX build-out (from live-eyeball feedback 2026-07-25)
-
-The `/refs/quest/<id>` hub works but reads thin. 8 jobs, decisions locked below.
-Six touch `templates/refs/quest_detail.html.j2` + `routes/refs.py::_quest_detail`,
-so they ship in **sequenced cycles** (not parallel — same-file conflicts).
-Skill `precis-quest-help`. Owner roots: web = `src/precis_web/`, quest data =
-`src/precis/quest/`.
-
-- **Cycle A — hub wiring** *(feature, open).*
-  - **J1 label fixes:** `tote` (= lifetime token spend, summed from quest_log
-    `meta.cost`, `refs.py:470`) gets a `title=` tooltip; **rename "Servers" →
-    "Retinue"** (`quest_detail.html.j2:140` — `rel='serves'` refs, word collided
-    with machines).
-  - **J5 paginated logbook:** new `/refs/quest/<id>/logbook` full paginated view
-    (hub shows last-10 today, `refs.py:485`); hub "full logbook" link points there.
-  - **J6 dossier reader link:** dossier is **already a `draft`** (`rel='dossier-of'`,
-    `quest/dossier.py`), so fisheye already applies — add a prominent hub link to
-    its `/drafts/<slug>` reader.
-  - **J8 spy-on-LLM:** the `/agentlogs/<id>` viewer already renders `meta.prompt`
-    collapsibly — gap is `quest_tick` doesn't emit an agentlog (`plan_tick` does,
-    `plan_tick.py:253-307`). Wire `quest_tick.py` → agentlog (own file, parallel-safe)
-    + a "spy on last session" hub link → latest quest agentlog.
-- **Cycle B — papers/stubs into Drive** *(feature, open; needs Cycle A first
-  only for merge order).*
-  - **J2 quest⇄paper tag + repoint:** tag papers with `rel='serves'` to the quest
-    (**serves-link only** — matches the hub count) as `quest:<slug>`; backfill
-    existing + tag-on-join; repoint the "N papers" link (`quest_detail.html.j2:142`,
-    today generic `/refs/paper`) → `/drive?submitted=1&k=paper&tag=quest:<slug>`.
-  - **J3 exploration queue → Drive stubs:** the gaps/exploration queue links into
-    Drive showing this quest's **unchunked stubs** (`/drive?...&state=unchunked`),
-    scoped by the J2 tag. Depends on J2.
-- **Cycle C — Pareto scatter (J4)** *(feature, open).* Replace the text frontier
-  (`quest/frontier.py::Candidate.measures`, from `struct_runs`) with a hoverable
-  SVG/JS scatter. **Axes v1: X = highest barrier, Y = highest intermediate energy**
-  (starter choice, make the two measure-keys a constant to swap later).
-- **Cycle D — dossier cites papers (J7)** *(feature, open).* Light: give the
-  dossier-writing agent the **cite skills + prompt instructions** to cite the
-  serving papers as it writes the narrative (`quest/dossier.py` generation path) —
-  not a generation redesign.
-
 ### Quest-optimization workstream (live quest 164903 — Pd catalyst NO→NH₃)
 
 Surfaced 2026-07-20 optimizing the first real running quest (**quest 164903**,
