@@ -31,6 +31,12 @@ COMPOSE="docker/code-search/compose.yaml"
 # the shared .git). Print it so the session searches the right collection.
 MAIN_ROOT="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)")" || MAIN_ROOT=""
 
+# Where the shell/Read/Edit actually operate this session — the current
+# checkout's toplevel. In a `claude -w` worktree this differs from MAIN_ROOT;
+# surfacing it (below) keeps the worktree path as available as the main one, so
+# a `cd <main-repo>` reflex doesn't split the two checkouts (guard-cd-to-primary).
+WORKTREE_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || WORKTREE_ROOT=""
+
 # Bring Milvus up if it isn't. `up -d` returns fast when already running; on a
 # cold machine it boots 3 containers (images are pre-pulled). Silence + never
 # fail: no docker / no daemon → code search is simply off this session.
@@ -39,8 +45,12 @@ if command -v docker >/dev/null 2>&1; then
 fi
 
 if [[ -n "$MAIN_ROOT" ]]; then
-    echo "🔎 code search (claude-context MCP): shared MAIN index — call search_code with"
+    echo "🔎 code search (claude-context MCP): shared MAIN index — pass this ONLY as search_code's path= arg:"
     echo "   path=\"$MAIN_ROOT\" (hits are repo-relative → they map onto this worktree)."
+    if [[ -n "$WORKTREE_ROOT" && "$WORKTREE_ROOT" != "$MAIN_ROOT" ]]; then
+        echo "   ⚠ shell/Read/Edit operate in THIS worktree: $WORKTREE_ROOT"
+        echo "     Run Bash bare (cwd is already here); never 'cd' to the MAIN path above — use 'git -C' to reach it."
+    fi
     echo "🧭 exact who-calls / what-depends-on (Python): scripts/coderef callers|deps <file.py::Sym>"
     echo "   (structural, deterministic — prefer over grepping a bare symbol name)."
 fi
