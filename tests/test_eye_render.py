@@ -8,6 +8,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+import pytest
+
 from precis.dispatch import Hub
 from precis.handlers.plan import PlanHandler
 from precis.store.types import BlockInsert
@@ -260,5 +262,36 @@ def test_working_set_mixes_tree_and_link_eyes(hub: Hub) -> None:
 def test_unresolvable_flat_eye_degrades_not_crashes(hub: Hub) -> None:
     ws = WorkingSet()
     ws.focus("me999999", "verbatim")  # no such memory
+    out = render_working_set(hub.store, ws)
+    assert "unrenderable" in out  # marker, not an exception
+
+
+# ── skill eyes: file-backed, atomic (no neighborhood) ──────────────────
+
+
+def test_skill_eye_toc_is_a_one_line_bookmark() -> None:
+    out = render_eye(None, "sk:precis-citation-help", "kwd")
+    assert out.startswith("· ")
+    assert "sk:precis-citation-help" in out
+    assert "\n" not in out
+
+
+def test_skill_eye_verbatim_renders_the_skill_body() -> None:
+    out = render_eye(None, "sk:precis-citation-help", "verbatim")
+    assert "sk:precis-citation-help" in out
+    assert "[skill]" in out
+    # the skill's own markdown body shows up verbatim, not just a bookmark
+    assert "citation" in out.lower()
+    assert len(out.splitlines()) > 1
+
+
+def test_skill_eye_unknown_slug_raises() -> None:
+    with pytest.raises(ValueError):
+        render_eye(None, "sk:no-such-skill-slug", "verbatim")
+
+
+def test_skill_eye_unknown_slug_degrades_not_crashes_in_working_set(hub: Hub) -> None:
+    ws = WorkingSet()
+    ws.focus("sk:no-such-skill-slug", "verbatim")
     out = render_working_set(hub.store, ws)
     assert "unrenderable" in out  # marker, not an exception

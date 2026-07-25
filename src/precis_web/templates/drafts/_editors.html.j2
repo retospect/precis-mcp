@@ -1,0 +1,660 @@
+{# Shared draft-chunk editors (gripe 56746) — extracted from the classic
+   /drafts reader (drafts/detail.html.j2 + drafts/_row.html.j2) so /drafts
+   AND /smartdraft run the SAME implementation, not a drifting copy:
+
+     - ``draft_edit(...)`` — the in-place ProseMirror rich-text block editor
+       (Alpine component ``draftEdit``), including the `[`-triggered citation
+       autocomplete popup. Saves through POST /drafts/{ident}/text.
+     - ``draft_table_editor(...)`` — the structured grid editor for a
+       ``chunk_kind='table'`` block (Alpine component ``tableEditor``: add/
+       remove rows + columns, rename headers, edit the caption). Saves
+       through POST /drafts/{ident}/table.
+
+   Include this ONCE per page — it defines ``window.__mountDraftPM`` plus the
+   two global Alpine component factories (``draftEdit``/``tableEditor``), NOT
+   per row/block. Then wrap each block's rendered (non-editing) markup with
+   ``{% call draft_editors.draft_edit(...) %}…{% endcall %}`` (or
+   ``draft_table_editor`` for a table) to get the x-data scope + the editing
+   surface around your own rendered view — the macro supplies the mount
+   point / textarea / grid and the show/hide wiring; you supply what's shown
+   while NOT editing (including any of your own edit-trigger buttons, which
+   resolve against the same Alpine scope since they're nested inside it). #}
+
+{# Inline rich editor: a per-block ProseMirror surface with a live red
+   squiggle on references that don't resolve. It edits raw source (refs / $…$
+   stay literal text — reveal-on-cursor is a later polish) and mirrors its
+   text into the block's hidden <textarea>, so the existing save / validate
+   flow is unchanged. If the module fails to load or mount, the row falls
+   back to that plain textarea — so this can only add, never regress. #}
+<style>
+  .pm-editor { border: 1px solid #7dd3fc; background: #fff; border-radius: 0.375rem;
+               padding: 0.5rem; }
+  .pm-editor .ProseMirror { white-space: pre-wrap; word-wrap: break-word; outline: none;
+               min-height: 3.25rem; font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+               color: #1e293b; }
+  .pm-editor .ProseMirror:focus { outline: none; }
+  .pm-editor .pm-block { min-height: 1.4em; }
+  /* dangling-reference squiggle — a distinct wavy rose underline (NOT the
+     browser's spellcheck red, and NOT the amber link chips). */
+  .ref-bad { text-decoration: underline wavy #f43f5e; text-underline-offset: 3px; }
+  /* reveal-on-cursor: a reference token shows as a subtle chip unless the caret
+     is inside it (then it's raw, for editing). A broken ref keeps its squiggle. */
+  .ref-chip { background: #eff6ff; color: #0369a1; border-radius: 3px;
+              padding: 0 2px; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+  .ref-chip.ref-bad { color: #be123c; }
+  /* `[` citation autocomplete dropdown (positioned at the caret, on <body>). */
+  .pm-ac { position: absolute; z-index: 60; max-width: 30rem; max-height: 16rem;
+           overflow-y: auto; background: #fff; border: 1px solid #cbd5e1;
+           border-radius: 0.375rem; box-shadow: 0 4px 14px rgba(0,0,0,0.12); }
+  .pm-ac-item { display: flex; gap: 0.5rem; align-items: baseline;
+                padding: 0.25rem 0.6rem; cursor: pointer; }
+  .pm-ac-item.pm-ac-sel, .pm-ac-item:hover { background: #e0f2fe; }
+  .pm-ac-label { color: #1e293b; font-size: 12px; overflow: hidden;
+                 text-overflow: ellipsis; white-space: nowrap; }
+  .pm-ac-sub { color: #94a3b8; font-family: ui-monospace, monospace; font-size: 11px;
+               flex-shrink: 0; }
+</style>
+<script type="module">
+import * as PM from '/static/prosemirror.bundle.mjs';
+const { EditorState, EditorView, Schema, keymap, baseKeymap, TextSelection,
+        history, undo, redo, Plugin, PluginKey, Decoration, DecorationSet } = PM;
+
+// One block of plain text; newlines are hard_breaks (preserved verbatim on
+// serialize). Round-trip is identity (tests/headless-verified) so an edit
+// never mangles the source.
+const schema = new Schema({ nodes: {
+  doc: { content: 'block' },
+  block: { content: 'inline*', toDOM: () => ['div', { class: 'pm-block' }, 0] },
+  text: { group: 'inline' },
+  hard_break: { group: 'inline', inline: true, selectable: false, toDOM: () => ['br'] },
+} });
+function textToDoc(t) {
+  const parts = (t || '').split('\n'); const inline = [];
+  parts.forEach((p, i) => { if (i) inline.push(schema.nodes.hard_break.create());
+                            if (p) inline.push(schema.text(p)); });
+  return schema.node('doc', null, [schema.node('block', null, inline)]);
+}
+function docToText(doc) {
+  let out = '';
+  doc.firstChild.forEach((n) => { if (n.type.name === 'hard_break') out += '\n';
+                                  else if (n.isText) out += n.text; });
+  return out;
+}
+// Text from the block start up to a doc position (the caret) — hard_breaks
+// count as '\n', matching docToText. Round-trip verified: before+after === full.
+function textUpTo(doc, pos) {
+  return doc.textBetween(0, pos, '\n', (leaf) => leaf.type.name === 'hard_break' ? '\n' : '');
+}
+
+// Reveal-on-cursor: style each reference token as a subtle chip, EXCEPT the one
+// the caret is inside (that shows raw so you can edit it). Recomputes on every
+// selection change (props.decorations runs per state). Pure client, no fetch.
+const REF_TOKEN = /\[(?:§[A-Za-z][\w~.-]*|\[?[a-z]{2}\d+\]?|¶[\w-]+)\]/g;
+function chipPlugin() {
+  return new Plugin({
+    props: {
+      decorations(state) {
+        const sel = state.selection;
+        const decos = [];
+        state.doc.descendants((node, pos) => {
+          if (!node.isText) return;
+          const t = node.text; REF_TOKEN.lastIndex = 0;
+          let m;
+          while ((m = REF_TOKEN.exec(t))) {
+            const from = pos + m.index, to = from + m[0].length;
+            // reveal (no chip) while the caret/selection overlaps the token
+            if (!(sel.to <= from || sel.from >= to)) continue;
+            decos.push(Decoration.inline(from, to, { class: 'ref-chip' }));
+          }
+        });
+        return DecorationSet.create(state.doc, decos);
+      },
+    },
+  });
+}
+
+const sqKey = new PluginKey('squiggle');
+function squigglePlugin() {
+  return new Plugin({
+    key: sqKey,
+    state: {
+      init() { return DecorationSet.empty; },
+      apply(tr, old) { const m = tr.getMeta(sqKey); return m ? m : old.map(tr.mapping, tr.doc); },
+    },
+    props: { decorations(state) { return sqKey.getState(state); } },
+  });
+}
+// Underline every occurrence of each dangling on-screen form (e.g. "[dc999]").
+function decorate(view, forms) {
+  const set = (forms || []).filter(Boolean);
+  if (!set.length) { view.dispatch(view.state.tr.setMeta(sqKey, DecorationSet.empty)); return; }
+  const decos = [];
+  view.state.doc.descendants((node, pos) => {
+    if (!node.isText) return;
+    const t = node.text;
+    for (const form of set) {
+      let i = t.indexOf(form);
+      while (i !== -1) { decos.push(Decoration.inline(pos + i, pos + i + form.length, { class: 'ref-bad' }));
+                         i = t.indexOf(form, i + form.length); }
+    }
+  });
+  view.dispatch(view.state.tr.setMeta(sqKey, DecorationSet.create(view.state.doc, decos)));
+}
+async function validate(view, text, url) {
+  try {
+    const res = await fetch(url, { method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ text }) });
+    if (res.ok) decorate(view, (await res.json()).dangling || []);
+  } catch (e) { /* leave decorations as-is */ }
+}
+
+// `[`-triggered citation autocomplete. Detects a `[query` run before the caret,
+// searches papers, and inserts the picked token. All display/DOM; wrapped so a
+// failure can never break the editor (worst case: `[` just types literally).
+function makeAutocomplete(view, url) {
+  const box = document.createElement('div');
+  box.className = 'pm-ac'; box.style.display = 'none';
+  document.body.appendChild(box);
+  const st = { active: false, from: -1, items: [], sel: 0 };
+  let timer = null;
+  function close() { st.active = false; box.style.display = 'none'; }
+  function choose(i) {
+    const it = st.items[i]; if (!it) { close(); return; }
+    view.dispatch(view.state.tr.insertText(it.token, st.from, view.state.selection.from));
+    close(); view.focus();
+  }
+  function render() {
+    if (!st.items.length) { close(); return; }
+    box.innerHTML = '';
+    st.items.forEach((it, i) => {
+      const row = document.createElement('div');
+      row.className = 'pm-ac-item' + (i === st.sel ? ' pm-ac-sel' : '');
+      const l = document.createElement('span'); l.className = 'pm-ac-label'; l.textContent = it.label;
+      const s = document.createElement('span'); s.className = 'pm-ac-sub'; s.textContent = it.token;
+      row.appendChild(l); row.appendChild(s);
+      row.addEventListener('mousedown', (e) => { e.preventDefault(); choose(i); });
+      box.appendChild(row);
+    });
+    const c = view.coordsAtPos(view.state.selection.from);
+    box.style.left = c.left + 'px'; box.style.top = (c.bottom + 4) + 'px';
+    box.style.display = 'block'; st.active = true;
+  }
+  function update() {
+    const sel = view.state.selection;
+    if (!sel.empty) { close(); return; }
+    const before = textUpTo(view.state.doc, sel.from);
+    const lb = before.lastIndexOf('[');
+    if (lb === -1) { close(); return; }
+    const q = before.slice(lb + 1);
+    if (q.includes(']') || q.includes('\n') || q.length > 60) { close(); return; }
+    st.from = 1 + lb;   // doc pos of the '['
+    clearTimeout(timer);
+    if (q.trim().length < 2) { close(); return; }
+    timer = setTimeout(async () => {
+      try {
+        const res = await fetch(`${url}?q=${encodeURIComponent(q.trim())}`, { cache: 'no-store' });
+        if (!res.ok) { close(); return; }
+        st.items = (await res.json()).results || []; st.sel = 0;
+        render();
+      } catch (e) { close(); }
+    }, 200);
+  }
+  function key(name) {
+    if (!st.active || !st.items.length) return false;
+    if (name === 'down') { st.sel = (st.sel + 1) % st.items.length; render(); return true; }
+    if (name === 'up') { st.sel = (st.sel - 1 + st.items.length) % st.items.length; render(); return true; }
+    if (name === 'enter') { choose(st.sel); return true; }
+    if (name === 'esc') { close(); return true; }
+    return false;
+  }
+  return { get active() { return st.active; }, update, key, destroy() { clearTimeout(timer); box.remove(); } };
+}
+
+// Mount a PM editor into `mountEl`, seeded from `seedText`. Returns a small
+// controller; opts carries the callbacks the Alpine row wires up.
+window.__mountDraftPM = function (mountEl, seedText, opts) {
+  let timer = null;
+  let ac = null;   // `[` autocomplete controller (assigned after the view exists)
+  const view = new EditorView(mountEl, {
+    state: EditorState.create({
+      doc: textToDoc(seedText),
+      plugins: [
+        history(),
+        keymap({
+          'Mod-z': undo, 'Mod-y': redo, 'Shift-Mod-z': redo,
+          'Mod-Enter': () => { opts.onSave && opts.onSave(); return true; },
+          'Escape': () => {
+            if (ac && ac.key('esc')) return true;   // dismiss the picker first
+            opts.onCancel && opts.onCancel(); return true;
+          },
+          // Enter splits the block at the caret into two chunks (this one keeps
+          // the text before, a new one gets the text after). When the `[` picker
+          // is open, Enter accepts the highlighted result instead.
+          'Enter': (state) => {
+            if (ac && ac.key('enter')) return true;
+            const before = textUpTo(state.doc, state.selection.from);
+            const after = docToText(state.doc).slice(before.length);
+            opts.onSplit && opts.onSplit(before, after);
+            return true;
+          },
+          'Tab': () => { if (ac && ac.key('enter')) return true; return false; },
+          // Shift-Enter is a soft line break within the same block.
+          'Shift-Enter': (state, dispatch) => {
+            if (dispatch) dispatch(state.tr.replaceSelectionWith(
+              schema.nodes.hard_break.create()).scrollIntoView());
+            return true;
+          },
+          // Arrow past the top/bottom line hands off to the neighbouring block
+          // (or moves the `[` picker selection when it's open).
+          'ArrowUp': (state, dispatch, view) => {
+            if (ac && ac.key('up')) return true;
+            if (view && view.endOfTextblock('up')) { opts.onLeave && opts.onLeave('up'); return true; }
+            return false;
+          },
+          'ArrowDown': (state, dispatch, view) => {
+            if (ac && ac.key('down')) return true;
+            if (view && view.endOfTextblock('down')) { opts.onLeave && opts.onLeave('down'); return true; }
+            return false;
+          },
+          // Backspace at the very start merges this block into the previous one
+          // (an empty block just gets deleted; caret lands at the join point).
+          'Backspace': (state) => {
+            const sel = state.selection;
+            if (sel.empty && sel.$from.parentOffset === 0) {
+              opts.onMergePrev && opts.onMergePrev();
+              return true;
+            }
+            return false;
+          },
+        }),
+        keymap(baseKeymap),
+        squigglePlugin(),
+        chipPlugin(),
+      ],
+    }),
+    dispatchTransaction(tr) {
+      const ns = view.state.apply(tr); view.updateState(ns);
+      if (ac) { try { ac.update(); } catch (e) { /* never break editing */ } }
+      if (tr.docChanged) {
+        const text = docToText(ns.doc);
+        opts.onChange && opts.onChange(text);
+        clearTimeout(timer);
+        timer = setTimeout(() => validate(view, text, opts.validateUrl), 350);
+      }
+    },
+  });
+  view.dom.addEventListener('blur', () => { opts.onBlur && opts.onBlur(); });
+  if (opts.refSearchUrl) { try { ac = makeAutocomplete(view, opts.refSearchUrl); } catch (e) { ac = null; } }
+  // Place the caret (end by default; 'start' from the block above / after a
+  // split; a number = string offset, e.g. the merge join point — doc pos is
+  // 1 + offset since every char is one position) and focus.
+  const _d = view.state.doc;
+  try {
+    let sel;
+    if (opts.caret === 'start') sel = TextSelection.atStart(_d);
+    else if (typeof opts.caret === 'number')
+      sel = TextSelection.create(_d, Math.max(1, Math.min(1 + opts.caret, _d.content.size - 1)));
+    else sel = TextSelection.atEnd(_d);
+    view.dispatch(view.state.tr.setSelection(sel));
+  } catch (e) { view.dispatch(view.state.tr.setSelection(TextSelection.atEnd(_d))); }
+  // Retry focus until it lands. A just-revealed contenteditable opened
+  // programmatically (caret handoff / split / merge — or even the initial
+  // ✎ click) isn't focusable for a few frames, so a lone view.focus()
+  // silently no-ops and the block opens blurred (looks like it "didn't open").
+  (function ensureFocus(n) {
+    try { view.focus(); } catch (e) { return; }   // view torn down → stop
+    if (view.hasFocus && view.hasFocus()) return;
+    if (n > 0) setTimeout(() => ensureFocus(n - 1), 30);
+  })(15);
+  setTimeout(() => validate(view, seedText, opts.validateUrl), 40);
+  return {
+    getText() { return docToText(view.state.doc); },
+    focus() { view.focus(); },
+    destroy() { clearTimeout(timer); if (ac) ac.destroy(); view.destroy(); },
+  };
+};
+</script>
+<script>
+// Per-block inline editor. One instance per row content column; edits are
+// contained to a single chunk (Model B). Saves on blur / ⌘↵; a
+// newly-broken reference bounces back (422) and keeps the box open. On success
+// it dispatches `draft:edited` (handle, warnings) — the classic reader's
+// virtual scroller re-hydrates just this block in place; smartdraft listens
+// for the same event and does a full-panel refresh (view.html.j2).
+function draftEdit(ident, handle, baseSha, editable, isHeading) {
+  return {
+    editing: false, saving: false, err: '', orig: '',
+    pmActive: false, _pm: null,   // ProseMirror surface (falls back to textarea)
+    // A freshly-inserted block auto-opens its editor: draftDoc sets a global
+    // to this handle before it hydrates, and the new row's init() consumes it.
+    init() {
+      // Registry so the doc can open a neighbour's editor (caret handoff / split).
+      if (!window.__dEditors) window.__dEditors = {};
+      window.__dEditors[handle] = this;
+      if (window.__draftAutoEdit === handle) {
+        window.__draftAutoEdit = null;
+        this.$nextTick(() => this.startEdit());
+      }
+    },
+    async add() {
+      try {
+        const res = await fetch(`/drafts/${ident}/block`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ after: handle }),
+        });
+        const d = await res.json().catch(() => ({}));
+        if (res.ok && d.handle) {
+          window.dispatchEvent(new CustomEvent('draft:inserted', { detail: { handle: d.handle } }));
+        } else { window.alert(d.error || 'could not add a block'); }
+      } catch (e) { window.alert('network error — block not added'); }
+    },
+    async del() {
+      const msg = isHeading
+        ? 'Delete this heading AND its whole section (all blocks under it)?'
+        : 'Delete this block?';
+      if (!window.confirm(msg)) return;
+      try {
+        const res = await fetch(`/drafts/${ident}/block/${handle}/delete`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ cascade: isHeading ? '1' : '' }),
+        });
+        if (res.ok) {
+          window.dispatchEvent(new CustomEvent('draft:removed', { detail: { handle } }));
+        } else { const d = await res.json().catch(() => ({})); window.alert(d.error || 'delete failed'); }
+      } catch (e) { window.alert('network error — not deleted'); }
+    },
+    startEdit(caret) {
+      if (!editable) return;
+      this.editing = true; this.err = '';
+      this.$nextTick(() => {
+        const t = this.$refs.ed;
+        this.orig = t ? t.value : '';
+        // Prefer the ProseMirror surface (live squiggle); if the module isn't
+        // loaded or mount throws, fall back to the plain textarea.
+        if (window.__mountDraftPM && this.$refs.pm) {
+          this.pmActive = true;               // reveal the mount point first…
+          this.$nextTick(() => {              // …then mount+focus once it's visible
+            try {
+              this._pm = window.__mountDraftPM(this.$refs.pm, this.orig, {
+                validateUrl: `/drafts/${ident}/validate-refs`,
+                refSearchUrl: `/drafts/${ident}/ref-search`,
+                caret: caret || 'end',
+                onChange: (txt) => { if (t) t.value = txt; },   // mirror into hidden textarea
+                onBlur: () => this.save(),
+                onSave: () => this.save(),
+                onCancel: () => this.cancel(),
+                onSplit: (before, after) => this.split(before, after),
+                onLeave: (dir) => this.leave(dir),
+                onMergePrev: () => this.mergePrev(),
+              });
+            } catch (e) {
+              this.pmActive = false; this._pm = null;
+              if (t) { t.focus(); t.setSelectionRange(t.value.length, t.value.length); }
+            }
+          });
+          return;
+        }
+        if (t) { t.focus(); t.setSelectionRange(t.value.length, t.value.length); }
+      });
+    },
+    // Enter: split this block at the caret. The current chunk keeps `before`
+    // (and its handle); a new chunk gets `after` and opens with caret at start.
+    async split(before, after) {
+      if (this.saving) return;
+      this.saving = true; this.err = '';
+      try {
+        const res = await fetch(`/drafts/${ident}/block/${handle}/split`, {
+          method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ before, after }),
+        });
+        const d = await res.json().catch(() => ({}));
+        this.saving = false;
+        if (res.ok && d.handle) {
+          this._teardownPM(); this.editing = false;
+          window.dispatchEvent(new CustomEvent('draft:split', { detail: { handle, newHandle: d.handle } }));
+        } else {
+          this.err = d.error || 'split failed';
+          this.$nextTick(() => { if (this._pm) this._pm.focus(); });
+        }
+      } catch (e) { this.saving = false; this.err = 'network error — not split'; }
+    },
+    // Arrow off the top/bottom edge: persist + close this block, then hand the
+    // caret to the neighbour (the doc computes which and opens it).
+    async leave(dir) {
+      await this.save();
+      if (this.editing) return;   // save bounced (a broken ref) → stay put
+      window.dispatchEvent(new CustomEvent('draft:goto', { detail: { handle, dir } }));
+    },
+    // Backspace at start: merge this block's (live) text into the previous one.
+    async mergePrev() {
+      if (isHeading) return;   // never fold a heading away (would orphan its section)
+      const text = this._pm ? this._pm.getText() : (this.$refs.ed ? this.$refs.ed.value : '');
+      try {
+        const res = await fetch(`/drafts/${ident}/block/${handle}/merge-prev`, {
+          method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ text }),
+        });
+        const d = await res.json().catch(() => ({}));
+        if (res.ok && d.handle) {
+          this._teardownPM(); this.editing = false;
+          window.dispatchEvent(new CustomEvent('draft:merged', { detail: { prev: d.handle, caret: d.caret } }));
+        } else if (!res.ok) { this.err = d.error || 'merge failed'; }
+        // d.noop (first block / prev is a heading) → stay put, do nothing
+      } catch (e) { this.err = 'network error'; }
+    },
+    _teardownPM() {
+      if (this._pm) { try { this._pm.destroy(); } catch (e) { /* ignore */ } this._pm = null; }
+      this.pmActive = false;
+    },
+    cancel() {
+      this._teardownPM();
+      const t = this.$refs.ed;
+      if (t) t.value = this.orig;                 // discard edits
+      this.editing = false; this.err = ''; this.saving = false;
+    },
+    async save() {
+      if (!this.editing || this.saving) return;
+      const t = this.$refs.ed;
+      const text = this._pm ? this._pm.getText() : (t ? t.value : '');
+      if (t) t.value = text;
+      if (text === this.orig) { this._teardownPM(); this.editing = false; this.err = ''; return; }  // no-op
+      this.saving = true; this.err = '';
+      try {
+        const res = await fetch(`/drafts/${ident}/text`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ handle, text, base_sha: baseSha }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) {
+          this._teardownPM();
+          this.editing = false; this.saving = false;
+          window.dispatchEvent(new CustomEvent('draft:edited', {
+            detail: { handle, warnings: data.warnings || [] },
+          }));
+        } else {
+          // Hard bounce (422 newly-broken ref, 409 stale, …): keep the box
+          // open with the message so the author fixes it in place.
+          this.err = data.error || ('save failed (' + res.status + ')');
+          this.saving = false;
+          this.$nextTick(() => { if (this._pm) this._pm.focus(); else if (t) t.focus(); });
+        }
+      } catch (e) {
+        this.err = 'network error — not saved'; this.saving = false;
+        this.$nextTick(() => { if (this._pm) this._pm.focus(); else if (t) t.focus(); });
+      }
+    },
+  };
+}
+
+// Structured grid editor for a chunk_kind='table' block (ADR 0035 §1). The
+// derived pipe-markdown text has no free-text edit path, so tables are edited
+// as {header, rows, caption} and POSTed to /drafts/<id>/table. `seed` is the
+// recovered table ({header, rows, caption}); on save we dispatch the same
+// `draft:edited` event the text editor uses.
+function tableEditor(ident, handle, baseSha, seed) {
+  return {
+    ted: false, saving: false, err: '',
+    hdr: [], rows: [], cap: '',
+    open() {
+      // Deep-copy the seed so Cancel restores cleanly and edits stay local
+      // until Save. Coerce to strings — the grid binds text inputs; the server
+      // recovers typed numbers on save.
+      this.hdr = (seed.header || []).map((h) => String(h));
+      this.rows = (seed.rows || []).map((r) => r.map((c) => (c == null ? '' : String(c))));
+      this.cap = seed.caption ? String(seed.caption) : '';
+      if (this.hdr.length === 0) this.hdr = ['Column 1'];   // never an empty header
+      this.err = ''; this.saving = false; this.ted = true;
+    },
+    cancel() { this.ted = false; this.err = ''; this.saving = false; },
+    addCol() { this.hdr.push('Column ' + (this.hdr.length + 1)); this.rows.forEach((r) => r.push('')); },
+    delCol(ci) {
+      if (this.hdr.length <= 1) return;   // keep at least one column (non-empty header)
+      this.hdr.splice(ci, 1); this.rows.forEach((r) => r.splice(ci, 1));
+    },
+    addRow() { this.rows.push(this.hdr.map(() => '')); },
+    delRow(ri) { this.rows.splice(ri, 1); },
+    async save() {
+      if (this.saving) return;
+      this.saving = true; this.err = '';
+      try {
+        const res = await fetch(`/drafts/${ident}/table`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ handle, base_sha: baseSha, header: this.hdr, rows: this.rows, caption: this.cap }),
+        });
+        const d = await res.json().catch(() => ({}));
+        if (res.ok) {
+          this.ted = false; this.saving = false;
+          window.dispatchEvent(new CustomEvent('draft:edited', {
+            detail: { handle, warnings: d.warnings || [] },
+          }));
+        } else {
+          // 422 (ragged / empty header) or 409 (stale): keep the grid open with
+          // the linter's own message so the author fixes it in place.
+          this.err = d.error || ('save failed (' + res.status + ')');
+          this.saving = false;
+        }
+      } catch (e) { this.err = 'network error — not saved'; this.saving = false; }
+    },
+  };
+}
+</script>
+
+{# draft_edit(ident, handle, base_sha, editable, is_heading, seed_text, rows=3)
+   Wraps caller() (the rendered, non-editing view — including any of your own
+   edit-trigger buttons, e.g. `@click="startEdit()"`) with the `draftEdit`
+   Alpine scope and, when `editable`, the ProseMirror/textarea editing surface
+   beneath it (shown instead, via x-show). `rows` sizes the plain-textarea
+   fallback (classic reader uses the default 3; a larger reading pane may
+   want more). #}
+{% macro draft_edit(ident, handle, base_sha, editable, is_heading, seed_text, rows=3) %}
+<div x-data="draftEdit('{{ ident }}', '{{ handle }}', '{{ base_sha or '' }}', {{ editable | tojson }}, {{ is_heading | tojson }})">
+  <div x-show="!editing">{{ caller() }}</div>
+  {% if editable %}
+  {# ProseMirror mount point (rich editor + live ref squiggle); shown once it
+     mounts. The textarea below is the seed + save mirror AND the graceful
+     fallback if the PM module didn't load. #}
+  <div x-show="editing" x-cloak>
+    <div x-ref="pm" x-show="pmActive" class="pm-editor"></div>
+    <textarea x-ref="ed" data-inline-edit rows="{{ rows }}"
+              x-show="!pmActive"
+              @blur="save()"
+              @keydown.escape.stop.prevent="cancel()"
+              @keydown.enter.meta.prevent="save()"
+              @keydown.enter.ctrl.prevent="save()"
+              class="w-full resize-y rounded border p-2 font-mono text-[13px] leading-snug focus:outline-none"
+              :class="err ? 'border-rose-400 bg-rose-50' : 'border-sky-300 bg-white'">{{ seed_text }}</textarea>
+    <div class="mt-0.5 flex items-center gap-2 text-[10px]">
+      <button @mousedown.prevent="save()"
+              class="rounded bg-sky-600 px-2 py-0.5 text-white hover:bg-sky-700">save</button>
+      <button @mousedown.prevent="cancel()"
+              class="text-slate-400 hover:text-slate-600">cancel</button>
+      <span x-show="saving" class="text-slate-400">saving…</span>
+      <span x-show="err" x-text="err" class="text-rose-600 break-words"></span>
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% endmacro %}
+
+{# draft_table_editor(ident, handle, base_sha, seed)
+   Wraps caller() (the rendered <table>, or the raw-text fallback when no
+   table can be recovered) with the `tableEditor` Alpine scope: an "⊞ edit
+   table" trigger below it, and — swapped in via x-show — the structured
+   add/remove-row/column grid. `seed` is {header, rows, caption}. #}
+{% macro draft_table_editor(ident, handle, base_sha, seed) %}
+<div x-data='tableEditor({{ ident | tojson }}, {{ handle | tojson }}, {{ (base_sha or "") | tojson }}, {{ seed | tojson }})'>
+  <div x-show="!ted">
+    {{ caller() }}
+    <div class="mt-1">
+      <button type="button" @click="open()"
+              class="text-[10px] text-slate-400 hover:text-sky-600"
+              title="edit this table — add/remove rows and columns, rename headers">⊞ edit table</button>
+    </div>
+  </div>
+  {# ── grid editor (structured) ─────────────────────────────────── #}
+  <div x-show="ted" x-cloak class="space-y-2 rounded border border-slate-200 bg-slate-50 p-2">
+    <label class="block">
+      <span class="text-[9px] uppercase tracking-wide text-slate-500">Caption</span>
+      <input x-model="cap" placeholder="optional table legend"
+             class="w-full rounded border border-slate-200 bg-white px-1.5 py-0.5 text-sm" />
+    </label>
+    <div class="overflow-x-auto">
+      <table class="border-collapse text-sm">
+        <thead>
+          <tr>
+            <template x-for="(h, ci) in hdr" :key="ci">
+              <th class="p-0.5 align-bottom">
+                <div class="flex flex-col gap-0.5">
+                  <button type="button" @click="delCol(ci)" x-show="hdr.length > 1"
+                          class="self-end text-[9px] text-slate-300 hover:text-rose-600"
+                          title="delete this column">✕ col</button>
+                  <input x-model="hdr[ci]"
+                         class="w-28 rounded border border-slate-300 bg-white px-1 py-0.5 font-semibold" />
+                </div>
+              </th>
+            </template>
+            <th class="p-0.5 align-bottom">
+              <button type="button" @click="addCol()"
+                      class="rounded border border-dashed border-slate-300 px-1 py-0.5 text-[10px] text-slate-500 hover:text-emerald-600"
+                      title="add a column">＋ col</button>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          <template x-for="(row, ri) in rows" :key="ri">
+            <tr>
+              <template x-for="(cell, ci) in row" :key="ci">
+                <td class="p-0.5">
+                  <input x-model="rows[ri][ci]"
+                         class="w-28 rounded border border-slate-200 bg-white px-1 py-0.5" />
+                </td>
+              </template>
+              <td class="p-0.5 align-middle">
+                <button type="button" @click="delRow(ri)"
+                        class="text-[10px] text-slate-300 hover:text-rose-600"
+                        title="delete this row">✕</button>
+              </td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </div>
+    <div class="flex items-center gap-2">
+      <button type="button" @click="save()" :disabled="saving"
+              class="rounded bg-violet-600 px-2 py-0.5 text-[11px] text-white hover:bg-violet-700 disabled:opacity-50"
+              x-text="saving ? 'saving…' : 'save'"></button>
+      <button type="button" @click="addRow()"
+              class="text-[11px] text-slate-500 hover:text-emerald-600"
+              title="add a row">＋ row</button>
+      <button type="button" @click="cancel()"
+              class="text-[10px] text-slate-400 hover:text-slate-600">cancel</button>
+      <span x-show="err" x-cloak x-text="err" class="text-[11px] text-rose-600"></span>
+    </div>
+  </div>
+</div>
+{% endmacro %}

@@ -29,8 +29,16 @@ kind, so the ladder generalizes but its shape does not:
   when you fisheye the paper (via the doc eye's ring) and the paper surfaces
   when you fisheye the note.
 
-``skill`` is file-backed (``resolve_handle`` returns ``None``), so an eye on a
-skill needs the handler, not this store-only path — a documented follow-up.
+- **Skill eyes** (``sk:<slug>``): a skill is file-backed, not refs-backed, so
+  it has no numeric pk for ``handle_registry.parse``'s decimal grammar
+  (ADR 0036 keeps ``skill`` on its existing slug addressing rather than
+  folding it into the registry — see that module's docstring). A skill eye
+  is dispatched on its ``sk:`` prefix ahead of the decimal parse and renders
+  straight from the skill corpus (``handlers.skill``'s own accessors —
+  ``_load_skill`` / ``_skill_title``, the same ones ``SkillHandler.get``
+  uses). It's **atomic**: no fisheye/1hop neighborhood (a skill has no
+  corpus position to be a neighbor of) — ``toc``/``none`` collapse to a
+  one-line bookmark, anything richer is the verbatim body.
 
 Ships dark; the composer (:func:`precis.utils.working_set_render`) dispatches
 non-tree eyes here.
@@ -66,10 +74,19 @@ _MAP_CLUSTER_CAP = 20
 _HOME_BACK = 6
 _HOME_FWD = 12
 
+#: Prefix marking a skill eye's handle. ``handle_registry.parse`` only
+#: decodes ``<2-char code><digits>`` and ``skill`` has no numeric pk (file-
+#: backed, slug-addressed — see that module's docstring), so a skill eye
+#: uses its own ``sk:<slug>`` shape and is dispatched here, ahead of the
+#: decimal parse, rather than folded into the registry's grammar.
+_SKILL_HANDLE_PREFIX = handle_registry.code_for_kind("skill") + ":"
+
 
 def render_eye(store: Any, handle: str, extent: Extent | str | int) -> str:
     """Render one eye by its kind's neighborhood strategy. Raises ``ValueError``
     if the handle does not resolve to a live ref/chunk."""
+    if handle.startswith(_SKILL_HANDLE_PREFIX):
+        return _render_skill_eye(handle, Extent.parse(extent))
     parsed = handle_registry.parse(handle)
     if parsed is None:
         raise ValueError(f"eye: unresolvable handle {handle!r}")
@@ -104,6 +121,30 @@ def _head(ref: Any, kind: str) -> str:
 def _cap(text: str, cap: int) -> str:
     t = (text or "").strip()
     return t if len(t) <= cap else t[: cap - 1].rstrip() + "…"
+
+
+# ── skill kind: file-backed, atomic verbatim (no neighborhood) ────────
+
+
+def _render_skill_eye(handle: str, ext: Extent) -> str:
+    """A skill eye (``sk:<slug>``): file-backed, so it renders straight from
+    the skill corpus via ``handlers.skill``'s own accessors — the same ones
+    ``SkillHandler.get`` uses — rather than a store round trip. No fisheye /
+    1hop ring: a skill has no corpus position to be a neighbor of, so the
+    ladder collapses to two rungs — ``toc``/``none`` render a one-line
+    bookmark, anything richer renders the verbatim body (capped like any
+    other eye)."""
+    from precis.handlers.skill import _load_skill, _skill_title
+
+    slug = handle[len(_SKILL_HANDLE_PREFIX) :]
+    text = _load_skill(slug)
+    if text is None:
+        raise ValueError(f"eye: no live skill for {handle!r}")
+    title = _skill_title(slug) or slug
+    head = f"{handle} [skill] {title}".rstrip()
+    if ext <= Extent.TOC:
+        return f"· {head}"
+    return f"{head}\n{_cap(text, _VERBATIM_CAP)}"
 
 
 # ── doc kinds: the keyword-cluster fisheye (paper / patent / web / …) ──

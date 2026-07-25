@@ -1,0 +1,241 @@
+{# Shared draft-chunk figure rendering (gripe 56668) — extracted from the
+   classic /drafts reader (drafts/_row.html.j2) so /drafts AND /smartdraft run
+   the SAME figure implementation, not a drifting copy (mirrors how gripe
+   56746 extracted drafts/_editors.html.j2 for the text/table editors):
+
+     - ``figure_media(ident, handle, rn, alt)`` — the medium-aware render
+       (ADR 0034/0057/0058): a ``blob``/``graph`` figure → an ``<img>``; a
+       ``canvas`` figure → its script-safe source.svg inline + "open in
+       /figure"; ``none`` (no asset yet) → a "create drawing" CTA that mints
+       an editable SVG canvas (``POST …/figure/{handle}/draw``). ``rn`` is the
+       :class:`precis.utils.figure_source.RenderSpec` (``resolve_figure_source``
+       — ``r.figure_render`` / ``n.figure_render``).
+     - ``clearance_badge(ident, handle, origin, cleared, permission)`` — the
+       origin chip (original / own_graph / third_party) + the clearance badge
+       (ADR 0034 §4): hover for the publisher-permission paper-trail, click to
+       edit it inline. Saves through
+       ``POST /drafts/{ident}/figure/{handle}/permission``.
+     - ``figure_upload_form(ident, handle)`` — the "+ figure" upload control:
+       an image file + caption + origin, revealing the third-party permission
+       paper-trail when needed. Saves through ``POST /drafts/{ident}/figure``
+       (inserted after ``handle``).
+
+   Each macro is self-contained (owns its own Alpine ``x-data`` scope), so a
+   caller can drop it anywhere — the classic reader wraps ``figure_media`` +
+   ``clearance_badge`` in a ``<figure>``/``<figcaption>`` it renders itself
+   (the caption's linkify args differ per reader); smartdraft's focus pane
+   does the same. Both readers submit the two POST forms as plain HTML forms
+   (classic navigates on the response's redirect); smartdraft additionally
+   intercepts them (matching on ``action``, smartdraft/view.html.j2) to POST
+   via fetch and refresh the panel in place instead. #}
+
+{% macro figure_media(ident, handle, rn, alt) %}
+{% if rn and rn.mode == 'placeholder' %}
+{# No asset yet — offer to draw it in /figure. #}
+<form method="post" action="/drafts/{{ ident }}/figure/{{ handle }}/draw"
+      class="flex flex-col items-center justify-center gap-2 rounded border border-dashed
+             border-slate-300 bg-slate-50 py-8 text-center">
+  <div class="text-3xl text-slate-300 select-none">✎</div>
+  <div class="text-sm text-slate-500">no image yet</div>
+  <button class="rounded bg-sky-600 px-3 py-1 text-xs font-medium text-white hover:bg-sky-700"
+          title="create an editable SVG figure and draw it with the model">
+    create drawing
+  </button>
+</form>
+{% elif rn and rn.mode == 'canvas' %}
+{# Our editable SVG canvas — rendered inline via the figure kind's
+   sanitized source.svg; click through to draw. #}
+<a href="{{ rn.open_url }}" class="group relative block"
+   title="open in the /figure editor">
+  <img src="{{ rn.url }}" alt="{{ alt }}" loading="lazy"
+       class="max-h-96 w-auto max-w-full rounded" />
+  <span class="absolute right-1 top-1 rounded bg-black/60 px-1.5 py-0.5 text-[10px]
+               text-white opacity-0 group-hover:opacity-100">✎ open in /figure</span>
+</a>
+{% else %}
+<img src="{{ rn.url if rn else '' }}" alt="{{ alt }}" loading="lazy"
+     class="max-h-96 w-auto max-w-full rounded" />
+{% endif %}
+{% endmacro %}
+
+{% macro clearance_badge(ident, handle, origin, cleared, permission) %}
+{% set p = permission or {} %}
+<div class="mt-1 flex items-center gap-1.5">
+  <span class="rounded px-1.5 py-0.5 text-[10px] font-mono uppercase
+               {% if origin == 'third_party' %}bg-violet-100 text-violet-700
+               {% elif origin == 'own_graph' %}bg-sky-100 text-sky-700
+               {% else %}bg-slate-100 text-slate-600{% endif %}">{{ origin or 'figure' }}</span>
+  {# Clearance badge: hover → the paper-trail; click → edit it. #}
+  <div class="relative" x-data="{ pop: false, ed: false }">
+    <button type="button"
+            @mouseenter="pop = true" @mouseleave="pop = false"
+            @click="ed = !ed; pop = false"
+            class="text-[10px] hover:underline {% if cleared %}text-emerald-600{% else %}text-rose-600{% endif %}"
+            title="hover for the provenance; click to edit">
+      {% if cleared %}✓ cleared{% else %}✗ uncleared{% endif %} ✎</button>
+
+    {# hover popover — provenance at a glance #}
+    <div x-show="pop && !ed" x-cloak
+         class="absolute left-0 z-30 mt-1 w-64 rounded border border-slate-200 bg-white p-2 text-[11px] shadow-lg">
+      {% if origin == 'third_party' %}
+      <div class="font-semibold text-slate-700">Publisher permission</div>
+      <dl class="mt-1 space-y-0.5 text-slate-600">
+        {% if p.publisher %}<div><span class="text-slate-400">publisher:</span> {{ p.publisher }}</div>{% endif %}
+        {% if p.permission_id %}<div><span class="text-slate-400">permission #:</span> {{ p.permission_id }}</div>{% endif %}
+        {% if p.status %}<div><span class="text-slate-400">status:</span> {{ p.status }}</div>{% endif %}
+        {% if p.requested_at %}<div><span class="text-slate-400">requested:</span> {{ p.requested_at }}</div>{% endif %}
+        {% if p.granted_at %}<div><span class="text-slate-400">granted:</span> {{ p.granted_at }}</div>{% endif %}
+        {% if p.expires_at %}<div><span class="text-slate-400">expires:</span> {{ p.expires_at }}</div>{% endif %}
+        {% if p.source_paper %}<div><span class="text-slate-400">source:</span> {{ p.source_paper }}</div>{% endif %}
+        {% if p.scope %}<div><span class="text-slate-400">scope:</span> {{ p.scope }}</div>{% endif %}
+        {% if p.required_credit %}<div class="mt-1 italic">“{{ p.required_credit }}”</div>{% endif %}
+        {% if not p %}<div class="text-rose-600">no permission recorded yet</div>{% endif %}
+      </dl>
+      {% elif origin == 'own_graph' %}
+      <div class="text-slate-600">Our graph — generated from data (ships a data supplement).</div>
+      {% else %}
+      <div class="text-slate-600">Our own figure — no third-party permission needed.</div>
+      {% endif %}
+      <div class="mt-1 text-[10px] text-slate-400">click the badge to edit</div>
+    </div>
+
+    {# click → edit provenance, prefilled, posts to the edit route #}
+    <form x-show="ed" x-cloak method="post"
+          action="/drafts/{{ ident }}/figure/{{ handle }}/permission"
+          x-data="{ org: '{{ origin or 'third_party' }}' }"
+          class="absolute left-0 z-30 mt-1 w-64 space-y-1 rounded border border-slate-200 bg-white p-2 shadow-lg">
+      <label class="block">
+        <span class="text-[9px] text-slate-500">Origin</span>
+        <select name="origin" x-model="org"
+                class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]">
+          <option value="original">original (ours)</option>
+          <option value="own_graph">own graph (from data)</option>
+          <option value="third_party">third-party (needs permission)</option>
+        </select>
+      </label>
+      <template x-if="org === 'third_party'">
+        <div class="space-y-1 border-l-2 border-violet-300 pl-1.5">
+          <label class="block"><span class="text-[9px] text-slate-500">Publisher</span>
+            <input name="publisher" value="{{ p.publisher or '' }}"
+                   class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]" /></label>
+          <label class="block"><span class="text-[9px] text-slate-500">Permission / licence #</span>
+            <input name="permission_id" value="{{ p.permission_id or '' }}"
+                   class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]" /></label>
+          <label class="block"><span class="text-[9px] text-slate-500">Status</span>
+            <select name="status"
+                    class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]">
+              {% for s in ['granted', 'requested', 'denied'] %}
+              <option value="{{ s }}" {% if p.status == s %}selected{% endif %}>{{ s }}</option>
+              {% endfor %}
+            </select></label>
+          <label class="block"><span class="text-[9px] text-slate-500">Source paper (cite-key)</span>
+            <input name="source_paper" value="{{ p.source_paper or '' }}"
+                   class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]" /></label>
+          <div class="flex gap-1">
+            <label class="min-w-0 flex-1"><span class="text-[9px] text-slate-500">Date requested</span>
+              <input name="requested_at" type="date" value="{{ p.requested_at or '' }}"
+                     class="w-full rounded border border-slate-200 px-1 py-0.5 text-[10px]" /></label>
+            <label class="min-w-0 flex-1"><span class="text-[9px] text-slate-500">Date granted</span>
+              <input name="granted_at" type="date" value="{{ p.granted_at or '' }}"
+                     class="w-full rounded border border-slate-200 px-1 py-0.5 text-[10px]" /></label>
+          </div>
+          <label class="block"><span class="text-[9px] text-slate-500">Required credit line</span>
+            <input name="required_credit" value="{{ p.required_credit or '' }}"
+                   class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]" /></label>
+          <label class="block"><span class="text-[9px] text-slate-500">Scope</span>
+            <input name="scope" value="{{ p.scope or '' }}"
+                   class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]" /></label>
+        </div>
+      </template>
+      <div class="flex items-center gap-2">
+        <button class="rounded bg-violet-600 px-2 py-0.5 text-[11px] text-white hover:bg-violet-700">save</button>
+        <button type="button" @click="ed = false" class="text-[10px] text-slate-400 hover:text-slate-600">cancel</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endmacro %}
+
+{% macro figure_upload_form(ident, handle) %}
+{# Add a figure after ``handle`` (ADR 0034). Bytes upload multipart →
+   /drafts/{ident}/figure → put(chunk_kind='figure'). A third-party image
+   reveals the permission paper-trail (required to clear). #}
+<div x-data="{ figopen: false, org: 'original' }">
+  <button type="button" @click="figopen = !figopen"
+          class="text-[10px] text-slate-400 hover:text-sky-600"
+          x-text="figopen ? '− figure' : '＋ figure'"></button>
+  <form x-show="figopen" x-cloak method="post" enctype="multipart/form-data"
+        action="/drafts/{{ ident }}/figure"
+        class="space-y-1 rounded border border-slate-200 bg-slate-50 p-1.5">
+    <input type="hidden" name="handle" value="{{ handle }}" />
+    <input type="file" name="file" accept="image/*" required
+           class="block w-full text-[10px]" />
+    <input name="caption" required placeholder="caption…"
+           class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]" />
+    <select name="origin" x-model="org"
+            class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]">
+      <option value="original">original (ours)</option>
+      <option value="own_graph">own graph (from data)</option>
+      <option value="third_party">third-party (needs permission)</option>
+    </select>
+    {# Permission paper-trail — only for a third-party image; the fields
+       are removed from the DOM otherwise, so `required` doesn't block
+       an original/own_graph upload. #}
+    <template x-if="org === 'third_party'">
+      {# Each field carries a small legend above it so the paper-trail is
+         self-explanatory (the two dates especially). #}
+      <div class="space-y-1.5 rounded border-l-2 border-violet-300 pl-1.5">
+        <p class="text-[10px] font-semibold uppercase tracking-wide text-violet-700">Publisher permission</p>
+        <label class="block">
+          <span class="text-[9px] text-slate-500">Publisher</span>
+          <input name="publisher" required placeholder="e.g. Springer Nature"
+                 class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]" />
+        </label>
+        <label class="block">
+          <span class="text-[9px] text-slate-500">Permission / licence #</span>
+          <input name="permission_id" required placeholder="e.g. SNCSC-2026-0451"
+                 class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]" />
+        </label>
+        <label class="block">
+          <span class="text-[9px] text-slate-500">Status</span>
+          <select name="status" required
+                  class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]">
+            <option value="granted">granted</option>
+            <option value="requested">requested</option>
+            <option value="denied">denied</option>
+          </select>
+        </label>
+        <label class="block">
+          <span class="text-[9px] text-slate-500">Source paper (cite-key)</span>
+          <input name="source_paper" required placeholder="e.g. smith19"
+                 class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]" />
+        </label>
+        <div class="flex gap-1">
+          <label class="min-w-0 flex-1">
+            <span class="text-[9px] text-slate-500">Date requested</span>
+            <input name="requested_at" type="date"
+                   class="w-full rounded border border-slate-200 px-1 py-0.5 text-[10px]" />
+          </label>
+          <label class="min-w-0 flex-1">
+            <span class="text-[9px] text-slate-500">Date granted</span>
+            <input name="granted_at" type="date"
+                   class="w-full rounded border border-slate-200 px-1 py-0.5 text-[10px]" />
+          </label>
+        </div>
+        <label class="block">
+          <span class="text-[9px] text-slate-500">Required credit line</span>
+          <input name="required_credit" placeholder="“Reprinted by permission …”"
+                 class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]" />
+        </label>
+        <label class="block">
+          <span class="text-[9px] text-slate-500">Scope</span>
+          <input name="scope" placeholder="e.g. print + electronic, worldwide"
+                 class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]" />
+        </label>
+      </div>
+    </template>
+    <button class="rounded bg-violet-600 px-2 py-0.5 text-[11px] text-white hover:bg-violet-700"
+            title="upload the image as a figure after this block">add figure</button>
+  </form>
+</div>
+{% endmacro %}

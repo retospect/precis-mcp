@@ -44,6 +44,7 @@ kind" stub. Cheap, no per-render dependency on the live ``Hub``.
 from __future__ import annotations
 
 import re
+import uuid
 from html import escape
 
 from markupsafe import Markup
@@ -160,12 +161,26 @@ def _anchor_html(
 ) -> str:
     """The shared hover-preview anchor. An ``<a href>`` (so right-click /
     open-in-new-tab work without JS) wrapped in an Alpine/htmx span that
-    lazily fetches a popover card from ``preview_url`` on hover. ``href``,
-    ``preview_url`` and ``label`` must already be HTML-safe.
+    eagerly fetches a popover card from ``preview_url`` on hover, then
+    shows it after a hover-intent delay. ``href``, ``preview_url`` and
+    ``label`` must already be HTML-safe.
 
     Single source for every reference surface — ``kind:ref`` mentions AND
     ``¶`` draft-chunk cross-refs — so hover-preview + click-navigate are
     identical across kinds.
+
+    The popover card is a ``<template x-teleport="body">`` (gripe 56806):
+    Alpine relocates its content to ``<body>`` at init, so it always
+    escapes whatever ``overflow:auto`` pane it was linkified into (a
+    clipping ancestor clips a ``position:absolute``/``fixed`` descendant
+    regardless of z-index — physical relocation is the only fix). The
+    teleported clone stays in the WRAPPER's reactive scope (Alpine tracks
+    ``x-show``/event listeners/``@click.outside`` against the originating
+    component, not the DOM location it's rendered at), so the existing
+    open/close state machine below still drives it unchanged. Because the
+    clone is a document-order-detached ``<body>`` child, ``hx-target``
+    can't use a DOM-adjacency selector any more — each anchor mints its
+    own popover id and targets it directly.
     """
     # ``whitespace-normal`` on the popover container resets the
     # ``white-space: pre-wrap`` it inherits from the parent ``<pre>``
@@ -176,13 +191,14 @@ def _anchor_html(
     # growing the popover off-screen.
     # The hover/leave handlers live on the outer span (not the anchor)
     # so moving the mouse from the link onto the popover doesn't close
-    # it — Alpine sees a single bounding box that includes both.
+    # it — Alpine sees a single bounding box that includes both. Now that
+    # the popover is teleported out to <body> it is no longer physically
+    # inside that bounding box, so the card gets its OWN mouseenter/leave
+    # pair below that shares the same component state — see the "pointer
+    # bridge" note on ``delayed_close_expr``.
     #
-    # Three robustness affordances guard against the stuck-popover
-    # symptom we saw in Safari (mouseleave not always firing reliably
-    # when an absolutely-positioned popover overlaps the cursor's path,
-    # plus the debounce race where a delayed mouseenter overrode a
-    # subsequent mouseleave):
+    # Robustness affordances guard against the stuck-popover / vanishes-
+    # too-soon symptoms we've hit in the wild:
     #
     # 1. ``setTimeout`` + ``clearTimeout`` on enter/leave — mouseleave
     #    cancels the pending hover so a quick fly-by never opens it.
@@ -191,44 +207,86 @@ def _anchor_html(
     #    set to ≤1 cluster-wide regardless of mouseleave reliability.
     # 3. ``@click.outside`` — clicking anywhere outside the span shuts
     #    the popover. Belt-and-suspenders for the Safari case where
-    #    mouseleave never fires (touch input, scroll past, swipe).
+    #    mouseleave never fires (touch input, scroll past, swipe). Alpine
+    #    treats the teleported card as "inside" for this purpose, so a
+    #    click on the card itself does not count as outside.
+    # 4. A DELAYED close (~120ms), cancellable by a mouseenter on EITHER
+    #    the wrapper (re-entering the link) or the teleported card —
+    #    otherwise the physical gap between the link and a now-teleported,
+    #    independently-positioned card would fire mouseleave and close it
+    #    before the pointer arrives (gripe 56806 regression #1).
+    # 5. Close also fires on window scroll (capture — a scroll inside some
+    #    OTHER scrollable ancestor doesn't bubble to window, only capture
+    #    reaches it) and Escape, since a ``position:fixed`` card computed
+    #    from a point-in-time bounding rect won't track a scrolling page.
+    #    But the card itself is ``overflow-y-auto`` (long previews scroll),
+    #    and a scroll tick INSIDE the card is still a window-capture scroll
+    #    event — without a guard, the very first attempt to read past the
+    #    fold closes the card (gripe: popover un-scrollable). So the scroll
+    #    handler is gated on ``$event.target``: only close when the scroll
+    #    didn't originate from inside the popover card. ``x-ref`` resolves
+    #    against the originating Alpine component regardless of the
+    #    teleport (same reasoning as the docstring above — the clone stays
+    #    in the wrapper's reactive scope), so ``$refs.card`` still finds the
+    #    teleported node.
     open_expr = (
-        "clearTimeout(hoverTimer); "
+        "clearTimeout(hoverTimer); clearTimeout(closeTimer); "
         "hoverTimer = setTimeout(() => { "
+        "const r = $el.getBoundingClientRect(); "
+        "const below = r.bottom + 8 + 200 < window.innerHeight; "
+        "const left = Math.max(4, Math.min(r.left, window.innerWidth - 392)); "
+        "popStyle = 'position:fixed;z-index:100;left:' + left + 'px;' + "
+        "(below ? ('top:' + (r.bottom + 4) + 'px') "
+        ": ('bottom:' + (window.innerHeight - r.top + 4) + 'px')); "
         "hovered = true; "
         "$dispatch('ref-popover-open', { source: $el }); "
         "}, 200)"
     )
-    close_expr = "clearTimeout(hoverTimer); hovered = false"
-    other_open_expr = (
-        "if ($event.detail.source !== $el) { "
-        "clearTimeout(hoverTimer); hovered = false; "
-        "}"
+    # Delayed close — shared by the wrapper's mouseleave and the
+    # teleported card's own mouseleave, so leaving either one starts the
+    # same countdown and re-entering either one cancels it.
+    delayed_close_expr = (
+        "clearTimeout(hoverTimer); clearTimeout(closeTimer); "
+        "closeTimer = setTimeout(() => { hovered = false }, 120)"
     )
+    # Immediate close — click-outside / a sibling popover opening / Escape
+    # / scroll all want the card gone right away, not after a travel grace.
+    immediate_close_expr = (
+        "clearTimeout(hoverTimer); clearTimeout(closeTimer); hovered = false"
+    )
+    other_open_expr = f"if ($event.detail.source !== $el) {{ {immediate_close_expr}; }}"
+    # Scroll only closes for an OUTSIDE scroll — a page/pane scroll detaches
+    # the fixed-position card from its anchor, which SHOULD close it, but
+    # scrolling the card's own (overflow-y-auto) content must not.
+    scroll_close_expr = (
+        f"if (!$refs.card || !$refs.card.contains($event.target)) "
+        f"{{ {immediate_close_expr}; }}"
+    )
+    pop_id = f"refpop-{uuid.uuid4().hex[:10]}"
     return (
-        f'<span x-data="{{hovered: false, hoverTimer: null}}" '
+        f'<span x-data="{{hovered: false, hoverTimer: null, closeTimer: null, '
+        f"popStyle: ''}}\" "
         f'class="relative inline-block" '
         f'@mouseenter="{open_expr}" '
-        f'@mouseleave="{close_expr}" '
-        f'@click.outside="{close_expr}" '
-        f'@ref-popover-open.window="{other_open_expr}">'
+        f'@mouseleave="{delayed_close_expr}" '
+        f'@click.outside="{immediate_close_expr}" '
+        f'@ref-popover-open.window="{other_open_expr}" '
+        f'@keydown.escape.window="{immediate_close_expr}" '
+        f'@scroll.window.capture="{scroll_close_expr}">'
         f'<a class="{anchor_cls}" '
         f'href="{href}" target="_blank" rel="noopener" '
         f'hx-get="{preview_url}" '
-        f'hx-trigger="mouseenter delay:200ms once" '
-        f'hx-target="next .ref-popover" hx-swap="innerHTML">'
+        f'hx-trigger="mouseenter once" '
+        f'hx-target="#{pop_id}" hx-swap="innerHTML">'
         f"{label}</a>"
-        # No top margin: the popover sits flush under the label so the
-        # cursor can travel from the link onto the card without crossing a
-        # dead gap (an absolute popover is out of flow, so a ``mt-1`` gap
-        # falls outside the hover span and fires mouseleave → the card
-        # vanished before you could click its "open →"). ``pt-2`` keeps the
-        # content visually off the label. ``z-[100]`` beats the sidebar's
-        # column dividers / change-box so the card isn't painted under them.
-        f'<span class="ref-popover absolute z-[100] top-full left-0 w-96 '
+        f'<template x-teleport="body">'
+        f'<span id="{pop_id}" x-ref="card" class="ref-popover w-96 '
         f"rounded-lg border border-slate-200 bg-white shadow-xl px-2 pb-2 pt-2 "
         f'text-sm whitespace-normal max-h-96 overflow-y-auto" '
-        f'x-show="hovered" x-cloak></span>'
+        f'x-show="hovered" x-cloak :style="popStyle" '
+        f'@mouseenter="clearTimeout(closeTimer); hovered = true" '
+        f'@mouseleave="{delayed_close_expr}"></span>'
+        f"</template>"
         f"</span>"
     )
 
@@ -525,11 +583,16 @@ def _term_pop_html(entry: object) -> str:
     just the definition, exactly as before. A manufacturing **part** entry adds
     optional rows from its attribute bag — MPN, manufacturer, and a datasheet
     link (an ``<a>`` that stays clickable because hovering it keeps ``:hover``
-    on the enclosing ``.pa``). Every value is HTML-escaped here."""
+    on the enclosing ``.pa``). A term carrying a dedicated ``abbrev`` (gripe
+    56690) shows it too, e.g. hovering ``stereolithography`` surfaces ``STL``.
+    Every value is HTML-escaped here."""
     if isinstance(entry, str):
         return f'<span class="pa-def">{escape(entry)}</span>'
     e = entry if isinstance(entry, dict) else {}
     parts = [f'<span class="pa-def">{escape(str(e.get("definition", "")))}</span>']
+    abbrev = e.get("abbrev")
+    if abbrev:
+        parts.append(f'<span class="pa-attr">{escape(str(abbrev))}</span>')
     mpn = e.get("mpn")
     if mpn:
         parts.append(f'<span class="pa-attr">MPN {escape(str(mpn))}</span>')

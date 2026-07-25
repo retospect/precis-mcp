@@ -36,8 +36,15 @@ class TermEntry(TypedDict, total=False):
     manufacturing part (absent ⇒ the leaf renders as spare as a patent part).
 
     A single leaf is reachable under several surface strings (its ``short``,
-    each ``surface_forms`` entry, and its ``mpn``) — they all map to the same
-    ``TermEntry``.
+    each ``surface_forms`` entry, its ``mpn``, and its ``abbrev``) — they all
+    map to the same ``TermEntry``.
+
+    ``abbrev`` is a dedicated acronym surface, parallel to ``short`` (gripe
+    56690): for a term whose primary label (``short``) is the long descriptive
+    form (e.g. ``short='stereolithography'``), ``abbrev`` names its
+    acronym (``'STL'``) as a *distinct* resolvable surface — rather than
+    overloading the generic ``surface_forms`` alias bag, which carries no
+    dedicated row/hover treatment.
     """
 
     definition: str
@@ -47,6 +54,7 @@ class TermEntry(TypedDict, total=False):
     manufacturer: str
     url: str
     ordering: str
+    abbrev: str
 
 
 @dataclass(frozen=True, slots=True)

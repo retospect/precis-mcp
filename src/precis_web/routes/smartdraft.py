@@ -117,6 +117,21 @@ async def reader(
         keep_dcs=keep_dcs,
     )
 
+    # "occurs in N places" backlinks for a focused registry/glossary term
+    # (gripe 56690) — computed from the already-loaded node set, no DB scan.
+    term_occurrences = (
+        smartdraft.term_occurrences(nodes, view.focus)
+        if view.focus is not None and view.focus.is_term
+        else []
+    )
+
+    # "Cited sources" (gripe 56635) — the focus block's paper citations,
+    # each a new-tab hover-preview chip. Scoped to the focus only (cheap —
+    # its text is already in hand), not the whole draft.
+    cited_sources = (
+        _cited_sources(store, view.focus.text) if view.focus is not None else []
+    )
+
     return templates.TemplateResponse(
         request,
         "smartdraft/view.html.j2",
@@ -135,9 +150,31 @@ async def reader(
             "hits": hits,
             "sem_degraded": sem_degraded,
             "needs": _needs_items(store, ref.id),
+            "term_occurrences": term_occurrences,
+            "cited_sources": cited_sources,
             "debug": debug.strip().lower() in ("1", "true", "on", "yes"),
         },
     )
+
+
+def _cited_sources(store: Any, text: str) -> list[Any]:
+    """The paper (``pc``/``pa``) sources the focus block cites, as
+    hover-preview chips (gripe 56635) — reuses the classic ``/drafts``
+    reader's block-scoped cite parser (:func:`precis_web.routes.drafts.
+    _ref_chips`) rather than re-implementing cite parsing, then narrows its
+    output to just the paper citations (that parser also yields intra-draft
+    ``¶`` xrefs / other-kind mentions, which this rail doesn't want). Each
+    chip is a :func:`precis_web.linkify.popover_chip` — its anchor already
+    carries ``target=\"_blank\" rel=\"noopener\"`` (no ``data-dc``), so it
+    opens the paper reader in a new tab and the no-reload nav interceptor
+    leaves it alone."""
+    from precis_web.routes.drafts import _paper_pdf_missing, _ref_chips
+
+    def is_missing(kind: str, ident: str) -> bool:
+        return kind == "paper" and _paper_pdf_missing(store, ident)
+
+    chips = _ref_chips(text or "", is_missing=is_missing)
+    return [c for c in chips if 'href="/r/paper/' in str(c)]
 
 
 def _needs_items(store: Any, ref_id: int) -> list[dict[str, Any]]:

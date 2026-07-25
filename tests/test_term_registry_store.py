@@ -71,6 +71,28 @@ def test_defined_terms_part_surfaces_all_key_to_rich_entry(
         assert e["registry"] == "components"
 
 
+def test_defined_terms_abbrev_is_a_dedicated_resolvable_surface(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """gripe 56690: a term's dedicated ``abbrev`` (parallel to ``short``, but
+    a distinct field) is itself a resolvable surface routing to the same
+    record — the primary label can be the long descriptive form while the
+    acronym still hover-resolves in prose."""
+    ref_id = _mk(hub, draft)
+    draft.put(
+        id="nt",
+        chunk_kind="term",
+        text="stereolithography",
+        meta={"short": "stereolithography", "abbrev": "STL"},
+    )
+    terms = hub.store.defined_terms(ref_id)
+    for surface in ("stereolithography", "STL"):
+        assert surface in terms, surface
+        e = terms[surface]
+        assert e["definition"] == "stereolithography"
+        assert e["abbrev"] == "STL"
+
+
 def test_defined_terms_plain_glossary_has_no_bag(draft: DraftHandler, hub: Hub) -> None:
     ref_id = _mk(hub, draft)
     draft.put(

@@ -2700,11 +2700,12 @@ class _AbbrevMixin:
         in this draft (ADR 0052 §4) — the generalization of
         :meth:`defined_abbrevs`. Returns ``{surface: TermEntry}`` where a leaf
         is reachable under each of its string surfaces (``meta.short``, every
-        ``meta.surface_forms`` entry, and ``meta.mpn``), all mapping to the
-        same record ``{definition, registry?, callout?, mpn?, manufacturer?,
-        url?, ordering?}``. Inline ``Long Form (ABBR)`` first-uses (Schwartz-
-        Hearst) contribute bare ``{definition}`` records; explicit ``term``
-        leaves win on a clash. Drives the reader's rich ``.pa-pop`` hover."""
+        ``meta.surface_forms`` entry, ``meta.mpn``, and ``meta.abbrev``), all
+        mapping to the same record ``{definition, registry?, callout?, mpn?,
+        manufacturer?, url?, ordering?, abbrev?}``. Inline ``Long Form (ABBR)``
+        first-uses (Schwartz-Hearst) contribute bare ``{definition}`` records;
+        explicit ``term`` leaves win on a clash. Drives the reader's rich
+        ``.pa-pop`` hover."""
         from precis.utils.abbreviations import find as _sh_find
 
         out: dict[str, dict[str, Any]] = {}
@@ -2737,6 +2738,7 @@ class _AbbrevMixin:
                     "manufacturer",
                     "url",
                     "ordering",
+                    "abbrev",
                 ):
                     val = m.get(key)
                     if val is not None and val != "":
@@ -2752,6 +2754,12 @@ class _AbbrevMixin:
                 mpn = m.get("mpn")
                 if mpn:
                     surfaces.append(str(mpn))
+                # A dedicated acronym surface (gripe 56690), parallel to
+                # ``short`` — lets a term's primary label be the long form
+                # while its abbreviation still hover-resolves in prose.
+                abbrev = m.get("abbrev")
+                if abbrev:
+                    surfaces.append(str(abbrev))
                 for surface in surfaces:
                     out[surface] = entry
         return out

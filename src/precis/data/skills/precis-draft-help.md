@@ -685,6 +685,11 @@ with copy-ready calls. For each, either:
   — `edit(kind='draft', id='<slug>', not_abbrev=['CO2'])` — to silence
   the hint.
 
+If the term's label should stay the long form (`short='stereolithography'`)
+but its acronym should also hover-resolve on its own, add both: `meta={'short':
+'stereolithography', 'abbrev': 'STL'}`. `abbrev` is a distinct resolvable
+surface from `short`, not a replacement for it.
+
 Once defined or silenced, a token stops being hinted. Reference a term with
 `[PEI](<dc-term-handle>)`; explicit
 terms win over auto-detected ones. **Notes** (memory / think / other

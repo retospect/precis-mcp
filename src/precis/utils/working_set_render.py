@@ -275,10 +275,15 @@ def render_working_set(
     flat_eyes: list[tuple[str, Any]] = []  # non-tree eyes (memory/paper/…)
 
     for handle, eye in ws.eyes.items():
-        kind = handle_registry.parse(handle)[0]
+        parsed = handle_registry.parse(handle)
+        # A handle ``handle_registry.parse`` doesn't decode at all (e.g. a
+        # skill eye's file-backed ``sk:<slug>``, which has no numeric pk) is
+        # never a tree kind — ``None`` falls straight into the flat-eye path
+        # below, same as any other non-tree kind.
+        kind = parsed[0] if parsed is not None else None
         # Only draft/plan share the reading-order demand-map dedup; every other
-        # kind's neighborhood is a different shape (link graph / doc) — render it
-        # standalone via the per-kind dispatcher.
+        # kind's neighborhood is a different shape (link graph / doc / skill) —
+        # render it standalone via the per-kind dispatcher.
         if kind not in _TREE_KINDS:
             flat_eyes.append((handle, eye))
             continue
@@ -306,12 +311,15 @@ def render_working_set(
         return "— empty working set —"
 
     # The cursor's document leads (only a tree-kind cursor resolves to a doc;
-    # a cursor on a non-tree eye just doesn't reorder the docs).
+    # a cursor on a non-tree eye — including an unparseable one like a
+    # skill's ``sk:<slug>`` — just doesn't reorder the docs).
     cursor = ws.cursor
     cursor_ref: int | None = None
-    if cursor is not None and handle_registry.parse(cursor)[0] in _TREE_KINDS:
-        ct = store.get_draft_chunk(cursor, kind=handle_registry.parse(cursor)[0])
-        cursor_ref = int(ct.ref_id) if ct is not None else None
+    if cursor is not None:
+        parsed_cursor = handle_registry.parse(cursor)
+        if parsed_cursor is not None and parsed_cursor[0] in _TREE_KINDS:
+            ct = store.get_draft_chunk(cursor, kind=parsed_cursor[0])
+            cursor_ref = int(ct.ref_id) if ct is not None else None
     order = sorted(docs, key=lambda r: (r != cursor_ref, r))
 
     blocks: list[str] = []

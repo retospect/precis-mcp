@@ -1,6 +1,15 @@
 {% extends "base.html.j2" %}
 {% block title %}{{ ref.title }} — smartdraft{% endblock %}
 {% block content %}
+{# The shared draftEdit/tableEditor Alpine components + ProseMirror mount
+   (gripe 56746) — same macros the classic /drafts reader uses, so smartdraft
+   gets the rich in-place editor (incl. `[`-citation autocomplete) and the
+   table grid editor. #}
+{% import "drafts/_editors.html.j2" as draft_editors %}
+{# Shared figure media render + clearance badge + upload form (gripe 56668)
+   — same drafts/_figures.html.j2 the classic /drafts reader uses, so a
+   figure looks and behaves identically in both readers. #}
+{% import "drafts/_figures.html.j2" as draft_figures %}
 {# One URL builder for the whole panel — every control overrides one param.
    Params are to_* so they don't shadow the render-context globals they
    default to (a macro can't see template-level {% set %} vars). #}
@@ -58,6 +67,13 @@
   .sd-badge { flex-shrink: 0; font-size: 10px; }
   .sd-dc { font-family: ui-monospace, monospace; font-size: 9px; color: #0ea5e9; }
 </style>
+
+{# ProseMirror mount (window.__mountDraftPM) + the global draftEdit/
+   tableEditor Alpine factories + their CSS — loaded ONCE here, OUTSIDE
+   #sd-content, so a no-reload nav swap (swapFrom, below) never re-imports the
+   ES module or redefines the globals; only the macro-rendered markup inside
+   #sd-content is replaced + re-initialized via Alpine.initTree. #}
+{% include "drafts/_editors.html.j2" %}
 
 <div class="mb-2 flex items-center justify-between">
   <h1 class="truncate text-base font-semibold">{{ ref.title }}</h1>
@@ -163,35 +179,83 @@
       {% for m in view.middle %}
         {% set n = m.node %}
         {% set hd = 'font-semibold text-slate-900 text-base' if n.is_heading else '' %}
-        {% if m.mode == 'full' %}
-        {# NB: never pass raw chunk text through x-data (its quotes/newlines break
-           the attribute) — the raw text is server-rendered into the <textarea>
-           and read via $refs on save. #}
-        <div id="mid-focus" class="rounded border border-amber-200 bg-amber-50 p-2"
-             x-data="smartEdit('{{ ident }}', '{{ n.base58 }}', '{{ n.sha }}', {{ n.editable | tojson }})">
+        {% if m.mode == 'full' and n.is_table %}
+        {# Table focus: the ⊞ grid editor (shared draft_editors.html.j2,
+           gripe 56746) instead of the plain-text editor — a table chunk isn't
+           `n.editable` (there's no free-text edit path for it), but it always
+           gets the structured grid. #}
+        {% set _seed = n.table or {'header': ['Column 1', 'Column 2'], 'rows': [], 'caption': none} %}
+        <div id="mid-focus" class="rounded border border-amber-200 bg-amber-50 p-2">
           <div class="mb-1 flex items-center gap-2 text-[10px] text-amber-700">
             <span>{% if debug %}<span class="font-mono text-sky-500">{{ n.dc }}</span> {% endif %}{% if n.locked %}🔒{% endif %}</span>
-            <div class="ml-auto flex items-center gap-2" x-show="!editing">
+            <button onclick="smartPin('{{ n.dc }}')"
+                    class="ml-auto {% if focus_pinned %}font-semibold text-amber-800{% else %}text-slate-400 hover:text-amber-700{% endif %}"
+                    title="pin/unpin this para (key: p)">📌 {{ 'unpin' if focus_pinned else 'pin' }}</button>
+          </div>
+          {% call draft_editors.draft_table_editor(ident, n.base58, n.sha, _seed) %}
+          {% if n.table %}
+          <div class="overflow-x-auto">
+            <table class="w-full border-collapse text-sm">
+              {% if n.table.caption %}
+              <caption class="mb-1 text-left text-[13px] font-semibold text-slate-700">{{ n.table.caption | linkify_refs(markdown=True, compact=True) }}</caption>
+              {% endif %}
+              <thead><tr>
+                {% for h in n.table.header %}
+                <th class="border-b-2 border-slate-300 px-2 py-1 text-left align-top font-semibold text-slate-800">{{ h | linkify_refs(markdown=True, compact=True) }}</th>
+                {% endfor %}
+              </tr></thead>
+              <tbody>
+                {% for row in n.table.rows %}
+                <tr class="even:bg-slate-50">
+                  {% for cell in row %}
+                  <td class="border-b border-slate-100 px-2 py-1 align-top text-slate-700 whitespace-pre-wrap break-words">{{ cell | linkify_refs(markdown=True, compact=True) }}</td>
+                  {% endfor %}
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% else %}
+          <p class="whitespace-pre-wrap text-slate-800 {{ hd }}">{{ m.display | linkify_refs(markdown=True, compact=True) }}</p>
+          {% endif %}
+          {% endcall %}
+        </div>
+        {% elif m.mode == 'full' and n.is_figure %}
+        {# Figure focus: the shared medium-aware image render + clearance
+           badge (drafts/_figures.html.j2, gripe 56668) — the SAME markup
+           the classic /drafts reader uses, instead of the raw caption text
+           smartdraft rendered before figures had their own render here. #}
+        <div id="mid-focus" class="rounded border border-amber-200 bg-amber-50 p-2">
+          <div class="mb-1 flex items-center gap-2 text-[10px] text-amber-700">
+            <span>{% if debug %}<span class="font-mono text-sky-500">{{ n.dc }}</span> {% endif %}{% if n.locked %}🔒{% endif %}</span>
+            <button onclick="smartPin('{{ n.dc }}')"
+                    class="ml-auto {% if focus_pinned %}font-semibold text-amber-800{% else %}text-slate-400 hover:text-amber-700{% endif %}"
+                    title="pin/unpin this para (key: p)">📌 {{ 'unpin' if focus_pinned else 'pin' }}</button>
+          </div>
+          <figure class="rounded-md border border-slate-200 bg-white p-2">
+            {{ draft_figures.figure_media(ident, n.base58, n.figure_render, n.text) }}
+            <figcaption class="mt-1.5 text-sm text-slate-700 whitespace-pre-wrap break-words">{{ m.display | linkify_refs(markdown=True, compact=True) }}</figcaption>
+            {{ draft_figures.clearance_badge(ident, n.base58, n.figure_origin, n.figure_cleared, n.figure_permission) }}
+          </figure>
+        </div>
+        {% elif m.mode == 'full' %}
+        <div id="mid-focus" class="rounded border border-amber-200 bg-amber-50 p-2">
+          {% call draft_editors.draft_edit(ident, n.base58, n.sha, n.editable, n.is_heading, n.text, rows=10) %}
+          <div class="mb-1 flex items-center gap-2 text-[10px] text-amber-700">
+            <span>{% if debug %}<span class="font-mono text-sky-500">{{ n.dc }}</span> {% endif %}{% if n.locked %}🔒{% endif %}</span>
+            <div class="ml-auto flex items-center gap-2">
               <button onclick="smartPin('{{ n.dc }}')"
                       class="{% if focus_pinned %}font-semibold text-amber-800{% else %}text-slate-400 hover:text-amber-700{% endif %}"
                       title="pin/unpin this para (key: p)">📌 {{ 'unpin' if focus_pinned else 'pin' }}</button>
-              <button x-show="canEdit" @click="start()" class="text-slate-400 hover:text-slate-700">✎ edit</button>
+              {% if n.editable %}
+              <button @click="startEdit()" class="text-slate-400 hover:text-slate-700">✎ edit</button>
+              {% endif %}
             </div>
           </div>
-          {# rendered view (with links) — hidden while editing #}
-          <div x-show="!editing" class="whitespace-pre-wrap text-slate-800 {{ hd }}">{{ m.display | linkify_refs(markdown=True, compact=True) }}</div>
-          {# inline editor — raw text server-rendered into the textarea; saves
-             through the shipped /drafts/{id}/text #}
-          <div x-show="editing" x-cloak>
-            <textarea x-ref="ta" rows="10" class="w-full rounded border border-amber-300 px-2 py-1 font-mono text-xs focus:border-amber-500 focus:outline-none">{{ n.text }}</textarea>
-            <div class="mt-1 flex items-center gap-2">
-              <button @click="save()" :disabled="saving" class="rounded bg-amber-600 px-2 py-0.5 text-[11px] text-white hover:bg-amber-700 disabled:opacity-40">save</button>
-              <button @click="cancel()" class="text-[11px] text-slate-500 hover:text-slate-800">cancel</button>
-              <span class="text-[11px] text-rose-600" x-show="msg" x-text="msg"></span>
-            </div>
-          </div>
+          {# rendered view (with links) #}
+          <div class="whitespace-pre-wrap text-slate-800 {{ hd }}">{{ m.display | linkify_refs(markdown=True, compact=True) }}</div>
           {# tag row (the T search signal) — chips + type-ahead add #}
-          <div x-show="!editing" class="mt-2 flex flex-wrap items-center gap-1 border-t border-amber-100 pt-1.5 text-[10px]">
+          <div class="mt-2 flex flex-wrap items-center gap-1 border-t border-amber-100 pt-1.5 text-[10px]">
             <span class="text-slate-400">🏷</span>
             {% for tag in n.tags %}
             <span class="inline-flex items-center gap-0.5 rounded bg-teal-100 px-1 text-teal-700">{{ tag }}<button onclick="smartTagRemove('{{ n.dc }}', {{ tag | tojson }})" class="hover:text-rose-600" title="remove tag">&times;</button></span>
@@ -204,6 +268,7 @@
               </div>
             </span>
           </div>
+          {% endcall %}
         </div>
         {% elif m.mode == 'doc' %}
         {# full-doc mode: every chunk verbatim, plain (focus is the amber box above) #}
@@ -241,11 +306,78 @@
         {% endfor %}
       </div>
       {% endif %}
+
+      {# ── Cited sources (gripe 56635): the FOCUS block's paper citations,
+           as hover-preview chips (precis_web.routes.smartdraft._cited_sources,
+           reusing the classic /drafts reader's _ref_chips parser). Each chip
+           opens the paper reader in a NEW TAB (popover_chip → linkify.
+           _anchor_html carries target="_blank", no data-dc) so the writing
+           surface stays put. Omitted when the focus cites nothing. #}
+      {% if cited_sources %}
+      <div class="rounded border border-slate-200 bg-white p-1.5">
+        <div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Cited sources</div>
+        <div class="flex flex-wrap gap-1">
+          {% for c in cited_sources %}{{ c }}{% endfor %}
+        </div>
+      </div>
+      {% endif %}
+
       <div class="flex items-center gap-2 text-slate-500">
         <span>Pinned: 📌 {{ eye_count }}</span>
         {% if eye_count %}<button onclick="smartClearPins()" class="text-[10px] text-slate-400 hover:text-rose-600">unpin all</button>
         {% else %}<span class="text-[10px] text-slate-400">nothing pinned — the ask works on the current para</span>{% endif %}
       </div>
+
+      {# ── Figure add + clearance (gripe 56668 — ported from the classic
+           /drafts reader; shared markup drafts/_figures.html.j2). Add
+           inserts a new figure chunk right after the current focus (the
+           same "insert after this block" semantics the classic per-row
+           control uses); the upload form + any clearance edit below POST to
+           the SAME /drafts/{ident}/figure… endpoints classic uses — the
+           delegated `submit` listener below intercepts them so a successful
+           save refreshes this panel in place instead of navigating to the
+           classic reader (their redirect target). #}
+      {% if view.focus %}
+      <div class="rounded border border-slate-200 bg-slate-50 p-1.5">
+        <div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Figure</div>
+        {{ draft_figures.figure_upload_form(ident, view.focus.base58) }}
+      </div>
+      {% endif %}
+      {% set fig_nodes = view.nodes | selectattr('is_figure') | list %}
+      {% if fig_nodes %}
+      <div class="rounded border border-slate-200 bg-white p-1.5">
+        <div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Figures · clearance</div>
+        {% for fn in fig_nodes %}
+        <div class="flex items-center gap-1.5 py-0.5 text-[10px]">
+          <a href="{{ qs(fn.dc) }}" data-dc="{{ fn.dc }}"
+             class="min-w-0 flex-1 truncate text-slate-600 hover:text-sky-700"
+             title="{{ fn.summary }}">{{ fn.summary }}</a>
+          {{ draft_figures.clearance_badge(ident, fn.base58, fn.figure_origin, fn.figure_cleared, fn.figure_permission) }}
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      {# ── Term occurrences (gripe 56690): focusing a chunk_kind='term'
+           leaf lists every other chunk mentioning it — short / long /
+           abbrev / surface_forms — so the author jumps straight to a
+           usage site. Computed server-side from the already-loaded node
+           set (precis_web.smartdraft.term_occurrences), no DB scan. #}
+      {% if view.focus and view.focus.is_term %}
+      <div class="rounded border border-slate-200 bg-white p-1.5">
+        <div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Occurs in {{ term_occurrences | length }} place{{ 's' if term_occurrences | length != 1 else '' }}</div>
+        {% if term_occurrences %}
+        {% for on in term_occurrences %}
+        <a href="{{ qs(on.dc) }}" data-dc="{{ on.dc }}"
+           class="block truncate rounded px-1 py-0.5 text-[10px] text-slate-600 hover:bg-slate-50 hover:text-sky-700"
+           title="{{ on.summary }}">{{ on.summary }}</a>
+        {% endfor %}
+        {% else %}
+        <div class="text-[10px] text-slate-400">not yet used elsewhere in this draft</div>
+        {% endif %}
+      </div>
+      {% endif %}
+
       <textarea x-model="text" rows="3" placeholder="Ask the LLM (works on the pinned context, or the current para if nothing is pinned)…"
                 class="w-full rounded border border-slate-200 px-2 py-1"></textarea>
       <div class="flex items-center gap-2">
@@ -281,6 +413,13 @@
       const fresh = doc.getElementById('sd-content');
       const cur = document.getElementById('sd-content');
       if (!fresh || !cur) { location.href = url; return; }
+      // Hover-preview cards are teleported to <body> (shared linkify fix,
+      // gripe 56806) — they live OUTSIDE #sd-content, so replacing its
+      // innerHTML can't reap them. Alpine's own teleport cleanup removes a
+      // clone when its source <template> is destroyed by that replace, but
+      // drop any survivors defensively so a stale card can never linger
+      // after navigating away from the para that opened it.
+      document.querySelectorAll('body > .ref-popover').forEach((el) => el.remove());
       cur.innerHTML = fresh.innerHTML;
       if (window.Alpine && window.Alpine.initTree) window.Alpine.initTree(cur);
       ST = readState();
@@ -356,31 +495,37 @@
   });
   document.addEventListener('submit', (e) => {
     const f = e.target;
-    if (!f.matches || !f.matches('form[action^="/smartdraft/' + IDENT + '"]')) return;
-    e.preventDefault();
-    const url = f.getAttribute('action') + '?' + new URLSearchParams(new FormData(f)).toString();
-    history.pushState({}, '', url);
-    swapFrom(url);
+    if (!f.matches) return;
+    if (f.matches('form[action^="/smartdraft/' + IDENT + '"]')) {
+      e.preventDefault();
+      const url = f.getAttribute('action') + '?' + new URLSearchParams(new FormData(f)).toString();
+      history.pushState({}, '', url);
+      swapFrom(url);
+      return;
+    }
+    // Figure add / clearance-edit forms (drafts/_figures.html.j2, gripe
+    // 56668) — the SAME endpoints the classic /drafts reader posts to
+    // (reused as-is, ADR 0034/0058), but their hardcoded redirect target is
+    // the classic reader (`/drafts/{ident}#c-{handle}`). Intercept just
+    // these two inside #sd-content and POST via fetch instead, then refresh
+    // the panel in place. The "draw" endpoint (mint + open an SVG canvas,
+    // `…/figure/{handle}/draw`) is deliberately NOT intercepted — like the
+    // classic reader, it's meant to navigate away into /figure.
+    const act = f.getAttribute('action') || '';
+    const figBase = `/drafts/${IDENT}/figure`;
+    const isFigAdd = act === figBase;
+    const isFigPermission = act.startsWith(figBase + '/') && act.endsWith('/permission');
+    if (f.closest('#sd-content') && (isFigAdd || isFigPermission)) {
+      e.preventDefault();
+      fetch(act, { method: 'POST', body: new FormData(f) })
+        .then(() => window.__sdRefresh())
+        .catch(() => window.alert('network error — figure not saved'));
+    }
   });
-  // Portal-lite (smartdraft only, no shared-linkify change): when a hover-preview
-  // card opens, pin it to FIXED coords at its anchor so it floats above content
-  // and escapes any pane — kills the "¶… fragment one block below" artifact.
-  const PW = 384;  // the card's w-96
-  window.addEventListener('ref-popover-open', (e) => {
-    const src = e.detail && e.detail.source;
-    if (!src || !src.parentNode) return;
-    const pop = src.parentNode.querySelector('.ref-popover');
-    if (!pop) return;
-    requestAnimationFrame(() => {
-      const r = src.getBoundingClientRect();
-      const below = r.bottom + 8 + 200 < window.innerHeight;  // room under the link?
-      pop.style.position = 'fixed';
-      pop.style.left = Math.max(4, Math.min(r.left, window.innerWidth - PW - 8)) + 'px';
-      if (below) { pop.style.top = (r.bottom + 4) + 'px'; pop.style.bottom = 'auto'; }
-      else { pop.style.bottom = (window.innerHeight - r.top + 4) + 'px'; pop.style.top = 'auto'; }
-      pop.style.zIndex = '200';
-    });
-  });
+  // The hover-preview card escaping smartdraft's overflow-clipped panes is
+  // now handled shared-side (gripe 56806, ``linkify._anchor_html`` teleports
+  // ``.ref-popover`` to <body> and computes its own fixed coords) — no
+  // per-page mitigation needed here any more.
   document.addEventListener('keydown', (e) => {
     const t = document.activeElement;
     const inField = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
@@ -424,6 +569,16 @@
   });
 })();
 
+// The shared draftEdit/tableEditor components (drafts/_editors.html.j2,
+// gripe 56746) save via fetch + a `draft:*` CustomEvent — the classic
+// reader's virtual scroller listens and re-hydrates just the affected row;
+// smartdraft has no such per-row machinery (each nav is a full-panel
+// server render), so it just re-fetches + swaps the whole panel. Covers a
+// text save/split/merge/delete/insert and a table save (all dispatch
+// `draft:edited`).
+['draft:edited', 'draft:split', 'draft:merged', 'draft:removed', 'draft:inserted']
+  .forEach((ev) => window.addEventListener(ev, () => window.__sdRefresh()));
+
 // Pin/unpin any chunk (a persistent context eye) — used by the focus header
 // and the TOC rows. POSTs the shipped /marks toggle, then swaps in place.
 function smartPin(dc) {
@@ -463,31 +618,10 @@ function smartTagInput(dc) {
   };
 }
 
-// Inline text edit of the focus para — saves through the shipped
-// /drafts/{id}/text (validation + link-sync single-sourced with the MCP path).
-// A 422 (broken ref introduced) / 409 (stale) surfaces its message in place.
-function smartEdit(ident, handle, sha, canEdit) {
-  return {
-    ident, handle, sha, canEdit,
-    editing: false, saving: false, msg: '',
-    start() { this.msg = ''; this.editing = true; },
-    cancel() { this.editing = false; this.msg = ''; },
-    async save() {
-      const text = this.$refs.ta ? this.$refs.ta.value : '';
-      this.saving = true; this.msg = '';
-      try {
-        const r = await fetch(`/drafts/${this.ident}/text`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: new URLSearchParams({ handle: this.handle, text, base_sha: this.sha }),
-        });
-        const d = await r.json();
-        if (d.ok) { this.editing = false; window.__sdRefresh(); }
-        else { this.msg = d.error || (d.hard ? ('broke: ' + d.hard.join(', ')) : 'save failed'); this.saving = false; }
-      } catch (e) { this.msg = 'network error'; this.saving = false; }
-    },
-  };
-}
+// The focus para's inline text/table editing is now the shared draftEdit /
+// tableEditor Alpine components (drafts/_editors.html.j2, gripe 56746) —
+// see the `draft:*` refresh listener above. `smartEdit` (the old
+// plain-textarea editor) is retired.
 
 function smartAsk(ident, focus) {
   return {

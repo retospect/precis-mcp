@@ -28,11 +28,14 @@ working reader — dark by construction.
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
 from precis.store._draft_ops import content_sha
+from precis.utils.figure_source import RenderSpec, resolve_figure_source
+from precis.utils.table_data import table_payload
 
 # ── pressure weights (tune later; env-overridable is a follow-up) ────────
 _W_KEYWORD = 1.0
@@ -91,15 +94,62 @@ class ChunkNode:
     tags: list[str] = field(default_factory=list)
     pinned: bool = False
     locked: bool = False
+    #: Recovered ``{header, rows, caption}`` for a ``chunk_kind='table'``
+    #: chunk (:func:`precis.utils.table_data.table_payload`), else ``None``.
+    #: Feeds the ``⊞ edit table`` grid editor (shared ``draft_editors.
+    #: draft_table_editor`` — gripe 56746) in the focus pane.
+    table: dict[str, Any] | None = None
+    #: Medium-aware render spec for a ``chunk_kind='figure'`` chunk
+    #: (:func:`precis.utils.figure_source.resolve_figure_source`, ADR
+    #: 0034/0057/0058), else ``None``. Feeds the shared ``draft_figures.
+    #: figure_media`` macro (gripe 56668) in the focus pane.
+    figure_render: RenderSpec | None = None
+    #: ``meta.figure.origin`` (``original``/``own_graph``/``third_party``) —
+    #: the clearance-badge chip. ``None`` for a non-figure chunk.
+    figure_origin: str | None = None
+    #: Whether the figure is cleared to ship (medium-aware — an asset-less
+    #: figure reads uncleared, a drawn canvas cleared). ``None`` for a
+    #: non-figure chunk.
+    figure_cleared: bool | None = None
+    #: ``meta.figure.permission`` — the third-party publisher paper-trail
+    #: (publisher / permission_id / status / dates / …), else ``None``.
+    figure_permission: dict[str, Any] | None = None
+    #: ``meta.short`` for a ``chunk_kind='term'`` leaf (ADR 0052) — the
+    #: term's primary label (may itself be the long descriptive form, e.g.
+    #: ``'stereolithography'``). ``None`` for a non-term chunk.
+    term_short: str | None = None
+    #: ``meta.abbrev`` (gripe 56690) — a dedicated acronym surface, distinct
+    #: from ``term_short``/``surface_forms``. ``None`` for a non-term chunk
+    #: or a term without one.
+    term_abbrev: str | None = None
+    #: ``meta.surface_forms`` — extra aliases the leaf also hover-resolves
+    #: under (ADR 0052 §4). Empty for a non-term chunk.
+    term_surface_forms: list[str] = field(default_factory=list)
 
     @property
     def is_heading(self) -> bool:
         return self.chunk_kind == "heading"
 
     @property
+    def is_table(self) -> bool:
+        return self.chunk_kind == "table"
+
+    @property
+    def is_figure(self) -> bool:
+        return self.chunk_kind == "figure"
+
+    @property
+    def is_term(self) -> bool:
+        return self.chunk_kind == "term"
+
+    @property
     def editable(self) -> bool:
-        """Only free-text body chunks are inline-editable here (a heading is
-        text too; a table/figure needs its own editor — a follow-up)."""
+        """Only free-text body chunks are inline-editable via the plain-text
+        editor here (a heading is text too). A table gets its own grid editor
+        (``is_table`` / ``table`` — gripe 56746); a figure gets its own
+        medium-aware image render + clearance badge (``is_figure`` /
+        ``figure_render`` — gripe 56668) — neither has a free-text edit
+        path, so both stay outside ``editable``."""
         return self.chunk_kind in ("paragraph", "heading")
 
     @property
@@ -232,6 +282,15 @@ def _build_nodes_uncached(store: Any, ref_id: int) -> list[ChunkNode]:
         v = views.get(c.handle, {}) or {}
         kws = list(b.keywords) if (b and b.keywords) else _kw_from_view(v)
         summary = v.get("summary") or _first_line(c.text)
+        is_table = c.chunk_kind == "table"
+        table = table_payload(getattr(c, "meta", None), c.text) if is_table else None
+        is_figure = c.chunk_kind == "figure"
+        fig_meta = (
+            (getattr(c, "meta", None) or {}).get("figure", {}) if is_figure else {}
+        )
+        fsrc = resolve_figure_source(store, c) if is_figure else None
+        is_term = c.chunk_kind == "term"
+        term_meta = (getattr(c, "meta", None) or {}) if is_term else {}
         nodes.append(
             ChunkNode(
                 idx=i,
@@ -245,6 +304,16 @@ def _build_nodes_uncached(store: Any, ref_id: int) -> list[ChunkNode]:
                 keywords=kws,
                 sha=content_sha(c.text or ""),
                 tags=tag_map.get(c.chunk_id, []),
+                table=table,
+                figure_render=fsrc.render if fsrc else None,
+                figure_origin=fig_meta.get("origin") if is_figure else None,
+                figure_cleared=fsrc.cleared if fsrc else None,
+                figure_permission=fig_meta.get("permission") if is_figure else None,
+                term_short=term_meta.get("short") if is_term else None,
+                term_abbrev=term_meta.get("abbrev") if is_term else None,
+                term_surface_forms=list(term_meta.get("surface_forms") or [])
+                if is_term
+                else [],
             )
         )
     return nodes
@@ -287,6 +356,48 @@ def focus_index(nodes: list[ChunkNode], focus_dc: str | None) -> int:
         if not n.is_heading:
             return n.idx
     return 0
+
+
+def _term_surfaces(term: ChunkNode) -> list[str]:
+    """The string surfaces a term chunk is known by — its ``short``, its
+    dedicated ``abbrev`` (gripe 56690), and each ``surface_forms`` alias —
+    longest first (mirrors :func:`precis_web.linkify._highlight_abbrevs`'s
+    matching, so ``RNA-seq`` beats ``RNA``). Deliberately excludes ``text``:
+    per :meth:`precis.store._draft_ops.PapersMixin.defined_terms`, a term
+    leaf's ``text`` is its DEFINITION prose, never a lookup surface — a
+    paragraph merely containing the definition wording is not an
+    "occurrence" of the term any more than it would get a live
+    ``<abbr class="pa">`` highlight in the reader. A glossary term has no
+    ``mpn`` (that's the manufacturing-part surface), so it's omitted here."""
+    surfaces = {
+        s.strip()
+        for s in (term.term_short, term.term_abbrev, *term.term_surface_forms)
+        if s and s.strip()
+    }
+    return sorted(surfaces, key=len, reverse=True)
+
+
+def term_occurrences(nodes: list[ChunkNode], term: ChunkNode) -> list[ChunkNode]:
+    """Every *other* chunk in ``nodes`` (already-loaded — no DB scan) whose
+    text mentions one of ``term``'s surfaces — the "occurs in N places"
+    backlink list for a focused glossary/registry term (gripe 56690). Mirrors
+    :func:`precis_web.linkify._highlight_abbrevs` EXACTLY — same surface set
+    (excludes the definition ``text``, see :func:`_term_surfaces`), same
+    longest-surface-first + word-boundary + plural/possessive inflection
+    pattern, and the same case-SENSITIVE matching (no ``re.IGNORECASE``) —
+    so this count equals the number of paragraphs that actually get a live
+    highlight, not a superset that also catches definition-prose mentions or
+    case variants the reader never highlights. A chunk matching more than
+    one surface (e.g. both ``STL`` and ``stereolithography``) is counted
+    once, not per surface. Reading-order-preserving."""
+    surfaces = _term_surfaces(term)
+    if not surfaces:
+        return []
+    pat = re.compile(
+        r"(?<![\w-])(" + "|".join(re.escape(s) for s in surfaces) + r")"
+        r"(?:s|es|'s|’s)?(?!\w)"
+    )
+    return [n for n in nodes if n.dc != term.dc and n.text and pat.search(n.text)]
 
 
 def pressures(nodes: list[ChunkNode], focus_idx: int) -> dict[int, float]:

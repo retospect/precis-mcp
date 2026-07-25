@@ -2,6 +2,8 @@
    content | meta (refs + in-flight) | change box. Collapse is driven by
    the parent `draftDoc` Alpine component via `vis(ancestors)`; heading
    rows carry data-heading so collapse-all can find them. #}
+{% import "drafts/_editors.html.j2" as draft_editors %}
+{% import "drafts/_figures.html.j2" as draft_figures %}
 {% macro draft_row(r, ref) %}
 <div id="c-{{ r.handle }}"
      {% if r.is_heading %}data-heading="{{ r.handle }}"{% endif %}
@@ -31,12 +33,10 @@
   {% endif %}
   {# ── Col A: content ─────────────────────────────────────────── #
      Rendered prose + edit affordances; clicking ✎ edit swaps this whole
-     view for the in-place ProseMirror editor (see draftEdit / detail.html). #}
-  <div data-content style="padding-left: {{ r.depth }}rem"
-       x-data="draftEdit('{{ ref.ident }}', '{{ r.handle }}', '{{ r.content_sha | default('') }}', {{ r.editable | default(false) | tojson }}, {{ r.is_heading | default(false) | tojson }})">
-    {# Rendered view + controls — hidden while editing so the editor replaces
-       the text in place (not a second box stacked below it). #}
-    <div x-show="!editing">
+     view for the in-place ProseMirror editor (shared drafts/_editors.html.j2
+     `draft_edit` macro — gripe 56746). #}
+  <div data-content style="padding-left: {{ r.depth }}rem">
+  {% call draft_editors.draft_edit(ref.ident, r.handle, r.content_sha | default(''), r.editable | default(false), r.is_heading | default(false), r.text) %}
     {% if r.is_heading %}
     {# items-baseline so the toggle caret + the small style/review/prompt
        controls sit on the heading's text baseline rather than floating at
@@ -101,134 +101,17 @@
       </div>
     </div>
     {% elif r.is_figure %}
-    {# ADR 0034/0057 — figure: the medium (blob / canvas / graph / none) picks
-       the render. `blob`/`graph` → an <img>; `canvas` → the linked figure
+    {# ADR 0034/0057/0058 — figure: shared media render + clearance badge
+       (drafts/_figures.html.j2, gripe 56668 — extracted alongside the
+       gripe 56746 editors so /drafts AND /smartdraft render figures
+       identically). The medium (blob / canvas / graph / none) picks the
+       render: `blob`/`graph` → an <img>; `canvas` → the linked figure
        kind's script-safe source.svg inline + "open in /figure"; `none` → a
        "drawing pending" placeholder (no more broken-image glyph). #}
-    {% set rn = r.figure_render %}
     <figure class="rounded-md border border-slate-200 bg-white p-2">
-      {% if rn and rn.mode == 'placeholder' %}
-      {# No asset yet — offer to draw it in /figure. #}
-      <form method="post" action="/drafts/{{ ref.ident }}/figure/{{ r.handle }}/draw"
-            class="flex flex-col items-center justify-center gap-2 rounded border border-dashed
-                   border-slate-300 bg-slate-50 py-8 text-center">
-        <div class="text-3xl text-slate-300 select-none">✎</div>
-        <div class="text-sm text-slate-500">no image yet</div>
-        <button class="rounded bg-sky-600 px-3 py-1 text-xs font-medium text-white hover:bg-sky-700"
-                title="create an editable SVG figure and draw it with the model">
-          create drawing
-        </button>
-      </form>
-      {% elif rn and rn.mode == 'canvas' %}
-      {# Our editable SVG canvas — rendered inline via the figure kind's
-         sanitized source.svg; click through to draw. #}
-      <a href="{{ rn.open_url }}" class="group relative block"
-         title="open in the /figure editor">
-        <img src="{{ rn.url }}" alt="{{ r.text }}" loading="lazy"
-             class="max-h-96 w-auto max-w-full rounded" />
-        <span class="absolute right-1 top-1 rounded bg-black/60 px-1.5 py-0.5 text-[10px]
-                     text-white opacity-0 group-hover:opacity-100">✎ open in /figure</span>
-      </a>
-      {% else %}
-      <img src="{{ rn.url if rn else '' }}" alt="{{ r.text }}" loading="lazy"
-           class="max-h-96 w-auto max-w-full rounded" />
-      {% endif %}
+      {{ draft_figures.figure_media(ref.ident, r.handle, r.figure_render, r.text) }}
       <figcaption class="mt-1.5 text-sm text-slate-700 whitespace-pre-wrap break-words">{{ r.text | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs, local=r.local, callouts=r.callouts) }}</figcaption>
-      {% set p = r.figure_permission or {} %}
-      <div class="mt-1 flex items-center gap-1.5">
-        <span class="rounded px-1.5 py-0.5 text-[10px] font-mono uppercase
-                     {% if r.figure_origin == 'third_party' %}bg-violet-100 text-violet-700
-                     {% elif r.figure_origin == 'own_graph' %}bg-sky-100 text-sky-700
-                     {% else %}bg-slate-100 text-slate-600{% endif %}">{{ r.figure_origin or 'figure' }}</span>
-        {# Clearance badge: hover → the paper-trail; click → edit it. #}
-        <div class="relative" x-data="{ pop: false, ed: false }">
-          <button type="button"
-                  @mouseenter="pop = true" @mouseleave="pop = false"
-                  @click="ed = !ed; pop = false"
-                  class="text-[10px] hover:underline {% if r.figure_cleared %}text-emerald-600{% else %}text-rose-600{% endif %}"
-                  title="hover for the provenance; click to edit">
-            {% if r.figure_cleared %}✓ cleared{% else %}✗ uncleared{% endif %} ✎</button>
-
-          {# hover popover — provenance at a glance #}
-          <div x-show="pop && !ed" x-cloak
-               class="absolute left-0 z-30 mt-1 w-64 rounded border border-slate-200 bg-white p-2 text-[11px] shadow-lg">
-            {% if r.figure_origin == 'third_party' %}
-            <div class="font-semibold text-slate-700">Publisher permission</div>
-            <dl class="mt-1 space-y-0.5 text-slate-600">
-              {% if p.publisher %}<div><span class="text-slate-400">publisher:</span> {{ p.publisher }}</div>{% endif %}
-              {% if p.permission_id %}<div><span class="text-slate-400">permission #:</span> {{ p.permission_id }}</div>{% endif %}
-              {% if p.status %}<div><span class="text-slate-400">status:</span> {{ p.status }}</div>{% endif %}
-              {% if p.requested_at %}<div><span class="text-slate-400">requested:</span> {{ p.requested_at }}</div>{% endif %}
-              {% if p.granted_at %}<div><span class="text-slate-400">granted:</span> {{ p.granted_at }}</div>{% endif %}
-              {% if p.expires_at %}<div><span class="text-slate-400">expires:</span> {{ p.expires_at }}</div>{% endif %}
-              {% if p.source_paper %}<div><span class="text-slate-400">source:</span> {{ p.source_paper }}</div>{% endif %}
-              {% if p.scope %}<div><span class="text-slate-400">scope:</span> {{ p.scope }}</div>{% endif %}
-              {% if p.required_credit %}<div class="mt-1 italic">“{{ p.required_credit }}”</div>{% endif %}
-              {% if not p %}<div class="text-rose-600">no permission recorded yet</div>{% endif %}
-            </dl>
-            {% elif r.figure_origin == 'own_graph' %}
-            <div class="text-slate-600">Our graph — generated from data (ships a data supplement).</div>
-            {% else %}
-            <div class="text-slate-600">Our own figure — no third-party permission needed.</div>
-            {% endif %}
-            <div class="mt-1 text-[10px] text-slate-400">click the badge to edit</div>
-          </div>
-
-          {# click → edit provenance, prefilled, posts to the edit route #}
-          <form x-show="ed" x-cloak method="post"
-                action="/drafts/{{ ref.ident }}/figure/{{ r.handle }}/permission"
-                x-data="{ org: '{{ r.figure_origin or 'third_party' }}' }"
-                class="absolute left-0 z-30 mt-1 w-64 space-y-1 rounded border border-slate-200 bg-white p-2 shadow-lg">
-            <label class="block">
-              <span class="text-[9px] text-slate-500">Origin</span>
-              <select name="origin" x-model="org"
-                      class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]">
-                <option value="original">original (ours)</option>
-                <option value="own_graph">own graph (from data)</option>
-                <option value="third_party">third-party (needs permission)</option>
-              </select>
-            </label>
-            <template x-if="org === 'third_party'">
-              <div class="space-y-1 border-l-2 border-violet-300 pl-1.5">
-                <label class="block"><span class="text-[9px] text-slate-500">Publisher</span>
-                  <input name="publisher" value="{{ p.publisher or '' }}"
-                         class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]" /></label>
-                <label class="block"><span class="text-[9px] text-slate-500">Permission / licence #</span>
-                  <input name="permission_id" value="{{ p.permission_id or '' }}"
-                         class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]" /></label>
-                <label class="block"><span class="text-[9px] text-slate-500">Status</span>
-                  <select name="status"
-                          class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]">
-                    {% for s in ['granted', 'requested', 'denied'] %}
-                    <option value="{{ s }}" {% if p.status == s %}selected{% endif %}>{{ s }}</option>
-                    {% endfor %}
-                  </select></label>
-                <label class="block"><span class="text-[9px] text-slate-500">Source paper (cite-key)</span>
-                  <input name="source_paper" value="{{ p.source_paper or '' }}"
-                         class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]" /></label>
-                <div class="flex gap-1">
-                  <label class="min-w-0 flex-1"><span class="text-[9px] text-slate-500">Date requested</span>
-                    <input name="requested_at" type="date" value="{{ p.requested_at or '' }}"
-                           class="w-full rounded border border-slate-200 px-1 py-0.5 text-[10px]" /></label>
-                  <label class="min-w-0 flex-1"><span class="text-[9px] text-slate-500">Date granted</span>
-                    <input name="granted_at" type="date" value="{{ p.granted_at or '' }}"
-                           class="w-full rounded border border-slate-200 px-1 py-0.5 text-[10px]" /></label>
-                </div>
-                <label class="block"><span class="text-[9px] text-slate-500">Required credit line</span>
-                  <input name="required_credit" value="{{ p.required_credit or '' }}"
-                         class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]" /></label>
-                <label class="block"><span class="text-[9px] text-slate-500">Scope</span>
-                  <input name="scope" value="{{ p.scope or '' }}"
-                         class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]" /></label>
-              </div>
-            </template>
-            <div class="flex items-center gap-2">
-              <button class="rounded bg-violet-600 px-2 py-0.5 text-[11px] text-white hover:bg-violet-700">save</button>
-              <button type="button" @click="ed = false" class="text-[10px] text-slate-400 hover:text-slate-600">cancel</button>
-            </div>
-          </form>
-        </div>
-      </div>
+      {{ draft_figures.clearance_badge(ref.ident, r.handle, r.figure_origin, r.figure_cleared, r.figure_permission) }}
     </figure>
     {% elif r.is_list_container %}
     {# A ulist/olist container (migration 0037) — structural; its `item`
@@ -265,103 +148,36 @@
        can be rewritten into the canonical structured form. #}
     {% set _seed = r.table or {'header': ['Column 1', 'Column 2'], 'rows': [], 'caption': none} %}
     <div x-show="view === 'body'">
-      <div x-data='tableEditor({{ ref.ident | tojson }}, {{ r.handle | tojson }}, {{ (r.content_sha or "") | tojson }}, {{ _seed | tojson }})'>
-        {# ── rendered <table> (read-only) ─────────────────────────────── #}
-        <div x-show="!ted">
-          {% if r.table %}
-          <div class="overflow-x-auto">
-            <table class="w-full border-collapse text-sm">
-              {% if r.table.caption %}
-              <caption class="mb-1 text-left text-[13px] font-semibold text-slate-700">{{ r.table.caption | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs, local=r.local, callouts=r.callouts) }}</caption>
-              {% endif %}
-              <thead>
-                <tr>
-                  {% for h in r.table.header %}
-                  <th class="border-b-2 border-slate-300 px-2 py-1 text-left align-top font-semibold text-slate-800">{{ h | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs, local=r.local, callouts=r.callouts) }}</th>
-                  {% endfor %}
-                </tr>
-              </thead>
-              <tbody>
-                {% for row in r.table.rows %}
-                <tr class="even:bg-slate-50">
-                  {% for cell in row %}
-                  <td class="border-b border-slate-100 px-2 py-1 align-top text-slate-700 whitespace-pre-wrap break-words">{{ cell | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs, local=r.local, callouts=r.callouts) }}</td>
-                  {% endfor %}
-                </tr>
-                {% endfor %}
-              </tbody>
-            </table>
-          </div>
-          {% else %}
-          <p class="font-serif text-[15px] leading-relaxed text-slate-800 whitespace-pre-wrap break-words">{{ r.text | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs, local=r.local, callouts=r.callouts) }}</p>
+      {% call draft_editors.draft_table_editor(ref.ident, r.handle, r.content_sha or "", _seed) %}
+      {# ── rendered <table> (read-only) ─────────────────────────────── #}
+      {% if r.table %}
+      <div class="overflow-x-auto">
+        <table class="w-full border-collapse text-sm">
+          {% if r.table.caption %}
+          <caption class="mb-1 text-left text-[13px] font-semibold text-slate-700">{{ r.table.caption | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs, local=r.local, callouts=r.callouts) }}</caption>
           {% endif %}
-          <div class="mt-1">
-            <button type="button" @click="open()"
-                    class="text-[10px] text-slate-400 hover:text-sky-600"
-                    title="edit this table — add/remove rows and columns, rename headers">⊞ edit table</button>
-          </div>
-        </div>
-        {# ── grid editor (structured) ─────────────────────────────────── #}
-        <div x-show="ted" x-cloak class="space-y-2 rounded border border-slate-200 bg-slate-50 p-2">
-          <label class="block">
-            <span class="text-[9px] uppercase tracking-wide text-slate-500">Caption</span>
-            <input x-model="cap" placeholder="optional table legend"
-                   class="w-full rounded border border-slate-200 bg-white px-1.5 py-0.5 text-sm" />
-          </label>
-          <div class="overflow-x-auto">
-            <table class="border-collapse text-sm">
-              <thead>
-                <tr>
-                  <template x-for="(h, ci) in hdr" :key="ci">
-                    <th class="p-0.5 align-bottom">
-                      <div class="flex flex-col gap-0.5">
-                        <button type="button" @click="delCol(ci)" x-show="hdr.length > 1"
-                                class="self-end text-[9px] text-slate-300 hover:text-rose-600"
-                                title="delete this column">✕ col</button>
-                        <input x-model="hdr[ci]"
-                               class="w-28 rounded border border-slate-300 bg-white px-1 py-0.5 font-semibold" />
-                      </div>
-                    </th>
-                  </template>
-                  <th class="p-0.5 align-bottom">
-                    <button type="button" @click="addCol()"
-                            class="rounded border border-dashed border-slate-300 px-1 py-0.5 text-[10px] text-slate-500 hover:text-emerald-600"
-                            title="add a column">＋ col</button>
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                <template x-for="(row, ri) in rows" :key="ri">
-                  <tr>
-                    <template x-for="(cell, ci) in row" :key="ci">
-                      <td class="p-0.5">
-                        <input x-model="rows[ri][ci]"
-                               class="w-28 rounded border border-slate-200 bg-white px-1 py-0.5" />
-                      </td>
-                    </template>
-                    <td class="p-0.5 align-middle">
-                      <button type="button" @click="delRow(ri)"
-                              class="text-[10px] text-slate-300 hover:text-rose-600"
-                              title="delete this row">✕</button>
-                    </td>
-                  </tr>
-                </template>
-              </tbody>
-            </table>
-          </div>
-          <div class="flex items-center gap-2">
-            <button type="button" @click="save()" :disabled="saving"
-                    class="rounded bg-violet-600 px-2 py-0.5 text-[11px] text-white hover:bg-violet-700 disabled:opacity-50"
-                    x-text="saving ? 'saving…' : 'save'"></button>
-            <button type="button" @click="addRow()"
-                    class="text-[11px] text-slate-500 hover:text-emerald-600"
-                    title="add a row">＋ row</button>
-            <button type="button" @click="cancel()"
-                    class="text-[10px] text-slate-400 hover:text-slate-600">cancel</button>
-            <span x-show="err" x-cloak x-text="err" class="text-[11px] text-rose-600"></span>
-          </div>
-        </div>
+          <thead>
+            <tr>
+              {% for h in r.table.header %}
+              <th class="border-b-2 border-slate-300 px-2 py-1 text-left align-top font-semibold text-slate-800">{{ h | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs, local=r.local, callouts=r.callouts) }}</th>
+              {% endfor %}
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in r.table.rows %}
+            <tr class="even:bg-slate-50">
+              {% for cell in row %}
+              <td class="border-b border-slate-100 px-2 py-1 align-top text-slate-700 whitespace-pre-wrap break-words">{{ cell | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs, local=r.local, callouts=r.callouts) }}</td>
+              {% endfor %}
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
       </div>
+      {% else %}
+      <p class="font-serif text-[15px] leading-relaxed text-slate-800 whitespace-pre-wrap break-words">{{ r.text | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs, local=r.local, callouts=r.callouts) }}</p>
+      {% endif %}
+      {% endcall %}
     </div>
     <p x-show="view === 'summary'" x-cloak class="text-sm italic text-slate-600 break-words">{{ r.summary }}</p>
     <p x-show="view === 'keywords'" x-cloak class="text-xs font-mono text-slate-500 break-words">{{ r.keywords }}</p>
@@ -390,7 +206,7 @@
          projection, rendered from the leaf (never an authored table). #}
       <p class="text-[15px] leading-relaxed text-slate-800 break-words">
         {% if r.callout is not none %}<span class="font-mono text-xs text-slate-500 mr-1.5">{{ r.callout }}</span>{% endif %}
-        {% if r.term_short %}<span class="font-semibold text-slate-900">{{ r.term_short }}</span> — {% endif %}{{ r.text | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs, local=r.local, callouts=r.callouts) }}{% if r.term_mpn %} <span class="font-mono text-xs text-slate-500">[{{ r.term_mpn }}]</span>{% endif %}
+        {% if r.term_short %}<span class="font-semibold text-slate-900">{{ r.term_short }}</span>{% if r.term_abbrev %} <span class="font-mono text-xs text-slate-500">({{ r.term_abbrev }})</span>{% endif %} — {% endif %}{{ r.text | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs, local=r.local, callouts=r.callouts) }}{% if r.term_mpn %} <span class="font-mono text-xs text-slate-500">[{{ r.term_mpn }}]</span>{% endif %}
       </p>
       {% else %}
       <p class="font-serif text-[15px] leading-relaxed text-slate-800 whitespace-pre-wrap break-words">{{ r.text | linkify_refs(markdown=True, compact=True, abbrevs=r.abbrevs, local=r.local, callouts=r.callouts) }}</p>
@@ -418,34 +234,7 @@
               title="delete this block">🗑</button>
       {% endif %}
     </div>
-    </div>{# /rendered view (x-show !editing) #}
-    {% if r.editable %}
-    {# Inline editor — REPLACES the rendered text above while editing. Saves on
-       blur / ⌘↵ / ctrl↵; a reference this edit newly breaks bounces back (422)
-       and keeps the box open; Esc cancels. #}
-    <div x-show="editing" x-cloak>
-      {# ProseMirror mount point (rich editor + live ref squiggle); shown once
-         it mounts. The textarea below is the seed + save mirror AND the
-         graceful fallback if the PM module didn't load. #}
-      <div x-ref="pm" x-show="pmActive" class="pm-editor"></div>
-      <textarea x-ref="ed" data-inline-edit rows="3"
-                x-show="!pmActive"
-                @blur="save()"
-                @keydown.escape.stop.prevent="cancel()"
-                @keydown.enter.meta.prevent="save()"
-                @keydown.enter.ctrl.prevent="save()"
-                class="w-full resize-y rounded border p-2 font-mono text-[13px] leading-snug focus:outline-none"
-                :class="err ? 'border-rose-400 bg-rose-50' : 'border-sky-300 bg-white'">{{ r.text }}</textarea>
-      <div class="mt-0.5 flex items-center gap-2 text-[10px]">
-        <button @mousedown.prevent="save()"
-                class="rounded bg-sky-600 px-2 py-0.5 text-white hover:bg-sky-700">save</button>
-        <button @mousedown.prevent="cancel()"
-                class="text-slate-400 hover:text-slate-600">cancel</button>
-        <span x-show="saving" class="text-slate-400">saving…</span>
-        <span x-show="err" x-text="err" class="text-rose-600 break-words"></span>
-      </div>
-    </div>
-    {% endif %}
+  {% endcall %}
   </div>
 
   {# ── Col B: meta — refs + connections + in-flight ───────────── #
@@ -562,7 +351,7 @@
   </div>
 
   {# ── Col C: change box — needs-you panel + "around here…" + add-figure ── #}
-  <div class="space-y-1" x-data="{ figopen: false, org: 'original' }">
+  <div class="space-y-1">
     {# Promoted "needs you" panel: when a request anchored here is waiting on
        a human, surface the whole exchange right in the change column — the
        original request, the LLM's question, and an answer box — so the
@@ -618,85 +407,12 @@
       </div>
     </form>
 
-    {# Add a figure after this block (ADR 0034). Bytes upload multipart →
-       /drafts/{ident}/figure → put(chunk_kind='figure'). A third-party
-       image reveals the permission paper-trail (required to clear). #}
-    <button type="button" @click="figopen = !figopen"
-            class="text-[10px] text-slate-400 hover:text-sky-600"
-            x-text="figopen ? '− figure' : '＋ figure'"></button>
-    <form x-show="figopen" x-cloak method="post" enctype="multipart/form-data"
-          action="/drafts/{{ ref.ident }}/figure"
-          class="space-y-1 rounded border border-slate-200 bg-slate-50 p-1.5">
-      <input type="hidden" name="handle" value="{{ r.handle }}" />
-      <input type="file" name="file" accept="image/*" required
-             class="block w-full text-[10px]" />
-      <input name="caption" required placeholder="caption…"
-             class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]" />
-      <select name="origin" x-model="org"
-              class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]">
-        <option value="original">original (ours)</option>
-        <option value="own_graph">own graph (from data)</option>
-        <option value="third_party">third-party (needs permission)</option>
-      </select>
-      {# Permission paper-trail — only for a third-party image; the fields
-         are removed from the DOM otherwise, so `required` doesn't block
-         an original/own_graph upload. #}
-      <template x-if="org === 'third_party'">
-        {# Each field carries a small legend above it so the paper-trail is
-           self-explanatory (the two dates especially). #}
-        <div class="space-y-1.5 rounded border-l-2 border-violet-300 pl-1.5">
-          <p class="text-[10px] font-semibold uppercase tracking-wide text-violet-700">Publisher permission</p>
-          <label class="block">
-            <span class="text-[9px] text-slate-500">Publisher</span>
-            <input name="publisher" required placeholder="e.g. Springer Nature"
-                   class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]" />
-          </label>
-          <label class="block">
-            <span class="text-[9px] text-slate-500">Permission / licence #</span>
-            <input name="permission_id" required placeholder="e.g. SNCSC-2026-0451"
-                   class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]" />
-          </label>
-          <label class="block">
-            <span class="text-[9px] text-slate-500">Status</span>
-            <select name="status" required
-                    class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]">
-              <option value="granted">granted</option>
-              <option value="requested">requested</option>
-              <option value="denied">denied</option>
-            </select>
-          </label>
-          <label class="block">
-            <span class="text-[9px] text-slate-500">Source paper (cite-key)</span>
-            <input name="source_paper" required placeholder="e.g. smith19"
-                   class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]" />
-          </label>
-          <div class="flex gap-1">
-            <label class="min-w-0 flex-1">
-              <span class="text-[9px] text-slate-500">Date requested</span>
-              <input name="requested_at" type="date"
-                     class="w-full rounded border border-slate-200 px-1 py-0.5 text-[10px]" />
-            </label>
-            <label class="min-w-0 flex-1">
-              <span class="text-[9px] text-slate-500">Date granted</span>
-              <input name="granted_at" type="date"
-                     class="w-full rounded border border-slate-200 px-1 py-0.5 text-[10px]" />
-            </label>
-          </div>
-          <label class="block">
-            <span class="text-[9px] text-slate-500">Required credit line</span>
-            <input name="required_credit" placeholder="“Reprinted by permission …”"
-                   class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]" />
-          </label>
-          <label class="block">
-            <span class="text-[9px] text-slate-500">Scope</span>
-            <input name="scope" placeholder="e.g. print + electronic, worldwide"
-                   class="w-full rounded border border-slate-200 px-1 py-0.5 text-[11px]" />
-          </label>
-        </div>
-      </template>
-      <button class="rounded bg-violet-600 px-2 py-0.5 text-[11px] text-white hover:bg-violet-700"
-              title="upload the image as a figure after this block">add figure</button>
-    </form>
+    {# Add a figure after this block (ADR 0034/56668 — shared with
+       /smartdraft's Collaborate pane, drafts/_figures.html.j2). Bytes
+       upload multipart → /drafts/{ident}/figure → put(chunk_kind='figure').
+       A third-party image reveals the permission paper-trail (required to
+       clear). #}
+    {{ draft_figures.figure_upload_form(ref.ident, r.handle) }}
   </div>
 </div>
 {% endmacro %}

@@ -794,6 +794,11 @@ def _build_rows(
                 "term_short": (getattr(c, "meta", None) or {}).get("short")
                 if c.chunk_kind == "term"
                 else None,
+                # dedicated acronym surface (gripe 56690), shown next to
+                # term_short — e.g. "stereolithography (STL) — …".
+                "term_abbrev": (getattr(c, "meta", None) or {}).get("abbrev")
+                if c.chunk_kind == "term"
+                else None,
                 "term_mpn": (getattr(c, "meta", None) or {}).get("mpn")
                 if c.chunk_kind == "term"
                 else None,

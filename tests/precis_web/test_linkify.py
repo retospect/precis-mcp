@@ -7,6 +7,8 @@ filter's output (``/preview/...``, ``/r/...``) are exercised in
 
 from __future__ import annotations
 
+import re
+
 from precis_web.linkify import linkify_refs, render_cloze
 
 
@@ -116,10 +118,78 @@ def test_anchor_uses_settimeout_for_hover_delay() -> None:
     assert "setTimeout(() => {" in out
 
 
-def test_anchor_has_htmx_lazy_preview_attributes() -> None:
-    """The preview fragment loads via htmx on first hover only."""
+def test_anchor_has_htmx_eager_preview_attributes() -> None:
+    """gripe 56681 residual: the preview fragment starts fetching the
+    INSTANT the pointer enters (no 200ms wait), so it's already loaded by
+    the time the (separately-debounced) hover-intent SHOWS the card. Only
+    once — the fetch is cached after the first hover."""
     out = str(linkify_refs("paper:acheson26"))
-    assert 'hx-trigger="mouseenter delay:200ms once"' in out
+    assert 'hx-trigger="mouseenter once"' in out
+    assert "delay:200ms" not in out  # that delay now gates the SHOW, not the fetch
+
+
+def test_popover_teleported_to_body() -> None:
+    """gripe 56806: the popover card lives in a ``<template x-teleport=
+    "body">`` so Alpine relocates it to <body> at init, escaping any
+    overflow-clipped ancestor pane (smartdraft's reader columns)."""
+    out = str(linkify_refs("paper:acheson26"))
+    assert '<template x-teleport="body">' in out
+    assert "ref-popover" in out
+
+
+def test_popover_hx_target_is_unique_id_not_dom_adjacency() -> None:
+    """Once teleported, the card is no longer a DOM sibling of the anchor,
+    so ``hx-target`` can't rely on ``next .ref-popover`` any more — each
+    anchor mints its own popover id and targets it directly."""
+    out = str(linkify_refs("paper:acheson26"))
+    assert 'hx-target="next .ref-popover"' not in out
+    m = re.search(r'id="(refpop-[0-9a-f]+)"', out)
+    assert m is not None
+    assert f'hx-target="#{m.group(1)}"' in out
+
+
+def test_teleported_card_has_its_own_pointer_bridge() -> None:
+    """gripe 56806 regression #1: moving the pointer from the (now
+    teleported) trigger across the gap onto the card must not close it —
+    the card gets its own mouseenter (cancel the pending close) / mouseleave
+    (schedule one) pair sharing the wrapper's component state."""
+    out = str(linkify_refs("paper:acheson26"))
+    card_start = out.index('<template x-teleport="body">')
+    card = out[card_start:]
+    assert '@mouseenter="clearTimeout(closeTimer); hovered = true"' in card
+    assert "closeTimer = setTimeout(() => { hovered = false }, 120)" in card
+
+
+def test_wrapper_close_is_delayed_not_immediate() -> None:
+    """The wrapper's mouseleave used to close instantly; now it schedules a
+    ~120ms close so the pointer has time to reach the teleported card."""
+    out = str(linkify_refs("paper:acheson26"))
+    enter_idx = out.index("@mouseenter=")
+    leave_idx = out.index("@mouseleave=", enter_idx)
+    wrapper_leave = out[leave_idx : out.index('"', out.index('"', leave_idx) + 1)]
+    assert "closeTimer = setTimeout" in wrapper_leave
+
+
+def test_popover_scroll_close_is_guarded_to_outside_scrolls() -> None:
+    """The card is ``overflow-y-auto`` (long previews scroll), so the
+    ``@scroll.window.capture`` close handler must NOT fire for a scroll
+    whose target is the card itself — only for a scroll elsewhere (the
+    page/pane, which detaches the fixed-position card from its anchor).
+    Otherwise the first attempt to scroll a long preview closes it."""
+    out = str(linkify_refs("paper:acheson26"))
+    scroll_idx = out.index("@scroll.window.capture=")
+    attr_start = out.index('"', scroll_idx) + 1
+    attr_end = out.index('"', attr_start)
+    scroll_expr = out[attr_start:attr_end]
+    # Guarded: only closes when the event target is NOT inside the card.
+    assert "if (!$refs.card || !$refs.card.contains($event.target))" in scroll_expr
+    assert "hovered = false" in scroll_expr
+    # The card carries the x-ref the guard resolves against, and it's on
+    # the teleported node (out.index confirms it, since the card is
+    # rendered inside <template x-teleport="body">).
+    card_start = out.index('<template x-teleport="body">')
+    card = out[card_start:]
+    assert 'x-ref="card"' in card
 
 
 def test_only_one_popover_open_at_a_time() -> None:
@@ -619,6 +689,25 @@ def test_abbrev_highlight_covers_plural_inflection() -> None:
     assert out.count('<abbr class="pa"') == 3
     assert ">FETs<span" in out  # the plural form is the visible text
     assert out.count("field-effect transistor") == 3
+
+
+def test_abbrev_highlight_shows_dedicated_abbrev_field() -> None:
+    """A term's dedicated ``abbrev`` (gripe 56690) — distinct from the
+    generic ``short``/``surface_forms`` bag — rides in the rich hover
+    record and renders as an attribute row, mirroring MPN/manufacturer."""
+    out = str(
+        linkify_refs(
+            "stereolithography is a common process",
+            abbrevs={
+                "stereolithography": {
+                    "definition": "a 3D printing process",
+                    "abbrev": "STL",
+                }
+            },
+        )
+    )
+    assert '<abbr class="pa"' in out
+    assert '<span class="pa-attr">STL</span>' in out
 
 
 def test_invalid_pilcrow_ref_flagged_not_anchored() -> None:
