@@ -51,7 +51,7 @@
              carries kind-specific columns (parts, atoms, energy, turns, …)
              Drive's generic row rendering doesn't reproduce; Clusters is
              likewise a bespoke visualization with no Drive equivalent. #}
-          {% set browse = [('clusters','Clusters','/clusters'), ('structure','Structures','/structure'), ('cad','CAD','/cad'), ('figure','Figures','/figure'), ('mermaid','Mermaid','/mermaid')] %}
+          {% set browse = [('quests','Quests','/drive?submitted=1&k=quest&sort=recency'), ('schedules','Schedules','/drive?submitted=1&k=todo&tag=level:recurring&sort=recency'), ('clusters','Clusters','/clusters'), ('structure','Structures','/structure'), ('cad','CAD','/cad'), ('figure','Figures','/figure'), ('mermaid','Mermaid','/mermaid')] %}
           {% set browse_keys = browse | map(attribute=0) | list %}
           <div x-data="{open:false}" @click.outside="open=false" @keydown.escape="open=false" class="relative">
             <button type="button" @click="open=!open"

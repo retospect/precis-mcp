@@ -70,7 +70,7 @@
 {% endif %}
 
 <form method="get" action="/drive" class="mb-4 space-y-2"
-      x-data='itemsFilter({{ kind_defs | tojson }}, {{ artifact_kind_defs | tojson }}, {{ selected_kinds | tojson }}, {{ tags | tojson }}, {{ paper_chunks | tojson }})'>
+      x-data='itemsFilter({{ kind_defs | tojson }}, {{ artifact_kind_defs | tojson }}, {{ work_kind_defs | tojson }}, {{ selected_kinds | tojson }}, {{ tags | tojson }}, {{ paper_chunks | tojson }})'>
   {# submitted=1 tells the server the checkboxes are authoritative (so
      "none checked" means none, and the choice is remembered in a cookie). #}
   <input type="hidden" name="submitted" value="1" />
@@ -216,6 +216,30 @@
   </div>
   {% endif %}
 
+  {# ── Work: quests + todos, plus the recurring-schedule preset. A third
+     facet beside Source/Author. These kinds carry no embedded chunks, so
+     they list in the no-query browse view (a text query matches only the
+     chunked Source/Author kinds). Click a quest → its hub; a todo → its
+     own subtree on /tasks. #}
+  {% if work_kind_defs %}
+  <div class="flex flex-wrap items-center gap-1.5 text-xs">
+    <span class="text-slate-500 mr-1">Work</span>
+    <template x-for="kk in workKinds" :key="kk">
+      <label class="inline-flex items-center gap-1 px-2 py-0.5 rounded border cursor-pointer select-none"
+             :class="kinds.includes(kk) ? 'bg-emerald-100 border-emerald-300 text-emerald-800' : 'border-slate-200 text-slate-400 hover:bg-slate-50'">
+        <input type="checkbox" name="k" :value="kk" x-model="kinds" class="sr-only" />
+        <span x-text="kk"></span>
+      </label>
+    </template>
+    {# Schedules = todos tagged level:recurring — a preset link, not a kind
+       (recurring is an OPEN tag). Rides the tag facet, newest-first. #}
+    <a href="/drive?submitted=1&amp;k=todo&amp;tag=level:recurring&amp;sort=recency"
+       class="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-emerald-200 text-emerald-700 hover:bg-emerald-50">
+      🔁 Schedules
+    </a>
+  </div>
+  {% endif %}
+
   {# Tag filter — type to autocomplete (substring), click to add a chip,
      ✕ to remove. Selected tags submit as repeated ?tag= params. #}
   <div class="flex flex-wrap items-center gap-1.5 text-xs">
@@ -244,9 +268,10 @@
 
 <script>
   document.addEventListener('alpine:init', () => {
-    Alpine.data('itemsFilter', (sourceKinds, artifactKinds, selectedKinds, selectedTags, paperChunks) => ({
+    Alpine.data('itemsFilter', (sourceKinds, artifactKinds, workKinds, selectedKinds, selectedTags, paperChunks) => ({
       sourceKinds: sourceKinds,
       artifactKinds: artifactKinds,
+      workKinds: workKinds,
       kinds: selectedKinds,
       tags: selectedTags,
       paperChunks: paperChunks || 'both',

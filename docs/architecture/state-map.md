@@ -1273,6 +1273,14 @@ Structures, CAD, Figures, Mermaid). Nav template:
 `state=stub`, pagination) grafted onto Drive's folder tree (`_flatten_tree`)
 + CRUD (`POST /drive/new|create|{id}/rename|move|{id}/delete`) + per-row
 quick actions (`ItemPresenter.actions()`, `src/precis_web/item_view.py`).
+The kind chips are three facet rows: **Source** (chunk-searchable corpus),
+**Author** (`role='artifact'`, foldered), and **Work** (`_WORK_KINDS =
+quest, todo` — agenda kinds with no body chunks, so they list in the
+no-query browse view; `todo` is pulled out of Author to sit here once).
+A quest row opens its hub (`/refs/quest/{id}`), a todo its own subtree
+(`/tasks?focus={id}`) — both via `_OPEN_URL_OVERRIDES`. "🔁 Schedules"
+is a preset link (`k=todo` + `tag=level:recurring`), not a kind; Quests +
+Schedules also sit in the nav Browse ▾ menu.
 Every bespoke list this replaced — `/items`, `/papers` (+`/papers/triage`),
 `/drafts`, `/papers-needed`, `/refs/{oracle,patent}`, `/cfp` — is now a
 307-redirect to a Drive kind/tag/state preset (e.g.

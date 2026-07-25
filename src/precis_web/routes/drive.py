@@ -86,8 +86,20 @@ _KIND_ICON = {
     "structure": "⚛️",
     "cad": "🧊",
     "todo": "☑️",
+    "quest": "🧭",
     "pathway": "🐈",  # a cat on a (reaction) path — gr161575
 }
+
+#: The "Work" facet — agenda / work-item kinds, browsed as a flat,
+#: paginated list (a third chip row beside "Source" and "Author"). These
+#: kinds carry no embedded body chunks, so they surface in the no-query
+#: browse view; a *text* query still matches only the chunked Source/
+#: Author kinds (harmless — a chunkless kind contributes nothing). ``todo``
+#: is declared ``role='artifact'`` (it can live in folders), so it is
+#: pulled out of the Author facet below to sit here instead — one home,
+#: not two. "Schedules" (``level:recurring`` todos) is not a kind but a
+#: tag preset the template links to, riding the existing tag facet.
+_WORK_KINDS: tuple[str, ...] = ("quest", "todo")
 
 
 def _artifact_kinds(request: Request) -> list[str]:
@@ -340,6 +352,10 @@ async def index(
     runtime = get_runtime(request)
     hub = getattr(runtime, "hub", None)
     artifact_kind_defs = artifact_kinds(hub)
+    # Third chip row: keep the Work kinds out of the Author facet so a
+    # role='artifact' work kind (``todo``) lists once, under "Work".
+    work_kind_defs = list(_WORK_KINDS)
+    artifact_kind_defs = [k for k in artifact_kind_defs if k not in _WORK_KINDS]
 
     rows: list[dict[str, Any]] = []
     recent: list[dict[str, Any]] = []
@@ -455,6 +471,7 @@ async def index(
             "q": q,
             "kind_defs": list(_DEFAULT_SOURCE_KINDS),
             "artifact_kind_defs": artifact_kind_defs,
+            "work_kind_defs": work_kind_defs,
             "selected_kinds": selected_kinds,
             "tags": tags,
             "sort": sort,
