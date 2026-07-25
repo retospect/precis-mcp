@@ -195,6 +195,55 @@ def test_quest_detail_tag_chips_closed_vs_open(client, runtime, monkeypatch) -> 
     assert 'value="nitrate-reduction"' in resp.text
 
 
+def test_quest_logbook_renders_and_paginates(client, runtime) -> None:
+    """``/refs/quest/<id>/logbook`` renders every entry, newest-first, 50/
+    page — the hub itself only shows the last 10 (``log_tail``)."""
+    from datetime import UTC, datetime, timedelta
+
+    store = runtime.store
+    now = datetime.now(UTC)
+    # 55 entries: enough to force a second page at the 50/page size.
+    store._conv_blocks[97] = [
+        SimpleNamespace(
+            pos=i,
+            text=f"entry number {i}",
+            chunk_kind="quest_log",
+            meta={"entry_type": "note", "by": "human"},
+            created_at=now - timedelta(days=55 - i),
+        )
+        for i in range(55)
+    ]
+
+    resp = client.get("/refs/quest/97/logbook")
+    assert resp.status_code == 200
+    assert "Logbook" in resp.text
+    # Newest-first: entry 54 (most recent) is on page 1, entry 0 is not.
+    assert "entry number 54" in resp.text
+    assert "entry number 0" not in resp.text
+    assert "Next" in resp.text
+    assert "back to quest" in resp.text
+
+    resp2 = client.get("/refs/quest/97/logbook?page=2")
+    assert resp2.status_code == 200
+    assert "entry number 0" in resp2.text
+    assert "entry number 54" not in resp2.text
+    assert "Prev" in resp2.text
+
+
+def test_quest_logbook_not_found_for_non_quest_id(client, runtime) -> None:
+    """A ``NotFound`` maps to a 400 error page (``PrecisError`` convention —
+    ``precis_web/errors.py``), same as the generic ``/{kind}/{ref_id}``
+    detail route's own not-found guard."""
+    resp = client.get("/refs/quest/1/logbook")  # id=1 is a todo, not a quest
+    assert resp.status_code == 400
+
+
+def test_quest_hub_links_to_full_logbook(client, runtime) -> None:
+    resp = client.get("/refs/quest/97")
+    assert resp.status_code == 200
+    assert "/refs/quest/97/logbook" in resp.text
+
+
 def test_quest_draft_url_prefers_slug_falls_back_to_id() -> None:
     store = SimpleNamespace(
         fetch_refs_by_ids=lambda ids: {

@@ -908,6 +908,7 @@ def run_quest_tick(
     compute: bool = False,
     review: bool | None = None,
     search_fn: Any = None,
+    job_ref_id: int | None = None,
 ) -> QuestTickOutcome:
     """Run one structured research step against ``quest_id``.
 
@@ -918,6 +919,8 @@ def run_quest_tick(
     the tier: ``None`` (default) lets the escalation signal decide — a local tick
     unless enough evidence / a stall triggers a **frontier review** at the senior
     tier; ``True``/``False`` overrides it. An explicit ``tier`` wins over both.
+    ``job_ref_id`` is the owning ``quest_tick`` coordinator job's ref id, when
+    known (threaded onto the run-attribution ``agentlog`` — see below).
     """
     from precis.quest import cascade as cascade_mod
     from precis.utils.llm.router import Tier
@@ -943,6 +946,39 @@ def run_quest_tick(
 
     prompt = build_tick_prompt(store, qref, review=is_review)
 
+    # Open a run-attribution record (kind='agentlog') carrying the full
+    # assembled prompt — the twin of ``plan_tick``'s own agentlog wiring
+    # (:mod:`precis.workers.job_types.plan_tick`) so the ``/agentlogs/<id>``
+    # web viewer can show a quest tick's prompt + session the same way it
+    # shows a planner tick's. Best-effort: a failure here must never abort
+    # the tick.
+    from precis import agentlog
+
+    model_str = str(resolved_tier)
+    agentlog_id: int | None = None
+    try:
+        agentlog_id = agentlog.open_log(
+            store,
+            source="quest_tick",
+            title=f"quest_tick #{quest_id} ({model_str})",
+            model=model_str,
+            prompt=prompt,
+            parent_ref_id=quest_id,
+            job_ref_id=job_ref_id,
+        )
+    except Exception:
+        log.warning("run_quest_tick: failed to open agentlog", exc_info=True)
+
+    def _finalize(outcome: QuestTickOutcome) -> QuestTickOutcome:
+        if agentlog_id is not None:
+            try:
+                agentlog.finalize_log(store, log_id=agentlog_id, status=outcome.status)
+            except Exception:
+                log.warning(
+                    "run_quest_tick: failed to finalize agentlog", exc_info=True
+                )
+        return outcome
+
     from precis.utils.llm.router import LlmRequest
     from precis.utils.llm.router import dispatch as _dispatch
 
@@ -965,17 +1001,23 @@ def run_quest_tick(
         # pick recorded, no panel "failed") and re-picks once the window clears —
         # instead of burning a tick + a FAILED-PASSES row every worker cycle.
         if getattr(res, "paused", False):
-            return QuestTickOutcome(
-                quest_id, "paused", 0, False, cost, f"paused: {res.error}"
+            return _finalize(
+                QuestTickOutcome(
+                    quest_id, "paused", 0, False, cost, f"paused: {res.error}"
+                )
             )
-        return QuestTickOutcome(
-            quest_id, "failed", 0, False, cost, f"llm error: {res.error}"
+        return _finalize(
+            QuestTickOutcome(
+                quest_id, "failed", 0, False, cost, f"llm error: {res.error}"
+            )
         )
 
     payload = _payload_from_result(res)
     if payload is None:
-        return QuestTickOutcome(
-            quest_id, "failed", 0, False, cost, "unparseable model output"
+        return _finalize(
+            QuestTickOutcome(
+                quest_id, "failed", 0, False, cost, "unparseable model output"
+            )
         )
 
     # Open hypotheses to dedup fresh ones against — a spin is the same question
@@ -1237,25 +1279,27 @@ def run_quest_tick(
         cost=cost_val,
         chars=chars,
     )
-    return QuestTickOutcome(
-        quest_id,
-        "succeeded",
-        added,
-        rewritten,
-        cost,
-        note,
-        proposals=len(proposals) + proposals_committed,
-        candidates_created=created,
-        sims_dispatched=dispatched,
-        results_harvested=harvested,
-        ruled_out=ruled,
-        graduated=graduated,
-        searches_run=searches_run,
-        papers_linked=papers_linked,
-        hypotheses_deduped=deduped,
-        ledger_added=ledger_added,
-        escalated=is_review,
-        mode="frontier-review" if is_review else "local",
+    return _finalize(
+        QuestTickOutcome(
+            quest_id,
+            "succeeded",
+            added,
+            rewritten,
+            cost,
+            note,
+            proposals=len(proposals) + proposals_committed,
+            candidates_created=created,
+            sims_dispatched=dispatched,
+            results_harvested=harvested,
+            ruled_out=ruled,
+            graduated=graduated,
+            searches_run=searches_run,
+            papers_linked=papers_linked,
+            hypotheses_deduped=deduped,
+            ledger_added=ledger_added,
+            escalated=is_review,
+            mode="frontier-review" if is_review else "local",
+        )
     )
 
 

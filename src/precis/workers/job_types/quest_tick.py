@@ -563,7 +563,12 @@ def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
 
     search_fn = make_acquiring_search(quest_id, Hub(store=ctx.store))
     outcome = run_quest_tick(
-        ctx.store, quest_id, compute=True, tier=tier, search_fn=search_fn
+        ctx.store,
+        quest_id,
+        compute=True,
+        tier=tier,
+        search_fn=search_fn,
+        job_ref_id=ctx.ref_id,
     )
     status = getattr(outcome, "status", "?")
     note = getattr(outcome, "note", "") or ""

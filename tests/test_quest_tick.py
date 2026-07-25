@@ -444,6 +444,48 @@ class TestQuestTick:
         assert out.ledger_added == 0
 
 
+class TestQuestTickAgentlog:
+    """A quest tick opens+finalizes an ``agentlog`` per run — the twin of
+    ``plan_tick``'s own agentlog wiring — so the ``/agentlogs/<id>`` web
+    viewer can show the tick's assembled prompt/session (observability
+    only; no quest-logic change)."""
+
+    def test_successful_tick_opens_and_finalizes_an_agentlog(self, store: Any) -> None:
+        from precis import agentlog
+
+        qid = _mk_quest(store, "A NO→NH₃ catalyst")
+        payload = {"logbook": [{"entry_type": "note", "text": "thinking"}]}
+        out = run_quest_tick(
+            store, qid, dispatch_fn=_fake_dispatch(payload), job_ref_id=4242
+        )
+        assert out.status == "succeeded"
+
+        rows = agentlog.list_recent(store)
+        row = next(r for r in rows if r["parent_ref_id"] == qid)
+        assert row["source"] == "quest_tick"
+        assert row["job_ref_id"] == 4242
+        assert row["status"] == "succeeded"
+
+        ref = store.get_ref(kind="agentlog", id=row["ref_id"])
+        assert ref is not None
+        assert ref.meta.get("prompt")  # non-empty, verbatim assembled prompt
+        assert "NO→NH₃" in ref.meta["prompt"]
+        assert ref.meta.get("model")
+        assert ref.meta.get("ended_at")
+
+    def test_failed_tick_still_finalizes_the_agentlog(self, store: Any) -> None:
+        from precis import agentlog
+
+        qid = _mk_quest(store, "A striving")
+        out = run_quest_tick(store, qid, dispatch_fn=_fake_dispatch(None, error="boom"))
+        assert out.status == "failed"
+
+        rows = agentlog.list_recent(store)
+        row = next(r for r in rows if r["parent_ref_id"] == qid)
+        assert row["source"] == "quest_tick"
+        assert row["status"] == "failed"
+
+
 class TestModelCannotFabricateResults:
     """gripes 171148/171149: a local model proposer fabricated a numeric
     barrier ("barrier=0.892 eV") inside a `result` logbook entry — the loop

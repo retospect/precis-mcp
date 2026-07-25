@@ -1,0 +1,40 @@
+{% extends "base.html.j2" %}
+{% block title %}Logbook — {{ headline }}{% endblock %}
+{% block content %}
+<a href="/refs/quest/{{ quest_id }}" class="text-sm text-slate-500 underline">&larr; back to quest</a>
+
+<div class="mt-2 mb-4">
+  <h1 class="text-lg font-semibold">Logbook — {{ headline }}</h1>
+  <p class="mt-1 text-sm text-slate-500">{{ total }} entr{{ 'y' if total == 1 else 'ies' }} · page {{ page }}</p>
+</div>
+
+{% if rows %}
+<ol class="mb-4 space-y-2">
+  {% for e in rows %}
+  <li class="text-sm rounded-lg border border-slate-200 bg-white p-3">
+    <div class="flex items-baseline gap-2 flex-wrap">
+      <span class="inline-flex items-center px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 text-xs">{{ e.entry_type }}</span>
+      <span class="text-xs text-slate-400 font-mono">{{ e.stamp }}</span>
+      <span class="text-xs text-slate-400">{{ e.by }}</span>
+      {% if e.cost %}<span class="text-xs text-slate-400">cost={{ '%g' | format(e.cost) }}</span>{% endif %}
+    </div>
+    <p class="text-sm text-slate-700 whitespace-pre-wrap mt-1">{{ e.text | linkify_refs }}</p>
+  </li>
+  {% endfor %}
+</ol>
+{% else %}
+<p class="text-sm text-slate-400 italic">no logbook entries yet.</p>
+{% endif %}
+
+<div class="flex items-center gap-3 text-sm">
+  {% if has_prev %}
+  <a href="/refs/quest/{{ quest_id }}/logbook?page={{ page - 1 }}"
+     class="rounded-md border border-slate-300 px-3 py-1 hover:bg-slate-100">&larr; Prev</a>
+  {% endif %}
+  <span class="text-slate-400">Page {{ page }}</span>
+  {% if has_next %}
+  <a href="/refs/quest/{{ quest_id }}/logbook?page={{ page + 1 }}"
+     class="rounded-md border border-slate-300 px-3 py-1 hover:bg-slate-100">Next &rarr;</a>
+  {% endif %}
+</div>
+{% endblock %}

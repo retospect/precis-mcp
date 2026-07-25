@@ -425,6 +425,25 @@ def _quest_draft_url(store: Any, draft_ref_id: int) -> str:
     return f"/drafts/{ident or draft_ref_id}"
 
 
+def _quest_last_agentlog_id(store: Any, qid: int) -> int | None:
+    """The most recent ``quest_tick`` agentlog run for this quest, or
+    ``None`` if the quest has never ticked. Mirrors the "latest job by
+    meta field" SQL shape in ``precis.quest.status._tick_events`` — an
+    ``agentlog`` ref carries ``meta.source='quest_tick'`` +
+    ``meta.parent_ref_id`` (the quest's own ref id), stamped by
+    ``touch_from_env``/``open_log`` (``precis.agentlog``)."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT ref_id FROM refs "
+            "WHERE kind = 'agentlog' AND deleted_at IS NULL "
+            "AND meta->>'source' = 'quest_tick' "
+            "AND (meta->>'parent_ref_id')::bigint = %s "
+            "ORDER BY ref_id DESC LIMIT 1",
+            (qid,),
+        ).fetchone()
+    return int(row[0]) if row else None
+
+
 async def _quest_detail(request: Request, store: Any, ref: Any) -> HTMLResponse:
     """Hub dashboard for ``kind='quest'`` — the striving above the work.
 
@@ -508,6 +527,10 @@ async def _quest_detail(request: Request, store: Any, ref: Any) -> HTMLResponse:
         request, "get", {"kind": "quest", "id": qid, "view": "gaps"}
     )
 
+    # Latest quest_tick run — lets a human spy on what the autonomous
+    # loop actually did/said last, via the existing agentlog viewer.
+    last_agentlog_id = _quest_last_agentlog_id(store, qid)
+
     # Servers-lite — kind counts replacing the raw handle dump. Linked to
     # the kind's own browse tab when one exists (todo/paper/structure/…);
     # a kind with no ``/refs/<kind>`` tab (e.g. concept) renders as plain
@@ -543,6 +566,7 @@ async def _quest_detail(request: Request, store: Any, ref: Any) -> HTMLResponse:
             "dossier_seeded": did is not None,
             "narrative_text": narrative_text,
             "ledger_text": ledger_text,
+            "last_agentlog_id": last_agentlog_id,
             "paper_url": paper_url,
             "paper_docx_url": paper_docx_url,
             "paper_pdf_url": paper_pdf_url,
@@ -555,6 +579,57 @@ async def _quest_detail(request: Request, store: Any, ref: Any) -> HTMLResponse:
             "servers_lite": servers_lite,
             "servers_total": len(live_servers),
             "discussions": _followup_discussions(store, qid),
+        },
+    )
+
+
+#: Full logbook page size — the hub itself only shows the last 10
+#: entries (``log_tail`` above); this is the "see everything" view.
+_QUEST_LOGBOOK_PAGE_SIZE = 50
+
+
+@router.get("/quest/{qid}/logbook", response_class=HTMLResponse)
+async def quest_logbook(request: Request, qid: int, page: int = 1) -> HTMLResponse:
+    """Every ``quest_log`` entry for one quest, newest-first, paginated —
+    the hub dashboard (``_quest_detail``) only renders the last 10."""
+    from precis.quest.logbook import LOG_KIND
+
+    store = get_store(request)
+    refs = store.fetch_refs_by_ids([qid], include_deleted=False)
+    ref = refs.get(qid)
+    if ref is None or ref.kind != "quest":
+        raise NotFound(f"quest id={qid} not found")
+
+    title_lines = (ref.title or "").split("\n", 1)
+    headline = title_lines[0] if title_lines else f"quest {qid}"
+
+    entries = [
+        b
+        for b in store.list_blocks_for_ref(qid)
+        if getattr(b, "chunk_kind", None) == LOG_KIND
+    ]
+    entries.reverse()  # newest-first, same order as the hub's tail
+
+    page = max(page, 1)
+    offset = (page - 1) * _QUEST_LOGBOOK_PAGE_SIZE
+    # Over-fetch one extra row to detect "is there a next page" without a
+    # separate count query — same probe as ``items.py``'s ``_recent_rows``.
+    window = entries[offset : offset + _QUEST_LOGBOOK_PAGE_SIZE + 1]
+    has_next = len(window) > _QUEST_LOGBOOK_PAGE_SIZE
+    rows = [_quest_log_row(b) for b in window[:_QUEST_LOGBOOK_PAGE_SIZE]]
+
+    return templates.TemplateResponse(
+        request,
+        "refs/quest_logbook.html.j2",
+        {
+            "active_tab": "refs:quest",
+            "quest_id": qid,
+            "headline": headline,
+            "rows": rows,
+            "page": page,
+            "has_prev": page > 1,
+            "has_next": has_next,
+            "total": len(entries),
         },
     )
 
