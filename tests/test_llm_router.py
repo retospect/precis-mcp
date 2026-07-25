@@ -1716,31 +1716,57 @@ def test_dispatch_failover_all_rungs_4xx_stays_error_not_paused(
     assert out.error is not None and "401" in out.error
 
 
-# ── resolve_chain: the chain-override layer (ADR 0066 §4, Phase A) ─────
+# ── resolve_chain: the chain-override layer (ADR 0066 §4 / §Phase B) ─────
 #
-# With no ``llm.chain.<tier>`` app_settings row set, resolve_chain must be
-# byte-for-byte _failover_ladder — that's the whole point of this slice.
+# ADR 0066 Phase B: the chain is the always-on resolution path. With no
+# ``llm.chain.<tier>`` row set, resolve_chain == _default_chain — a single
+# primary rung by default, or the built-in _failover_ladder when
+# PRECIS_LLM_FAILOVER is on. An operator override is read regardless of the
+# flag (the Phase B unlock — see test_dispatch_chain_override_honored_flag_off).
+
+_LADDER_CASES = [
+    (Tier.CLOUD_SUPER, True, Backend.OPENAI),
+    (Tier.CLOUD_SMALL, False, Backend.OPENAI),
+    (Tier.CLOUD_SUPER, True, Backend.ANTHROPIC),
+    (Tier.LOCAL_BIG, True, Backend.ANTHROPIC),
+    (Tier.LOCAL_SMALL, False, Backend.OPENAI),
+]
 
 
-@pytest.mark.parametrize(
-    ("tier", "tools_needed", "backend"),
-    [
-        (Tier.CLOUD_SUPER, True, Backend.OPENAI),
-        (Tier.CLOUD_SMALL, False, Backend.OPENAI),
-        (Tier.CLOUD_SUPER, True, Backend.ANTHROPIC),
-        (Tier.LOCAL_BIG, True, Backend.ANTHROPIC),
-        (Tier.LOCAL_SMALL, False, Backend.OPENAI),
-    ],
-)
-def test_resolve_chain_no_override_matches_failover_ladder(
+@pytest.mark.parametrize(("tier", "tools_needed", "backend"), _LADDER_CASES)
+def test_resolve_chain_no_override_flag_off_is_single_primary_rung(
     monkeypatch: pytest.MonkeyPatch,
     tier: Tier,
     tools_needed: bool,
     backend: Backend,
 ) -> None:
+    """Phase B default: no override + failover flag off → a single primary rung
+    (``select_transport``), byte-for-byte the pre-Phase-B non-failover path —
+    NOT the OSS→claude ladder (which is opt-in)."""
     monkeypatch.setattr(
         "precis.utils.llm.live_config.chain_override", lambda _tier: None
     )
+    monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
+
+    chain = router.resolve_chain(tier, tools_needed=tools_needed, backend=backend)
+
+    primary = router.select_transport(tier, tools_needed=tools_needed, backend=backend)
+    assert chain == [Rung(primary, label="primary")]
+
+
+@pytest.mark.parametrize(("tier", "tools_needed", "backend"), _LADDER_CASES)
+def test_resolve_chain_no_override_flag_on_matches_failover_ladder(
+    monkeypatch: pytest.MonkeyPatch,
+    tier: Tier,
+    tools_needed: bool,
+    backend: Backend,
+) -> None:
+    """With PRECIS_LLM_FAILOVER on, no override falls to the built-in
+    auto-failover ladder — byte-for-byte the legacy failover-on behaviour."""
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override", lambda _tier: None
+    )
+    monkeypatch.setenv("PRECIS_LLM_FAILOVER", "1")
     monkeypatch.delenv("PRECIS_MODEL_OPUS", raising=False)
     monkeypatch.delenv("PRECIS_MODEL_SONNET", raising=False)
 
@@ -1824,14 +1850,14 @@ def test_resolve_chain_malformed_override_falls_back_to_ladder(
             Tier.CLOUD_SUPER, tools_needed=True, backend=Backend.OPENAI
         )
 
-    default = router._failover_ladder(
+    default = router._default_chain(
         Tier.CLOUD_SUPER, tools_needed=True, backend=Backend.OPENAI
     )
     assert chain == default
     assert any("llm-chain" in rec.message for rec in caplog.records)
 
 
-def test_resolve_chain_empty_override_falls_back_to_ladder(
+def test_resolve_chain_empty_override_falls_back_to_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An empty list (as opposed to ``None``) is treated the same as no
@@ -1842,10 +1868,83 @@ def test_resolve_chain_empty_override_falls_back_to_ladder(
     chain = router.resolve_chain(
         Tier.CLOUD_SUPER, tools_needed=True, backend=Backend.OPENAI
     )
-    default = router._failover_ladder(
+    default = router._default_chain(
         Tier.CLOUD_SUPER, tools_needed=True, backend=Backend.OPENAI
     )
     assert chain == default
+
+
+def test_dispatch_chain_override_honored_flag_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Phase B unlock: an operator ``llm.chain.<tier>`` override is walked
+    even with PRECIS_LLM_FAILOVER OFF — Phase A left a set chain inert unless
+    the flag was on, so the operator chain editor's rows would have been
+    written but never read. Here rung 0 (OSS) errors and dispatch falls through
+    to rung 1 (claude), proving the chain drove the routing."""
+    monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda tier: (
+            [
+                {
+                    "placement": "cloud",
+                    "model": "z-ai/glm-5.2",
+                    "transport": "openai_tools",
+                },
+                {
+                    "placement": "cloud",
+                    "model": "claude-opus-4-8",
+                    "transport": "claude_agent",
+                },
+            ]
+            if tier is Tier.CLOUD_SUPER
+            else None
+        ),
+    )
+    oss = _FakeProv(_err("glm down"))
+    claude = _FakeProv(_ok("claude saved it"))
+    monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_TOOLS, oss)
+    monkeypatch.setitem(router._PROVIDERS, Transport.CLAUDE_AGENT, claude)
+
+    out = dispatch(LlmRequest(tier=Tier.CLOUD_SUPER, prompt="x", tools_needed=True))
+
+    assert out.text == "claude saved it"
+    assert out.error is None
+    assert oss.calls == 1 and claude.calls == 1
+    assert oss.model_seen == "z-ai/glm-5.2"  # rung 0's pinned model
+    assert claude.model_seen == "claude-opus-4-8"  # rung 1's pinned model
+
+
+def test_dispatch_single_rung_chain_override_honors_pinned_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A single-rung operator chain still pins its own model — dispatch must
+    wrap it (``ladder[0].model is not None``) so the rung's model reaches the
+    provider rather than the tier-resolved default."""
+    monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda tier: (
+            [
+                {
+                    "placement": "cloud",
+                    "model": "z-ai/glm-4.7",
+                    "transport": "openai_compat",
+                }
+            ]
+            if tier is Tier.CLOUD_SMALL
+            else None
+        ),
+    )
+    compat = _FakeProv(_ok("ok", model="z-ai/glm-4.7"))
+    monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_COMPAT, compat)
+
+    out = dispatch(LlmRequest(tier=Tier.CLOUD_SMALL, prompt="x"))
+
+    assert out.text == "ok"
+    assert compat.calls == 1
+    assert compat.model_seen == "z-ai/glm-4.7"  # the chain's pin, not haiku
 
 
 def test_dispatch_chain_override_falls_through_to_rung_1(

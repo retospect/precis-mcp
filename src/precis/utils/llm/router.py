@@ -992,21 +992,48 @@ def _failover_ladder(tier: Tier, *, tools_needed: bool, backend: Backend) -> lis
     return [Rung(primary, label="primary")]
 
 
+def _default_chain(tier: Tier, *, tools_needed: bool, backend: Backend) -> list[Rung]:
+    """The rung list for a tier with **no operator chain override** — the
+    behaviour-preserving default under ADR 0066 Phase B's always-on chain.
+
+    The built-in OSS→claude safety-net ladder (:func:`_failover_ladder`) is
+    opt-in via ``PRECIS_LLM_FAILOVER``. Without it a tier resolves to a
+    **single rung** — its primary transport — which is exactly the pre-Phase-B
+    non-failover dispatch path (``select_transport`` → one provider,
+    byte-for-byte). With the flag on it resolves to the full auto-failover
+    ladder, exactly as before. So making the chain the always-on resolution
+    path (Phase B) doesn't change a no-override tier's routing: only an
+    operator-written ``llm.chain.<tier>`` row does, and that is now read
+    regardless of the flag (:func:`resolve_chain`).
+    """
+    if _failover_enabled():
+        return _failover_ladder(tier, tools_needed=tools_needed, backend=backend)
+    primary = select_transport(tier, tools_needed=tools_needed, backend=backend)
+    return [Rung(primary, label="primary")]
+
+
 def resolve_chain(tier: Tier, *, tools_needed: bool, backend: Backend) -> list[Rung]:
     """The rung list :func:`dispatch` / :func:`dispatch_async` actually walk —
-    an operator-owned ``app_settings`` chain override (ADR 0066 §4, Phase A)
-    layered in front of the compiled :func:`_failover_ladder`.
+    an operator-owned ``app_settings`` chain override (ADR 0066 §4) layered in
+    front of the compiled default (:func:`_default_chain`).
 
-    With no ``llm.chain.<tier>`` row set (today's steady state, and every
-    existing test), this returns exactly what ``_failover_ladder`` returns —
-    the whole point of this seam is that its mere existence changes nothing
-    until an operator writes a chain. A configured override is a list of rung
-    dicts (``{"placement": "cloud"|"local", "model": <str>, "transport":
-    <str>}``, :func:`~precis.utils.llm.live_config.chain_override`) mapped
-    onto :class:`Rung` in order, with ``placement`` carried through as the
-    label. Any malformed rung — an unrecognized ``transport`` string, a
+    **ADR 0066 Phase B — the chain is the always-on resolution path.** An
+    ``llm.chain.<tier>`` override is honoured *regardless of*
+    ``PRECIS_LLM_FAILOVER``, so the operator chain editor's rows are actually
+    read (Phase A wired this call inside ``if _failover_enabled():``, which
+    left a set chain inert unless the legacy flag was on). With no override
+    (today's steady state, and every non-chain test), this returns
+    :func:`_default_chain` — a single primary rung, or the built-in
+    auto-failover ladder when the flag is on — so a no-override tier routes
+    byte-for-byte as it does today.
+
+    A configured override is a list of rung dicts (``{"placement":
+    "cloud"|"local", "model": <str>, "transport": <str>}``,
+    :func:`~precis.utils.llm.live_config.chain_override`) mapped onto
+    :class:`Rung` in order, with ``placement`` carried through as the label.
+    Any malformed rung — an unrecognized ``transport`` string, a
     missing/non-string ``model``, a non-object entry — degrades the *whole*
-    chain back to ``_failover_ladder`` (never a partial or best-effort
+    chain back to :func:`_default_chain` (never a partial or best-effort
     chain), logged once so a typo'd override is visible without darking the
     tier.
     """
@@ -1014,17 +1041,17 @@ def resolve_chain(tier: Tier, *, tools_needed: bool, backend: Backend) -> list[R
 
     override = live_config.chain_override(tier)
     if not override:
-        return _failover_ladder(tier, tools_needed=tools_needed, backend=backend)
+        return _default_chain(tier, tools_needed=tools_needed, backend=backend)
 
     def _fallback(reason: str, i: int, detail: object) -> list[Rung]:
         log.warning(
-            "llm-chain: %s rung %d %s (%r) — falling back to the default ladder",
+            "llm-chain: %s rung %d %s (%r) — falling back to the default chain",
             live_config.chain_key(tier),
             i,
             reason,
             detail,
         )
-        return _failover_ladder(tier, tools_needed=tools_needed, backend=backend)
+        return _default_chain(tier, tools_needed=tools_needed, backend=backend)
 
     rungs: list[Rung] = []
     for i, raw in enumerate(override):
@@ -1123,12 +1150,15 @@ def dispatch(req: LlmRequest) -> LlmResult:
     on but no base url set, cloud calls fall back to ``claude`` rather than
     POST to a phantom endpoint — the ships-dark safety net.
 
-    With ``PRECIS_LLM_FAILOVER`` on, an OSS primary is wrapped in a
-    :class:`FailoverProvider` that falls back to ``claude`` on error — so a
-    flipped backend degrades to claude instead of failing. Off by default.
-    The same ladder also covers a *saturated local slot*: a ``paused``
-    local-serving result retries rung 0 against the hosted OSS endpoint
-    (skipping the busy local hardware) before falling to the claude rung.
+    Routing walks a per-tier **chain** (:func:`resolve_chain`, ADR 0066
+    Phase B — always-on): an operator ``llm.chain.<tier>`` override, else the
+    default (a single primary rung, or — with ``PRECIS_LLM_FAILOVER`` on — the
+    built-in OSS→claude auto-failover ladder). A multi-rung chain is wrapped in
+    a :class:`FailoverProvider` that falls through on error, so a flipped
+    backend degrades to its next rung instead of failing. The ladder also
+    covers a *saturated local slot*: a ``paused`` local-serving result retries
+    rung 0 against the hosted OSS endpoint (skipping the busy local hardware)
+    before falling to the next rung.
     """
     backend = resolve_backend()
     if backend is Backend.OPENAI and not os.environ.get("PRECIS_LLM_BASE_URL"):
@@ -1137,14 +1167,24 @@ def dispatch(req: LlmRequest) -> LlmResult:
     # Resolve the transport *before* the breaker, so the gate can key on the
     # resource actually spent: the claude-OAuth transports draw subscription
     # quota (gated on the snapshot), everything else paid spends real dollars.
-    if _failover_enabled():
-        ladder = resolve_chain(req.tier, tools_needed=req.tools_needed, backend=backend)
-        transport = ladder[0].transport
+    # ADR 0066 Phase B: the chain is the always-on resolution path, so an
+    # operator ``llm.chain.<tier>`` override is honoured regardless of
+    # PRECIS_LLM_FAILOVER (the editor's rows are actually read). With no
+    # override this collapses to today's path (single primary rung, or the
+    # built-in auto-failover ladder when the flag is on — see _default_chain).
+    ladder = resolve_chain(req.tier, tools_needed=req.tools_needed, backend=backend)
+    transport = ladder[0].transport
+    # Wrap in the FailoverProvider only when there's genuinely a ladder to walk:
+    # the failover flag is on (preserves the pre-Phase-B flag-on wrapping
+    # exactly), the chain has >1 rung, or a single rung pins its own model (an
+    # operator single-rung chain — resolve_chain's parser always sets a rung
+    # model, so this catches every operator override). A bare single primary
+    # rung (model=None, flag off) routes straight to its provider — byte-for-
+    # byte the old non-failover path, and it keeps the saturated-slot escape
+    # below gated on a real ladder.
+    if _failover_enabled() or len(ladder) > 1 or ladder[0].model is not None:
         provider: LlmProvider = FailoverProvider(ladder)
     else:
-        transport = select_transport(
-            req.tier, tools_needed=req.tools_needed, backend=backend
-        )
         provider = provider_for(transport)
     # Global circuit breaker: refuse a *new paid* call once its resource is
     # exhausted (only free local tiers pass; dark when no store is bound).
@@ -1200,7 +1240,8 @@ def dispatch(req: LlmRequest) -> LlmResult:
         # (`PRECIS_LLM_BASE_URL`, e.g. OpenRouter) instead of the busy local
         # slot, falling through to the claude rung only if that also fails.
         # docs/proposals/llm-openrouter-bypass.md item 3 — gated on the
-        # existing PRECIS_LLM_FAILOVER flag rather than a new one. But this
+        # PRECIS_LLM_FAILOVER flag OR an operator chain (both produce a
+        # FailoverProvider here) rather than a new one. But this
         # escape only exists when rung 0's transport is one of the two that
         # read `PRECIS_LLM_BASE_URL` when `local_url` is unset (OPENAI_TOOLS /
         # OPENAI_COMPAT) — ``Transport.LITELLM`` (e.g. LOCAL_SMALL under the
@@ -1339,13 +1380,12 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
     either — same as :func:`dispatch`, which only records a call once a
     provider actually ran.
 
-    Note: when ``PRECIS_LLM_FAILOVER`` is on, this checks only the primary
-    rung's transport to decide whether to stream — it does not wrap the
-    streaming call in the sync path's :class:`FailoverProvider` ladder, so a
-    streaming caller trades the OSS→claude safety net for real-time progress
-    on that one call. Ships dark: the failover ladder is opt-in and a
-    streaming ``on_event`` caller (asa_bot) sits on the cloud claude tiers,
-    where ``resolve_chain`` returns a single ``[Rung(primary)]`` anyway (no
+    Note: this checks only the primary rung's transport to decide whether to
+    stream — it does not wrap the streaming call in the sync path's
+    :class:`FailoverProvider` ladder, so a streaming caller trades the
+    multi-rung safety net for real-time progress on that one call. Ships dark:
+    a streaming ``on_event`` caller (asa_bot) sits on the cloud claude tiers,
+    where :func:`resolve_chain` returns a single ``[Rung(primary)]`` anyway (no
     chain override configured, nothing to fail over to), so this is a no-op
     distinction until an OSS tier ever streams.
     """
@@ -1353,13 +1393,10 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
     if backend is Backend.OPENAI and not os.environ.get("PRECIS_LLM_BASE_URL"):
         backend = Backend.ANTHROPIC
     model = req.model or resolve_model(req.tier, backend=backend)
-    if _failover_enabled():
-        ladder = resolve_chain(req.tier, tools_needed=req.tools_needed, backend=backend)
-        transport = ladder[0].transport
-    else:
-        transport = select_transport(
-            req.tier, tools_needed=req.tools_needed, backend=backend
-        )
+    # Resolve the primary transport through the always-on chain (ADR 0066
+    # Phase B), same as sync dispatch — the streaming decision keys on rung 0.
+    ladder = resolve_chain(req.tier, tools_needed=req.tools_needed, backend=backend)
+    transport = ladder[0].transport
 
     if transport is not Transport.CLAUDE_AGENT or req.on_event is None:
         return dispatch(req)

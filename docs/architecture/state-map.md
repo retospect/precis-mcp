@@ -610,9 +610,19 @@ under `backend=openai`, item 2) — previously pinned unconditionally to the
 loopback litellm proxy with no hosted-backend escape at all. **ADR 0066
 Phase A** (dark/additive, no live caller yet — call-site sweep is Phase C):
 `live_config.chain_override(tier)` + `router.py::resolve_chain` layer a
-per-tier `app_settings`-backed chain override in front of `_failover_ladder`
-(only consulted inside `if _failover_enabled():`; no row → byte-identical to
-today's ladder). `router.py::Tier` also gained four capability rungs
+per-tier `app_settings`-backed chain override in front of the compiled
+default. **Phase B (step 1, `resolve_chain` always-on):** `dispatch` /
+`dispatch_async` now resolve *every* call through `resolve_chain`, so an
+operator `llm.chain.<tier>` override is read **regardless of
+`PRECIS_LLM_FAILOVER`** (Phase A wired it inside `if _failover_enabled():`,
+which left a set chain inert). With no override, `resolve_chain` →
+`_default_chain`: a single primary rung by default (byte-for-byte the
+pre-Phase-B non-failover path), or `_failover_ladder` when the flag is on.
+`dispatch` wraps in `FailoverProvider` iff `_failover_enabled() or len(chain)
+> 1 or chain[0].model is not None` — reproducing the legacy flag-on/flag-off
+wrapping exactly, and activating operator chains (every parsed override rung
+pins a model, so a single-rung operator chain is honoured too). `router.py::Tier`
+also gained four capability rungs
 (`FRONTIER`/`BIG`/`MEDIUM`/`SMALL`) **additively** alongside the legacy five,
 each routing byte-for-byte identically to its legacy analogue
 (`FRONTIER↔CLOUD_SUPER`, `BIG↔CLOUD_MID`, `MEDIUM↔CLOUD_SMALL`,
