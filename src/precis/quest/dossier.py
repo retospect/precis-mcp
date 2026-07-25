@@ -43,6 +43,17 @@ if TYPE_CHECKING:
 
 _RELATION = "dossier-of"
 
+#: The owner's reader-facing PAPER draft — a SEPARATE draft from the
+#: dossier (the dossier is the internal thinking substrate; the paper is
+#: what a human reads). Mirrors ``dossier-of`` exactly (asymmetric,
+#: auto-mirrored inverse ``has-paper``), but this module does not mint the
+#: paper draft — that pipeline is unbuilt (docs/design/paper-writing-
+#: pipeline.md). :func:`paper_ref_id` is a read-only resolver so callers
+#: (the quest web dashboard) can link to a paper when one exists and
+#: degrade gracefully when it doesn't. Keep in sync with the `relations`
+#: seed in migration 0089_paper_of_relation.sql.
+_PAPER_RELATION = "paper-of"
+
 _SEED = (
     "_(No synthesis yet — this dossier is rewritten each research cycle. The "
     "first tick will replace this seed with the current understanding, "
@@ -114,6 +125,27 @@ def dossier_ref_id(store: Store, owner_id: int) -> int | None:
             "SELECT src_ref_id FROM links "
             "WHERE dst_ref_id = %s AND relation = %s LIMIT 1",
             (owner_id, _RELATION),
+        ).fetchone()
+    return int(row[0]) if row else None
+
+
+def paper_ref_id(store: Store, owner_id: int) -> int | None:
+    """The ref id of the owner's reader-facing PAPER draft, or ``None``.
+
+    Resolved via the ``paper-of`` edge — the same shape as
+    :func:`dossier_ref_id`, but a distinct draft: the dossier is the
+    process's internal rewritten synthesis, the paper is a separate,
+    human-facing projection of it (docs/decisions/0064-dossier-thinking-
+    substrate-and-paper-projection.md). Nothing in this module creates a
+    paper draft — that pipeline doesn't exist yet — so this always
+    returns ``None`` until some other writer links one in with
+    ``rel='paper-of'``.
+    """
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT src_ref_id FROM links "
+            "WHERE dst_ref_id = %s AND relation = %s LIMIT 1",
+            (owner_id, _PAPER_RELATION),
         ).fetchone()
     return int(row[0]) if row else None
 
@@ -312,6 +344,7 @@ __all__ = [
     "dossier_ref_id",
     "ensure_dossier",
     "ensure_ledger_chunk",
+    "paper_ref_id",
     "read_dossier",
     "read_ledger",
     "read_narrative",

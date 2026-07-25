@@ -952,7 +952,13 @@ The master kinds table lives in the `precis-overview` skill.
   quest-coordinator orphans (quest context + every-pass cadence); the sweeper
   stays the general coordinator/`claude_inproc` backstop (and covers quest loops
   if the reconciler is gated off). Both terminalize under `FOR UPDATE`, so a
-  rare double-fire just leaves the job terminal either way.
+  rare double-fire just leaves the job terminal either way. **Web-surfaced**:
+  `/refs/quest/<id>` is a dedicated hub dashboard (`precis_web/routes/refs.py`'s
+  `detail()`, `refs/quest_detail.html.j2`), not the generic ref-detail render —
+  header (status/prio/momentum/tote), hub links (dossier, paper draft when a
+  `paper-of` edge exists, log/frontier/gaps), a "happening now" recent-log
+  callout, dossier narrative+ledger, logbook tail, frontier/gaps panels, and a
+  servers-lite kind-count footer replacing the old raw-handle-link dump.
 - **`llm`** — the model catalog (design-of-record `docs/proposals/llm-catalog.md`;
   slice 1 **live, read-only, ships dark**). Turns model choice from hardcoded
   constants (`router._TIER_MODEL` + the `LLM:opus|sonnet|haiku|local` tag) into a

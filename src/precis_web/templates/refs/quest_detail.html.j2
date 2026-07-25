@@ -1,0 +1,211 @@
+{% extends "base.html.j2" %}
+{% block title %}{{ headline }}{% endblock %}
+{% block content %}
+<a href="/refs/quest" class="text-sm text-slate-500 underline">&larr; {{ kind_label }}</a>
+
+{# ── Header strip — striving + status/prio/momentum/tote ────────────── #}
+<div class="mt-2 mb-4">
+  <h1 class="text-lg font-semibold">{{ headline }}</h1>
+  {% if criteria %}
+  <p class="mt-1 text-sm text-slate-600 whitespace-pre-wrap">{{ criteria | linkify_refs }}</p>
+  {% endif %}
+  <p class="mt-2 text-sm text-slate-500 flex flex-wrap items-center gap-x-2 gap-y-1">
+    <span class="font-mono">qu{{ ref.id }}</span>
+    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
+      {% if status == 'active' %}bg-emerald-100 text-emerald-800
+      {% elif status == 'dormant' %}bg-amber-100 text-amber-800
+      {% else %}bg-slate-200 text-slate-700{% endif %}">
+      STATUS:{{ status }}
+    </span>
+    {% if ref.prio is not none %}
+    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-sky-100 text-sky-800">
+      PRIO:{{ ref.prio }}
+    </span>
+    {% endif %}
+    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
+      {% if momentum.label == 'active' %}bg-emerald-100 text-emerald-800
+      {% elif momentum.label == 'warming' %}bg-amber-100 text-amber-800
+      {% elif momentum.label == 'stalled' %}bg-rose-100 text-rose-800
+      {% else %}bg-slate-200 text-slate-700{% endif %}"
+      title="{{ momentum.recent_entries }} recent log entr{{ 'y' if momentum.recent_entries == 1 else 'ies' }} · {{ momentum.recent_server_events }} server event{{ '' if momentum.recent_server_events == 1 else 's' }}">
+      momentum: {{ momentum.label }}
+    </span>
+    <span class="text-slate-400">·</span>
+    <span>tote {{ '%g' | format(tote) }}</span>
+    {% if ref.updated %}<span class="text-slate-400">·</span><span>updated {{ ref.updated }}</span>{% endif %}
+  </p>
+</div>
+
+{# ── Hub nav row ──────────────────────────────────────────────────── #}
+<div class="mb-4 flex flex-wrap items-center gap-2">
+  {% if dossier_url %}
+  <a href="{{ dossier_url }}" class="rounded-md border border-slate-300 bg-white text-sm px-3 py-1.5 text-slate-700 hover:bg-slate-50">📓 Dossier</a>
+  {% else %}
+  <span class="rounded-md border border-slate-200 bg-slate-50 text-sm px-3 py-1.5 text-slate-400" title="no dossier yet — a quest tick creates + fills it">📓 Dossier</span>
+  {% endif %}
+  {% if paper_url %}
+  <a href="{{ paper_url }}" class="rounded-md border border-slate-300 bg-white text-sm px-3 py-1.5 text-slate-700 hover:bg-slate-50">📄 Paper</a>
+  <a href="{{ paper_docx_url }}" class="rounded-md border border-slate-200 bg-white text-xs px-2 py-1.5 text-slate-500 hover:bg-slate-50">.docx</a>
+  <a href="{{ paper_pdf_url }}" class="rounded-md border border-slate-200 bg-white text-xs px-2 py-1.5 text-slate-500 hover:bg-slate-50">.pdf</a>
+  {% else %}
+  <span class="rounded-md border border-slate-200 bg-slate-50 text-sm px-3 py-1.5 text-slate-400" title="no reader-facing paper yet">📄 Paper</span>
+  {% endif %}
+  <a href="#logbook" class="rounded-md border border-slate-300 bg-white text-sm px-3 py-1.5 text-slate-700 hover:bg-slate-50">📜 Full log ({{ log_entry_count }})</a>
+  <a href="#frontier" class="rounded-md border border-slate-300 bg-white text-sm px-3 py-1.5 text-slate-700 hover:bg-slate-50">🧭 Frontier</a>
+  <a href="#gaps" class="rounded-md border border-slate-300 bg-white text-sm px-3 py-1.5 text-slate-700 hover:bg-slate-50">🕳️ Gaps</a>
+  <a href="#servers" class="rounded-md border border-slate-300 bg-white text-sm px-3 py-1.5 text-slate-700 hover:bg-slate-50">🔗 Servers ({{ servers_total }})</a>
+</div>
+
+{# ── Happening now ───────────────────────────────────────────────── #}
+<section class="mb-6 rounded-lg border border-sky-200 bg-sky-50 p-3">
+  <h2 class="text-sm font-semibold text-sky-900 mb-1">Happening now</h2>
+  {% if happening_now %}
+  <ul class="space-y-1">
+    {% for e in happening_now %}
+    <li class="text-sm text-sky-900">
+      <span class="text-xs font-mono text-sky-600">{{ e.stamp }}</span>
+      <span class="ml-1 inline-flex items-center px-1.5 py-0.5 rounded bg-sky-100 text-sky-800 text-xs">{{ e.entry_type }}</span>
+      <span class="ml-1 text-xs text-sky-500">{{ e.by }}</span>
+      <span class="ml-1">{{ e.text.splitlines()[0][:140] if e.text else '' }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="text-sm text-sky-700">no activity logged yet.</p>
+  {% endif %}
+</section>
+
+{# ── Two-column: Dossier | Logbook tail ──────────────────────────── #}
+<div class="mb-6 grid grid-cols-1 lg:grid-cols-2 gap-4">
+  <section class="rounded-lg border border-slate-200 bg-white p-4">
+    <h2 class="text-sm font-semibold text-slate-700 mb-2">Dossier — living synthesis</h2>
+    {% if dossier_seeded %}
+    <h3 class="text-xs font-semibold uppercase text-slate-400 mb-1">Narrative</h3>
+    <div class="text-sm text-slate-700 mb-3">{{ narrative_text | linkify_toon }}</div>
+    <h3 class="text-xs font-semibold uppercase text-slate-400 mb-1">Ledger</h3>
+    <div class="text-sm text-slate-700">{{ ledger_text | linkify_toon }}</div>
+    {% else %}
+    <p class="text-sm text-slate-400 italic">no dossier yet — a quest tick creates + fills it.</p>
+    {% endif %}
+  </section>
+
+  <section id="logbook" class="rounded-lg border border-slate-200 bg-white p-4">
+    <h2 class="text-sm font-semibold text-slate-700 mb-2">Logbook — last {{ log_tail | length }} of {{ log_entry_count }}</h2>
+    {% if log_tail %}
+    <ol class="space-y-2">
+      {% for e in log_tail %}
+      <li class="text-sm border-b border-slate-100 pb-2 last:border-0 last:pb-0">
+        <div class="flex items-baseline gap-2 flex-wrap">
+          <span class="inline-flex items-center px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 text-xs">{{ e.entry_type }}</span>
+          <span class="text-xs text-slate-400 font-mono">{{ e.stamp }}</span>
+          <span class="text-xs text-slate-400">{{ e.by }}</span>
+          {% if e.cost %}<span class="text-xs text-slate-400">cost={{ '%g' | format(e.cost) }}</span>{% endif %}
+        </div>
+        <p class="text-sm text-slate-700 whitespace-pre-wrap mt-1">{{ e.text | linkify_refs }}</p>
+      </li>
+      {% endfor %}
+    </ol>
+    {% else %}
+    <p class="text-sm text-slate-400 italic">no logbook entries yet.</p>
+    {% endif %}
+  </section>
+</div>
+
+{# ── Frontier ─────────────────────────────────────────────────────── #}
+<section id="frontier" class="mb-6 rounded-lg border border-slate-200 bg-white p-4">
+  <h2 class="text-sm font-semibold text-slate-700 mb-2">Frontier — Pareto candidates</h2>
+  {% if frontier_error %}
+  <p class="text-sm text-rose-700 whitespace-pre-wrap">{{ frontier_text | linkify_refs }}</p>
+  {% elif frontier_text %}
+  <div class="text-xs text-slate-700 overflow-x-auto">{{ frontier_text | linkify_toon }}</div>
+  {% else %}
+  <p class="text-sm text-slate-400 italic">no candidate structures serve this quest yet.</p>
+  {% endif %}
+</section>
+
+{# ── Gaps ─────────────────────────────────────────────────────────── #}
+<section id="gaps" class="mb-6 rounded-lg border border-slate-200 bg-white p-4">
+  <h2 class="text-sm font-semibold text-slate-700 mb-2">Gaps — the exploration queue</h2>
+  {% if gaps_error %}
+  <p class="text-sm text-rose-700 whitespace-pre-wrap">{{ gaps_text | linkify_refs }}</p>
+  {% elif gaps_text %}
+  <div class="text-xs text-slate-700 overflow-x-auto">{{ gaps_text | linkify_toon }}</div>
+  {% else %}
+  <p class="text-sm text-slate-400 italic">no gaps — this striving is well-supported.</p>
+  {% endif %}
+</section>
+
+{# ── Servers-lite footer — counts, replacing the raw handle dump ───── #}
+<section id="servers" class="mb-6 rounded-lg border border-slate-200 bg-slate-50 p-3">
+  <h2 class="text-sm font-semibold text-slate-700 mb-1">Servers — {{ servers_total }} in this quest's service</h2>
+  {% if servers_lite %}
+  <p class="text-sm text-slate-600">
+    {% for row in servers_lite %}
+    {% if row.url %}<a href="{{ row.url }}" class="text-sky-700 hover:underline">{{ row.count }} {{ row.kind }}{{ '' if row.count == 1 else 's' }}</a>{% else %}<span>{{ row.count }} {{ row.kind }}{{ '' if row.count == 1 else 's' }}</span>{% endif %}{% if not loop.last %} · {% endif %}
+    {% endfor %}
+  </p>
+  {% else %}
+  <p class="text-sm text-slate-400 italic">nothing serves this quest yet — link a project / concept / paper with rel='serves'.</p>
+  {% endif %}
+</section>
+
+{# ── Tag strip (same idiom every browsable kind gets) ────────────── #}
+<div class="mb-4 flex flex-wrap items-center gap-1.5">
+  {% for t in tags %}
+    {% if t.deletable %}
+    <form method="post" action="/refs/{{ kind }}/{{ ref.id }}/tags" class="inline">
+      <input type="hidden" name="remove" value="{{ t.value }}" />
+      <span class="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-slate-100 text-slate-700 border border-slate-200">
+        <span class="font-mono">{{ t.value }}</span>
+        <button class="text-slate-400 hover:text-rose-600" title="remove tag">×</button>
+      </span>
+    </form>
+    {% else %}
+    <span class="inline-flex items-center gap-1 text-xs px-2 py-1 rounded bg-violet-50 text-violet-700 border border-violet-100"
+          title="closed-vocab tag — remove via tag(kind='{{ kind }}', id={{ ref.id }}, remove=[...])">
+      <span class="font-mono">{{ t.label }}</span>
+    </span>
+    {% endif %}
+  {% else %}
+  <span class="text-xs text-slate-400 italic">no tags yet</span>
+  {% endfor %}
+  <form method="post" action="/refs/{{ kind }}/{{ ref.id }}/tags"
+        class="inline-flex items-center gap-1 ml-auto">
+    <input name="add" placeholder="+ tag (comma-separated)"
+           class="text-xs px-2 py-1 rounded border border-slate-300 w-56" />
+    <button class="text-xs px-2 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700">add</button>
+  </form>
+</div>
+
+{# ── Ask a follow-up — same idiom as the generic detail page ───────── #}
+<section class="mt-6">
+  <h2 class="text-sm font-semibold mb-2 text-slate-700">Discussion</h2>
+  {% if discussions %}
+  <ul class="mb-3 rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
+    {% for d in discussions %}
+    <li class="px-3 py-2 text-sm flex items-center gap-2">
+      <span class="text-slate-400">💬</span>
+      <a href="{{ d.url }}" class="text-sky-700 hover:underline flex-1">{{ d.title }}</a>
+      {% if d.chunk is not none %}
+      <span class="text-xs font-mono text-slate-400">on ~{{ d.chunk }}</span>
+      {% endif %}
+      <span class="text-xs text-slate-400">{{ d.turns }} turn{{ '' if d.turns == 1 else 's' }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  <form method="post" action="/refs/{{ kind }}/{{ ref.id }}/ask" class="space-y-2">
+    <textarea name="question" rows="2" required
+              placeholder="Ask a follow-up about this quest…"
+              class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"></textarea>
+    <div class="flex items-center gap-2">
+      <button class="rounded-md bg-sky-600 text-white text-sm px-4 py-2 hover:bg-sky-700">
+        Ask &amp; think
+      </button>
+      <span class="text-xs text-slate-400">
+        runs an agentic pass (can take ~30–60s); the answer lands in a linked thread
+      </span>
+    </div>
+  </form>
+</section>
+{% endblock %}

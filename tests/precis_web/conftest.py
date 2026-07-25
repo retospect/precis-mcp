@@ -194,6 +194,21 @@ class FakeStore:
         self.oracles = [
             make_ref(id=30, kind="oracle", slug="planck-constant", title="Planck"),
         ]
+        # A quest for the /refs/quest/<id> hub-dashboard tests. No dossier/
+        # paper/servers seeded by default — the dashboard's empty states
+        # are exercised against this fixture; individual tests monkeypatch
+        # the quest.dossier / quest.gaps reads for the "data present" cases.
+        self.quests = [
+            make_ref(
+                id=97,
+                kind="quest",
+                title=(
+                    "A NO->NH3 catalyst with no external energy\n\n"
+                    "Rubric: NH3 selectivity, yield, stability"
+                ),
+                prio=3,
+            ),
+        ]
         # Web ref to exercise the expanded-allowlist detail path —
         # T12.6 expanded ``_REFS_BROWSABLE_KINDS`` to 19+ kinds but
         # the legacy ``_REF_KIND_LABEL`` only had 6, so /refs/web/N
@@ -322,6 +337,7 @@ class FakeStore:
             "datasheet": self.datasheets,
             "youtube": self.youtubes,
             "gripe": self.gripes,
+            "quest": self.quests,
         }
         if kind is None:
             return [r for pool in pools.values() for r in pool]
@@ -515,6 +531,7 @@ class FakeStore:
             + self.datasheets
             + self.youtubes
             + self.gripes
+            + self.quests
         }
         return {i: pool[i] for i in ids if i in pool}
 

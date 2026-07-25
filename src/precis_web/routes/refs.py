@@ -370,6 +370,187 @@ def _youtube_meta(store: Any, ref: Any) -> dict[str, Any] | None:
     }
 
 
+#: Logbook entry ``by`` values that count as "the system did something"
+#: for the quest dashboard's Happening Now callout — dispatched work
+#: (agent) and measured facts (system, ``quest/logbook.py``'s
+#: ``MEASURED_BY``), as opposed to a human's own note.
+_QUEST_HAPPENING_BY: frozenset[str] = frozenset({"agent", "system"})
+
+
+def _quest_log_row(block: Any) -> dict[str, Any]:
+    """One logbook (``quest_log``) chunk → the dashboard's display shape."""
+    meta = getattr(block, "meta", None) or {}
+    created = getattr(block, "created_at", None)
+    cost = meta.get("cost")
+    return {
+        "entry_type": meta.get("entry_type", "note"),
+        "by": meta.get("by", "?"),
+        "cost": cost,
+        "stamp": created.strftime("%Y-%m-%d %H:%M") if created else "",
+        "text": block.text or "",
+    }
+
+
+def _quest_draft_url(store: Any, draft_ref_id: int) -> str:
+    """``/drafts/<ident>`` for a draft ref id — slug when the draft has
+    one (the human-legible address), else the numeric id (the reader
+    route resolves both, ``_draft_ref`` in ``routes/drafts.py``)."""
+    refs = store.fetch_refs_by_ids([draft_ref_id])
+    dref = refs.get(draft_ref_id)
+    ident = getattr(dref, "slug", None) if dref is not None else None
+    return f"/drafts/{ident or draft_ref_id}"
+
+
+async def _quest_detail(request: Request, store: Any, ref: Any) -> HTMLResponse:
+    """Hub dashboard for ``kind='quest'`` — the striving above the work.
+
+    Replaces the generic ``refs/detail.html.j2`` render (which, for a
+    quest, was just the striving statement + tags + a ~150-line raw
+    ``pa…``/``st…`` handle dump of every ``serves`` link) with a proper
+    dashboard: header (status/prio/momentum/tote), links to the dossier +
+    reader-facing paper (when either exists) + the frontier/gaps panels
+    below, a "happening now" recent-activity callout, the dossier
+    narrative+ledger, a logbook tail, the frontier + gaps views (the same
+    markdown a ``get(view=…)`` call would return, rendered inline via the
+    same ``linkify_toon`` filter the generic detail body uses), and a
+    servers-lite kind-count footer. Entirely read-only — no verb beyond
+    the two ``get(view=…)`` reads below is dispatched.
+    """
+    from precis.quest import dossier as dossier_mod
+    from precis.quest.gaps import _live_servers, quest_momentum
+    from precis.quest.logbook import LOG_KIND
+
+    qid = int(ref.id)
+    raw_tags = store.tags_for(qid)
+    status = "active"
+    for t in raw_tags:
+        if (
+            getattr(t, "namespace", None) == "closed"
+            and getattr(t, "prefix", None) == "STATUS"
+        ):
+            status = t.value
+    # Tag chips: a closed tag renders as its "PREFIX:value" (e.g.
+    # "STATUS:active") and is inert; an open tag renders as its bare value
+    # and gets a × to remove. Namespace is the lowercase "closed"/"flag"/
+    # "open" the Tag model uses (store/types.py) — not "OPEN".
+    tags = [
+        {
+            "namespace": getattr(t, "namespace", "open"),
+            "value": getattr(t, "value", ""),
+            "label": (
+                f"{getattr(t, 'prefix', '') or ''}:{getattr(t, 'value', '')}"
+                if getattr(t, "namespace", "") == "closed"
+                else getattr(t, "value", "")
+            ),
+            "deletable": getattr(t, "namespace", "open") == "open",
+        }
+        for t in raw_tags
+    ]
+
+    title_lines = (ref.title or "").split("\n", 1)
+    headline = title_lines[0] if title_lines else f"quest {qid}"
+    criteria = title_lines[1].strip() if len(title_lines) > 1 else ""
+
+    live_servers = _live_servers(store, qid)
+    momentum = quest_momentum(store, qid, servers=live_servers)
+
+    entries = [
+        b
+        for b in store.list_blocks_for_ref(qid)
+        if getattr(b, "chunk_kind", None) == LOG_KIND
+    ]
+    tote = sum(
+        float((getattr(b, "meta", None) or {}).get("cost", 0) or 0) for b in entries
+    )
+
+    # Happening now — the most recent dispatched/measured entries (by
+    # agent/system); a quest with only human notes falls back to its most
+    # recent entries regardless of author so the callout isn't just empty.
+    dispatched = [
+        b
+        for b in entries
+        if (getattr(b, "meta", None) or {}).get("by") in _QUEST_HAPPENING_BY
+    ]
+    happening_source = dispatched if dispatched else entries
+    happening_now = [_quest_log_row(b) for b in reversed(happening_source[-6:])]
+
+    log_tail = [_quest_log_row(b) for b in reversed(entries[-10:])]
+
+    # Dossier — the internal living synthesis (a draft, ``dossier-of``).
+    did = dossier_mod.dossier_ref_id(store, qid)
+    dossier_url = _quest_draft_url(store, did) if did is not None else None
+    narrative_text = dossier_mod.read_narrative(store, qid) if did is not None else ""
+    ledger_text = dossier_mod.read_ledger(store, qid) if did is not None else ""
+
+    # Paper — the SEPARATE reader-facing draft (``paper-of``), when one
+    # exists. Nothing mints it yet (docs/design/paper-writing-pipeline.md);
+    # the hub just links it when some other writer has.
+    pid = dossier_mod.paper_ref_id(store, qid)
+    paper_url = _quest_draft_url(store, pid) if pid is not None else None
+    paper_docx_url = f"{paper_url}/export.docx" if paper_url else None
+    paper_pdf_url = f"{paper_url}/pdf" if paper_url else None
+
+    # Frontier + gaps — the same markdown a `get(view=…)` call returns,
+    # rendered inline (the template applies the same ``linkify_toon``
+    # filter the generic detail body does — no second renderer to drift).
+    frontier_text, frontier_error = await await_dispatch(
+        request, "get", {"kind": "quest", "id": qid, "view": "frontier"}
+    )
+    gaps_text, gaps_error = await await_dispatch(
+        request, "get", {"kind": "quest", "id": qid, "view": "gaps"}
+    )
+
+    # Servers-lite — kind counts replacing the raw handle dump. Linked to
+    # the kind's own browse tab when one exists (todo/paper/structure/…);
+    # a kind with no ``/refs/<kind>`` tab (e.g. concept) renders as plain
+    # text.
+    by_kind: dict[str, int] = {}
+    for s in live_servers:
+        by_kind[s.kind] = by_kind.get(s.kind, 0) + 1
+    servers_lite = [
+        {
+            "kind": k,
+            "count": n,
+            "url": f"/refs/{k}" if k in _REFS_BROWSABLE_KINDS else None,
+        }
+        for k, n in sorted(by_kind.items(), key=lambda kv: (-kv[1], kv[0]))
+    ]
+
+    return templates.TemplateResponse(
+        request,
+        "refs/quest_detail.html.j2",
+        {
+            "active_tab": "refs:quest",
+            "kind": "quest",
+            "kind_label": _REF_KIND_LABEL.get("quest", "Quest"),
+            "ref": _row(ref),
+            "headline": headline,
+            "criteria": criteria,
+            "status": status,
+            "tags": tags,
+            "momentum": momentum,
+            "tote": tote,
+            "log_entry_count": len(entries),
+            "dossier_url": dossier_url,
+            "dossier_seeded": did is not None,
+            "narrative_text": narrative_text,
+            "ledger_text": ledger_text,
+            "paper_url": paper_url,
+            "paper_docx_url": paper_docx_url,
+            "paper_pdf_url": paper_pdf_url,
+            "happening_now": happening_now,
+            "log_tail": log_tail,
+            "frontier_text": frontier_text,
+            "frontier_error": frontier_error,
+            "gaps_text": gaps_text,
+            "gaps_error": gaps_error,
+            "servers_lite": servers_lite,
+            "servers_total": len(live_servers),
+            "discussions": _followup_discussions(store, qid),
+        },
+    )
+
+
 #: The kinds the Refs tab pre-checks by default — note-like, browsable,
 #: low-friction. The other checkbox-eligible kinds stay unchecked
 #: unless the operator opts in (via ``?all=1`` or by tickering them
@@ -831,6 +1012,14 @@ async def detail(request: Request, kind: str, ref_id: int) -> HTMLResponse:
                 ),
             },
         )
+
+    # Quests render as a hub dashboard — header (status/prio/momentum/
+    # tote) + links to the dossier/paper/frontier/gaps + a happening-now
+    # callout + logbook tail + servers-lite — rather than the handler's
+    # bare striving+logbook card the generic template renders for every
+    # other numeric-ref kind. See ``_quest_detail``.
+    if kind == "quest":
+        return await _quest_detail(request, store, ref)
 
     # Slug kinds (oracle/patent/pres) address get() by slug; numeric
     # kinds (memory/gripe) by id. Prefer the slug when present.

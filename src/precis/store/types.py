@@ -141,6 +141,17 @@ Relation = Literal[
     # seed in 0067_dossier_relation.sql.
     "dossier-of",
     "has-dossier",
+    # Quest PAPER — migration 0089. `paper-of` binds a `draft` to the owner
+    # (quest, or any dossier-owning process) whose reader-facing paper it
+    # is — a projection of the dossier's living synthesis, but a SEPARATE
+    # draft from the dossier itself (the dossier is internal thinking
+    # substrate; the paper is what a human reads). Modeled 1:1 on
+    # `dossier-of`: asymmetric, `has-paper` inverse, auto-mirrored.
+    # Resolved read-only by `quest.dossier.paper_ref_id`; nothing yet
+    # *creates* the paper draft (docs/design/paper-writing-pipeline.md).
+    # Keep in sync with the `relations` seed in 0089_paper_of_relation.sql.
+    "paper-of",
+    "has-paper",
     # Argument graph — migration 0080 (ADR 0054). `entails` is the typed
     # logical edge from an inference node (`memory` tagged `kind:inference`)
     # to its conclusion lemma (`memory` tagged `kind:lemma`) — "A logically
@@ -252,6 +263,8 @@ _INVERSE_RELATIONS: dict[str, str] = {
     "served-by": "serves",
     "dossier-of": "has-dossier",
     "has-dossier": "dossier-of",
+    "paper-of": "has-paper",
+    "has-paper": "paper-of",
     # Argument graph (0080 / ADR 0054).
     "entails": "entailed-by",
     "entailed-by": "entails",

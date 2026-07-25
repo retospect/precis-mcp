@@ -164,6 +164,12 @@ is no `view='logbook'` or `view='deeds'`.
 kind), recurses into sub-quests, prints the deed ledger + tote, and — from
 slice 3 — a **health** line and a **gaps** list at the foot.
 
+All of the above is also visible on the web: `/refs/quest/<id>` is a
+dedicated hub dashboard (header + momentum/tote, dossier + logbook tail,
+frontier/gaps panels, servers-lite) rather than the generic ref-detail
+render — a human can read a quest's state without calling `get(view=…)`
+by hand.
+
 ## Health + gaps — the exploration queue (slice 3)
 
 A quest is measured by *striving*, not finishing, so the tree rollup ends

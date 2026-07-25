@@ -25,6 +25,7 @@ from precis.quest.dossier import (
     dossier_ref_id,
     ensure_dossier,
     ensure_ledger_chunk,
+    paper_ref_id,
     read_dossier,
     read_ledger,
     read_narrative,
@@ -542,6 +543,44 @@ def test_dossier_relation_registered() -> None:
 
     assert _INVERSE_RELATIONS["dossier-of"] == "has-dossier"
     assert _INVERSE_RELATIONS["has-dossier"] == "dossier-of"
+
+
+# ── paper relation (the quest web dashboard's "Paper" hub link) ─────────
+
+
+class TestPaperRelation:
+    """``paper-of`` — the SEPARATE reader-facing draft a quest may have,
+    distinct from its dossier. Migration 0089. Nothing mints this draft yet
+    (docs/design/paper-writing-pipeline.md); only the relation + a read-only
+    resolver (:func:`paper_ref_id`) exist so the web dashboard can link one
+    in when some other writer creates it."""
+
+    def test_no_paper_resolves_none(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving with no paper yet")
+        assert paper_ref_id(store, qid) is None
+        # a dossier existing doesn't imply a paper — they're separate drafts
+        ensure_dossier(store, qid)
+        assert paper_ref_id(store, qid) is None
+
+    def test_linked_paper_resolves(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving with a reader-facing paper")
+        ref, _heading = store.create_draft(
+            name=f"quest-{qid}-paper",
+            title="Paper — draft",
+            project_ref_id=qid,
+            relation="paper-of",
+        )
+        assert paper_ref_id(store, qid) == ref.id
+        # the paper is NOT the dossier — a quest can have neither, either, or
+        # both, and they resolve independently
+        assert dossier_ref_id(store, qid) is None
+
+
+def test_paper_relation_registered() -> None:
+    from precis.store.types import _INVERSE_RELATIONS
+
+    assert _INVERSE_RELATIONS["paper-of"] == "has-paper"
+    assert _INVERSE_RELATIONS["has-paper"] == "paper-of"
 
 
 class TestReactionContext:
