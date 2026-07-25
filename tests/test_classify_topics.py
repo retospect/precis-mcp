@@ -274,6 +274,33 @@ class TestPass:
         assert _topic_tags(store, ref_id) == {"topic:mof"}
         assert _has_marker(store, ref_id)
 
+    def test_ref_ids_scopes_the_sweep_to_named_papers_only(self, store: Any) -> None:
+        """``ref_ids`` restricts the claim to specific refs — a sibling paper
+        outside scope must stay completely untouched (targeted backfill via
+        `precis classify topics`, mirroring the ``role3`` scoping test)."""
+        ref_a = _seed_paper(
+            store,
+            "A MOF catalyst for NOx reduction",
+            "We report a metal-organic-framework catalyst for NOx reduction.",
+        )
+        ref_b = _seed_paper(
+            store,
+            "A MOF catalyst for NOx reduction (sibling)",
+            "We report a metal-organic-framework catalyst for NOx reduction.",
+        )
+        client = _FakeClient('{"topics": ["noxrr"]}')
+
+        result = run_classify_topics_pass(
+            store, client=client, batch_size=10, ref_ids=[ref_a]
+        )
+
+        assert result == {"claimed": 1, "ok": 1, "failed": 0, "dist": {"noxrr": 1}}
+        assert len(client.calls) == 1
+        assert _topic_tags(store, ref_a) == {"topic:noxrr"}
+        assert _topic_tags(store, ref_b) == set()  # untouched — outside scope
+        assert _has_marker(store, ref_a)
+        assert not _has_marker(store, ref_b)
+
     def test_existing_open_tag_helper_matches_written_value(self, store: Any) -> None:
         # Sanity: our raw-SQL read of ref_tags/tags matches what Tag.open()
         # actually produces (lowercased, namespace='OPEN').

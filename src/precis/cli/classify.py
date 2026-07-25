@@ -1,16 +1,22 @@
-"""``precis classify role3`` — targeted-scope driver for the ADR 0047 ROLE3
-chunk-tag classifier cascade (``workers/classify.py``).
+"""``precis classify {role3,topics}`` — targeted-scope drivers for the two
+ADR 0047 / ADR 0060 chunk/paper classifier cascades (``workers/classify.py``,
+``workers/classify_topics.py``).
 
-The worker pass (``--only classify``) sweeps the whole corpus FIFO by
-``chunk_id``. This CLI is for the other case: classify a *specific* set of
-papers on demand (e.g. right after fetching a paper's citation graph, or
-backfilling one topic) without waiting for/relying on the global sweep.
-Scope is resolved to a concrete ``ref_ids`` list once, then fed to
-``run_classify_pass`` repeatedly until a cycle claims nothing.
+The worker passes (``--only classify`` / ``--only classify_topics``) sweep the
+whole corpus FIFO. This CLI is for the other case: classify a *specific* set
+of papers on demand (e.g. right after fetching a paper's citation graph, or
+backfilling one topic) without waiting for/relying on the global sweep. Scope
+is resolved to a concrete ``ref_ids`` list (or ``None`` for a global sweep,
+``topics --all`` only) once, then fed to the pass repeatedly until a cycle
+claims nothing.
 
     precis classify role3 --cites-of 43020
     precis classify role3 --topic nanobuds
     precis classify role3 --ref-ids 43020,43021,43099
+
+    precis classify topics --all
+    precis classify topics --cites-of 43020
+    precis classify topics --topic nanobuds
 """
 
 from __future__ import annotations
@@ -23,18 +29,20 @@ from precis.cli._common import resolve_dsn
 from precis.store import Store
 
 
-def add_parser(subparsers: Any) -> None:
-    p = subparsers.add_parser(
-        "classify", help="ROLE3 chunk-tag classifier — targeted-scope driver."
-    )
-    csub = p.add_subparsers(dest="classify_cmd", required=True)
-
-    r = csub.add_parser(
-        "role3",
-        help="Run the junk-gate -> ROLE3 (own/background/furniture) cascade "
-        "over a specific set of papers, not the global FIFO backfill.",
-    )
-    scope = r.add_mutually_exclusive_group(required=True)
+def _add_scope_args(sub: Any, *, include_all: bool) -> None:
+    """Register the shared scope-selector group + ``--batch-size``/
+    ``--database-url`` on a ``role3``/``topics`` subparser. ``include_all``
+    adds the ``--all`` global-sweep selector (``topics`` only — ``role3`` has
+    no equivalent CLI entry point for its FIFO sweep, that's the worker
+    pass)."""
+    scope = sub.add_mutually_exclusive_group(required=True)
+    if include_all:
+        scope.add_argument(
+            "--all",
+            action="store_true",
+            help="Global sweep — every paper/patent lacking a current-version "
+            "marker tag (ref_ids=None).",
+        )
     scope.add_argument(
         "--cites-of",
         type=int,
@@ -54,13 +62,34 @@ def add_parser(subparsers: Any) -> None:
         metavar="CSV",
         help="Explicit comma-separated ref ids to classify.",
     )
-    r.add_argument(
+    sub.add_argument(
         "--batch-size",
         type=int,
         default=16,
-        help="Chunks claimed per cycle (default 16, mirrors the worker cap).",
+        help="Claimed per cycle (default 16, mirrors the worker cap).",
     )
-    r.add_argument("--database-url", default=None, help="Postgres DSN override.")
+    sub.add_argument("--database-url", default=None, help="Postgres DSN override.")
+
+
+def add_parser(subparsers: Any) -> None:
+    p = subparsers.add_parser(
+        "classify", help="Chunk/paper classifier cascades — targeted-scope drivers."
+    )
+    csub = p.add_subparsers(dest="classify_cmd", required=True)
+
+    r = csub.add_parser(
+        "role3",
+        help="Run the junk-gate -> ROLE3 (own/background/furniture) cascade "
+        "over a specific set of papers, not the global FIFO backfill.",
+    )
+    _add_scope_args(r, include_all=False)
+
+    t = csub.add_parser(
+        "topics",
+        help="Run the tier-0/tier-1 topic-dossier cascade (ADR 0060) over a "
+        "specific set of papers, or --all for the global sweep.",
+    )
+    _add_scope_args(t, include_all=True)
 
 
 def _resolve_cites_of(store: Store, ref_id: int) -> list[int]:
@@ -88,7 +117,13 @@ def _resolve_topic(store: Store, slug: str) -> list[int]:
     return [int(r[0]) for r in rows]
 
 
-def _resolve_scope(store: Store, args: argparse.Namespace) -> list[int]:
+def _resolve_scope(store: Store, args: argparse.Namespace) -> list[int] | None:
+    """Shared scope resolver for both ``role3`` and ``topics``. Returns
+    ``None`` only for ``topics --all`` (global sweep, ``ref_ids=None``);
+    ``role3``'s parser has no ``--all`` so ``getattr`` falls through to the
+    other three selectors, always yielding a (possibly empty) list."""
+    if getattr(args, "all", False):
+        return None
     if args.cites_of is not None:
         return _resolve_cites_of(store, args.cites_of)
     if args.topic is not None:
@@ -154,7 +189,53 @@ def _cmd_role3(store: Store, args: argparse.Namespace) -> None:
     )
 
 
+def _cmd_topics(store: Store, args: argparse.Namespace) -> None:
+    from precis.utils.llm.router import DispatchClient, Tier
+    from precis.workers.classify_topics import run_classify_topics_pass
+
+    ref_ids = _resolve_scope(store, args)
+    if ref_ids is not None and not ref_ids:
+        print("classify topics: no papers matched scope")
+        return
+
+    # Mirrors cli/worker.py's `classify_topics` pass wiring exactly (ADR 0046
+    # dispatch seam). No escalate client — tier 2 is unimplemented for topics
+    # (ADR 0060's open questions).
+    client = DispatchClient(
+        tier=Tier.LOCAL_SMALL,
+        model=os.environ.get("PRECIS_CLASSIFY_TOPICS_MODEL") or "summarizer",
+        source="classify_topics",
+        log_call=True,
+        log_blobs=False,
+    )
+
+    scope_desc = "the whole corpus" if ref_ids is None else f"{len(ref_ids)} paper(s)"
+    print(f"classify topics: sweeping {scope_desc}")
+
+    total_claimed = total_ok = total_failed = 0
+    dist: dict[str, int] = {}
+    while True:
+        r = run_classify_topics_pass(
+            store, client=client, batch_size=args.batch_size, ref_ids=ref_ids
+        )
+        if r["claimed"] == 0:
+            break
+        total_claimed += r["claimed"]
+        total_ok += r["ok"]
+        total_failed += r["failed"]
+        for k, v in (r.get("dist") or {}).items():
+            dist[k] = dist.get(k, 0) + v
+        print(f"  ...claimed {total_claimed}, ok {total_ok}, failed {total_failed}")
+
+    print(
+        f"classify topics: done — {total_claimed} paper(s) processed, "
+        f"{total_ok} ok, {total_failed} failed, distribution {dist}"
+    )
+
+
 def run(args: argparse.Namespace) -> None:
     store = Store.connect(resolve_dsn(args.database_url))
     if args.classify_cmd == "role3":
         _cmd_role3(store, args)
+    elif args.classify_cmd == "topics":
+        _cmd_topics(store, args)
