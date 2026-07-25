@@ -392,11 +392,14 @@ class BlocksMixin:
         *,
         q: str,
         kind: str | None = None,
+        kinds: list[str] | None = None,
         scope_ref_id: int | None = None,
         tags: list[str] | None = None,
         exclude_ref_ids: list[int] | None = None,
         card_kinds: tuple[str, ...] | None = None,
         distinct_refs: bool = False,
+        since: datetime | None = None,
+        until: datetime | None = None,
     ) -> int:
         """Count chunks matching the lexical filter (no LIMIT).
 
@@ -412,6 +415,15 @@ class BlocksMixin:
         (:meth:`NumericRefHandler._best_body_hits`), where one ref can
         contribute many chunks and a chunk-level count over-states the
         result-row total.
+
+        ``kinds`` (a set → ``r.kind = ANY(%s)``) takes precedence over
+        the single ``kind`` (→ ``r.kind = %s``); pass one or neither.
+        ``since``/``until`` filter ``refs.created_at``, with ``until``
+        **exclusive** (``<``, not ``<=``). Together with
+        ``distinct_refs=True`` these also serve the ``/drive`` "showing
+        N of ~K" denominator (:meth:`NumericRefHandler._best_body_hits`'s
+        sibling use case, now folded into this one method rather than a
+        near-duplicate ``count_refs_matching_lexical``).
         """
         count_expr = "count(DISTINCT c.ref_id)" if distinct_refs else "count(*)"
         clauses = [
@@ -426,7 +438,10 @@ class BlocksMixin:
             *_block_noise_clauses(text_alias="c.text"),
         ]
         params: list[Any] = [q]
-        if kind is not None:
+        if kinds is not None:
+            params.append(list(kinds))
+            clauses.append("r.kind = ANY(%s)")
+        elif kind is not None:
             params.append(kind)
             clauses.append("r.kind = %s")
         if scope_ref_id is not None:
@@ -439,57 +454,6 @@ class BlocksMixin:
         if exclude_ref_ids:
             params.append(list(exclude_ref_ids))
             clauses.append("c.ref_id <> ALL(%s)")
-        sql = (
-            f"SELECT {count_expr} FROM chunks c "
-            "JOIN refs r ON r.ref_id = c.ref_id, "
-            "websearch_to_tsquery('english', %s) qq(qq) "
-            f"WHERE {' AND '.join(clauses)}"
-        )
-        with self.pool.connection() as conn:
-            row = conn.execute(sql, params).fetchone()
-        assert row is not None
-        return int(row[0])
-
-    def count_refs_matching_lexical(
-        self,
-        *,
-        kinds: list[str],
-        q: str,
-        tags: list[str] | None = None,
-        since: datetime | None = None,
-        until: datetime | None = None,
-    ) -> int:
-        """Distinct-ref lexical match count across ``kinds`` — the honest
-        denominator for the ``/drive`` "showing N of ~K" header.
-
-        The fused semantic+lexical ranking that actually populates Drive's
-        results has no cheap exact total (RRF over ANN legs isn't
-        countable without exhausting it), so this counts distinct refs
-        whose **body** chunk text matches the plain FTS query across the
-        selected kinds instead — an honest lexical approximation of the
-        result universe, not the exact fused total. Same clause shape as
-        :meth:`count_blocks_lexical` (ghost-chunk guard, noise-floor
-        guard, tag filter) plus the ``created_at`` window Drive's
-        since/until boxes carry. Returns ``0`` for an empty ``kinds`` or
-        blank ``q`` rather than running a query that can only match
-        nothing.
-        """
-        if not kinds or not (q or "").strip():
-            return 0
-        clauses = [
-            "r.kind = ANY(%s)",
-            "r.deleted_at IS NULL",
-            # Ghost-chunk guard — see count_blocks_lexical.
-            "c.retired_at IS NULL",
-            _ord_card_clause(None),
-            "c.tsv @@ qq.qq",
-            *_block_noise_clauses(text_alias="c.text"),
-        ]
-        params: list[Any] = [q, list(kinds)]
-        tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
-        if tag_frag:
-            clauses.append(tag_frag)
-            params.extend(tag_params)
         if since is not None:
             clauses.append("r.created_at >= %s")
             params.append(since)
@@ -497,7 +461,7 @@ class BlocksMixin:
             clauses.append("r.created_at < %s")
             params.append(until)
         sql = (
-            "SELECT count(DISTINCT c.ref_id) FROM chunks c "
+            f"SELECT {count_expr} FROM chunks c "
             "JOIN refs r ON r.ref_id = c.ref_id, "
             "websearch_to_tsquery('english', %s) qq(qq) "
             f"WHERE {' AND '.join(clauses)}"

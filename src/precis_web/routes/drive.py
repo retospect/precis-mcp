@@ -378,15 +378,21 @@ async def index(
         # Total-match count for the "showing N of ~K" header — a lexical
         # approximation (the fused semantic+lexical ranking that actually
         # populates ``rows`` has no cheap exact total), but it's the
-        # difference between finding 5 of 50 and 5 of 50,000.
-        result_total = await asyncio.to_thread(
-            store.count_refs_matching_lexical,
-            kinds=selected_kinds,
-            q=q,
-            tags=tags,
-            since=since_dt,
-            until=until_dt,
-        )
+        # difference between finding 5 of 50 and 5 of 50,000. Skip the
+        # query when no kind is selected — it can only match nothing (``q``
+        # is already guaranteed non-blank by the outer ``if q:``).
+        if selected_kinds:
+            result_total = await asyncio.to_thread(
+                store.count_blocks_lexical,
+                q=q,
+                kinds=selected_kinds,
+                tags=tags,
+                distinct_refs=True,
+                since=since_dt,
+                until=until_dt,
+            )
+        else:
+            result_total = 0
         # Floor to what's actually on the page: the fused ranking can surface
         # semantic-only hits the lexical count misses, so without this the
         # header could read the absurd "showing 30 of ~5".

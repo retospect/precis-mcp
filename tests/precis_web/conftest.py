@@ -100,11 +100,13 @@ class FakeStore:
         #: {(ref_id, ord): gloss} a test seeds to exercise the
         #: chunk_summaries_bulk-backed row preview (Drive search rows).
         self.chunk_summaries: dict[tuple[int, int], str] = {}
-        #: Overridable lexical-match total for count_refs_matching_lexical
-        #: (the /drive "showing N of ~K" header) — 0 by default.
+        #: Overridable lexical-match total for the count_blocks_lexical
+        #: distinct-refs call (the /drive "showing N of ~K" header) — 0 by
+        #: default.
         self.result_total = 0
-        #: kwargs from the most recent count_refs_matching_lexical call, so
-        #: a test can assert the filters it was invoked with.
+        #: kwargs from the most recent count_blocks_lexical(kinds=…,
+        #: distinct_refs=True) call, so a test can assert the filters it
+        #: was invoked with.
         self.result_total_call: dict[str, Any] | None = None
         #: Corpus-presence ledger fakes. ``missing_pdf_shas`` are the shas
         #: ``pdf_missing`` reports as held-but-missing (empty → nothing
@@ -723,16 +725,32 @@ class FakeStore:
         want = set(kinds)
         return [(b, r, s) for (b, r, s) in hits if r.kind in want][offset:]
 
-    def count_refs_matching_lexical(
-        self, *, kinds, q, tags=None, since=None, until=None
+    def count_blocks_lexical(
+        self,
+        *,
+        q,
+        kind=None,
+        kinds=None,
+        scope_ref_id=None,
+        tags=None,
+        exclude_ref_ids=None,
+        card_kinds=None,
+        distinct_refs=False,
+        since=None,
+        until=None,
     ) -> int:
         """Overridable lexical-match total for the Drive "showing N of ~K"
-        header — records the call args (``self.result_total_call``) and
-        returns the seeded ``self.result_total`` (0 by default)."""
+        header (the consolidated ``kinds=…, distinct_refs=True`` call
+        shape) — records the call args (``self.result_total_call``) and
+        returns the seeded ``self.result_total`` (0 by default). No other
+        route in this test suite drives ``count_blocks_lexical`` through
+        ``FakeStore``, so a single fake covers the one call shape."""
         self.result_total_call = {
-            "kinds": list(kinds),
+            "kinds": list(kinds) if kinds is not None else None,
+            "kind": kind,
             "q": q,
             "tags": tags,
+            "distinct_refs": distinct_refs,
             "since": since,
             "until": until,
         }

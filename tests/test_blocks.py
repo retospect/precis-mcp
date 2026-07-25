@@ -242,6 +242,11 @@ class TestBlocksMissingEmbeddings:
 
 
 class TestCountRefsMatchingLexical:
+    """``count_blocks_lexical(kinds=…, distinct_refs=True)`` — the
+    ``/drive`` "showing N of ~K" denominator (formerly the standalone
+    ``count_refs_matching_lexical``, folded in to keep the WHERE-clause
+    guards in one place)."""
+
     def test_counts_distinct_matching_refs_across_kinds(self, store: Store) -> None:
         ref_a = _paper_ref(store, slug="lex-a")
         ref_b = _paper_ref(store, slug="lex-b")
@@ -256,20 +261,32 @@ class TestCountRefsMatchingLexical:
         store.insert_blocks(
             ref_b, [BlockInsert(pos=0, text="xenocryst inclusions in basalt")]
         )
-        total = store.count_refs_matching_lexical(kinds=["paper"], q="xenocryst")
+        total = store.count_blocks_lexical(
+            kinds=["paper"], q="xenocryst", distinct_refs=True
+        )
         assert total == 2
 
     def test_no_match_returns_zero(self, store: Store) -> None:
         ref_id = _paper_ref(store, slug="lex-nomatch")
         store.insert_blocks(ref_id, [BlockInsert(pos=0, text="unrelated content")])
-        total = store.count_refs_matching_lexical(kinds=["paper"], q="xenocryst")
+        total = store.count_blocks_lexical(
+            kinds=["paper"], q="xenocryst", distinct_refs=True
+        )
         assert total == 0
 
     def test_empty_kinds_or_blank_q_returns_zero(self, store: Store) -> None:
+        # No Python-level early return on the store method (that guard now
+        # lives at the /drive call site) — an empty ``kinds`` list or blank
+        # ``q`` still resolves to zero matches via plain SQL semantics
+        # (``r.kind = ANY('{}')`` and an empty tsquery both match nothing).
         ref_id = _paper_ref(store, slug="lex-empty")
         store.insert_blocks(ref_id, [BlockInsert(pos=0, text="xenocryst text")])
-        assert store.count_refs_matching_lexical(kinds=[], q="xenocryst") == 0
-        assert store.count_refs_matching_lexical(kinds=["paper"], q="") == 0
+        assert (
+            store.count_blocks_lexical(kinds=[], q="xenocryst", distinct_refs=True) == 0
+        )
+        assert (
+            store.count_blocks_lexical(kinds=["paper"], q="", distinct_refs=True) == 0
+        )
 
 
 class TestCascade:
