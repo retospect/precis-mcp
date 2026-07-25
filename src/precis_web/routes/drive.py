@@ -86,6 +86,7 @@ _KIND_ICON = {
     "structure": "⚛️",
     "cad": "🧊",
     "todo": "☑️",
+    "pathway": "🐈",  # a cat on a (reaction) path — gr161575
 }
 
 
