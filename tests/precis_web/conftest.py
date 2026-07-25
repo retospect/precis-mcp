@@ -445,6 +445,7 @@ class FakeStore:
             + self.jobs
             + self.press
             + self.datasheets
+            + self.quests
         ):
             if r.kind == kind and (r.slug == id or r.id == id):
                 return r

@@ -22,6 +22,7 @@ from precis.quest import compute as compute_mod
 from precis.quest.frontier import (
     Candidate,
     _candidate_from_structure,
+    build_frontier_scatter,
     pareto_split,
     quest_frontier,
 )
@@ -71,6 +72,85 @@ class TestPareto:
         a = Candidate(1, "st1", "A", {}, False)
         fr = pareto_split([a], [("energy", "min")])
         assert fr.unevaluated and not fr.frontier
+
+
+# ── frontier scatter — Cycle C J4 (quest hub v2) ────────────────────────
+
+
+class TestFrontierScatter:
+    def test_points_map_to_expected_coords(self) -> None:
+        a = Candidate(1, "st1", "A", {"barrier": 0.3, "energy": -20.0}, True)
+        b = Candidate(2, "st2", "B", {"barrier": 0.9, "energy": -10.0}, True)
+        scatter = build_frontier_scatter([a, b])
+        assert scatter is not None
+        assert len(scatter.points) == 2
+        by_id = {p["ref_id"]: p for p in scatter.points}
+        assert by_id[1]["cx"] == 70.0
+        assert by_id[1]["cy"] == 208.33
+        assert by_id[2]["cx"] == 410.0
+        assert by_id[2]["cy"] == 51.67
+        assert scatter.x_min == 0.3 and scatter.x_max == 0.9
+        assert scatter.y_min == -20.0 and scatter.y_max == -10.0
+
+    def test_zero_candidates_is_none(self) -> None:
+        assert build_frontier_scatter([]) is None
+
+    def test_one_plottable_candidate_is_none(self) -> None:
+        a = Candidate(1, "st1", "A", {"barrier": 0.3, "energy": -20.0}, True)
+        assert build_frontier_scatter([a]) is None
+
+    def test_missing_measure_candidate_excluded(self) -> None:
+        # b is missing the y measure (`energy`) — not comparable ⇒ not
+        # plottable, mirroring `_dominates`'s own "missing ⇒ not comparable"
+        # rule. Only 1 remains plottable ⇒ below the 2-point floor ⇒ None.
+        a = Candidate(1, "st1", "A", {"barrier": 0.3, "energy": -20.0}, True)
+        b = Candidate(2, "st2", "B", {"barrier": 0.9}, True)
+        assert build_frontier_scatter([a, b]) is None
+
+    def test_missing_measure_candidate_excluded_but_others_plot(self) -> None:
+        a = Candidate(1, "st1", "A", {"barrier": 0.3, "energy": -20.0}, True)
+        b = Candidate(2, "st2", "B", {"barrier": 0.9, "energy": -10.0}, True)
+        c = Candidate(3, "st3", "C", {"barrier": 0.5}, True)  # no `energy`
+        scatter = build_frontier_scatter([a, b, c])
+        assert scatter is not None
+        assert {p["ref_id"] for p in scatter.points} == {1, 2}
+
+    def test_all_equal_x_axis_no_divide_by_zero(self) -> None:
+        a = Candidate(1, "st1", "A", {"barrier": 0.5, "energy": -20.0}, True)
+        b = Candidate(2, "st2", "B", {"barrier": 0.5, "energy": -10.0}, True)
+        scatter = build_frontier_scatter([a, b])
+        assert scatter is not None
+        cxs = {p["cx"] for p in scatter.points}
+        # Both share x=0.5 → both land at the same, finite x pixel.
+        assert len(cxs) == 1
+        assert all(0.0 <= p["cx"] <= scatter.width for p in scatter.points)
+
+    def test_all_equal_y_axis_no_divide_by_zero(self) -> None:
+        a = Candidate(1, "st1", "A", {"barrier": 0.3, "energy": -15.0}, True)
+        b = Candidate(2, "st2", "B", {"barrier": 0.9, "energy": -15.0}, True)
+        scatter = build_frontier_scatter([a, b])
+        assert scatter is not None
+        cys = {p["cy"] for p in scatter.points}
+        assert len(cys) == 1
+        assert all(0.0 <= p["cy"] <= scatter.height for p in scatter.points)
+
+    def test_open_url_for_stamps_per_point(self) -> None:
+        a = Candidate(1, "st1", "A", {"barrier": 0.3, "energy": -20.0}, True)
+        b = Candidate(2, "st2", "B", {"barrier": 0.9, "energy": -10.0}, True)
+        scatter = build_frontier_scatter(
+            [a, b], open_url_for=lambda c: f"/refs/structure/{c.ref_id}"
+        )
+        assert scatter is not None
+        urls = {p["ref_id"]: p["open_url"] for p in scatter.points}
+        assert urls == {1: "/refs/structure/1", 2: "/refs/structure/2"}
+
+    def test_converged_flag_carried(self) -> None:
+        a = Candidate(1, "st1", "A", {"barrier": 0.3, "energy": -20.0}, True)
+        b = Candidate(2, "st2", "B", {"barrier": 0.9, "energy": -10.0}, False)
+        scatter = build_frontier_scatter([a, b])
+        assert scatter is not None
+        conv = {p["ref_id"]: p["converged"] for p in scatter.points}
+        assert conv == {1: True, 2: False}
 
 
 # ── candidate creation ────────────────────────────────────────────────

@@ -965,6 +965,33 @@ class TestServedPapersDetail:
         assert "Held literature" in prompt
         assert "A specific measured finding." in prompt
 
+    def test_served_paper_carries_a_citable_pc_handle(self, store: Any) -> None:
+        """Cycle D / J7 — the dossier narrative should cite its serving
+        papers, so a served paper with a body chunk hands the tick prompt a
+        copyable `[pc<id>]` handle, plus an instruction to actually cite it."""
+        from precis.utils import handle_registry
+        from tests.workers._helpers import seed_chunk, seed_ref
+
+        qid = _mk_quest(store, "A striving needing literature")
+        paper = seed_ref(store, title="A held paper with a body chunk")
+        chunk_id = seed_chunk(
+            store, ref_id=paper, text="The measured barrier drops with Cu doping."
+        )
+        store.add_link(src_ref_id=paper, dst_ref_id=qid, relation="serves")
+
+        expected_handle = handle_registry.try_format("paper", chunk_id, chunk=True)
+        assert expected_handle is not None
+
+        detail = tick_mod._served_papers_detail(store, qid)
+        assert any(f"[{expected_handle}]" in d for d in detail)
+
+        quest = store.get_ref(kind="quest", id=qid)
+        prompt = build_tick_prompt(store, quest)
+        assert f"[{expected_handle}]" in prompt
+        # the citation instruction itself — tells the model to actually cite
+        assert "cite the specific paper inline" in prompt
+        assert "precis-cite-paper-help" in prompt
+
 
 def _sequenced_dispatch(
     payloads: list[dict[str, Any] | None],

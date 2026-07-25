@@ -33,6 +33,8 @@ from typing import TYPE_CHECKING, Any
 
 from precis.quest.gaps import _handle, _live_servers
 from precis.quest.logbook import append_entry
+from precis.quest.tagging import quest_tag_value
+from precis.store.types import Tag
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -163,8 +165,14 @@ def run_search_step(
     (external progress → the cascade stall clock resets), or an ``observation``
     when nothing held matched (the un-held / acquisition-needed case, made
     visible rather than silent).
+
+    Every freshly-linked paper also picks up the ``quest:<public_id>`` OPEN
+    tag (see :mod:`precis.quest.tagging`) — the same tag the Drive-scoped
+    hub links point at, so a paper this step links is immediately visible
+    there without waiting on a backfill.
     """
     search = search_fn or _default_paper_search
+    quest_tag = Tag.open(quest_tag_value(quest_id, store))
     existing = {s.id for s in _live_servers(store, quest_id) if s.kind == "paper"}
     queries_run = 0
     linked_total = 0
@@ -186,6 +194,7 @@ def run_search_step(
                 relation="serves",
                 set_by="agent",
             )
+            store.add_tag(rid, quest_tag, set_by="system")
             existing.add(rid)
             linked.append(rid)
         linked_total += len(linked)

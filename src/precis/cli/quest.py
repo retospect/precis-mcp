@@ -8,6 +8,8 @@
                                       # jobs, coordinator trail, LLM spend
     precis quest review-all <draft>  # rung 3a: mint a review-todo for every
                                       # (reviewable chunk x lens) of a draft
+    precis quest tag-papers 7        # backfill quest:<id> tag onto serving
+                                      # papers (Drive-scoped browse)
 
 The autonomous loop (rung 4d) is dark by default; ``tick`` is the manual, one-
 shot driver — explicit human intent, so it runs regardless of
@@ -131,6 +133,14 @@ def add_parser(subparsers: Any) -> None:
         help="Mint the NO→NH₃/Pd catalyst-discovery quest (idempotent, dark).",
     )
     sc.add_argument("--database-url", default=None, help="Postgres DSN override.")
+
+    tp = qsub.add_parser(
+        "tag-papers",
+        help="Backfill: tag every serves-linked paper with quest:<id> "
+        "(scopes the Drive browse surface to this quest — idempotent).",
+    )
+    tp.add_argument("id", type=int, help="Quest ref id.")
+    tp.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
     r = qsub.add_parser(
         "run", help="Allocator: pick the best active quest + tick it once."
@@ -279,6 +289,21 @@ def _cmd_seed_catalyst(store: Store, args: argparse.Namespace) -> None:
     )
 
 
+def _cmd_tag_papers(store: Store, args: argparse.Namespace) -> None:
+    import sys
+
+    from precis.errors import NotFound
+    from precis.quest.tagging import quest_tag_value, tag_serving_papers
+
+    try:
+        n = tag_serving_papers(store, args.id)
+        tag_value = quest_tag_value(args.id, store)
+    except NotFound as exc:
+        print(f"quest tag-papers: {exc}", file=sys.stderr)
+        sys.exit(2)
+    print(f"quest {args.id}: tagged {n} serving paper(s) with tag={tag_value!r}")
+
+
 def _cmd_run(store: Store, args: argparse.Namespace) -> None:
     from precis.quest.allocator import run_allocator_pass
 
@@ -366,5 +391,7 @@ def run(args: argparse.Namespace) -> None:
         _cmd_status(store, args)
     elif args.quest_cmd == "seed-catalyst":
         _cmd_seed_catalyst(store, args)
+    elif args.quest_cmd == "tag-papers":
+        _cmd_tag_papers(store, args)
     elif args.quest_cmd == "run":
         _cmd_run(store, args)

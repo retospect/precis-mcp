@@ -45,6 +45,7 @@ from precis.quest.logbook import (
     append_entry,
     clamp_entry_type,
 )
+from precis.utils import handle_registry
 
 if TYPE_CHECKING:
     from precis.store import Ref, Store
@@ -182,15 +183,57 @@ def _paper_abstract_snippet(store: Store, ref: Ref) -> str:
     return text
 
 
+def _paper_citable_handle(store: Store, ref: Ref) -> str | None:
+    """The ``[pc<id>]`` handle of ``ref``'s first substantive body chunk, or
+    ``None`` when it has none yet (a metadata-only stub awaiting fetch).
+
+    The tick is a single structured LLM call with no live ``search``/``get``
+    mid-generation (unlike an agentic writer), so a served paper's citation
+    handle has to be handed to it in-context to be citable at all. This is
+    the same bare ``[pc<id>]`` paper-chunk convention
+    ``get(kind='skill', id='precis-cite-paper-help')`` teaches — copy the
+    handle, never guess it — and the dossier is a ``draft`` kind, so the
+    export/bibliography materializer already recognizes it inline.
+    """
+    try:
+        blocks = store.list_blocks_for_ref(ref.id)
+    except Exception:
+        return None
+    for b in blocks:
+        if b.chunk_kind == "heading":
+            continue
+        if (b.text or "").strip():
+            return handle_registry.try_format("paper", b.id, chunk=True)
+    return None
+
+
 def _served_papers_detail(store: Store, quest_id: int) -> list[str]:
-    """One line per served `paper`: a short title + its abstract snippet."""
+    """One line per served `paper`: its citable ``[pc<id>]`` handle (when it
+    has a body chunk to point at), a short title, and an abstract snippet."""
     live = gaps_mod._live_servers(store, quest_id)
     papers = [r for r in live if r.kind == "paper"][:_MAX_DETAIL_PAPERS]
     out: list[str] = []
     for r in papers:
         title = (r.title or "").splitlines()[0][:80] if r.title else "(untitled)"
-        out.append(f"- {title} — {_paper_abstract_snippet(store, r)}")
+        handle = _paper_citable_handle(store, r)
+        cite = f"[{handle}] " if handle else ""
+        out.append(f"- {cite}{title} — {_paper_abstract_snippet(store, r)}")
     return out
+
+
+#: Instruction appended to the literature section — the dossier is a
+#: `draft` kind (module docstring, dossier.py), so its narrative honors the
+#: same bare `[pc<id>]` inline-citation convention as any other draft
+#: (`get(kind='skill', id='precis-cite-paper-help')`); this tells the model
+#: to actually use it against the handles just listed above.
+_CITE_INSTRUCTION = (
+    "\nWhen the rewritten dossier states a claim this literature supports, "
+    "cite the specific paper inline by the bare `[pc<id>]` handle shown "
+    "above (e.g. `...a markedly lower barrier [pc234]`) — copy the handle "
+    "from the list, never invent one. A served paper listed with no handle "
+    "has no body chunk yet (a stub awaiting fetch) — do not cite it. See "
+    "`get(kind='skill', id='precis-cite-paper-help')`.\n"
+)
 
 
 def _literature_section(store: Store, quest_id: int) -> str:
@@ -198,7 +241,12 @@ def _literature_section(store: Store, quest_id: int) -> str:
     detail = _served_papers_detail(store, quest_id)
     if not detail:
         return ""
-    return "\n## Held literature (abstracts)\n" + "\n".join(detail) + "\n"
+    return (
+        "\n## Held literature (abstracts)\n"
+        + "\n".join(detail)
+        + "\n"
+        + _CITE_INSTRUCTION
+    )
 
 
 def _ruled_out_handles(

@@ -21,6 +21,7 @@ canonical address (slug when present, else id) for the ``get`` call.
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlencode
@@ -43,6 +44,8 @@ from precis_web.deps import (
 from precis_web.item_view import display_title
 
 router = APIRouter(prefix="/refs", tags=["refs"])
+
+log = logging.getLogger(__name__)
 
 #: Browsable ref kinds, in nav order: ``(kind, label)``. The nav in
 #: ``base.html.j2`` renders one tab per entry; adding a kind here +
@@ -460,10 +463,13 @@ async def _quest_detail(request: Request, store: Any, ref: Any) -> HTMLResponse:
     the two ``get(view=…)`` reads below is dispatched.
     """
     from precis.quest import dossier as dossier_mod
+    from precis.quest import frontier as frontier_mod
     from precis.quest.gaps import _live_servers, quest_momentum
     from precis.quest.logbook import LOG_KIND
+    from precis.quest.tagging import quest_tag_value
 
     qid = int(ref.id)
+    quest_tag = quest_tag_value(qid, store)
     raw_tags = store.tags_for(qid)
     status = "active"
     for t in raw_tags:
@@ -527,6 +533,27 @@ async def _quest_detail(request: Request, store: Any, ref: Any) -> HTMLResponse:
         request, "get", {"kind": "quest", "id": qid, "view": "gaps"}
     )
 
+    # Frontier scatter (Cycle C J4) — the same `Candidate`s the text
+    # frontier's markdown summarises, read directly off `frontier.py`'s pure
+    # builder (a store read, not a second `get(view=…)` dispatch — mirrors
+    # how `_render_frontier` itself calls `quest_frontier`) so the hub can
+    # plot real (x, y) points instead of re-parsing the markdown. `None` when
+    # fewer than two candidates carry both axis measures — the template
+    # falls back to the text-only frontier already below it.
+    # Isolated like the text frontier above (which degrades to ``frontier_error``):
+    # a bad struct_runs row must not 500 the whole hub — just drop the scatter.
+    frontier_has_candidates = False
+    frontier_scatter = None
+    try:
+        fr = frontier_mod.quest_frontier(store, qid)
+        frontier_has_candidates = bool(fr.frontier or fr.dominated or fr.unevaluated)
+        frontier_scatter = frontier_mod.build_frontier_scatter(
+            fr.frontier + fr.dominated,
+            open_url_for=lambda c: f"/refs/structure/{c.ref_id}",
+        )
+    except Exception:
+        log.warning("quest %s: frontier scatter build failed", qid, exc_info=True)
+
     # Latest quest_tick run — lets a human spy on what the autonomous
     # loop actually did/said last, via the existing agentlog viewer.
     last_agentlog_id = _quest_last_agentlog_id(store, qid)
@@ -538,11 +565,34 @@ async def _quest_detail(request: Request, store: Any, ref: Any) -> HTMLResponse:
     by_kind: dict[str, int] = {}
     for s in live_servers:
         by_kind[s.kind] = by_kind.get(s.kind, 0) + 1
+    # Papers get a Drive-scoped link (this quest's serving papers only, via
+    # the ``quest:<id>`` tag every serves-link stamps — see
+    # ``precis.quest.tagging``); every other browsable kind keeps the
+    # generic ``/refs/<kind>`` tab (no equivalent tag-scoped browse exists
+    # for them yet).
+    quest_papers_url = "/drive?" + urlencode(
+        [("submitted", "1"), ("k", "paper"), ("tag", quest_tag)]
+    )
+    # Exploration queue → Drive stubs: this quest's serving papers that
+    # haven't been chunked yet (acquired but not ingested), so a human can
+    # jump straight from "here's a gap" to "here's what to go read".
+    quest_stubs_url = "/drive?" + urlencode(
+        [
+            ("submitted", "1"),
+            ("k", "paper"),
+            ("tag", quest_tag),
+            ("paper_chunks", "without"),
+        ]
+    )
     servers_lite = [
         {
             "kind": k,
             "count": n,
-            "url": f"/refs/{k}" if k in _REFS_BROWSABLE_KINDS else None,
+            "url": (
+                quest_papers_url
+                if k == "paper"
+                else (f"/refs/{k}" if k in _REFS_BROWSABLE_KINDS else None)
+            ),
         }
         for k, n in sorted(by_kind.items(), key=lambda kv: (-kv[1], kv[0]))
     ]
@@ -574,10 +624,14 @@ async def _quest_detail(request: Request, store: Any, ref: Any) -> HTMLResponse:
             "log_tail": log_tail,
             "frontier_text": frontier_text,
             "frontier_error": frontier_error,
+            "frontier_scatter": frontier_scatter,
+            "frontier_has_candidates": frontier_has_candidates,
             "gaps_text": gaps_text,
             "gaps_error": gaps_error,
             "servers_lite": servers_lite,
             "servers_total": len(live_servers),
+            "quest_tag": quest_tag,
+            "quest_stubs_url": quest_stubs_url,
             "discussions": _followup_discussions(store, qid),
         },
     )

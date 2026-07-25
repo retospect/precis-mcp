@@ -16,6 +16,7 @@ now it defaults to **minimise energy** and can be overridden per quest via
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -59,6 +60,151 @@ class FrontierResult:
     frontier: list[Candidate] = field(default_factory=list)  # non-dominated
     dominated: list[Candidate] = field(default_factory=list)  # explored + beaten
     unevaluated: list[Candidate] = field(default_factory=list)  # no measures yet
+
+
+#: Quest hub v2 / Cycle C J4 — the Pareto-scatter axis choice. A starter pick
+#: (Reto, 2026-07-25), explicitly changeable later: swap the two ``*_MEASURE``
+#: keys (+ their ``*_LABEL``) and every caller (route + template) follows —
+#: nothing else moves.
+#:
+#: X = "highest barrier" → the catpath rate-limiting barrier
+#: :func:`compute._catpath_measures_from_job` stamps onto a candidate's own
+#: ``meta`` (harvested by :func:`_candidate_from_structure` above as the
+#: ``"barrier"`` measure) — an exact match, no substitution needed.
+#:
+#: Y = "highest intermediate energy" → no separate "intermediate" concept
+#: exists on a candidate yet (a quest's candidates ARE the structures, one
+#: `structure` server per candidate material/intermediate — see the module
+#: docstring), so the closest available measure is the candidate's own
+#: relaxed ``"energy"`` (from ``struct_runs``, the default quest objective —
+#: see :data:`DEFAULT_OBJECTIVES`): a candidate's relax energy literally IS
+#: that intermediate's energy.
+PARETO_X_MEASURE = "barrier"
+PARETO_X_LABEL = "Barrier (eV)"
+PARETO_Y_MEASURE = "energy"
+PARETO_Y_LABEL = "Relaxed energy (eV)"
+
+#: Minimum plottable candidates (both axis measures present) before the
+#: scatter is worth drawing — below this a two-point line/point cloud with
+#: no real shape isn't more legible than the text frontier already below it.
+_SCATTER_MIN_POINTS = 2
+
+#: Default SVG geometry (px) — a `viewBox` this size, `pad` reserved on every
+#: edge for axis labels/breathing room around the outermost points.
+_SVG_WIDTH = 480.0
+_SVG_HEIGHT = 260.0
+_SVG_PAD = 36.0
+
+#: Fraction of the data span added as padding on each side of the axis range,
+#: so the extreme points never sit flush against the plot border.
+_RANGE_PAD_FRACTION = 0.1
+
+
+@dataclass(frozen=True)
+class FrontierScatter:
+    """A plottable Pareto scatter — geometry pre-computed, template-ready.
+
+    ``points`` are plain dicts (not a dataclass) since the caller may stamp
+    an ``open_url`` onto each before handing them to Jinja; every point
+    already carries pixel-space ``cx``/``cy`` so the template does no math.
+    """
+
+    points: list[dict[str, Any]]
+    x_label: str
+    y_label: str
+    x_min: float
+    x_max: float
+    y_min: float
+    y_max: float
+    width: float = _SVG_WIDTH
+    height: float = _SVG_HEIGHT
+
+
+def build_frontier_scatter(
+    candidates: Sequence[Candidate],
+    *,
+    x_measure: str = PARETO_X_MEASURE,
+    y_measure: str = PARETO_Y_MEASURE,
+    x_label: str = PARETO_X_LABEL,
+    y_label: str = PARETO_Y_LABEL,
+    open_url_for: Callable[[Candidate], str] | None = None,
+    width: float = _SVG_WIDTH,
+    height: float = _SVG_HEIGHT,
+    pad: float = _SVG_PAD,
+) -> FrontierScatter | None:
+    """Extract + scale an (x, y) scatter over ``candidates``, or ``None``.
+
+    Pure geometry: no store, no Jinja. A candidate is plottable only when
+    *both* axis measures are present (``_dominates``'s own "missing a measure
+    ⇒ not comparable" rule, mirrored here as "not comparable ⇒ not
+    plottable"); fewer than :data:`_SCATTER_MIN_POINTS` plottable candidates
+    returns ``None`` so the caller falls back to the text-only frontier.
+    An all-equal axis (every point shares one x or y) would otherwise divide
+    by zero scaling to the viewBox — guarded by substituting a span of
+    ``1.0`` so the points simply plot along a flat line instead.
+    """
+    plottable = [
+        c
+        for c in candidates
+        if c.measures.get(x_measure) is not None
+        and c.measures.get(y_measure) is not None
+    ]
+    if len(plottable) < _SCATTER_MIN_POINTS:
+        return None
+
+    xs = [c.measures[x_measure] for c in plottable]
+    ys = [c.measures[y_measure] for c in plottable]
+    x_min, x_max = min(xs), max(xs)
+    y_min, y_max = min(ys), max(ys)
+
+    x_span = (x_max - x_min) or 1.0
+    y_span = (y_max - y_min) or 1.0
+    x_lo = x_min - x_span * _RANGE_PAD_FRACTION
+    x_hi = x_max + x_span * _RANGE_PAD_FRACTION
+    y_lo = y_min - y_span * _RANGE_PAD_FRACTION
+    y_hi = y_max + y_span * _RANGE_PAD_FRACTION
+    x_range = (x_hi - x_lo) or 1.0
+    y_range = (y_hi - y_lo) or 1.0
+
+    plot_w = width - 2 * pad
+    plot_h = height - 2 * pad
+
+    def _cx(v: float) -> float:
+        return pad + (v - x_lo) / x_range * plot_w
+
+    def _cy(v: float) -> float:
+        # SVG y grows downward; flip so the higher value plots higher up.
+        return pad + (1.0 - (v - y_lo) / y_range) * plot_h
+
+    points: list[dict[str, Any]] = []
+    for c in plottable:
+        x = c.measures[x_measure]
+        y = c.measures[y_measure]
+        point: dict[str, Any] = {
+            "ref_id": c.ref_id,
+            "handle": c.handle,
+            "name": c.name,
+            "x": x,
+            "y": y,
+            "converged": c.converged,
+            "cx": round(_cx(x), 2),
+            "cy": round(_cy(y), 2),
+        }
+        if open_url_for is not None:
+            point["open_url"] = open_url_for(c)
+        points.append(point)
+
+    return FrontierScatter(
+        points=points,
+        x_label=x_label,
+        y_label=y_label,
+        x_min=x_min,
+        x_max=x_max,
+        y_min=y_min,
+        y_max=y_max,
+        width=width,
+        height=height,
+    )
 
 
 def _dominates(a: Candidate, b: Candidate, objectives: list[tuple[str, str]]) -> bool:
@@ -318,8 +464,14 @@ def quest_frontier(
 
 __all__ = [
     "DEFAULT_OBJECTIVES",
+    "PARETO_X_LABEL",
+    "PARETO_X_MEASURE",
+    "PARETO_Y_LABEL",
+    "PARETO_Y_MEASURE",
     "Candidate",
     "FrontierResult",
+    "FrontierScatter",
+    "build_frontier_scatter",
     "leaderboard",
     "pareto_split",
     "quest_frontier",

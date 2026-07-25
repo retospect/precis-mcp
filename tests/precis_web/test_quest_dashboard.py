@@ -162,11 +162,15 @@ def test_quest_detail_panels_render_with_data(client, runtime, monkeypatch) -> N
     # Momentum flips off "quiet" once there's live logbook + server data.
     assert "momentum: quiet" not in resp.text
 
-    # Servers-lite counts, grouped + linked.
+    # Servers-lite counts, grouped + linked. The papers count is
+    # Drive-scoped to this quest's serving papers (tag=quest:<id>), not
+    # the generic /refs/paper browse — every other kind keeps its
+    # generic tab.
     assert "2 todos" in resp.text
     assert "1 paper" in resp.text
     assert 'href="/refs/todo"' in resp.text
-    assert 'href="/refs/paper"' in resp.text
+    assert "/drive?submitted=1&amp;k=paper&amp;tag=quest%3A97" in resp.text
+    assert 'href="/refs/paper"' not in resp.text
 
     # Frontier + gaps render the dispatched view text.
     assert "candidate Fe-N4 — energy=-4.2" in resp.text
@@ -242,6 +246,80 @@ def test_quest_hub_links_to_full_logbook(client, runtime) -> None:
     resp = client.get("/refs/quest/97")
     assert resp.status_code == 200
     assert "/refs/quest/97/logbook" in resp.text
+
+
+def test_quest_hub_frontier_scatter_renders_points(
+    client, runtime, monkeypatch
+) -> None:
+    """Two-or-more measured candidates ⇒ an inline SVG scatter with one
+    ``<circle>`` per plottable candidate, hover ``<title>``, and a clickable
+    ``open_url`` per point. `quest_frontier` is monkeypatched directly (the
+    fake store has no `structure_runs`) — mirrors how `_live_servers` is
+    stubbed in the panels-render test above."""
+    from precis.quest.frontier import Candidate, FrontierResult
+
+    frontier = FrontierResult(
+        objectives=[("barrier", "min")],
+        frontier=[
+            Candidate(1, "st1", "Fe-N4", {"barrier": 0.3, "energy": -20.0}, True),
+            Candidate(2, "st2", "Cu-N4", {"barrier": 0.9, "energy": -10.0}, True),
+        ],
+        dominated=[
+            Candidate(3, "st3", "Ni-N4", {"barrier": 1.2, "energy": -5.0}, True),
+        ],
+        unevaluated=[Candidate(4, "st4", "Pd-N4", {}, False)],
+    )
+    monkeypatch.setattr(
+        "precis.quest.frontier.quest_frontier", lambda store, qid: frontier
+    )
+
+    resp = client.get("/refs/quest/97")
+    assert resp.status_code == 200
+    # 3 plottable (frontier + dominated); the unevaluated candidate has no
+    # measures and is excluded.
+    assert resp.text.count("<circle") == 3
+    assert "/refs/structure/1" in resp.text
+    assert "Fe-N4" in resp.text
+    assert "converged" in resp.text
+    assert "not enough simulated candidates to plot yet." not in resp.text
+
+
+def test_quest_hub_frontier_scatter_falls_back_when_underpopulated(
+    client, runtime, monkeypatch
+) -> None:
+    """Fewer than 2 plottable candidates ⇒ no SVG, muted fallback note,
+    text frontier still renders below it."""
+    from precis.quest.frontier import Candidate, FrontierResult
+
+    frontier = FrontierResult(
+        objectives=[("barrier", "min")],
+        frontier=[
+            Candidate(1, "st1", "Fe-N4", {"barrier": 0.3, "energy": -20.0}, True)
+        ],
+        dominated=[],
+        unevaluated=[Candidate(2, "st2", "Cu-N4", {}, False)],
+    )
+    monkeypatch.setattr(
+        "precis.quest.frontier.quest_frontier", lambda store, qid: frontier
+    )
+
+    resp = client.get("/refs/quest/97")
+    assert resp.status_code == 200
+    assert "<circle" not in resp.text
+    assert "not enough simulated candidates to plot yet." in resp.text
+
+
+def test_quest_hub_exploration_queue_links_to_drive_stubs(client, runtime) -> None:
+    """The Gaps panel's "exploration queue" affordance points at Drive,
+    scoped to this quest's tag *and* chunkless (papers acquired but
+    not yet ingested) — not the generic gaps=text alone."""
+    resp = client.get("/refs/quest/97")
+    assert resp.status_code == 200
+    assert "exploration queue" in resp.text
+    assert (
+        "/drive?submitted=1&amp;k=paper&amp;tag=quest%3A97&amp;paper_chunks=without"
+        in resp.text
+    )
 
 
 def test_quest_draft_url_prefers_slug_falls_back_to_id() -> None:
