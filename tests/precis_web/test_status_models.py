@@ -38,7 +38,7 @@ def test_cloud_card_view_extracts_price_provider_and_caps() -> None:
         162503,
         "z-ai/glm-5.2",
         title="GLM-5.2 — the strongest open-weight model.",
-        tier_floor="cloud-super",
+        tier_floor="frontier",
         offerings=[
             {
                 "transport": "openai_compat",
@@ -61,7 +61,7 @@ def test_cloud_card_view_extracts_price_provider_and_caps() -> None:
 
 
 def test_claude_slug_maps_to_anthropic_provider() -> None:
-    v = _llm_card_view(_ref(1, "claude-opus-4-8", tier_floor="cloud-super"))
+    v = _llm_card_view(_ref(1, "claude-opus-4-8", tier_floor="frontier"))
     assert v["provider"] == "anthropic"
 
 
@@ -80,15 +80,15 @@ def test_local_card_view_surfaces_served_by_hosts() -> None:
         ],
     )
     v = _llm_card_view(ref)
-    assert v["is_cloud"] is False  # no cloud-* tier floor
+    assert v["is_cloud"] is False  # bare local model id (no slash, not claude-*)
     assert [h["host"] for h in v["hosts"]] == ["balthazar", "no-host-key-skipped"]
     assert v["hosts"][0]["slots"] == 1
 
 
 def test_tier_anchor_without_served_by_is_local_with_no_hosts() -> None:
-    # ``qwen-heavy`` / ``summarizer`` are local-* tier anchors: local, but no
-    # concrete host until the router resolves them at dispatch.
-    v = _llm_card_view(_ref(162071, "qwen-heavy", tier_floor="local-big"))
+    # ``qwen-heavy`` / ``summarizer`` are bare local model ids (the local rungs
+    # backing BIG/SMALL): local, but no concrete host until dispatch resolves.
+    v = _llm_card_view(_ref(162071, "qwen-heavy", tier_floor="big"))
     assert v["is_cloud"] is False
     assert v["hosts"] == []
 
@@ -98,30 +98,30 @@ def test_models_ctx_groups_sorts_and_lists_serving_hosts() -> None:
         _ref(
             "small",
             "z-ai/glm-4.7-flash",
-            tier_floor="cloud-small",
+            tier_floor="medium",
             offerings=[{"price_in": 0.1}],
         ),
         _ref(
             "super",
             "z-ai/glm-5.2",
-            tier_floor="cloud-super",
+            tier_floor="frontier",
             offerings=[{"price_in": 0.9}],
         ),
         _ref(
             "mid",
             "qwen/qwen3.7-max",
-            tier_floor="cloud-mid",
+            tier_floor="big",
             offerings=[{"price_in": 0.5}],
         ),
-        _ref("anchor", "qwen-heavy", tier_floor="local-big"),
+        _ref("anchor", "qwen-heavy", tier_floor="big"),
         _ref("served", "qwen3.6-35b", served_by=[{"host": "spark", "max_parallel": 1}]),
     ]
     ctx = _models_ctx(_FakeStore(refs))
     # Cloud sorted strongest tier first.
     assert [c["tier"] for c in ctx["cloud_cards"]] == [
-        "cloud-super",
-        "cloud-mid",
-        "cloud-small",
+        "frontier",
+        "big",
+        "medium",
     ]
     # Local: host-backed models before the abstract tier anchors.
     assert [c["model_id"] for c in ctx["local_cards"]] == ["qwen3.6-35b", "qwen-heavy"]
@@ -141,7 +141,7 @@ def test_models_tab_renders_cards_end_to_end(client, runtime) -> None:
             162503,
             "z-ai/glm-5.2",
             title="GLM-5.2 — strongest open-weight model.",
-            tier_floor="cloud-super",
+            tier_floor="frontier",
             offerings=[{"price_in": 0.969, "price_out": 3.045, "max_input": 1048576}],
         ),
         _ref(

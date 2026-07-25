@@ -513,10 +513,11 @@ class TestSeed:
         assert len(model_ids) >= 3
         cards = store.list_refs(kind="llm", limit=100)
         floors = {(c.meta or {}).get("tier_floor") for c in cards}
-        # ADR 0066 Phase A: the canonical tiers (FRONTIER/BIG/MEDIUM/SMALL) share
-        # a model with their legacy analogue, so the seed dedupes by model — one
-        # card per distinct model, keyed to the legacy tier_floor (first-wins).
-        # Phase C reseeds the catalog to the 4 canonical tiers.
+        # ADR 0066 Phase C: the seed emits the four capability tier_floor values
+        # (LOCAL_BIG's qwen card is labeled `big`, per the relabel mapping) — the
+        # legacy location-coupled values are gone from freshly-seeded cards.
+        canonical = {Tier.FRONTIER, Tier.BIG, Tier.MEDIUM, Tier.SMALL}
+        assert {t.value for t in canonical} <= floors
         legacy = {
             Tier.LOCAL_SMALL,
             Tier.LOCAL_BIG,
@@ -524,9 +525,7 @@ class TestSeed:
             Tier.CLOUD_MID,
             Tier.CLOUD_SUPER,
         }
-        assert {t.value for t in legacy} <= floors
-        canonical = {Tier.FRONTIER, Tier.BIG, Tier.MEDIUM, Tier.SMALL}
-        assert not ({t.value for t in canonical} & floors)
+        assert not ({t.value for t in legacy} & floors)
 
     def test_frontier_seed_mints_oss_ladder(self, store: Any) -> None:
         from precis import llm_catalog
@@ -547,7 +546,7 @@ class TestSeed:
             for m in by_id.values()
             if m.get("model_id") in model_ids
         }
-        assert {"cloud-super", "cloud-mid", "cloud-small"} <= floors
+        assert {"frontier", "big", "medium"} <= floors
         glm = by_id["z-ai/glm-5.2"]
         off = glm["offerings"][0]
         assert off["transport"] == "openai_compat"

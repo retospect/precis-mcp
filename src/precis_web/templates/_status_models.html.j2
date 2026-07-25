@@ -49,9 +49,9 @@
         </div>
         {% if c.tier %}
         <span class="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium
-          {% if c.tier == 'cloud-super' %}bg-violet-50 text-violet-700
-          {% elif c.tier == 'cloud-mid' %}bg-sky-50 text-sky-700
-          {% else %}bg-slate-100 text-slate-600{% endif %}">{{ c.tier.replace('cloud-', '') }}</span>
+          {% if c.tier == 'frontier' %}bg-violet-50 text-violet-700
+          {% elif c.tier == 'big' %}bg-sky-50 text-sky-700
+          {% else %}bg-slate-100 text-slate-600{% endif %}">{{ c.tier }}</span>
         {% endif %}
       </div>
 

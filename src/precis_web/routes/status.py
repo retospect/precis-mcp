@@ -1306,8 +1306,9 @@ def _llm_chain_ctx(store: Any) -> dict[str, Any]:
 
 
 #: Cloud tiers, strongest first — the sort order for the Models sub-tab's
-#: cloud grid (local cards sort served-first, then by model_id).
-_TIER_RANK: dict[str, int] = {"cloud-super": 0, "cloud-mid": 1, "cloud-small": 2}
+#: cloud grid (local cards sort served-first, then by model_id). ADR 0066
+#: capability tiers; SMALL is a local tier, so it's absent from the cloud grid.
+_TIER_RANK: dict[str, int] = {"frontier": 0, "big": 1, "medium": 2}
 
 
 def _llm_card_view(ref: Any) -> dict[str, Any]:
@@ -1357,7 +1358,11 @@ def _llm_card_view(ref: Any) -> dict[str, Any]:
         "id": ref.id,
         "model_id": model_id,
         "tier": tier,
-        "is_cloud": tier.startswith("cloud"),
+        # ADR 0066: tier_floor is now capability, not location — derive
+        # cloud-vs-local from the MODEL id. Cloud models are `claude-*` or
+        # provider-slugged (`z-ai/glm-4.7`); bare local aliases (`summarizer`,
+        # `qwen-heavy`, `rake-lemma`) have neither → local.
+        "is_cloud": "/" in model_id or model_id.startswith("claude"),
         "provider": provider,
         "price_in": off.get("price_in"),
         "price_out": off.get("price_out"),

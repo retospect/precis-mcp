@@ -622,28 +622,28 @@ def record_benchmark(
 #: with (so ``search(kind='llm', q=…)`` has something to match before the
 #: reviewers + evals enrich it in slice 3). Drawn from the ``Tier`` docstring.
 _SEED_PROSE: dict[str, str] = {
-    "cloud-super": (
-        "Cloud reasoning tier (opus-class). Heavy reasoning with tools — the "
+    "frontier": (
+        "Frontier reasoning tier (opus-class). Heavy reasoning with tools — the "
         "structural / deep reviewers, fix-gripe, the planner's LLM:opus ticks, "
         "the dream pass, and the generic claude_agent default. Strong at "
         "multi-file refactors and careful SQL; the default when the task is hard."
     ),
-    "cloud-mid": (
-        "Cloud mid agentic tier (sonnet-class). The workhorse rung — planner "
-        "ticks and tex-fix. Capable with tools at lower cost than the super tier."
+    "big": (
+        "Big agentic tier (sonnet-class). The workhorse rung — planner "
+        "ticks and tex-fix. Capable with tools at lower cost than the frontier tier."
     ),
-    "cloud-small": (
-        "Cloud small tier (haiku-class). Tool-less one-shot JSON judgement (the "
+    "medium": (
+        "Medium tier (haiku-class). Tool-less one-shot JSON judgement (the "
         "chase-verifier shape) — fast and cheap classification / triage."
     ),
-    "local-small": (
-        "Local small tier (the summarizer alias) on the loopback litellm proxy. "
+    "small": (
+        "Small tier (the summarizer alias) on the loopback litellm proxy. "
         "The cheapest rung; the per-chunk gloss lives here. Tool-less by "
         "construction."
     ),
     "local-big": (
         "Local big tier (qwen-class) with tools over the OpenAI tools= loop. The "
-        "local agentic rung; ADR 0024's dream model."
+        "local agentic rung backing BIG; ADR 0024's dream model."
     ),
 }
 
@@ -665,10 +665,10 @@ _SEED_PROSE: dict[str, str] = {
 #:
 #: Each row: (model_id, tier_floor, max_input, price_in, price_out, capability).
 _FRONTIER_CARDS: tuple[tuple[str, str, int, float, float, dict[str, int]], ...] = (
-    # ── cloud-super — Opus-class heavy reasoning with tools ────────────────
+    # ── frontier — Opus-class heavy reasoning with tools ──────────────────
     (
         "z-ai/glm-5.2",
-        "cloud-super",
+        "frontier",
         1_048_576,
         0.969,
         3.045,
@@ -681,7 +681,7 @@ _FRONTIER_CARDS: tuple[tuple[str, str, int, float, float, dict[str, int]], ...] 
     ),
     (
         "moonshotai/kimi-k3",
-        "cloud-super",
+        "frontier",
         1_048_576,
         3.0,
         15.0,
@@ -694,7 +694,7 @@ _FRONTIER_CARDS: tuple[tuple[str, str, int, float, float, dict[str, int]], ...] 
     ),
     (
         "deepseek/deepseek-v4-pro",
-        "cloud-super",
+        "frontier",
         1_048_576,
         0.435,
         0.87,
@@ -705,10 +705,10 @@ _FRONTIER_CARDS: tuple[tuple[str, str, int, float, float, dict[str, int]], ...] 
             "long-context-recall": 5,
         },
     ),
-    # ── cloud-mid — Sonnet-class workhorse, capable with tools, cheaper ────
+    # ── big — Sonnet-class workhorse, capable with tools, cheaper ─────────
     (
         "moonshotai/kimi-k2.7-code",
-        "cloud-mid",
+        "big",
         262_144,
         0.75,
         3.5,
@@ -721,7 +721,7 @@ _FRONTIER_CARDS: tuple[tuple[str, str, int, float, float, dict[str, int]], ...] 
     ),
     (
         "qwen/qwen3.7-max",
-        "cloud-mid",
+        "big",
         1_000_000,
         1.475,
         4.425,
@@ -734,7 +734,7 @@ _FRONTIER_CARDS: tuple[tuple[str, str, int, float, float, dict[str, int]], ...] 
     ),
     (
         "minimax/minimax-m3",
-        "cloud-mid",
+        "big",
         1_048_576,
         0.30,
         1.20,
@@ -747,7 +747,7 @@ _FRONTIER_CARDS: tuple[tuple[str, str, int, float, float, dict[str, int]], ...] 
     ),
     (
         "z-ai/glm-4.7",
-        "cloud-mid",
+        "big",
         202_752,
         0.40,
         1.75,
@@ -758,10 +758,10 @@ _FRONTIER_CARDS: tuple[tuple[str, str, int, float, float, dict[str, int]], ...] 
             "long-context-recall": 3,
         },
     ),
-    # ── cloud-small — Haiku-class fast/cheap triage, still tool-capable ────
+    # ── medium — Haiku-class fast/cheap triage, still tool-capable ────────
     (
         "qwen/qwen3.6-flash",
-        "cloud-small",
+        "medium",
         1_000_000,
         0.188,
         1.125,
@@ -774,7 +774,7 @@ _FRONTIER_CARDS: tuple[tuple[str, str, int, float, float, dict[str, int]], ...] 
     ),
     (
         "deepseek/deepseek-v4-flash",
-        "cloud-small",
+        "medium",
         1_048_576,
         0.098,
         0.196,
@@ -787,7 +787,7 @@ _FRONTIER_CARDS: tuple[tuple[str, str, int, float, float, dict[str, int]], ...] 
     ),
     (
         "z-ai/glm-4.7-flash",
-        "cloud-small",
+        "medium",
         202_752,
         0.06,
         0.40,
@@ -800,7 +800,7 @@ _FRONTIER_CARDS: tuple[tuple[str, str, int, float, float, dict[str, int]], ...] 
     ),
     (
         "openai/gpt-oss-120b",
-        "cloud-small",
+        "medium",
         131_072,
         0.037,
         0.17,
@@ -813,7 +813,7 @@ _FRONTIER_CARDS: tuple[tuple[str, str, int, float, float, dict[str, int]], ...] 
     ),
     (
         "openai/gpt-oss-20b",
-        "cloud-small",
+        "medium",
         131_072,
         0.03,
         0.13,
@@ -969,14 +969,14 @@ def seed_default_cards(store: Store) -> list[tuple[str, int, bool]]:
 
     results: list[tuple[str, int, bool]] = []
     seen_models: set[str] = set()
-    for tier in Tier:
+    # ADR 0066 Phase C: seed one card per capability tier (FRONTIER/BIG/MEDIUM/
+    # SMALL) plus the still-alive LOCAL_BIG (qwen-heavy, the local rung backing
+    # BIG). These resolve to distinct models, so `tier_floor` carries the new
+    # capability value — LOCAL_BIG's card is labeled `big` (per the relabel
+    # mapping) while keeping its own `local-big` prose. The `seen_models` guard
+    # stays as a belt-and-braces dedup.
+    for tier in (Tier.FRONTIER, Tier.BIG, Tier.MEDIUM, Tier.SMALL, Tier.LOCAL_BIG):
         model_id = resolve_model(tier)
-        # One card per *model* (the card's identity is model_id). ADR 0066's
-        # Phase-A canonical tiers (FRONTIER/BIG/MEDIUM/SMALL) resolve to the
-        # SAME model as their legacy analogue, and the legacy tiers come first
-        # in Tier, so first-wins keeps today's cards + tier_floor values
-        # untouched (a second write would clobber tier_floor). Phase C reseeds
-        # the catalog to the 4 canonical tiers (per the ADR Surfaces table).
         if model_id in seen_models:
             continue
         seen_models.add(model_id)
@@ -988,11 +988,12 @@ def seed_default_cards(store: Store) -> list[tuple[str, int, bool]]:
         if rates is not None:
             offering["price_in"], offering["price_out"] = rates
         prose = _SEED_PROSE.get(tier.value, f"{tier.value} tier model.")
+        tier_floor = "big" if tier is Tier.LOCAL_BIG else tier.value
         ref_id, created = upsert_card(
             store,
             model_id=model_id,
             text=prose,
-            tier_floor=tier.value,
+            tier_floor=tier_floor,
             offerings=[offering],
             provenance={"source": "seed"},
         )
