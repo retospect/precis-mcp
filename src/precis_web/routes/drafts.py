@@ -2625,6 +2625,54 @@ async def set_authoring(
     return RedirectResponse(url=back, status_code=303)
 
 
+@router.post("/drafts/{ident}/fork")
+async def fork_draft_route(
+    request: Request,
+    ident: str,
+    project: str = Form(...),
+    title: str = Form(""),
+) -> Response:
+    """Duplicate this draft (Phase-1 fork) — deep-copy every chunk + its
+    links into a NEW draft bound to ``project`` (a fresh project's name, or a
+    ``todo:N`` for an existing draft-less one). The web twin of
+    ``put(kind='draft', copy_of=<slug>, project=<name>)``; the source is
+    untouched and the copy starts fully unreviewed. Lands on the new copy's
+    reader (or the /drafts list if the new slug can't be parsed back)."""
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    if ref is None:
+        return RedirectResponse(url="/drafts", status_code=303)
+    project = project.strip()
+    if not project:
+        return RedirectResponse(url=f"/drafts/{ident}", status_code=303)
+    payload: dict[str, Any] = {
+        "kind": "draft",
+        "copy_of": ref.slug or ref.id,
+        "project": project,
+    }
+    if title.strip():
+        payload["title"] = title.strip()
+    body, is_error = await await_dispatch(request, "put", payload)
+    if is_error:
+        return templates.TemplateResponse(
+            request,
+            "error.html.j2",
+            {
+                "active_tab": "drafts",
+                "title": "Duplicate draft error",
+                "detail": body,
+                "status": 400,
+            },
+            status_code=400,
+        )
+    # _fork's ack: "forked draft '<src>' → '<new_slug>' (ref N); …".
+    m = re.search(r"→ '([^']+)'", body)
+    dest = m.group(1) if m else None
+    return RedirectResponse(
+        url=f"/drafts/{dest}" if dest else "/drafts", status_code=303
+    )
+
+
 @router.post("/drafts/{ident}/workspace")
 async def set_workspace(
     request: Request,

@@ -1465,6 +1465,51 @@ def test_reader_renders_the_human_review_checkbox(draft_client: TestClient) -> N
     assert "$dispatch('draft-review', {dc:'dc2'})" in r.text
 
 
+def test_reader_has_duplicate_button(draft_client: TestClient) -> None:
+    """The reader toolbar exposes the web fork affordance (Phase-1 fork): a
+    ⧉ duplicate control whose reveal-form posts to /drafts/<ident>/fork with
+    a project name."""
+    r = draft_client.get("/drafts/nt")
+    assert r.status_code == 200
+    assert "duplicate" in r.text
+    assert 'action="/drafts/nt/fork"' in r.text
+    assert 'name="project"' in r.text
+
+
+def test_fork_route_dispatches_put_copy_of(
+    draft_client: TestClient, draft_runtime: FakeRuntime
+) -> None:
+    """POST /drafts/<ident>/fork routes through the same
+    ``put(copy_of=, project=)`` verb the MCP/CLI fork uses — the source
+    draft as ``copy_of`` and the typed project name — then redirects (to the
+    new copy when the ack names it)."""
+    r = draft_client.post(
+        "/drafts/nt/fork",
+        data={"project": "nanobuds-review", "title": "Nanobuds (review copy)"},
+        follow_redirects=False,
+    )
+    assert r.status_code in (302, 303)
+    verb, args = draft_runtime.calls[-1]
+    assert verb == "put"
+    assert args["kind"] == "draft"
+    assert args["copy_of"]  # the source draft's slug/id
+    assert args["project"] == "nanobuds-review"
+    assert args["title"] == "Nanobuds (review copy)"
+
+
+def test_fork_route_blank_project_is_a_noop(
+    draft_client: TestClient, draft_runtime: FakeRuntime
+) -> None:
+    """A blank project name never dispatches the fork (the copy must bind to
+    a project) — it just redirects back to the source draft."""
+    r = draft_client.post(
+        "/drafts/nt/fork", data={"project": "   "}, follow_redirects=False
+    )
+    assert r.status_code in (302, 303)
+    assert r.headers["location"] == "/drafts/nt"
+    assert not any(v == "put" and "copy_of" in a for v, a in draft_runtime.calls)
+
+
 def test_checker_flag_strip_renders_per_lens_state(tmp_path) -> None:
     """The meta-column checker strip (rung 3d) renders one glyph per lens:
     current (✓) when reviewed at the live text, stale (~) when the
