@@ -176,6 +176,15 @@ class NumericRefHandler(Handler):
     #: out so bug reports never enter the dream frontier.
     heat_salience_on_body_search: ClassVar[bool] = False
 
+    #: Per-kind default for the ``search(status=…)`` shorthand. When set
+    #: (e.g. gripe → ``'open'``), a bare ``search(kind=K, …)`` filters by
+    #: ``STATUS:<value>`` — the everyday "what's still open?" call — unless
+    #: the caller passes an explicit ``status=``, already pins a ``STATUS:``
+    #: tag, or opts out with ``status='*'``. ``None`` (the default) means no
+    #: implicit status filter, matching the historical behaviour for every
+    #: kind that doesn't set it.
+    default_search_status: ClassVar[str | None] = None
+
     def __init__(self, *, hub: Hub) -> None:
         if hub.store is None:
             raise InitError(f"{self.kind}: store required")
@@ -328,14 +337,21 @@ class NumericRefHandler(Handler):
         self,
         *,
         q: str | None = None,
+        status: str | None = None,
         tags: list[str] | None = None,
         page_size: int = 10,
         **_kw: Any,
     ) -> Response:
+        # Resolve the per-kind STATUS default (e.g. gripe → 'open') into
+        # the effective tag filter. An explicit status= always applies;
+        # the implicit default only fires when the caller neither passed
+        # status= nor already pinned a STATUS: tag; status='*' opts out.
+        effective_tags, status_note = self._apply_status_default(status, tags)
+
         # Validate at the agent boundary — symmetric with put(tags=...).
         # Pass kind= so per-kind axis enforcement catches
         # STATUS: filter queries against kinds that don't use STATUS.
-        normalized_tags = Tag.normalize_filter(tags, kind=self.kind)
+        normalized_tags = Tag.normalize_filter(effective_tags, kind=self.kind)
 
         # ``q=`` is optional when ``tags=`` is supplied — broad
         # usability pass 2026-05-30 (#7 / #13): an agent looking for
@@ -346,7 +362,9 @@ class NumericRefHandler(Handler):
         # wanted in the first place.
         if q is None or not q.strip():
             if normalized_tags:
-                return self._list_by_tags(normalized_tags, page_size=page_size)
+                return self._list_by_tags(
+                    normalized_tags, page_size=page_size, note=status_note
+                )
             raise BadInput(
                 "search requires q= or tags=",
                 next=(
@@ -359,7 +377,10 @@ class NumericRefHandler(Handler):
         # body/comment chunks grouped by ref rather than ``ref.title``.
         if self.search_body_chunks:
             return self._search_body_chunks(
-                q=q, tags=normalized_tags, page_size=page_size
+                q=q,
+                tags=normalized_tags,
+                page_size=page_size,
+                status_note=status_note,
             )
 
         hits = self.store.search_refs_lexical(
@@ -368,6 +389,10 @@ class NumericRefHandler(Handler):
         if not hits:
             tag_suffix = f" tagged {normalized_tags}" if normalized_tags else ""
             body = f"no {self._sense()} entries match {q!r}{tag_suffix}"
+            # Surface the implicit status default so "no matches" can't be
+            # misread as "no entries at all" when a STATUS filter was in play.
+            if status_note:
+                body += f"\n{status_note}"
             # Empty searches should still teach the agent what to try
             # next — broaden the query, drop the tag filter (if any),
             # or fall back to the recent-list view.  Without this, a
@@ -415,19 +440,102 @@ class NumericRefHandler(Handler):
             query=q,
         )
         table = self._render_hits_table([ref for ref, _ in hits])
-        return Response(body=f"{header}\n{table}")
+        trunc = self._tag_truncation_note(normalized_tags, matched_total=total, q=q)
+        parts = [header]
+        if status_note:
+            parts.append(status_note)
+        if trunc:
+            parts.append(trunc)
+        parts.append(table)
+        return Response(body="\n".join(parts))
 
-    def _list_by_tags(self, tags: list[str], *, page_size: int) -> Response:
+    def _apply_status_default(
+        self, status: str | None, tags: list[str] | None
+    ) -> tuple[list[str] | None, str]:
+        """Fold the per-kind STATUS default into the effective tag filter.
+
+        Returns ``(effective_tags, note)``. ``note`` is a one-line hint
+        naming the implicit default so it is *visible* in the response
+        (empty when no default was applied). Rules:
+
+        * an explicit ``status=`` (not ``'*'``) always applies, and wins
+          over any ``STATUS:`` tag the caller also passed — the
+          conflicting tag is dropped rather than AND-ed into an
+          unsatisfiable filter (a ref carries one STATUS value);
+        * ``status='*'`` opts out of the status shorthand (a caller's own
+          ``STATUS:`` tag, if any, still stands);
+        * :attr:`default_search_status` fires only when the caller passed
+          no ``status=`` *and* did not already pin a ``STATUS:`` tag — so
+          it never fights an explicit choice or silently drops one.
+
+        The ``STATUS:`` prefix check is case-sensitive to match
+        :meth:`Tag.parse_strict`, which only treats an uppercase prefix
+        as the closed axis (a mixed-case ``Status:`` parses as an open
+        tag, so it must not suppress the default).
+        """
+        effective: list[str] = list(tags) if tags else []
+        has_status_tag = any(t.strip().startswith("STATUS:") for t in effective)
+        explicit = status is not None
+        resolved = (status if explicit else self.default_search_status) or ""
+        resolved = resolved.strip()
+        note = ""
+        if resolved and resolved != "*" and (explicit or not has_status_tag):
+            # Explicit status wins outright: drop any caller STATUS: tag so
+            # two conflicting closed-axis values can't AND to zero rows.
+            if explicit and has_status_tag:
+                effective = [
+                    t for t in effective if not t.strip().startswith("STATUS:")
+                ]
+            tag_str = f"STATUS:{resolved}"
+            if tag_str not in effective:
+                effective.append(tag_str)
+            if not explicit:
+                note = (
+                    f"(default status={resolved!r} — pass status='*' for all statuses)"
+                )
+        return (effective or None, note)
+
+    def _tag_truncation_note(
+        self, tags: list[str] | None, *, matched_total: int, q: str
+    ) -> str:
+        """Warn when a ``q=`` narrowed a tag-filtered enumeration.
+
+        With ``tags=`` present, ``q=`` is a *filter* over the tagged set —
+        a ref must lexically match ``q`` to appear — not merely an
+        ordering. So the returned count can fall far below the tagged
+        population, silently; this cue makes that visible (the whole
+        point of the fix behind it). Returns ``''`` when there are no
+        tags or ``q`` didn't drop anything.
+        """
+        if not tags:
+            return ""
+        tag_total = self.store.count_refs(kind=self.kind, tags=tags)
+        if tag_total <= matched_total:
+            return ""
+        return (
+            f"⚠ {matched_total} of {tag_total} {self._sense()} entries tagged "
+            f"{tags} also match q={q!r} — here q filters, it does not just "
+            f"order. To enumerate all {tag_total}, drop q: "
+            f"search(kind={self.kind!r}, tags={tags!r})"
+        )
+
+    def _list_by_tags(
+        self, tags: list[str], *, page_size: int, note: str = ""
+    ) -> Response:
         """Recency-ordered list of refs matching ``tags``, no ranking.
 
         Reached when ``search(kind=K, tags=[...])`` is called without
         ``q=`` — the right shape for "show me everything I tagged X".
         Always emits a ``Next:`` trailer pointing at the ranked search
-        path for callers who realize they wanted ranking.
+        path for callers who realize they wanted ranking. ``note`` is an
+        optional one-liner (e.g. the implicit-status-default hint) shown
+        under the header.
         """
         refs = self.store.list_refs(kind=self.kind, tags=tags, limit=page_size)
         if not refs:
             body = f"no {self._sense()} entries tagged {tags}"
+            if note:
+                body += f"\n{note}"
             body += render_next_section(
                 [
                     (
@@ -441,13 +549,21 @@ class NumericRefHandler(Handler):
                 ]
             )
             return Response(body=body)
+        # Total tagged population (list_refs caps at page_size) so the
+        # header can flag pagination the same way the ranked path does.
+        total = self.store.count_refs(kind=self.kind, tags=tags)
+        shown = len(refs)
+        count_frag = f"{shown} of {total}" if total > shown else f"{shown}"
         header = (
-            f"# {len(refs)} {self._sense()} entr"
-            f"{'y' if len(refs) == 1 else 'ies'} tagged {tags} "
+            f"# {count_frag} {self._sense()} entr"
+            f"{'y' if total == 1 else 'ies'} tagged {tags} "
             f"(by recency)"
         )
-        table = self._render_hits_table(refs)
-        return Response(body=f"{header}\n{table}")
+        parts = [header]
+        if note:
+            parts.append(note)
+        parts.append(self._render_hits_table(refs))
+        return Response(body="\n".join(parts))
 
     # ── search_hits: structured form for cross-kind merge ──────────
 
@@ -497,8 +613,16 @@ class NumericRefHandler(Handler):
         Over-fetches ~5× ``page_size`` so a ref with several matching
         chunks still leaves room for distinct refs, dedupes to the
         best-rank chunk per ref, and returns ``(ordered_hits, total)``
-        where ``total`` is the distinct-ref count (for the "N of K"
-        headline).
+        where ``total`` is the distinct-ref match count.
+
+        ``total`` comes from an exact ``COUNT(DISTINCT ref_id)`` query,
+        **not** ``len(best_by_ref)`` — the over-fetch caps at chunk
+        granularity, so one ref with many matching chunks (e.g. a
+        long gripe comment thread) can crowd other matching refs out of
+        the pool and make the in-pool distinct count an undercount. An
+        approximate ``total`` would mislead the "N of K" headline and,
+        worse, the tag-truncation cue that compares it against the full
+        tagged population.
         """
         raw = self.store.search_blocks_lexical(
             q=q, kind=self.kind, tags=tags, limit=page_size * 5
@@ -511,10 +635,18 @@ class NumericRefHandler(Handler):
         ordered = sorted(best_by_ref.values(), key=lambda t: t[2], reverse=True)[
             :page_size
         ]
-        return ordered, len(best_by_ref)
+        total = self.store.count_blocks_lexical(
+            q=q, kind=self.kind, tags=tags, distinct_refs=True
+        )
+        return ordered, total
 
     def _search_body_chunks(
-        self, *, q: str, tags: list[str] | None, page_size: int
+        self,
+        *,
+        q: str,
+        tags: list[str] | None,
+        page_size: int,
+        status_note: str = "",
     ) -> Response:
         """Rendered body-chunk search: headline + one block per matching ref."""
         hits, total = self._best_body_hits(q, tags, page_size)
@@ -525,6 +657,8 @@ class NumericRefHandler(Handler):
         if not hits:
             tag_suffix = f" tagged {tags}" if tags else ""
             body = f"no {self._sense()} entries match {q!r}{tag_suffix}"
+            if status_note:
+                body += f"\n{status_note}"
             nav: list[tuple[str, str]] = [
                 (f"search(kind={self.kind!r}, q='broader term')", "loosen the query")
             ]
@@ -548,6 +682,15 @@ class NumericRefHandler(Handler):
                 query=q,
             )
         ]
+        if status_note:
+            lines.append(status_note)
+        # ``total`` here is the distinct-ref count matching q AND tags —
+        # the q-filtered subset. Flag when the *tagged* population is
+        # larger, so a generic q= (e.g. 'open' on STATUS:open) can't
+        # silently under-count a triage/inventory sweep.
+        trunc = self._tag_truncation_note(tags, matched_total=total, q=q)
+        if trunc:
+            lines.append(trunc)
         for block, ref, rank in hits:
             lines.append(self._render_body_search_hit(ref, block, rank))
         return Response(body="\n".join(lines))

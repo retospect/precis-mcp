@@ -46,11 +46,28 @@ Search before you file. Duplicates are OK but the existing thread
 often has the context you'd otherwise rediscover. Body text and
 every comment chunk are searchable.
 
+**`STATUS:open` is the default filter.** A bare `search(kind='gripe',
+…)` shows only open gripes — the everyday "what's still open?" shape.
+The response header names the default so it's never silent. Override it:
+
+```python
+search(kind="gripe", q="X", status="wontfix")  # one other cohort
+search(kind="gripe", q="X", status="*")  # every status, no filter
+```
+
+**Enumerating vs. searching — a trap.** Adding `q=` to a status/tag
+filter turns a *complete enumeration* into a *ranked filter*: a gripe
+must also lexically match `q` to appear, so the count can fall far below
+the tagged population. To **count / list** the open backlog, use the
+**no-`q`** form; a `q=` there answers "open gripes that mention X", not
+"how many are open". When `q=` drops matches from a tagged set, the
+header flags it (`⚠ N of M … also match q`) so the truncation is visible.
+
 ## Find gripes that are open but untriaged
 ## Show me the inbox of new gripes
 
 ```python
-search(kind="gripe", tags=["STATUS:open"])
+search(kind="gripe", tags=["STATUS:open"])  # complete enumeration (no q)
 ```
 
 ## Find gripes that are ready for a fix attempt

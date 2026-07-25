@@ -396,6 +396,7 @@ class BlocksMixin:
         tags: list[str] | None = None,
         exclude_ref_ids: list[int] | None = None,
         card_kinds: tuple[str, ...] | None = None,
+        distinct_refs: bool = False,
     ) -> int:
         """Count chunks matching the lexical filter (no LIMIT).
 
@@ -404,7 +405,15 @@ class BlocksMixin:
         the ``card_kinds`` opt-in) so the "you're seeing N of K" header
         reflects the exact universe the search would return at infinite
         limit.
+
+        ``distinct_refs=True`` counts distinct *refs* with a matching
+        chunk (``COUNT(DISTINCT c.ref_id)``) rather than matching chunks
+        — the honest denominator for ref-grouped body-chunk search
+        (:meth:`NumericRefHandler._best_body_hits`), where one ref can
+        contribute many chunks and a chunk-level count over-states the
+        result-row total.
         """
+        count_expr = "count(DISTINCT c.ref_id)" if distinct_refs else "count(*)"
         clauses = [
             "r.deleted_at IS NULL",
             # Ghost-chunk guard: a retired draft chunk keeps its embedding +
@@ -431,7 +440,7 @@ class BlocksMixin:
             params.append(list(exclude_ref_ids))
             clauses.append("c.ref_id <> ALL(%s)")
         sql = (
-            "SELECT count(*) FROM chunks c "
+            f"SELECT {count_expr} FROM chunks c "
             "JOIN refs r ON r.ref_id = c.ref_id, "
             "websearch_to_tsquery('english', %s) qq(qq) "
             f"WHERE {' AND '.join(clauses)}"

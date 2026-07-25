@@ -82,7 +82,7 @@ always first.
 | `view` | str | Alternate result shape. `view='dreamable'` returns a salience-focus-region pick from the most-due seed (cross-kind only; `q=` not required for this view). `view='stubs'` returns the paper-acquisition backlog — paper refs with an external id but no PDF yet (`q=` ignored; see `precis-stubs-help`). |
 | `angle` | float | Salience-rotation search; pairs with `like=` (or `q=` for a seed). See `precis-dreaming-help`. |
 | `like` | str | Seed ref handle for `angle=` search; e.g. `like='pc40'` (a handle also works) or the legacy `like='paper:wang2020state~5'`. |
-| `status` | str | Finding-only shorthand for `tags=['STATUS:<value>']`. Default is `'established'` (the "what evidence do we have?" cohort); pass `'tracing'`/`'multi_candidate'`/`'dead_chain'` for a specific cohort, or `'*'` for all findings regardless. Ignored on every other kind. |
+| `status` | str | Shorthand for `tags=['STATUS:<value>']` on kinds with a STATUS axis. `finding` defaults to `'established'`, `gripe` to `'open'`; pass another value for a specific cohort, or `'*'` for all regardless. On kinds with no STATUS default it simply adds the filter when given, and is ignored when omitted. |
 | `queries` | list[str] | **Broad retrieval** (paper): extra question rephrasings, each fused as its own ranked leg. Up to 8. See below. |
 | `answers` | list[str] | **Broad retrieval** (paper): hypothetical answer passages (HyDE) — short paragraphs you'd *expect* a relevant chunk to read like; embedded and fused. Up to 8. See below. |
 | `per_paper` | int | **Broad retrieval** (paper): cap hits per paper to spread results across more sources (breadth triage). |
@@ -241,6 +241,34 @@ AND semantics — `tags=['A', 'B']` matches refs carrying *both* tags.
 Closed-vocab axes (`STATUS:`, `PRIO:`, `SRC:`, `CACHE:`) are kind-gated;
 open tags (`topic:`, `project:`, `pinned`, ...) are universal. See
 `precis-tags` for the axis matrix.
+
+### Enumerating a tag ≠ searching within it — a counting trap
+
+`tags=` alone is a **complete enumeration** by recency: `search(kind='gripe',
+tags=['STATUS:open'])` returns *every* open gripe (paginated, with an "N of
+K" header). Add a `q=` and it becomes a **ranked filter**: a ref must *also*
+lexically match `q` to appear, so the result is "the tagged refs that also
+match q", capped by relevance — often far fewer. The mode switch is real and
+easy to miss.
+
+So for **counting / inventory / "is the backlog clear?"** questions, use the
+**no-`q`** form. Reach for `q=` only when you actually mean "the tagged refs
+that mention X". When a `q=` drops matches from a tagged set, numeric-ref
+kinds flag it in the header (`⚠ N of M … entries tagged […] also match q`)
+so the truncation is visible rather than silent — but the header only helps
+if you read it; prefer the no-`q` form when you want the whole set.
+
+```python
+search(kind="gripe", tags=["STATUS:open"])  # ✅ how many are open (all of them)
+search(
+    kind="gripe", q="timeout", tags=["STATUS:open"]
+)  # open gripes mentioning "timeout" (a subset!)
+```
+
+Some kinds fold a **default status** into this: `gripe` defaults to
+`STATUS:open` and `finding` to `STATUS:established` when you pass no
+`status=`/`STATUS:` tag. Pass `status='*'` to opt out. The default is named
+in the response header, never silent.
 
 ## Search inside a specific paper or ref
 ## Where does this paper mention X?

@@ -69,6 +69,14 @@ class GripeHandler(NumericRefHandler):
     sense: ClassVar[str] = "gripe"
     default_tags_on_create: ClassVar[tuple[str, ...]] = ("STATUS:open",)
 
+    # The everyday gripe search is "what's still open?" — so default the
+    # STATUS filter to open. Overridable: pass an explicit status= (e.g.
+    # status='wontfix'), pin a STATUS: tag, or status='*' for every
+    # status regardless. Mirrors finding's status-axis default (there:
+    # 'established'). The default surfaces a one-line hint in the header
+    # so it's never a silent filter.
+    default_search_status: ClassVar[str] = "open"
+
     # Body + append-only comment timeline live in chunks, so search the
     # chunks grouped by ref (a term that only appears in a comment still
     # surfaces the parent gripe). Salience stays cold — bug reports must

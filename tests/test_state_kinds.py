@@ -17,7 +17,7 @@ from precis.handlers.gripe import GripeHandler
 from precis.handlers.job import JobHandler
 from precis.handlers.oracle import OracleHandler
 from precis.handlers.presentation import PresentationHandler
-from precis.store import Store
+from precis.store import Store, Tag
 from precis.store.types import BlockInsert
 from tests.conftest import chunk_handle, record_handle
 
@@ -80,6 +80,150 @@ class TestGripe:
         assert "reproduces on HNSW ties" in body
         assert "## comment 2" in body
         assert "tiebreaker" in body
+
+    # ── status default + truncation cue (gripe search ergonomics) ──
+
+    def _retag_status(self, gripe: GripeHandler, ref_id: int, value: str) -> None:
+        """Flip a gripe's STATUS closed-axis tag to ``value``."""
+        gripe.store.add_tag(
+            ref_id, Tag.closed("STATUS", value), replace_prefix=True, set_by="agent"
+        )
+
+    def test_search_defaults_to_status_open(self, gripe: GripeHandler) -> None:
+        """A bare gripe search filters to STATUS:open — the everyday
+        'what's still open?' shape — and says so in the header."""
+        gripe.put(text="alpha fluxcap misfires on cold boot")  # open
+        gripe.put(text="beta fluxcap wontfix by design")
+        beta = next(
+            r
+            for r in gripe.store.list_refs(kind="gripe", limit=10)
+            if "beta" in r.title
+        )
+        self._retag_status(gripe, beta.id, "wontfix")
+
+        body = gripe.search(q="fluxcap").body
+        assert "alpha fluxcap" in body
+        assert "beta fluxcap" not in body  # wontfix excluded by the default
+        assert "default status='open'" in body
+        assert "status='*'" in body  # the widen hint
+
+    def test_search_status_star_widens(self, gripe: GripeHandler) -> None:
+        """status='*' drops the implicit STATUS filter — every status."""
+        gripe.put(text="alpha fluxcap misfires on cold boot")
+        gripe.put(text="beta fluxcap wontfix by design")
+        beta = next(
+            r
+            for r in gripe.store.list_refs(kind="gripe", limit=10)
+            if "beta" in r.title
+        )
+        self._retag_status(gripe, beta.id, "wontfix")
+
+        body = gripe.search(q="fluxcap", status="*").body
+        assert "alpha fluxcap" in body
+        assert "beta fluxcap" in body
+        # No implicit default was applied, so no default-status hint.
+        assert "default status" not in body
+
+    def test_search_explicit_status_selects_cohort(self, gripe: GripeHandler) -> None:
+        """An explicit status= picks that cohort and suppresses the hint."""
+        gripe.put(text="alpha fluxcap misfires on cold boot")
+        gripe.put(text="beta fluxcap wontfix by design")
+        beta = next(
+            r
+            for r in gripe.store.list_refs(kind="gripe", limit=10)
+            if "beta" in r.title
+        )
+        self._retag_status(gripe, beta.id, "wontfix")
+
+        body = gripe.search(q="fluxcap", status="wontfix").body
+        assert "beta fluxcap" in body
+        assert "alpha fluxcap" not in body
+        assert "default status" not in body  # caller chose it explicitly
+
+    def test_explicit_status_overrides_conflicting_tag(
+        self, gripe: GripeHandler
+    ) -> None:
+        """An explicit status= wins over a conflicting STATUS: tag rather
+        than AND-ing to an unsatisfiable (silently empty) filter."""
+        gripe.put(text="alpha fluxcap misfires on cold boot")
+        gripe.put(text="beta fluxcap wontfix by design")
+        beta = next(
+            r
+            for r in gripe.store.list_refs(kind="gripe", limit=10)
+            if "beta" in r.title
+        )
+        self._retag_status(gripe, beta.id, "wontfix")
+
+        # status='wontfix' must win over tags=['STATUS:open'] → the
+        # wontfix cohort, not zero rows.
+        body = gripe.search(q="fluxcap", status="wontfix", tags=["STATUS:open"]).body
+        assert "beta fluxcap" in body
+        assert "alpha fluxcap" not in body
+
+    def test_truncation_count_is_exact_under_chunk_overfetch(
+        self, gripe: GripeHandler
+    ) -> None:
+        """No false cue when a ref's many matching chunks saturate the
+        over-fetch pool: the distinct-ref total is an exact COUNT, so a
+        set where every tagged ref matches q shows no truncation cue.
+
+        page_size=1 → over-fetch 5 chunks; 3 gripes × 2 matching chunks
+        each = 6 chunks > 5, so len(best_by_ref) over the capped pool
+        would undercount and (pre-fix) fire a spurious cue.
+        """
+        for i in range(3):
+            gripe.put(text=f"zephyr breeze body {i}")
+            gid = next(
+                r
+                for r in gripe.store.list_refs(kind="gripe", limit=10)
+                if f"body {i}" in r.title
+            ).id
+            gripe.put(id=gid, text=f"zephyr breeze comment {i}")
+
+        body = gripe.search(q="zephyr", page_size=1).body
+        # All 3 open gripes match q → q didn't narrow → no cue.
+        assert "⚠" not in body
+
+    def test_search_q_truncation_cue_names_full_tag_total(
+        self, gripe: GripeHandler
+    ) -> None:
+        """The bug behind this: q= over a tag filter silently under-counts.
+
+        Four open gripes, only two containing 'zephyr'. Searching
+        q='zephyr' returns 2 — but the cue must name the full tagged
+        population (4) and point at the drop-q enumeration, so a triage
+        sweep can't conclude the backlog is nearly clear.
+        """
+        gripe.put(text="zephyr breeze one")
+        gripe.put(text="zephyr breeze two")
+        gripe.put(text="unrelated gust three")
+        gripe.put(text="unrelated gust four")
+
+        body = gripe.search(q="zephyr").body
+        assert "2 of 4" in body
+        assert "⚠" in body
+        assert "drop q" in body
+        assert "tags=['STATUS:open']" in body
+
+    def test_search_no_cue_when_q_matches_whole_tag_set(
+        self, gripe: GripeHandler
+    ) -> None:
+        """No truncation cue when q= didn't actually drop anything."""
+        gripe.put(text="zephyr breeze one")
+        gripe.put(text="zephyr breeze two")
+
+        body = gripe.search(q="zephyr").body
+        assert "⚠" not in body
+
+    def test_list_by_tags_no_q_enumerates_full_set(self, gripe: GripeHandler) -> None:
+        """The no-q form stays a complete enumeration (the correct path)."""
+        for i in range(3):
+            gripe.put(text=f"zephyr breeze {i}")
+        gripe.put(text="unrelated gust")
+        # tags=['STATUS:open'] with no q → recency list of all 4 open.
+        body = gripe.search(tags=["STATUS:open"]).body
+        assert "4 gripe entries tagged" in body
+        assert "⚠" not in body  # no q, no truncation
 
     def test_kindspec_is_first_class(self) -> None:
         """Regression guard: the v0 write-only KindSpec was inverted
