@@ -601,6 +601,119 @@ def test_openai_tools_threads_tool_calls(monkeypatch: pytest.MonkeyPatch) -> Non
     assert acted.tool_calls == 4
 
 
+# ── Part 2: openai_tools cost capture (un-blind the budget breaker) ────
+# docs/proposals/glm-fleet-flip-safety.md Part 2 — the 14 "successful"
+# openai_tools rows that all logged cost_usd=None.
+
+
+def test_openai_tools_reads_loop_cost_usd(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The loop's own summed ``usage.cost`` (OpenRouter) reaches
+    LlmResult.cost_usd — no longer hardcoded None (acceptance criterion 2)."""
+    from precis.utils.llm.openai_tools import AgentLoopResult
+    from precis.utils.llm.router import LlmRequest, Tier, _dispatch_openai_tools
+
+    monkeypatch.setattr(
+        "precis.utils.llm.router.run_oss_tool_loop",
+        lambda **k: AgentLoopResult(
+            final_text="ok",
+            turns_used=2,
+            tool_calls_made=1,
+            total_tokens=500,
+            stop_reason="stop",
+            cost_usd=0.0137,
+        ),
+    )
+    out = _dispatch_openai_tools(
+        LlmRequest(tier=Tier.LOCAL_BIG, prompt="x", tools_needed=True), "m"
+    )
+    assert out.cost_usd == pytest.approx(0.0137)
+
+
+def test_openai_tools_falls_back_to_token_pricing_when_cost_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No ``usage.cost`` on any turn (a backend that reports tokens but not
+    dollars) still yields a priced estimate via the same catalog
+    ``cost_from_tokens`` fallback ``result_from_openai`` uses — not a silent
+    ``None`` that blinds the breaker."""
+    from precis.utils.llm.openai_tools import AgentLoopResult
+    from precis.utils.llm.router import LlmRequest, Tier, _dispatch_openai_tools
+
+    monkeypatch.setattr(
+        "precis.utils.llm.router.run_oss_tool_loop",
+        lambda **k: AgentLoopResult(
+            final_text="ok",
+            turns_used=1,
+            tool_calls_made=0,
+            total_tokens=1_000_000,
+            stop_reason="stop",
+            cost_usd=None,
+        ),
+    )
+    out = _dispatch_openai_tools(
+        LlmRequest(tier=Tier.LOCAL_BIG, prompt="x", tools_needed=True),
+        "deepseek-ai/DeepSeek-V3",  # a priced id in budget.pricing.PRICE_TABLE
+    )
+    assert out.cost_usd is not None
+    assert out.cost_usd > 0
+
+
+def test_openai_tools_unknown_model_and_no_cost_stays_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No cost reported AND the model isn't in the pricing table → cost_usd
+    stays None (priced as free/unknown), not a fabricated number."""
+    from precis.utils.llm.openai_tools import AgentLoopResult
+    from precis.utils.llm.router import LlmRequest, Tier, _dispatch_openai_tools
+
+    monkeypatch.setattr(
+        "precis.utils.llm.router.run_oss_tool_loop",
+        lambda **k: AgentLoopResult(
+            final_text="ok",
+            turns_used=1,
+            tool_calls_made=0,
+            total_tokens=1000,
+            stop_reason="stop",
+            cost_usd=None,
+        ),
+    )
+    out = _dispatch_openai_tools(
+        LlmRequest(tier=Tier.LOCAL_BIG, prompt="x", tools_needed=True), "qwen-heavy"
+    )
+    assert out.cost_usd is None
+
+
+def test_dispatch_openai_tools_cost_reaches_route_log(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A full dispatch() through the OPENAI_TOOLS transport writes the loop's
+    cost into the route-log's LlmCallRecord.cost_usd — un-blinding the budget
+    breaker end to end (acceptance criterion 2)."""
+    from precis import route_log
+    from precis.utils.llm.openai_tools import AgentLoopResult
+
+    monkeypatch.setattr(
+        "precis.utils.llm.router.run_oss_tool_loop",
+        lambda **k: AgentLoopResult(
+            final_text="ok",
+            turns_used=1,
+            tool_calls_made=1,
+            total_tokens=200,
+            stop_reason="stop",
+            cost_usd=0.0055,
+        ),
+    )
+    monkeypatch.setattr(route_log, "enabled", lambda: True)
+    recorded: list[route_log.LlmCallRecord] = []
+    monkeypatch.setattr(route_log, "record_call", lambda rec: recorded.append(rec))
+    monkeypatch.delenv("PRECIS_LOCAL_BIG_MODEL", raising=False)
+
+    dispatch(LlmRequest(tier=Tier.LOCAL_BIG, prompt="x", tools_needed=True))
+
+    assert len(recorded) == 1
+    assert recorded[0].cost_usd == pytest.approx(0.0055)
+
+
 def test_dispatch_client_routes_through_dispatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -961,6 +1074,205 @@ def test_dispatch_anthropic_backend_tools_still_uses_claude_agent(
 
     dispatch(LlmRequest(tier=Tier.CLOUD_SUPER, prompt="x", tools_needed=True))
     assert calls.get("ran") is True
+
+
+# ── Part 1: transparent hosted-small remap ──────────────────────────────
+# docs/proposals/glm-fleet-flip-safety.md Part 1 — the 395-error class:
+# classify/summarize pin model="summarizer" (a local-only litellm alias),
+# which 400s when it reaches a hosted OSS endpoint under the flip.
+
+
+def test_dispatch_local_small_remaps_to_hosted_under_openai_flip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """LOCAL_SMALL pinning model="summarizer" under backend=openai + a hosted
+    base url routes OPENAI_COMPAT with the HOSTED small-model id, not the dead
+    local alias (acceptance criterion 1)."""
+    seen: dict[str, object] = {}
+
+    def fake_compat(req: LlmRequest, *, model: str) -> LlmResult:
+        seen["model"] = model
+        return LlmResult(
+            text="hosted", cost_usd=0.001, turns_used=None, model=model, tier=req.tier
+        )
+
+    monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_COMPAT, _RunFn(fake_compat))
+    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.delenv("PRECIS_LOCAL_SMALL_HOSTED_MODEL", raising=False)
+
+    out = dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="x", model="summarizer"))
+
+    assert seen["model"] == "z-ai/glm-4.7-flash"  # the compiled hosted default
+    assert seen["model"] != "summarizer"
+    assert out.model == "z-ai/glm-4.7-flash"
+
+
+def test_dispatch_local_small_remap_env_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PRECIS_LOCAL_SMALL_HOSTED_MODEL overrides the compiled hosted default."""
+    seen: dict[str, object] = {}
+
+    def fake_compat(req: LlmRequest, *, model: str) -> LlmResult:
+        seen["model"] = model
+        return LlmResult(
+            text="x", cost_usd=None, turns_used=None, model=model, tier=req.tier
+        )
+
+    monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_COMPAT, _RunFn(fake_compat))
+    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.setenv("PRECIS_LOCAL_SMALL_HOSTED_MODEL", "some/other-small")
+
+    dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="x", model="rake-lemma"))
+
+    assert seen["model"] == "some/other-small"
+
+
+def test_dispatch_local_small_no_remap_under_default_anthropic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Under the default (anthropic) backend LOCAL_SMALL still resolves to
+    Transport.LITELLM — no hosted-OSS transport, so the remap is a hard no-op
+    and `summarizer` reaches the loopback proxy unchanged (acceptance
+    criterion 1 + 5: byte-identical to today)."""
+    import precis.workers.llm_summarize as summ
+
+    seen: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, config: object) -> None:
+            seen["model"] = getattr(config, "model", None)
+
+        def complete(self, messages: list[dict[str, str]]) -> _FakeOpenAI:
+            return _FakeOpenAI(text="local gloss", total_tokens=3)
+
+    monkeypatch.setattr(summ, "LlmClient", FakeClient)
+    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
+    monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
+
+    out = dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="x", model="summarizer"))
+
+    assert seen["model"] == "summarizer"
+    assert out.model == "summarizer"
+
+
+def test_dispatch_local_small_no_remap_when_base_url_unset_even_under_openai(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """backend=openai but PRECIS_LLM_BASE_URL absent → the existing
+    ships-dark demotion already forces ANTHROPIC/LITELLM before the remap
+    helper ever sees a hosted transport — still `summarizer` unchanged."""
+    import precis.workers.llm_summarize as summ
+
+    seen: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, config: object) -> None:
+            seen["model"] = getattr(config, "model", None)
+
+        def complete(self, messages: list[dict[str, str]]) -> _FakeOpenAI:
+            return _FakeOpenAI(text="x", total_tokens=1)
+
+    monkeypatch.setattr(summ, "LlmClient", FakeClient)
+    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
+    monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
+
+    dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="x", model="summarizer"))
+
+    assert seen["model"] == "summarizer"
+
+
+def test_dispatch_served_by_slot_is_never_remapped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A local `served_by` slot with a direct endpoint is already correctly
+    named for its own local server — the hosted remap must not clobber it,
+    even though PRECIS_LLM_BASE_URL is set and the model name is one of the
+    local-only aliases (acceptance criterion 1)."""
+    from precis.utils.llm import local_serving as ls
+
+    monkeypatch.setattr(
+        ls,
+        "acquire",
+        lambda model: ls.LocalSlot(
+            host="h",
+            resource=f"llm:{model}",
+            reserved=True,
+            paused=False,
+            endpoint="http://127.0.0.1:11445/v1",
+            served_model="qwen-heavy-served",
+        ),
+    )
+    monkeypatch.setattr(ls, "release", lambda slot: None)
+
+    seen: dict[str, object] = {}
+
+    def fake_tools(req: LlmRequest, *, model: str) -> LlmResult:
+        seen["model"] = model
+        seen["local_url"] = req.local_url
+        return LlmResult(
+            text="served", cost_usd=None, turns_used=1, model=model, tier=req.tier
+        )
+
+    monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_TOOLS, _RunFn(fake_tools))
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.delenv("PRECIS_LOCAL_BIG_MODEL", raising=False)
+
+    dispatch(LlmRequest(tier=Tier.LOCAL_BIG, prompt="x", tools_needed=True))
+
+    assert seen["model"] == "qwen-heavy-served"  # the slot's own name, not remapped
+    assert seen["local_url"] == "http://127.0.0.1:11445/v1"
+
+
+def test_dispatch_saturated_slot_escape_also_remaps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The saturated-local-slot ladder escape (retrying rung 0 against the
+    hosted endpoint) is a SEPARATE code path from the normal call_req/
+    call_model block — it must also apply the remap (not leave the dead
+    local alias on the hosted retry), and not apply it twice."""
+    from precis.utils.llm import local_serving as ls
+
+    monkeypatch.setattr(
+        ls,
+        "acquire",
+        lambda model: ls.LocalSlot(
+            host="h", resource=f"llm:{model}", reserved=False, paused=True
+        ),
+    )
+
+    seen: dict[str, object] = {}
+
+    def fake_compat(req: LlmRequest, *, model: str) -> LlmResult:
+        seen["model"] = model
+        return LlmResult(
+            text="x", cost_usd=None, turns_used=None, model=model, tier=req.tier
+        )
+
+    monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_COMPAT, _RunFn(fake_compat))
+    monkeypatch.setenv("PRECIS_LLM_FAILOVER", "1")
+    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+
+    out = dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="x", model="summarizer"))
+
+    assert seen["model"] == "z-ai/glm-4.7-flash"
+    assert out.model == "z-ai/glm-4.7-flash"
+
+
+def test_hosted_small_model_override_precedence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """live_config override wins over the env var, which wins over the
+    compiled default — same precedence as resolve_model."""
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.model_override",
+        lambda tier: "app-settings/pick" if tier is Tier.LOCAL_SMALL else None,
+    )
+    monkeypatch.setenv("PRECIS_LOCAL_SMALL_HOSTED_MODEL", "env/pick")
+    assert router._hosted_small_model() == "app-settings/pick"
 
 
 # ── FailoverProvider ladder (LLM-independence safety net) ──────────────

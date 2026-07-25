@@ -17,8 +17,10 @@ from pathlib import Path
 
 import pytest
 
+from precis.workers.job_types import fix_gripe
 from precis.workers.job_types.fix_gripe import (
     FixGripeConfig,
+    RunOutcome,
     _compose_prompt,
     _restricted_env,
     load_config_from_env,
@@ -375,6 +377,76 @@ class TestValidateSubmit:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
         err = validate_submit(self._store(), gripe_id=42, params={})
         assert err is None
+
+
+# ── GLM/OpenRouter fleet-flip safety gate (Part 3) ─────────────────
+#
+# fix_gripe.run() spawns a raw `claude -p` subprocess whose --model comes
+# from resolve_model(Tier.CLOUD_SUPER) — under backend=openai that's an
+# OSS slug the claude CLI can't run. The gate must skip cleanly *before*
+# any subprocess is spawned (indeed, before the gripe/repo are even
+# resolved) rather than let claude -p 400.
+
+
+class TestBackendFlipGate:
+    @staticmethod
+    def _cfg() -> FixGripeConfig:
+        return FixGripeConfig(
+            default_repo_dir=Path("/tmp/precis-mcp"),
+            work_dir=Path("/tmp/precis-fix-work"),
+            claude_bin="claude",
+            claude_model="z-ai/glm-5.2",
+            timeout_seconds=1800,
+        )
+
+    def test_skips_under_openai_backend_without_touching_store_or_subprocess(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from precis.utils.llm.router import Backend
+
+        monkeypatch.setattr(fix_gripe, "resolve_backend", lambda: Backend.OPENAI)
+
+        class _BoomStore:
+            """Any DB access past the gate is a test failure."""
+
+            def get_ref(self, **_kw: object) -> object:
+                raise AssertionError("gate did not skip before store.get_ref")
+
+        spawn_calls: list[object] = []
+        monkeypatch.setattr(
+            fix_gripe, "_spawn_claude", lambda *a, **kw: spawn_calls.append((a, kw))
+        )
+
+        outcome = fix_gripe.run(
+            store=_BoomStore(), job_id=1, gripe_id=42, config=self._cfg()
+        )
+
+        assert isinstance(outcome, RunOutcome)
+        assert outcome.status == "skipped"
+        assert "openai" in outcome.summary_text
+        assert "openai" in outcome.gripe_comment_text
+        assert outcome.branch is None
+        assert outcome.sha is None
+        assert spawn_calls == []
+
+    def test_proceeds_past_gate_under_default_anthropic_backend(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from precis.utils.llm.router import Backend
+
+        monkeypatch.setattr(fix_gripe, "resolve_backend", lambda: Backend.ANTHROPIC)
+
+        class _FakeStore:
+            def get_ref(self, **_kw: object) -> None:
+                # Reached — proves the gate did NOT skip. Returning None
+                # makes run() raise its own not-found RuntimeError, so we
+                # don't need to stand up a full clone/subprocess harness
+                # just to prove execution reached the spawn side of the
+                # gate.
+                return None
+
+        with pytest.raises(RuntimeError, match="gripe id=42 not found"):
+            fix_gripe.run(store=_FakeStore(), job_id=1, gripe_id=42, config=self._cfg())
 
 
 # ── job_types registry: lookup paths ───────────────────────────────

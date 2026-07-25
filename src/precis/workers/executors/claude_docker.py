@@ -53,6 +53,10 @@ import time
 from pathlib import Path
 from typing import Any
 
+from precis.utils.llm.router import Backend, resolve_backend
+from precis.workers.executors._common import (
+    CANCELLED as _CANCELLED,
+)
 from precis.workers.executors._common import (
     FAILED as _FAILED,
 )
@@ -463,6 +467,32 @@ def _launch_safe(
 
 def _launch(store: Any, ref_id: int, meta: dict[str, Any], node: str | None) -> None:
     """Stage ``/work``, launch a detached container, record its handle."""
+    # GLM/OpenRouter fleet-flip safety gate (docs/proposals/glm-fleet-flip-
+    # safety.md Part 3): the container spawns a raw `claude` CLI, which
+    # assumes Claude model semantics — under backend=openai,
+    # resolve_sandbox_model() (-> resolve_model(CLOUD_SUPER)) returns an OSS
+    # slug that `claude` can't run (HTTP 400). Skip cleanly rather than
+    # launch a doomed container: STATUS:cancelled, no failure bubble (this
+    # is a config mismatch, not a job failure), so a re-claim after the
+    # backend reverts to anthropic just launches normally.
+    if resolve_backend() is Backend.OPENAI:
+        log.info(
+            "claude_docker: llm.backend=openai — skipping sandbox_run job "
+            "%d (the container spawns a raw `claude` CLI that assumes "
+            "Claude model semantics, unsupported under the OSS/OpenRouter "
+            "backend)",
+            ref_id,
+        )
+        _skip(
+            store,
+            ref_id,
+            "sandbox_run: llm.backend=openai is not supported — the "
+            "container spawns a raw `claude` CLI (Claude model semantics "
+            "only); skipped cleanly, re-attempt once the backend reverts "
+            "to anthropic",
+        )
+        return
+
     params = dict(meta.get("params") or {})
 
     # Defence in depth: a job minted by dispatch from a todo never went
@@ -742,6 +772,19 @@ def _fail(store: Any, ref_id: int, reason: str) -> None:
     from precis.handlers._job_bubble import bubble_job_failure
 
     bubble_job_failure(store, ref_id)
+
+
+def _skip(store: Any, ref_id: int, reason: str) -> None:
+    """Cleanly terminate a job before/without a container — a config-
+    mismatch no-op, not a failure (e.g. the backend-flip safety gate).
+    Event chunk + STATUS:cancelled, **no** failure bubble — mirrors the
+    cooperative-cancel treatment ``claude_inproc`` gives a pre-run cancel
+    request, so a downstream parent todo isn't tagged ``child-failed`` for
+    a job that never actually attempted (and failed) its task."""
+    with store.pool.connection() as conn:
+        _append_chunk(store, ref_id, _JOB_EVENT_KIND, reason, conn=conn)
+        _set_status(store, ref_id, _CANCELLED, conn=conn)
+        conn.commit()
 
 
 __all__ = [

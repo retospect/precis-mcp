@@ -168,3 +168,186 @@ def test_resolve_model_dark_without_store_is_env(
     _bind(monkeypatch, None)
     monkeypatch.delenv("PRECIS_MODEL_SONNET", raising=False)
     assert router.resolve_model(Tier.CLOUD_MID) == "claude-sonnet-5"
+
+
+# ── Part 3: resolve_model backend-coherence ─────────────────────────────
+# docs/proposals/glm-fleet-flip-safety.md Part 3 — the 4 `dream` api_errors:
+# a half-applied flip demotes the backend to ANTHROPIC (no PRECIS_LLM_BASE_URL)
+# but the app_settings model override still names an OSS slug, handing a
+# claude transport a model it can't run.
+
+
+def test_resolve_model_drops_oss_override_under_anthropic_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An OSS app_settings override is INCOHERENT with backend=ANTHROPIC —
+    drop it and fall through to env/compiled default (never an OSS slug on a
+    claude transport)."""
+    monkeypatch.delenv("PRECIS_MODEL_OPUS", raising=False)
+    _bind(monkeypatch, {"llm.model.cloud-super": "z-ai/glm-5.2"})
+    assert (
+        router.resolve_model(Tier.CLOUD_SUPER, backend=Backend.ANTHROPIC)
+        == "claude-opus-4-8"
+    )
+
+
+def test_resolve_model_drops_oss_override_falls_through_to_env_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dropping the incoherent override falls through to the env var (not
+    straight to the compiled default) — same order resolve_model always uses."""
+    monkeypatch.setenv("PRECIS_MODEL_OPUS", "claude-pinned-env")
+    _bind(monkeypatch, {"llm.model.cloud-super": "z-ai/glm-5.2"})
+    assert (
+        router.resolve_model(Tier.CLOUD_SUPER, backend=Backend.ANTHROPIC)
+        == "claude-pinned-env"
+    )
+
+
+def test_resolve_model_keeps_claude_override_under_anthropic_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A claude-family override is coherent with ANTHROPIC — kept, not dropped."""
+    monkeypatch.delenv("PRECIS_MODEL_OPUS", raising=False)
+    _bind(monkeypatch, {"llm.model.cloud-super": "claude-opus-4-9-preview"})
+    assert (
+        router.resolve_model(Tier.CLOUD_SUPER, backend=Backend.ANTHROPIC)
+        == "claude-opus-4-9-preview"
+    )
+
+
+def test_resolve_model_keeps_oss_override_under_openai_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Under backend=OPENAI the OSS override IS coherent — kept unchanged."""
+    _bind(monkeypatch, {"llm.model.cloud-super": "z-ai/glm-5.2"})
+    assert (
+        router.resolve_model(Tier.CLOUD_SUPER, backend=Backend.OPENAI) == "z-ai/glm-5.2"
+    )
+
+
+def test_resolve_model_keeps_local_overrides_under_anthropic_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The coherence drop is CLOUD-tier only. LOCAL_SMALL (→LITELLM) and
+    LOCAL_BIG (→OPENAI_TOOLS) never route to a claude transport, so their
+    (always-non-claude) overrides are legitimate and must be HONORED even
+    under the default ANTHROPIC backend — dropping them would silently ignore
+    a live `llm.model.local-*` row, incl. the one Part 1's remap reads
+    (reviewer finding #1)."""
+    monkeypatch.delenv("PRECIS_SUMMARIZE_MODEL", raising=False)
+    monkeypatch.delenv("PRECIS_LOCAL_BIG_MODEL", raising=False)
+    _bind(
+        monkeypatch,
+        {
+            "llm.model.local-small": "z-ai/glm-4.7-flash",
+            "llm.model.local-big": "qwen/qwen3.7-max",
+        },
+    )
+    assert (
+        router.resolve_model(Tier.LOCAL_SMALL, backend=Backend.ANTHROPIC)
+        == "z-ai/glm-4.7-flash"
+    )
+    assert (
+        router.resolve_model(Tier.LOCAL_BIG, backend=Backend.ANTHROPIC)
+        == "qwen/qwen3.7-max"
+    )
+
+
+def test_resolve_model_no_backend_arg_keeps_override_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every caller that never passes ``backend=`` (every call site but
+    dispatch/dispatch_async) sees the pre-Part-3 behavior byte-for-byte —
+    the coherence check is opt-in via the parameter, not a global change."""
+    _bind(monkeypatch, {"llm.model.cloud-super": "z-ai/glm-5.2"})
+    assert router.resolve_model(Tier.CLOUD_SUPER) == "z-ai/glm-5.2"
+
+
+def test_dispatch_openai_override_no_base_url_resolves_claude_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The end-to-end desync fix (acceptance criterion 3): dispatch with
+    backend=openai + an OSS model-override row set, but NO
+    PRECIS_LLM_BASE_URL, resolves a CLAUDE model on claude_agent — never the
+    OSS slug landing on the claude transport (the `dream` api_error class)."""
+    from precis.utils.llm.router import LlmRequest, dispatch
+    from precis.utils.llm.router import Tier as _Tier
+
+    _bind(
+        monkeypatch,
+        {"llm.backend": "openai", "llm.model.cloud-super": "z-ai/glm-5.2"},
+    )
+    monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("PRECIS_MODEL_OPUS", raising=False)
+
+    calls: dict[str, object] = {}
+
+    def fake_agent(prompt: str, **kwargs: object) -> object:
+        from precis.utils.claude_agent import AgentResult
+
+        calls["model"] = kwargs.get("model")
+        return AgentResult(
+            final_text="claude ran", cost_usd=None, duration_s=0.0, turns_used=1
+        )
+
+    monkeypatch.setattr(router, "call_claude_agent", fake_agent)
+
+    out = dispatch(LlmRequest(tier=_Tier.CLOUD_SUPER, prompt="x", tools_needed=True))
+
+    assert calls["model"] == "claude-opus-4-8"  # NOT "z-ai/glm-5.2"
+    assert out.text == "claude ran"
+
+
+def test_dispatch_openai_override_with_base_url_routes_oss_slug(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The other half of the invariant: WITH PRECIS_LLM_BASE_URL set, the same
+    override is coherent (backend stays OPENAI) and routes OPENAI_TOOLS
+    carrying the OSS slug — the flip working as intended."""
+    from precis.utils.llm.router import (
+        LlmRequest,
+        LlmResult,
+        Transport,
+        dispatch,
+    )
+    from precis.utils.llm.router import (
+        Tier as _Tier,
+    )
+
+    _bind(
+        monkeypatch,
+        {"llm.backend": "openai", "llm.model.cloud-super": "z-ai/glm-5.2"},
+    )
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+
+    calls: dict[str, object] = {}
+
+    def fake_tools(req: object, *, model: str) -> LlmResult:
+        calls["model"] = model
+        calls["transport"] = "openai_tools"
+        return LlmResult(
+            text="oss ran",
+            cost_usd=0.01,
+            turns_used=1,
+            model=model,
+            tier=_Tier.CLOUD_SUPER,
+        )
+
+    monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_TOOLS, _RunFnLC(fake_tools))
+
+    out = dispatch(LlmRequest(tier=_Tier.CLOUD_SUPER, prompt="x", tools_needed=True))
+
+    assert calls["model"] == "z-ai/glm-5.2"
+    assert out.text == "oss ran"
+
+
+class _RunFnLC:
+    """Minimal provider adapter — mirrors test_llm_router's ``_RunFn`` so this
+    file doesn't need to import test internals across modules."""
+
+    def __init__(self, fn: object) -> None:
+        self._fn = fn
+
+    def run(self, req: object, *, model: str) -> object:
+        return self._fn(req, model=model)  # type: ignore[operator]

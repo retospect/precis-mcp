@@ -380,6 +380,49 @@ def test_launch_records_container_and_deadline(store: Store, sandbox_env: Path) 
     assert (work / "PROMPT.md").exists()
 
 
+# ── GLM/OpenRouter fleet-flip safety gate (Part 3) ─────────────────
+#
+# claude_docker._launch spawns a raw `claude` CLI in the container whose
+# --model comes from resolve_sandbox_model() (-> resolve_model(CLOUD_SUPER))
+# — under backend=openai that's an OSS slug the claude CLI can't run. The
+# gate must skip *before* `podman run` (no container, no subprocess).
+
+
+def test_launch_skips_under_openai_backend(
+    store: Store, sandbox_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis.utils.llm.router import Backend
+
+    monkeypatch.setattr(claude_docker, "resolve_backend", lambda: Backend.OPENAI)
+    parent = store.insert_ref(kind="todo", slug=None, title="owner", meta={})
+    jid = _mk_queued_job(store, params=_valid_params(), parent_id=parent.id)
+    claude_docker.run_claude_docker_pass(store, limit=4)
+    # Cleanly cancelled, not left queued and not failed — no podman run,
+    # no container ever recorded.
+    assert _status(store, jid) == "cancelled"
+    assert "container" not in _meta(store, jid)
+    work = Path(os.environ["PRECIS_SANDBOX_WORK_DIR"]) / f"sandbox-{jid}"
+    assert not (work / "PROMPT.md").exists()
+    # A config-mismatch skip is not a job failure — no bubble to the parent.
+    assert not any(t.startswith("child-failed:") for t in _tags(store, parent.id))
+
+
+def test_launch_proceeds_under_default_anthropic_backend(
+    store: Store, sandbox_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bookend of the skip test above: with the gate explicitly resolved to
+    the default Anthropic backend, launch proceeds exactly as before the
+    gate existed (mirrors test_launch_records_container_and_deadline)."""
+    from precis.utils.llm.router import Backend
+
+    monkeypatch.setattr(claude_docker, "resolve_backend", lambda: Backend.ANTHROPIC)
+    jid = _mk_queued_job(store, params=_valid_params())
+    claude_docker.run_claude_docker_pass(store, limit=4)
+    meta = _meta(store, jid)
+    assert meta["container"] == f"sandbox-{jid}"
+    assert _status(store, jid) == "running"
+
+
 def test_poll_exit_zero_succeeds(store: Store, sandbox_env: Path) -> None:
     parent = store.insert_ref(kind="todo", slug=None, title="owner", meta={})
     jid = _mk_queued_job(store, params=_valid_params(), parent_id=parent.id)

@@ -1148,6 +1148,14 @@ def _run_fix_gripe(store: Any, ref_id: int, spec: Any) -> None:
         if outcome.status == "succeeded":
             _set_status(store, ref_id, _SUCCEEDED, conn=conn)
             _set_status(store, gripe_id, "in_review", conn=conn)
+        elif outcome.status == "skipped":
+            # GLM/OpenRouter fleet-flip safety gate (backend=openai) — a
+            # clean no-op, not a failure: no bubble, gripe just stays open
+            # for a re-attempt once the backend reverts. Mirrors the
+            # cooperative-cancel treatment above (STATUS:cancelled, no
+            # failure bubble).
+            _set_status(store, ref_id, _CANCELLED, conn=conn)
+            _set_status(store, gripe_id, "open", conn=conn)
         else:
             _set_status(store, ref_id, _FAILED, conn=conn)
             _set_status(store, gripe_id, "open", conn=conn)

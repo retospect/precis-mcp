@@ -165,6 +165,39 @@ def test_client_raises_on_no_choice() -> None:
         client.chat([{"role": "user", "content": "hi"}])
 
 
+def test_client_parses_usage_cost(monkeypatch: pytest.MonkeyPatch) -> None:
+    """OpenRouter's ``usage.cost`` lands on ``ChatTurn.cost_usd``
+    (docs/proposals/glm-fleet-flip-safety.md Part 2)."""
+    tx = _FakeTransport(
+        [
+            {
+                "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
+                "usage": {"total_tokens": 12, "cost": 0.0042},
+            }
+        ]
+    )
+    client = ToolChatClient(url="http://x/v1", api_key="k", model="m", transport=tx)
+    turn = client.chat([{"role": "user", "content": "hi"}])
+    assert turn.cost_usd == 0.0042
+
+
+def test_client_missing_usage_cost_is_none() -> None:
+    """A backend that doesn't report ``usage.cost`` (a local/loopback server)
+    leaves it ``None`` rather than defaulting to 0 — a real zero-cost call
+    must stay distinguishable from "no data"."""
+    tx = _FakeTransport(
+        [
+            {
+                "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
+                "usage": {"total_tokens": 12},
+            }
+        ]
+    )
+    client = ToolChatClient(url="http://x/v1", api_key="k", model="m", transport=tx)
+    turn = client.chat([{"role": "user", "content": "hi"}])
+    assert turn.cost_usd is None
+
+
 # ── run_tool_loop ──────────────────────────────────────────────────────
 
 
@@ -187,17 +220,18 @@ class _ScriptedClient:
         return self._turns.pop(0)
 
 
-def _content_turn(text: str) -> ChatTurn:
+def _content_turn(text: str, *, cost_usd: float | None = None) -> ChatTurn:
     return ChatTurn(
         message={"role": "assistant", "content": text},
         content=text,
         tool_calls=[],
         total_tokens=5,
         finish_reason="stop",
+        cost_usd=cost_usd,
     )
 
 
-def _toolcall_turn(call: ToolCall) -> ChatTurn:
+def _toolcall_turn(call: ToolCall, *, cost_usd: float | None = None) -> ChatTurn:
     msg = {
         "role": "assistant",
         "content": None,
@@ -215,6 +249,7 @@ def _toolcall_turn(call: ToolCall) -> ChatTurn:
         tool_calls=[call],
         total_tokens=7,
         finish_reason="tool_calls",
+        cost_usd=cost_usd,
     )
 
 
@@ -316,3 +351,64 @@ def test_loop_transport_error_returns_partial() -> None:
     assert out.stop_reason == "error"
     assert out.error is not None and "connection reset" in out.error
     assert out.turns_used == 0
+
+
+# ── cost accumulation (Part 2 — meter OpenRouter spend) ────────────────
+
+
+def test_loop_sums_usage_cost_across_turns() -> None:
+    """A turn carrying ``usage.cost`` sums into ``AgentLoopResult.cost_usd``,
+    mirroring ``total_tokens``'s accumulation
+    (docs/proposals/glm-fleet-flip-safety.md Part 2)."""
+    call = ToolCall("c1", "get", {"id": 7})
+    client = _ScriptedClient(
+        [
+            _toolcall_turn(call, cost_usd=0.01),
+            _content_turn("the answer", cost_usd=0.002),
+        ]
+    )
+    out = run_tool_loop(
+        client,
+        prompt="q",
+        tools=[ToolSpec("get", "d", {"type": "object"})],
+        execute=lambda n, a: "tool-said-hi",
+        max_turns=5,
+    )
+    assert out.cost_usd == pytest.approx(0.012)
+
+
+def test_loop_no_cost_reported_stays_none() -> None:
+    """No turn reports ``usage.cost`` (a local backend) → ``cost_usd`` stays
+    ``None``, not a false zero."""
+    client = _ScriptedClient([_content_turn("done")])
+    out = run_tool_loop(
+        client, prompt="q", tools=[], execute=lambda n, a: "", max_turns=5
+    )
+    assert out.cost_usd is None
+
+
+def test_loop_transport_error_still_reports_partial_cost() -> None:
+    """A turn that reported cost before the transport failed keeps that
+    partial cost on the error result — same partial-preservation discipline
+    as ``final_text``."""
+
+    class _OneThenBoom:
+        def __init__(self) -> None:
+            self._turns = [_toolcall_turn(ToolCall("c1", "get", {}), cost_usd=0.05)]
+
+        def chat(
+            self, messages: Any, *, tools: Any = None, tool_choice: str = "auto"
+        ) -> ChatTurn:
+            if self._turns:
+                return self._turns.pop(0)
+            raise RuntimeError("connection reset")
+
+    out = run_tool_loop(
+        _OneThenBoom(),
+        prompt="q",
+        tools=[ToolSpec("get", "d", {"type": "object"})],
+        execute=lambda n, a: "ok",
+        max_turns=5,
+    )
+    assert out.stop_reason == "error"
+    assert out.cost_usd == pytest.approx(0.05)

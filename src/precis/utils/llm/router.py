@@ -182,8 +182,16 @@ _TIER_MODEL: dict[Tier, tuple[str, str]] = {
 # at dispatch (mirrors the TodoView totality assert in handlers/todo.py).
 assert set(_TIER_MODEL) == set(Tier), "resolve_model: tier table is not total"
 
+#: The tiers that route to a *claude* transport under the ANTHROPIC backend —
+#: the only ones an OSS model override is incoherent for (see resolve_model's
+#: Part-3 coherence check). The local tiers (LITELLM / OPENAI_TOOLS) are never
+#: claude-bound, so their overrides are always honored.
+_CLOUD_TIERS: frozenset[Tier] = frozenset(
+    {Tier.CLOUD_SUPER, Tier.CLOUD_MID, Tier.CLOUD_SMALL}
+)
 
-def resolve_model(tier: Tier) -> str:
+
+def resolve_model(tier: Tier, backend: Backend | None = None) -> str:
     """The concrete model id for ``tier`` — the ONE place model
     selection lives.
 
@@ -192,11 +200,33 @@ def resolve_model(tier: Tier) -> str:
     env var → the compiled default in :data:`_TIER_MODEL`. With no override
     row (or no store bound) the DB tier is a no-op, so a caller resolves
     byte-for-byte to the model it uses today.
+
+    ``backend`` (default ``None`` — no coherence check, today's behavior for
+    every caller that doesn't pass it) is the *effective*, already-demoted
+    backend a dispatch call is about to run on
+    (`docs/proposals/glm-fleet-flip-safety.md` Part 3). When it is
+    :data:`Backend.ANTHROPIC` and the ``app_settings`` override resolves to a
+    non-claude slug (heuristic: doesn't start with ``"claude"``), the override
+    is incoherent with the claude transport it would land on — drop it and
+    fall through to the env var / compiled default instead. This is what
+    keeps a half-applied flip (backend demoted to ``ANTHROPIC`` for a missing
+    ``PRECIS_LLM_BASE_URL``, but an OSS ``app_settings`` model override still
+    set) from handing an OSS model id to a claude transport — the ``dream``
+    ``api_error`` class. :func:`dispatch` passes its post-demotion
+    ``backend`` here; every other caller (claude-only helpers that never see
+    an OSS override) leaves it ``None`` and is unaffected.
     """
     from precis.utils.llm import live_config
 
     override = live_config.model_override(tier)
-    if override:
+    # The coherence drop applies ONLY to the cloud tiers: they are the ones
+    # that route to a claude transport under ANTHROPIC, so an OSS override
+    # there is incoherent. LOCAL_SMALL (→LITELLM) and LOCAL_BIG (→OPENAI_TOOLS)
+    # never touch a claude transport, so their (always-non-claude) overrides
+    # are legitimate and must be honored — dropping them would silently ignore
+    # a live `llm.model.local-*` row (incl. the one Part 1's remap reads).
+    claude_bound = backend is Backend.ANTHROPIC and tier in _CLOUD_TIERS
+    if override and not (claude_bound and not override.startswith("claude")):
         return override
     env_var, default = _TIER_MODEL[tier]
     return os.environ.get(env_var, default)
@@ -904,6 +934,66 @@ def _failover_ladder(tier: Tier, *, tools_needed: bool, backend: Backend) -> lis
     return [Rung(primary, label="primary")]
 
 
+#: ``LOCAL_SMALL`` (categorizer) model ids that only mean something on the
+#: litellm loopback (the ``summarizer`` alias and the ``rake-lemma`` name it
+#: resolves to) — POSTing either to a hosted OSS backend (OpenRouter et al.)
+#: 400s, since the hosted side has never heard of them. See
+#: :func:`_hosted_small_remap`. Deliberately scoped to the LOCAL_SMALL aliases:
+#: ``LOCAL_BIG``'s ``qwen-heavy`` is NOT here — it always routes ``OPENAI_TOOLS``
+#: regardless of the backend flag, so remapping it would fire even under the
+#: default ``ANTHROPIC`` (breaking byte-identity) and silently downgrade a big
+#: call to a *small* hosted model. LOCAL_BIG's hosted fallback is the Phase-2
+#: per-tier failover chain's job, not this small-model remap.
+_LOCAL_ONLY_MODEL_ALIASES = frozenset({"summarizer", "rake-lemma"})
+
+
+def _hosted_small_model() -> str:
+    """The hosted small model a local-only alias remaps onto — resolved
+    ``llm.model.local-small`` ``app_settings`` override →
+    ``PRECIS_LOCAL_SMALL_HOSTED_MODEL`` → a compiled default. Mirrors
+    :func:`resolve_model`'s override→env→default order but against a
+    dedicated env var/default pair, since ``PRECIS_SUMMARIZE_MODEL``'s
+    default (``"summarizer"``) is itself one of the aliases being remapped
+    *away from*.
+    """
+    from precis.utils.llm import live_config
+
+    override = live_config.model_override(Tier.LOCAL_SMALL)
+    if override:
+        return override
+    return os.environ.get("PRECIS_LOCAL_SMALL_HOSTED_MODEL", "z-ai/glm-4.7-flash")
+
+
+def _hosted_small_remap(
+    model: str, transport: Transport, *, has_local_slot: bool
+) -> str:
+    """Transparently remap a local-only model alias onto a real hosted small
+    model when the call is actually headed to a hosted OSS backend
+    (`docs/proposals/glm-fleet-flip-safety.md` Part 1 — the 395-error class:
+    ``classify``/``summarize`` pin ``model="summarizer"``, which means nothing
+    to OpenRouter).
+
+    A no-op unless *all* of: the transport is a hosted-OSS one
+    (:data:`Transport.OPENAI_COMPAT` / :data:`Transport.OPENAI_TOOLS`),
+    ``PRECIS_LLM_BASE_URL`` is set (so there is a hosted endpoint to remap
+    onto at all), the call is not already pinned to a local ``served_by``
+    slot (``has_local_slot`` — that slot's own model name is already correct
+    for its endpoint), and ``model`` is one of :data:`_LOCAL_ONLY_MODEL_ALIASES`.
+    Under the default ``ANTHROPIC`` backend ``LOCAL_SMALL`` resolves to
+    :data:`Transport.LITELLM`, not a hosted-OSS transport, so this is
+    byte-identical to today whenever the flip is off.
+    """
+    if has_local_slot:
+        return model
+    if transport not in (Transport.OPENAI_COMPAT, Transport.OPENAI_TOOLS):
+        return model
+    if not os.environ.get("PRECIS_LLM_BASE_URL"):
+        return model
+    if model not in _LOCAL_ONLY_MODEL_ALIASES:
+        return model
+    return _hosted_small_model()
+
+
 def dispatch(req: LlmRequest) -> LlmResult:
     """Route ``req`` to its provider and return a normalized
     :class:`LlmResult`.
@@ -930,7 +1020,7 @@ def dispatch(req: LlmRequest) -> LlmResult:
     backend = resolve_backend()
     if backend is Backend.OPENAI and not os.environ.get("PRECIS_LLM_BASE_URL"):
         backend = Backend.ANTHROPIC
-    model = req.model or resolve_model(req.tier)
+    model = req.model or resolve_model(req.tier, backend=backend)
     # Resolve the transport *before* the breaker, so the gate can key on the
     # resource actually spent: the claude-OAuth transports draw subscription
     # quota (gated on the snapshot), everything else paid spends real dollars.
@@ -1018,8 +1108,15 @@ def dispatch(req: LlmRequest) -> LlmResult:
                 "(capacity backoff, not a transport error)",
                 model,
             )
+            # No local slot is in play here by construction (the local host
+            # is saturated, that's why we're escaping to the hosted rung) —
+            # so a local-only alias (`summarizer` et al.) still needs the
+            # Part 1 remap before it hits the hosted endpoint.
+            saturated_model = _hosted_small_remap(
+                model, transport, has_local_slot=False
+            )
             started = time.monotonic()
-            result = provider.run(req, model=model)
+            result = provider.run(req, model=saturated_model)
             _record_dispatch(
                 req,
                 result,
@@ -1049,6 +1146,12 @@ def dispatch(req: LlmRequest) -> LlmResult:
 
         call_req = _replace(req, local_url=slot.endpoint)
         call_model = slot.served_model or model
+    # Part 1 hosted-small remap: only when this call is NOT pinned to a local
+    # `served_by` slot (`call_req.local_url` unset above means no slot — or a
+    # slot with no direct endpoint — is in play).
+    call_model = _hosted_small_remap(
+        call_model, transport, has_local_slot=call_req.local_url is not None
+    )
     started = time.monotonic()
     try:
         result = provider.run(call_req, model=call_model)
@@ -1138,7 +1241,7 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
     backend = resolve_backend()
     if backend is Backend.OPENAI and not os.environ.get("PRECIS_LLM_BASE_URL"):
         backend = Backend.ANTHROPIC
-    model = req.model or resolve_model(req.tier)
+    model = req.model or resolve_model(req.tier, backend=backend)
     if _failover_enabled():
         ladder = _failover_ladder(
             req.tier, tools_needed=req.tools_needed, backend=backend
@@ -1674,9 +1777,25 @@ def _dispatch_openai_tools(req: LlmRequest, model: str) -> LlmResult:
             # stop_reason reader (the planner tick), same as an in-loop one.
             stop_reason="error",
         )
+    # Cost: prefer the loop's own summed ``usage.cost`` (OpenRouter); otherwise
+    # price the accumulated token split via the catalog, exactly as
+    # ``result_from_openai`` does for the tool-less openai_compat transport —
+    # so the budget breaker isn't blind to openai_tools spend either
+    # (docs/proposals/glm-fleet-flip-safety.md Part 2).
+    cost = result.cost_usd
+    if cost is None and result.total_tokens is not None:
+        from precis.budget.pricing import cost_from_tokens
+
+        # No prompt/completion split survives the loop's accumulation (only a
+        # running ``total_tokens``) — price the whole total at the pricier
+        # output rate, a deliberately conservative (never-under) estimate for
+        # a breaker whose job is to not miss real spend.
+        cost = cost_from_tokens(
+            model, prompt_tokens=None, completion_tokens=result.total_tokens
+        )
     return LlmResult(
         text=result.final_text,
-        cost_usd=None,
+        cost_usd=cost,
         turns_used=result.turns_used,
         model=model,
         tier=req.tier,

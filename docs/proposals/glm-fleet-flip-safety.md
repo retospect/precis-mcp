@@ -1,6 +1,7 @@
 # Making the GLM-5.2 / OpenRouter fleet flip safe
 
-- **Status**: proposed (2026-07-25) · **spec, not yet built**
+- **Status**: proposed (2026-07-25) · **landed 2026-07-25** (Parts 1/2/3 +
+  the sandbox_run/claude_docker dark site)
 - **Owner**: gripe 171782 (flip blockers)
 - **Refs**: ADR 0046 (routing layer) · `docs/proposals/llm-openrouter-bypass.md`
   (items 1–3, shipped) · memory `factory_llm_switch`
@@ -287,3 +288,12 @@ path: it is load-bearing for the local tier today.
    base_url-cleared case too, not just the flip.
 3. **fix_gripe under openai** — skip-clean vs. pin-Anthropic. Recommendation:
    skip-clean (it's a code-fixer that assumes Claude semantics).
+
+## Known remaining edge (follow-up, out of scope for this landing)
+
+An explicit `req.model` OSS pin bypasses the Part-3 coherence check entirely
+— `dispatch` honors `req.model` over `resolve_model(tier, backend=)`, and the
+check lives inside `resolve_model`. So `dream`'s `PRECIS_DREAM_AGENT_MODEL`
+env-pin and asa's hard-pinned `--model claude-opus-4-8`
+(`asa_bot/claude_invoke.py`) can still desync under a half-applied flip.
+Reviewer finding #2; tracked in `OPEN-ITEMS.md`.

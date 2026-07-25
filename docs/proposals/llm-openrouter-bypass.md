@@ -109,6 +109,10 @@ without a code change.
    has no tools-loop transport to always fall onto). Makes `local-small`
    eligible for the `FailoverProvider` ladder for free once `backend=openai`
    (today it has zero fallback under the default `backend=anthropic`).
+   **Made safe 2026-07-25**: this branch used to 400 every call, since the
+   pinned local-only model alias (`summarizer`) means nothing to OpenRouter —
+   closed by `glm-fleet-flip-safety.md` Part 1's transparent hosted-small
+   remap (`router.py::_hosted_small_remap`), landed.
 3. **Wire a per-call OpenRouter fallback on local-serving saturation** —
    **built 2026-07-23** (fixed 2026-07-23 post-review: the first cut
    over-triggered on `isinstance(provider, FailoverProvider)` alone, which

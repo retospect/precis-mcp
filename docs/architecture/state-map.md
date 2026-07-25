@@ -571,8 +571,29 @@ first, env otherwise, so the spawned-claude + operator/test paths stay
 byte-identical. `max_turns` maps to a resumable `PlanTickOutcome`
 (`resume_reason`) so the executor streak-cap still fires. (Known gap: the
 OSS tick skips the prose-kind gate — boot-time only — so the `## Draft`
-prompt block is its sole steer there.) Still direct `claude -p`:
-`fix_gripe`. **Built: the `FailoverProvider`/`Rung` ladder**
+prompt block is its sole steer there.) **Fleet-flip safety**
+(`docs/proposals/glm-fleet-flip-safety.md`, landed 2026-07-25) closes three
+`backend=openai` coherence gaps found on a live flip: **Part 1** — `dispatch`
+transparently remaps the `LOCAL_SMALL` local-only aliases
+(`summarizer`/`rake-lemma`) to a configured hosted small model
+(`llm.model.local-small` override → `PRECIS_LOCAL_SMALL_HOSTED_MODEL` → default
+`z-ai/glm-4.7-flash`) whenever the call lands on a hosted OSS transport
+(`router.py::_hosted_small_remap`) — a no-op under default `anthropic` or a
+local `served_by` slot. **Part 2** — the `openai_tools` loop now captures
+OpenRouter's `usage.cost` (falling back to the token price table) into
+`LlmResult.cost_usd`/`llm_call_log.cost_usd` (`openai_tools.py`,
+`router.py::_dispatch_openai_tools`), so the budget breaker isn't blind to
+OpenRouter spend. **Part 3** — `resolve_model(tier, backend=)`
+(`router.py::resolve_model`) is backend-aware: under an effective `ANTHROPIC`
+backend it drops an incoherent OSS `app_settings` model override for the
+`CLOUD_*` tiers only (local-tier overrides are always honored — they never
+route to a claude transport), so a half-applied flip (backend demoted for a
+missing `PRECIS_LLM_BASE_URL`, model override still OSS) never hands an OSS
+slug to a claude transport. The two raw-`claude`-subprocess sites —
+`fix_gripe` and `sandbox_run`/`claude_docker` — read `resolve_backend()` and
+skip clean (no spawn, job marked skipped/cancelled, not failed) under
+`backend=openai` rather than being folded through `dispatch`. **Built: the
+`FailoverProvider`/`Rung` ladder**
 (`PRECIS_LLM_FAILOVER`, off by default) wraps an OSS primary transport with
 an automatic claude-fallback rung on a transport error; a `LOCAL_*` tier's
 claude rung resolves through `_LOCAL_ESCALATION_TIER` (its own

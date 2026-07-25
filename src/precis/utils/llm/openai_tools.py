@@ -81,6 +81,11 @@ class ChatTurn:
     tool_calls: list[ToolCall]
     total_tokens: int | None
     finish_reason: str | None
+    #: A provider-reported USD cost for this turn (OpenRouter's
+    #: ``usage.cost``), when the backend returns one — ``None`` otherwise
+    #: (docs/proposals/glm-fleet-flip-safety.md Part 2; mirrors how
+    #: ``total_tokens`` is read off the same ``usage`` block).
+    cost_usd: float | None = None
 
 
 class HttpTransport(Protocol):
@@ -215,12 +220,14 @@ class ToolChatClient:
         tool_calls = _parse_tool_calls(message.get("tool_calls"))
         usage = body.get("usage") or {}
         total = usage.get("total_tokens")
+        cost = usage.get("cost")
         return ChatTurn(
             message=dict(message),
             content=content if isinstance(content, str) else None,
             tool_calls=tool_calls,
             total_tokens=int(total) if isinstance(total, int) else None,
             finish_reason=choice.get("finish_reason"),
+            cost_usd=float(cost) if isinstance(cost, int | float) else None,
         )
 
 
@@ -261,6 +268,12 @@ class AgentLoopResult:
     #: ``"error"`` (transport failure — ``error`` set).
     stop_reason: str
     error: str | None = None
+    #: Summed :attr:`ChatTurn.cost_usd` across every turn — ``None`` when no
+    #: turn reported one (a backend that doesn't return ``usage.cost``, e.g. a
+    #: local/loopback server). Mirrors :attr:`total_tokens`'s accumulation so
+    #: the ``openai_tools`` transport can meter real spend
+    #: (docs/proposals/glm-fleet-flip-safety.md Part 2).
+    cost_usd: float | None = None
 
 
 def _tool_result_message(call: ToolCall, content: str) -> dict[str, Any]:
@@ -296,13 +309,16 @@ def run_tool_loop(
 
     tools_param = build_tools_param(tools)
     total_tokens: int | None = None
+    total_cost: float | None = None
     calls_made = 0
     last_text = ""
 
-    def _accumulate(turn_tokens: int | None) -> None:
-        nonlocal total_tokens
+    def _accumulate(turn_tokens: int | None, turn_cost: float | None) -> None:
+        nonlocal total_tokens, total_cost
         if turn_tokens is not None:
             total_tokens = (total_tokens or 0) + turn_tokens
+        if turn_cost is not None:
+            total_cost = (total_cost or 0.0) + turn_cost
 
     for turn_no in range(1, max_turns + 1):
         try:
@@ -315,8 +331,9 @@ def run_tool_loop(
                 total_tokens=total_tokens,
                 stop_reason="error",
                 error=str(exc),
+                cost_usd=total_cost,
             )
-        _accumulate(turn.total_tokens)
+        _accumulate(turn.total_tokens, turn.cost_usd)
         if turn.content:
             last_text = turn.content
 
@@ -327,6 +344,7 @@ def run_tool_loop(
                 tool_calls_made=calls_made,
                 total_tokens=total_tokens,
                 stop_reason="stop",
+                cost_usd=total_cost,
             )
 
         # Echo the assistant's tool-call message verbatim, then answer each
@@ -347,6 +365,7 @@ def run_tool_loop(
                 tool_calls_made=calls_made,
                 total_tokens=total_tokens,
                 stop_reason="max_turns",
+                cost_usd=total_cost,
             )
 
     return AgentLoopResult(
@@ -355,6 +374,7 @@ def run_tool_loop(
         tool_calls_made=calls_made,
         total_tokens=total_tokens,
         stop_reason="max_turns",
+        cost_usd=total_cost,
     )
 
 

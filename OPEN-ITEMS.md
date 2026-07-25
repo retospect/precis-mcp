@@ -419,6 +419,16 @@ passes now. Remaining:
   way local serving is), and whether this is scoped as a `docs/proposals/*.md`
   first given it touches dispatch semantics (ADR 0048). A first draft of that
   proposal exists: `docs/proposals/llm-openrouter-bypass.md`.
+- **LLM flip-safety follow-up: `req.model` OSS pins bypass the
+  backend-coherence check** *(bug, open — owner
+  `docs/proposals/glm-fleet-flip-safety.md`)*. `dream`'s
+  `PRECIS_DREAM_AGENT_MODEL` env-pin and asa's hard-pinned
+  `--model claude-opus-4-8` (`asa_bot/claude_invoke.py`) set `req.model`
+  directly, which `dispatch` honors over `resolve_model(tier, backend=)` —
+  so the Part-3 coherence check (which lives inside `resolve_model`) never
+  runs for them, and an OSS slug can still land on a claude transport under a
+  half-applied flip. Reviewer finding #2, deferred from the Phase-1
+  flip-safety landing (2026-07-25).
 
 ---
 

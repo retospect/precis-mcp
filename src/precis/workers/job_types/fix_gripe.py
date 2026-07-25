@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from precis.utils.llm.router import Tier, resolve_model
+from precis.utils.llm.router import Backend, Tier, resolve_backend, resolve_model
 
 log = logging.getLogger(__name__)
 
@@ -237,7 +237,7 @@ class RunOutcome:
     """Result of one fix_gripe attempt — what the executor needs to
     transition status and write the summary."""
 
-    status: str  # "succeeded" | "failed"
+    status: str  # "succeeded" | "failed" | "skipped"
     summary_text: str
     gripe_comment_text: str
     branch: str | None
@@ -264,6 +264,41 @@ def run(
 
     t0 = time.perf_counter()
     cfg = config or load_config_from_env()
+
+    # GLM/OpenRouter fleet-flip safety gate (docs/proposals/glm-fleet-flip-
+    # safety.md Part 3): this spawns a raw `claude -p` subprocess, which
+    # assumes Claude model semantics — under backend=openai,
+    # resolve_model(CLOUD_SUPER) returns an OSS slug that `claude -p`
+    # can't run (HTTP 400). Skip cleanly rather than spawn a doomed call;
+    # the gripe stays open for a re-attempt once the backend reverts to
+    # anthropic (recommended: skip-clean, per the proposal's Part 3).
+    if resolve_backend() is Backend.OPENAI:
+        wall = time.perf_counter() - t0
+        log.warning(
+            "fix_gripe: llm.backend=openai — skipping gripe:%d fix attempt "
+            "(raw `claude -p` subprocess assumes Claude model semantics, "
+            "unsupported under the OSS/OpenRouter backend)",
+            gripe_id,
+        )
+        return RunOutcome(
+            status="skipped",
+            summary_text=(
+                f"fix_gripe job:{job_id} for gripe:{gripe_id} skipped: "
+                "llm.backend=openai — fix_gripe spawns a raw `claude -p` "
+                "subprocess that assumes Claude model semantics, so it "
+                "does not run under the OSS/OpenRouter backend. Re-attempt "
+                "once the backend reverts to anthropic."
+            ),
+            gripe_comment_text=(
+                f"[worker:job:{job_id}] fix attempt skipped: "
+                "llm.backend=openai is not supported by fix_gripe (raw "
+                "`claude -p` subprocess). Will need a re-attempt once the "
+                "backend is anthropic again."
+            ),
+            branch=None,
+            sha=None,
+            wall_seconds=wall,
+        )
 
     # Resolve the gripe so we can fail fast if it was deleted between
     # claim and run.
