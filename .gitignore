@@ -62,6 +62,10 @@ scripts/exercise-mcp/out/
 !.claude/skills/
 !.claude/agents/
 
+# Session-liveness anchor: an untracked marker a live session drops at a
+# worktree root so the auto-reaper won't cull it mid-session. Never source.
+.keep-session-alive
+
 # Personal ops notes — anything matching *.local.md / *.local/.
 # Convention for ops crib sheets, scratch SQL, host-specific quirks.
 *.local.md
