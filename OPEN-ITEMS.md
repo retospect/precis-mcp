@@ -485,6 +485,18 @@ consumes the policy yet:
   `PRECIS_LLM_BASE_URL` + `OPENROUTER_API_KEY` are deployed. Mitigated in
   practice by the console being tailnet-scoped (`*.ts.net`); gate it, or
   consciously accept tailnet-trust, before deploying the OpenRouter key.
+- **Fleet-wide GLM/OpenRouter flip breaks `classify` + `dream`** *(bug, open
+  — gripe 171782).* Live-tested 2026-07-25: `llm.backend=openai` + the GLM
+  preset works for the tools-loop cloud path (`review:structural` ran 10
+  turns on `z-ai/glm-5.2` via `openai_tools`, no error) but breaks `classify`
+  (pins the `summarizer` litellm alias, hijacked to OpenRouter, HTTP 400,
+  ~395 errors) and `dream`/other un-forked `claude_agent` sites (fed a GLM
+  slug to the Claude transport, 400). Reverted; fleet recovered in minutes.
+  Needs, before a safe fleet flip: (a) route the ADR-0046 "group B"
+  call-sites through backend-aware dispatch, (b) keep the summarizer/classify
+  local path off `backend=openai`, (c) capture OpenRouter `usage.cost` into
+  `llm_call_log` (the `openai_tools` path logs `cost=null`, so the $85/$20
+  budget breaker is blind to OpenRouter spend).
 
 ## 🔴 High-priority
 
