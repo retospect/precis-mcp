@@ -677,7 +677,12 @@ class SkillHandler(Handler):
             semantic_available = self._semantic_available()
             if semantic_available:
                 headline = f"no skills mention {q!r}"
-                tip = "Try a different phrasing, or fall back to the index:"
+                tip = (
+                    "This search ran and matched nothing. Reword once if the "
+                    "phrasing was unusual; otherwise stop rewording and open "
+                    "the index — the skill may be named differently, or this "
+                    "isn't a skill:"
+                )
             else:
                 headline = (
                     f"no lexical matches for {q!r}; semantic search is "

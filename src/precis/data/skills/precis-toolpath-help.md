@@ -27,6 +27,16 @@ or ad-hoc web scrape: a **YouTube** URL → `get(kind='youtube', id=…)` (not
 When unsure, `search(kind='skill', q='<the thing>')` first — reaching for a
 native tool and only falling back to precis on failure is the slow path.
 
+**Reading a `search(kind='skill')` reply — three outcomes, three responses.**
+A ranked table → pick a slug and `get` it. `no skills mention '…'` means the
+search *ran* and matched nothing: reword **once** if the phrasing was unusual,
+then stop rewording and `get(kind='skill', id='toc')` — the skill is likely
+named differently, or the thing isn't a skill. A *permission* or *error* reply
+(`… haven't granted it yet`, `[error:…]`, a timeout) means the tool **didn't
+run at all**: do **not** reword — a reworded query hits the same block and
+wastes the turn. Report the tool as unavailable and move on. Rewording only
+ever helps the middle case; it never unblocks a blocked or errored call.
+
 ## Find things
 
 | Goal | Toolpath | Depth |
