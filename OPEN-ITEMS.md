@@ -429,6 +429,32 @@ passes now. Remaining:
   runs for them, and an OSS slug can still land on a claude transport under a
   half-applied flip. Reviewer finding #2, deferred from the Phase-1
   flip-safety landing (2026-07-25).
+- **ADR 0066 capability-tiers — Phase B surfaces + Phase C sweep remain**
+  *(feature, in progress — owner [`docs/decisions/0066-capability-tiers-and-placement-chains.md`](docs/decisions/0066-capability-tiers-and-placement-chains.md)).*
+  **Done + deployed (2026-07-25):** Phase A (additive 4 tiers + chain resolver,
+  dark) and Phase B steps 1 (`resolve_chain` always-on — operator chains read
+  regardless of `PRECIS_LLM_FAILOVER`, main `2d7b304d`) + 3a (`llm.cloud_enabled`
+  throttle prunes cloud rungs; FRONTIER/no-local-rung tiers pause, main
+  `0a2fc576`). Both ship **dark** (no operator chain written, throttle defaults
+  on) so zero live routing change yet. **Remaining Phase B:**
+  (2) the **surfaces** — split the two menus (caller picker = 4 rungs only;
+  operator **chain editor** + throttle toggle on `/status` Services+Models
+  tabs), migrate `status.py::_llm_override_ctx` (today iterates only the 3 cloud
+  tiers + reads `GLM_OPENROUTER_PRESET`), `_TIER_RANK` (keyed `cloud-super/mid/
+  small`), and `_llm_card_view.is_cloud = tier.startswith("cloud")` to 4 tiers;
+  (3b) the **`tier_floor` forward migration** relabeling `llm` card meta
+  (`cloud-super→frontier`, `cloud-mid→big`, `cloud-small→medium`,
+  `local-small→small`, `local-big→big`) — **coupled to (2): the renderers must
+  tolerate both old+new values FIRST, else the Models tab misclassifies every
+  relabeled card as local**. **UX open q:** how an operator edits a per-tier
+  chain in the browser (structured add/remove/reorder-rungs form vs JSON
+  textarea) — decide before building the editor. **Phase C (GATED):** the
+  call-site sweep collapsing `LLM:local`→`BIG` must NOT ship until the
+  content-sensitivity/local-only constraint exists
+  ([`docs/proposals/content-sensitivity-placement.md`](docs/proposals/content-sensitivity-placement.md),
+  Rollout gate) — design that first. Also resolve the planner-tag-vocab note
+  (ADR §"Still genuinely open": `LLM:small`/`medium` no-op via fallback since
+  `plan_tick` always `tools_needed=True`).
 
 ---
 
