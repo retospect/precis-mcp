@@ -243,12 +243,12 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     timeout_s = float(os.environ.get("PRECIS_CAD_DISCUSS_TIMEOUT_S", "1800"))
     ctx.append_chunk("job_event", f"discuss: {instruction[:200]}")
     # Routed through the LLM seam (ADR 0046 unit 4b): read-only agent call on
-    # CLOUD_SUPER, so PRECIS_LLM_BACKEND can switch it. Broad except kept +
+    # FRONTIER, so PRECIS_LLM_BACKEND can switch it. Broad except kept +
     # the folded res.error checked.
     try:
         res = dispatch(
             LlmRequest(
-                tier=Tier.CLOUD_SUPER,
+                tier=Tier.FRONTIER,
                 source="cad_discuss",
                 ref_id=cad_ref_id,  # attribute spend to the cad entity (gr162130)
                 prompt=prompt,

@@ -305,12 +305,10 @@ def _scan(args: argparse.Namespace, store: Store) -> None:
     from precis.workers.inject_scan import run_inject_scan_pass
 
     model = args.model or os.environ.get("PRECIS_INJECT_SCAN_MODEL") or "summarizer"
-    client = DispatchClient(tier=Tier.LOCAL_SMALL, model=model, source="inject_scan")
+    client = DispatchClient(tier=Tier.SMALL, model=model, source="inject_scan")
     escalate_model = os.environ.get("PRECIS_INJECT_SCAN_ESCALATE_MODEL")
     escalate = (
-        DispatchClient(
-            tier=Tier.LOCAL_SMALL, model=escalate_model, source="inject_scan"
-        )
+        DispatchClient(tier=Tier.SMALL, model=escalate_model, source="inject_scan")
         if escalate_model
         else None
     )

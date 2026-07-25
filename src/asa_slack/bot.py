@@ -8,7 +8,7 @@ a channel root, always ``thread_ts = incoming.thread_ts or incoming.ts``.
 
 Unlike the Discord bridge (which hand-rolls its own streaming ``claude -p``
 subprocess), asa-slack calls ``precis.utils.llm.router.dispatch()`` forced
-to ``Tier.CLOUD_MID`` (sonnet) with a hard kind-allowlist
+to ``Tier.BIG`` (sonnet) with a hard kind-allowlist
 (``asa_slack.kind_policy``) baked in via ``env_overlay`` — Slack is a
 semi-trusted, multi-user surface, and this is the router's governance
 (budget breaker, route-log, per-turn cost/turn caps) for free.
@@ -265,7 +265,7 @@ class AsaSlack:
         # 4. Router dispatch, off the event loop thread — a single blocking
         # call (no streaming progress ticker; see the plan doc trade-off).
         req = LlmRequest(
-            tier=Tier.CLOUD_MID,
+            tier=Tier.BIG,
             tools_needed=True,
             prompt=text,
             system_prompt=system_prompt,

@@ -199,7 +199,7 @@ async def invoke(
         await _handle_event(evt, result, on_progress)
 
     req = LlmRequest(
-        tier=Tier.CLOUD_SUPER,
+        tier=Tier.FRONTIER,
         prompt=user_message,
         tools_needed=True,
         # Pin the model explicitly (rather than deferring to the tier

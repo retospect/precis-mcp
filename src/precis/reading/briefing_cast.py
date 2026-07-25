@@ -802,7 +802,7 @@ def build_reading_briefing(
     # claude_agent (no native completion-length flag there), not a real
     # generation-time stop, but it keeps the cast bounded to its target length.
     llm = client or DispatchClient(
-        tier=Tier.CLOUD_SUPER,
+        tier=Tier.FRONTIER,
         model=os.environ.get("PRECIS_READING_BRIEF_MODEL") or None,
         tools_needed=True,
         max_tokens=compose_max_tokens(profile),

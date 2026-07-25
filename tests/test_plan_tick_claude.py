@@ -102,7 +102,7 @@ def test_run_claude_binds_request_and_maps_clean(
     outcome, seen = _run_claude(monkeypatch, result=_clean_result())
     req = seen["req"]
     # Tier is the tag's cloud tier; tools + stream-json + neutral cwd + source.
-    assert req.tier is Tier.CLOUD_SUPER
+    assert req.tier is Tier.FRONTIER
     assert req.tools_needed is True
     assert req.prompt == "USR"
     assert req.system_prompt == "SYS"

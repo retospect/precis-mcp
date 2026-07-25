@@ -100,7 +100,7 @@ def propose_fix(req: FixRequest, *, model: str | None = None) -> dict[str, str]:
     names exist on the note (a hallucinated field name is dropped).
 
     Routes through the ADR 0046 seam (:func:`~precis.utils.llm.router.dispatch`)
-    on the ``CLOUD_SMALL`` tier so the ``/factory`` backend switch reaches it
+    on the ``MEDIUM`` tier so the ``/factory`` backend switch reaches it
     (ADR 0046 unit 4b). Under the default ``anthropic`` backend this resolves to
     the ``claude_p`` transport — the same one-shot JSON judge the direct call
     used — and ``LlmResult.data`` carries the parsed dict exactly as
@@ -114,7 +114,7 @@ def propose_fix(req: FixRequest, *, model: str | None = None) -> dict[str, str]:
 
     result = dispatch(
         LlmRequest(
-            tier=Tier.CLOUD_SMALL,
+            tier=Tier.MEDIUM,
             prompt=build_fix_prompt(req),
             model=model,
             source="anki:fix",

@@ -64,7 +64,7 @@ def add_parser(subparsers: Any) -> None:
     )
     s.add_argument(
         "--tier",
-        default="cloud-super",
+        default="frontier",
         help="Tier floor / budget band + degrade target.",
     )
     s.add_argument("--axis", default=None, help="Dominant capability axis (e.g. code).")
@@ -85,9 +85,7 @@ def add_parser(subparsers: Any) -> None:
         help="Task→requirement (LLM judge) → model (policy) — the slice-5 loop.",
     )
     ch.add_argument("task", help="A description of the task to route.")
-    ch.add_argument(
-        "--tier", default="cloud-super", help="Tier floor / degrade target."
-    )
+    ch.add_argument("--tier", default="frontier", help="Tier floor / degrade target.")
     ch.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
     co = lsub.add_parser(
@@ -125,7 +123,7 @@ def add_parser(subparsers: Any) -> None:
     )
     ev.add_argument(
         "--tier",
-        default="cloud-small",
+        default="medium",
         help="Tier the candidate runs under (transport selection).",
     )
     ev.add_argument(

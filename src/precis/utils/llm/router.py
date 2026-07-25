@@ -290,9 +290,9 @@ def resolve_model(tier: Tier, backend: Backend | None = None) -> str:
 # Rollout gate: `local`'s remap to `BIG` is a Phase-C event, gated on the
 # local-only sensitivity constraint (ADR 0066 §6) — do not touch it here.
 PLANNER_TIER_BY_ALIAS: dict[str, Tier] = {
-    "opus": Tier.CLOUD_SUPER,
-    "sonnet": Tier.CLOUD_MID,
-    "haiku": Tier.CLOUD_SMALL,
+    "opus": Tier.FRONTIER,
+    "sonnet": Tier.BIG,
+    "haiku": Tier.MEDIUM,
     "local": Tier.LOCAL_BIG,
     "frontier": Tier.FRONTIER,
     "big": Tier.BIG,
@@ -1606,7 +1606,7 @@ class DispatchClient:
     backs a batch off.
     """
 
-    tier: Tier = Tier.LOCAL_SMALL
+    tier: Tier = Tier.SMALL
     model: str | None = None
     max_tokens: int | None = None
     source: str = ""

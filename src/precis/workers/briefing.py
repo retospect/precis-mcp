@@ -59,7 +59,7 @@ _BRIEF_MAX_TOKENS = 1200
 
 # The briefing is a once-a-day call whose US section asks the model to
 # separate operational signal from spectacle — analytically demanding, so it
-# runs on the router's ``CLOUD_SUPER`` tier (opus-class reasoning), not the
+# runs on the router's ``FRONTIER`` tier (opus-class reasoning), not the
 # free ``LOCAL_SMALL`` tier the per-chunk glosses use (ADR 0046). A
 # ``PRECIS_BRIEFING_MODEL`` override still wins — but it must now name a real
 # model id the ``claude`` CLI accepts (e.g. ``claude-opus-4-8``), not the
@@ -264,7 +264,7 @@ def run_briefing(
     # tool-less claude_p judge shape, which would drop the system prompt and
     # demand a parseable JSON block this pass's prose brief never has.
     llm = client or DispatchClient(
-        tier=Tier.CLOUD_SUPER,
+        tier=Tier.FRONTIER,
         model=os.environ.get("PRECIS_BRIEFING_MODEL") or None,
         tools_needed=True,
         max_tokens=_BRIEF_MAX_TOKENS,

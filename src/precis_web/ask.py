@@ -159,7 +159,7 @@ def generate_answer(prompt: str, *, store: Store, conv_ref_id: int) -> AgentResu
     # dispatch folds failures into res.error, which we re-raise.
     res = dispatch(
         LlmRequest(
-            tier=Tier.CLOUD_SUPER,
+            tier=Tier.FRONTIER,
             source="followup",
             prompt=prompt,
             tools_needed=True,

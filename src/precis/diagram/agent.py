@@ -154,7 +154,7 @@ def build_agentic_claude_fn(
 
         res = dispatch(
             LlmRequest(
-                tier=Tier.CLOUD_SUPER,
+                tier=Tier.FRONTIER,
                 source=source,
                 prompt=f"{_AGENTIC_PREAMBLE}\n\n{prompt}",
                 tools_needed=True,

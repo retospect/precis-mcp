@@ -91,7 +91,7 @@ log = logging.getLogger(__name__)
 # the speculative-connection work earns the stronger model, at the same
 # price as 4-7. Override with PRECIS_DREAM_AGENT_MODEL for a per-pass pin.
 def _default_model() -> str:
-    return resolve_model(Tier.CLOUD_SUPER)
+    return resolve_model(Tier.FRONTIER)
 
 
 # Same turn cap as the bash script's --max-turns 20.
@@ -172,13 +172,13 @@ def run_dream_pass(store: Store) -> BatchResult:
             f"produced it."
         )
 
-    # Routed through the LLM seam (ADR 0046 unit 4b): CLOUD_SUPER + tools,
+    # Routed through the LLM seam (ADR 0046 unit 4b): FRONTIER + tools,
     # so ``PRECIS_LLM_BACKEND`` can move the whole dream pass onto an OSS
     # model. ``model=`` keeps the per-pass ``PRECIS_DREAM_AGENT_MODEL`` pin
     # (None ⇒ the tier default). Errors fold into ``res.error``.
     res = dispatch(
         LlmRequest(
-            tier=Tier.CLOUD_SUPER,
+            tier=Tier.FRONTIER,
             source="dream",
             prompt=prompt,
             tools_needed=True,

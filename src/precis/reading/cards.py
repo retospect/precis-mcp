@@ -517,7 +517,7 @@ def _env_int(name: str, default: int) -> int:
 
 def _default_client() -> Any:
     """The production compose client — folds through the router (ADR 0046)
-    onto the ``CLOUD_SUPER`` reasoning tier (``claude_agent``, direct Anthropic
+    onto the ``FRONTIER`` reasoning tier (``claude_agent``, direct Anthropic
     OAuth) instead of holding a raw litellm client, so this cast-authoring pass
     gets the budget breaker + the route-log. ``tools_needed=True`` lands on
     ``claude_agent`` (free-text/JSON final answer, no tools advertised) rather
@@ -536,7 +536,7 @@ def _default_client() -> Any:
     from precis.utils.llm.router import DispatchClient, Tier
 
     return DispatchClient(
-        tier=Tier.CLOUD_SUPER,
+        tier=Tier.FRONTIER,
         model=os.environ.get("PRECIS_CARD_FORGE_MODEL") or None,
         tools_needed=True,
         max_tokens=1500,

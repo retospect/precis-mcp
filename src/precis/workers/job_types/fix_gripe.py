@@ -108,14 +108,14 @@ def load_config_from_env() -> FixGripeConfig:
         default_repo_dir=default_repo,
         work_dir=Path(work_dir_raw).resolve(),
         claude_bin=os.environ.get("PRECIS_FIX_CLAUDE_BIN", "claude"),
-        # Model selection via the ADR 0046 resolver's CLOUD_SUPER tier
+        # Model selection via the ADR 0046 resolver's FRONTIER tier
         # (``PRECIS_MODEL_OPUS`` / ``claude-opus-4-8`` — the consolidated cloud
         # reasoning tier the planner + reviewers + dream share). The bespoke
         # ``PRECIS_FIX_CLAUDE_MODEL`` override still wins so a deployment can pin
         # fix-gripe to a different model; unset, it falls through to the shared
         # tier default (opus-4.8).
         claude_model=os.environ.get("PRECIS_FIX_CLAUDE_MODEL")
-        or resolve_model(Tier.CLOUD_SUPER),
+        or resolve_model(Tier.FRONTIER),
         timeout_seconds=int(os.environ.get("PRECIS_FIX_TIMEOUT_SECONDS", "1800")),
         repos=repos,
     )
@@ -268,7 +268,7 @@ def run(
     # GLM/OpenRouter fleet-flip safety gate (docs/proposals/glm-fleet-flip-
     # safety.md Part 3): this spawns a raw `claude -p` subprocess, which
     # assumes Claude model semantics — under backend=openai,
-    # resolve_model(CLOUD_SUPER) returns an OSS slug that `claude -p`
+    # resolve_model(FRONTIER) returns an OSS slug that `claude -p`
     # can't run (HTTP 400). Skip cleanly rather than spawn a doomed call;
     # the gripe stays open for a re-attempt once the backend reverts to
     # anthropic (recommended: skip-clean, per the proposal's Part 3).

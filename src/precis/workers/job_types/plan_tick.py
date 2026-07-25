@@ -273,7 +273,7 @@ def run(
             log.warning("plan_tick: failed to finalize agentlog", exc_info=True)
 
     transport = select_transport(
-        _TIER_BY_ALIAS.get(model, Tier.CLOUD_SUPER),
+        _TIER_BY_ALIAS.get(model, Tier.FRONTIER),
         tools_needed=True,
         backend=resolve_backend(),
     )
@@ -490,7 +490,7 @@ def _run_claude_tick(
     """
     from precis.utils.llm.router import LlmRequest, dispatch
 
-    tier = _TIER_BY_ALIAS.get(model, Tier.CLOUD_SUPER)
+    tier = _TIER_BY_ALIAS.get(model, Tier.FRONTIER)
     mcp_config = os.environ.get("PRECIS_MCP_CONFIG", "")
     if not mcp_config:
         log.warning(
@@ -790,7 +790,7 @@ def _resolve_oss_tier(model: str) -> Tier:
     always drives the tools loop, so the tick runs on the capability the
     cluster actually has. Model selection stays in the ADR 0046 resolver.
     """
-    tag_tier = _TIER_BY_ALIAS.get(model, Tier.CLOUD_SUPER)
+    tag_tier = _TIER_BY_ALIAS.get(model, Tier.FRONTIER)
     transport = select_transport(tag_tier, tools_needed=True, backend=resolve_backend())
     return tag_tier if transport is Transport.OPENAI_TOOLS else Tier.LOCAL_BIG
 

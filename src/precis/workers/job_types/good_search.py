@@ -653,11 +653,11 @@ def _triage_dispatch(ctx: Any, spec: Any) -> None:
     verdicts: list[dict[str, Any]] | None = None
     last_err = "no parseable verdicts"
     for attempt in (1, 2):
-        # Routed through the LLM seam (ADR 0046 unit 4b): CLOUD_SMALL judge, so
+        # Routed through the LLM seam (ADR 0046 unit 4b): MEDIUM judge, so
         # PRECIS_LLM_BACKEND can switch it. Errors fold into res.error.
         res = dispatch(
             LlmRequest(
-                tier=Tier.CLOUD_SMALL,
+                tier=Tier.MEDIUM,
                 prompt=prompt,
                 model=model,
                 source="good_search:triage",

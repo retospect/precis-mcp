@@ -20,7 +20,7 @@ The job_type module is a pure declaration + helpers:
   for jobs minted by ``dispatch`` from a todo, which don't pass through
   the JobHandler put path).
 * ``resolve_sandbox_model`` — model via the ADR 0046 router
-  (``Tier.CLOUD_SUPER``) with a ``PRECIS_SANDBOX_MODEL`` override; never
+  (``Tier.FRONTIER``) with a ``PRECIS_SANDBOX_MODEL`` override; never
   a private constant.
 * ``compose_prompt`` — the ``/work/PROMPT.md`` body (task + harvest
   contract) the executor stages into the run dir.
@@ -64,7 +64,7 @@ PARAMS_SCHEMA: dict[str, Any] = {
         "wall_seconds": {"type": "integer"},
         # Container image tag (built in place per host by the ops play).
         "image": {"type": "string"},
-        # Model override; unset → resolve_model(Tier.CLOUD_SUPER).
+        # Model override; unset → resolve_model(Tier.FRONTIER).
         "model": {"type": "string"},
         # Slice gates — declared so additionalProperties=False lets a
         # caller *pass* them, then validate_submit rejects the
@@ -107,10 +107,10 @@ def resolve_sandbox_model() -> str:
     """Model for the container run.
 
     ``PRECIS_SANDBOX_MODEL`` override wins; otherwise the ADR 0046
-    ``Tier.CLOUD_SUPER`` opus pin (``PRECIS_MODEL_OPUS`` /
+    ``Tier.FRONTIER`` opus pin (``PRECIS_MODEL_OPUS`` /
     ``claude-opus-4-7`` default). Never a private constant.
     """
-    return os.environ.get("PRECIS_SANDBOX_MODEL") or resolve_model(Tier.CLOUD_SUPER)
+    return os.environ.get("PRECIS_SANDBOX_MODEL") or resolve_model(Tier.FRONTIER)
 
 
 def default_image() -> str:

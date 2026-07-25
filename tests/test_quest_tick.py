@@ -1131,8 +1131,8 @@ class TestCommitReRepromptLadder:
         assert len(reqs) == 4  # 2 primary passes + 2 ladder rungs
         from precis.utils.llm.router import Tier
 
-        assert reqs[2].tier != Tier.CLOUD_SUPER  # first rung: current tier
-        assert reqs[3].tier == Tier.CLOUD_SUPER  # escalated rung
+        assert reqs[2].tier != Tier.FRONTIER  # first rung: current tier
+        assert reqs[3].tier == Tier.FRONTIER  # escalated rung
         assert len(calls) == 3  # 2 dry primary passes + 1 successful ladder dispatch
         assert out.sims_dispatched == 1
         qref = store.get_ref(kind="quest", id=qid)

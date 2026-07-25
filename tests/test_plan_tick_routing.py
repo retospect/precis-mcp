@@ -19,9 +19,9 @@ from precis.workers.job_types import plan_tick as pt
 # ── _resolve_oss_tier: tag → served tier, backend-aware ────────────────
 
 _TAG_TIER = {
-    "opus": Tier.CLOUD_SUPER,
-    "sonnet": Tier.CLOUD_MID,
-    "haiku": Tier.CLOUD_SMALL,
+    "opus": Tier.FRONTIER,
+    "sonnet": Tier.BIG,
+    "haiku": Tier.MEDIUM,
 }
 
 
@@ -55,13 +55,13 @@ def test_resolve_oss_tier_local_always_runs_local_big(
     assert pt._resolve_oss_tier("local") is Tier.LOCAL_BIG
 
 
-def test_resolve_oss_tier_unknown_tag_defaults_to_cloud_super_family(
+def test_resolve_oss_tier_unknown_tag_defaults_to_frontier_family(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An unrecognized tag maps to the cloud-super family, then subject to the
+    """An unrecognized tag maps to the frontier family, then subject to the
     same backend gate."""
     monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
-    assert pt._resolve_oss_tier("no-such-tier") is Tier.CLOUD_SUPER
+    assert pt._resolve_oss_tier("no-such-tier") is Tier.FRONTIER
 
 
 # ── _max_turns: env-overridable turn ceiling ───────────────────────────

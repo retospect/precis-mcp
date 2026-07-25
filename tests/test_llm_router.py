@@ -2785,12 +2785,40 @@ def test_new_aliases_resolve_to_new_tiers() -> None:
     assert router.PLANNER_TIER_BY_ALIAS["small"] is Tier.SMALL
 
 
-def test_old_aliases_unchanged_local_still_pins_local_big() -> None:
-    """The Rollout gate (ADR 0066): `local` keeps pinning LOCAL_BIG, NOT the
-    new BIG tier, until the local-only sensitivity constraint ships."""
-    assert router.PLANNER_TIER_BY_ALIAS["opus"] is Tier.CLOUD_SUPER
-    assert router.PLANNER_TIER_BY_ALIAS["sonnet"] is Tier.CLOUD_MID
-    assert router.PLANNER_TIER_BY_ALIAS["haiku"] is Tier.CLOUD_SMALL
+def test_resolve_model_byte_for_byte_against_legacy_analogue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR 0066 Phase C: the cloud-alias remap in ``PLANNER_TIER_BY_ALIAS``
+    is behavior-preserving ONLY because every new tier resolves to the exact
+    same model as its legacy analogue — pin that invariant explicitly (on top
+    of the parametrized ``test_new_tier_resolve_model_matches_analogue``
+    above) so a future edit to ``_TIER_MODEL`` that breaks it fails loudly
+    here too."""
+    _clear_tier_env(monkeypatch)
+    assert resolve_model(Tier.FRONTIER) == resolve_model(Tier.CLOUD_SUPER)
+    assert resolve_model(Tier.BIG) == resolve_model(Tier.CLOUD_MID)
+    assert resolve_model(Tier.MEDIUM) == resolve_model(Tier.CLOUD_SMALL)
+    assert resolve_model(Tier.SMALL) == resolve_model(Tier.LOCAL_SMALL)
+
+
+def test_dispatch_client_default_tier_is_new_small() -> None:
+    """ADR 0066 Phase C: ``DispatchClient``'s bare default now names the new
+    SMALL capability tier — its LOCAL_SMALL analogue, so a caller that never
+    passes ``tier=`` keeps resolving to the same model/transport."""
+    from precis.utils.llm.router import DispatchClient
+
+    assert DispatchClient().tier is Tier.SMALL
+
+
+def test_cloud_aliases_remapped_to_new_tiers_local_carve_out_holds() -> None:
+    """ADR 0066 Phase C: the three cloud legacy aliases (opus/sonnet/haiku)
+    now resolve through the new capability tiers — behavior-identical, since
+    each new tier's ``_TIER_MODEL`` row mirrors its legacy analogue
+    byte-for-byte. `local` keeps pinning LOCAL_BIG (the privacy carve-out),
+    NOT the new BIG tier, until the local-only sensitivity constraint ships."""
+    assert router.PLANNER_TIER_BY_ALIAS["opus"] is Tier.FRONTIER
+    assert router.PLANNER_TIER_BY_ALIAS["sonnet"] is Tier.BIG
+    assert router.PLANNER_TIER_BY_ALIAS["haiku"] is Tier.MEDIUM
     assert router.PLANNER_TIER_BY_ALIAS["local"] is Tier.LOCAL_BIG
 
 

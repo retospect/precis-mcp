@@ -36,7 +36,7 @@ Knobs (all overridable per call, project defaults via env):
 
 * ``PRECIS_CLAUDE_BIN``       — claude binary path (default ``claude``).
 * ``PRECIS_CLAUDE_AGENT_MODEL`` — default model (falls back to the router's
-  ``Tier.CLOUD_SUPER`` = ``claude-opus-4-8``).
+  ``Tier.FRONTIER`` = ``claude-opus-4-8``).
 * ``PRECIS_CLAUDE_AGENT_MAX_USD`` — per-call cost cap (default ``2.00``).
 * ``PRECIS_CLAUDE_AGENT_TIMEOUT_S`` — wall-clock timeout (default ``600``).
 """
@@ -84,7 +84,7 @@ _extract_cost_usd = extract_cost_usd
 def _default_agent_model() -> str:
     from precis.utils.llm.router import Tier, resolve_model
 
-    return resolve_model(Tier.CLOUD_SUPER)
+    return resolve_model(Tier.FRONTIER)
 
 
 # Default budget per call. Agentic passes spend more than one-shot

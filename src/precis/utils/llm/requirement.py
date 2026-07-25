@@ -8,7 +8,7 @@ vector, and the deterministic :func:`~precis.utils.llm.policy.select_offering` m
 that to a concrete model. The raw catalog is **never** handed to the model to pick
 from.
 
-:func:`infer_requirement` runs a cheap one-shot judge (``CLOUD_SMALL`` — a small
+:func:`infer_requirement` runs a cheap one-shot judge (``MEDIUM`` — a small
 model is enough to classify a task) and parses a small JSON requirement.
 :func:`choose_model` chains it into the policy. The judge is injectable
 (``judge=``) so callers + tests can supply a fixed vector without an LLM call.
@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 #: The judge itself is cheap — classifying a task doesn't need the super tier.
-_JUDGE_TIER = Tier.CLOUD_SMALL
+_JUDGE_TIER = Tier.MEDIUM
 
 _PROMPT = """You are routing a task to the right LLM from a catalog. Infer the \
 CAPABILITY the task needs — NEVER a model name (you are price- and window-blind; a \

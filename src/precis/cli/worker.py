@@ -737,13 +737,13 @@ def run(args: argparse.Namespace) -> None:
 
             # Fold through the router (ADR 0046) — same ``.complete`` contract, but
             # the call gets the local-serving ``served_by`` reroute (Phase-2
-            # litellm-retire). model=None ⇒ resolve_model(LOCAL_SMALL) =
+            # litellm-retire). model=None ⇒ resolve_model(SMALL) =
             # ``PRECIS_SUMMARIZE_MODEL or summarizer`` = the config default, so
             # behaviour is byte-identical until a card declares served_by. The
             # per-chunk backfill logs a **lite** row (metadata + ref_id, no replay
             # blob) so local spend/wall-clock is mineable without a blob explosion.
             _summarize_client = _DispatchClient(
-                tier=_Tier.LOCAL_SMALL,
+                tier=_Tier.SMALL,
                 source="llm_summarize",
                 log_call=True,
                 log_blobs=False,
@@ -782,7 +782,7 @@ def run(args: argparse.Namespace) -> None:
             # Forces model=`summarizer` (a thinking model like qwen returns empty).
             # Per-chunk high volume ⇒ a lite row (metadata, no replay blob).
             _cls_client = _DispatchClient(
-                tier=_Tier.LOCAL_SMALL,
+                tier=_Tier.SMALL,
                 model=os.environ.get("PRECIS_CLASSIFY_MODEL") or "summarizer",
                 source="classify",
                 log_call=True,
@@ -797,7 +797,7 @@ def run(args: argparse.Namespace) -> None:
             )
             _cls_escalate_client = (
                 _DispatchClient(
-                    tier=_Tier.LOCAL_SMALL,
+                    tier=_Tier.SMALL,
                     model=_cls_escalate_model,
                     source="classify",
                     log_call=True,
@@ -858,11 +858,11 @@ def run(args: argparse.Namespace) -> None:
             # a raw litellm client — so this pass gets the breaker gate + the
             # local-serving ``served_by`` reroute (Phase-2 litellm-retire). A
             # glossary is a multi-term JSON object, far larger than the 220-token
-            # 2-part summary the LOCAL_SMALL default caps at — that budget
+            # 2-part summary the SMALL default caps at — that budget
             # truncates the JSON mid-object so it never parses (every paper
             # "fails"). Pin the room via ``max_tokens``; env-overridable.
             _pg_client = _DispatchClient(
-                tier=_Tier.LOCAL_SMALL,
+                tier=_Tier.SMALL,
                 model=os.environ.get("PRECIS_PAPER_GLOSSARY_MODEL") or "summarizer",
                 max_tokens=int(
                     os.environ.get("PRECIS_PAPER_GLOSSARY_MAX_TOKENS") or 2000
@@ -905,7 +905,7 @@ def run(args: argparse.Namespace) -> None:
             from precis.workers.runner import BatchResult as _CtBatchResult
 
             _ct_client = _DispatchClient(
-                tier=_Tier.LOCAL_SMALL,
+                tier=_Tier.SMALL,
                 model=os.environ.get("PRECIS_CLASSIFY_TOPICS_MODEL") or "summarizer",
                 source="classify_topics",
                 log_call=True,
@@ -962,7 +962,7 @@ def run(args: argparse.Namespace) -> None:
                     continue
 
                 _axis_client = _DispatchClient(
-                    tier=_Tier.LOCAL_SMALL,
+                    tier=_Tier.SMALL,
                     model=os.environ.get("PRECIS_AXIS_MODEL") or "summarizer",
                     source=_axis_service,
                     log_call=True,
@@ -1262,14 +1262,14 @@ def run(args: argparse.Namespace) -> None:
             from precis.workers.runner import BatchResult as _InjBatchResult
 
             _inj_client = _InjDispatchClient(
-                tier=_InjTier.LOCAL_SMALL,
+                tier=_InjTier.SMALL,
                 model=os.environ.get("PRECIS_INJECT_SCAN_MODEL") or "summarizer",
                 source="inject_scan",
             )
             _inj_escalate_model = os.environ.get("PRECIS_INJECT_SCAN_ESCALATE_MODEL")
             _inj_escalate = (
                 _InjDispatchClient(
-                    tier=_InjTier.LOCAL_SMALL,
+                    tier=_InjTier.SMALL,
                     model=_inj_escalate_model,
                     source="inject_scan",
                 )

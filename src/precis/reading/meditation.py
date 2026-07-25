@@ -369,7 +369,7 @@ def build_meditation(
         # profile. Tests always inject a fake client, so this branch stays out of
         # unit runs and off the cheap MCP import graph.
         #
-        # Folds through the router (ADR 0046) onto the CLOUD_SUPER reasoning
+        # Folds through the router (ADR 0046) onto the FRONTIER reasoning
         # tier (``claude_agent``, direct Anthropic OAuth) instead of holding a
         # raw litellm client, so this cast composer gets the budget breaker +
         # the route-log. ``tools_needed=True`` lands on ``claude_agent``
@@ -391,7 +391,7 @@ def build_meditation(
         # segmented long walk's per-call asks are each well under this ceiling,
         # so it only bites a genuinely runaway single call).
         client = DispatchClient(
-            tier=Tier.CLOUD_SUPER,
+            tier=Tier.FRONTIER,
             model=os.environ.get("PRECIS_MEDITATION_MODEL") or None,
             tools_needed=True,
             max_tokens=compose_max_tokens(profile, target_minutes=target),

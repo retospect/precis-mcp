@@ -710,7 +710,7 @@ def _resolve_tier(tier: Any) -> Any:
     from precis.utils.llm.router import Tier
 
     if tier is None:
-        return Tier.CLOUD_SMALL
+        return Tier.MEDIUM
     if isinstance(tier, Tier):
         return tier
     return Tier(str(tier))
@@ -915,8 +915,8 @@ def _commit_reprompt_ladder(
     quest_id = quest.id
 
     tiers = [tier]
-    if tier != Tier.CLOUD_SUPER:
-        tiers.append(Tier.CLOUD_SUPER)  # escalate once — the senior/review tier
+    if tier != Tier.FRONTIER:
+        tiers.append(Tier.FRONTIER)  # escalate once — the senior/review tier
 
     any_error = False
     for attempt_tier in tiers:
@@ -988,9 +988,9 @@ def run_quest_tick(
     if tier is not None:
         resolved_tier = _resolve_tier(tier)
     elif is_review:
-        resolved_tier = Tier.CLOUD_SUPER
+        resolved_tier = Tier.FRONTIER
     else:
-        resolved_tier = Tier.CLOUD_SMALL
+        resolved_tier = Tier.MEDIUM
 
     prompt = build_tick_prompt(store, qref, review=is_review)
 

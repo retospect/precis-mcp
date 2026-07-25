@@ -225,8 +225,8 @@ DEEP_REVIEW = Reviewer(
     meta_prefix="deep_review_",
     # Cloud reasoning tier (opus-4.8) via the router; a per-pass
     # ``PRECIS_DEEP_REVIEW_MODEL`` pin still wins in ``run_review_pass``.
-    tier=Tier.CLOUD_SUPER,
-    model=resolve_model(Tier.CLOUD_SUPER),
+    tier=Tier.FRONTIER,
+    model=resolve_model(Tier.FRONTIER),
     max_turns=60,
     timeout_s=1800,
     min_interval_hours=MIN_INTERVAL_HOURS,

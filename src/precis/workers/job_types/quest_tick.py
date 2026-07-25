@@ -422,7 +422,7 @@ def _phase_weave_tick(
     from precis.quest.weave_tick import weave_tick
     from precis.utils.llm.router import DispatchClient, Tier
 
-    tier = params.get("tier") or "cloud-mid"
+    tier = params.get("tier") or "big"
     client = DispatchClient(tier=Tier(tier), source="quest_weave", tools_needed=True)
 
     try:

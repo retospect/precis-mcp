@@ -20,7 +20,7 @@ chunks, *which* lenses, *which* tier, and *which* parent.
 (``LLM:sonnet``, matching ``weave_review``'s per-weave tier); ``structure``
 (``precis-review-section-structure``) and ``adversarial``
 (``precis-review-paper-help``) are the weekly/deep-tier lenses in the
-design doc's persona table — routed to ``LLM:opus`` (``Tier.CLOUD_SUPER``
+design doc's persona table — routed to ``LLM:opus`` (``Tier.FRONTIER``
 in ``utils/llm/router.py``; the same closed tag value ``workers/
 deep_review.py`` and the dispatcher's auto-run-signal predicate resolve
 for the opus rung).

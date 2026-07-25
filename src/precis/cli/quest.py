@@ -63,8 +63,8 @@ def add_parser(subparsers: Any) -> None:
     )
     w.add_argument(
         "--tier",
-        default="cloud-mid",
-        help="LLM tier for the weave/title-judgment calls (default cloud-mid — "
+        default="big",
+        help="LLM tier for the weave/title-judgment calls (default big — "
         "the mid agentic rung; see --tier on `quest tick` for the full set).",
     )
     w.add_argument(

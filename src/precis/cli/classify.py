@@ -143,7 +143,7 @@ def _cmd_role3(store: Store, args: argparse.Namespace) -> None:
     # Mirrors cli/worker.py's `classify` pass wiring exactly (ADR 0046
     # dispatch seam + the Tier 2 escalate-client shape).
     client = DispatchClient(
-        tier=Tier.LOCAL_SMALL,
+        tier=Tier.SMALL,
         model=os.environ.get("PRECIS_CLASSIFY_MODEL") or "summarizer",
         source="classify",
         log_call=True,
@@ -152,7 +152,7 @@ def _cmd_role3(store: Store, args: argparse.Namespace) -> None:
     escalate_model = os.environ.get("PRECIS_CLASSIFY_ESCALATE_MODEL") or None
     escalate_client = (
         DispatchClient(
-            tier=Tier.LOCAL_SMALL,
+            tier=Tier.SMALL,
             model=escalate_model,
             source="classify",
             log_call=True,
@@ -202,7 +202,7 @@ def _cmd_topics(store: Store, args: argparse.Namespace) -> None:
     # dispatch seam). No escalate client — tier 2 is unimplemented for topics
     # (ADR 0060's open questions).
     client = DispatchClient(
-        tier=Tier.LOCAL_SMALL,
+        tier=Tier.SMALL,
         model=os.environ.get("PRECIS_CLASSIFY_TOPICS_MODEL") or "summarizer",
         source="classify_topics",
         log_call=True,

@@ -92,9 +92,7 @@ def _verify_support_with_caveats(
         target_chunk_ord=target_chunk_ord,
         target_chunk_text=target_chunk_text[:4000],  # cap context cost
     )
-    res = dispatch(
-        LlmRequest(tier=Tier.CLOUD_SMALL, prompt=prompt, source="chase:verify")
-    )
+    res = dispatch(LlmRequest(tier=Tier.MEDIUM, prompt=prompt, source="chase:verify"))
     if res.error:
         log.warning("chase: verify hook failed: %s", res.error)
         return None
@@ -135,7 +133,7 @@ def _disambiguate_candidates(
         candidates_table=table,
     )
     res = dispatch(
-        LlmRequest(tier=Tier.CLOUD_SMALL, prompt=prompt, source="chase:disambiguate")
+        LlmRequest(tier=Tier.MEDIUM, prompt=prompt, source="chase:disambiguate")
     )
     if res.error:
         log.warning("chase: disambiguate hook failed: %s", res.error)
@@ -188,9 +186,7 @@ def _locate_chunk_in_target(
         main_text=proposed[2][:1500],
         alternates_table=alt_table,
     )
-    res = dispatch(
-        LlmRequest(tier=Tier.CLOUD_SMALL, prompt=prompt, source="chase:locate")
-    )
+    res = dispatch(LlmRequest(tier=Tier.MEDIUM, prompt=prompt, source="chase:locate"))
     if res.error:
         log.warning("chase: locate hook failed: %s", res.error)
         return proposed  # fall back to lexical pick

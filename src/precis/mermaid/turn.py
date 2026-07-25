@@ -23,7 +23,7 @@ def _default_claude(prompt: str) -> dict[str, Any]:
 
     res = dispatch(
         LlmRequest(
-            tier=Tier.CLOUD_SUPER,
+            tier=Tier.FRONTIER,
             source="mermaid",
             prompt=prompt,
             model=os.environ.get("PRECIS_MERMAID_MODEL"),
