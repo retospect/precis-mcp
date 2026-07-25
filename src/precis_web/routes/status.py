@@ -9,6 +9,7 @@ in one query degrades to an empty panel instead of a 500.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -1223,6 +1224,7 @@ def _services_ctx(store: Any, host: str) -> dict[str, Any]:
         "service_kinds": [k.value for k in ServiceKind],
         "quests": _factory_quests(store),
         "llm_override": _llm_override_ctx(store),
+        "llm_chains": _llm_chain_ctx(store),
     }
 
 
@@ -1254,6 +1256,53 @@ def _llm_override_ctx(store: Any) -> dict[str, Any]:
         and budget_settings.get_setting(store, live_config.model_key(Tier.CLOUD_SUPER))
         == "z-ai/glm-5.2",
     }
+
+
+def _llm_chain_ctx(store: Any) -> dict[str, Any]:
+    """The ADR 0066 Phase B operator placement-chain editor state — one row
+    per pure-capability tier (``FRONTIER``/``BIG``/``MEDIUM``/``SMALL``) plus
+    the cloud-throttle dial, for the Services sub-tab's chain-editor panel.
+
+    Reads go through an explicit ``store`` via ``budget_settings.get_setting``
+    (not ``live_config``'s ambient-store cached readers — this is a page
+    render, not the dispatch hot path) and degrade to empty/default on any
+    surprise, mirroring ``_llm_override_ctx``: a bad row or DB hiccup shows
+    "default"/blank rather than 500ing the page.
+    """
+    try:
+        from precis.budget import settings as budget_settings
+        from precis.utils.llm import live_config
+        from precis.utils.llm.router import Tier
+
+        tiers = []
+        for t in (Tier.FRONTIER, Tier.BIG, Tier.MEDIUM, Tier.SMALL):
+            raw = budget_settings.get_setting(store, live_config.chain_key(t))
+            chain_json = ""
+            if raw:
+                try:
+                    parsed = json.loads(raw)
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    parsed = None
+                if isinstance(parsed, list):
+                    chain_json = json.dumps(parsed, indent=2)
+            tiers.append({"tier": t.value, "chain_json": chain_json})
+
+        cloud_raw = budget_settings.get_setting(store, live_config.CLOUD_ENABLED_KEY)
+        cloud_enabled = (
+            True
+            if cloud_raw is None
+            else cloud_raw.strip().lower() not in ("false", "0", "no", "off")
+        )
+        return {"tiers": tiers, "cloud_enabled": cloud_enabled}
+    except Exception:
+        log.warning("status: _llm_chain_ctx failed", exc_info=True)
+        return {
+            "tiers": [
+                {"tier": t, "chain_json": ""}
+                for t in ("frontier", "big", "medium", "small")
+            ],
+            "cloud_enabled": True,
+        }
 
 
 #: Cloud tiers, strongest first — the sort order for the Models sub-tab's

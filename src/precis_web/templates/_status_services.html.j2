@@ -65,6 +65,45 @@
   </div>
 </section>
 
+{# ── LLM placement chains — the ADR 0066 Phase B operator editor ── #}
+<section class="mb-6">
+  <div class="rounded-lg border border-slate-200 bg-white p-4 max-w-2xl">
+    <h2 class="text-sm font-semibold mb-2">LLM placement chains (operator)</h2>
+
+    <div class="flex items-center gap-2 mb-3">
+      {% if llm_chains.cloud_enabled %}
+      <span class="rounded px-1.5 py-0.5 text-[11px] bg-emerald-50 text-emerald-700">cloud ON</span>
+      {% else %}
+      <span class="rounded px-1.5 py-0.5 text-[11px] bg-amber-50 text-amber-700">cloud OFF</span>
+      {% endif %}
+      <form method="post" action="/factory/llm/cloud">
+        <input type="hidden" name="enabled" value="{{ 'false' if llm_chains.cloud_enabled else 'true' }}">
+        <button class="rounded bg-slate-200 text-slate-700 text-xs px-3 py-1 hover:bg-slate-300 transition">
+          {% if llm_chains.cloud_enabled %}Disable cloud (→ local only){% else %}Enable cloud{% endif %}
+        </button>
+      </form>
+    </div>
+
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      {% for t in llm_chains.tiers %}
+      <form method="post" action="/factory/llm/chain" class="rounded border border-slate-200 p-2">
+        <input type="hidden" name="tier" value="{{ t.tier }}">
+        <div class="text-xs font-mono text-slate-600 mb-1">{{ t.tier }}</div>
+        <textarea name="chain_json" rows="3"
+                  class="w-full rounded border border-slate-300 text-[11px] font-mono px-1.5 py-1"
+                  placeholder='default ladder — paste JSON [{"placement":"cloud","model":"…","transport":"openai_tools"}, …]'>{{ t.chain_json }}</textarea>
+        <button class="mt-1 rounded bg-sky-600 text-white text-xs px-3 py-1 hover:bg-sky-700 transition">
+          Save
+        </button>
+      </form>
+      {% endfor %}
+    </div>
+    <p class="text-[11px] text-slate-400 mt-2">
+      Blank = revert to the default ladder; malformed JSON (not a valid list) is ignored, leaving the prior override untouched.
+    </p>
+  </div>
+</section>
+
 {# ── One list per category ───────────────────────────────────── #}
 {% for cat in categories %}
 <section class="mb-6">

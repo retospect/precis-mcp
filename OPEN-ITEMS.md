@@ -435,20 +435,23 @@ passes now. Remaining:
   dark) and Phase B steps 1 (`resolve_chain` always-on — operator chains read
   regardless of `PRECIS_LLM_FAILOVER`, main `2d7b304d`) + 3a (`llm.cloud_enabled`
   throttle prunes cloud rungs; FRONTIER/no-local-rung tiers pause, main
-  `0a2fc576`). Both ship **dark** (no operator chain written, throttle defaults
-  on) so zero live routing change yet. **Remaining Phase B:**
-  (2) the **surfaces** — split the two menus (caller picker = 4 rungs only;
-  operator **chain editor** + throttle toggle on `/status` Services+Models
-  tabs), migrate `status.py::_llm_override_ctx` (today iterates only the 3 cloud
-  tiers + reads `GLM_OPENROUTER_PRESET`), `_TIER_RANK` (keyed `cloud-super/mid/
-  small`), and `_llm_card_view.is_cloud = tier.startswith("cloud")` to 4 tiers;
-  (3b) the **`tier_floor` forward migration** relabeling `llm` card meta
-  (`cloud-super→frontier`, `cloud-mid→big`, `cloud-small→medium`,
-  `local-small→small`, `local-big→big`) — **coupled to (2): the renderers must
-  tolerate both old+new values FIRST, else the Models tab misclassifies every
-  relabeled card as local**. **UX open q:** how an operator edits a per-tier
-  chain in the browser (structured add/remove/reorder-rungs form vs JSON
-  textarea) — decide before building the editor. **Phase C (GATED):** the
+  `0a2fc576`). Plus Phase B step 2 (**operator chain editor + cloud-throttle
+  toggle** on `/status?tab=services` — per-tier JSON textarea `POST
+  /factory/llm/chain` + `POST /factory/llm/cloud`; `status.py::_llm_chain_ctx`).
+  All ship **dark** (no operator chain written, throttle defaults on) so zero
+  live routing change yet. **UX decided:** JSON textarea (v1), server-validated
+  list-only — a structured add/remove/reorder form is a fast-follow if wanted.
+  **Remaining Phase B → folded into Phase C** (both deferred for concrete code
+  reasons, not oversight):
+  (3b) the **`tier_floor` forward migration** (relabel `llm` card meta
+  `cloud-super→frontier` etc.) — **clobbered by `llm_catalog.seed_default_cards`**
+  (`for tier in Tier` first-wins patches `tier_floor` back to legacy values
+  every reconcile tick), so it must ride with the Phase-C catalog reseed
+  (`_SEED_PROSE` keys + `TIER_FLOOR_MODELS` → 4 tiers) + the
+  `is_cloud`-derives-from-placement renderer change, never land alone;
+  (2-residual) the **caller-picker→4-rungs split** (migrate the `LLM:` dropdown
+  vocab, `_TIER_RANK`, `is_cloud`) — entangled with the planner-tag-vocab open q
+  below. **Phase C (GATED):** the
   call-site sweep collapsing `LLM:local`→`BIG` must NOT ship until the
   content-sensitivity/local-only constraint exists
   ([`docs/proposals/content-sensitivity-placement.md`](docs/proposals/content-sensitivity-placement.md),

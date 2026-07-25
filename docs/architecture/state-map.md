@@ -634,7 +634,20 @@ their chain:** `FRONTIER` is always cloud-only (pauses); today only `SMALL`
 has a standing local rung (`LITELLM`), so `BIG`/`MEDIUM` also pause under
 throttle until an operator chain gives them a `placement:"local"` rung (the
 target-state "drop to local" story lands with the Phase-3 roster / chain
-editor). No-op while cloud is on (byte-identical). `router.py::Tier` also gained four capability rungs
+editor). No-op while cloud is on (byte-identical). **Phase B (step 2,
+operator surface):** `/status?tab=services` now carries an operator
+placement-chain editor (a per-tier JSON textarea `POST /factory/llm/chain`
+writing `llm.chain.<tier>`, server-validated list-only, blank = revert) plus
+a cloud-throttle toggle (`POST /factory/llm/cloud` writing
+`llm.cloud_enabled`) — `status.py::_llm_chain_ctx`, degrade-safe. This is the
+write UI for the two settings the router already reads. Two Phase-B pieces are
+**deferred to Phase C** for concrete code reasons: the `tier_floor` card
+migration (step 3b) is clobbered by `llm_catalog.seed_default_cards`'
+first-wins `for tier in Tier` on every reconcile tick, so it must ride with
+the Phase-C catalog reseed; and the caller-picker→4-rungs split is entangled
+with the unresolved planner-tag-vocab question (`LLM:small`/`medium` no-op via
+fallback). The legacy GLM-preset panel (`_llm_override_ctx`) stays until
+Phase C. `router.py::Tier` also gained four capability rungs
 (`FRONTIER`/`BIG`/`MEDIUM`/`SMALL`) **additively** alongside the legacy five,
 each routing byte-for-byte identically to its legacy analogue
 (`FRONTIER↔CLOUD_SUPER`, `BIG↔CLOUD_MID`, `MEDIUM↔CLOUD_SMALL`,

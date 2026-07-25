@@ -3178,6 +3178,18 @@ def test_status_services_tab_host_selector_scopes_page(client) -> None:
     assert "melchior" in resp.text
 
 
+def test_status_services_tab_renders_llm_chain_editor(client) -> None:
+    """ADR 0066 Phase B step 2 — the placement-chain editor + cloud-throttle
+    toggle render with no operator overrides set (degrade-safe defaults)."""
+    resp = client.get("/status?tab=services")
+    assert resp.status_code == 200
+    assert "LLM placement chains (operator)" in resp.text
+    assert 'action="/factory/llm/chain"' in resp.text
+    assert 'action="/factory/llm/cloud"' in resp.text
+    for tier in ("frontier", "big", "medium", "small"):
+        assert f'value="{tier}"' in resp.text
+
+
 def test_status_budget_tab_renders_tote_and_caps(client) -> None:
     """``?tab=budget`` renders the retired Budget page's content."""
     resp = client.get("/status?tab=budget")

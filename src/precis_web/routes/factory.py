@@ -27,6 +27,7 @@ and its last-success / last-failure from `worker_logs`
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -35,6 +36,7 @@ from fastapi.responses import RedirectResponse
 
 from precis.budget import settings as budget_settings
 from precis.utils.llm import live_config
+from precis.utils.llm.router import Tier
 from precis.workers.service_config import (
     clear_service_config,
     set_service_model,
@@ -475,4 +477,86 @@ async def set_llm_backend(
             _revert_glm_preset(store)
     except Exception:
         log.warning("factory: set_llm_backend failed", exc_info=True)
+    return RedirectResponse(url="/status?tab=services", status_code=303)
+
+
+#: The four ADR 0066 capability tiers an operator placement-chain can target
+#: (Phase B step 2) — the ``Tier`` string values, not the five legacy
+#: ``cloud-*``/``local-*`` analogues these route dark alongside.
+_CHAIN_TIERS: dict[str, Tier] = {
+    Tier.FRONTIER.value: Tier.FRONTIER,
+    Tier.BIG.value: Tier.BIG,
+    Tier.MEDIUM.value: Tier.MEDIUM,
+    Tier.SMALL.value: Tier.SMALL,
+}
+
+
+def _set_chain_override(store: Any, tier: Tier, chain_json: str) -> None:
+    """Write (or, for blank text, clear) one tier's placement-chain override.
+
+    Blank ``chain_json`` reverts the tier to the compiled default ladder.
+    Non-blank text must parse as JSON *and* be a list — a malformed row can't
+    dark a tier, so a decode failure or a non-list value is logged and
+    dropped without writing anything (the previous override, if any, is left
+    untouched rather than clobbered by garbage).
+    """
+    text = chain_json.strip()
+    if not text:
+        budget_settings.clear_setting(store, live_config.chain_key(tier))
+        live_config.bust_cache()
+        return
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        log.warning("factory: ignoring malformed chain JSON for tier=%s", tier.value)
+        return
+    if not isinstance(parsed, list):
+        log.warning(
+            "factory: ignoring non-list chain JSON for tier=%s (got %s)",
+            tier.value,
+            type(parsed).__name__,
+        )
+        return
+    budget_settings.set_setting(store, live_config.chain_key(tier), chain_json)
+    live_config.bust_cache()
+
+
+@router.post("/llm/chain", response_model=None)
+async def set_llm_chain(
+    request: Request,
+    tier: str = Form(...),
+    chain_json: str = Form(""),
+) -> RedirectResponse:
+    """Write an operator placement-chain override for one capability tier
+    (ADR 0066 Phase B step 2) — blank ``chain_json`` clears it back to the
+    default ladder. An unrecognized ``tier`` or malformed JSON is a no-op."""
+    store = get_store(request)
+    try:
+        resolved = _CHAIN_TIERS.get(tier)
+        if resolved is not None:
+            _set_chain_override(store, resolved, chain_json)
+    except Exception:
+        log.warning("factory: set_llm_chain failed", exc_info=True)
+    return RedirectResponse(url="/status?tab=services", status_code=303)
+
+
+def _set_cloud_enabled(store: Any, enabled: bool) -> None:
+    """Write the ADR 0066 §5 cloud-throttle dial. ``True`` clears the row
+    (back to default-on); only an explicit ``False`` writes ``"false"``."""
+    if enabled:
+        budget_settings.clear_setting(store, live_config.CLOUD_ENABLED_KEY)
+    else:
+        budget_settings.set_setting(store, live_config.CLOUD_ENABLED_KEY, "false")
+    live_config.bust_cache()
+
+
+@router.post("/llm/cloud", response_model=None)
+async def set_llm_cloud(request: Request, enabled: str = Form(...)) -> RedirectResponse:
+    """Flip the fleet-wide cloud-throttle dial — ``enabled=false`` pauses
+    every tier's cloud rungs; anything else clears back to default-on."""
+    store = get_store(request)
+    try:
+        _set_cloud_enabled(store, enabled.strip().lower() != "false")
+    except Exception:
+        log.warning("factory: set_llm_cloud failed", exc_info=True)
     return RedirectResponse(url="/status?tab=services", status_code=303)
