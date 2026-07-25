@@ -335,7 +335,12 @@ these (`cloud-super → frontier`, `cloud-mid → big`, `cloud-small → medium`
 - **Phase B — surface migration.** Split the two menus: the caller picker
   (4 rungs) and the operator chain editor on `/status` (Services + Models
   tabs). Run the `tier_floor` forward migration. Migrate `app_settings`
-  keys. Add the `llm.cloud_enabled` throttle.
+  keys. Add the `llm.cloud_enabled` throttle. **Decouple `resolve_chain` from
+  `if _failover_enabled():`** — Phase A wired it inside that branch to stay
+  byte-for-byte, so a set chain is inert unless `PRECIS_LLM_FAILOVER` is on;
+  Phase B must make the chain the always-on resolution path (a no-override
+  tier resolves to a single-rung chain == today's single-provider path), or
+  the operator chain editor writes rows nothing reads.
 - **Phase C — call-site sweep + retirement.** Flip every `tier=Tier.CLOUD_*`
   / `LOCAL_*` to its capability tier (table above). Retire
   `GLM_OPENROUTER_PRESET` + the global `llm.backend` flip. Drop the compat
