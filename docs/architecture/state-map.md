@@ -1197,6 +1197,24 @@ The master kinds table lives in the `precis-overview` skill.
     a local `clean` (default) or opt-in `preflight='emt'` pre-relax, re-checking
     the cleaned geometry's `cache_key` for a completed run before dispatch. Cloud
     is last-resort; a plain local `clean`/`emt` edit is never gated.
+  - **Tier-0 substrate preflight (`structure/preflight.py`, gr172323, flag
+    `PRECIS_STRUCTURE_PREFLIGHT`, default OFF → dark).** A fast, synchronous,
+    element-agnostic sanity gate for catalyst candidates, *in front of* any MLIP
+    compute. `preflight(scene) → PreflightVerdict(ok, reasons)` runs: (1) an
+    ASE-free **element-in-box** check (element ∈ the deployed MLIP's set —
+    `MACE_MP_ELEMENTS` ≈ 89, not EMT's 7; outside → reject) then (2) a **dumb
+    universal relax** (`_DumbField` — covalent-radius springs + soft repulsion,
+    any element, ~30 FIRE steps) and (3) post-settle judgments — clash / detached
+    (fly-off) / ceiling (into the vacuum) / no-vacuum / porous / internal-void —
+    each a **per-atom actionable reason** (names the atom handle + a fix verb).
+    Wired two seams: `handlers/structure.py` `put`/`edit` **reject + undo** the
+    edit before the version commits (fail-open on missing ASE/[dft]); and
+    `quest/compute.py::dispatch_catpath` **mints no job** for a failing substrate
+    and stamps a `ruled-out:preflight` dead-end the proposer reads. Catches
+    *authoring* faults (badly-placed / spongiform / out-of-box); *physical*
+    desorption of a well-authored slab stays the catpath-tier (MLIP) verdict.
+    Slab/adsorbate split falls back to a dominant-element heuristic (Scene has no
+    slab provenance yet — OPEN-ITEMS follow-up).
   - **Structure ↔ literature loop (gr161578/gr161577).** `view='literature'`
     assembles a **deterministic** paper query from the design (description +
     host-metal(s)/adsorbate/facet from `scene.composition()`, all host metals

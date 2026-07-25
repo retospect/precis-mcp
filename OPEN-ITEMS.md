@@ -8,6 +8,20 @@ items are removed (history is `git log`).
 > regression that pins it.
 
 ---
+## structure IR lacks explicit slab/adsorbate provenance (preflight `detached` heuristic)
+- Status: open · Severity: polish · Owner: `src/precis/structure/{scene,ops}.py`
+  · Test: n/a yet.
+- `src/precis/structure/preflight.py::_slab_adsorbate_indices` falls back to a
+  dominant-element heuristic (most-common element = the slab) whenever
+  `atoms.info['n_slab']` isn't set — and today neither caller (the structure
+  handler's put/edit, `quest.compute.dispatch_catpath`) can set it, because
+  the Scene/Atom IR has no slab-vs-adsorbate provenance (no op records "these
+  N atoms came from the `slab` op"). A doped slab (e.g. a Cu/Ag dopant swapped
+  in via `set_element`) risks the `detached` check misreading the dopant as a
+  floating adsorbate. Add `n_slab` (or richer op-provenance) metadata at
+  slab-op time, then thread it through to `preflight()`.
+
+---
 ## deploy doesn't actively disable the watcher on excluded hosts (e.g. balthazar)
 - Status: open · Severity: polish · Owner: `deploy/roles/` (precis_watch) · Test: n/a yet.
 - Low-pri residual from the marker-2.0/surya-leak fix (shipped `8ebbae27`): deploy

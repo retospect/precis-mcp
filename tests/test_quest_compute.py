@@ -27,6 +27,7 @@ from precis.quest.frontier import (
     quest_frontier,
 )
 from precis.quest.tick import run_quest_tick
+from precis.structure import preflight as preflight_mod
 
 
 def _mk_quest(store: Any, text: str) -> int:
@@ -1290,6 +1291,56 @@ class TestDispatchCatpath:
         compute_mod.dispatch_catpath(store, sid, self._RX)
         _job_id, jmeta = compute_mod._fresh_catpath_jobs(store, sid, 0)[0]
         assert (jmeta.get("params") or {})["config"] == self._RX  # unchanged
+
+    # ── preflight hard gate (PRECIS_STRUCTURE_PREFLIGHT, default off) ──────
+
+    _BAD_SPEC = {
+        "cell": {"a": 8.4, "b": 8.4, "c": 24.0, "pbc": [True, True, False]},
+        # He is a noble gas — outside MACE_MP_ELEMENTS (element_out_of_box).
+        "ops": [{"op": "add_atom", "element": "He", "frac": [0.0, 0.0, 0.5]}],
+    }
+
+    def _bad_candidate(self, store: Any, qid: int) -> int:
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "He", "structure": self._BAD_SPEC}
+        )
+        assert sid is not None
+        return sid
+
+    def test_preflight_flag_off_dispatches_bad_candidate_regardless(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        monkeypatch.delenv(preflight_mod._PREFLIGHT_ENABLED_ENV, raising=False)
+        qid = _mk_quest(store, "A striving")
+        sid = self._bad_candidate(store, qid)
+        note = compute_mod.dispatch_catpath(store, sid, self._RX)
+        assert note.startswith("catpath[")  # current behaviour: dispatches regardless
+
+    def test_preflight_flag_on_skips_bad_candidate_and_stamps_dead_end(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        # Create the candidate with the gate OFF — `ensure_candidate` itself
+        # calls `StructureHandler.put()` (seam 1), which would otherwise
+        # reject this same bad geometry before it ever became a candidate.
+        monkeypatch.delenv(preflight_mod._PREFLIGHT_ENABLED_ENV, raising=False)
+        qid = _mk_quest(store, "A striving")
+        sid = self._bad_candidate(store, qid)
+        monkeypatch.setenv(preflight_mod._PREFLIGHT_ENABLED_ENV, "1")
+        note = compute_mod.dispatch_catpath(store, sid, self._RX)
+        assert "failed substrate preflight" in note
+        assert compute_mod._fresh_catpath_jobs(store, sid, 0) == []  # no job minted
+        tags = {str(t) for t in store.tags_for(sid)}
+        assert any(t.startswith("ruled-out:preflight") for t in tags)
+
+    def test_preflight_flag_on_dispatches_clean_candidate(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        monkeypatch.setenv(preflight_mod._PREFLIGHT_ENABLED_ENV, "1")
+        qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
+        sid = self._candidate(store, qid)  # _SPEC — a single, in-box Fe atom
+        note = compute_mod.dispatch_catpath(store, sid, self._RX)
+        assert note.startswith("catpath[")
+        assert len(compute_mod._fresh_catpath_jobs(store, sid, 0)) == 1
 
 
 class TestReactionCoDispatch:

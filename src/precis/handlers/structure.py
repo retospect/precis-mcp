@@ -20,6 +20,7 @@ later increments. See ``precis-structure-help``.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from collections.abc import Mapping
@@ -56,6 +57,9 @@ from precis.structure import cache as relax_cache
 from precis.structure import relax as run_relax
 from precis.structure.cell import Cell
 from precis.structure.importers import catalysis_hub, get_adapter
+from precis.structure.preflight import PreflightReason
+from precis.structure.preflight import _preflight_enabled as _mlip_preflight_enabled
+from precis.structure.preflight import preflight as _mlip_preflight
 
 # NB: ``precis.structure`` re-exports the ``relax`` *function* under that
 # name (see ``run_relax`` above), shadowing the submodule — reach
@@ -64,6 +68,8 @@ from precis.structure.relax import EMT_ELEMENTS, RelaxResult, estimate_forces_em
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
 from precis.utils.search_merge import SearchHit
+
+log = logging.getLogger(__name__)
 
 _PROBE_VIEWS = ("atom", "neighborhood", "bonds", "find", "validate")
 _NAV_VIEWS = (
@@ -157,6 +163,43 @@ def _format_gate_rejection(findings: list[Any]) -> str:
     ]
     lines += [f"  [{f.rule}] {f.suggested_fix}" for f in findings]
     return "\n".join(lines)
+
+
+def _format_preflight_rejection(reasons: list[PreflightReason]) -> str:
+    """One BadInput message for every Tier-0 preflight reason (element/clash/
+    detached/vacuum/porosity) blocking an edit — names each offending atom
+    and why, mirroring :func:`_format_gate_rejection`'s shape."""
+    lines = [f"structure preflight rejected this edit ({len(reasons)} issue(s)):"]
+    lines += [r.message for r in reasons]
+    return "\n".join(lines)
+
+
+def _run_preflight_gate(scene: Scene) -> None:
+    """Tier-0 MLIP preflight — hard reject an edit whose *resulting* scene
+    fails (element out of the MLIP's coverage, a clash, a floating
+    adsorbate, no vacuum headroom, a porous slab). Only runs when
+    ``PRECIS_STRUCTURE_PREFLIGHT`` is on (:func:`_mlip_preflight_enabled`,
+    default OFF); called after ops are applied to the in-memory scene but
+    *before* ``structure_save`` commits, so a rejection leaves the prior
+    version standing (transactional reject + undo — nothing to roll back).
+
+    Fail-**open** on infra (ASE/[dft] missing, or any other unexpected
+    preflight-internal error): a preflight that can't run must not block an
+    edit. Fail-**closed** only on a real ``not ok`` verdict, which raises
+    :class:`BadInput` — the caller does not catch this."""
+    if not _mlip_preflight_enabled():
+        return
+    try:
+        verdict = _mlip_preflight(scene)
+    except Exception as exc:  # ImportError (no ASE/[dft]) or any other infra hiccup
+        log.debug("structure preflight degraded (fail-open): %s", exc)
+        return
+    if not verdict.ok:
+        raise BadInput(
+            _format_preflight_rejection(verdict.reasons),
+            next="fix the flagged atom(s) (swap element / reposition / "
+            "pack the slab) and re-apply the edit",
+        )
 
 
 def _relax_cache_address(
@@ -554,6 +597,9 @@ class StructureHandler(Handler):
         version = (int(existing.meta.get("version", 0)) + 1) if existing else 1
         desc = str(payload.get("description") or "").strip()
         ttl = (title or slug).strip() or slug
+        # Tier-0 preflight (gated, default off): reject before anything
+        # persists — the prior version (none yet, for a fresh put) stands.
+        _run_preflight_gate(scene)
         ref, created = self.store.structure_save(
             slug=slug,
             title=ttl,
@@ -626,6 +672,9 @@ class StructureHandler(Handler):
         version = self.store.structure_version(ref.id) + 1
         desc = str((ref.meta or {}).get("description") or "").strip()
         ttl = ref.title or str(ref.slug)
+        # Tier-0 preflight (gated, default off): reject before this new
+        # version commits — the prior version stands (transactional undo).
+        _run_preflight_gate(scene)
         self.store.structure_save(
             slug=str(ref.slug),
             title=ttl,

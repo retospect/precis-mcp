@@ -24,15 +24,21 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from precis.quest.logbook import MEASURED_BY, append_entry
 from precis.store import Tag
+from precis.structure.preflight import PreflightReason
+from precis.structure.preflight import _preflight_enabled as _mlip_preflight_enabled
+from precis.structure.preflight import preflight as _mlip_preflight
 
 if TYPE_CHECKING:
     from precis.store import Store
+
+log = logging.getLogger(__name__)
 
 #: The GPU relax rung a quest dispatches by default (cheap ML potential).
 _DEFAULT_FIDELITY = "ml"
@@ -228,6 +234,32 @@ def dispatch_catpath(
         from precis.structure import export
 
         scene, _handles = store.structure_load(structure_ref_id)
+        if _mlip_preflight_enabled():
+            # Tier-0 hard gate (gated, default off): a substrate the MLIP
+            # can't handle mints no compute at all — cheaper than burning a
+            # GPU NEB on a geometry that would fail anyway, and the proposer
+            # gets a dead-end stamp so it stops re-treading the same
+            # material. Isolated in its own try so a preflight-internal
+            # hiccup (ASE/[dft] missing, or anything else) fails OPEN —
+            # it must never be mistaken for the export failure below.
+            try:
+                verdict = _mlip_preflight(scene)
+            except Exception as exc:
+                log.debug(
+                    "catpath preflight degraded (fail-open) for %s: %s",
+                    ref.slug,
+                    exc,
+                )
+                verdict = None
+            if verdict is not None and not verdict.ok:
+                _stamp_preflight_dead_end(
+                    store, structure_ref_id, str(ref.slug), verdict.reasons
+                )
+                summary = "; ".join(r.message for r in verdict.reasons)
+                return (
+                    f"catpath skipped: {ref.slug} failed substrate preflight "
+                    f"— {summary}"
+                )
         # constraints=True → the slab's frozen bottom layers ride along as a
         # FixAtoms, so catpath's injected-slab relax/NEB keeps them fixed.
         slab_extxyz = export.to_extxyz(scene, constraints=True)
@@ -301,6 +333,57 @@ def dispatch_catpath(
     except Exception as e:
         return f"catpath dispatch failed for {ref.slug}: job mint ({e})"
     return f"catpath[{force or 'config'}] dispatched for {ref.slug} → pathway {pslug}"
+
+
+def _serving_quest_id(store: Store, structure_ref_id: int) -> int | None:
+    """The quest a candidate `structure` serves (the ``serves`` link
+    :func:`ensure_candidate` writes on creation), or ``None`` if there isn't
+    one (a candidate probed standalone, e.g. from a test)."""
+    links = store.links_for(structure_ref_id, direction="out", relation="serves")
+    for link in links:
+        return int(link.dst_ref_id)
+    return None
+
+
+def _stamp_preflight_dead_end(
+    store: Store,
+    structure_ref_id: int,
+    slug: str,
+    reasons: list[PreflightReason],
+) -> None:
+    """One-shot dead-end stamp for a preflight-failing candidate — the
+    dispatch-time mirror of :func:`harvest_measures`'s ``ruled-out:`` +
+    ``dead-end`` pattern for a relax that failed to converge. Tags the
+    candidate ``ruled-out:preflight`` and appends a `dead-end` logbook entry
+    naming the candidate + its top reason(s), so the next tick's proposer
+    sees this substrate as already-explored dead ground instead of
+    re-proposing the same broken geometry.
+
+    Idempotent-ish: a no-op once *any* ``ruled-out:`` tag is already present
+    (mirrors :func:`harvest_measures`'s ``already_out`` guard) — a repeat
+    dispatch attempt on the same still-broken candidate doesn't spam the
+    logbook every tick.
+    """
+    if any(str(t).startswith("ruled-out:") for t in store.tags_for(structure_ref_id)):
+        return
+    store.add_tag(structure_ref_id, Tag.open("ruled-out:preflight"), set_by="system")
+    quest_id = _serving_quest_id(store, structure_ref_id)
+    if quest_id is None:
+        return
+    from precis.utils import handle_registry
+
+    handle = (
+        handle_registry.try_format("structure", structure_ref_id)
+        or f"structure:{structure_ref_id}"
+    )
+    top = "; ".join(r.message for r in reasons[:2])
+    append_entry(
+        store,
+        quest_id,
+        text=f"ruled out {handle} ({slug}): failed substrate preflight — {top}",
+        entry_type="dead-end",
+        by=MEASURED_BY,
+    )
 
 
 #: Job-meta spellings that carry catpath's rate-limiting barrier (eV). The
