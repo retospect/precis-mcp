@@ -351,6 +351,47 @@ def test_loop_transport_error_returns_partial() -> None:
     assert out.stop_reason == "error"
     assert out.error is not None and "connection reset" in out.error
     assert out.turns_used == 0
+    # A bare RuntimeError (not a recognized transport-unavailability signal)
+    # is not flagged paused — same as today's plain-error behavior.
+    assert out.paused is False
+
+
+def test_loop_timeout_is_flagged_paused() -> None:
+    """A request timeout classifies as unavailability (ADR 0066 §5a) — the
+    loop's ``AgentLoopResult.paused`` rides through to
+    ``LlmResult.paused`` at the router seam so a pinned pass backs off and
+    retries instead of recording a hard failure."""
+
+    class _TimeoutClient:
+        def chat(
+            self, messages: Any, *, tools: Any = None, tool_choice: str = "auto"
+        ) -> ChatTurn:
+            raise TimeoutError("timed out after 120.0s")
+
+    out = run_tool_loop(
+        _TimeoutClient(), prompt="q", tools=[], execute=lambda n, a: "", max_turns=5
+    )
+    assert out.stop_reason == "error"
+    assert out.paused is True
+
+
+def test_loop_4xx_stays_unpaused() -> None:
+    """A 4xx (non-429) transport failure is a genuine semantic error — it
+    will fail identically on retry, so it must NOT be flagged paused."""
+    from email.message import Message
+    from urllib.error import HTTPError
+
+    class _BadRequestClient:
+        def chat(
+            self, messages: Any, *, tools: Any = None, tool_choice: str = "auto"
+        ) -> ChatTurn:
+            raise HTTPError("http://x", 400, "Bad Request", Message(), None)
+
+    out = run_tool_loop(
+        _BadRequestClient(), prompt="q", tools=[], execute=lambda n, a: "", max_turns=5
+    )
+    assert out.stop_reason == "error"
+    assert out.paused is False
 
 
 # ── cost accumulation (Part 2 — meter OpenRouter spend) ────────────────

@@ -56,6 +56,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
+from urllib.error import HTTPError
 from urllib.parse import urlparse
 
 from precis.utils._claude_subprocess import ClaudeProcessError
@@ -1615,6 +1616,32 @@ def _record_dispatch(
         log.debug("route_log: dispatch record failed", exc_info=True)
 
 
+def _is_unavailability(exc: BaseException) -> bool:
+    """Classify a caught transport exception: unavailability (skip-and-retry,
+    :attr:`LlmResult.paused`) vs. a genuine semantic failure (:attr:`LlmResult.error`
+    only) that will never succeed on retry — ADR 0066 §5a "Failure & congestion
+    semantics" ("a todo that can't run right now waits and retries; it does not
+    park").
+
+    * **Unavailability → True**: a request timeout (``socket.timeout`` /
+      ``TimeoutError``), a connection failure (``urllib.error.URLError`` that
+      is *not* an ``HTTPError``, ``ConnectionError``, any other ``OSError``),
+      or an HTTP 5xx / 429 rate-limit (``urllib.error.HTTPError``).
+    * **Semantic → False**: an HTTP 4xx other than 429 — a malformed/
+      unauthorized request that will fail identically on every retry.
+
+    ``HTTPError`` is checked first since it subclasses ``URLError`` subclasses
+    ``OSError`` — a bare ``isinstance(exc, OSError)`` would otherwise catch it
+    before its status code is inspected. Anything not covered above (e.g. a
+    plain ``RuntimeError`` from a malformed response body) is *not* classified
+    as unavailability — today's behavior (stays ``error``), since it isn't a
+    known transient signal.
+    """
+    if isinstance(exc, HTTPError):
+        return exc.code == 429 or exc.code >= 500
+    return isinstance(exc, OSError)
+
+
 def _dispatch_local(req: LlmRequest, model: str) -> LlmResult:
     """Drive the loopback litellm ``LlmClient`` for a local tier.
 
@@ -1643,6 +1670,10 @@ def _dispatch_local(req: LlmRequest, model: str) -> LlmResult:
     try:
         res = client.complete(messages)
     except (RuntimeError, OSError) as exc:
+        # A transport-level timeout / connection failure / 5xx-or-429 is
+        # unavailability, not a genuine failure — flag it `paused` so a pinned
+        # pass backs off and retries instead of recording a dispatch failure
+        # that can park the todo (ADR 0066 §5a).
         return LlmResult(
             text="",
             cost_usd=None,
@@ -1650,6 +1681,7 @@ def _dispatch_local(req: LlmRequest, model: str) -> LlmResult:
             model=model,
             tier=req.tier,
             error=str(exc),
+            paused=_is_unavailability(exc),
         )
     return result_from_openai(res, model=model, tier=req.tier)
 
@@ -1766,6 +1798,7 @@ def _dispatch_openai_compat(req: LlmRequest, model: str) -> LlmResult:
             else client.complete(messages)
         )
     except (RuntimeError, OSError) as exc:
+        # Same unavailability-vs-semantic split as `_dispatch_local` above.
         return LlmResult(
             text="",
             cost_usd=None,
@@ -1773,6 +1806,7 @@ def _dispatch_openai_compat(req: LlmRequest, model: str) -> LlmResult:
             model=model,
             tier=req.tier,
             error=str(exc),
+            paused=_is_unavailability(exc),
         )
     return result_from_openai(res, model=model, tier=req.tier)
 
@@ -1881,6 +1915,10 @@ def _dispatch_openai_tools(req: LlmRequest, model: str) -> LlmResult:
             model=model,
             tier=req.tier,
             error=str(exc),
+            # Same unavailability-vs-semantic split as `_dispatch_local` above
+            # — a failure to *build* the executor/tools rarely trips this, but
+            # it shares the exception classes, so classify it the same way.
+            paused=_is_unavailability(exc),
             # A failure to *build* the executor/tools is a transport error to a
             # stop_reason reader (the planner tick), same as an in-loop one.
             stop_reason="error",
@@ -1908,6 +1946,11 @@ def _dispatch_openai_tools(req: LlmRequest, model: str) -> LlmResult:
         model=model,
         tier=req.tier,
         error=result.error,
+        # The in-loop transport-error classification (`_is_unavailability`,
+        # applied where the exception was actually caught — inside
+        # `run_tool_loop`) rides through so an unavailability rides the same
+        # skip-and-retry path as the breaker / local-slot pauses.
+        paused=result.paused,
         # Thread the definitive tool-call count so the review seam's
         # empty-result assertion works on this (local/OSS) backend too —
         # otherwise a silent-empty pass routed through OPENAI_TOOLS keeps
@@ -1941,6 +1984,11 @@ def _error_result(exc: ClaudeProcessError, *, model: str, tier: Tier) -> LlmResu
         tier=tier,
         error=str(exc),
         interrupted=rc is not None and rc >= 128,
+        # A wall-clock timeout is a transient unavailability → paused (retry),
+        # so a claude-only rung (e.g. FRONTIER) waits rather than parking the
+        # todo (ADR 0066 §5a). A non-timeout ClaudeProcessError (non-zero exit /
+        # missing binary) stays a semantic error, as before.
+        paused=getattr(exc, "timed_out", False),
     )
 
 

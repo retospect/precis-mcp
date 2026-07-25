@@ -268,6 +268,16 @@ class AgentLoopResult:
     #: ``"error"`` (transport failure — ``error`` set).
     stop_reason: str
     error: str | None = None
+    #: ``True`` when ``error`` is a transport *unavailability* (a request
+    #: timeout, connection failure, or HTTP 5xx/429) rather than a genuine
+    #: semantic failure (a malformed/unauthorized 4xx request) — mirrors
+    #: :attr:`~precis.utils.llm.router.LlmResult.paused` (ADR 0066 §5a), which
+    #: :func:`~precis.utils.llm.router._dispatch_openai_tools` threads this
+    #: onto so a pinned pass backs off and retries instead of recording a
+    #: dispatch failure that can park the todo. ``False`` (the default) for a
+    #: clean run, a semantic error, or any exception not recognized as a known
+    #: transient signal.
+    paused: bool = False
     #: Summed :attr:`ChatTurn.cost_usd` across every turn — ``None`` when no
     #: turn reported one (a backend that doesn't return ``usage.cost``, e.g. a
     #: local/loopback server). Mirrors :attr:`total_tokens`'s accumulation so
@@ -324,6 +334,17 @@ def run_tool_loop(
         try:
             turn = client.chat(messages, tools=tools_param)
         except (RuntimeError, OSError) as exc:
+            # Classify via the router's shared taxonomy (ADR 0066 §5a): a
+            # timeout / connection failure / 5xx-or-429 is unavailability
+            # (skip-and-retry), a 4xx-non-429 is a genuine semantic failure.
+            # Local import — `router` is the module that calls into this loop
+            # (via `run_oss_tool_loop`), so it's already fully imported by the
+            # time any exception reaches here; importing it at module level
+            # would pull router's heavier import chain into this
+            # precis-agnostic, offline-testable module for every caller, not
+            # just the ones that hit this branch.
+            from precis.utils.llm.router import _is_unavailability
+
             return AgentLoopResult(
                 final_text=last_text,
                 turns_used=turn_no - 1,
@@ -331,6 +352,7 @@ def run_tool_loop(
                 total_tokens=total_tokens,
                 stop_reason="error",
                 error=str(exc),
+                paused=_is_unavailability(exc),
                 cost_usd=total_cost,
             )
         _accumulate(turn.total_tokens, turn.cost_usd)

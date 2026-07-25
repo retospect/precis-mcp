@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from email.message import Message
+from urllib.error import HTTPError, URLError
 
 import pytest
 
@@ -601,6 +603,32 @@ def test_openai_tools_threads_tool_calls(monkeypatch: pytest.MonkeyPatch) -> Non
     assert acted.tool_calls == 4
 
 
+def test_openai_tools_threads_loop_paused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The loop's own unavailability classification (set where the exception
+    is actually caught, inside `run_tool_loop`) rides through to
+    `LlmResult.paused` — ADR 0066 §5a."""
+    from precis.utils.llm.openai_tools import AgentLoopResult
+    from precis.utils.llm.router import LlmRequest, Tier, _dispatch_openai_tools
+
+    monkeypatch.setattr(
+        "precis.utils.llm.router.run_oss_tool_loop",
+        lambda **k: AgentLoopResult(
+            final_text="",
+            turns_used=0,
+            tool_calls_made=0,
+            total_tokens=None,
+            stop_reason="error",
+            error="timed out after 120.0s",
+            paused=True,
+        ),
+    )
+    out = _dispatch_openai_tools(
+        LlmRequest(tier=Tier.LOCAL_BIG, prompt="x", tools_needed=True), "m"
+    )
+    assert out.paused is True
+    assert out.error == "timed out after 120.0s"
+
+
 # ── Part 2: openai_tools cost capture (un-blind the budget breaker) ────
 # docs/proposals/glm-fleet-flip-safety.md Part 2 — the 14 "successful"
 # openai_tools rows that all logged cost_usd=None.
@@ -880,6 +908,95 @@ def test_dispatch_folds_transport_error(monkeypatch: pytest.MonkeyPatch) -> None
     assert "kaboom" in out.error
     assert out.text == "partial"  # partial stdout preserved
     assert out.cost_usd is None
+
+
+# ── unavailability vs. semantic-error classification (ADR 0066 §5a) ────
+#
+# "A todo that can't run right now waits and retries; it does not park."
+# `_is_unavailability` sorts a caught transport exception into `paused=True`
+# (skip-and-retry) or a plain `error` (fails outright, no retry) — see
+# docs/decisions/0066-capability-tiers-and-placement-chains.md §5a.
+
+
+@pytest.mark.parametrize(
+    ("exc", "expected"),
+    [
+        (TimeoutError("timed out"), True),  # == socket.timeout, py>=3.10 alias
+        (URLError("connection refused"), True),
+        (ConnectionError("connection reset"), True),
+        (OSError("some other os error"), True),
+        (HTTPError("http://x", 500, "Internal Server Error", Message(), None), True),
+        (HTTPError("http://x", 503, "Service Unavailable", Message(), None), True),
+        (HTTPError("http://x", 429, "Too Many Requests", Message(), None), True),
+        (HTTPError("http://x", 400, "Bad Request", Message(), None), False),
+        (HTTPError("http://x", 401, "Unauthorized", Message(), None), False),
+        (HTTPError("http://x", 403, "Forbidden", Message(), None), False),
+        (HTTPError("http://x", 422, "Unprocessable Entity", Message(), None), False),
+        (RuntimeError("summarizer returned no completion"), False),
+        (ValueError("not a transport error at all"), False),
+    ],
+)
+def test_is_unavailability_table(exc: BaseException, expected: bool) -> None:
+    assert router._is_unavailability(exc) is expected
+
+
+def test_error_result_claude_timeout_is_paused() -> None:
+    """A claude wall-clock timeout → paused (retry), so a claude-only rung
+    (e.g. FRONTIER, no local fallback) waits rather than parking the todo
+    (ADR 0066 §5a). A non-timeout ClaudeProcessError stays a semantic error."""
+    from precis.utils._claude_subprocess import ClaudeProcessError
+    from precis.utils.llm.router import _error_result
+
+    timed = ClaudeProcessError("claude -p timed out after 600s", timed_out=True)
+    res = _error_result(timed, model="claude-opus-4-8", tier=Tier.FRONTIER)
+    assert res.paused is True
+    assert res.error and "timed out" in res.error  # still carries the error
+
+    exited = ClaudeProcessError("claude -p exited 1", returncode=1)
+    res2 = _error_result(exited, model="claude-opus-4-8", tier=Tier.FRONTIER)
+    assert res2.paused is False
+
+
+def test_dispatch_local_timeout_is_paused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A request timeout on the local litellm transport is unavailability —
+    skip-and-retry, not a hard failure that can park the todo."""
+    import precis.workers.llm_summarize as summ
+
+    class FakeClient:
+        def __init__(self, config: object) -> None:
+            pass
+
+        def complete(self, messages: list[dict[str, str]]) -> _FakeOpenAI:
+            raise TimeoutError("timed out after 120.0s")
+
+    monkeypatch.setattr(summ, "LlmClient", FakeClient)
+
+    out = dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="p"))
+
+    assert out.paused is True
+    assert out.error is not None and "timed out" in out.error
+
+
+def test_dispatch_local_4xx_is_error_not_paused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 4xx (non-429) is a genuine semantic failure — it will fail identically
+    on retry, so it must NOT be flagged paused."""
+    import precis.workers.llm_summarize as summ
+
+    class FakeClient:
+        def __init__(self, config: object) -> None:
+            pass
+
+        def complete(self, messages: list[dict[str, str]]) -> _FakeOpenAI:
+            raise HTTPError("http://x", 400, "Bad Request", Message(), None)
+
+    monkeypatch.setattr(summ, "LlmClient", FakeClient)
+
+    out = dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="p"))
+
+    assert out.paused is False
+    assert out.error is not None and "400" in out.error
 
 
 def test_dispatch_breaker_trip_is_flagged_paused(
@@ -1370,6 +1487,58 @@ def test_failover_all_error_returns_last(monkeypatch: pytest.MonkeyPatch) -> Non
     assert out.error == "also down"  # the last attempt, with its error
 
 
+def _paused(msg: str, model: str = "m") -> LlmResult:
+    return LlmResult(
+        text="",
+        cost_usd=None,
+        turns_used=None,
+        model=model,
+        tier=Tier.CLOUD_SUPER,
+        error=msg,
+        paused=True,
+    )
+
+
+def test_failover_all_unavailable_returns_paused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every rung raises unavailability (a timeout) — the ladder exhausts and
+    returns the last rung's result, which must still carry ``paused=True`` so
+    the caller backs off and retries rather than recording a hard failure
+    (ADR 0066 §5a)."""
+    primary = _FakeProv(_paused("primary timed out after 120.0s"))
+    fallback = _FakeProv(_paused("fallback timed out after 600.0s"))
+    monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_TOOLS, primary)
+    monkeypatch.setitem(router._PROVIDERS, Transport.CLAUDE_AGENT, fallback)
+
+    prov = FailoverProvider(
+        [Rung(Transport.OPENAI_TOOLS), Rung(Transport.CLAUDE_AGENT)]
+    )
+    out = prov.run(LlmRequest(tier=Tier.CLOUD_SUPER, prompt="x"), model="m")
+
+    assert out.paused is True
+    assert out.error == "fallback timed out after 600.0s"
+
+
+def test_failover_all_semantic_error_stays_unpaused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 4xx semantic error on every rung stays a plain (unpaused) error — it
+    will fail identically on retry, so the ladder must not flag it paused."""
+    primary = _FakeProv(_err("400 bad request"))
+    fallback = _FakeProv(_err("401 unauthorized"))
+    monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_TOOLS, primary)
+    monkeypatch.setitem(router._PROVIDERS, Transport.CLAUDE_AGENT, fallback)
+
+    prov = FailoverProvider(
+        [Rung(Transport.OPENAI_TOOLS), Rung(Transport.CLAUDE_AGENT)]
+    )
+    out = prov.run(LlmRequest(tier=Tier.CLOUD_SUPER, prompt="x"), model="m")
+
+    assert out.paused is False
+    assert out.error == "401 unauthorized"
+
+
 def test_failover_accept_gate_rejects_low_quality(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1493,6 +1662,58 @@ def test_dispatch_failover_flag_falls_back_to_claude(
     assert out.text == "claude saved it"
     assert out.error is None
     assert calls["model"] == "claude-opus-4-8"  # claude fallback, not the OSS id
+
+
+def test_dispatch_failover_all_rungs_timeout_is_paused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End to end (ADR 0066 §5a): LOCAL_SMALL's ladder has no claude fallback
+    (see ``test_failover_ladder_local_small_has_no_claude_rung``), so its one
+    OSS rung timing out exhausts the ladder — the result must still come back
+    ``paused=True``, not a plain error that can park the caller's todo."""
+    import precis.workers.llm_summarize as summ
+
+    class FakeClient:
+        def __init__(self, config: object) -> None:
+            pass
+
+        def complete(self, messages: list[dict[str, str]]) -> _FakeOpenAI:
+            raise TimeoutError("timed out after 120.0s")
+
+    monkeypatch.setattr(summ, "LlmClient", FakeClient)
+    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.setenv("PRECIS_LLM_FAILOVER", "1")
+
+    out = dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="x"))
+
+    assert out.paused is True
+    assert out.error is not None and "timed out" in out.error
+
+
+def test_dispatch_failover_all_rungs_4xx_stays_error_not_paused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same single-rung ladder, but a 4xx (non-429) semantic failure — it will
+    fail identically on retry, so it must stay a plain error, not paused."""
+    import precis.workers.llm_summarize as summ
+
+    class FakeClient:
+        def __init__(self, config: object) -> None:
+            pass
+
+        def complete(self, messages: list[dict[str, str]]) -> _FakeOpenAI:
+            raise HTTPError("http://x", 401, "Unauthorized", Message(), None)
+
+    monkeypatch.setattr(summ, "LlmClient", FakeClient)
+    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.setenv("PRECIS_LLM_FAILOVER", "1")
+
+    out = dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="x"))
+
+    assert out.paused is False
+    assert out.error is not None and "401" in out.error
 
 
 # ── resolve_chain: the chain-override layer (ADR 0066 §4, Phase A) ─────

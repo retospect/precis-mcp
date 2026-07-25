@@ -44,11 +44,16 @@ class ClaudeProcessError(RuntimeError):
         stdout: str = "",
         stderr: str = "",
         returncode: int | None = None,
+        timed_out: bool = False,
     ) -> None:
         super().__init__(message)
         self.stdout = stdout
         self.stderr = stderr
         self.returncode = returncode
+        #: True when this failure is a wall-clock timeout (vs a non-zero exit /
+        #: missing binary) — a transient *unavailability* the router classifies
+        #: as ``paused`` (retry), not a semantic error (ADR 0066 §5a).
+        self.timed_out = timed_out
 
 
 def to_str(raw: bytes | str | None) -> str:
@@ -123,6 +128,7 @@ def run_claude(
             f"{label} timed out after {timeout_s}s",
             stdout=to_str(exc.stdout),
             stderr=to_str(exc.stderr),
+            timed_out=True,
         ) from exc
     except FileNotFoundError as exc:
         raise error_cls(
@@ -231,6 +237,7 @@ async def run_claude_async(
             f"{label} timed out after {timeout_s}s",
             stdout="".join(stdout_lines),
             stderr=to_str(stderr_partial),
+            timed_out=True,
         ) from None
 
     # Read stderr to EOF (closes when the process exits) *before* ``wait()``

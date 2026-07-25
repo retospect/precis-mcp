@@ -617,7 +617,14 @@ today's ladder). `router.py::Tier` also gained four capability rungs
 each routing byte-for-byte identically to its legacy analogue
 (`FRONTIER↔CLOUD_SUPER`, `BIG↔CLOUD_MID`, `MEDIUM↔CLOUD_SMALL`,
 `SMALL↔LOCAL_SMALL`), with new `LLM:` aliases `frontier`/`big`/`medium`/
-`small` alongside the unchanged legacy aliases.
+`small` alongside the unchanged legacy aliases. **Failure semantics (§5a):** a
+transport exception is classified (`router.py::_is_unavailability`) —
+timeout / connection / HTTP 5xx / 429 → `paused` (skip-not-fail, the todo
+retries next cycle, never parks); HTTP 4xx (semantic) stays `error`. Applies to
+the OSS transports and, via `ClaudeProcessError.timed_out`, to a `claude`
+wall-clock timeout too — so a claude-only rung (`FRONTIER`) waits rather than
+parking. Every transport already carries a wall-clock timeout (claude 600 s,
+openai_tools / litellm 120 s), so a hang converts to that classified failure.
 
 ## Discovery layer (F20)
 
