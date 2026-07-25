@@ -260,6 +260,15 @@ def _candidate_parent_ids(store: Store, *, limit: int) -> list[int]:
       parked-on-human leaf.
     * No exclusion tag (registry: halt / halt:* / ask-user* /
       waiting-for:* / child-failed:*).
+    * Not a ``level:recurring`` watch root — cadence for those is owned
+      by the schedule worker (``precis.workers.schedule.worker``), which
+      spawns a ``level:subtask`` child each tick; that child (not the
+      root) is the legitimate dispatch candidate. Without this
+      exclusion, a recurring root whose latest child resolves instantly
+      re-satisfies every other eligibility clause immediately, and the
+      dispatcher re-mints a job directly under the root on every pass —
+      a tight spin (root and schedule worker fighting over the same
+      cadence).
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
@@ -315,6 +324,12 @@ def _candidate_parent_ids(store: Store, *, limit: int) -> list[int]:
                       AND """
             + _doable_exclusion_clause()
             + """
+               )
+               AND NOT EXISTS (
+                   SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                    WHERE rt.ref_id = r.ref_id
+                      AND t.namespace = 'OPEN'
+                      AND t.value = 'level:recurring'
                )
              ORDER BY r.ref_id
              LIMIT %s

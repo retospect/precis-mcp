@@ -297,6 +297,47 @@ def test_running_child_job_blocks_redispatch(
     assert pid not in _candidate_parent_ids(store, limit=10)
 
 
+def test_recurring_watch_root_excluded_from_candidates(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A ``level:recurring`` watch root is NEVER a dispatch candidate,
+    even with an executor, an open STATUS, and no live child job/todo.
+
+    Regression guard for the prod spin: the schedule worker (not the
+    dispatcher) owns recurring cadence, spawning a ``level:subtask``
+    child each tick. Without this exclusion, a recurring root whose
+    latest child resolves instantly satisfies every other eligibility
+    clause and gets re-minted on every dispatch pass — ~1 job/5s on
+    news_poll."""
+    from precis.store.types import Tag
+    from precis.workers.dispatch import _candidate_parent_ids
+
+    r = handler.put(
+        text="news_poll cron root",
+        meta={"executor": "claude_inproc", "job_type": "news_poll"},
+    )
+    rid = id_of(r.body)
+    store.add_tag(rid, Tag.open("level:recurring"), set_by="system")
+    assert rid not in _candidate_parent_ids(store, limit=10)
+
+
+def test_non_recurring_parent_still_a_candidate(
+    handler: TodoHandler, store: Store
+) -> None:
+    """Control for the recurring-root exclusion above: the identical
+    parent WITHOUT the ``level:recurring`` tag IS returned — guards
+    against over-exclusion (e.g. matching on executor/job_type instead
+    of the tag)."""
+    from precis.workers.dispatch import _candidate_parent_ids
+
+    r = handler.put(
+        text="news_poll cron root, untagged",
+        meta={"executor": "claude_inproc", "job_type": "news_poll"},
+    )
+    rid = id_of(r.body)
+    assert rid in _candidate_parent_ids(store, limit=10)
+
+
 # ── rejection paths ──────────────────────────────────────────────
 
 
