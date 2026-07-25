@@ -57,7 +57,11 @@ log = logging.getLogger(__name__)
 CLASSIFY_TOPICS_VERSION = "3"
 MARKER_NAMESPACE = "TOPICCASCADE"
 _TOPICS_DIR = Path(__file__).resolve().parent.parent / "data" / "topics"
-_ABSTRACT_CHARS = 2000
+_CONTEXT_CHARS = 3000
+# Below this many stripped chars, the abstract is considered too thin to
+# classify off alone — fall back to (or supplement with) body text.
+_THIN_ABSTRACT_CHARS = 400
+_BODY_FALLBACK_CHUNKS = 5
 
 _SYS = (
     "You are a precise multi-label classifier for standing research topics. "
@@ -102,12 +106,12 @@ def _tier0_candidates(topics: list[dict[str, Any]], haystack: str) -> list[str]:
 
 
 def _build_prompt(
-    topics: list[dict[str, Any]], candidates: list[str], title: str, abstract: str
+    topics: list[dict[str, Any]], candidates: list[str], title: str, context: str
 ) -> str:
     lines = [
         f"Paper title: {title}",
         "",
-        f"Abstract:\n{abstract[:_ABSTRACT_CHARS]}",
+        f"Abstract / opening text:\n{context[:_CONTEXT_CHARS]}",
         "",
     ]
     lines.append(
@@ -135,7 +139,7 @@ def _classify_one(
     topics: list[dict[str, Any]],
     candidates: list[str],
     title: str,
-    abstract: str,
+    context: str,
 ) -> list[str] | None:
     """Returns the confirmed topic-slug list, or ``None`` on a call/parse failure."""
     try:
@@ -144,7 +148,7 @@ def _classify_one(
                 {"role": "system", "content": _SYS},
                 {
                     "role": "user",
-                    "content": _build_prompt(topics, candidates, title, abstract),
+                    "content": _build_prompt(topics, candidates, title, context),
                 },
             ]
         )
@@ -200,21 +204,29 @@ def _claim(
     return [(int(r[0]), str(r[1] or "")) for r in rows]
 
 
-def _abstract(conn: Any, ref_id: int) -> str:
+def _context_text(conn: Any, ref_id: int) -> str:
+    """Classification context: the abstract when it's substantial, else the
+    abstract (if any) topped up with the first few body chunks — a thin or
+    missing abstract otherwise starves tier-0/tier-1 of signal even though
+    the paper has a rich body (the claim SQL already requires body chunks)."""
     row = conn.execute(
         "SELECT text FROM chunks WHERE ref_id = %s AND chunk_kind = 'card_abstract' "
         "AND retired_at IS NULL LIMIT 1",
         (ref_id,),
     ).fetchone()
-    text = (row[0] if row else "") or ""
-    if not text:
-        row = conn.execute(
-            "SELECT text FROM chunks WHERE ref_id = %s AND ord >= 0 "
-            "AND retired_at IS NULL ORDER BY ord LIMIT 1",
-            (ref_id,),
-        ).fetchone()
-        text = (row[0] if row else "") or ""
-    return text
+    abstract = ((row[0] if row else "") or "").strip()
+    if len(abstract) >= _THIN_ABSTRACT_CHARS:
+        return abstract
+
+    rows = conn.execute(
+        "SELECT text FROM chunks WHERE ref_id = %s AND ord >= 0 "
+        "AND retired_at IS NULL ORDER BY ord LIMIT %s",
+        (ref_id, _BODY_FALLBACK_CHUNKS),
+    ).fetchall()
+    body = "\n\n".join((r[0] or "") for r in rows).strip()
+
+    text = f"{abstract}\n\n{body}" if abstract else body
+    return text[:_CONTEXT_CHARS]
 
 
 # ── the pass ───────────────────────────────────────────────────────────
@@ -238,13 +250,13 @@ def run_classify_topics_pass(
     dist: Counter[str] = Counter()
     for ref_id, title in rows:
         with store.pool.connection() as conn:
-            abstract = _abstract(conn, ref_id)
+            context = _context_text(conn, ref_id)
 
-        candidates = _tier0_candidates(topics, f"{title} {abstract}")
+        candidates = _tier0_candidates(topics, f"{title} {context}")
         if not candidates:
             confirmed: list[str] = []
         else:
-            classified = _classify_one(client, topics, candidates, title, abstract)
+            classified = _classify_one(client, topics, candidates, title, context)
             if classified is None:
                 failed += 1
                 continue

@@ -16,6 +16,7 @@ from precis.workers.classify_topics import (
     CLASSIFY_TOPICS_VERSION,
     MARKER_NAMESPACE,
     _build_prompt,
+    _context_text,
     _extract_json,
     _load_topics,
     _tier0_candidates,
@@ -242,8 +243,9 @@ class TestPass:
         assert _topic_tags(store, ref_id) == {"topic:healthspan"}
 
     def test_patent_ref_with_body_chunk_no_abstract_is_swept(self, store: Any) -> None:
-        # No card_abstract chunk — _abstract() must fall back to the first
-        # ord>=0 body chunk. kind='patent' must now be in the claim's scope.
+        # No card_abstract chunk — _context_text() must fall back to the
+        # first ord>=0 body chunks. kind='patent' must now be in the claim's
+        # scope.
         ref_id = _seed_paper(
             store,
             "A metal-organic framework device for gas separation",
@@ -305,6 +307,81 @@ class TestPass:
         assert _topic_tags(store, ref_b) == set()  # untouched — outside scope
         assert _has_marker(store, ref_a)
         assert not _has_marker(store, ref_b)
+
+    def test_context_text_thin_abstract_falls_back_to_body_chunks(
+        self, store: Any
+    ) -> None:
+        from tests.workers._helpers import seed_chunk, seed_ref
+
+        ref_id = seed_ref(store, title="A paper with a thin abstract")
+        seed_chunk(
+            store, ref_id=ref_id, ord=-1, chunk_kind="card_abstract", text="TBD."
+        )
+        seed_chunk(
+            store,
+            ref_id=ref_id,
+            ord=0,
+            text="We report a metal-organic-framework catalyst for NOx reduction.",
+        )
+        seed_chunk(
+            store, ref_id=ref_id, ord=1, text="Second body paragraph with more detail."
+        )
+
+        with store.pool.connection() as conn:
+            context = _context_text(conn, ref_id)
+
+        assert "metal-organic-framework catalyst for NOx reduction" in context
+        assert "Second body paragraph" in context
+
+    def test_context_text_full_abstract_skips_body_fallback(self, store: Any) -> None:
+        from tests.workers._helpers import seed_chunk, seed_ref
+
+        full_abstract = "A robust catalyst study. " * 20  # well over 400 chars
+        assert len(full_abstract.strip()) >= 400
+        ref_id = seed_ref(store, title="A paper with a full abstract")
+        seed_chunk(
+            store, ref_id=ref_id, ord=-1, chunk_kind="card_abstract", text=full_abstract
+        )
+        seed_chunk(
+            store,
+            ref_id=ref_id,
+            ord=0,
+            text="BODY-ONLY-MARKER should not appear in the returned context.",
+        )
+
+        with store.pool.connection() as conn:
+            context = _context_text(conn, ref_id)
+
+        assert context == full_abstract.strip()
+        assert "BODY-ONLY-MARKER" not in context
+
+    def test_thin_abstract_body_only_keyword_reaches_tier0_and_tier1(
+        self, store: Any
+    ) -> None:
+        """A paper whose abstract is thin/uninformative but whose body carries
+        a topic keyword must still get flagged by tier-0 and confirmed by
+        tier-1 — proving the fallback context actually reaches both stages."""
+        from tests.workers._helpers import seed_chunk, seed_ref
+
+        ref_id = seed_ref(store, title="Some paper")
+        seed_chunk(
+            store, ref_id=ref_id, ord=-1, chunk_kind="card_abstract", text="TBD."
+        )
+        seed_chunk(
+            store,
+            ref_id=ref_id,
+            ord=0,
+            text="We report a zeolitic imidazolate framework with record surface area.",
+        )
+        client = _FakeClient('{"topics": ["mof"]}')
+
+        result = run_classify_topics_pass(
+            store, client=client, batch_size=10, ref_ids=[ref_id]
+        )
+
+        assert result == {"claimed": 1, "ok": 1, "failed": 0, "dist": {"mof": 1}}
+        assert len(client.calls) == 1  # tier-0 hit via body-only fallback text
+        assert _topic_tags(store, ref_id) == {"topic:mof"}
 
     def test_existing_open_tag_helper_matches_written_value(self, store: Any) -> None:
         # Sanity: our raw-SQL read of ref_tags/tags matches what Tag.open()
