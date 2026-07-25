@@ -104,6 +104,41 @@ def test_model_key_uses_tier_value() -> None:
 # ── reader: chain override (ADR 0066 §4, Phase A) ───────────────────────
 
 
+# ── reader: cloud throttle (ADR 0066 §5) ────────────────────────────────
+
+
+def test_cloud_enabled_default_true_without_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _bind(monkeypatch, None)
+    assert live_config.cloud_enabled() is True
+
+
+def test_cloud_enabled_default_true_without_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _bind(monkeypatch, {})
+    assert live_config.cloud_enabled() is True
+
+
+@pytest.mark.parametrize("falsey", ["false", "False", "0", "no", "off", "  OFF  "])
+def test_cloud_enabled_false_on_explicit_falsey(
+    monkeypatch: pytest.MonkeyPatch, falsey: str
+) -> None:
+    _bind(monkeypatch, {"llm.cloud_enabled": falsey})
+    assert live_config.cloud_enabled() is False
+
+
+@pytest.mark.parametrize("truthy", ["true", "1", "yes", "on", "garbage"])
+def test_cloud_enabled_true_on_anything_else(
+    monkeypatch: pytest.MonkeyPatch, truthy: str
+) -> None:
+    # Only an unambiguous falsey turns cloud off — a typo can't strand the
+    # fleet on local.
+    _bind(monkeypatch, {"llm.cloud_enabled": truthy})
+    assert live_config.cloud_enabled() is True
+
+
 def test_chain_key_uses_tier_value() -> None:
     assert live_config.chain_key(Tier.CLOUD_SUPER) == "llm.chain.cloud-super"
     assert live_config.chain_key(Tier.LOCAL_BIG) == "llm.chain.local-big"

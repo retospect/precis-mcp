@@ -621,8 +621,20 @@ pre-Phase-B non-failover path), or `_failover_ladder` when the flag is on.
 `dispatch` wraps in `FailoverProvider` iff `_failover_enabled() or len(chain)
 > 1 or chain[0].model is not None` — reproducing the legacy flag-on/flag-off
 wrapping exactly, and activating operator chains (every parsed override rung
-pins a model, so a single-rung operator chain is honoured too). `router.py::Tier`
-also gained four capability rungs
+pins a model, so a single-rung operator chain is honoured too). **Phase B
+(step 3a, cloud throttle, §5):** `live_config.cloud_enabled()` (app_settings
+`llm.cloud_enabled`, default true) + `router.py::_apply_cloud_throttle` prune
+a resolved chain's cloud rungs when an operator disables cloud —
+`_rung_is_cloud` classifies by explicit operator `placement` label, else by
+transport (claude = cloud; litellm = local; OSS = cloud iff
+`PRECIS_LLM_BASE_URL` set). A tier with a local rung keeps flowing on it; a
+tier left with no rung prunes to empty → `dispatch` returns `paused`
+(skip-not-fail, never silently degraded). **Which tiers survive depends on
+their chain:** `FRONTIER` is always cloud-only (pauses); today only `SMALL`
+has a standing local rung (`LITELLM`), so `BIG`/`MEDIUM` also pause under
+throttle until an operator chain gives them a `placement:"local"` rung (the
+target-state "drop to local" story lands with the Phase-3 roster / chain
+editor). No-op while cloud is on (byte-identical). `router.py::Tier` also gained four capability rungs
 (`FRONTIER`/`BIG`/`MEDIUM`/`SMALL`) **additively** alongside the legacy five,
 each routing byte-for-byte identically to its legacy analogue
 (`FRONTIER↔CLOUD_SUPER`, `BIG↔CLOUD_MID`, `MEDIUM↔CLOUD_SMALL`,

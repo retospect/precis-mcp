@@ -1074,6 +1074,67 @@ def resolve_chain(tier: Tier, *, tools_needed: bool, backend: Backend) -> list[R
     return rungs
 
 
+def _rung_is_cloud(rung: Rung) -> bool:
+    """Classify a chain rung as cloud (hits a cloud API) vs local, for the
+    ADR 0066 §5 throttle's cloud-rung pruning.
+
+    An operator chain rung carries an explicit ``placement`` label
+    (``"cloud"`` / ``"local"``, written by the chain editor) — authoritative
+    when present. A default-chain rung (``_failover_ladder`` / ``_default_chain``
+    labels: ``"primary"`` / ``"oss"`` / ``"claude-fallback"``, or an operator
+    rung with no ``placement`` → ``"chain"``) is classified by transport:
+
+    * ``CLAUDE_AGENT`` / ``CLAUDE_P`` → always Anthropic **cloud**.
+    * ``LITELLM`` → the loopback litellm proxy → **local**.
+    * ``OPENAI_COMPAT`` / ``OPENAI_TOOLS`` → hosted-OSS **cloud** when a hosted
+      endpoint is configured (``PRECIS_LLM_BASE_URL`` set), else **local** (a
+      ``served_by`` llama-swap slot is the only way these run without a base
+      url). Conservative for a throttle whose job is to keep work off cloud: a
+      rung that *might* have gone to a local ``served_by`` slot but has a hosted
+      base url set is treated as cloud and pruned — an operator that wants it
+      kept labels it ``placement: "local"`` in the chain, which wins above.
+    """
+    if rung.label == "local":
+        return False
+    if rung.label == "cloud":
+        return True
+    if rung.transport in (Transport.CLAUDE_AGENT, Transport.CLAUDE_P):
+        return True
+    if rung.transport is Transport.LITELLM:
+        return False
+    return bool(os.environ.get("PRECIS_LLM_BASE_URL"))
+
+
+def _apply_cloud_throttle(chain: list[Rung]) -> list[Rung]:
+    """Prune cloud rungs from ``chain`` when the operator has disabled cloud
+    (``llm.cloud_enabled = false``, ADR 0066 §5) — a no-op returning ``chain``
+    unchanged while cloud is on (the default), so dispatch stays byte-identical
+    until an operator flips the dial.
+
+    When cloud is off, only the local rungs survive. A tier whose chain has a
+    local rung keeps flowing on it; a tier left with **no** rung prunes to an
+    **empty** list, which :func:`dispatch` turns into a ``paused`` result
+    (skip-not-fail: the call queues and resumes when cloud is re-enabled, never
+    silently degraded to a weaker local model — the §5 contract).
+
+    **Which tiers survive a throttle depends on their chain, not just their
+    name.** ``FRONTIER`` is cloud-only by construction (no local mirror), so it
+    always pauses. Today (default ``ANTHROPIC`` backend, no operator chain
+    written) only ``SMALL`` has a standing local rung (``LITELLM``, via
+    :func:`select_transport`); ``BIG`` / ``MEDIUM`` resolve to a single cloud
+    rung and so *also* pause under throttle **until an operator chain gives
+    them a `placement: "local"` rung** (the Phase-3 roster / chain editor). The
+    §5 "``BIG`` / ``MEDIUM`` / ``SMALL`` drop to local" story is the target
+    state once those chains exist; the pruning mechanism here is correct for
+    it, but doesn't manufacture a local rung a chain doesn't have.
+    """
+    from precis.utils.llm import live_config
+
+    if live_config.cloud_enabled():
+        return chain
+    return [rung for rung in chain if not _rung_is_cloud(rung)]
+
+
 #: ``LOCAL_SMALL`` (categorizer) model ids that only mean something on the
 #: litellm loopback (the ``summarizer`` alias and the ``rake-lemma`` name it
 #: resolves to) — POSTing either to a hosted OSS backend (OpenRouter et al.)
@@ -1173,6 +1234,24 @@ def dispatch(req: LlmRequest) -> LlmResult:
     # override this collapses to today's path (single primary rung, or the
     # built-in auto-failover ladder when the flag is on — see _default_chain).
     ladder = resolve_chain(req.tier, tools_needed=req.tools_needed, backend=backend)
+    # Cloud-throttle (ADR 0066 §5): with cloud disabled, prune the chain's
+    # cloud rungs → local. A cloud-only tier (FRONTIER) prunes to empty and
+    # pauses (skip-not-fail), never silently degrading to a local model. No-op
+    # while cloud is on (the default) — byte-identical to above.
+    ladder = _apply_cloud_throttle(ladder)
+    if not ladder:
+        return LlmResult(
+            text="",
+            cost_usd=None,
+            turns_used=None,
+            model=model,
+            tier=req.tier,
+            error=(
+                "cloud is disabled and this tier has no local rung — "
+                "waiting for cloud to be re-enabled"
+            ),
+            paused=True,
+        )
     transport = ladder[0].transport
     # Wrap in the FailoverProvider only when there's genuinely a ladder to walk:
     # the failover flag is on (preserves the pre-Phase-B flag-on wrapping
@@ -1396,7 +1475,12 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
     # Resolve the primary transport through the always-on chain (ADR 0066
     # Phase B), same as sync dispatch — the streaming decision keys on rung 0.
     ladder = resolve_chain(req.tier, tools_needed=req.tools_needed, backend=backend)
-    transport = ladder[0].transport
+    # Cloud-throttle parity with sync dispatch: prune cloud rungs when disabled.
+    # An empty result (a cloud-only tier under throttle) is delegated to the
+    # sync dispatch below, which returns the paused result — so the streaming
+    # path never needs its own copy of that early-out.
+    ladder = _apply_cloud_throttle(ladder)
+    transport = ladder[0].transport if ladder else None
 
     if transport is not Transport.CLAUDE_AGENT or req.on_event is None:
         return dispatch(req)

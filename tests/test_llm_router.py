@@ -1947,6 +1947,114 @@ def test_dispatch_single_rung_chain_override_honors_pinned_model(
     assert compat.model_seen == "z-ai/glm-4.7"  # the chain's pin, not haiku
 
 
+# ── cloud throttle (ADR 0066 §5): prune cloud rungs when disabled ───────
+
+
+def test_rung_is_cloud_classification(monkeypatch: pytest.MonkeyPatch) -> None:
+    # operator placement label wins
+    assert router._rung_is_cloud(Rung(Transport.OPENAI_TOOLS, model="m", label="cloud"))
+    assert not router._rung_is_cloud(
+        Rung(Transport.CLAUDE_AGENT, model="m", label="local")
+    )
+    # transport-intrinsic (no explicit placement)
+    assert router._rung_is_cloud(Rung(Transport.CLAUDE_AGENT, label="primary"))
+    assert router._rung_is_cloud(Rung(Transport.CLAUDE_P, label="claude-fallback"))
+    assert not router._rung_is_cloud(Rung(Transport.LITELLM, label="primary"))
+    # OSS transports: hosted (cloud) iff a base url is configured
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+    assert router._rung_is_cloud(Rung(Transport.OPENAI_TOOLS, label="oss"))
+    monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
+    assert not router._rung_is_cloud(Rung(Transport.OPENAI_TOOLS, label="oss"))
+
+
+def test_apply_cloud_throttle_noop_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("precis.utils.llm.live_config.cloud_enabled", lambda: True)
+    chain = [
+        Rung(Transport.CLAUDE_AGENT, label="primary"),
+        Rung(Transport.LITELLM, model="q", label="local"),
+    ]
+    assert router._apply_cloud_throttle(chain) == chain
+
+
+def test_apply_cloud_throttle_prunes_cloud_when_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("precis.utils.llm.live_config.cloud_enabled", lambda: False)
+    chain = [
+        Rung(Transport.OPENAI_TOOLS, model="glm", label="cloud"),
+        Rung(Transport.OPENAI_TOOLS, model="qwen", label="local"),
+    ]
+    assert router._apply_cloud_throttle(chain) == [chain[1]]  # only the local rung
+
+
+def test_apply_cloud_throttle_empties_cloud_only_tier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("precis.utils.llm.live_config.cloud_enabled", lambda: False)
+    # FRONTIER's default chain is a single claude rung — no local rung to keep.
+    chain = [Rung(Transport.CLAUDE_AGENT, label="primary")]
+    assert router._apply_cloud_throttle(chain) == []
+
+
+def test_dispatch_cloud_throttle_pauses_cloud_only_tier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Throttle on + a cloud-only tier (no local rung) → paused (skip-not-fail),
+    the provider is never called, and nothing silently degrades to local."""
+    monkeypatch.setattr("precis.utils.llm.live_config.cloud_enabled", lambda: False)
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override", lambda _tier: None
+    )
+    monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
+    monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
+    called = _FakeProv(_ok("should not run"))
+    monkeypatch.setitem(router._PROVIDERS, Transport.CLAUDE_AGENT, called)
+
+    out = dispatch(LlmRequest(tier=Tier.FRONTIER, prompt="x", tools_needed=True))
+
+    assert out.paused is True
+    assert out.error is not None and "cloud is disabled" in out.error
+    assert called.calls == 0
+
+
+def test_dispatch_cloud_throttle_drops_to_local_rung(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Throttle on + an operator chain with a local rung → the cloud rung is
+    pruned and the local rung runs, keeping the tier flowing (ADR 0066 §5)."""
+    monkeypatch.setattr("precis.utils.llm.live_config.cloud_enabled", lambda: False)
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda tier: (
+            [
+                {
+                    "placement": "cloud",
+                    "model": "z-ai/glm-5.2",
+                    "transport": "openai_tools",
+                },
+                {
+                    "placement": "local",
+                    "model": "qwen-heavy",
+                    "transport": "openai_tools",
+                },
+            ]
+            if tier is Tier.BIG
+            else None
+        ),
+    )
+    monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
+    prov = _FakeProv(_ok("local qwen out"))
+    monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_TOOLS, prov)
+
+    out = dispatch(LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True))
+
+    assert out.text == "local qwen out"
+    assert prov.calls == 1
+    assert prov.model_seen == "qwen-heavy"  # the local rung; the cloud rung pruned
+
+
 def test_dispatch_chain_override_falls_through_to_rung_1(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

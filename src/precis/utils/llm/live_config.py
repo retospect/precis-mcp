@@ -47,6 +47,14 @@ MODEL_KEY_PREFIX = "llm.model."
 #: ``{"placement": "cloud"|"local", "model": <str>, "transport": <str>}``
 #: (ADR 0066 §4). Same suffix vocabulary as :data:`MODEL_KEY_PREFIX`.
 CHAIN_KEY_PREFIX = "llm.chain."
+#: app_settings key for the cloud-throttle dial (ADR 0066 §5). ``"false"`` (or
+#: ``0``/``no``/``off``) forces every tier's chain to skip its cloud rungs →
+#: drop to whatever local rung the chain has; a tier left with no rung
+#: (``FRONTIER`` always; ``BIG``/``MEDIUM`` too until an operator chain gives
+#: them a local rung) then pauses (skip-not-fail) until cloud is re-enabled.
+#: Absent / any other value = cloud on (the default) — so with nothing set,
+#: dispatch is byte-identical.
+CLOUD_ENABLED_KEY = "llm.cloud_enabled"
 
 #: The ``/factory`` "GLM via OpenRouter" preset — the one-click roster for
 #: the three cloud tiers, verified against the live OpenRouter catalog
@@ -132,6 +140,22 @@ def chain_override(tier: Tier) -> list[dict] | None:
     return parsed
 
 
+def cloud_enabled() -> bool:
+    """Whether cloud rungs are currently enabled (ADR 0066 §5 throttle).
+
+    Defaults to ``True`` — cloud on — so with no ``llm.cloud_enabled`` row (or
+    no store bound) dispatch is byte-identical to before the throttle existed.
+    Only an explicit falsey value (``false`` / ``0`` / ``no`` / ``off``, case-
+    insensitive) turns cloud off; any other string is treated as on (a typo
+    can't silently strand the fleet on local by mistake — the operator-visible
+    dial only disables cloud on an unambiguous "false").
+    """
+    raw = _cached_setting(CLOUD_ENABLED_KEY)
+    if raw is None:
+        return True
+    return raw.strip().lower() not in ("false", "0", "no", "off")
+
+
 def bust_cache() -> None:
     """Drop the TTL cache so the *next* read re-queries the DB.
 
@@ -176,12 +200,14 @@ def _read_setting(key: str) -> str | None:
 __all__ = [
     "BACKEND_KEY",
     "CHAIN_KEY_PREFIX",
+    "CLOUD_ENABLED_KEY",
     "GLM_OPENROUTER_PRESET",
     "MODEL_KEY_PREFIX",
     "backend_override",
     "bust_cache",
     "chain_key",
     "chain_override",
+    "cloud_enabled",
     "model_key",
     "model_override",
 ]
