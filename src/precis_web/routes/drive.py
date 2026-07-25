@@ -274,6 +274,7 @@ async def index(
     k: list[str] = Query(default_factory=list),
     tag: list[str] = Query(default_factory=list),
     state: str = "all",
+    paper_chunks: str = "both",
     folder: str = "",
     page: int = 1,
     submitted: str = "",
@@ -287,11 +288,14 @@ async def index(
     kinds); ``tag=`` (repeated) are the tag-filter chips; ``state=stub``
     shows only paper stubs (awaiting fetch), ``state=deleted`` shows
     soft-deleted refs instead of live ones (a lightweight trash view —
-    no undelete surface yet, just visibility), ``state=chunked``/
-    ``state=unchunked`` filter on whether a ref has a body chunk (the
-    ingested-vs-not split); ``folder=`` (a folder
-    ``ref_id``) narrows the no-query landing to one folder's direct
-    children — the same facet the sidebar tree's links drive;
+    no undelete surface yet, just visibility); ``paper_chunks=with``/
+    ``=without`` (the grouped "paper" chip's popover) filters on
+    whether a ref has a body chunk (the ingested-vs-not split) — this
+    is a **global** browse filter (it reuses ``recent_refs(has_chunks=
+    …)``, not scoped to the ``paper`` kind, by design: chunk presence
+    is meaningful for any source kind, not just papers); ``folder=`` (a
+    folder ``ref_id``) narrows the no-query landing to one folder's
+    direct children — the same facet the sidebar tree's links drive;
     ``sort=recency`` orders newest-first; ``since=``/``until=`` bound
     the date window; ``page=`` pages past the ``_PAGE_SIZE`` cap. With
     no ``q`` the landing shows the recent list.
@@ -315,13 +319,17 @@ async def index(
     sort = "recency" if (sort or "").strip().lower() == "recency" else "relevance"
     state = (state or "all").strip().lower()
     # ``state=stub`` → only PDF-less papers (the "to get" queue);
-    # ``state=deleted`` → soft-deleted refs (the "show deleted" toggle);
-    # ``state=chunked``/``state=unchunked`` → ingested-vs-not. All shape
-    # only the recent/browse view, not search (a search hit matched a
-    # live chunk, so none of these filters are meaningful there).
+    # ``state=deleted`` → soft-deleted refs (the "show deleted" toggle).
+    # Both shape only the recent/browse view, not search (a search hit
+    # matched a live chunk, so neither filter is meaningful there).
     has_pdf = False if state == "stub" else None
-    has_chunks = True if state == "chunked" else False if state == "unchunked" else None
     show_deleted = state == "deleted"
+    # ``paper_chunks`` (the grouped "paper" chip's ▾ popover) drives the
+    # ingested-vs-not split. It's a **global** browse chunk-filter by
+    # design — it reuses ``recent_refs(has_chunks=…)`` unscoped to any
+    # one kind, not a paper-only facet, despite riding the "paper" chip.
+    pc = (paper_chunks or "both").strip().lower()
+    has_chunks = True if pc == "with" else False if pc == "without" else None
     since_dt = _parse_date(since)
     until_dt = _parse_date(until)
     folder_raw = (folder or "").strip()
@@ -336,6 +344,7 @@ async def index(
     rows: list[dict[str, Any]] = []
     recent: list[dict[str, Any]] = []
     has_next = False
+    result_total: int | None = None
     if q:
         embedder = getattr(hub, "embedder", None)
         rows, has_next = await asyncio.to_thread(
@@ -350,6 +359,22 @@ async def index(
             tags=tags,
             offset=offset,
         )
+        # Total-match count for the "showing N of ~K" header — a lexical
+        # approximation (the fused semantic+lexical ranking that actually
+        # populates ``rows`` has no cheap exact total), but it's the
+        # difference between finding 5 of 50 and 5 of 50,000.
+        result_total = await asyncio.to_thread(
+            store.count_refs_matching_lexical,
+            kinds=selected_kinds,
+            q=q,
+            tags=tags,
+            since=since_dt,
+            until=until_dt,
+        )
+        # Floor to what's actually on the page: the fused ranking can surface
+        # semantic-only hits the lexical count misses, so without this the
+        # header could read the absurd "showing 30 of ~5".
+        result_total = max(result_total, offset + len(rows))
     else:
         recent, has_next = await asyncio.to_thread(
             _recent_rows,
@@ -379,6 +404,8 @@ async def index(
         _pager_params.append(("until", until))
     if state != "all":
         _pager_params.append(("state", state))
+    if pc != "both":
+        _pager_params.append(("paper_chunks", pc))
     if folder_raw:
         _pager_params.append(("folder", folder_raw))
     for kk in selected_kinds:
@@ -434,6 +461,7 @@ async def index(
             "since": since,
             "until": until,
             "state": state,
+            "paper_chunks": pc,
             "folder": folder_raw,
             "folder_options": await asyncio.to_thread(_folder_options, store),
             "folders": flat,
@@ -442,6 +470,7 @@ async def index(
             "notice": notice,
             "rows": rows,
             "recent": recent,
+            "result_total": result_total,
             "flag_defs": FLAG_DEFS,
             "acquire_flag_defs": ACQUIRE_FLAG_DEFS,
             "return_to": return_to,

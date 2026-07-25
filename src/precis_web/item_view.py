@@ -9,8 +9,8 @@ click-through URL. The default covers *every* kind through the generic
 ``open_url`` via :data:`_OPEN_URL_OVERRIDES`.
 
 The full method contract from the proposal is now present
-(``name``/``open_url``/``preview``/``hover_preview``/``thumbnail``/
-``state``/``actions``/``links``), each with a generic default so every
+(``name``/``open_url``/``preview``/``title_meta``/``chunk_full``/
+``thumbnail``/``state``/``actions``/``links``), each with a generic default so every
 kind renders without a subclass. **Not yet promoted to
 ``@abstractmethod``** — that check-time-totality guarantee (per the
 proposal's decisions log) requires a dedicated presenter for every
@@ -25,15 +25,15 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from precis.utils.authors import author_names
 from precis_web.paper_links import doi_url, scholar_url, uol_url
 
 #: Max characters of the matching chunk shown as the row preview.
-_PREVIEW_CHARS = 240
+_PREVIEW_CHARS = 140
 
 #: Max characters of the richer hover-popover peek.
 _HOVER_CHARS = 600
 
-_TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
 
 #: Max characters of a title shown in a list / Drive row. Generous
@@ -132,32 +132,34 @@ class ItemPresenter:
             )
         return f"/refs/{self.kind}/{getattr(ref, 'id', '')}"
 
-    def preview(self, block: Any) -> str:
-        text = (getattr(block, "text", None) or "").strip()
+    def preview(self, block: Any, summary: str | None = None) -> str:
+        """Row preview text: the matching chunk's ``llm-v1`` gloss when
+        one was batched for this hit (``summary``), else the truncated
+        chunk text itself. Both share the same length-cap rule."""
+        gloss = (summary or "").strip()
+        text = gloss if gloss else (getattr(block, "text", None) or "").strip()
         if len(text) <= _PREVIEW_CHARS:
             return text
         return text[: _PREVIEW_CHARS - 1].rstrip() + "…"
 
-    def _abstract(self, ref: Any) -> str:
-        """Publisher abstract off ``refs.meta['abstract']``, tag-stripped —
-        present on the paper-family kinds, empty (harmlessly) elsewhere."""
+    def title_meta(self, ref: Any) -> dict[str, Any]:
+        """Full (uncapped) title + journal/authors/year for the
+        title-hover popover."""
         meta = getattr(ref, "meta", None) or {}
-        raw = meta.get("abstract")
-        if not raw:
-            return ""
-        return _WS_RE.sub(" ", _TAG_RE.sub(" ", str(raw))).strip()
+        return {
+            "title": _WS_RE.sub(" ", getattr(ref, "title", None) or "").strip(),
+            "journal": (meta.get("journal") or "").strip() or None,
+            "authors": author_names(getattr(ref, "authors", None)),
+            "year": getattr(ref, "year", None),
+        }
 
-    def hover_preview(self, ref: Any, block: Any) -> str:
-        """The richer hover-popover peek: abstract (if any) + the matching
-        chunk, wider than the row preview. Falls back to the row preview
-        when there's neither an abstract nor a chunk (a recent-list row
-        with no query has no ``block``)."""
-        abstract = self._abstract(ref)
+    def chunk_full(self, block: Any) -> str:
+        """The fuller matching-chunk text for the chunk-hover popover —
+        chunk only, no abstract."""
         text = (getattr(block, "text", None) or "").strip()
-        combined = "\n\n".join(p for p in (abstract, text) if p) or self.preview(block)
-        if len(combined) <= _HOVER_CHARS:
-            return combined
-        return combined[: _HOVER_CHARS - 1].rstrip() + "…"
+        if len(text) <= _HOVER_CHARS:
+            return text
+        return text[: _HOVER_CHARS - 1].rstrip() + "…"
 
     def thumbnail(self, ref: Any) -> str | None:
         """Cached-still image URL, or ``None`` when there isn't one.
@@ -211,6 +213,14 @@ class ItemPresenter:
                     "label": "stub",
                     "cls": "bg-slate-200 text-slate-500",
                     "title": "awaiting fetch — no PDF yet",
+                }
+            )
+        if getattr(ref, "pdf_sha256", None) is not None:
+            badges.append(
+                {
+                    "label": "pdf",
+                    "cls": "bg-emerald-100 text-emerald-700",
+                    "title": "PDF stored",
                 }
             )
         if has_chunks:
@@ -313,13 +323,15 @@ def item_row(
     has_chunks: bool = False,
     tags: list[tuple[str, str]] | None = None,
     identifier: str | None = None,
+    summary: str | None = None,
 ) -> dict[str, Any]:
     """Build one unified-list row view-model from a search hit.
 
     ``flags`` is the ref's active reading-intent flag values (for the
-    toggle buttons). ``preview`` is the chunk that made the ref match.
-    ``has_chunks`` drives the stub/ingested state badges (a search hit
-    matched a chunk, so it's ``True``; a recent-list ref is probed).
+    toggle buttons). ``preview`` is the chunk that made the ref match
+    (or its ``llm-v1`` gloss, when ``summary`` was batched for this
+    hit). ``has_chunks`` drives the stub/ingested state badges (a search
+    hit matched a chunk, so it's ``True``; a recent-list ref is probed).
     ``tags`` are the ref's raw ``(namespace, value)`` tags → the per-row
     chips.
     """
@@ -329,8 +341,7 @@ def item_row(
         "kind": getattr(ref, "kind", ""),
         "title": p.name(ref),
         "open_url": p.open_url(ref),
-        "preview": p.preview(block),
-        "hover_preview": p.hover_preview(ref, block),
+        "preview": p.preview(block, summary),
         "thumbnail": p.thumbnail(ref),
         "actions": p.actions(ref),
         "created_at": getattr(ref, "created_at", None),
@@ -338,5 +349,7 @@ def item_row(
         "tags": _display_tags(tags),
         "links": p.links(identifier),
         "score": score,
+        "title_meta": p.title_meta(ref),
+        "chunk_full": p.chunk_full(block),
         "flags": flags,
     }

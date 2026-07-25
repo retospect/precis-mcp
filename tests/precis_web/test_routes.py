@@ -374,22 +374,68 @@ def test_drive_stub_filter(runtime, client) -> None:
     assert "Stubs — papers to get" in resp.text
 
 
-def test_drive_chunked_filter(runtime, client) -> None:
-    """state=chunked narrows the landing to refs with body chunks and
-    relabels the heading (the has_chunks=True facet)."""
-    resp = client.get("/drive?state=chunked")
+def test_drive_paper_chunks_with_filter(runtime, client) -> None:
+    """paper_chunks=with narrows the landing to refs with body chunks —
+    the grouped ``paper`` chip's popover (the has_chunks=True facet),
+    replacing the retired state=chunked."""
+    resp = client.get("/drive?paper_chunks=with")
     assert resp.status_code == 200
     assert runtime.store.recent_has_chunks is True
-    assert "Chunked — refs with body chunks" in resp.text
 
 
-def test_drive_unchunked_filter(runtime, client) -> None:
-    """state=unchunked narrows the landing to chunk-less refs (awaiting
-    ingest) and relabels the heading (the has_chunks=False facet)."""
-    resp = client.get("/drive?state=unchunked")
+def test_drive_paper_chunks_without_filter(runtime, client) -> None:
+    """paper_chunks=without narrows the landing to chunk-less refs
+    (awaiting ingest) — replacing the retired state=unchunked."""
+    resp = client.get("/drive?paper_chunks=without")
     assert resp.status_code == 200
     assert runtime.store.recent_has_chunks is False
-    assert "No chunks — refs awaiting ingest" in resp.text
+
+
+def test_drive_paper_chunks_default_is_both(runtime, client) -> None:
+    """No ``paper_chunks=`` param leaves the chunk facet unset (both)."""
+    resp = client.get("/drive")
+    assert resp.status_code == 200
+    assert runtime.store.recent_has_chunks is None
+
+
+def test_drive_paper_chip_and_websearch_popover_render(client) -> None:
+    """The grouped ``paper`` chip (tri-state paper_chunks radios) renders,
+    and ``websearch`` lives inside the perplexity popover (grouped), not
+    as a flat source chip."""
+    resp = client.get("/drive")
+    assert resp.status_code == 200
+    assert "togglePaper()" in resp.text
+    assert 'name="paper_chunks" value="both"' in resp.text
+    assert 'name="paper_chunks" value="with"' in resp.text
+    assert 'name="paper_chunks" value="without"' in resp.text
+    assert 'value="websearch" x-model="kinds"' in resp.text
+    assert "'perplexity-reasoning', 'perplexity-research', 'websearch'" in resp.text
+
+
+def test_drive_result_total_shown_above_results(runtime, client) -> None:
+    """With a query, an approximate total-match count renders above the
+    result list — "5 of 50,000" reads very differently from "5 of 50"."""
+    runtime.store.result_total = 50000
+    resp = client.get("/drive?q=query")
+    assert resp.status_code == 200
+    assert "50,000" in resp.text
+    assert "≈" in resp.text or "~" in resp.text
+
+
+def test_drive_pager_preserves_paper_chunks(runtime, client) -> None:
+    """A live Next/Prev pager link carries ``paper_chunks=`` through, same
+    as every other filter."""
+    from types import SimpleNamespace
+
+    from .conftest import make_ref
+
+    pref = make_ref(id=10, kind="paper", slug="smith2024", title="A paper")
+    blk = SimpleNamespace(id=1001, pos=0, text="passage about the query")
+    runtime.store.cross_kind_hits = [(blk, pref, 0.9)] * 31
+
+    resp = client.get("/drive?q=query&submitted=1&k=paper&paper_chunks=with")
+    assert resp.status_code == 200
+    assert "paper_chunks=with" in resp.text
 
 
 def test_drive_rows_show_paper_lookup_links(client) -> None:
@@ -410,6 +456,24 @@ def test_drive_stub_vs_ingested_badges(runtime, client) -> None:
     resp2 = client.get("/drive")
     assert ">chunks<" in resp2.text
     assert ">stub<" not in resp2.text
+
+
+def test_drive_search_row_shows_pdf_badge(runtime, client) -> None:
+    """A search hit for a ref carrying ``pdf_sha256`` shows the 'pdf'
+    badge (alongside 'chunks' — a search hit is ingested by definition)."""
+    from types import SimpleNamespace
+
+    from .conftest import make_ref
+
+    pref = make_ref(
+        id=10, kind="paper", slug="smith2024", title="A paper", pdf_sha256="abc123"
+    )
+    blk = SimpleNamespace(id=1001, pos=0, text="passage about the query")
+    runtime.store.cross_kind_hits = [(blk, pref, 0.9)]
+
+    resp = client.get("/drive?q=query")
+    assert resp.status_code == 200
+    assert ">pdf<" in resp.text
 
 
 def test_drive_rows_show_per_item_tags(client) -> None:

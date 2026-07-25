@@ -131,6 +131,9 @@ def _run_search(
     flag_state = store.ref_tag_values(ref_ids, FLAG_NAMESPACE, FLAG_VALUE_LIST)
     tags_bulk = store.ref_tags_bulk(ref_ids)
     idents = store.paper_identifiers(ref_ids)
+    summaries = store.chunk_summaries_bulk(
+        [(ref.id, block.pos) for block, ref, _ in hits]
+    )
     # A search hit matched a chunk, so the ref is ingested by definition.
     rows = [
         item_row(
@@ -141,6 +144,7 @@ def _run_search(
             has_chunks=True,
             tags=tags_bulk.get(ref.id),
             identifier=idents.get(ref.id),
+            summary=summaries.get((ref.id, block.pos)),
         )
         for block, ref, score in hits
     ]

@@ -97,6 +97,15 @@ class FakeStore:
         #: collision branch can be exercised.
         self.identifier_writes: list[tuple[int, str, str]] = []
         self.taken_cite_keys: set[str] = set()
+        #: {(ref_id, ord): gloss} a test seeds to exercise the
+        #: chunk_summaries_bulk-backed row preview (Drive search rows).
+        self.chunk_summaries: dict[tuple[int, int], str] = {}
+        #: Overridable lexical-match total for count_refs_matching_lexical
+        #: (the /drive "showing N of ~K" header) — 0 by default.
+        self.result_total = 0
+        #: kwargs from the most recent count_refs_matching_lexical call, so
+        #: a test can assert the filters it was invoked with.
+        self.result_total_call: dict[str, Any] | None = None
         #: Corpus-presence ledger fakes. ``missing_pdf_shas`` are the shas
         #: ``pdf_missing`` reports as held-but-missing (empty → nothing
         #: flagged); ``storage_paths`` seeds ``pdf_storage_path``;
@@ -378,6 +387,14 @@ class FakeStore:
         """No llm-v1 glosses in the fake corpus — search rows carry an
         empty summary and the client falls back to keyword chips."""
         return {}
+
+    def chunk_summaries_bulk(
+        self, pairs: list[tuple[int, int]]
+    ) -> dict[tuple[int, int], str]:
+        """Batch companion to ``chunk_summaries_for`` — reads the
+        overridable ``self.chunk_summaries`` seed dict so a test can
+        exercise the gloss-preview path; empty by default."""
+        return {p: self.chunk_summaries[p] for p in pairs if p in self.chunk_summaries}
 
     def chunk_glosses_for_ref(self, ref_id: int, **kw: Any) -> list[dict[str, Any]]:
         """Per-chunk gloss list for the rapid-nav /chunks endpoint. Empty
@@ -705,6 +722,21 @@ class FakeStore:
             hits = [(blk_p, pref, 0.9), (blk_w, wref, 0.8)]
         want = set(kinds)
         return [(b, r, s) for (b, r, s) in hits if r.kind in want][offset:]
+
+    def count_refs_matching_lexical(
+        self, *, kinds, q, tags=None, since=None, until=None
+    ) -> int:
+        """Overridable lexical-match total for the Drive "showing N of ~K"
+        header — records the call args (``self.result_total_call``) and
+        returns the seeded ``self.result_total`` (0 by default)."""
+        self.result_total_call = {
+            "kinds": list(kinds),
+            "q": q,
+            "tags": tags,
+            "since": since,
+            "until": until,
+        }
+        return self.result_total
 
     def recent_refs(
         self,

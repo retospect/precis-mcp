@@ -559,6 +559,113 @@ async def _quest_detail(request: Request, store: Any, ref: Any) -> HTMLResponse:
     )
 
 
+def _pathway_struct_row(
+    structs: dict[int, Any], label: str, sid: Any
+) -> dict[str, Any]:
+    """One linked-structure row: ``label`` (e.g. ``"NO"``, ``"candidate"``)
+    + the resolved title/url for ``sid``, or a "missing" placeholder when
+    ``sid`` doesn't resolve (a soft-deleted or not-yet-fetched structure)."""
+    s = structs.get(sid)
+    title = getattr(s, "title", None) if s is not None else None
+    return {
+        "label": label,
+        "ref_id": sid,
+        "title": title or f"structure {sid}" + ("" if s is not None else " (missing)"),
+        "url": f"/refs/structure/{sid}",
+    }
+
+
+async def _pathway_detail(request: Request, store: Any, ref: Any) -> HTMLResponse:
+    """Detail page for ``kind='pathway'`` — a catpath reaction-energetics
+    network (candidate structure → adsorbate/intermediate structures →
+    computed barriers).
+
+    ``pathway`` is an EXTERNAL plugin kind (the catpath bridge): its
+    handler isn't loaded in every process (dev sessions, some workers),
+    so — unlike most other kinds on this page — this never dispatches a
+    ``get()`` verb. Everything renders off stored data already on the
+    ``Store``: ``ref.meta`` (candidate/structure refs, the computed
+    ``results`` network, config), the single ``pathway_body`` chunk
+    (a short markdown methods section), and a batched
+    ``fetch_refs_by_ids`` to resolve the linked structures' titles.
+    Every ``meta`` key is optional — a sparse/early-slice pathway is
+    expected, not an error.
+    """
+    meta = ref.meta or {}
+
+    # Body — exactly one ``pathway_body`` chunk. Rendered the same way
+    # the generic detail body renders a markdown-ish chunk (linkify_toon
+    # in the template) — no second markdown renderer to drift.
+    body_text = ""
+    for b in store.list_blocks_for_ref(ref.id):
+        if getattr(b, "chunk_kind", None) == "pathway_body":
+            body_text = b.text or ""
+            break
+
+    # Linked structures — the candidate (base catalyst) plus every
+    # adsorbate/intermediate structure ``structure_refs`` names. One
+    # batched fetch resolves titles for all of them; a link that doesn't
+    # resolve (deleted / not yet fetched) still renders, marked missing.
+    candidate_ref_id = meta.get("candidate_ref")
+    structure_refs: dict[str, Any] = meta.get("structure_refs") or {}
+    want_ids = {sid for sid in structure_refs.values() if sid is not None}
+    if candidate_ref_id is not None:
+        want_ids.add(candidate_ref_id)
+    structs = store.fetch_refs_by_ids(list(want_ids)) if want_ids else {}
+
+    candidate = (
+        _pathway_struct_row(structs, "candidate", candidate_ref_id)
+        if candidate_ref_id is not None
+        else None
+    )
+    structures = [
+        _pathway_struct_row(structs, label, sid)
+        for label, sid in sorted(structure_refs.items())
+    ]
+
+    # Energetics summary — defensive reads off ``meta['results']`` (the
+    # computed network); every field is optional.
+    results = meta.get("results") or {}
+    warnings_raw = results.get("warnings") or []
+    if not isinstance(warnings_raw, list):
+        warnings_raw = [warnings_raw]
+    nodes = results.get("nodes")
+    edges = results.get("edges")
+    results_summary = {
+        "substrate": results.get("substrate"),
+        "target": results.get("target"),
+        "backend": results.get("backend"),
+        "energy_reference": results.get("energy_reference"),
+        "relaxed_lattice_A": results.get("relaxed_lattice_A"),
+        "n_nodes": len(nodes) if isinstance(nodes, (list, dict)) else None,
+        "n_edges": len(edges) if isinstance(edges, (list, dict)) else None,
+        "warnings": [str(w) for w in warnings_raw],
+    }
+
+    return templates.TemplateResponse(
+        request,
+        "refs/pathway_detail.html.j2",
+        {
+            "active_tab": "refs:pathway",
+            "kind": "pathway",
+            "kind_label": _REF_KIND_LABEL.get("pathway", "Pathway"),
+            "ref": _row(ref),
+            "status": meta.get("status"),
+            "rate_ea": meta.get("rate_Ea"),
+            "n_structures": meta.get("n_structures"),
+            "slice_num": meta.get("slice"),
+            "produced_by": meta.get("produced_by"),
+            "catpath_version": meta.get("catpath_version"),
+            "config_snapshot_yaml": meta.get("config_snapshot_yaml"),
+            "has_graph": bool(meta.get("graph")),
+            "candidate": candidate,
+            "structures": structures,
+            "body_text": body_text,
+            "results_summary": results_summary,
+        },
+    )
+
+
 #: The kinds the Refs tab pre-checks by default — note-like, browsable,
 #: low-friction. The other checkbox-eligible kinds stay unchecked
 #: unless the operator opts in (via ``?all=1`` or by tickering them
@@ -596,6 +703,12 @@ _REFS_BROWSABLE_KINDS: tuple[str, ...] = (
     # candidate link 400 with "no browse tab" even though they render fine.
     "quest",
     "structure",
+    # Catpath's reaction-energetics ref (candidate structure → adsorbate/
+    # intermediate structures → computed barriers). An EXTERNAL plugin
+    # kind — its handler isn't loaded in every process — so its detail
+    # page (``_pathway_detail``) renders entirely off stored data rather
+    # than dispatching ``get()`` the way the generic template does.
+    "pathway",
     # Machine-detected ops/health rows (non-embedded). The /alerts list
     # links each row to /refs/alert/<id>; without this the detail page
     # 400s ("no browse tab for kind='alert'"). AlertHandler.get(id=N)
@@ -1028,6 +1141,14 @@ async def detail(request: Request, kind: str, ref_id: int) -> HTMLResponse:
     # other numeric-ref kind. See ``_quest_detail``.
     if kind == "quest":
         return await _quest_detail(request, store, ref)
+
+    # Pathways render as a dedicated candidate→structures→energetics
+    # page rather than the generic handler-card render — see
+    # ``_pathway_detail``. ``pathway`` is an EXTERNAL plugin kind (the
+    # catpath bridge) so this never dispatches the handler's own
+    # ``get()``; everything comes off the stored ref meta + chunk.
+    if kind == "pathway":
+        return await _pathway_detail(request, store, ref)
 
     # Slug kinds (oracle/patent/pres) address get() by slug; numeric
     # kinds (memory/gripe) by id. Prefer the slug when present.

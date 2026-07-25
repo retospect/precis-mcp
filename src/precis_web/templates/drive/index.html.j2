@@ -70,7 +70,7 @@
 {% endif %}
 
 <form method="get" action="/drive" class="mb-4 space-y-2"
-      x-data='itemsFilter({{ kind_defs | tojson }}, {{ artifact_kind_defs | tojson }}, {{ selected_kinds | tojson }}, {{ tags | tojson }})'>
+      x-data='itemsFilter({{ kind_defs | tojson }}, {{ artifact_kind_defs | tojson }}, {{ selected_kinds | tojson }}, {{ tags | tojson }}, {{ paper_chunks | tojson }})'>
   {# submitted=1 tells the server the checkboxes are authoritative (so
      "none checked" means none, and the choice is remembered in a cookie). #}
   <input type="hidden" name="submitted" value="1" />
@@ -92,10 +92,8 @@
     <div>
       <label class="block text-xs text-slate-500 mb-0.5">Show</label>
       <select name="state" @change="submitForm(150)" class="rounded-md border border-slate-300 px-3 py-1.5 text-sm">
-        <option value="all" {% if state not in ('stub', 'deleted', 'chunked', 'unchunked') %}selected{% endif %}>All</option>
+        <option value="all" {% if state not in ('stub', 'deleted') %}selected{% endif %}>All</option>
         <option value="stub" {% if state == 'stub' %}selected{% endif %}>Stubs (to get)</option>
-        <option value="chunked" {% if state == 'chunked' %}selected{% endif %}>Chunked</option>
-        <option value="unchunked" {% if state == 'unchunked' %}selected{% endif %}>No chunks</option>
         <option value="deleted" {% if state == 'deleted' %}selected{% endif %}>Deleted</option>
       </select>
     </div>
@@ -133,7 +131,7 @@
     <span class="text-slate-500 mr-1">Source</span>
     <button type="button" @click="allKinds()" class="px-1.5 py-0.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-50">All</button>
     <button type="button" @click="noKinds()" class="px-1.5 py-0.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-50">None</button>
-    <template x-for="kk in sourceKinds.filter(k => !perplexityKinds.includes(k))" :key="kk">
+    <template x-for="kk in sourceKinds.filter(k => !perplexityKinds.includes(k) && k !== 'paper')" :key="kk">
       <label class="inline-flex items-center gap-1 px-2 py-0.5 rounded border cursor-pointer select-none"
              :class="kinds.includes(kk) ? 'bg-sky-100 border-sky-300 text-sky-800' : 'border-slate-200 text-slate-400 hover:bg-slate-50'">
         <input type="checkbox" name="k" :value="kk" x-model="kinds" class="sr-only" />
@@ -148,7 +146,7 @@
               class="inline-flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-l border border-r-0 cursor-pointer select-none"
               :class="ppCount() > 0 ? 'bg-sky-100 border-sky-300 text-sky-800' : 'border-slate-200 text-slate-400 hover:bg-slate-50'">
         <span>perplexity</span>
-        <span x-show="ppCount() === 1" class="text-[9px] opacity-70">½</span>
+        <span x-show="ppCount() > 0 && ppCount() < perplexityKinds.length" class="text-[9px] opacity-70" x-text="ppCount() + '/' + perplexityKinds.length"></span>
       </button>
       <button type="button" @click="ppOpen = !ppOpen"
               class="px-1 py-0.5 rounded-r border cursor-pointer text-[9px]"
@@ -162,6 +160,45 @@
         <label class="flex items-center gap-2 px-3 py-1 text-xs text-slate-600 hover:bg-slate-100 cursor-pointer">
           <input type="checkbox" name="k" value="perplexity-research" x-model="kinds" class="rounded border-slate-300">
           <span>research</span>
+        </label>
+        <label class="flex items-center gap-2 px-3 py-1 text-xs text-slate-600 hover:bg-slate-100 cursor-pointer">
+          <input type="checkbox" name="k" value="websearch" x-model="kinds" class="rounded border-slate-300">
+          <span>websearch</span>
+        </label>
+      </div>
+    </div>
+    {# Grouped paper chip — a tri-state radio popover (both/with/without
+       chunks) rather than a checkbox list, since paper_chunks is a
+       single global browse facet (Part 2 of the drive-ui-chunk-filter
+       change), not a per-kind toggle. #}
+    <div class="relative inline-flex items-center" x-data="{ paperOpen: false }">
+      <button type="button" @click="togglePaper()"
+              class="inline-flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-l border border-r-0 cursor-pointer select-none"
+              :class="kinds.includes('paper') ? 'bg-sky-100 border-sky-300 text-sky-800' : 'border-slate-200 text-slate-400 hover:bg-slate-50'">
+        <span>paper</span>
+        <span x-show="paperChunks !== 'both'" class="text-[9px] opacity-70" x-text="paperChunks"></span>
+      </button>
+      {# Backing input so native form serialization emits k=paper — the main
+         button only mutates the in-memory `kinds` array (drives the highlight
+         + auto-submit); without this checkbox `paper` would never be posted
+         and would silently drop from the kind set on the first resubmit. #}
+      <input type="checkbox" name="k" value="paper" x-model="kinds" class="sr-only" />
+      <button type="button" @click="paperOpen = !paperOpen"
+              class="px-1 py-0.5 rounded-r border cursor-pointer text-[9px]"
+              :class="kinds.includes('paper') ? 'bg-sky-100 border-sky-300 text-sky-800' : 'border-slate-200 text-slate-400 hover:bg-slate-50'">▾</button>
+      <div x-show="paperOpen" x-cloak @click.outside="paperOpen = false"
+           class="absolute left-0 top-full mt-1 z-30 w-40 rounded-md border border-slate-200 bg-white py-1 shadow-lg">
+        <label class="flex items-center gap-2 px-3 py-1 text-xs text-slate-600 hover:bg-slate-100 cursor-pointer">
+          <input type="radio" name="paper_chunks" value="both" x-model="paperChunks" @change="submitForm(150)" class="border-slate-300">
+          <span>both</span>
+        </label>
+        <label class="flex items-center gap-2 px-3 py-1 text-xs text-slate-600 hover:bg-slate-100 cursor-pointer">
+          <input type="radio" name="paper_chunks" value="with" x-model="paperChunks" @change="submitForm(150)" class="border-slate-300">
+          <span>with chunks</span>
+        </label>
+        <label class="flex items-center gap-2 px-3 py-1 text-xs text-slate-600 hover:bg-slate-100 cursor-pointer">
+          <input type="radio" name="paper_chunks" value="without" x-model="paperChunks" @change="submitForm(150)" class="border-slate-300">
+          <span>without chunks</span>
         </label>
       </div>
     </div>
@@ -207,15 +244,16 @@
 
 <script>
   document.addEventListener('alpine:init', () => {
-    Alpine.data('itemsFilter', (sourceKinds, artifactKinds, selectedKinds, selectedTags) => ({
+    Alpine.data('itemsFilter', (sourceKinds, artifactKinds, selectedKinds, selectedTags, paperChunks) => ({
       sourceKinds: sourceKinds,
       artifactKinds: artifactKinds,
       kinds: selectedKinds,
       tags: selectedTags,
+      paperChunks: paperChunks || 'both',
       tagQuery: '',
       suggestions: [],
       _t: null,
-      perplexityKinds: ['perplexity-reasoning', 'perplexity-research'],
+      perplexityKinds: ['perplexity-reasoning', 'perplexity-research', 'websearch'],
       init() {
         this.$watch('kinds', () => this.submitForm());
       },
@@ -232,6 +270,11 @@
         } else {
           for (const k of this.perplexityKinds) if (!this.kinds.includes(k)) this.kinds.push(k);
         }
+      },
+      togglePaper() {
+        this.kinds = this.kinds.includes('paper')
+          ? this.kinds.filter(k => k !== 'paper')
+          : [...this.kinds, 'paper'];
       },
       removeTag(i) { this.tags.splice(i, 1); },
       addTag(t) {
@@ -254,7 +297,7 @@
 {% macro item_list(items) %}
 <ul class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
   {% for row in items %}
-  <li class="px-4 py-3 hover:bg-slate-50" x-data="{ hover: false }">
+  <li class="px-4 py-3 hover:bg-slate-50" x-data="{ titleHover: false, chunkHover: false }">
     <div class="flex items-start gap-3">
       {% if row.thumbnail %}
       <img src="{{ row.thumbnail }}" loading="lazy" alt=""
@@ -267,9 +310,22 @@
           <span class="text-[10px] px-1.5 py-0.5 rounded {{ b.cls }}" title="{{ b.title }}">{{ b.label }}</span>
         {% endfor %}
       </div>
-      <div class="min-w-0 flex-1 relative"
-           @mouseenter="hover = true" @mouseleave="hover = false">
-        <a href="{{ row.open_url }}" class="text-sky-700 hover:underline font-medium">{{ row.title }}</a>
+      <div class="min-w-0 flex-1 relative">
+        {% set tm = row.title_meta %}
+        <span class="relative inline-block" @mouseenter="titleHover=true" @mouseleave="titleHover=false">
+          <a href="{{ row.open_url }}" class="text-sky-700 hover:underline text-sm">{{ row.title }}</a>
+          {# Title/metadata popover — full (uncapped) title + journal/authors/year,
+             only worth a floating box when it says more than the capped row title. #}
+          {% if tm and (tm.title != row.title or tm.journal or tm.authors or tm.year) %}
+          <div x-show="titleHover" x-cloak
+               class="absolute left-0 top-full mt-1 z-20 w-80 max-w-[90vw] rounded-md border border-slate-200 bg-white p-3 text-xs text-slate-600 shadow-lg">
+            <p class="font-medium text-slate-800">{{ tm.title }}</p>
+            {% if tm.journal %}<p class="italic mt-0.5">{{ tm.journal }}</p>{% endif %}
+            {% if tm.authors %}<p class="mt-0.5">{{ tm.authors | join(', ') }}</p>{% endif %}
+            {% if tm.year %}<p class="mt-0.5">{{ tm.year }}</p>{% endif %}
+          </div>
+          {% endif %}
+        </span>
         {% if row.tags %}
           <span class="ml-1 inline-flex flex-wrap gap-1 align-middle">
             {% for t in row.tags %}
@@ -278,7 +334,13 @@
           </span>
         {% endif %}
         {% if row.preview %}
-          <p class="text-xs text-slate-500 mt-0.5">{{ row.preview }}</p>
+          <span class="relative block" @mouseenter="chunkHover=true" @mouseleave="chunkHover=false">
+            <p class="text-xs text-slate-500 mt-0.5">{{ row.preview }}</p>
+            {% if row.chunk_full and row.chunk_full != row.preview %}
+            <div x-show="chunkHover" x-cloak
+                 class="absolute left-0 top-full mt-1 z-20 w-96 max-w-[90vw] rounded-md border border-slate-200 bg-white p-3 text-xs text-slate-600 shadow-lg whitespace-pre-line">{{ row.chunk_full }}</div>
+            {% endif %}
+          </span>
         {% elif row.created_at %}
           <p class="text-xs text-slate-400 mt-0.5">added <span title="{{ row.created_at | abs_ts }}">{{ row.created_at | ago }}</span></p>
         {% endif %}
@@ -324,14 +386,6 @@
             </form>
             {% endif %}
           {% endfor %}
-        </div>
-        {% endif %}
-        {# Hover popover — the richer peek (abstract + wider chunk). Only
-           worth a floating box when it says more than the row preview. #}
-        {% if row.hover_preview and row.hover_preview != row.preview %}
-        <div x-show="hover" x-cloak
-             class="absolute left-0 top-full mt-1 z-20 w-96 max-w-[90vw] rounded-md border border-slate-200 bg-white p-3 text-xs text-slate-600 shadow-lg whitespace-pre-line">
-          {{ row.hover_preview }}
         </div>
         {% endif %}
       </div>
@@ -469,18 +523,20 @@
         No matches for <span class="font-medium text-slate-700">{{ q }}</span>{% if since or until %} in that date window{% endif %}.
       </p>
       {% else %}
-      {{ item_list(rows) }}
-      <p class="mt-2 text-xs text-slate-400">
-        Showing up to {{ rows | length }} best-matching source{{ '' if rows | length == 1 else 's' }} · one passage per item.
+      {# The lexical denominator, up top — "5 of 50" reads very
+         differently from "5 of ~50,000" (Reto). Approximate (≈) since
+         the fused ranking that produced `rows` has no cheap exact
+         total. #}
+      <p class="text-xs text-slate-500 mb-2">
+        Showing {{ rows | length }} of ≈{{ "{:,}".format(result_total or 0) }} match{{ '' if (result_total or 0) == 1 else 'es' }} · one passage per item.
       </p>
+      {{ item_list(rows) }}
       {{ pager() }}
       {% endif %}
     {% else %}
       {# Default landing: the recent list (or stub/deleted queue) under the search. #}
       <h2 class="text-sm font-semibold text-slate-600 mb-2">
         {% if state == 'stub' %}Stubs — papers to get
-        {% elif state == 'chunked' %}Chunked — refs with body chunks
-        {% elif state == 'unchunked' %}No chunks — refs awaiting ingest
         {% elif state == 'deleted' %}Deleted — soft-deleted refs
         {% elif current %}{{ current.title }}
         {% else %}Recently added{% endif %}
@@ -500,8 +556,6 @@
       {% else %}
         <p class="text-sm text-slate-400">
           {% if state == 'stub' %}No stubs in the selected kinds — nothing waiting to be fetched.
-          {% elif state == 'chunked' %}No chunked refs in the selected kinds.
-          {% elif state == 'unchunked' %}Nothing awaiting ingest — every ref in the selected kinds has chunks.
           {% elif state == 'deleted' %}Nothing deleted in the selected kinds.
           {% else %}Nothing here yet — ingest a paper, place something in a folder, or run a search above.{% endif %}
         </p>

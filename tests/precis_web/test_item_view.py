@@ -1,10 +1,11 @@
 """Unit tests for the ``ItemPresenter`` contract (``item_view.py``).
 
 Exercises the presenter methods directly (no FastAPI client needed) —
-``hover_preview`` / ``thumbnail`` / ``actions`` are new surface on the
-Slice-3 contract (``docs/proposals/unified-item-view.md``); the
-per-kind registry and the ``artifact_kinds`` facet helper back the
-``/drive`` route tests in ``test_routes.py``.
+``title_meta`` / ``chunk_full`` / ``thumbnail`` / ``actions`` are new
+surface on the Slice-3 contract
+(``docs/proposals/unified-item-view.md``); the per-kind registry and
+the ``artifact_kinds`` facet helper back the ``/drive`` route tests in
+``test_routes.py``.
 """
 
 from __future__ import annotations
@@ -21,7 +22,16 @@ from precis_web.item_view import (
 
 
 def _ref(**kw):
-    base = {"id": 1, "kind": "paper", "slug": None, "title": "t", "meta": {}}
+    base = {
+        "id": 1,
+        "kind": "paper",
+        "slug": None,
+        "title": "t",
+        "meta": {},
+        "year": None,
+        "authors": None,
+        "pdf_sha256": None,
+    }
     base.update(kw)
     return SimpleNamespace(**base)
 
@@ -49,32 +59,82 @@ def test_name_falls_back_to_kind_and_id_when_title_empty() -> None:
     assert p.name(_ref(kind="web", id=7, title="")) == "web #7"
 
 
-def test_hover_preview_leads_with_abstract() -> None:
-    """A kind carrying ``meta['abstract']`` gets a richer hover peek than
-    the row preview — abstract first, then the matching chunk."""
-    ref = _ref(meta={"abstract": "<p>The <b>abstract</b>.</p>"})
+def test_chunk_full_is_chunk_only_no_abstract() -> None:
+    """``chunk_full`` is the matching chunk alone — no abstract splice,
+    unlike the retired ``hover_preview``."""
     p = ItemPresenter("paper")
-    hv = p.hover_preview(ref, _block("matching chunk text"))
-    assert "The abstract" in hv
-    assert "matching chunk text" in hv
-    # Tags stripped, whitespace collapsed.
-    assert "<p>" not in hv and "<b>" not in hv
+    assert p.chunk_full(_block("matching chunk text")) == "matching chunk text"
 
 
-def test_hover_preview_falls_back_to_row_preview_with_no_abstract() -> None:
-    ref = _ref(meta={})
-    p = ItemPresenter("web")
-    assert p.hover_preview(ref, _block("just a chunk")) == p.preview(
-        _block("just a chunk")
+def test_chunk_full_caps_at_hover_chars() -> None:
+    from precis_web.item_view import _HOVER_CHARS
+
+    p = ItemPresenter("paper")
+    cf = p.chunk_full(_block("y" * 900))
+    assert len(cf) <= _HOVER_CHARS
+    assert cf.endswith("…")
+
+
+def test_title_meta_carries_full_title_journal_authors_year() -> None:
+    ref = _ref(
+        title="A   very\nlong   title",
+        meta={"journal": "Nature"},
+        authors=[{"name": "Doe, Jane"}],
+        year=2020,
     )
-
-
-def test_hover_preview_truncates_long_combined_text() -> None:
-    ref = _ref(meta={"abstract": "x" * 500})
     p = ItemPresenter("paper")
-    hv = p.hover_preview(ref, _block("y" * 500))
-    assert len(hv) <= 600
-    assert hv.endswith("…")
+    tm = p.title_meta(ref)
+    assert tm["title"] == "A very long title"
+    assert tm["journal"] == "Nature"
+    assert tm["authors"] == ["Doe, Jane"]
+    assert tm["year"] == 2020
+
+
+def test_title_meta_defaults_when_no_meta() -> None:
+    ref = _ref(title="Plain", meta={})
+    p = ItemPresenter("web")
+    tm = p.title_meta(ref)
+    assert tm["title"] == "Plain"
+    assert tm["journal"] is None
+    assert tm["authors"] == []
+    assert tm["year"] is None
+
+
+def test_preview_prefers_gloss_over_chunk_text() -> None:
+    p = ItemPresenter("paper")
+    assert p.preview(_block("chunk text"), "a gloss") == "a gloss"
+
+
+def test_preview_falls_back_to_truncated_chunk_text_without_gloss() -> None:
+    p = ItemPresenter("paper")
+    assert p.preview(_block("chunk text"), None) == "chunk text"
+
+
+def test_preview_caps_at_140_for_both_paths() -> None:
+    from precis_web.item_view import _PREVIEW_CHARS
+
+    assert _PREVIEW_CHARS == 140
+    p = ItemPresenter("paper")
+    gloss_preview = p.preview(_block("x"), "g" * 200)
+    chunk_preview = p.preview(_block("c" * 200), None)
+    assert len(gloss_preview) == 140
+    assert gloss_preview.endswith("…")
+    assert len(chunk_preview) == 140
+    assert chunk_preview.endswith("…")
+
+
+def test_state_adds_pdf_badge_for_pipeline_kind_with_pdf() -> None:
+    ref = _ref(kind="paper", pdf_sha256="deadbeef")
+    p = ItemPresenter("paper")
+    badges = p.state(ref, has_chunks=True)
+    assert any(b["label"] == "pdf" for b in badges)
+
+
+def test_state_no_pdf_badge_for_non_pipeline_kind() -> None:
+    ref = _ref(kind="web", pdf_sha256="deadbeef")
+    p = ItemPresenter("web")
+    badges = p.state(ref, has_chunks=True)
+    assert not any(b["label"] == "pdf" for b in badges)
 
 
 def test_default_thumbnail_is_empty_actions_are_universal() -> None:
@@ -142,7 +202,8 @@ def test_item_row_carries_hover_thumbnail_actions() -> None:
         "delete": "abc123",
         "tag": "abc123",
     }
-    assert "a caption line" in row["hover_preview"]
+    assert "a caption line" in row["chunk_full"]
+    assert row["title_meta"]["title"] == "A video"
 
 
 def test_artifact_kinds_falls_back_when_hub_is_none() -> None:

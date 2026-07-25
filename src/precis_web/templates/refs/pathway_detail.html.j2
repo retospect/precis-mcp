@@ -1,0 +1,144 @@
+{% extends "base.html.j2" %}
+{% block title %}{{ ref.display_title }}{% endblock %}
+{% block content %}
+<a href="/refs/pathway" class="text-sm text-slate-500 underline">&larr; {{ kind_label }}</a>
+
+{# ── Header strip — title + status/Ea/version badges ────────────────── #}
+<div class="mt-2 mb-4">
+  <h1 class="text-lg font-semibold break-all">{{ ref.title }}</h1>
+  <p class="mt-2 text-sm text-slate-500 flex flex-wrap items-center gap-x-2 gap-y-1">
+    {% if ref.slug %}<span class="font-mono">{{ ref.slug }}</span>{% else %}<span class="font-mono">#{{ ref.id }}</span>{% endif %}
+    {% if status %}
+    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
+      {% if status == 'ready' %}bg-emerald-100 text-emerald-800
+      {% elif status in ('running', 'pending') %}bg-amber-100 text-amber-800
+      {% elif status in ('failed', 'error') %}bg-rose-100 text-rose-800
+      {% else %}bg-slate-200 text-slate-700{% endif %}">
+      STATUS:{{ status }}
+    </span>
+    {% endif %}
+    {% if rate_ea is not none %}
+    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-sky-100 text-sky-800">
+      Ea = {{ rate_ea }} eV
+    </span>
+    {% endif %}
+    {% if catpath_version %}<span class="text-slate-400">·</span><span>catpath {{ catpath_version }}</span>{% endif %}
+    {% if ref.updated %}<span class="text-slate-400">·</span><span>updated {{ ref.updated }}</span>{% endif %}
+  </p>
+</div>
+
+{# ── Two-column: meta panel | linked structures ──────────────────────── #}
+<div class="mb-6 grid grid-cols-1 lg:grid-cols-2 gap-4">
+  <section class="rounded-lg border border-slate-200 bg-white p-4">
+    <h2 class="text-sm font-semibold text-slate-700 mb-2">Pathway meta</h2>
+    <dl class="text-sm text-slate-700 space-y-1.5">
+      <div class="flex gap-2">
+        <dt class="text-slate-400 w-32 shrink-0">Candidate</dt>
+        <dd class="min-w-0 break-words">
+          {% if candidate %}
+          <a href="{{ candidate.url }}" class="text-sky-700 hover:underline">{{ candidate.title }}</a>
+          {% else %}
+          <span class="text-slate-400 italic">none recorded</span>
+          {% endif %}
+        </dd>
+      </div>
+      {% if n_structures is not none %}
+      <div class="flex gap-2">
+        <dt class="text-slate-400 w-32 shrink-0">Structures</dt>
+        <dd>{{ n_structures }}</dd>
+      </div>
+      {% endif %}
+      {% if slice_num is not none %}
+      <div class="flex gap-2">
+        <dt class="text-slate-400 w-32 shrink-0">Slice</dt>
+        <dd>{{ slice_num }}</dd>
+      </div>
+      {% endif %}
+      {% if produced_by %}
+      <div class="flex gap-2">
+        <dt class="text-slate-400 w-32 shrink-0">Produced by</dt>
+        <dd class="font-mono">{{ produced_by }}</dd>
+      </div>
+      {% endif %}
+    </dl>
+    {% if has_graph %}
+    <p class="mt-3 text-xs text-slate-400 italic">
+      a full networkx energetics graph is also stored on this ref (omitted here — large).
+    </p>
+    {% endif %}
+    {% if config_snapshot_yaml %}
+    <details class="mt-3">
+      <summary class="text-xs text-slate-500 cursor-pointer hover:text-slate-700">config snapshot (YAML)</summary>
+      <pre class="mt-2 text-xs bg-slate-50 border border-slate-200 rounded p-2 overflow-x-auto whitespace-pre-wrap break-words">{{ config_snapshot_yaml }}</pre>
+    </details>
+    {% endif %}
+  </section>
+
+  <section class="rounded-lg border border-slate-200 bg-white p-4">
+    <h2 class="text-sm font-semibold text-slate-700 mb-2">
+      Linked structures <span class="text-slate-400 font-normal">({{ structures|length }})</span>
+    </h2>
+    {% if structures %}
+    <ul class="space-y-1 text-sm">
+      {% for s in structures %}
+      <li class="flex items-baseline gap-2">
+        <span class="text-xs px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 font-mono shrink-0">{{ s.label }}</span>
+        <a href="{{ s.url }}" class="text-sky-700 hover:underline break-words">{{ s.title }}</a>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="text-sm text-slate-400 italic">no linked adsorbate/intermediate structures recorded.</p>
+    {% endif %}
+  </section>
+</div>
+
+{# ── Energetics summary — defensive reads off meta['results'] ───────── #}
+<section class="mb-6 rounded-lg border border-slate-200 bg-white p-4">
+  <h2 class="text-sm font-semibold text-slate-700 mb-2">Energetics</h2>
+  {% if results_summary.substrate or results_summary.target or results_summary.backend or results_summary.energy_reference or results_summary.relaxed_lattice_A or results_summary.n_nodes is not none or results_summary.n_edges is not none %}
+  <dl class="text-sm text-slate-700 grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1.5">
+    {% if results_summary.substrate %}
+    <div class="flex gap-2"><dt class="text-slate-400 w-32 shrink-0">Substrate</dt><dd class="break-words">{{ results_summary.substrate }}</dd></div>
+    {% endif %}
+    {% if results_summary.target %}
+    <div class="flex gap-2"><dt class="text-slate-400 w-32 shrink-0">Target</dt><dd class="break-words">{{ results_summary.target }}</dd></div>
+    {% endif %}
+    {% if results_summary.backend %}
+    <div class="flex gap-2"><dt class="text-slate-400 w-32 shrink-0">Backend</dt><dd class="font-mono">{{ results_summary.backend }}</dd></div>
+    {% endif %}
+    {% if results_summary.energy_reference %}
+    <div class="flex gap-2"><dt class="text-slate-400 w-32 shrink-0">Energy ref</dt><dd class="break-words">{{ results_summary.energy_reference }}</dd></div>
+    {% endif %}
+    {% if results_summary.relaxed_lattice_A %}
+    <div class="flex gap-2"><dt class="text-slate-400 w-32 shrink-0">Relaxed lattice</dt><dd>{{ results_summary.relaxed_lattice_A }} &Aring;</dd></div>
+    {% endif %}
+    {% if results_summary.n_nodes is not none %}
+    <div class="flex gap-2"><dt class="text-slate-400 w-32 shrink-0">Nodes</dt><dd>{{ results_summary.n_nodes }}</dd></div>
+    {% endif %}
+    {% if results_summary.n_edges is not none %}
+    <div class="flex gap-2"><dt class="text-slate-400 w-32 shrink-0">Edges</dt><dd>{{ results_summary.n_edges }}</dd></div>
+    {% endif %}
+  </dl>
+  {% else %}
+  <p class="text-sm text-slate-400 italic">no computed results recorded yet.</p>
+  {% endif %}
+  {% if results_summary.warnings %}
+  <ul class="mt-3 space-y-1">
+    {% for w in results_summary.warnings %}
+    <li class="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1">&#9888; {{ w }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</section>
+
+{# ── Body — the pathway_body markdown chunk (methods prose) ─────────── #}
+<section class="mb-6">
+  <h2 class="text-sm font-semibold mb-2 text-slate-700">Methods</h2>
+  {% if body_text %}
+  <div class="rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-700 overflow-x-auto">{{ body_text | linkify_toon }}</div>
+  {% else %}
+  <p class="text-sm text-slate-400 italic">no body chunk recorded for this pathway.</p>
+  {% endif %}
+</section>
+{% endblock %}

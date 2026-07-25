@@ -450,6 +450,63 @@ class BlocksMixin:
         assert row is not None
         return int(row[0])
 
+    def count_refs_matching_lexical(
+        self,
+        *,
+        kinds: list[str],
+        q: str,
+        tags: list[str] | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> int:
+        """Distinct-ref lexical match count across ``kinds`` — the honest
+        denominator for the ``/drive`` "showing N of ~K" header.
+
+        The fused semantic+lexical ranking that actually populates Drive's
+        results has no cheap exact total (RRF over ANN legs isn't
+        countable without exhausting it), so this counts distinct refs
+        whose **body** chunk text matches the plain FTS query across the
+        selected kinds instead — an honest lexical approximation of the
+        result universe, not the exact fused total. Same clause shape as
+        :meth:`count_blocks_lexical` (ghost-chunk guard, noise-floor
+        guard, tag filter) plus the ``created_at`` window Drive's
+        since/until boxes carry. Returns ``0`` for an empty ``kinds`` or
+        blank ``q`` rather than running a query that can only match
+        nothing.
+        """
+        if not kinds or not (q or "").strip():
+            return 0
+        clauses = [
+            "r.kind = ANY(%s)",
+            "r.deleted_at IS NULL",
+            # Ghost-chunk guard — see count_blocks_lexical.
+            "c.retired_at IS NULL",
+            _ord_card_clause(None),
+            "c.tsv @@ qq.qq",
+            *_block_noise_clauses(text_alias="c.text"),
+        ]
+        params: list[Any] = [q, list(kinds)]
+        tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
+        if tag_frag:
+            clauses.append(tag_frag)
+            params.extend(tag_params)
+        if since is not None:
+            clauses.append("r.created_at >= %s")
+            params.append(since)
+        if until is not None:
+            clauses.append("r.created_at < %s")
+            params.append(until)
+        sql = (
+            "SELECT count(DISTINCT c.ref_id) FROM chunks c "
+            "JOIN refs r ON r.ref_id = c.ref_id, "
+            "websearch_to_tsquery('english', %s) qq(qq) "
+            f"WHERE {' AND '.join(clauses)}"
+        )
+        with self.pool.connection() as conn:
+            row = conn.execute(sql, params).fetchone()
+        assert row is not None
+        return int(row[0])
+
     def count_paper_yearless_matches(
         self,
         *,
@@ -2270,6 +2327,39 @@ class BlocksMixin:
                 (ref_id, list(ords)),
             ).fetchall()
         return {int(ord_): (text or "").strip() for ord_, text in rows if text}
+
+    def chunk_summaries_bulk(
+        self, pairs: list[tuple[int, int]]
+    ) -> dict[tuple[int, int], str]:
+        """Map ``(ref_id, ord)`` → ``llm-v1`` summary text for the given pairs.
+
+        Batch companion to :meth:`chunk_summaries_for` for the cross-kind
+        search path, which builds ``(ref_id, ord)`` pairs from the page's
+        hits and needs each hit chunk's llm-v1 gloss at once. Pairs with
+        no gloss are omitted (caller falls back to truncated chunk text).
+        One query.
+        """
+        if not pairs:
+            return {}
+        ref_ids = [p[0] for p in pairs]
+        ords = [p[1] for p in pairs]
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT w.ref_id, w.ord, s.text
+                  FROM unnest(%s::bigint[], %s::bigint[]) AS w(ref_id, ord)
+                  JOIN chunks c
+                    ON c.ref_id = w.ref_id AND c.ord = w.ord
+                  JOIN chunk_summaries s
+                    ON s.chunk_id = c.chunk_id AND s.summarizer = 'llm-v1'
+                """,
+                (ref_ids, ords),
+            ).fetchall()
+        return {
+            (int(ref_id), int(ord_)): text.strip()
+            for ref_id, ord_, text in rows
+            if text and text.strip()
+        }
 
     def ref_ids_with_chunks(self, ref_ids: list[int]) -> set[int]:
         """Subset of ``ref_ids`` that have at least one body chunk (ord>=0).

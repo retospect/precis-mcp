@@ -241,6 +241,37 @@ class TestBlocksMissingEmbeddings:
         assert paper_only[0].text == "paper text"
 
 
+class TestCountRefsMatchingLexical:
+    def test_counts_distinct_matching_refs_across_kinds(self, store: Store) -> None:
+        ref_a = _paper_ref(store, slug="lex-a")
+        ref_b = _paper_ref(store, slug="lex-b")
+        # Two body chunks in the same ref shouldn't double-count the ref.
+        store.insert_blocks(
+            ref_a,
+            [
+                BlockInsert(pos=0, text="a study of xenocryst formation"),
+                BlockInsert(pos=1, text="more on xenocryst growth rates"),
+            ],
+        )
+        store.insert_blocks(
+            ref_b, [BlockInsert(pos=0, text="xenocryst inclusions in basalt")]
+        )
+        total = store.count_refs_matching_lexical(kinds=["paper"], q="xenocryst")
+        assert total == 2
+
+    def test_no_match_returns_zero(self, store: Store) -> None:
+        ref_id = _paper_ref(store, slug="lex-nomatch")
+        store.insert_blocks(ref_id, [BlockInsert(pos=0, text="unrelated content")])
+        total = store.count_refs_matching_lexical(kinds=["paper"], q="xenocryst")
+        assert total == 0
+
+    def test_empty_kinds_or_blank_q_returns_zero(self, store: Store) -> None:
+        ref_id = _paper_ref(store, slug="lex-empty")
+        store.insert_blocks(ref_id, [BlockInsert(pos=0, text="xenocryst text")])
+        assert store.count_refs_matching_lexical(kinds=[], q="xenocryst") == 0
+        assert store.count_refs_matching_lexical(kinds=["paper"], q="") == 0
+
+
 class TestCascade:
     def test_hard_delete_ref_removes_blocks(self, store: Store) -> None:
         ref_id = _paper_ref(store)
@@ -251,3 +282,34 @@ class TestCascade:
         with store.pool.connection() as conn:
             conn.execute("DELETE FROM refs WHERE ref_id = %s", (ref_id,))
         assert store.count_blocks(ref_id) == 0
+
+
+class TestChunkSummariesBulk:
+    def test_chunk_summaries_bulk_maps_ref_ord_pairs(self, store: Store) -> None:
+        ref_a = _paper_ref(store, slug="bulk-a")
+        ref_b = _paper_ref(store, slug="bulk-b")
+        blocks_a = store.insert_blocks(
+            ref_a,
+            [BlockInsert(pos=0, text="a0"), BlockInsert(pos=1, text="a1")],
+        )
+        blocks_b = store.insert_blocks(ref_b, [BlockInsert(pos=1, text="b1")])
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO chunk_summaries (chunk_id, summarizer, text, status) "
+                "VALUES (%s, 'llm-v1', %s, 'ok')",
+                (blocks_a[0].id, "gloss for a0"),
+            )
+            conn.execute(
+                "INSERT INTO chunk_summaries (chunk_id, summarizer, text, status) "
+                "VALUES (%s, 'llm-v1', %s, 'ok')",
+                (blocks_b[0].id, "gloss for b1"),
+            )
+
+        out = store.chunk_summaries_bulk([(ref_a, 0), (ref_b, 1), (ref_a, 99)])
+        assert out == {
+            (ref_a, 0): "gloss for a0",
+            (ref_b, 1): "gloss for b1",
+        }
+
+    def test_chunk_summaries_bulk_empty_pairs(self, store: Store) -> None:
+        assert store.chunk_summaries_bulk([]) == {}
