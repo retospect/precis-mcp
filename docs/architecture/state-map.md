@@ -699,7 +699,15 @@ values + prompt + few-shot + `applies_when`); gold sets + accuracy live in
   (the item must already carry a tag in each listed prerequisite
   axis's namespace, checked at *that* axis's own level) and
   `applies_when:` (`domain_in` value filter, `tags_any` gate) —
-  neither existing pass enforced these. `discover_axis_ids()` is the
+  neither existing pass enforced these. `tags_any` resolves ref-level
+  by default, but for a **chunk-level axis** it checks `v_chunk_tags_all`
+  on the chunk (2026-07-25), so a chunk axis can gate on another chunk
+  axis's *value* — e.g. `open-question` now runs only on
+  `ROLE3 ∈ {own, background}` chunks, skipping furniture. Same pass, the
+  axis *definitions* were also reviewed/tightened that day: `material`
+  widened (metal/zeolite/2d-material — catalysts no longer fall to
+  `other`), `transport` gained `unknown` + a `PROPERTY:electrical|multi`
+  gate. `discover_axis_ids()` is the
   one source both `cli/worker.py`'s per-axis wiring and the
   `/categorizers` console read; each id registers its own `axis:<id>`
   `service_config` service, default-OFF (`PRECIS_AXES_ENABLED`
@@ -713,11 +721,16 @@ values + prompt + few-shot + `applies_when`); gold sets + accuracy live in
 
 Same cascade shape lifted one level, **paper**→topic (not chunk→role), for
 the standing "living topic document" line of work. Taxonomy config
-`src/precis/data/topics/*.yaml` (one file per top-level topic — seed:
-`healthspan`, `molelec`, `noxrr`, `llm-improvements` — each with
-`slug`/`description`/`keywords`/`sub_tags`; the top-level list is **closed**,
-new entries added by Reto, not auto-minted, per ADR 0047's measured
-folksonomy-drift lesson).
+`src/precis/data/topics/*.yaml` (one file per top-level topic — 14 as of
+2026-07-25: `healthspan`, `molelec`, `noxrr`, `nh3-synthesis`,
+`co2-conversion`, `catalyst-stability`, `mof`, `mof-tools`,
+`catalysis-tools`, `nanobuds`, `carbon-cad`, `llm`, `ml-general`,
+`bayesian-statistics` — each with `slug`/`description`/`keywords`/`sub_tags`;
+the top-level list is **closed**, new entries added by Reto, not auto-minted,
+per ADR 0047's measured folksonomy-drift lesson). The set was reviewed +
+tightened 2026-07-25 (`CLASSIFY_TOPICS_VERSION=3`): `llm-improvements`
+rescoped→`llm`, `nanobuds` narrowed to just nanobuds, `noxrr` split from the
+new `nh3-synthesis`, keyword substring-traps pruned (`tool use`, `agentic`).
 
 - **Tiers.** 0: free keyword/substring screen over title+abstract per topic —
   a paper matching nothing skips the LLM call entirely. 1: local cheap model

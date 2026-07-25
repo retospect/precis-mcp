@@ -1,0 +1,23 @@
+slug: bayesian-statistics
+description: >
+  Bayesian inference and statistical methodology — probabilistic modeling,
+  Bayesian optimization, MCMC and variational inference, Gaussian processes,
+  uncertainty quantification, and design of experiments. General statistics
+  methods as the contribution; a domain paper that merely *applies* Bayesian
+  optimization to a screening problem may legitimately carry both this and
+  its domain topic (multi-label).
+keywords:
+  - Bayesian
+  - Bayesian inference
+  - Bayesian optimization
+  - probabilistic model
+  - Markov chain Monte Carlo
+  - MCMC
+  - variational inference
+  - Gaussian process
+  - uncertainty quantification
+  - design of experiments
+sub_tags:
+  - bayesian-optimization
+  - bayesian-inference
+  - bayesian-doe

@@ -1,15 +1,15 @@
 slug: nanobuds
 description: >
-  Fullerene-nanotube hybrids and related carbon nanostructures — carbon
-  nanobuds, fullerene-functionalized nanotubes, carbon peapods, and other
-  hybrid carbon nanostructure assemblies.
+  Carbon nanobuds specifically — the covalent fusion of fullerenes onto a
+  carbon-nanotube or graphene sidewall (the "budded" fullerene-on-tube
+  hybrid), including their synthesis, electronic/field-emission properties,
+  and composites. Deliberately narrow: NOT the wider family of carbon
+  nanostructure hybrids (peapods, endohedral tubes, decorated graphene) —
+  those belong to a `carbon-nanostructure-hybrids` superclass added later,
+  not here.
 keywords:
   - nanobud
   - carbon nanobud
-  - fullerene-nanotube hybrid
-  - fullerene-functionalized nanotube
-  - carbon peapod
-  - carbon nanostructure hybrid
 sub_tags:
   - nanobuds-synthesis
   - nanobuds-electronic-properties

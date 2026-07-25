@@ -86,8 +86,9 @@ Gates on `domain ∈ {chemistry, physics, materials, eng}`.
 
 ### `transport:` — geometry of conductivity / current path
 
-Gates on `domain ∈ {physics, materials, eng}` AND `property:electrical`.
-Optional otherwise.
+Gates on `domain ∈ {physics, materials, eng}` AND `property ∈
+{electrical, multi}` (the gate now *skips* non-electrical papers rather
+than running them to `n-a`).
 
 | value | criterion |
 |---|---|
@@ -96,7 +97,8 @@ Optional otherwise.
 | `thin-film` | planar film, 2D sheet conduction |
 | `bulk-3d` | 3D current path |
 | `interfacial` | conduction at an interface or grain boundary |
-| `n-a` | no electrical transport measured |
+| `unknown` | studies transport but the geometry isn't pinned down |
+| `n-a` | electrical property but no transport-path geometry (e.g. dielectric) |
 
 ### `studytype:` — epistemic mode: how the paper knows  *(all papers)*
 
@@ -121,8 +123,11 @@ Gates on `domain ∈ {chemistry, materials, eng}`.
 | `graphene` | graphene, GO, rGO |
 | `nanobud` | carbon nanobuds |
 | `fullerene` | C60, C70, endohedrals |
-| `mof` | metal-organic frameworks |
-| `metal-oxide` | TiO2, ZnO, Cu2O, perovskite oxides |
+| `metal` | elemental metals, alloys/bimetallics, doped metals, metal nanoparticles, SACs (Pd, Pt, Cu, Ni, PdCu…) — the metal is the contribution even on an oxide support |
+| `mof` | metal-organic frameworks, coordination polymers, ZIFs |
+| `zeolite` | aluminosilicate / zeotype molecular sieves (distinct from MOFs) |
+| `metal-oxide` | TiO2, ZnO, Cu2O, perovskite/mixed oxides |
+| `2d-material` | non-graphene 2D — MXenes, TMDs, h-BN (graphene itself → `graphene`) |
 | `polymer` | conducting and structural polymers |
 | `other` | specific but not in the list |
 | `unknown` | can't tell |
@@ -172,8 +177,10 @@ closed vocabularies above; don't mint new values inside those
 prefixes.
 
 **A curated subset of `topic:` slugs also drives a standing living-document
-loop (ADR 0060)** — `healthspan`, `molelec`, `noxrr`, `llm-improvements` (see
-`src/precis/data/topics/*.yaml`). A background cascade (default-OFF,
+loop (ADR 0060)** — the closed set lives in `src/precis/data/topics/*.yaml`
+(currently `healthspan`, `molelec`, `noxrr`, `nh3-synthesis`, `co2-conversion`,
+`catalyst-stability`, `mof`, `mof-tools`, `catalysis-tools`, `nanobuds`,
+`carbon-cad`, `llm`, `ml-general`, `bayesian-statistics`). A background cascade (default-OFF,
 `PRECIS_CLASSIFY_TOPICS_ENABLED`) auto-tags matching papers with these slugs,
 **multi-label** (a paper can carry several). Don't hand-coin a `topic:` value
 that collides with one of these slugs for an unrelated meaning; check
@@ -206,7 +213,9 @@ recall-biased binary flag for experiment planning: does the chunk
 name something *specific* not yet done (future direction, open
 question, untried condition, acknowledged failure, negative result)?
 Cross-cutting by design — leads live in `future-work`, `limitation`,
-`result`, and even `motivation` chunks:
+`result`, and even `motivation` chunks. Gated on `ROLE3 ∈ {own,
+background}` (runs only after the role3 cascade; skips `furniture`, where
+no lead lives):
 
 ```python
 search(kind="paper", q="mof water stability", tags=["open-question:yes"])

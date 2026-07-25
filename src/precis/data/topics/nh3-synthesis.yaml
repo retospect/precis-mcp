@@ -1,0 +1,21 @@
+slug: nh3-synthesis
+description: >
+  Ammonia synthesis — making NH3 from N2 (nitrogen fixation): thermochemical
+  Haber-Bosch catalysis, electrocatalytic nitrogen reduction (NRR),
+  photocatalytic and plasma-assisted ammonia synthesis, and the catalyst
+  design behind them. Distinct from noxrr, which is NOx→(N2|NH3) abatement,
+  not N2→NH3 fixation.
+keywords:
+  - ammonia synthesis
+  - nitrogen fixation
+  - nitrogen reduction reaction
+  - NRR
+  - Haber-Bosch
+  - Haber Bosch
+  - dinitrogen reduction
+  - electrocatalytic ammonia
+  - N2 reduction
+sub_tags:
+  - nh3-synthesis-thermal
+  - nh3-synthesis-electro
+  - nh3-synthesis-mechanism

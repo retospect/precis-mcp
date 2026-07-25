@@ -2,8 +2,14 @@
 # the previous work left off". Deliberately orthogonal to role: —
 # leads live in future-work AND limitation AND negative results AND
 # "no study has yet addressed X" motivation chunks; a single-select
-# rhetorical axis cannot retrieve that set. Rides the same combined
-# call / cached prefix as role:.
+# rhetorical axis cannot retrieve that set.
+#
+# Gated on role3 (2026-07-25): only substantive prose is classified —
+# ROLE3:own (this paper's methods/results/limitations/future-work) plus
+# ROLE3:background (motivation chunks hold the "no study has addressed X"
+# leads). ROLE3:furniture is skipped — no lead ever lives in a reference
+# list or copyright block — which also prunes the pass to the chunks that
+# can plausibly answer "yes", instead of running on every chunk.
 #
 # This axis is tuned for RECALL: a false-positive lead costs seconds
 # of reading; a false negative is an invisible lost thread. The
@@ -31,7 +37,10 @@ select: one
 values: ["yes", "no", unknown, n-a]   # yes/no quoted — YAML 1.1 bools
 default_unknown: unknown
 applies_when:
-  always: true
+  # Skip furniture + unclassified chunks; keep own + background (see
+  # header). Chunk-level tags_any → checked via v_chunk_tags_all, i.e.
+  # the chunk's own ROLE3 tag, so the role3 cascade must sweep first.
+  tags_any: ["ROLE3:own", "ROLE3:background"]
 cost_tier: small
 context: [section_path, position, title, ref_tags, neighbor_gists_1]
 prompt: |

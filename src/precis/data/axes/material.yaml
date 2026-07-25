@@ -1,15 +1,29 @@
+# v2 vocabulary (still version: 1 — the axis has never been applied,
+# so pre-Round-0 edits are free; see ADR 0047 §7). Widened 2026-07-25
+# beyond the original carbon-only focus: the corpus is dominated by
+# catalysis (Pd/doped-metal NOx→NH3 + CO2-electro), MOF, and molecular-
+# electronics work that all fell to `other`. Added `metal` (the single
+# biggest miss — every metallic catalyst was `other`), `zeolite`, and
+# `2d-material`. Carbon buckets kept (nanobud is a primary target). A
+# `carbon-nanostructure-hybrids` superclass may split off later; further
+# classes (biomolecule, semiconductor) join by mining, not pre-emptive
+# invention (ADR 0047 §5).
+
 id: material
 version: 1
 question: "What primary material class does this paper investigate?"
-values: [cnt, graphene, nanobud, fullerene, mof, metal-oxide, polymer, other, unknown, n-a]
+values: [cnt, graphene, nanobud, fullerene, metal, mof, zeolite,
+         metal-oxide, "2d-material", polymer, other, unknown, n-a]
 default_unknown: unknown
 applies_when:
   domain_in: [chemistry, materials, eng]
 prereq: [domain]
 cost_tier: small
 prompt: |
-  Classify the *primary material class* studied. Use "other" when
-  the material is specific but doesn't match the listed buckets.
+  Classify the *primary material class* studied — the material the
+  paper claims as its own contribution or object of study, not a
+  support or substrate it merely sits on. Use "other" when the
+  material is specific but doesn't match any listed bucket.
 
   Pick exactly ONE:
 
@@ -17,10 +31,20 @@ prompt: |
   - graphene    : graphene, GO, rGO, few-layer graphene
   - nanobud     : carbon nanobuds (graphene/CNT + fullerene fusion)
   - fullerene   : C60, C70, endohedral fullerenes
-  - mof         : metal-organic frameworks
-  - metal-oxide : TiO2, ZnO, Cu2O, perovskite oxides
+  - metal       : metallic materials — elemental metals, alloys and
+                  bimetallics, doped metals, metal nanoparticles, and
+                  single-atom metal catalysts (Pd, Pt, Cu, Ni, PdCu…).
+                  A supported metal catalyst is "metal" when the metal
+                  is the contribution, even if it sits on an oxide.
+  - mof         : metal-organic frameworks, coordination polymers, ZIFs
+  - zeolite     : aluminosilicate / zeotype molecular sieves (a
+                  distinct porous class from MOFs)
+  - metal-oxide : TiO2, ZnO, Cu2O, perovskite oxides, mixed oxides
+  - 2d-material : non-graphene 2D materials — MXenes, TMDs (MoS2, WS2),
+                  h-BN, phosphorene (graphene itself is "graphene")
   - polymer     : conducting and structural polymers
-  - other       : specific material outside the above
+  - other       : specific material outside the above (e.g. an organic
+                  molecule, elemental semiconductor, biomolecule)
   - unknown     : title + abstract don't pin down the material
   - n-a         : no specific material (pure theory, methodology, review)
 
@@ -28,6 +52,8 @@ prompt: |
   {"value": "<one>", "confidence": <0..1>,
    "rationale": "<one sentence; required if confidence < 0.7>"}
 
-  A graphene/CNT/fullerene composite is whichever the paper claims
-  is the new contribution. If multiple are equally weighted, pick
-  the most novel — usually nanobud > fullerene > cnt > graphene.
+  Support vs contribution: a Pd/CeO2 catalyst paper is "metal" (Pd is
+  the contribution); a paper *about* the CeO2 support is "metal-oxide".
+  A graphene/CNT/fullerene composite is whichever the paper claims as
+  new; if equally weighted, pick the most novel — usually
+  nanobud > fullerene > cnt > graphene.

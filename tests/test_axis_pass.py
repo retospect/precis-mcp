@@ -156,7 +156,8 @@ def test_prereq_gate_blocks_claim_until_prereq_tag_present(store: Any) -> None:
 
 def test_prereq_gate_two_axes_both_required(store: Any) -> None:
     """``transport`` needs BOTH ``domain`` and ``property`` — one alone
-    must not unblock it."""
+    must not unblock it. ``property`` must resolve to ``electrical`` (or
+    ``multi``) to also clear transport's ``applies_when.tags_any`` gate."""
     ref_id = seed_ref(store, title="A study of point contacts")
     seed_chunk(store, ref_id=ref_id, text=_LONG_PARA, ord=0)
     client = _FakeClient("point-contact")
@@ -174,7 +175,7 @@ def test_prereq_gate_two_axes_both_required(store: Any) -> None:
 
     with store.pool.connection() as conn:
         store.add_tag(
-            ref_id, Tag.closed("PROPERTY", "conductivity"), set_by="agent", conn=conn
+            ref_id, Tag.closed("PROPERTY", "electrical"), set_by="agent", conn=conn
         )
         conn.commit()
 
@@ -304,6 +305,72 @@ def test_applies_when_tags_any_gates_on_listed_tag(store: Any) -> None:
     assert result == {"claimed": 1, "ok": 1, "failed": 0, "dist": {"analogy": 1}}
     assert _ref_tag(store, dream_ref, "MOVE") == "analogy"
     assert _ref_tag(store, plain_ref, "MOVE") is None  # not tags_any-eligible
+
+
+def test_applies_when_tags_any_ref_level_value_gate(store: Any) -> None:
+    """``transport``'s ``applies_when.tags_any: [PROPERTY:electrical,
+    PROPERTY:multi]`` rejects a property-tagged ref whose PROPERTY value is
+    outside the list, even though its mere presence satisfies
+    ``prereq: [property]``."""
+    ref_thermal = seed_ref(store, title="A thermal-conductivity study")
+    seed_chunk(store, ref_id=ref_thermal, text=_LONG_PARA, ord=0)
+    ref_elec = seed_ref(store, title="An electrical-transport study")
+    seed_chunk(store, ref_id=ref_elec, text=_LONG_PARA, ord=0)
+    with store.pool.connection() as conn:
+        for rid, prop in ((ref_thermal, "thermal"), (ref_elec, "electrical")):
+            store.add_tag(
+                rid, Tag.closed("DOMAIN", "physics"), set_by="agent", conn=conn
+            )
+            store.add_tag(rid, Tag.closed("PROPERTY", prop), set_by="agent", conn=conn)
+        conn.commit()
+
+    client = _FakeClient("thin-film")
+    result = run_axis_pass(
+        store,
+        dispatch=client,
+        axis_id="transport",
+        batch_size=10,
+        ref_ids=[ref_thermal, ref_elec],
+    )
+
+    assert result == {"claimed": 1, "ok": 1, "failed": 0, "dist": {"thin-film": 1}}
+    assert _ref_tag(store, ref_elec, "TRANSPORT") == "thin-film"
+    assert _ref_tag(store, ref_thermal, "TRANSPORT") is None  # blocked by tags_any
+
+
+def test_applies_when_tags_any_chunk_level_gates_on_role3(store: Any) -> None:
+    """``open-question`` (chunk-level) gates on ``applies_when.tags_any:
+    [ROLE3:own, ROLE3:background]`` — a *per-chunk* tag resolved via
+    ``v_chunk_tags_all``. Only own/background chunks are classified; a
+    ROLE3:furniture chunk and an un-role3'd chunk are both skipped."""
+    ref_id = seed_ref(store, title="A paper with mixed chunks")
+    seed_chunk(store, ref_id=ref_id, text=_LONG_PARA, ord=0)  # ROLE3:own
+    seed_chunk(store, ref_id=ref_id, text=_LONG_PARA, ord=1)  # ROLE3:furniture
+    seed_chunk(store, ref_id=ref_id, text=_LONG_PARA, ord=2)  # no role3 tag
+    with store.pool.connection() as conn:
+        store.add_tag(
+            ref_id, Tag.closed("ROLE3", "own"), set_by="system", conn=conn, pos=0
+        )
+        store.add_tag(
+            ref_id, Tag.closed("ROLE3", "furniture"), set_by="system", conn=conn, pos=1
+        )
+        conn.commit()
+
+    client = _FakeClient("yes")
+    result = run_axis_pass(
+        store,
+        dispatch=client,
+        axis_id="open-question",
+        batch_size=10,
+        ref_ids=[ref_id],
+    )
+
+    assert result == {"claimed": 1, "ok": 1, "failed": 0, "dist": {"yes": 1}}
+    assert _chunk_tag(store, ref_id, 0, "OPEN-QUESTION") == "yes"  # own -> classified
+    assert _chunk_tag(store, ref_id, 1, "OPEN-QUESTION") is None  # furniture -> skipped
+    assert (
+        _chunk_tag(store, ref_id, 2, "OPEN-QUESTION") is None
+    )  # un-role3'd -> skipped
 
 
 def test_unparseable_output_is_failed_and_stays_claimable(store: Any) -> None:

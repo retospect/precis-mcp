@@ -49,7 +49,12 @@ from precis.store.types import Tag
 
 log = logging.getLogger(__name__)
 
-CLASSIFY_TOPICS_VERSION = "2"
+# v3 (2026-07-25): topic set changed — llm-improvements → llm (rescope),
+# + ml-general, bayesian-statistics, co2-conversion, catalyst-stability,
+# nh3-synthesis; nanobuds narrowed, noxrr split from nh3-synthesis. Bumping
+# lazily re-classifies the corpus against the new set (also the retroactive-
+# backfill path for the added topics). Harmless while the pass is default-OFF.
+CLASSIFY_TOPICS_VERSION = "3"
 MARKER_NAMESPACE = "TOPICCASCADE"
 _TOPICS_DIR = Path(__file__).resolve().parent.parent / "data" / "topics"
 _ABSTRACT_CHARS = 2000

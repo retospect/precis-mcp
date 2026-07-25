@@ -33,9 +33,16 @@ requires the item's (parent) ref to carry a ``DOMAIN`` tag whose VALUE is
 in the list — stricter than a bare ``prereq: [domain]`` presence check,
 since a ``DOMAIN:bio`` ref satisfies the prereq but fails
 ``domain_in: [physics, materials, eng]``. ``tags_any: ["NS:value", ...]``
-requires the ref to carry at least one of the listed closed-prefix tags
-(``move``, the dream/memory axis, uses this to gate on
-``DREAM:speculative`` / ``DREAM:grounded``).
+requires at least one of the listed closed-prefix tags to be present:
+resolved on the (parent) ref for a **ref-level** axis (``move``, the
+dream/memory axis, gates on ``DREAM:speculative`` / ``DREAM:grounded``),
+but on the **chunk itself** for a chunk-level axis — checked via
+``v_chunk_tags_all`` (the chunk's own ``chunk_tags`` plus inherited
+``ref_tags``), so a chunk axis can gate on another chunk axis's VALUE
+(``open-question`` runs only on ``ROLE3:own`` / ``ROLE3:background``
+chunks, skipping furniture). Unlike ``prereq:`` — which keys the table off
+the *prerequisite* axis's level — ``tags_any`` keys off *this* axis's
+level.
 
 **Idempotency + versioning**: a per-axis marker tag ``f"{NS}CASCADE"``
 (mirroring ``classify_topics``'s ``TOPICCASCADE``) valued at the current
@@ -249,7 +256,7 @@ def _prereq_clauses(
 
 
 def _applies_when_clauses(
-    axis: dict[str, Any], *, ref_col: str
+    axis: dict[str, Any], *, ref_col: str, chunk_col: str | None = None
 ) -> tuple[str, dict[str, Any]]:
     """``AND EXISTS (...)`` clause(s) for the axis's ``applies_when:`` gate —
     an orthogonal layer alongside ``prereq:`` (both must pass; an item can
@@ -257,17 +264,23 @@ def _applies_when_clauses(
     ``applies_when`` value check, e.g. ``DOMAIN:bio`` satisfies
     ``prereq: [domain]`` but fails ``domain_in: [physics, materials,
     eng]``). Handles the three forms that appear in ``data/axes/*.yaml``
-    today; always resolved against the item's (parent) ref, ``ref_col``
-    (the same column ``_prereq_clauses`` uses for a ref-level prereq):
+    today:
 
     - absent, or ``always: true`` -> no clause.
-    - ``domain_in: [...]`` -> the ref must carry a ``DOMAIN`` tag whose
-      VALUE is in the list.
-    - ``tags_any: ["NS:value", ...]`` -> the ref must carry at least one
-      of the listed closed-prefix ``(namespace, value)`` tags (each token
+    - ``domain_in: [...]`` -> the (parent) ref must carry a ``DOMAIN`` tag
+      whose VALUE is in the list. Always ref-level (``DOMAIN`` is a ref
+      axis), resolved against ``ref_col``.
+    - ``tags_any: ["NS:value", ...]`` -> at least one of the listed
+      closed-prefix ``(namespace, value)`` tags is present (each token
       split on the first ``:``). Built as an OR of per-pair equality
       checks rather than a single row-value ``IN`` — safer against driver
-      tuple-array adaptation than assuming composite-type support.
+      tuple-array adaptation than assuming composite-type support. For a
+      **chunk-level axis** (``chunk_col`` given), this resolves against
+      ``v_chunk_tags_all`` on ``chunk_col`` — the view unions the chunk's
+      own ``chunk_tags`` with its inherited ``ref_tags``, so a token may
+      name a chunk axis (e.g. ``ROLE3:own`` gating ``open-question``) or a
+      ref axis, both read from the chunk's perspective. Ref-level axes
+      keep the ``ref_tags``-on-``ref_col`` path.
     """
     when = axis.get("applies_when") or {}
     if not when or when.get("always"):
@@ -297,11 +310,22 @@ def _applies_when_clauses(
                 f"(awt2.namespace = %(tags_any_ns_{i})s AND "
                 f"awt2.value = %(tags_any_val_{i})s)"
             )
-        clauses.append(
-            "AND EXISTS (SELECT 1 FROM ref_tags awrt2 JOIN tags awt2 "
-            "ON awt2.tag_id = awrt2.tag_id "
-            f"WHERE awrt2.ref_id = {ref_col} AND (" + " OR ".join(pairs_sql) + "))"
-        )
+        pred = " OR ".join(pairs_sql)
+        if chunk_col is not None and axis.get("level") == "chunk":
+            # Gate a chunk axis on the chunk's own tag (e.g. open-question
+            # on ROLE3:own|background). v_chunk_tags_all already carries
+            # (chunk_id, namespace, value) with ref-tag inheritance folded
+            # in, so no join to `tags` is needed.
+            clauses.append(
+                "AND EXISTS (SELECT 1 FROM v_chunk_tags_all awt2 "
+                f"WHERE awt2.chunk_id = {chunk_col} AND (" + pred + "))"
+            )
+        else:
+            clauses.append(
+                "AND EXISTS (SELECT 1 FROM ref_tags awrt2 JOIN tags awt2 "
+                "ON awt2.tag_id = awrt2.tag_id "
+                f"WHERE awrt2.ref_id = {ref_col} AND (" + pred + "))"
+            )
 
     return "\n        ".join(clauses), params
 
@@ -326,7 +350,9 @@ def _claim_chunk(
     prereq_sql, prereq_params = _prereq_clauses(
         axis, ref_col="c.ref_id", chunk_col="c.chunk_id"
     )
-    applies_sql, applies_params = _applies_when_clauses(axis, ref_col="c.ref_id")
+    applies_sql, applies_params = _applies_when_clauses(
+        axis, ref_col="c.ref_id", chunk_col="c.chunk_id"
+    )
     sql = f"""
     WITH cand AS (
       SELECT c.chunk_id, c.ref_id, c.ord, c.text, c.section_path

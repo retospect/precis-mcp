@@ -1,0 +1,29 @@
+slug: llm
+description: >
+  Large language models — any aspect of LLMs: training and fine-tuning,
+  alignment/RLHF, inference efficiency and serving, retrieval-augmented
+  generation, tool-calling / agentic systems, evaluation and benchmarking,
+  and architecture advances. Broadened 2026-07-25 from the old
+  improvements-only scope (was `llm-improvements`) to a general "about LLMs"
+  bucket. A paper that merely *uses* an LLM as a tool for another field is
+  that field's topic, not this one.
+keywords:
+  - large language model
+  - LLM
+  - RLHF
+  - instruction tuning
+  - retrieval-augmented generation
+  - transformer language model
+  - LLM agent
+  - agentic AI
+  - function calling
+  - prompt engineering
+  - in-context learning
+  - AI alignment
+sub_tags:
+  - llm-training
+  - llm-alignment
+  - llm-inference
+  - llm-agents
+  - llm-eval
+  - llm-architecture

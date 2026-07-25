@@ -1,0 +1,25 @@
+slug: ml-general
+description: >
+  Machine learning methods in general — architectures, training and
+  optimization, representation/self-supervised learning, generative models,
+  reinforcement learning, and benchmarks — as the paper's own contribution.
+  NOT LLM-specific (that is the `llm` topic) and NOT applied domain-ML: a
+  chemistry/materials paper that merely *uses* an ML model to screen
+  catalysts or predict MOFs belongs to its domain topic
+  (`catalysis-tools`, `mof-tools`), not here.
+keywords:
+  - machine learning
+  - deep learning
+  - neural network
+  - representation learning
+  - self-supervised learning
+  - graph neural network
+  - reinforcement learning
+  - generative model
+  - diffusion model
+  - foundation model
+sub_tags:
+  - ml-general-architecture
+  - ml-general-training
+  - ml-general-generative
+  - ml-general-benchmarks

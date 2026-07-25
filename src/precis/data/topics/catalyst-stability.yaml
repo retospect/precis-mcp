@@ -1,0 +1,21 @@
+slug: catalyst-stability
+description: >
+  Catalyst stability, durability, and deactivation — poisoning and poisoning
+  resistance, sintering and thermal degradation, coking / fouling, leaching,
+  regeneration, and long-term lifetime of catalysts of any class. A
+  cross-cutting concern that composes with noxrr / co2-conversion /
+  nh3-synthesis / catalysis-tools (multi-label expected).
+keywords:
+  - catalyst deactivation
+  - catalyst stability
+  - catalyst poisoning
+  - poisoning resistance
+  - catalyst durability
+  - catalyst sintering
+  - catalyst regeneration
+  - coking
+  - catalyst lifetime
+sub_tags:
+  - catalyst-stability-poisoning
+  - catalyst-stability-sintering
+  - catalyst-stability-regeneration

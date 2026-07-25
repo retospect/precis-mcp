@@ -1355,8 +1355,19 @@ Cascade shipped + deployed + validated. Design
   ADR 0047 §3: prereq + applies_when enforced, per-axis `axis:<id>`
   `service_config` gate) has never been flipped on for any of the ~10 axes it
   now drives. `domain`/`studytype`/`property` need a stronger model than the
-  free one clears the gate on; `material` (93%) + `transport` (97%) already
-  clear it — candidates for the first corpus-wide sweep.
+  free one clears the gate on; `material` + `transport` were the eval leaders
+  (93% / 97%) — **but those numbers are now STALE**: the 2026-07-25 definition
+  pass changed both vocabularies (`material` +metal/zeolite/2d-material,
+  `transport` +unknown + a `PROPERTY:electrical|multi` gate), and `material`
+  has **no gold rows** for the three new values. **Re-run
+  `scripts/classify/eval-classifier --axis material,transport` and add gold
+  rows for the new material values before trusting either for a corpus sweep.**
+  - **Gold rows for the new/changed topics** — the 2026-07-25 topic pass added
+    `nh3-synthesis`, `co2-conversion`, `catalyst-stability`, `ml-general`,
+    `bayesian-statistics` and rescoped `llm`/`nanobuds`; `CLASSIFY_TOPICS_VERSION`
+    bumped to 3 (lazy re-classify on next enable). No gold/eval exists for the
+    topic cascade yet — spot-check Tier-1 precision on the new topics before a
+    corpus-wide `PRECIS_CLASSIFY_TOPICS_ENABLED` sweep.
   - **Blocker before any *chunk-level* axis (`role`, `open-question`) sweeps:**
     add a per-axis failed-`chunk_claims`-lease reaper. On a chunk-level LLM
     failure `axis_pass.py` leaves the `axis:<id>-v<version>` lease in place, so
