@@ -664,6 +664,23 @@ values + prompt + few-shot + `applies_when`); gold sets + accuracy live in
   backfill, mirrors `classify_topics`' `ref_ids` scoping). Manual backfill +
   eval: `scripts/classify/classify --cascade` (dry-run default; `--commit` to
   write). Full design: `docs/design/chunk-classifier-cascade.md`.
+- **Generic axis runner (ADR 0047 §3, built).** `workers/axis_pass.py`
+  (`run_axis_pass`) drives every `data/axes/*.yaml` axis outside the
+  `junk`/`role3` cascade — chunk-level (claim/lease mirrors
+  `classify.py`) or ref-level (claim mirrors `classify_topics.py`,
+  the default when an axis omits `level:`). Enforces both `prereq:`
+  (the item must already carry a tag in each listed prerequisite
+  axis's namespace, checked at *that* axis's own level) and
+  `applies_when:` (`domain_in` value filter, `tags_any` gate) —
+  neither existing pass enforced these. `discover_axis_ids()` is the
+  one source both `cli/worker.py`'s per-axis wiring and the
+  `/categorizers` console read; each id registers its own `axis:<id>`
+  `service_config` service, default-OFF (`PRECIS_AXES_ENABLED`
+  comma-list seeds the default-on verdict). The ~10 axes this makes
+  runnable (`domain`, `scale`, `dim`, `transport`, `material`,
+  `property`, `studytype`, `move`, `open-question`, plus any new
+  axis file) still haven't been swept corpus-wide — flipping one on
+  is an operator decision, not yet exercised in prod.
 
 ### Topic-dossier classifier (ADR 0060 cascade) — classifier slice built
 
@@ -1226,8 +1243,8 @@ The master kinds table lives in the `precis-overview` skill.
 Rationalized 2026-07 (`docs/proposals/web-ui-rationalization.md`, now
 shipped): the nav collapsed from ~11 top-level entries + 2 dropdowns down
 to **Daily** (Drive, Tags, ToDo, always visible) · **Attention** (Needs
-you / Gripes / Alerts, badged, right) · **Ops ▾** (System, Agent Logs,
-Console, Env, Secrets) · a slimmed **Browse ▾** for the five
+you / Gripes / Alerts, badged, right) · **Ops ▾** (System, Categorizers,
+Agent Logs, Console, Env, Secrets) · a slimmed **Browse ▾** for the five
 kind-specific readers Drive's generic rows can't reproduce (Clusters,
 Structures, CAD, Figures, Mermaid). Nav template:
 `src/precis_web/templates/base.html.j2`; badge counts:
@@ -1254,6 +1271,16 @@ POST (closed-vocab `tag` verb — `open → triaged → ready_for_fix →
 in_review → wontfix`), and a `retire` (soft-delete, distinct from
 `wontfix`). Nav badge counts every non-`wontfix` gripe
 (`src/precis_web/nav.py::_gripes_count`).
+
+**Categorizers console (`/categorizers`, new).**
+`src/precis_web/routes/categorizers.py` lists every axis (`data/axes/*.yaml`)
+and topic (`data/topics/*.yaml`) — granularity, prereqs, and a live
+enable/disable toggle (`POST /categorizers/toggle`) writing the all-hosts
+`service_config` row the axis's own `axis:<id>` service (or the shared
+`classify`/`classify_topics` pass, for `role3`/`junk`/topics) reads — flips
+in place, no redeploy. Coverage %s are a lazy `GET /categorizers/progress`
+htmx fragment (the corpus-scan aggregates are deferred off the initial
+paint, mirroring `/status`'s backlog fragment).
 
 **System — merged Status+Factory+Budget+Models
 (`/status?tab=health|services|models|budget`).**

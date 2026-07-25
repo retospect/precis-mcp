@@ -1,0 +1,81 @@
+{% extends "base.html.j2" %}
+{% block title %}Categorizers{% endblock %}
+{% block content %}
+<h1 class="text-lg font-semibold mb-1">Categorizers</h1>
+<p class="text-sm text-slate-500 mb-4">
+  Every axis (<code>src/precis/data/axes/*.yaml</code>, closed-vocabulary,
+  chunk- or paper/patent-level) and topic (<code>src/precis/data/topics/*.yaml</code>,
+  paper/patent multi-label) the corpus can carry, in one inventory. The
+  On / Off / Default control live-flips the governing
+  <code>service_config</code> row (all hosts) — every worker node picks a
+  flip up within one cache TTL, no redeploy.
+</p>
+
+<div class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100 mb-8">
+  <div class="px-4 py-2 text-[11px] font-semibold text-slate-500 flex items-center gap-3">
+    <span class="w-32 shrink-0">Name</span>
+    <span class="flex-1">What it categorizes</span>
+    <span class="w-28 shrink-0">Granularity</span>
+    <span class="w-20 shrink-0">Active</span>
+    <span class="w-44 shrink-0">Prereqs</span>
+    <span class="w-56 shrink-0">Toggle</span>
+  </div>
+  {% for row in axes + topics %}
+  <div class="px-4 py-2 text-xs flex items-center gap-3" data-categorizer="{{ row.name }}" data-kind="{{ row.kind }}" data-service="{{ row.service }}">
+    <span class="w-32 shrink-0 font-mono text-slate-700">{{ row.name }}</span>
+    <span class="flex-1 text-slate-600">
+      {{ row.question }}
+      {% if row.shared_note %}
+      <span class="block text-[11px] text-slate-400 mt-0.5">{{ row.shared_note }}</span>
+      {% endif %}
+    </span>
+    <span class="w-28 shrink-0 text-slate-500">{{ row.granularity }}</span>
+    <span class="w-20 shrink-0">
+      {% if row.status == 'active' %}
+      <span class="inline-flex items-center rounded-full bg-emerald-100 text-emerald-700 px-2 py-0.5 font-medium">active</span>
+      {% else %}
+      <span class="inline-flex items-center rounded-full bg-amber-100 text-amber-700 px-2 py-0.5 font-medium">off</span>
+      {% endif %}
+      {% if row.overridden %}
+      <span class="block text-[10px] text-slate-400 mt-0.5">override</span>
+      {% else %}
+      <span class="block text-[10px] text-slate-400 mt-0.5">default</span>
+      {% endif %}
+    </span>
+    <span class="w-44 shrink-0 text-slate-400">
+      {% if row.prereq %}{{ row.prereq | join(', ') }}{% else %}—{% endif %}
+    </span>
+    <span class="w-56 shrink-0 flex items-center gap-1">
+      <form method="post" action="/categorizers/toggle" class="inline">
+        <input type="hidden" name="service" value="{{ row.service }}">
+        <input type="hidden" name="action" value="on">
+        <button type="submit" class="px-2 py-0.5 rounded border {{ 'border-emerald-400 bg-emerald-50 text-emerald-700' if row.active else 'border-slate-200 text-slate-500 hover:bg-slate-50' }}">On</button>
+      </form>
+      <form method="post" action="/categorizers/toggle" class="inline">
+        <input type="hidden" name="service" value="{{ row.service }}">
+        <input type="hidden" name="action" value="off">
+        <button type="submit" class="px-2 py-0.5 rounded border {{ 'border-amber-400 bg-amber-50 text-amber-700' if not row.active else 'border-slate-200 text-slate-500 hover:bg-slate-50' }}">Off</button>
+      </form>
+      <form method="post" action="/categorizers/toggle" class="inline">
+        <input type="hidden" name="service" value="{{ row.service }}">
+        <input type="hidden" name="action" value="default">
+        <button type="submit" class="px-2 py-0.5 rounded border border-slate-200 text-slate-400 hover:bg-slate-50">Default</button>
+      </form>
+    </span>
+  </div>
+  {% endfor %}
+</div>
+
+{# Coverage counts are full-table aggregate scans (the chunk-level axes
+   walk ~1.3M chunks) — the slowest part of this page, so lazy-loaded via
+   htmx the same way ``/status``'s chunk-pipeline backlog panel is. #}
+<h2 class="text-sm font-semibold mb-2">Coverage
+  <span class="font-normal text-xs text-slate-400">(done / eligible corpus)</span>
+</h2>
+<div hx-get="/categorizers/progress" hx-trigger="load" hx-swap="innerHTML">
+  <div class="rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm text-slate-400 flex items-center gap-2">
+    <span class="inline-block w-3 h-3 rounded-full border-2 border-slate-300 border-t-slate-500 animate-spin"></span>
+    loading coverage…
+  </div>
+</div>
+{% endblock %}

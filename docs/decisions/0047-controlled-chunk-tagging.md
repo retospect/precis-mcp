@@ -15,7 +15,15 @@
   full 11-way `role:` kept as an optional refinement. Human inter-annotator
   agreement is ~89%, so ~85–90% is the ceiling; the `accept:` sets + the
   query-time agent absorb the rest. `material`/`transport` ref axes pass on
-  the free model; the ref-axis production runner is not yet built.
+  the free model.
+- **§3's generic runner is now built.** `src/precis/workers/axis_pass.py`
+  (`run_axis_pass`) drives any non-cascade `data/axes/*.yaml` axis —
+  chunk- or ref-level, enforcing `prereq:` and `applies_when:` — behind
+  its own per-axis `axis:<id>` `service_config` gate
+  (`cli/worker.py`, default-OFF). Caveat: still default-OFF everywhere,
+  and none of the ref-level lexical axes (`domain`, `scale`, `dim`,
+  `transport`, `material`, `property`, `studytype`) has been swept
+  corpus-wide — a YAML + worker wiring exists, a completed run doesn't.
 - **Extended by**: [ADR 0060](./0060-topic-dossiers.md) lifts this cascade
   pattern one level, from chunks to papers (`topic:` tags, multi-label).
 - **Deciders**: Reto + agent

@@ -87,6 +87,7 @@ def create_app(
         asks,
         budget,
         cad,
+        categorizers,
         cfp,
         clusters,
         console,
@@ -134,6 +135,7 @@ def create_app(
     app.include_router(clusters.router)
     app.include_router(structure.router)
     app.include_router(cad.router)
+    app.include_router(categorizers.router)
     app.include_router(figure.router)
     app.include_router(mermaid.router)
     app.include_router(alerts.router)

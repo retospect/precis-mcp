@@ -168,10 +168,13 @@ def run_loop(
     * ``pass_gate(service)`` — consulted *each cycle* before running a
       ref-pass, so a live ``service_config`` flip (prio → 0) skips the
       pass on the next cycle without a worker restart (factory slice 2).
-      The service name is derived from the closure ``__name__``
-      (``_classify_pass`` → ``classify``); a closure whose name doesn't
-      fit that shape (plugin passes) is never gated. Returning ``False``
-      skips the pass this cycle; ``None`` gate disables gating entirely.
+      The service name is the closure's ``service_name`` attribute when
+      set (the per-axis ``_axis_pass`` closures share one ``__name__`` but
+      each carries a distinct ``axis:<id>`` service via this attribute);
+      otherwise it's derived from ``__name__`` (``_classify_pass`` ->
+      ``classify``). A closure with neither is never gated. Returning
+      ``False`` skips the pass this cycle; ``None`` gate disables gating
+      entirely.
     """
     if not handlers and not ref_passes:
         log.warning("worker: no handlers and no ref_passes registered; nothing to do")
@@ -219,14 +222,21 @@ def run_loop(
                 log.info("worker: stop signal received; exiting loop")
                 return
             if pass_gate is not None:
-                fn_name = getattr(ref_pass, "__name__", "")
-                if fn_name.startswith("_") and fn_name.endswith("_pass"):
-                    service = fn_name[1:-5]
-                    if not pass_gate(service):
-                        # Live-disabled via service_config (prio 0). Skip
-                        # this cycle; not counted as work so the loop can
-                        # still idle-sleep when everything else is drained.
-                        continue
+                # Prefer an explicit ``service_name`` attribute (per-axis
+                # closures registered under distinct ``axis:<id>`` services
+                # all share the literal ``__name__`` ``_axis_pass``, so the
+                # name-derived fallback below can't tell them apart) over
+                # the ``__name__``-derived service.
+                service = getattr(ref_pass, "service_name", None)
+                if service is None:
+                    fn_name = getattr(ref_pass, "__name__", "")
+                    if fn_name.startswith("_") and fn_name.endswith("_pass"):
+                        service = fn_name[1:-5]
+                if service is not None and not pass_gate(service):
+                    # Live-disabled via service_config (prio 0). Skip
+                    # this cycle; not counted as work so the loop can
+                    # still idle-sleep when everything else is drained.
+                    continue
             try:
                 result = ref_pass(batch_size)
             except Exception:

@@ -535,6 +535,21 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-overview",
     ),
     ServiceSpec(
+        name="axis",
+        label="Axis classifier (generic)",
+        category="discovery",
+        kind=ServiceKind.PASS,
+        ref_pass=True,
+        enable_env="PRECIS_AXES_ENABLED",
+        uses_model=True,
+        cost_sources=("axis",),
+        one_line=(
+            "Generic data/axes/<id>.yaml classifier w/ prereq enforcement "
+            "(ADR 0047 §3); PRECIS_AXES_ENABLED=<comma ids> picks which run."
+        ),
+        doc_skill="precis-overview",
+    ),
+    ServiceSpec(
         name="briefing_audio",
         label="Briefing audio (TTS)",
         category="audio",

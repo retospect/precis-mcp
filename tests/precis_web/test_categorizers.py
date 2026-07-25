@@ -1,0 +1,264 @@
+"""Tests for the ``/categorizers`` dashboard + its live enable/disable toggle.
+
+Two layers, mirroring ``test_env_context.py`` / ``test_status_sql.py``:
+the fast FakeStore ``client`` fixture for page-shell/route-shape checks
+(FakeStore's pool always returns empty rows, so every coverage count
+degrades to 0/0 — no schema surprise possible there), plus a real-DB
+layer (the shared test Postgres, via the root ``store`` fixture) proving
+the actual coverage SQL, the ``service_config``-backed effective-state
+read, and the toggle endpoint's writes against seeded chunks/refs/tags.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+pytest.importorskip("fastapi")
+
+from fastapi.testclient import TestClient
+
+from precis.store import Store
+from precis.store.types import Tag
+from precis.workers.service_config import (
+    ALL_HOSTS,
+    clear_service_config,
+    list_service_config,
+    set_service_prio,
+)
+from precis_web.app import create_app
+from precis_web.routes import categorizers as cz
+
+# ── fast route-shell layer (FakeStore) ──────────────────────────────
+
+
+def test_categorizers_page_lists_axes_and_topics(client: TestClient) -> None:
+    resp = client.get("/categorizers")
+    assert resp.status_code == 200
+    body = resp.text
+    assert "Categorizers" in body
+
+    # A wired chunk-level axis (role3), a dormant ref-level axis (domain),
+    # and a topic — all show up in the unified table.
+    assert "role3" in body
+    assert "domain" in body
+    assert "mof" in body  # src/precis/data/topics/mof.yaml
+
+    # Granularity buckets per the level:chunk / level:ref+topics split.
+    assert "chunk" in body
+    assert "paper+patent" in body
+
+    # Prereq display: dim.yaml declares prereq: [domain].
+    assert "domain" in body  # (also as a prereq value on the dim row)
+
+    # Active-state badges: every governing service is default-OFF in the
+    # test env (no PRECIS_*_ENABLED / PRECIS_AXES_ENABLED, no
+    # service_config row) -> every row reads "off".
+    assert "off" in body
+
+    # Every row carries a toggle posting to the live service_config flip.
+    assert 'action="/categorizers/toggle"' in body
+    assert 'name="service"' in body
+
+    # The heavy coverage panel is deferred to the htmx fragment, not
+    # computed inline on the shell page.
+    assert 'hx-get="/categorizers/progress"' in body
+    assert "loading coverage" in body
+
+
+def test_axis_row_service_mapping() -> None:
+    """Each non-cascade axis governs its own ``axis:<id>`` service;
+    role3/junk both map to the shared ``classify`` cascade service."""
+    effective: dict[str, dict[str, object]] = {}
+    rows = {str(a["id"]): cz._axis_row(a, effective) for a in cz._load_axes()}
+    assert rows["domain"]["service"] == "axis:domain"
+    assert rows["material"]["service"] == "axis:material"
+    assert rows["role3"]["service"] == "classify"
+    assert rows["junk"]["service"] == "classify"
+    # Every row defaults to "off" state + non-overridden with no
+    # service_config rows supplied.
+    assert rows["domain"]["status"] == "off"
+    assert rows["domain"]["overridden"] is False
+
+
+def test_topic_row_service_mapping() -> None:
+    """Every topic shares the one ``classify_topics`` service."""
+    effective: dict[str, dict[str, object]] = {}
+    rows = [cz._topic_row(t, effective) for t in cz._load_topics()]
+    assert rows
+    assert all(r["service"] == "classify_topics" for r in rows)
+
+
+def test_categorizers_nav_entry_present(client: TestClient) -> None:
+    resp = client.get("/status")
+    assert resp.status_code == 200
+    assert 'href="/categorizers"' in resp.text
+
+
+def test_categorizers_progress_fragment_renders(client: TestClient) -> None:
+    resp = client.get("/categorizers/progress")
+    assert resp.status_code == 200
+    body = resp.text
+    # FakeStore's pool always returns empty rows -> every categorizer
+    # renders a real (degraded-to-zero) row, not the query-failed state.
+    assert "query failed" not in body
+    assert "role3" in body
+    assert "mof" in body
+    assert "hits" in body  # topic hit-count column
+
+
+# ── real-DB coverage-math layer ──────────────────────────────────────
+
+
+@pytest.fixture
+def real_client(runtime_with_store) -> TestClient:  # type: ignore[no-untyped-def]
+    return TestClient(create_app(runtime=runtime_with_store))
+
+
+def test_chunk_axis_progress_counts_tagged_over_eligible(store: Store) -> None:
+    ref = store.insert_ref(
+        kind="paper", slug="cz-test-role3-paper", title="a paper", meta={}
+    )
+    long_text = "a real scientific sentence about catalysts " * 4  # > 120 chars
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+            "VALUES (%s, 0, 'paragraph', %s) RETURNING chunk_id",
+            (ref.id, long_text),
+        ).fetchone()
+        assert row is not None
+        chunk_id = int(row[0])
+        # A second eligible chunk that never gets tagged.
+        conn.execute(
+            "INSERT INTO chunks (ref_id, ord, chunk_kind, text) VALUES (%s, 1, 'paragraph', %s)",
+            (ref.id, long_text),
+        )
+        conn.commit()
+
+    store.add_tag(ref.id, Tag.closed("ROLE3", "own"), pos=0, set_by="agent")
+
+    chunk_total = cz._chunk_eligible_total(store)
+    assert chunk_total >= 2
+    done, total = cz._chunk_axis_progress(store, "ROLE3", chunk_total)
+    assert done >= 1
+    assert total == chunk_total
+    assert done <= total
+    # sanity: the chunk we tagged is really the one carrying ROLE3.
+    with store.pool.connection() as conn:
+        tagged = conn.execute(
+            "SELECT ct.chunk_id FROM chunk_tags ct JOIN tags t ON t.tag_id = ct.tag_id "
+            "WHERE t.namespace = 'ROLE3'",
+        ).fetchall()
+    assert any(r[0] == chunk_id for r in tagged)
+
+
+def test_ref_axis_progress_dormant_reads_zero(store: Store) -> None:
+    """No axis writes a ref-level closed tag yet (the non-role3/junk axes
+    are default-OFF and nothing has run them) — the query must still run
+    cleanly and report 0."""
+    total = cz._paper_patent_total(store)
+    done, reported_total = cz._ref_axis_progress(store, "DOMAIN", total)
+    assert done == 0
+    assert reported_total == total
+
+
+def test_topic_hit_count_and_marker_done(store: Store) -> None:
+    ref = store.insert_ref(
+        kind="paper", slug="cz-test-mof-paper", title="a mof paper", meta={}
+    )
+    store.add_tag(ref.id, Tag.open("topic:mof"), set_by="agent")
+    version = cz._current_topics_version()
+    store.add_tag(
+        ref.id, Tag.closed(cz._TOPIC_MARKER_NAMESPACE, version), set_by="agent"
+    )
+
+    assert cz._topic_hit_count(store, "mof") >= 1
+    assert cz._topics_marker_done(store, version) >= 1
+    # A slug nothing was tagged with reads 0, not an error.
+    assert cz._topic_hit_count(store, "no-such-topic-slug") == 0
+
+
+def test_categorizers_progress_fragment_renders_against_real_db(
+    real_client: TestClient,
+) -> None:
+    resp = real_client.get("/categorizers/progress")
+    assert resp.status_code == 200
+    assert "query failed" not in resp.text
+
+
+# ── real-DB effective-state + toggle-endpoint layer ─────────────────
+
+
+def test_effective_state_reflects_service_config(store: Store) -> None:
+    """A ``service_config`` all-hosts row overrides the env/profile default,
+    and a shared-pass override flips every row that pass governs."""
+    try:
+        # A prio>=1 row forces a default-OFF axis ON, and is flagged overridden.
+        set_service_prio(store, ALL_HOSTS, "axis:material", 5, actor="test")
+        eff = cz._effective_state(store)
+        assert eff["axis:material"]["enabled"] is True
+        assert eff["axis:material"]["overridden"] is True
+
+        # A prio 0 row is the live OFF switch.
+        set_service_prio(store, ALL_HOSTS, "axis:material", 0, actor="test")
+        assert cz._effective_state(store)["axis:material"]["enabled"] is False
+
+        # Overriding the shared `classify` cascade flips BOTH role3 and junk
+        # rows (they map to the one service), reflected in the rendered rows.
+        set_service_prio(store, ALL_HOSTS, "classify", 5, actor="test")
+        eff = cz._effective_state(store)
+        rows = {str(a["id"]): cz._axis_row(a, eff) for a in cz._load_axes()}
+        assert rows["role3"]["status"] == "active"
+        assert rows["junk"]["status"] == "active"
+    finally:
+        clear_service_config(store, ALL_HOSTS, "axis:material")
+        clear_service_config(store, ALL_HOSTS, "classify")
+
+
+def test_toggle_endpoint_writes_row_and_rejects_unknown_service(
+    real_client: TestClient, store: Store
+) -> None:
+    """POST /categorizers/toggle upserts/deletes the expected all-hosts
+    ``service_config`` row, and refuses a service outside the allow-list."""
+
+    def _rows() -> dict[tuple[str, str], int]:
+        return {
+            (str(r["host"]), str(r["service"])): int(r["prio"])  # type: ignore[call-overload]
+            for r in list_service_config(store)
+        }
+
+    try:
+        # on -> prio DEFAULT_PRIO
+        r = real_client.post(
+            "/categorizers/toggle",
+            data={"service": "axis:domain", "action": "on"},
+            follow_redirects=False,
+        )
+        assert r.status_code == 303
+        assert _rows()[(ALL_HOSTS, "axis:domain")] == 5
+
+        # off -> prio 0
+        real_client.post(
+            "/categorizers/toggle",
+            data={"service": "axis:domain", "action": "off"},
+            follow_redirects=False,
+        )
+        assert _rows()[(ALL_HOSTS, "axis:domain")] == 0
+
+        # default -> row deleted
+        real_client.post(
+            "/categorizers/toggle",
+            data={"service": "axis:domain", "action": "default"},
+            follow_redirects=False,
+        )
+        assert (ALL_HOSTS, "axis:domain") not in _rows()
+
+        # an unknown service is rejected (303 redirect) with NO row written.
+        r = real_client.post(
+            "/categorizers/toggle",
+            data={"service": "axis:not-a-real-axis", "action": "on"},
+            follow_redirects=False,
+        )
+        assert r.status_code == 303
+        assert (ALL_HOSTS, "axis:not-a-real-axis") not in _rows()
+    finally:
+        clear_service_config(store, ALL_HOSTS, "axis:domain")

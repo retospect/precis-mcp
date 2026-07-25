@@ -12,13 +12,18 @@
 
 id: open-question
 level: chunk
-# For memory (dreams), classification is ref-level: dream bodies live
-# in refs.title (only chunk is the card_combined card), so the runner
-# reads the ref and the envelope goes to refs.meta->'tagging'. The
-# dream corpus is dense in leads — nearly every dream ends in an
-# untested implication ("a device class that does not currently
-# exist"), making OPEN-QUESTION:yes + the speculative opt-in a
-# queryable idea backlog.
+# For memory (dreams), classification is INTENDED to be ref-level: dream
+# bodies live in refs.title (only chunk is the card_combined card), so a
+# runner would read the ref and put the envelope in refs.meta->'tagging'.
+# The dream corpus is dense in leads — nearly every dream ends in an
+# untested implication ("a device class that does not currently exist"),
+# which would make OPEN-QUESTION:yes + the speculative opt-in a queryable
+# idea backlog.
+#   NOT YET IMPLEMENTED: the generic axis runner (workers/axis_pass.py)
+#   treats this as a plain level:chunk axis, so a `memory` ref (no ord>=0
+#   paragraph chunk) never matches its claim predicate — memory is a no-op
+#   for this axis today. Only `move` (level: ref) classifies dreams. The
+#   ref-level path for chunk-declared axes is tracked in OPEN-ITEMS.
 applies_to_kinds: [paper, cfp, memory]
 version: 1
 question: "Does this chunk name something specific that has not yet been done?"

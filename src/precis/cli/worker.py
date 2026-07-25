@@ -25,7 +25,7 @@ import os
 import signal
 import sys
 from enum import IntEnum
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from precis.cli._common import (
     add_format_argument,
@@ -35,7 +35,7 @@ from precis.cli._common import (
 from precis.embedder import make_embedder
 from precis.format import serialize
 from precis.store import Store
-from precis.utils.env import env_flag
+from precis.utils.env import env_csv_set, env_flag
 from precis.workers import (
     EmbedHandler,
     RakeLemmaHandler,
@@ -112,6 +112,7 @@ _REF_PASS_PRIORITY: dict[str, PassBand] = {
     "_llm_reconcile_pass": PassBand.BACKGROUND,
     "_paper_glossary_pass": PassBand.BACKGROUND,
     "_classify_topics_pass": PassBand.BACKGROUND,
+    "_axis_pass": PassBand.BACKGROUND,
     "_mail_poll_pass": PassBand.BACKGROUND,
     "_inject_scan_pass": PassBand.BACKGROUND,
     "_structural_pass": PassBand.BACKGROUND,
@@ -927,6 +928,75 @@ def run(args: argparse.Namespace) -> None:
                 )
 
             ref_passes.append(_classify_topics_pass)
+
+        # axis — generic ``data/axes/<id>.yaml`` classifier runner (ADR 0047
+        # §3), with prerequisite enforcement: an item is only eligible for
+        # axis X once it already carries a tag in every namespace X's
+        # `prereq:` lists (e.g. `material` waits for `domain`). Purely
+        # additive — does not touch `classify` (junk/role3, which keep
+        # their own cascade pass below) or `classify_topics`.
+        #
+        # Each axis :func:`~precis.workers.axis_pass.discover_axis_ids`
+        # returns is its own `service_config`-gated service, `axis:<id>` —
+        # independently flippable from the `/categorizers` console (the
+        # `service_config` row's write target) without touching any other
+        # axis. Default-OFF per id: PRECIS_AXES_ENABLED (comma-separated
+        # ids) just seeds that id's env/profile default_on verdict — a
+        # deploy-time convenience — but a live `service_config` row always
+        # wins, mirroring `_pass_enabled`'s contract for every other named
+        # pass. See workers/axis_pass.py + data/axes/README.md.
+        from precis.workers.axis_pass import discover_axis_ids
+
+        _axes_env_set = env_csv_set("PRECIS_AXES_ENABLED")
+        _axis_ids = discover_axis_ids()
+        if _axis_ids:
+            from precis.utils.llm.router import DispatchClient as _DispatchClient
+            from precis.utils.llm.router import Tier as _Tier
+            from precis.workers.runner import BatchResult as _AxisBatchResult
+
+            for _axis_id in _axis_ids:
+                _axis_service = f"axis:{_axis_id}"
+                if not _svc_resolver.enabled(
+                    _axis_service, default_on=_axis_id in _axes_env_set
+                ):
+                    continue
+
+                _axis_client = _DispatchClient(
+                    tier=_Tier.LOCAL_SMALL,
+                    model=os.environ.get("PRECIS_AXIS_MODEL") or "summarizer",
+                    source=_axis_service,
+                    log_call=True,
+                    log_blobs=False,
+                )
+
+                def _axis_pass(
+                    batch_size: int,
+                    axis_id: str = _axis_id,
+                    client: Any = _axis_client,
+                ) -> _AxisBatchResult:
+                    from precis.workers.axis_pass import run_axis_pass
+
+                    r = run_axis_pass(
+                        store,
+                        dispatch=client,
+                        axis_id=axis_id,
+                        batch_size=min(batch_size, 16),
+                    )
+                    return _AxisBatchResult(
+                        handler=f"axis:{axis_id}",
+                        claimed=r["claimed"],
+                        ok=r["ok"],
+                        failed=r["failed"],
+                    )
+
+                # Per-cycle live gate (below, passed to run_loop as
+                # ``pass_gate``): every ``_axis_pass`` closure shares the
+                # same ``__name__``, so the name-derived service ("axis")
+                # can't tell them apart — carry the real ``axis:<id>``
+                # service explicitly (``runner.run_loop`` prefers this
+                # attribute over the ``__name__`` derivation).
+                _axis_pass.service_name = _axis_service  # type: ignore[attr-defined]
+                ref_passes.append(_axis_pass)
 
         # briefing_audio — narrate the morning news briefing onto the podcast
         # feed (the first automatic audio producer, docs/design/audio-feed.md).

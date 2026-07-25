@@ -1351,10 +1351,22 @@ Cascade shipped + deployed + validated. Design
 - **Tier-2 escalation (optional)** — `PRECIS_CLASSIFY_ESCALATE_MODEL=claude-haiku-4-5`
   to push own-claim precision past 91% (~$200-400 on the residual). Was 429-blocked
   in dev; retry when free.
-- **Ref-axis production runner (`classify-papers`)** — not built. Only `material`
-  (93%) + `transport` (97%) clear the gate on the free model; `domain`/`studytype`/
-  `property` need a stronger model. Walk `paper` refs, apply `applies_when` gates,
-  write ref tags + `meta.processing.<axis>`.
+- **Enable the generic axis runner corpus-wide** — `workers/axis_pass.py` (built,
+  ADR 0047 §3: prereq + applies_when enforced, per-axis `axis:<id>`
+  `service_config` gate) has never been flipped on for any of the ~10 axes it
+  now drives. `domain`/`studytype`/`property` need a stronger model than the
+  free one clears the gate on; `material` (93%) + `transport` (97%) already
+  clear it — candidates for the first corpus-wide sweep.
+  - **Blocker before any *chunk-level* axis (`role`, `open-question`) sweeps:**
+    add a per-axis failed-`chunk_claims`-lease reaper. On a chunk-level LLM
+    failure `axis_pass.py` leaves the `axis:<id>-v<version>` lease in place, so
+    the chunk isn't retried until the axis `version` is bumped (same gap as the
+    `classify` cascade). Harmless while default-OFF; must land before enabling a
+    chunk axis in prod. (ref-level axes have no lease and self-retry.)
+  - **`open-question` on `memory` is a no-op** until the ref-level path for a
+    `level: chunk` axis is built — the runner never matches a dream ref (no
+    `ord>=0` paragraph chunk). Only `move` classifies dreams today. See the
+    NOT-YET-IMPLEMENTED note in `data/axes/open-question.yaml`.
 - **Better table detection (polish)** — the free Tier-0 `numeric_ratio` heuristic
   catches only 0.1%; a pipe/tab/repeated-token heuristic would recover the free
   furniture drop.

@@ -167,3 +167,82 @@ def test_agent_specs_are_the_introspect_bearing_rows() -> None:
 def test_service_names_are_unique() -> None:
     names = [s.name for s in SERVICES]
     assert len(names) == len(set(names)), "duplicate ServiceSpec.name"
+
+
+# ---------------------------------------------------------------------------
+# Per-axis service names (categorizers-console: each generic axis is its own
+# `axis:<id>` service, independently flippable via `service_config`).
+# ---------------------------------------------------------------------------
+
+
+def test_discover_axis_ids_excludes_cascade_axes_and_lookup_tables() -> None:
+    """The 10 axes the generic runner drives — everything with an ``id:``
+    except ``junk``/``role3`` (owned by the ``classify`` cascade instead)
+    and ``journal_domains.yaml`` (a lookup table, no ``id:`` field)."""
+    from precis.workers.axis_pass import CASCADE_AXIS_IDS, discover_axis_ids
+
+    ids = discover_axis_ids()
+    assert set(ids) == {
+        "role",
+        "open-question",
+        "domain",
+        "material",
+        "property",
+        "scale",
+        "dim",
+        "studytype",
+        "transport",
+        "move",
+    }
+    assert CASCADE_AXIS_IDS.isdisjoint(ids)
+    assert ids == sorted(ids)  # deterministic registration order
+
+
+def test_axis_service_config_row_overrides_default_off(store) -> None:  # type: ignore[no-untyped-def]
+    """Mirrors ``cli/worker.py``'s per-axis wiring call:
+    ``_svc_resolver.enabled(f"axis:{id}", default_on=(id in _axes_env_set))``.
+    Every axis is default-OFF (no ``PRECIS_AXES_ENABLED`` seed) until a
+    ``service_config prio >= 1`` row flips just that one axis on — an
+    unrelated axis stays off."""
+    from precis.workers.service_config import ServiceConfigResolver, set_service_prio
+
+    set_service_prio(store, "*", "axis:material", 5, actor="test")
+    resolver = ServiceConfigResolver(store, host="melchior", ttl_s=0.0)
+
+    assert resolver.enabled("axis:material", default_on=False) is True
+    assert resolver.enabled("axis:domain", default_on=False) is False
+
+
+def test_run_loop_pass_gate_distinguishes_same_named_axis_closures() -> None:
+    """Every ``_axis_pass`` closure shares the literal ``__name__``, so the
+    per-cycle gate can't derive distinct services from it — the wiring
+    stamps an explicit ``service_name`` attribute
+    (``runner.run_loop`` prefers it over the ``__name__`` derivation) so a
+    live flip on ``axis:material`` alone doesn't also skip ``axis:domain``."""
+    from precis.workers.runner import BatchResult, run_loop
+
+    calls: list[str] = []
+
+    def _axis_pass(batch_size: int, axis_id: str = "material") -> BatchResult:
+        calls.append(axis_id)
+        return BatchResult(f"axis:{axis_id}", 0, 0, 0)
+
+    def _axis_pass2(batch_size: int, axis_id: str = "domain") -> BatchResult:
+        calls.append(axis_id)
+        return BatchResult(f"axis:{axis_id}", 0, 0, 0)
+
+    # Mirrors the real wiring: both closures come from a `def _axis_pass(...)`
+    # inside the same per-axis loop iteration, so they share one `__name__`.
+    _axis_pass2.__name__ = "_axis_pass"
+    _axis_pass.service_name = "axis:material"  # type: ignore[attr-defined]
+    _axis_pass2.service_name = "axis:domain"  # type: ignore[attr-defined]
+    assert _axis_pass.__name__ == _axis_pass2.__name__ == "_axis_pass"
+
+    run_loop(
+        handlers=[],
+        store=None,  # type: ignore[arg-type]
+        once=True,
+        ref_passes=[_axis_pass, _axis_pass2],
+        pass_gate=lambda service: service != "axis:material",
+    )
+    assert calls == ["domain"]  # only the material one was gated off

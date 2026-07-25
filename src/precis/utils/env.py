@@ -22,4 +22,15 @@ def env_flag(var: str) -> bool:
     return env_truthy(os.environ.get(var))
 
 
-__all__ = ["env_flag", "env_truthy"]
+def env_csv_set(var: str) -> frozenset[str]:
+    """``var``'s comma-separated value as a set of stripped, non-empty tokens.
+
+    Unset/empty -> the empty set. Shared by ``cli/worker.py``'s per-axis
+    ``PRECIS_AXES_ENABLED`` seed and the ``/categorizers`` console's
+    effective-default read, so the two parses can't drift.
+    """
+    raw = os.environ.get(var) or ""
+    return frozenset(tok.strip() for tok in raw.split(",") if tok.strip())
+
+
+__all__ = ["env_csv_set", "env_flag", "env_truthy"]

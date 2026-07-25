@@ -1,0 +1,47 @@
+{# Coverage fragment — lazy-loaded via htmx from ``GET /categorizers/progress``.
+   One row per categorizer (axis or topic), keyed by name; each ``done``/``total``
+   pair is its own independent full-table aggregate scan, so this is deferred off
+   the main page the same way ``/status/backlog`` defers the chunk-pipeline panel
+   (see that fragment's docstring/comments for the rationale).
+
+   ``done`` = chunks (axis) or refs (ref-level axis / topic marker) already
+   carrying the categorizer's tag; ``total`` = its eligible universe (body
+   chunks for a chunk-level axis; the paper+patent corpus for a ref-level axis
+   or a topic). A dormant ("not wired") categorizer correctly reads 0% — no
+   pass has ever run to write its tag. ``error: true`` = the count query itself
+   failed (schema drift); rendered as a dash rather than a misleading 0%. #}
+<div class="flex items-center gap-3 mb-2 text-[11px] text-slate-500">
+  <span class="flex items-center gap-1"><span class="inline-block w-3 h-2 rounded-sm bg-emerald-500"></span>done</span>
+  <span class="flex items-center gap-1"><span class="inline-block w-3 h-2 rounded-sm bg-sky-500"></span>pending</span>
+</div>
+<div class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
+  {% for name, row in progress.items() %}
+  {% set total = row.total|default(0) %}
+  {% set done = row.done|default(0) %}
+  {% set pct = ((done / total) * 100) if total > 0 else 100 %}
+  {% set pct_pend = (100 - pct) if total > 0 else 0 %}
+  <div class="px-4 py-2 text-xs flex items-center gap-2">
+    <span class="font-mono text-slate-700 w-32 shrink-0">{{ name }}</span>
+    {% if row.error %}
+    <span class="text-rose-600">(query failed — see logs)</span>
+    {% else %}
+    <span class="w-40 shrink-0 tabular-nums text-slate-500" title="{{ '{:,}'.format(total) }} eligible">
+      {{ '{:,}'.format(done) }} / {{ '{:,}'.format(total) }}
+    </span>
+    <div class="flex-1 h-2 rounded bg-slate-100 overflow-hidden flex"
+         title="done {{ '{:,}'.format(done) }} · pending {{ '{:,}'.format(total - done) }}">
+      <div class="h-2 bg-emerald-500" style="width: {{ '%.1f'|format(pct) }}%"></div>
+      <div class="h-2 bg-sky-500" style="width: {{ '%.1f'|format(pct_pend) }}%"></div>
+    </div>
+    <span class="w-16 text-right text-slate-500 tabular-nums">{{ '%.1f'|format(pct) }}%</span>
+    {% if 'hit_count' in row %}
+    <span class="w-32 text-right text-slate-400 shrink-0 tabular-nums" title="refs carrying topic:{{ name }}">
+      {{ '{:,}'.format(row.hit_count|default(0)) }} hits
+    </span>
+    {% endif %}
+    {% endif %}
+  </div>
+  {% else %}
+  <div class="px-4 py-2 text-sm text-slate-500">no coverage data</div>
+  {% endfor %}
+</div>
