@@ -473,16 +473,18 @@ consumes the policy yet:
   production call-site invokes them — every dispatch still resolves a model
   via the fixed `Tier` table. `Selection.endpoint` (the variant-precise
   OpenRouter booking) is similarly plumbed but unthreaded.
-- **`/factory` model/backend console is wired to the wrong keys, and has no
-  auth** *(bug + feature, open — owner `precis_web/routes/factory.py`).*
-  `set_model`/`set_prio` write `service_config.model_pref`, not the
-  `app_settings['llm.backend'/'llm.model.<tier>']` keys
-  `utils/llm/live_config.py` actually reads for the live fleet-wide switch —
-  today the switch is DB-driven only via a raw `app_settings` INSERT, not a
-  browser control. No route reads/writes a backend toggle at all. Also: no
-  auth on any `/factory` POST (`src/precis_web/app.py` has no auth
-  middleware) — flag before wiring a control that can flip prod's LLM
-  backend.
+- **`/factory` POST routes have no auth** *(bug, open — owner
+  `precis_web/routes/factory.py` / `app.py`).* The backend/model half of
+  this item is DONE: `POST /factory/llm` (`set_llm_backend`, main
+  `6940ed99`) now writes the `app_settings['llm.backend'/'llm.model.<tier>']`
+  keys `utils/llm/live_config.py` reads, via a one-click GLM/OpenRouter
+  preset panel in the Services sub-tab. Remaining gap: **no auth on any
+  `/factory` POST** (`src/precis_web/app.py` has no auth middleware) — a
+  pre-existing gap across all `/factory` writes, now sharper because the LLM
+  flip can route prod traffic (and cost) through OpenRouter once
+  `PRECIS_LLM_BASE_URL` + `OPENROUTER_API_KEY` are deployed. Mitigated in
+  practice by the console being tailnet-scoped (`*.ts.net`); gate it, or
+  consciously accept tailnet-trust, before deploying the OpenRouter key.
 
 ## 🔴 High-priority
 
