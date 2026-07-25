@@ -1670,6 +1670,7 @@ class RefsMixin:
         *,
         tags: list[str] | None = None,
         has_pdf: bool | None = None,
+        has_chunks: bool | None = None,
         parent_id: int | None = None,
         deleted: bool = False,
         limit: int = 30,
@@ -1680,7 +1681,10 @@ class RefsMixin:
         no-query landing); ``tags`` narrows it to refs carrying all of them
         (the tag-filter chips with no search query). ``has_pdf=False`` keeps
         only stubs (``pdf_sha256 IS NULL`` — the "papers to get" filter);
-        ``True`` keeps only those with a PDF. ``parent_id`` narrows to one
+        ``True`` keeps only those with a PDF. ``has_chunks`` filters on the
+        presence of at least one body chunk (``ord >= 0``) — ``True`` keeps
+        only ingested refs, ``False`` only chunk-less ones (the
+        "chunked"/"unchunked" state facet). ``parent_id`` narrows to one
         folder's *direct* children (the ``/drive`` folder facet — same
         non-recursive semantics as the folder-tree sidebar). ``deleted=True``
         flips the polarity to soft-deleted refs only (the "show deleted"
@@ -1699,6 +1703,12 @@ class RefsMixin:
             clauses.append(
                 "r.pdf_sha256 IS NOT NULL" if has_pdf else "r.pdf_sha256 IS NULL"
             )
+        if has_chunks is not None:
+            exists = (
+                "EXISTS (SELECT 1 FROM chunks c "
+                "WHERE c.ref_id = r.ref_id AND c.ord >= 0)"
+            )
+            clauses.append(exists if has_chunks else f"NOT {exists}")
         if parent_id is not None:
             clauses.append("r.parent_id = %s")
             params.append(parent_id)

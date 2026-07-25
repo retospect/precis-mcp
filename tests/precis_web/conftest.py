@@ -695,6 +695,7 @@ class FakeStore:
         *,
         tags=None,
         has_pdf=None,
+        has_chunks=None,
         parent_id=None,
         deleted=False,
         limit=30,
@@ -702,13 +703,14 @@ class FakeStore:
     ):
         """Canned recent source refs for the /drive default landing —
         one paper (stub, no pdf) + one web, filtered to requested kinds.
-        ``self.recent_tags`` / ``self.recent_has_pdf`` / ``self.recent_parent_id``
-        / ``self.recent_deleted`` / ``self.recent_offset`` record the filters.
-        ``deleted=True`` serves ``self.deleted_recent_refs`` instead (empty
-        by default — tests populate it to exercise the "show deleted"
-        toggle)."""
+        ``self.recent_tags`` / ``self.recent_has_pdf`` / ``self.recent_has_chunks``
+        / ``self.recent_parent_id`` / ``self.recent_deleted`` /
+        ``self.recent_offset`` record the filters. ``deleted=True`` serves
+        ``self.deleted_recent_refs`` instead (empty by default — tests
+        populate it to exercise the "show deleted" toggle)."""
         self.recent_tags = tags
         self.recent_has_pdf = has_pdf
+        self.recent_has_chunks = has_chunks
         self.recent_parent_id = parent_id
         self.recent_deleted = deleted
         self.recent_offset = offset

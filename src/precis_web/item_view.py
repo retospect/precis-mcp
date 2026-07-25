@@ -69,7 +69,7 @@ def display_title(title: str | None, *, limit: int = DISPLAY_TITLE_LIMIT) -> str
 #: only needs the exceptions — grow it as kinds gain dedicated readers.
 _OPEN_URL_OVERRIDES: dict[str, str] = {
     "paper": "/papers/{id}",
-    "draft": "/drafts/{id}",
+    "draft": "/smartdraft/{id}",
     "datasheet": "/datasheets/{id}",
     "cad": "/cad/{slug}",
     "structure": "/structure/{slug}",

@@ -374,6 +374,24 @@ def test_drive_stub_filter(runtime, client) -> None:
     assert "Stubs — papers to get" in resp.text
 
 
+def test_drive_chunked_filter(runtime, client) -> None:
+    """state=chunked narrows the landing to refs with body chunks and
+    relabels the heading (the has_chunks=True facet)."""
+    resp = client.get("/drive?state=chunked")
+    assert resp.status_code == 200
+    assert runtime.store.recent_has_chunks is True
+    assert "Chunked — refs with body chunks" in resp.text
+
+
+def test_drive_unchunked_filter(runtime, client) -> None:
+    """state=unchunked narrows the landing to chunk-less refs (awaiting
+    ingest) and relabels the heading (the has_chunks=False facet)."""
+    resp = client.get("/drive?state=unchunked")
+    assert resp.status_code == 200
+    assert runtime.store.recent_has_chunks is False
+    assert "No chunks — refs awaiting ingest" in resp.text
+
+
 def test_drive_rows_show_paper_lookup_links(client) -> None:
     """Paper rows carry off-site UoL + Scholar 'find:' links built from
     the paper's identifier."""

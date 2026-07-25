@@ -79,37 +79,40 @@
       <label class="block text-xs text-slate-500 mb-0.5">Search</label>
       <input type="text" name="q" value="{{ q }}" autofocus
              placeholder="e.g. MOF CO₂ capture"
+             @input="submitForm(1000)"
              class="w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm" />
     </div>
     <div>
       <label class="block text-xs text-slate-500 mb-0.5">Sort</label>
-      <select name="sort" class="rounded-md border border-slate-300 px-3 py-1.5 text-sm">
+      <select name="sort" @change="submitForm(150)" class="rounded-md border border-slate-300 px-3 py-1.5 text-sm">
         <option value="relevance" {% if sort != 'recency' %}selected{% endif %}>Relevance</option>
         <option value="recency" {% if sort == 'recency' %}selected{% endif %}>Newest first</option>
       </select>
     </div>
     <div>
       <label class="block text-xs text-slate-500 mb-0.5">Show</label>
-      <select name="state" class="rounded-md border border-slate-300 px-3 py-1.5 text-sm">
-        <option value="all" {% if state not in ('stub', 'deleted') %}selected{% endif %}>All</option>
+      <select name="state" @change="submitForm(150)" class="rounded-md border border-slate-300 px-3 py-1.5 text-sm">
+        <option value="all" {% if state not in ('stub', 'deleted', 'chunked', 'unchunked') %}selected{% endif %}>All</option>
         <option value="stub" {% if state == 'stub' %}selected{% endif %}>Stubs (to get)</option>
+        <option value="chunked" {% if state == 'chunked' %}selected{% endif %}>Chunked</option>
+        <option value="unchunked" {% if state == 'unchunked' %}selected{% endif %}>No chunks</option>
         <option value="deleted" {% if state == 'deleted' %}selected{% endif %}>Deleted</option>
       </select>
     </div>
     <div>
       <label class="block text-xs text-slate-500 mb-0.5">Since</label>
-      <input type="date" name="since" value="{{ since }}"
+      <input type="date" name="since" value="{{ since }}" @change="submitForm(150)"
              class="rounded-md border border-slate-300 px-2 py-1.5 text-sm" />
     </div>
     <div>
       <label class="block text-xs text-slate-500 mb-0.5">Until</label>
-      <input type="date" name="until" value="{{ until }}"
+      <input type="date" name="until" value="{{ until }}" @change="submitForm(150)"
              class="rounded-md border border-slate-300 px-2 py-1.5 text-sm" />
     </div>
     {% if folder_options %}
     <div>
       <label class="block text-xs text-slate-500 mb-0.5">Folder</label>
-      <select name="folder" class="rounded-md border border-slate-300 px-3 py-1.5 text-sm max-w-[12rem]">
+      <select name="folder" @change="submitForm(150)" class="rounded-md border border-slate-300 px-3 py-1.5 text-sm max-w-[12rem]">
         <option value="">Any</option>
         {% for f in folder_options %}
         <option value="{{ f.id }}" {% if folder == f.id | string %}selected{% endif %}>{{ f.label }}</option>
@@ -130,13 +133,38 @@
     <span class="text-slate-500 mr-1">Source</span>
     <button type="button" @click="allKinds()" class="px-1.5 py-0.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-50">All</button>
     <button type="button" @click="noKinds()" class="px-1.5 py-0.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-50">None</button>
-    <template x-for="kk in sourceKinds" :key="kk">
+    <template x-for="kk in sourceKinds.filter(k => !perplexityKinds.includes(k))" :key="kk">
       <label class="inline-flex items-center gap-1 px-2 py-0.5 rounded border cursor-pointer select-none"
              :class="kinds.includes(kk) ? 'bg-sky-100 border-sky-300 text-sky-800' : 'border-slate-200 text-slate-400 hover:bg-slate-50'">
         <input type="checkbox" name="k" :value="kk" x-model="kinds" class="sr-only" />
         <span x-text="kk"></span>
       </label>
     </template>
+    {# Grouped perplexity chip — collapses perplexity-reasoning +
+       perplexity-research into one toggle, with a ▾ popover for picking
+       just one of the two. #}
+    <div class="relative inline-flex items-center" x-data="{ ppOpen: false }">
+      <button type="button" @click="togglePerplexity()"
+              class="inline-flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-l border border-r-0 cursor-pointer select-none"
+              :class="ppCount() > 0 ? 'bg-sky-100 border-sky-300 text-sky-800' : 'border-slate-200 text-slate-400 hover:bg-slate-50'">
+        <span>perplexity</span>
+        <span x-show="ppCount() === 1" class="text-[9px] opacity-70">½</span>
+      </button>
+      <button type="button" @click="ppOpen = !ppOpen"
+              class="px-1 py-0.5 rounded-r border cursor-pointer text-[9px]"
+              :class="ppCount() > 0 ? 'bg-sky-100 border-sky-300 text-sky-800' : 'border-slate-200 text-slate-400 hover:bg-slate-50'">▾</button>
+      <div x-show="ppOpen" x-cloak @click.outside="ppOpen = false"
+           class="absolute left-0 top-full mt-1 z-30 w-40 rounded-md border border-slate-200 bg-white py-1 shadow-lg">
+        <label class="flex items-center gap-2 px-3 py-1 text-xs text-slate-600 hover:bg-slate-100 cursor-pointer">
+          <input type="checkbox" name="k" value="perplexity-reasoning" x-model="kinds" class="rounded border-slate-300">
+          <span>reasoning</span>
+        </label>
+        <label class="flex items-center gap-2 px-3 py-1 text-xs text-slate-600 hover:bg-slate-100 cursor-pointer">
+          <input type="checkbox" name="k" value="perplexity-research" x-model="kinds" class="rounded border-slate-300">
+          <span>research</span>
+        </label>
+      </div>
+    </div>
   </div>
   {% if artifact_kind_defs %}
   <div class="flex flex-wrap items-center gap-1.5 text-xs">
@@ -186,8 +214,25 @@
       tags: selectedTags,
       tagQuery: '',
       suggestions: [],
+      _t: null,
+      perplexityKinds: ['perplexity-reasoning', 'perplexity-research'],
+      init() {
+        this.$watch('kinds', () => this.submitForm());
+      },
+      submitForm(delay = 150) {
+        clearTimeout(this._t);
+        this._t = setTimeout(() => this.$root.requestSubmit(), delay);
+      },
       allKinds() { this.kinds = [...this.sourceKinds, ...this.artifactKinds]; },
       noKinds() { this.kinds = []; },
+      ppCount() { return this.perplexityKinds.filter(k => this.kinds.includes(k)).length; },
+      togglePerplexity() {
+        if (this.ppCount() === this.perplexityKinds.length) {
+          this.kinds = this.kinds.filter(k => !this.perplexityKinds.includes(k));
+        } else {
+          for (const k of this.perplexityKinds) if (!this.kinds.includes(k)) this.kinds.push(k);
+        }
+      },
       removeTag(i) { this.tags.splice(i, 1); },
       addTag(t) {
         if (!this.tags.includes(t)) this.tags.push(t);
@@ -434,6 +479,8 @@
       {# Default landing: the recent list (or stub/deleted queue) under the search. #}
       <h2 class="text-sm font-semibold text-slate-600 mb-2">
         {% if state == 'stub' %}Stubs — papers to get
+        {% elif state == 'chunked' %}Chunked — refs with body chunks
+        {% elif state == 'unchunked' %}No chunks — refs awaiting ingest
         {% elif state == 'deleted' %}Deleted — soft-deleted refs
         {% elif current %}{{ current.title }}
         {% else %}Recently added{% endif %}
@@ -453,6 +500,8 @@
       {% else %}
         <p class="text-sm text-slate-400">
           {% if state == 'stub' %}No stubs in the selected kinds — nothing waiting to be fetched.
+          {% elif state == 'chunked' %}No chunked refs in the selected kinds.
+          {% elif state == 'unchunked' %}Nothing awaiting ingest — every ref in the selected kinds has chunks.
           {% elif state == 'deleted' %}Nothing deleted in the selected kinds.
           {% else %}Nothing here yet — ingest a paper, place something in a folder, or run a search above.{% endif %}
         </p>

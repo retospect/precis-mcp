@@ -126,7 +126,7 @@ def test_open_url_routes_id_addressed_readers() -> None:
     since it isn't a browsable-tab kind (the Drive click-through bug)."""
     for kind, expected in (
         ("paper", "/papers/7"),
-        ("draft", "/drafts/7"),
+        ("draft", "/smartdraft/7"),
         ("datasheet", "/datasheets/7"),
     ):
         assert ItemPresenter(kind).open_url(_ref(kind=kind, id=7)) == expected

@@ -155,23 +155,26 @@ def _recent_rows(
     folder_id: int | None,
     offset: int,
     *,
+    has_chunks: bool | None = None,
     deleted: bool = False,
 ) -> tuple[list[dict[str, Any]], bool]:
     """The no-query landing: most-recently-added source items, newest
     first, optionally narrowed by the tag chips, the stub filter
     (``has_pdf=False`` → only stubs, the "papers to get" queue), the
-    folder facet (``folder_id`` — one folder's direct children; only
-    artifact kinds carry a ``parent_id``, so this is a no-op for pure
-    source rows), and ``deleted`` (the "show deleted" toggle — soft-deleted
-    refs instead of live ones). Rows carry no preview (no query) — name,
-    kind, when-added, badges, tags, links, flags. Returns ``(rows,
-    has_next)`` via the same over-fetch-one-extra probe as
+    ingested/chunk-less filter (``has_chunks`` — the "chunked"/"unchunked"
+    state facet), the folder facet (``folder_id`` — one folder's direct
+    children; only artifact kinds carry a ``parent_id``, so this is a no-op
+    for pure source rows), and ``deleted`` (the "show deleted" toggle —
+    soft-deleted refs instead of live ones). Rows carry no preview (no
+    query) — name, kind, when-added, badges, tags, links, flags. Returns
+    ``(rows, has_next)`` via the same over-fetch-one-extra probe as
     :func:`_run_search`.
     """
     refs = store.recent_refs(
         kinds,
         tags=tags or None,
         has_pdf=has_pdf,
+        has_chunks=has_chunks,
         parent_id=folder_id,
         deleted=deleted,
         limit=_PAGE_SIZE + 1,

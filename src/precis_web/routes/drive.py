@@ -71,7 +71,7 @@ router.add_api_route("/tags/suggest", _tags_suggest, methods=["GET"])
 #: Per-kind reader deep links. Kinds without a dedicated reader render
 #: as plain rows (the handle still tells the operator what to `get`).
 _READER_URL = {
-    "draft": "/drafts/{ident}",
+    "draft": "/smartdraft/{ident}",
     "structure": "/structure/{ident}",
     "cad": "/cad/{ident}",
     "figure": "/figure/{ident}",
@@ -287,7 +287,9 @@ async def index(
     kinds); ``tag=`` (repeated) are the tag-filter chips; ``state=stub``
     shows only paper stubs (awaiting fetch), ``state=deleted`` shows
     soft-deleted refs instead of live ones (a lightweight trash view —
-    no undelete surface yet, just visibility); ``folder=`` (a folder
+    no undelete surface yet, just visibility), ``state=chunked``/
+    ``state=unchunked`` filter on whether a ref has a body chunk (the
+    ingested-vs-not split); ``folder=`` (a folder
     ``ref_id``) narrows the no-query landing to one folder's direct
     children — the same facet the sidebar tree's links drive;
     ``sort=recency`` orders newest-first; ``since=``/``until=`` bound
@@ -313,10 +315,12 @@ async def index(
     sort = "recency" if (sort or "").strip().lower() == "recency" else "relevance"
     state = (state or "all").strip().lower()
     # ``state=stub`` → only PDF-less papers (the "to get" queue);
-    # ``state=deleted`` → soft-deleted refs (the "show deleted" toggle).
-    # Both only shape the recent/browse view, not search (a search hit
-    # matched a live chunk, so neither filter is meaningful there).
+    # ``state=deleted`` → soft-deleted refs (the "show deleted" toggle);
+    # ``state=chunked``/``state=unchunked`` → ingested-vs-not. All shape
+    # only the recent/browse view, not search (a search hit matched a
+    # live chunk, so none of these filters are meaningful there).
     has_pdf = False if state == "stub" else None
+    has_chunks = True if state == "chunked" else False if state == "unchunked" else None
     show_deleted = state == "deleted"
     since_dt = _parse_date(since)
     until_dt = _parse_date(until)
@@ -355,6 +359,7 @@ async def index(
             has_pdf,
             folder_id,
             offset,
+            has_chunks=has_chunks,
             deleted=show_deleted,
         )
 

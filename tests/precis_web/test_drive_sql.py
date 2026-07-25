@@ -73,3 +73,26 @@ def test_unfiled_lists_only_parentless_artifacts(store, seeded):
 def test_breadcrumb_walks_up(store, seeded):
     crumbs = _breadcrumb(store, seeded["sub"])
     assert [c["title"] for c in crumbs] == ["Projects", "Hardware"]
+
+
+def test_recent_refs_has_chunks_filter(store):
+    """``has_chunks`` narrows ``/drive``'s ``state=chunked``/``unchunked``
+    facet to refs with (or without) a body chunk (``ord >= 0``)."""
+    from precis.embedder import MockEmbedder
+    from precis.store import BlockInsert
+
+    emb = MockEmbedder(dim=store.embedding_dim())
+    with_chunk = store.insert_ref(kind="web", slug="has-a-chunk", title="chunked")
+    store.insert_blocks(
+        with_chunk.id,
+        [BlockInsert(pos=0, text="some body text", embedding=emb.embed_one("x"))],
+    )
+    without_chunk = store.insert_ref(kind="web", slug="no-chunk", title="unchunked")
+
+    chunked = {r.id for r in store.recent_refs(["web"], has_chunks=True)}
+    assert with_chunk.id in chunked
+    assert without_chunk.id not in chunked
+
+    unchunked = {r.id for r in store.recent_refs(["web"], has_chunks=False)}
+    assert without_chunk.id in unchunked
+    assert with_chunk.id not in unchunked
