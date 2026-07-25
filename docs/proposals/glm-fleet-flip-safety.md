@@ -1,7 +1,13 @@
 # Making the GLM-5.2 / OpenRouter fleet flip safe
 
 - **Status**: proposed (2026-07-25) · **landed 2026-07-25** (Parts 1/2/3 +
-  the sandbox_run/claude_docker dark site)
+  the sandbox_run/claude_docker dark site) · **partly superseded by
+  [ADR 0066](../decisions/0066-capability-tiers-and-placement-chains.md)** —
+  its *global* `llm.backend` flag + `GLM_OPENROUTER_PRESET` roster give way to
+  per-tier placement chains; the call-site fixes (backend-aware
+  `resolve_model`, `_hosted_small_remap`, `result_from_openai` cost capture,
+  the `fix_gripe`/`claude_docker` subprocess gates) are foundational and carry
+  forward.
 - **Owner**: gripe 171782 (flip blockers)
 - **Refs**: ADR 0046 (routing layer) · `docs/proposals/llm-openrouter-bypass.md`
   (items 1–3, shipped) · memory `factory_llm_switch`

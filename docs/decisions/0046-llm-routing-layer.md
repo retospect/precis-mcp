@@ -6,6 +6,13 @@
   **follow-up (unit 4b)** — this unit is additive and behavior-preserving,
   it does **not** rewire any existing caller.
 - **Deciders**: Reto + agent
+- **Superseded in part by**:
+  [ADR 0066 — capability tiers + placement chains](./0066-capability-tiers-and-placement-chains.md)
+  — replaces this ADR's five location-coupled `Tier`s (`LOCAL_*` / `CLOUD_*`)
+  with four *pure-capability* rungs (`FRONTIER`/`BIG`/`MEDIUM`/`SMALL`) and
+  moves placement onto per-tier operator-owned chains. The seam
+  (`resolve_model` / `select_transport` / `dispatch` / `FailoverProvider`)
+  stays; the tier vocabulary and placement mechanism change.
 - **Builds on**:
   - [ADR 0038 — Prompt assembly & principles](./0038-prompt-assembly-and-principles.md)
     — the **direct sibling**: 0038 consolidated *prompt construction* into
