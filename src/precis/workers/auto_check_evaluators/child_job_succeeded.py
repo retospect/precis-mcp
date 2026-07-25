@@ -7,7 +7,7 @@ the todo's auto_check resolves and the leaf flips to
 ``STATUS:done``.
 
 Resolves to ``True`` when any non-deleted child of the leaf has
-``kind='job'`` AND ``STATUS:succeeded`` — *unless* one of two
+``kind='job'`` AND ``STATUS:succeeded`` — *unless* one of three
 guards fires first (see below). Failed siblings are ignored — the
 failure-bubble tag (``child-failed:N``) is what surfaces a stuck
 parent, not this evaluator.
@@ -18,7 +18,7 @@ Guards (why a succeeded child job is NOT always "done")
 This evaluator is the right completion signal for a *deterministic*
 parent whose entire work is one offline job (``fix_gripe`` and the
 like): the job succeeds, the parent is done. It is the WRONG signal
-for two cases, which this module refuses to resolve:
+for three cases, which this module refuses to resolve:
 
 1. **Planner coroutines.** An ``LLM:*``-tagged parent runs the
    ``plan_tick`` coroutine — each tick is one ``kind='job'`` that
@@ -37,6 +37,16 @@ for two cases, which this module refuses to resolve:
    todos are still open. This mirrors the manual ``STATUS:done``
    guardrail (``handlers/_todo_guards.check_status_done_artifact``),
    which the auto-resolver bypasses by writing the tag directly.
+
+3. **``level:recurring`` watches.** A schedule-driven watch (ADR 0061)
+   spawns one child job per tick and owns its own terminal state (a
+   one-shot self-tags ``STATUS:done`` on resolve; a cron never
+   resolves). Left unguarded, the *first* spawned child job to succeed
+   would auto-resolve the recurring root itself — permanently stopping
+   the cadence. This was a live 2-day prod outage on ``news_poll`` and
+   several cast watches, stacked with a schedule-worker bug (fixed
+   separately) that then excluded the resulting ``STATUS:done`` root
+   from the dispatch candidate set for good.
 
 Spec
 ====
@@ -81,6 +91,31 @@ def _parent_is_planner_coroutine(conn: Connection, ref_id: int) -> bool:
     return row is not None
 
 
+def _parent_is_recurring_watch(conn: Connection, ref_id: int) -> bool:
+    """True when the parent carries an open ``level:recurring`` tag.
+
+    Such a todo is a schedule-driven watch (cron or one-shot, ADR 0061) —
+    the schedule worker owns its terminal state (a one-shot self-tags
+    ``STATUS:done`` on resolve; a cron never resolves at all).
+    ``child_job_succeeded`` must never close it: the *first* spawned
+    child job to succeed would otherwise auto-resolve the recurring root
+    itself, permanently stopping the cadence (mirrors guard 1's
+    planner-coroutine reasoning above).
+    """
+    row = conn.execute(
+        """
+        SELECT 1 FROM ref_tags rt
+          JOIN tags t ON t.tag_id = rt.tag_id
+         WHERE rt.ref_id = %s
+           AND t.namespace = 'OPEN'
+           AND t.value = 'level:recurring'
+         LIMIT 1
+        """,
+        (ref_id,),
+    ).fetchone()
+    return row is not None
+
+
 def _has_live_child_todo(conn: Connection, ref_id: int) -> bool:
     """True when ``ref_id`` has a child todo that is not yet finished.
 
@@ -115,14 +150,19 @@ def evaluate(store: Store, spec: dict[str, Any], *, ref_id: int) -> bool | None:
     ``ref_id`` (they answer global questions like "is paper:X
     ingested?"); this one needs to scope to the calling leaf.
 
-    Returns ``None`` (= not yet, leave the leaf open) when a guard
-    fires; ``True`` only when a child job has actually succeeded and
-    neither guard applies.
+    Returns ``None`` (= not yet, leave the leaf open) when guard 1 or 2
+    fires, ``False`` when guard 3 (``level:recurring``) fires — both
+    mean "do not auto-resolve"; ``True`` only when a child job has
+    actually succeeded and no guard applies.
     """
     with store.pool.connection() as conn:
         # Guard 1: planner coroutines self-resolve — never close them.
         if _parent_is_planner_coroutine(conn, ref_id):
             return None
+        # Guard 3: level:recurring watches own their own terminal state —
+        # never let a spawned tick's succeeded job auto-close the watch.
+        if _parent_is_recurring_watch(conn, ref_id):
+            return False
         # Guard 2: don't close while a child todo is still live.
         if _has_live_child_todo(conn, ref_id):
             return None

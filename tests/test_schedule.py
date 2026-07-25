@@ -634,6 +634,79 @@ def test_schedule_pass_skips_paused_recurring(
     _ = result
 
 
+def test_candidate_cron_with_stale_done_still_eligible(
+    handler: TodoHandler, store: Store
+) -> None:
+    """Regression: a **cron**-shaped recurring that picked up a stray
+    ``STATUS:done`` (e.g. hand-tagged, or a legacy artifact) must stay a
+    dispatch candidate — only ``paused`` may exclude a cron watch. Before
+    the fix, the one-shot's done-class exclusion set
+    (``done``/``won't-do``/``auto-timeout``) was applied to *all*
+    recurrings, permanently dropping a done-tagged cron (news_poll and
+    several cast watches) out of ``_candidate_recurring_ids`` for good —
+    the 2-day prod outage this test guards against."""
+    from precis.workers.schedule.worker import _candidate_recurring_ids
+
+    resp = handler.put(
+        text="Hourly cron, stale done",
+        tags=["level:recurring"],
+        meta={"schedule": {"cron": "0 * * * *"}},
+    )
+    rid = _id_of(resp.body)
+    store.add_tag(
+        rid,
+        Tag.closed("STATUS", "done"),
+        set_by="agent",
+        replace_prefix=True,
+    )
+    assert rid in _candidate_recurring_ids(store, limit=50)
+
+
+def test_candidate_cron_paused_still_excluded(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A cron watch's one live exclusion — ``paused`` — must still work
+    after scoping the extended (one-shot) exclusion set to one-shots."""
+    from precis.workers.schedule.worker import _candidate_recurring_ids
+
+    resp = handler.put(
+        text="Hourly cron, paused",
+        tags=["level:recurring"],
+        meta={"schedule": {"cron": "0 * * * *"}},
+    )
+    rid = _id_of(resp.body)
+    store.add_tag(
+        rid,
+        Tag.closed("STATUS", "paused"),
+        set_by="agent",
+        replace_prefix=True,
+    )
+    assert rid not in _candidate_recurring_ids(store, limit=50)
+
+
+def test_candidate_one_shot_with_done_excluded(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A **one-shot** (``schedule.at``) recurring with ``STATUS:done`` —
+    the shape :func:`_process_one_shot` self-tags on resolve — is
+    correctly excluded (unchanged behaviour, still the extended set)."""
+    from precis.workers.schedule.worker import _candidate_recurring_ids
+
+    resp = handler.put(
+        text="One-shot, resolved",
+        tags=["level:recurring"],
+        meta={"schedule": {"at": "2026-06-12T09:00:00Z"}},
+    )
+    rid = _id_of(resp.body)
+    store.add_tag(
+        rid,
+        Tag.closed("STATUS", "done"),
+        set_by="agent",
+        replace_prefix=True,
+    )
+    assert rid not in _candidate_recurring_ids(store, limit=50)
+
+
 # ── push delivery (ADR 0061 — folded from kind='cron') ──────────────
 
 

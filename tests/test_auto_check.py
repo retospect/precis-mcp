@@ -431,6 +431,48 @@ def test_child_job_succeeded_resolves_when_child_todos_done(
     )
 
 
+def test_child_job_succeeded_skips_recurring_watch(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A ``level:recurring`` watch (ADR 0061) is never auto-closed by its
+    first spawned child job succeeding — it owns its own terminal state
+    (cron never resolves; a one-shot self-tags STATUS:done). Regression
+    for the 2-day news_poll / cast-watch outage: guard 3."""
+    from precis.store.types import Tag
+    from precis.workers.auto_check_evaluators import child_job_succeeded
+
+    r = handler.put(text="news_poll watch", tags=["level:recurring"])
+    rid = _id_of(r.body)
+    job = store.insert_ref(kind="job", slug=None, title="tick", meta={}, parent_id=rid)
+    store.add_tag(
+        job.id,
+        Tag.closed("STATUS", "succeeded"),
+        set_by="agent",
+        replace_prefix=True,
+    )
+    assert (
+        child_job_succeeded.evaluate(store, {"type": "child_job_succeeded"}, ref_id=rid)
+        is False
+    )
+    # Sanity: the ordinary one-shot deterministic-parent case still
+    # resolves — this guard must not regress the intended behaviour.
+    r2 = handler.put(text="plain parent")
+    rid2 = _id_of(r2.body)
+    job2 = store.insert_ref(kind="job", slug=None, title="job", meta={}, parent_id=rid2)
+    store.add_tag(
+        job2.id,
+        Tag.closed("STATUS", "succeeded"),
+        set_by="agent",
+        replace_prefix=True,
+    )
+    assert (
+        child_job_succeeded.evaluate(
+            store, {"type": "child_job_succeeded"}, ref_id=rid2
+        )
+        is True
+    )
+
+
 def test_child_job_succeeded_ignores_other_kinds(
     handler: TodoHandler, store: Store
 ) -> None:

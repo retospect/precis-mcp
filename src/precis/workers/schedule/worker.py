@@ -87,10 +87,26 @@ from precis.workers.schedule.seed import (
 
 log = logging.getLogger(__name__)
 
-#: STATUS values that make a recurring root ineligible for the next sweep:
-#: paused (operator opt-out) or one of the done-class terminals a resolved
-#: one-shot self-tags after firing/expiring.
-_INELIGIBLE_STATUSES_SQL = "('paused', 'done', 'won''t-do', 'auto-timeout')"
+#: STATUS values that make a **one-shot** (``meta.schedule.at``) recurring
+#: root ineligible for the next sweep: paused (operator opt-out), or one of
+#: the done-class terminals :func:`_process_one_shot` self-tags after
+#: firing/expiring.
+_ONE_SHOT_INELIGIBLE_STATUSES_SQL = "('paused', 'done', 'won''t-do', 'auto-timeout')"
+
+#: STATUS values that make a **cron** (``meta.schedule.cron``) recurring
+#: root ineligible for the next sweep: paused only. A cron recurring never
+#: self-tags a done-class terminal — its ``STATUS`` is fully operator-owned
+#: (or, historically, a stale tag from before the schedule kind existed) —
+#: so excluding it on ``done``/``won't-do``/``auto-timeout`` would silently
+#: and permanently stop the cadence (the news_poll / cast-watch outage this
+#: guards against: a cron-shaped recurring picked up a stray ``STATUS:done``
+#: and vanished from the candidate set for good).
+_CRON_INELIGIBLE_STATUSES_SQL = "('paused')"
+
+#: Both branches share the "is this the one-shot shape" test: a JSONB
+#: ``?`` key-exists check against ``meta.schedule`` (already available on
+#: both the enumeration and per-row queries below).
+_IS_ONE_SHOT_SQL = "r.meta->'schedule' ? 'at'"
 
 
 def run_schedule_pass(store: Store, *, limit: int = 50) -> BatchResult:
@@ -163,8 +179,13 @@ def _candidate_recurring_ids(store: Store, *, limit: int) -> list[int]:
 
     * ``kind='todo'`` and not deleted
     * carries the ``level:recurring`` open tag
-    * not paused, and not a resolved one-shot (``STATUS`` in
-      :data:`_INELIGIBLE_STATUSES_SQL` excluded)
+    * not ineligible by ``STATUS`` — the excluded set depends on the
+      schedule shape (:data:`_IS_ONE_SHOT_SQL`): a one-shot excludes
+      :data:`_ONE_SHOT_INELIGIBLE_STATUSES_SQL` (paused + the done-class
+      terminals it self-tags on resolve); a cron excludes only
+      :data:`_CRON_INELIGIBLE_STATUSES_SQL` (``paused``) — a cron never
+      self-resolves, so a stray ``STATUS:done`` must not silently retire
+      its cadence forever
     * not the umbrella folder (``meta.builtin = 'watches-root'``)
     * has a ``meta.schedule`` block (not a folder ref by other means)
     """
@@ -180,11 +201,21 @@ def _candidate_recurring_ids(store: Store, *, limit: int) -> list[int]:
                       AND t.namespace = 'OPEN'
                       AND t.value = 'level:recurring'
                )
-               AND COALESCE(
-                     (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
-                       WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1),
-                     'open'
-                   ) NOT IN {_INELIGIBLE_STATUSES_SQL}
+               AND (
+                     CASE WHEN {_IS_ONE_SHOT_SQL} THEN
+                       COALESCE(
+                             (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                               WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1),
+                             'open'
+                           ) NOT IN {_ONE_SHOT_INELIGIBLE_STATUSES_SQL}
+                     ELSE
+                       COALESCE(
+                             (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                               WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1),
+                             'open'
+                           ) NOT IN {_CRON_INELIGIBLE_STATUSES_SQL}
+                     END
+                   )
                AND COALESCE(r.meta->>'builtin', '') <> %s
                AND r.meta ? 'schedule'
              ORDER BY r.ref_id
@@ -242,11 +273,21 @@ def _claim_and_process(
                AND r.deleted_at IS NULL
                AND r.meta ? 'schedule'
                AND COALESCE(r.meta->>'builtin', '') <> %s
-               AND COALESCE(
-                     (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
-                       WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1),
-                     'open'
-                   ) NOT IN {_INELIGIBLE_STATUSES_SQL}
+               AND (
+                     CASE WHEN {_IS_ONE_SHOT_SQL} THEN
+                       COALESCE(
+                             (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                               WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1),
+                             'open'
+                           ) NOT IN {_ONE_SHOT_INELIGIBLE_STATUSES_SQL}
+                     ELSE
+                       COALESCE(
+                             (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                               WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1),
+                             'open'
+                           ) NOT IN {_CRON_INELIGIBLE_STATUSES_SQL}
+                     END
+                   )
              FOR UPDATE OF r SKIP LOCKED
             """,
             (rec_id, WATCHES_BUILTIN),
