@@ -519,29 +519,28 @@ consumes the policy yet:
   via the fixed `Tier` table. `Selection.endpoint` (the variant-precise
   OpenRouter booking) is similarly plumbed but unthreaded.
 - **`/factory` POST routes have no auth** *(bug, open — owner
-  `precis_web/routes/factory.py` / `app.py`).* The backend/model half of
-  this item is DONE: `POST /factory/llm` (`set_llm_backend`, main
-  `6940ed99`) now writes the `app_settings['llm.backend'/'llm.model.<tier>']`
-  keys `utils/llm/live_config.py` reads, via a one-click GLM/OpenRouter
-  preset panel in the Services sub-tab. Remaining gap: **no auth on any
-  `/factory` POST** (`src/precis_web/app.py` has no auth middleware) — a
-  pre-existing gap across all `/factory` writes, now sharper because the LLM
-  flip can route prod traffic (and cost) through OpenRouter once
-  `PRECIS_LLM_BASE_URL` + `OPENROUTER_API_KEY` are deployed. Mitigated in
-  practice by the console being tailnet-scoped (`*.ts.net`); gate it, or
-  consciously accept tailnet-trust, before deploying the OpenRouter key.
-- **Fleet-wide GLM/OpenRouter flip breaks `classify` + `dream`** *(bug, open
-  — gripe 171782).* Live-tested 2026-07-25: `llm.backend=openai` + the GLM
-  preset works for the tools-loop cloud path (`review:structural` ran 10
-  turns on `z-ai/glm-5.2` via `openai_tools`, no error) but breaks `classify`
-  (pins the `summarizer` litellm alias, hijacked to OpenRouter, HTTP 400,
-  ~395 errors) and `dream`/other un-forked `claude_agent` sites (fed a GLM
-  slug to the Claude transport, 400). Reverted; fleet recovered in minutes.
-  Needs, before a safe fleet flip: (a) route the ADR-0046 "group B"
-  call-sites through backend-aware dispatch, (b) keep the summarizer/classify
-  local path off `backend=openai`, (c) capture OpenRouter `usage.cost` into
-  `llm_call_log` (the `openai_tools` path logs `cost=null`, so the $85/$20
-  budget breaker is blind to OpenRouter spend).
+  `precis_web/routes/factory.py` / `app.py`).* **No auth on any `/factory`
+  POST** (`src/precis_web/app.py` has no auth middleware) — a pre-existing
+  gap across all `/factory` writes, sharper for the LLM surface because the
+  per-tier chain editor (`POST /factory/llm/chain`) can route prod traffic
+  (and cost) through OpenRouter now that `PRECIS_LLM_BASE_URL` +
+  `OPENROUTER_API_KEY` are deployed. Mitigated in practice by the console
+  being tailnet-scoped (`*.ts.net`); gate it, or consciously accept
+  tailnet-trust. (Tracked as gripe 171512, tailnet-accepted for now.)
+- **OpenRouter chain rungs need cost capture + backend-aware group-B
+  dispatch** *(bug, open — gripe 171782).* The original footgun — the
+  fleet-wide global `llm.backend=openai` GLM flip — was **retired in ADR 0066
+  Phase C** (it dragged SMALL's `summarizer` litellm alias to OpenRouter →
+  HTTP 400, and fed GLM slugs to un-forked `claude_agent` sites → 400).
+  Per-tier placement chains replace it: a chain rung pins a concrete valid
+  slug + its own transport, so MEDIUM/SMALL reach OpenRouter without touching
+  the summarizer/classify local path. Two residuals survive the retirement
+  and still bite a cloud chain rung: (a) the ADR-0046 "group B" call-sites
+  aren't backend-aware, so a cloud rung on those paths would still mis-route;
+  (c) **the `openai_tools` path logs `cost=null`**, so the $85/$20 budget
+  breaker is blind to OpenRouter spend — this one is load-bearing for the
+  Workstream D MEDIUM-on-`z-ai/glm-4.7` chain and should land before that
+  chain carries sustained traffic.
 
 ## 🔴 High-priority
 

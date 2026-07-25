@@ -26,45 +26,6 @@
   <span class="text-xs text-slate-400">prio 0 = off · 1–10 = claim weight · blank = env/profile default ({{ default_prio }})</span>
 </form>
 
-{# ── Cloud LLM backend — the fleet-wide live flip ────────────── #}
-<section class="mb-6">
-  <div class="rounded-lg border border-slate-200 bg-white p-4 max-w-2xl">
-    <div class="flex items-center gap-2 mb-2">
-      <h2 class="text-sm font-semibold">Cloud LLM backend</h2>
-      <span class="text-xs font-mono text-slate-500">{{ llm_override.backend }}</span>
-      {% if llm_override.glm_active %}
-      <span class="rounded px-1.5 py-0.5 text-[11px] bg-emerald-50 text-emerald-700">ACTIVE</span>
-      {% endif %}
-    </div>
-    <ul class="text-xs font-mono divide-y divide-slate-100 mb-3">
-      {% for t in llm_override.tiers %}
-      <li class="py-1 flex items-center justify-between gap-2">
-        <span class="text-slate-600">{{ t.tier }}</span>
-        <span class="{% if t.override %}text-sky-700{% else %}text-slate-400{% endif %}">{{ t.override or 'default' }}</span>
-      </li>
-      {% endfor %}
-    </ul>
-    <div class="flex items-center gap-2">
-      <form method="post" action="/factory/llm">
-        <input type="hidden" name="action" value="glm">
-        <button class="rounded bg-sky-600 text-white text-xs px-3 py-1 hover:bg-sky-700 transition">
-          Switch cloud → GLM-5.2 (OpenRouter)
-        </button>
-      </form>
-      <form method="post" action="/factory/llm">
-        <input type="hidden" name="action" value="revert">
-        <button class="rounded bg-slate-200 text-slate-700 text-xs px-3 py-1 hover:bg-slate-300 transition">
-          Revert → Claude
-        </button>
-      </form>
-    </div>
-    <p class="text-[11px] text-slate-400 mt-2">
-      Takes effect only once <code>PRECIS_LLM_BASE_URL</code> + <code>OPENROUTER_API_KEY</code> are
-      deployed to workers; until then cloud calls fall back to Claude.
-    </p>
-  </div>
-</section>
-
 {# ── LLM placement chains — the ADR 0066 Phase B operator editor ── #}
 <section class="mb-6">
   <div class="rounded-lg border border-slate-200 bg-white p-4 max-w-2xl">

@@ -56,19 +56,6 @@ CHAIN_KEY_PREFIX = "llm.chain."
 #: dispatch is byte-identical.
 CLOUD_ENABLED_KEY = "llm.cloud_enabled"
 
-#: The ``/factory`` "GLM via OpenRouter" preset — the one-click roster for
-#: the three cloud tiers, verified against the live OpenRouter catalog
-#: (openai_compat + tool-capable). Keyed by :class:`Tier` so a caller writes
-#: ``model_key(tier)`` → this slug for each row; see
-#: ``precis_web.routes.factory.set_llm_backend``. Ships dark: nothing reads
-#: this dict on its own — it only takes effect once the console (or an
-#: operator) writes it into ``app_settings``.
-GLM_OPENROUTER_PRESET: dict[Tier, str] = {
-    Tier.CLOUD_SUPER: "z-ai/glm-5.2",
-    Tier.CLOUD_MID: "z-ai/glm-4.7",
-    Tier.CLOUD_SMALL: "z-ai/glm-4.7-flash",
-}
-
 #: How long a read is reused before re-querying. Matches the budget meter's
 #: cache window; short enough that a console flip is seen promptly.
 _TTL_S = 15.0
@@ -201,7 +188,6 @@ __all__ = [
     "BACKEND_KEY",
     "CHAIN_KEY_PREFIX",
     "CLOUD_ENABLED_KEY",
-    "GLM_OPENROUTER_PRESET",
     "MODEL_KEY_PREFIX",
     "backend_override",
     "bust_cache",

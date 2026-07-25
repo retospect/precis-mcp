@@ -226,12 +226,15 @@ string via `ServiceSpec.log_handler`), now renders at
 original paths (`POST /factory/prio` / `/factory/model` / `/factory/clear`,
 `src/precis_web/routes/factory.py::set_prio`) — only `GET /factory`
 retired to a redirect; see "Web UI" below for the full merged-surface
-story. `POST /factory/llm` (`set_llm_backend`, `action=glm|revert`) is the
-fleet-wide cloud-LLM live flip: one click writes the `llm.backend=openai`
-+ per-tier `llm.model.<tier>` overrides for the GLM/OpenRouter preset
-(`live_config.GLM_OPENROUTER_PRESET`) the router already reads, or clears
-them back to Claude. Ships dark — inert until `PRECIS_LLM_BASE_URL` +
-`OPENROUTER_API_KEY` are deployed to workers.
+story. Cloud-LLM placement is operator-owned per-tier chains (ADR 0066):
+`POST /factory/llm/chain` writes one `llm.chain.<tier>` JSON list and
+`POST /factory/llm/cloud` flips the `llm.cloud_enabled` throttle
+(`status.py::_llm_chain_ctx`, `factory.py::set_llm_chain`/`set_llm_cloud`).
+The old fleet-wide global backend flip (`POST /factory/llm`,
+`GLM_OPENROUTER_PRESET`) was retired in Phase C — it was gripe-171782's
+footgun (it dragged SMALL's `summarizer` alias to OpenRouter → 400); a
+chain rung pins a concrete valid slug + its own transport, so it reaches
+OpenRouter without touching the other tiers.
 
 **Capability universalization (slice 5).** The *incidental* kind gates —
 a raw-cache dir any host can create, edgar's descriptive User-Agent
