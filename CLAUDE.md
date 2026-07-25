@@ -155,6 +155,9 @@ per-kind reference.
   non-Python / a symbol you can't yet name; blind to dynamic dispatch.
 - **Skills are runtime docs.** Editing `src/precis/data/skills/` is the
   agent-facing channel — the MCP server serves them via `get(kind='skill')`.
+- **Bug intake → triage via the `bug` skill** before coding a fix — masked
+  root cause (obvious fix would hide a deeper defect)? Dispatch `root-cause`
+  first, patch after.
 - **Embeddings populated by the worker, not ingest** (ADR 0007): ingest
   stores chunks `embedding IS NULL`; `embed:bge-m3` fills them. Don't call
   `fill_embeddings` from the ingest path.
@@ -199,11 +202,14 @@ guardrails (the Agent tool surfaces those descriptions), so this is just the map
   OPEN-ITEMS.md — with a dedup check; doesn't decide the target itself).
 - **Sonnet** — a *decided* change or bounded op (the *how*, not the *what*):
   `coder`, `test-author`, `reviewer`, `documenter`, `dep-bumper`,
-  `cluster-admin`, `forensics`, `housekeeper` (worktree/branch GC via
-  `/workspace-cleanup`), `ready` (the ADR 0048 proposal-readiness judge —
-  vets a `docs/proposals/*.md` spec, not yet wired into an automated gate),
-  `issue-closer` (post-ship: closes gripes/OPEN-ITEMS entries the shipped
-  commit resolved — spawned from `/land`/`/go`, background/non-blocking).
+  `cluster-admin`, `forensics`, `root-cause` (read-only code-level root-cause
+  investigator — reproduces + traces symptom→true defect + flags whether the
+  obvious fix masks a deeper one; reports a dossier, doesn't fix),
+  `housekeeper` (worktree/branch GC via `/workspace-cleanup`), `ready` (the
+  ADR 0048 proposal-readiness judge — vets a `docs/proposals/*.md` spec, not
+  yet wired into an automated gate), `issue-closer` (post-ship: closes
+  gripes/OPEN-ITEMS entries the shipped commit resolved — spawned from
+  `/land`/`/go`, background/non-blocking).
 - **Opus (main loop)** — the *what/why*: architecture; core API/schema/
   abstraction; CFD/DFT/ML and NOx/catalyst reasoning; mission/voice prose;
   novel prod diagnosis; memory *reconsolidation*.
