@@ -1677,17 +1677,50 @@ def _m_children(ctx: AssemblyContext) -> str:
 #: Persona loaded when a tick is a draft-section review (ADR 0038 step 3).
 _REVIEW_PERSONA_SKILL: str = "precis-draft-reviewer"
 
+#: Opt-in persona for a review-todo that carries ``meta.author=true`` on an
+#: author-eligible lens (below) — the grounded-authoring reviewer that may
+#: fix a gap in place (`put`/`edit(kind='draft', ...)`) when it can ground
+#: the fix, instead of only filing a change-request todo.
+_REVIEW_AUTHORING_PERSONA_SKILL: str = "precis-review-authoring"
 
-def _load_review_persona() -> str:
-    """Verbatim body of the draft-reviewer persona (``{{include}}``-expanded
-    by ``SkillHandler.get``). Degrades to a terse inline stance if the skill
-    can't load, so a review tick never runs persona-less."""
+#: Lenses for which ``meta.author=true`` is honoured — mirrors
+#: ``quest/review_fanout.py``'s ``_AUTHOR_ELIGIBLE_LENSES`` (kept as a
+#: separate literal rather than an import of that module's private name;
+#: same design call — `flow`/`adversarial` stay pure find-and-file
+#: regardless of the flag, since there is nothing "cited" or "structural"
+#: for them to ground a fix in).
+_AUTHOR_ELIGIBLE_LENSES: frozenset[str] = frozenset({"cites", "structure"})
+
+
+def _load_review_persona(lens: str | None, author: bool) -> str:
+    """Verbatim body of the reviewer persona for this tick
+    (``{{include}}``-expanded by ``SkillHandler.get``): the opt-in
+    grounded-authoring persona when ``author`` is set on an author-eligible
+    ``lens`` (see ``_AUTHOR_ELIGIBLE_LENSES``), else the default read-only
+    draft-reviewer. Degrades to a terse inline stance matching whichever
+    persona was selected if the skill can't load, so a review tick never
+    runs persona-less."""
+    authoring = author and lens in _AUTHOR_ELIGIBLE_LENSES
+    skill_id = _REVIEW_AUTHORING_PERSONA_SKILL if authoring else _REVIEW_PERSONA_SKILL
     try:
         from precis.handlers.skill import SkillHandler
 
-        return SkillHandler(hub=None).get(id=_REVIEW_PERSONA_SKILL).body  # type: ignore[arg-type]
+        return SkillHandler(hub=None).get(id=skill_id).body  # type: ignore[arg-type]
     except Exception:
-        log.exception("planner_prompt: failed to load draft-reviewer persona")
+        log.exception("planner_prompt: failed to load %s persona", skill_id)
+        if authoring:
+            return (
+                "You are reviewing a draft section with leave to author "
+                "grounded fixes: ground it or flag it. If you can tie a fix "
+                "to a real source, mint the citation first — `put(kind="
+                "'citation', ...)` — then make the smallest grounded edit "
+                "(`edit(kind='draft', id='dc<id>', ...)` to extend, `put"
+                "(kind='draft', at={...}, ...)` to add). If you cannot "
+                "ground it, do not write anything — file an anchored "
+                "change-request todo instead — `put(kind='todo', "
+                "meta={'anchor':'dc<id>'}, text='<fix>')`. Never record "
+                "your own approval of an edit you authored."
+            )
         return (
             "You are reviewing a draft section. File each finding as an "
             "anchored change-request todo — `put(kind='todo', "
@@ -1701,14 +1734,25 @@ def _m_reviewer_persona(ctx: AssemblyContext) -> str:
 
     Specialises the persona in the variable layer (ADR 0038 §5) so the
     cached planner contract stays genre-agnostic: a review-todo overrides
-    the default plan-this-todo stance with review-this-section."""
+    the default plan-this-todo stance with review-this-section. Also picks
+    between the read-only reviewer and the opt-in grounded-authoring
+    reviewer (``meta.author=true`` on an author-eligible lens — the fanout's
+    ``author=`` flag, ``quest/weave_review.py``/``quest/review_fanout.py``)."""
     lens = ctx.extras.get("review") or "structural"
+    authoring = bool(ctx.extras.get("author")) and lens in _AUTHOR_ELIGIBLE_LENSES
+    stance = (
+        "grounded fixes where you can ground them (ground it or flag it), "
+        "plus anchored change requests for what you cannot"
+        if authoring
+        else "anchored change requests, not prose edits"
+    )
+    mode_note = ", meta.author=true" if authoring else ""
     return (
-        f"## Reviewer mode — {lens}\n\n"
-        f"This tick is a REVIEW (meta.review={lens}), not an edit. Adopt the "
-        f"persona below for this tick; apply the specific lens your task body "
-        f"names. Your output is anchored change requests, not prose edits.\n\n"
-        f"{_load_review_persona()}"
+        f"## Reviewer mode — {lens}{' (authoring)' if authoring else ''}\n\n"
+        f"This tick is a REVIEW (meta.review={lens}{mode_note}), not a plain "
+        f"edit. Adopt the persona below for this tick; apply the specific "
+        f"lens your task body names. Your output is {stance}.\n\n"
+        f"{_load_review_persona(lens, bool(ctx.extras.get('author')))}"
     )
 
 

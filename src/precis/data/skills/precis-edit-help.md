@@ -249,6 +249,16 @@ Per-kind gates:
 
 `put` on a file kind is creation-only; use `edit` to modify.
 
+`draft` chunks carry two more `edit` params outside this shared grammar:
+`review='human'` (+ optional `verdict=`, default `'approved'`) records that
+you — the human — signed off on a chunk at its *current* text, e.g.
+`edit(kind='draft', id='dc12', review='human')`. See
+`precis-draft-help` § "Mark a chunk reviewed". `authoring='on'|'off'` is a
+draft-level (not chunk-level) toggle — `edit(kind='draft', id='<slug>',
+authoring='on')` — that lets the `cites`/`structure` review lenses edit
+the draft inline instead of only filing findings. See `precis-draft-help`
+§ "Auto-author toggle".
+
 ## See also
 
 ```python

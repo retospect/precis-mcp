@@ -52,9 +52,15 @@
   .dr-marks .dr-pen.on { color: #d97706; }               /* amber-600 — pen */
   .dr-marks .dr-eye.on, .dr-marks .dr-eye-sec.on { color: #0284c7; }  /* sky-600 — eye */
   .dr-marks:has(.on) { opacity: 1; }
+  /* Human sign-off checkbox (migration 0086 ledger, distinct working-set):
+     a stale ("dirty") review needs re-checking, so it stays visible too. */
+  .dr-marks .dr-review.on { color: #059669; }            /* emerald-600 — reviewed */
+  .dr-marks .dr-review.dirty { color: #d97706; }         /* amber-600 — stale review */
+  .dr-marks:has(.dr-review.dirty) { opacity: 1; }
 </style>
 <div x-data="draftDoc('{{ ref.ident }}')" x-init="init()"
-     @draft-mark="onMark($event.detail)">
+     @draft-mark="onMark($event.detail)"
+     @draft-review="onReview($event.detail)">
   <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
     <div>
       <h1 class="text-xl font-semibold">{{ ref.title }}</h1>
@@ -229,6 +235,16 @@
           </div>
         </form>
       </div>
+      {# Per-document auto-author toggle (3e). OFF by default. When ON, the
+         grounded review lenses (cites/structure) EDIT the draft — adding
+         cited prose where they can ground it, flagging the rest — and
+         every such edit re-opens the chunk for your sign-off. #}
+      <form method="post" action="/drafts/{{ ref.ident }}/authoring"
+            @submit="if (!{{ 'true' if authoring_enabled else 'false' }} && !confirm('Turn ON auto-authoring? The cites/structure review lenses will EDIT this draft — adding grounded, cited prose where a real source supports it and flagging the rest. Every edit re-opens that paragraph for your human sign-off.')) $event.preventDefault()">
+        <input type="hidden" name="enabled" value="{{ '0' if authoring_enabled else '1' }}" />
+        <button class="underline {% if authoring_enabled %}text-amber-600 hover:text-amber-800{% else %}text-slate-500 hover:text-slate-800{% endif %}"
+                title="{% if authoring_enabled %}auto-author is ON — grounded lenses edit the draft; click to turn OFF{% else %}auto-author is OFF — review lenses only file findings; click to turn ON{% endif %}">✎ auto-author: {{ 'ON' if authoring_enabled else 'OFF' }}</button>
+      </form>
       {# Delete the whole draft. Two-step: a button reveals a type-the-name
          confirm (the server re-checks the name and soft-deletes the ref +
          retires its chunks in one transaction). The owning project stays. #}
@@ -663,6 +679,36 @@ function draftDoc(ident) {
     _applyAllMarks() {
       const win = document.getElementById('dr-win');
       if (win) [...win.querySelectorAll('.dr-block')].forEach((n) => this._applyMarks(n));
+    },
+
+    // ── human sign-off (migration 0086 ledger, ADR draft-review-checkoff) ──
+    // Unlike pens/eyes (an ephemeral whole-draft working set, seeded once
+    // from #dr-marks), each row's initial ✓ state is already baked in
+    // server-side (r.review.human) — every hydrate/rehydrate re-renders it
+    // fresh from the ledger. So there's no whole-draft _absorb here: a click
+    // posts, then patches just that one button from the response.
+    onReview(detail) {
+      if (!detail || !detail.dc) return;
+      this._postReview(detail.dc);
+    },
+    async _postReview(dc) {
+      try {
+        const r = await fetch(`/drafts/${this.ident}/human-review`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dc }),
+        });
+        const d = await r.json();
+        if (d.ok) this._applyReview(dc, d.review);
+      } catch (e) {}
+    },
+    _applyReview(dc, review) {
+      const win = document.getElementById('dr-win');
+      if (!win) return;
+      const btn = win.querySelector(`.dr-review[data-dc="${CSS.escape(dc)}"]`);
+      if (!btn) return;
+      const hr = (review || {}).human;
+      btn.classList.toggle('on', !!hr && !hr.dirty);
+      btn.classList.toggle('dirty', !!hr && !!hr.dirty);
     },
 
     // ── virtual-scroll state ─────────────────────────────────────

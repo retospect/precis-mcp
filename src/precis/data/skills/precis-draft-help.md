@@ -171,6 +171,30 @@ put(
 `at` places the new chunk (all parts optional): `{'first'|'last': True}`,
 `{'into': 'dc<id>'}`, `{'before'|'after': 'dc<id>'}`.
 
+## Fork a draft — deep-copy into a new project
+
+```python
+put(kind="draft", copy_of="nanotrans", project="<new-project-todo-id>")
+# → forked draft 'nanotrans-copy' bound draft-of the new project; source untouched
+put(
+    kind="draft",
+    copy_of="nanotrans",
+    project="Nanotrans review pass",
+    id="nanotrans-r2",
+)
+# → project= a bare string mints a fresh project todo titled that; id= names the new slug
+```
+
+Deep-copies the WHOLE source draft — every chunk (live and retired), its
+hierarchy, and every link touching it — into a NEW draft; the source is
+never touched. `project=` is required: an existing project todo (id /
+`todo:N`) or a title string that mints a fresh one; refuses if that
+project already owns a draft (one draft per project still holds, even for
+a fork). `id=` seeds the new slug (deduped `-2`/`-3`… on collision);
+default `<src>-copy`. The copy starts fully unreviewed (the `chunk_review`
+ledger is not carried over) — use this to spin off a review pass, or any
+draft you want to diverge from the original without touching it.
+
 ## Scaffold — lay down a genre's standard sections
 
 `edit(kind='draft', scaffold=<class>)` appends a document class's standard
@@ -489,6 +513,38 @@ default and commits on `apply=True`.)
 
 In-place: the handle (and every reference to it) survives; embeddings /
 keywords / gist re-derive automatically.
+
+## Mark a chunk reviewed
+
+```python
+edit(kind="draft", id="dc12", review="human")  # record your sign-off
+edit(kind="draft", id="dc12", review="human", verdict="needs-rework")
+```
+
+`review=` names the checker (`'human'` is the single human reviewer identity;
+an automated checker like `'cites'`/`'flow'` records the same way from a
+worker). `verdict=` is free text, default `'approved'`. It's an upsert keyed
+on `(chunk_id, checker)` at the chunk's *current* content_sha — metadata-only,
+no re-embed, no text touched — and a later text edit makes the chunk "dirty"
+for that checker again (`Store.review_status_for_chunk`/
+`review_status_for_draft`). The web reader's ✓ gutter button drives this same
+verb; there's no un-review verb yet (re-review just overwrites the prior
+row — see `Store.record_review`).
+
+## Auto-author toggle — let the reviewer fix, not just flag
+
+```python
+edit(kind="draft", id="nanotrans", authoring="on")
+edit(kind="draft", id="nanotrans", authoring="off")  # default
+```
+
+Per-document flag (`draft.meta.authoring_enabled`, default off). When on,
+the `cites`/`structure` review lenses edit the draft inline (mint a
+grounded citation, then extend/add a chunk stamped
+`authored_by='review:<lens>'`) instead of only filing a change-request
+todo, whenever they can ground the fix; `flow`/`adversarial` never author
+regardless of the toggle. The web reader's toolbar carries the same
+switch.
 
 ## Reorder / move (structure, not a new verb)
 

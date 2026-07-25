@@ -168,6 +168,13 @@ Relation = Literal[
     "corroborates",
     "superseded-in",
     "off-topic-for",
+    # Draft fork/deep-copy — migration 0088. `copy-of` binds a forked draft
+    # (fork_draft: chunks + hierarchy + links copied) to its source; the
+    # inverse `has-copy` lives on the source. Asymmetric, auto-mirrored.
+    # Keep in sync with the `relations` seed in
+    # 0088_draft_copy_of_relation.sql.
+    "copy-of",
+    "has-copy",
 ]
 ActorSlug = Literal["agent", "user", "system"]
 
@@ -250,6 +257,9 @@ _INVERSE_RELATIONS: dict[str, str] = {
     "entailed-by": "entails",
     "qualifies": "qualified-by",
     "qualified-by": "qualifies",
+    # Draft fork/deep-copy (0088).
+    "copy-of": "has-copy",
+    "has-copy": "copy-of",
 }
 
 

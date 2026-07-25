@@ -6,6 +6,8 @@
     precis quest gaps 7              # print quest 7's gaps + health
     precis quest status 7            # ops roll-up: logbook, candidates, sim
                                       # jobs, coordinator trail, LLM spend
+    precis quest review-all <draft>  # rung 3a: mint a review-todo for every
+                                      # (reviewable chunk x lens) of a draft
 
 The autonomous loop (rung 4d) is dark by default; ``tick`` is the manual, one-
 shot driver — explicit human intent, so it runs regardless of
@@ -73,6 +75,27 @@ def add_parser(subparsers: Any) -> None:
         "over stay unintegrated for the next tick (no state lost).",
     )
     w.add_argument("--database-url", default=None, help="Postgres DSN override.")
+
+    ra = qsub.add_parser(
+        "review-all",
+        help="One-shot whole-draft review fanout (rung 3a): mint a "
+        "review-todo for every (reviewable chunk x lens) of a draft.",
+    )
+    ra.add_argument("draft", help="Draft slug or numeric id.")
+    ra.add_argument(
+        "--lenses",
+        default=None,
+        help="Comma-separated lens list (default: flow,cites,structure,"
+        "adversarial — all four).",
+    )
+    ra.add_argument(
+        "--author",
+        action="store_true",
+        help="Stamp meta.author=True on minted cites/structure todos "
+        "(plumbing only — no authoring behavior yet; flow/adversarial "
+        "never author).",
+    )
+    ra.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
     d = qsub.add_parser("dossier", help="Print a quest's dossier.")
     d.add_argument("id", type=int, help="Quest ref id.")
@@ -208,6 +231,43 @@ def _cmd_weave(store: Store, args: argparse.Namespace) -> None:
         print(f"  logbook entry #{result['log_entry']}")
 
 
+def _cmd_review_all(store: Store, args: argparse.Namespace) -> None:
+    import sys
+
+    from precis.errors import BadInput, NotFound
+    from precis.quest.review_fanout import ALL_LENSES, mint_review_fanout
+
+    key: int | str = int(args.draft) if str(args.draft).isdigit() else args.draft
+    ref = store.get_ref(kind="draft", id=key)
+    if ref is None:
+        print(f"quest review-all: no draft {args.draft!r}", file=sys.stderr)
+        sys.exit(2)
+
+    lenses = (
+        tuple(x.strip() for x in args.lenses.split(",") if x.strip())
+        if args.lenses
+        else ALL_LENSES
+    )
+
+    try:
+        result = mint_review_fanout(
+            store, ref.id, lenses=lenses, author=bool(args.author)
+        )
+    except (BadInput, NotFound) as exc:
+        print(f"quest review-all: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+    msg = (
+        f"draft {args.draft!r}: review-all fanout — {result['chunks_seen']} "
+        f"chunk(s) x {len(lenses)} lens(es), {len(result['minted'])} minted, "
+        f"{result['skipped']} already live, parented on todo "
+        f"{result['parent_id']}"
+    )
+    if args.author:
+        msg += f", {result['author_minted']} author-enabled"
+    print(msg)
+
+
 def _cmd_seed_catalyst(store: Store, args: argparse.Namespace) -> None:
     from precis.quest.catalyst_seed import seed_catalyst_quest
 
@@ -294,6 +354,8 @@ def run(args: argparse.Namespace) -> None:
         _cmd_tick(store, args)
     elif args.quest_cmd == "weave":
         _cmd_weave(store, args)
+    elif args.quest_cmd == "review-all":
+        _cmd_review_all(store, args)
     elif args.quest_cmd == "dossier":
         _cmd_dossier(store, args)
     elif args.quest_cmd == "gaps":

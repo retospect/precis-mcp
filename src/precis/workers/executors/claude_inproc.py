@@ -379,6 +379,20 @@ def _run_plan_tick(store: Any, ref_id: int, spec: Any) -> None:
         )
         return
 
+    # Review-ledger writeback (rung 3b) snapshot — captured BEFORE the
+    # LLM runs so a clean completion can tell "reviewer approved" from
+    # "reviewer edited the chunk itself" (a future authoring reviewer
+    # must not self-approve prose it just wrote). One cheap meta read for
+    # every tick; the anchor resolve + sha snapshot only run when this
+    # parent IS a review-mode todo.
+    review_pass: tuple[str, int, str | None] | None = None
+    review_meta = _review_meta(store, parent_id)
+    if review_meta is not None:
+        lens, anchor = review_meta
+        snap = _anchor_chunk_snapshot(store, anchor)
+        if snap is not None:
+            review_pass = (lens, snap[0], snap[1])
+
     # ``meta.params`` carries the model (synthesized from the parent's
     # ``LLM:<value>`` tag at dispatch time). Pull it from the job ref.
     params = _job_params(store, ref_id)
@@ -562,6 +576,30 @@ def _run_plan_tick(store: Any, ref_id: int, spec: Any) -> None:
 
             bubble_job_failure(store, ref_id)
             return
+        # Rung 3b writeback fires ONLY for a genuinely-finished review pass:
+        # a clean, non-resumed tick that concluded ``verdict: done``. A
+        # resumed exhaustion (``resume`` — max-turns / timeout under the cap)
+        # or a ``continue``/``yield``/``halt`` verdict means the reviewer did
+        # NOT finish the section, so recording an "approved" row would falsely
+        # mark an unchecked chunk clean — the one thing the memoized ledger
+        # must never do (a *missing* row is cheap: the chunk is simply
+        # re-reviewed next fanout; a *false* approval hides an unreviewed
+        # section behind a green ✓).
+        if (
+            review_pass is not None
+            and not resume
+            and conclusion is not None
+            and conclusion.verdict == "done"
+        ):
+            lens, chunk_id, sha_before = review_pass
+            _maybe_record_review_pass(
+                store,
+                conn,
+                review_todo_id=parent_id,
+                lens=lens,
+                chunk_id=chunk_id,
+                sha_before=sha_before,
+            )
         conn.commit()
 
 
@@ -705,6 +743,142 @@ def _parent_todo_id(store: Any, job_ref_id: int) -> int | None:
             (job_ref_id,),
         ).fetchone()
     return int(row[0]) if row else None
+
+
+# ── Review-ledger writeback (rung 3b — pass-only, "no record = not
+# passed" per docs/design/paper-writing-pipeline.md §"Review — the
+# memoized approval ledger") ───────────────────────────────────────────
+#
+# A review-mode plan_tick's parent todo carries meta.review=<lens> +
+# meta.anchor='dc<id>' (the same shape predicates.has_review/has_anchor
+# read). On a clean SUCCEEDED completion — zero filed findings AND the
+# anchor chunk's content_sha unchanged since the tick started — record
+# store.record_review(chunk_id, lens, verdict='approved'). Any findings,
+# or a sha that moved (the reviewer edited the chunk itself — future
+# authoring reviewers must not self-approve prose they just wrote),
+# records nothing: the chunk correctly stays "requires review".
+
+
+def _review_meta(store: Any, parent_id: int) -> tuple[str, str] | None:
+    """``(lens, anchor)`` when ``parent_id`` is a review-mode todo (its
+    ``refs.meta`` carries both ``review`` and ``anchor``), else ``None``.
+
+    One cheap read, run for *every* plan_tick — this is the entire
+    "is this tick reviewer mode?" cost a non-review tick pays."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta->>'review', meta->>'anchor' FROM refs WHERE ref_id = %s",
+            (parent_id,),
+        ).fetchone()
+    if row is None or not row[0] or not row[1]:
+        return None
+    return (row[0], row[1])
+
+
+def _anchor_chunk_snapshot(store: Any, anchor: str) -> tuple[int, str | None] | None:
+    """Resolve a ``dc<id>`` anchor to ``(chunk_id, content_sha)`` via the
+    shared handle resolver (``store.get_draft_chunk`` — same lookup
+    ``predicates.py``'s anchor handling relies on), or ``None`` when the
+    anchor doesn't resolve to a live chunk."""
+    chunk = store.get_draft_chunk(anchor)
+    if chunk is None:
+        return None
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT content_sha FROM chunks WHERE chunk_id = %s", (chunk.chunk_id,)
+        ).fetchone()
+    return (chunk.chunk_id, row[0] if row is not None else None)
+
+
+def _chunk_anchor_forms(conn: Connection, chunk_id: int) -> list[str]:
+    """The anchor strings a change-request todo might carry for this chunk:
+    the ADR-0036 ``dc<id>`` form (what the fanout + personas mint today) plus
+    the base58 ``handle`` and its legacy ``¶handle`` variant (older/other
+    write paths). Matching all three keeps the "any open request?" guard from
+    missing a finding stored under a different anchor convention."""
+    row = conn.execute(
+        "SELECT handle FROM chunks WHERE chunk_id = %s", (chunk_id,)
+    ).fetchone()
+    forms = [f"dc{chunk_id}"]
+    if row is not None and row[0]:
+        forms += [row[0], f"¶{row[0]}"]
+    return forms
+
+
+def _maybe_record_review_pass(
+    store: Any,
+    conn: Connection,
+    *,
+    review_todo_id: int,
+    lens: str,
+    chunk_id: int,
+    sha_before: str | None,
+) -> None:
+    """Record a ``chunk_review`` "approved" verdict for a clean review
+    tick — the reviewer filed nothing AND the anchor chunk's
+    ``content_sha`` is unchanged since the tick started. Called from
+    ``_run_plan_tick``'s success path (gated on a non-resumed
+    ``verdict: done`` tick), after ``_set_status(..., _SUCCEEDED, ...)``
+    and before ``conn.commit()``.
+
+    "Filed nothing" spans BOTH representations a reviewer uses: a
+    ``kind='finding'`` child of the review-todo (the lens skills'
+    ``put(kind='finding')`` shape) AND an anchored change-request
+    ``kind='todo'`` on the chunk (``meta.anchor=dc<id>`` — the shape the
+    ``precis-draft-reviewer`` persona files, which is NOT a child of the
+    review-todo). Either an open finding of either kind → no approval, so
+    a reviewer that raised an issue never also stamps the chunk clean.
+
+    CRITICAL: this runs in the hot executor path for every SUCCEEDED
+    plan_tick that is in review mode. Any failure here must never fail
+    the job or abort the commit — swallow and log."""
+    try:
+        finding_row = conn.execute(
+            "SELECT count(*) FROM refs WHERE parent_id = %s AND kind = 'finding' "
+            "AND deleted_at IS NULL",
+            (review_todo_id,),
+        ).fetchone()
+        if finding_row is not None and int(finding_row[0]) > 0:
+            return  # findings filed as kind='finding' children — requires review
+        # The draft-reviewer persona files each finding as an anchored
+        # change-request kind='todo' (meta.anchor=dc<id>), NOT a
+        # kind='finding' child — so also skip approval when this chunk carries
+        # any OPEN (not done / won't-do) anchored change-request, matched
+        # across the dc<id> / base58-handle / legacy ¶handle anchor forms.
+        # Conservative by design: an open request from any lens or a human
+        # blocks the auto-approval, erring toward "requires review".
+        anchors = _chunk_anchor_forms(conn, chunk_id)
+        # ``meta->>'review' IS NULL`` excludes review-MODE todos (this tick's
+        # own review parent + any sibling-lens review-todos on the same chunk
+        # — all keyed by the same ``meta.anchor``); only a genuine
+        # change-request (an anchored todo with no ``review`` key, the shape
+        # the reviewer files a finding as) blocks the approval.
+        open_req = conn.execute(
+            "SELECT 1 FROM refs r WHERE r.kind = 'todo' AND r.deleted_at IS NULL "
+            "AND r.meta->>'anchor' = ANY(%s) AND r.meta->>'review' IS NULL "
+            "AND NOT EXISTS ("
+            "  SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+            "  WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' "
+            "  AND t.value IN ('done', 'won''t-do')) LIMIT 1",
+            (anchors,),
+        ).fetchone()
+        if open_req is not None:
+            return  # an open anchored change-request — requires review
+        sha_row = conn.execute(
+            "SELECT content_sha FROM chunks WHERE chunk_id = %s", (chunk_id,)
+        ).fetchone()
+        sha_now = sha_row[0] if sha_row is not None else None
+        if sha_now != sha_before:
+            return  # the reviewer edited the chunk itself — no self-approval
+        store.record_review(chunk_id, lens, verdict="approved")
+    except Exception:
+        log.exception(
+            "review writeback failed (review_todo=%s chunk=%s lens=%s) — "
+            "swallowing; job status/commit is unaffected",
+            review_todo_id,
+            chunk_id,
+            lens,
+        )
 
 
 #: plan_tick's wall-clock timeout sentinel exit code (set by

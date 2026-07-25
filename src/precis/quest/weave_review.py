@@ -52,6 +52,13 @@ todo/store layer has none), so this does its own existence check — a live
 unchanged body doesn't stack duplicates. Returns only the ids minted by
 *this* call; a lens that already has a live review-todo is skipped, not
 re-returned.
+
+**Shared minting primitive.** :func:`mint_review_todo` is the single
+per-``(parent, lens, anchor)`` minting op (idempotency check + insert +
+tags), factored out so :mod:`precis.quest.review_fanout` (rung 3a, the
+whole-draft review-all fanout) reuses it instead of re-deriving the same
+ref/tag shape. This module's own :func:`mint_weave_reviews` is now a thin
+loop over it.
 """
 
 from __future__ import annotations
@@ -94,9 +101,9 @@ _DEFAULT_LENSES: tuple[str, ...] = ("flow", "cites")
 
 
 def _existing_review_todo(
-    store: Any, quest_id: int, lens: str, anchor: str
+    store: Any, parent_id: int, lens: str, anchor: str
 ) -> int | None:
-    """A live ``kind='todo'`` child of ``quest_id`` already carrying this
+    """A live ``kind='todo'`` child of ``parent_id`` already carrying this
     exact ``(review, anchor)`` pair, or ``None``. Manual idempotency check
     — see the module docstring (no ``idem_key`` primitive below
     ``JobHandler``)."""
@@ -106,9 +113,73 @@ def _existing_review_todo(
             "WHERE parent_id = %s AND kind = 'todo' AND deleted_at IS NULL "
             "AND meta->>'review' = %s AND meta->>'anchor' = %s "
             "LIMIT 1",
-            (quest_id, lens, anchor),
+            (parent_id, lens, anchor),
         ).fetchone()
     return int(row[0]) if row else None
+
+
+def mint_review_todo(
+    store: Any,
+    *,
+    parent_id: int,
+    lens: str,
+    anchor: str,
+    text: str,
+    llm_tag: str = _REVIEW_LLM_TAG,
+    author: bool = False,
+) -> int | None:
+    """Mint one review-todo for ``(lens, anchor)`` parented on
+    ``parent_id``, or ``None`` if a live one already exists (idempotent
+    skip — see the module docstring).
+
+    Each carries ``meta.review=<lens>`` + ``meta.anchor=anchor`` — the
+    shape :mod:`precis.utils.prompt.predicates`'s ``has_review``/
+    ``has_anchor`` read to flip a ``plan_tick`` into reviewer mode over
+    this section — plus an ``LLM:<llm_tag>`` tag (so the dispatcher
+    actually picks it up; see ``workers/dispatch.py``'s auto-run-signal
+    predicate) and ``STATUS:open``.
+
+    ``author=True`` additionally stamps ``meta.author=True`` on the
+    minted todo. This is plumbing only (no authoring behavior lives here
+    yet — a later piece teaches the reviewer engine to *edit* instead of
+    just filing findings when this flag is set); callers should only pass
+    ``author=True`` for lenses where authoring is meaningful (the caller
+    decides which).
+
+    The single minting primitive shared by :func:`mint_weave_reviews`
+    (per-weave, parented on the quest) and
+    :mod:`precis.quest.review_fanout`'s ``mint_review_fanout`` (whole-
+    draft, parented on the draft's owning project todo) — same ref/tag
+    shape, different parent + lens set.
+    """
+    if _existing_review_todo(store, parent_id, lens, anchor) is not None:
+        return None
+    meta: dict[str, Any] = {"anchor": anchor, "review": lens}
+    if author:
+        meta["author"] = True
+    with store.tx() as conn:
+        ref = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title=text,
+            meta=meta,
+            parent_id=parent_id,
+            conn=conn,
+        )
+        store.add_tag(
+            ref.id,
+            Tag.closed("STATUS", "open"),
+            set_by="system",
+            replace_prefix=True,
+            conn=conn,
+        )
+        store.add_tag(
+            ref.id,
+            Tag.closed("LLM", llm_tag),
+            set_by="system",
+            conn=conn,
+        )
+    return int(ref.id)
 
 
 def mint_weave_reviews(
@@ -121,22 +192,14 @@ def mint_weave_reviews(
     """Mint one review-todo per lens for the section at ``body_handle``,
     parented on ``quest_id``.
 
-    Each carries ``meta.review=<lens>`` + ``meta.anchor=body_handle`` — the
-    shape :mod:`precis.utils.prompt.predicates`'s ``has_review``/
-    ``has_anchor`` read to flip a ``plan_tick`` into reviewer mode over
-    this section — plus an ``LLM:sonnet`` tag (so the dispatcher actually
-    picks it up; see ``workers/dispatch.py``'s auto-run-signal predicate)
-    and ``STATUS:open``.
-
-    Returns the ids minted by *this* call — a lens already carrying a live
-    review-todo for this exact ``body_handle`` is skipped (idempotent-
-    friendly re-weave), so a repeat call over an unchanged body returns
-    ``[]``.
+    Thin loop over :func:`mint_review_todo` — see that function for the
+    exact ref/tag shape. Returns the ids minted by *this* call; a lens
+    already carrying a live review-todo for this exact ``body_handle`` is
+    skipped (idempotent-friendly re-weave), so a repeat call over an
+    unchanged body returns ``[]``.
     """
     minted: list[int] = []
     for lens in lenses:
-        if _existing_review_todo(store, quest_id, lens, body_handle) is not None:
-            continue
         brief = _LENS_BRIEFS.get(lens)
         text = (
             brief.format(h=body_handle)
@@ -147,30 +210,17 @@ def mint_weave_reviews(
                 "change requests."
             )
         )
-        with store.tx() as conn:
-            ref = store.insert_ref(
-                kind="todo",
-                slug=None,
-                title=text,
-                meta={"anchor": body_handle, "review": lens},
-                parent_id=quest_id,
-                conn=conn,
-            )
-            store.add_tag(
-                ref.id,
-                Tag.closed("STATUS", "open"),
-                set_by="system",
-                replace_prefix=True,
-                conn=conn,
-            )
-            store.add_tag(
-                ref.id,
-                Tag.closed("LLM", _REVIEW_LLM_TAG),
-                set_by="system",
-                conn=conn,
-            )
-        minted.append(int(ref.id))
+        todo_id = mint_review_todo(
+            store,
+            parent_id=quest_id,
+            lens=lens,
+            anchor=body_handle,
+            text=text,
+            llm_tag=_REVIEW_LLM_TAG,
+        )
+        if todo_id is not None:
+            minted.append(todo_id)
     return minted
 
 
-__all__ = ["mint_weave_reviews"]
+__all__ = ["mint_review_todo", "mint_weave_reviews"]

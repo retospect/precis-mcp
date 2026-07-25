@@ -29,13 +29,28 @@
             class="dr-eye-sec font-mono text-[11px] leading-none text-slate-300 hover:text-sky-600"
             @click="$dispatch('draft-mark', {op:'eye-section', handle:'{{ r.handle }}'})">&sect;</button>
     {% endif %}
+    {# Human sign-off (paper-writing pipeline rung 3, migration 0086). ``r.review``
+       is None for a non-reviewable block (hides the checkbox entirely); a dict
+       (possibly empty) otherwise. ``.on`` = reviewed at the current text;
+       ``.dirty`` = reviewed, but the text changed since (re-check needed);
+       plain = never reviewed. One-way for now — click only ever marks
+       reviewed (no un-review verb yet). #}
+    {% if r.review is not none %}
+    {% set hr = r.review.human %}
+    <button type="button"
+            title="{% if hr and not hr.dirty %}reviewed by you{% elif hr %}reviewed, but changed since — mark reviewed again{% else %}mark reviewed{% endif %}"
+            data-dc="{{ r.dc }}"
+            class="dr-review text-[11px] leading-none text-slate-300 hover:text-emerald-600
+                   {% if hr and not hr.dirty %}on{% elif hr %}dirty{% endif %}"
+            @click="$dispatch('draft-review', {dc:'{{ r.dc }}'})">&check;</button>
+    {% endif %}
   </div>
   {% endif %}
   {# ── Col A: content ─────────────────────────────────────────── #
      Rendered prose + edit affordances; clicking ✎ edit swaps this whole
      view for the in-place ProseMirror editor (shared drafts/_editors.html.j2
      `draft_edit` macro — gripe 56746). #}
-  <div data-content style="padding-left: {{ r.depth }}rem">
+  <div data-content class="{% if r.authored %}border-l-4 border-amber-300 pl-1{% endif %}" style="padding-left: {{ r.depth }}rem">
   {% call draft_editors.draft_edit(ref.ident, r.handle, r.content_sha | default(''), r.editable | default(false), r.is_heading | default(false), r.text) %}
     {% if r.is_heading %}
     {# items-baseline so the toggle caret + the small style/review/prompt
@@ -243,6 +258,34 @@
      column stops inflating the row and the text drives the height. #}
   <div class="draft-meta text-xs">
     <div class="draft-meta-inner space-y-1">
+    {# Checker-flag strip (paper-writing pipeline rung 3d): a read-only,
+       per-lens glyph mirroring MCP view='review' — unreviewed (–) / stale
+       (~, approved sha != current content_sha) / current (✓). No "has
+       findings" state: reviewers don't stamp which lens filed a change
+       request, so there is no truthful per-lens findings signal. #}
+    {% if r.review is not none %}
+    <div class="flex flex-wrap gap-1 items-center" title="checker review status: flow / cites / structure / adversarial">
+      {% for letter, lens in [('F','flow'),('C','cites'),('S','structure'),('A','adversarial')] %}
+      {% set entry = r.review.get(lens) %}
+      {% if not entry %}
+        {% set glyph, cls, state = '–', 'text-slate-300', 'never reviewed' %}
+      {% elif entry.dirty %}
+        {% set glyph, cls, state = '~', 'text-slate-400', 'reviewed, but changed since — stale' %}
+      {% else %}
+        {% set glyph, cls, state = '✓', 'text-emerald-600', 'reviewed at the current text' %}
+      {% endif %}
+      <span class="font-mono text-[10px] leading-none {{ cls }}" title="{{ lens }}: {{ state }}">{{ letter }}{{ glyph }}</span>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {# Machine-authored provenance marker (3d): a NEW authored chunk or a
+       grounded EXTEND of an existing one, stamped by the grounded-authoring
+       reviewer persona. Starts unreviewed — approve it like any other edit
+       once you've checked the grounding. #}
+    {% if r.authored %}
+    <span class="inline-flex items-center rounded-sm bg-amber-100 px-1 font-mono text-[10px] text-amber-700"
+          title="machine-authored by the {{ r.authored.split(':')[-1] }} review lens — starts unreviewed; approve after checking">✎ authored ({{ r.authored.split(':')[-1] }})</span>
+    {% endif %}
     {% if r.refs %}
     {# Each chip carries the cited quote on hover (popover_chip). #}
     <div class="flex flex-wrap gap-1">

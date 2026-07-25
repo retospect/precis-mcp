@@ -1166,6 +1166,14 @@ The master kinds table lives in the `precis-overview` skill.
   PDFs + a `manifest.txt`. PDFs resolve via the same corpus resolver as
   `corpus_reconcile` (`corpus_layout.rebase_onto_local`); the corpus being
   per-host, unlocatable sources are listed in the manifest rather than failing.
+  **Review surface** (paper-writing-pipeline `chunk_review` ledger,
+  `OPEN-ITEMS.md` § "Topic dossiers"): a ✓ gutter checkoff per block
+  (`POST /drafts/{id}/human-review` → `edit(review='human')`, one-way), a
+  read-only per-chunk F/C/S/A checker-flag strip mirroring
+  `view='review'` (✓ current / ~ stale / – unreviewed), a machine-authored
+  marker for grounded-authoring-reviewer edits, and a toolbar toggle for
+  the per-draft `authoring_enabled` flag (`edit(kind='draft',
+  authoring=)`).
 - **SSRF guard** — `src/precis/utils/safe_fetch.py` (used by `handlers/web.py`
   + `workers/fetch_oa.py`); DNS-resolves + revalidates every redirect against the
   private/loopback/link-local/cloud-metadata blocklist.

@@ -42,6 +42,12 @@ Routes:
   reference ring, and file a change request carrying the whole set
   (``meta.working_set``) so the planner tick edits the pens grounded in the
   eyes instead of a single anchor.
+* ``POST /drafts/{ident}/human-review`` — the ✓ gutter checkbox: records the
+  human reviewer's sign-off on one block (``edit(kind='draft',
+  review='human')``, migration 0086's ``chunk_review`` ledger). One-way
+  (mark reviewed; no un-review verb yet). Distinct from the per-heading
+  ``POST /drafts/{ident}/review`` "review ▾" menu, which files an
+  *automated-reviewer* todo, not a ledger row.
 * ``POST /drafts/{ident}/delete`` — soft-delete the whole draft, gated on
   typing its name (atomic: ref ``deleted_at`` + chunks retired; recoverable).
 * ``GET /c/{handle}`` — resolve a chunk handle → redirect to where it
@@ -659,6 +665,58 @@ _EDITABLE_KINDS = frozenset(
 _MERGE_KINDS = frozenset({"paragraph", "item", "aside", "box", "callout"})
 
 
+def _review_status_by_chunk(
+    store: Any, ref_id: int
+) -> dict[int, dict[str, dict[str, Any]]]:
+    """Whole-draft human/checker review-ledger status (migration 0086),
+    indexed by ``chunk_id``: ``{chunk_id: {checker: {approved_sha, verdict,
+    at, dirty}}}``. One call to ``Store.review_status_for_draft`` per
+    request, shared by every row/skeleton entry that request builds — the
+    read-side counterpart to the ``/human-review`` route's
+    write-through-the-``edit``-verb.
+
+    A chunk **absent** from the map is one ``review_status_for_draft``
+    doesn't surface (retired / no ``content_sha`` / unordered) — not
+    reviewable, so the reader hides the ✓ gutter for it. A chunk **present**
+    with an empty per-checker dict is reviewable but never reviewed.
+    Threads every checker the ledger carries (not just ``'human'``) so a
+    future column (the other paper-writing-pipeline rung-3 checkers) can
+    render off the same payload; the row/skeleton template only reads
+    ``'human'`` for now."""
+    out: dict[int, dict[str, dict[str, Any]]] = {}
+    for row in store.review_status_for_draft(ref_id):
+        entry = out.setdefault(row["chunk_id"], {})
+        checker = row.get("checker")
+        if checker:
+            entry[checker] = {
+                "approved_sha": row.get("approved_sha"),
+                "verdict": row.get("verdict"),
+                "at": row.get("at"),
+                "dirty": row.get("dirty"),
+            }
+    return out
+
+
+def _review_json(status: list[dict[str, Any]]) -> dict[str, Any]:
+    """JSON-safe ``{checker: {approved_sha, verdict, at, dirty}}`` for the
+    ``/human-review`` POST response — same shape ``_review_status_by_chunk``
+    attaches to a row, but with ``at`` stringified (a raw ``datetime`` isn't
+    JSON-serializable)."""
+    out: dict[str, Any] = {}
+    for r in status:
+        checker = r.get("checker")
+        if not checker:
+            continue
+        at = r.get("at")
+        out[checker] = {
+            "approved_sha": r.get("approved_sha"),
+            "verdict": r.get("verdict"),
+            "at": at.isoformat() if hasattr(at, "isoformat") else at,
+            "dirty": r.get("dirty"),
+        }
+    return out
+
+
 def _build_rows(
     store: Any,
     ref: Any,
@@ -723,6 +781,13 @@ def _build_rows(
     # patent part renders as its numeral. One map for the whole draft, shared
     # by every row's linkify.
     callouts = _callouts_from_order(chunk_objs)
+    # Human sign-off ledger (migration 0086): one whole-draft query, indexed
+    # by chunk_id so each row's lookup below is O(1) (see
+    # _review_status_by_chunk).
+    review_idx = _review_status_by_chunk(store, ref.id)
+    # Machine-authored provenance marker (paper-writing pipeline rung 3d):
+    # one whole-draft query, indexed by chunk_id, mirroring review_idx above.
+    authored_idx = store.authored_provenance(ref.id)
     rows: list[dict[str, Any]] = []
     for i in want:
         c = chunk_objs[i]
@@ -767,6 +832,14 @@ def _build_rows(
                 # column. The client echoes it back as base_sha on save.
                 "content_sha": content_sha(c.text or ""),
                 "editable": c.chunk_kind in _EDITABLE_KINDS,
+                # Human/checker review-ledger status (migration 0086):
+                # ``None`` when this chunk isn't reviewable (hides the ✓
+                # gutter); a dict (possibly empty) keyed by checker
+                # otherwise. Only ``human`` is rendered for now.
+                "review": review_idx.get(c.chunk_id),
+                # 'review:<lens>' or None — machine-authored provenance
+                # marker (3d).
+                "authored": authored_idx.get(c.chunk_id),
                 "depth": c.depth,
                 "is_heading": c.chunk_kind == "heading",
                 # List rendering (migration 0037): items carry a bullet/number
@@ -918,13 +991,16 @@ def _est_short_px(c: Any) -> int:
 def _skeleton(store: Any, ref: Any) -> list[dict[str, Any]]:
     """The whole-draft **skeleton** the reader's virtual scroller runs on:
     one tiny record per block (handle, address, kind, depth, ancestors,
-    heading flag/title, height estimate) — NOT a DOM node. The client keeps
-    only the on-screen window of real rows in the DOM (fetched via
-    ``/rows?handles=``) and a sized spacer for everything else, so a
-    10k-block draft costs ~a screenful of nodes, not 10k. Cheap: derived
-    from the cached reading order, no per-block enrichment."""
+    heading flag/title, height estimate, review status) — NOT a DOM node.
+    The client keeps only the on-screen window of real rows in the DOM
+    (fetched via ``/rows?handles=``) and a sized spacer for everything
+    else, so a 10k-block draft costs ~a screenful of nodes, not 10k.
+    Cheap: derived from the cached reading order plus one whole-draft
+    review-ledger query (:func:`_review_status_by_chunk`), no per-block
+    enrichment."""
     chunk_objs, _version, _abbrevs = _doc_state(store, ref)
     anc = _ancestor_headings(chunk_objs)
+    review_idx = _review_status_by_chunk(store, ref.id)
     out: list[dict[str, Any]] = []
     for c in chunk_objs:
         is_h = c.chunk_kind == "heading"
@@ -944,6 +1020,12 @@ def _skeleton(store: Any, ref: Any) -> list[dict[str, Any]]:
                 # non-heading/figure block to one line. The client picks
                 # this for those views so the spacers stay honest.
                 "estS": _est_short_px(c),
+                # Review-ledger status (migration 0086), same shape as a
+                # row's ``review`` field — not yet consumed client-side;
+                # carried here so a future skeleton-level indicator (e.g. an
+                # unreviewed-block dot on an un-hydrated spacer) doesn't need
+                # a schema change.
+                "rv": review_idx.get(c.chunk_id),
             }
         )
     return out
@@ -1622,6 +1704,7 @@ async def reader(request: Request, ident: str) -> Response:
             "cur_doctype": str(owner_ws.get("doc_type") or ""),
             "cur_brief": str(owner_ws.get("brief") or ""),
             "assembled_context_href": assembled_context_href,
+            "authoring_enabled": store.draft_authoring_enabled(ref.id),
         },
     )
 
@@ -1998,6 +2081,53 @@ async def edit_marks(request: Request, ident: str) -> JSONResponse:
         return JSONResponse({"ok": False, "error": f"bad op {op!r}"}, status_code=400)
     stored = draft_eyes.save_marks(store, ref.id, marks)
     return JSONResponse({"ok": True, "marks": _marks_view(store, stored)})
+
+
+@router.post("/drafts/{ident}/human-review")
+async def edit_human_review(request: Request, ident: str) -> JSONResponse:
+    """Record the human reviewer's sign-off on one draft block — the ✓
+    gutter checkbox (mirrors ``edit_marks``'s pen/eye toggle; distinct from
+    the automated per-heading ``POST /drafts/{ident}/review`` "review ▾"
+    menu, which files a *reviewer todo*, not a ledger row). Body ``{dc}``
+    (either the reader's base-58 handle or the ``dc<id>`` address —
+    resolved/validated via :func:`_chunk_addr`, like the table/text
+    editors). Writes through ``edit(kind='draft', review='human')`` so the
+    review ledger stays single-sourced with the MCP/CLI verb — this route
+    never calls ``Store.record_review`` directly — then returns the
+    chunk's fresh per-checker status (``Store.review_status_for_chunk``)
+    so the client re-syncs the button.
+
+    One-way for now: this only *sets* the human checkmark.
+    ``record_review`` upserts a fresh approval at the chunk's current
+    ``content_sha``; there is no store-level "un-review" (delete the
+    ledger row) to route to yet, so the button can't be toggled back off
+    here."""
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "bad request body"}, status_code=400)
+    if not isinstance(payload, dict):
+        return JSONResponse({"ok": False, "error": "bad request body"}, status_code=400)
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    if ref is None:
+        return JSONResponse({"ok": False, "error": "draft not found"}, status_code=404)
+    handle = str(payload.get("dc") or payload.get("handle") or "")
+    addr = _chunk_addr(store, handle) if handle else None
+    if addr is None:
+        return JSONResponse({"ok": False, "error": "block not found"}, status_code=404)
+    args: dict[str, Any] = {
+        "kind": "draft",
+        "id": addr,
+        "review": "human",
+        "verdict": str(payload.get("verdict") or "approved"),
+    }
+    body, is_error = await await_dispatch(request, "edit", args)
+    if is_error:
+        return JSONResponse({"ok": False, "error": body}, status_code=400)
+    chunk = store.get_draft_chunk(handle)
+    status = store.review_status_for_chunk(chunk.chunk_id) if chunk is not None else []
+    return JSONResponse({"ok": True, "review": _review_json(status)})
 
 
 @router.post("/drafts/{ident}/around")
@@ -2476,6 +2606,23 @@ async def review_block(
     return await redirect_or_error(
         request, "put", args, redirect=back, error_title="Review error"
     )
+
+
+@router.post("/drafts/{ident}/authoring")
+async def set_authoring(
+    request: Request, ident: str, enabled: str = Form("0")
+) -> Response:
+    """Per-document auto-author toggle (3e): when ON, the grounded review
+    lenses (cites/structure) EDIT the draft instead of only filing findings.
+    Writes draft.meta.authoring_enabled. Default OFF."""
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    back = f"/drafts/{ident}"
+    if ref is None:
+        return RedirectResponse(url=back, status_code=303)
+    on = enabled.strip().lower() in ("1", "true", "on", "yes")
+    store.stamp_ref_meta(ref.id, {"authoring_enabled": on})
+    return RedirectResponse(url=back, status_code=303)
 
 
 @router.post("/drafts/{ident}/workspace")

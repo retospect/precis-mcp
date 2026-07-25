@@ -1250,6 +1250,304 @@ class DraftMixin:
             )
         return ref, title_chunk
 
+    def _insert_forked_chunk(
+        self,
+        conn: psycopg.Connection,
+        *,
+        ref_id: int,
+        src: dict[str, Any],
+    ) -> int:
+        """Insert one copy of a source draft chunk for :meth:`fork_draft`.
+
+        Preserves ``ord``/``pos``/``chunk_kind``/``text``/``section_path``/
+        ``content_sha``/``meta``/``keywords``/``retired_at`` verbatim from
+        the source row (so a retired source chunk copies as retired, and a
+        live one's ``content_sha`` still matches its text for the
+        embed/summarize workers to key off), but mints a FRESH handle
+        (never the source's — handles are globally unique) with the same
+        savepoint-retry as :meth:`_insert_draft_chunk`. ``parent_chunk_id``
+        is left NULL here — the source's parent may not be forked yet
+        (chunk_id insertion order doesn't guarantee parent-before-child),
+        so :meth:`fork_draft` fixes up hierarchy in a second pass once
+        every chunk has a new id. Returns the new ``chunk_id``."""
+        last_exc: Exception | None = None
+        row = None
+        for _ in range(_HANDLE_RETRIES):
+            handle = new_handle()
+            try:
+                with conn.transaction():  # savepoint
+                    row = conn.execute(
+                        """
+                        INSERT INTO chunks
+                            (ref_id, set_by, ord, chunk_kind, text, handle,
+                             pos, parent_chunk_id, content_sha, meta,
+                             section_path, keywords, retired_at)
+                        VALUES (%s, 'agent', %s, %s, %s, %s, %s, NULL, %s,
+                                %s, %s, %s, %s)
+                        RETURNING chunk_id
+                        """,
+                        (
+                            ref_id,
+                            src["ord"],
+                            src["chunk_kind"],
+                            src["text"],
+                            handle,
+                            src["pos"],
+                            src["content_sha"],
+                            Jsonb(src["meta"]),
+                            src["section_path"],
+                            src["keywords"],
+                            src["retired_at"],
+                        ),
+                    ).fetchone()
+                break
+            except psycopg.errors.UniqueViolation as exc:
+                last_exc = exc
+                continue
+        else:  # pragma: no cover - astronomically unlikely
+            raise RuntimeError(
+                f"could not mint a unique handle in {_HANDLE_RETRIES} tries"
+            ) from last_exc
+
+        assert row is not None
+        new_chunk_id = int(row[0])
+        conn.execute(
+            """
+            INSERT INTO chunk_events
+                (chunk_id, event_kind, content_sha, source)
+            VALUES (%s, 'created', %s, %s)
+            """,
+            (
+                new_chunk_id,
+                src["content_sha"],
+                Jsonb({"reason": "fork", "src_chunk_id": src["chunk_id"]}),
+            ),
+        )
+        return new_chunk_id
+
+    def fork_draft(
+        self,
+        src_ref_id: int,
+        project_id: int,
+        *,
+        new_slug: str,
+        title: str | None = None,
+    ) -> Any:
+        """Deep-copy an entire draft into a NEW draft bound to
+        ``project_id``, leaving ``src_ref_id`` completely untouched.
+
+        Copies, in one transaction:
+
+        1. the ``refs`` row (title/meta/authors/year) under ``new_slug``;
+        2. every chunk (live *and* retired) with its hierarchy intact —
+           a fresh handle per copy (never the source's), everything else
+           (``ord``/``pos``/``chunk_kind``/``text``/``content_sha``/
+           ``meta``/``keywords``/``section_path``/``retired_at``)
+           preserved verbatim;
+        3. the figure-blob (``chunk_blobs``) and tag (``chunk_tags``) side
+           tables keyed on the copied chunks. ``chunk_embeddings`` /
+           ``chunk_summaries`` are skipped (re-derived by the worker from
+           ``content_sha``) and ``chunk_review`` is skipped so the copy
+           starts fully unreviewed (paper-writing pipeline rung 3);
+        4. every link touching ``src_ref_id`` in either direction
+           (INSERT-only — the source's edges are untouched, unlike
+           :meth:`~precis.store._links_ops.LinksMixin.migrate_links`,
+           which deletes them), with the ``src_ref_id``/chunk-scoped
+           endpoint remapped onto the new ref/chunks; a would-be
+           self-loop after remap is dropped rather than raising the
+           schema's ``links_check`` CHECK;
+        5. a ``copy-of`` provenance edge new→source (inverse ``has-copy``
+           mirrors at read time via ``links_for``, like ``draft-of`` /
+           ``has-draft`` — see ``migrations/0032_draft_relations.sql``);
+        6. the ``draft-of`` bind to ``project_id`` (1:1 — refuses if the
+           project already owns a draft, same invariant as
+           :meth:`create_draft`).
+
+        Returns the new draft :class:`~precis.store.types.Ref`. Raises
+        ``NotFound`` if ``src_ref_id`` isn't a live draft, ``ValueError``
+        if ``project_id`` already owns a draft (mirrors
+        :meth:`create_draft`'s guard)."""
+        with self.tx() as conn:
+            dup = conn.execute(
+                "SELECT 1 FROM links WHERE dst_ref_id = %s AND relation = 'draft-of'",
+                (project_id,),
+            ).fetchone()
+            if dup is not None:
+                raise ValueError(f"project ref {project_id} already has a draft")
+
+            src_row = conn.execute(
+                "SELECT title, meta, authors, year FROM refs "
+                "WHERE ref_id = %s AND kind = 'draft' AND deleted_at IS NULL",
+                (src_ref_id,),
+            ).fetchone()
+            if src_row is None:
+                raise NotFound(f"no live draft ref id={src_ref_id}")
+            src_title, src_meta, src_authors, src_year = src_row
+
+            new_ref = self.insert_ref(
+                kind="draft",
+                slug=new_slug,
+                title=title or src_title,
+                meta=dict(src_meta or {}),
+                authors=list(src_authors) if src_authors else None,
+                year=src_year,
+                conn=conn,
+            )
+
+            # -- 2/3. chunks + side tables ------------------------------
+            chunk_rows = conn.execute(
+                """
+                SELECT chunk_id, ord, chunk_kind, text, pos, parent_chunk_id,
+                       content_sha, meta, section_path, keywords, retired_at
+                  FROM chunks WHERE ref_id = %s ORDER BY chunk_id
+                """,
+                (src_ref_id,),
+            ).fetchall()
+
+            id_map: dict[int, int] = {}
+            old_parents: dict[int, int | None] = {}
+            for r in chunk_rows:
+                src_chunk = {
+                    "chunk_id": r[0],
+                    "ord": r[1],
+                    "chunk_kind": r[2],
+                    "text": r[3],
+                    "pos": r[4],
+                    "content_sha": r[6],
+                    "meta": dict(r[7] or {}),
+                    "section_path": list(r[8] or []),
+                    "keywords": list(r[9]) if r[9] else None,
+                    "retired_at": r[10],
+                }
+                new_chunk_id = self._insert_forked_chunk(
+                    conn, ref_id=new_ref.id, src=src_chunk
+                )
+                id_map[r[0]] = new_chunk_id
+                old_parents[r[0]] = r[5]
+
+            # second pass: fix up parent_chunk_id now every chunk has a
+            # new id (a parent can be inserted after its child above).
+            for old_id, new_id in id_map.items():
+                old_parent = old_parents[old_id]
+                if old_parent is not None:
+                    conn.execute(
+                        "UPDATE chunks SET parent_chunk_id = %s WHERE chunk_id = %s",
+                        (id_map[old_parent], new_id),
+                    )
+
+            if id_map:
+                old_ids = list(id_map)
+                blob_rows = conn.execute(
+                    """
+                    SELECT chunk_id, bytes, mime, sha256, size_bytes, width, height
+                      FROM chunk_blobs WHERE chunk_id = ANY(%s)
+                    """,
+                    (old_ids,),
+                ).fetchall()
+                for b_chunk_id, b_bytes, b_mime, b_sha, b_size, b_w, b_h in blob_rows:
+                    conn.execute(
+                        """
+                        INSERT INTO chunk_blobs
+                            (chunk_id, bytes, mime, sha256, size_bytes, width, height)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            id_map[b_chunk_id],
+                            b_bytes,
+                            b_mime,
+                            b_sha,
+                            b_size,
+                            b_w,
+                            b_h,
+                        ),
+                    )
+                tag_rows = conn.execute(
+                    "SELECT chunk_id, tag_id, set_by FROM chunk_tags "
+                    "WHERE chunk_id = ANY(%s)",
+                    (old_ids,),
+                ).fetchall()
+                for t_chunk_id, t_tag_id, t_set_by in tag_rows:
+                    conn.execute(
+                        "INSERT INTO chunk_tags (chunk_id, tag_id, set_by) "
+                        "VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+                        (id_map[t_chunk_id], t_tag_id, t_set_by),
+                    )
+                # chunk_embeddings / chunk_summaries: skipped, re-derived by
+                # the worker from content_sha. chunk_review: skipped, the
+                # copy starts fully unreviewed.
+
+            # -- 4. links touching src_ref_id, either direction ---------
+            link_rows = conn.execute(
+                """
+                SELECT src_ref_id, src_chunk_id, dst_ref_id, dst_chunk_id,
+                       relation, set_by, meta
+                  FROM links WHERE src_ref_id = %s OR dst_ref_id = %s
+                """,
+                (src_ref_id, src_ref_id),
+            ).fetchall()
+            for (
+                l_src_ref,
+                l_src_chunk,
+                l_dst_ref,
+                l_dst_chunk,
+                relation,
+                set_by,
+                meta,
+            ) in link_rows:
+                new_src_ref = new_ref.id if l_src_ref == src_ref_id else l_src_ref
+                new_dst_ref = new_ref.id if l_dst_ref == src_ref_id else l_dst_ref
+                new_src_chunk = (
+                    id_map[l_src_chunk]
+                    if l_src_chunk is not None and l_src_ref == src_ref_id
+                    else l_src_chunk
+                )
+                new_dst_chunk = (
+                    id_map[l_dst_chunk]
+                    if l_dst_chunk is not None and l_dst_ref == src_ref_id
+                    else l_dst_chunk
+                )
+                if new_src_ref == new_dst_ref and new_src_chunk == new_dst_chunk:
+                    # would-be self-loop after remap (the links_check CHECK
+                    # forbids it) — drop rather than raise.
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO links
+                        (src_ref_id, src_chunk_id, dst_ref_id, dst_chunk_id,
+                         relation, set_by, meta)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT
+                        (src_ref_id, src_chunk_id, dst_ref_id, dst_chunk_id, relation)
+                        DO NOTHING
+                    """,
+                    (
+                        new_src_ref,
+                        new_src_chunk,
+                        new_dst_ref,
+                        new_dst_chunk,
+                        relation,
+                        set_by,
+                        Jsonb(meta or {}),
+                    ),
+                )
+
+            # -- 5. copy-of provenance (has-copy mirrors at read time) --
+            self.add_link(
+                src_ref_id=new_ref.id,
+                dst_ref_id=src_ref_id,
+                relation="copy-of",
+                conn=conn,
+            )
+
+            # -- 6. bind the new draft to its project (1:1, draft-of) ---
+            self.add_link(
+                src_ref_id=new_ref.id,
+                dst_ref_id=project_id,
+                relation="draft-of",
+                conn=conn,
+            )
+        return new_ref
+
     def add_chunks(
         self,
         *,
@@ -2151,6 +2449,77 @@ class DraftMixin:
                 "text": r[3] or "",
             }
             for r in rows
+        ]
+
+    def authored_provenance(self, ref_id: int) -> dict[int, str]:
+        """``{chunk_id: authored_by}`` for live body chunks of ``ref_id``
+        that carry a machine-authored stamp (grounded-authoring reviewer,
+        paper-writing pipeline rung 3d) — either a NEW chunk's
+        ``chunks.meta->>'authored_by'`` or the latest grounded EDIT's
+        ``chunk_events.source->>'authored_by'`` (``event_kind='edited'``).
+        The value is the raw stamp, e.g. ``'review:cites'``. Only stamped
+        chunks appear. Same live-chunk filter as :meth:`reviewable_chunks`
+        (non-NULL ``content_sha``, not retired)."""
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT c.chunk_id,
+                       COALESCE(
+                         c.meta->>'authored_by',
+                         (SELECT ce.source->>'authored_by'
+                            FROM chunk_events ce
+                           WHERE ce.chunk_id = c.chunk_id
+                             AND ce.event_kind = 'edited'
+                             AND ce.source->>'authored_by' IS NOT NULL
+                           ORDER BY ce.ts DESC LIMIT 1)
+                       ) AS authored_by
+                  FROM chunks c
+                 WHERE c.ref_id = %s
+                   AND c.content_sha IS NOT NULL
+                   AND c.retired_at IS NULL
+                """,
+                (ref_id,),
+            ).fetchall()
+        return {int(r[0]): r[1] for r in rows if r[1] is not None}
+
+    def draft_authoring_enabled(self, ref_id: int) -> bool:
+        """Per-document auto-author toggle (rung 3e):
+        ``refs.meta.authoring_enabled`` for ``ref_id``, default ``False``.
+        When on, the grounded review lenses (``cites``/``structure``) EDIT
+        the draft instead of only filing findings (see
+        :func:`precis.quest.review_fanout.mint_review_fanout`)."""
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT meta FROM refs WHERE ref_id = %s", (ref_id,)
+            ).fetchone()
+        if row is None or not row[0]:
+            return False
+        return bool(row[0].get("authoring_enabled"))
+
+    def reviewable_chunks(self, ref_id: int) -> list[dict[str, Any]]:
+        """Every live, reviewable chunk of ``ref_id`` — draft-family chunks
+        with a non-NULL ``content_sha`` (the same population
+        :meth:`chunks_requiring_review` / :meth:`review_status_for_draft`
+        scope to), regardless of any checker's ledger state.
+
+        Unlike :meth:`chunks_requiring_review`, this is not filtered by
+        ``checker`` — it's the whole-draft chunk list a fanout (rung 3a
+        ``mint_review_fanout``) walks to mint one review-todo per
+        ``(chunk, lens)``, independent of dirty/clean status."""
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT c.chunk_id, c.handle, c.chunk_kind
+                  FROM chunks c
+                 WHERE c.ref_id = %s
+                   AND c.content_sha IS NOT NULL
+                   AND c.retired_at IS NULL
+                 ORDER BY c.chunk_id
+                """,
+                (ref_id,),
+            ).fetchall()
+        return [
+            {"chunk_id": int(r[0]), "handle": r[1], "chunk_kind": r[2]} for r in rows
         ]
 
     def review_status_for_chunk(self, chunk_id: int) -> list[dict[str, Any]]:

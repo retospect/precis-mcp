@@ -187,6 +187,41 @@ class DraftFakeStore(FakeStore):
                 return c
         return None
 
+    def review_status_for_draft(self, ref_id):
+        # Every chunk is reviewable-but-never-reviewed by default (mirrors
+        # the real store's LEFT JOIN: no chunk_review row still yields one
+        # sentinel entry per chunk, checker=None). ReviewFakeStore below
+        # overrides this to actually track recorded reviews.
+        return [
+            {
+                "chunk_id": c.chunk_id,
+                "handle": c.handle,
+                "chunk_kind": c.chunk_kind,
+                "checker": None,
+                "approved_sha": None,
+                "verdict": None,
+                "at": None,
+                "dirty": True,
+            }
+            for c in self._chunks
+        ]
+
+    def review_status_for_chunk(self, chunk_id):
+        return []
+
+    def authored_provenance(self, ref_id):
+        # Mirrors the real query's shape: any live chunk seeded with
+        # meta.authored_by (the new-chunk stamp) appears.
+        out = {}
+        for c in self._chunks:
+            by = (getattr(c, "meta", None) or {}).get("authored_by")
+            if by:
+                out[c.chunk_id] = by
+        return out
+
+    def draft_authoring_enabled(self, ref_id):
+        return getattr(self, "_authoring_enabled", False)
+
     def universal_chunk(self, handle):
         # pc77 = a paper chunk (ref 10, ord 3); anything else unknown.
         if handle == "pc77":
@@ -229,6 +264,8 @@ class DraftFakeStore(FakeStore):
         # Records the genre/brief workspace writes (the /workspace route).
         # `meta_writes` is declared on the base FakeStore.
         self.meta_writes.append((ref_id, updates))
+        if "authoring_enabled" in updates:
+            self._authoring_enabled = bool(updates["authoring_enabled"])
 
 
 @pytest.fixture
@@ -1282,6 +1319,224 @@ def test_request_ws_files_todo_carrying_the_working_set(tmp_path) -> None:
     assert args["meta"]["anchor"] == "BBBBBB"  # dc2 → its base-58 anchor
 
 
+# ── human sign-off checkbox (migration 0086 review ledger) ──────────
+
+
+class ReviewFakeStore(WsFakeStore):
+    """``WsFakeStore`` (dc<id> handle resolution) that also tracks recorded
+    reviews in-memory, mirroring ``Store.record_review`` /
+    ``review_status_for_{chunk,draft}``. The fake ``edit`` verb dispatch
+    (``FakeRuntime.dispatch_with_status``) never touches the store — real
+    write-through-the-verb behaviour is a store-level concern tested
+    elsewhere — so these tests assert the *route*'s contract (dispatches the
+    right ``edit`` args; reads back through the same store methods the row
+    renderer uses) rather than an end-to-end DB round trip."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._reviews: dict[int, dict[str, dict]] = {}
+
+    def record_review(self, chunk_id, checker, *, verdict="approved"):
+        self._reviews.setdefault(chunk_id, {})[checker] = {
+            "approved_sha": "shaX",
+            "verdict": verdict,
+            "at": None,
+            "dirty": False,
+        }
+        return "shaX"
+
+    def review_status_for_chunk(self, chunk_id):
+        return [
+            {"checker": checker, **status}
+            for checker, status in self._reviews.get(chunk_id, {}).items()
+        ]
+
+    def review_status_for_draft(self, ref_id):
+        out = []
+        for c in self._chunks:
+            revs = self._reviews.get(c.chunk_id, {})
+            if not revs:
+                out.append(
+                    {
+                        "chunk_id": c.chunk_id,
+                        "handle": c.handle,
+                        "chunk_kind": c.chunk_kind,
+                        "checker": None,
+                        "approved_sha": None,
+                        "verdict": None,
+                        "at": None,
+                        "dirty": True,
+                    }
+                )
+                continue
+            for checker, status in revs.items():
+                out.append(
+                    {
+                        "chunk_id": c.chunk_id,
+                        "handle": c.handle,
+                        "chunk_kind": c.chunk_kind,
+                        "checker": checker,
+                        **status,
+                    }
+                )
+        return out
+
+
+def _review_client(tmp_path):
+    rt = FakeRuntime(ReviewFakeStore())
+    app = create_app(runtime=rt, web_config=WebConfig(corpus_dir=tmp_path))
+    return rt, TestClient(app)
+
+
+def test_human_review_route_dispatches_edit_verb(tmp_path) -> None:
+    _rt, client = _review_client(tmp_path)
+    r = client.post("/drafts/nt/human-review", json={"dc": "dc2"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    verb, args = _rt.calls[-1]
+    # The web layer never calls Store.record_review directly — it always
+    # goes through the edit verb, so the ledger write stays single-sourced
+    # with the MCP/CLI path.
+    assert verb == "edit"
+    assert args == {
+        "kind": "draft",
+        "id": "dc2",
+        "review": "human",
+        "verdict": "approved",
+    }
+    # The fake edit dispatch only records the call (doesn't mutate the
+    # store), so the freshly-read-back status is still empty here.
+    assert body["review"] == {}
+
+
+def test_human_review_route_accepts_base58_handle_and_custom_verdict(
+    tmp_path,
+) -> None:
+    _rt, client = _review_client(tmp_path)
+    r = client.post(
+        "/drafts/nt/human-review", json={"dc": "BBBBBB", "verdict": "needs-rework"}
+    )
+    assert r.status_code == 200
+    verb, args = _rt.calls[-1]
+    assert verb == "edit"
+    assert args["id"] == "dc2"  # base-58 handle normalised to the dc address
+    assert args["verdict"] == "needs-rework"
+
+
+def test_human_review_route_404s_for_unknown_handle(tmp_path) -> None:
+    _rt, client = _review_client(tmp_path)
+    r = client.post("/drafts/nt/human-review", json={"dc": "dc999"})
+    assert r.status_code == 404
+    assert _rt.calls == []  # never reached the edit verb
+
+
+def test_human_review_route_404s_for_missing_draft(tmp_path) -> None:
+    _rt, client = _review_client(tmp_path)
+    r = client.post("/drafts/no-such-draft/human-review", json={"dc": "dc2"})
+    assert r.status_code == 404
+
+
+def test_row_review_status_reflects_the_ledger() -> None:
+    """The reader's per-row payload (``_build_rows``, via ``_one_row``)
+    carries the review ledger's status: never-reviewed is a present-but-empty
+    dict (the ✓ shows, unclicked); a recorded human review shows non-dirty;
+    editing after review would go dirty (exercised at the store level, not
+    re-derived here since this fake doesn't model content_sha)."""
+    from precis_web.routes.drafts import _one_row
+
+    store = ReviewFakeStore()
+    row = _one_row(store, _DRAFT, "BBBBBB")
+    assert row is not None
+    assert row["review"] == {}  # reviewable, never reviewed
+
+    store.record_review(2, "human", verdict="approved")  # BBBBBB is chunk_id=2
+    row = _one_row(store, _DRAFT, "BBBBBB")
+    assert row["review"]["human"]["dirty"] is False
+    assert row["review"]["human"]["verdict"] == "approved"
+
+
+def test_reader_renders_the_human_review_checkbox(draft_client: TestClient) -> None:
+    """The ✓ gutter button is wired into the reader's markup — dispatches
+    ``draft-review`` (the Alpine listener ``onReview`` posts through)."""
+    r = draft_client.get("/drafts/nt")
+    assert r.status_code == 200
+    assert "dr-review" in r.text
+    assert "$dispatch('draft-review', {dc:'dc2'})" in r.text
+
+
+def test_checker_flag_strip_renders_per_lens_state(tmp_path) -> None:
+    """The meta-column checker strip (rung 3d) renders one glyph per lens:
+    current (✓) when reviewed at the live text, stale (~) when the
+    approved sha is behind the current one, unreviewed (–) otherwise. No
+    "findings" glyph — reviewers don't stamp which lens filed a request."""
+    rt, client = _review_client(tmp_path)
+    store = rt.store
+    store.record_review(2, "cites", verdict="approved")  # cites: current
+    store._reviews[2]["structure"] = {
+        "approved_sha": "stale-sha",
+        "verdict": "approved",
+        "at": None,
+        "dirty": True,
+    }  # structure: stale (approved sha is behind)
+    # flow / adversarial: never reviewed
+    r = client.get("/drafts/nt")
+    assert r.status_code == 200
+    html = r.text
+    assert 'title="cites: reviewed at the current text">C✓' in html
+    assert 'title="structure: reviewed, but changed since — stale">S~' in html
+    assert 'title="flow: never reviewed">F–' in html
+    assert 'title="adversarial: never reviewed">A–' in html
+
+
+def test_authored_badge_and_border_render_for_machine_authored_chunk(
+    tmp_path,
+) -> None:
+    """A chunk carrying ``meta.authored_by`` (the grounded-authoring
+    reviewer's new-chunk stamp) renders the amber "authored" badge and its
+    content column gets an amber left border — the reviewer's cue that this
+    prose is machine-written and starts unreviewed."""
+    store = DraftFakeStore()
+    store._chunks[1].meta = {"authored_by": "review:cites"}  # BBBBBB, chunk_id=2
+    rt = FakeRuntime(store)
+    app = create_app(runtime=rt, web_config=WebConfig(corpus_dir=tmp_path))
+    client = TestClient(app)
+    r = client.get("/drafts/nt")
+    assert r.status_code == 200
+    assert "✎ authored (cites)" in r.text
+    assert "border-l-4 border-amber-300 pl-1" in r.text
+
+
+def test_set_authoring_route_writes_ref_meta(
+    draft_client: TestClient, draft_runtime: FakeRuntime
+) -> None:
+    """``POST /drafts/{ident}/authoring`` (3e) writes
+    ``refs.meta.authoring_enabled`` via ``stamp_ref_meta``."""
+    r = draft_client.post(
+        "/drafts/nt/authoring", data={"enabled": "1"}, follow_redirects=False
+    )
+    assert r.status_code in (302, 303)
+    assert draft_runtime.store.meta_writes[-1] == (500, {"authoring_enabled": True})
+
+    r = draft_client.post(
+        "/drafts/nt/authoring", data={"enabled": "0"}, follow_redirects=False
+    )
+    assert r.status_code in (302, 303)
+    assert draft_runtime.store.meta_writes[-1] == (500, {"authoring_enabled": False})
+
+
+def test_reader_shows_auto_author_toggle_state(draft_client: TestClient) -> None:
+    """The reader defaults to ``auto-author: OFF`` and flips to ``ON`` once
+    the toggle route has been posted (the toolbar control, 3e)."""
+    r = draft_client.get("/drafts/nt")
+    assert r.status_code == 200
+    assert "auto-author: OFF" in r.text
+
+    draft_client.post("/drafts/nt/authoring", data={"enabled": "1"})
+    r = draft_client.get("/drafts/nt")
+    assert "auto-author: ON" in r.text
+
+
 def test_smartdraft_index_lists_drafts(draft_client: TestClient) -> None:
     # The parallel /smartdraft index lists drafts via list_refs (the same source
     # the classic /drafts index uses) — not a nonexistent list_drafts().
@@ -1502,6 +1757,8 @@ def _render_row(requests: list[SimpleNamespace]) -> str:
         edited_at=None,
         abbrevs={},
         requests=requests,
+        review=None,
+        authored=None,
     )
     ref = SimpleNamespace(ident="nt")
     tmpl = templates.env.get_template("drafts/_row.html.j2")

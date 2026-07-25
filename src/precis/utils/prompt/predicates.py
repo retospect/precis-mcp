@@ -59,20 +59,28 @@ def has_styled_anchor(ctx: AssemblyContext) -> bool:
 def _review_kind(ctx: AssemblyContext) -> str | None:
     """The ``meta.review`` lens of this tick's todo, memoised in extras.
 
-    A review-todo (filed by the draft reader's "review ▾" menu) carries
-    ``meta.review = structural | deep_review | citation | all``. Cached
-    under ``extras['review']`` so both the predicate and the reviewer
-    persona / section modules share one query."""
+    A review-todo (filed by the draft reader's "review ▾" menu, or the
+    ``review-all``/weave fanouts) carries ``meta.review = flow | cites |
+    structure | adversarial | …`` plus, for the author-eligible lenses, an
+    opt-in ``meta.author=true`` (``quest/weave_review.py``'s ``author=``
+    fanout flag). Cached under ``extras['review']`` / ``extras['author']``
+    so the predicate and the reviewer persona / section modules share one
+    query."""
     if "review" in ctx.extras:
         return ctx.extras["review"]  # type: ignore[no-any-return]
     review: str | None = None
+    author = False
     if ctx.store is not None:
         with ctx.store.pool.connection() as conn:
             row = conn.execute(
-                "SELECT meta->>'review' FROM refs WHERE ref_id = %s", (ctx.ref_id,)
+                "SELECT meta->>'review', meta->>'author' FROM refs WHERE ref_id = %s",
+                (ctx.ref_id,),
             ).fetchone()
-        review = (row[0] if row else None) or None
+        if row is not None:
+            review = row[0] or None
+            author = (row[1] or "").lower() == "true"
     ctx.extras["review"] = review
+    ctx.extras["author"] = author
     return review
 
 

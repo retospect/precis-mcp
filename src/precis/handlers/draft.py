@@ -182,6 +182,27 @@ def _sanitize_svg_bytes(raw: bytes) -> bytes:
         raise BadInput(f"invalid SVG figure: {exc}") from exc
 
 
+_AUTHORING_ON = frozenset({"on", "true", "1", "yes", "enable", "enabled"})
+_AUTHORING_OFF = frozenset({"off", "false", "0", "no", "disable", "disabled"})
+
+
+def _coerce_authoring(v: bool | str) -> bool:
+    """Coerce ``edit(kind='draft', authoring=…)`` to a bool. A real bool
+    passes through; a string is matched case/whitespace-insensitively
+    against on/off synonyms; anything else is rejected."""
+    if isinstance(v, bool):
+        return v
+    key = str(v).strip().lower()
+    if key in _AUTHORING_ON:
+        return True
+    if key in _AUTHORING_OFF:
+        return False
+    raise BadInput(
+        f"authoring={v!r} not understood",
+        next="edit(kind='draft', id=<slug>, authoring='on')  # or 'off' / True / False",
+    )
+
+
 def _coerce_word_target(raw: dict[str, Any]) -> tuple[int, int] | None:
     """Validate an ``edit(word_target=…)`` payload → ``(min, max)`` or
     ``None`` (clear). ``{}`` / both-bounds-absent clears; a present bound
@@ -216,7 +237,11 @@ class DraftHandler(Handler):
         title="Draft",
         description=(
             "Editable, chunk-native document (ADR 0033). put creates a "
-            "draft (project=, born with a title heading) or adds a chunk "
+            "draft (project=, born with a title heading), forks one "
+            "(copy_of=<src-slug>, project=<todo|new-title>: deep-copies "
+            "chunks + hierarchy + links into a new draft, source untouched; "
+            "project= an int/todo:N binds an existing project, any other "
+            "string mints a fresh one titled that), or adds a chunk "
             "(chunk_kind=, text=, at={first|last|into|before|after}); get "
             "lists / outlines / reads a chunk window dc<id>-B+A; search "
             "(q=, mode=lexical|semantic|hybrid|regex, scope=slug|dc<id>, "
@@ -781,8 +806,17 @@ class DraftHandler(Handler):
         plots: list[str] | None = None,
         voice: str | None = None,
         lang: str | None = None,
+        copy_of: str | int | None = None,
         **_kw: Any,
     ) -> Response:
+        if copy_of is not None:
+            # Draft fork/deep-copy primitive: put(kind='draft',
+            # copy_of='<src-slug>', project=<todo>) deep-copies the WHOLE
+            # source draft (chunks + hierarchy + links) into a NEW draft
+            # bound to `project`, leaving the source untouched. `id=`, if
+            # given, seeds the new slug (deduped); otherwise `<src>-copy`.
+            return self._fork(copy_of, project=project, new_id=id, title=title)
+
         if id is None or not str(id).strip():
             raise BadInput(
                 "put(kind='draft') requires id= (the draft slug)",
@@ -901,6 +935,107 @@ class DraftHandler(Handler):
                 f"linked draft-of project {project_ref_id}"
             )
         )
+
+    def _dedup_slug(self, candidate: str) -> str:
+        """``candidate``, or ``candidate-2``/``-3``/… if a live draft
+        already holds it — same "never clobber a slug" instinct as the
+        rest of the kind, just applied to a machine-derived fork slug
+        instead of an agent-typed one."""
+        slug = candidate
+        n = 2
+        while self.store.get_ref(kind="draft", id=slug) is not None:
+            slug = f"{candidate}-{n}"
+            n += 1
+        return slug
+
+    def _fork(
+        self,
+        copy_of: str | int,
+        *,
+        project: str | int | None,
+        new_id: str | int | None,
+        title: str | None,
+    ) -> Response:
+        """``put(kind='draft', copy_of='<slug>', project=<todo>)`` — deep-copy
+        the WHOLE source draft (every chunk + its hierarchy + every link
+        touching it) into a NEW draft bound to ``project``, via
+        :meth:`~precis.store._draft_ops.DraftMixin.fork_draft`. The source is
+        never touched. Refuses (does not clobber) if ``project`` already owns
+        a draft — unlike ``draftimport``'s re-import path, a fork never
+        retires an existing draft out from under a project. ``project=`` may
+        also be a fresh project TITLE (see :meth:`_resolve_or_create_project`)."""
+        src_slug = str(copy_of).strip()
+        if not src_slug:
+            raise BadInput(
+                "copy_of= must name the source draft's slug",
+                next="put(kind='draft', copy_of='<src-slug>', project=<todo-id>)",
+            )
+        src = resolve_live_slug_ref(self.store, kind="draft", id=src_slug)
+        if project is None:
+            raise BadInput(
+                "put(kind='draft', copy_of=…) requires project= "
+                "(an existing project todo id/handle, or a NEW project's title)",
+                next=f"put(kind='draft', copy_of='{src_slug}', project=<todo-id>)",
+            )
+        project_ref_id = self._resolve_or_create_project(project)
+        if self.store.links_for(project_ref_id, direction="in", relation="draft-of"):
+            raise BadInput(
+                f"project {project_ref_id} already has a draft — "
+                "a project owns at most one",
+                next=(
+                    f"get(kind='draft', project={project_ref_id}) to see it, "
+                    "or pick a fresh project todo for the fork"
+                ),
+            )
+        candidate = str(new_id).strip() if new_id else f"{src_slug}-copy"
+        new_slug = self._dedup_slug(candidate)
+        new_title = (title or f"{src.title} (review copy)").strip()
+        new_ref = self.store.fork_draft(
+            src.id, project_ref_id, new_slug=new_slug, title=new_title
+        )
+        return Response(
+            body=(
+                f"forked draft '{src_slug}' → '{new_ref.slug}' (ref {new_ref.id}); "
+                f"linked draft-of project {project_ref_id}; copy-of {src_slug}"
+            )
+        )
+
+    def _resolve_or_create_project(self, project: str | int) -> int:
+        """``project=`` for a fork: an int or a ``'todo:N'`` string resolves
+        to an EXISTING project todo, exactly like :meth:`_resolve_project`
+        (and every other draft/plan ``project=`` call site) — never
+        fuzzy-matched. A plain non-numeric string is a NEW project's
+        **title**: mints a fresh ``level:strategic`` project todo with that
+        title.
+
+        Reuses ``TodoHandler.put`` — the same "mint a project when the
+        caller doesn't hand us one" path
+        :func:`precis.draftimport.build.run_import` takes — rather than an
+        ``insert_ref`` direct to the store, so the level-gradient authority
+        guard (``_todo_guards.check_level_tags_on_create``: workers can't
+        mint ``level:strategic``) still applies instead of being silently
+        bypassed for the fork's own project-minting shortcut. The new ref's
+        id is read back off the ack's universal handle (``td<id>``, ADR
+        0036) rather than by title lookup — a title has no uniqueness
+        guarantee, but the handle in the ack IS this call's own ref."""
+        raw = str(project).strip()
+        bare = raw[len("todo:") :] if raw.startswith("todo:") else raw
+        if bare.isdigit():
+            return self._resolve_project(project)
+        from precis.dispatch import Hub
+        from precis.handlers.todo import TodoHandler
+
+        resp = TodoHandler(hub=Hub(store=self.store)).put(
+            text=raw, tags=["level:strategic"]
+        )
+        code = handle_registry.code_for_kind("todo")
+        m = re.search(rf"\b{code}(\d+)\b", resp.body)
+        if m is None:  # pragma: no cover - defensive; the ack format is stable
+            raise BadInput(
+                f"minted project {raw!r} but couldn't read its id back "
+                f"off the todo ack: {resp.body!r}"
+            )
+        return int(m.group(1))
 
     def _prepare_term_meta(
         self, ref_id: int, meta: dict[str, Any] | None
@@ -1111,10 +1246,23 @@ class DraftHandler(Handler):
         lang: str | None = None,
         review: str | None = None,
         verdict: str = "approved",
+        authoring: bool | str | None = None,
         scaffold: str | None = None,
         dry_run: bool | str = False,
+        source: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
+        # ``source`` is a code/provenance-caller convenience (not documented
+        # on the general edit surface): forwarded verbatim to
+        # ``store.edit_text``'s ``chunk_events.source`` payload for the two
+        # plain-text-mutation paths (find-replace + whole-chunk rewrite)
+        # only. Lets a caller that knows *why* it's editing — e.g. the
+        # grounded-authoring reviewer persona stamping
+        # ``source={'authored_by': 'review:<lens>'}`` — leave that on the
+        # append-only edit log, queryable per-chunk, without a new store
+        # primitive or a ``chunks.meta`` write (which would collide with the
+        # ``meta=`` term-attrs patch branch below).
+        #
         # ``dry_run`` is advertised on the shared edit surface as "preview
         # without writing". It used to be swallowed in ``**_kw`` and the edit
         # *applied anyway* — a data-loss footgun (gr48518). It is now honored
@@ -1161,6 +1309,20 @@ class DraftHandler(Handler):
             ref = self._resolve_draft_any(id)
             self.store.add_abbrev_ignore(ref.id, tokens)
             return Response(body=f"marked not-an-abbrev: {', '.join(tokens)}")
+        # ``authoring`` is a draft-level op (paper-writing pipeline rung 3e,
+        # the per-document auto-author toggle) — id is the slug (or any
+        # handle in the draft), not a single chunk. When on, the grounded
+        # review lenses (``cites``/``structure``) EDIT the draft instead of
+        # only filing findings (``quest/review_fanout.py``'s
+        # ``mint_review_fanout`` ORs this into its ``author`` decision).
+        if authoring is not None:
+            _reject_dry_run("authoring")
+            ref = self._resolve_draft_any(id)
+            on = _coerce_authoring(authoring)
+            self.store.stamp_ref_meta(ref.id, {"authoring_enabled": on})
+            return Response(
+                body=f"auto-author {'ON' if on else 'OFF'} for {ref.slug or ref.id}"
+            )
         # ``scaffold`` is a draft-level op (paper-writing pipeline rung 4,
         # docs/design/paper-writing-pipeline.md §"Document classes"): lays
         # down a genre's standard section skeleton (ADR 0037 step 4), the
@@ -1364,7 +1526,7 @@ class DraftHandler(Handler):
                 return self._render_draft_dry_run(
                     _base.dc, old_text, new_text, mode=dry_mode, note=note
                 )
-            c = self.store.edit_text(handle, new_text, base_sha=base_sha)
+            c = self.store.edit_text(handle, new_text, base_sha=base_sha, source=source)
             body = f"edited {c.dc}" if c else "edited"
             if c is not None:
                 if occurrences > 1:
@@ -1390,7 +1552,9 @@ class DraftHandler(Handler):
                 return self._render_draft_dry_run(
                     _base.dc, old_text, str(text), mode=dry_mode
                 )
-            c = self.store.edit_text(handle, str(text), base_sha=base_sha)
+            c = self.store.edit_text(
+                handle, str(text), base_sha=base_sha, source=source
+            )
             body = f"edited {c.dc}" if c else "edited"
             if c is not None:
                 self._sync_draft_links(c.ref_id)

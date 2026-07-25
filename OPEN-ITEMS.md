@@ -600,14 +600,21 @@ weave <qid>` CLI; 6e-2 `quest_tick.py` `_phase_weave_tick` branch (autonomous
 coordinator routes `meta.quest_body='weave'` quests, budget/backoff-mirrored, dark
 behind `PRECIS_QUEST_LOOP_ENABLED`); 6f `quest/weave_review.py` (`mint_weave_reviews`
 — flow+cites review-todos post-weave). **Loop is runnable end-to-end** (`precis quest
-weave`); nothing deployed. Remaining:
+weave`); nothing deployed. **Whole-draft review fanout + writeback shipped**
+(dark): `quest/review_fanout.py` (`mint_review_fanout` — one
+review-todo per reviewable chunk x lens across all four lenses, `precis quest
+review-all`); the writeback closes 6f's ledger-gating — a review-mode `plan_tick`
+that finishes with 0 findings AND an unmoved anchor `content_sha` now calls
+`store.record_review(..., verdict='approved')` itself
+(`workers/executors/claude_inproc.py`); a per-document `authoring_enabled` toggle
+(`edit(kind='draft', authoring='on')`) lets the `cites`/`structure` lenses edit the
+draft inline instead of only filing findings (`precis-review-authoring` persona);
+`put(kind='draft', copy_of=..., project=...)` deep-copies a draft (rung-3
+prerequisite for a review pass that shouldn't touch the source, mig 0088). Web
+reader gained the matching surface: a ✓ gutter checkoff, a read-only F/C/S/A
+checker-flag strip, a machine-authored marker, and the auto-author toolbar
+toggle. Remaining:
 
-- **Wire reviewer PASS → `chunk_review` ledger** *(feature, open — closes 6f's
-  ledger-gating)*. `store.record_review` is called ONLY from `edit(kind='draft',
-  review=…)` (rung 3, manual/agent verb); a passing `flow`/`cites` review-tick does
-  NOT auto-clear "requires review". So "cited-in = the cites checker passed at this
-  sha" is not auto-closed. Needs the `precis-draft-reviewer` persona (or the
-  review-todo resolution path) to call `record_review` on a clean pass.
 - **Topic-dossier weave-quest creation flow** *(feature, open)*. `mark_weave_quest`
   flags an existing quest, but nothing creates one end-to-end (mint quest +
   `ensure_dossier` + `topic:` tag + `mark_weave_quest`). The ADR-0060 synthesis-tick
