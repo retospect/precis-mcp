@@ -43,7 +43,7 @@ router = APIRouter(prefix="/status", tags=["status"])
 #: fast as each formerly-standalone route. `/factory` and `/budget`
 #: now just redirect here (their POST endpoints stay mounted at their
 #: original paths — only the write path's redirect target moved).
-_TABS = ("health", "services", "budget")
+_TABS = ("health", "services", "budget", "models")
 
 log = logging.getLogger(__name__)
 
@@ -1256,6 +1256,101 @@ def _llm_override_ctx(store: Any) -> dict[str, Any]:
     }
 
 
+#: Cloud tiers, strongest first — the sort order for the Models sub-tab's
+#: cloud grid (local cards sort served-first, then by model_id).
+_TIER_RANK: dict[str, int] = {"cloud-super": 0, "cloud-mid": 1, "cloud-small": 2}
+
+
+def _llm_card_view(ref: Any) -> dict[str, Any]:
+    """Normalise one ``llm`` catalog card into the flat shape the Models
+    sub-tab renders: name, tier, provider, headline cost + window, the local
+    ``served_by`` hosts (where a model is *sourced* on the fleet — the fact the
+    text renderer never surfaces), and the capability axes. Everything degrades
+    to ``None``/``[]`` so a half-populated card never 500s the page.
+    """
+    from precis import llm_catalog
+
+    meta = ref.meta or {}
+    model_id = meta.get("model_id") or f"llm:{ref.id}"
+    tier = meta.get("tier_floor") or ""
+    offerings = meta.get("offerings") or []
+    off = offerings[0] if offerings and isinstance(offerings[0], dict) else {}
+
+    hosts = [
+        {
+            "host": e.get("host"),
+            "endpoint": e.get("endpoint"),
+            "slots": e.get("max_parallel"),
+            "model": e.get("model"),
+        }
+        for e in (meta.get("served_by") or [])
+        if isinstance(e, dict) and e.get("host")
+    ]
+
+    if "/" in model_id:
+        provider = model_id.split("/", 1)[0]
+    elif model_id.startswith("claude"):
+        provider = "anthropic"
+    else:
+        prov = meta.get("provenance")
+        provider = (prov.get("source") if isinstance(prov, dict) else None) or "—"
+
+    cap = meta.get("capability") or {}
+    caps: list[dict[str, Any]] = []
+    for axis in llm_catalog.CAPABILITY_AXES:
+        if axis in cap:
+            val = cap[axis]
+            score = val.get("score") if isinstance(val, dict) else val
+            if isinstance(score, (int, float)):
+                caps.append({"axis": axis, "score": int(score)})
+
+    return {
+        "id": ref.id,
+        "model_id": model_id,
+        "tier": tier,
+        "is_cloud": tier.startswith("cloud"),
+        "provider": provider,
+        "price_in": off.get("price_in"),
+        "price_out": off.get("price_out"),
+        "transport": off.get("transport"),
+        "window": off.get("max_input"),
+        "quant": off.get("quant"),
+        "hosts": hosts,
+        "caps": caps,
+        "prose": (ref.title or "").strip(),
+    }
+
+
+def _models_ctx(store: Any) -> dict[str, Any]:
+    """Models sub-tab: the ``llm`` catalog rendered as cards, split by where a
+    model is *sourced* — Cloud (``tier_floor`` = ``cloud-*``: provider + list
+    price + window) vs Local (fleet-served: the ``served_by`` host chips, plus
+    the tier-anchor cards that resolve to one). Read-only; the catalog is minted
+    by the ``llm_reconcile`` pass, not here.
+    """
+    try:
+        cards = [_llm_card_view(r) for r in store.list_refs(kind="llm", limit=200)]
+    except Exception:
+        cards = []
+    cloud = [c for c in cards if c["is_cloud"]]
+    local = [c for c in cards if not c["is_cloud"]]
+    cloud.sort(
+        key=lambda c: (
+            _TIER_RANK.get(c["tier"], 9),
+            c["price_in"] if c["price_in"] is not None else float("inf"),
+            c["model_id"],
+        )
+    )
+    # Served (host-backed) models first, then the abstract tier anchors.
+    local.sort(key=lambda c: (0 if c["hosts"] else 1, c["model_id"]))
+    serving_hosts = sorted({h["host"] for c in local for h in c["hosts"]})
+    return {
+        "cloud_cards": cloud,
+        "local_cards": local,
+        "serving_hosts": serving_hosts,
+    }
+
+
 def _budget_ctx(store: Any) -> dict[str, Any]:
     """Budget sub-tab: the retired ``/budget`` page folded in verbatim —
     the tote, the quota live-pause banner, and the cap-editor state."""
@@ -1309,6 +1404,8 @@ async def index(
                 _request_conn.reset(token)
     elif tab == "services":
         ctx.update(_services_ctx(store, host))
+    elif tab == "models":
+        ctx.update(_models_ctx(store))
     else:
         ctx.update(_budget_ctx(store))
     return templates.TemplateResponse(request, "status.html.j2", ctx)

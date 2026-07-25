@@ -1220,10 +1220,14 @@ in_review → wontfix`), and a `retire` (soft-delete, distinct from
 `wontfix`). Nav badge counts every non-`wontfix` gripe
 (`src/precis_web/nav.py::_gripes_count`).
 
-**System — merged Status+Factory+Budget (`/status?tab=health|services|budget`).**
+**System — merged Status+Factory+Budget+Models
+(`/status?tab=health|services|models|budget`).**
 `src/precis_web/routes/status.py::index` dispatches on `tab=` to
 `_health_ctx` (host/liveness strip, was `/status`), `_services_ctx` (the
-old `/factory` category tables + live prio/model_pref edit), and
+old `/factory` category tables + live prio/model_pref edit), `_models_ctx`
+(the `llm` catalog as read-only cards — `_llm_card_view` splits Cloud rungs
+`tier_floor=cloud-*` [provider + list price + window + capability dots]
+from fleet-served Local rungs [the `served_by` host chips]), and
 `_budget_tote` (the spend cap/pause/resume controls, was `/budget`).
 `/factory` and `/budget`'s `GET` routes are bare redirects into the
 matching sub-tab; their `POST` write routes (`/factory/prio`, `/budget/set`,
