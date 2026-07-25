@@ -91,3 +91,125 @@ class TestGraduation:
         assert "needs-experiment" in kinds
         exp = next(g for g in quest_gaps(store, qid) if g.kind == "needs-experiment")
         assert exp.handle == f"st{sid}"
+
+
+class TestBarrierQualityGate:
+    """A candidate that crosses a catpath barrier ceiling but whose pathway
+    did not converge (harvest stamped ``barrier_trusted=False``) is held
+    back — the pathway warnings gate below OPEN-ITEMS/decided spec.
+
+    Ranking exclusion (frontier.py) is now the primary mechanism: an untrusted
+    barrier is dropped from ``measures`` at frontier-build time, so the
+    candidate falls to ``unevaluated`` and ``graduate_frontier`` (which only
+    walks ``fr.frontier``) never even sees it — no tag, no note, from *this*
+    path. The explicit ``barrier_trusted is False`` check in ``graduate.py``
+    is deliberately kept as a belt-and-suspenders defense (see
+    ``test_defensive_gate_fires_if_frontier_ever_yields_an_untrusted_candidate``
+    below), in case a future frontier change ever lets one through.
+    """
+
+    def _candidate_with_barrier(
+        self, store: Any, qid: int, barrier: float, *, trusted: bool | None
+    ) -> int:
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "cand", "structure": _SPEC}
+        )
+        assert sid is not None
+        # A frontier candidate must be converged + carry the objective measure.
+        store.structure_record_run(
+            sid,
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=10,
+            max_disp=0.0,
+            energy=-10.0,
+        )
+        meta: dict[str, Any] = {"barrier": barrier}
+        if trusted is not None:
+            meta["barrier_trusted"] = trusted
+        store.stamp_ref_meta(sid, meta)
+        return sid
+
+    def test_untrusted_barrier_is_excluded_from_ranking_and_not_graduated(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
+        store.stamp_ref_meta(
+            qid, {"rubric_objectives": [{"key": "barrier", "sense": "min"}]}
+        )
+        sid = self._candidate_with_barrier(store, qid, 0.3, trusted=False)
+        _set_rule(store, qid, key="barrier", sense="min", threshold=0.5)
+        graduated = grad.graduate_frontier(store, qid)
+        assert graduated == []
+        assert not any(str(t) == "needs-experiment" for t in store.tags_for(sid))
+
+        from precis.quest.frontier import quest_frontier
+
+        fr = quest_frontier(store, qid)
+        assert sid not in [c.ref_id for c in fr.frontier]
+        assert sid not in [c.ref_id for c in fr.dominated]
+        assert sid in [c.ref_id for c in fr.unevaluated]
+
+    def test_defensive_gate_fires_if_frontier_ever_yields_an_untrusted_candidate(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """Belt-and-suspenders: if ``quest_frontier`` ever handed
+        ``graduate_frontier`` a frontier candidate whose barrier is untrusted
+        (should not happen given frontier.py's ranking exclusion, but this is
+        the defensive check that survives a future regression there), it must
+        still be held back with a `note` — never silently graduated."""
+        from precis.quest import frontier as frontier_mod
+
+        qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
+        sid = self._candidate_with_barrier(store, qid, 0.3, trusted=False)
+        _set_rule(store, qid, key="barrier", sense="min", threshold=0.5)
+
+        fake_candidate = frontier_mod.Candidate(
+            ref_id=sid,
+            handle=f"st{sid}",
+            name="synthetic",
+            measures={"barrier": 0.3},  # bypasses the usual exclusion
+            converged=True,
+            flags={
+                "barrier_trusted": False,
+                "barrier_neb_failed": 1,
+                "barrier_desorbed": 2,
+            },
+        )
+        fake_fr = frontier_mod.FrontierResult(
+            objectives=[("barrier", "min")], frontier=[fake_candidate]
+        )
+        monkeypatch.setattr(frontier_mod, "quest_frontier", lambda *a, **k: fake_fr)
+        graduated = grad.graduate_frontier(store, qid)
+        assert graduated == []
+        assert not any(str(t) == "needs-experiment" for t in store.tags_for(sid))
+        logs = [
+            b for b in store.list_blocks_for_ref(qid) if b.chunk_kind == "quest_log"
+        ]
+        assert any(
+            (b.meta or {}).get("entry_type") == "note" and "held back" in b.text
+            for b in logs
+        )
+
+    def test_trusted_barrier_graduates(self, store: Any) -> None:
+        qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
+        store.stamp_ref_meta(
+            qid, {"rubric_objectives": [{"key": "barrier", "sense": "min"}]}
+        )
+        sid = self._candidate_with_barrier(store, qid, 0.3, trusted=True)
+        _set_rule(store, qid, key="barrier", sense="min", threshold=0.5)
+        graduated = grad.graduate_frontier(store, qid)
+        assert graduated == [sid]
+        assert any(str(t) == "needs-experiment" for t in store.tags_for(sid))
+
+    def test_unknown_trust_graduates(self, store: Any) -> None:
+        """No trust flag stamped (legacy / pre-gate harvest) → not blocked."""
+        qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
+        store.stamp_ref_meta(
+            qid, {"rubric_objectives": [{"key": "barrier", "sense": "min"}]}
+        )
+        sid = self._candidate_with_barrier(store, qid, 0.3, trusted=None)
+        _set_rule(store, qid, key="barrier", sense="min", threshold=0.5)
+        graduated = grad.graduate_frontier(store, qid)
+        assert graduated == [sid]

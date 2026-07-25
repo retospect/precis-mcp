@@ -989,6 +989,20 @@ The master kinds table lives in the `precis-overview` skill.
   verdict), so it retries once (`meta.quest_catpath_infra_retries`) then gripes
   (`lane="catpath"`) and **never** rules out — `_latest_catpath_job` +
   `dispatch_catpath` re-dispatch, same retry-once-then-gripe shape as relax.
+  **Barrier quality gate** (`compute._pathway_quality`, gr172323): harvest
+  lifts not only the scalar `barrier`/`span` but a trust verdict read from the
+  linked pathway's `meta.warnings` — `barrier_trusted=False` iff any
+  `NEB not converged` or adsorbate-`detached` warning. An untrusted barrier is
+  **excluded from ranking** (dropped from `measures` in
+  `frontier._candidate_from_structure` → the candidate lands `unevaluated`,
+  never on the frontier; the raw value survives as
+  `flags.barrier_untrusted_value` for the leaderboard's `⚠ non-converged` /
+  `(excluded)` cell) and can **never graduate** (`graduate.py` belt-and-
+  suspenders gate on `_CATPATH_GATED_KEYS`). NB single-seed runs make catpath's
+  own `low_confidence` uninformative (always `n<2`), so the *warnings* are the
+  signal, not that flag — the physical fix (endpoint desorption pre-flight,
+  bigger NEB budget, seed ensemble) is catpath-side + quest-config, tracked in
+  gr172323.
   Reaction (slab) candidates relax the box **in-plane** (`cell="inplane"`
   — a/b + γ free, c-axis/vacuum pinned) so stability is judged on a relaxed slab
   (`quest/compute.py`; the `relax` op's variable-cell mode in `structure/relax.py`).

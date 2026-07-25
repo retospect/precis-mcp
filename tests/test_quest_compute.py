@@ -727,6 +727,61 @@ class TestGeneralizedFrontier:
         assert c.params == {"n_cu": 2, "facet": "111"}
         assert "params" not in c.measures  # the dict itself is never a measure
 
+    def test_untrusted_barrier_excluded_from_ranking_even_though_it_would_dominate(
+        self, store: Any
+    ) -> None:
+        # ids[1]'s raw barrier (0.1) is far better than ids[0]'s (0.5) — if it
+        # ranked, it would dominate. But its pathway didn't converge, so it must
+        # be excluded from ranking entirely (Reto: "noise should be excluded
+        # from ranking") — it lands in unevaluated, NOT dominated, NOT frontier.
+        qid, ids = self._two_candidates(store)
+        store.stamp_ref_meta(
+            qid, {"rubric_objectives": [{"key": "barrier", "sense": "min"}]}
+        )
+        for sid, energy in zip(ids, (-20.0, -8.0)):
+            store.structure_record_run(
+                sid,
+                fidelity="ml",
+                on_version=1,
+                converged=True,
+                n_steps=10,
+                max_disp=0.0,
+                energy=energy,
+            )
+        store.stamp_ref_meta(ids[0], {"barrier": 0.5, "barrier_trusted": True})
+        store.stamp_ref_meta(
+            ids[1], {"barrier": 0.1, "barrier_trusted": False, "barrier_neb_failed": 2}
+        )
+        fr = quest_frontier(store, qid)
+        assert [c.ref_id for c in fr.frontier] == [ids[0]]
+        assert not fr.dominated
+        assert [c.ref_id for c in fr.unevaluated] == [ids[1]]
+        untrusted = next(c for c in fr.unevaluated if c.ref_id == ids[1])
+        assert "barrier" not in untrusted.measures
+        assert untrusted.flags["barrier_untrusted_value"] == 0.1
+        assert untrusted.flags["barrier_trusted"] is False
+
+    def test_all_untrusted_leaves_frontier_empty(self, store: Any) -> None:
+        qid, ids = self._two_candidates(store)
+        store.stamp_ref_meta(
+            qid, {"rubric_objectives": [{"key": "barrier", "sense": "min"}]}
+        )
+        for sid, barrier in zip(ids, (0.5, 0.9)):
+            store.structure_record_run(
+                sid,
+                fidelity="ml",
+                on_version=1,
+                converged=True,
+                n_steps=10,
+                max_disp=0.0,
+                energy=-10.0,
+            )
+            store.stamp_ref_meta(sid, {"barrier": barrier, "barrier_trusted": False})
+        fr = quest_frontier(store, qid)
+        assert fr.frontier == []
+        assert fr.dominated == []
+        assert {c.ref_id for c in fr.unevaluated} == set(ids)
+
 
 # ── by-total leaderboard view (§7.3) ──────────────────────────────────
 
@@ -748,7 +803,15 @@ class TestLeaderboard:
             unevaluated=[une],
         )
         rows, schema = leaderboard(fr, graduated={1})
-        assert schema == ["design", "name", "barrier", "energy", "band", "graduated"]
+        assert schema == [
+            "design",
+            "name",
+            "barrier",
+            "energy",
+            "band",
+            "graduated",
+            "quality",
+        ]
         # within the frontier, sorted by the primary objective (barrier, min)
         assert [r["design"] for r in rows] == ["st1", "st2", "st3", "st4"]
         assert [r["band"] for r in rows] == [
@@ -760,6 +823,45 @@ class TestLeaderboard:
         assert rows[0]["graduated"] == "★"  # st1 crossed the ceiling
         assert rows[1]["graduated"] == ""
         assert rows[3]["barrier"] == "—"  # unevaluated: no measure
+        assert rows[0]["quality"] == ""  # no flags stamped → unknown, not flagged
+
+    def test_untrusted_barrier_flagged_in_leaderboard(self) -> None:
+        from precis.quest.frontier import FrontierResult, leaderboard
+
+        f1 = Candidate(
+            1,
+            "st1",
+            "A",
+            {"barrier": 0.3},
+            True,
+            flags={"barrier_trusted": False},
+        )
+        fr = FrontierResult(
+            objectives=[("barrier", "min")], frontier=[f1], dominated=[], unevaluated=[]
+        )
+        rows, _schema = leaderboard(fr)
+        assert rows[0]["quality"] == "⚠ non-converged"
+
+    def test_untrusted_barrier_shows_excluded_value_not_a_bare_dash(self) -> None:
+        # An untrusted candidate has NO "barrier" in measures (excluded from
+        # ranking at build time) but its flags carry the raw value — the
+        # leaderboard should surface "0.648 (excluded)", not a bare "—".
+        from precis.quest.frontier import FrontierResult, leaderboard
+
+        f1 = Candidate(
+            1,
+            "st1",
+            "A",
+            {},  # barrier excluded from measures
+            True,
+            flags={"barrier_trusted": False, "barrier_untrusted_value": 0.648},
+        )
+        fr = FrontierResult(
+            objectives=[("barrier", "min")], frontier=[], dominated=[], unevaluated=[f1]
+        )
+        rows, _schema = leaderboard(fr)
+        assert rows[0]["barrier"] == "0.648 (excluded)"
+        assert rows[0]["quality"] == "⚠ non-converged"
 
     def test_view_leaderboard_renders_toon_table(self, store: Any) -> None:
         qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
@@ -894,6 +996,66 @@ class TestCatpathHarvest:
         links = store.links_for(sid, direction="both", relation="related-to")
         linked = [ln.dst_ref_id for ln in links] + [ln.src_ref_id for ln in links]
         assert target in linked
+
+    def test_untrusted_barrier_flags_pathway_warnings(self, store: Any) -> None:
+        """A pathway with a non-converged NEB + a desorbed adsorbate stamps
+        ``barrier_trusted=False`` (+ counts) onto the candidate, so a garbage
+        barrier never silently ranks as trustworthy."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        target = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="pw",
+            meta={
+                "warnings": [
+                    "NO->N+O seed=0 NEB not converged",
+                    "NH3 seed=0 geometry: adsorbate atom 41 detached from "
+                    "slab (3.89 A)",
+                ],
+                "low_confidence": True,
+            },
+            parent_id=sid,
+        ).id
+        self._catpath_job(
+            store, sid, {"result": {"barrier": 0.4}, "pathway_ref": target}
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is False
+        assert meta["barrier_neb_failed"] == 1
+        assert meta["barrier_desorbed"] == 1
+        assert meta["barrier_low_confidence"] is True
+
+    def test_clean_pathway_is_trusted(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        target = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="pw",
+            meta={"warnings": [], "low_confidence": True},
+            parent_id=sid,
+        ).id
+        self._catpath_job(
+            store, sid, {"result": {"barrier": 0.4}, "pathway_ref": target}
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is True
+        assert meta["barrier_neb_failed"] == 0
+        assert meta["barrier_desorbed"] == 0
+
+    def test_missing_pathway_ref_stamps_no_trust_flags(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        self._catpath_job(store, sid, {"result": {"barrier": 0.4}})  # no pathway_ref
+        step = compute_mod.harvest_measures(store, qid)
+        assert step.results_harvested == 1
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier"] == 0.4
+        assert "barrier_trusted" not in meta
+        assert "barrier_neb_failed" not in meta
 
 
 def _catpath_registered() -> bool:

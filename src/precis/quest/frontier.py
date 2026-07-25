@@ -41,6 +41,16 @@ class Candidate:
     #: The candidate's point in the quest's named param space (``meta.params``,
     #: §7.8). Rides along for a later optimizer advisor; never a ranking measure.
     params: dict[str, Any] = field(default_factory=dict)
+    #: Non-ranking diagnostic flags stamped by harvest (e.g. the pathway
+    #: quality verdict — ``barrier_trusted``/``barrier_neb_failed``/
+    #: ``barrier_desorbed``, see :func:`precis.quest.compute._pathway_quality`).
+    #: An untrusted barrier is excluded from ``measures`` entirely (it must
+    #: not rank or dominate — "noise should be excluded from ranking"); its
+    #: raw value survives here as ``barrier_untrusted_value`` purely for
+    #: display (:func:`leaderboard`). Rides along for the leaderboard's
+    #: quality column and :func:`precis.quest.graduate.graduate_frontier`'s
+    #: belt-and-suspenders gate; never a measure.
+    flags: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -131,8 +141,18 @@ _RUN_NON_MEASURE: frozenset[str] = frozenset({"id", "ref_id", "on_version"})
 #: idempotency bookmarks ``harvest_measures`` (compute.py) stamps onto the
 #: candidate. ``label_hi``/``lattice``/``pbc`` are non-numeric already
 #: (``_numeric`` filters them), so only the numeric ones need listing here.
+#: ``barrier_neb_failed``/``barrier_desorbed`` are the pathway-quality warning
+#: counts harvest_measures also stamps (``barrier_trusted``/
+#: ``barrier_low_confidence`` are bools, already excluded by ``_numeric``) —
+#: diagnostics for :func:`leaderboard`'s quality flag, never a rank measure.
 _META_NON_MEASURE: frozenset[str] = frozenset(
-    {"version", "quest_harvested_upto", "quest_catpath_harvested_upto"}
+    {
+        "version",
+        "quest_harvested_upto",
+        "quest_catpath_harvested_upto",
+        "barrier_neb_failed",
+        "barrier_desorbed",
+    }
 )
 
 
@@ -195,6 +215,26 @@ def _candidate_from_structure(store: Store, s: Any) -> Candidate:
     raw_params = meta.get("params")
     params = dict(raw_params) if isinstance(raw_params, dict) else {}
 
+    flags: dict[str, Any] = {}
+    if "barrier_trusted" in meta:
+        flags["barrier_trusted"] = bool(meta.get("barrier_trusted"))
+    if "barrier_neb_failed" in meta:
+        flags["barrier_neb_failed"] = meta.get("barrier_neb_failed")
+    if "barrier_desorbed" in meta:
+        flags["barrier_desorbed"] = meta.get("barrier_desorbed")
+
+    # An untrusted barrier (its pathway had non-converged NEB edges / desorbed
+    # adsorbates) is noise, not a measurement — exclude it (and span, measured
+    # over the same pathway) from ranking entirely so it can neither dominate
+    # nor be dominated; it falls to `unevaluated` via the existing "missing a
+    # declared objective" path. The raw value survives in `flags` so the
+    # leaderboard can still show what was measured, just marked excluded.
+    if flags.get("barrier_trusted") is False:
+        excluded_barrier = measures.pop("barrier", None)
+        measures.pop("span", None)
+        if excluded_barrier is not None:
+            flags["barrier_untrusted_value"] = excluded_barrier
+
     return Candidate(
         ref_id=s.id,
         handle=handle,
@@ -202,6 +242,7 @@ def _candidate_from_structure(store: Store, s: Any) -> Candidate:
         measures=measures,
         converged=converged,
         params=params,
+        flags=flags,
     )
 
 
@@ -234,10 +275,20 @@ def leaderboard(
         out: list[dict[str, Any]] = []
         for c in sorted(cands, key=_sort_key):
             row: dict[str, Any] = {"design": c.handle, "name": c.name, "band": band}
+            untrusted_value = c.flags.get("barrier_untrusted_value")
             for key in obj_keys:
                 v = c.measures.get(key)
-                row[key] = f"{v:g}" if isinstance(v, (int, float)) else "—"
+                if v is None and key == "barrier" and untrusted_value is not None:
+                    # Excluded from ranking (noise), but still shown — a
+                    # reader should see "we measured this, it just doesn't
+                    # count", not a bare unexplained "—".
+                    row[key] = f"{untrusted_value:g} (excluded)"
+                else:
+                    row[key] = f"{v:g}" if isinstance(v, (int, float)) else "—"
             row["graduated"] = "★" if c.ref_id in graduated else ""
+            row["quality"] = (
+                "⚠ non-converged" if c.flags.get("barrier_trusted") is False else ""
+            )
             out.append(row)
         return out
 
@@ -246,7 +297,7 @@ def leaderboard(
         + _rows(fr.dominated, "dominated")
         + _rows(fr.unevaluated, "awaiting")
     )
-    schema = ["design", "name", *obj_keys, "band", "graduated"]
+    schema = ["design", "name", *obj_keys, "band", "graduated", "quality"]
     return rows, schema
 
 

@@ -341,6 +341,38 @@ def _catpath_measures_from_job(meta: dict[str, Any]) -> dict[str, float]:
     return out
 
 
+#: Warning substrings (case-sensitive, matched anywhere in a `pathway` ref's
+#: ``meta['warnings']`` strings) that mark a harvested barrier as untrustworthy:
+#: an NEB edge that never converged, or an adsorbate that desorbed off the slab
+#: mid-relax. Kept as module constants so :func:`_pathway_quality` and any
+#: future caller (e.g. a diagnostic report) match on the same strings.
+_NEB_NOT_CONVERGED = "NEB not converged"
+_ADSORBATE_DETACHED = "detached"
+
+
+def _pathway_quality(meta: dict[str, Any]) -> dict[str, Any]:
+    """Derive the trust verdict on a harvested barrier from its pathway's meta.
+
+    ``meta`` is the linked `pathway` ref's meta (``meta['warnings']`` — a list
+    of human-readable strings — and ``meta['low_confidence']``, a *separate*,
+    less informative flag: a single-seed quest run always sets it (catpath's
+    ``low_confidence = std>tol OR n<2``), so it rides along for visibility but
+    never gates trust on its own). Counts warnings mentioning a non-converged
+    NEB edge and a desorbed adsorbate; ``barrier_trusted`` is False iff either
+    count is nonzero.
+    """
+    warnings = meta.get("warnings")
+    warnings = warnings if isinstance(warnings, list) else []
+    n_neb_failed = sum(1 for w in warnings if _NEB_NOT_CONVERGED in str(w))
+    n_desorbed = sum(1 for w in warnings if _ADSORBATE_DETACHED in str(w))
+    return {
+        "barrier_trusted": n_neb_failed == 0 and n_desorbed == 0,
+        "barrier_neb_failed": n_neb_failed,
+        "barrier_desorbed": n_desorbed,
+        "barrier_low_confidence": bool(meta.get("low_confidence")),
+    }
+
+
 def _fresh_catpath_jobs(
     store: Store, structure_ref_id: int, upto: int
 ) -> list[tuple[int, dict[str, Any]]]:
@@ -577,8 +609,20 @@ def harvest_measures(
             if not measures:
                 continue  # still running — do not advance the bookmark, retry next tick
             cp_seen = max(cp_seen, job_id)
-            store.stamp_ref_meta(s.id, measures)
             pathway_ref = jmeta.get("pathway_ref")
+            if isinstance(pathway_ref, int) and not isinstance(pathway_ref, bool):
+                # Defensive: an unfetchable / meta-less pathway ref stamps no
+                # trust flags at all (treated as unknown by graduate_frontier),
+                # rather than crashing the harvest.
+                try:
+                    pw_refs = store.fetch_refs_by_ids({pathway_ref})
+                    pw_ref = pw_refs.get(pathway_ref)
+                    pw_meta = pw_ref.meta if pw_ref is not None else None
+                    if isinstance(pw_meta, dict):
+                        measures.update(_pathway_quality(pw_meta))
+                except Exception:
+                    pass
+            store.stamp_ref_meta(s.id, measures)
             if isinstance(pathway_ref, int) and not isinstance(pathway_ref, bool):
                 _link_pathway(store, s.id, pathway_ref)
             b = measures.get("barrier")
