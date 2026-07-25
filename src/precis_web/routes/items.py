@@ -46,7 +46,9 @@ def _tag_filter_string(ns: str, value: str) -> str:
 #: kinds: ingested documents, cached external answers, and the authored /
 #: reflective notes (``memory`` — the reviewer digests and the dream
 #: ``DREAM:*`` speculations, whose ``memory_body`` chunk is embedded like a
-#: source doc). Kinds with no embedded chunks contribute nothing, so an
+#: source doc), and the captured conversations (``conv`` — the Discord /
+#: Slack bridge threads and AI follow-up discussions, each turn an embedded
+#: body chunk). Kinds with no embedded chunks contribute nothing, so an
 #: over-broad list is harmless; the coupled taxonomy audit will formalise
 #: this set.
 _DEFAULT_SOURCE_KINDS: tuple[str, ...] = (
@@ -65,6 +67,7 @@ _DEFAULT_SOURCE_KINDS: tuple[str, ...] = (
     "oracle",
     "math",
     "memory",
+    "conv",
 )
 
 #: Results per page.

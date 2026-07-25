@@ -4429,3 +4429,19 @@ def test_stop_start_routes_registered(client) -> None:
     paths = {getattr(r, "path", None) for r in client.app.routes}
     assert "/tasks/{ref_id}/stop" in paths
     assert "/tasks/{ref_id}/start" in paths
+
+
+def test_drive_includes_conv_kind(runtime, client) -> None:
+    """Captured conversations (the Discord / Slack bridge threads + AI
+    follow-up discussions, stored as ``conv`` with each turn an embedded
+    body chunk) are a default, selectable source kind on /drive — their
+    chat chunks surface in search/browse like any other source."""
+    from precis_web.routes.items import _DEFAULT_SOURCE_KINDS
+
+    assert "conv" in _DEFAULT_SOURCE_KINDS
+    # renders as a checkbox chip (kind_defs seed) on a fresh visit...
+    resp = client.get("/drive")
+    assert '"conv"' in resp.text
+    # ...and a query passes it through to the cross-kind search primitive.
+    client.get("/drive?q=anything")
+    assert "conv" in runtime.store.search_kinds

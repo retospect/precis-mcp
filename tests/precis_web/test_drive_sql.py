@@ -96,3 +96,48 @@ def test_recent_refs_has_chunks_filter(store):
     unchunked = {r.id for r in store.recent_refs(["web"], has_chunks=False)}
     assert without_chunk.id in unchunked
     assert with_chunk.id not in unchunked
+
+
+def test_conv_chat_turn_surfaces_as_drive_search_hit(store):
+    """A captured conversation's turn (the Discord / Slack bridge threads
+    are stored as ``conv`` with each turn an embedded body chunk) surfaces
+    on ``/drive`` search like any other source: the matching chat message
+    is the row preview, and the row opens the transcript at
+    ``/refs/conv/{id}``. Guards ``conv`` being a first-class source kind."""
+    from precis.embedder import MockEmbedder
+    from precis.store import BlockInsert
+    from precis_web.routes.items import _run_search
+
+    emb = MockEmbedder(dim=store.embedding_dim())
+    with store.tx() as conn:
+        ref = store.insert_ref(
+            kind="conv", slug="discord/1/2/3", title="#general", meta={}, conn=conn
+        )
+        store.insert_blocks(
+            ref.id,
+            [
+                BlockInsert(
+                    pos=0,
+                    text="did the reingest finish yet?",
+                    meta={"author": "alice"},
+                    embedding=emb.embed_one("reingest"),
+                )
+            ],
+            conn=conn,
+        )
+
+    rows, _ = _run_search(
+        store,
+        emb,
+        kinds=["conv"],
+        q="reingest",
+        sort="relevance",
+        since=None,
+        until=None,
+        tags=[],
+        offset=0,
+    )
+    hit = next(r for r in rows if r["id"] == ref.id)
+    assert hit["kind"] == "conv"
+    assert hit["open_url"] == f"/refs/conv/{ref.id}"
+    assert "reingest" in hit["preview"]
