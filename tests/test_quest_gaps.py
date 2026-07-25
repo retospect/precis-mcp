@@ -110,6 +110,27 @@ class TestMomentum:
         assert m.recent_entries == 3
         assert m.label == "active"
 
+    def test_entries_short_circuit_matches_default(self, store: Any) -> None:
+        """Passing precomputed ``entries=`` (the quest-hub route's own
+        already-fetched logbook blocks) skips the internal
+        ``list_blocks_for_ref`` re-query but yields the same momentum —
+        the shape the web dashboard route relies on to avoid a duplicate
+        query per page load."""
+        from precis.quest.logbook import LOG_KIND
+
+        h = _handler(store)
+        qid = _created_id(h.put(text="A busy striving"))
+        for i in range(3):
+            h.put(id=qid, text=f"observation {i}", entry="observation")
+        log_entries = [
+            b for b in store.list_blocks_for_ref(qid) if b.chunk_kind == LOG_KIND
+        ]
+        assert len(log_entries) == 3
+        m_default = quest_momentum(store, qid)
+        m_short = quest_momentum(store, qid, entries=log_entries)
+        assert m_short.recent_entries == m_default.recent_entries == 3
+        assert m_short.label == m_default.label == "active"
+
     def test_open_and_blocked_todo_servers(self, store: Any) -> None:
         from precis.store import Tag
         from tests.conftest import id_of

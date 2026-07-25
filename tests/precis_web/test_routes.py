@@ -2091,6 +2091,27 @@ def test_refs_detail_tags_no_op_redirects(client, runtime) -> None:
     assert len(runtime.calls) == before  # no tag verb invoked
 
 
+def test_refs_detail_tag_chips_closed_vs_open(client, runtime) -> None:
+    """The generic detail handler (every kind except quest) must use the
+    same corrected chip logic as the quest hub: a closed tag renders its
+    real ``PREFIX:value`` label and is inert, an open tag renders bare
+    with a removal (×) form. Job 80 in ``FakeStore.tags_for`` carries one
+    of each (``STATUS:failed`` closed, ``swept:claim-orphaned`` open) —
+    guards the ``namespace == "OPEN"`` regression (gripe #171954)."""
+    runtime.dispatch_with_status = lambda verb, args: (
+        "# job 80\nstatus: failed\n",
+        False,
+    )
+    resp = client.get("/refs/job/80")
+    assert resp.status_code == 200
+    # Closed tag: its true prefix:value, never the raw "closed:value".
+    assert "STATUS:failed" in resp.text
+    assert "closed:failed" not in resp.text
+    # Open tag: bare value + a hidden `remove` input (the × form) proving
+    # `deletable` is True.
+    assert 'value="swept:claim-orphaned"' in resp.text
+
+
 def test_env_index_lists_all_agents(client) -> None:
     """``GET /env`` renders the empty-state agent list — one row per
     AgentSpec — without invoking anything."""

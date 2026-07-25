@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from precis.store import Ref, Store
+    from precis.store.types import Block
 
 # ── tunables ──────────────────────────────────────────────────────────
 
@@ -240,9 +241,19 @@ def _open_hypotheses(store: Store, quest_id: int) -> list[str]:
 
 
 def quest_momentum(
-    store: Store, quest_id: int, *, servers: list[Ref] | None = None
+    store: Store,
+    quest_id: int,
+    *,
+    servers: list[Ref] | None = None,
+    entries: list[Block] | None = None,
 ) -> Momentum:
-    """Are deeds + knowledge flowing in? A mechanical read, no % done."""
+    """Are deeds + knowledge flowing in? A mechanical read, no % done.
+
+    ``servers`` and ``entries`` are optional precomputed short-circuits for
+    callers (the quest dashboard route) that already fetched the live
+    servers / logbook blocks for this quest — passing them saves a
+    redundant ``list_blocks_for_ref`` / ``_live_servers`` query per call.
+    """
     live = _live_servers(store, quest_id) if servers is None else servers
     since = datetime.now(UTC) - timedelta(days=MOMENTUM_WINDOW_DAYS)
 
@@ -250,12 +261,15 @@ def quest_momentum(
     def _aware(dt: datetime) -> datetime:
         return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
 
+    log_blocks = (
+        [b for b in store.list_blocks_for_ref(quest_id) if b.chunk_kind == _LOG_KIND]
+        if entries is None
+        else entries
+    )
     recent_entries = sum(
         1
-        for b in store.list_blocks_for_ref(quest_id)
-        if b.chunk_kind == _LOG_KIND
-        and b.created_at is not None
-        and _aware(b.created_at) >= since
+        for b in log_blocks
+        if b.created_at is not None and _aware(b.created_at) >= since
     )
 
     # Recent activity on the servers (ref_events in the window).

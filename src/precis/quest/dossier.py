@@ -118,12 +118,17 @@ def dossier_ref_id(store: Store, owner_id: int) -> int | None:
     Resolution is via the ``dossier-of`` edge, **not** the denormalized
     ``meta.dossier_of_owner`` back-pointer — so a pre-0064-§B dossier carrying
     only the legacy ``meta.dossier_of_quest`` key resolves identically, with no
-    migration or backfill (ADR 0064 §B).
+    migration or backfill (ADR 0064 §B). Excludes a soft-deleted dossier draft
+    — the ``dossier-of`` link row can outlive a ``delete()`` of the draft
+    itself, and a caller resolving this id should see "no dossier" rather
+    than a tombstoned ref.
     """
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT src_ref_id FROM links "
-            "WHERE dst_ref_id = %s AND relation = %s LIMIT 1",
+            "SELECT l.src_ref_id FROM links l "
+            "JOIN refs r ON r.ref_id = l.src_ref_id "
+            "WHERE l.dst_ref_id = %s AND l.relation = %s "
+            "AND r.deleted_at IS NULL LIMIT 1",
             (owner_id, _RELATION),
         ).fetchone()
     return int(row[0]) if row else None
@@ -139,12 +144,15 @@ def paper_ref_id(store: Store, owner_id: int) -> int | None:
     substrate-and-paper-projection.md). Nothing in this module creates a
     paper draft — that pipeline doesn't exist yet — so this always
     returns ``None`` until some other writer links one in with
-    ``rel='paper-of'``.
+    ``rel='paper-of'``. Excludes a soft-deleted paper draft — see
+    :func:`dossier_ref_id`.
     """
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT src_ref_id FROM links "
-            "WHERE dst_ref_id = %s AND relation = %s LIMIT 1",
+            "SELECT l.src_ref_id FROM links l "
+            "JOIN refs r ON r.ref_id = l.src_ref_id "
+            "WHERE l.dst_ref_id = %s AND l.relation = %s "
+            "AND r.deleted_at IS NULL LIMIT 1",
             (owner_id, _PAPER_RELATION),
         ).fetchone()
     return int(row[0]) if row else None

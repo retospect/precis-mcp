@@ -391,6 +391,30 @@ def _quest_log_row(block: Any) -> dict[str, Any]:
     }
 
 
+def _tag_chips(raw_tags: Any) -> list[dict[str, Any]]:
+    """Shared tag-chip shape for every detail page (generic + quest).
+
+    A closed tag (e.g. ``STATUS:active``) renders as its real
+    ``PREFIX:value`` label and is inert; an open tag renders as its bare
+    value and carries a × to remove. ``namespace`` is the lowercase
+    "closed"/"flag"/"open" the ``Tag`` model uses (``store/types.py``) —
+    not the legacy uppercase ``"OPEN"`` literal.
+    """
+    return [
+        {
+            "namespace": getattr(t, "namespace", "open"),
+            "value": getattr(t, "value", ""),
+            "label": (
+                f"{getattr(t, 'prefix', '') or ''}:{getattr(t, 'value', '')}"
+                if getattr(t, "namespace", "") == "closed"
+                else getattr(t, "value", "")
+            ),
+            "deletable": getattr(t, "namespace", "open") == "open",
+        }
+        for t in raw_tags
+    ]
+
+
 def _quest_draft_url(store: Any, draft_ref_id: int) -> str:
     """``/drafts/<ident>`` for a draft ref id — slug when the draft has
     one (the human-legible address), else the numeric id (the reader
@@ -429,36 +453,20 @@ async def _quest_detail(request: Request, store: Any, ref: Any) -> HTMLResponse:
             and getattr(t, "prefix", None) == "STATUS"
         ):
             status = t.value
-    # Tag chips: a closed tag renders as its "PREFIX:value" (e.g.
-    # "STATUS:active") and is inert; an open tag renders as its bare value
-    # and gets a × to remove. Namespace is the lowercase "closed"/"flag"/
-    # "open" the Tag model uses (store/types.py) — not "OPEN".
-    tags = [
-        {
-            "namespace": getattr(t, "namespace", "open"),
-            "value": getattr(t, "value", ""),
-            "label": (
-                f"{getattr(t, 'prefix', '') or ''}:{getattr(t, 'value', '')}"
-                if getattr(t, "namespace", "") == "closed"
-                else getattr(t, "value", "")
-            ),
-            "deletable": getattr(t, "namespace", "open") == "open",
-        }
-        for t in raw_tags
-    ]
+    tags = _tag_chips(raw_tags)
 
     title_lines = (ref.title or "").split("\n", 1)
     headline = title_lines[0] if title_lines else f"quest {qid}"
     criteria = title_lines[1].strip() if len(title_lines) > 1 else ""
 
     live_servers = _live_servers(store, qid)
-    momentum = quest_momentum(store, qid, servers=live_servers)
 
     entries = [
         b
         for b in store.list_blocks_for_ref(qid)
         if getattr(b, "chunk_kind", None) == LOG_KIND
     ]
+    momentum = quest_momentum(store, qid, servers=live_servers, entries=entries)
     tote = sum(
         float((getattr(b, "meta", None) or {}).get("cost", 0) or 0) for b in entries
     )
@@ -1078,19 +1086,7 @@ async def detail(request: Request, kind: str, ref_id: int) -> HTMLResponse:
     # template doesn't offer a × on them; per-ref removal of a
     # structural tag goes through the standard tag() verb explicitly.
     raw_tags = store.tags_for(ref.id)
-    tags = [
-        {
-            "namespace": getattr(t, "namespace", "OPEN"),
-            "value": getattr(t, "value", ""),
-            "label": (
-                f"{getattr(t, 'namespace', 'OPEN')}:{getattr(t, 'value', '')}"
-                if getattr(t, "namespace", "") not in ("", "OPEN")
-                else getattr(t, "value", "")
-            ),
-            "deletable": getattr(t, "namespace", "OPEN") == "OPEN",
-        }
-        for t in raw_tags
-    ]
+    tags = _tag_chips(raw_tags)
 
     # References panel (MVP — memory views only, where dreams live).
     # Walk the body for ref handles, resolve each, build a list to

@@ -87,6 +87,17 @@ class TestDossier:
         assert "Understanding" in text and "promising" in text
         assert "No synthesis yet" not in text  # wholesale replaced
 
+    def test_soft_deleted_dossier_resolves_none(self, store: Any) -> None:
+        """A dossier draft soft-deleted out from under its ``dossier-of``
+        link (the link row survives the delete) must resolve to ``None`` —
+        the web hub should show "no dossier yet", never a live button
+        pointing at a tombstoned ref."""
+        qid = _mk_quest(store, "A striving whose dossier gets deleted")
+        did = ensure_dossier(store, qid)
+        assert dossier_ref_id(store, qid) == did
+        store.soft_delete_draft(did)
+        assert dossier_ref_id(store, qid) is None
+
 
 # ── the pinned ledger (ADR 0064 §A) ─────────────────────────────────────
 
@@ -574,6 +585,20 @@ class TestPaperRelation:
         # the paper is NOT the dossier — a quest can have neither, either, or
         # both, and they resolve independently
         assert dossier_ref_id(store, qid) is None
+
+    def test_soft_deleted_paper_resolves_none(self, store: Any) -> None:
+        """Mirrors the dossier case: a ``paper-of`` link surviving the
+        soft-delete of its target draft must not resolve to a live id."""
+        qid = _mk_quest(store, "A striving whose paper gets deleted")
+        ref, _heading = store.create_draft(
+            name=f"quest-{qid}-paper-deleted",
+            title="Paper — draft",
+            project_ref_id=qid,
+            relation="paper-of",
+        )
+        assert paper_ref_id(store, qid) == ref.id
+        store.soft_delete_draft(ref.id)
+        assert paper_ref_id(store, qid) is None
 
 
 def test_paper_relation_registered() -> None:
