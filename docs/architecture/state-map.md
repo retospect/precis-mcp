@@ -607,7 +607,17 @@ instead of the busy local hardware, before falling to claude if that also
 errors (`docs/proposals/llm-openrouter-bypass.md` item 3). `Tier.LOCAL_SMALL`
 also gained a `backend`-aware branch in `select_transport` (`OPENAI_COMPAT`
 under `backend=openai`, item 2) — previously pinned unconditionally to the
-loopback litellm proxy with no hosted-backend escape at all.
+loopback litellm proxy with no hosted-backend escape at all. **ADR 0066
+Phase A** (dark/additive, no live caller yet — call-site sweep is Phase C):
+`live_config.chain_override(tier)` + `router.py::resolve_chain` layer a
+per-tier `app_settings`-backed chain override in front of `_failover_ladder`
+(only consulted inside `if _failover_enabled():`; no row → byte-identical to
+today's ladder). `router.py::Tier` also gained four capability rungs
+(`FRONTIER`/`BIG`/`MEDIUM`/`SMALL`) **additively** alongside the legacy five,
+each routing byte-for-byte identically to its legacy analogue
+(`FRONTIER↔CLOUD_SUPER`, `BIG↔CLOUD_MID`, `MEDIUM↔CLOUD_SMALL`,
+`SMALL↔LOCAL_SMALL`), with new `LLM:` aliases `frontier`/`big`/`medium`/
+`small` alongside the unchanged legacy aliases.
 
 ## Discovery layer (F20)
 

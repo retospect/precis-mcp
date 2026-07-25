@@ -6,7 +6,9 @@ so an operator flips the whole fleet's LLM backend, or a per-tier model, from
 the browser (or, until the console write side lands, a single SQL ``INSERT``).
 This module is the **read** side: a small TTL-cached layer the router's
 :func:`~precis.utils.llm.router.resolve_backend` /
-:func:`~precis.utils.llm.router.resolve_model` consult *before* env.
+:func:`~precis.utils.llm.router.resolve_model` /
+:func:`~precis.utils.llm.router.resolve_chain` consult *before* env (or, for
+the chain, before the compiled failover ladder — ADR 0066 §4, Phase A).
 
 Resolution order (per key): **app_settings DB row → env default → compiled
 default**. Ships **dark**: with no store bound (tests, DB-free CLI) or no row
@@ -25,6 +27,7 @@ module's import graph stays free of the DB chain, exactly as it is today.
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -39,6 +42,11 @@ BACKEND_KEY = "llm.backend"
 #: (e.g. ``llm.model.cloud-super``). The suffix is the ``Tier`` string value,
 #: so the console writes the same tier vocabulary the resolver keys on.
 MODEL_KEY_PREFIX = "llm.model."
+#: app_settings key prefix for a per-tier chain override: ``llm.chain.<tier>``
+#: (e.g. ``llm.chain.cloud-super``), a JSON-encoded list of rung dicts
+#: ``{"placement": "cloud"|"local", "model": <str>, "transport": <str>}``
+#: (ADR 0066 §4). Same suffix vocabulary as :data:`MODEL_KEY_PREFIX`.
+CHAIN_KEY_PREFIX = "llm.chain."
 
 #: The ``/factory`` "GLM via OpenRouter" preset — the one-click roster for
 #: the three cloud tiers, verified against the live OpenRouter catalog
@@ -68,6 +76,11 @@ def model_key(tier: Tier) -> str:
     return f"{MODEL_KEY_PREFIX}{tier.value}"
 
 
+def chain_key(tier: Tier) -> str:
+    """The ``app_settings`` key a per-tier chain override lives under."""
+    return f"{CHAIN_KEY_PREFIX}{tier.value}"
+
+
 def backend_override() -> str | None:
     """The web-set backend family (``"anthropic"`` / ``"openai"``), or ``None``.
 
@@ -87,6 +100,36 @@ def backend_override() -> str | None:
 def model_override(tier: Tier) -> str | None:
     """The web-set model id for ``tier``, or ``None`` (→ env / compiled)."""
     return _cached_setting(model_key(tier))
+
+
+def chain_override(tier: Tier) -> list[dict] | None:
+    """The web-set placement chain for ``tier`` — a list of rung dicts
+    (``{"placement": ..., "model": ..., "transport": ...}``) — or ``None``
+    (→ :func:`~precis.utils.llm.router._failover_ladder`, today's ladder).
+
+    Degrade-safe like :func:`model_override`: no store / no row / a value
+    that isn't valid JSON / JSON that isn't a list all return ``None`` rather
+    than raising, so a malformed row can't dark a tier. Per-rung field
+    validation (a known ``transport``, a ``model`` present) is the router's
+    job (:func:`~precis.utils.llm.router.resolve_chain`) — this layer only
+    guarantees "a list of *something*, or nothing at all."
+    """
+    raw = _cached_setting(chain_key(tier))
+    if raw is None:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        log.warning("live_config: ignoring malformed JSON for %s", chain_key(tier))
+        return None
+    if not isinstance(parsed, list):
+        log.warning(
+            "live_config: ignoring non-list %s (got %s)",
+            chain_key(tier),
+            type(parsed).__name__,
+        )
+        return None
+    return parsed
 
 
 def bust_cache() -> None:
@@ -132,10 +175,13 @@ def _read_setting(key: str) -> str | None:
 
 __all__ = [
     "BACKEND_KEY",
+    "CHAIN_KEY_PREFIX",
     "GLM_OPENROUTER_PRESET",
     "MODEL_KEY_PREFIX",
     "backend_override",
     "bust_cache",
+    "chain_key",
+    "chain_override",
     "model_key",
     "model_override",
 ]

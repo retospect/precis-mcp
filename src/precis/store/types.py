@@ -802,8 +802,12 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
     # :data:`precis.handlers._todo_guards._EXECUTOR_TAG_VALUES`.
     # Mirrors ``router.PLANNER_MODEL_ALIASES`` (kept literal here so this
     # foundational module stays free of the router import); ``local`` is the
-    # cluster's served OSS tier (qwen-heavy + tools).
-    "LLM": frozenset({"opus", "sonnet", "haiku", "local"}),
+    # cluster's served OSS tier (qwen-heavy + tools). ADR 0066 (Phase A) adds
+    # the four capability-tier aliases (frontier/big/medium/small) alongside
+    # the legacy four — ``local`` still pins ``LOCAL_BIG``, unchanged.
+    "LLM": frozenset(
+        {"opus", "sonnet", "haiku", "local", "frontier", "big", "medium", "small"}
+    ),
     # Provenance axis for on-demand, externally-sourced corpora that
     # should be *namespaced out of default search* rather than mixed
     # into the curated library. ``ORIGIN:wikipedia`` is stamped on

@@ -1495,6 +1495,182 @@ def test_dispatch_failover_flag_falls_back_to_claude(
     assert calls["model"] == "claude-opus-4-8"  # claude fallback, not the OSS id
 
 
+# ── resolve_chain: the chain-override layer (ADR 0066 §4, Phase A) ─────
+#
+# With no ``llm.chain.<tier>`` app_settings row set, resolve_chain must be
+# byte-for-byte _failover_ladder — that's the whole point of this slice.
+
+
+@pytest.mark.parametrize(
+    ("tier", "tools_needed", "backend"),
+    [
+        (Tier.CLOUD_SUPER, True, Backend.OPENAI),
+        (Tier.CLOUD_SMALL, False, Backend.OPENAI),
+        (Tier.CLOUD_SUPER, True, Backend.ANTHROPIC),
+        (Tier.LOCAL_BIG, True, Backend.ANTHROPIC),
+        (Tier.LOCAL_SMALL, False, Backend.OPENAI),
+    ],
+)
+def test_resolve_chain_no_override_matches_failover_ladder(
+    monkeypatch: pytest.MonkeyPatch,
+    tier: Tier,
+    tools_needed: bool,
+    backend: Backend,
+) -> None:
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override", lambda _tier: None
+    )
+    monkeypatch.delenv("PRECIS_MODEL_OPUS", raising=False)
+    monkeypatch.delenv("PRECIS_MODEL_SONNET", raising=False)
+
+    default = router._failover_ladder(tier, tools_needed=tools_needed, backend=backend)
+    chain = router.resolve_chain(tier, tools_needed=tools_needed, backend=backend)
+
+    assert chain == default
+
+
+def test_resolve_chain_valid_override_maps_rungs_in_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda tier: (
+            [
+                {
+                    "placement": "cloud",
+                    "model": "z-ai/glm-5.2",
+                    "transport": "openai_tools",
+                },
+                {
+                    "placement": "cloud",
+                    "model": "claude-opus-4-8",
+                    "transport": "claude_agent",
+                },
+            ]
+            if tier is Tier.CLOUD_SUPER
+            else None
+        ),
+    )
+
+    chain = router.resolve_chain(
+        Tier.CLOUD_SUPER, tools_needed=True, backend=Backend.OPENAI
+    )
+
+    assert chain == [
+        Rung(Transport.OPENAI_TOOLS, model="z-ai/glm-5.2", label="cloud"),
+        Rung(Transport.CLAUDE_AGENT, model="claude-opus-4-8", label="cloud"),
+    ]
+
+
+def test_resolve_chain_override_placement_missing_labels_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda _tier: [{"model": "z-ai/glm-5.2", "transport": "openai_tools"}],
+    )
+    chain = router.resolve_chain(
+        Tier.CLOUD_SUPER, tools_needed=True, backend=Backend.OPENAI
+    )
+    assert chain == [Rung(Transport.OPENAI_TOOLS, model="z-ai/glm-5.2", label="chain")]
+
+
+@pytest.mark.parametrize(
+    "bad_rungs",
+    [
+        # unknown transport
+        [{"placement": "cloud", "model": "m", "transport": "carrier_pigeon"}],
+        # missing model
+        [{"placement": "cloud", "transport": "openai_tools"}],
+        # non-string model
+        [{"placement": "cloud", "model": 123, "transport": "openai_tools"}],
+        # non-object rung
+        ["not-a-dict"],
+    ],
+)
+def test_resolve_chain_malformed_override_falls_back_to_ladder(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    bad_rungs: list[object],
+) -> None:
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override", lambda _tier: bad_rungs
+    )
+    monkeypatch.delenv("PRECIS_MODEL_OPUS", raising=False)
+
+    with caplog.at_level("WARNING"):
+        chain = router.resolve_chain(
+            Tier.CLOUD_SUPER, tools_needed=True, backend=Backend.OPENAI
+        )
+
+    default = router._failover_ladder(
+        Tier.CLOUD_SUPER, tools_needed=True, backend=Backend.OPENAI
+    )
+    assert chain == default
+    assert any("llm-chain" in rec.message for rec in caplog.records)
+
+
+def test_resolve_chain_empty_override_falls_back_to_ladder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty list (as opposed to ``None``) is treated the same as no
+    override — not a valid zero-rung chain (FailoverProvider requires ≥1)."""
+    monkeypatch.setattr("precis.utils.llm.live_config.chain_override", lambda _tier: [])
+    monkeypatch.delenv("PRECIS_MODEL_OPUS", raising=False)
+
+    chain = router.resolve_chain(
+        Tier.CLOUD_SUPER, tools_needed=True, backend=Backend.OPENAI
+    )
+    default = router._failover_ladder(
+        Tier.CLOUD_SUPER, tools_needed=True, backend=Backend.OPENAI
+    )
+    assert chain == default
+
+
+def test_dispatch_chain_override_falls_through_to_rung_1(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End to end: a 2-rung chain override where rung 0's transport errors —
+    FailoverProvider walks to rung 1, exactly as the default ladder would."""
+    rung0 = _FakeProv(_err("rung0 down"))
+    rung1_calls: dict[str, object] = {}
+
+    def fake_agent(prompt: str, **kwargs: object) -> AgentResult:
+        rung1_calls["model"] = kwargs.get("model")
+        return AgentResult(
+            final_text="rung1 saved it", cost_usd=None, duration_s=0.0, turns_used=1
+        )
+
+    monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_TOOLS, rung0)
+    monkeypatch.setattr(router, "call_claude_agent", fake_agent)
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda tier: (
+            [
+                {
+                    "placement": "cloud",
+                    "model": "oss-primary",
+                    "transport": "openai_tools",
+                },
+                {
+                    "placement": "cloud",
+                    "model": "claude-backup",
+                    "transport": "claude_agent",
+                },
+            ]
+            if tier is Tier.CLOUD_SUPER
+            else None
+        ),
+    )
+    monkeypatch.setenv("PRECIS_LLM_FAILOVER", "1")
+
+    out = dispatch(LlmRequest(tier=Tier.CLOUD_SUPER, prompt="x", tools_needed=True))
+
+    assert out.text == "rung1 saved it"
+    assert out.error is None
+    assert rung1_calls["model"] == "claude-backup"
+
+
 # ── paused local slot degrades into the ladder (llm-openrouter-bypass item 3) ──
 
 
@@ -2066,3 +2242,139 @@ def test_dispatch_async_records_route_log(monkeypatch: pytest.MonkeyPatch) -> No
         )
     )
     assert recorded["transport"] is Transport.CLAUDE_AGENT
+
+
+# ── ADR 0066 Phase A: FRONTIER/BIG/MEDIUM/SMALL — additive, analogue-exact ──
+#
+# The four new capability tiers must route byte-for-byte identically to
+# their analogue (FRONTIER↔CLOUD_SUPER, BIG↔CLOUD_MID, MEDIUM↔CLOUD_SMALL,
+# SMALL↔LOCAL_SMALL) — nothing constructs them outside tests/aliases yet, so
+# this whole section is a *safety net for the future sweep*, not a behavior
+# change today.
+
+_ANALOGUE_PAIRS: tuple[tuple[Tier, Tier], ...] = (
+    (Tier.FRONTIER, Tier.CLOUD_SUPER),
+    (Tier.BIG, Tier.CLOUD_MID),
+    (Tier.MEDIUM, Tier.CLOUD_SMALL),
+    (Tier.SMALL, Tier.LOCAL_SMALL),
+)
+
+_ENV_VARS_TO_CLEAR = (
+    "PRECIS_MODEL_OPUS",
+    "PRECIS_MODEL_SONNET",
+    "PRECIS_MODEL_HAIKU",
+    "PRECIS_SUMMARIZE_MODEL",
+    "PRECIS_LOCAL_BIG_MODEL",
+)
+
+
+def _clear_tier_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for var in _ENV_VARS_TO_CLEAR:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
+
+
+@pytest.mark.parametrize(("new", "analogue"), _ANALOGUE_PAIRS)
+def test_new_tier_resolve_model_matches_analogue(
+    new: Tier, analogue: Tier, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _clear_tier_env(monkeypatch)
+    for backend in (None, Backend.ANTHROPIC, Backend.OPENAI):
+        if backend is None:
+            assert resolve_model(new) == resolve_model(analogue)
+        else:
+            assert resolve_model(new, backend=backend) == resolve_model(
+                analogue, backend=backend
+            )
+
+
+@pytest.mark.parametrize(("new", "analogue"), _ANALOGUE_PAIRS)
+@pytest.mark.parametrize("tools_needed", [False, True])
+@pytest.mark.parametrize("backend", [Backend.ANTHROPIC, Backend.OPENAI])
+def test_new_tier_select_transport_matches_analogue(
+    new: Tier, analogue: Tier, tools_needed: bool, backend: Backend
+) -> None:
+    assert select_transport(
+        new, tools_needed=tools_needed, backend=backend
+    ) is select_transport(analogue, tools_needed=tools_needed, backend=backend)
+
+
+@pytest.mark.parametrize(("new", "analogue"), _ANALOGUE_PAIRS)
+@pytest.mark.parametrize("tools_needed", [False, True])
+@pytest.mark.parametrize("backend", [Backend.ANTHROPIC, Backend.OPENAI])
+def test_new_tier_failover_ladder_matches_analogue(
+    new: Tier,
+    analogue: Tier,
+    tools_needed: bool,
+    backend: Backend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_tier_env(monkeypatch)
+    # A hosted base url is needed to observe the OSS/claude-fallback shape at
+    # all for the cloud analogues under OPENAI; the local analogues (SMALL/
+    # LOCAL_SMALL) don't need it for their transport choice but do for the
+    # ladder's OSS rung to resolve deterministically.
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+
+    new_ladder = router._failover_ladder(
+        new, tools_needed=tools_needed, backend=backend
+    )
+    analogue_ladder = router._failover_ladder(
+        analogue, tools_needed=tools_needed, backend=backend
+    )
+
+    assert [r.transport for r in new_ladder] == [r.transport for r in analogue_ladder]
+    assert [r.label for r in new_ladder] == [r.label for r in analogue_ladder]
+    # A rung's pinned model differs in *label* space only if the analogue's
+    # model is tier-specific (it isn't here — both draw the same env var/
+    # default row) — so the models line up too.
+    assert [r.model for r in new_ladder] == [r.model for r in analogue_ladder]
+
+
+def test_small_gets_no_claude_fallback_like_local_small(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SMALL (LOCAL_SMALL's analogue) skips Anthropic entirely — same
+    no-claude-fallback ladder, even under backend=openai."""
+    ladder = router._failover_ladder(
+        Tier.SMALL, tools_needed=False, backend=Backend.OPENAI
+    )
+    assert [r.transport for r in ladder] == [Transport.OPENAI_COMPAT]
+
+
+def test_tier_table_totality_holds_with_new_tiers() -> None:
+    # 5 old + 4 new = 9 members; the import-time assert already guards this,
+    # but make it explicit here so a future tier addition without a row
+    # fails loudly in this test too.
+    assert set(router._TIER_MODEL) == set(Tier)
+    assert len(Tier) == 9
+
+
+def test_new_aliases_resolve_to_new_tiers() -> None:
+    assert router.PLANNER_TIER_BY_ALIAS["frontier"] is Tier.FRONTIER
+    assert router.PLANNER_TIER_BY_ALIAS["big"] is Tier.BIG
+    assert router.PLANNER_TIER_BY_ALIAS["medium"] is Tier.MEDIUM
+    assert router.PLANNER_TIER_BY_ALIAS["small"] is Tier.SMALL
+
+
+def test_old_aliases_unchanged_local_still_pins_local_big() -> None:
+    """The Rollout gate (ADR 0066): `local` keeps pinning LOCAL_BIG, NOT the
+    new BIG tier, until the local-only sensitivity constraint ships."""
+    assert router.PLANNER_TIER_BY_ALIAS["opus"] is Tier.CLOUD_SUPER
+    assert router.PLANNER_TIER_BY_ALIAS["sonnet"] is Tier.CLOUD_MID
+    assert router.PLANNER_TIER_BY_ALIAS["haiku"] is Tier.CLOUD_SMALL
+    assert router.PLANNER_TIER_BY_ALIAS["local"] is Tier.LOCAL_BIG
+
+
+def test_llm_tag_big_passes_todo_guards_vocab() -> None:
+    """`LLM:big` (the new alias) is a valid closed-vocab tag value — the
+    guard is single-sourced from PLANNER_MODEL_ALIASES, so this is a
+    regression test on that wiring, not a hardcoded vocab copy."""
+    from precis.handlers._todo_guards import _LLM_TAG_VALUES
+
+    assert "big" in _LLM_TAG_VALUES
+    assert "frontier" in _LLM_TAG_VALUES
+    assert "medium" in _LLM_TAG_VALUES
+    assert "small" in _LLM_TAG_VALUES
+    # legacy vocab still present alongside the new names.
+    assert {"opus", "sonnet", "haiku", "local"} <= _LLM_TAG_VALUES

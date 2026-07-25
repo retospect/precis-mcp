@@ -63,6 +63,13 @@ _TIER_BANDS: dict[Tier, Band] = {
     Tier.CLOUD_SMALL: Band(Cost.CHEAP, Pace.FAST),
     Tier.CLOUD_MID: Band(Cost.CHEAP, Pace.SLOW),
     Tier.CLOUD_SUPER: Band(Cost.EXPENSIVE, Pace.SLOW),
+    # ADR 0066 (Phase A) pure-capability tiers — each row mirrors its
+    # analogue's band exactly (see router.Tier's docstring for the
+    # analogue table).
+    Tier.SMALL: Band(Cost.FREE, Pace.FAST),
+    Tier.MEDIUM: Band(Cost.CHEAP, Pace.FAST),
+    Tier.BIG: Band(Cost.CHEAP, Pace.SLOW),
+    Tier.FRONTIER: Band(Cost.EXPENSIVE, Pace.SLOW),
 }
 
 assert set(_TIER_BANDS) == set(Tier), "budget.bands: tier band table is not total"

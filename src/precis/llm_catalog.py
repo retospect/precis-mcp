@@ -968,8 +968,18 @@ def seed_default_cards(store: Store) -> list[tuple[str, int, bool]]:
     from precis.utils.llm.router import Tier, resolve_model, select_transport
 
     results: list[tuple[str, int, bool]] = []
+    seen_models: set[str] = set()
     for tier in Tier:
         model_id = resolve_model(tier)
+        # One card per *model* (the card's identity is model_id). ADR 0066's
+        # Phase-A canonical tiers (FRONTIER/BIG/MEDIUM/SMALL) resolve to the
+        # SAME model as their legacy analogue, and the legacy tiers come first
+        # in Tier, so first-wins keeps today's cards + tier_floor values
+        # untouched (a second write would clobber tier_floor). Phase C reseeds
+        # the catalog to the 4 canonical tiers (per the ADR Surfaces table).
+        if model_id in seen_models:
+            continue
+        seen_models.add(model_id)
         offering: dict[str, Any] = {
             "effort": "medium",
             "transport": select_transport(tier, tools_needed=True).value,

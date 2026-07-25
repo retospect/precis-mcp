@@ -387,6 +387,12 @@ until the constraint ships.
 - The **content-sensitivity model** itself (§6 / the carved-out proposal) —
   the one remaining design bag-of-worms, tracked separately and gating
   Phase C.
+- **Planner-tag vocab vs. caller-capability vocab may need to diverge**
+  (flagged pre-ship): `plan_tick` is the only `LLM:` tag consumer and always
+  passes `tools_needed=True`, so `LLM:small`/`LLM:medium` (tool-less
+  classifier/judge tiers) would no-op through the existing local-fallback
+  path rather than route distinctively. Decide the `LLM:` planner-tag
+  vocab's scope before Phase C makes the new tiers live.
 
 ## Readiness review (ready agent, 2026-07-25)
 

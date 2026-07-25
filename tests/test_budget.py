@@ -108,6 +108,23 @@ def test_band_table_total_and_labels() -> None:
     assert bands.band_for_tier(Tier.CLOUD_SUPER).label() == "expensive \u00b7 slow"
 
 
+@pytest.mark.parametrize(
+    ("new", "analogue"),
+    [
+        (Tier.FRONTIER, Tier.CLOUD_SUPER),
+        (Tier.BIG, Tier.CLOUD_MID),
+        (Tier.MEDIUM, Tier.CLOUD_SMALL),
+        (Tier.SMALL, Tier.LOCAL_SMALL),
+    ],
+)
+def test_new_tier_band_matches_analogue(new: Tier, analogue: Tier) -> None:
+    """ADR 0066 (Phase A): each new capability tier's cost/pace band mirrors
+    its analogue exactly \u2014 additive, no behavior change for existing tiers."""
+    assert bands.band_for_tier(new) == bands.band_for_tier(analogue)
+    assert bands.is_expensive(new) == bands.is_expensive(analogue)
+    assert bands.is_paid(new) == bands.is_paid(analogue)
+
+
 # ── pricing ──────────────────────────────────────────────────────────────
 
 

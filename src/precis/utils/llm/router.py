@@ -94,6 +94,23 @@ class Tier(StrEnum):
       reasoning tier: heavy reasoning + tools (the structural / deep
       reviewers, fix-gripe, ``LLM:opus`` ticks, the dream pass, and
       the generic ``claude_agent`` default).
+
+    ADR 0066 (Phase A) adds four pure-capability tiers **alongside** the
+    five above, purely additively — no old member is removed/renamed, and
+    no old call-site changes. Each new tier routes byte-for-byte identically
+    to its analogue (:data:`_TIER_MODEL`, :func:`select_transport`,
+    :func:`_failover_ladder` all branch the new tier onto its analogue's
+    path). A caller migrates onto the new vocabulary at Phase C; until then
+    these are dark (nothing constructs them yet outside tests/aliases).
+
+    * ``FRONTIER`` — analogue ``CLOUD_SUPER`` (opus). The trusted-answer
+      tier: heavy reasoning + tools.
+    * ``BIG`` — analogue ``CLOUD_MID`` (sonnet). The general agentic
+      workhorse — planner, tex-fix, weave.
+    * ``MEDIUM`` — analogue ``CLOUD_SMALL`` (haiku). One-shot JSON judge /
+      cheap triage.
+    * ``SMALL`` — analogue ``LOCAL_SMALL`` (summarizer). The categorizer /
+      classifier rung — per-chunk gloss, inject-scan.
     """
 
     LOCAL_SMALL = "local-small"
@@ -101,6 +118,11 @@ class Tier(StrEnum):
     CLOUD_SMALL = "cloud-small"
     CLOUD_MID = "cloud-mid"
     CLOUD_SUPER = "cloud-super"
+    #: ADR 0066 pure-capability tiers (Phase A — additive, dark until swept).
+    FRONTIER = "frontier"
+    BIG = "big"
+    MEDIUM = "medium"
+    SMALL = "small"
 
 
 class Transport(StrEnum):
@@ -175,6 +197,15 @@ _TIER_MODEL: dict[Tier, tuple[str, str]] = {
     # honors the slot's local_url); with no served_by it falls to the hosted
     # PRECIS_LLM_BASE_URL path (dark by default).
     Tier.LOCAL_BIG: ("PRECIS_LOCAL_BIG_MODEL", "qwen-heavy"),
+    # ADR 0066 (Phase A) pure-capability tiers — each row mirrors its
+    # analogue's (env_var, default) EXACTLY, so resolve_model(NEW, ...) ==
+    # resolve_model(ANALOGUE, ...) byte-for-byte (see the class docstring's
+    # analogue table). Rewiring which env var / default a tier reads is a
+    # later-phase concern, not this one.
+    Tier.FRONTIER: ("PRECIS_MODEL_OPUS", "claude-opus-4-8"),
+    Tier.BIG: ("PRECIS_MODEL_SONNET", "claude-sonnet-5"),
+    Tier.MEDIUM: ("PRECIS_MODEL_HAIKU", "claude-haiku-4-5-20251001"),
+    Tier.SMALL: ("PRECIS_SUMMARIZE_MODEL", "summarizer"),
 }
 
 # Import-time totality guard: every Tier must have a resolver row, so
@@ -185,9 +216,18 @@ assert set(_TIER_MODEL) == set(Tier), "resolve_model: tier table is not total"
 #: The tiers that route to a *claude* transport under the ANTHROPIC backend —
 #: the only ones an OSS model override is incoherent for (see resolve_model's
 #: Part-3 coherence check). The local tiers (LITELLM / OPENAI_TOOLS) are never
-#: claude-bound, so their overrides are always honored.
+#: claude-bound, so their overrides are always honored. ADR 0066's FRONTIER /
+#: BIG / MEDIUM join their CLOUD_* analogues here (SMALL does not — it is the
+#: LOCAL_SMALL analogue, never claude-bound).
 _CLOUD_TIERS: frozenset[Tier] = frozenset(
-    {Tier.CLOUD_SUPER, Tier.CLOUD_MID, Tier.CLOUD_SMALL}
+    {
+        Tier.CLOUD_SUPER,
+        Tier.CLOUD_MID,
+        Tier.CLOUD_SMALL,
+        Tier.FRONTIER,
+        Tier.BIG,
+        Tier.MEDIUM,
+    }
 )
 
 
@@ -242,11 +282,21 @@ def resolve_model(tier: Tier, backend: Backend | None = None) -> str:
 # never drift. ``local`` is the cluster's served OSS tier (``qwen-heavy`` +
 # tools), reachable now that ADR 0046's ``OPENAI_TOOLS`` loop drives the verbs
 # in-process — a planner tick runs on it just like the cloud tiers.
+#
+# ADR 0066 (Phase A) adds the four capability-tier names below AS NEW
+# CALLER VOCAB — the legacy {opus, sonnet, haiku, local} aliases are left
+# EXACTLY as they are (`local` keeps pinning `LOCAL_BIG`, not `BIG`). The
+# Rollout gate: `local`'s remap to `BIG` is a Phase-C event, gated on the
+# local-only sensitivity constraint (ADR 0066 §6) — do not touch it here.
 PLANNER_TIER_BY_ALIAS: dict[str, Tier] = {
     "opus": Tier.CLOUD_SUPER,
     "sonnet": Tier.CLOUD_MID,
     "haiku": Tier.CLOUD_SMALL,
     "local": Tier.LOCAL_BIG,
+    "frontier": Tier.FRONTIER,
+    "big": Tier.BIG,
+    "medium": Tier.MEDIUM,
+    "small": Tier.SMALL,
 }
 
 #: Ordered alias vocabulary — dropdown order AND the ``LLM:`` closed-vocab set.
@@ -314,8 +364,13 @@ def select_transport(
     no local hardware fallback of its own) instead of the loopback litellm
     proxy. This is the gap-fill from `docs/proposals/llm-openrouter-bypass.md`
     item 2: ``LOCAL_SMALL`` previously had no path off local hardware at all.
+
+    ADR 0066's ``SMALL`` is ``LOCAL_SMALL``'s analogue and takes the exact
+    same branch (byte-for-byte). ``FRONTIER`` / ``BIG`` / ``MEDIUM`` need no
+    special branch — they fall through to the cloud ``tools_needed`` /
+    ``backend`` split below, exactly like their ``CLOUD_*`` analogues.
     """
-    if tier is Tier.LOCAL_SMALL:
+    if tier is Tier.LOCAL_SMALL or tier is Tier.SMALL:
         return (
             Transport.OPENAI_COMPAT if backend is Backend.OPENAI else Transport.LITELLM
         )
@@ -920,11 +975,13 @@ def _failover_ladder(tier: Tier, *, tools_needed: bool, backend: Backend) -> lis
     ``LOCAL_SMALL`` is the one exception: per the roster cascade
     (`docs/proposals/llm-openrouter-bypass.md` — "small" skips Anthropic
     entirely, low-stakes/high-volume dispatch traffic), its ladder stops at
-    the OSS rung with no claude fallback, however this call resolves.
+    the OSS rung with no claude fallback, however this call resolves. ADR
+    0066's ``SMALL`` (its analogue) gets the identical no-claude-fallback
+    ladder.
     """
     primary = select_transport(tier, tools_needed=tools_needed, backend=backend)
     if primary in (Transport.OPENAI_TOOLS, Transport.OPENAI_COMPAT):
-        if tier is Tier.LOCAL_SMALL:
+        if tier is Tier.LOCAL_SMALL or tier is Tier.SMALL:
             return [Rung(primary, label="oss")]
         claude = Transport.CLAUDE_AGENT if tools_needed else Transport.CLAUDE_P
         return [
@@ -932,6 +989,61 @@ def _failover_ladder(tier: Tier, *, tools_needed: bool, backend: Backend) -> lis
             Rung(claude, model=_claude_default(tier), label="claude-fallback"),
         ]
     return [Rung(primary, label="primary")]
+
+
+def resolve_chain(tier: Tier, *, tools_needed: bool, backend: Backend) -> list[Rung]:
+    """The rung list :func:`dispatch` / :func:`dispatch_async` actually walk —
+    an operator-owned ``app_settings`` chain override (ADR 0066 §4, Phase A)
+    layered in front of the compiled :func:`_failover_ladder`.
+
+    With no ``llm.chain.<tier>`` row set (today's steady state, and every
+    existing test), this returns exactly what ``_failover_ladder`` returns —
+    the whole point of this seam is that its mere existence changes nothing
+    until an operator writes a chain. A configured override is a list of rung
+    dicts (``{"placement": "cloud"|"local", "model": <str>, "transport":
+    <str>}``, :func:`~precis.utils.llm.live_config.chain_override`) mapped
+    onto :class:`Rung` in order, with ``placement`` carried through as the
+    label. Any malformed rung — an unrecognized ``transport`` string, a
+    missing/non-string ``model``, a non-object entry — degrades the *whole*
+    chain back to ``_failover_ladder`` (never a partial or best-effort
+    chain), logged once so a typo'd override is visible without darking the
+    tier.
+    """
+    from precis.utils.llm import live_config
+
+    override = live_config.chain_override(tier)
+    if not override:
+        return _failover_ladder(tier, tools_needed=tools_needed, backend=backend)
+
+    def _fallback(reason: str, i: int, detail: object) -> list[Rung]:
+        log.warning(
+            "llm-chain: %s rung %d %s (%r) — falling back to the default ladder",
+            live_config.chain_key(tier),
+            i,
+            reason,
+            detail,
+        )
+        return _failover_ladder(tier, tools_needed=tools_needed, backend=backend)
+
+    rungs: list[Rung] = []
+    for i, raw in enumerate(override):
+        if not isinstance(raw, dict):
+            return _fallback("is not an object", i, raw)
+        model = raw.get("model")
+        if not model or not isinstance(model, str):
+            return _fallback("is missing a model", i, raw)
+        transport_raw = raw.get("transport")
+        if not isinstance(transport_raw, str):
+            return _fallback("has an unknown transport", i, transport_raw)
+        try:
+            transport = Transport(transport_raw)
+        except ValueError:
+            return _fallback("has an unknown transport", i, transport_raw)
+        placement = raw.get("placement")
+        rungs.append(
+            Rung(transport, model=model, label=placement if placement else "chain")
+        )
+    return rungs
 
 
 #: ``LOCAL_SMALL`` (categorizer) model ids that only mean something on the
@@ -1025,9 +1137,7 @@ def dispatch(req: LlmRequest) -> LlmResult:
     # resource actually spent: the claude-OAuth transports draw subscription
     # quota (gated on the snapshot), everything else paid spends real dollars.
     if _failover_enabled():
-        ladder = _failover_ladder(
-            req.tier, tools_needed=req.tools_needed, backend=backend
-        )
+        ladder = resolve_chain(req.tier, tools_needed=req.tools_needed, backend=backend)
         transport = ladder[0].transport
         provider: LlmProvider = FailoverProvider(ladder)
     else:
@@ -1234,18 +1344,16 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
     streaming caller trades the OSS→claude safety net for real-time progress
     on that one call. Ships dark: the failover ladder is opt-in and a
     streaming ``on_event`` caller (asa_bot) sits on the cloud claude tiers,
-    where ``_failover_ladder`` returns a single ``[Rung(primary)]`` anyway
-    (nothing to fail over to), so this is a no-op distinction until an OSS
-    tier ever streams.
+    where ``resolve_chain`` returns a single ``[Rung(primary)]`` anyway (no
+    chain override configured, nothing to fail over to), so this is a no-op
+    distinction until an OSS tier ever streams.
     """
     backend = resolve_backend()
     if backend is Backend.OPENAI and not os.environ.get("PRECIS_LLM_BASE_URL"):
         backend = Backend.ANTHROPIC
     model = req.model or resolve_model(req.tier, backend=backend)
     if _failover_enabled():
-        ladder = _failover_ladder(
-            req.tier, tools_needed=req.tools_needed, backend=backend
-        )
+        ladder = resolve_chain(req.tier, tools_needed=req.tools_needed, backend=backend)
         transport = ladder[0].transport
     else:
         transport = select_transport(

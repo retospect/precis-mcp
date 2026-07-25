@@ -101,6 +101,48 @@ def test_model_key_uses_tier_value() -> None:
     assert live_config.model_key(Tier.CLOUD_SMALL) == "llm.model.cloud-small"
 
 
+# ── reader: chain override (ADR 0066 §4, Phase A) ───────────────────────
+
+
+def test_chain_key_uses_tier_value() -> None:
+    assert live_config.chain_key(Tier.CLOUD_SUPER) == "llm.chain.cloud-super"
+    assert live_config.chain_key(Tier.LOCAL_BIG) == "llm.chain.local-big"
+
+
+def test_chain_override_dark_without_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    _bind(monkeypatch, None)
+    assert live_config.chain_override(Tier.CLOUD_SUPER) is None
+
+
+def test_chain_override_no_row(monkeypatch: pytest.MonkeyPatch) -> None:
+    _bind(monkeypatch, {})
+    assert live_config.chain_override(Tier.CLOUD_SUPER) is None
+
+
+def test_chain_override_parses_valid_json_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    rows = {
+        "llm.chain.cloud-super": (
+            '[{"placement": "cloud", "model": "z-ai/glm-5.2", '
+            '"transport": "openai_tools"}]'
+        )
+    }
+    _bind(monkeypatch, rows)
+    out = live_config.chain_override(Tier.CLOUD_SUPER)
+    assert out == [
+        {"placement": "cloud", "model": "z-ai/glm-5.2", "transport": "openai_tools"}
+    ]
+
+
+def test_chain_override_malformed_json_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    _bind(monkeypatch, {"llm.chain.cloud-super": "not json{{"})
+    assert live_config.chain_override(Tier.CLOUD_SUPER) is None
+
+
+def test_chain_override_non_list_json_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    _bind(monkeypatch, {"llm.chain.cloud-super": '{"placement": "cloud"}'})
+    assert live_config.chain_override(Tier.CLOUD_SUPER) is None
+
+
 # ── reader: TTL cache ──────────────────────────────────────────────────
 
 

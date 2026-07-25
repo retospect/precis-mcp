@@ -513,7 +513,20 @@ class TestSeed:
         assert len(model_ids) >= 3
         cards = store.list_refs(kind="llm", limit=100)
         floors = {(c.meta or {}).get("tier_floor") for c in cards}
-        assert {t.value for t in Tier} <= floors
+        # ADR 0066 Phase A: the canonical tiers (FRONTIER/BIG/MEDIUM/SMALL) share
+        # a model with their legacy analogue, so the seed dedupes by model — one
+        # card per distinct model, keyed to the legacy tier_floor (first-wins).
+        # Phase C reseeds the catalog to the 4 canonical tiers.
+        legacy = {
+            Tier.LOCAL_SMALL,
+            Tier.LOCAL_BIG,
+            Tier.CLOUD_SMALL,
+            Tier.CLOUD_MID,
+            Tier.CLOUD_SUPER,
+        }
+        assert {t.value for t in legacy} <= floors
+        canonical = {Tier.FRONTIER, Tier.BIG, Tier.MEDIUM, Tier.SMALL}
+        assert not ({t.value for t in canonical} & floors)
 
     def test_frontier_seed_mints_oss_ladder(self, store: Any) -> None:
         from precis import llm_catalog
