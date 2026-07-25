@@ -458,6 +458,12 @@ passes now. Remaining:
   Rollout gate) — design that first. Also resolve the planner-tag-vocab note
   (ADR §"Still genuinely open": `LLM:small`/`medium` no-op via fallback since
   `plan_tick` always `tools_needed=True`).
+  **PARKED by decision (Reto, 2026-07-25):** the content-sensitivity proposal
+  is deferred, so all of Phase C (call-site sweep + catalog reseed + `tier_floor`
+  migration + caller-picker) stays on hold — **not the immediate next step**.
+  Resume by writing the proposal when the local-only constraint becomes a
+  priority; until then the shipped router (steps 1/3a) + operator chain editor
+  (step 2) are the usable surface, dark until an operator writes a chain.
 
 ---
 
