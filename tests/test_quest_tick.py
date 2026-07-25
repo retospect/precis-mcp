@@ -623,7 +623,12 @@ class TestReactionContext:
         assert '"op": "slab"' in prompt
         assert "NO → NH3" in prompt  # substrate → target
         assert "ammonia" in prompt  # the catpath network
-        assert "adatom" in prompt  # a param_space design knob
+        # "adatom" is prose (one of the placement knobs the agent picks from —
+        # "pick ANY dopant element ... its placement (an adatom on the
+        # surface / ...)"), NOT a param_space enumeration — PARAM_SPACE
+        # carries no chemistry menu (removed; see catalyst_seed.PARAM_SPACE).
+        assert "adatom" in prompt
+        assert "pick ANY dopant element" in prompt
 
     def test_generic_quest_prompt_has_no_reaction_block(self, store: Any) -> None:
         qid = _mk_quest(store, "A generic materials striving with no reaction")
@@ -647,10 +652,15 @@ class TestReactionContext:
         assert "set_element" in prompt
         assert "vacancy" in prompt
 
-    def test_reaction_context_steers_toward_novel_dopants(self, store: Any) -> None:
+    def test_reaction_context_steers_toward_novelty_without_enumerating_elements(
+        self, store: Any
+    ) -> None:
         # gripe 171149: the loop kept re-proposing the same handful of
-        # adatoms once it believed it had "solved" the quest — the novelty
-        # steer names concrete unexplored levers.
+        # adatoms once it believed it had "solved" the quest. The design
+        # change (rework) removed the code-owned element shortlist entirely
+        # — the novelty steer states the PRINCIPLE ("don't repeat what's
+        # tried") and the agent picks the lever using its own chemistry
+        # judgment; no Python code names a specific element anywhere.
         from precis.quest.catalyst_seed import seed_catalyst_quest
 
         qid, created = seed_catalyst_quest(store)
@@ -658,9 +668,26 @@ class TestReactionContext:
         quest = store.get_ref(kind="quest", id=qid)
         prompt = build_tick_prompt(store, quest)
         assert "NOT already in the frontier" in prompt
-        for dopant in ("Fe", "Co", "Ag", "Au", "Rh", "Ru", "Zn"):
-            assert dopant in prompt
-        assert "co-adsorbed H" in prompt
+        assert "own chemistry judgment" in prompt
+        assert "do not repeat a composition already tried" in prompt
+        # no closed element menu anywhere in the prompt
+        assert "∈ {" not in prompt
+
+    def test_prompt_describes_knobs_in_prose_not_a_choices_menu(
+        self, store: Any
+    ) -> None:
+        from precis.quest.catalyst_seed import seed_catalyst_quest
+
+        qid, created = seed_catalyst_quest(store)
+        assert created
+        quest = store.get_ref(kind="quest", id=qid)
+        prompt = build_tick_prompt(store, quest)
+        assert "pick ANY dopant element" in prompt
+        assert "your own chemistry judgment" in prompt
+        assert "Only the fcc(111) facet is buildable today" in prompt
+        # the illustrative `Cu` syntax example is explicitly flagged as such,
+        # never presented as a menu entry
+        assert "not a suggested element" in prompt
 
     def test_prompt_makes_unevaluated_barriers_unciteable(self, store: Any) -> None:
         # gripes 171148/171149: the frontier caveat must say an "awaiting a
@@ -675,6 +702,50 @@ class TestReactionContext:
         assert "UNKNOWN barrier" in prompt
         assert "may NOT cite, claim, or rank on a barrier" in prompt
         assert "You do not emit" in prompt and "result" in prompt
+
+    def test_creed_block_present_without_a_champion_yet(self, store: Any) -> None:
+        # No converged candidate yet — the creed still renders (moving-target
+        # framing, "first move" framing) but omits a fabricated "champion".
+        from precis.quest.catalyst_seed import seed_catalyst_quest
+
+        qid, created = seed_catalyst_quest(store)
+        assert created
+        quest = store.get_ref(kind="quest", id=qid)
+        prompt = build_tick_prompt(store, quest)
+        assert "explorer's creed" in prompt
+        assert "relentless catalysis researcher" in prompt
+        assert 'Forbidden: never write "solved"' in prompt
+        assert "Champion to beat" not in prompt
+        assert "you have the first move" in prompt
+
+    def test_creed_block_states_the_champion_once_one_exists(self, store: Any) -> None:
+        # A converged, measured candidate makes the frontier non-empty — the
+        # creed's "champion to beat" line names its barrier, reframing the
+        # graduation threshold as a moving target rather than a fixed line.
+        from precis.quest.catalyst_seed import seed_catalyst_quest
+
+        qid, created = seed_catalyst_quest(store)
+        assert created
+        candidate = compute_mod.ensure_candidate(
+            store, qid, {"name": "Champion candidate", "structure": _tick_spec("Fe")}
+        )
+        assert candidate is not None
+        store.stamp_ref_meta(candidate, {"barrier": 0.42})
+        store.structure_record_run(
+            candidate,
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=5,
+            max_disp=0.0,
+            energy=-9.0,
+        )
+        quest = store.get_ref(kind="quest", id=qid)
+        prompt = build_tick_prompt(store, quest)
+        assert "Champion to beat" in prompt
+        assert "0.42" in prompt
+        assert "Tried:" in prompt
+        assert "Champion candidate 0.42 (BEST)" in prompt
 
 
 def _tick_spec(element: str) -> dict[str, Any]:
@@ -778,7 +849,9 @@ class TestFrontierAlwaysOn:
     ) -> None:
         qid = _mk_quest(store, "A striving")
         monkeypatch.setattr(
-            tick_mod, "_frontier_summary", lambda s, q: "SENTINEL-FRONTIER-LOCAL"
+            tick_mod,
+            "_frontier_summary",
+            lambda s, q, **_kw: "SENTINEL-FRONTIER-LOCAL",
         )
         quest = store.get_ref(kind="quest", id=qid)
         prompt = build_tick_prompt(store, quest, review=False)
@@ -790,7 +863,9 @@ class TestFrontierAlwaysOn:
     ) -> None:
         qid = _mk_quest(store, "A striving")
         monkeypatch.setattr(
-            tick_mod, "_frontier_summary", lambda s, q: "SENTINEL-FRONTIER-REVIEW"
+            tick_mod,
+            "_frontier_summary",
+            lambda s, q, **_kw: "SENTINEL-FRONTIER-REVIEW",
         )
         quest = store.get_ref(kind="quest", id=qid)
         prompt = build_tick_prompt(store, quest, review=True)
@@ -847,3 +922,264 @@ class TestServedPapersDetail:
         prompt = build_tick_prompt(store, quest)
         assert "Held literature" in prompt
         assert "A specific measured finding." in prompt
+
+
+def _sequenced_dispatch(
+    payloads: list[dict[str, Any] | None],
+) -> tuple[Any, list[Any]]:
+    """A ``dispatch_fn`` stub returning successive canned payloads per call,
+    holding the last payload once the list is exhausted. Shared by the
+    primary tick call AND the commit ladder's re-prompt calls (they use the
+    same ``disp`` callable), so this lets a test script a whole tick's worth
+    of LLM turns. Records every ``LlmRequest`` so a test can assert call
+    count / tier escalation."""
+    calls: list[Any] = []
+
+    def _d(req: Any) -> Any:
+        idx = min(len(calls), len(payloads) - 1)
+        calls.append(req)
+        return SimpleNamespace(
+            data=payloads[idx], text="", error=None, cost_usd=0.01, paused=False
+        )
+
+    return _d, calls
+
+
+class TestCommitReRepromptLadder:
+    """Core-principle rework: code never picks the chemistry — it only
+    guarantees the AGENT is asked to act. When the model dispatches zero
+    sims for ``PRECIS_QUEST_FORCE_EXPERIMENT_EVERY`` (default 2) consecutive
+    ticks, ``run_quest_tick`` re-prompts the SAME model with a hard "commit
+    now" directive, escalates one tier if that still comes back empty, and
+    backs off — never fabricating a dispatch — if the model still proposes
+    nothing after that."""
+
+    _EMPTY: dict[str, Any] = {"logbook": [], "dossier_markdown": "", "proposals": []}
+
+    @staticmethod
+    def _proposal(name: str = "Fe adatom") -> dict[str, Any]:
+        return {
+            "logbook": [],
+            "dossier_markdown": "",
+            "proposals": [
+                {"name": name, "rationale": "x", "structure": _tick_spec("Fe")}
+            ],
+        }
+
+    def _stub_run_compute_step(self, monkeypatch: Any) -> list[list[dict[str, Any]]]:
+        """A fake ``run_compute_step`` that never touches real compute — a
+        non-empty ``proposals`` list "dispatches" (records 1 sim), an empty
+        one dispatches nothing. Records every call's proposals so a test can
+        assert how many times, and with what, the tick invoked it."""
+        calls: list[list[dict[str, Any]]] = []
+
+        def _fake(
+            _store: Any,
+            _quest_id: int,
+            proposals: list[dict[str, Any]],
+            *,
+            hub: Any = None,
+            dispatch: bool = True,
+            by: str = "agent",
+        ) -> Any:
+            proposals = list(proposals or [])
+            calls.append(proposals)
+            n = 1 if proposals else 0
+            return compute_mod.ComputeStep(
+                candidates_created=n,
+                sims_dispatched=n,
+                results_harvested=0,
+                ruled_out=0,
+                notes=[],
+                graduated=0,
+            )
+
+        monkeypatch.setattr(compute_mod, "run_compute_step", _fake)
+        return calls
+
+    def _logs(self, store: Any, qid: int) -> list[Any]:
+        return [
+            b for b in store.list_blocks_for_ref(qid) if b.chunk_kind == "quest_log"
+        ]
+
+    def test_first_dry_tick_advances_counter_without_a_commit_reprompt(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        calls = self._stub_run_compute_step(monkeypatch)
+        qid = _mk_quest(store, "A striving")
+        disp, reqs = _sequenced_dispatch([self._EMPTY])
+        out = run_quest_tick(store, qid, dispatch_fn=disp, compute=True)
+        assert out.status == "succeeded"
+        assert out.sims_dispatched == 0
+        assert len(reqs) == 1  # only the primary pass — stall below threshold
+        assert calls == [[]]
+        qref = store.get_ref(kind="quest", id=qid)
+        assert qref is not None
+        assert qref.meta.get("ticks_since_experiment") == 1
+        assert not any(
+            "committed after re-prompt" in (b.text or "")
+            for b in self._logs(store, qid)
+        )
+
+    def test_commit_reprompt_succeeds_at_the_current_tier(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        calls = self._stub_run_compute_step(monkeypatch)
+        qid = _mk_quest(store, "A striving")
+        disp, reqs = _sequenced_dispatch([self._EMPTY, self._EMPTY, self._proposal()])
+        run_quest_tick(store, qid, dispatch_fn=disp, compute=True)  # tick 1: dry
+        out = run_quest_tick(
+            store, qid, dispatch_fn=disp, compute=True
+        )  # tick 2: ladder
+        assert out.status == "succeeded"
+        assert len(reqs) == 3  # 2 primary passes + 1 successful commit re-prompt
+        assert reqs[-1].tier == reqs[0].tier  # no escalation needed
+        assert "COMMIT NOW" in reqs[-1].prompt
+        assert len(calls) == 3
+        assert calls[-1][0]["name"] == "Fe adatom"
+        assert out.sims_dispatched == 1
+        qref = store.get_ref(kind="quest", id=qid)
+        assert qref is not None
+        assert qref.meta.get("ticks_since_experiment") == 0
+        assert any(
+            "committed after re-prompt" in (b.text or "")
+            for b in self._logs(store, qid)
+        )
+
+    def test_empty_reprompt_escalates_one_tier_then_succeeds(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        calls = self._stub_run_compute_step(monkeypatch)
+        qid = _mk_quest(store, "A striving")
+        disp, reqs = _sequenced_dispatch(
+            [self._EMPTY, self._EMPTY, self._EMPTY, self._proposal()]
+        )
+        run_quest_tick(store, qid, dispatch_fn=disp, compute=True)  # tick 1: dry
+        out = run_quest_tick(
+            store, qid, dispatch_fn=disp, compute=True
+        )  # tick 2: ladder
+        assert out.status == "succeeded"
+        assert len(reqs) == 4  # 2 primary passes + 2 ladder rungs
+        from precis.utils.llm.router import Tier
+
+        assert reqs[2].tier != Tier.CLOUD_SUPER  # first rung: current tier
+        assert reqs[3].tier == Tier.CLOUD_SUPER  # escalated rung
+        assert len(calls) == 3  # 2 dry primary passes + 1 successful ladder dispatch
+        assert out.sims_dispatched == 1
+        qref = store.get_ref(kind="quest", id=qid)
+        assert qref is not None
+        assert qref.meta.get("ticks_since_experiment") == 0
+
+    def test_both_rungs_empty_backs_off_without_crashing(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        calls = self._stub_run_compute_step(monkeypatch)
+        qid = _mk_quest(store, "A striving")
+        disp, reqs = _sequenced_dispatch([self._EMPTY])  # always empty
+        run_quest_tick(store, qid, dispatch_fn=disp, compute=True)  # tick 1: dry
+        out = run_quest_tick(
+            store, qid, dispatch_fn=disp, compute=True
+        )  # tick 2: ladder
+        assert out.status == "succeeded"  # the tick itself never fails
+        assert len(reqs) == 4  # 2 primary passes + 2 ladder rungs, all empty
+        # run_compute_step only ever saw the two (empty) primary passes — the
+        # ladder never fabricated a dispatch of its own.
+        assert calls == [[], []]
+        assert out.sims_dispatched == 0
+        qref = store.get_ref(kind="quest", id=qid)
+        assert qref is not None
+        assert qref.meta.get("ticks_since_experiment") == 2  # NOT reset
+        # a genuine decline (both rungs answered, neither proposed) reads
+        # differently in the logbook than an unreachable-agent back-off.
+        assert any(
+            "agent declined to propose an untried variant" in (b.text or "")
+            for b in self._logs(store, qid)
+        )
+        assert not any(
+            "agent unreachable" in (b.text or "") for b in self._logs(store, qid)
+        )
+
+    def test_both_rungs_erroring_reads_as_unreachable_not_a_decline(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        # gripe fold-in B: an LLM transport/breaker/quota error must not read
+        # the same as a genuine "the model looked and declined" — the whole
+        # point of the ladder's log line is diagnosing which one happened.
+        self._stub_run_compute_step(monkeypatch)
+        qid = _mk_quest(store, "A striving")
+        # Prime the stall counter directly (as if a prior dry tick already
+        # ran) — this tick's own primary pass succeeds-but-empty, pushing
+        # the stall to the force-every threshold, then both ladder rungs
+        # error (simulated breaker trip).
+        store.stamp_ref_meta(qid, {"ticks_since_experiment": 1})
+
+        calls: list[Any] = []
+
+        def _mixed_disp(req: Any) -> Any:
+            calls.append(req)
+            if len(calls) == 1:  # this tick's primary pass: succeed, empty
+                return SimpleNamespace(
+                    data=self._EMPTY, text="", error=None, cost_usd=0.01, paused=False
+                )
+            # both ladder rungs error
+            return SimpleNamespace(
+                data=None, text="", error="breaker tripped", cost_usd=0.0, paused=False
+            )
+
+        out = run_quest_tick(store, qid, dispatch_fn=_mixed_disp, compute=True)
+        assert out.status == "succeeded"
+        assert len(calls) == 3  # 1 primary + 2 erroring ladder rungs
+        assert any(
+            "agent unreachable (LLM error/paused)" in (b.text or "")
+            for b in self._logs(store, qid)
+        )
+        assert not any(
+            "agent declined to propose" in (b.text or "")
+            for b in self._logs(store, qid)
+        )
+
+    def test_a_tick_that_dispatches_never_triggers_the_ladder(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        calls = self._stub_run_compute_step(monkeypatch)
+        qid = _mk_quest(store, "A striving")
+        store.stamp_ref_meta(qid, {"ticks_since_experiment": 5})
+        out = run_quest_tick(
+            store, qid, dispatch_fn=_fake_dispatch(self._proposal()), compute=True
+        )
+        assert out.sims_dispatched == 1
+        assert len(calls) == 1  # no ladder call
+        qref = store.get_ref(kind="quest", id=qid)
+        assert qref is not None
+        assert qref.meta.get("ticks_since_experiment") == 0
+
+    def test_exception_in_commit_path_degrades_gracefully_and_still_stamps(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        calls = self._stub_run_compute_step(monkeypatch)
+        qid = _mk_quest(store, "A striving")
+
+        n = {"c": 0}
+
+        def _raising_disp(_req: Any) -> Any:
+            n["c"] += 1
+            if n["c"] > 2:  # the two primary (dry) tick calls succeed; the
+                # commit ladder's first re-prompt raises (simulated transport bug).
+                raise RuntimeError("transport boom")
+            return SimpleNamespace(
+                data=self._EMPTY, text="", error=None, cost_usd=0.01, paused=False
+            )
+
+        run_quest_tick(store, qid, dispatch_fn=_raising_disp, compute=True)  # tick 1
+        out = run_quest_tick(
+            store, qid, dispatch_fn=_raising_disp, compute=True
+        )  # tick 2
+        assert out.status == "succeeded"  # the tick degrades, never crashes
+        assert calls == [[], []]  # only the two primary (dry) passes
+        qref = store.get_ref(kind="quest", id=qid)
+        assert qref is not None
+        assert qref.meta.get("ticks_since_experiment") == 2  # still stamped
+        assert any(
+            "commit re-prompt ladder errored" in (b.text or "")
+            for b in self._logs(store, qid)
+        )

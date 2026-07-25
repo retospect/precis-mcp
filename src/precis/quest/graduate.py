@@ -15,6 +15,14 @@ A frontier candidate whose measure meets the threshold is tagged
 ``needs-experiment`` (once) and logged as a `milestone`; the slice-3 gaps then
 surface it as a ``needs-experiment`` item. With no rule set, nothing graduates —
 so this ships dark until a quest opts in by declaring its ceiling.
+
+**Graduation is per-candidate, never terminal for the quest.** It tags and
+logs one crossing candidate — it never touches the quest's own STATUS, never
+appears in the coordinator's (:mod:`precis.workers.job_types.quest_tick`)
+rest condition, and the forced-experiment floor + explorer's-creed prompt
+block (:mod:`precis.quest.explore`, :func:`precis.quest.tick._explorers_creed`)
+both keep pushing after a graduation — the new floor is a *moving* champion,
+not a finish line.
 """
 
 from __future__ import annotations

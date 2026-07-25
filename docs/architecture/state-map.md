@@ -986,7 +986,25 @@ The master kinds table lives in the `precis-overview` skill.
   quest-coordinator orphans (quest context + every-pass cadence); the sweeper
   stays the general coordinator/`claude_inproc` backstop (and covers quest loops
   if the reconciler is gated off). Both terminalize under `FOR UPDATE`, so a
-  rare double-fire just leaves the job terminal either way. **Web-surfaced**:
+  rare double-fire just leaves the job terminal either way. **Anti-stall
+  commit ladder (gripe 171149):** `quest/tick.py::run_quest_tick` tracks
+  `meta.ticks_since_experiment`; once a tick's compute phase dispatches 0
+  sims for `PRECIS_QUEST_FORCE_EXPERIMENT_EVERY` (default 2) consecutive
+  ticks, `_commit_reprompt_ladder` re-prompts the same model in propose-mode
+  with a hard "commit now" directive (`_build_commit_prompt`) plus the
+  tried-set (`quest/explore.py::tried_set_summary` — a pure DB-fact read of
+  tried candidates + measures, no chemistry enumeration); still nothing
+  escalates one tier to `Tier.CLOUD_SUPER` and re-prompts once more; still
+  nothing backs off honestly (a logged `decision` entry — code never
+  fabricates a dispatch or picks chemistry). Every tick prompt also carries
+  the **explorer's creed** (`_explorers_creed`): a *moving* champion-to-beat
+  (the frontier-best, never a fixed threshold), mechanism→variant reasoning,
+  and a ban on the model ever declaring the quest "solved"/"done"/"closed".
+  Design principle: **the discovery agent owns all chemistry** (element,
+  site, coverage, co-adsorbate) — `catalyst_seed.py::PARAM_SPACE` is now
+  coverage-count + the fcc111-buildable fact only, not a chemistry menu;
+  graduation (`graduate.py`) stays a per-candidate milestone (a
+  `needs-experiment` deed) and never halts the search. **Web-surfaced**:
   `/refs/quest/<id>` is a dedicated hub dashboard (`precis_web/routes/refs.py`'s
   `detail()`, `refs/quest_detail.html.j2`), not the generic ref-detail render —
   header (status/prio/momentum/tote), hub links (dossier, paper draft when a

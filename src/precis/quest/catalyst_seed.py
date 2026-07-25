@@ -13,9 +13,12 @@ a `quest` whose meta wires the whole loop:
   rank on ``energy`` until formation energy is computed.
 * ``meta.graduation`` — the in-silico ceiling that promotes a good design to a
   ``needs-experiment`` deed (:mod:`precis.quest.graduate`). A starting bar to tune.
-* ``meta.param_space`` — the named design knobs, declared now so a clean
-  ``(params → barrier, energy)`` history accrues before the §7.8 optimizer
-  advisor lands (it arrives to a populated study, not an empty one).
+* ``meta.param_space`` — non-chemistry scaffolding (coverage count, buildable
+  facet) for the §7.8 optimizer advisor's ``(params → barrier, energy)``
+  history. **Not a chemistry menu**: the discovery agent picks the dopant
+  element, site, and co-adsorbate every tick using its own judgment (the
+  explorer's creed + commit re-prompt in :mod:`precis.quest.tick`) — code
+  never enumerates or constrains that choice.
 
 **Dark by construction:** minting changes nothing until someone ticks it
 (``precis quest tick <id> --compute``) or the autonomous loop is switched on.
@@ -70,13 +73,22 @@ RUBRIC_OBJECTIVES: list[dict[str, str]] = [
 ]
 
 #: In-silico ceiling — a candidate whose rate-limiting barrier drops below this
-#: (eV) graduates to a real-world experiment. A conservative starting bar.
-GRADUATION: dict[str, Any] = {"key": "barrier", "sense": "min", "threshold": 0.7}
+#: (eV) graduates a candidate to a real-world experiment (a milestone, NOT a stop:
+#: the search keeps hunting for a lower barrier — the objective is a moving best,
+#: see the explorer's creed in tick.py). A tunable bar.
+GRADUATION: dict[str, Any] = {"key": "barrier", "sense": "min", "threshold": 0.5}
 
-#: Named design knobs (§7.8) — declared now so history accrues; the proposer/
-#: decoder that stamps `meta.params` per candidate is a later slice.
+#: Pure non-chemistry scaffolding for the §7.8 optimizer advisor's future
+#: ``(params → barrier, energy)`` correlation study — NOT a chemistry menu.
+#: `n_adatoms` is a coverage *count* (not which element); `facet` records a
+#: buildability fact, not a design choice — only 111 is buildable today (the
+#: `slab` op builds fcc111 via `ase.build.fcc111`; do NOT advertise 100/211
+#: until a slab op supports them, or the model proposes unbuildable
+#: candidates). The dopant element, its site (adatom / surface substitution /
+#: subsurface), and any co-adsorbate are the discovery agent's own chemistry
+#: judgment every tick — no code enumerates or constrains them (see the
+#: explorer's creed + commit re-prompt in :mod:`precis.quest.tick`).
 PARAM_SPACE: dict[str, Any] = {
-    "adatom": {"type": "cat", "choices": ["none", "Cu", "Ni", "Pt"]},
     "n_adatoms": {"type": "int", "low": 0, "high": 4},
     "facet": {"type": "cat", "choices": ["111"]},
 }

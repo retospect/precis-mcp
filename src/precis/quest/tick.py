@@ -30,6 +30,7 @@ deterministically unit-testable without a live model.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from collections.abc import Callable
@@ -47,6 +48,8 @@ from precis.quest.logbook import (
 
 if TYPE_CHECKING:
     from precis.store import Ref, Store
+
+log = logging.getLogger(__name__)
 
 QUEST_LOOP_ENABLED_ENV = "PRECIS_QUEST_LOOP_ENABLED"
 
@@ -198,31 +201,49 @@ def _literature_section(store: Store, quest_id: int) -> str:
     return "\n## Held literature (abstracts)\n" + "\n".join(detail) + "\n"
 
 
-def _ruled_out_handles(store: Store, quest_id: int) -> list[str]:
+def _ruled_out_handles(
+    store: Store, quest_id: int, *, fr: Any | None = None
+) -> list[str]:
     """Handles of live candidates carrying a ``ruled-out:`` tag.
 
     Surfaced in the frontier section so the model does not re-propose a
     material the ledger already killed (gripe 171149) — a ruled-out candidate
     with no converged run would otherwise silently fall into the "awaiting a
     sim" band below, reading as merely unexplored rather than dead.
-    """
-    from precis.utils import handle_registry
 
-    live = gaps_mod._live_servers(store, quest_id)
-    structures = [s for s in live if s.kind == "structure"]
+    ``fr`` reuses an already-computed frontier (see :func:`_frontier_summary`)
+    instead of a second live-candidate scan — its ``Candidate.handle`` is the
+    same value ``handle_registry.try_format`` would produce, so no extra work
+    is needed once ``fr`` is in hand.
+    """
+    if fr is None:
+        from precis.quest.frontier import quest_frontier
+
+        fr = quest_frontier(store, quest_id)
     out = []
-    for s in structures:
-        if any(str(t).startswith("ruled-out:") for t in store.tags_for(s.id)):
-            fallback = f"structure:{s.id}"
-            out.append(handle_registry.try_format("structure", s.id) or fallback)
+    for c in (*fr.frontier, *fr.dominated, *fr.unevaluated):
+        if any(str(t).startswith("ruled-out:") for t in store.tags_for(c.ref_id)):
+            out.append(c.handle)
     return out
 
 
-def _frontier_summary(store: Store, quest_id: int) -> str:
-    """A compact rendering of the Pareto frontier for a review prompt."""
-    from precis.quest.frontier import quest_frontier
+def _frontier_summary(store: Store, quest_id: int, *, fr: Any | None = None) -> str:
+    """A compact rendering of the Pareto frontier for a review prompt.
 
-    fr = quest_frontier(store, quest_id)
+    ``fr`` reuses an already-computed :class:`precis.quest.frontier.
+    FrontierResult` (``build_tick_prompt`` computes one per tick and threads
+    it here, plus into :func:`_champion` / :func:`_ruled_out_handles` /
+    :func:`precis.quest.explore.tried_set_summary`) instead of each
+    independently re-scanning live candidates + re-reading every candidate's
+    ``struct_runs`` (an N+1) — a reaction-quest tick that also fires the
+    commit ladder would otherwise repeat this scan up to ~6×. ``None``
+    (default, and every unit test) computes it fresh — unit-testable
+    standalone.
+    """
+    if fr is None:
+        from precis.quest.frontier import quest_frontier
+
+        fr = quest_frontier(store, quest_id)
     if not (fr.frontier or fr.dominated or fr.unevaluated):
         return "(no candidate materials simulated yet)"
     lines = [f"objective: {' · '.join(f'{k} ({s})' for k, s in fr.objectives)}"]
@@ -236,7 +257,7 @@ def _frontier_summary(store: Store, quest_id: int) -> str:
         named = ", ".join(f"{c.handle} {c.name}" for c in fr.unevaluated[:5])
         rest = f" (+{len(fr.unevaluated) - 5} more)" if len(fr.unevaluated) > 5 else ""
         lines.append(f"- awaiting a sim ({len(fr.unevaluated)}): {named}{rest}")
-    ruled_out = _ruled_out_handles(store, quest_id)
+    ruled_out = _ruled_out_handles(store, quest_id, fr=fr)
     if ruled_out:
         lines.append(f"- ruled out (do not re-propose): {', '.join(ruled_out)}")
     return "\n".join(lines)
@@ -267,15 +288,120 @@ def _ledger_constraints(ledger_text: str) -> str:
     return "\n".join(lines) if lines else "(nothing pinned yet)"
 
 
-def _reaction_context(quest: Ref) -> str:
+def _champion(
+    store: Store, quest_id: int, *, fr: Any | None = None
+) -> tuple[float, str] | None:
+    """The current frontier-leading measure as ``(value, name)``, or ``None``.
+
+    Reads the quest's primary rubric objective (``barrier`` for a catalyst
+    quest, ``energy`` by default — :mod:`precis.quest.frontier`) and picks
+    the best value among the **non-dominated** frontier — nothing needs
+    comparing against the dominated/unevaluated bands since a candidate that
+    beats every frontier member on the primary key would itself already be on
+    the frontier. Feeds the explorer's-creed "champion to beat" line
+    (:func:`_explorers_creed`); ``None`` (nothing converged yet) drops that
+    line rather than citing a bogus champion.
+
+    ``fr`` reuses an already-computed frontier (see :func:`_frontier_summary`)
+    instead of a second frontier/candidate scan. ``None`` (default, and every
+    unit test) computes it fresh — unit-testable standalone.
+    """
+    if fr is None:
+        from precis.quest.frontier import quest_frontier
+
+        fr = quest_frontier(store, quest_id)
+    if not fr.objectives:
+        return None
+    key, sense = fr.objectives[0]
+    best: tuple[float, str] | None = None
+    for c in fr.frontier:
+        v = c.measures.get(key)
+        if v is None:
+            continue
+        if best is None or (v < best[0] if sense == "min" else v > best[0]):
+            best = (v, c.name)
+    return best
+
+
+def _explorers_creed(store: Store, quest_id: int, *, fr: Any | None = None) -> str:
+    """The "relentless researcher" prompt block for a catalyst/reaction quest.
+
+    Code's job here is only the *guarantee the agent acts* (the commit
+    re-prompt + tier-escalation ladder in :func:`run_quest_tick`) — never the
+    chemistry itself. This block reframes the objective as a **moving**
+    champion (beat the current best; there is no fixed finish line) so a
+    graduated candidate (:mod:`precis.quest.graduate`) reads as a new floor to
+    beat, not a stop signal, and states the tried-set explicitly
+    (:func:`precis.quest.explore.tried_set_summary` — a pure DB-fact read, no
+    chemistry enumeration) so the model reasons from the live state instead of
+    guessing it. The untried composition itself is always the model's own
+    chemistry judgment call.
+
+    ``fr`` reuses an already-computed frontier (see :func:`_frontier_summary`)
+    and is threaded into both :func:`_champion` and
+    :func:`precis.quest.explore.tried_set_summary` — a reaction-quest tick
+    would otherwise pay for the same frontier/candidate scan (an N+1 over
+    ``struct_runs``) twice more per call. ``None`` (default, and every unit
+    test) computes it fresh in each helper — unit-testable standalone.
+    """
+    from precis.quest import explore as explore_mod
+
+    champion = _champion(store, quest_id, fr=fr)
+    if champion is not None:
+        value, name = champion
+        champion_line = (
+            f"Champion to beat: the current best rate-limiting measure is "
+            f"{value:g} ({name}). Every tick, propose at least one untried "
+            "variant you predict will beat it, and state (a) the mechanistic "
+            "reason you expect it to win and (b) your predicted value.\n"
+        )
+    else:
+        champion_line = ""
+
+    tried_line = explore_mod.tried_set_summary(store, quest_id, fr=fr)
+    tried_block = (
+        f"{tried_line}\n"
+        if tried_line
+        else "Nothing tried yet — you have the first move.\n"
+    )
+
+    return (
+        "\n## The explorer's creed\n"
+        "You are a relentless catalysis researcher. Belief: there is always "
+        "a better catalyst. A candidate that meets the target is a NEW FLOOR "
+        "TO BEAT, never a finish line — it is promoted to a real-world "
+        "experiment AND you immediately look for something better.\n"
+        f"{champion_line}"
+        f"{tried_block}"
+        "From why to what: reason from WHY the leader works (e.g. d-band "
+        "downshift weakens N–O) to the next variant that should push it "
+        "further — transfer the mechanism, don't restate it. YOU choose the "
+        "dopant, its placement, and coverage — this system never picks the "
+        "chemistry for you, only the ops that build what you choose.\n"
+        'Forbidden: never write "solved", "done", or "closed" about the '
+        'quest. "Ruled out" applies to ONE failed variant, never to the '
+        "search. Narrating or lit-searching WITHOUT a new proposal is not "
+        "progress. Meeting the bar promotes a candidate to a real "
+        "experiment; the search continues.\n"
+    )
+
+
+def _reaction_context(store: Store, quest: Ref, *, fr: Any | None = None) -> str:
     """Proposal rules for a **barrier quest** that declares a reaction (catpath).
 
     When the quest carries ``meta.reaction_config`` every candidate is a *catalyst
     slab* — catpath places the reactants and measures the rate-limiting barrier,
     so a proposal builds the reaction's slab with the compact ``slab`` op and
-    varies only its surface composition (the ``meta.param_space`` design knobs).
-    Absent → ``""`` (a generic materials quest keeps the free-form,
+    varies only its surface composition. **Prose, not enumeration**: no closed
+    element list, no fixed site/coadsorbate menu — the discovery agent picks
+    the dopant, its placement, and coverage using its own chemistry judgment
+    every tick; code only states what it can build (see the explorer's creed
+    below). Absent → ``""`` (a generic materials quest keeps the free-form,
     hand-built-cell proposal rules already in the template).
+
+    ``fr`` is the tick's already-computed frontier (see
+    :func:`_frontier_summary`), threaded straight through to
+    :func:`_explorers_creed`.
     """
     meta = getattr(quest, "meta", None) or {}
     rc = meta.get("reaction_config")
@@ -291,15 +417,16 @@ def _reaction_context(quest: Ref) -> str:
         rc.get("target", "?"),
         rc.get("network", "?"),
     )
-    knob_bits: list[str] = []
-    for name, spec in (meta.get("param_space") or {}).items():
-        if isinstance(spec, dict) and spec.get("choices"):
-            knob_bits.append(f"{name} ∈ {{{', '.join(map(str, spec['choices']))}}}")
-        elif isinstance(spec, dict) and "low" in spec:
-            knob_bits.append(f"{name} ∈ [{spec['low']}..{spec.get('high', '?')}]")
-        else:
-            knob_bits.append(str(name))
-    knobs = "; ".join(knob_bits) or "surface composition"
+    # Degrees of freedom in PROSE, not an enumerated choices list — the
+    # discovery agent owns the chemistry (which element, which site, how
+    # much coverage); code only states what it is capable of building.
+    knobs = (
+        "pick ANY dopant element (your own chemistry judgment), its "
+        "placement (an adatom on the surface / a substitution at the "
+        "surface layer / a substitution one layer down), coverage (1–3 "
+        "atoms), and an optional co-adsorbate (e.g. H). Only the fcc(111) "
+        "facet is buildable today"
+    )
     slab_op = (
         f'{{"op": "slab", "element": "{el}", "size": {size}, '
         f'"vacuum": {vac}, "fix_layers": {fixl}}}'
@@ -320,11 +447,14 @@ def _reaction_context(quest: Ref) -> str:
     top_index = nx * ny * (nz - 1) + -(-(nx * ny) // 2)  # + ceil(nx*ny/2)
     label = f"a{el}"
     top_label = f"{label}{top_index}"
+    # `Cu` in the worked examples below is a SYNTAX example only, not a
+    # suggested element or a menu — pick your own dopant.
     op_menu = (
         "\nComposition ops you can use on the slab (the slab op labels atoms "
         f"{label}1..N in ascending-z order — the TOP surface layer is the "
-        "highest-numbered labels):\n"
-        "- add_atom  — an adatom ON the surface (what you've used): "
+        "highest-numbered labels; `Cu` below is a worked SYNTAX example, "
+        "not a suggested element — pick your own):\n"
+        "- add_atom  — an adatom ON the surface: "
         '{"op":"add_atom","element":"Cu","frac":[0.33,0.33,0.66]}\n'
         "- set_element — SUBSTITUTE a surface atom (in-plane dopant / "
         f'single-atom-alloy motif): {{"op":"set_element","atom":"{top_label}",'
@@ -336,28 +466,35 @@ def _reaction_context(quest: Ref) -> str:
         "atoms.\n"
     )
     # Novelty steer (gripe 171149): a stalled loop tended to re-propose the same
-    # handful of adatoms; name the unexplored levers explicitly.
+    # handful of dopants. The PRINCIPLE, not a fixed shortlist (no code-owned
+    # element list) — the tried-set summary in the creed below states the
+    # live "what's already been tried" fact; picking the untried lever
+    # (dopant, coverage, site, co-adsorbate) is the model's own judgment.
     novelty = (
         "\nPropose a composition NOT already in the frontier/beaten/awaiting "
-        "table. Unexplored levers to try: other dopants (Fe, Co, Ag, Au, Rh, "
-        "Ru, Zn), coverage (1–3 adatoms), facet, subsurface vs surface site, "
-        "and co-adsorbed H (H-predosing lowers NO-dissociation barriers).\n"
+        "table or the tried-set below. Use your own chemistry judgment for "
+        "which dopant, coverage, site, or co-adsorbate to vary — do not "
+        "repeat a composition already tried.\n"
     )
+    creed = _explorers_creed(store, quest.id, fr=fr)
     return (
         "\n## Reaction R — this is a catalyst-barrier quest\n"
         f"Every candidate is a **catalyst slab**. catpath places the reactants "
         f"(**{sub} → {tgt}** via the `{net}` network) on *your* slab and measures "
         f"the rate-limiting **barrier** (eV, an ML-potential NEB); a relax measures "
         f"the slab's **stability** (`energy`). You design the **surface**, NOT the "
-        f"adsorbate — so vary only its composition: {knobs}.\n\n"
+        f"adsorbate — {knobs}. Minimise the barrier — beat the current best; "
+        f"there is no fixed floor, only a better catalyst.\n\n"
         f"Build the slab with the compact `slab` op (do NOT hand-enumerate the {el} "
         f"atoms — the op builds the fcc(111) geometry ASE-exact so catpath can "
         f"inject it), then edit composition. Omit the top-level `cell` (the `slab` "
         f"op provides it).\n"
         f"- reference point (propose this verbatim first): `{base}`\n"
-        f"- a doped variant (an adatom is the design knob): `{doped}`\n"
+        f"- a worked SYNTAX example of a doped variant (Cu here is "
+        f"illustrative only — choose your own element): `{doped}`\n"
         f"{op_menu}"
         f"{novelty}"
+        f"{creed}"
     )
 
 
@@ -383,7 +520,15 @@ def build_tick_prompt(store: Store, quest: Ref, *, review: bool = False) -> str:
     servers = _servers_summary(store, qid) or ["- (nothing serves this quest yet)"]
     # Always-on measurement table (rung 4c's review banner used to be the only
     # place this rendered; the local tick reasons from the same numbers now).
-    frontier_text = _frontier_summary(store, qid)
+    # Computed ONCE here and threaded into _frontier_summary / _reaction_context
+    # (→ _explorers_creed → _champion / tried_set_summary) — those each used to
+    # independently re-run quest_frontier (a live-candidate scan + a
+    # struct_runs read per candidate), so a reaction-quest tick that also
+    # fires the commit ladder was repeating this ~6× per tick.
+    from precis.quest.frontier import quest_frontier
+
+    fr = quest_frontier(store, qid)
+    frontier_text = _frontier_summary(store, qid, fr=fr)
     literature = _literature_section(store, qid)
 
     if review:
@@ -415,7 +560,7 @@ def build_tick_prompt(store: Store, quest: Ref, *, review: bool = False) -> str:
         servers="\n".join(servers),
         frontier=frontier_text,
         literature=literature,
-        reaction_context=_reaction_context(quest),
+        reaction_context=_reaction_context(store, quest, fr=fr),
         entry_types=", ".join(sorted(ENTRY_TYPES)),
     )
 
@@ -625,6 +770,131 @@ def _sanitize_model_entry(entry_type: str, text: str) -> tuple[str, str]:
     return entry_type, text
 
 
+# ── the commit re-prompt + tier-escalation ladder ───────────────────────
+#
+# Core principle: the discovery AGENT owns the chemistry (what to try); code
+# only owns the capabilities (the ops it can build) and the *guarantee that
+# the agent acts*. So this is not a deterministic proposer — it never picks
+# an element/site/composition itself. When the model has dispatched no new
+# experiment for PRECIS_QUEST_FORCE_EXPERIMENT_EVERY consecutive ticks, it
+# re-prompts the SAME model with a hard "you must propose now" directive; if
+# that still produces nothing, it escalates one tier (to the senior/review
+# tier) and asks once more. If the model still proposes nothing after that,
+# the tick backs off rather than fabricating a dispatch — the coordinator's
+# own dry/punt budget (`precis.workers.job_types.quest_tick`) handles a
+# persistent stall.
+
+
+def _build_commit_prompt(
+    store: Store, quest: Ref, *, stall: int, base_prompt: str | None = None
+) -> str:
+    """The "you must propose now" re-prompt the commit ladder fires.
+
+    The base context is the normal propose-mode prompt (:func:`build_tick_prompt`,
+    ``review=False`` — this never escalates to the frontier-review banner,
+    only the model *tier* escalates) plus a hard directive appended. No
+    chemistry menu, no enumeration — the agent picks the untried composition
+    using its own judgment; this only insists that it act.
+
+    ``base_prompt``, when given, is the primary tick's ALREADY-BUILT prompt
+    (``run_quest_tick`` only passes it when that tick itself ran with
+    ``review=False`` — i.e. it's byte-identical to what a fresh
+    ``build_tick_prompt(..., review=False)`` call would produce), so the
+    commit ladder skips rebuilding the whole context (another frontier +
+    live-candidate scan) from scratch. ``None`` (default, and every unit
+    test) builds it fresh.
+    """
+    base = (
+        base_prompt
+        if base_prompt is not None
+        else build_tick_prompt(store, quest, review=False)
+    )
+    directive = (
+        "\n## COMMIT NOW\n"
+        f"You have dispatched no new experiment for {stall} tick(s). You "
+        "MUST now output at least one entry in `proposals` for a "
+        "composition NOT in the tried-set above — use your own chemistry "
+        "judgment to choose the most promising untried variant (dopant, "
+        "placement, coverage, co-adsorbate). Do not review, narrate, or "
+        "lit-search this turn; propose a buildable `structure` (a `slab` op "
+        "plus composition ops).\n"
+    )
+    return base + directive
+
+
+#: Source tag on the commit ladder's own LlmRequest — distinct from the
+#: primary tick's "quest_tick"/"quest_review" so per-quest spend is mineable
+#: separately (mirrors the existing local-vs-review split, gr162130).
+_COMMIT_SOURCE = "quest_tick_commit"
+
+
+def _commit_reprompt_ladder(
+    store: Store,
+    quest: Ref,
+    tier: Any,
+    *,
+    stall: int,
+    disp: Callable[[Any], Any],
+    by: str,
+    base_prompt: str | None = None,
+) -> tuple[tuple[Any, list[str]] | None, bool]:
+    """At most 2 extra LLM calls: re-prompt at ``tier``, then one tier up.
+
+    Returns ``(committed, any_transport_error)``:
+
+    * ``committed`` is ``(ComputeStep, proposal_names)`` on a successful
+      commit (the model proposed something, materialised/dispatched via the
+      SAME :func:`precis.quest.compute.run_compute_step` path as any
+      ordinary proposal — idempotent, content-addressed), or ``None`` when
+      neither rung's response carried a usable ``proposals`` entry. Never
+      fabricates a candidate itself.
+    * ``any_transport_error`` is ``True`` when at least one rung came back
+      with an LLM ``error``/``paused`` result (breaker/quota/transport
+      trouble) rather than a genuine empty ``proposals`` — so the caller's
+      back-off log can say "agent unreachable" instead of "agent declined"
+      (this feature exists to diagnose stalls from the logbook, so that
+      distinction is the whole point).
+
+    The caller wraps this in a ``try/except`` — a raise here must never crash
+    the tick. ``base_prompt`` (see :func:`_build_commit_prompt`) skips a
+    redundant full-context rebuild when the primary tick already built the
+    identical (``review=False``) prompt this call.
+    """
+    from precis.quest.compute import run_compute_step
+    from precis.utils.llm.router import LlmRequest, Tier
+
+    prompt = _build_commit_prompt(store, quest, stall=stall, base_prompt=base_prompt)
+    quest_id = quest.id
+
+    tiers = [tier]
+    if tier != Tier.CLOUD_SUPER:
+        tiers.append(Tier.CLOUD_SUPER)  # escalate once — the senior/review tier
+
+    any_error = False
+    for attempt_tier in tiers:
+        res = disp(
+            LlmRequest(
+                tier=attempt_tier,
+                prompt=prompt,
+                source=_COMMIT_SOURCE,
+                ref_id=quest_id,
+            )
+        )
+        if getattr(res, "error", None) or getattr(res, "paused", False):
+            any_error = True  # transient/breaker/quota trouble — try the next rung
+            continue
+        payload = _payload_from_result(res)
+        proposals = [
+            p for p in ((payload or {}).get("proposals") or []) if isinstance(p, dict)
+        ]
+        if not proposals:
+            continue
+        step = run_compute_step(store, quest_id, proposals, by=by)
+        names = [str(p.get("name") or "?") for p in proposals]
+        return (step, names), any_error
+    return None, any_error
+
+
 # ── the tick ──────────────────────────────────────────────────────────
 
 
@@ -811,6 +1081,7 @@ def run_quest_tick(
             added += sstep.queries_run
 
     created = dispatched = harvested = ruled = graduated = 0
+    proposals_committed = 0  # extra proposals the commit ladder got dispatched
     if compute:
         from precis.quest.compute import run_compute_step
 
@@ -820,6 +1091,112 @@ def run_quest_tick(
         harvested = step.results_harvested
         ruled = step.ruled_out
         graduated = step.graduated
+
+        # Commit re-prompt + tier-escalation ladder: a structural guarantee
+        # that the AGENT is asked to act — never a code-chosen dispatch. A
+        # model tick that dispatched a real sim resets the stall counter;
+        # one that dispatched nothing advances it, and once it reaches
+        # PRECIS_QUEST_FORCE_EXPERIMENT_EVERY consecutive dry ticks (default
+        # 2) the tick fires the commit ladder (see above): re-prompt at the
+        # current tier, then one tier up, each asking the model to propose a
+        # composition using its own judgment. A raise anywhere in the ladder
+        # must never crash the tick (mirrors the weave-tick try/except
+        # convention in workers/job_types/quest_tick.py's
+        # _phase_weave_tick) — degrade to a normal backed-off outcome, and
+        # ALWAYS stamp the counter before returning either way.
+        prev_stall = int((qref.meta or {}).get("ticks_since_experiment", 0) or 0)
+        if dispatched > 0:
+            stall = 0
+        else:
+            stall = prev_stall + 1
+            force_every = int(
+                os.environ.get("PRECIS_QUEST_FORCE_EXPERIMENT_EVERY", "2")
+            )
+            if stall >= force_every:
+                try:
+                    # Reuse the primary tick's already-built prompt when it
+                    # was built in propose mode (review=False) — byte-
+                    # identical to what the ladder would otherwise rebuild
+                    # from scratch (another frontier + live-candidate scan).
+                    # A review tick's prompt carries the review banner, so
+                    # the ladder must rebuild its own propose-mode one. And if
+                    # this same tick just created a candidate (created > 0),
+                    # the cached prompt predates it — rebuild so the re-prompt's
+                    # tried-set/frontier reflects the new candidate.
+                    reuse_prompt = not is_review and created == 0
+                    committed, ladder_had_error = _commit_reprompt_ladder(
+                        store,
+                        qref,
+                        resolved_tier,
+                        stall=stall,
+                        disp=disp,
+                        by=by,
+                        base_prompt=prompt if reuse_prompt else None,
+                    )
+                except Exception as exc:  # defensive — a ladder bug must not
+                    # crash the tick; see the docstring above.
+                    log.exception("tick #%s: commit re-prompt ladder raised", quest_id)
+                    append_entry(
+                        store,
+                        quest_id,
+                        text=(
+                            "commit re-prompt ladder errored "
+                            f"({type(exc).__name__}: {exc}); backing off"
+                        ),
+                        entry_type="observation",
+                        by=by,
+                    )
+                    added += 1
+                else:
+                    if committed is not None:
+                        fstep, names = committed
+                        created += fstep.candidates_created
+                        dispatched += fstep.sims_dispatched
+                        harvested += fstep.results_harvested
+                        ruled += fstep.ruled_out
+                        graduated += fstep.graduated
+                        proposals_committed += len(names)
+                        append_entry(
+                            store,
+                            quest_id,
+                            text=(
+                                f"committed after re-prompt: {', '.join(names)} — "
+                                f"model stalled {stall} tick(s) with no experiment"
+                            ),
+                            entry_type="decision",
+                            by=by,
+                        )
+                        added += 1
+                        stall = 0
+                    elif ladder_had_error:
+                        # LLM transport/breaker/quota trouble, not a genuine
+                        # decline — distinct from the branch below so the
+                        # logbook (the whole point of this ladder) tells the
+                        # two apart.
+                        append_entry(
+                            store,
+                            quest_id,
+                            text=(
+                                "agent unreachable (LLM error/paused) — "
+                                "backing off, will retry"
+                            ),
+                            entry_type="decision",
+                            by=by,
+                        )
+                        added += 1
+                    else:
+                        append_entry(
+                            store,
+                            quest_id,
+                            text=(
+                                "agent declined to propose an untried variant "
+                                "after commit re-prompt + tier escalation"
+                            ),
+                            entry_type="decision",
+                            by=by,
+                        )
+                        added += 1
+        store.stamp_ref_meta(quest_id, {"ticks_since_experiment": stall})
 
     # Advance the cascade counters + recompute `promise` (rung 4d reads it).
     cascade_mod.update_cascade_state(store, quest_id, reviewed=is_review)
@@ -867,7 +1244,7 @@ def run_quest_tick(
         rewritten,
         cost,
         note,
-        proposals=len(proposals),
+        proposals=len(proposals) + proposals_committed,
         candidates_created=created,
         sims_dispatched=dispatched,
         results_harvested=harvested,
