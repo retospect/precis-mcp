@@ -88,6 +88,14 @@ Pin the skills agents in this deployment will hit first and most
 often — typically `precis-search-help` plus the one or two `kind`
 helpers central to the workspace.
 
+## Writing skills — authoring a new skill file is a repo-dev task, not this
+
+This skill covers *pinning* existing skills at boot, not *authoring*
+one. A new skill file (or a rewrite of the prose conventions in an
+existing one) is repo-dev work on `src/precis/data/skills/` — outside
+what this MCP session can do. Use the `scaffold` agent, or read
+`docs/design/skill-authoring-style.md` in the precis-mcp repo.
+
 ## See also
 
 ```python

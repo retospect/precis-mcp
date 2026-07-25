@@ -726,6 +726,18 @@ is discoverable from the note's side. Remove a reference and its edge
 drops on the next edit. Intra-draft `[dc<id>]` cross-refs are
 document-internal (TOC / `\ref`), not graph edges.
 
+## Draft hygiene — undefined abbreviations, stray footers, whole-paper vs chunk citations
+
+Two things the runtime flags for you before export: an abbreviation
+used but never defined (see **Abbreviations**, above — define it via
+a `term` chunk or silence it with `not_abbrev`) and a citation that
+resolves to nothing (see **References in prose**, above — cite the
+exact `[pc<id>]` chunk, never the whole paper). Neither needs a
+hand-maintained bibliography **footer**; citation handles resolve to
+one entry per paper at export. Skim the **outline**
+(`get(kind='draft', id=…)`) first — it's the cheapest place to catch
+both before they reach a compile.
+
 ## Writing well — structure + common mistakes
 
 A research write-up is *flowing prose*, not a slide deck. When you write

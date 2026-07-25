@@ -303,6 +303,26 @@ additionally parks at `STATUS:waiting_children` / `waiting_time` /
 legitimate pause, not a stall; the `wake_runner` re-queues it when
 the wake condition fires.)
 
+## A coordinator job yields a pending question — `STATUS:waiting_ask_user`
+## Why is this job parked waiting on me?
+
+A `coordinator` job_type (long-running campaigns like `good_search`)
+can pause on a human decision instead of failing or blocking: its
+dispatcher tags itself with an open `ask-user:<phase>:<slug>` pattern
+and returns `Yield(state=<checkpoint>, wake_when=WakeWhen('tag_cleared',
+{'tag': 'ask-user:<phase>:*'}))`. The executor checkpoints that state
+into `meta.coordinator_state`, sets `STATUS:waiting_ask_user`, and
+releases the runner slot — parked, not stuck. `wake_runner` polls for
+the matching tag to disappear and re-queues the job to `STATUS:queued`
+so the next slice resumes from the checkpoint.
+
+Answer the pending question by clearing the matching tag on the job
+(`tag(kind='job', id=N, remove=['ask-user:<phase>:<slug>'])`) once
+you've decided. This is the job-level sibling of the todo-level
+`ask-user`/`ask-user:<question>` open tag a dispatched agent tags on
+its own todo to yield the same way — see `precis-tasks-help`,
+`precis-decomposition-help` for that path.
+
 ## See also
 
 ```python

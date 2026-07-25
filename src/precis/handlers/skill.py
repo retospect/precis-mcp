@@ -323,23 +323,34 @@ def _semantic_row(hit: SearchHit) -> _SkillSearchRow:
     )
 
 
-def _lexical_row(slug: str, count: int, preview: str) -> _SkillSearchRow:
-    """Build a row from a substring-match hit.
+def _lexical_row(
+    slug: str, count: int, preview: str, *, verbatim: bool
+) -> _SkillSearchRow:
+    """Build a row from a lexical hit — verbatim phrase or word overlap.
 
-    Substring hits don't carry a section; we record the match count
-    in ``section`` (``"3 substring hits"``) so the TOON column stays
-    populated and informative.
+    ``count`` is the honest signal count for its kind: occurrences of the
+    whole query for a ``verbatim`` hit, or number of matched query words
+    for a word-overlap hit. The ``section`` column labels which, so the
+    number never reads as "substring occurrences" when no substring
+    matched. Both map to a ``[0.0, 0.5)`` score so lexical ranks below a
+    genuine semantic hit, and a verbatim hit is floored above every
+    word-overlap hit (a literal phrase match beats a bag-of-words one).
     """
-    # Substring counts map to a [0.0, 0.5) score so they rank below
-    # any genuine semantic hit but still surface when the index missed.
-    lex_score = min(0.49, count / 20.0)
+    if verbatim:
+        score = min(0.49, 0.30 + count / 50.0)
+        label = f"{count} substring {'hit' if count == 1 else 'hits'}"
+    else:
+        # Gentle slope so longer queries keep ranking headroom (more
+        # matched words → higher) instead of saturating the cap and
+        # tying; always floored below a verbatim hit's 0.30.
+        score = min(0.29, 0.10 + 0.02 * count)
+        label = f"{count} word {'match' if count == 1 else 'matches'}"
     short = (preview[:160] + "…") if len(preview) > 160 else preview
-    word = "hit" if count == 1 else "hits"
     return _SkillSearchRow(
         slug=slug,
-        score=lex_score,
+        score=score,
         source="lexical",
-        section=f"{count} substring {word}",
+        section=label,
         snippet=short.strip(),
     )
 
@@ -595,38 +606,65 @@ class SkillHandler(Handler):
             existing = merged.get(hit.slug)
             if existing is None or row.score > existing.score:
                 merged[hit.slug] = row
-        for slug, count, preview in lexical_hits:
+        for slug, count, preview, verbatim in lexical_hits:
             if slug in merged:
                 continue
-            merged[slug] = _lexical_row(slug, count, preview)
+            merged[slug] = _lexical_row(slug, count, preview, verbatim=verbatim)
 
-        # Exact title / H1 phrase boost. A query that *is* a substring of
-        # a skill's title or H1 ("how do I cite a paper" →
-        # precis-cite-paper-help) is an almost-certain intent match — but
-        # the lexical leg caps such a hit below 0.5 and the merge above
-        # drops it whenever any (possibly weak) semantic hit shares the
-        # slug, so the obvious doc sinks below the page_size cut. Pin a
-        # title/H1 phrase match to the top regardless of stream. Guarded
-        # on a 4+ char needle so a degenerate 1-3 char query can't promote
-        # half the catalogue.
-        needle = _norm_for_substr(q)
-        if len(needle) >= 4:
+        # Title / header intent boost. A query whose content words
+        # overlap a skill's stated purpose ("how to cite a paper, add a
+        # citation" → precis-cite-paper-help, whose H2s read "## How do I
+        # cite a paper?") is an almost-certain intent match — but the
+        # lexical leg caps such a hit below 0.5 and the merge above drops
+        # it whenever any (possibly weak) semantic hit shares the slug,
+        # so the obvious doc sinks below the page_size cut. Pin it to the
+        # top by *word overlap* against the slug + title + summary + H1 +
+        # every H2 header (_skill_title_tokens). This replaces the older
+        # whole-query-substring boost, which needed the entire query to
+        # appear verbatim in title+H1 and so missed reordered / extra-
+        # word / punctuated phrasings (gr: skill-search discoverability
+        # audit 2026-07). Guarded on ≥2 matched content words and ≥70%
+        # coverage so a single common word can't promote the catalogue;
+        # score carries the overlap so higher-overlap titles lead.
+        qtokens = set(_content_tokens(q))
+        if qtokens:
+            single = len(qtokens) == 1
             for slug in _list_skills():
-                title = _skill_title_text(slug)
-                if not title or needle not in _norm_for_substr(title):
+                ident, sections = _skill_title_tokens(slug)
+                matched = qtokens & (ident | sections)
+                ident_matched = qtokens & ident
+                coverage = len(matched) / len(qtokens)
+                # Fire only when the query names this skill's subject (≥1
+                # identity token) AND — for multi-word queries — ≥70% of
+                # its content words land somewhere in title/headers. So
+                # "cite a paper" pins precis-cite-paper-help, not every
+                # skill that mentions a citation in some section; a lone
+                # "gripe" still pins precis-gripe-help off its identity.
+                # Score by identity coverage so the named skill leads; the
+                # tiny full-coverage term only breaks ties among equal
+                # identity.
+                if not ident_matched:
                     continue
+                if not single and (len(matched) < 2 or coverage < 0.7):
+                    continue
+                boost = (
+                    _TITLE_MATCH_SCORE
+                    + len(ident_matched) / len(qtokens)
+                    + 0.01 * coverage
+                )
                 row = merged.get(slug)
-                if row is None:
+                if row is None or row.score < boost:
+                    # New or promoted: the winning signal is now the
+                    # title/identity match, so overwrite the display
+                    # section/snippet too (not just the score) — else a
+                    # promoted row keeps a stale "N word matches" label.
                     merged[slug] = _SkillSearchRow(
                         slug=slug,
-                        score=_TITLE_MATCH_SCORE,
+                        score=boost,
                         source="title",
                         section="title match",
-                        snippet=title.strip(),
+                        snippet=_skill_title_text(slug).strip(),
                     )
-                elif row.score < _TITLE_MATCH_SCORE:
-                    row.score = _TITLE_MATCH_SCORE
-                    row.source = "title"
 
         if not merged:
             # Distinguish "genuinely no match" from "lexical drew blank
@@ -789,29 +827,58 @@ class SkillHandler(Handler):
         # are always-ready by construction.
         return True
 
-    def _lexical_hits(self, q: str) -> list[tuple[str, int, str]]:
-        """Substring-match every skill body against ``q``.
+    def _lexical_hits(self, q: str) -> list[tuple[str, int, str, bool]]:
+        """Score every skill body against ``q`` (whole-phrase + word overlap).
 
-        Hyphens and whitespace are normalised on both sides so a
-        natural-language query (``spaced repetition``) finds the
-        corpus's hyphenated form (``spaced-repetition``) and vice
-        versa. (MCP critic MAJOR-C 2026-05-02.)
+        Yields ``(slug, count, preview, verbatim)``. Two signals:
+
+        1. **Whole-query substring** (``verbatim=True``) — the query
+           appears verbatim (hyphen/whitespace-normalised) somewhere in
+           the body; ``count`` is the occurrence count. Best for literal
+           slugs / kind names / verbatim quotes. (MCP critic MAJOR-C
+           2026-05-02.)
+        2. **Token overlap** (``verbatim=False``) — when the verbatim
+           phrase misses, a multi-word query still scores a skill that
+           contains a *majority* of its content words; ``count`` is the
+           number of matched words. The fix for punctuated natural-
+           language queries (``how to cite a paper, add a citation``)
+           that never appear as one contiguous run but whose words all
+           live in the target skill. Guarded to ≥2 matched content words
+           and ≥50% coverage so a single common word can't drag in half
+           the catalogue.
+
+        :func:`_lexical_row` turns ``(count, verbatim)`` into a score that
+        floors verbatim hits above every word-overlap hit.
         """
         needle = _norm_for_substr(q)
-        out: list[tuple[str, int, str]] = []
+        qtokens = set(_content_tokens(q))
+        out: list[tuple[str, int, str, bool]] = []
         for slug in _list_skills():
             text = _load_skill(slug)
             if text is None:
                 continue
-            count = _norm_for_substr(text).count(needle)
-            if count == 0:
+            body_norm = _norm_for_substr(text)
+            verbatim = body_norm.count(needle)
+            matched: set[str] = set()
+            if not verbatim and len(qtokens) >= 2:
+                body_tokens = set(_content_tokens(text))
+                matched = qtokens & body_tokens
+                # Majority of the query's content words must be present,
+                # and at least two of them, before a partial hit counts.
+                if len(matched) < 2 or len(matched) * 2 < len(qtokens):
+                    continue
+            elif not verbatim:
                 continue
+            if verbatim:
+                count, probe = verbatim, needle
+            else:
+                count, probe = len(matched), next(iter(matched))
             preview = ""
             for line in text.splitlines():
-                if needle in _norm_for_substr(line):
+                if probe in _norm_for_substr(line):
                     preview = line.strip()
                     break
-            out.append((slug, count, preview))
+            out.append((slug, count, preview, bool(verbatim)))
         return out
 
     def _get_index(self) -> FileCorpusIndex | None:
@@ -1790,8 +1857,88 @@ def _norm_for_substr(s: str) -> str:
     return _NORM_HYPHEN_WS_RE.sub(" ", s.lower()).strip()
 
 
+#: Function words dropped from a query before token-overlap matching.
+#: Kept deliberately small — interrogatives, articles, prepositions and
+#: pronouns that break the old whole-query substring match (``how to
+#: cite a paper``) without carrying topic signal. Content words like
+#: "add", "create", "list" are NOT here — they discriminate skills.
+_STOPWORDS = frozenset(
+    [
+        "a",
+        "an",
+        "the",
+        "to",
+        "of",
+        "in",
+        "on",
+        "for",
+        "and",
+        "or",
+        "is",
+        "are",
+        "be",
+        "been",
+        "being",
+        "with",
+        "as",
+        "by",
+        "at",
+        "from",
+        "how",
+        "do",
+        "does",
+        "did",
+        "i",
+        "me",
+        "my",
+        "we",
+        "our",
+        "you",
+        "your",
+        "it",
+        "its",
+        "that",
+        "this",
+        "these",
+        "those",
+        "what",
+        "when",
+        "where",
+        "which",
+        "who",
+        "whom",
+        "want",
+        "wants",
+        "into",
+        "about",
+        "via",
+        "not",
+        "no",
+    ]
+)
+
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
+def _content_tokens(s: str) -> list[str]:
+    """Lower-case topic tokens of ``s``: alnum runs minus stopwords / <3 char.
+
+    The tokenised counterpart to :func:`_norm_for_substr`. Where the
+    substring norm needs the whole query to appear verbatim, this lets
+    the matcher score *word overlap* — so a punctuated natural-language
+    query (``how to cite a paper, add a citation``) still credits a skill
+    whose headers read ``## How do I cite a paper?`` even though the two
+    never line up as one contiguous run.
+    """
+    return [
+        t for t in _TOKEN_RE.findall(s.lower()) if len(t) >= 3 and t not in _STOPWORDS
+    ]
+
+
 _FM_TITLE_RE = re.compile(r"^title:\s*(.+?)\s*$", re.MULTILINE)
+_FM_SUMMARY_RE = re.compile(r"^summary:\s*(.+?)\s*$", re.MULTILINE)
 _H1_RE = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
+_H2_RE = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
 
 
 def _skill_title_text(slug: str) -> str:
@@ -1814,6 +1961,44 @@ def _skill_title_text(slug: str) -> str:
     if h1:
         parts.append(h1.group(1))
     return " ".join(parts)
+
+
+def _skill_title_tokens(slug: str) -> tuple[frozenset[str], frozenset[str]]:
+    """Two content-token pools describing a skill's stated purpose.
+
+    Returns ``(identity, sections)``:
+
+    * **identity** — the skill's *name*: slug words + front-matter
+      ``title:`` + first ``# H1``. A query word here means the query is
+      about *this skill's subject*, not merely mentioned in passing.
+    * **sections** — front-matter ``summary:`` + **every ``## H2``
+      header**. Topics the skill covers. A query word here is a weaker
+      signal (many skills mention "citation" in some section).
+
+    The title boost fires on overlap against ``identity | sections`` but
+    *scores* by identity overlap, so the obvious doc (whose slug/title
+    the query names) leads a pack of skills that merely mention the same
+    words. Seeing H2 headers is the fix the old title+H1-only substring
+    boost lacked (``## How do I cite a paper?``). Re-derived per call —
+    only the raw skill text is cached (``_load_skills_map``); the
+    regex/tokenise pass is cheap at corpus size (~140 skills).
+    """
+    text = _load_skill(slug)
+    if text is None:
+        return frozenset(), frozenset()
+    ident: list[str] = [slug.replace("-", " ")]
+    for rx in (_FM_TITLE_RE, _H1_RE):
+        m = rx.search(text)
+        if m:
+            ident.append(m.group(1))
+    sections: list[str] = [m.group(1) for m in _H2_RE.finditer(text)]
+    sm = _FM_SUMMARY_RE.search(text)
+    if sm:
+        sections.append(sm.group(1))
+    return (
+        frozenset(_content_tokens(" ".join(ident))),
+        frozenset(_content_tokens(" ".join(sections))),
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -486,6 +486,73 @@ def test_search_falls_back_to_substring_when_no_embedder(skill: SkillHandler) ->
     )
 
 
+# ── tokenized matcher: word-overlap title boost (discoverability audit) ──
+#
+# Regression tests for the 2026-07 skill-search discoverability audit.
+# The old lexical leg + title boost required the *entire* query to appear
+# as one contiguous substring of the body / of title+H1, so punctuated or
+# reordered natural-language queries surfaced nothing even when the
+# obviously-correct skill existed. These run on the no-embedder ``skill``
+# fixture, so they exercise exactly the lexical + title-boost legs that
+# were changed (the semantic leg is absent and contributes nothing).
+
+
+def _ranked_slugs(body: str) -> list[str]:
+    """Slugs of the TOON data rows, in rendered (score) order."""
+    out: list[str] = []
+    for ln in body.splitlines():
+        if "\t" not in ln or ln.startswith("{"):
+            continue
+        head = ln.split("\t", 1)[0].strip()
+        if head.startswith("precis-") or "-" in head:
+            out.append(head)
+    return out
+
+
+def test_title_boost_matches_word_overlap_not_contiguous_phrase(
+    skill: SkillHandler,
+) -> None:
+    """A query whose words overlap a skill's title/headers surfaces it,
+    even though it never appears as one contiguous substring.
+
+    Both queries returned *zero / absent* under the old atomic-substring
+    matcher: `precis-toolpath-help`'s title reads "canonical call
+    sequences per scenario" (the word "toolpath" lives only in the slug),
+    and `precis-cite-paper-help`'s relevant text is in H2 headers
+    ("## How do I cite a paper?") the old boost never looked at.
+    """
+    top = _ranked_slugs(skill.search(q="toolpath canonical call sequences").body)[:3]
+    assert "precis-toolpath-help" in top, top
+
+    top = _ranked_slugs(skill.search(q="how to cite a paper, add a citation").body)[:3]
+    assert "precis-cite-paper-help" in top, top
+
+
+def test_title_boost_requires_identity_match_not_mere_mention(
+    skill: SkillHandler,
+) -> None:
+    """The boost pins the skill the query *names*, not every skill that
+    mentions the words in some section — so "cite a paper" surfaces the
+    citing skills, and a single common word doesn't promote the whole
+    catalogue.
+    """
+    top5 = _ranked_slugs(skill.search(q="cite a paper").body)[:5]
+    assert "precis-cite-paper-help" in top5, top5
+    # A lone common word must not title-boost (would pin half the corpus);
+    # it still returns lexical hits without crashing.
+    out = skill.search(q="citation")
+    assert "skill match" in out.body or "no skills mention" in out.body
+
+
+def test_single_word_query_pins_named_skill(skill: SkillHandler) -> None:
+    """A one-word query that names a skill's subject still pins it via the
+    identity path (parity with the old single-word title substring boost).
+    """
+    assert "precis-memory-help" in _ranked_slugs(skill.search(q="memory").body)[:3]
+    top3 = _ranked_slugs(skill.search(q="gripe").body)[:3]
+    assert any("gripe" in s for s in top3), top3
+
+
 # ── search hides unwired skills + surfaces escalation hint ───────────
 
 
