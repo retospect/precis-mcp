@@ -1437,13 +1437,16 @@ Owner `mcp_modalities.py::register_skill_prompts`; artefact
 
 ## ⏸️ Snoozed — blocked upstream
 
-- **Dependabot #56–#67 — `pillow` heap-OOB/DoS/decompression-bomb-bypass (11
-  alerts, mostly high).** `Recheck-after: 2026-08-06`. `Unblock-when:`
-  `marker-pdf` drops its `Pillow<11.0.0` cap. **Verified 2026-07-23:**
-  `uv lock --upgrade-package pillow==12.3.0` (the fixed version) fails
-  resolution outright — every published `marker-pdf` (latest `2.0.0`) pins
-  `pillow<11,>=10.1.0`; same shape as #44/#45's `transformers` block, already
-  documented as a known ceiling in `pyproject.toml` lines 86-93. Tolerable:
+- **Dependabot #56–#67 — `pillow` heap-OOB/DoS/decompression-bomb-bypass (12
+  alerts, mostly high).** `Recheck-after: 2026-08-08`. `Unblock-when:`
+  `marker-pdf` drops its `Pillow<11.0.0` cap. **Re-verified 2026-07-25:** still
+  blocked — latest `marker-pdf` on PyPI is unchanged (`2.0.0`, still pins
+  `pillow<11,>=10.1.0`), the fix is `pillow>=12.3.0`, so the constraint
+  intersection is empty (no patched Pillow exists below 11); deployed cluster
+  (`72fc227`) confirmed running `pillow 10.4.0`. `uv lock --upgrade-package
+  pillow==12.3.0` fails resolution outright; same shape as #44/#45's
+  `transformers` block, documented as a known ceiling in `pyproject.toml` lines
+  95-102. Tolerable:
   precis only ever feeds Marker/Pillow trusted PDF ingestion behind the
   `[paper]` extra, none of the specific vectors (PSD/FITS/JPEG2000/TGA/mmap
   font-loading paths) are reachable from precis's own code. **Recheck:**
