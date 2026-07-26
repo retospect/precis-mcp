@@ -198,7 +198,16 @@ def _classify_one(
                 },
             ]
         )
-    except Exception:
+    except Exception as exc:
+        # A dispatch/provider failure (breaker refusal, admission block, a dead
+        # or mis-configured endpoint, a transport error) never reaches
+        # llm_call_log — the router only records a call once a provider actually
+        # ran (router.py:1500-1503). Swallowing it silently turns a
+        # broken-endpoint window into a bare `failed` count with no forensic
+        # trail (gripe #172740 / the "5570 failed, no rows" of #173317). Surface
+        # it at WARNING (transient/refused, not a crash) so the window is
+        # greppable rather than invisible.
+        log.warning("classify_topics dispatch failed for %r: %r", title[:80], exc)
         return None
     parsed = _extract_json(out.text)
     if parsed is None:

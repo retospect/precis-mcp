@@ -26,6 +26,7 @@ Default-OFF (``PRECIS_CLASSIFY_ENABLED=1`` or ``--only classify``) — a
 from __future__ import annotations
 
 import json
+import logging
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,8 @@ from typing import Any
 import yaml
 
 from precis.store.types import Tag
+
+log = logging.getLogger(__name__)
 
 CLASSIFY_VERSION = "1"
 OUTPUT_NAMESPACE = "ROLE3"
@@ -108,7 +111,20 @@ def _classify_one(client: Any, axis: dict, row: dict) -> str | None:
                 {"role": "user", "content": _build_prompt(axis, row)},
             ]
         )
-    except Exception:
+    except Exception as exc:
+        # A dispatch/provider failure (breaker refusal, admission block, a dead
+        # or mis-configured endpoint, a transport error) is invisible in
+        # llm_call_log — the router only records a call once a provider actually
+        # ran (router.py:1500-1503). Swallowing it silently turns a
+        # broken-endpoint window into a bare `failed` count with no forensic
+        # trail, which is exactly what cost hours on gripe #172740. Surface it
+        # at WARNING (transient/refused, not a crash) so the window is greppable.
+        log.warning(
+            "classify axis=%s chunk=%s dispatch failed: %r",
+            axis.get("id") or "?",
+            row.get("chunk_id"),
+            exc,
+        )
         return None
     return (_extract_json(out.text) or {}).get("value")
 
