@@ -58,6 +58,15 @@
   </span>
 </div>
 
+<div class="flex items-center justify-between mb-2">
+  <div class="flex items-center gap-3 text-[11px] text-slate-400">
+    <span class="flex items-center gap-1"><span class="inline-block w-3 h-2 rounded-sm bg-emerald-500"></span>done</span>
+    <span class="flex items-center gap-1"><span class="inline-block w-3 h-2 rounded-sm bg-sky-500"></span>pending</span>
+  </div>
+  <button hx-get="/categorizers/progress" hx-trigger="click" hx-swap="none"
+          class="px-2 py-0.5 rounded border border-slate-200 text-slate-500 hover:bg-slate-50 text-xs">↻ refresh coverage</button>
+</div>
+
 <div class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100 mb-8">
   <div class="px-4 py-2 text-[11px] font-semibold text-slate-500 flex items-center gap-3">
     <span class="w-32 shrink-0">Name</span>
@@ -66,9 +75,11 @@
     <span class="w-20 shrink-0">Active</span>
     <span class="w-44 shrink-0">Prereqs</span>
     <span class="w-56 shrink-0">Toggle</span>
+    <span class="w-24 shrink-0 text-right">Last run</span>
   </div>
   {% for row in axes + topics %}
-  <div class="px-4 py-2 text-xs flex items-center gap-3" data-categorizer="{{ row.name }}" data-kind="{{ row.kind }}" data-service="{{ row.service }}">
+  <div class="px-4 py-2 text-xs" data-categorizer="{{ row.name }}" data-kind="{{ row.kind }}" data-service="{{ row.service }}">
+    <div class="flex items-center gap-3">
     <span class="w-32 shrink-0 font-mono text-slate-700 relative group inline-flex items-center gap-0.5">
       {{ row.name }}
       <sup class="text-slate-400 cursor-help select-none">ⓘ</sup>
@@ -123,20 +134,12 @@
         <button type="submit" class="px-2 py-0.5 rounded border border-slate-200 text-slate-400 hover:bg-slate-50">Default</button>
       </form>
     </span>
+    <span class="w-24 shrink-0 text-right text-slate-400 tabular-nums" id="lastproc-{{ row.name }}" title="last tag written">…</span>
+    </div>
+    <div class="mt-1 pl-32 pr-2" id="cov-{{ row.name }}"><span class="text-[11px] text-slate-300">loading coverage…</span></div>
   </div>
   {% endfor %}
 </div>
 
-{# Coverage counts are full-table aggregate scans (the chunk-level axes
-   walk ~1.3M chunks) — the slowest part of this page, so lazy-loaded via
-   htmx the same way ``/status``'s chunk-pipeline backlog panel is. #}
-<h2 class="text-sm font-semibold mb-2">Coverage
-  <span class="font-normal text-xs text-slate-400">(done / eligible corpus)</span>
-</h2>
-<div hx-get="/categorizers/progress" hx-trigger="load" hx-swap="innerHTML">
-  <div class="rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm text-slate-400 flex items-center gap-2">
-    <span class="inline-block w-3 h-3 rounded-full border-2 border-slate-300 border-t-slate-500 animate-spin"></span>
-    loading coverage…
-  </div>
-</div>
+<div hx-get="/categorizers/progress" hx-trigger="load" hx-swap="none"></div>
 {% endblock %}

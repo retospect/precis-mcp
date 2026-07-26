@@ -11,8 +11,6 @@ read, and the toggle endpoint's writes against seeded chunks/refs/tags.
 
 from __future__ import annotations
 
-import re
-
 import pytest
 
 pytest.importorskip("fastapi")
@@ -61,10 +59,14 @@ def test_categorizers_page_lists_axes_and_topics(client: TestClient) -> None:
     assert 'action="/categorizers/toggle"' in body
     assert 'name="service"' in body
 
-    # The heavy coverage panel is deferred to the htmx fragment, not
-    # computed inline on the shell page.
+    # The heavy coverage panel is deferred to the htmx fragment (OOB swap
+    # into per-row placeholders), not computed inline nor rendered as a
+    # separate section on the shell page.
     assert 'hx-get="/categorizers/progress"' in body
-    assert "loading coverage" in body
+    assert 'id="lastproc-role3"' in body
+    assert 'id="cov-role3"' in body
+    assert "<h2" not in body
+    assert "↻ refresh coverage" in body
 
 
 def test_categorizers_page_has_kill_switch_control(client: TestClient) -> None:
@@ -171,8 +173,11 @@ def test_categorizers_progress_fragment_renders(client: TestClient) -> None:
     # FakeStore's pool always returns empty rows -> every categorizer
     # renders a real (degraded-to-zero) row, not the query-failed state.
     assert "query failed" not in body
-    assert "role3" in body
-    assert "mof" in body
+    # Each row is an OOB swap patching the matching main-table placeholder,
+    # not a standalone section.
+    assert 'hx-swap-oob="true"' in body
+    assert 'id="lastproc-role3"' in body
+    assert 'id="cov-role3"' in body
     assert "hits" in body  # topic hit-count column
 
 
@@ -267,7 +272,10 @@ def test_progress_fragment_shows_last_minted_timestamp(
 ) -> None:
     """The coverage fragment folds each row's most-recent-tag timestamp into
     the same aggregate scan (no extra query) — a categorizer with a tag
-    reads a real ``ago`` value, one with none reads "never"."""
+    reads a real ``ago`` value, one with none reads "never". The fragment
+    emits this as an OOB ``lastproc-<name>`` span per categorizer, so slice
+    out each row's own span to avoid a sibling row's "never" text bleeding
+    into the assertion."""
     ref = store.insert_ref(
         kind="paper", slug="cz-test-last-minted-paper", title="a paper", meta={}
     )
@@ -290,22 +298,19 @@ def test_progress_fragment_shows_last_minted_timestamp(
     assert resp.status_code == 200
     body = resp.text
 
-    def _row_html(name: str) -> str:
-        """Slice out this row's own markup so the assertion doesn't get
-        fooled by a sibling row's "never" text."""
-        starts = [
-            m.start()
-            for m in re.finditer(r'font-mono text-slate-700 w-32 shrink-0">', body)
-        ]
-        for i, start in enumerate(starts):
-            end = starts[i + 1] if i + 1 < len(starts) else len(body)
-            chunk = body[start:end]
-            if chunk.startswith(f'font-mono text-slate-700 w-32 shrink-0">{name}<'):
-                return chunk
-        raise AssertionError(f"row {name!r} not found in fragment")
+    def _lastproc_span(name: str) -> str:
+        """Slice out this row's own ``lastproc-<name>`` OOB span (up to the
+        start of its paired ``cov-<name>`` div, which the fragment always
+        emits right after) so the assertion doesn't get fooled by a sibling
+        row's "never" text."""
+        start_marker = f'<span id="lastproc-{name}"'
+        end_marker = f'<div id="cov-{name}"'
+        start = body.index(start_marker)
+        end = body.index(end_marker, start)
+        return body[start:end]
 
-    assert "never" not in _row_html("role3")
-    assert "never" in _row_html("domain")
+    assert "never" not in _lastproc_span("role3")
+    assert "never" in _lastproc_span("domain")
 
 
 # ── real-DB effective-state + toggle-endpoint layer ─────────────────
