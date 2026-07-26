@@ -12,7 +12,11 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-from precis_web.routes.status import _llm_card_view, _models_ctx
+from precis_web.routes.status import (
+    _active_routing_ctx,
+    _llm_card_view,
+    _models_ctx,
+)
 
 
 def _ref(
@@ -126,11 +130,80 @@ def test_models_ctx_groups_sorts_and_lists_serving_hosts() -> None:
     # Local: host-backed models before the abstract tier anchors.
     assert [c["model_id"] for c in ctx["local_cards"]] == ["qwen3.6-35b", "qwen-heavy"]
     assert ctx["serving_hosts"] == ["spark"]
+    # The active-routing header rides along (independent of the card query).
+    assert [r["tier"] for r in ctx["active_routing"]] == [
+        "frontier",
+        "big",
+        "medium",
+        "small",
+    ]
 
 
-def test_models_ctx_degrades_to_empty_on_store_error() -> None:
+def test_models_ctx_degrades_cards_but_keeps_active_routing_on_store_error() -> None:
+    # A ``list_refs`` boom empties the catalog grids, but the active-routing
+    # header reads the live chains (not ``list_refs``), so it still renders.
     ctx = _models_ctx(_FakeStore([], boom=True))
-    assert ctx == {"cloud_cards": [], "local_cards": [], "serving_hosts": []}
+    assert ctx["cloud_cards"] == []
+    assert ctx["local_cards"] == []
+    assert ctx["serving_hosts"] == []
+    assert [r["tier"] for r in ctx["active_routing"]] == [
+        "frontier",
+        "big",
+        "medium",
+        "small",
+    ]
+
+
+def test_active_routing_ctx_reflects_an_operator_chain(monkeypatch) -> None:
+    # The prod-shaped path: SMALL carries an operator chain
+    # ``[cloud glm-4.7-flash → local summarizer]``. The header must advertise
+    # rung-0 (glm-4.7-flash, cloud) as active, mark the source "operator chain",
+    # and list the full failover order.
+    from precis.utils.llm import live_config
+    from precis.utils.llm.router import Tier
+
+    small_chain = [
+        {
+            "placement": "cloud",
+            "model": "z-ai/glm-4.7-flash",
+            "transport": "openai_compat",
+        },
+        {"placement": "local", "model": "summarizer", "transport": "litellm"},
+    ]
+    monkeypatch.setattr(
+        live_config,
+        "chain_override",
+        lambda tier: small_chain if tier is Tier.SMALL else None,
+    )
+    rows = {r["tier"]: r for r in _active_routing_ctx(_FakeStore([]))["active_routing"]}
+    small = rows["small"]
+    assert small["source"] == "operator chain"
+    assert small["active_model"] == "z-ai/glm-4.7-flash"
+    assert small["active_placement"] == "cloud"
+    assert [(g["model"], g["placement"]) for g in small["rungs"]] == [
+        ("z-ai/glm-4.7-flash", "cloud"),
+        ("summarizer", "local"),
+    ]
+    # A tier without an override still shows its compiled default.
+    assert rows["frontier"]["source"] == "default"
+
+
+def test_active_routing_ctx_resolves_default_chain_per_tier() -> None:
+    # With no operator ``llm.chain.*`` override reachable (the fake store has no
+    # app_settings), every tier resolves its compiled DEFAULT chain — one
+    # primary rung, ``source`` "default", a concrete model, a placement.
+    ctx = _active_routing_ctx(_FakeStore([]))
+    rows = ctx["active_routing"]
+    assert [r["tier"] for r in rows] == ["frontier", "big", "medium", "small"]
+    assert ctx["active_backend"] in ("anthropic", "openai")
+    for r in rows:
+        assert r["source"] == "default"  # no override reachable
+        assert r["active_model"] and r["active_model"] != "—"
+        assert r["active_placement"] in ("cloud", "local")
+        assert len(r["rungs"]) >= 1
+        # rung-0 IS the advertised active model.
+        assert r["rungs"][0]["model"] == r["active_model"]
+        assert r["rungs"][0]["placement"] == r["active_placement"]
 
 
 def test_models_tab_renders_cards_end_to_end(client, runtime) -> None:
@@ -155,3 +228,7 @@ def test_models_tab_renders_cards_end_to_end(client, runtime) -> None:
     assert "0.969" in html  # headline list price
     assert "qwen3.6-35b-a3b" in html  # local card name
     assert "balthazar" in html  # served-by host chip
+    # The active-routing header renders with a row per capability tier.
+    assert "Active routing" in html
+    for tier in ("frontier", "big", "medium", "small"):
+        assert tier in html

@@ -526,14 +526,6 @@ golden-task eval harness (`src/precis/llm_eval/`, `precis llm eval` CLI, 5
 scored axes) and the structure round-trip eval also shipped. Nothing
 consumes the policy yet:
 
-- **Models tab: surface the ACTIVE routing on top** *(feature, open — owner
-  `precis_web/routes/status.py::_models_ctx` + `templates/_status_models.html.j2`).*
-  `/status?tab=models` today groups the catalog Cloud/Local by `tier_floor`. Reto
-  wants the **default/active model per capability tier on top** (a separate
-  "what each tier routes to right now" section) — derived from
-  `resolve_chain(tier)` / `resolve_model(tier)` (the live chain + compiled
-  default), so an operator sees FRONTIER→opus, BIG→sonnet, MEDIUM→glm-4.7,
-  SMALL→(its chain rung-0) at a glance, not just the full catalog.
 - **Local-first CAPACITY failover valve (local primary → spill to cloud on
   demand)** *(feature, open — the ADR-0066 slice-7 saturation escape).* Reto:
   "if model is local, run that first, but if too much demand, spin out onto the

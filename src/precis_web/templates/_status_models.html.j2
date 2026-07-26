@@ -13,6 +13,59 @@
   <a href="/status?tab=services" class="text-emerald-700 hover:underline">Services</a> tab.
 </p>
 
+{# ── Active routing — what each capability tier dispatches to *now* ──
+   Derived from the SAME resolvers dispatch walks (resolve_chain /
+   resolve_model), so it reflects live operator chains, not the static
+   catalog below. rung-0 is what the router tries first; any further rungs
+   are the failover order. #}
+{% if active_routing %}
+<section class="mb-8">
+  <div class="flex items-baseline gap-2 mb-3">
+    <h2 class="text-sm font-semibold">Active routing</h2>
+    <span class="text-xs text-slate-400">
+      what each capability tier dispatches to right now · cloud backend
+      <span class="font-mono">{{ active_backend }}</span>
+    </span>
+  </div>
+  <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+    {% for r in active_routing %}
+    <div class="rounded-lg border border-slate-200 bg-white p-4 flex flex-col">
+      <div class="flex items-center justify-between gap-2">
+        <span class="rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide
+          {% if r.tier == 'frontier' %}bg-violet-50 text-violet-700
+          {% elif r.tier == 'big' %}bg-sky-50 text-sky-700
+          {% elif r.tier == 'medium' %}bg-teal-50 text-teal-700
+          {% else %}bg-slate-100 text-slate-600{% endif %}">{{ r.tier }}</span>
+        <span class="text-[10px] rounded px-1.5 py-0.5
+          {% if r.source == 'operator chain' %}bg-amber-50 text-amber-700{% else %}bg-slate-50 text-slate-400{% endif %}"
+          title="{% if r.source == 'operator chain' %}an operator llm.chain.{{ r.tier }} override is set{% else %}the compiled default chain (no operator override){% endif %}">{{ r.source }}</span>
+      </div>
+      <div class="mt-2 font-mono font-semibold text-sm text-slate-800 truncate" title="{{ r.active_model }}">{{ r.active_model }}</div>
+      <div class="text-[11px] {% if r.active_placement == 'cloud' %}text-amber-600{% else %}text-emerald-600{% endif %}">
+        {{ r.active_placement }} · primary rung
+      </div>
+      {% if r.rungs | length > 1 %}
+      <div class="mt-2 pt-2 border-t border-slate-100 text-[11px] text-slate-500">
+        <div class="text-[10px] uppercase tracking-wide text-slate-400 mb-1">failover</div>
+        {% for rung in r.rungs %}
+        <div class="flex items-center gap-1 {% if not loop.first %}text-slate-400{% endif %}">
+          <span class="tabular-nums text-slate-300">{{ loop.index }}.</span>
+          <span class="font-mono truncate" title="{{ rung.model }}">{{ rung.model }}</span>
+          <span class="text-slate-300">·</span>
+          <span>{{ rung.placement }}</span>
+          <span class="text-slate-300 font-mono">{{ rung.transport }}</span>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="mt-1 text-[11px] font-mono text-slate-400">{{ r.rungs[0].transport if r.rungs else '—' }}</div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
 {# ── macro: capability dots (1–5 ordinal per axis) ───────────── #}
 {% macro caps(items) %}
   {% set labels = {'code': 'code', 'long-context-recall': 'ctx', 'tool-structured': 'tools', 'reasoning-convergence': 'reason', 'summarize-extract': 'extract'} %}

@@ -1412,11 +1412,15 @@ paint, mirroring `/status`'s backlog fragment).
 (`/status?tab=health|services|models|budget`).**
 `src/precis_web/routes/status.py::index` dispatches on `tab=` to
 `_health_ctx` (host/liveness strip, was `/status`), `_services_ctx` (the
-old `/factory` category tables + live prio/model_pref edit), `_models_ctx`
-(the `llm` catalog as read-only cards — `_llm_card_view` splits Cloud rungs
-`tier_floor=cloud-*` [provider + list price + window + capability dots]
-from fleet-served Local rungs [the `served_by` host chips]), and
-`_budget_tote` (the spend cap/pause/resume controls, was `/budget`).
+old `/factory` category tables + live prio/model_pref edit + the ADR 0066
+per-tier chain editor), `_models_ctx` (the `llm` catalog as read-only cards
+— `_llm_card_view` splits Cloud from fleet-served Local by *model id* [ADR
+0066: `tier_floor` is capability now, not location], topped by
+`_active_routing_ctx`: a "what each capability tier dispatches to *right
+now*" header derived from the live `resolve_chain`/`resolve_model` — binds
+the store first so the operator-chain overrides are read, not the compiled
+defaults), and `_budget_tote` (the spend cap/pause/resume controls, was
+`/budget`).
 `/factory` and `/budget`'s `GET` routes are bare redirects into the
 matching sub-tab; their `POST` write routes (`/factory/prio`, `/budget/set`,
 …) are unchanged — only the *page* merged, not the write paths.

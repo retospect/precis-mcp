@@ -1274,6 +1274,97 @@ def _llm_chain_ctx(store: Any) -> dict[str, Any]:
         }
 
 
+#: Representative ``tools_needed`` per capability tier for the active-routing
+#: header. The agentic tiers (FRONTIER/BIG) dispatch with tools, the
+#: judge/classify tiers (MEDIUM/SMALL) are one-shot JSON. This only sways the
+#: *transport* shown for a tier with **no** operator chain override (the
+#: resolved model is tools-independent); an operator chain pins its own
+#: transport per rung, so the value is moot there.
+_TIER_TOOLS: dict[str, bool] = {
+    "frontier": True,
+    "big": True,
+    "medium": False,
+    "small": False,
+}
+
+
+def _active_routing_ctx(store: Any) -> dict[str, Any]:
+    """The ADR 0066 "what each capability tier routes to *right now*" header for
+    the Models sub-tab. For each pure-capability tier it resolves the live
+    placement chain (:func:`~precis.utils.llm.router.resolve_chain`) and the
+    concrete model each rung runs, so an operator sees FRONTIER→opus,
+    MEDIUM→glm-4.7, SMALL→(its chain rung-0) at a glance rather than inferring
+    it from the catalog cards below.
+
+    The chain + models come from the SAME resolvers ``dispatch`` walks, so this
+    can't drift from real routing. Those resolvers read the operator
+    ``app_settings`` overrides through ``live_config``'s process-bound store, so
+    we ``bind_store`` first (as the budget routes do) — otherwise the reads dark
+    to the compiled defaults and the header would silently lie. Everything
+    degrades (per-tier to a dash, and the whole section to empty) rather than
+    500ing the page.
+    """
+    try:
+        from precis.budget import meter
+        from precis.utils.llm import live_config
+        from precis.utils.llm.router import (
+            Backend,
+            Tier,
+            _rung_is_cloud,
+            resolve_backend,
+            resolve_chain,
+            resolve_model,
+        )
+
+        meter.bind_store(store)
+        try:
+            backend = resolve_backend()
+        except Exception:
+            backend = Backend.ANTHROPIC
+
+        rows: list[dict[str, Any]] = []
+        for tier in (Tier.FRONTIER, Tier.BIG, Tier.MEDIUM, Tier.SMALL):
+            try:
+                chain = resolve_chain(
+                    tier,
+                    tools_needed=_TIER_TOOLS.get(tier.value, False),
+                    backend=backend,
+                )
+                primary = resolve_model(tier)
+                has_override = bool(live_config.chain_override(tier))
+                rungs = [
+                    {
+                        # A rung with ``model=None`` inherits the tier's resolved
+                        # primary; an operator rung pins its own slug.
+                        "model": r.model or primary,
+                        "transport": r.transport.value,
+                        "placement": "cloud" if _rung_is_cloud(r) else "local",
+                    }
+                    for r in chain
+                ]
+            except Exception:
+                log.warning(
+                    "status: _active_routing_ctx tier %s failed",
+                    tier.value,
+                    exc_info=True,
+                )
+                rungs, has_override = [], False
+            rows.append(
+                {
+                    "tier": tier.value,
+                    # The rung dispatch tries first IS what the tier routes to now.
+                    "active_model": rungs[0]["model"] if rungs else "—",
+                    "active_placement": rungs[0]["placement"] if rungs else "—",
+                    "source": "operator chain" if has_override else "default",
+                    "rungs": rungs,
+                }
+            )
+        return {"active_routing": rows, "active_backend": backend.value}
+    except Exception:
+        log.warning("status: _active_routing_ctx failed", exc_info=True)
+        return {"active_routing": [], "active_backend": "—"}
+
+
 #: Cloud tiers, strongest first — the sort order for the Models sub-tab's
 #: cloud grid (local cards sort served-first, then by model_id). ADR 0066
 #: capability tiers; SMALL is a local tier, so it's absent from the cloud grid.
@@ -1367,11 +1458,16 @@ def _models_ctx(store: Any) -> dict[str, Any]:
     # Served (host-backed) models first, then the abstract tier anchors.
     local.sort(key=lambda c: (0 if c["hosts"] else 1, c["model_id"]))
     serving_hosts = sorted({h["host"] for c in local for h in c["hosts"]})
-    return {
+    ctx = {
         "cloud_cards": cloud,
         "local_cards": local,
         "serving_hosts": serving_hosts,
     }
+    # The active-routing header is independent of the catalog cards (it reads
+    # the live chains, not ``list_refs``), so it renders even when the catalog
+    # query above degraded to empty.
+    ctx.update(_active_routing_ctx(store))
+    return ctx
 
 
 def _budget_ctx(store: Any) -> dict[str, Any]:
