@@ -24,7 +24,12 @@ from precis.store.types import Tag
 from precis.utils.embed_query import embed_query
 from precis_web import draft_eyes, smartdraft
 from precis_web.deps import get_runtime, get_store, templates
-from precis_web.routes.drafts import _draft_ref
+from precis_web.routes.drafts import (
+    _DOC_TYPES,
+    _draft_author_lines,
+    _draft_ref,
+    _owner_workspace,
+)
 
 router = APIRouter(tags=["smartdraft"])
 
@@ -132,6 +137,16 @@ async def reader(
         _cited_sources(store, view.focus.text) if view.focus is not None else []
     )
 
+    # Tools pane (right-rail bottom): the export/metadata/lifecycle controls
+    # ported from the classic reader. All reuse the classic /drafts/{ident}/…
+    # endpoints, so this only needs the same context the classic route computes
+    # (drafts.detail): reMarkable readiness, the byline editor's prefilled
+    # lines, the genre picker's options + current genre/brief, and the
+    # auto-author toggle state.
+    from precis.export.remarkable import remarkable_configured
+
+    _, owner_ws = _owner_workspace(store, ref)
+
     return templates.TemplateResponse(
         request,
         "smartdraft/view.html.j2",
@@ -153,6 +168,13 @@ async def reader(
             "term_occurrences": term_occurrences,
             "cited_sources": cited_sources,
             "debug": debug.strip().lower() in ("1", "true", "on", "yes"),
+            # ── Tools pane (right-rail bottom) — classic-reader parity ──
+            "remarkable_ready": remarkable_configured(store),
+            "author_lines": _draft_author_lines(ref),
+            "doctypes": _DOC_TYPES,
+            "cur_doctype": str(owner_ws.get("doc_type") or ""),
+            "cur_brief": str(owner_ws.get("brief") or ""),
+            "authoring_enabled": store.draft_authoring_enabled(ref.id),
         },
     )
 

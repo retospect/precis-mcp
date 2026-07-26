@@ -388,6 +388,177 @@
         <button @click="send()" :disabled="!text.trim()" class="ml-auto rounded bg-slate-800 px-2 py-1 text-white disabled:opacity-40">Send ▸</button>
       </div>
     </div>
+
+    {# ── Tools pane (right-rail bottom) — export / doc-metadata / lifecycle
+         controls ported from the classic /drafts reader (detail.html.j2).
+         Tabbed (Export · Meta · Actions) so the resting footprint stays a
+         tab-bar + one short row — the rail is a `sticky` element and a pane
+         tall enough to exceed the viewport would strand its own bottom. Every
+         dropdown opens UPWARD (`bottom-full`) for the same reason: there's no
+         room below. All controls POST/GET the SAME shared /drafts/{ident}/…
+         endpoints classic uses (nothing new server-side); the in-place ones
+         (authors/genre/auto-author/export→project/reMarkable, which classic
+         redirects back to its own reader) are intercepted in the submit
+         handler below and refreshed in place — fork/delete correctly navigate
+         away (new copy / drafts list). #}
+    <div class="border-t border-slate-100" x-data="{ tool: 'export' }">
+      <div class="flex items-center gap-1 border-b border-slate-100 px-2 py-1">
+        <span class="mr-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Tools</span>
+        <template x-for="t in ['export', 'meta', 'actions']" :key="t">
+          <button @click="tool = t"
+                  class="rounded px-1.5 py-0.5 text-[11px] capitalize"
+                  :class="tool === t ? 'bg-slate-700 text-white' : 'text-slate-500 hover:text-slate-800'"
+                  x-text="t"></button>
+        </template>
+      </div>
+
+      {# ── Export: docx/pdf downloads, PDF→project job, papers zip, reMarkable.
+           `withSources` toggles the include-referenced-sources appendix (docx
+           returns a zip; PDF a pdfpages appendix) — same semantics as classic. #}
+      <div x-show="tool === 'export'" x-cloak class="space-y-1.5 p-2 text-xs" x-data="{ withSources: false }">
+        <label class="flex items-center gap-1 text-slate-500"
+               title="include the referenced papers & datasheets in the export">
+          <input type="checkbox" x-model="withSources" class="h-3 w-3"><span>+ sources</span>
+        </label>
+        <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <a :href="'/drafts/{{ ident }}/export.docx' + (withSources ? '?sources=1' : '')"
+             class="text-slate-500 underline hover:text-slate-800"
+             x-text="withSources ? 'download .docx+zip' : 'download .docx'">download .docx</a>
+          <a :href="'/drafts/{{ ident }}/pdf' + (withSources ? '?sources=1' : '')"
+             class="text-slate-500 underline hover:text-slate-800">download PDF</a>
+          <form method="post" action="/drafts/{{ ident }}/export.pdf" class="inline">
+            <input type="hidden" name="sources" :value="withSources ? '1' : ''">
+            <button type="submit" class="text-slate-500 underline hover:text-slate-800"
+                    title="start a background job that persists the PDF into the project workspace">export →project</button>
+          </form>
+          <a href="/drafts/{{ ident }}/papers.zip"
+             class="text-slate-500 underline hover:text-slate-800"
+             title="zip the cited paper/datasheet PDFs + a manifest">download papers</a>
+          {% if remarkable_ready %}
+          <form method="post" action="/drafts/{{ ident }}/remarkable" class="inline">
+            <button type="submit" class="text-slate-500 underline hover:text-slate-800"
+                    title="export in reMarkable mode (footnoted references) and send to the tablet">→ reMarkable</button>
+          </form>
+          {% endif %}
+        </div>
+      </div>
+
+      {# ── Meta: byline, genre + project brief, auto-author toggle. The two
+           editors are upward-opening popovers (no added rail height). #}
+      <div x-show="tool === 'meta'" x-cloak class="flex flex-wrap items-center gap-x-3 gap-y-1 p-2 text-xs">
+        {# Author byline editor — one author per line, "Name | Affiliation | ROR". #}
+        <div class="relative" x-data="{ au: false }" @click.outside="au = false">
+          <button @click="au = !au"
+                  class="text-slate-500 underline hover:text-slate-800"
+                  title="edit the author byline + affiliations">authors ▾</button>
+          <form x-show="au" x-cloak method="post"
+                action="/drafts/{{ ident }}/authors"
+                class="absolute bottom-full right-0 z-40 mb-1 w-96 space-y-2 rounded border border-slate-200 bg-white p-3 text-left shadow-lg">
+            <div>
+              <label class="block text-[11px] font-semibold text-slate-600">Authors — one per line</label>
+              <textarea name="authors" rows="4"
+                        placeholder="Doe, Jane | Massachusetts Institute of Technology | https://ror.org/042nb2s44&#10;Roe, John | Caltech&#10;Solo Author"
+                        class="mt-0.5 w-full resize-y rounded border border-slate-200 px-2 py-1 font-mono text-xs leading-snug focus:border-sky-400 focus:outline-none">{{ author_lines }}</textarea>
+              <p class="mt-0.5 text-[10px] text-slate-400"><span class="font-mono">Name | Affiliation | ROR</span> — affiliation + ROR optional; a shared ROR collapses to one numbered affiliation. Replaces the whole byline.</p>
+            </div>
+            <div class="flex items-center gap-2">
+              <button class="rounded bg-sky-600 px-2 py-0.5 text-[11px] text-white hover:bg-sky-700">save authors</button>
+              <button type="button" @click="au = false" class="text-[10px] text-slate-400 hover:text-slate-600">cancel</button>
+            </div>
+          </form>
+        </div>
+        {# Genre (document type) + project context (planner brief). #}
+        <div class="relative" x-data="{ gen: false }" @click.outside="gen = false">
+          <button @click="gen = !gen"
+                  class="text-slate-500 underline hover:text-slate-800"
+                  title="set the document genre + project context">genre{% if cur_doctype %}: {{ cur_doctype }}{% endif %} ▾</button>
+          <form x-show="gen" x-cloak method="post"
+                action="/drafts/{{ ident }}/workspace"
+                class="absolute bottom-full right-0 z-40 mb-1 w-80 space-y-2 rounded border border-slate-200 bg-white p-3 text-left shadow-lg">
+            <div>
+              <label class="block text-[11px] font-semibold text-slate-600">Genre (document type)</label>
+              <select name="doctype"
+                      class="mt-0.5 w-full rounded border border-slate-200 px-2 py-1 text-xs focus:border-sky-400 focus:outline-none">
+                <option value="" {% if not cur_doctype %}selected{% endif %}>— none —</option>
+                {% for d in doctypes %}
+                <option value="{{ d.value }}" {% if cur_doctype == d.value %}selected{% endif %}>{{ d.label }}</option>
+                {% endfor %}
+              </select>
+              <p class="mt-0.5 text-[10px] text-slate-400">paper / patent / report / review unlock the per-heading style picker.</p>
+            </div>
+            <div>
+              <label class="block text-[11px] font-semibold text-slate-600">Project context (planner brief)</label>
+              <textarea name="brief" rows="4"
+                        placeholder="Standing guidance injected into every planner tick's ## Project context…"
+                        class="mt-0.5 w-full resize-y rounded border border-slate-200 px-2 py-1 text-xs leading-snug focus:border-sky-400 focus:outline-none">{{ cur_brief }}</textarea>
+            </div>
+            <div class="flex items-center gap-2">
+              <button class="rounded bg-sky-600 px-2 py-0.5 text-[11px] text-white hover:bg-sky-700">save</button>
+              <button type="button" @click="gen = false" class="text-[10px] text-slate-400 hover:text-slate-600">cancel</button>
+            </div>
+          </form>
+        </div>
+        {# Per-document auto-author toggle (3e). Turning ON confirms first
+           (the grounded lenses will EDIT the draft). #}
+        <form method="post" action="/drafts/{{ ident }}/authoring"
+              @submit="if (!{{ 'true' if authoring_enabled else 'false' }} && !confirm('Turn ON auto-authoring? The cites/structure review lenses will EDIT this draft — adding grounded, cited prose where a real source supports it and flagging the rest. Every edit re-opens that paragraph for your human sign-off.')) $event.preventDefault()">
+          <input type="hidden" name="enabled" value="{{ '0' if authoring_enabled else '1' }}" />
+          <button class="underline {% if authoring_enabled %}text-amber-600 hover:text-amber-800{% else %}text-slate-500 hover:text-slate-800{% endif %}"
+                  title="{% if authoring_enabled %}auto-author is ON — grounded lenses edit the draft; click to turn OFF{% else %}auto-author is OFF — review lenses only file findings; click to turn ON{% endif %}">✎ auto-author: {{ 'ON' if authoring_enabled else 'OFF' }}</button>
+        </form>
+      </div>
+
+      {# ── Actions: duplicate (Phase-1 fork → new draft) and delete. Both are
+           upward-opening popovers; both navigate away on success (the new
+           copy / the drafts list), so they're deliberately NOT intercepted. #}
+      <div x-show="tool === 'actions'" x-cloak class="flex flex-wrap items-center gap-x-3 gap-y-1 p-2 text-xs">
+        {# Duplicate this draft into a fresh project (deep-copies every chunk). #}
+        <div class="relative" x-data="{ dup: false }" @click.outside="dup = false">
+          <button @click="dup = !dup"
+                  class="text-slate-500 underline hover:text-slate-800"
+                  title="duplicate this draft into a new project (a review copy)">⧉ duplicate ▾</button>
+          <form x-show="dup" x-cloak method="post"
+                action="/drafts/{{ ident }}/fork"
+                class="absolute bottom-full right-0 z-40 mb-1 w-80 space-y-2 rounded border border-slate-200 bg-white p-3 text-left shadow-lg">
+            <p class="text-[11px] text-slate-600">Deep-copies every paragraph + link into a <span class="font-semibold">new</span> draft under a fresh project. The original is untouched; the copy starts fully unreviewed.</p>
+            <div>
+              <label class="block text-[11px] font-semibold text-slate-600">New project name</label>
+              <input name="project" required autocomplete="off" placeholder="e.g. nanobuds-review"
+                     class="mt-0.5 w-full rounded border border-slate-200 px-2 py-1 text-xs focus:border-sky-400 focus:outline-none" />
+              <p class="mt-0.5 text-[10px] text-slate-400">A fresh strategic project is created to own the copy (or pass <span class="font-mono">todo:N</span> for an existing draft-less one).</p>
+            </div>
+            <div>
+              <label class="block text-[11px] font-semibold text-slate-600">Copy title <span class="font-normal text-slate-400">(optional)</span></label>
+              <input name="title" autocomplete="off" placeholder="{{ ref.title }} (review copy)"
+                     class="mt-0.5 w-full rounded border border-slate-200 px-2 py-1 text-xs focus:border-sky-400 focus:outline-none" />
+            </div>
+            <div class="flex items-center gap-2">
+              <button class="rounded bg-sky-600 px-2 py-0.5 text-[11px] text-white hover:bg-sky-700">duplicate →</button>
+              <button type="button" @click="dup = false" class="text-[10px] text-slate-400 hover:text-slate-600">cancel</button>
+            </div>
+          </form>
+        </div>
+        {# Delete the whole draft — type-the-name confirm; soft-delete. #}
+        <div class="relative" x-data="{ del: false }" @click.outside="del = false">
+          <button @click="del = !del"
+                  class="text-rose-500 underline hover:text-rose-700">delete ▾</button>
+          <form x-show="del" x-cloak method="post"
+                action="/drafts/{{ ident }}/delete"
+                @submit="if (!confirm('Delete this draft? It can be recovered by an admin, but disappears from the app.')) $event.preventDefault()"
+                class="absolute bottom-full right-0 z-40 mb-1 w-72 space-y-1.5 rounded border border-rose-300 bg-white p-2 text-left shadow-lg">
+            <p class="text-[11px] text-slate-600">Type the draft name
+              <span class="font-semibold text-slate-800">{{ ref.title }}</span>
+              to delete it (recoverable):</p>
+            <input name="confirm" autocomplete="off" placeholder="draft name…"
+                   class="w-full rounded border border-slate-200 px-2 py-1 text-xs focus:border-rose-400 focus:outline-none" />
+            <div class="flex items-center gap-2">
+              <button class="rounded bg-rose-600 px-2 py-0.5 text-[11px] text-white hover:bg-rose-700">delete draft</button>
+              <button type="button" @click="del = false" class="text-[10px] text-slate-400 hover:text-slate-600">cancel</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
   </div>
 
   {# nav state travels INSIDE #sd-content so a swap carries the fresh values #}
@@ -520,6 +691,22 @@
       fetch(act, { method: 'POST', body: new FormData(f) })
         .then(() => window.__sdRefresh())
         .catch(() => window.alert('network error — figure not saved'));
+      return;
+    }
+    // Tools-pane forms that edit in place / start a job. In the classic
+    // reader each of these redirects back to `/drafts/{ident}` — a plain
+    // submit here would bounce the writer OUT of smartdraft into classic, so
+    // (like the figure forms above) POST via fetch and refresh in place. NOT
+    // listed: fork + delete, which correctly navigate away (new copy / drafts
+    // list). Respect a cancelled confirm — the auto-author toggle's @submit
+    // may already have preventDefault()'d when the user declined.
+    const inPlace = ['authors', 'workspace', 'authoring', 'export.pdf', 'remarkable'];
+    if (f.closest('#sd-content') && inPlace.some((ep) => act === `/drafts/${IDENT}/${ep}`)) {
+      if (e.defaultPrevented) return;
+      e.preventDefault();
+      fetch(act, { method: 'POST', body: new FormData(f) })
+        .then(() => window.__sdRefresh())
+        .catch(() => window.alert('network error — not saved'));
     }
   });
   // The hover-preview card escaping smartdraft's overflow-clipped panes is

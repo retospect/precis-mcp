@@ -508,6 +508,11 @@ class FakeStore:
         # test can assert the access was registered.
         self.viewed.append(ref_id)
 
+    def draft_authoring_enabled(self, ref_id: int) -> bool:
+        # Per-document auto-author toggle (drafts/smartdraft Tools pane). The
+        # fake reports OFF; a test can subclass to exercise the ON branch.
+        return False
+
     def live_paper_cites(self, handles: set[str], slugs: set[str]) -> set[str]:
         # Draft-reader local-vs-external citation colouring. The fake pool
         # parses no SQL, so default to "every cite is local" (unchanged sky
