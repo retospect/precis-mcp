@@ -197,6 +197,14 @@ A file-based memory dir with:
   record. Memory keeps only live threads + durable knowledge; `memory-lint`
   flags a `## Threads` bullet whose cited commits all landed in `main`.
 
+**Compaction relocates; it does not shrink by deletion.** Cutting the
+always-loaded index means moving a bullet's detail *down* into its permanent
+topic file — or graduating a matured, stable memory into a permanent home (a
+durable topic file, or a repo doc / ADR / runbook: **make it permanent**) —
+keeping only pointer + live status in the index. Delete a bullet only when it's
+**landed transient work** (git log is its record); never drop a durable fact to
+save bytes, and reach for trimming filler words *last*, not first.
+
 Discipline: before saving, check for an existing file to update (no dupes);
 delete memories proven wrong; don't save what the repo already records
 (structure, past fixes, git history). Save the *non-obvious*.

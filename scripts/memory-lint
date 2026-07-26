@@ -42,8 +42,8 @@ MEMDIR="$HOME/.claude/projects/${MAIN_ROOT//\//-}/memory"
 # Size is HYSTERETIC — don't fiddle at the margin. Let the index grow untouched
 # up to the high-water mark; only then reconsolidate, and cut it back DOWN to
 # ~low-water (not just under the mark) so it stays quiet for a long time after.
-HIGH_WATER=22000
-LOW_WATER=16000
+HIGH_WATER=20000
+LOW_WATER=15000
 
 if [[ ! -d "$MEMDIR" ]]; then
     echo "memory-lint: no memory dir at $MEMDIR (nothing to lint)"; exit 0
@@ -88,7 +88,7 @@ done <<< "$threads"
 # 3. index size — hysteresis: silent inside the band, flag only past high-water
 bytes=$(wc -c < "$INDEX" | tr -d ' ')
 if (( bytes > HIGH_WATER )); then
-    echo "  MEMORY.md past high-water: $bytes > $HIGH_WATER B — reconsolidate DOWN to ~$LOW_WATER B (delete landed threads; git has them), not just under the mark"
+    echo "  MEMORY.md past high-water: $bytes > $HIGH_WATER B — reconsolidate DOWN to ~$LOW_WATER B: relocate detail into topic files + promote matured memories to permanent docs (make them permanent); delete only landed threads (git has them). NOT lossy word-trimming."
     problems=$((problems+1))
 fi
 
