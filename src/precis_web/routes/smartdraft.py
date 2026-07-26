@@ -211,18 +211,22 @@ def _needs_items(store: Any, ref_id: int) -> list[dict[str, Any]]:
         return []
     out: list[dict[str, Any]] = []
     for w in items or []:
-        jobs = getattr(w, "jobs", ()) or ()
+        # ``_work_items`` returns dicts (jobs = ``[{"id", "status", "reason"}]``,
+        # asks = ``[{"tag", "question"}]``) — read keys, not attributes, or every
+        # field silently defaults and the pane shows a blank row (todo → None).
+        jobs = w.get("jobs") or ()
         status = (
-            jobs[-1][1]
-            if jobs
-            else ("blocked" if getattr(w, "blocked", False) else "open")
+            jobs[-1]["status"] if jobs else ("blocked" if w.get("blocked") else "open")
         )
         out.append(
             {
-                "todo_id": getattr(w, "todo_id", None),
-                "title": getattr(w, "title", "") or "",
-                "blocked": bool(getattr(w, "blocked", False)),
-                "asks": list(getattr(w, "asks", ()) or ()),
+                "todo_id": w.get("todo_id"),
+                "title": w.get("title") or "",
+                "blocked": bool(w.get("blocked")),
+                "asks": [
+                    (a.get("question") or a.get("tag") or "")
+                    for a in (w.get("asks") or [])
+                ],
                 "status": status,
             }
         )

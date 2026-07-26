@@ -217,6 +217,62 @@ def test_smartdraft_reader_table_focus_uses_shared_table_editor(
     assert "<th" in body and ">A<" in body and ">B<" in body
 
 
+def test_needs_items_reads_dict_keys_not_attributes(monkeypatch) -> None:
+    """Regression: ``_needs_items`` walks ``_work_items``' dict rows. The old
+    code read them with ``getattr(w, "todo_id", None)`` — attribute access on
+    a dict always misses, so every row silently defaulted to
+    ``todo_id=None``/``title=""``/``status="open"`` and the "Needs · in-flight"
+    pane rendered a blank row linking to ``/r/todo/None``. This pins the fix:
+    real dict values must survive the walk, including the last job's status
+    and the blocked/no-jobs fallback."""
+    from precis_web.routes import drafts as drafts_mod
+    from precis_web.routes.smartdraft import _needs_items
+
+    work_items = [
+        {
+            "todo_id": 4242,
+            "title": "Fix the intro paragraph",
+            "blocked": True,
+            "jobs": [],
+            "asks": [{"tag": "clarify", "question": "Which section?"}],
+            "ask_tags": ["clarify"],
+        },
+        {
+            "todo_id": 4343,
+            "title": "Rewrite the conclusion",
+            "blocked": False,
+            "jobs": [
+                {"id": 1, "status": "done", "reason": None},
+                {"id": 2, "status": "running", "reason": None},
+            ],
+            "asks": [],
+            "ask_tags": [],
+        },
+    ]
+    monkeypatch.setattr(drafts_mod, "_work_items", lambda store, ref_id: work_items)
+
+    rows = _needs_items(store=None, ref_id=700)
+
+    assert len(rows) == 2
+    blocked_row, running_row = rows
+
+    # The real todo_id must survive — old getattr-based code always yielded
+    # None here (attribute access on a dict never finds "todo_id").
+    assert blocked_row["todo_id"] == 4242
+    assert blocked_row["title"] == "Fix the intro paragraph"
+    assert blocked_row["blocked"] is True
+    # No jobs + blocked=True -> "blocked" fallback, not the old "open" default.
+    assert blocked_row["status"] == "blocked"
+    assert blocked_row["asks"] == ["Which section?"]
+
+    assert running_row["todo_id"] == 4343
+    assert running_row["title"] == "Rewrite the conclusion"
+    assert running_row["blocked"] is False
+    # Status comes from the LAST job, not the first or a hardcoded default.
+    assert running_row["status"] == "running"
+    assert running_row["asks"] == []
+
+
 def test_smartdraft_reader_figure_focus_renders_image_and_clearance_badge(
     smartdraft_client: TestClient,
 ) -> None:
