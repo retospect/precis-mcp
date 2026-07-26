@@ -3,9 +3,9 @@
 The hard rail. Two gates, one for each spend chokepoint:
 
 * :func:`gate_tier` — called from ``router.dispatch`` before a provider runs.
-  Any *paid* tier (non-``free`` band — cheap ``CLOUD_MID``/``CLOUD_SMALL`` as
-  well as expensive ``CLOUD_SUPER``) is gated; if it costs money, the cap
-  limits it. Only free local tiers pass untouched.
+  Any *paid* tier (non-``free`` band — cheap ``BIG``/``MEDIUM`` as
+  well as expensive ``FRONTIER``) is gated; if it costs money, the cap
+  limits it. Only the free ``SMALL`` tier passes untouched.
 * :func:`gate_paid` — called from the cache-backed ``_fetch`` path before a
   paid HTTP call. Any fetch with a non-zero estimated cost is gated; only
   free lookups (cache hits, zero-cost providers) always run.

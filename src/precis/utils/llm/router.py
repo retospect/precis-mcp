@@ -33,16 +33,16 @@ Four pieces:
 
 The :class:`Tier` vocabulary aligns with the prompt-assembler
 :class:`~precis.utils.prompt.model.Profile`: a ``HELPER`` (tool-less,
-one-shot, structured) profile rides the ``cloud-small`` / ``local-small``
-tiers on the ``claude_p`` / litellm transports; an ``AGENT`` (tools,
-multi-turn) profile rides ``cloud-mid`` / ``cloud-super`` (and,
-eventually, ``local-big``) on the ``claude_agent`` transport.
+one-shot, structured) profile rides the ``MEDIUM`` / ``SMALL`` tiers on
+the ``claude_p`` / litellm transports; an ``AGENT`` (tools, multi-turn)
+profile rides ``BIG`` / ``FRONTIER`` on the ``claude_agent`` transport
+(and, when the backend routes there, a served OSS model on ``BIG``).
 
 **OSS tool-calling lands on** :data:`Transport.OPENAI_TOOLS` — an
 open-source model driving the precis verbs over the OpenAI ``tools=``
 wire (:class:`OpenAIToolsProvider`), the ADR 0024 loop rebuilt behind
-the provider port. It serves the ``LOCAL_BIG`` tier and, when
-``PRECIS_LLM_BACKEND=openai``, the tool-using cloud tiers.
+the provider port. It serves a served local model on the ``BIG`` tier
+and, when ``PRECIS_LLM_BACKEND=openai``, the tool-using cloud tiers.
 """
 
 from __future__ import annotations
@@ -79,51 +79,69 @@ class Tier(StrEnum):
 
     A tier bundles a capability level with a tool-use expectation, and
     maps onto both a concrete model (via :func:`resolve_model`) and a
-    transport (via :func:`select_transport`).
+    transport (via :func:`select_transport`). ADR 0066 Phase C retired the
+    original five location-coupled members (``local-small``/``local-big``/
+    ``cloud-small``/``cloud-mid``/``cloud-super``) in favor of these four
+    pure-capability tiers — every call site now routes on *what a task
+    needs*, not on where it happens to run.
 
-    * ``LOCAL_SMALL`` — tool-less local completion on the loopback
-      litellm proxy (the ``summarizer`` alias). The cheapest rung; the
-      per-chunk gloss lives here.
-    * ``LOCAL_BIG`` — a local model *with* tools, over the OpenAI
-      ``tools=`` loop (:data:`Transport.OPENAI_TOOLS`); the resolver
-      names its model (``qwen-heavy``).
-    * ``CLOUD_SMALL`` — cloud haiku, tool-less one-shot JSON judgment
-      (the chase verifier shape).
-    * ``CLOUD_MID`` — cloud sonnet, the mid agentic rung (planner
-      ticks, tex-fix).
-    * ``CLOUD_SUPER`` — cloud opus-4.8, the consolidated cloud
-      reasoning tier: heavy reasoning + tools (the structural / deep
-      reviewers, fix-gripe, ``LLM:opus`` ticks, the dream pass, and
-      the generic ``claude_agent`` default).
-
-    ADR 0066 (Phase A) adds four pure-capability tiers **alongside** the
-    five above, purely additively — no old member is removed/renamed, and
-    no old call-site changes. Each new tier routes byte-for-byte identically
-    to its analogue (:data:`_TIER_MODEL`, :func:`select_transport`,
-    :func:`_failover_ladder` all branch the new tier onto its analogue's
-    path). A caller migrates onto the new vocabulary at Phase C; until then
-    these are dark (nothing constructs them yet outside tests/aliases).
-
-    * ``FRONTIER`` — analogue ``CLOUD_SUPER`` (opus). The trusted-answer
-      tier: heavy reasoning + tools.
-    * ``BIG`` — analogue ``CLOUD_MID`` (sonnet). The general agentic
-      workhorse — planner, tex-fix, weave.
-    * ``MEDIUM`` — analogue ``CLOUD_SMALL`` (haiku). One-shot JSON judge /
-      cheap triage.
-    * ``SMALL`` — analogue ``LOCAL_SMALL`` (summarizer). The categorizer /
-      classifier rung — per-chunk gloss, inject-scan.
+    * ``FRONTIER`` — the trusted-answer tier: heavy reasoning + tools
+      (opus-class). The structural / deep reviewers, fix-gripe,
+      ``LLM:opus`` ticks, the dream pass, and the generic ``claude_agent``
+      default.
+    * ``BIG`` — the general agentic workhorse (sonnet-class) — planner,
+      tex-fix, weave. Also the tools-capable rung a served OSS model runs
+      on (a local ``qwen-heavy``-class model when the backend routes it
+      there).
+    * ``MEDIUM`` — one-shot JSON judge / cheap triage (haiku-class) — the
+      chase-verifier shape.
+    * ``SMALL`` — the categorizer / classifier rung (the ``summarizer``
+      alias) — per-chunk gloss, inject-scan. Tool-less by construction.
     """
 
-    LOCAL_SMALL = "local-small"
-    LOCAL_BIG = "local-big"
-    CLOUD_SMALL = "cloud-small"
-    CLOUD_MID = "cloud-mid"
-    CLOUD_SUPER = "cloud-super"
-    #: ADR 0066 pure-capability tiers (Phase A — additive, dark until swept).
     FRONTIER = "frontier"
     BIG = "big"
     MEDIUM = "medium"
     SMALL = "small"
+
+
+#: ADR 0066 Phase C retired these five location-coupled tier strings from the
+#: enum. A *stored* value written before this ship (a quest's
+#: ``meta.loop.tier``, an already-baked ``quest_tick`` job's
+#: ``meta.params.tier``, a route-log ``llm_call_log.tier`` row, …) can still
+#: carry one — mapped here onto its capability-tier analogue so
+#: :func:`tier_from_str` degrades instead of raising. New code should never
+#: write these.
+_LEGACY_TIER_ALIASES: dict[str, Tier] = {
+    "cloud-super": Tier.FRONTIER,
+    "cloud-mid": Tier.BIG,
+    "cloud-small": Tier.MEDIUM,
+    "local-small": Tier.SMALL,
+    "local-big": Tier.BIG,
+}
+
+
+def tier_from_str(value: str, *, default: Tier = Tier.MEDIUM) -> Tier:
+    """Resolve ``value`` to a :class:`Tier` — a live capability-tier string,
+    or one of the five ADR 0066 Phase C retired legacy strings (see
+    :data:`_LEGACY_TIER_ALIASES`) — without ever raising. Anything else
+    unrecognized (a typo, a future/unknown value) logs and falls back to
+    ``default`` (``MEDIUM``) rather than crash-looping the caller. Callers
+    resolving a **stored** tier value (as opposed to a fresh CLI/API argument,
+    where a typo raising immediately is the right, loud failure) should use
+    this instead of a bare ``Tier(value)``.
+    """
+    try:
+        return Tier(value)
+    except ValueError:
+        pass
+    alias = _LEGACY_TIER_ALIASES.get(value)
+    if alias is not None:
+        return alias
+    log.warning(
+        "router: unrecognized tier %r — falling back to %s", value, default.value
+    )
+    return default
 
 
 class Transport(StrEnum):
@@ -146,8 +164,8 @@ class Transport(StrEnum):
       one-shot / completion path); tool-using calls go to ``OPENAI_TOOLS``.
     * ``OPENAI_TOOLS`` — an OSS model driving the precis verbs over the
       OpenAI ``tools=`` wire, in-process (:mod:`precis.utils.llm.openai_tools`
-      + :mod:`precis.utils.llm.precis_tools`). Serves both the ``LOCAL_BIG``
-      tier (a local model + tools) and the ``OPENAI`` backend's tool-using
+      + :mod:`precis.utils.llm.precis_tools`). Serves both a served local
+      model backing the ``BIG`` tier and the ``OPENAI`` backend's tool-using
       cloud calls — same wire, different base url. Implements the ADR 0024
       loop that was prototyped-then-reversed onto ``claude`` (ADR 0046
       §"Next step").
@@ -180,37 +198,24 @@ class Backend(StrEnum):
 
 # ── the tier → model table (the ONE consolidation point) ───────────────
 #
-# Each row is ``tier: (env_var, default)``. The cloud triad is the *pinned*
-# set from ``plan_tick._model_alias`` — ``PRECIS_MODEL_{OPUS,SONNET,HAIKU}`` —
-# which is the most deliberate of the scattered reads (it pins a model *id*
-# so a ``LLM:opus`` tag binds to one generation as the CLI default drifts).
-# The cloud-super default is ``claude-opus-4-8`` — the consolidation point
-# for the whole cloud reasoning tier (dream, tex-fix, reviewers, fix-gripe,
-# the generic ``claude_agent`` default all resolve through here). 4-7 and
-# 4-8 are the same price, so there is no cost reason to stay on 4-7 and the
-# reasoning/agentic work is exactly where the stronger model earns its keep.
-# ``claude_p``'s legacy suffix-less ``claude-haiku-4-5`` default is folded
-# onto the dated pin here (same family — see ADR 0046 §"Resolver").
+# Each row is ``tier: (env_var, default)``. The cloud triad (FRONTIER/BIG/
+# MEDIUM) is the *pinned* set from ``plan_tick._model_alias`` —
+# ``PRECIS_MODEL_{OPUS,SONNET,HAIKU}`` — which is the most deliberate of the
+# scattered reads (it pins a model *id* so a ``LLM:opus`` tag binds to one
+# generation as the CLI default drifts). The FRONTIER default is
+# ``claude-opus-4-8`` — the consolidation point for the whole cloud reasoning
+# tier (dream, tex-fix, reviewers, fix-gripe, the generic ``claude_agent``
+# default all resolve through here). 4-7 and 4-8 are the same price, so there
+# is no cost reason to stay on 4-7 and the reasoning/agentic work is exactly
+# where the stronger model earns its keep. ``claude_p``'s legacy suffix-less
+# ``claude-haiku-4-5`` default is folded onto the dated pin here (same family
+# — see ADR 0046 §"Resolver").
 _TIER_MODEL: dict[Tier, tuple[str, str]] = {
-    Tier.CLOUD_SUPER: ("PRECIS_MODEL_OPUS", "claude-opus-4-8"),
-    Tier.CLOUD_MID: ("PRECIS_MODEL_SONNET", "claude-sonnet-5"),
-    Tier.CLOUD_SMALL: ("PRECIS_MODEL_HAIKU", "claude-haiku-4-5-20251001"),
-    # The litellm ``summarizer`` alias (``LlmConfig.model`` default), read
-    # from ``PRECIS_SUMMARIZE_MODEL`` exactly as ``LlmConfig.from_env``.
-    Tier.LOCAL_SMALL: ("PRECIS_SUMMARIZE_MODEL", "summarizer"),
-    # ADR 0024's dream model — local big + tools. Dispatchable to a per-host
-    # llama-swap endpoint when a served_by card declares one (OPENAI_TOOLS now
-    # honors the slot's local_url); with no served_by it falls to the hosted
-    # PRECIS_LLM_BASE_URL path (dark by default).
-    Tier.LOCAL_BIG: ("PRECIS_LOCAL_BIG_MODEL", "qwen-heavy"),
-    # ADR 0066 (Phase A) pure-capability tiers — each row mirrors its
-    # analogue's (env_var, default) EXACTLY, so resolve_model(NEW, ...) ==
-    # resolve_model(ANALOGUE, ...) byte-for-byte (see the class docstring's
-    # analogue table). Rewiring which env var / default a tier reads is a
-    # later-phase concern, not this one.
     Tier.FRONTIER: ("PRECIS_MODEL_OPUS", "claude-opus-4-8"),
     Tier.BIG: ("PRECIS_MODEL_SONNET", "claude-sonnet-5"),
     Tier.MEDIUM: ("PRECIS_MODEL_HAIKU", "claude-haiku-4-5-20251001"),
+    # The litellm ``summarizer`` alias (``LlmConfig.model`` default), read
+    # from ``PRECIS_SUMMARIZE_MODEL`` exactly as ``LlmConfig.from_env``.
     Tier.SMALL: ("PRECIS_SUMMARIZE_MODEL", "summarizer"),
 }
 
@@ -221,20 +226,10 @@ assert set(_TIER_MODEL) == set(Tier), "resolve_model: tier table is not total"
 
 #: The tiers that route to a *claude* transport under the ANTHROPIC backend —
 #: the only ones an OSS model override is incoherent for (see resolve_model's
-#: Part-3 coherence check). The local tiers (LITELLM / OPENAI_TOOLS) are never
-#: claude-bound, so their overrides are always honored. ADR 0066's FRONTIER /
-#: BIG / MEDIUM join their CLOUD_* analogues here (SMALL does not — it is the
-#: LOCAL_SMALL analogue, never claude-bound).
-_CLOUD_TIERS: frozenset[Tier] = frozenset(
-    {
-        Tier.CLOUD_SUPER,
-        Tier.CLOUD_MID,
-        Tier.CLOUD_SMALL,
-        Tier.FRONTIER,
-        Tier.BIG,
-        Tier.MEDIUM,
-    }
-)
+#: Part-3 coherence check). ``SMALL`` is never claude-bound (it always routes
+#: to the local/hosted-OSS split via :func:`select_transport`), so it is not
+#: here.
+_CLOUD_TIERS: frozenset[Tier] = frozenset({Tier.FRONTIER, Tier.BIG, Tier.MEDIUM})
 
 
 def resolve_model(tier: Tier, backend: Backend | None = None) -> str:
@@ -267,10 +262,10 @@ def resolve_model(tier: Tier, backend: Backend | None = None) -> str:
     override = live_config.model_override(tier)
     # The coherence drop applies ONLY to the cloud tiers: they are the ones
     # that route to a claude transport under ANTHROPIC, so an OSS override
-    # there is incoherent. LOCAL_SMALL (→LITELLM) and LOCAL_BIG (→OPENAI_TOOLS)
-    # never touch a claude transport, so their (always-non-claude) overrides
-    # are legitimate and must be honored — dropping them would silently ignore
-    # a live `llm.model.local-*` row (incl. the one Part 1's remap reads).
+    # there is incoherent. SMALL (→LITELLM/OPENAI_COMPAT) never touches a
+    # claude transport, so its (always-non-claude) override is legitimate and
+    # must be honored — dropping it would silently ignore a live
+    # `llm.model.small` row (incl. the one Part 1's remap reads).
     claude_bound = backend is Backend.ANTHROPIC and tier in _CLOUD_TIERS
     if override and not (claude_bound and not override.startswith("claude")):
         return override
@@ -280,7 +275,7 @@ def resolve_model(tier: Tier, backend: Backend | None = None) -> str:
 
 #: Per-tier ``(thinking, temperature)`` default — ADR 0066 gen-param
 #: passthrough (:attr:`LlmRequest.thinking` / :attr:`LlmRequest.temperature`).
-#: ``SMALL``/``LOCAL_SMALL`` (the categorizer/classifier rung) get thinking
+#: ``SMALL`` (the categorizer/classifier rung) gets thinking
 #: **off** + temperature **0.0**: a per-chunk gloss/inject-scan must not spend
 #: reasoning tokens on a one-line judgment, must answer deterministically, and
 #: — the fix this table exists for — must not degrade to an empty completion
@@ -289,20 +284,12 @@ def resolve_model(tier: Tier, backend: Backend | None = None) -> str:
 #: the answer). Every other tier gets thinking **on** + temperature **None**
 #: (the provider's own default, sent as no field at all) — today's implicit
 #: behaviour for the bigger/agentic tiers, made explicit here rather than
-#: changed. Mirrors the ADR 0066 analogue table (:data:`_TIER_MODEL`'s
-#: docstring / the ``Tier`` class docstring): ``LOCAL_SMALL``↔``SMALL``,
-#: ``CLOUD_SMALL``↔``MEDIUM``, ``CLOUD_MID``↔``BIG``, ``CLOUD_SUPER``↔``FRONTIER``,
-#: ``LOCAL_BIG``↔``BIG``.
+#: changed.
 _TIER_GEN_DEFAULTS: dict[Tier, tuple[bool, float | None]] = {
     Tier.SMALL: (False, 0.0),
-    Tier.LOCAL_SMALL: (False, 0.0),
     Tier.MEDIUM: (True, None),
-    Tier.CLOUD_SMALL: (True, None),
     Tier.BIG: (True, None),
-    Tier.CLOUD_MID: (True, None),
-    Tier.LOCAL_BIG: (True, None),
     Tier.FRONTIER: (True, None),
-    Tier.CLOUD_SUPER: (True, None),
 }
 
 # Import-time totality guard, mirroring _TIER_MODEL's above.
@@ -330,16 +317,15 @@ def _tier_gen_defaults(tier: Tier) -> tuple[bool, float | None]:
 # tools), reachable now that ADR 0046's ``OPENAI_TOOLS`` loop drives the verbs
 # in-process — a planner tick runs on it just like the cloud tiers.
 #
-# ADR 0066 (Phase A) adds the four capability-tier names below AS NEW
-# CALLER VOCAB — the legacy {opus, sonnet, haiku, local} aliases are left
-# EXACTLY as they are (`local` keeps pinning `LOCAL_BIG`, not `BIG`). The
-# Rollout gate: `local`'s remap to `BIG` is a Phase-C event, gated on the
-# local-only sensitivity constraint (ADR 0066 §6) — do not touch it here.
+# ADR 0066 Phase C: ``local`` now pins ``BIG`` directly (the location-coupled
+# ``LOCAL_BIG`` tier is retired) — a served OSS model still backs it when the
+# backend/chain routes there (:func:`select_transport` / a served_by slot);
+# the legacy {opus, sonnet, haiku} aliases are otherwise unchanged.
 PLANNER_TIER_BY_ALIAS: dict[str, Tier] = {
     "opus": Tier.FRONTIER,
     "sonnet": Tier.BIG,
     "haiku": Tier.MEDIUM,
-    "local": Tier.LOCAL_BIG,
+    "local": Tier.BIG,
     "frontier": Tier.FRONTIER,
     "big": Tier.BIG,
     "medium": Tier.MEDIUM,
@@ -391,38 +377,27 @@ def select_transport(
 ) -> Transport:
     """Pick the transport for ``(tier, tools_needed, backend)`` — a pure function.
 
-    Local tiers route to their local transport regardless of tools
-    (``LOCAL_SMALL`` is tool-less by construction; ``LOCAL_BIG`` is the
-    tools-capable local rung). Cloud tiers split on ``tools_needed``,
-    which mirrors the ``AGENT`` vs ``HELPER``
-    :class:`~precis.utils.prompt.model.Profile` split: tools ⇒
-    ``claude_agent`` (AGENT), no tools ⇒ ``claude_p`` (HELPER).
+    ``SMALL`` is tool-less by construction and routes to the local/hosted-OSS
+    split regardless of ``tools_needed``: under ``ANTHROPIC`` (the default) it
+    takes the loopback litellm proxy (:data:`Transport.LITELLM`); under
+    ``OPENAI`` it takes :data:`Transport.OPENAI_COMPAT` (a hosted OSS backend —
+    OpenRouter — with no local hardware fallback of its own). This is the
+    gap-fill from `docs/proposals/llm-openrouter-bypass.md` item 2.
 
+    ``MEDIUM`` / ``BIG`` / ``FRONTIER`` split on ``tools_needed``, which
+    mirrors the ``AGENT`` vs ``HELPER`` :class:`~precis.utils.prompt.model.Profile`
+    split: tools ⇒ ``claude_agent`` (AGENT), no tools ⇒ ``claude_p`` (HELPER).
     ``backend`` (default ``ANTHROPIC``, so existing callers are unchanged)
     routes cloud work to the OSS path when ``OPENAI``: tool-less →
     :data:`Transport.OPENAI_COMPAT`, tool-using → :data:`Transport.OPENAI_TOOLS`
-    (the in-process ``tools=`` loop). Under ``ANTHROPIC`` both stay on the
-    ``claude`` transports. The ``LOCAL_BIG`` tier (a local model + tools)
-    always takes the OSS tools loop.
-
-    ``LOCAL_SMALL`` mirrors the cloud split rather than ``LOCAL_BIG``'s
-    unconditional local pin: under ``OPENAI`` it takes
-    :data:`Transport.OPENAI_COMPAT` (a hosted OSS backend — OpenRouter — with
-    no local hardware fallback of its own) instead of the loopback litellm
-    proxy. This is the gap-fill from `docs/proposals/llm-openrouter-bypass.md`
-    item 2: ``LOCAL_SMALL`` previously had no path off local hardware at all.
-
-    ADR 0066's ``SMALL`` is ``LOCAL_SMALL``'s analogue and takes the exact
-    same branch (byte-for-byte). ``FRONTIER`` / ``BIG`` / ``MEDIUM`` need no
-    special branch — they fall through to the cloud ``tools_needed`` /
-    ``backend`` split below, exactly like their ``CLOUD_*`` analogues.
+    (the in-process ``tools=`` loop, also how a served local model backs
+    ``BIG`` under an ``OPENAI_TOOLS``-carrying chain rung). Under ``ANTHROPIC``
+    both stay on the ``claude`` transports.
     """
-    if tier is Tier.LOCAL_SMALL or tier is Tier.SMALL:
+    if tier is Tier.SMALL:
         return (
             Transport.OPENAI_COMPAT if backend is Backend.OPENAI else Transport.LITELLM
         )
-    if tier is Tier.LOCAL_BIG:
-        return Transport.OPENAI_TOOLS
     if tools_needed:
         return (
             Transport.OPENAI_TOOLS
@@ -662,15 +637,15 @@ class LlmRequest:
     max_tokens: int | None = None
     #: Reasoning + sampling passthrough (ADR 0066 gen-param knobs). ``None`` on
     #: either ⇒ :func:`dispatch` resolves the tier default (:func:`_tier_gen_defaults`):
-    #: ``SMALL``/``LOCAL_SMALL`` (a categorizer/classifier — per-chunk gloss,
+    #: ``SMALL`` (a categorizer/classifier — per-chunk gloss,
     #: inject-scan) wants thinking **off** + temperature **0.0**, so it never
     #: burns reasoning tokens on a one-line judgment and stays deterministic —
     #: this is also what makes the tier runnable on a local *thinking-only*
     #: model (thinking left on would otherwise degrade the completion to a
     #: reasoning trace with an empty/truncated final answer). Every other tier
-    #: (``MEDIUM``/``BIG``/``FRONTIER`` and their ``CLOUD_*``/``LOCAL_BIG``
-    #: analogues) wants thinking **on** + temperature **None** (the provider's
-    #: own default — the field is omitted from the wire rather than pinned).
+    #: (``MEDIUM``/``BIG``/``FRONTIER``) wants thinking **on** + temperature
+    #: **None** (the provider's own default — the field is omitted from the
+    #: wire rather than pinned).
     #: An explicit non-``None`` value set here always wins over the tier
     #: default. No-op on the claude transports (``claude_agent``/``claude_p``
     #: have no such knobs — Anthropic's extended-thinking budget is a separate,
@@ -892,8 +867,9 @@ class OpenAIToolsProvider:
     :func:`~precis.utils.llm.openai_tools.run_tool_loop` drives a hosted or
     local OSS backend (``PRECIS_LLM_BASE_URL``, vault key) through a
     tool-calling conversation, executing each call in-process via
-    ``runtime.dispatch`` — no MCP socket round-trip. Serves both the
-    ``LOCAL_BIG`` tier and the ``OPENAI`` backend's tool-using cloud calls.
+    ``runtime.dispatch`` — no MCP socket round-trip. Serves both a served
+    local model backing the ``BIG`` tier and the ``OPENAI`` backend's
+    tool-using cloud calls.
     """
 
     def run(self, req: LlmRequest, *, model: str) -> LlmResult:
@@ -1003,23 +979,13 @@ class FailoverProvider:
         return last
 
 
-#: A ``LOCAL_*`` tier's ``_TIER_MODEL`` default is an OSS alias
-#: (``qwen-heavy``), not a claude id, so it can't back its own claude-fallback
-#: rung the way a ``CLOUD_*`` tier can. Maps a local tier onto the cloud tier
-#: whose claude id it escalates to instead — ``LOCAL_BIG`` plays the "medium"
-#: cascade role in the roster (`docs/proposals/llm-openrouter-bypass.md`), so
-#: it escalates to ``CLOUD_MID`` (sonnet). ``LOCAL_SMALL`` has no entry: per
-#: the roster's "small" row, that tier skips Anthropic entirely — see
-#: :func:`_failover_ladder`, which never calls this for ``LOCAL_SMALL``.
-_LOCAL_ESCALATION_TIER: dict[Tier, Tier] = {Tier.LOCAL_BIG: Tier.CLOUD_MID}
-
-
 def _claude_default(tier: Tier) -> str:
     """The tier's compiled-in claude model id, ignoring any PRECIS_MODEL_*
     override — so a claude fallback rung stays on claude even when the override
-    points the primary at an OSS id. A ``LOCAL_*`` tier resolves through
-    :data:`_LOCAL_ESCALATION_TIER` first (see its docstring)."""
-    return _TIER_MODEL[_LOCAL_ESCALATION_TIER.get(tier, tier)][1]
+    points the primary at an OSS id. ``BIG``/``MEDIUM``/``FRONTIER`` each have
+    their own claude default; ``SMALL`` never reaches this (its ladder skips
+    the claude fallback entirely — see :func:`_failover_ladder`)."""
+    return _TIER_MODEL[tier][1]
 
 
 def _failover_enabled() -> bool:
@@ -1036,16 +1002,14 @@ def _failover_ladder(tier: Tier, *, tools_needed: bool, backend: Backend) -> lis
     claude equivalent as a safety net (only when the primary is an OSS
     transport — a claude/local primary has nothing to fall back to).
 
-    ``LOCAL_SMALL`` is the one exception: per the roster cascade
+    ``SMALL`` is the one exception: per the roster cascade
     (`docs/proposals/llm-openrouter-bypass.md` — "small" skips Anthropic
     entirely, low-stakes/high-volume dispatch traffic), its ladder stops at
-    the OSS rung with no claude fallback, however this call resolves. ADR
-    0066's ``SMALL`` (its analogue) gets the identical no-claude-fallback
-    ladder.
+    the OSS rung with no claude fallback, however this call resolves.
     """
     primary = select_transport(tier, tools_needed=tools_needed, backend=backend)
     if primary in (Transport.OPENAI_TOOLS, Transport.OPENAI_COMPAT):
-        if tier is Tier.LOCAL_SMALL or tier is Tier.SMALL:
+        if tier is Tier.SMALL:
             return [Rung(primary, label="oss")]
         claude = Transport.CLAUDE_AGENT if tools_needed else Transport.CLAUDE_P
         return [
@@ -1198,22 +1162,23 @@ def _apply_cloud_throttle(chain: list[Rung]) -> list[Rung]:
     return [rung for rung in chain if not _rung_is_cloud(rung)]
 
 
-#: ``LOCAL_SMALL`` (categorizer) model ids that only mean something on the
+#: ``SMALL`` (categorizer) model ids that only mean something on the
 #: litellm loopback (the ``summarizer`` alias and the ``rake-lemma`` name it
 #: resolves to) — POSTing either to a hosted OSS backend (OpenRouter et al.)
 #: 400s, since the hosted side has never heard of them. See
-#: :func:`_hosted_small_remap`. Deliberately scoped to the LOCAL_SMALL aliases:
-#: ``LOCAL_BIG``'s ``qwen-heavy`` is NOT here — it always routes ``OPENAI_TOOLS``
-#: regardless of the backend flag, so remapping it would fire even under the
-#: default ``ANTHROPIC`` (breaking byte-identity) and silently downgrade a big
-#: call to a *small* hosted model. LOCAL_BIG's hosted fallback is the Phase-2
-#: per-tier failover chain's job, not this small-model remap.
+#: :func:`_hosted_small_remap`. Deliberately scoped to the ``SMALL``-only
+#: aliases: a served local model backing ``BIG`` is NOT here — it always
+#: routes ``OPENAI_TOOLS`` regardless of the backend flag, so remapping it
+#: would fire even under the default ``ANTHROPIC`` (breaking byte-identity)
+#: and silently downgrade a big call to a *small* hosted model. ``BIG``'s
+#: hosted fallback is the Phase-2 per-tier failover chain's job, not this
+#: small-model remap.
 _LOCAL_ONLY_MODEL_ALIASES = frozenset({"summarizer", "rake-lemma"})
 
 
 def _hosted_small_model() -> str:
     """The hosted small model a local-only alias remaps onto — resolved
-    ``llm.model.local-small`` ``app_settings`` override →
+    ``llm.model.small`` ``app_settings`` override →
     ``PRECIS_LOCAL_SMALL_HOSTED_MODEL`` → a compiled default. Mirrors
     :func:`resolve_model`'s override→env→default order but against a
     dedicated env var/default pair, since ``PRECIS_SUMMARIZE_MODEL``'s
@@ -1222,7 +1187,7 @@ def _hosted_small_model() -> str:
     """
     from precis.utils.llm import live_config
 
-    override = live_config.model_override(Tier.LOCAL_SMALL)
+    override = live_config.model_override(Tier.SMALL)
     if override:
         return override
     return os.environ.get("PRECIS_LOCAL_SMALL_HOSTED_MODEL", "z-ai/glm-4.7-flash")
@@ -1243,7 +1208,7 @@ def _hosted_small_remap(
     onto at all), the call is not already pinned to a local ``served_by``
     slot (``has_local_slot`` — that slot's own model name is already correct
     for its endpoint), and ``model`` is one of :data:`_LOCAL_ONLY_MODEL_ALIASES`.
-    Under the default ``ANTHROPIC`` backend ``LOCAL_SMALL`` resolves to
+    Under the default ``ANTHROPIC`` backend ``SMALL`` resolves to
     :data:`Transport.LITELLM`, not a hosted-OSS transport, so this is
     byte-identical to today whenever the flip is off.
     """
@@ -1268,7 +1233,7 @@ def dispatch(req: LlmRequest) -> LlmResult:
     :class:`~precis.utils._claude_subprocess.ClaudeProcessError` (or a
     local-transport ``RuntimeError``) into :attr:`LlmResult.error` rather
     than raising, so every dispatch path returns one shape. A programming
-    error (the unwired local-big path) still raises.
+    error (an unwired local-tools path) still raises.
 
     The ``OPENAI`` backend needs ``PRECIS_LLM_BASE_URL``; with the backend
     on but no base url set, cloud calls fall back to ``claude`` rather than
@@ -1403,7 +1368,7 @@ def dispatch(req: LlmRequest) -> LlmResult:
         # FailoverProvider here) rather than a new one. But this
         # escape only exists when rung 0's transport is one of the two that
         # read `PRECIS_LLM_BASE_URL` when `local_url` is unset (OPENAI_TOOLS /
-        # OPENAI_COMPAT) — ``Transport.LITELLM`` (e.g. LOCAL_SMALL under the
+        # OPENAI_COMPAT) — ``Transport.LITELLM`` (e.g. SMALL under the
         # default ANTHROPIC backend) has no hosted mode at all and would just
         # re-hit the same saturated loopback proxy, so that case (like
         # failover-off, or a primary with no fallback rung) stays
@@ -1448,8 +1413,8 @@ def dispatch(req: LlmRequest) -> LlmResult:
     # local transport there instead of the litellm proxy, using the server-side
     # model name — the Phase-2 litellm-retirement flip. No endpoint ⇒ req + model
     # unchanged (today's behavior). Both local transports read ``local_url``:
-    # LITELLM (tool-less, ``_dispatch_local``) and OPENAI_TOOLS (LOCAL_BIG, tools,
-    # ``run_oss_tool_loop``).
+    # LITELLM (tool-less, ``_dispatch_local``) and OPENAI_TOOLS (a served local
+    # model backing ``BIG``, tools, ``run_oss_tool_loop``).
     call_req = req
     call_model = model
     if slot is not None and slot.reserved and slot.endpoint:
@@ -1658,12 +1623,12 @@ class DispatchClient:
     it gains the budget breaker gate, the ``served_by`` reroute (local tiers) /
     ``claude_agent`` transport (cloud tiers), and the route-log.
 
-    **Local tiers** (the default, ``LOCAL_SMALL``): behaviour-preserving until
+    **The local tier** (the default, ``SMALL``): behaviour-preserving until
     ``served_by`` is seeded — with no slot the model resolves to today's
     ``summarizer`` alias on the ``LlmConfig.from_env`` proxy URL, byte-identical
     to the raw client.
 
-    **Cloud tiers** (``CLOUD_SUPER`` / ``CLOUD_MID``): ``messages`` is split into
+    **Cloud tiers** (``FRONTIER`` / ``BIG``): ``messages`` is split into
     a ``system_prompt`` (the ``system``-role turn(s), joined) and a ``prompt``
     (everything else, joined) — the shape ``claude_agent`` / ``claude_p`` need,
     since those transports read ``LlmRequest.prompt`` / ``.system_prompt``, not
@@ -1911,7 +1876,7 @@ def _dispatch_local(req: LlmRequest, model: str) -> LlmResult:
     # batches with no failover (the 2026-07-26 classify stall).
     if req.timeout_s is not None:
         cfg = replace(cfg, timeout=req.timeout_s)
-    elif req.tier in (Tier.SMALL, Tier.LOCAL_SMALL):
+    elif req.tier is Tier.SMALL:
         cfg = replace(cfg, timeout=min(cfg.timeout, _SMALL_LOCAL_TIMEOUT_S))
     messages = req.messages or [{"role": "user", "content": req.prompt}]
     client = LlmClient(cfg)
@@ -2141,8 +2106,9 @@ def run_oss_tool_loop(
     ``local_url`` is given — a local-serving slot's pinned llama-swap endpoint
     — in which case it routes there directly with an authless dummy key (a
     loopback model has no auth; the vault key is for the hosted OSS backend).
-    This is what makes the ``LOCAL_BIG`` tier dispatch to a per-host local
-    endpoint, mirroring :func:`_dispatch_local`'s ``local_url`` override.
+    This is what makes a served local model backing the ``BIG`` tier dispatch
+    to a per-host local endpoint, mirroring :func:`_dispatch_local`'s
+    ``local_url`` override.
     Runs the precis verbs in-process via ``runtime.dispatch`` unless
     ``tool_less``. May raise ``RuntimeError`` / ``OSError`` if the executor /
     tools can't be built (an unavailable runtime); the loop itself folds a
@@ -2153,7 +2119,7 @@ def run_oss_tool_loop(
     ``temperature``/``thinking`` are the ADR 0066 gen-param passthrough
     (:attr:`LlmRequest.temperature` / :attr:`.thinking`, already tier-resolved
     by :func:`dispatch`). ``temperature`` threads straight onto the client —
-    ``None`` (the ``MEDIUM``/``BIG``/``FRONTIER``/``LOCAL_BIG`` tier default)
+    ``None`` (the ``MEDIUM``/``BIG``/``FRONTIER`` tier default)
     means the field is omitted from the wire entirely (the provider's own
     default), a deliberate change from this loop's previous unconditional
     ``temperature: 0`` for every call. The no-thinking directive is only

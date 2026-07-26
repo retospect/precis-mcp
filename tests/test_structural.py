@@ -114,7 +114,7 @@ def _err_result() -> object:
         cost_usd=None,
         turns_used=None,
         model="test",
-        tier=Tier.CLOUD_SUPER,
+        tier=Tier.FRONTIER,
         error="claude -p (agent) exited 1: [entrypoint] ERROR: PRECIS_DATABASE_URL not set",
         paused=False,
     )

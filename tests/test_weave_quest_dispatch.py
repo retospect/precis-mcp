@@ -65,9 +65,7 @@ class FakeCtx:
         return self._cancel
 
 
-def _meta(
-    state: dict[str, Any] | None = None, *, tier: str = "local-big"
-) -> dict[str, Any]:
+def _meta(state: dict[str, Any] | None = None, *, tier: str = "big") -> dict[str, Any]:
     m: dict[str, Any] = {
         "job_type": "quest_tick",
         "executor": "coordinator",

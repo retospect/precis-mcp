@@ -113,8 +113,9 @@ def _auto_prose(model_id: str) -> str:
     hosts come and go."""
     return (
         f"Local model `{model_id}` — auto-discovered on the cluster's llama-swap. "
-        "Directly addressable by this model_id; bind a tier "
-        "(`PRECIS_SUMMARIZE_MODEL` / `PRECIS_LOCAL_BIG_MODEL`) to route to it."
+        "Directly addressable by this model_id; bind the SMALL tier "
+        "(`PRECIS_SUMMARIZE_MODEL`) or an `llm.chain.big` operator override to "
+        "route to it."
     )
 
 

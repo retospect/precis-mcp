@@ -49,7 +49,7 @@ class TestUpsertCard:
             store,
             model_id="claude-opus-4-8",
             text="Cloud reasoning tier; strong at careful SQL and refactors.",
-            tier_floor="cloud-super",
+            tier_floor="frontier",
             offerings=[{"effort": "medium", "transport": "claude_agent"}],
             capability={"code": 5, "long-context-recall": {"score": 4}},
             provenance={"source": "seed"},
@@ -58,7 +58,7 @@ class TestUpsertCard:
         ref = store.get_ref(kind="llm", id=ref_id)
         assert ref is not None
         assert ref.meta["model_id"] == "claude-opus-4-8"
-        assert ref.meta["tier_floor"] == "cloud-super"
+        assert ref.meta["tier_floor"] == "frontier"
         assert ref.meta["offerings"][0]["transport"] == "claude_agent"
         # embeddable card_combined (ord=-1) = the model vector
         with store.pool.connection() as conn:
@@ -202,7 +202,7 @@ class TestHandler:
             store,
             model_id="claude-sonnet-4-6",
             text="Mid agentic tier — the workhorse rung.",
-            tier_floor="cloud-mid",
+            tier_floor="big",
         )
         h = _handler(store)
         resp = h.get(id="claude-sonnet-4-6")
@@ -278,7 +278,7 @@ class TestHandler:
             store,
             model_id="claude-haiku-4-5",
             text="Fast cheap triage classifier for one-shot JSON judgement.",
-            tier_floor="cloud-small",
+            tier_floor="medium",
         )
         h = _handler(store)
         resp = h.search(q="triage classifier")
@@ -348,7 +348,7 @@ class TestVariantOfferings:
             store,
             model_id="var-model",
             text="A model.",
-            tier_floor="cloud-super",
+            tier_floor="frontier",
             offerings=[
                 {"transport": "openai_compat", "max_input": 200_000, "price_in": 5.0}
             ],
@@ -513,19 +513,14 @@ class TestSeed:
         assert len(model_ids) >= 3
         cards = store.list_refs(kind="llm", limit=100)
         floors = {(c.meta or {}).get("tier_floor") for c in cards}
-        # ADR 0066 Phase C: the seed emits the four capability tier_floor values
-        # (LOCAL_BIG's qwen card is labeled `big`, per the relabel mapping) — the
-        # legacy location-coupled values are gone from freshly-seeded cards.
+        # ADR 0066 Phase C: the seed emits only the four capability tier_floor
+        # values — the legacy location-coupled values (now retired from the
+        # ``Tier`` enum itself) are gone from freshly-seeded cards. Checked as
+        # raw strings since the legacy enum members no longer exist to import.
         canonical = {Tier.FRONTIER, Tier.BIG, Tier.MEDIUM, Tier.SMALL}
         assert {t.value for t in canonical} <= floors
-        legacy = {
-            Tier.LOCAL_SMALL,
-            Tier.LOCAL_BIG,
-            Tier.CLOUD_SMALL,
-            Tier.CLOUD_MID,
-            Tier.CLOUD_SUPER,
-        }
-        assert not ({t.value for t in legacy} & floors)
+        legacy = {"local-small", "local-big", "cloud-small", "cloud-mid", "cloud-super"}
+        assert not (legacy & floors)
 
     def test_frontier_seed_mints_oss_ladder(self, store: Any) -> None:
         from precis import llm_catalog

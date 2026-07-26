@@ -58,14 +58,6 @@ class Band:
 #: totality assert (below) guarantees every tier has a band, so adding a
 #: tier without classifying it is a load-time failure, not a KeyError.
 _TIER_BANDS: dict[Tier, Band] = {
-    Tier.LOCAL_SMALL: Band(Cost.FREE, Pace.FAST),
-    Tier.LOCAL_BIG: Band(Cost.FREE, Pace.SLOW),
-    Tier.CLOUD_SMALL: Band(Cost.CHEAP, Pace.FAST),
-    Tier.CLOUD_MID: Band(Cost.CHEAP, Pace.SLOW),
-    Tier.CLOUD_SUPER: Band(Cost.EXPENSIVE, Pace.SLOW),
-    # ADR 0066 (Phase A) pure-capability tiers — each row mirrors its
-    # analogue's band exactly (see router.Tier's docstring for the
-    # analogue table).
     Tier.SMALL: Band(Cost.FREE, Pace.FAST),
     Tier.MEDIUM: Band(Cost.CHEAP, Pace.FAST),
     Tier.BIG: Band(Cost.CHEAP, Pace.SLOW),
@@ -120,8 +112,8 @@ def is_paid(tier: Tier) -> bool:
     """True when ``tier`` costs money — any non-``free`` band.
 
     This is what the breaker gates: once a spend cap trips, *every* paid tier
-    is refused (cheap ``CLOUD_MID``/``CLOUD_SMALL`` included), not just the
-    expensive lane. Only ``free`` local tiers keep flowing.
+    is refused (cheap ``BIG``/``MEDIUM`` included), not just the
+    expensive lane. Only the ``free`` local ``SMALL`` tier keeps flowing.
     """
     return _TIER_BANDS[tier].cost is not Cost.FREE
 

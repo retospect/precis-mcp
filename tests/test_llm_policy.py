@@ -39,7 +39,7 @@ def _req(**kw: Any) -> Any:
     from precis.utils.llm.policy import Requirement
     from precis.utils.llm.router import Tier
 
-    kw.setdefault("tier_floor", Tier.CLOUD_MID)
+    kw.setdefault("tier_floor", Tier.BIG)
     if isinstance(kw["tier_floor"], str):
         kw["tier_floor"] = Tier(kw["tier_floor"])
     return Requirement(**kw)
@@ -50,9 +50,9 @@ class TestDegradeToFloor:
         from precis.utils.llm.policy import select_offering
         from precis.utils.llm.router import Tier, resolve_model
 
-        sel = select_offering(clean_catalog, _req(tier_floor=Tier.CLOUD_SUPER))
+        sel = select_offering(clean_catalog, _req(tier_floor=Tier.FRONTIER))
         assert sel.from_catalog is False
-        assert sel.model == resolve_model(Tier.CLOUD_SUPER)
+        assert sel.model == resolve_model(Tier.FRONTIER)
         assert sel.next_better is None
 
     def test_no_candidate_meets_min_degrades(self, clean_catalog: Any) -> None:
@@ -62,13 +62,13 @@ class TestDegradeToFloor:
         _card(
             clean_catalog,
             "weak",
-            tier_floor="cloud-mid",
+            tier_floor="big",
             offerings=[{"transport": "claude_agent"}],
             capability={"code": 2},
         )
         sel = select_offering(clean_catalog, _req(axis="code", min_ordinal=5))
         assert sel.from_catalog is False
-        assert sel.model == resolve_model(Tier.CLOUD_MID)
+        assert sel.model == resolve_model(Tier.BIG)
 
 
 class TestRank:
@@ -81,19 +81,19 @@ class TestRank:
         _card(
             clean_catalog,
             "cheap3",
-            tier_floor="cloud-small",
+            tier_floor="medium",
             offerings=[{"transport": "claude_agent", "price_in": 1.0}],
             capability={"code": 3},
         )
         _card(
             clean_catalog,
             "mid4",
-            tier_floor="cloud-mid",
+            tier_floor="big",
             offerings=[{"transport": "claude_agent", "price_in": 3.0}],
             capability={"code": 4},
         )
         sel = select_offering(
-            clean_catalog, _req(tier_floor=Tier.CLOUD_SMALL, axis="code", min_ordinal=3)
+            clean_catalog, _req(tier_floor=Tier.MEDIUM, axis="code", min_ordinal=3)
         )
         assert sel.model == "cheap3" and sel.from_catalog is True
         assert sel.offering is not None
@@ -107,12 +107,12 @@ class TestRank:
         _card(
             clean_catalog,
             "only5",
-            tier_floor="cloud-mid",
+            tier_floor="big",
             offerings=[{"transport": "claude_agent", "price_in": 3.0}],
             capability={"code": 5},
         )
         sel = select_offering(
-            clean_catalog, _req(tier_floor=Tier.CLOUD_MID, axis="code", min_ordinal=4)
+            clean_catalog, _req(tier_floor=Tier.BIG, axis="code", min_ordinal=4)
         )
         assert sel.model == "only5" and sel.next_better is None
 
@@ -125,17 +125,17 @@ class TestHardFilters:
         _card(
             clean_catalog,
             "narrow",
-            tier_floor="local-small",
+            tier_floor="small",
             offerings=[{"transport": "litellm", "max_input": 1000}],
         )
         _card(
             clean_catalog,
             "wide",
-            tier_floor="local-small",
+            tier_floor="small",
             offerings=[{"transport": "litellm", "max_input": 200_000}],
         )
         sel = select_offering(
-            clean_catalog, _req(tier_floor=Tier.LOCAL_SMALL, max_input=50_000)
+            clean_catalog, _req(tier_floor=Tier.SMALL, max_input=50_000)
         )
         assert sel.model == "wide"
 
@@ -146,7 +146,7 @@ class TestHardFilters:
         rid = _card(
             clean_catalog,
             "notools",
-            tier_floor="local-small",
+            tier_floor="small",
             offerings=[{"transport": "litellm"}],
         )
         clean_catalog.update_ref(
@@ -156,7 +156,7 @@ class TestHardFilters:
         rid2 = _card(
             clean_catalog,
             "hastools",
-            tier_floor="local-small",
+            tier_floor="small",
             offerings=[{"transport": "litellm"}],
         )
         clean_catalog.update_ref(
@@ -166,7 +166,7 @@ class TestHardFilters:
             },
         )
         sel = select_offering(
-            clean_catalog, _req(tier_floor=Tier.LOCAL_SMALL, needs_tools=True)
+            clean_catalog, _req(tier_floor=Tier.SMALL, needs_tools=True)
         )
         assert sel.model == "hastools"
 
@@ -180,26 +180,26 @@ class TestHardFilters:
         _card(
             clean_catalog,
             "expensive5",
-            tier_floor="cloud-super",
+            tier_floor="frontier",
             offerings=[{"transport": "claude_agent", "price_in": 15.0}],
             capability={"code": 5},
         )
         _card(
             clean_catalog,
             "mid4",
-            tier_floor="cloud-mid",
+            tier_floor="big",
             offerings=[{"transport": "claude_agent", "price_in": 3.0}],
             capability={"code": 4},
         )
-        # Force the expensive band tripped: the cloud-super candidate is filtered
+        # Force the expensive band tripped: the frontier candidate is filtered
         # out, so the pick + the escalation both respect the budget.
         monkeypatch.setattr(
             breaker,
             "gate_tier",
-            lambda tier, store=None: "tripped" if tier is Tier.CLOUD_SUPER else None,
+            lambda tier, store=None: "tripped" if tier is Tier.FRONTIER else None,
         )
         sel = select_offering(
-            clean_catalog, _req(tier_floor=Tier.CLOUD_MID, axis="code", min_ordinal=4)
+            clean_catalog, _req(tier_floor=Tier.BIG, axis="code", min_ordinal=4)
         )
         assert sel.model == "mid4" and sel.next_better is None
 
@@ -213,7 +213,7 @@ class TestEndpointBooking:
         _card(
             clean_catalog,
             "z-ai/glm-5.2",
-            tier_floor="cloud-super",
+            tier_floor="frontier",
             capability={"code": 5},
             endpoints=[
                 {
@@ -235,7 +235,7 @@ class TestEndpointBooking:
             ],
         )
         sel = select_offering(
-            clean_catalog, _req(tier_floor="cloud-super", axis="code", min_ordinal=5)
+            clean_catalog, _req(tier_floor="frontier", axis="code", min_ordinal=5)
         )
         assert sel.from_catalog
         assert sel.endpoint is not None
@@ -250,7 +250,7 @@ class TestEndpointBooking:
         _card(
             clean_catalog,
             "wide-model",
-            tier_floor="cloud-super",
+            tier_floor="frontier",
             endpoints=[
                 {
                     "provider": "Small",
@@ -270,7 +270,7 @@ class TestEndpointBooking:
         )
         # need a 500k window → the cheap 101k endpoint can't be booked
         sel = select_offering(
-            clean_catalog, _req(tier_floor="cloud-super", max_input=500_000)
+            clean_catalog, _req(tier_floor="frontier", max_input=500_000)
         )
         assert sel.endpoint is not None
         assert sel.endpoint["provider"] == "Wide"
@@ -281,10 +281,10 @@ class TestEndpointBooking:
         _card(
             clean_catalog,
             "slug-only",
-            tier_floor="cloud-super",
+            tier_floor="frontier",
             offerings=[{"transport": "openai_compat", "price_in": 1.0}],
         )
-        sel = select_offering(clean_catalog, _req(tier_floor="cloud-super"))
+        sel = select_offering(clean_catalog, _req(tier_floor="frontier"))
         assert sel.from_catalog
         assert sel.endpoint is None  # bare slug, today's behaviour
 

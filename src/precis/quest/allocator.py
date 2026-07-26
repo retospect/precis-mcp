@@ -24,7 +24,7 @@ A **weekly proportional budget** (``PRECIS_QUEST_WEEKLY_CHARS``, unset = no
 cap) bounds total draw: each active quest's share ∝ its priority weight,
 metered against the **tote** (the dated `cost` entries in its logbook over
 the last 7 days, summed in **characters** — prompt + response text. Quest
-ticks run on the free/quota-bound `claude_p`/`cloud-small` lane, where
+ticks run on the free/quota-bound `claude_p`/`MEDIUM` lane, where
 ``cost_usd`` and token counts are never populated, gr162594). A quest over
 its share is skipped this round; one that has gone cold
 (no promise, long since the frontier improved, no recent activity) **cools to

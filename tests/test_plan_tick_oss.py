@@ -231,7 +231,7 @@ def test_run_oss_binds_context_and_maps_clean(monkeypatch: pytest.MonkeyPatch) -
     assert ctx.model == "opus"
     assert ctx.workspace == "projects/demo"
     assert ctx.agentlog_id == 55
-    # Resolved OSS model id (cloud-super default) fed to the loop.
+    # Resolved OSS model id (frontier default) fed to the loop.
     assert seen["model_id"] == "claude-opus-4-8"
     # PRECIS_MCP_CONFIG set → precis tools advertised (not a bare completion).
     assert seen["tool_less"] is False
@@ -297,7 +297,7 @@ def test_run_oss_breaker_pause_is_resumable(monkeypatch: pytest.MonkeyPatch) -> 
             cost_usd=None,
             turns_used=None,
             model="m",
-            tier=Tier.CLOUD_SUPER,
+            tier=Tier.FRONTIER,
             error="daily dollar cap reached",
             paused=True,
         ),
@@ -320,7 +320,7 @@ def _oss_result(**kw: Any) -> Any:
         "cost_usd": None,
         "turns_used": None,
         "model": "m",
-        "tier": Tier.CLOUD_SUPER,
+        "tier": Tier.FRONTIER,
     }
     base.update(kw)
     return LlmResult(**base)

@@ -100,7 +100,7 @@ def test_run_eval_perfect_model_scores_5(store: Any) -> None:
     report = run_eval(
         store,
         model="stub-perfect",
-        tier=Tier.CLOUD_SMALL,
+        tier=Tier.MEDIUM,
         tasks=tasks,
         dispatch_fn=dispatch,
         record=True,
@@ -122,7 +122,7 @@ def test_run_eval_wrong_model_scores_1(store: Any) -> None:
     report = run_eval(
         store,
         model="stub-wrong",
-        tier=Tier.CLOUD_SMALL,
+        tier=Tier.MEDIUM,
         tasks=tasks,
         dispatch_fn=dispatch,
         record=False,
@@ -142,7 +142,7 @@ def test_dispatch_error_scores_zero(store: Any) -> None:
     report = run_eval(
         store,
         model="stub-err",
-        tier=Tier.CLOUD_SMALL,
+        tier=Tier.MEDIUM,
         tasks=tasks,
         dispatch_fn=_err,
         record=False,
@@ -162,7 +162,7 @@ def test_unwired_scorer_is_skipped_not_scored(store: Any) -> None:
     report = run_eval(
         store,
         model="m",
-        tier=Tier.CLOUD_SMALL,
+        tier=Tier.MEDIUM,
         tasks=tasks,
         dispatch_fn=dispatch,
         record=False,
@@ -180,7 +180,7 @@ def test_compare_runs_both_without_recording(store: Any) -> None:
         store,
         model_a="good",
         model_b="bad",
-        tier=Tier.CLOUD_SMALL,
+        tier=Tier.MEDIUM,
         dispatch_fn=dispatch,
     )
     # compare runs both models over the (seed) gold set, record=False by default

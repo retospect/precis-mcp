@@ -42,7 +42,7 @@ def _clean_result() -> LlmResult:
         cost_usd=0.4,
         turns_used=3,
         model="claude-opus-4-8",
-        tier=Tier.CLOUD_SUPER,
+        tier=Tier.FRONTIER,
         raw_text="<stream-json>",
         terminal_reason=None,
     )
@@ -157,7 +157,7 @@ def test_run_claude_terminal_reason_maps_resume(
         cost_usd=1.0,
         turns_used=60,
         model="claude-opus-4-8",
-        tier=Tier.CLOUD_SUPER,
+        tier=Tier.FRONTIER,
         raw_text="<stream>",
         terminal_reason=terminal_reason,
     )
@@ -177,7 +177,7 @@ def test_run_claude_hard_error_bubbles(monkeypatch: pytest.MonkeyPatch) -> None:
         cost_usd=None,
         turns_used=None,
         model="claude-opus-4-8",
-        tier=Tier.CLOUD_SUPER,
+        tier=Tier.FRONTIER,
         error="claude -p (agent) exited 1: boom",
     )
     outcome, _ = _run_claude(monkeypatch, result=res)
@@ -192,7 +192,7 @@ def test_run_claude_timeout_is_resumable(monkeypatch: pytest.MonkeyPatch) -> Non
         cost_usd=None,
         turns_used=None,
         model="claude-opus-4-8",
-        tier=Tier.CLOUD_SUPER,
+        tier=Tier.FRONTIER,
         error="claude -p (agent) timed out after 1800s",
     )
     outcome, _ = _run_claude(monkeypatch, result=res)
@@ -208,7 +208,7 @@ def test_run_claude_breaker_pause_is_resumable(
         cost_usd=None,
         turns_used=None,
         model="claude-opus-4-8",
-        tier=Tier.CLOUD_SUPER,
+        tier=Tier.FRONTIER,
         error="daily dollar cap reached",
         paused=True,
     )
@@ -226,7 +226,7 @@ def _res(**kw: Any) -> LlmResult:
         "cost_usd": None,
         "turns_used": None,
         "model": "m",
-        "tier": Tier.CLOUD_SUPER,
+        "tier": Tier.FRONTIER,
     }
     base.update(kw)
     return LlmResult(**base)

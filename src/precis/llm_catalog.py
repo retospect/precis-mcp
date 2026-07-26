@@ -641,10 +641,6 @@ _SEED_PROSE: dict[str, str] = {
         "The cheapest rung; the per-chunk gloss lives here. Tool-less by "
         "construction."
     ),
-    "local-big": (
-        "Local big tier (qwen-class) with tools over the OpenAI tools= loop. The "
-        "local agentic rung backing BIG; ADR 0024's dream model."
-    ),
 }
 
 
@@ -970,12 +966,11 @@ def seed_default_cards(store: Store) -> list[tuple[str, int, bool]]:
     results: list[tuple[str, int, bool]] = []
     seen_models: set[str] = set()
     # ADR 0066 Phase C: seed one card per capability tier (FRONTIER/BIG/MEDIUM/
-    # SMALL) plus the still-alive LOCAL_BIG (qwen-heavy, the local rung backing
-    # BIG). These resolve to distinct models, so `tier_floor` carries the new
-    # capability value — LOCAL_BIG's card is labeled `big` (per the relabel
-    # mapping) while keeping its own `local-big` prose. The `seen_models` guard
-    # stays as a belt-and-braces dedup.
-    for tier in (Tier.FRONTIER, Tier.BIG, Tier.MEDIUM, Tier.SMALL, Tier.LOCAL_BIG):
+    # SMALL) — the location-coupled LOCAL_BIG tier (qwen-heavy, the local rung
+    # backing BIG) is retired; a served OSS model still backs BIG when the
+    # backend/chain routes there. The `seen_models` guard stays as a
+    # belt-and-braces dedup.
+    for tier in (Tier.FRONTIER, Tier.BIG, Tier.MEDIUM, Tier.SMALL):
         model_id = resolve_model(tier)
         if model_id in seen_models:
             continue
@@ -988,7 +983,7 @@ def seed_default_cards(store: Store) -> list[tuple[str, int, bool]]:
         if rates is not None:
             offering["price_in"], offering["price_out"] = rates
         prose = _SEED_PROSE.get(tier.value, f"{tier.value} tier model.")
-        tier_floor = "big" if tier is Tier.LOCAL_BIG else tier.value
+        tier_floor = tier.value
         ref_id, created = upsert_card(
             store,
             model_id=model_id,

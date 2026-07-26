@@ -62,7 +62,7 @@ class TestPure:
             )
 
         # propose_fix routes through the ADR 0046 router (unit 4b); stub the
-        # subprocess helper the CLOUD_SMALL/claude_p transport wraps, so the
+        # subprocess helper the MEDIUM/claude_p transport wraps, so the
         # real dispatch → ClaudePProvider → result_from_claude_p path runs and
         # LlmResult.data carries the parsed dict.
         monkeypatch.setattr(router, "call_claude_p", fake_call)

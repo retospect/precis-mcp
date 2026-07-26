@@ -22,7 +22,7 @@ from __future__ import annotations
 
 #: ``model id → ($/1M input tokens, $/1M output tokens)``. Approximate list
 #: prices. The local ``summarizer`` alias is intentionally absent — local
-#: inference is priced as free (the ``LOCAL_SMALL`` band is ``free``).
+#: inference is priced as free (the ``SMALL`` band is ``free``).
 PRICE_TABLE: dict[str, tuple[float, float]] = {
     # A few common hosted-OSS ids seen behind OpenRouter / DeepInfra. Extend
     # as a deployment pins concrete PRECIS_MODEL_* ids. Local aliases

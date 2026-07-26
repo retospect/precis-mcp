@@ -84,9 +84,7 @@ class FakeCtx:
         return self._cancel
 
 
-def _meta(
-    state: dict[str, Any] | None = None, *, tier: str = "local-big"
-) -> dict[str, Any]:
+def _meta(state: dict[str, Any] | None = None, *, tier: str = "big") -> dict[str, Any]:
     m: dict[str, Any] = {
         "job_type": "quest_tick",
         "executor": "coordinator",
@@ -140,7 +138,7 @@ class TestPhaseTick:
         assert out.wake_when.kind == "at_time"
         assert "ts" in out.wake_when.payload
         assert len(calls) == 1 and calls[0]["compute"] is True
-        assert calls[0]["tier"] == "local-big"
+        assert calls[0]["tier"] == "big"
 
     def test_empty_punt_backs_off_and_retries(
         self, monkeypatch: pytest.MonkeyPatch

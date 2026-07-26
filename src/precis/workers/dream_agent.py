@@ -85,7 +85,7 @@ _DEFAULT_QUEST_ANGLE = 0.5
 log = logging.getLogger(__name__)
 
 
-# Default model: the router's cloud-super tier (opus-4.8). The dream
+# Default model: the router's FRONTIER tier (opus-4.8). The dream
 # pass moved onto the consolidated cloud reasoning tier (ADR 0046 unit
 # 4b) — "if it's worth thinking about, think well": opus-4.8 is where
 # the speculative-connection work earns the stronger model, at the same

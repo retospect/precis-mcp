@@ -41,7 +41,7 @@ lease-steal (``claim_executor_jobs(reclaim_stale_running=True)``) treats
 `lease < now()` alone as safe because an ssh_node lease is ~1h — longer than any
 live dispatch. A *coordinator* lease is only 5 min and is set once at claim, not
 renewed mid-slice (:mod:`precis.workers.executors.coordinator`), so a live but
-slow ``quest_tick`` slice (its `local-big` review/propose LLM call under spark
+slow ``quest_tick`` slice (its `big`-tier review/propose LLM call under spark
 contention) can outlive its lease *while genuinely running*. Cancelling that
 would re-mint a second loop while the old slice finishes and re-parks — the very
 double-drive this module prevents. So a loop is only reaped once its lease is
@@ -73,8 +73,10 @@ from precis.quest.tick import quest_loop_enabled
 
 log = logging.getLogger(__name__)
 
-#: Default LLM tier for the coordinator loop's review/propose call.
-_DEFAULT_TIER = "local-big"
+#: Default LLM tier for the coordinator loop's review/propose call. ADR 0066
+#: Phase C retired the location-coupled ``local-big`` tier — a served OSS
+#: model still backs ``big`` when the backend/chain routes there.
+_DEFAULT_TIER = "big"
 #: Default node the coordinator claim pins to (env-overridable per-deploy;
 #: a quest's own ``meta.loop.target_node`` wins over both).
 _DEFAULT_NODE_ENV = "PRECIS_QUEST_LOOP_NODE"

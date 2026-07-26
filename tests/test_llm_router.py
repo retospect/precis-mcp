@@ -35,8 +35,44 @@ from precis.utils.llm.router import (
     result_from_claude_p,
     result_from_openai,
     select_transport,
+    tier_from_str,
     transport_for_profile,
 )
+
+# ── tier_from_str: stored-value degrade over the ADR 0066 Phase C removal ──
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        # live capability-tier strings round-trip.
+        ("frontier", Tier.FRONTIER),
+        ("big", Tier.BIG),
+        ("medium", Tier.MEDIUM),
+        ("small", Tier.SMALL),
+        # the five retired legacy strings degrade onto their analogue rather
+        # than raising, so a pre-Phase-C stored value (a quest meta.loop.tier /
+        # a baked job meta.params.tier) keeps resolving.
+        ("cloud-super", Tier.FRONTIER),
+        ("cloud-mid", Tier.BIG),
+        ("cloud-small", Tier.MEDIUM),
+        ("local-small", Tier.SMALL),
+        ("local-big", Tier.BIG),
+    ],
+)
+def test_tier_from_str_live_and_legacy(value: str, expected: Tier) -> None:
+    assert tier_from_str(value) is expected
+
+
+def test_tier_from_str_unknown_falls_back_to_default(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # An unrecognized value (typo / future tier) must not raise — it logs and
+    # falls back to the caller-supplied default (MEDIUM by default).
+    assert tier_from_str("nonsense-tier") is Tier.MEDIUM
+    assert tier_from_str("nonsense-tier", default=Tier.SMALL) is Tier.SMALL
+    assert any("unrecognized tier" in r.message for r in caplog.records)
+
 
 # ── resolve_model: defaults reproduce current call sites ───────────────
 
@@ -44,16 +80,14 @@ from precis.utils.llm.router import (
 @pytest.mark.parametrize(
     ("tier", "expected"),
     [
-        # cloud triad — the pinned plan_tick._model_alias defaults. The
-        # cloud-super default is the consolidated opus-4.8 reasoning tier
-        # (reviewers / dream / fix-gripe / generic claude_agent all resolve it).
-        (Tier.CLOUD_SUPER, "claude-opus-4-8"),
-        (Tier.CLOUD_MID, "claude-sonnet-5"),
-        (Tier.CLOUD_SMALL, "claude-haiku-4-5-20251001"),
-        # local — the litellm summarizer alias (LlmConfig.model default).
-        (Tier.LOCAL_SMALL, "summarizer"),
-        # local-big — the ADR 0024 dream alias (resolvable, not dispatchable).
-        (Tier.LOCAL_BIG, "qwen-heavy"),
+        # the pinned plan_tick._model_alias defaults. FRONTIER's default is
+        # the consolidated opus-4.8 reasoning tier (reviewers / dream /
+        # fix-gripe / generic claude_agent all resolve it).
+        (Tier.FRONTIER, "claude-opus-4-8"),
+        (Tier.BIG, "claude-sonnet-5"),
+        (Tier.MEDIUM, "claude-haiku-4-5-20251001"),
+        # the litellm summarizer alias (LlmConfig.model default).
+        (Tier.SMALL, "summarizer"),
     ],
 )
 def test_resolve_model_defaults(
@@ -65,7 +99,6 @@ def test_resolve_model_defaults(
         "PRECIS_MODEL_SONNET",
         "PRECIS_MODEL_HAIKU",
         "PRECIS_SUMMARIZE_MODEL",
-        "PRECIS_LOCAL_BIG_MODEL",
     ):
         monkeypatch.delenv(var, raising=False)
     assert resolve_model(tier) == expected
@@ -74,11 +107,10 @@ def test_resolve_model_defaults(
 @pytest.mark.parametrize(
     ("tier", "env_var"),
     [
-        (Tier.CLOUD_SUPER, "PRECIS_MODEL_OPUS"),
-        (Tier.CLOUD_MID, "PRECIS_MODEL_SONNET"),
-        (Tier.CLOUD_SMALL, "PRECIS_MODEL_HAIKU"),
-        (Tier.LOCAL_SMALL, "PRECIS_SUMMARIZE_MODEL"),
-        (Tier.LOCAL_BIG, "PRECIS_LOCAL_BIG_MODEL"),
+        (Tier.FRONTIER, "PRECIS_MODEL_OPUS"),
+        (Tier.BIG, "PRECIS_MODEL_SONNET"),
+        (Tier.MEDIUM, "PRECIS_MODEL_HAIKU"),
+        (Tier.SMALL, "PRECIS_SUMMARIZE_MODEL"),
     ],
 )
 def test_resolve_model_env_override(
@@ -90,8 +122,11 @@ def test_resolve_model_env_override(
 
 def test_tier_table_is_total() -> None:
     # The import-time assert already guards this; make it an explicit test
-    # so a future tier without a resolver row fails loudly here too.
+    # so a future tier without a resolver row fails loudly here too. The 4
+    # capability tiers (FRONTIER/BIG/MEDIUM/SMALL) are the only Tier members
+    # since ADR 0066 Phase C retired the 5 location-coupled legacy ones.
     assert set(router._TIER_MODEL) == set(Tier)
+    assert len(Tier) == 4
 
 
 # ── select_transport: (tier, tools_needed) → transport ─────────────────
@@ -100,16 +135,14 @@ def test_tier_table_is_total() -> None:
 @pytest.mark.parametrize(
     ("tier", "tools_needed", "expected"),
     [
-        (Tier.LOCAL_SMALL, False, Transport.LITELLM),
-        (Tier.LOCAL_SMALL, True, Transport.LITELLM),  # local-small is tool-less
-        (Tier.LOCAL_BIG, False, Transport.OPENAI_TOOLS),
-        (Tier.LOCAL_BIG, True, Transport.OPENAI_TOOLS),
-        (Tier.CLOUD_SMALL, False, Transport.CLAUDE_P),
-        (Tier.CLOUD_SMALL, True, Transport.CLAUDE_AGENT),
-        (Tier.CLOUD_MID, False, Transport.CLAUDE_P),
-        (Tier.CLOUD_MID, True, Transport.CLAUDE_AGENT),
-        (Tier.CLOUD_SUPER, False, Transport.CLAUDE_P),
-        (Tier.CLOUD_SUPER, True, Transport.CLAUDE_AGENT),
+        (Tier.SMALL, False, Transport.LITELLM),
+        (Tier.SMALL, True, Transport.LITELLM),  # SMALL is tool-less
+        (Tier.MEDIUM, False, Transport.CLAUDE_P),
+        (Tier.MEDIUM, True, Transport.CLAUDE_AGENT),
+        (Tier.BIG, False, Transport.CLAUDE_P),
+        (Tier.BIG, True, Transport.CLAUDE_AGENT),
+        (Tier.FRONTIER, False, Transport.CLAUDE_P),
+        (Tier.FRONTIER, True, Transport.CLAUDE_AGENT),
     ],
 )
 def test_select_transport(tier: Tier, tools_needed: bool, expected: Transport) -> None:
@@ -120,10 +153,8 @@ def test_transport_for_profile() -> None:
     from precis.utils.prompt.model import Profile
 
     # AGENT ⇒ tools ⇒ claude_agent; HELPER ⇒ no tools ⇒ claude_p.
-    assert (
-        transport_for_profile(Profile.AGENT, Tier.CLOUD_MID) is Transport.CLAUDE_AGENT
-    )
-    assert transport_for_profile(Profile.HELPER, Tier.CLOUD_SMALL) is Transport.CLAUDE_P
+    assert transport_for_profile(Profile.AGENT, Tier.BIG) is Transport.CLAUDE_AGENT
+    assert transport_for_profile(Profile.HELPER, Tier.MEDIUM) is Transport.CLAUDE_P
 
 
 # ── LlmResult normalization from each wrapper's raw shape ──────────────
@@ -142,13 +173,13 @@ def test_result_from_agent() -> None:
         cache_read_tokens=0,
         cache_creation_tokens=46653,
     )
-    got = result_from_agent(raw, model="claude-opus-4-7", tier=Tier.CLOUD_SUPER)
+    got = result_from_agent(raw, model="claude-opus-4-7", tier=Tier.FRONTIER)
     assert got == LlmResult(
         text="done thinking",
         cost_usd=0.42,
         turns_used=5,
         model="claude-opus-4-7",
-        tier=Tier.CLOUD_SUPER,
+        tier=Tier.FRONTIER,
         duration_s=3.1,  # preserved for dream/review telemetry
         # The raw stream + terminal reason ride through so a caller (plan_tick)
         # can keep a debuggable transcript and map an exhaustion to a resume.
@@ -169,7 +200,7 @@ def test_result_from_agent_usage_defaults_none() -> None:
     text/stub path) propagates ``None`` for all four onto ``LlmResult`` —
     never a false zero."""
     raw = AgentResult(final_text="ok", cost_usd=None, duration_s=0.0, turns_used=None)
-    got = result_from_agent(raw, model="claude-opus-4-7", tier=Tier.CLOUD_SUPER)
+    got = result_from_agent(raw, model="claude-opus-4-7", tier=Tier.FRONTIER)
     assert got.input_tokens is None
     assert got.output_tokens is None
     assert got.cache_read_tokens is None
@@ -182,14 +213,12 @@ def test_result_from_claude_p() -> None:
         raw_stdout='{"verdict": "ok"}',
         cost_usd=0.01,
     )
-    got = result_from_claude_p(
-        raw, model="claude-haiku-4-5-20251001", tier=Tier.CLOUD_SMALL
-    )
+    got = result_from_claude_p(raw, model="claude-haiku-4-5-20251001", tier=Tier.MEDIUM)
     # text is the raw stdout (JSON block lives inside); turns None.
     assert got.text == '{"verdict": "ok"}'
     assert got.cost_usd == 0.01
     assert got.turns_used is None
-    assert got.tier is Tier.CLOUD_SMALL
+    assert got.tier is Tier.MEDIUM
     assert got.data == {"verdict": "ok"}  # parsed dict preserved for judges
 
 
@@ -203,13 +232,13 @@ class _FakeOpenAI:
 
 def test_result_from_openai() -> None:
     raw = _FakeOpenAI(text="a gloss", total_tokens=120)
-    got = result_from_openai(raw, model="summarizer", tier=Tier.LOCAL_SMALL)
+    got = result_from_openai(raw, model="summarizer", tier=Tier.SMALL)
     # local proxy reports tokens, not dollars ⇒ cost_usd None.
     assert got.text == "a gloss"
     assert got.cost_usd is None
     assert got.turns_used is None
     assert got.model == "summarizer"
-    assert got.tier is Tier.LOCAL_SMALL
+    assert got.tier is Tier.SMALL
 
 
 # ── dispatch: routes to the right transport (wrappers monkeypatched) ────
@@ -228,7 +257,7 @@ def test_dispatch_cloud_agent(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(router, "call_claude_agent", fake_agent)
     monkeypatch.delenv("PRECIS_MODEL_SONNET", raising=False)
 
-    out = dispatch(LlmRequest(tier=Tier.CLOUD_MID, prompt="hi", tools_needed=True))
+    out = dispatch(LlmRequest(tier=Tier.BIG, prompt="hi", tools_needed=True))
 
     assert out.text == "agent out"
     assert out.turns_used == 3
@@ -254,7 +283,7 @@ def test_dispatch_agent_forwards_disallowed_tools_and_log_event(
 
     dispatch(
         LlmRequest(
-            tier=Tier.CLOUD_SUPER,
+            tier=Tier.FRONTIER,
             prompt="x",
             tools_needed=True,
             disallowed_tools=("WebFetch", "WebSearch"),
@@ -293,7 +322,7 @@ def test_dispatch_agent_max_tokens_truncates_post_hoc(
 
     out = dispatch(
         LlmRequest(
-            tier=Tier.CLOUD_SUPER,
+            tier=Tier.FRONTIER,
             prompt="hi",
             tools_needed=True,
             max_tokens=14,  # ~10 words at the 1.4 tokens/word ratio
@@ -321,7 +350,7 @@ def test_dispatch_agent_no_max_tokens_leaves_text_untouched(
 
     monkeypatch.setattr(router, "call_claude_agent", fake_agent)
 
-    out = dispatch(LlmRequest(tier=Tier.CLOUD_SUPER, prompt="hi", tools_needed=True))
+    out = dispatch(LlmRequest(tier=Tier.FRONTIER, prompt="hi", tools_needed=True))
 
     assert out.text == long_text
 
@@ -339,7 +368,7 @@ def test_dispatch_cloud_helper(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PRECIS_MODEL_HAIKU", raising=False)
 
     out = dispatch(
-        LlmRequest(tier=Tier.CLOUD_SMALL, prompt="judge this", tools_needed=False)
+        LlmRequest(tier=Tier.MEDIUM, prompt="judge this", tools_needed=False)
     )
 
     assert out.text == '{"ok": true}'
@@ -364,7 +393,7 @@ def test_dispatch_local(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(summ, "LlmClient", FakeClient)
     monkeypatch.delenv("PRECIS_SUMMARIZE_MODEL", raising=False)
 
-    out = dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="summarize me"))
+    out = dispatch(LlmRequest(tier=Tier.SMALL, prompt="summarize me"))
 
     assert out.text == "local gloss"
     assert out.cost_usd is None
@@ -391,7 +420,7 @@ def test_dispatch_local_uses_explicit_messages(
     monkeypatch.setattr(summ, "LlmClient", FakeClient)
     msgs = [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
 
-    dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, messages=msgs))
+    dispatch(LlmRequest(tier=Tier.SMALL, messages=msgs))
 
     assert seen["messages"] == msgs
 
@@ -415,11 +444,11 @@ def test_dispatch_local_threads_max_tokens(
     monkeypatch.setattr(summ, "LlmClient", FakeClient)
     monkeypatch.delenv("PRECIS_SUMMARIZE_MAX_TOKENS", raising=False)
 
-    dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="p", max_tokens=2000))
+    dispatch(LlmRequest(tier=Tier.SMALL, prompt="p", max_tokens=2000))
     assert seen["max_tokens"] == 2000
 
     # Unset ⇒ the env/config default (220) — byte-identical to today.
-    dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="p"))
+    dispatch(LlmRequest(tier=Tier.SMALL, prompt="p"))
     assert seen["max_tokens"] == 220
 
 
@@ -430,21 +459,15 @@ def test_dispatch_local_threads_max_tokens(
     ("tier", "expected"),
     [
         (Tier.SMALL, (False, 0.0)),
-        (Tier.LOCAL_SMALL, (False, 0.0)),
         (Tier.MEDIUM, (True, None)),
-        (Tier.CLOUD_SMALL, (True, None)),
         (Tier.BIG, (True, None)),
-        (Tier.CLOUD_MID, (True, None)),
-        (Tier.LOCAL_BIG, (True, None)),
         (Tier.FRONTIER, (True, None)),
-        (Tier.CLOUD_SUPER, (True, None)),
     ],
 )
 def test_tier_gen_defaults(tier: Tier, expected: tuple[bool, float | None]) -> None:
-    """SMALL/LOCAL_SMALL (a categorizer) want thinking off + temperature 0 so
-    they never burn reasoning tokens on a one-line judgment; every other
-    tier (+ its ADR 0066 analogue) wants thinking on + the provider's own
-    temperature default."""
+    """SMALL (a categorizer) wants thinking off + temperature 0 so it never
+    burns reasoning tokens on a one-line judgment; every other tier wants
+    thinking on + the provider's own temperature default."""
     assert router._tier_gen_defaults(tier) == expected
 
 
@@ -455,8 +478,8 @@ def test_tier_gen_defaults_table_is_total() -> None:
 def test_dispatch_local_threads_tier_gen_default_temperature(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """LOCAL_SMALL (the SMALL analogue) resolves to temperature 0.0 — the
-    LlmConfig default this replaces was hardcoded, now it's tier-driven."""
+    """SMALL resolves to temperature 0.0 — the LlmConfig default this
+    replaces was hardcoded, now it's tier-driven."""
     import precis.workers.llm_summarize as summ
 
     seen: dict[str, object] = {}
@@ -470,7 +493,7 @@ def test_dispatch_local_threads_tier_gen_default_temperature(
 
     monkeypatch.setattr(summ, "LlmClient", FakeClient)
 
-    dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="p"))
+    dispatch(LlmRequest(tier=Tier.SMALL, prompt="p"))
     assert seen["temperature"] == 0.0
 
 
@@ -491,11 +514,11 @@ def test_dispatch_local_explicit_temperature_overrides_tier_default(
 
     monkeypatch.setattr(summ, "LlmClient", FakeClient)
 
-    dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="p", temperature=0.85))
+    dispatch(LlmRequest(tier=Tier.SMALL, prompt="p", temperature=0.85))
     assert seen["temperature"] == 0.85
 
     # Unset ⇒ back to the tier default.
-    dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="p"))
+    dispatch(LlmRequest(tier=Tier.SMALL, prompt="p"))
     assert seen["temperature"] == 0.0
 
 
@@ -514,7 +537,7 @@ def test_dispatch_claude_transport_ignores_gen_params(
     monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
 
     out = dispatch(
-        LlmRequest(tier=Tier.CLOUD_SUPER, prompt="x", thinking=False, temperature=0.9)
+        LlmRequest(tier=Tier.FRONTIER, prompt="x", thinking=False, temperature=0.9)
     )
     assert out.error is None
     assert "thinking" not in calls["kwargs"]
@@ -558,7 +581,7 @@ def test_dispatch_local_routes_to_served_endpoint(
     monkeypatch.setattr(summ, "LlmClient", FakeClient)
     monkeypatch.delenv("PRECIS_SUMMARIZE_MODEL", raising=False)
 
-    out = dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="hi"))
+    out = dispatch(LlmRequest(tier=Tier.SMALL, prompt="hi"))
 
     # URL + model came from the slot's endpoint, not the litellm proxy default.
     assert seen["url"] == "http://127.0.0.1:11445/v1"
@@ -596,17 +619,21 @@ def test_dispatch_local_slot_without_endpoint_keeps_proxy(
     monkeypatch.delenv("PRECIS_SUMMARIZE_MODEL", raising=False)
     monkeypatch.delenv("PRECIS_SUMMARIZE_LLM_URL", raising=False)
 
-    dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="hi"))
+    dispatch(LlmRequest(tier=Tier.SMALL, prompt="hi"))
 
     assert seen["url"] == "http://127.0.0.1:4000/v1"  # litellm proxy default
     assert seen["model"] == "summarizer"
 
 
-def test_dispatch_local_big_routes_to_tools_loop(
+def test_dispatch_big_tools_routes_to_tools_loop_under_openai_backend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """LOCAL_BIG (local model + tools) now runs the OSS tools loop, not a
-    NotImplementedError — routed regardless of the cloud backend flag."""
+    """BIG + tools_needed under the OPENAI backend runs the OSS tools loop —
+    the ADR 0024 loop, not a NotImplementedError. (ADR 0066 Phase C retired
+    the LOCAL_BIG tier, which pinned this transport unconditionally
+    regardless of backend; BIG now takes this path only when the backend/
+    chain routes it there — see the backend-routing table below for the
+    ANTHROPIC-default case, which stays on claude_agent.)"""
     seen: dict[str, object] = {}
 
     def fake_tools(req: LlmRequest, model: str) -> LlmResult:
@@ -617,19 +644,21 @@ def test_dispatch_local_big_routes_to_tools_loop(
         )
 
     monkeypatch.setattr(router, "_dispatch_openai_tools", fake_tools)
-    monkeypatch.delenv("PRECIS_LOCAL_BIG_MODEL", raising=False)
+    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.delenv("PRECIS_MODEL_SONNET", raising=False)
 
-    out = dispatch(LlmRequest(tier=Tier.LOCAL_BIG, prompt="x", tools_needed=True))
+    out = dispatch(LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True))
 
     assert out.text == "looped"
     assert out.turns_used == 2
-    assert seen["model"] == "qwen-heavy"  # resolved from the tier table
+    assert seen["model"] == "claude-sonnet-5"  # resolved from the tier table
 
 
 def test_run_oss_tool_loop_honors_local_url(monkeypatch: pytest.MonkeyPatch) -> None:
     """A local-serving slot's endpoint routes the OSS tools loop to that
-    llama-swap URL with an authless dummy key — the LOCAL_BIG per-host flip,
-    winning over PRECIS_LLM_BASE_URL + the vault key."""
+    llama-swap URL with an authless dummy key — the served-model per-host
+    flip, winning over PRECIS_LLM_BASE_URL + the vault key."""
     from precis.utils.llm.router import run_oss_tool_loop
 
     seen: dict[str, object] = {}
@@ -679,7 +708,7 @@ def test_run_oss_tool_loop_hosted_thinking_off_disables_reasoning(
 ) -> None:
     """A *hosted* (no ``local_url``) OSS tools-loop call with thinking off
     gets the confirmed OpenRouter ``reasoning.enabled: false`` directive plus
-    the resolved temperature — the LOCAL_BIG/BIG-analogue path's hosted leg."""
+    the resolved temperature — the BIG-tier path's hosted leg."""
     import precis.secrets as secrets
     from precis.utils.llm.router import run_oss_tool_loop
 
@@ -734,7 +763,7 @@ def test_openai_tools_threads_tool_calls(monkeypatch: pytest.MonkeyPatch) -> Non
         ),
     )
     empty = _dispatch_openai_tools(
-        LlmRequest(tier=Tier.LOCAL_BIG, prompt="x", tools_needed=True), "m"
+        LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True), "m"
     )
     assert empty.tool_calls == 0  # definitive zero, NOT None
 
@@ -749,7 +778,7 @@ def test_openai_tools_threads_tool_calls(monkeypatch: pytest.MonkeyPatch) -> Non
         ),
     )
     acted = _dispatch_openai_tools(
-        LlmRequest(tier=Tier.LOCAL_BIG, prompt="x", tools_needed=True), "m"
+        LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True), "m"
     )
     assert acted.tool_calls == 4
 
@@ -774,7 +803,7 @@ def test_openai_tools_threads_loop_paused(monkeypatch: pytest.MonkeyPatch) -> No
         ),
     )
     out = _dispatch_openai_tools(
-        LlmRequest(tier=Tier.LOCAL_BIG, prompt="x", tools_needed=True), "m"
+        LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True), "m"
     )
     assert out.paused is True
     assert out.error == "timed out after 120.0s"
@@ -803,7 +832,7 @@ def test_openai_tools_reads_loop_cost_usd(monkeypatch: pytest.MonkeyPatch) -> No
         ),
     )
     out = _dispatch_openai_tools(
-        LlmRequest(tier=Tier.LOCAL_BIG, prompt="x", tools_needed=True), "m"
+        LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True), "m"
     )
     assert out.cost_usd == pytest.approx(0.0137)
 
@@ -830,7 +859,7 @@ def test_openai_tools_falls_back_to_token_pricing_when_cost_missing(
         ),
     )
     out = _dispatch_openai_tools(
-        LlmRequest(tier=Tier.LOCAL_BIG, prompt="x", tools_needed=True),
+        LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True),
         "deepseek-ai/DeepSeek-V3",  # a priced id in budget.pricing.PRICE_TABLE
     )
     assert out.cost_usd is not None
@@ -857,7 +886,7 @@ def test_openai_tools_unknown_model_and_no_cost_stays_none(
         ),
     )
     out = _dispatch_openai_tools(
-        LlmRequest(tier=Tier.LOCAL_BIG, prompt="x", tools_needed=True), "qwen-heavy"
+        LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True), "qwen-heavy"
     )
     assert out.cost_usd is None
 
@@ -885,9 +914,10 @@ def test_dispatch_openai_tools_cost_reaches_route_log(
     monkeypatch.setattr(route_log, "enabled", lambda: True)
     recorded: list[route_log.LlmCallRecord] = []
     monkeypatch.setattr(route_log, "record_call", lambda rec: recorded.append(rec))
-    monkeypatch.delenv("PRECIS_LOCAL_BIG_MODEL", raising=False)
+    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
 
-    dispatch(LlmRequest(tier=Tier.LOCAL_BIG, prompt="x", tools_needed=True))
+    dispatch(LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True))
 
     assert len(recorded) == 1
     assert recorded[0].cost_usd == pytest.approx(0.0055)
@@ -918,7 +948,7 @@ def test_dispatch_client_routes_through_dispatch(
     monkeypatch.delenv("PRECIS_SUMMARIZE_MAX_TOKENS", raising=False)
 
     client = DispatchClient(
-        tier=Tier.LOCAL_SMALL, model="summarizer", max_tokens=2000, source="glossary"
+        tier=Tier.SMALL, model="summarizer", max_tokens=2000, source="glossary"
     )
     msgs = [{"role": "user", "content": "define terms"}]
     out = client.complete(msgs)
@@ -949,13 +979,13 @@ def test_dispatch_client_threads_thinking_and_temperature(
 
     monkeypatch.setattr(summ, "LlmClient", FakeClient)
 
-    # Explicit pin wins over the (SMALL/LOCAL_SMALL) tier default of 0.0.
-    client = DispatchClient(tier=Tier.LOCAL_SMALL, temperature=0.6)
+    # Explicit pin wins over the SMALL tier default of 0.0.
+    client = DispatchClient(tier=Tier.SMALL, temperature=0.6)
     client.complete([{"role": "user", "content": "x"}])
     assert seen["temperature"] == 0.6
 
     # Bare client (defaults) ⇒ the tier default, unchanged from today.
-    bare = DispatchClient(tier=Tier.LOCAL_SMALL)
+    bare = DispatchClient(tier=Tier.SMALL)
     bare.complete([{"role": "user", "content": "x"}])
     assert seen["temperature"] == 0.0
 
@@ -986,7 +1016,7 @@ def test_dispatch_client_cloud_tier_splits_messages_to_prompt(
     monkeypatch.setattr(router, "call_claude_agent", fake_agent)
 
     client = DispatchClient(
-        tier=Tier.CLOUD_SUPER,
+        tier=Tier.FRONTIER,
         model="claude-opus-4-8",
         tools_needed=True,
         source="meditation",
@@ -1020,7 +1050,7 @@ def test_dispatch_client_cloud_tier_raises_dispatch_error(
 
     monkeypatch.setattr(router, "call_claude_agent", boom)
 
-    client = DispatchClient(tier=Tier.CLOUD_SUPER, tools_needed=True, source="cast")
+    client = DispatchClient(tier=Tier.FRONTIER, tools_needed=True, source="cast")
     with pytest.raises(DispatchError, match="kaboom"):
         client.complete([{"role": "user", "content": "x"}])
 
@@ -1040,7 +1070,7 @@ def test_dispatch_client_raises_on_error(monkeypatch: pytest.MonkeyPatch) -> Non
 
     monkeypatch.setattr(summ, "LlmClient", BoomClient)
 
-    client = DispatchClient(tier=Tier.LOCAL_SMALL, model="summarizer")
+    client = DispatchClient(tier=Tier.SMALL, model="summarizer")
     with pytest.raises(RuntimeError, match="proxy down"):
         client.complete([{"role": "user", "content": "x"}])
 
@@ -1065,10 +1095,10 @@ def test_dispatch_log_call_false_skips_route_log(
     recorded: list[object] = []
     monkeypatch.setattr(route_log, "record_call", lambda rec: recorded.append(rec))
 
-    dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="p", log_call=False))
+    dispatch(LlmRequest(tier=Tier.SMALL, prompt="p", log_call=False))
     assert recorded == []  # opted out
 
-    dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="p"))  # default logs
+    dispatch(LlmRequest(tier=Tier.SMALL, prompt="p"))  # default logs
     assert len(recorded) == 1
 
 
@@ -1082,7 +1112,7 @@ def test_dispatch_folds_transport_error(monkeypatch: pytest.MonkeyPatch) -> None
 
     monkeypatch.setattr(router, "call_claude_p", boom)
 
-    out = dispatch(LlmRequest(tier=Tier.CLOUD_SMALL, prompt="x"))
+    out = dispatch(LlmRequest(tier=Tier.MEDIUM, prompt="x"))
 
     # Error is folded into the normalized result, not raised.
     assert out.error is not None
@@ -1154,7 +1184,7 @@ def test_dispatch_local_timeout_is_paused(monkeypatch: pytest.MonkeyPatch) -> No
 
     monkeypatch.setattr(summ, "LlmClient", FakeClient)
 
-    out = dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="p"))
+    out = dispatch(LlmRequest(tier=Tier.SMALL, prompt="p"))
 
     assert out.paused is True
     assert out.error is not None and "timed out" in out.error
@@ -1176,7 +1206,7 @@ def test_dispatch_local_4xx_is_error_not_paused(
 
     monkeypatch.setattr(summ, "LlmClient", FakeClient)
 
-    out = dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="p"))
+    out = dispatch(LlmRequest(tier=Tier.SMALL, prompt="p"))
 
     assert out.paused is False
     assert out.error is not None and "400" in out.error
@@ -1196,7 +1226,7 @@ def test_dispatch_breaker_trip_is_flagged_paused(
         lambda *a, **kw: "budget: daily cap $20.00 reached ($85.06 spent) — paused",
     )
 
-    out = dispatch(LlmRequest(tier=Tier.CLOUD_SUPER, prompt="x", tools_needed=True))
+    out = dispatch(LlmRequest(tier=Tier.FRONTIER, prompt="x", tools_needed=True))
 
     assert out.paused is True
     assert out.error is not None and "daily cap" in out.error
@@ -1216,7 +1246,7 @@ def test_dispatch_explicit_model_override(monkeypatch: pytest.MonkeyPatch) -> No
 
     dispatch(
         LlmRequest(
-            tier=Tier.CLOUD_SUPER,
+            tier=Tier.FRONTIER,
             prompt="x",
             tools_needed=True,
             model="pinned-override",
@@ -1252,16 +1282,14 @@ def test_resolve_backend(
     ("tier", "tools_needed", "expected"),
     [
         # Tool-less cloud diverts to the OpenAI-compatible transport…
-        (Tier.CLOUD_SMALL, False, Transport.OPENAI_COMPAT),
-        (Tier.CLOUD_SUPER, False, Transport.OPENAI_COMPAT),
+        (Tier.MEDIUM, False, Transport.OPENAI_COMPAT),
+        (Tier.FRONTIER, False, Transport.OPENAI_COMPAT),
         # …and tool-using cloud diverts to the OSS tools loop.
-        (Tier.CLOUD_SUPER, True, Transport.OPENAI_TOOLS),
-        (Tier.CLOUD_MID, True, Transport.OPENAI_TOOLS),
-        # local-small now mirrors the cloud split (OPENAI_COMPAT under the
-        # openai backend — docs/proposals/llm-openrouter-bypass.md item 2);
-        # local-big is unconditionally the tools loop either way.
-        (Tier.LOCAL_SMALL, False, Transport.OPENAI_COMPAT),
-        (Tier.LOCAL_BIG, True, Transport.OPENAI_TOOLS),
+        (Tier.FRONTIER, True, Transport.OPENAI_TOOLS),
+        (Tier.BIG, True, Transport.OPENAI_TOOLS),
+        # SMALL mirrors the cloud split (OPENAI_COMPAT under the openai
+        # backend — docs/proposals/llm-openrouter-bypass.md item 2).
+        (Tier.SMALL, False, Transport.OPENAI_COMPAT),
     ],
 )
 def test_select_transport_openai_backend(
@@ -1300,7 +1328,7 @@ def test_dispatch_openai_compat(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
     monkeypatch.setenv("PRECIS_MODEL_HAIKU", "qwen-small")  # OSS id via the tier table
 
-    out = dispatch(LlmRequest(tier=Tier.CLOUD_SMALL, prompt="judge this"))
+    out = dispatch(LlmRequest(tier=Tier.MEDIUM, prompt="judge this"))
 
     assert out.text == "oss out"
     assert out.cost_usd is None
@@ -1426,7 +1454,7 @@ def test_dispatch_openai_backend_without_base_url_falls_back_to_claude(
     monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
     monkeypatch.delenv("PRECIS_MODEL_HAIKU", raising=False)
 
-    out = dispatch(LlmRequest(tier=Tier.CLOUD_SMALL, prompt="x"))
+    out = dispatch(LlmRequest(tier=Tier.MEDIUM, prompt="x"))
 
     assert out.text == '{"ok": true}'  # claude_p ran, not the OSS path
     assert calls["model"] == "claude-haiku-4-5-20251001"
@@ -1451,7 +1479,7 @@ def test_dispatch_openai_backend_tools_routes_to_loop(
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
     monkeypatch.setenv("PRECIS_MODEL_OPUS", "deepseek-v3")
 
-    out = dispatch(LlmRequest(tier=Tier.CLOUD_SUPER, prompt="x", tools_needed=True))
+    out = dispatch(LlmRequest(tier=Tier.FRONTIER, prompt="x", tools_needed=True))
     assert called.get("ran") is True
     assert called["model"] == "deepseek-v3"
     assert out.text == "ok"
@@ -1471,7 +1499,7 @@ def test_dispatch_anthropic_backend_tools_still_uses_claude_agent(
     monkeypatch.setattr(router, "call_claude_agent", fake_agent)
     monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
 
-    dispatch(LlmRequest(tier=Tier.CLOUD_SUPER, prompt="x", tools_needed=True))
+    dispatch(LlmRequest(tier=Tier.FRONTIER, prompt="x", tools_needed=True))
     assert calls.get("ran") is True
 
 
@@ -1484,7 +1512,7 @@ def test_dispatch_anthropic_backend_tools_still_uses_claude_agent(
 def test_dispatch_local_small_remaps_to_hosted_under_openai_flip(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """LOCAL_SMALL pinning model="summarizer" under backend=openai + a hosted
+    """SMALL pinning model="summarizer" under backend=openai + a hosted
     base url routes OPENAI_COMPAT with the HOSTED small-model id, not the dead
     local alias (acceptance criterion 1)."""
     seen: dict[str, object] = {}
@@ -1500,7 +1528,7 @@ def test_dispatch_local_small_remaps_to_hosted_under_openai_flip(
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
     monkeypatch.delenv("PRECIS_LOCAL_SMALL_HOSTED_MODEL", raising=False)
 
-    out = dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="x", model="summarizer"))
+    out = dispatch(LlmRequest(tier=Tier.SMALL, prompt="x", model="summarizer"))
 
     assert seen["model"] == "z-ai/glm-4.7-flash"  # the compiled hosted default
     assert seen["model"] != "summarizer"
@@ -1524,7 +1552,7 @@ def test_dispatch_local_small_remap_env_override(
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
     monkeypatch.setenv("PRECIS_LOCAL_SMALL_HOSTED_MODEL", "some/other-small")
 
-    dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="x", model="rake-lemma"))
+    dispatch(LlmRequest(tier=Tier.SMALL, prompt="x", model="rake-lemma"))
 
     assert seen["model"] == "some/other-small"
 
@@ -1532,7 +1560,7 @@ def test_dispatch_local_small_remap_env_override(
 def test_dispatch_local_small_no_remap_under_default_anthropic(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Under the default (anthropic) backend LOCAL_SMALL still resolves to
+    """Under the default (anthropic) backend SMALL still resolves to
     Transport.LITELLM — no hosted-OSS transport, so the remap is a hard no-op
     and `summarizer` reaches the loopback proxy unchanged (acceptance
     criterion 1 + 5: byte-identical to today)."""
@@ -1551,7 +1579,7 @@ def test_dispatch_local_small_no_remap_under_default_anthropic(
     monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
     monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
 
-    out = dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="x", model="summarizer"))
+    out = dispatch(LlmRequest(tier=Tier.SMALL, prompt="x", model="summarizer"))
 
     assert seen["model"] == "summarizer"
     assert out.model == "summarizer"
@@ -1578,7 +1606,7 @@ def test_dispatch_local_small_no_remap_when_base_url_unset_even_under_openai(
     monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
     monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
 
-    dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="x", model="summarizer"))
+    dispatch(LlmRequest(tier=Tier.SMALL, prompt="x", model="summarizer"))
 
     assert seen["model"] == "summarizer"
 
@@ -1616,10 +1644,10 @@ def test_dispatch_served_by_slot_is_never_remapped(
         )
 
     monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_TOOLS, _RunFn(fake_tools))
+    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
-    monkeypatch.delenv("PRECIS_LOCAL_BIG_MODEL", raising=False)
 
-    dispatch(LlmRequest(tier=Tier.LOCAL_BIG, prompt="x", tools_needed=True))
+    dispatch(LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True))
 
     assert seen["model"] == "qwen-heavy-served"  # the slot's own name, not remapped
     assert seen["local_url"] == "http://127.0.0.1:11445/v1"
@@ -1655,7 +1683,7 @@ def test_dispatch_saturated_slot_escape_also_remaps(
     monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
 
-    out = dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="x", model="summarizer"))
+    out = dispatch(LlmRequest(tier=Tier.SMALL, prompt="x", model="summarizer"))
 
     assert seen["model"] == "z-ai/glm-4.7-flash"
     assert out.model == "z-ai/glm-4.7-flash"
@@ -1668,7 +1696,7 @@ def test_hosted_small_model_override_precedence(
     compiled default — same precedence as resolve_model."""
     monkeypatch.setattr(
         "precis.utils.llm.live_config.model_override",
-        lambda tier: "app-settings/pick" if tier is Tier.LOCAL_SMALL else None,
+        lambda tier: "app-settings/pick" if tier is Tier.SMALL else None,
     )
     monkeypatch.setenv("PRECIS_LOCAL_SMALL_HOSTED_MODEL", "env/pick")
     assert router._hosted_small_model() == "app-settings/pick"
@@ -1707,7 +1735,7 @@ class _RunFn:
 
 def _ok(text: str, model: str = "m") -> LlmResult:
     return LlmResult(
-        text=text, cost_usd=None, turns_used=None, model=model, tier=Tier.CLOUD_SUPER
+        text=text, cost_usd=None, turns_used=None, model=model, tier=Tier.FRONTIER
     )
 
 
@@ -1717,7 +1745,7 @@ def _err(msg: str, model: str = "m") -> LlmResult:
         cost_usd=None,
         turns_used=None,
         model=model,
-        tier=Tier.CLOUD_SUPER,
+        tier=Tier.FRONTIER,
         error=msg,
     )
 
@@ -1731,7 +1759,7 @@ def test_failover_first_rung_wins(monkeypatch: pytest.MonkeyPatch) -> None:
     prov = FailoverProvider(
         [Rung(Transport.OPENAI_TOOLS), Rung(Transport.CLAUDE_AGENT)]
     )
-    out = prov.run(LlmRequest(tier=Tier.CLOUD_SUPER, prompt="x"), model="oss-model")
+    out = prov.run(LlmRequest(tier=Tier.FRONTIER, prompt="x"), model="oss-model")
 
     assert out.text == "primary out"
     assert primary.calls == 1
@@ -1747,7 +1775,7 @@ def test_failover_falls_through_on_error(monkeypatch: pytest.MonkeyPatch) -> Non
     prov = FailoverProvider(
         [Rung(Transport.OPENAI_TOOLS), Rung(Transport.CLAUDE_AGENT, model="claude-x")]
     )
-    out = prov.run(LlmRequest(tier=Tier.CLOUD_SUPER, prompt="x"), model="oss-model")
+    out = prov.run(LlmRequest(tier=Tier.FRONTIER, prompt="x"), model="oss-model")
 
     assert out.text == "fallback out"
     assert primary.calls == 1 and fallback.calls == 1
@@ -1764,7 +1792,7 @@ def test_failover_all_error_returns_last(monkeypatch: pytest.MonkeyPatch) -> Non
     prov = FailoverProvider(
         [Rung(Transport.OPENAI_TOOLS), Rung(Transport.CLAUDE_AGENT)]
     )
-    out = prov.run(LlmRequest(tier=Tier.CLOUD_SUPER, prompt="x"), model="m")
+    out = prov.run(LlmRequest(tier=Tier.FRONTIER, prompt="x"), model="m")
 
     assert out.error == "also down"  # the last attempt, with its error
 
@@ -1775,7 +1803,7 @@ def _paused(msg: str, model: str = "m") -> LlmResult:
         cost_usd=None,
         turns_used=None,
         model=model,
-        tier=Tier.CLOUD_SUPER,
+        tier=Tier.FRONTIER,
         error=msg,
         paused=True,
     )
@@ -1796,7 +1824,7 @@ def test_failover_all_unavailable_returns_paused(
     prov = FailoverProvider(
         [Rung(Transport.OPENAI_TOOLS), Rung(Transport.CLAUDE_AGENT)]
     )
-    out = prov.run(LlmRequest(tier=Tier.CLOUD_SUPER, prompt="x"), model="m")
+    out = prov.run(LlmRequest(tier=Tier.FRONTIER, prompt="x"), model="m")
 
     assert out.paused is True
     assert out.error == "fallback timed out after 600.0s"
@@ -1815,7 +1843,7 @@ def test_failover_all_semantic_error_stays_unpaused(
     prov = FailoverProvider(
         [Rung(Transport.OPENAI_TOOLS), Rung(Transport.CLAUDE_AGENT)]
     )
-    out = prov.run(LlmRequest(tier=Tier.CLOUD_SUPER, prompt="x"), model="m")
+    out = prov.run(LlmRequest(tier=Tier.FRONTIER, prompt="x"), model="m")
 
     assert out.paused is False
     assert out.error == "401 unauthorized"
@@ -1835,7 +1863,7 @@ def test_failover_accept_gate_rejects_low_quality(
         [Rung(Transport.OPENAI_TOOLS), Rung(Transport.CLAUDE_AGENT)],
         accept=lambda r: r.text == "good",
     )
-    out = prov.run(LlmRequest(tier=Tier.CLOUD_SUPER, prompt="x"), model="m")
+    out = prov.run(LlmRequest(tier=Tier.FRONTIER, prompt="x"), model="m")
 
     assert out.text == "good"
     assert primary.calls == 1 and fallback.calls == 1
@@ -1854,7 +1882,7 @@ def test_failover_ladder_oss_tools_has_claude_fallback(
 ) -> None:
     monkeypatch.delenv("PRECIS_MODEL_OPUS", raising=False)
     ladder = router._failover_ladder(
-        Tier.CLOUD_SUPER, tools_needed=True, backend=Backend.OPENAI
+        Tier.FRONTIER, tools_needed=True, backend=Backend.OPENAI
     )
     assert [r.transport for r in ladder] == [
         Transport.OPENAI_TOOLS,
@@ -1866,7 +1894,7 @@ def test_failover_ladder_oss_tools_has_claude_fallback(
 
 def test_failover_ladder_oss_judge_has_claude_p_fallback() -> None:
     ladder = router._failover_ladder(
-        Tier.CLOUD_SMALL, tools_needed=False, backend=Backend.OPENAI
+        Tier.MEDIUM, tools_needed=False, backend=Backend.OPENAI
     )
     assert [r.transport for r in ladder] == [
         Transport.OPENAI_COMPAT,
@@ -1876,35 +1904,33 @@ def test_failover_ladder_oss_judge_has_claude_p_fallback() -> None:
 
 def test_failover_ladder_anthropic_has_no_fallback() -> None:
     ladder = router._failover_ladder(
-        Tier.CLOUD_SUPER, tools_needed=True, backend=Backend.ANTHROPIC
+        Tier.FRONTIER, tools_needed=True, backend=Backend.ANTHROPIC
     )
     # a claude primary has nothing to fall back to.
     assert [r.transport for r in ladder] == [Transport.CLAUDE_AGENT]
 
 
-def test_failover_ladder_local_big_escalates_to_sonnet_not_qwen_heavy(
+def test_claude_default_big_resolves_sonnet_ignoring_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """LOCAL_BIG's own _TIER_MODEL default ("qwen-heavy") is an OSS alias, not
-    a claude id — its claude-fallback rung must not pin that nonsense model."""
-    monkeypatch.delenv("PRECIS_MODEL_SONNET", raising=False)
-    ladder = router._failover_ladder(
-        Tier.LOCAL_BIG, tools_needed=True, backend=Backend.ANTHROPIC
-    )
-    assert [r.transport for r in ladder] == [
-        Transport.OPENAI_TOOLS,
-        Transport.CLAUDE_AGENT,
-    ]
-    assert ladder[1].model == "claude-sonnet-5"
+    """ADR 0066 Phase C retired the LOCAL_BIG/_LOCAL_ESCALATION_TIER
+    indirection that used to reroute a local tier's claude-fallback rung
+    through its cloud analogue (LOCAL_BIG → CLOUD_MID) because LOCAL_BIG's
+    own _TIER_MODEL default was an OSS alias ("qwen-heavy"), not a claude id.
+    BIG's own row is already claude-sonnet-5, so _claude_default reads it
+    directly — still ignoring a PRECIS_MODEL_SONNET override that might point
+    the primary at an OSS id."""
+    monkeypatch.setenv("PRECIS_MODEL_SONNET", "deepseek-ai/DeepSeek-V3")
+    assert router._claude_default(Tier.BIG) == "claude-sonnet-5"
 
 
-def test_failover_ladder_local_small_has_no_claude_rung(
+def test_failover_ladder_small_has_no_claude_rung(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Per the roster ("small" skips Anthropic entirely), LOCAL_SMALL's
+    """Per the roster ("small" skips Anthropic entirely), SMALL's
     ladder never grows a claude-fallback rung, even under backend=openai."""
     ladder = router._failover_ladder(
-        Tier.LOCAL_SMALL, tools_needed=False, backend=Backend.OPENAI
+        Tier.SMALL, tools_needed=False, backend=Backend.OPENAI
     )
     assert [r.transport for r in ladder] == [Transport.OPENAI_COMPAT]
 
@@ -1915,7 +1941,7 @@ def test_claude_default_ignores_model_override(
     # Even with PRECIS_MODEL_OPUS pointed at an OSS id, the claude fallback
     # resolves the compiled-in claude id — so OSS ids never leak onto claude -p.
     monkeypatch.setenv("PRECIS_MODEL_OPUS", "deepseek-ai/DeepSeek-V3")
-    assert router._claude_default(Tier.CLOUD_SUPER) == "claude-opus-4-8"
+    assert router._claude_default(Tier.FRONTIER) == "claude-opus-4-8"
 
 
 def test_dispatch_failover_flag_falls_back_to_claude(
@@ -1939,7 +1965,7 @@ def test_dispatch_failover_flag_falls_back_to_claude(
     monkeypatch.setenv("PRECIS_LLM_FAILOVER", "1")
     monkeypatch.delenv("PRECIS_MODEL_OPUS", raising=False)
 
-    out = dispatch(LlmRequest(tier=Tier.CLOUD_SUPER, prompt="x", tools_needed=True))
+    out = dispatch(LlmRequest(tier=Tier.FRONTIER, prompt="x", tools_needed=True))
 
     assert out.text == "claude saved it"
     assert out.error is None
@@ -1949,8 +1975,8 @@ def test_dispatch_failover_flag_falls_back_to_claude(
 def test_dispatch_failover_all_rungs_timeout_is_paused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """End to end (ADR 0066 §5a): LOCAL_SMALL's ladder has no claude fallback
-    (see ``test_failover_ladder_local_small_has_no_claude_rung``), so its one
+    """End to end (ADR 0066 §5a): SMALL's ladder has no claude fallback
+    (see ``test_failover_ladder_small_has_no_claude_rung``), so its one
     OSS rung timing out exhausts the ladder — the result must still come back
     ``paused=True``, not a plain error that can park the caller's todo."""
     import precis.workers.llm_summarize as summ
@@ -1972,7 +1998,7 @@ def test_dispatch_failover_all_rungs_timeout_is_paused(
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
     monkeypatch.setenv("PRECIS_LLM_FAILOVER", "1")
 
-    out = dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="x"))
+    out = dispatch(LlmRequest(tier=Tier.SMALL, prompt="x"))
 
     assert out.paused is True
     assert out.error is not None and "timed out" in out.error
@@ -2002,7 +2028,7 @@ def test_dispatch_failover_all_rungs_4xx_stays_error_not_paused(
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
     monkeypatch.setenv("PRECIS_LLM_FAILOVER", "1")
 
-    out = dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="x"))
+    out = dispatch(LlmRequest(tier=Tier.SMALL, prompt="x"))
 
     assert out.paused is False
     assert out.error is not None and "401" in out.error
@@ -2017,11 +2043,11 @@ def test_dispatch_failover_all_rungs_4xx_stays_error_not_paused(
 # flag (the Phase B unlock — see test_dispatch_chain_override_honored_flag_off).
 
 _LADDER_CASES = [
-    (Tier.CLOUD_SUPER, True, Backend.OPENAI),
-    (Tier.CLOUD_SMALL, False, Backend.OPENAI),
-    (Tier.CLOUD_SUPER, True, Backend.ANTHROPIC),
-    (Tier.LOCAL_BIG, True, Backend.ANTHROPIC),
-    (Tier.LOCAL_SMALL, False, Backend.OPENAI),
+    (Tier.FRONTIER, True, Backend.OPENAI),
+    (Tier.MEDIUM, False, Backend.OPENAI),
+    (Tier.FRONTIER, True, Backend.ANTHROPIC),
+    (Tier.BIG, True, Backend.ANTHROPIC),
+    (Tier.SMALL, False, Backend.OPENAI),
 ]
 
 
@@ -2086,13 +2112,13 @@ def test_resolve_chain_valid_override_maps_rungs_in_order(
                     "transport": "claude_agent",
                 },
             ]
-            if tier is Tier.CLOUD_SUPER
+            if tier is Tier.FRONTIER
             else None
         ),
     )
 
     chain = router.resolve_chain(
-        Tier.CLOUD_SUPER, tools_needed=True, backend=Backend.OPENAI
+        Tier.FRONTIER, tools_needed=True, backend=Backend.OPENAI
     )
 
     assert chain == [
@@ -2109,7 +2135,7 @@ def test_resolve_chain_override_placement_missing_labels_chain(
         lambda _tier: [{"model": "z-ai/glm-5.2", "transport": "openai_tools"}],
     )
     chain = router.resolve_chain(
-        Tier.CLOUD_SUPER, tools_needed=True, backend=Backend.OPENAI
+        Tier.FRONTIER, tools_needed=True, backend=Backend.OPENAI
     )
     assert chain == [Rung(Transport.OPENAI_TOOLS, model="z-ai/glm-5.2", label="chain")]
 
@@ -2139,11 +2165,11 @@ def test_resolve_chain_malformed_override_falls_back_to_ladder(
 
     with caplog.at_level("WARNING"):
         chain = router.resolve_chain(
-            Tier.CLOUD_SUPER, tools_needed=True, backend=Backend.OPENAI
+            Tier.FRONTIER, tools_needed=True, backend=Backend.OPENAI
         )
 
     default = router._default_chain(
-        Tier.CLOUD_SUPER, tools_needed=True, backend=Backend.OPENAI
+        Tier.FRONTIER, tools_needed=True, backend=Backend.OPENAI
     )
     assert chain == default
     assert any("llm-chain" in rec.message for rec in caplog.records)
@@ -2158,10 +2184,10 @@ def test_resolve_chain_empty_override_falls_back_to_default(
     monkeypatch.delenv("PRECIS_MODEL_OPUS", raising=False)
 
     chain = router.resolve_chain(
-        Tier.CLOUD_SUPER, tools_needed=True, backend=Backend.OPENAI
+        Tier.FRONTIER, tools_needed=True, backend=Backend.OPENAI
     )
     default = router._default_chain(
-        Tier.CLOUD_SUPER, tools_needed=True, backend=Backend.OPENAI
+        Tier.FRONTIER, tools_needed=True, backend=Backend.OPENAI
     )
     assert chain == default
 
@@ -2190,7 +2216,7 @@ def test_dispatch_chain_override_honored_flag_off(
                     "transport": "claude_agent",
                 },
             ]
-            if tier is Tier.CLOUD_SUPER
+            if tier is Tier.FRONTIER
             else None
         ),
     )
@@ -2199,7 +2225,7 @@ def test_dispatch_chain_override_honored_flag_off(
     monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_TOOLS, oss)
     monkeypatch.setitem(router._PROVIDERS, Transport.CLAUDE_AGENT, claude)
 
-    out = dispatch(LlmRequest(tier=Tier.CLOUD_SUPER, prompt="x", tools_needed=True))
+    out = dispatch(LlmRequest(tier=Tier.FRONTIER, prompt="x", tools_needed=True))
 
     assert out.text == "claude saved it"
     assert out.error is None
@@ -2225,14 +2251,14 @@ def test_dispatch_single_rung_chain_override_honors_pinned_model(
                     "transport": "openai_compat",
                 }
             ]
-            if tier is Tier.CLOUD_SMALL
+            if tier is Tier.MEDIUM
             else None
         ),
     )
     compat = _FakeProv(_ok("ok", model="z-ai/glm-4.7"))
     monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_COMPAT, compat)
 
-    out = dispatch(LlmRequest(tier=Tier.CLOUD_SMALL, prompt="x"))
+    out = dispatch(LlmRequest(tier=Tier.MEDIUM, prompt="x"))
 
     assert out.text == "ok"
     assert compat.calls == 1
@@ -2378,13 +2404,13 @@ def test_dispatch_chain_override_falls_through_to_rung_1(
                     "transport": "claude_agent",
                 },
             ]
-            if tier is Tier.CLOUD_SUPER
+            if tier is Tier.FRONTIER
             else None
         ),
     )
     monkeypatch.setenv("PRECIS_LLM_FAILOVER", "1")
 
-    out = dispatch(LlmRequest(tier=Tier.CLOUD_SUPER, prompt="x", tools_needed=True))
+    out = dispatch(LlmRequest(tier=Tier.FRONTIER, prompt="x", tools_needed=True))
 
     assert out.text == "rung1 saved it"
     assert out.error is None
@@ -2397,9 +2423,11 @@ def test_dispatch_chain_override_falls_through_to_rung_1(
 def test_dispatch_paused_local_slot_falls_back_to_hosted_rung(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A saturated (paused) local-big slot, with failover on, retries rung 0
-    unmodified — no ``local_url`` override — so it lands on the hosted OSS
-    endpoint (OpenRouter) instead of returning the paused error immediately."""
+    """A saturated (paused) local slot serving BIG, with failover on, retries
+    rung 0 unmodified — no ``local_url`` override — so it lands on the hosted
+    OSS endpoint (OpenRouter) instead of returning the paused error
+    immediately. BIG only takes the OPENAI_TOOLS transport when the backend
+    routes it there (here: backend=openai)."""
     from precis.utils.llm import local_serving as ls
 
     monkeypatch.setattr(
@@ -2421,15 +2449,17 @@ def test_dispatch_paused_local_slot_falls_back_to_hosted_rung(
 
     monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_TOOLS, _RunFn(fake_tools))
     monkeypatch.setenv("PRECIS_LLM_FAILOVER", "1")
-    monkeypatch.delenv("PRECIS_LOCAL_BIG_MODEL", raising=False)
+    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.delenv("PRECIS_MODEL_SONNET", raising=False)
 
-    out = dispatch(LlmRequest(tier=Tier.LOCAL_BIG, prompt="x", tools_needed=True))
+    out = dispatch(LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True))
 
     assert out.text == "hosted rung"
     assert out.error is None
     assert out.paused is False
     assert seen["local_url"] is None  # rung 0 retried WITHOUT the busy endpoint
-    assert seen["model"] == "qwen-heavy"
+    assert seen["model"] == "claude-sonnet-5"
 
 
 def test_dispatch_paused_local_slot_still_falls_to_claude_if_hosted_also_fails(
@@ -2461,22 +2491,22 @@ def test_dispatch_paused_local_slot_still_falls_to_claude_if_hosted_also_fails(
 
     monkeypatch.setattr(router, "call_claude_agent", fake_agent)
     monkeypatch.setenv("PRECIS_LLM_FAILOVER", "1")
-    monkeypatch.delenv("PRECIS_LOCAL_BIG_MODEL", raising=False)
+    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
     monkeypatch.delenv("PRECIS_MODEL_SONNET", raising=False)
 
-    out = dispatch(LlmRequest(tier=Tier.LOCAL_BIG, prompt="x", tools_needed=True))
+    out = dispatch(LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True))
 
     assert out.text == "claude saved it"
     assert out.error is None
-    # LOCAL_BIG has no claude id of its own (_TIER_MODEL's default is the OSS
-    # alias "qwen-heavy") — it escalates through CLOUD_MID's compiled default.
+    # The claude fallback rung pins BIG's own compiled claude default.
     assert calls["model"] == "claude-sonnet-5"
 
 
-def test_dispatch_paused_local_slot_local_small_default_backend_still_paused(
+def test_dispatch_paused_local_slot_small_default_backend_still_paused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """LOCAL_SMALL under the default (anthropic) backend resolves to
+    """SMALL under the default (anthropic) backend resolves to
     Transport.LITELLM, which has no hosted mode — it always reads the local
     loopback proxy (``LlmConfig.from_env()``), never ``PRECIS_LLM_BASE_URL``.
     A paused slot must NOT retry through it (that would just re-hit the same
@@ -2502,18 +2532,18 @@ def test_dispatch_paused_local_slot_local_small_default_backend_still_paused(
     monkeypatch.setenv("PRECIS_LLM_FAILOVER", "1")
     monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
 
-    out = dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="x", tools_needed=False))
+    out = dispatch(LlmRequest(tier=Tier.SMALL, prompt="x", tools_needed=False))
 
     assert out.paused is True
     assert "busy" in (out.error or "")
 
 
-def test_dispatch_paused_local_slot_local_small_openai_backend_falls_to_hosted(
+def test_dispatch_paused_local_slot_small_openai_backend_falls_to_hosted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """LOCAL_SMALL under backend=openai resolves to Transport.OPENAI_COMPAT,
+    """SMALL under backend=openai resolves to Transport.OPENAI_COMPAT,
     which DOES have a hosted mode — a paused slot should retry rung 0
-    unmodified and land on the hosted endpoint, same as LOCAL_BIG."""
+    unmodified and land on the hosted endpoint, same as BIG."""
     from precis.utils.llm import local_serving as ls
 
     monkeypatch.setattr(
@@ -2538,7 +2568,7 @@ def test_dispatch_paused_local_slot_local_small_openai_backend_falls_to_hosted(
     monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
 
-    out = dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="x", tools_needed=False))
+    out = dispatch(LlmRequest(tier=Tier.SMALL, prompt="x", tools_needed=False))
 
     assert out.text == "hosted rung"
     assert out.error is None
@@ -2566,9 +2596,10 @@ def test_dispatch_paused_local_slot_without_failover_still_returns_paused(
 
     monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_TOOLS, _RunFn(_boom))
     monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
-    monkeypatch.delenv("PRECIS_LOCAL_BIG_MODEL", raising=False)
+    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
 
-    out = dispatch(LlmRequest(tier=Tier.LOCAL_BIG, prompt="x", tools_needed=True))
+    out = dispatch(LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True))
 
     assert out.paused is True
     assert "busy" in (out.error or "")
@@ -2594,7 +2625,7 @@ def test_failover_warns_on_fallback(
         ]
     )
     with caplog.at_level(logging.WARNING, logger="precis.utils.llm.router"):
-        out = prov.run(LlmRequest(tier=Tier.CLOUD_SUPER, prompt="x"), model="m")
+        out = prov.run(LlmRequest(tier=Tier.FRONTIER, prompt="x"), model="m")
 
     assert out.text == "claude saved it"
     msgs = " ".join(r.getMessage() for r in caplog.records)
@@ -2617,7 +2648,7 @@ def test_failover_no_warning_when_primary_succeeds(
         [Rung(Transport.OPENAI_TOOLS), Rung(Transport.CLAUDE_AGENT)]
     )
     with caplog.at_level(logging.WARNING, logger="precis.utils.llm.router"):
-        prov.run(LlmRequest(tier=Tier.CLOUD_SUPER, prompt="x"), model="m")
+        prov.run(LlmRequest(tier=Tier.FRONTIER, prompt="x"), model="m")
     assert not [r for r in caplog.records if "llm-failover" in r.getMessage()]
 
 
@@ -2675,7 +2706,7 @@ def test_dispatch_openai_compat_threads_the_pin(
     monkeypatch.setattr(summ, "LlmClient", _FakeClient)
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "http://backend.example/v1")
     req = LlmRequest(
-        tier=Tier.CLOUD_SUPER,
+        tier=Tier.FRONTIER,
         prompt="hi",
         endpoint={"provider": "DeepInfra", "quant": "fp4", "tag": "deepinfra/fp4"},
         effort="high",
@@ -2705,9 +2736,8 @@ def _compat_capture_client(
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "http://backend.example/v1")
 
 
-@pytest.mark.parametrize("tier", [Tier.SMALL, Tier.LOCAL_SMALL])
 def test_openai_compat_pins_reasoning_off_for_small_judge(
-    monkeypatch: pytest.MonkeyPatch, tier: Tier
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A SMALL-tier tool-less call (classify/summarize/triage) pins reasoning
     OFF, so a reasoning model (z-ai/glm-4.7-flash) emits its short JSON answer
@@ -2719,7 +2749,7 @@ def test_openai_compat_pins_reasoning_off_for_small_judge(
     captured: dict[str, object] = {}
     _compat_capture_client(monkeypatch, captured)
     _dispatch_openai_compat(
-        LlmRequest(tier=tier, prompt="classify me", tools_needed=False),
+        LlmRequest(tier=Tier.SMALL, prompt="classify me", tools_needed=False),
         "z-ai/glm-4.7-flash",
     )
     assert captured["extra_body"] == {"reasoning": {"enabled": False}}
@@ -2752,9 +2782,9 @@ def test_openai_compat_no_reasoning_off_for_non_small(
 
     captured: dict[str, object] = {}
     _compat_capture_client(monkeypatch, captured)
-    # CLOUD_SUPER, no endpoint/effort → nothing to pin → bare call (extra_body {}).
+    # FRONTIER, no endpoint/effort → nothing to pin → bare call (extra_body {}).
     _dispatch_openai_compat(
-        LlmRequest(tier=Tier.CLOUD_SUPER, prompt="p", tools_needed=False),
+        LlmRequest(tier=Tier.FRONTIER, prompt="p", tools_needed=False),
         "z-ai/glm-5.2",
     )
     assert "reasoning" not in (captured["extra_body"] or {})  # type: ignore[operator]
@@ -2776,9 +2806,8 @@ def _local_capture_client(
     monkeypatch.setattr(summ, "LlmClient", _FakeClient)
 
 
-@pytest.mark.parametrize("tier", [Tier.SMALL, Tier.LOCAL_SMALL])
 def test_dispatch_local_caps_small_tier_timeout(
-    monkeypatch: pytest.MonkeyPatch, tier: Tier
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A SMALL-tier local judge caps its timeout to _SMALL_LOCAL_TIMEOUT_S (far
     below the 120s LlmConfig default) so a stuck/flapping loopback proxy fails
@@ -2788,7 +2817,7 @@ def test_dispatch_local_caps_small_tier_timeout(
 
     seen: dict[str, object] = {}
     _local_capture_client(monkeypatch, seen)
-    _dispatch_local(LlmRequest(tier=tier, prompt="classify me"), "summarizer")
+    _dispatch_local(LlmRequest(tier=Tier.SMALL, prompt="classify me"), "summarizer")
     assert seen["timeout"] == _SMALL_LOCAL_TIMEOUT_S
 
 
@@ -2923,7 +2952,7 @@ def test_dispatch_openai_compat_uses_openrouter_key_for_openrouter_host(
     monkeypatch.setattr(secrets, "get_secret", fake_get_secret)
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
 
-    req = LlmRequest(tier=Tier.CLOUD_SUPER, prompt="hi")
+    req = LlmRequest(tier=Tier.FRONTIER, prompt="hi")
     res = _dispatch_openai_compat(req, "z-ai/glm-5.2")
 
     assert res.error is None
@@ -2972,7 +3001,7 @@ def test_dispatch_async_routes_to_streaming_agent_path(
     out = asyncio.run(
         dispatch_async(
             LlmRequest(
-                tier=Tier.CLOUD_MID,
+                tier=Tier.BIG,
                 prompt="hi",
                 tools_needed=True,
                 on_event=on_event,
@@ -3005,7 +3034,7 @@ def test_dispatch_async_falls_back_to_sync_dispatch_without_on_event(
     monkeypatch.setattr(router, "dispatch", fake_dispatch)
 
     out = asyncio.run(
-        dispatch_async(LlmRequest(tier=Tier.CLOUD_MID, prompt="hi", tools_needed=True))
+        dispatch_async(LlmRequest(tier=Tier.BIG, prompt="hi", tools_needed=True))
     )
     assert out.text == "sync path"
     assert seen["req"].prompt == "hi"  # type: ignore[attr-defined]
@@ -3037,7 +3066,7 @@ def test_dispatch_async_falls_back_to_sync_dispatch_for_non_agent_transport(
     out = asyncio.run(
         dispatch_async(
             LlmRequest(
-                tier=Tier.CLOUD_SMALL,
+                tier=Tier.MEDIUM,
                 prompt="judge",
                 tools_needed=False,
                 on_event=on_event,
@@ -3076,118 +3105,13 @@ def test_dispatch_async_records_route_log(monkeypatch: pytest.MonkeyPatch) -> No
 
     asyncio.run(
         dispatch_async(
-            LlmRequest(
-                tier=Tier.CLOUD_MID, prompt="hi", tools_needed=True, on_event=on_event
-            )
+            LlmRequest(tier=Tier.BIG, prompt="hi", tools_needed=True, on_event=on_event)
         )
     )
     assert recorded["transport"] is Transport.CLAUDE_AGENT
 
 
-# ── ADR 0066 Phase A: FRONTIER/BIG/MEDIUM/SMALL — additive, analogue-exact ──
-#
-# The four new capability tiers must route byte-for-byte identically to
-# their analogue (FRONTIER↔CLOUD_SUPER, BIG↔CLOUD_MID, MEDIUM↔CLOUD_SMALL,
-# SMALL↔LOCAL_SMALL) — nothing constructs them outside tests/aliases yet, so
-# this whole section is a *safety net for the future sweep*, not a behavior
-# change today.
-
-_ANALOGUE_PAIRS: tuple[tuple[Tier, Tier], ...] = (
-    (Tier.FRONTIER, Tier.CLOUD_SUPER),
-    (Tier.BIG, Tier.CLOUD_MID),
-    (Tier.MEDIUM, Tier.CLOUD_SMALL),
-    (Tier.SMALL, Tier.LOCAL_SMALL),
-)
-
-_ENV_VARS_TO_CLEAR = (
-    "PRECIS_MODEL_OPUS",
-    "PRECIS_MODEL_SONNET",
-    "PRECIS_MODEL_HAIKU",
-    "PRECIS_SUMMARIZE_MODEL",
-    "PRECIS_LOCAL_BIG_MODEL",
-)
-
-
-def _clear_tier_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for var in _ENV_VARS_TO_CLEAR:
-        monkeypatch.delenv(var, raising=False)
-    monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
-
-
-@pytest.mark.parametrize(("new", "analogue"), _ANALOGUE_PAIRS)
-def test_new_tier_resolve_model_matches_analogue(
-    new: Tier, analogue: Tier, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _clear_tier_env(monkeypatch)
-    for backend in (None, Backend.ANTHROPIC, Backend.OPENAI):
-        if backend is None:
-            assert resolve_model(new) == resolve_model(analogue)
-        else:
-            assert resolve_model(new, backend=backend) == resolve_model(
-                analogue, backend=backend
-            )
-
-
-@pytest.mark.parametrize(("new", "analogue"), _ANALOGUE_PAIRS)
-@pytest.mark.parametrize("tools_needed", [False, True])
-@pytest.mark.parametrize("backend", [Backend.ANTHROPIC, Backend.OPENAI])
-def test_new_tier_select_transport_matches_analogue(
-    new: Tier, analogue: Tier, tools_needed: bool, backend: Backend
-) -> None:
-    assert select_transport(
-        new, tools_needed=tools_needed, backend=backend
-    ) is select_transport(analogue, tools_needed=tools_needed, backend=backend)
-
-
-@pytest.mark.parametrize(("new", "analogue"), _ANALOGUE_PAIRS)
-@pytest.mark.parametrize("tools_needed", [False, True])
-@pytest.mark.parametrize("backend", [Backend.ANTHROPIC, Backend.OPENAI])
-def test_new_tier_failover_ladder_matches_analogue(
-    new: Tier,
-    analogue: Tier,
-    tools_needed: bool,
-    backend: Backend,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _clear_tier_env(monkeypatch)
-    # A hosted base url is needed to observe the OSS/claude-fallback shape at
-    # all for the cloud analogues under OPENAI; the local analogues (SMALL/
-    # LOCAL_SMALL) don't need it for their transport choice but do for the
-    # ladder's OSS rung to resolve deterministically.
-    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
-
-    new_ladder = router._failover_ladder(
-        new, tools_needed=tools_needed, backend=backend
-    )
-    analogue_ladder = router._failover_ladder(
-        analogue, tools_needed=tools_needed, backend=backend
-    )
-
-    assert [r.transport for r in new_ladder] == [r.transport for r in analogue_ladder]
-    assert [r.label for r in new_ladder] == [r.label for r in analogue_ladder]
-    # A rung's pinned model differs in *label* space only if the analogue's
-    # model is tier-specific (it isn't here — both draw the same env var/
-    # default row) — so the models line up too.
-    assert [r.model for r in new_ladder] == [r.model for r in analogue_ladder]
-
-
-def test_small_gets_no_claude_fallback_like_local_small(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """SMALL (LOCAL_SMALL's analogue) skips Anthropic entirely — same
-    no-claude-fallback ladder, even under backend=openai."""
-    ladder = router._failover_ladder(
-        Tier.SMALL, tools_needed=False, backend=Backend.OPENAI
-    )
-    assert [r.transport for r in ladder] == [Transport.OPENAI_COMPAT]
-
-
-def test_tier_table_totality_holds_with_new_tiers() -> None:
-    # 5 old + 4 new = 9 members; the import-time assert already guards this,
-    # but make it explicit here so a future tier addition without a row
-    # fails loudly in this test too.
-    assert set(router._TIER_MODEL) == set(Tier)
-    assert len(Tier) == 9
+# ── ADR 0066 Phase C: the 4 capability tiers are the only tiers ────────
 
 
 def test_new_aliases_resolve_to_new_tiers() -> None:
@@ -3197,41 +3121,22 @@ def test_new_aliases_resolve_to_new_tiers() -> None:
     assert router.PLANNER_TIER_BY_ALIAS["small"] is Tier.SMALL
 
 
-def test_resolve_model_byte_for_byte_against_legacy_analogue(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """ADR 0066 Phase C: the cloud-alias remap in ``PLANNER_TIER_BY_ALIAS``
-    is behavior-preserving ONLY because every new tier resolves to the exact
-    same model as its legacy analogue — pin that invariant explicitly (on top
-    of the parametrized ``test_new_tier_resolve_model_matches_analogue``
-    above) so a future edit to ``_TIER_MODEL`` that breaks it fails loudly
-    here too."""
-    _clear_tier_env(monkeypatch)
-    assert resolve_model(Tier.FRONTIER) == resolve_model(Tier.CLOUD_SUPER)
-    assert resolve_model(Tier.BIG) == resolve_model(Tier.CLOUD_MID)
-    assert resolve_model(Tier.MEDIUM) == resolve_model(Tier.CLOUD_SMALL)
-    assert resolve_model(Tier.SMALL) == resolve_model(Tier.LOCAL_SMALL)
-
-
-def test_dispatch_client_default_tier_is_new_small() -> None:
-    """ADR 0066 Phase C: ``DispatchClient``'s bare default now names the new
-    SMALL capability tier — its LOCAL_SMALL analogue, so a caller that never
-    passes ``tier=`` keeps resolving to the same model/transport."""
+def test_dispatch_client_default_tier_is_small() -> None:
+    """``DispatchClient``'s bare default names the SMALL capability tier."""
     from precis.utils.llm.router import DispatchClient
 
     assert DispatchClient().tier is Tier.SMALL
 
 
-def test_cloud_aliases_remapped_to_new_tiers_local_carve_out_holds() -> None:
+def test_cloud_aliases_and_local_alias_resolve_to_capability_tiers() -> None:
     """ADR 0066 Phase C: the three cloud legacy aliases (opus/sonnet/haiku)
-    now resolve through the new capability tiers — behavior-identical, since
-    each new tier's ``_TIER_MODEL`` row mirrors its legacy analogue
-    byte-for-byte. `local` keeps pinning LOCAL_BIG (the privacy carve-out),
-    NOT the new BIG tier, until the local-only sensitivity constraint ships."""
+    resolve through the capability tiers, and `local` now pins BIG directly —
+    the location-coupled LOCAL_BIG tier this alias used to pin is retired; a
+    served OSS model still backs BIG when the backend/chain routes there."""
     assert router.PLANNER_TIER_BY_ALIAS["opus"] is Tier.FRONTIER
     assert router.PLANNER_TIER_BY_ALIAS["sonnet"] is Tier.BIG
     assert router.PLANNER_TIER_BY_ALIAS["haiku"] is Tier.MEDIUM
-    assert router.PLANNER_TIER_BY_ALIAS["local"] is Tier.LOCAL_BIG
+    assert router.PLANNER_TIER_BY_ALIAS["local"] is Tier.BIG
 
 
 def test_llm_tag_big_passes_todo_guards_vocab() -> None:

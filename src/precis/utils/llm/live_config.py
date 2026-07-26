@@ -39,11 +39,11 @@ log = logging.getLogger(__name__)
 #: app_settings key for the backend family — ``"anthropic"`` | ``"openai"``.
 BACKEND_KEY = "llm.backend"
 #: app_settings key prefix for a per-tier model override: ``llm.model.<tier>``
-#: (e.g. ``llm.model.cloud-super``). The suffix is the ``Tier`` string value,
+#: (e.g. ``llm.model.frontier``). The suffix is the ``Tier`` string value,
 #: so the console writes the same tier vocabulary the resolver keys on.
 MODEL_KEY_PREFIX = "llm.model."
 #: app_settings key prefix for a per-tier chain override: ``llm.chain.<tier>``
-#: (e.g. ``llm.chain.cloud-super``), a JSON-encoded list of rung dicts
+#: (e.g. ``llm.chain.frontier``), a JSON-encoded list of rung dicts
 #: ``{"placement": "cloud"|"local", "model": <str>, "transport": <str>}``
 #: (ADR 0066 §4). Same suffix vocabulary as :data:`MODEL_KEY_PREFIX`.
 CHAIN_KEY_PREFIX = "llm.chain."

@@ -1,5 +1,5 @@
 """Unit 4b — the Layer-2 tex fixer selects its model through the ADR 0046
-resolver (CLOUD_MID / sonnet), byte-identically to the legacy inline read.
+resolver (BIG / sonnet), byte-identically to the legacy inline read.
 
 DB-free and spawn-free: ``_run_chktex`` is stubbed to force the LLM path and
 ``subprocess.run`` is captured, so no ``claude`` binary runs.
@@ -38,7 +38,7 @@ def _capture_cmd(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
 
 def test_uses_resolved_sonnet_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Env unset → CLOUD_MID default, byte-identical to the legacy default."""
+    """Env unset → BIG default, byte-identical to the legacy default."""
     monkeypatch.delenv("PRECIS_MODEL_SONNET", raising=False)
     cmd = _capture_cmd(monkeypatch)
     assert cmd[cmd.index("--model") + 1] == "claude-sonnet-5"

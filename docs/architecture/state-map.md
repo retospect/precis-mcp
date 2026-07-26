@@ -425,9 +425,9 @@ executor's (`claude_inproc` plan_tick, etc.).
   row surfaces the published mp3 + compiled PDF as download links. Compose is the
   `reading_brief`/`meditation`
   **`claude_inproc`** job_types (melchior — both casts, `card_forge`, and the news
-  briefing now compose via the LLM router's `Tier.CLOUD_SUPER` (`DispatchClient`,
+  briefing now compose via the LLM router's `Tier.FRONTIER` (`DispatchClient`,
   ADR 0046) onto `claude_agent` — a `claude -p` subprocess, direct Anthropic OAuth —
-  not the melchior-loopback litellm proxy; litellm now serves only the local tiers)
+  not the melchior-loopback litellm proxy; litellm now serves only `SMALL`)
   on daily `level:recurring` watches; **TTS is the separate downstream spark pass**, so the
   nice-model compose and the container narration never block each other. CLI:
   `precis cast run <reading|nidra> [--publish]` + `precis cast schedule [--now]`.
@@ -588,42 +588,39 @@ OSS tick skips the prose-kind gate — boot-time only — so the `## Draft`
 prompt block is its sole steer there.) **Fleet-flip safety**
 (`docs/proposals/glm-fleet-flip-safety.md`, landed 2026-07-25) closes three
 `backend=openai` coherence gaps found on a live flip: **Part 1** — `dispatch`
-transparently remaps the `LOCAL_SMALL` local-only aliases
-(`summarizer`/`rake-lemma`) to a configured hosted small model
-(`llm.model.local-small` override → `PRECIS_LOCAL_SMALL_HOSTED_MODEL` → default
-`z-ai/glm-4.7-flash`) whenever the call lands on a hosted OSS transport
-(`router.py::_hosted_small_remap`) — a no-op under default `anthropic` or a
-local `served_by` slot. **Part 2** — the `openai_tools` loop now captures
-OpenRouter's `usage.cost` (falling back to the token price table) into
-`LlmResult.cost_usd`/`llm_call_log.cost_usd` (`openai_tools.py`,
-`router.py::_dispatch_openai_tools`), so the budget breaker isn't blind to
-OpenRouter spend. **Part 3** — `resolve_model(tier, backend=)`
-(`router.py::resolve_model`) is backend-aware: under an effective `ANTHROPIC`
-backend it drops an incoherent OSS `app_settings` model override for the
-`CLOUD_*` tiers only (local-tier overrides are always honored — they never
-route to a claude transport), so a half-applied flip (backend demoted for a
-missing `PRECIS_LLM_BASE_URL`, model override still OSS) never hands an OSS
-slug to a claude transport. The two raw-`claude`-subprocess sites —
+transparently remaps `SMALL`'s local-only aliases (`summarizer`/`rake-lemma`)
+to a configured hosted small model (`llm.model.small` override →
+`PRECIS_LOCAL_SMALL_HOSTED_MODEL` → default `z-ai/glm-4.7-flash`) whenever the
+call lands on a hosted OSS transport (`router.py::_hosted_small_remap`) — a
+no-op under default `anthropic` or a local `served_by` slot. **Part 2** — the
+`openai_tools` loop now captures OpenRouter's `usage.cost` (falling back to
+the token price table) into `LlmResult.cost_usd`/`llm_call_log.cost_usd`
+(`openai_tools.py`, `router.py::_dispatch_openai_tools`), so the budget
+breaker isn't blind to OpenRouter spend. **Part 3** — `resolve_model(tier,
+backend=)` (`router.py::resolve_model`) is backend-aware: under an effective
+`ANTHROPIC` backend it drops an incoherent OSS `app_settings` model override
+for `FRONTIER`/`BIG`/`MEDIUM` only (`SMALL`'s override is always honored — it
+never routes to a claude transport), so a half-applied flip (backend demoted
+for a missing `PRECIS_LLM_BASE_URL`, model override still OSS) never hands an
+OSS slug to a claude transport. The two raw-`claude`-subprocess sites —
 `fix_gripe` and `sandbox_run`/`claude_docker` — read `resolve_backend()` and
 skip clean (no spawn, job marked skipped/cancelled, not failed) under
 `backend=openai` rather than being folded through `dispatch`. **Built: the
 `FailoverProvider`/`Rung` ladder**
 (`PRECIS_LLM_FAILOVER`, off by default) wraps an OSS primary transport with
-an automatic claude-fallback rung on a transport error; a `LOCAL_*` tier's
-claude rung resolves through `_LOCAL_ESCALATION_TIER` (its own
-`_TIER_MODEL` default is an OSS alias, not a claude id — `LOCAL_BIG`
-escalates to `CLOUD_MID`'s sonnet id; `LOCAL_SMALL` gets no claude rung at
-all, per the roster below). The ladder also covers a **saturated local
-slot**: `dispatch()`'s paused-slot branch (`local_serving.acquire()` returns
-`paused=True`, all capacity busy) retries the ladder's rung 0 with the
+an automatic claude-fallback rung on a transport error, pinned to that tier's
+own compiled claude id (`router.py::_claude_default` reads
+`_TIER_MODEL[tier][1]` directly, ignoring any `PRECIS_MODEL_*`/live override);
+`SMALL` gets no claude rung at all. The ladder also covers a **saturated
+local slot**: `dispatch()`'s paused-slot branch (`local_serving.acquire()`
+returns `paused=True`, all capacity busy) retries the ladder's rung 0 with the
 request's `local_url` override cleared, landing on the hosted OSS endpoint
 instead of the busy local hardware, before falling to claude if that also
-errors (`docs/proposals/llm-openrouter-bypass.md` item 3). `Tier.LOCAL_SMALL`
-also gained a `backend`-aware branch in `select_transport` (`OPENAI_COMPAT`
-under `backend=openai`, item 2) — previously pinned unconditionally to the
-loopback litellm proxy with no hosted-backend escape at all. **SMALL judge
-pins reasoning off:** a tool-less `SMALL`/`LOCAL_SMALL` call with no explicit
-`effort` merges `reasoning:{enabled:false}` into the `openai_compat` body
+errors (`docs/proposals/llm-openrouter-bypass.md` item 3). `select_transport`
+routes `SMALL` to `OPENAI_COMPAT` under `backend=openai` (item 2), vs. the
+loopback litellm proxy it takes under the default `ANTHROPIC`. **SMALL judge
+pins reasoning off:** a tool-less `SMALL` call with no explicit `effort`
+merges `reasoning:{enabled:false}` into the `openai_compat` body
 (`router.py::_dispatch_openai_compat`) — a reasoning model on that rung
 (`z-ai/glm-4.7-flash`, tier-floor medium) otherwise spends the whole
 `max_tokens` budget on a reasoning trace and returns empty `content`;
@@ -632,64 +629,62 @@ pins reasoning off:** a tool-less `SMALL`/`LOCAL_SMALL` call with no explicit
 empty-check and silently failed while `errored` stayed false), so the caller's
 empty-handling fires (classify no-value, summarize's `EmptySummaryError`
 retry). **SMALL local calls also fail fast:** `_dispatch_local` caps a
-`SMALL`/`LOCAL_SMALL` call's loopback timeout at `_SMALL_LOCAL_TIMEOUT_S` (30s,
-vs the 120s `LlmConfig` default; an explicit `req.timeout_s` still wins) so a
+`SMALL` call's loopback timeout at `_SMALL_LOCAL_TIMEOUT_S` (30s, vs the 120s
+`LlmConfig` default; an explicit `req.timeout_s` still wins) so a
 stuck/flapping `:4000` proxy fails fast → the `FailoverProvider` falls over to
 the hosted rung, instead of a batch (N chunks × 2 calls × 120s) blocking past
 the worker watchdog and stranding the pass (the 2026-07-26 classify stall).
-**ADR 0066 Phase A** (dark/additive, no live caller yet — call-site
-sweep is Phase C):
+
+**ADR 0066 — operator placement-chains, all phases shipped.**
 `live_config.chain_override(tier)` + `router.py::resolve_chain` layer a
 per-tier `app_settings`-backed chain override in front of the compiled
-default. **Phase B (step 1, `resolve_chain` always-on):** `dispatch` /
-`dispatch_async` now resolve *every* call through `resolve_chain`, so an
+default; `dispatch`/`dispatch_async` resolve *every* call through it, so an
 operator `llm.chain.<tier>` override is read **regardless of
-`PRECIS_LLM_FAILOVER`** (Phase A wired it inside `if _failover_enabled():`,
-which left a set chain inert). With no override, `resolve_chain` →
-`_default_chain`: a single primary rung by default (byte-for-byte the
-pre-Phase-B non-failover path), or `_failover_ladder` when the flag is on.
-`dispatch` wraps in `FailoverProvider` iff `_failover_enabled() or len(chain)
-> 1 or chain[0].model is not None` — reproducing the legacy flag-on/flag-off
-wrapping exactly, and activating operator chains (every parsed override rung
-pins a model, so a single-rung operator chain is honoured too). **Phase B
-(step 3a, cloud throttle, §5):** `live_config.cloud_enabled()` (app_settings
-`llm.cloud_enabled`, default true) + `router.py::_apply_cloud_throttle` prune
-a resolved chain's cloud rungs when an operator disables cloud —
-`_rung_is_cloud` classifies by explicit operator `placement` label, else by
-transport (claude = cloud; litellm = local; OSS = cloud iff
-`PRECIS_LLM_BASE_URL` set). A tier with a local rung keeps flowing on it; a
-tier left with no rung prunes to empty → `dispatch` returns `paused`
+`PRECIS_LLM_FAILOVER`**. With no override, `resolve_chain` → `_default_chain`:
+a single primary rung by default (byte-for-byte the non-failover path), or
+`_failover_ladder` when the flag is on. `dispatch` wraps in `FailoverProvider`
+iff `_failover_enabled() or len(chain) > 1 or chain[0].model is not None` —
+so an operator single-rung chain (every parsed override rung pins a model) is
+honoured too. **Cloud throttle (§5):** `live_config.cloud_enabled()`
+(app_settings `llm.cloud_enabled`, default true) +
+`router.py::_apply_cloud_throttle` prune a resolved chain's cloud rungs when
+an operator disables cloud — `_rung_is_cloud` classifies by explicit operator
+`placement` label, else by transport (claude = cloud; litellm = local; OSS =
+cloud iff `PRECIS_LLM_BASE_URL` set). A tier with a local rung keeps flowing
+on it; a tier left with no rung prunes to empty → `dispatch` returns `paused`
 (skip-not-fail, never silently degraded). **Which tiers survive depends on
 their chain:** `FRONTIER` is always cloud-only (pauses); today only `SMALL`
 has a standing local rung (`LITELLM`), so `BIG`/`MEDIUM` also pause under
 throttle until an operator chain gives them a `placement:"local"` rung (the
 target-state "drop to local" story lands with the Phase-3 roster / chain
-editor). No-op while cloud is on (byte-identical). **Phase B (step 2,
-operator surface):** `/status?tab=services` now carries an operator
-placement-chain editor (a per-tier JSON textarea `POST /factory/llm/chain`
-writing `llm.chain.<tier>`, server-validated list-only, blank = revert) plus
-a cloud-throttle toggle (`POST /factory/llm/cloud` writing
-`llm.cloud_enabled`) — `status.py::_llm_chain_ctx`, degrade-safe. This is the
-write UI for the two settings the router already reads. Two Phase-B pieces are
-**deferred to Phase C** for concrete code reasons: the `tier_floor` card
-migration (step 3b) is clobbered by `llm_catalog.seed_default_cards`'
-first-wins `for tier in Tier` on every reconcile tick, so it must ride with
-the Phase-C catalog reseed; and the caller-picker→4-rungs split is entangled
-with the unresolved planner-tag-vocab question (`LLM:small`/`medium` no-op via
-fallback). The legacy GLM-preset panel (`_llm_override_ctx`) stays until
-Phase C. `router.py::Tier` also gained four capability rungs
-(`FRONTIER`/`BIG`/`MEDIUM`/`SMALL`) **additively** alongside the legacy five,
-each routing byte-for-byte identically to its legacy analogue
-(`FRONTIER↔CLOUD_SUPER`, `BIG↔CLOUD_MID`, `MEDIUM↔CLOUD_SMALL`,
-`SMALL↔LOCAL_SMALL`), with new `LLM:` aliases `frontier`/`big`/`medium`/
-`small` alongside the unchanged legacy aliases. **Failure semantics (§5a):** a
-transport exception is classified (`router.py::_is_unavailability`) —
-timeout / connection / HTTP 5xx / 429 → `paused` (skip-not-fail, the todo
-retries next cycle, never parks); HTTP 4xx (semantic) stays `error`. Applies to
-the OSS transports and, via `ClaudeProcessError.timed_out`, to a `claude`
-wall-clock timeout too — so a claude-only rung (`FRONTIER`) waits rather than
-parking. Every transport already carries a wall-clock timeout (claude 600 s,
-openai_tools / litellm 120 s), so a hang converts to that classified failure.
+editor). No-op while cloud is on (byte-identical). `/status?tab=services`
+carries the operator placement-chain editor (a per-tier JSON textarea `POST
+/factory/llm/chain` writing `llm.chain.<tier>`, server-validated list-only,
+blank = revert) plus a cloud-throttle toggle (`POST /factory/llm/cloud`
+writing `llm.cloud_enabled`) — `status.py::_llm_chain_ctx`, degrade-safe.
+**Phase C (landed) retired the five location-coupled tier members** —
+`router.py::Tier` now has *only* `FRONTIER`/`BIG`/`MEDIUM`/`SMALL`; every call
+site routes on capability, never location (a served OSS model backs `BIG`
+when the backend/chain routes there, not a separate `LOCAL_BIG` tier). A
+*stored* pre-Phase-C tier string (a quest's `meta.loop.tier`, a job's
+`meta.params.tier`, a route-log row) degrades onto its capability analogue via
+`router.tier_from_str()` + `_LEGACY_TIER_ALIASES` instead of raising —
+`local-small`→`SMALL`, `local-big`/`cloud-mid`→`BIG`, `cloud-small`→`MEDIUM`,
+`cloud-super`→`FRONTIER`. Phase C also folded in the two pieces Phase B
+deferred: `llm_catalog.seed_default_cards` now seeds one `tier_floor` card per
+capability tier (`for tier in (FRONTIER, BIG, MEDIUM, SMALL)`, no more
+first-wins clobber over five tiers), and the four capability `LLM:` aliases
+(`frontier`/`big`/`medium`/`small`) are live in `PLANNER_TIER_BY_ALIAS`
+alongside the legacy `opus`/`sonnet`/`haiku`/`local` names (`local` now pins
+`BIG` directly). The legacy GLM-preset panel (`_llm_override_ctx`) is gone.
+**Failure semantics (§5a):** a transport exception is classified
+(`router.py::_is_unavailability`) — timeout / connection / HTTP 5xx / 429 →
+`paused` (skip-not-fail, the todo retries next cycle, never parks); HTTP 4xx
+(semantic) stays `error`. Applies to the OSS transports and, via
+`ClaudeProcessError.timed_out`, to a `claude` wall-clock timeout too — so a
+claude-only rung (`FRONTIER`) waits rather than parking. Every transport
+already carries a wall-clock timeout (claude 600 s, openai_tools / litellm
+120 s), so a hang converts to that classified failure.
 
 ## Discovery layer (F20)
 
@@ -1001,8 +996,9 @@ The master kinds table lives in the `precis-overview` skill.
   steering, materials as `structure` servers, slice 4). Skill:
   `precis-quest-help`. **Perpetual loop = a `coordinator` job**
   (`workers/job_types/quest_tick.py`): each slice harvests finished sims, runs
-  the review+propose tick (`run_quest_tick`, tier `local-big` → the node-local
-  OSS model), co-dispatches the batch's barrier/relax sims, and `Yield`s on an
+  the review+propose tick (`run_quest_tick`, tier `big` — routed by
+  `resolve_chain`/`llm.chain.big`, a served local OSS model when the chain
+  points there), co-dispatches the batch's barrier/relax sims, and `Yield`s on an
   `at_time` heartbeat until they land — event-driven, self-paced on sim
   completion (not a cron), with per-quest backpressure (no new batch while one is
   in flight) + a node-load starvation gate. The coordinator claim now honours
@@ -1067,7 +1063,7 @@ The master kinds table lives in the `precis-overview` skill.
   margin** (`PRECIS_QUEST_LOOP_ORPHAN_GRACE_S`, default 600 s) — so
   `ensure_quest_loop` re-mints in the same pass (~15 min recovery). The grace
   margin is load-bearing: unlike the ~1h ssh_node lease, a coordinator lease is
-  5 min and *not renewed mid-slice*, so a live-but-slow `local-big`
+  5 min and *not renewed mid-slice*, so a live-but-slow `big`-tier
   review/propose slice can outlive its lease while genuinely running — bare
   `lease < now()` (the ssh_node steal predicate) would false-positive and
   double-drive. Reap terminalizes to `cancelled` (tag `reaped:reboot-orphan`),
@@ -1098,7 +1094,7 @@ The master kinds table lives in the `precis-overview` skill.
   with a hard "commit now" directive (`_build_commit_prompt`) plus the
   tried-set (`quest/explore.py::tried_set_summary` — a pure DB-fact read of
   tried candidates + measures, no chemistry enumeration); still nothing
-  escalates one tier to `Tier.CLOUD_SUPER` and re-prompts once more; still
+  escalates one tier to `Tier.FRONTIER` and re-prompts once more; still
   nothing backs off honestly (a logged `decision` entry — code never
   fabricates a dispatch or picks chemistry). Every tick prompt also carries
   the **explorer's creed** (`_explorers_creed`): a *moving* champion-to-beat
@@ -1195,7 +1191,7 @@ The master kinds table lives in the `precis-overview` skill.
   (`LITELLM`+`OPENAI_COMPAT` → one param'd provider) — progressive integration, not
   the policy core. **Slice 5 (agent surface) built** (`utils/llm/requirement.py`):
   the **task→requirement judge** — `infer_requirement(task) → Requirement` runs a
-  cheap (`CLOUD_SMALL`) one-shot judge that infers a *capability requirement*
+  cheap (`MEDIUM`) one-shot judge that infers a *capability requirement*
   (never a model name — the LLM is price/window-blind + self-biased), and
   `choose_model(store, task)` chains it into `select_offering`. Every field is
   clamped so a malformed reply can't produce an illegal requirement; the judge is
@@ -1226,7 +1222,7 @@ The master kinds table lives in the `precis-overview` skill.
   representation-invariant fingerprint (composition · per-layer · adsorbate site ·
   coordination) powering the **round-trip eval** (`scripts/llm_eval/roundtrip.py`,
   `docs/design/structure-roundtrip-eval.md`). `structure_propose` build step
-  pinned to CLOUD_MID=sonnet (ties opus at ½ cost; reasoning stays super). Skill:
+  pinned to BIG=sonnet (ties opus at ½ cost; reasoning stays on FRONTIER). Skill:
   `precis-structure-help`.
   - **Pre-dispatch pre-flight gate (gr51393).** A relax that would dispatch to
     the GPU (`handlers/structure.py`, the `RelaxUnsupported` branch) first runs
@@ -1381,10 +1377,10 @@ The master kinds table lives in the `precis-overview` skill.
 - **Ingest hygiene** — pysbd sentence splitter in the chunker fallback chain;
   dehyphenation in `marker._clean_text`; HNSW index on `chunk_embeddings.vector`.
 - **`asa-slack`** — Slack bridge sibling to `asa_bot` (`src/asa_slack/`), Socket
-  Mode. Routes each turn through the ADR-0046 router (`Tier.CLOUD_MID` — sonnet
+  Mode. Routes each turn through the ADR-0046 router (`Tier.BIG` — sonnet
   forced) via a single blocking `dispatch()` call, no live progress ticker —
   asa_bot's own Discord bridge also routes through the router now
-  (router-migration Phase 3, `asa_bot/claude_invoke.py`: `Tier.CLOUD_SUPER`,
+  (router-migration Phase 3, `asa_bot/claude_invoke.py`: `Tier.FRONTIER`,
   streaming `dispatch_async` + `on_event` so the Discord progress indicator
   still ticks live), so both bridges get the budget breaker/route-log for
   free. A hard kind-allowlist (`asa_slack/kind_policy.py`, via

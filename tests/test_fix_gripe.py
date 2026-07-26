@@ -174,7 +174,7 @@ class TestLoadConfig:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Unit 4b: with no bespoke override, claude_model resolves through
-        the ADR 0046 CLOUD_SUPER tier — the consolidated opus-4.8 cloud
+        the ADR 0046 FRONTIER tier — the consolidated opus-4.8 cloud
         reasoning default."""
         monkeypatch.setenv("PRECIS_FIX_REPO_DIR", "/tmp/repo")
         monkeypatch.setenv("PRECIS_FIX_WORK_DIR", "/tmp/precis-fix-work")
@@ -382,7 +382,7 @@ class TestValidateSubmit:
 # ── GLM/OpenRouter fleet-flip safety gate (Part 3) ─────────────────
 #
 # fix_gripe.run() spawns a raw `claude -p` subprocess whose --model comes
-# from resolve_model(Tier.CLOUD_SUPER) — under backend=openai that's an
+# from resolve_model(Tier.FRONTIER) — under backend=openai that's an
 # OSS slug the claude CLI can't run. The gate must skip cleanly *before*
 # any subprocess is spawned (indeed, before the gripe/repo are even
 # resolved) rather than let claude -p 400.

@@ -439,8 +439,8 @@ async def clear(
 
 
 #: The four ADR 0066 capability tiers an operator placement-chain can target
-#: (Phase B step 2) — the ``Tier`` string values, not the five legacy
-#: ``cloud-*``/``local-*`` analogues these route dark alongside.
+#: (Phase B step 2; Phase C made these the only ``Tier`` members) — keyed by
+#: the ``Tier`` string values.
 _CHAIN_TIERS: dict[str, Tier] = {
     Tier.FRONTIER.value: Tier.FRONTIER,
     Tier.BIG.value: Tier.BIG,

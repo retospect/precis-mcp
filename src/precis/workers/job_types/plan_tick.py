@@ -213,8 +213,8 @@ def run(
     (:func:`_run_oss_tick`). The transport + model are the router's
     decision (:func:`~precis.utils.llm.router.select_transport` +
     :func:`~precis.utils.llm.router.resolve_backend`): a served OSS
-    model (``LOCAL_BIG``) by default, or the tag's cloud tier when the
-    backend is flipped to a tools-capable cloud.
+    model on the ``BIG`` tier by default, or the tag's capability tier when
+    the backend is flipped to a tools-capable cloud.
     """
     from precis.workers.planner_prompt import build_planner_prompts
 
@@ -782,17 +782,20 @@ def _load_parent_workspace(store: Any, parent_ref_id: int):
 def _resolve_oss_tier(model: str) -> Tier:
     """Pick the capability tier the in-process tools loop runs on.
 
-    The ``LLM:<tag>`` maps to a cloud tier (:data:`_TIER_BY_ALIAS`); that tier
-    is used only when the router would actually route it to the OSS ``tools=``
-    loop under the active backend (a tools-capable cloud such as OpenRouter).
-    Otherwise — the default ``ANTHROPIC`` backend, whose cloud tiers route to
-    ``claude -p`` — fall to ``LOCAL_BIG`` (a served OSS model), the tier that
-    always drives the tools loop, so the tick runs on the capability the
-    cluster actually has. Model selection stays in the ADR 0046 resolver.
+    The ``LLM:<tag>`` maps to a capability tier (:data:`_TIER_BY_ALIAS`); that
+    tier is used only when the router would actually route it to the OSS
+    ``tools=`` loop under the active backend (a tools-capable cloud such as
+    OpenRouter). Otherwise — the default ``ANTHROPIC`` backend, whose cloud
+    tiers route to ``claude -p`` — fall to ``BIG``, whose chain
+    (``llm.chain.big``, an ``openai_tools`` cloud rung — see
+    :mod:`precis.utils.llm.live_config`) drives a served local model through
+    the in-process tools loop, so the tick runs on the capability the cluster
+    actually has. Model selection stays in the ADR 0046 resolver; the
+    tools-loop guarantee is chain-carried through :func:`~precis.utils.llm.router.dispatch`.
     """
     tag_tier = _TIER_BY_ALIAS.get(model, Tier.FRONTIER)
     transport = select_transport(tag_tier, tools_needed=True, backend=resolve_backend())
-    return tag_tier if transport is Transport.OPENAI_TOOLS else Tier.LOCAL_BIG
+    return tag_tier if transport is Transport.OPENAI_TOOLS else Tier.BIG
 
 
 def _max_turns() -> int:

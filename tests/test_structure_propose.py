@@ -172,9 +172,9 @@ def test_dispatch_writes_valid_proposal(seeded, monkeypatch):
 
 
 def test_dispatch_pins_build_to_sonnet_mid_tier_with_override(seeded, monkeypatch):
-    # The structure BUILD step runs on CLOUD_MID (sonnet) — the round-trip eval
+    # The structure BUILD step runs on BIG (sonnet) — the round-trip eval
     # showed sonnet ties opus on this mechanical step at ~½ the cost, while
-    # catalyst *reasoning* stays CLOUD_SUPER=opus. Capture the model that reaches
+    # catalyst *reasoning* stays FRONTIER=opus. Capture the model that reaches
     # the claude_agent transport to prove the pin (and the revert knob).
     from precis.utils.llm.router import Tier, resolve_model
 
@@ -196,8 +196,8 @@ def test_dispatch_pins_build_to_sonnet_mid_tier_with_override(seeded, monkeypatc
 
     monkeypatch.delenv("PRECIS_STRUCTURE_PROPOSE_MODEL", raising=False)
     sp._dispatch(_FakeCtx(store, ref.id, params), sp.SPEC)
-    assert seen["model"] == resolve_model(Tier.CLOUD_MID)  # sonnet, the default now
-    assert seen["model"] != resolve_model(Tier.CLOUD_SUPER)  # NOT opus
+    assert seen["model"] == resolve_model(Tier.BIG)  # sonnet, the default now
+    assert seen["model"] != resolve_model(Tier.FRONTIER)  # NOT opus
 
     monkeypatch.setenv("PRECIS_STRUCTURE_PROPOSE_MODEL", "claude-opus-4-8")
     sp._dispatch(_FakeCtx(store, ref.id, params), sp.SPEC)

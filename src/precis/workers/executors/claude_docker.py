@@ -470,7 +470,7 @@ def _launch(store: Any, ref_id: int, meta: dict[str, Any], node: str | None) -> 
     # GLM/OpenRouter fleet-flip safety gate (docs/proposals/glm-fleet-flip-
     # safety.md Part 3): the container spawns a raw `claude` CLI, which
     # assumes Claude model semantics — under backend=openai,
-    # resolve_sandbox_model() (-> resolve_model(CLOUD_SUPER)) returns an OSS
+    # resolve_sandbox_model() (-> resolve_model(Tier.FRONTIER)) returns an OSS
     # slug that `claude` can't run (HTTP 400). Skip cleanly rather than
     # launch a doomed container: STATUS:cancelled, no failure bubble (this
     # is a config mismatch, not a job failure), so a re-claim after the

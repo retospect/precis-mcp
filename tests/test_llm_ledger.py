@@ -36,7 +36,7 @@ def _log_call(
             "INSERT INTO llm_call_log "
             "(source, tier, transport, model, tools_needed, cost_usd, "
             " turns_used, duration_ms, errored) "
-            "VALUES (%s, 'cloud-super', 'claude_agent', %s, false, %s, %s, %s, %s)",
+            "VALUES (%s, 'frontier', 'claude_agent', %s, false, %s, %s, %s, %s)",
             (source, model, cost, turns, duration, errored),
         )
 

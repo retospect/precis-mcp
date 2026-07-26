@@ -141,8 +141,9 @@ PARAMS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "quest_id": {"type": "integer"},
-        # LLM tier for the review/propose call. 'local-big' routes to the
-        # node-local OSS model (PRECIS_LOCAL_BIG_MODEL) via the OpenAI-tools seam.
+        # LLM tier for the review/propose call (a router.Tier value, e.g.
+        # 'big'). 'big' routes to a node-local served OSS model via the
+        # OpenAI-tools seam when the backend/chain routes there.
         "tier": {"type": ["string", "null"]},
     },
     "required": ["quest_id"],
@@ -420,10 +421,15 @@ def _phase_weave_tick(
     sustained trouble, rather than spinning forever.
     """
     from precis.quest.weave_tick import weave_tick
-    from precis.utils.llm.router import DispatchClient, Tier
+    from precis.utils.llm.router import DispatchClient, tier_from_str
 
     tier = params.get("tier") or "big"
-    client = DispatchClient(tier=Tier(tier), source="quest_weave", tools_needed=True)
+    # tier_from_str degrades a pre-Phase-C legacy string (an already-baked
+    # job's meta.params.tier) onto its capability-tier analogue instead of
+    # raising — see router.tier_from_str.
+    client = DispatchClient(
+        tier=tier_from_str(tier), source="quest_weave", tools_needed=True
+    )
 
     try:
         result = weave_tick(ctx.store, client, quest_id)
@@ -521,7 +527,7 @@ def _phase_tick(ctx: Any, state: dict[str, Any]) -> Any:
 
     params = (ctx.meta or {}).get("params") or {}
     quest_id = int(params["quest_id"])  # schema-required
-    tier = params.get("tier") or "local-big"
+    tier = params.get("tier") or "big"
     slice_count = int(state.get("slice_count") or 0) + 1
 
     # Backpressure: never dispatch a new batch while this quest's sims are still

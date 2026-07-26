@@ -192,7 +192,7 @@ class TestOversizeAlert:
 def _local_tier() -> Any:
     from precis.utils.llm.router import Tier
 
-    return Tier.LOCAL_SMALL
+    return Tier.SMALL
 
 
 def store_of(bound: Any) -> Any:

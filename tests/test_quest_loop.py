@@ -138,7 +138,7 @@ class TestEnsureQuestLoop:
         meta = _job_meta(store, job_id)
         assert meta["idem_key"] == f"quest_tick:{q}"
         assert meta["params"]["quest_id"] == q
-        assert meta["params"]["tier"] == "local-big"
+        assert meta["params"]["tier"] == "big"
         assert meta["params"]["target_node"] == "spark"
 
     def test_second_call_while_non_terminal_does_not_mint_again(
@@ -170,7 +170,7 @@ class TestEnsureQuestLoop:
             conn.execute(
                 "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
                 (
-                    Jsonb({"loop": {"tier": "cloud-super", "target_node": "melchior"}}),
+                    Jsonb({"loop": {"tier": "frontier", "target_node": "melchior"}}),
                     q,
                 ),
             )
@@ -180,7 +180,7 @@ class TestEnsureQuestLoop:
         assert created is True
         assert job_id is not None
         meta = _job_meta(store, job_id)
-        assert meta["params"]["tier"] == "cloud-super"
+        assert meta["params"]["tier"] == "frontier"
         assert meta["params"]["target_node"] == "melchior"
 
     def test_never_raises_on_a_bad_quest_id(self, store: Store) -> None:

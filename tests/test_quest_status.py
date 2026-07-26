@@ -84,7 +84,7 @@ def test_status_gathers_logbook_candidates_sim_jobs_and_llm_spend(
     route_log.record_call(
         LlmCallRecord(
             source="quest_tick",
-            tier="cloud-small",
+            tier="medium",
             transport="claude_agent",
             model="claude-x",
             tools_needed=False,
@@ -103,7 +103,7 @@ def test_status_gathers_logbook_candidates_sim_jobs_and_llm_spend(
     route_log.record_call(
         LlmCallRecord(
             source="quest_tick",
-            tier="cloud-small",
+            tier="medium",
             transport="claude_agent",
             model="claude-x",
             tools_needed=False,
@@ -166,7 +166,7 @@ def test_status_tick_events_from_coordinator_job(store: Any) -> None:
         meta={
             "job_type": "quest_tick",
             "executor": "coordinator",
-            "params": {"quest_id": qid, "tier": "local-big"},
+            "params": {"quest_id": qid, "tier": "big"},
         },
         parent_id=todo.id,
     )

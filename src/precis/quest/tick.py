@@ -707,13 +707,16 @@ Propose nothing if the next step is analysis, not a new material."""
 
 
 def _resolve_tier(tier: Any) -> Any:
-    from precis.utils.llm.router import Tier
+    from precis.utils.llm.router import Tier, tier_from_str
 
     if tier is None:
         return Tier.MEDIUM
     if isinstance(tier, Tier):
         return tier
-    return Tier(str(tier))
+    # tier_from_str degrades a pre-Phase-C legacy string (a quest's stored
+    # meta.loop.tier or an already-baked job's meta.params.tier) onto its
+    # capability-tier analogue instead of raising — see router.tier_from_str.
+    return tier_from_str(str(tier))
 
 
 def _extract_json(text: str) -> dict[str, Any] | None:
@@ -1304,7 +1307,7 @@ def run_quest_tick(
         (f"frontier-review ({reason})" if is_review else "ok") if did_work else "no-op"
     )
     # Attribute the tick's *real* measured usage to the tote (gripe 162594).
-    # Quest ticks run on the claude_p transport at CLOUD_SMALL, where
+    # Quest ticks run on the claude_p transport at MEDIUM, where
     # ``cost_usd`` is null/0.00 for 100% of prod rows (free/quota-bound lane)
     # and ``total_tokens`` is never populated either — so metering the tote in
     # dollars or tokens silently starves ``over_budget`` of any signal. Chars

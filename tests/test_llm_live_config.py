@@ -59,13 +59,13 @@ def _bind(
 def test_dark_without_store(monkeypatch: pytest.MonkeyPatch) -> None:
     _bind(monkeypatch, None)
     assert live_config.backend_override() is None
-    assert live_config.model_override(Tier.CLOUD_SUPER) is None
+    assert live_config.model_override(Tier.FRONTIER) is None
 
 
 def test_dark_with_store_but_no_row(monkeypatch: pytest.MonkeyPatch) -> None:
     _bind(monkeypatch, {})
     assert live_config.backend_override() is None
-    assert live_config.model_override(Tier.CLOUD_MID) is None
+    assert live_config.model_override(Tier.BIG) is None
 
 
 # ── reader: overrides + validation ─────────────────────────────────────
@@ -92,13 +92,13 @@ def test_backend_override_blank_is_none(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_model_override(monkeypatch: pytest.MonkeyPatch) -> None:
-    _bind(monkeypatch, {"llm.model.cloud-super": "deepseek-ai/DeepSeek-V3"})
-    assert live_config.model_override(Tier.CLOUD_SUPER) == "deepseek-ai/DeepSeek-V3"
+    _bind(monkeypatch, {"llm.model.frontier": "deepseek-ai/DeepSeek-V3"})
+    assert live_config.model_override(Tier.FRONTIER) == "deepseek-ai/DeepSeek-V3"
 
 
 def test_model_key_uses_tier_value() -> None:
-    assert live_config.model_key(Tier.CLOUD_SUPER) == "llm.model.cloud-super"
-    assert live_config.model_key(Tier.CLOUD_SMALL) == "llm.model.cloud-small"
+    assert live_config.model_key(Tier.FRONTIER) == "llm.model.frontier"
+    assert live_config.model_key(Tier.MEDIUM) == "llm.model.medium"
 
 
 # ── reader: chain override (ADR 0066 §4, Phase A) ───────────────────────
@@ -140,42 +140,42 @@ def test_cloud_enabled_true_on_anything_else(
 
 
 def test_chain_key_uses_tier_value() -> None:
-    assert live_config.chain_key(Tier.CLOUD_SUPER) == "llm.chain.cloud-super"
-    assert live_config.chain_key(Tier.LOCAL_BIG) == "llm.chain.local-big"
+    assert live_config.chain_key(Tier.FRONTIER) == "llm.chain.frontier"
+    assert live_config.chain_key(Tier.BIG) == "llm.chain.big"
 
 
 def test_chain_override_dark_without_store(monkeypatch: pytest.MonkeyPatch) -> None:
     _bind(monkeypatch, None)
-    assert live_config.chain_override(Tier.CLOUD_SUPER) is None
+    assert live_config.chain_override(Tier.FRONTIER) is None
 
 
 def test_chain_override_no_row(monkeypatch: pytest.MonkeyPatch) -> None:
     _bind(monkeypatch, {})
-    assert live_config.chain_override(Tier.CLOUD_SUPER) is None
+    assert live_config.chain_override(Tier.FRONTIER) is None
 
 
 def test_chain_override_parses_valid_json_list(monkeypatch: pytest.MonkeyPatch) -> None:
     rows = {
-        "llm.chain.cloud-super": (
+        "llm.chain.frontier": (
             '[{"placement": "cloud", "model": "z-ai/glm-5.2", '
             '"transport": "openai_tools"}]'
         )
     }
     _bind(monkeypatch, rows)
-    out = live_config.chain_override(Tier.CLOUD_SUPER)
+    out = live_config.chain_override(Tier.FRONTIER)
     assert out == [
         {"placement": "cloud", "model": "z-ai/glm-5.2", "transport": "openai_tools"}
     ]
 
 
 def test_chain_override_malformed_json_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    _bind(monkeypatch, {"llm.chain.cloud-super": "not json{{"})
-    assert live_config.chain_override(Tier.CLOUD_SUPER) is None
+    _bind(monkeypatch, {"llm.chain.frontier": "not json{{"})
+    assert live_config.chain_override(Tier.FRONTIER) is None
 
 
 def test_chain_override_non_list_json_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    _bind(monkeypatch, {"llm.chain.cloud-super": '{"placement": "cloud"}'})
-    assert live_config.chain_override(Tier.CLOUD_SUPER) is None
+    _bind(monkeypatch, {"llm.chain.frontier": '{"placement": "cloud"}'})
+    assert live_config.chain_override(Tier.FRONTIER) is None
 
 
 # ── reader: TTL cache ──────────────────────────────────────────────────
@@ -223,8 +223,8 @@ def test_resolve_backend_falls_back_to_env(monkeypatch: pytest.MonkeyPatch) -> N
 
 def test_resolve_model_override_wins(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PRECIS_MODEL_OPUS", raising=False)
-    _bind(monkeypatch, {"llm.model.cloud-super": "oss/x"})
-    assert router.resolve_model(Tier.CLOUD_SUPER) == "oss/x"
+    _bind(monkeypatch, {"llm.model.frontier": "oss/x"})
+    assert router.resolve_model(Tier.FRONTIER) == "oss/x"
 
 
 def test_resolve_model_falls_back_to_env_then_default(
@@ -232,10 +232,10 @@ def test_resolve_model_falls_back_to_env_then_default(
 ) -> None:
     _bind(monkeypatch, {})  # store bound, no override row
     monkeypatch.setenv("PRECIS_MODEL_OPUS", "pinned-opus")
-    assert router.resolve_model(Tier.CLOUD_SUPER) == "pinned-opus"
+    assert router.resolve_model(Tier.FRONTIER) == "pinned-opus"
     live_config.bust_cache()
     monkeypatch.delenv("PRECIS_MODEL_OPUS", raising=False)
-    assert router.resolve_model(Tier.CLOUD_SUPER) == "claude-opus-4-8"
+    assert router.resolve_model(Tier.FRONTIER) == "claude-opus-4-8"
 
 
 def test_resolve_model_dark_without_store_is_env(
@@ -244,7 +244,7 @@ def test_resolve_model_dark_without_store_is_env(
     # No store → no DB tier → pure env/compiled default, byte-identical.
     _bind(monkeypatch, None)
     monkeypatch.delenv("PRECIS_MODEL_SONNET", raising=False)
-    assert router.resolve_model(Tier.CLOUD_MID) == "claude-sonnet-5"
+    assert router.resolve_model(Tier.BIG) == "claude-sonnet-5"
 
 
 # ── Part 3: resolve_model backend-coherence ─────────────────────────────
@@ -261,9 +261,9 @@ def test_resolve_model_drops_oss_override_under_anthropic_backend(
     drop it and fall through to env/compiled default (never an OSS slug on a
     claude transport)."""
     monkeypatch.delenv("PRECIS_MODEL_OPUS", raising=False)
-    _bind(monkeypatch, {"llm.model.cloud-super": "z-ai/glm-5.2"})
+    _bind(monkeypatch, {"llm.model.frontier": "z-ai/glm-5.2"})
     assert (
-        router.resolve_model(Tier.CLOUD_SUPER, backend=Backend.ANTHROPIC)
+        router.resolve_model(Tier.FRONTIER, backend=Backend.ANTHROPIC)
         == "claude-opus-4-8"
     )
 
@@ -274,9 +274,9 @@ def test_resolve_model_drops_oss_override_falls_through_to_env_first(
     """Dropping the incoherent override falls through to the env var (not
     straight to the compiled default) — same order resolve_model always uses."""
     monkeypatch.setenv("PRECIS_MODEL_OPUS", "claude-pinned-env")
-    _bind(monkeypatch, {"llm.model.cloud-super": "z-ai/glm-5.2"})
+    _bind(monkeypatch, {"llm.model.frontier": "z-ai/glm-5.2"})
     assert (
-        router.resolve_model(Tier.CLOUD_SUPER, backend=Backend.ANTHROPIC)
+        router.resolve_model(Tier.FRONTIER, backend=Backend.ANTHROPIC)
         == "claude-pinned-env"
     )
 
@@ -286,9 +286,9 @@ def test_resolve_model_keeps_claude_override_under_anthropic_backend(
 ) -> None:
     """A claude-family override is coherent with ANTHROPIC — kept, not dropped."""
     monkeypatch.delenv("PRECIS_MODEL_OPUS", raising=False)
-    _bind(monkeypatch, {"llm.model.cloud-super": "claude-opus-4-9-preview"})
+    _bind(monkeypatch, {"llm.model.frontier": "claude-opus-4-9-preview"})
     assert (
-        router.resolve_model(Tier.CLOUD_SUPER, backend=Backend.ANTHROPIC)
+        router.resolve_model(Tier.FRONTIER, backend=Backend.ANTHROPIC)
         == "claude-opus-4-9-preview"
     )
 
@@ -297,37 +297,39 @@ def test_resolve_model_keeps_oss_override_under_openai_backend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Under backend=OPENAI the OSS override IS coherent — kept unchanged."""
-    _bind(monkeypatch, {"llm.model.cloud-super": "z-ai/glm-5.2"})
-    assert (
-        router.resolve_model(Tier.CLOUD_SUPER, backend=Backend.OPENAI) == "z-ai/glm-5.2"
-    )
+    _bind(monkeypatch, {"llm.model.frontier": "z-ai/glm-5.2"})
+    assert router.resolve_model(Tier.FRONTIER, backend=Backend.OPENAI) == "z-ai/glm-5.2"
 
 
-def test_resolve_model_keeps_local_overrides_under_anthropic_backend(
+def test_resolve_model_keeps_small_override_under_anthropic_backend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The coherence drop is CLOUD-tier only. LOCAL_SMALL (→LITELLM) and
-    LOCAL_BIG (→OPENAI_TOOLS) never route to a claude transport, so their
-    (always-non-claude) overrides are legitimate and must be HONORED even
-    under the default ANTHROPIC backend — dropping them would silently ignore
-    a live `llm.model.local-*` row, incl. the one Part 1's remap reads
-    (reviewer finding #1)."""
+    """The coherence drop is CLOUD-tier only. SMALL (→LITELLM/OPENAI_COMPAT)
+    never routes to a claude transport, so its (always-non-claude) override
+    is legitimate and must be HONORED even under the default ANTHROPIC
+    backend — dropping it would silently ignore a live `llm.model.small` row,
+    incl. the one Part 1's remap reads (reviewer finding #1)."""
     monkeypatch.delenv("PRECIS_SUMMARIZE_MODEL", raising=False)
-    monkeypatch.delenv("PRECIS_LOCAL_BIG_MODEL", raising=False)
-    _bind(
-        monkeypatch,
-        {
-            "llm.model.local-small": "z-ai/glm-4.7-flash",
-            "llm.model.local-big": "qwen/qwen3.7-max",
-        },
-    )
+    _bind(monkeypatch, {"llm.model.small": "z-ai/glm-4.7-flash"})
     assert (
-        router.resolve_model(Tier.LOCAL_SMALL, backend=Backend.ANTHROPIC)
+        router.resolve_model(Tier.SMALL, backend=Backend.ANTHROPIC)
         == "z-ai/glm-4.7-flash"
     )
+
+
+def test_resolve_model_big_override_is_cloud_bound_and_dropped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR 0066 Phase C: BIG joined the cloud-bound tier set — it no longer
+    has a location-coupled LOCAL_BIG analogue whose override was always
+    non-claude and thus always honored. An OSS `llm.model.big` override under
+    the default ANTHROPIC backend is now INCOHERENT and gets dropped, exactly
+    like FRONTIER/MEDIUM — not honored unconditionally as the retired
+    LOCAL_BIG tier's override was."""
+    monkeypatch.delenv("PRECIS_MODEL_SONNET", raising=False)
+    _bind(monkeypatch, {"llm.model.big": "qwen/qwen3.7-max"})
     assert (
-        router.resolve_model(Tier.LOCAL_BIG, backend=Backend.ANTHROPIC)
-        == "qwen/qwen3.7-max"
+        router.resolve_model(Tier.BIG, backend=Backend.ANTHROPIC) == "claude-sonnet-5"
     )
 
 
@@ -337,8 +339,8 @@ def test_resolve_model_no_backend_arg_keeps_override_unchanged(
     """Every caller that never passes ``backend=`` (every call site but
     dispatch/dispatch_async) sees the pre-Part-3 behavior byte-for-byte —
     the coherence check is opt-in via the parameter, not a global change."""
-    _bind(monkeypatch, {"llm.model.cloud-super": "z-ai/glm-5.2"})
-    assert router.resolve_model(Tier.CLOUD_SUPER) == "z-ai/glm-5.2"
+    _bind(monkeypatch, {"llm.model.frontier": "z-ai/glm-5.2"})
+    assert router.resolve_model(Tier.FRONTIER) == "z-ai/glm-5.2"
 
 
 def test_dispatch_openai_override_no_base_url_resolves_claude_model(
@@ -353,7 +355,7 @@ def test_dispatch_openai_override_no_base_url_resolves_claude_model(
 
     _bind(
         monkeypatch,
-        {"llm.backend": "openai", "llm.model.cloud-super": "z-ai/glm-5.2"},
+        {"llm.backend": "openai", "llm.model.frontier": "z-ai/glm-5.2"},
     )
     monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
     monkeypatch.delenv("PRECIS_MODEL_OPUS", raising=False)
@@ -370,7 +372,7 @@ def test_dispatch_openai_override_no_base_url_resolves_claude_model(
 
     monkeypatch.setattr(router, "call_claude_agent", fake_agent)
 
-    out = dispatch(LlmRequest(tier=_Tier.CLOUD_SUPER, prompt="x", tools_needed=True))
+    out = dispatch(LlmRequest(tier=_Tier.FRONTIER, prompt="x", tools_needed=True))
 
     assert calls["model"] == "claude-opus-4-8"  # NOT "z-ai/glm-5.2"
     assert out.text == "claude ran"
@@ -394,7 +396,7 @@ def test_dispatch_openai_override_with_base_url_routes_oss_slug(
 
     _bind(
         monkeypatch,
-        {"llm.backend": "openai", "llm.model.cloud-super": "z-ai/glm-5.2"},
+        {"llm.backend": "openai", "llm.model.frontier": "z-ai/glm-5.2"},
     )
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
 
@@ -408,12 +410,12 @@ def test_dispatch_openai_override_with_base_url_routes_oss_slug(
             cost_usd=0.01,
             turns_used=1,
             model=model,
-            tier=_Tier.CLOUD_SUPER,
+            tier=_Tier.FRONTIER,
         )
 
     monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_TOOLS, _RunFnLC(fake_tools))
 
-    out = dispatch(LlmRequest(tier=_Tier.CLOUD_SUPER, prompt="x", tools_needed=True))
+    out = dispatch(LlmRequest(tier=_Tier.FRONTIER, prompt="x", tools_needed=True))
 
     assert calls["model"] == "z-ai/glm-5.2"
     assert out.text == "oss ran"

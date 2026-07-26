@@ -137,16 +137,16 @@ def test_packaged_prompt_carries_thread_directive(
     assert "Never mint a ``kind='todo'``" in prompt
 
 
-def test_dream_default_model_is_cloud_super(
+def test_dream_default_model_is_frontier(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The dream pass consolidated onto the router's cloud-super tier
+    # The dream pass consolidated onto the router's FRONTIER tier
     # (opus-4.8); an explicit PRECIS_DREAM_AGENT_MODEL pin still wins.
     from precis.utils.llm.router import Tier, resolve_model
     from precis.workers.dream_agent import _default_model
 
     monkeypatch.delenv("PRECIS_MODEL_OPUS", raising=False)
-    assert _default_model() == resolve_model(Tier.CLOUD_SUPER)
+    assert _default_model() == resolve_model(Tier.FRONTIER)
     assert _default_model() == "claude-opus-4-8"
 
 

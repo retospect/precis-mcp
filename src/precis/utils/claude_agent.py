@@ -74,7 +74,7 @@ _to_str = to_str
 _extract_cost_usd = extract_cost_usd
 
 
-# Default model: the router's cloud-super tier (opus-4.8). This is the
+# Default model: the router's FRONTIER tier (opus-4.8). This is the
 # agentic/reasoning shape — reviewers, dream, follow-up "ask & think" —
 # so it consolidates on the strong model rather than sonnet (ADR 0046
 # unit 4b; the reasoning tier is where the stronger model earns its keep,
@@ -188,7 +188,7 @@ def call_claude_agent(
             output is captured raw and the actual "result" is whatever
             tool calls it made (MCP precis writes, etc.).
         model: Override the default model (env
-            ``PRECIS_CLAUDE_AGENT_MODEL`` or the router's cloud-super
+            ``PRECIS_CLAUDE_AGENT_MODEL`` or the router's FRONTIER
             tier, opus-4.8).
         system_prompt: Inject via ``--append-system-prompt``. Accepts
             a literal string OR a :class:`Path` (read at call time).

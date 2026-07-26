@@ -8,8 +8,8 @@ sites fold through it in a follow-up.
 
 Public surface:
 
-* :class:`Tier` — capability tiers (local-small / local-big / cloud-*).
-* :class:`Transport` — the transports + the local-big extension point.
+* :class:`Tier` — capability tiers (frontier / big / medium / small).
+* :class:`Transport` — the transports + the OpenAI-tools extension point.
 * :class:`Backend` / :func:`resolve_backend` — the anthropic↔openai switch
   (LLM independence); ``PRECIS_LLM_BACKEND`` selects, ships dark by default.
 * :func:`resolve_model` — the ONE tier→model table.

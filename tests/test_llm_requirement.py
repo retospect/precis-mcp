@@ -38,9 +38,7 @@ class TestInferRequirement:
                 "max_input": 120000,
             }
 
-        req = infer_requirement(
-            "refactor auth", tier_floor=Tier.CLOUD_SUPER, judge=judge
-        )
+        req = infer_requirement("refactor auth", tier_floor=Tier.FRONTIER, judge=judge)
         assert req.axis == "code" and req.min_ordinal == 4
         assert req.needs_tools is True and req.max_input == 120000
 
@@ -52,14 +50,14 @@ class TestInferRequirement:
         def judge(_t: str) -> dict[str, Any]:
             return {"axis": "vibes", "min_ordinal": 99, "max_input": "lots"}
 
-        req = infer_requirement("do a thing", tier_floor=Tier.CLOUD_MID, judge=judge)
+        req = infer_requirement("do a thing", tier_floor=Tier.BIG, judge=judge)
         assert req.axis is None and req.min_ordinal == 5 and req.max_input is None
 
     def test_empty_judge_reply_is_a_bare_requirement(self) -> None:
         from precis.utils.llm.requirement import infer_requirement
         from precis.utils.llm.router import Tier
 
-        req = infer_requirement("x", tier_floor=Tier.CLOUD_MID, judge=lambda _t: {})
+        req = infer_requirement("x", tier_floor=Tier.BIG, judge=lambda _t: {})
         assert req.axis is None and req.min_ordinal == 1
 
 
@@ -88,7 +86,7 @@ class TestChooseModel:
             clean_catalog,
             model_id="coder",
             text="A strong coder.",
-            tier_floor="cloud-mid",
+            tier_floor="big",
             offerings=[{"transport": "claude_agent", "price_in": 3.0}],
             capability={"code": 5},
         )
@@ -97,7 +95,7 @@ class TestChooseModel:
             return {"axis": "code", "min_ordinal": 4}
 
         req, sel = choose_model(
-            clean_catalog, "write a parser", tier_floor=Tier.CLOUD_MID, judge=judge
+            clean_catalog, "write a parser", tier_floor=Tier.BIG, judge=judge
         )
         assert req.axis == "code"
         assert sel.model == "coder" and sel.from_catalog is True
@@ -109,8 +107,8 @@ class TestChooseModel:
         req, sel = choose_model(
             clean_catalog,
             "summarize this",
-            tier_floor=Tier.CLOUD_SMALL,
+            tier_floor=Tier.MEDIUM,
             judge=lambda _t: {"axis": "summarize-extract", "min_ordinal": 3},
         )
         assert sel.from_catalog is False
-        assert sel.model == resolve_model(Tier.CLOUD_SMALL)
+        assert sel.model == resolve_model(Tier.MEDIUM)

@@ -169,11 +169,11 @@ def test_executor_provides() -> None:
     assert EXECUTOR_PROVIDES["claude_docker"] >= sandbox_run.REQUIRES
 
 
-def test_resolve_model_uses_cloud_super(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resolve_model_uses_frontier(monkeypatch: pytest.MonkeyPatch) -> None:
     from precis.utils.llm.router import Tier, resolve_model
 
     monkeypatch.delenv("PRECIS_SANDBOX_MODEL", raising=False)
-    assert sandbox_run.resolve_sandbox_model() == resolve_model(Tier.CLOUD_SUPER)
+    assert sandbox_run.resolve_sandbox_model() == resolve_model(Tier.FRONTIER)
     monkeypatch.setenv("PRECIS_SANDBOX_MODEL", "claude-custom-9")
     assert sandbox_run.resolve_sandbox_model() == "claude-custom-9"
 
@@ -383,7 +383,7 @@ def test_launch_records_container_and_deadline(store: Store, sandbox_env: Path) 
 # ── GLM/OpenRouter fleet-flip safety gate (Part 3) ─────────────────
 #
 # claude_docker._launch spawns a raw `claude` CLI in the container whose
-# --model comes from resolve_sandbox_model() (-> resolve_model(CLOUD_SUPER))
+# --model comes from resolve_sandbox_model() (-> resolve_model(Tier.FRONTIER))
 # — under backend=openai that's an OSS slug the claude CLI can't run. The
 # gate must skip *before* `podman run` (no container, no subprocess).
 

@@ -90,7 +90,7 @@ _LENS_BRIEFS: dict[str, str] = {
     ),
 }
 
-#: Planner model tier for a per-weave review tick — CLOUD_MID ("sonnet"),
+#: Planner model tier for a per-weave review tick — BIG ("sonnet"),
 #: matching the design doc's routing table row "Review (per-weave/weekly)
 #: | anchored section fisheye+1hop | mid, per persona".
 _REVIEW_LLM_TAG = "sonnet"

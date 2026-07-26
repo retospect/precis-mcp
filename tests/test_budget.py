@@ -102,27 +102,10 @@ def test_band_table_total_and_labels() -> None:
         band = bands.band_for_tier(tier)
         assert band.cost in Cost
         assert band.pace in Pace
-    assert bands.band_for_tier(Tier.LOCAL_SMALL) == bands.Band(Cost.FREE, Pace.FAST)
-    assert bands.is_expensive(Tier.CLOUD_SUPER) is True
-    assert bands.is_expensive(Tier.CLOUD_SMALL) is False
-    assert bands.band_for_tier(Tier.CLOUD_SUPER).label() == "expensive \u00b7 slow"
-
-
-@pytest.mark.parametrize(
-    ("new", "analogue"),
-    [
-        (Tier.FRONTIER, Tier.CLOUD_SUPER),
-        (Tier.BIG, Tier.CLOUD_MID),
-        (Tier.MEDIUM, Tier.CLOUD_SMALL),
-        (Tier.SMALL, Tier.LOCAL_SMALL),
-    ],
-)
-def test_new_tier_band_matches_analogue(new: Tier, analogue: Tier) -> None:
-    """ADR 0066 (Phase A): each new capability tier's cost/pace band mirrors
-    its analogue exactly \u2014 additive, no behavior change for existing tiers."""
-    assert bands.band_for_tier(new) == bands.band_for_tier(analogue)
-    assert bands.is_expensive(new) == bands.is_expensive(analogue)
-    assert bands.is_paid(new) == bands.is_paid(analogue)
+    assert bands.band_for_tier(Tier.SMALL) == bands.Band(Cost.FREE, Pace.FAST)
+    assert bands.is_expensive(Tier.FRONTIER) is True
+    assert bands.is_expensive(Tier.MEDIUM) is False
+    assert bands.band_for_tier(Tier.FRONTIER).label() == "expensive \u00b7 slow"
 
 
 # ── pricing ──────────────────────────────────────────────────────────────
@@ -160,13 +143,13 @@ class _FakeOpenAIResult:
 
 def test_result_from_openai_prices_oss_tokens() -> None:
     res = _FakeOpenAIResult("hi", prompt=1_000_000, completion=0)
-    out = result_from_openai(res, model="deepseek-ai/DeepSeek-V3", tier=Tier.CLOUD_MID)
+    out = result_from_openai(res, model="deepseek-ai/DeepSeek-V3", tier=Tier.BIG)
     assert out.cost_usd == pytest.approx(PRICE_TABLE["deepseek-ai/DeepSeek-V3"][0])
 
 
 def test_result_from_openai_local_is_free() -> None:
     res = _FakeOpenAIResult("hi", prompt=500, completion=20)
-    out = result_from_openai(res, model="summarizer", tier=Tier.LOCAL_SMALL)
+    out = result_from_openai(res, model="summarizer", tier=Tier.SMALL)
     assert out.cost_usd is None
 
 
@@ -174,7 +157,7 @@ def test_result_from_openai_bare_text_fake() -> None:
     class _BareText:
         text = "hello"
 
-    out = result_from_openai(_BareText(), model="summarizer", tier=Tier.LOCAL_SMALL)
+    out = result_from_openai(_BareText(), model="summarizer", tier=Tier.SMALL)
     assert out.cost_usd is None
     assert out.text == "hello"
     assert out.data is None
@@ -190,7 +173,7 @@ def test_result_from_openai_prefers_provider_cost() -> None:
         cost_usd = 0.007
 
     out = result_from_openai(
-        _WithCost(), model="deepseek-ai/DeepSeek-V3", tier=Tier.CLOUD_MID
+        _WithCost(), model="deepseek-ai/DeepSeek-V3", tier=Tier.BIG
     )
     assert out.cost_usd == pytest.approx(0.007)
 
@@ -201,7 +184,7 @@ def test_result_from_openai_parses_trailing_json_into_data() -> None:
     class _JudgeText:
         text = 'Reasoning here.\n{"verdict": "yes", "confidence": 0.9}'
 
-    out = result_from_openai(_JudgeText(), model="summarizer", tier=Tier.LOCAL_BIG)
+    out = result_from_openai(_JudgeText(), model="summarizer", tier=Tier.BIG)
     assert out.data == {"verdict": "yes", "confidence": 0.9}
 
 
@@ -237,26 +220,24 @@ def test_current_status_over_hourly_cap() -> None:
 
 
 def test_is_paid_covers_every_nonfree_tier() -> None:
-    # Only the two local (free-band) tiers are unpaid; every cloud tier is paid.
-    assert bands.is_paid(Tier.LOCAL_SMALL) is False
-    assert bands.is_paid(Tier.LOCAL_BIG) is False
-    assert bands.is_paid(Tier.CLOUD_SMALL) is True
-    assert bands.is_paid(Tier.CLOUD_MID) is True
-    assert bands.is_paid(Tier.CLOUD_SUPER) is True
+    # Only the free-band SMALL tier is unpaid; every other tier is paid.
+    assert bands.is_paid(Tier.SMALL) is False
+    assert bands.is_paid(Tier.MEDIUM) is True
+    assert bands.is_paid(Tier.BIG) is True
+    assert bands.is_paid(Tier.FRONTIER) is True
 
 
 def test_gate_tier_free_local_always_passes() -> None:
     store = cast("Store", FakeStore(llm=999.0, fetch=0.0))  # wildly over cap
-    # Free local tiers keep flowing even while tripped.
-    assert breaker_mod.gate_tier(Tier.LOCAL_SMALL, store=store) is None
-    assert breaker_mod.gate_tier(Tier.LOCAL_BIG, store=store) is None
+    # The free SMALL tier keeps flowing even while tripped.
+    assert breaker_mod.gate_tier(Tier.SMALL, store=store) is None
 
 
 def test_gate_tier_paid_cheap_tiers_gated_over_cap() -> None:
     # The decision: if it costs money, the cap limits it. A tripped cap refuses
-    # the cheap CLOUD_MID (sonnet) / CLOUD_SMALL (haiku) rungs too, not just opus.
+    # the cheap BIG (sonnet) / MEDIUM (haiku) rungs too, not just opus.
     store = cast("Store", FakeStore(llm=25.0, fetch=0.0))  # over both caps
-    for tier in (Tier.CLOUD_SMALL, Tier.CLOUD_MID, Tier.CLOUD_SUPER):
+    for tier in (Tier.MEDIUM, Tier.BIG, Tier.FRONTIER):
         reason = breaker_mod.gate_tier(tier, store=store)
         assert reason is not None, tier
         assert "budget" in reason and "/budget" in reason
@@ -264,13 +245,13 @@ def test_gate_tier_paid_cheap_tiers_gated_over_cap() -> None:
 
 def test_gate_tier_paid_under_cap_passes() -> None:
     store = cast("Store", FakeStore(llm=1.0, fetch=0.0))
-    assert breaker_mod.gate_tier(Tier.CLOUD_SUPER, store=store) is None
-    assert breaker_mod.gate_tier(Tier.CLOUD_SMALL, store=store) is None
+    assert breaker_mod.gate_tier(Tier.FRONTIER, store=store) is None
+    assert breaker_mod.gate_tier(Tier.MEDIUM, store=store) is None
 
 
 def test_gate_tier_dark_without_store() -> None:
     # No bound store and none passed → never trips.
-    assert breaker_mod.gate_tier(Tier.CLOUD_SUPER) is None
+    assert breaker_mod.gate_tier(Tier.FRONTIER) is None
 
 
 def test_gate_paid_free_vs_paid_over_cap() -> None:
@@ -316,7 +297,7 @@ def test_dispatch_returns_error_llmresult_when_breaker_trips(
 
     monkeypatch.setattr(router, "provider_for", lambda transport: _BoomProvider())
 
-    out = router.dispatch(router.LlmRequest(tier=Tier.CLOUD_SUPER, prompt="hi"))
+    out = router.dispatch(router.LlmRequest(tier=Tier.FRONTIER, prompt="hi"))
     assert out.error is not None
     assert "budget" in out.error
     assert out.text == ""
@@ -698,7 +679,7 @@ def test_gate_tier_claude_transport_uses_quota_not_dollars() -> None:
     store = SqlStore(llm=999.0, windows={"five_hour": {"status": "allowed"}})
     assert (
         breaker_mod.gate_tier(
-            Tier.CLOUD_SUPER, transport="claude_agent", store=cast("Store", store)
+            Tier.FRONTIER, transport="claude_agent", store=cast("Store", store)
         )
         is None
     )
@@ -707,7 +688,7 @@ def test_gate_tier_claude_transport_uses_quota_not_dollars() -> None:
 def test_gate_tier_claude_transport_rejected_pauses() -> None:
     store = SqlStore(windows={"five_hour": {"status": "rejected"}})
     reason = breaker_mod.gate_tier(
-        Tier.CLOUD_SUPER, transport="claude_agent", store=cast("Store", store)
+        Tier.FRONTIER, transport="claude_agent", store=cast("Store", store)
     )
     assert reason is not None
     assert "quota" in reason
@@ -716,7 +697,7 @@ def test_gate_tier_claude_transport_rejected_pauses() -> None:
 def test_gate_tier_metered_transport_uses_dollars() -> None:
     store = SqlStore(llm=25.0)  # over both caps
     reason = breaker_mod.gate_tier(
-        Tier.CLOUD_SUPER, transport="openai_tools", store=cast("Store", store)
+        Tier.FRONTIER, transport="openai_tools", store=cast("Store", store)
     )
     assert reason is not None
     assert "cap" in reason
@@ -729,7 +710,7 @@ def test_gate_tier_resume_override_bypasses_dollars() -> None:
     )
     assert (
         breaker_mod.gate_tier(
-            Tier.CLOUD_SUPER, transport="openai_tools", store=cast("Store", store)
+            Tier.FRONTIER, transport="openai_tools", store=cast("Store", store)
         )
         is None
     )
@@ -742,7 +723,7 @@ def test_gate_tier_resume_override_bypasses_quota() -> None:
     )
     assert (
         breaker_mod.gate_tier(
-            Tier.CLOUD_SUPER, transport="claude_agent", store=cast("Store", store)
+            Tier.FRONTIER, transport="claude_agent", store=cast("Store", store)
         )
         is None
     )

@@ -16,7 +16,7 @@ from precis.route_log import LlmCallRecord
 def _rec(**kw: Any) -> LlmCallRecord:
     base: dict[str, Any] = {
         "source": "dream",
-        "tier": "cloud-super",
+        "tier": "frontier",
         "transport": "claude_agent",
         "model": "claude-opus-4-8",
         "tools_needed": True,
@@ -172,7 +172,7 @@ def test_dispatch_lite_when_log_blobs_false(store: Any, monkeypatch: Any) -> Non
     try:
         dispatch(
             LlmRequest(
-                tier=Tier.CLOUD_SMALL, prompt="gloss this", source=src, log_blobs=False
+                tier=Tier.MEDIUM, prompt="gloss this", source=src, log_blobs=False
             )
         )
     finally:
@@ -286,9 +286,7 @@ def test_dispatch_records_the_full_call(store: Any, monkeypatch: Any) -> None:
 
     route_log.bind_store(store)
     try:
-        out = dispatch(
-            LlmRequest(tier=Tier.CLOUD_SMALL, prompt="judge this", source=src)
-        )
+        out = dispatch(LlmRequest(tier=Tier.MEDIUM, prompt="judge this", source=src))
     finally:
         route_log.bind_store(None)
 

@@ -39,7 +39,7 @@ def add_parser(subparsers: Any) -> None:
     t.add_argument(
         "--tier",
         default=None,
-        help="LLM tier (e.g. cloud-small, local-small, cloud-super).",
+        help="LLM tier (e.g. medium, small, frontier).",
     )
     t.add_argument(
         "--compute",

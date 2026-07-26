@@ -87,7 +87,7 @@ the **Slack bridge** (`src/asa_slack/`, `[asa-slack]` extra) — a sibling that
 routes chat turns through the ADR-0046 `dispatch()` seam (forced sonnet + a
 hard per-turn kind-allowlist); see ADR 0062. Both bridges now route through
 ADR-0046: Discord's `claude_invoke.invoke()` streams via `dispatch_async`
-(`Tier.CLOUD_SUPER`, `on_event` driving the live Discord progress indicator,
+(`Tier.FRONTIER`, `on_event` driving the live Discord progress indicator,
 router-migration Phase 3) where Slack's is one blocking `dispatch()` call.
 
 ## Seams — where changes concentrate

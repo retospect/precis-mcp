@@ -3,8 +3,8 @@
 The transport is the router's decision: the ANTHROPIC backend routes the tick
 to ``claude -p`` (``CLAUDE_AGENT`` — covered by ``test_plan_tick_claude``); a
 tools-capable OSS backend routes it to the in-process ``tools=`` loop. On the
-OSS branch :func:`plan_tick._resolve_oss_tier` keeps the ``LLM:<tag>`` cloud
-tier when the router would route it to the OSS loop, else falls to ``LOCAL_BIG``
+OSS branch :func:`plan_tick._resolve_oss_tier` keeps the ``LLM:<tag>`` capability
+tier when the router would route it to the OSS loop, else falls to ``BIG``
 (a served OSS model). DB-free: pure env / router reads, no store, no ``claude``
 binary.
 """
@@ -36,23 +36,27 @@ def test_resolve_oss_tier_honours_tag_under_tools_capable_cloud(
 
 
 @pytest.mark.parametrize("alias", ["opus", "sonnet", "haiku"])
-def test_resolve_oss_tier_falls_to_local_big_under_anthropic(
+def test_resolve_oss_tier_falls_to_big_under_anthropic(
     alias: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Default ANTHROPIC backend routes tool-using cloud tiers to ``claude -p``
-    (not the OSS loop), so the tick falls to the served ``LOCAL_BIG`` tier."""
+    (not the OSS loop), so the tick falls to the served ``BIG`` tier."""
     monkeypatch.setenv("PRECIS_LLM_BACKEND", "anthropic")
-    assert pt._resolve_oss_tier(alias) is Tier.LOCAL_BIG
+    assert pt._resolve_oss_tier(alias) is Tier.BIG
 
 
 @pytest.mark.parametrize("backend", ["openai", "anthropic"])
-def test_resolve_oss_tier_local_always_runs_local_big(
+def test_resolve_oss_tier_local_always_runs_big(
     backend: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The ``local`` alias names ``LOCAL_BIG`` (the cluster's served qwen +
-    tools) — always the OSS loop, so it runs local under either backend."""
+    """The ``local`` alias now names ``BIG`` directly (ADR 0066 Phase C
+    retired the location-coupled ``LOCAL_BIG`` tier this used to pin) — a
+    served OSS model still backs it under either backend: tag_tier is
+    already BIG under ``openai`` (routes OPENAI_TOOLS) and the ``_resolve_
+    oss_tier`` fallback is also BIG under ``anthropic`` (routes claude_agent
+    instead, so the fallback branch fires) — either way the result is BIG."""
     monkeypatch.setenv("PRECIS_LLM_BACKEND", backend)
-    assert pt._resolve_oss_tier("local") is Tier.LOCAL_BIG
+    assert pt._resolve_oss_tier("local") is Tier.BIG
 
 
 def test_resolve_oss_tier_unknown_tag_defaults_to_frontier_family(
