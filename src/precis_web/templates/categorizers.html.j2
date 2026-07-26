@@ -18,6 +18,46 @@
 </div>
 {% endif %}
 
+<div class="rounded-lg border border-slate-200 bg-white px-4 py-2 mb-4 flex items-center gap-3 text-xs">
+  <span class="flex-1">
+    <span class="font-semibold text-slate-700">Topic classification — global kill-switch</span>
+    <span class="block text-[11px] text-slate-400 mt-0.5">
+      Governs every topic above: an explicit Off force-disables all topics
+      regardless of their own toggle; Default reverts to "runs if any topic
+      is on".
+    </span>
+  </span>
+  <span class="w-20 shrink-0">
+    {% if kill_switch.enabled %}
+    <span class="inline-flex items-center rounded-full bg-emerald-100 text-emerald-700 px-2 py-0.5 font-medium">active</span>
+    {% else %}
+    <span class="inline-flex items-center rounded-full bg-amber-100 text-amber-700 px-2 py-0.5 font-medium">off</span>
+    {% endif %}
+    {% if kill_switch.overridden %}
+    <span class="block text-[10px] text-slate-400 mt-0.5">override</span>
+    {% else %}
+    <span class="block text-[10px] text-slate-400 mt-0.5">default</span>
+    {% endif %}
+  </span>
+  <span class="w-56 shrink-0 flex items-center gap-1">
+    <form method="post" action="/categorizers/toggle" class="inline">
+      <input type="hidden" name="service" value="{{ kill_switch.service }}">
+      <input type="hidden" name="action" value="on">
+      <button type="submit" class="px-2 py-0.5 rounded border {{ 'border-emerald-400 bg-emerald-50 text-emerald-700' if kill_switch.enabled else 'border-slate-200 text-slate-500 hover:bg-slate-50' }}">On</button>
+    </form>
+    <form method="post" action="/categorizers/toggle" class="inline">
+      <input type="hidden" name="service" value="{{ kill_switch.service }}">
+      <input type="hidden" name="action" value="off">
+      <button type="submit" class="px-2 py-0.5 rounded border {{ 'border-amber-400 bg-amber-50 text-amber-700' if not kill_switch.enabled else 'border-slate-200 text-slate-500 hover:bg-slate-50' }}">Off</button>
+    </form>
+    <form method="post" action="/categorizers/toggle" class="inline">
+      <input type="hidden" name="service" value="{{ kill_switch.service }}">
+      <input type="hidden" name="action" value="default">
+      <button type="submit" class="px-2 py-0.5 rounded border border-slate-200 text-slate-400 hover:bg-slate-50">Default</button>
+    </form>
+  </span>
+</div>
+
 <div class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100 mb-8">
   <div class="px-4 py-2 text-[11px] font-semibold text-slate-500 flex items-center gap-3">
     <span class="w-32 shrink-0">Name</span>

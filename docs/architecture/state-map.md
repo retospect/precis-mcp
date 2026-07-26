@@ -1439,9 +1439,13 @@ and topic (`data/topics/*.yaml`) — granularity, prereqs, and a live
 enable/disable toggle (`POST /categorizers/toggle`) writing the all-hosts
 `service_config` row the axis's own `axis:<id>` service (or the shared
 `classify`/`classify_topics` pass, for `role3`/`junk`/topics) reads — flips
-in place, no redeploy. Coverage %s are a lazy `GET /categorizers/progress`
-htmx fragment (the corpus-scan aggregates are deferred off the initial
-paint, mirroring `/status`'s backlog fragment).
+in place, no redeploy. The `classify_topics` global kill-switch has its own
+On/Off/Default strip (below the amber force-off banner) — Off force-disables
+every topic, Default reverts to "runs if any topic is on". Coverage %s are a
+lazy `GET /categorizers/progress` htmx fragment (the corpus-scan aggregates
+are deferred off the initial paint, mirroring `/status`'s backlog fragment);
+each row also carries a **last-minted** timestamp (`max(created_at)` folded
+into the same scan at zero extra cost — no new query/index).
 
 **System — merged Status+Factory+Budget+Models
 (`/status?tab=health|services|models|budget`).**

@@ -42,6 +42,7 @@ chunk-level axes) so they're deferred to the ``GET
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -361,32 +362,39 @@ def _chunk_eligible_total(store: Any) -> int:
 
 def _chunk_axis_progress(
     store: Any, namespace: str, chunk_eligible_total: int
-) -> tuple[int, int]:
-    """(done, total) for a chunk-level axis's own namespace. ``done`` =
-    chunks already carrying a tag in this namespace; ``total`` is the
+) -> tuple[int, int, datetime | None]:
+    """(done, total, last_ts) for a chunk-level axis's own namespace. ``done``
+    = chunks already carrying a tag in this namespace; ``total`` is the
     shared eligible-chunk count passed in (see :func:`_chunk_eligible_total`)
-    so the expensive scan runs once, not once per axis."""
+    so the expensive scan runs once, not once per axis; ``last_ts`` is the
+    ``created_at`` of the most recently written tag in this namespace
+    (``None`` if none), folded into this same scan at zero extra cost."""
     with store.pool.connection() as conn:
         done_row = conn.execute(
-            "SELECT count(DISTINCT ct.chunk_id)::int FROM chunk_tags ct "
+            "SELECT count(DISTINCT ct.chunk_id)::int, max(ct.created_at) "
+            "FROM chunk_tags ct "
             "JOIN tags t ON t.tag_id = ct.tag_id WHERE t.namespace = %s",
             (namespace,),
         ).fetchone()
     done = int(done_row[0]) if done_row and done_row[0] is not None else 0
-    return done, chunk_eligible_total
+    last_ts = done_row[1] if done_row else None
+    return done, chunk_eligible_total, last_ts
 
 
 def _ref_axis_progress(
     store: Any, namespace: str, paper_patent_total: int
-) -> tuple[int, int]:
-    """(done, total) for a ref-level axis: refs tagged in its namespace,
-    over the paper+patent corpus. Each non-cascade axis now has a runtime
-    pass (``axis:<id>``, default-OFF) — ``done`` reads 0 until its toggle
-    is flipped on and it's had a chance to sweep the corpus, not because
-    no code exists."""
+) -> tuple[int, int, datetime | None]:
+    """(done, total, last_ts) for a ref-level axis: refs tagged in its
+    namespace, over the paper+patent corpus. Each non-cascade axis now has a
+    runtime pass (``axis:<id>``, default-OFF) — ``done`` reads 0 until its
+    toggle is flipped on and it's had a chance to sweep the corpus, not
+    because no code exists. ``last_ts`` is the ``created_at`` of the most
+    recently written tag in this namespace (``None`` if none), folded into
+    this same scan at zero extra cost."""
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT count(DISTINCT rt.ref_id)::int FROM ref_tags rt "
+            "SELECT count(DISTINCT rt.ref_id)::int, max(rt.created_at) "
+            "FROM ref_tags rt "
             "JOIN tags t ON t.tag_id = rt.tag_id "
             "JOIN refs r ON r.ref_id = rt.ref_id "
             "WHERE r.kind = ANY(%(kinds)s) AND r.deleted_at IS NULL "
@@ -394,7 +402,8 @@ def _ref_axis_progress(
             {"kinds": ["paper", "patent"], "ns": namespace},
         ).fetchone()
     done = int(row[0]) if row and row[0] is not None else 0
-    return done, paper_patent_total
+    last_ts = row[1] if row else None
+    return done, paper_patent_total, last_ts
 
 
 def _paper_patent_total(store: Any) -> int:
@@ -430,20 +439,26 @@ def _topics_marker_done(store: Any, marker_value: str) -> int:
     return int(row[0]) if row and row[0] is not None else 0
 
 
-def _topic_hit_count(store: Any, slug: str) -> int:
-    """How many paper+patent refs carry ``topic:<slug>`` (an OPEN tag —
-    ``workers/classify_topics.py`` writes ``Tag.open(f"topic:{slug}")``,
-    so the DB namespace is the ``OPEN`` sentinel, not the slug itself)."""
+def _topic_hit_count(store: Any, slug: str) -> tuple[int, datetime | None]:
+    """(hit_count, last_ts) — how many paper+patent refs carry
+    ``topic:<slug>`` (an OPEN tag — ``workers/classify_topics.py`` writes
+    ``Tag.open(f"topic:{slug}")``, so the DB namespace is the ``OPEN``
+    sentinel, not the slug itself), plus the ``created_at`` of the most
+    recently written one (``None`` if none), folded into this same scan at
+    zero extra cost. Only called from :func:`_progress_rows`."""
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT count(DISTINCT rt.ref_id)::int FROM ref_tags rt "
+            "SELECT count(DISTINCT rt.ref_id)::int, max(rt.created_at) "
+            "FROM ref_tags rt "
             "JOIN tags t ON t.tag_id = rt.tag_id "
             "JOIN refs r ON r.ref_id = rt.ref_id "
             "WHERE r.kind = ANY(%(kinds)s) AND r.deleted_at IS NULL "
             "AND t.namespace = 'OPEN' AND t.value = %(val)s",
             {"kinds": ["paper", "patent"], "val": f"topic:{slug}"},
         ).fetchone()
-    return int(row[0]) if row and row[0] is not None else 0
+    hit_count = int(row[0]) if row and row[0] is not None else 0
+    last_ts = row[1] if row else None
+    return hit_count, last_ts
 
 
 def _progress_rows(store: Any) -> dict[str, dict[str, Any]]:
@@ -468,10 +483,15 @@ def _progress_rows(store: Any) -> dict[str, dict[str, Any]]:
                 lambda ns=namespace: _ref_axis_progress(store, ns, paper_patent_total)
             )
         if result is None:
-            rows[axis_id] = {"done": 0, "total": 0, "error": True}
+            rows[axis_id] = {"done": 0, "total": 0, "error": True, "last_minted": None}
         else:
-            done, total = result
-            rows[axis_id] = {"done": done, "total": total, "error": False}
+            done, total, last_ts = result
+            rows[axis_id] = {
+                "done": done,
+                "total": total,
+                "error": False,
+                "last_minted": last_ts,
+            }
 
     topics = _load_topics()
     if topics:
@@ -491,20 +511,23 @@ def _progress_rows(store: Any) -> dict[str, dict[str, Any]]:
         )
         for topic in topics:
             slug = str(topic["slug"])
-            hit_count = _safe(lambda s=slug: _topic_hit_count(store, s))
-            if marker_done is None or hit_count is None:
+            hit_result = _safe(lambda s=slug: _topic_hit_count(store, s))
+            if marker_done is None or hit_result is None:
                 rows[slug] = {
                     "done": 0,
                     "total": 0,
                     "hit_count": 0,
                     "error": True,
+                    "last_minted": None,
                 }
             else:
+                hit_count, last_ts = hit_result
                 rows[slug] = {
                     "done": marker_done,
                     "total": paper_patent_total,
                     "hit_count": hit_count,
                     "error": False,
+                    "last_minted": last_ts,
                 }
     return rows
 
@@ -546,6 +569,11 @@ async def index(request: Request) -> HTMLResponse:
         "axes": axes,
         "topics": topics,
         "topics_globally_off": topics_globally_off,
+        "kill_switch": {
+            "service": "classify_topics",
+            "enabled": bool(eff_ct["enabled"]),
+            "overridden": bool(eff_ct["overridden"]),
+        },
     }
     return templates.TemplateResponse(request, "categorizers.html.j2", ctx)
 

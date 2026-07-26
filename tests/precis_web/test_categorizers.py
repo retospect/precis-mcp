@@ -11,6 +11,8 @@ read, and the toggle endpoint's writes against seeded chunks/refs/tags.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 pytest.importorskip("fastapi")
@@ -63,6 +65,39 @@ def test_categorizers_page_lists_axes_and_topics(client: TestClient) -> None:
     # computed inline on the shell page.
     assert 'hx-get="/categorizers/progress"' in body
     assert "loading coverage" in body
+
+
+def test_categorizers_page_has_kill_switch_control(client: TestClient) -> None:
+    """The global ``classify_topics`` kill-switch is a live On/Off/Default
+    control on the page, not just the read-only amber banner."""
+    resp = client.get("/categorizers")
+    assert resp.status_code == 200
+    body = resp.text
+    assert "global kill-switch" in body.lower()
+    assert 'value="classify_topics"' in body
+    assert ">On<" in body
+    assert ">Off<" in body
+    assert ">Default<" in body
+
+
+def test_categorizers_page_kill_switch_renders_when_forced_off(
+    real_client: TestClient, store: Store
+) -> None:
+    """An explicit prio-0 ``classify_topics`` row still leaves the On/Off/
+    Default control on the page (so an operator can turn it back on),
+    alongside the existing amber warning banner."""
+    try:
+        set_service_prio(store, ALL_HOSTS, "classify_topics", 0, actor="test")
+        resp = real_client.get("/categorizers")
+        assert resp.status_code == 200
+        body = resp.text
+        assert "force-disabled" in body  # the existing amber banner
+        assert 'value="classify_topics"' in body
+        assert ">On<" in body
+        assert ">Off<" in body
+        assert ">Default<" in body
+    finally:
+        clear_service_config(store, ALL_HOSTS, "classify_topics")
 
 
 def test_axis_row_service_mapping() -> None:
@@ -173,10 +208,11 @@ def test_chunk_axis_progress_counts_tagged_over_eligible(store: Store) -> None:
 
     chunk_total = cz._chunk_eligible_total(store)
     assert chunk_total >= 2
-    done, total = cz._chunk_axis_progress(store, "ROLE3", chunk_total)
+    done, total, last_ts = cz._chunk_axis_progress(store, "ROLE3", chunk_total)
     assert done >= 1
     assert total == chunk_total
     assert done <= total
+    assert last_ts is not None
     # sanity: the chunk we tagged is really the one carrying ROLE3.
     with store.pool.connection() as conn:
         tagged = conn.execute(
@@ -191,9 +227,10 @@ def test_ref_axis_progress_dormant_reads_zero(store: Store) -> None:
     are default-OFF and nothing has run them) — the query must still run
     cleanly and report 0."""
     total = cz._paper_patent_total(store)
-    done, reported_total = cz._ref_axis_progress(store, "DOMAIN", total)
+    done, reported_total, last_ts = cz._ref_axis_progress(store, "DOMAIN", total)
     assert done == 0
     assert reported_total == total
+    assert last_ts is None
 
 
 def test_topic_hit_count_and_marker_done(store: Store) -> None:
@@ -207,10 +244,14 @@ def test_topic_hit_count_and_marker_done(store: Store) -> None:
         ref.id, Tag.closed(cz._TOPIC_MARKER_NAMESPACE, marker_value), set_by="agent"
     )
 
-    assert cz._topic_hit_count(store, "mof") >= 1
+    hit_count, last_ts = cz._topic_hit_count(store, "mof")
+    assert hit_count >= 1
+    assert last_ts is not None
     assert cz._topics_marker_done(store, marker_value) >= 1
     # A slug nothing was tagged with reads 0, not an error.
-    assert cz._topic_hit_count(store, "no-such-topic-slug") == 0
+    no_hit_count, no_last_ts = cz._topic_hit_count(store, "no-such-topic-slug")
+    assert no_hit_count == 0
+    assert no_last_ts is None
 
 
 def test_categorizers_progress_fragment_renders_against_real_db(
@@ -219,6 +260,52 @@ def test_categorizers_progress_fragment_renders_against_real_db(
     resp = real_client.get("/categorizers/progress")
     assert resp.status_code == 200
     assert "query failed" not in resp.text
+
+
+def test_progress_fragment_shows_last_minted_timestamp(
+    real_client: TestClient, store: Store
+) -> None:
+    """The coverage fragment folds each row's most-recent-tag timestamp into
+    the same aggregate scan (no extra query) — a categorizer with a tag
+    reads a real ``ago`` value, one with none reads "never"."""
+    ref = store.insert_ref(
+        kind="paper", slug="cz-test-last-minted-paper", title="a paper", meta={}
+    )
+    long_text = "a real scientific sentence about catalysts " * 4  # > 120 chars
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+            "VALUES (%s, 0, 'paragraph', %s)",
+            (ref.id, long_text),
+        )
+        conn.commit()
+    store.add_tag(ref.id, Tag.closed("ROLE3", "own"), pos=0, set_by="agent")
+
+    progress = cz._progress_rows(store)
+    assert progress["role3"]["last_minted"] is not None
+    # An axis nothing has ever tagged has no minted timestamp.
+    assert progress["domain"]["last_minted"] is None
+
+    resp = real_client.get("/categorizers/progress")
+    assert resp.status_code == 200
+    body = resp.text
+
+    def _row_html(name: str) -> str:
+        """Slice out this row's own markup so the assertion doesn't get
+        fooled by a sibling row's "never" text."""
+        starts = [
+            m.start()
+            for m in re.finditer(r'font-mono text-slate-700 w-32 shrink-0">', body)
+        ]
+        for i, start in enumerate(starts):
+            end = starts[i + 1] if i + 1 < len(starts) else len(body)
+            chunk = body[start:end]
+            if chunk.startswith(f'font-mono text-slate-700 w-32 shrink-0">{name}<'):
+                return chunk
+        raise AssertionError(f"row {name!r} not found in fragment")
+
+    assert "never" not in _row_html("role3")
+    assert "never" in _row_html("domain")
 
 
 # ── real-DB effective-state + toggle-endpoint layer ─────────────────

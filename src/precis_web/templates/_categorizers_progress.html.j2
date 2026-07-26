@@ -39,6 +39,9 @@
       {{ '{:,}'.format(row.hit_count|default(0)) }} hits
     </span>
     {% endif %}
+    <span class="w-20 text-right text-slate-400 shrink-0 tabular-nums" title="last tag written">
+      {% if row.last_minted %}{{ row.last_minted | ago }}{% else %}<span class="text-slate-400">never</span>{% endif %}
+    </span>
     {% endif %}
   </div>
   {% else %}
