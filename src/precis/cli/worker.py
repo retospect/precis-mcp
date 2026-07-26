@@ -778,12 +778,15 @@ def run(args: argparse.Namespace) -> None:
             from precis.utils.llm.router import Tier as _Tier
             from precis.workers.runner import BatchResult as _ClsBatchResult
 
-            # Fold through the router (ADR 0046) for the Phase-2 served_by reroute.
-            # Forces model=`summarizer` (a thinking model like qwen returns empty).
+            # Resolve via the SMALL-tier chain (ADR 0066 `llm.chain.small`)
+            # rather than pinning the legacy `summarizer` litellm alias. The
+            # chain's rungs (glm-4.7-flash → summarizer) are non-thinking small
+            # models, so the empty-return hazard the old pin guarded against no
+            # longer applies. PRECIS_CLASSIFY_MODEL still overrides (pin / tests).
             # Per-chunk high volume ⇒ a lite row (metadata, no replay blob).
             _cls_client = _DispatchClient(
                 tier=_Tier.SMALL,
-                model=os.environ.get("PRECIS_CLASSIFY_MODEL") or "summarizer",
+                model=os.environ.get("PRECIS_CLASSIFY_MODEL") or None,
                 source="classify",
                 log_call=True,
                 log_blobs=False,
