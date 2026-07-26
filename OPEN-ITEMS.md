@@ -527,31 +527,16 @@ scored axes) and the structure round-trip eval also shipped. Nothing
 consumes the policy yet:
 
 - **Local-first CAPACITY failover valve (local primary → spill to cloud on
-  demand)** *(feature, open — the ADR-0066 slice-7 saturation escape).* Reto:
-  "if model is local, run that first, but if too much demand, spin out onto the
-  net." The mechanism **already exists** — `router.py::dispatch` (~the
-  `_local.acquire` / saturation block, and `_hosted_small_remap`→`glm-4.7-flash`
-  default): a `served_by` `resource_slots` slot + an **`openai_compat`** rung-0
-  spills local→cloud when the local slot is saturated (a `litellm` rung-0 can't —
-  it returns a paused backoff). **Blockers found 2026-07-25, not yet built:**
-  (1) the classifier's local model is **Qwen3-Next-80B via the litellm proxy
-  @127.0.0.1:4000, real capacity ~1/host** (`workers/llm_summarize.py`) — wrong
-  model for a high-volume burst; a genuinely small fast model on llama-swap is
-  the precondition for the valve to pull weight; (2) **name-mismatch trap**: the
-  chain rung says `summarizer` but `resource_slots` register under the concrete
-  model name (`qwen3-next-80b-…`), so `local_serving.acquire("summarizer")` is
-  dark and logs "check served_by naming"; (3) rung-0 must be `openai_compat`, not
-  `litellm`. Wiring = fix alias↔slot naming + add `served_by`/`resource_slots` at
-  real capacity (seeded by `workers/llm_reconcile.py` §S + `workers/llm_serving.py`
-  heartbeat from `served_by.max_parallel`) + flip the tier's chain rung-0 to
-  `openai_compat`. `_LOCAL_ONLY_MODEL_ALIASES = {summarizer, rake-lemma}`,
-  `_hosted_small_model()` = `llm.model.local-small` override → env →
-  `z-ai/glm-4.7-flash`.
-- **⚠ TEMP PROD STATE: SMALL is left cloud-primary** *(revert when the burst is
-  done).* `app_settings['llm.chain.small']` currently
-  `[cloud glm-4.7-flash → local summarizer]` (burst setting 2026-07-25). Steady
-  state is local-primary — flip back with one `scripts/prod-psql` upsert to
-  `[{local summarizer litellm} → {cloud glm-4.7-flash openai_compat}]`.
+  demand)** *(feature, DESIGN PASS DONE — `docs/proposals/local-first-capacity-valve.md`,
+  status:draft).* Reto: "if model is local, run that first, but if too much
+  demand, spin out onto the net" + **local and cloud must be the SAME model** so
+  a spill is quality-invisible. The saturation-escape mechanism already shipped
+  (`llm-openrouter-bypass.md` item 3); the proposal spells out the three
+  activation blockers (small open-weight model served both places · name-mismatch
+  `resolve_model(SMALL)=summarizer` vs `served_by` resource · `openai_compat`
+  rung-0 not `litellm`) and why a static chain only fails over on ERROR, not on
+  SATURATION. **Next:** resolve the two BLOCKER open questions (which model `M`;
+  local capacity `N`/host) → `/ready` → build. SMALL-only; MEDIUM deferred.
 - **Wire `choose_model`/`select_offering` into deliberative call-sites**
   *(feature, open).* `utils/llm/requirement.py::choose_model` and
   `utils/llm/policy.py::select_offering` exist and are green, but no
