@@ -682,38 +682,45 @@ def _review_status_by_chunk(
     Threads every checker the ledger carries (not just ``'human'``) so a
     future column (the other paper-writing-pipeline rung-3 checkers) can
     render off the same payload; the row/skeleton template only reads
-    ``'human'`` for now."""
+    ``'human'`` for now.
+
+    Records are JSON-safe (``at`` ISO-stringified via :func:`_review_entry`)
+    because this map is embedded in the reader **skeleton** and serialized
+    (``tojson`` / ``JSONResponse``) — a raw ``datetime`` would 500 the page."""
     out: dict[int, dict[str, dict[str, Any]]] = {}
     for row in store.review_status_for_draft(ref_id):
         entry = out.setdefault(row["chunk_id"], {})
         checker = row.get("checker")
         if checker:
-            entry[checker] = {
-                "approved_sha": row.get("approved_sha"),
-                "verdict": row.get("verdict"),
-                "at": row.get("at"),
-                "dirty": row.get("dirty"),
-            }
+            entry[checker] = _review_entry(row)
     return out
+
+
+def _review_entry(row: dict[str, Any]) -> dict[str, Any]:
+    """One JSON-safe per-checker review record ``{approved_sha, verdict, at,
+    dirty}`` — ``at`` ISO-stringified (a raw ``datetime`` isn't JSON
+    serializable, and this rides into the skeleton JSON). The single shape
+    both :func:`_review_status_by_chunk` and :func:`_review_json` build, so
+    the two paths can't drift on serializability."""
+    at = row.get("at")
+    return {
+        "approved_sha": row.get("approved_sha"),
+        "verdict": row.get("verdict"),
+        "at": at.isoformat() if hasattr(at, "isoformat") else at,
+        "dirty": row.get("dirty"),
+    }
 
 
 def _review_json(status: list[dict[str, Any]]) -> dict[str, Any]:
     """JSON-safe ``{checker: {approved_sha, verdict, at, dirty}}`` for the
-    ``/human-review`` POST response — same shape ``_review_status_by_chunk``
-    attaches to a row, but with ``at`` stringified (a raw ``datetime`` isn't
-    JSON-serializable)."""
+    ``/human-review`` POST response — same per-checker record
+    (:func:`_review_entry`) ``_review_status_by_chunk`` attaches to a row."""
     out: dict[str, Any] = {}
     for r in status:
         checker = r.get("checker")
         if not checker:
             continue
-        at = r.get("at")
-        out[checker] = {
-            "approved_sha": r.get("approved_sha"),
-            "verdict": r.get("verdict"),
-            "at": at.isoformat() if hasattr(at, "isoformat") else at,
-            "dirty": r.get("dirty"),
-        }
+        out[checker] = _review_entry(r)
     return out
 
 

@@ -14,7 +14,7 @@ import pytest
 
 pytest.importorskip("fastapi")
 
-from datetime import UTC
+from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
 
@@ -1454,6 +1454,52 @@ def test_row_review_status_reflects_the_ledger() -> None:
     row = _one_row(store, _DRAFT, "BBBBBB")
     assert row["review"]["human"]["dirty"] is False
     assert row["review"]["human"]["verdict"] == "approved"
+
+
+class _DatetimeReviewStore(ReviewFakeStore):
+    """A review ledger that stamps a real ``datetime`` ``at`` — what the DB
+    actually returns — unlike ``ReviewFakeStore``'s ``at=None``. This is the
+    shape that used to 500 the reader once a chunk had been reviewed."""
+
+    def record_review(self, chunk_id, checker, *, verdict="approved"):
+        self._reviews.setdefault(chunk_id, {})[checker] = {
+            "approved_sha": "shaX",
+            "verdict": verdict,
+            "at": datetime(2026, 7, 26, 12, 23, 34, tzinfo=UTC),
+            "dirty": False,
+        }
+        return "shaX"
+
+
+def test_reader_survives_datetime_review_at(tmp_path) -> None:
+    """Regression: the reader embeds the whole-draft review ledger in the
+    virtual-scroll skeleton and ``tojson``s it (and serves it raw from
+    ``/skeleton``). A recorded review carries a real ``datetime`` ``at``, so
+    the raw value 500'd the page (``TypeError: Object of type datetime is not
+    JSON serializable``). ``_review_entry`` ISO-stringifies ``at`` at the
+    single source both the row and skeleton read, keeping both serializable."""
+    store = _DatetimeReviewStore()
+    store.record_review(2, "human")  # BBBBBB / dc2
+    app = create_app(
+        runtime=FakeRuntime(store), web_config=WebConfig(corpus_dir=tmp_path)
+    )
+    client = TestClient(app)
+
+    # The inline skeleton (`{{ skeleton | tojson }}` in detail.html.j2).
+    r = client.get("/drafts/nt")
+    assert r.status_code == 200  # was 500
+
+    # The /skeleton JSON endpoint serializes the same ledger.
+    skel = client.get("/drafts/nt/skeleton")
+    assert skel.status_code == 200
+    rv = next(
+        row["rv"]
+        for row in skel.json()["skeleton"]
+        if (row.get("rv") or {}).get("human")
+    )
+    assert (
+        rv["human"]["at"] == "2026-07-26T12:23:34+00:00"
+    )  # ISO string, not a datetime
 
 
 def test_reader_renders_the_human_review_checkbox(draft_client: TestClient) -> None:
