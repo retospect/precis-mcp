@@ -7,6 +7,28 @@ import pytest
 pytest.importorskip("fastapi")
 
 
+def _registered_paths(app) -> set[str]:
+    """Every route path registered on ``app``, resolving through FastAPI
+    0.139's lazy ``_IncludedRouter`` wrappers. `include_router` no longer
+    flattens sub-router routes into ``app.routes`` — it stores a wrapper
+    whose own ``.path`` is ``None`` and whose ``original_router.routes``
+    hold the real paths — so a flat ``{r.path for r in app.routes}`` scan
+    misses every included route. Walk both shapes."""
+    out: set[str] = set()
+
+    def walk(routes) -> None:
+        for r in routes:
+            path = getattr(r, "path", None)
+            if path is not None:
+                out.add(path)
+            orig = getattr(r, "original_router", None)
+            if orig is not None:
+                walk(orig.routes)
+
+    walk(app.routes)
+    return out
+
+
 # ── app skeleton ───────────────────────────────────────────────────
 
 
@@ -38,7 +60,7 @@ def test_drive_new_dropdown_offers_draft_doctype(client) -> None:
 def test_pres_editor_routes_registered(client) -> None:
     """The pres slide-deck editor wires four endpoints (reader / pdf /
     bibtex / edit). Guards the app-factory registration + path shapes."""
-    paths = {getattr(r, "path", None) for r in client.app.routes}
+    paths = _registered_paths(client.app)
     assert "/pres/{slug}" in paths
     assert "/pres/{ref_id}/pdf" in paths
     assert "/pres/{ref_id}/bibtex" in paths
@@ -48,7 +70,7 @@ def test_pres_editor_routes_registered(client) -> None:
 def test_datasheet_reader_route_registered(client) -> None:
     """The /datasheets reader + edit endpoints are wired (datasheet joined
     _DOC_FAMILY). Guards the app-factory registration."""
-    paths = {getattr(r, "path", None) for r in client.app.routes}
+    paths = _registered_paths(client.app)
     assert "/datasheets/{ident}" in paths
     assert "/datasheets/{ref_id}/edit" in paths
 
@@ -4426,7 +4448,7 @@ def test_stop_surfaces_handler_error(runtime, client, monkeypatch) -> None:
 
 
 def test_stop_start_routes_registered(client) -> None:
-    paths = {getattr(r, "path", None) for r in client.app.routes}
+    paths = _registered_paths(client.app)
     assert "/tasks/{ref_id}/stop" in paths
     assert "/tasks/{ref_id}/start" in paths
 

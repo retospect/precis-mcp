@@ -3,6 +3,7 @@
     "ENABLE_TOOL_SEARCH": "auto:20"
   },
   "permissions": {
+    "defaultMode": "auto",
     "allow": [
       "Bash(scripts/ship:*)",
       "Bash(scripts/deploy:*)",

@@ -49,6 +49,51 @@ def content_sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+#: Intra-draft chunk cross-refs as they appear *in prose* — the bare
+#: bracket handle ``[dc41]``, the display-link target ``](dc41)`` (the
+#: ``[cap]`` half is left intact), and the legacy ``[¶<base58>]`` anchor.
+#: Only these forms are document-internal (not graph edges), so
+#: :meth:`fork_draft`'s link remap never touches them — see
+#: :func:`_remap_intra_draft_xrefs`.
+_DRAFT_XREF_REMAP_RE = re.compile(
+    r"\[dc(?P<bare>\d+)\]"
+    r"|\]\(dc(?P<tgt>\d+)"
+    r"|\[¶(?P<legacy>[^\[\]]+)\]"
+)
+
+
+def _remap_intra_draft_xrefs(
+    text: str,
+    id_map: dict[int, int],
+    handle_to_new_id: dict[str, int],
+) -> str:
+    """Rewrite in-prose intra-draft chunk cross-refs onto the copied chunks
+    for :meth:`fork_draft`. A ``[dc<id>]`` / ``[cap](dc<id>)`` cross-ref (and
+    the legacy ``[¶<base58>]`` anchor) is *document-internal*: it lives in the
+    chunk text, not the ``links`` table, so the fork's link remap never touches
+    it — copied verbatim it would point back at the SOURCE draft's chunks.
+    ``dc<id>`` is ``dc`` + ``chunk_id``, so ``id_map`` (old chunk_id → new) is
+    the handle remap; legacy ``¶`` anchors map via ``handle_to_new_id`` and are
+    normalised to the current ``[dc<id>]`` form. Only refs to a *source-draft*
+    chunk are rewritten — a cross-draft ``[dc<id>]`` names another draft's
+    (globally unique) chunk_id, absent from both maps, so it is left alone.
+    Returns the (possibly unchanged) text."""
+
+    def _sub(m: re.Match[str]) -> str:
+        bare = m.group("bare")
+        if bare is not None:
+            new = id_map.get(int(bare))
+            return f"[dc{new}]" if new is not None else m.group(0)
+        tgt = m.group("tgt")
+        if tgt is not None:
+            new = id_map.get(int(tgt))
+            return f"](dc{new}" if new is not None else m.group(0)
+        new = handle_to_new_id.get(m.group("legacy"))
+        return f"[dc{new}]" if new is not None else m.group(0)
+
+    return _DRAFT_XREF_REMAP_RE.sub(_sub, text)
+
+
 @dataclass(frozen=True, slots=True)
 class DraftChunk:
     chunk_id: int
@@ -1349,6 +1394,13 @@ class DraftMixin:
            ``chunk_summaries`` are skipped (re-derived by the worker from
            ``content_sha``) and ``chunk_review`` is skipped so the copy
            starts fully unreviewed (paper-writing pipeline rung 3);
+        3b. in-prose intra-draft cross-refs (``[dc<id>]`` / ``[cap](dc<id>)``
+           / legacy ``[¶<base58>]``) rewritten onto the copied chunks — these
+           are document-internal (not graph edges), so step 4's link remap
+           can't reach them; copied verbatim they'd dangle back into the
+           source. ``content_sha`` (and the ``created`` ``chunk_events`` row)
+           are recomputed for each rewritten chunk. See
+           :func:`_remap_intra_draft_xrefs`;
         4. every link touching ``src_ref_id`` in either direction
            (INSERT-only — the source's edges are untouched, unlike
            :meth:`~precis.store._links_ops.LinksMixin.migrate_links`,
@@ -1398,7 +1450,8 @@ class DraftMixin:
             chunk_rows = conn.execute(
                 """
                 SELECT chunk_id, ord, chunk_kind, text, pos, parent_chunk_id,
-                       content_sha, meta, section_path, keywords, retired_at
+                       content_sha, meta, section_path, keywords, retired_at,
+                       handle
                   FROM chunks WHERE ref_id = %s ORDER BY chunk_id
                 """,
                 (src_ref_id,),
@@ -1406,6 +1459,8 @@ class DraftMixin:
 
             id_map: dict[int, int] = {}
             old_parents: dict[int, int | None] = {}
+            # legacy ``¶<base58>`` anchor → new chunk_id, for the xref remap
+            handle_to_new_id: dict[str, int] = {}
             for r in chunk_rows:
                 src_chunk = {
                     "chunk_id": r[0],
@@ -1424,6 +1479,7 @@ class DraftMixin:
                 )
                 id_map[r[0]] = new_chunk_id
                 old_parents[r[0]] = r[5]
+                handle_to_new_id[r[11]] = new_chunk_id
 
             # second pass: fix up parent_chunk_id now every chunk has a
             # new id (a parent can be inserted after its child above).
@@ -1434,6 +1490,33 @@ class DraftMixin:
                         "UPDATE chunks SET parent_chunk_id = %s WHERE chunk_id = %s",
                         (id_map[old_parent], new_id),
                     )
+
+            # third pass: rewrite in-prose intra-draft cross-refs so they
+            # point at the COPIED chunks, not the source's. These live in the
+            # chunk text (document-internal — TOC / \ref), never the links
+            # table, so the link remap below can't reach them; copied verbatim
+            # they'd dangle back into the source draft. dc<id> == dc+chunk_id,
+            # so id_map is the remap. Text change ⇒ recompute content_sha (a
+            # pure fn of text) and keep the just-created chunk_events row in
+            # sync, so the embed/summarize workers key off the right hash. Safe
+            # to UPDATE in place here (unlike a committed body chunk): the copy
+            # has no chunk_embeddings/chunk_summaries yet — they're re-derived.
+            for r in chunk_rows:
+                src_text = r[3]
+                new_text = _remap_intra_draft_xrefs(src_text, id_map, handle_to_new_id)
+                if new_text == src_text:
+                    continue
+                new_id = id_map[r[0]]
+                new_sha = content_sha(new_text)
+                conn.execute(
+                    "UPDATE chunks SET text = %s, content_sha = %s WHERE chunk_id = %s",
+                    (new_text, new_sha, new_id),
+                )
+                conn.execute(
+                    "UPDATE chunk_events SET content_sha = %s "
+                    "WHERE chunk_id = %s AND event_kind = 'created'",
+                    (new_sha, new_id),
+                )
 
             if id_map:
                 old_ids = list(id_map)

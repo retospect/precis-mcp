@@ -9,6 +9,7 @@ import pytest
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.handlers.draft import DraftHandler
+from precis.store._draft_ops import _remap_intra_draft_xrefs, content_sha
 from precis.store.store import Store
 
 
@@ -71,6 +72,39 @@ def _make_source_draft(store: Store) -> tuple[int, int]:
 @pytest.fixture
 def draft(hub: Hub) -> DraftHandler:
     return DraftHandler(hub=hub)
+
+
+# ---------------------------------------------------------------------------
+# _remap_intra_draft_xrefs — the pure text-rewrite primitive
+# ---------------------------------------------------------------------------
+
+
+def test_remap_xrefs_rewrites_bare_display_and_legacy_forms() -> None:
+    id_map = {41: 987, 42: 988}
+    handle_to_new_id = {"5BL5xQ": 989}
+    text = "See [dc41] and the [second one](dc42) below; legacy [¶5BL5xQ] anchor too."
+    out = _remap_intra_draft_xrefs(text, id_map, handle_to_new_id)
+    assert out == (
+        "See [dc987] and the [second one](dc988) below; legacy [dc989] anchor too."
+    )
+
+
+def test_remap_xrefs_leaves_cross_draft_and_other_kinds_alone() -> None:
+    """A ``dc<id>`` naming a chunk NOT in the source draft (a cross-draft
+    ref — its chunk_id is absent from id_map) is untouched, as are other
+    kinds' handles (``pc``/``me``/``pa``) and an unmapped legacy anchor."""
+    id_map = {41: 987}
+    text = "intra [dc41], cross [dc50000], cite [pc12], note [me7], legacy [¶ZZZ]"
+    out = _remap_intra_draft_xrefs(text, id_map, {})
+    assert (
+        out == "intra [dc987], cross [dc50000], cite [pc12], note [me7], legacy [¶ZZZ]"
+    )
+
+
+def test_remap_xrefs_noop_when_no_refs() -> None:
+    assert _remap_intra_draft_xrefs("plain prose, no handles", {41: 987}, {}) == (
+        "plain prose, no handles"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +250,82 @@ def test_fork_links_remapped_not_shared_with_source(store: Store) -> None:
     dst_in = store.links_for(new_ref.id, direction="in", relation="related-to")
     assert len(src_in) == 1  # source's inbound edge is untouched, not duplicated
     assert len(dst_in) == 1  # the copy inherited its own inbound edge
+
+
+def test_fork_rewrites_intra_draft_prose_xrefs(store: Store) -> None:
+    """An in-prose ``[dc<id>]`` / ``[cap](dc<id>)`` cross-ref points at the
+    COPY's own chunks, not the source's (these live in the text, not the
+    links table, so verbatim copy would dangle them back into the source);
+    a cross-draft ref is left alone, and content_sha stays consistent."""
+    proj = _project(store, "Xref source project")
+    ref, title = store.create_draft(
+        name="xref-src", title="Xref Source", project_ref_id=proj
+    )
+    # target paragraph the cross-refs point at (need its id first)
+    [target] = store.add_chunks(
+        ref_id=ref.id,
+        chunk_kind="paragraph",
+        text="the target paragraph",
+        at={"after": title.dc},
+    )
+    # a chunk in ANOTHER draft — a cross-draft ref that must NOT be rewritten
+    other_proj = _project(store, "Other project")
+    other_ref, other_title = store.create_draft(
+        name="xref-other", title="Other", project_ref_id=other_proj
+    )
+    [other_chunk] = store.add_chunks(
+        ref_id=other_ref.id,
+        chunk_kind="paragraph",
+        text="external",
+        at={"after": other_title.dc},
+    )
+    # the referencing paragraph: intra-draft bare + display-link, plus a
+    # cross-draft bare ref to leave alone
+    ref_text = (
+        f"As shown in [dc{target.chunk_id}] and [the target]"
+        f"(dc{target.chunk_id}); compare [dc{other_chunk.chunk_id}]."
+    )
+    [referrer] = store.add_chunks(
+        ref_id=ref.id,
+        chunk_kind="paragraph",
+        text=ref_text,
+        at={"after": target.dc},
+    )
+
+    dst_proj = _project(store, "Xref dest project")
+    new_ref = store.fork_draft(ref.id, dst_proj, new_slug="xref-dst")
+
+    # align source ↔ copy by reading-order index to find the copied chunks
+    src_order = store.reading_order(ref.id)
+    dst_order = store.reading_order(new_ref.id)
+    assert len(src_order) == len(dst_order)
+    ti = next(i for i, s in enumerate(src_order) if s.chunk_id == target.chunk_id)
+    ri = next(i for i, s in enumerate(src_order) if s.chunk_id == referrer.chunk_id)
+    dst_target = dst_order[ti]
+    dst_referrer = dst_order[ri]
+
+    expected = (
+        f"As shown in [dc{dst_target.chunk_id}] and [the target]"
+        f"(dc{dst_target.chunk_id}); compare [dc{other_chunk.chunk_id}]."
+    )
+    assert dst_referrer.text == expected
+    # the intra-draft ref was actually remapped (not left as the source id)
+    assert f"dc{target.chunk_id}" not in dst_referrer.text
+    # the cross-draft ref is untouched
+    assert f"[dc{other_chunk.chunk_id}]" in dst_referrer.text
+
+    # content_sha (and the created chunk_events row) track the rewritten text
+    with store.pool.connection() as conn:
+        sha_row = conn.execute(
+            "SELECT c.content_sha, "
+            " (SELECT content_sha FROM chunk_events "
+            "  WHERE chunk_id = c.chunk_id AND event_kind = 'created') "
+            "FROM chunks c WHERE c.chunk_id = %s",
+            (dst_referrer.chunk_id,),
+        ).fetchone()
+    assert sha_row is not None
+    assert sha_row[0] == content_sha(expected)
+    assert sha_row[1] == content_sha(expected)
 
 
 def test_fork_original_draft_untouched(store: Store) -> None:
