@@ -212,8 +212,12 @@ Status: open · Severity: polish · Owner: `src/precis/utils/llm/router.py` (`Ba
 - Status: `open` · Severity: `feature` · Owner: `src/asa_slack/`,
   `deploy/roles/asa_slack/` · Test: manual (no automated end-to-end harness
   for a live Slack workspace). Code shipped + deployed + connected to Slack
-  (`com.asa.slack` on melchior, playbook `48-asa-slack.yml` — run directly,
-  NOT part of `scripts/deploy`); the remaining work is the smoke test.
+  (`com.asa.slack` on melchior). Since 2026-07-26 the shared `/opt/asa` venv
+  code-refresh + `com.asa.*` daemon bounce IS part of `scripts/deploy` / `/go`
+  (`redeploy-precis.yml` → `playbooks/32-asa-code-refresh.yml`); only
+  prompt/config changes (SOUL/HINTS/config — grimoire-sourced) still need the
+  full `48-asa-slack.yml` / `31-asa-bot.yml` run directly, on a controller with
+  the grimoire checkout. The remaining work is the smoke test.
 - **Smoke test**: confirm threading (never posts to channel root), a
   paper-search question actually works, a "kick off a job" request is refused
   (`Unsupported`, not just declined in prose), and a repeat message from the
