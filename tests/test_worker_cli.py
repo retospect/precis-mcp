@@ -13,7 +13,13 @@ import json
 import pytest
 
 from precis.cli.main import _build_parser
-from precis.cli.worker import _build_handlers, _print_status, _resolve_embedder
+from precis.cli.worker import (
+    _axis_id_default_on,
+    _build_handlers,
+    _print_status,
+    _resolve_embedder,
+    _should_register_categorizer,
+)
 from precis.embedder import MockEmbedder, RemoteEmbedder
 from precis.format import toon
 
@@ -386,3 +392,44 @@ class TestRefPassPriority:
             "priority table keys with no matching ref_passes.append() site "
             f"(renamed or removed closure?): {sorted(missing)}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Live-toggle registration (bug: a live On-flip couldn't start a default-off
+# categorizer, because the boot gate only ever *disabled* — the pass was never
+# registered, so the per-cycle gate had nothing to enable).
+# ---------------------------------------------------------------------------
+
+
+class TestCategorizerRegistration:
+    def test_registers_all_categorizers_with_no_only(self):
+        # No --only: every categorizer registers regardless of enabled-state,
+        # so a live prio-flip is picked up by the per-cycle gate without a
+        # worker restart.
+        for name in ("classify", "classify_topics", "axis:domain", "axis:material"):
+            assert _should_register_categorizer(None, name) is True
+
+    def test_only_restricts_to_the_named_pass(self):
+        assert _should_register_categorizer("classify", "classify") is True
+        assert _should_register_categorizer("classify", "classify_topics") is False
+        assert _should_register_categorizer("classify", "axis:domain") is False
+        assert _should_register_categorizer("axis:domain", "axis:domain") is True
+        assert _should_register_categorizer("axis:domain", "axis:material") is False
+
+
+class TestAxisGateDefault:
+    def test_axis_default_reads_env_set(self):
+        env = frozenset({"domain", "material"})
+        assert _axis_id_default_on("axis:domain", env) is True
+        assert _axis_id_default_on("axis:material", env) is True
+        assert _axis_id_default_on("axis:scale", env) is False  # not seeded → off
+
+    def test_empty_env_means_all_axes_default_off(self):
+        assert _axis_id_default_on("axis:domain", frozenset()) is False
+
+    def test_non_axis_service_returns_none(self):
+        # None → caller falls back to the registry/profile default (these have
+        # their own ServiceSpec; an axis:<id> does not).
+        assert _axis_id_default_on("classify", frozenset()) is None
+        assert _axis_id_default_on("classify_topics", frozenset({"domain"})) is None
+        assert _axis_id_default_on("chunk_keywords", frozenset({"domain"})) is None

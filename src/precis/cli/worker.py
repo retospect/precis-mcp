@@ -51,6 +51,38 @@ from precis.workers.service_config import ServiceConfigResolver
 if TYPE_CHECKING:
     from precis.workers.runner import RefPass
 
+
+def _should_register_categorizer(only: str | None, name: str) -> bool:
+    """Whether a live-toggleable categorizer pass (``classify`` /
+    ``classify_topics`` / ``axis:<id>``) registers on this invocation.
+
+    Registered regardless of its enabled-state — the per-cycle ``pass_gate``
+    decides whether it actually *runs* — unless ``--only`` selected a different
+    pass. This is what makes a live On-flip from the ``/categorizers`` console
+    take effect within one cache TTL WITHOUT a worker restart: the old boot gate
+    (``_pass_enabled``) only ever *disabled* these, because a default-off pass
+    was never appended to ``ref_passes``, so the per-cycle gate had nothing to
+    turn on.
+    """
+    return only is None or only == name
+
+
+def _axis_id_default_on(service: str, axes_env: frozenset[str]) -> bool | None:
+    """Env default for an ``axis:<id>`` service — whether its id is listed in
+    ``PRECIS_AXES_ENABLED`` (``axes_env``).
+
+    Returns ``None`` for a non-axis service (the caller falls back to the
+    registry/profile default). An ``axis:<id>`` service has no ``ServiceSpec`` of
+    its own — the spec is named ``axis`` — so its default can't come from
+    ``SERVICES_BY_NAME``; this is where the per-axis env seed is read for the
+    per-cycle gate.
+    """
+    prefix = "axis:"
+    if service.startswith(prefix):
+        return service[len(prefix) :] in axes_env
+    return None
+
+
 # ── ref-pass scheduling priority ──────────────────────────────────
 #
 # ``run_loop`` (workers/runner.run_loop) walks ``ref_passes`` in list
@@ -441,6 +473,14 @@ def run(args: argparse.Namespace) -> None:
                 return args.only == name
             return _svc_resolver.enabled(name, default_on=_env_profile_default_on(name))
 
+        def _register_categorizer(name: str) -> bool:
+            """Boot gate for a live-toggleable categorizer pass — registered
+            regardless of enabled-state (the per-cycle ``pass_gate`` decides each
+            cycle), unless ``--only`` selected a different pass, so a live
+            On-flip works without a restart. See
+            :func:`_should_register_categorizer`."""
+            return _should_register_categorizer(args.only, name)
+
         # Chunk-keybert pass (F20). Replaces the v1 segment_toc worker.
         # Runs after embeddings exist (the claim query requires
         # ``chunk_embeddings.status='ok'``). Default (no ``--only``)
@@ -773,7 +813,7 @@ def run(args: argparse.Namespace) -> None:
         # Forces model=`summarizer` (PRECIS_SUMMARIZE_MODEL=qwen returns
         # empty — it's a thinking model). See workers/classify.py +
         # scripts/classify/EVAL_RESULTS.md.
-        if _pass_enabled("classify"):
+        if _register_categorizer("classify"):
             from precis.utils.llm.router import DispatchClient as _DispatchClient
             from precis.utils.llm.router import Tier as _Tier
             from precis.workers.runner import BatchResult as _ClsBatchResult
@@ -902,7 +942,7 @@ def run(args: argparse.Namespace) -> None:
         # corpus-wide backfill is a deliberate, node-targeted batch, like
         # classify/paper_glossary. See workers/classify_topics.py +
         # docs/decisions/0060-topic-dossiers.md.
-        if _pass_enabled("classify_topics"):
+        if _register_categorizer("classify_topics"):
             from precis.utils.llm.router import DispatchClient as _DispatchClient
             from precis.utils.llm.router import Tier as _Tier
             from precis.workers.runner import BatchResult as _CtBatchResult
@@ -959,9 +999,12 @@ def run(args: argparse.Namespace) -> None:
 
             for _axis_id in _axis_ids:
                 _axis_service = f"axis:{_axis_id}"
-                if not _svc_resolver.enabled(
-                    _axis_service, default_on=_axis_id in _axes_env_set
-                ):
+                # Register every axis unconditionally — the per-cycle pass_gate
+                # decides whether it runs, so a /categorizers On-flip takes effect
+                # without a worker restart. ``--only`` still restricts to the one
+                # selected pass. (``_axes_env_set`` now feeds the gate's default,
+                # not this boot check — see the ``pass_gate`` wiring below.)
+                if not _register_categorizer(_axis_service):
                     continue
 
                 _axis_client = _DispatchClient(
@@ -1541,15 +1584,32 @@ def run(args: argparse.Namespace) -> None:
         # within a band. See ``_REF_PASS_PRIORITY``.
         ref_passes.sort(key=_ref_pass_priority)
 
-        # Per-cycle live gate: a service_config flip (prio → 0) skips an
-        # already-registered pass on the next cycle. ``default_on=True``
-        # because the pass was registered at boot, so it keeps running
-        # unless a row disables it. Skipped under ``--only`` (an explicit
-        # one-pass invocation shouldn't be silently DB-gated).
+        # Per-cycle live gate: consulted each cycle for every registered pass so
+        # a service_config flip takes effect within one cache TTL, no restart —
+        # in BOTH directions. A default-off categorizer (now always registered,
+        # see ``_register_categorizer``) turns ON when a prio>=1 row lands; any
+        # pass turns OFF on a prio 0 row. The baseline when NO row exists is the
+        # service's real env/profile default (NOT a blanket ``True``, which would
+        # run an always-registered default-off pass unconditionally): an
+        # ``axis:<id>`` seeds from ``PRECIS_AXES_ENABLED``, every other service
+        # from its ``ServiceSpec``/profile — so a boot-enabled rotation pass keeps
+        # its prior verdict while an always-registered default-off categorizer
+        # stays off until explicitly enabled. Skipped under ``--only`` (an
+        # explicit one-pass invocation shouldn't be silently DB-gated).
+        def _gate_default_on(service: str) -> bool:
+            axis_default = _axis_id_default_on(service, _axes_env_set)
+            if axis_default is not None:
+                return axis_default
+            return _env_profile_default_on(service)
+
         _pass_gate = (
             None
             if args.only is not None
-            else (lambda service: _svc_resolver.enabled(service, default_on=True))
+            else (
+                lambda service: _svc_resolver.enabled(
+                    service, default_on=_gate_default_on(service)
+                )
+            )
         )
 
         stop_flag = _install_signal_handlers()

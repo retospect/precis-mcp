@@ -213,8 +213,19 @@ claim ordering slice 6 adds). An empty table is byte-identical to the
 env/profile defaults; a row overrides per host (exact host wins over the
 `*` wildcard). `workers/service_config.py::ServiceConfigResolver` (a
 short-TTL cache) is read at boot (`_pass_enabled`) *and* per-cycle
-(`run_loop`'s `pass_gate`), so a flip disables an already-registered pass
-on the next cycle — no redeploy. CLI: `precis service prio|model|clear|list`.
+(`run_loop`'s `pass_gate`), so a flip takes effect on the next cycle — no
+redeploy. **Both directions, for the live-toggleable categorizer passes**
+(`classify`, `classify_topics`, every `axis:<id>`): these are registered
+*unconditionally* at boot (`_register_categorizer`, guarded only by `--only`),
+so a live On-flip actually starts them — the per-cycle gate is the sole
+enable/disable. The gate's no-row baseline is each service's real env/profile
+default (`_gate_default_on`: an `axis:<id>` seeds from `PRECIS_AXES_ENABLED`,
+everything else from its `ServiceSpec`), **not** a blanket "on" — so an
+always-registered default-off pass stays off until a `prio>=1` row lands.
+(Before: only `_pass_enabled` gated registration, so a default-off pass was
+never in `ref_passes` and an On-flip was a silent no-op until a restart — the
+`/categorizers` "activated but nothing happens" bug.) CLI: `precis service
+prio|model|clear|list`.
 
 **Console — merged into System's Services tab.** The read-only host
 strip (`host_heartbeat` load + liveness) over one list per category of
