@@ -548,6 +548,15 @@ def _resolve_agent_args(
         "--output-format",
         output_format,
     ]
+    if output_format == "stream-json" and "--verbose" not in extra_args:
+        # ``claude -p`` (``--print``) rejects ``--output-format stream-json``
+        # unless ``--verbose`` is also passed ("When using --print,
+        # --output-format=stream-json requires --verbose"). Individual callers
+        # used to add this by hand via ``extra_args``; centralizing it here
+        # means the router/asa_bot streaming path — which builds no extra_args
+        # of its own — is correct too. Guarded so a caller that still passes
+        # ``--verbose`` explicitly doesn't get a duplicate flag.
+        args.append("--verbose")
     if bare:
         # ``--bare`` strips OAuth / keychain / CLAUDE.md auto-discovery
         # and forces ANTHROPIC_API_KEY. Used in containers where

@@ -324,6 +324,46 @@ def test_mcp_config_adds_flag_and_strict(stub_bin: Path, tmp_path: Path) -> None
     assert "--strict-mcp-config" in res.final_text
 
 
+def _argv_for(output_format: str, extra_args: tuple[str, ...] = ()) -> list[str]:
+    from precis.utils.claude_agent import _resolve_agent_args
+
+    _, args, *_ = _resolve_agent_args(
+        prompt="hi",
+        model="claude-opus-4-8",
+        system_prompt=None,
+        mcp_config=None,
+        max_turns=5,
+        timeout_s=10.0,
+        max_usd=1.0,
+        permission_mode="bypassPermissions",
+        output_format=output_format,
+        bare=False,
+        disallowed_tools=(),
+        envelope=None,
+        extra_args=extra_args,
+    )
+    return args
+
+
+def test_stream_json_output_adds_verbose() -> None:
+    """``claude -p --output-format stream-json`` requires ``--verbose`` or the
+    CLI exits 1 ("requires --verbose"). The argv builder must add it centrally
+    so the router/asa_bot streaming path (which passes no extra_args) is valid.
+    """
+    assert _argv_for("stream-json").count("--verbose") == 1
+
+
+def test_stream_json_verbose_not_duplicated() -> None:
+    """A caller that still passes ``--verbose`` via extra_args must not get a
+    second copy from the centralized add."""
+    assert _argv_for("stream-json", ("--verbose",)).count("--verbose") == 1
+
+
+def test_text_output_omits_verbose() -> None:
+    """The default ``text`` output format needs no ``--verbose``."""
+    assert _argv_for("text").count("--verbose") == 0
+
+
 def test_bare_flag_emitted_when_requested(stub_bin: Path) -> None:
     stub_bin.write_text(
         textwrap.dedent(
