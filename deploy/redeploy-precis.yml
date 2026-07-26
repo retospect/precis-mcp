@@ -387,6 +387,16 @@
              else 'skipped bounce (no venv changed)' }}
           {{ precis_plists.files | map(attribute='path') | map('basename') | list }}
 
+# ── 2b. Refresh the asa bridges (shared /opt/asa venv + com.asa.* daemons) ──
+# asa_bot/asa_slack live outside the three precis venvs this playbook manages,
+# so a precis fix affecting them used to ship+deploy green yet never reach the
+# Discord/Slack bridge until a manual 31-/48- role run (2026-07-26 incident).
+# This code-only refresh installs the same PINNED sha into /opt/asa and bounces
+# com.asa.* — no grimoire-sourced config, so it runs on any deploy controller.
+# No-op on a cluster without asa installed. See the playbook header for detail.
+- name: "Refresh asa bridges (code + daemon bounce)"
+  ansible.builtin.import_playbook: playbooks/32-asa-code-refresh.yml
+
 # ── 3. Remove the vestigial /opt/mcps/venv relic off hosts that never run it ──
 # `precis_web` — the only role that installs the gateway's /opt/mcps/venv —
 # targets the `gateway` group (the gateway) ONLY. `data`/`inference` hosts may

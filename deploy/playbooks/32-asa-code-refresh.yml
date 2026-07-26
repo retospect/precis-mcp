@@ -1,0 +1,155 @@
+---
+# 32-asa-code-refresh.yml — code-only refresh of the shared /opt/asa venv
+# (asa_bot + asa_slack) plus a bounce of the com.asa.* daemons, so a plain
+# `scripts/deploy` / `/go` lands a precis code fix in the Discord/Slack
+# bridges too.
+#
+# WHY THIS EXISTS (distinct from roles/asa_bot + roles/asa_slack):
+#   redeploy-precis.yml (what scripts/deploy runs) manages the three PRECIS
+#   venvs + com.precis.* daemons only. asa_bot/asa_slack run from their own
+#   shared /opt/asa venv and com.asa.* daemons, which that playbook never
+#   touched — so a precis fix that affects asa shipped+deployed GREEN yet never
+#   reached the bridge until someone ran 31-asa-bot.yml / 48-asa-slack.yml by
+#   hand (the 2026-07-26 "requires --verbose" incident: the fix was live in
+#   every precis venv but asa stayed on stale code for hours). This play closes
+#   that gap for the CODE path.
+#
+#   It deliberately does NOT re-template SOUL.md / TOOL_HINTS / config — those
+#   are sourced from the operator's grimoire dir, which is not present on every
+#   deploy controller (a plain /go controller has no grimoire checkout, so the
+#   full role playbooks fail on the SOUL.md copy). Prompt/config changes still
+#   go through the full 31-/48- role playbooks, run where the grimoire lives.
+#   This play only moves the wheel + bounces the daemons.
+#
+#   Installs the SAME pinned sha (precis_target_sha, frozen by redeploy-precis
+#   step 0) as the rest of the cluster, so asa can't drift onto a different
+#   commit than the workers. Guarded on /opt/asa/venv existing — a cluster
+#   without asa installed is a clean no-op; initial install stays the role's
+#   job. Run standalone it falls back to `main` and skips the convergence
+#   assert (no pinned sha to compare against).
+- name: "asa code refresh (shared /opt/asa venv + com.asa.* daemons)"
+  hosts: gateway
+  become: true
+  vars:
+    # The pinned sha when imported by redeploy-precis.yml (step 0); `main` for a
+    # standalone run. Installing the exact frozen sha keeps asa in lockstep with
+    # the precis venvs a /go just deployed.
+    _asa_ref: "{{ precis_target_sha | default(asa_git_ref | default('main')) }}"
+  tasks:
+    - name: Check whether the shared asa venv exists
+      ansible.builtin.stat:
+        path: /opt/asa/venv/bin/python
+      register: asa_venv
+
+    - name: Snapshot the asa venv's installed sha (gate the bounce)
+      # Reads pip's direct_url.json (the sha actually built into the venv) and
+      # diffs it against the target — same technique as the precis pre-flight.
+      # SAME → no bounce; DIFF/MISSING → the daemons get restarted below.
+      when: asa_venv.stat.exists
+      ansible.builtin.shell: |
+        set -uo pipefail
+        f=$(ls /opt/asa/venv/lib/python*/site-packages/precis_mcp-*.dist-info/direct_url.json 2>/dev/null | head -1)
+        installed=$([ -n "$f" ] && python3 -c "import json;print(json.load(open('$f'))['vcs_info']['commit_id'])" || echo MISSING)
+        [ "$installed" = "{{ _asa_ref }}" ] && echo SAME || echo DIFF
+      args:
+        executable: /bin/bash
+      register: asa_preflight
+      changed_when: false
+      failed_when: false
+
+    - name: Decide whether the asa venv will move (gate the daemon bounce)
+      when: asa_venv.stat.exists
+      ansible.builtin.set_fact:
+        asa_deploy_changed: "{{ (asa_preflight.stdout | default('DIFF') | trim) == 'DIFF' }}"
+
+    - name: Install precis-mcp[asa,asa-slack] into the shared asa venv (pinned sha)
+      # Both bridges ship in the one precis-mcp wheel (the `asa` and `asa-slack`
+      # extras) into the SHARED /opt/asa venv — install both extras together so
+      # a host running either daemon gets its deps. --refresh-package forces uv
+      # to re-resolve the ref so a moving `main` (or the same-branch re-push)
+      # actually updates. Mirrors roles/asa_bot + roles/asa_slack's install
+      # step, minus the grimoire-sourced config tasks.
+      when: asa_venv.stat.exists
+      ansible.builtin.shell: |
+        /opt/homebrew/bin/uv pip install --python /opt/asa/venv/bin/python --upgrade \
+          --refresh-package precis-mcp \
+          'precis-mcp[asa,asa-slack] @ git+https://github.com/retospect/precis-mcp@{{ _asa_ref }}'
+      register: asa_pip
+      # uv prints "Installed/Updated N package(s)" to STDERR — check both streams.
+      changed_when: >-
+        'Installed' in (asa_pip.stdout + asa_pip.stderr)
+        or 'Updated' in (asa_pip.stdout + asa_pip.stderr)
+
+    - name: Find installed com.asa.* LaunchDaemons
+      when: asa_venv.stat.exists
+      ansible.builtin.find:
+        paths: /Library/LaunchDaemons
+        patterns: "com.asa.*.plist"
+      register: asa_plists
+
+    - name: Bootstrap each com.asa.* daemon (macOS) — no-op if loaded
+      # bootstrap-first (gr162132): kickstart -k cannot load a daemon that was
+      # booted out of launchd, so a jetsam-evicted bridge would be silently
+      # skipped. Bootstrap unconditionally so the kickstart that follows acts
+      # on a guaranteed-loaded service.
+      when: asa_venv.stat.exists
+      ansible.builtin.command:
+        cmd: launchctl bootstrap system {{ item.path }}
+      loop: "{{ asa_plists.files }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
+      changed_when: false
+      failed_when: false
+
+    - name: Kickstart each com.asa.* daemon (macOS) — only if the venv moved
+      when:
+        - asa_venv.stat.exists
+        - asa_deploy_changed | default(true) | bool
+      ansible.builtin.command: >-
+        launchctl kickstart -k
+        system/{{ item.path | basename | regex_replace('\.plist$', '') }}
+      loop: "{{ asa_plists.files }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
+      changed_when: true
+      failed_when: false
+
+    - name: Report asa refresh outcome
+      when: asa_venv.stat.exists
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}: asa venv
+          {{ 'bounced' if (asa_deploy_changed | default(true) | bool)
+             else 'unchanged (no bounce)' }}
+          {{ asa_plists.files | map(attribute='path') | map('basename') | list }}
+
+    - name: Read the asa venv's installed sha for the convergence assert
+      when:
+        - asa_venv.stat.exists
+        - precis_target_sha is defined
+      ansible.builtin.shell: |
+        set -uo pipefail
+        f=$(ls /opt/asa/venv/lib/python*/site-packages/precis_mcp-*.dist-info/direct_url.json 2>/dev/null | head -1)
+        [ -n "$f" ] && python3 -c "import json;print(json.load(open('$f'))['vcs_info']['commit_id'])" || echo MISSING
+      args:
+        executable: /bin/bash
+      register: asa_convergence
+      changed_when: false
+
+    - name: Assert the asa venv converged on the pinned sha
+      # Only when running inside redeploy-precis.yml (precis_target_sha set) —
+      # proves the asa refresh actually landed the deployed commit, the same
+      # guarantee step 4 gives the precis venvs. Standalone runs skip it.
+      when:
+        - asa_venv.stat.exists
+        - precis_target_sha is defined
+      ansible.builtin.assert:
+        that:
+          - asa_convergence.stdout | trim == precis_target_sha
+        fail_msg: >-
+          /opt/asa/venv is on {{ asa_convergence.stdout | trim }} but the pinned
+          deploy target is {{ precis_target_sha }} — asa code refresh did not
+          converge (re-run).
+        success_msg: >-
+          /opt/asa/venv @ {{ asa_convergence.stdout | trim }} ✓ (pinned {{ precis_target_sha }})
+        quiet: true
