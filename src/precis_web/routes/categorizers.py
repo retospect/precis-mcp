@@ -45,6 +45,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 import yaml
 from fastapi import APIRouter, Form, Request
@@ -95,6 +96,22 @@ _TOPICS_ENABLED_ENV = "PRECIS_TOPICS_ENABLED"
 _CLASSIFY_PASS_AXES = frozenset({"role3", "junk"})
 
 _TOPIC_MARKER_NAMESPACE = "TOPICCASCADE"
+
+
+def _drive_chip_url(tag: str) -> str:
+    """Deep-link to /drive showing paper+patent refs carrying ``tag``
+    (the categorizer-outcome browse chip). ``tag`` is the /drive tag-facet
+    string — ``topic:<slug>`` for a topic, ``<NS>:<value>`` for a
+    ref-level axis value."""
+    return "/drive?" + urlencode(
+        [
+            ("submitted", "1"),
+            ("k", "paper"),
+            ("k", "patent"),
+            ("tag", tag),
+            ("sort", "recency"),
+        ]
+    )
 
 
 def _topic_service(slug: str) -> str:
@@ -291,13 +308,25 @@ def _axis_row(
         if axis_id in _CLASSIFY_PASS_AXES
         else None
     )
+    namespace = axis_id.upper()
+    if level == "chunk":
+        chips: list[dict[str, str]] = []
+    else:
+        chips = [
+            {
+                "label": str(v),
+                "tag": f"{namespace}:{v}",
+                "url": _drive_chip_url(f"{namespace}:{v}"),
+            }
+            for v in (axis.get("values") or [])
+        ]
     return {
         "kind": "axis",
         "name": axis_id,
         "question": axis.get("question") or "",
         "granularity": "chunk" if level == "chunk" else "paper+patent",
         "level": level,
-        "namespace": axis_id.upper(),
+        "namespace": namespace,
         "prereq": list(axis.get("prereq") or []),
         "service": service,
         "status": "active" if state["enabled"] else "off",
@@ -305,6 +334,7 @@ def _axis_row(
         "overridden": bool(state["overridden"]),
         "shared_note": shared_note,
         "prompt_preview": _axis_prompt_preview(axis_id),
+        "chips": chips,
     }
 
 
@@ -315,9 +345,10 @@ def _topic_row(
 ) -> dict[str, Any]:
     service = _topic_service(str(topic["slug"]))
     state = effective.get(service) or {"enabled": False, "overridden": False}
+    slug = str(topic["slug"])
     return {
         "kind": "topic",
-        "name": str(topic["slug"]),
+        "name": slug,
         "question": topic.get("description") or "",
         "granularity": "paper+patent",
         "level": "ref",
@@ -329,6 +360,13 @@ def _topic_row(
         "overridden": bool(state["overridden"]),
         "shared_note": None,
         "prompt_preview": prompt_preview,
+        "chips": [
+            {
+                "label": slug,
+                "tag": f"topic:{slug}",
+                "url": _drive_chip_url(f"topic:{slug}"),
+            }
+        ],
     }
 
 

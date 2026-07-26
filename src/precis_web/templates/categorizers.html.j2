@@ -137,6 +137,14 @@
     <span class="w-24 shrink-0 text-right text-slate-400 tabular-nums" id="lastproc-{{ row.name }}" title="last tag written">…</span>
     </div>
     <div class="mt-1 pl-32 pr-2" id="cov-{{ row.name }}"><span class="text-[11px] text-slate-300">loading coverage…</span></div>
+    {% if row.chips %}
+    <div class="mt-1 pl-32 flex flex-wrap gap-1">
+      {% for chip in row.chips %}
+      <a href="{{ chip.url }}" title="papers tagged {{ chip.tag }}"
+         class="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] text-slate-600 hover:bg-slate-100 hover:border-slate-300">{{ chip.label }}</a>
+      {% endfor %}
+    </div>
+    {% endif %}
   </div>
   {% endfor %}
 </div>

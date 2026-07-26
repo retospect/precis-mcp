@@ -160,6 +160,43 @@ def test_allowed_services_includes_per_topic_and_kill_switch() -> None:
     assert "classify_topics" in allowed
 
 
+def test_categorizers_page_topic_row_has_drive_chip(client: TestClient) -> None:
+    """A topic row renders a click-through chip deep-linking to /drive
+    filtered by its ``topic:<slug>`` tag (src/precis/data/topics/llm.yaml)."""
+    resp = client.get("/categorizers")
+    assert resp.status_code == 200
+    body = resp.text
+    assert (
+        'href="/drive?submitted=1&amp;k=paper&amp;k=patent&amp;tag=topic%3Allm&amp;sort=recency"'
+        in body
+    )
+
+
+def test_categorizers_page_ref_axis_row_has_drive_chips_per_value(
+    client: TestClient,
+) -> None:
+    """A ref-level axis (domain) renders one chip per YAML ``values:`` entry,
+    tagged in its uppercased namespace."""
+    resp = client.get("/categorizers")
+    assert resp.status_code == 200
+    body = resp.text
+    assert (
+        'href="/drive?submitted=1&amp;k=paper&amp;k=patent&amp;tag=DOMAIN%3Achemistry&amp;sort=recency"'
+        in body
+    )
+
+
+def test_categorizers_page_chunk_axis_row_has_no_drive_chips(
+    client: TestClient,
+) -> None:
+    """A chunk-level axis (role3) carries no chips — its tags live on
+    chunks, not papers, so there's nothing for /drive's ref-level facet to
+    filter on."""
+    resp = client.get("/categorizers")
+    assert resp.status_code == 200
+    assert "tag=ROLE3%3A" not in resp.text
+
+
 def test_categorizers_nav_entry_present(client: TestClient) -> None:
     resp = client.get("/status")
     assert resp.status_code == 200

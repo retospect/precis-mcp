@@ -1450,7 +1450,11 @@ deferred `GET /categorizers/progress` via htmx **out-of-band swaps**
 (`id="lastproc-<name>"` / `id="cov-<name>"`, `hx-swap="none"` loader) — one
 corpus-scan aggregate pass, N rows filled, still deferred off the paint
 (mirroring `/status`'s backlog fragment). A `↻ refresh coverage` button
-re-fires the same fetch on demand.
+re-fires the same fetch on demand. Each row also renders static
+outcome-**chips** (`_drive_chip_url`) deep-linking to `/drive` filtered by
+that tag — one per topic (`topic:<slug>`), one per value on ref-level axes
+(`<NS>:<value>`); chunk-level axes (role3/junk/open-question) get none
+(their tags are on chunks, not papers).
 
 **System — merged Status+Factory+Budget+Models
 (`/status?tab=health|services|models|budget`).**
