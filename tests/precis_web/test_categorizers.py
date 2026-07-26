@@ -85,10 +85,33 @@ def test_topic_row_service_mapping() -> None:
     longer the shared ``classify_topics`` service — and carries no
     shared-toggle note."""
     effective: dict[str, dict[str, object]] = {}
-    rows = [cz._topic_row(t, effective) for t in cz._load_topics()]
+    rows = [cz._topic_row(t, effective, None) for t in cz._load_topics()]
     assert rows
     assert all(r["service"] == f"topic:{r['name']}" for r in rows)
     assert all(r["shared_note"] is None for r in rows)
+
+
+def test_axis_row_includes_prompt_preview() -> None:
+    """#5 — each axis row carries its actual (system, user) LLM prompt for
+    the /categorizers hover popover, built in-process from the real
+    ``workers/axis_pass.prompt_preview``."""
+    effective: dict[str, dict[str, object]] = {}
+    rows = {str(a["id"]): cz._axis_row(a, effective) for a in cz._load_axes()}
+    preview = rows["domain"]["prompt_preview"]
+    assert preview is not None
+    assert preview["system"]
+    assert preview["user"]
+
+
+def test_topic_row_includes_passed_through_prompt_preview() -> None:
+    """The topics preview is computed once by the caller (shared across topic
+    rows, since the pass sends one multi-label prompt over the whole
+    taxonomy) and threaded through unchanged."""
+    effective: dict[str, dict[str, object]] = {}
+    shared_preview = {"system": "sys", "user": "usr"}
+    rows = [cz._topic_row(t, effective, shared_preview) for t in cz._load_topics()]
+    assert rows
+    assert all(r["prompt_preview"] == shared_preview for r in rows)
 
 
 def test_allowed_services_includes_per_topic_and_kill_switch() -> None:

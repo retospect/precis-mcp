@@ -160,6 +160,26 @@ def _build_prompt(
     return "\n".join(lines)
 
 
+def prompt_preview(enabled_slugs: list[str] | None = None) -> dict[str, str]:
+    """The actual (system, user) multi-label prompt ``classify_topics`` sends,
+    built over the enabled topic subset (or the full taxonomy when
+    ``enabled_slugs`` is ``None``), with placeholder paper content — for the
+    ``/categorizers`` hover popover. Reuses :func:`_build_prompt` + ``_SYS`` so
+    it tracks the real pass. The topics prompt lists the whole enabled
+    taxonomy in one call, so this preview is shared across topic rows."""
+    topics = _load_topics()
+    if enabled_slugs is not None:
+        wanted = {str(s) for s in enabled_slugs}
+        topics = [
+            t for t in topics if isinstance(t, dict) and str(t.get("slug")) in wanted
+        ]
+    sample_candidates = [str(topics[0]["slug"])] if topics else []
+    user = _build_prompt(
+        topics, sample_candidates, "‹paper title›", "‹paper abstract / opening text›"
+    )
+    return {"system": _SYS, "user": user}
+
+
 def _classify_one(
     client: Any,
     topics: list[dict[str, Any]],

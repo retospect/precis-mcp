@@ -32,9 +32,16 @@
     <span class="w-32 shrink-0 font-mono text-slate-700 relative group inline-flex items-center gap-0.5">
       {{ row.name }}
       <sup class="text-slate-400 cursor-help select-none">ⓘ</sup>
-      <span class="hidden group-hover:block absolute left-0 top-full mt-1 z-10 w-64 max-w-xs rounded-md border border-slate-200 bg-white shadow-lg p-2 text-[11px] font-sans normal-case text-slate-600 leading-snug">
+      <span class="hidden group-hover:block absolute left-0 top-full mt-1 z-10 w-[34rem] max-w-[90vw] rounded-md border border-slate-200 bg-white shadow-lg p-2 text-[11px] font-sans normal-case text-slate-600 leading-snug">
         {{ row.question }}
-        {# #5: actual-prompt preview goes here #}
+        {% if row.prompt_preview %}
+        <div class="mt-1.5 border-t border-slate-100 pt-1.5">
+          <div class="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">System</div>
+          <pre class="mt-0.5 max-h-24 overflow-auto whitespace-pre-wrap break-words font-mono text-[10px] text-slate-500 bg-slate-50 rounded p-1">{{ row.prompt_preview.system }}</pre>
+          <div class="mt-1 text-[10px] font-semibold text-slate-400 uppercase tracking-wide">Prompt</div>
+          <pre class="mt-0.5 max-h-56 overflow-auto whitespace-pre-wrap break-words font-mono text-[10px] text-slate-600 bg-slate-50 rounded p-1">{{ row.prompt_preview.user }}</pre>
+        </div>
+        {% endif %}
       </span>
     </span>
     <span class="flex-1 text-slate-600">

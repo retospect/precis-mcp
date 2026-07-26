@@ -13,6 +13,7 @@ from typing import Any
 
 from precis.store.types import Tag
 from precis.workers.classify_topics import (
+    _SYS,
     CLASSIFY_TOPICS_VERSION,
     MARKER_NAMESPACE,
     _build_prompt,
@@ -21,6 +22,7 @@ from precis.workers.classify_topics import (
     _load_topics,
     _tier0_candidates,
     all_topic_slugs,
+    prompt_preview,
     run_classify_topics_pass,
     topic_marker_value,
 )
@@ -109,6 +111,23 @@ class TestPure:
         assert "healthspan:" in prompt
         assert "healthspan" in prompt.split("flagged")[1]  # candidate line mentions it
         assert '"topics"' in prompt
+
+
+class TestPromptPreview:
+    """``prompt_preview`` — the ``/categorizers`` hover popover's source of
+    truth (ADR 0068 follow-up, #5). Must reuse ``_build_prompt``/``_SYS`` so
+    the preview can't drift from the real pass."""
+
+    def test_full_taxonomy_preview_has_system_and_user(self) -> None:
+        preview = prompt_preview()
+        assert preview["system"] == _SYS
+        assert preview["user"]
+        assert "healthspan:" in preview["user"]  # a real topic slug is listed
+
+    def test_narrows_to_enabled_subset(self) -> None:
+        preview = prompt_preview(enabled_slugs=["healthspan"])
+        assert "healthspan:" in preview["user"]
+        assert "mof:" not in preview["user"]  # disabled slug does not appear
 
 
 class TestTopicMarkerValue:

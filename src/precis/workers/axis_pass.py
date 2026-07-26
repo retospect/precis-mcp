@@ -188,6 +188,28 @@ def _build_ref_prompt(axis: dict[str, Any], row: dict[str, Any]) -> str:
     return f"{axis['prompt'].rstrip()}\n{ex_block}---\n" + "\n".join(lines) + "\n"
 
 
+def prompt_preview(axis_id: str) -> dict[str, str]:
+    """The actual (system, user) prompt this axis sends the LLM, built with
+    placeholder paper content — for the ``/categorizers`` hover popover.
+    Reuses the real :func:`_build_ref_prompt` / :func:`_build_chunk_prompt` so
+    the preview can't drift from what the pass actually sends."""
+    axis = _load_axis(axis_id)
+    if axis.get("level", "ref") == "chunk":
+        row = {
+            "title": "‹paper title›",
+            "section_path": "‹section ▸ path›",
+            "position": "‹n/N›",
+            "prev_gist": "‹previous chunk gist›",
+            "next_gist": "‹next chunk gist›",
+            "text": "‹the chunk text being classified›",
+        }
+        user = _build_chunk_prompt(axis, row)
+    else:
+        row = {"title": "‹paper title›", "abstract": "‹paper abstract / opening text›"}
+        user = _build_ref_prompt(axis, row)
+    return {"system": _SYS, "user": user}
+
+
 def _classify_one(dispatch: Any, axis: dict[str, Any], prompt: str) -> str | None:
     """Returns the raw ``value`` string from the model, or ``None`` on a
     call/parse failure (the caller decides whether an out-of-vocabulary

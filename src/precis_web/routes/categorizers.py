@@ -117,6 +117,34 @@ def _current_marker_value(enabled_slugs: list[str]) -> str | None:
         return None
 
 
+def _axis_prompt_preview(axis_id: str) -> dict[str, str] | None:
+    """The axis's actual (system, user) LLM prompt, imported lazily from
+    ``workers/axis_pass.py`` (kept import-time-decoupled since another agent
+    may be actively editing that module — mirrors :func:`_current_marker_value`).
+    ``None`` on import/build failure — the caller degrades the popover
+    rather than 500ing the page."""
+    try:
+        from precis.workers.axis_pass import prompt_preview
+
+        return prompt_preview(axis_id)
+    except Exception:
+        log.exception("categorizers: axis prompt_preview failed for %r", axis_id)
+        return None
+
+
+def _topics_prompt_preview(enabled_slugs: list[str] | None) -> dict[str, str] | None:
+    """The topics pass's actual (system, user) LLM prompt over the enabled
+    subset, imported lazily from ``workers/classify_topics.py`` (mirrors
+    :func:`_current_marker_value`). ``None`` on import/build failure."""
+    try:
+        from precis.workers.classify_topics import prompt_preview
+
+        return prompt_preview(enabled_slugs)
+    except Exception:
+        log.exception("categorizers: topics prompt_preview failed")
+        return None
+
+
 def _load_axes() -> list[dict[str, Any]]:
     """Every axis YAML that defines an ``id``.
 
@@ -275,11 +303,14 @@ def _axis_row(
         "active": bool(state["enabled"]),
         "overridden": bool(state["overridden"]),
         "shared_note": shared_note,
+        "prompt_preview": _axis_prompt_preview(axis_id),
     }
 
 
 def _topic_row(
-    topic: dict[str, Any], effective: dict[str, dict[str, Any]]
+    topic: dict[str, Any],
+    effective: dict[str, dict[str, Any]],
+    prompt_preview: dict[str, str] | None,
 ) -> dict[str, Any]:
     service = _topic_service(str(topic["slug"]))
     state = effective.get(service) or {"enabled": False, "overridden": False}
@@ -296,6 +327,7 @@ def _topic_row(
         "active": bool(state["enabled"]),
         "overridden": bool(state["overridden"]),
         "shared_note": None,
+        "prompt_preview": prompt_preview,
     }
 
 
@@ -489,7 +521,21 @@ async def index(request: Request) -> HTMLResponse:
     store = get_store(request)
     effective = _safe(lambda: _effective_state(store)) or {}
     axes = [_axis_row(a, effective) for a in _load_axes()]
-    topics = [_topic_row(t, effective) for t in _load_topics()]
+    topics_yaml = _load_topics()
+    # Same enabled-subset derivation as `_progress_rows` — the preview must
+    # reflect what the pass would actually send today, not the full
+    # taxonomy, so a per-topic toggle changes what the popover shows.
+    enabled_slugs = [
+        str(t["slug"])
+        for t in topics_yaml
+        if isinstance(t, dict)
+        and t.get("slug")
+        and (effective.get(_topic_service(str(t["slug"]))) or {}).get("enabled")
+    ]
+    # None -> full taxonomy, so an all-off page still shows a representative
+    # prompt rather than an empty one.
+    topics_preview = _topics_prompt_preview(enabled_slugs or None)
+    topics = [_topic_row(t, effective, topics_preview) for t in topics_yaml]
     # Kill-switch honesty: an explicit prio-0 `classify_topics` row force-
     # disables the pass regardless of any topic's own toggle — surface that
     # so the UI doesn't show individual topics as "On" while nothing runs.

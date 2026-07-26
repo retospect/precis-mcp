@@ -14,7 +14,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from precis.store.types import Tag
-from precis.workers.axis_pass import run_axis_pass
+from precis.workers.axis_pass import _SYS, prompt_preview, run_axis_pass
 from tests.workers._helpers import seed_chunk, seed_ref
 
 
@@ -398,3 +398,30 @@ def test_unparseable_output_is_failed_and_stays_claimable(store: Any) -> None:
         ref_ids=[ref_id],
     )
     assert retried == {"claimed": 1, "ok": 1, "failed": 0, "dist": {"chemistry": 1}}
+
+
+# ── prompt_preview (no DB — pure YAML + prompt-builder) ─────────────────
+
+
+class TestPromptPreview:
+    """``prompt_preview`` — the ``/categorizers`` hover popover's source of
+    truth (#5, follows ADR 0068's per-topic control). Must reuse
+    ``_build_ref_prompt``/``_build_chunk_prompt`` so the preview can't drift
+    from what the pass actually sends."""
+
+    def test_ref_level_axis_preview(self) -> None:
+        preview = prompt_preview("domain")
+        assert preview["system"] == _SYS
+        assert preview["user"]
+        # The axis's own prompt text is in there, not a generic stand-in.
+        assert "You classify a scientific paper" in preview["user"]
+        assert "‹paper title›" in preview["user"]
+        assert "‹paper abstract" in preview["user"]
+
+    def test_chunk_level_axis_preview(self) -> None:
+        preview = prompt_preview("role3")
+        assert preview["system"] == _SYS
+        assert preview["user"]
+        assert "Classify this chunk of a scientific paper" in preview["user"]
+        assert "‹the chunk text being classified›" in preview["user"]
+        assert "‹paper title›" in preview["user"]
