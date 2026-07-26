@@ -26,9 +26,6 @@
 - name: "05a — SSH tunnels"
   ansible.builtin.import_playbook: playbooks/17-ssh-tunnels.yml
 
-- name: "06 — LiteLLM"
-  ansible.builtin.import_playbook: playbooks/06-litellm.yml
-
 - name: "08 — Monitoring"
   ansible.builtin.import_playbook: playbooks/08-monitoring.yml
 
@@ -61,9 +58,6 @@
 
 - name: "16 — API monitors"
   ansible.builtin.import_playbook: playbooks/16-api-monitors.yml
-
-- name: "21 — Daily briefing"
-  ansible.builtin.import_playbook: playbooks/21-daily-briefing.yml
 
 - name: "22 — Sortie campaign orchestration"
   ansible.builtin.import_playbook: playbooks/22-sortie.yml

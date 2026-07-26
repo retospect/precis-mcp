@@ -161,38 +161,6 @@
   become: true
   become_user: "{{ pg_user }}"
 
-- name: Create litellm database
-  community.postgresql.postgresql_db:
-    name: litellm
-    state: present
-    login_user: "{{ pg_user }}"
-    login_unix_socket: /tmp
-  become: true
-  become_user: "{{ pg_user }}"
-
-- name: Grant litellm_app ownership of litellm public schema
-  community.postgresql.postgresql_privs:
-    database: litellm
-    objs: public
-    type: schema
-    privs: ALL
-    role: litellm_app
-    state: present
-    login_user: "{{ pg_user }}"
-    login_unix_socket: /tmp
-  become: true
-  become_user: "{{ pg_user }}"
-
-- name: Make litellm_app owner of litellm public schema
-  community.postgresql.postgresql_query:
-    db: litellm
-    query: "ALTER SCHEMA public OWNER TO litellm_app"
-    login_user: "{{ pg_user }}"
-    login_unix_socket: /tmp
-  become: true
-  become_user: "{{ pg_user }}"
-  changed_when: false
-
 - name: Create database roles
   community.postgresql.postgresql_user:
     name: "{{ item.name }}"

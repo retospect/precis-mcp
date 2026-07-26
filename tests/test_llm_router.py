@@ -423,6 +423,104 @@ def test_dispatch_local_threads_max_tokens(
     assert seen["max_tokens"] == 220
 
 
+# ── ADR 0066 gen-param passthrough: per-tier thinking/temperature defaults ──
+
+
+@pytest.mark.parametrize(
+    ("tier", "expected"),
+    [
+        (Tier.SMALL, (False, 0.0)),
+        (Tier.LOCAL_SMALL, (False, 0.0)),
+        (Tier.MEDIUM, (True, None)),
+        (Tier.CLOUD_SMALL, (True, None)),
+        (Tier.BIG, (True, None)),
+        (Tier.CLOUD_MID, (True, None)),
+        (Tier.LOCAL_BIG, (True, None)),
+        (Tier.FRONTIER, (True, None)),
+        (Tier.CLOUD_SUPER, (True, None)),
+    ],
+)
+def test_tier_gen_defaults(tier: Tier, expected: tuple[bool, float | None]) -> None:
+    """SMALL/LOCAL_SMALL (a categorizer) want thinking off + temperature 0 so
+    they never burn reasoning tokens on a one-line judgment; every other
+    tier (+ its ADR 0066 analogue) wants thinking on + the provider's own
+    temperature default."""
+    assert router._tier_gen_defaults(tier) == expected
+
+
+def test_tier_gen_defaults_table_is_total() -> None:
+    assert set(router._TIER_GEN_DEFAULTS) == set(Tier)
+
+
+def test_dispatch_local_threads_tier_gen_default_temperature(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """LOCAL_SMALL (the SMALL analogue) resolves to temperature 0.0 — the
+    LlmConfig default this replaces was hardcoded, now it's tier-driven."""
+    import precis.workers.llm_summarize as summ
+
+    seen: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, config: object) -> None:
+            seen["temperature"] = getattr(config, "temperature", "MISSING")
+
+        def complete(self, messages: list[dict[str, str]]) -> _FakeOpenAI:
+            return _FakeOpenAI(text="x", total_tokens=1)
+
+    monkeypatch.setattr(summ, "LlmClient", FakeClient)
+
+    dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="p"))
+    assert seen["temperature"] == 0.0
+
+
+def test_dispatch_local_explicit_temperature_overrides_tier_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicit LlmRequest.temperature wins over the tier default."""
+    import precis.workers.llm_summarize as summ
+
+    seen: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, config: object) -> None:
+            seen["temperature"] = getattr(config, "temperature", "MISSING")
+
+        def complete(self, messages: list[dict[str, str]]) -> _FakeOpenAI:
+            return _FakeOpenAI(text="x", total_tokens=1)
+
+    monkeypatch.setattr(summ, "LlmClient", FakeClient)
+
+    dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="p", temperature=0.85))
+    assert seen["temperature"] == 0.85
+
+    # Unset ⇒ back to the tier default.
+    dispatch(LlmRequest(tier=Tier.LOCAL_SMALL, prompt="p"))
+    assert seen["temperature"] == 0.0
+
+
+def test_dispatch_claude_transport_ignores_gen_params(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """thinking/temperature are no-ops on the claude transports — never
+    raise, never reach the ``claude -p`` call."""
+    calls: dict[str, object] = {}
+
+    def fake_p(prompt: str, **kwargs: object) -> ClaudePResult:
+        calls["kwargs"] = kwargs
+        return ClaudePResult(data={"ok": True}, raw_stdout='{"ok": true}', cost_usd=0.0)
+
+    monkeypatch.setattr(router, "call_claude_p", fake_p)
+    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
+
+    out = dispatch(
+        LlmRequest(tier=Tier.CLOUD_SUPER, prompt="x", thinking=False, temperature=0.9)
+    )
+    assert out.error is None
+    assert "thinking" not in calls["kwargs"]
+    assert "temperature" not in calls["kwargs"]
+
+
 def test_dispatch_local_routes_to_served_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -538,11 +636,20 @@ def test_run_oss_tool_loop_honors_local_url(monkeypatch: pytest.MonkeyPatch) -> 
 
     class FakeClient:
         def __init__(
-            self, *, url: str, api_key: str, model: str, timeout: float
+            self,
+            *,
+            url: str,
+            api_key: str,
+            model: str,
+            timeout: float,
+            temperature: float | None = None,
+            extra_body: dict[str, object] | None = None,
         ) -> None:
             seen["url"] = url
             seen["api_key"] = api_key
             seen["model"] = model
+            seen["temperature"] = temperature
+            seen["extra_body"] = extra_body
 
     monkeypatch.setattr("precis.utils.llm.openai_tools.ToolChatClient", FakeClient)
     monkeypatch.setattr(
@@ -561,6 +668,50 @@ def test_run_oss_tool_loop_honors_local_url(monkeypatch: pytest.MonkeyPatch) -> 
     assert seen["url"] == "http://127.0.0.1:11444/v1"  # local wins over the hosted base
     assert seen["api_key"] == "dummy"  # authless loopback, not the vault key
     assert seen["model"] == "qwen3-235b-thinking-2507-ud-q3_k_xl"
+    assert seen["temperature"] is None  # not passed in ⇒ provider default
+    # A local endpoint never gets the (unconfirmed) no-thinking directive —
+    # see the NOTE in _dispatch_local / run_oss_tool_loop.
+    assert seen["extra_body"] is None
+
+
+def test_run_oss_tool_loop_hosted_thinking_off_disables_reasoning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A *hosted* (no ``local_url``) OSS tools-loop call with thinking off
+    gets the confirmed OpenRouter ``reasoning.enabled: false`` directive plus
+    the resolved temperature — the LOCAL_BIG/BIG-analogue path's hosted leg."""
+    import precis.secrets as secrets
+    from precis.utils.llm.router import run_oss_tool_loop
+
+    seen: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(
+            self,
+            *,
+            url: str,
+            api_key: str,
+            model: str,
+            timeout: float,
+            temperature: float | None = None,
+            extra_body: dict[str, object] | None = None,
+        ) -> None:
+            seen["temperature"] = temperature
+            seen["extra_body"] = extra_body
+
+    monkeypatch.setattr("precis.utils.llm.openai_tools.ToolChatClient", FakeClient)
+    monkeypatch.setattr(
+        "precis.utils.llm.openai_tools.run_tool_loop", lambda *a, **k: object()
+    )
+    monkeypatch.setattr("precis.utils.llm.precis_tools.precis_tool_specs", lambda: [])
+    monkeypatch.setattr("precis.utils.llm.precis_tools.runtime_executor", lambda: None)
+    monkeypatch.setattr(secrets, "get_secret", lambda name, **kw: "sk-vault-key")
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+
+    run_oss_tool_loop(prompt="x", model="m", temperature=0.0, thinking=False)
+
+    assert seen["temperature"] == 0.0
+    assert seen["extra_body"]["reasoning"] == {"enabled": False}
 
 
 def test_openai_tools_threads_tool_calls(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -777,6 +928,36 @@ def test_dispatch_client_routes_through_dispatch(
     assert seen["model"] == "summarizer"
     assert seen["max_tokens"] == 2000
     assert seen["messages"] == msgs
+
+
+def test_dispatch_client_threads_thinking_and_temperature(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DispatchClient's thinking/temperature fields reach the LlmRequest
+    dispatch resolves, same as max_tokens (ADR 0066 gen-param passthrough)."""
+    import precis.workers.llm_summarize as summ
+    from precis.utils.llm.router import DispatchClient
+
+    seen: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, config: object) -> None:
+            seen["temperature"] = getattr(config, "temperature", "MISSING")
+
+        def complete(self, messages: list[dict[str, str]]) -> _FakeOpenAI:
+            return _FakeOpenAI(text="x", total_tokens=1)
+
+    monkeypatch.setattr(summ, "LlmClient", FakeClient)
+
+    # Explicit pin wins over the (SMALL/LOCAL_SMALL) tier default of 0.0.
+    client = DispatchClient(tier=Tier.LOCAL_SMALL, temperature=0.6)
+    client.complete([{"role": "user", "content": "x"}])
+    assert seen["temperature"] == 0.6
+
+    # Bare client (defaults) ⇒ the tier default, unchanged from today.
+    bare = DispatchClient(tier=Tier.LOCAL_SMALL)
+    bare.complete([{"role": "user", "content": "x"}])
+    assert seen["temperature"] == 0.0
 
 
 def test_dispatch_client_cloud_tier_splits_messages_to_prompt(
@@ -1128,6 +1309,105 @@ def test_dispatch_openai_compat(monkeypatch: pytest.MonkeyPatch) -> None:
     assert seen["api_key"] == "sk-vault-key"
     assert seen["model"] == "qwen-small"
     assert seen["messages"] == [{"role": "user", "content": "judge this"}]
+
+
+def test_dispatch_openai_compat_thinking_off_disables_reasoning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SMALL's thinking-off tier default reaches the wire as OpenRouter's
+    documented ``reasoning.enabled: false`` switch, plus temperature 0.0 —
+    the confirmed half of the ADR 0066 no-thinking directive."""
+    import precis.secrets as secrets
+    import precis.workers.llm_summarize as summ
+
+    seen: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, config: object) -> None:
+            seen["temperature"] = getattr(config, "temperature", "MISSING")
+
+        def complete(
+            self, messages: list[dict[str, str]], *, extra_body: dict | None = None
+        ) -> _FakeOpenAI:
+            seen["extra_body"] = extra_body
+            return _FakeOpenAI(text="ok", total_tokens=1)
+
+    monkeypatch.setattr(summ, "LlmClient", FakeClient)
+    monkeypatch.setattr(secrets, "get_secret", lambda name, **kw: "sk-vault-key")
+    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+
+    out = dispatch(LlmRequest(tier=Tier.SMALL, prompt="classify this"))
+
+    assert out.error is None
+    assert seen["temperature"] == 0.0
+    assert seen["extra_body"]["reasoning"] == {"enabled": False}
+
+
+def test_dispatch_openai_compat_thinking_on_omits_reasoning_disable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MEDIUM (thinking-on by tier default) sends no ``reasoning`` block and
+    no ``temperature`` (the provider's own default — the field is omitted,
+    not pinned to 0)."""
+    import precis.secrets as secrets
+    import precis.workers.llm_summarize as summ
+
+    seen: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, config: object) -> None:
+            seen["temperature"] = getattr(config, "temperature", "MISSING")
+
+        def complete(
+            self, messages: list[dict[str, str]], *, extra_body: dict | None = None
+        ) -> _FakeOpenAI:
+            seen["extra_body"] = extra_body
+            return _FakeOpenAI(text="ok", total_tokens=1)
+
+    monkeypatch.setattr(summ, "LlmClient", FakeClient)
+    monkeypatch.setattr(secrets, "get_secret", lambda name, **kw: "sk-vault-key")
+    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.setenv("PRECIS_MODEL_HAIKU", "qwen-small")
+
+    out = dispatch(LlmRequest(tier=Tier.MEDIUM, prompt="judge this"))
+
+    assert out.error is None
+    assert seen["temperature"] is None  # omitted — provider default
+    assert seen.get("extra_body") is None  # {} → no extra_body kwarg passed at all
+
+
+def test_dispatch_openai_compat_explicit_thinking_false_overrides_big_tier_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicit LlmRequest.thinking=False wins over BIG's thinking-on
+    tier default, reaching the wire as the same reasoning-disabled block."""
+    import precis.secrets as secrets
+    import precis.workers.llm_summarize as summ
+
+    seen: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, config: object) -> None:
+            pass
+
+        def complete(
+            self, messages: list[dict[str, str]], *, extra_body: dict | None = None
+        ) -> _FakeOpenAI:
+            seen["extra_body"] = extra_body
+            return _FakeOpenAI(text="ok", total_tokens=1)
+
+    monkeypatch.setattr(summ, "LlmClient", FakeClient)
+    monkeypatch.setattr(secrets, "get_secret", lambda name, **kw: "sk-vault-key")
+    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.setenv("PRECIS_MODEL_SONNET", "qwen-mid")
+
+    out = dispatch(LlmRequest(tier=Tier.BIG, prompt="x", thinking=False))
+
+    assert out.error is None
+    assert seen["extra_body"]["reasoning"] == {"enabled": False}
 
 
 def test_dispatch_openai_backend_without_base_url_falls_back_to_claude(
@@ -1680,7 +1960,10 @@ def test_dispatch_failover_all_rungs_timeout_is_paused(
             pass
 
         def complete(
-            self, messages: list[dict[str, str]], *, extra_body: object = None
+            self,
+            messages: list[dict[str, str]],
+            *,
+            extra_body: dict[str, object] | None = None,
         ) -> _FakeOpenAI:
             raise TimeoutError("timed out after 120.0s")
 
@@ -1707,7 +1990,10 @@ def test_dispatch_failover_all_rungs_4xx_stays_error_not_paused(
             pass
 
         def complete(
-            self, messages: list[dict[str, str]], *, extra_body: object = None
+            self,
+            messages: list[dict[str, str]],
+            *,
+            extra_body: dict[str, object] | None = None,
         ) -> _FakeOpenAI:
             raise HTTPError("http://x", 401, "Unauthorized", Message(), None)
 

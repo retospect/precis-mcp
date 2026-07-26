@@ -139,9 +139,10 @@ Populated so far:
       `postgres_host`/`gateway_host` + `nas_*` over the `finnmaccool_*` facts —
       additive, both trees resolve identically. (Full `finnmaccool_* → nas_*`
       *rename* still deferred to when the legacy tree is deleted.)
-- [ ] retire `litellm` role + `06-litellm.yml` + its `site.yml` entry (slice 7)
-      — the only role not carried; `site.yml --syntax-check` fails on it until
-      then. Does NOT block `redeploy-precis.yml` (the routine deploy path).
+- [x] retired `06-litellm.yml` + its `site.yml` entry (2026-07-26, the central
+      `:4000` proxy teardown) — the `litellm` role itself was never carried
+      into this in-repo tree (only referenced by name), so there was nothing
+      to `git rm` there.
 - [x] **switched** (2026-07-19): default flipped + a full tree-deploy landed
       green on all 4 nodes and was health-verified (Phase-2 scheduler live).
 - [x] **demoted** (2026-07-19): `~/work/cluster` retired; its roles/playbooks are

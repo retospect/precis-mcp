@@ -1,8 +1,0 @@
----
-# 06-litellm.yml — LiteLLM proxy on the gateway
-- name: Configure LiteLLM
-  hosts: gateway
-  become: true
-  roles:
-    - litellm
-  tags: [litellm]

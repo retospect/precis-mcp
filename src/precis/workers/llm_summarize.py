@@ -222,6 +222,14 @@ class LlmConfig:
     model: str = "summarizer"
     api_key: str = "dummy"  # loopback litellm has no master_key
     max_tokens: int = 220
+    #: Sampling temperature — ``0`` (deterministic) by default, matching the
+    #: hardcoded value this replaces (:mod:`precis.utils.llm.router`'s ADR
+    #: 0066 gen-param passthrough is the only caller that overrides it: a
+    #: caller-pinned tier default of ``None`` sent through
+    #: :func:`LlmClient.complete`'s payload build means "omit the field,
+    #: use the provider's own default" rather than a Python-level ``None``
+    #: value). Direct construction (no router in front) keeps today's ``0``.
+    temperature: float | None = 0
     timeout: float = 120.0
     #: How many chunks of a batch to summarize concurrently. The HTTP
     #: completion is the only slow part, so a thread pool of this width
@@ -296,8 +304,13 @@ class LlmClient:
             "model": self._config.model,
             "messages": messages,
             "max_tokens": self._config.max_tokens,
-            "temperature": 0,
         }
+        # `None` omits the field entirely (the provider's own default) — the
+        # ADR 0066 gen-param passthrough's MEDIUM/BIG/FRONTIER-tier default.
+        # The class default (0) reproduces this client's previous hardcoded
+        # `"temperature": 0` for every caller that doesn't override it.
+        if self._config.temperature is not None:
+            payload["temperature"] = self._config.temperature
         if extra_body:
             payload.update(extra_body)
         headers = {

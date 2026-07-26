@@ -176,7 +176,8 @@ class ToolChatClient:
         model: str,
         timeout: float = 120.0,
         max_tokens: int | None = None,
-        temperature: float = 0.0,
+        temperature: float | None = 0.0,
+        extra_body: dict[str, Any] | None = None,
         transport: HttpTransport | None = None,
     ) -> None:
         self._url = url.rstrip("/") + "/chat/completions"
@@ -184,7 +185,18 @@ class ToolChatClient:
         self._model = model
         self._timeout = timeout
         self._max_tokens = max_tokens
+        #: ``None`` omits ``temperature`` from the wire entirely (the
+        #: provider's own default) — the ADR 0066 gen-param passthrough's
+        #: MEDIUM/BIG/FRONTIER-tier default, threaded in by
+        #: :func:`~precis.utils.llm.router.run_oss_tool_loop`. The class
+        #: default (``0.0``) reproduces this client's previous unconditional
+        #: ``temperature: 0`` for a caller that doesn't override it.
         self._temperature = temperature
+        #: Extra request-body keys merged verbatim onto every turn's payload
+        #: (e.g. OpenRouter's ``reasoning: {"enabled": false}`` — see
+        #: :func:`~precis.utils.llm.router.openrouter_routing`). ``None`` ⇒
+        #: no-op, today's behaviour.
+        self._extra_body = extra_body
         self._transport: HttpTransport = transport or _UrllibTransport()
 
     def chat(
@@ -197,13 +209,16 @@ class ToolChatClient:
         payload: dict[str, Any] = {
             "model": self._model,
             "messages": messages,
-            "temperature": self._temperature,
         }
+        if self._temperature is not None:
+            payload["temperature"] = self._temperature
         if self._max_tokens is not None:
             payload["max_tokens"] = self._max_tokens
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = tool_choice
+        if self._extra_body:
+            payload.update(self._extra_body)
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self._api_key}",

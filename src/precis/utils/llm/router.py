@@ -133,8 +133,13 @@ class Transport(StrEnum):
       (multi-turn, MCP tools, stream-json result event).
     * ``CLAUDE_P`` — :func:`precis.utils.claude_p.call_claude_p`
       (one-shot, no tools, last-JSON-block parse).
-    * ``LITELLM`` — the loopback litellm ``LlmClient`` (OpenAI
-      ``/v1/chat/completions``, tool-less local completion).
+    * ``LITELLM`` — the loopback ``LlmClient`` (OpenAI
+      ``/v1/chat/completions``, tool-less local completion). Named for the
+      now-retired central litellm ``:4000`` proxy this used to front; the
+      value is unchanged (still read out of ``app_settings``/
+      ``llm_call_log`` history as ``"litellm"``) but the wire it denotes
+      today is the served_by-direct/loopback OpenAI-compat path, not a
+      proxy.
     * ``OPENAI_COMPAT`` — the same OpenAI ``/v1/chat/completions`` wire
       pointed at a *hosted* OSS backend (OpenRouter / DeepInfra / a
       remote vLLM), authed with a vault-resolved key. Tool-less (the
@@ -271,6 +276,47 @@ def resolve_model(tier: Tier, backend: Backend | None = None) -> str:
         return override
     env_var, default = _TIER_MODEL[tier]
     return os.environ.get(env_var, default)
+
+
+#: Per-tier ``(thinking, temperature)`` default — ADR 0066 gen-param
+#: passthrough (:attr:`LlmRequest.thinking` / :attr:`LlmRequest.temperature`).
+#: ``SMALL``/``LOCAL_SMALL`` (the categorizer/classifier rung) get thinking
+#: **off** + temperature **0.0**: a per-chunk gloss/inject-scan must not spend
+#: reasoning tokens on a one-line judgment, must answer deterministically, and
+#: — the fix this table exists for — must not degrade to an empty completion
+#: when the tier's model is a local *thinking-only* model (leaving thinking on
+#: there burns the whole budget on the reasoning trace with nothing left for
+#: the answer). Every other tier gets thinking **on** + temperature **None**
+#: (the provider's own default, sent as no field at all) — today's implicit
+#: behaviour for the bigger/agentic tiers, made explicit here rather than
+#: changed. Mirrors the ADR 0066 analogue table (:data:`_TIER_MODEL`'s
+#: docstring / the ``Tier`` class docstring): ``LOCAL_SMALL``↔``SMALL``,
+#: ``CLOUD_SMALL``↔``MEDIUM``, ``CLOUD_MID``↔``BIG``, ``CLOUD_SUPER``↔``FRONTIER``,
+#: ``LOCAL_BIG``↔``BIG``.
+_TIER_GEN_DEFAULTS: dict[Tier, tuple[bool, float | None]] = {
+    Tier.SMALL: (False, 0.0),
+    Tier.LOCAL_SMALL: (False, 0.0),
+    Tier.MEDIUM: (True, None),
+    Tier.CLOUD_SMALL: (True, None),
+    Tier.BIG: (True, None),
+    Tier.CLOUD_MID: (True, None),
+    Tier.LOCAL_BIG: (True, None),
+    Tier.FRONTIER: (True, None),
+    Tier.CLOUD_SUPER: (True, None),
+}
+
+# Import-time totality guard, mirroring _TIER_MODEL's above.
+assert set(_TIER_GEN_DEFAULTS) == set(Tier), (
+    "_tier_gen_defaults: tier table is not total"
+)
+
+
+def _tier_gen_defaults(tier: Tier) -> tuple[bool, float | None]:
+    """``tier``'s ``(thinking, temperature)`` default — see
+    :data:`_TIER_GEN_DEFAULTS`. :func:`dispatch` uses this only when the
+    caller's :class:`LlmRequest` left the corresponding field ``None``; an
+    explicit request value always wins."""
+    return _TIER_GEN_DEFAULTS[tier]
 
 
 # ── planner model aliases (the LLM:<value> dropdown vocab) ─────────────
@@ -614,6 +660,23 @@ class LlmRequest:
     #: cap must use a local/openai-compat tier instead. ``None`` (the default)
     #: leaves ``claude_agent`` output untruncated, as before this knob existed.
     max_tokens: int | None = None
+    #: Reasoning + sampling passthrough (ADR 0066 gen-param knobs). ``None`` on
+    #: either ⇒ :func:`dispatch` resolves the tier default (:func:`_tier_gen_defaults`):
+    #: ``SMALL``/``LOCAL_SMALL`` (a categorizer/classifier — per-chunk gloss,
+    #: inject-scan) wants thinking **off** + temperature **0.0**, so it never
+    #: burns reasoning tokens on a one-line judgment and stays deterministic —
+    #: this is also what makes the tier runnable on a local *thinking-only*
+    #: model (thinking left on would otherwise degrade the completion to a
+    #: reasoning trace with an empty/truncated final answer). Every other tier
+    #: (``MEDIUM``/``BIG``/``FRONTIER`` and their ``CLOUD_*``/``LOCAL_BIG``
+    #: analogues) wants thinking **on** + temperature **None** (the provider's
+    #: own default — the field is omitted from the wire rather than pinned).
+    #: An explicit non-``None`` value set here always wins over the tier
+    #: default. No-op on the claude transports (``claude_agent``/``claude_p``
+    #: have no such knobs — Anthropic's extended-thinking budget is a separate,
+    #: unrelated knob this does not touch).
+    thinking: bool | None = None
+    temperature: float | None = None
     #: A booked OpenRouter variant (a ``meta.endpoints`` dict — provider / quant /
     #: window) + reasoning effort, pinned onto the ``openai_compat`` wire so the
     #: call reproducibly hits *that* provider×quant instead of OpenRouter load-
@@ -1225,6 +1288,23 @@ def dispatch(req: LlmRequest) -> LlmResult:
     if backend is Backend.OPENAI and not os.environ.get("PRECIS_LLM_BASE_URL"):
         backend = Backend.ANTHROPIC
     model = req.model or resolve_model(req.tier, backend=backend)
+    # ADR 0066 gen-param passthrough: resolve the tier's (thinking, temperature)
+    # default (_tier_gen_defaults) unless the caller already pinned one
+    # explicitly. Reassigning `req` itself here (rather than threading two
+    # extra locals through the rest of this function) means every downstream
+    # copy — the FailoverProvider ladder's rungs, the slot/endpoint `replace`s
+    # below, the route-log record — already carries the resolved values with
+    # no per-transport re-derivation of tier logic.
+    from dataclasses import replace as _replace
+
+    _default_thinking, _default_temperature = _tier_gen_defaults(req.tier)
+    req = _replace(
+        req,
+        thinking=req.thinking if req.thinking is not None else _default_thinking,
+        temperature=(
+            req.temperature if req.temperature is not None else _default_temperature
+        ),
+    )
     # Resolve the transport *before* the breaker, so the gate can key on the
     # resource actually spent: the claude-OAuth transports draw subscription
     # quota (gated on the snapshot), everything else paid spends real dollars.
@@ -1373,8 +1453,6 @@ def dispatch(req: LlmRequest) -> LlmResult:
     call_req = req
     call_model = model
     if slot is not None and slot.reserved and slot.endpoint:
-        from dataclasses import replace as _replace
-
         call_req = _replace(req, local_url=slot.endpoint)
         call_model = slot.served_model or model
     # Part 1 hosted-small remap: only when this call is NOT pinned to a local
@@ -1609,6 +1687,12 @@ class DispatchClient:
     tier: Tier = Tier.SMALL
     model: str | None = None
     max_tokens: int | None = None
+    #: ADR 0066 gen-param passthrough (see :attr:`LlmRequest.thinking` /
+    #: ``.temperature``) — ``None`` (the default) leaves the tier's own
+    #: default in force, so a bare ``DispatchClient`` (``tier=SMALL``) gets
+    #: thinking-off/temperature-0 with zero caller change.
+    thinking: bool | None = None
+    temperature: float | None = None
     source: str = ""
     #: Route to ``claude_agent`` (cloud tiers only — local tiers ignore this)
     #: instead of the tool-less ``claude_p`` judge shape. See the class
@@ -1651,6 +1735,8 @@ class DispatchClient:
                 tools_needed=self.tools_needed,
                 model=self.model,
                 max_tokens=self.max_tokens,
+                thinking=self.thinking,
+                temperature=self.temperature,
                 source=self.source,
                 log_call=self.log_call,
                 log_blobs=self.log_blobs,
@@ -1696,6 +1782,8 @@ def _serialize_request(req: LlmRequest) -> str:
             "max_turns": req.max_turns,
             "max_usd": req.max_usd,
             "max_tokens": req.max_tokens,
+            "thinking": req.thinking,
+            "temperature": req.temperature,
             "output_format": req.output_format,
             "disallowed_tools": list(req.disallowed_tools),
         },
@@ -1796,6 +1884,26 @@ def _dispatch_local(req: LlmRequest, model: str) -> LlmResult:
     # env default so a migrated direct-``LlmClient`` pass keeps its budget.
     if req.max_tokens is not None:
         cfg = replace(cfg, max_tokens=req.max_tokens)
+    # ADR 0066 gen-param passthrough: unlike `max_tokens` above, `None` here
+    # is a meaningful *resolved* value (the MEDIUM/BIG/FRONTIER-tier default —
+    # "omit temperature, let the provider pick"), not "caller didn't ask to
+    # override" — `dispatch` always resolves `req.temperature` to a concrete
+    # tier default before calling this, so the override is unconditional.
+    # (Only a test that calls this function directly, bypassing `dispatch`,
+    # sees the unresolved field default of `None` here — no production caller
+    # does; see the docstring above.)
+    cfg = replace(cfg, temperature=req.temperature)
+    # NOTE — no-thinking directive intentionally NOT applied here. Disabling
+    # a Qwen/GLM model's chain-of-thought over the OpenAI wire needs a
+    # backend-specific key (candidates: `chat_template_kwargs:
+    # {"enable_thinking": false}`, `reasoning: {"enabled": false}`, or an
+    # inline `/nothink` directive) and this repo has no confirmed answer for
+    # which one the deployed llama.cpp/llama-swap build (built off a rolling
+    # `master` pin, deploy/roles/llamacpp/defaults/main.yml) honors — see
+    # the router param-passthrough task write-up. `req.thinking=False` is
+    # resolved (SMALL tier default) but deliberately unused here rather than
+    # guessed; temperature=0.0 alone is applied. Revisit once the deployed
+    # llama-server version's behavior is verified live.
     # Fail fast on a stuck/flapping loopback proxy so the failover ladder can
     # fall over to the hosted rung. An explicit ``req.timeout_s`` wins; else a
     # SMALL-tier judge gets the tight cap (see ``_SMALL_LOCAL_TIMEOUT_S``) — a
@@ -1827,20 +1935,34 @@ def _dispatch_local(req: LlmRequest, model: str) -> LlmResult:
 
 
 def openrouter_routing(
-    endpoint: dict[str, Any] | None, *, effort: str | None = None
+    endpoint: dict[str, Any] | None,
+    *,
+    effort: str | None = None,
+    thinking: bool | None = None,
 ) -> dict[str, Any]:
     """Translate a booked ``meta.endpoints`` variant → the OpenRouter request-body
-    block that pins it (gripe 162624).
+    block that pins it (gripe 162624), composed with the ADR 0066 gen-param
+    ``reasoning`` toggle.
 
     Emits ``provider:{order:[<slug>], quantizations:[<quant>],
     allow_fallbacks:false, require_parameters:true}`` so OpenRouter routes to
-    *exactly* that provider×quant (no load-balancing across the ~28 endpoints),
-    plus ``reasoning:{effort}`` when an effort is set. The provider slug comes
-    from the endpoint's OpenRouter ``tag`` (``deepinfra/fp4`` → ``deepinfra``,
-    the routing key), falling back to a lower-cased ``provider`` name. A
-    ``quant`` of ``unknown`` is omitted (nothing to pin). Returns ``{}`` when
-    there is nothing to pin — the caller then posts the bare slug, today's
-    behaviour.
+    *exactly* that provider×quant (no load-balancing across the ~28 endpoints).
+    The provider slug comes from the endpoint's OpenRouter ``tag``
+    (``deepinfra/fp4`` → ``deepinfra``, the routing key), falling back to a
+    lower-cased ``provider`` name. A ``quant`` of ``unknown`` is omitted
+    (nothing to pin).
+
+    ``reasoning`` is built from both ``effort`` and ``thinking``: an ``effort``
+    sets ``reasoning.effort``; ``thinking=False`` additionally (or solely) sets
+    ``reasoning.enabled: false`` — OpenRouter's documented switch to turn
+    reasoning off entirely — so a ``SMALL``-tier dispatch (thinking off by
+    tier default) disables it on the hosted backend without touching the
+    ``effort`` a caller may have booked. ``thinking`` of ``True``/``None``
+    never clobbers a set ``effort`` (the "on" case is today's behaviour: pass
+    ``effort`` through unchanged, or nothing at all).
+
+    Returns ``{}`` when there is nothing to pin/toggle — the caller then posts
+    the bare slug with no ``reasoning`` block, today's behaviour.
     """
     body: dict[str, Any] = {}
     provider: dict[str, Any] = {}
@@ -1860,8 +1982,15 @@ def openrouter_routing(
     if provider:
         provider["require_parameters"] = True
         body["provider"] = provider
+    reasoning: dict[str, Any] = {}
     if effort:
-        body["reasoning"] = {"effort": effort}
+        reasoning["effort"] = effort
+    # Auto-off only guards the default (no-effort) shape: an explicit effort
+    # means the caller wants reasoning, so it wins over a thinking=False.
+    if thinking is False and not effort:
+        reasoning["enabled"] = False
+    if reasoning:
+        body["reasoning"] = reasoning
     return body
 
 
@@ -1926,22 +2055,26 @@ def _dispatch_openai_compat(req: LlmRequest, model: str) -> LlmResult:
     )
     if req.max_tokens is not None:
         cfg = replace(cfg, max_tokens=req.max_tokens)
+    # ADR 0066 gen-param passthrough — see the matching comment in
+    # _dispatch_local (`None` is a meaningful resolved value here, not
+    # "unset", so the override is unconditional). Unlike the local path, the
+    # hosted OpenRouter wire's no-thinking directive IS confirmed (its
+    # documented `reasoning.enabled` switch — see openrouter_routing), so
+    # it's applied below via extra_body.
+    cfg = replace(cfg, temperature=req.temperature)
     messages = req.messages or [{"role": "user", "content": req.prompt}]
-    extra_body = openrouter_routing(req.endpoint, effort=req.effort)
-    # SMALL-tier tool-less calls (classify / summarize / triage — "the
-    # categorizer rung") are one-shot JSON judges that never want a reasoning
-    # trace. A reasoning-capable model (e.g. z-ai/glm-4.7-flash) left in its
-    # default thinking mode spends the whole ``max_tokens`` budget on reasoning
-    # tokens and returns empty ``content`` — the silent 'None' failure that
-    # burned ~10k classify chunks. Pin reasoning OFF for that shape, unless the
-    # caller explicitly asked for an effort (then honour it). A no-op for
-    # non-reasoning models / providers that ignore the field.
-    if (
-        req.tier in (Tier.SMALL, Tier.LOCAL_SMALL)
-        and not req.tools_needed
-        and req.effort is None
-    ):
-        extra_body = {**extra_body, "reasoning": {"enabled": False}}
+    # SMALL-tier judges (classify / summarize / triage) never want a reasoning
+    # trace — a reasoning-capable model (glm-4.7-flash) left thinking spends its
+    # whole max_tokens on reasoning and returns empty content (the silent None
+    # that burned ~10k classify chunks). `thinking` (False by the SMALL tier
+    # default) drives `reasoning.enabled: false` without clobbering a booked
+    # `effort`. Resolve the tier default here too when unresolved — so a SMALL
+    # judge pins reasoning off self-contained, even on a path that reaches this
+    # transport without dispatch's top-level resolution.
+    thinking = (
+        req.thinking if req.thinking is not None else _tier_gen_defaults(req.tier)[0]
+    )
+    extra_body = openrouter_routing(req.endpoint, effort=req.effort, thinking=thinking)
     client = LlmClient(cfg)
     try:
         # Only pass extra_body when there is something to send, so the bare
@@ -1993,6 +2126,8 @@ def run_oss_tool_loop(
     timeout_s: float | None = None,
     tool_less: bool = False,
     local_url: str | None = None,
+    temperature: float | None = None,
+    thinking: bool | None = None,
 ) -> AgentLoopResult:
     """Drive the in-process OSS ``tools=`` loop and return the RAW
     :class:`~precis.utils.llm.openai_tools.AgentLoopResult`.
@@ -2014,6 +2149,19 @@ def run_oss_tool_loop(
     transport failure into ``AgentLoopResult.error`` (``stop_reason='error'``)
     rather than raising. Imports the loop + bridge lazily so the router stays
     DB-free.
+
+    ``temperature``/``thinking`` are the ADR 0066 gen-param passthrough
+    (:attr:`LlmRequest.temperature` / :attr:`.thinking`, already tier-resolved
+    by :func:`dispatch`). ``temperature`` threads straight onto the client —
+    ``None`` (the ``MEDIUM``/``BIG``/``FRONTIER``/``LOCAL_BIG`` tier default)
+    means the field is omitted from the wire entirely (the provider's own
+    default), a deliberate change from this loop's previous unconditional
+    ``temperature: 0`` for every call. The no-thinking directive is only
+    applied when this is genuinely a *hosted* OSS call (``local_url`` unset)
+    — :func:`openrouter_routing`'s confirmed ``reasoning.enabled`` toggle; a
+    direct local llama-swap endpoint gets no such directive (see the matching
+    NOTE in :func:`_dispatch_local` — the key llama.cpp/llama-swap itself
+    honors for this is unconfirmed).
     """
     from precis.utils.llm.openai_tools import ToolChatClient, run_tool_loop
     from precis.utils.llm.precis_tools import precis_tool_specs, runtime_executor
@@ -2021,11 +2169,20 @@ def run_oss_tool_loop(
     if local_url:
         base_url = local_url
         api_key = "dummy"
+        extra_body = None
     else:
         base_url = os.environ.get("PRECIS_LLM_BASE_URL", "")
         api_key = _provider_api_key(base_url)
+        extra_body = openrouter_routing(None, thinking=thinking) or None
     timeout = timeout_s if timeout_s is not None else 600.0
-    client = ToolChatClient(url=base_url, api_key=api_key, model=model, timeout=timeout)
+    client = ToolChatClient(
+        url=base_url,
+        api_key=api_key,
+        model=model,
+        timeout=timeout,
+        temperature=temperature,
+        extra_body=extra_body,
+    )
     return run_tool_loop(
         client,
         prompt=prompt,
@@ -2061,6 +2218,8 @@ def _dispatch_openai_tools(req: LlmRequest, model: str) -> LlmResult:
             timeout_s=req.timeout_s,
             tool_less=req.mcp_config is None,
             local_url=req.local_url,
+            temperature=req.temperature,
+            thinking=req.thinking,
         )
     except (RuntimeError, OSError) as exc:
         return LlmResult(

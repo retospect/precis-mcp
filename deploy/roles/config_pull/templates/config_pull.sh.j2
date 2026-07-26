@@ -24,8 +24,6 @@ rsync -a /usr/local/etc/pgbouncer/ "${DEST}/pgbouncer/" 2>/dev/null || true
 {% if 'gateway' in group_names %}
 # Nginx configs (gateway node)
 rsync -a --delete /usr/local/etc/nginx/ "${DEST}/nginx/" 2>/dev/null || true
-# LiteLLM config
-rsync -a /usr/local/etc/litellm/ "${DEST}/litellm/" 2>/dev/null || true
 {% endif %}
 
 {% if 'inference' in group_names %}
@@ -36,7 +34,6 @@ rsync -a /etc/systemd/system/ollama.service.d/ "${DEST}/ollama.service.d/" 2>/de
 # LaunchDaemons (macOS)
 {% if os_family == "darwin" %}
 rsync -a /Library/LaunchDaemons/com.hermes.* "${DEST}/" 2>/dev/null || true
-rsync -a /Library/LaunchDaemons/com.litellm.* "${DEST}/" 2>/dev/null || true
 rsync -a /Library/LaunchDaemons/com.olla.* "${DEST}/" 2>/dev/null || true
 {% endif %}
 
