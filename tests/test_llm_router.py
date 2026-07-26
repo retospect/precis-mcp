@@ -2474,6 +2474,53 @@ def test_openai_compat_no_reasoning_off_for_non_small(
     assert "reasoning" not in (captured["extra_body"] or {})  # type: ignore[operator]
 
 
+def _local_capture_client(
+    monkeypatch: pytest.MonkeyPatch, seen: dict[str, object]
+) -> None:
+    """Fake LlmClient recording the LlmConfig.timeout it was constructed with."""
+    import precis.workers.llm_summarize as summ
+
+    class _FakeClient:
+        def __init__(self, config: object) -> None:
+            seen["timeout"] = config.timeout  # type: ignore[attr-defined]
+
+        def complete(self, messages, *, extra_body=None):  # type: ignore[no-untyped-def]
+            return summ.LlmResult(text="ok", total_tokens=1)
+
+    monkeypatch.setattr(summ, "LlmClient", _FakeClient)
+
+
+@pytest.mark.parametrize("tier", [Tier.SMALL, Tier.LOCAL_SMALL])
+def test_dispatch_local_caps_small_tier_timeout(
+    monkeypatch: pytest.MonkeyPatch, tier: Tier
+) -> None:
+    """A SMALL-tier local judge caps its timeout to _SMALL_LOCAL_TIMEOUT_S (far
+    below the 120s LlmConfig default) so a stuck/flapping loopback proxy fails
+    fast → failover, instead of a batch hanging past the worker watchdog
+    (2026-07-26 classify stall)."""
+    from precis.utils.llm.router import _SMALL_LOCAL_TIMEOUT_S, _dispatch_local
+
+    seen: dict[str, object] = {}
+    _local_capture_client(monkeypatch, seen)
+    _dispatch_local(LlmRequest(tier=tier, prompt="classify me"), "summarizer")
+    assert seen["timeout"] == _SMALL_LOCAL_TIMEOUT_S
+
+
+def test_dispatch_local_explicit_timeout_wins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicit req.timeout_s overrides the SMALL cap (a caller that
+    deliberately wants a different local budget)."""
+    from precis.utils.llm.router import _dispatch_local
+
+    seen: dict[str, object] = {}
+    _local_capture_client(monkeypatch, seen)
+    _dispatch_local(
+        LlmRequest(tier=Tier.SMALL, prompt="p", timeout_s=90.0), "summarizer"
+    )
+    assert seen["timeout"] == 90.0
+
+
 # ── _provider_api_key: host→vault-key mapping (gripe 159988) ───────────
 #
 # A provider switch should be a *single* PRECIS_LLM_BASE_URL edit, not also a

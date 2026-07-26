@@ -620,7 +620,13 @@ pins reasoning off:** a tool-less `SMALL`/`LOCAL_SMALL` call with no explicit
 `str(None)`=`"None"`, a 4-char pseudo-answer that slipped past every
 empty-check and silently failed while `errored` stayed false), so the caller's
 empty-handling fires (classify no-value, summarize's `EmptySummaryError`
-retry). **ADR 0066 Phase A** (dark/additive, no live caller yet — call-site
+retry). **SMALL local calls also fail fast:** `_dispatch_local` caps a
+`SMALL`/`LOCAL_SMALL` call's loopback timeout at `_SMALL_LOCAL_TIMEOUT_S` (30s,
+vs the 120s `LlmConfig` default; an explicit `req.timeout_s` still wins) so a
+stuck/flapping `:4000` proxy fails fast → the `FailoverProvider` falls over to
+the hosted rung, instead of a batch (N chunks × 2 calls × 120s) blocking past
+the worker watchdog and stranding the pass (the 2026-07-26 classify stall).
+**ADR 0066 Phase A** (dark/additive, no live caller yet — call-site
 sweep is Phase C):
 `live_config.chain_override(tier)` + `router.py::resolve_chain` layer a
 per-tier `app_settings`-backed chain override in front of the compiled

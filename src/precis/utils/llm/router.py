@@ -1763,6 +1763,16 @@ def _is_unavailability(exc: BaseException) -> bool:
     return isinstance(exc, OSError)
 
 
+#: Local-transport timeout cap for a SMALL-tier judge call. A classify /
+#: summarize / triage judge returns in ~1s against a healthy loopback proxy;
+#: capping far below the 120s ``LlmConfig`` default means a stuck / flapping
+#: ``:4000`` fails FAST so the ``FailoverProvider`` falls over to the hosted rung,
+#: instead of a batch (N chunks × 2 calls × 120s) blocking past the worker's
+#: watchdog and stranding the pass with zero progress (the 2026-07-26 classify
+#: stall: a transient litellm flap hung SMALL work → no failover, no tags).
+_SMALL_LOCAL_TIMEOUT_S = 30.0
+
+
 def _dispatch_local(req: LlmRequest, model: str) -> LlmResult:
     """Drive the loopback litellm ``LlmClient`` for a local tier.
 
@@ -1786,6 +1796,15 @@ def _dispatch_local(req: LlmRequest, model: str) -> LlmResult:
     # env default so a migrated direct-``LlmClient`` pass keeps its budget.
     if req.max_tokens is not None:
         cfg = replace(cfg, max_tokens=req.max_tokens)
+    # Fail fast on a stuck/flapping loopback proxy so the failover ladder can
+    # fall over to the hosted rung. An explicit ``req.timeout_s`` wins; else a
+    # SMALL-tier judge gets the tight cap (see ``_SMALL_LOCAL_TIMEOUT_S``) — a
+    # 120s-per-call default let a transient litellm flap hang whole SMALL
+    # batches with no failover (the 2026-07-26 classify stall).
+    if req.timeout_s is not None:
+        cfg = replace(cfg, timeout=req.timeout_s)
+    elif req.tier in (Tier.SMALL, Tier.LOCAL_SMALL):
+        cfg = replace(cfg, timeout=min(cfg.timeout, _SMALL_LOCAL_TIMEOUT_S))
     messages = req.messages or [{"role": "user", "content": req.prompt}]
     client = LlmClient(cfg)
     try:
