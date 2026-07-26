@@ -49,6 +49,7 @@ import json
 import logging
 import os
 import time
+import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -202,8 +203,30 @@ class _UrllibTransport:
     ) -> dict[str, Any]:
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(url, data=data, method="POST", headers=headers)
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read()
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read()
+        except urllib.error.HTTPError as exc:
+            # `urlopen` raises on a 4xx/5xx *before* the body is read, so the
+            # upstream's rejection reason (e.g. an OpenRouter provider's "this
+            # gen-param isn't supported" message on a 400) is normally lost —
+            # `llm_call_log.error` then holds only the generic "HTTP Error
+            # 400: Bad Request". Read the body here and fold it into the
+            # re-raised error's message so it survives into the log. Re-raise
+            # the SAME exception type with the SAME `.code`/`.url`/`.headers`
+            # so `_is_unavailability` (keys on `HTTPError.code`, not the
+            # message text) classifies it identically — this only enriches
+            # `str(exc)`.
+            body = ""
+            try:
+                body = exc.read().decode("utf-8", "replace")[:500]
+            except Exception:
+                pass
+            reason = exc.reason if isinstance(exc.reason, str) else str(exc.reason)
+            msg = f"{reason}: {body}" if body else reason
+            raise urllib.error.HTTPError(
+                exc.url, exc.code, msg, exc.headers, None
+            ) from exc
         result: dict[str, Any] = json.loads(raw)
         return result
 
