@@ -16,6 +16,7 @@ from precis.cli.main import _build_parser
 from precis.cli.worker import (
     _axis_id_default_on,
     _build_handlers,
+    _classify_topics_enabled_slugs,
     _print_status,
     _resolve_embedder,
     _should_register_categorizer,
@@ -433,3 +434,70 @@ class TestAxisGateDefault:
         assert _axis_id_default_on("classify", frozenset()) is None
         assert _axis_id_default_on("classify_topics", frozenset({"domain"})) is None
         assert _axis_id_default_on("chunk_keywords", frozenset({"domain"})) is None
+
+
+# ---------------------------------------------------------------------------
+# classify_topics enabled-slugs (bug: --only classify_topics / the
+# PRECIS_CLASSIFY_TOPICS_ENABLED admin backfill hatches silently classified
+# zero topics once per-topic gating (ADR 0068) landed).
+# ---------------------------------------------------------------------------
+
+
+class _FakeResolver:
+    """Stubs :meth:`ServiceConfigResolver.enabled` — ``overrides`` mimics an
+    explicit ``service_config`` row (prio 0 ⇒ False, prio >= 1 ⇒ True); a
+    service with no entry falls back to the caller-supplied ``default_on``,
+    same as the real resolver with no DB row."""
+
+    def __init__(self, overrides: dict[str, bool] | None = None) -> None:
+        self.overrides = overrides or {}
+
+    def enabled(self, service: str, *, default_on: bool) -> bool:
+        return self.overrides.get(service, default_on)
+
+
+class TestClassifyTopicsEnabledSlugs:
+    def test_only_classify_topics_means_full_taxonomy(self):
+        resolver = _FakeResolver()
+        assert (
+            _classify_topics_enabled_slugs(
+                resolver,
+                only="classify_topics",
+                global_on=False,
+                topics_env=frozenset(),
+                slugs=["safety", "batteries"],
+            )
+            is None
+        )
+
+    def test_global_on_enables_every_slug(self):
+        resolver = _FakeResolver()
+        assert _classify_topics_enabled_slugs(
+            resolver,
+            only=None,
+            global_on=True,
+            topics_env=frozenset(),
+            slugs=["safety", "batteries"],
+        ) == ["safety", "batteries"]
+
+    def test_neither_falls_back_to_topics_env_subset(self):
+        resolver = _FakeResolver()
+        assert _classify_topics_enabled_slugs(
+            resolver,
+            only=None,
+            global_on=False,
+            topics_env=frozenset({"safety"}),
+            slugs=["safety", "batteries"],
+        ) == ["safety"]
+
+    def test_per_topic_override_wins_over_global_on(self):
+        # An explicit prio-0 `topic:batteries` row force-disables it even
+        # though PRECIS_CLASSIFY_TOPICS_ENABLED=1 defaults every topic on.
+        resolver = _FakeResolver(overrides={"topic:batteries": False})
+        assert _classify_topics_enabled_slugs(
+            resolver,
+            only=None,
+            global_on=True,
+            topics_env=frozenset(),
+            slugs=["safety", "batteries"],
+        ) == ["safety"]

@@ -804,6 +804,18 @@ new `nh3-synthesis`, keyword substring-traps pruned (`tool use`, `agentic`).
   registered in `cli/worker.py` **default-OFF**
   (`PRECIS_CLASSIFY_TOPICS_ENABLED=1` / `--only classify_topics`).
   `tests/test_classify_topics.py`.
+- **Per-topic gating (ADR 0068).** Each topic has its own `service_config`
+  service `topic:<slug>` (independently flippable from `/categorizers`, no
+  more "toggling one flips them all") — consulted *inside* the one pass to
+  filter `_load_topics()` to the enabled subset (topics don't register their
+  own passes: one pass, one LLM call/paper). The done-marker becomes
+  `TOPICCASCADE:<version>-<hash(sorted enabled slugs)>`
+  (`topic_marker_value()`, shared by the worker and the
+  `src/precis_web/routes/categorizers.py` route) — a change to the enabled
+  set changes the marker, lazily re-claiming the corpus (the backfill
+  mechanism, replacing hand-bumping `CLASSIFY_TOPICS_VERSION` alone).
+  `classify_topics` itself remains a global kill-switch: gate `default_on` =
+  "any `topic:<slug>` enabled"; an explicit `classify_topics` row overrides.
 - **Not yet built**: the quest-family synthesis tick body (harvest
   `topic:X`-tagged papers lacking an `integrated-into` link → merge into the
   topic's dossier `draft`), the weekly digest cast, and the daily-brief lane.

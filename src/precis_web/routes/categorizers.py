@@ -14,16 +14,22 @@ Unifies the two closed-vocabulary tagging families across the corpus:
     ``workers/axis_pass.py``) — default-OFF but independently flippable.
   * **Topics** (``src/precis/data/topics/*.yaml``) — paper/patent-level,
     multi-label ``topic:<slug>`` open tags plus a
-    ``TOPICCASCADE:<version>`` marker (the ``classify_topics`` pass,
-    ADR 0060). All topics share that one pass.
+    ``TOPICCASCADE:<marker>`` marker. All topics share the one
+    ``classify_topics`` pass (ADR 0060), but each topic is independently
+    flippable via its own ``topic:<slug>`` service (ADR 0068): the pass
+    filters ``_load_topics()`` to the enabled subset and the marker encodes
+    that enabled-topic set, so toggling a topic lazily re-sweeps the corpus
+    against the new set. ``classify_topics`` itself remains a global
+    kill-switch — an explicit off row there force-kills the pass regardless
+    of any topic's own state.
 
 The Active column + toggle read/write the live ``service_config``
 DB-override resolver ``cli/worker.py`` uses (``ServiceConfigResolver`` /
 ``set_service_prio`` / ``clear_service_config``), scoped to the
 all-hosts (``*``) row — a flip here is picked up by every worker node
-within one cache TTL, no redeploy. Rows that share a governing service
-(role3+junk -> ``classify``; every topic -> ``classify_topics``) show
-the same effective state and carry a note that the toggle is shared.
+within one cache TTL, no redeploy. role3+junk still share one governing
+``classify`` service and carry a note that the toggle is shared; topics no
+longer do (each is its own row/service now).
 
 Mirrors ``status.py``'s backlog-fragment pattern: the shell (name /
 question / granularity / active / prereqs) is cheap (one small
@@ -76,6 +82,10 @@ _CLASSIFY_TOPICS_ENABLED_ENV = "PRECIS_CLASSIFY_TOPICS_ENABLED"
 #: ``default_on`` verdict from (a live ``service_config`` row always wins).
 _AXES_ENABLED_ENV = "PRECIS_AXES_ENABLED"
 
+#: Comma-separated topic slugs ``cli/worker.py``'s per-topic gate (ADR 0068)
+#: seeds its ``default_on`` verdict from — mirrors ``_AXES_ENABLED_ENV``.
+_TOPICS_ENABLED_ENV = "PRECIS_TOPICS_ENABLED"
+
 #: Axis ids the ``classify`` cascade actually drives. ``junk`` is a
 #: gate folded into ``ROLE3:furniture`` — it never writes its own
 #: ``JUNK:`` tag (see ``workers/classify.py``) — so its own coverage
@@ -83,24 +93,28 @@ _AXES_ENABLED_ENV = "PRECIS_AXES_ENABLED"
 #: not a bug.
 _CLASSIFY_PASS_AXES = frozenset({"role3", "junk"})
 
-#: Fallback ``classify_topics`` marker version, used only if importing
-#: the live constant from ``workers/classify_topics.py`` fails (kept
-#: import-time-decoupled since another agent may be actively editing
-#: that module). Keep in sync with ``CLASSIFY_TOPICS_VERSION`` there.
-_TOPICS_VERSION_FALLBACK = "2"
 _TOPIC_MARKER_NAMESPACE = "TOPICCASCADE"
 
 
-def _current_topics_version() -> str:
-    try:
-        from precis.workers.classify_topics import CLASSIFY_TOPICS_VERSION
+def _topic_service(slug: str) -> str:
+    """The per-topic ``service_config`` service name (ADR 0068) — each topic
+    is independently flippable; ``classify_topics`` itself remains the
+    retained global kill-switch (see :func:`_allowed_services`)."""
+    return f"topic:{slug}"
 
-        return str(CLASSIFY_TOPICS_VERSION)
+
+def _current_marker_value(enabled_slugs: list[str]) -> str | None:
+    """The live done-marker value for ``enabled_slugs``, imported lazily from
+    ``workers/classify_topics.py`` (kept import-time-decoupled since another
+    agent may be actively editing that module). ``None`` on import failure —
+    the caller degrades the topic coverage rows rather than 500ing."""
+    try:
+        from precis.workers.classify_topics import topic_marker_value
+
+        return topic_marker_value(enabled_slugs)
     except Exception:
-        log.exception(
-            "categorizers: failed to import CLASSIFY_TOPICS_VERSION, using fallback"
-        )
-        return _TOPICS_VERSION_FALLBACK
+        log.exception("categorizers: topic_marker_value import failed")
+        return None
 
 
 def _load_axes() -> list[dict[str, Any]]:
@@ -148,16 +162,22 @@ def _governing_service(axis_id: str) -> str:
 def _allowed_services() -> frozenset[str]:
     """Every ``service_config`` service name this page may toggle.
 
-    Read live off the axis YAMLs (not hardcoded) so a new axis file is
-    toggleable without a code change, and re-derived per request so a
-    concurrently-added axis file doesn't need a worker restart to become
-    toggleable. Guards ``POST /categorizers/toggle`` against writing an
-    arbitrary ``service_config`` row.
+    Read live off the axis/topic YAMLs (not hardcoded) so a new axis or
+    topic file is toggleable without a code change, and re-derived per
+    request so a concurrently-added file doesn't need a worker restart to
+    become toggleable. Guards ``POST /categorizers/toggle`` against writing
+    an arbitrary ``service_config`` row. ``classify_topics`` is retained as
+    the global kill-switch target (ADR 0068) alongside each topic's own
+    ``topic:<slug>`` service.
     """
     axis_ids = {str(a["id"]) for a in _load_axes()}
+    topic_slugs = {
+        str(t["slug"]) for t in _load_topics() if isinstance(t, dict) and t.get("slug")
+    }
     return frozenset(
         {"classify", "classify_topics"}
         | {_governing_service(a) for a in axis_ids if a not in _CLASSIFY_PASS_AXES}
+        | {_topic_service(s) for s in topic_slugs}
     )
 
 
@@ -183,6 +203,12 @@ def _effective_state(store: Any) -> dict[str, dict[str, Any]]:
     resolver = ServiceConfigResolver(store, ALL_HOSTS)
     overridden = _override_rows(store)
     axes_env = env_csv_set(_AXES_ENABLED_ENV)
+    # Mirrors cli/worker.py's `_classify_topics_enabled_slugs` /
+    # `_gate_default_on`: PRECIS_CLASSIFY_TOPICS_ENABLED=1 is the legacy
+    # "all topics default-on" admin seed, so a per-topic row's own
+    # ``default_on`` must fold it in too — otherwise the UI would show a
+    # topic off that the worker actually classifies.
+    global_topics_on = env_flag(_CLASSIFY_TOPICS_ENABLED_ENV)
 
     out: dict[str, dict[str, Any]] = {
         "classify": {
@@ -191,10 +217,10 @@ def _effective_state(store: Any) -> dict[str, dict[str, Any]]:
             ),
             "overridden": "classify" in overridden,
         },
+        # Retained as the global kill-switch state (ADR 0068) — each topic
+        # now also carries its own independent ``topic:<slug>`` state below.
         "classify_topics": {
-            "enabled": resolver.enabled(
-                "classify_topics", default_on=env_flag(_CLASSIFY_TOPICS_ENABLED_ENV)
-            ),
+            "enabled": resolver.enabled("classify_topics", default_on=global_topics_on),
             "overridden": "classify_topics" in overridden,
         },
     }
@@ -205,6 +231,19 @@ def _effective_state(store: Any) -> dict[str, dict[str, Any]]:
         service = _governing_service(axis_id)
         out[service] = {
             "enabled": resolver.enabled(service, default_on=axis_id in axes_env),
+            "overridden": service in overridden,
+        }
+
+    topics_env = env_csv_set(_TOPICS_ENABLED_ENV)
+    for topic in _load_topics():
+        if not (isinstance(topic, dict) and topic.get("slug")):
+            continue
+        slug = str(topic["slug"])
+        service = _topic_service(slug)
+        out[service] = {
+            "enabled": resolver.enabled(
+                service, default_on=global_topics_on or slug in topics_env
+            ),
             "overridden": service in overridden,
         }
     return out
@@ -242,7 +281,8 @@ def _axis_row(
 def _topic_row(
     topic: dict[str, Any], effective: dict[str, dict[str, Any]]
 ) -> dict[str, Any]:
-    state = effective.get("classify_topics") or {"enabled": False, "overridden": False}
+    service = _topic_service(str(topic["slug"]))
+    state = effective.get(service) or {"enabled": False, "overridden": False}
     return {
         "kind": "topic",
         "name": str(topic["slug"]),
@@ -251,14 +291,11 @@ def _topic_row(
         "level": "ref",
         "namespace": None,
         "prereq": [],
-        "service": "classify_topics",
+        "service": service,
         "status": "active" if state["enabled"] else "off",
         "active": bool(state["enabled"]),
         "overridden": bool(state["overridden"]),
-        "shared_note": (
-            "Shares the `classify_topics` pass with every other topic — "
-            "toggling this flips them all."
-        ),
+        "shared_note": None,
     }
 
 
@@ -338,22 +375,24 @@ def _paper_patent_total(store: Any) -> int:
     return int(row[0]) if row and row[0] is not None else 0
 
 
-def _topics_marker_done(store: Any, version: str) -> int:
-    """Paper+patent refs carrying the current ``TOPICCASCADE:<version>``
-    marker — the ``classify_topics`` pass's overall coverage of the
-    corpus (same value for every topic row; each topic's own hit-count
-    is a separate, per-slug number — see :func:`_topic_hit_count`)."""
+def _topics_marker_done(store: Any, marker_value: str) -> int:
+    """Paper+patent refs carrying the current ``TOPICCASCADE:<marker>``
+    marker — the ``classify_topics`` pass's coverage of the corpus under the
+    *live enabled-topic set* (ADR 0068 — a toggle changes the marker value,
+    so this recomputes against the new set; same value for every topic row;
+    each topic's own hit-count is a separate, per-slug number — see
+    :func:`_topic_hit_count`)."""
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT count(DISTINCT rt.ref_id)::int FROM ref_tags rt "
             "JOIN tags t ON t.tag_id = rt.tag_id "
             "JOIN refs r ON r.ref_id = rt.ref_id "
             "WHERE r.kind = ANY(%(kinds)s) AND r.deleted_at IS NULL "
-            "AND t.namespace = %(ns)s AND t.value = %(ver)s",
+            "AND t.namespace = %(ns)s AND t.value = %(marker)s",
             {
                 "kinds": ["paper", "patent"],
                 "ns": _TOPIC_MARKER_NAMESPACE,
-                "ver": version,
+                "marker": marker_value,
             },
         ).fetchone()
     return int(row[0]) if row and row[0] is not None else 0
@@ -404,8 +443,20 @@ def _progress_rows(store: Any) -> dict[str, dict[str, Any]]:
 
     topics = _load_topics()
     if topics:
-        version = _current_topics_version()
-        marker_done = _safe(lambda: _topics_marker_done(store, version))
+        effective = _safe(lambda: _effective_state(store)) or {}
+        enabled_slugs = [
+            str(t["slug"])
+            for t in topics
+            if isinstance(t, dict)
+            and t.get("slug")
+            and (effective.get(_topic_service(str(t["slug"]))) or {}).get("enabled")
+        ]
+        marker_value = _current_marker_value(enabled_slugs)
+        marker_done = (
+            _safe(lambda mv=marker_value: _topics_marker_done(store, mv))
+            if marker_value
+            else None
+        )
         for topic in topics:
             slug = str(topic["slug"])
             hit_count = _safe(lambda s=slug: _topic_hit_count(store, s))
@@ -439,10 +490,16 @@ async def index(request: Request) -> HTMLResponse:
     effective = _safe(lambda: _effective_state(store)) or {}
     axes = [_axis_row(a, effective) for a in _load_axes()]
     topics = [_topic_row(t, effective) for t in _load_topics()]
+    # Kill-switch honesty: an explicit prio-0 `classify_topics` row force-
+    # disables the pass regardless of any topic's own toggle — surface that
+    # so the UI doesn't show individual topics as "On" while nothing runs.
+    eff_ct = effective.get("classify_topics") or {"enabled": True, "overridden": False}
+    topics_globally_off = (not eff_ct["enabled"]) and eff_ct["overridden"]
     ctx = {
         "active_tab": "categorizers",
         "axes": axes,
         "topics": topics,
+        "topics_globally_off": topics_globally_off,
     }
     return templates.TemplateResponse(request, "categorizers.html.j2", ctx)
 
@@ -473,9 +530,10 @@ async def toggle(
     off), ``default`` -> delete the row (revert to the env/profile
     default). Always scoped to the all-hosts (``*``) row — every worker
     node picks the flip up within one cache TTL, no redeploy. ``service``
-    must be one of :func:`_allowed_services` (the two shared cascade
-    passes + one ``axis:<id>`` per non-cascade axis) — an unknown value is
-    rejected rather than writing an arbitrary ``service_config`` row.
+    must be one of :func:`_allowed_services` (``classify`` + the
+    ``classify_topics`` kill-switch + one ``axis:<id>`` per non-cascade axis
+    + one ``topic:<slug>`` per topic) — an unknown value is rejected rather
+    than writing an arbitrary ``service_config`` row.
     """
     if service not in _allowed_services():
         log.warning("categorizers: rejected toggle for unknown service %r", service)

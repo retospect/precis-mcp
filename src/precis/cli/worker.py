@@ -25,7 +25,7 @@ import os
 import signal
 import sys
 from enum import IntEnum
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from precis.cli._common import (
     add_format_argument,
@@ -81,6 +81,57 @@ def _axis_id_default_on(service: str, axes_env: frozenset[str]) -> bool | None:
     if service.startswith(prefix):
         return service[len(prefix) :] in axes_env
     return None
+
+
+def _topic_slug_default_on(service: str, topics_env: frozenset[str]) -> bool | None:
+    """Env default for a ``topic:<slug>`` service — whether its slug is
+    listed in ``PRECIS_TOPICS_ENABLED`` (``topics_env``).
+
+    Mirrors :func:`_axis_id_default_on`: returns ``None`` for a non-topic
+    service (the caller falls back to the registry/profile default). A
+    ``topic:<slug>`` service has no ``ServiceSpec`` of its own (the spec is
+    named ``classify_topics``) — this is where the per-topic env seed is
+    read for the per-cycle gate (ADR 0068).
+    """
+    prefix = "topic:"
+    if service.startswith(prefix):
+        return service[len(prefix) :] in topics_env
+    return None
+
+
+class _ResolverLike(Protocol):
+    """The slice of :class:`ServiceConfigResolver` this pure helper needs —
+    lets a test stub in without a DB-backed ``Store``."""
+
+    def enabled(self, service: str, *, default_on: bool) -> bool: ...
+
+
+def _classify_topics_enabled_slugs(
+    resolver: _ResolverLike,
+    *,
+    only: str | None,
+    global_on: bool,
+    topics_env: frozenset[str],
+    slugs: list[str],
+) -> list[str] | None:
+    """Enabled topic slugs for the ``classify_topics`` pass, or ``None`` for
+    the full taxonomy.
+
+    ``--only classify_topics`` and ``PRECIS_CLASSIFY_TOPICS_ENABLED=1`` are
+    the admin full-backfill hatches (ADR 0068 preserved the pre-0068
+    meaning): the former always sweeps every topic (a single-pass,
+    node-targeted invocation shouldn't be silently narrowed by per-topic
+    gates); the latter is the legacy "all topics default-on" env seed, still
+    refinable per-topic by a ``service_config`` row or
+    ``PRECIS_TOPICS_ENABLED``.
+    """
+    if only == "classify_topics":
+        return None
+    return [
+        s
+        for s in slugs
+        if resolver.enabled(f"topic:{s}", default_on=global_on or s in topics_env)
+    ]
 
 
 # ── ref-pass scheduling priority ──────────────────────────────────
@@ -932,16 +983,23 @@ def run(args: argparse.Namespace) -> None:
 
             ref_passes.append(_paper_glossary_pass)
 
-        # classify_topics — paper→topic-dossier cascade (ADR 0060). Tier-0
-        # free keyword screen, tier-1 cheap local model confirms/expands the
-        # candidate set — MULTI-LABEL (a paper can carry several `topic:`
-        # tags). Writes `topic:<slug>` open tags + a `TOPICCASCADE:<version>`
-        # marker (bump CLASSIFY_TOPICS_VERSION to re-tag the corpus lazily,
-        # e.g. when a new topic is added). Default-OFF
-        # (PRECIS_CLASSIFY_TOPICS_ENABLED=1 or --only classify_topics): a
+        # classify_topics — paper→topic-dossier cascade (ADR 0060, per-topic
+        # gating ADR 0068). Tier-0 free keyword screen, tier-1 cheap local
+        # model confirms/expands the candidate set — MULTI-LABEL (a paper can
+        # carry several `topic:` tags). Writes `topic:<slug>` open tags + a
+        # `TOPICCASCADE:<marker>` marker keyed on the *enabled-topic set*
+        # (bump CLASSIFY_TOPICS_VERSION, or flip a topic's own
+        # `topic:<slug>` service, to re-tag the corpus lazily). Each topic is
+        # independently flippable from the `/categorizers` console — this one
+        # `classify_topics` pass still runs iff >=1 topic is enabled; an
+        # explicit `classify_topics` row remains a global kill-switch
+        # (`_gate_default_on` below). `--only classify_topics` and
+        # PRECIS_CLASSIFY_TOPICS_ENABLED=1 are the admin full-taxonomy
+        # backfill hatches (ADR 0068 preserved the pre-0068 meaning): a
         # corpus-wide backfill is a deliberate, node-targeted batch, like
         # classify/paper_glossary. See workers/classify_topics.py +
         # docs/decisions/0060-topic-dossiers.md.
+        _topics_env_set = env_csv_set("PRECIS_TOPICS_ENABLED")
         if _register_categorizer("classify_topics"):
             from precis.utils.llm.router import DispatchClient as _DispatchClient
             from precis.utils.llm.router import Tier as _Tier
@@ -956,12 +1014,23 @@ def run(args: argparse.Namespace) -> None:
             )
 
             def _classify_topics_pass(batch_size: int) -> _CtBatchResult:
-                from precis.workers.classify_topics import run_classify_topics_pass
+                from precis.workers.classify_topics import (
+                    all_topic_slugs,
+                    run_classify_topics_pass,
+                )
 
+                enabled = _classify_topics_enabled_slugs(
+                    _svc_resolver,
+                    only=args.only,
+                    global_on=env_flag("PRECIS_CLASSIFY_TOPICS_ENABLED"),
+                    topics_env=_topics_env_set,
+                    slugs=all_topic_slugs(),
+                )
                 r = run_classify_topics_pass(
                     store,
                     client=_ct_client,
                     batch_size=min(batch_size, 16),
+                    enabled_slugs=enabled,
                 )
                 return _CtBatchResult(
                     handler="classify_topics",
@@ -1600,6 +1669,19 @@ def run(args: argparse.Namespace) -> None:
             axis_default = _axis_id_default_on(service, _axes_env_set)
             if axis_default is not None:
                 return axis_default
+            topic_default = _topic_slug_default_on(service, _topics_env_set)
+            if topic_default is not None:
+                return topic_default
+            if service == "classify_topics":
+                from precis.workers.classify_topics import all_topic_slugs
+
+                global_on = env_flag("PRECIS_CLASSIFY_TOPICS_ENABLED")
+                return any(
+                    _svc_resolver.enabled(
+                        f"topic:{s}", default_on=global_on or s in _topics_env_set
+                    )
+                    for s in all_topic_slugs()
+                )
             return _env_profile_default_on(service)
 
         _pass_gate = (

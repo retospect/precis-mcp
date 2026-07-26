@@ -81,11 +81,23 @@ def test_axis_row_service_mapping() -> None:
 
 
 def test_topic_row_service_mapping() -> None:
-    """Every topic shares the one ``classify_topics`` service."""
+    """Every topic governs its own ``topic:<slug>`` service (ADR 0068) — no
+    longer the shared ``classify_topics`` service — and carries no
+    shared-toggle note."""
     effective: dict[str, dict[str, object]] = {}
     rows = [cz._topic_row(t, effective) for t in cz._load_topics()]
     assert rows
-    assert all(r["service"] == "classify_topics" for r in rows)
+    assert all(r["service"] == f"topic:{r['name']}" for r in rows)
+    assert all(r["shared_note"] is None for r in rows)
+
+
+def test_allowed_services_includes_per_topic_and_kill_switch() -> None:
+    """Every topic gets its own ``topic:<slug>`` service (ADR 0068), and the
+    shared ``classify_topics`` service is retained as the global
+    kill-switch target."""
+    allowed = cz._allowed_services()
+    assert "topic:nh3-synthesis" in allowed
+    assert "classify_topics" in allowed
 
 
 def test_categorizers_nav_entry_present(client: TestClient) -> None:
@@ -166,13 +178,14 @@ def test_topic_hit_count_and_marker_done(store: Store) -> None:
         kind="paper", slug="cz-test-mof-paper", title="a mof paper", meta={}
     )
     store.add_tag(ref.id, Tag.open("topic:mof"), set_by="agent")
-    version = cz._current_topics_version()
+    marker_value = cz._current_marker_value(["mof"])
+    assert marker_value is not None
     store.add_tag(
-        ref.id, Tag.closed(cz._TOPIC_MARKER_NAMESPACE, version), set_by="agent"
+        ref.id, Tag.closed(cz._TOPIC_MARKER_NAMESPACE, marker_value), set_by="agent"
     )
 
     assert cz._topic_hit_count(store, "mof") >= 1
-    assert cz._topics_marker_done(store, version) >= 1
+    assert cz._topics_marker_done(store, marker_value) >= 1
     # A slug nothing was tagged with reads 0, not an error.
     assert cz._topic_hit_count(store, "no-such-topic-slug") == 0
 
@@ -212,6 +225,26 @@ def test_effective_state_reflects_service_config(store: Store) -> None:
     finally:
         clear_service_config(store, ALL_HOSTS, "axis:material")
         clear_service_config(store, ALL_HOSTS, "classify")
+
+
+def test_effective_state_includes_independent_per_topic_rows(store: Store) -> None:
+    """Each topic's ``topic:<slug>`` state is independent — flipping one
+    topic ON does NOT flip a sibling topic (the old shared-toggle behavior
+    this step replaces)."""
+    try:
+        eff = cz._effective_state(store)
+        assert "topic:nh3-synthesis" in eff
+        assert "topic:mof" in eff
+
+        set_service_prio(store, ALL_HOSTS, "topic:nh3-synthesis", 5, actor="test")
+        eff = cz._effective_state(store)
+        assert eff["topic:nh3-synthesis"]["enabled"] is True
+        assert eff["topic:nh3-synthesis"]["overridden"] is True
+        # A sibling topic's state is untouched by the flip above.
+        assert eff["topic:mof"]["enabled"] is False
+        assert eff["topic:mof"]["overridden"] is False
+    finally:
+        clear_service_config(store, ALL_HOSTS, "topic:nh3-synthesis")
 
 
 def test_toggle_endpoint_writes_row_and_rejects_unknown_service(
@@ -262,3 +295,27 @@ def test_toggle_endpoint_writes_row_and_rejects_unknown_service(
         assert (ALL_HOSTS, "axis:not-a-real-axis") not in _rows()
     finally:
         clear_service_config(store, ALL_HOSTS, "axis:domain")
+
+
+def test_toggle_endpoint_accepts_per_topic_service(
+    real_client: TestClient, store: Store
+) -> None:
+    """A ``topic:<slug>`` service (ADR 0068) is a valid, independently
+    flippable toggle target."""
+
+    def _rows() -> dict[tuple[str, str], int]:
+        return {
+            (str(r["host"]), str(r["service"])): int(r["prio"])  # type: ignore[call-overload]
+            for r in list_service_config(store)
+        }
+
+    try:
+        r = real_client.post(
+            "/categorizers/toggle",
+            data={"service": "topic:nh3-synthesis", "action": "on"},
+            follow_redirects=False,
+        )
+        assert r.status_code == 303
+        assert _rows()[(ALL_HOSTS, "topic:nh3-synthesis")] == 5
+    finally:
+        clear_service_config(store, ALL_HOSTS, "topic:nh3-synthesis")

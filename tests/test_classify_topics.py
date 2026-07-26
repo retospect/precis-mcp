@@ -20,7 +20,9 @@ from precis.workers.classify_topics import (
     _extract_json,
     _load_topics,
     _tier0_candidates,
+    all_topic_slugs,
     run_classify_topics_pass,
+    topic_marker_value,
 )
 
 
@@ -109,6 +111,25 @@ class TestPure:
         assert '"topics"' in prompt
 
 
+class TestTopicMarkerValue:
+    """``topic_marker_value`` (ADR 0068) — order-independent, set-sensitive,
+    stable digest of the enabled-topic set, keyed under the pass's version."""
+
+    def test_order_independent(self) -> None:
+        assert topic_marker_value(["a", "b"]) == topic_marker_value(["b", "a"])
+
+    def test_set_sensitive(self) -> None:
+        assert topic_marker_value(["a"]) != topic_marker_value(["a", "b"])
+
+    def test_stable_across_calls(self) -> None:
+        assert topic_marker_value(["nh3-synthesis", "mof"]) == topic_marker_value(
+            ["nh3-synthesis", "mof"]
+        )
+
+    def test_carries_the_pass_version_prefix(self) -> None:
+        assert topic_marker_value(["mof"]).startswith(f"{CLASSIFY_TOPICS_VERSION}-")
+
+
 # ── end-to-end pass (real PG, fake client) ─────────────────────────────
 
 
@@ -130,12 +151,22 @@ def _topic_tags(store: Any, ref_id: int) -> set[str]:
     return {r[0] for r in rows}
 
 
-def _has_marker(store: Any, ref_id: int) -> bool:
+def _has_marker(store: Any, ref_id: int, marker_value: str | None = None) -> bool:
+    """Whether ``ref_id`` carries the ``TOPICCASCADE`` marker.
+
+    ``marker_value`` defaults to the value a default (``enabled_slugs=None``)
+    pass call writes — ``topic_marker_value(all_topic_slugs())``.
+    """
+    value = (
+        marker_value
+        if marker_value is not None
+        else topic_marker_value(all_topic_slugs())
+    )
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
             "WHERE rt.ref_id = %s AND t.namespace = %s AND t.value = %s",
-            (ref_id, MARKER_NAMESPACE, CLASSIFY_TOPICS_VERSION),
+            (ref_id, MARKER_NAMESPACE, value),
         ).fetchone()
     return row is not None
 
@@ -387,3 +418,134 @@ class TestPass:
         # Sanity: our raw-SQL read of ref_tags/tags matches what Tag.open()
         # actually produces (lowercased, namespace='OPEN').
         assert Tag.open("topic:HealthSpan").value == "topic:healthspan"
+
+
+# ── per-topic gating (ADR 0068) ─────────────────────────────────────────
+
+
+class TestPerTopicGating:
+    """``enabled_slugs`` filters the taxonomy the pass classifies against
+    (route: ``/categorizers`` per-topic toggles), and the marker it writes
+    encodes that set — driving the lazy backfill re-sweep on a toggle."""
+
+    def test_enabled_slugs_filters_to_only_that_topic(self, store: Any) -> None:
+        # Body carries keyword hits for BOTH nh3-synthesis ("Haber-Bosch")
+        # and mof ("zeolitic imidazolate framework") — but only nh3-synthesis
+        # is enabled, so mof must never be tagged even if the (fake) model
+        # hallucinates it back.
+        ref_id = _seed_paper(
+            store,
+            "Ammonia synthesis over a novel catalyst",
+            "We report a Haber-Bosch catalyst and also discuss a zeolitic "
+            "imidazolate framework used in the reactor housing.",
+        )
+        client = _FakeClient('{"topics": ["nh3-synthesis", "mof"]}')
+
+        result = run_classify_topics_pass(
+            store,
+            client=client,
+            batch_size=10,
+            enabled_slugs=["nh3-synthesis"],
+            ref_ids=[ref_id],
+        )
+
+        assert result == {
+            "claimed": 1,
+            "ok": 1,
+            "failed": 0,
+            "dist": {"nh3-synthesis": 1},
+        }
+        assert _topic_tags(store, ref_id) == {"topic:nh3-synthesis"}
+        marker = topic_marker_value(["nh3-synthesis"])
+        assert _has_marker(store, ref_id, marker)
+
+    def test_disabled_topic_never_tagged_even_on_keyword_match(
+        self, store: Any
+    ) -> None:
+        # mof's own keyword is present, but mof is NOT in enabled_slugs — it
+        # must not even reach tier-0 candidacy for the LLM call.
+        ref_id = _seed_paper(
+            store,
+            "A metal-organic framework",
+            "We report a zeolitic imidazolate framework with record surface area.",
+        )
+        client = _FakeClient('{"topics": ["mof"]}')
+
+        result = run_classify_topics_pass(
+            store,
+            client=client,
+            batch_size=10,
+            enabled_slugs=["nh3-synthesis"],
+            ref_ids=[ref_id],
+        )
+
+        assert result == {"claimed": 1, "ok": 1, "failed": 0, "dist": {}}
+        assert client.calls == []  # mof isn't a candidate under this subset
+        assert _topic_tags(store, ref_id) == set()
+
+    def test_empty_enabled_slugs_is_a_noop(self, store: Any) -> None:
+        ref_id = _seed_paper(
+            store,
+            "A MOF catalyst for NOx reduction",
+            "We report a metal-organic-framework catalyst for NOx reduction.",
+        )
+        client = _FakeClient('{"topics": ["mof"]}')
+
+        result = run_classify_topics_pass(
+            store, client=client, batch_size=10, enabled_slugs=[], ref_ids=[ref_id]
+        )
+
+        assert result == {"claimed": 0, "ok": 0, "failed": 0}
+        assert client.calls == []
+        assert _topic_tags(store, ref_id) == set()
+        assert not _has_marker(store, ref_id, topic_marker_value([]))
+
+    def test_toggling_enabled_set_backfills_via_new_marker(self, store: Any) -> None:
+        """A paper marked done under set {A} is re-claimed once the enabled
+        set grows to {A, B} (a different marker value) — the toggle-driven
+        lazy backfill — and stays done (not re-claimed) once re-run against
+        the same {A, B} set (idempotent within a set)."""
+        ref_id = _seed_paper(
+            store,
+            "Ammonia synthesis over a novel catalyst",
+            "We report a Haber-Bosch catalyst for ammonia synthesis.",
+        )
+        client = _FakeClient('{"topics": ["nh3-synthesis"]}')
+
+        first = run_classify_topics_pass(
+            store,
+            client=client,
+            batch_size=10,
+            enabled_slugs=["nh3-synthesis"],
+            ref_ids=[ref_id],
+        )
+        assert first == {
+            "claimed": 1,
+            "ok": 1,
+            "failed": 0,
+            "dist": {"nh3-synthesis": 1},
+        }
+        assert _has_marker(store, ref_id, topic_marker_value(["nh3-synthesis"]))
+
+        # Enabling a second topic changes the marker -> re-claimed.
+        second = run_classify_topics_pass(
+            store,
+            client=client,
+            batch_size=10,
+            enabled_slugs=["nh3-synthesis", "mof"],
+            ref_ids=[ref_id],
+        )
+        assert second["claimed"] == 1
+        assert _has_marker(store, ref_id, topic_marker_value(["nh3-synthesis", "mof"]))
+        # The prior marker is gone — replaced (Tag.closed replace_prefix=True).
+        assert not _has_marker(store, ref_id, topic_marker_value(["nh3-synthesis"]))
+
+        # Re-running against the SAME {nh3-synthesis, mof} set is idempotent.
+        third = run_classify_topics_pass(
+            store,
+            client=client,
+            batch_size=10,
+            enabled_slugs=["nh3-synthesis", "mof"],
+            ref_ids=[ref_id],
+        )
+        assert third == {"claimed": 0, "ok": 0, "failed": 0}

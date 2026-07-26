@@ -37,9 +37,11 @@ docs/decisions/0060-topic-dossiers.md + docs/design/topic-dossiers.md.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from collections import Counter
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -73,6 +75,30 @@ def _load_topics() -> list[dict[str, Any]]:
     return [
         yaml.safe_load(path.read_text()) for path in sorted(_TOPICS_DIR.glob("*.yaml"))
     ]
+
+
+def all_topic_slugs() -> list[str]:
+    """Every topic slug in ``data/topics/*.yaml`` — for the worker-CLI gate +
+    the ``classify_topics`` closure to enumerate without duplicating the
+    glob."""
+    return [
+        str(t["slug"]) for t in _load_topics() if isinstance(t, dict) and t.get("slug")
+    ]
+
+
+def topic_marker_value(enabled_slugs: Iterable[str]) -> str:
+    """Done-marker value encoding the enabled-topic SET (ADR 0068 backfill).
+
+    Order-independent, set-sensitive: a change to the enabled set changes the
+    value, so ``_claim`` re-claims the corpus lazily against the new set.
+    """
+    slugs = sorted({str(s) for s in enabled_slugs})
+    # "\x1f" (unit separator) can't appear in a slug, so two distinct
+    # slug-sets can't collide onto the same joined string (unlike ",").
+    digest = hashlib.blake2b(
+        "\x1f".join(slugs).encode("utf-8"), digest_size=4
+    ).hexdigest()
+    return f"{CLASSIFY_TOPICS_VERSION}-{digest}"
 
 
 def _extract_json(text: str) -> dict[str, Any] | None:
@@ -168,13 +194,15 @@ def _classify_one(
 
 
 def _claim(
-    conn: Any, *, limit: int, ref_ids: list[int] | None = None
+    conn: Any, *, limit: int, marker_value: str, ref_ids: list[int] | None = None
 ) -> list[tuple[int, str]]:
-    """Papers or patents with body content lacking a current-version marker
-    tag. Existence of a fresh ``TOPICCASCADE`` ref tag is the 'done' marker
-    (no separate lease table, mirroring ``paper_glossary``); idempotent +
-    version-bumpable. ``ref_ids`` optionally restricts the sweep to specific
-    refs (targeted backfill / tests)."""
+    """Papers or patents with body content lacking a current-marker tag.
+    Existence of a fresh ``TOPICCASCADE`` ref tag carrying ``marker_value`` is
+    the 'done' marker (no separate lease table, mirroring
+    ``paper_glossary``); idempotent + re-claimable by changing the marker
+    (a version bump, or — ADR 0068 — a change to the enabled-topic set).
+    ``ref_ids`` optionally restricts the sweep to specific refs (targeted
+    backfill / tests)."""
     ref_filter = "AND r.ref_id = ANY(%(ref_ids)s)" if ref_ids else ""
     sql = f"""
         SELECT r.ref_id, r.title
@@ -187,7 +215,7 @@ def _claim(
           )
           AND NOT EXISTS (
             SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
-            WHERE rt.ref_id = r.ref_id AND t.namespace = %(ns)s AND t.value = %(ver)s
+            WHERE rt.ref_id = r.ref_id AND t.namespace = %(ns)s AND t.value = %(marker_value)s
           )
         ORDER BY r.ref_id
         LIMIT %(limit)s
@@ -195,7 +223,7 @@ def _claim(
     params: dict[str, Any] = {
         "kinds": ["paper", "patent"],
         "ns": MARKER_NAMESPACE,
-        "ver": CLASSIFY_TOPICS_VERSION,
+        "marker_value": marker_value,
         "limit": limit,
     }
     if ref_ids:
@@ -233,15 +261,37 @@ def _context_text(conn: Any, ref_id: int) -> str:
 
 
 def run_classify_topics_pass(
-    store: Any, *, client: Any, batch_size: int = 16, ref_ids: list[int] | None = None
+    store: Any,
+    *,
+    client: Any,
+    batch_size: int = 16,
+    enabled_slugs: list[str] | None = None,
+    ref_ids: list[int] | None = None,
 ) -> dict[str, Any]:
     """One claim → tier0 → tier1 → write cycle. Returns
-    ``{claimed, ok, failed, dist}``. ``ref_ids`` optionally restricts the sweep
-    to specific papers (targeted backfill / tests); ``None`` sweeps the whole
+    ``{claimed, ok, failed, dist}``. ``enabled_slugs`` restricts classification
+    to that topic subset (ADR 0068 per-topic gating) — ``None`` classifies
+    against the full taxonomy (back-compat for CLI/tests); an empty list
+    short-circuits to a no-op. ``ref_ids`` optionally restricts the sweep to
+    specific papers (targeted backfill / tests); ``None`` sweeps the whole
     corpus."""
     topics = _load_topics()
+    if enabled_slugs is None:
+        effective = topics
+    else:
+        wanted = {str(s) for s in enabled_slugs}
+        effective = [
+            t for t in topics if isinstance(t, dict) and str(t.get("slug")) in wanted
+        ]
+    if not effective:
+        return {"claimed": 0, "ok": 0, "failed": 0}
+    effective_slugs = [str(t["slug"]) for t in effective]
+    marker_value = topic_marker_value(effective_slugs)
+
     with store.pool.connection() as conn:
-        rows = _claim(conn, limit=batch_size, ref_ids=ref_ids)
+        rows = _claim(
+            conn, limit=batch_size, marker_value=marker_value, ref_ids=ref_ids
+        )
         conn.commit()
     if not rows:
         return {"claimed": 0, "ok": 0, "failed": 0}
@@ -252,11 +302,11 @@ def run_classify_topics_pass(
         with store.pool.connection() as conn:
             context = _context_text(conn, ref_id)
 
-        candidates = _tier0_candidates(topics, f"{title} {context}")
+        candidates = _tier0_candidates(effective, f"{title} {context}")
         if not candidates:
             confirmed: list[str] = []
         else:
-            classified = _classify_one(client, topics, candidates, title, context)
+            classified = _classify_one(client, effective, candidates, title, context)
             if classified is None:
                 failed += 1
                 continue
@@ -270,7 +320,7 @@ def run_classify_topics_pass(
                 dist[slug] += 1
             store.add_tag(
                 ref_id,
-                Tag.closed(MARKER_NAMESPACE, CLASSIFY_TOPICS_VERSION),
+                Tag.closed(MARKER_NAMESPACE, marker_value),
                 set_by="agent",
                 replace_prefix=True,
                 conn=conn,

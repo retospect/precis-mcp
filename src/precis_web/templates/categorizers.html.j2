@@ -11,6 +11,13 @@
   flip up within one cache TTL, no redeploy.
 </p>
 
+{% if topics_globally_off %}
+<div class="rounded-lg border border-amber-200 bg-amber-50 text-amber-700 px-4 py-2 text-xs mb-4">
+  ⚠ Global kill-switch: <code>classify_topics</code> is force-disabled — no
+  topic runs regardless of its per-topic toggle.
+</div>
+{% endif %}
+
 <div class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100 mb-8">
   <div class="px-4 py-2 text-[11px] font-semibold text-slate-500 flex items-center gap-3">
     <span class="w-32 shrink-0">Name</span>
@@ -22,7 +29,14 @@
   </div>
   {% for row in axes + topics %}
   <div class="px-4 py-2 text-xs flex items-center gap-3" data-categorizer="{{ row.name }}" data-kind="{{ row.kind }}" data-service="{{ row.service }}">
-    <span class="w-32 shrink-0 font-mono text-slate-700">{{ row.name }}</span>
+    <span class="w-32 shrink-0 font-mono text-slate-700 relative group inline-flex items-center gap-0.5">
+      {{ row.name }}
+      <sup class="text-slate-400 cursor-help select-none">ⓘ</sup>
+      <span class="hidden group-hover:block absolute left-0 top-full mt-1 z-10 w-64 max-w-xs rounded-md border border-slate-200 bg-white shadow-lg p-2 text-[11px] font-sans normal-case text-slate-600 leading-snug">
+        {{ row.question }}
+        {# #5: actual-prompt preview goes here #}
+      </span>
+    </span>
     <span class="flex-1 text-slate-600">
       {{ row.question }}
       {% if row.shared_note %}

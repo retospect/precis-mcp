@@ -198,9 +198,11 @@ def _cmd_topics(store: Store, args: argparse.Namespace) -> None:
         print("classify topics: no papers matched scope")
         return
 
-    # Mirrors cli/worker.py's `classify_topics` pass wiring exactly (ADR 0046
-    # dispatch seam). No escalate client — tier 2 is unimplemented for topics
-    # (ADR 0060's open questions).
+    # Admin CLI: always sweeps the FULL taxonomy (a deliberate, node-targeted
+    # full backfill) — unlike cli/worker.py's rotation `classify_topics` pass,
+    # which filters through per-topic `service_config` gates (ADR 0068).
+    # Shares the dispatch seam (ADR 0046). No escalate client — tier 2 is
+    # unimplemented for topics (ADR 0060's open questions).
     client = DispatchClient(
         tier=Tier.SMALL,
         model=os.environ.get("PRECIS_CLASSIFY_TOPICS_MODEL") or "summarizer",
