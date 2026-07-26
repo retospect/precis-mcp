@@ -283,6 +283,49 @@ def test_client_complete_parses_choice_and_usage() -> None:
     assert t.calls[0]["payload"]["model"] == "summarizer"
 
 
+class _NullContentTransport:
+    """A backend that returns HTTP 200 with null / empty / omitted content —
+    the reasoning-only or truncated shape a thinking model (z-ai/glm-4.7-flash)
+    produces when its whole token budget goes to reasoning."""
+
+    def __init__(self, message: dict[str, Any]) -> None:
+        self.message = message
+
+    def post_json(
+        self,
+        url: str,
+        payload: dict[str, Any],
+        *,
+        headers: dict[str, str],
+        timeout: float,
+    ) -> dict[str, Any]:
+        return {"choices": [{"message": self.message}], "usage": {}}
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        {"content": None},  # explicit null
+        {"reasoning": "thought hard, emitted nothing"},  # content omitted
+    ],
+)
+def test_client_complete_null_content_normalizes_to_empty(
+    message: dict[str, Any],
+) -> None:
+    """Null / omitted content normalizes to "" — NOT the old ``str(None)`` =
+    "None". Regression for the glm-4.7-flash silent failure: a 200 with no
+    content used to become a 4-char "None" that slipped past every empty-check
+    (parse_summary saw a non-blank string; classify's JSON extract choked on
+    it) and failed silently while ``errored`` stayed false. As "" it flows into
+    each caller's existing empty-handling (EmptySummaryError / no-value).
+    """
+    client = LlmClient(
+        LlmConfig(model="summarizer"), transport=_NullContentTransport(message)
+    )
+    res = client.complete([{"role": "user", "content": "hi"}])
+    assert res.text == ""
+
+
 # --------------------------------------------------------------------------
 # config
 # --------------------------------------------------------------------------

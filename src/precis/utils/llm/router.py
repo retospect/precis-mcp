@@ -1909,10 +1909,25 @@ def _dispatch_openai_compat(req: LlmRequest, model: str) -> LlmResult:
         cfg = replace(cfg, max_tokens=req.max_tokens)
     messages = req.messages or [{"role": "user", "content": req.prompt}]
     extra_body = openrouter_routing(req.endpoint, effort=req.effort)
+    # SMALL-tier tool-less calls (classify / summarize / triage — "the
+    # categorizer rung") are one-shot JSON judges that never want a reasoning
+    # trace. A reasoning-capable model (e.g. z-ai/glm-4.7-flash) left in its
+    # default thinking mode spends the whole ``max_tokens`` budget on reasoning
+    # tokens and returns empty ``content`` — the silent 'None' failure that
+    # burned ~10k classify chunks. Pin reasoning OFF for that shape, unless the
+    # caller explicitly asked for an effort (then honour it). A no-op for
+    # non-reasoning models / providers that ignore the field.
+    if (
+        req.tier in (Tier.SMALL, Tier.LOCAL_SMALL)
+        and not req.tools_needed
+        and req.effort is None
+    ):
+        extra_body = {**extra_body, "reasoning": {"enabled": False}}
     client = LlmClient(cfg)
     try:
-        # Only pass extra_body when there is a booking to pin, so the un-booked
-        # path is the byte-identical call it was before (gripe 162624 ships dark).
+        # Only pass extra_body when there is something to send, so the bare
+        # path is the byte-identical call it was before (gripe 162624 ships
+        # dark); the reasoning-off pin above makes it non-empty for SMALL.
         res = (
             client.complete(messages, extra_body=extra_body)
             if extra_body

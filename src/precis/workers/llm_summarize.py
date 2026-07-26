@@ -308,9 +308,20 @@ class LlmClient:
             url, payload, headers=headers, timeout=self._config.timeout
         )
         try:
-            text = body["choices"][0]["message"]["content"]
+            message = body["choices"][0]["message"]
         except (KeyError, IndexError, TypeError) as exc:  # pragma: no cover - defensive
             raise RuntimeError(f"summarizer returned no completion: {body!r}") from exc
+        # A reasoning model can return null / omitted `content` (its output lands
+        # in a separate `reasoning` field, or the token budget was spent before
+        # any content). Normalize to "" — NOT the old str(None) = "None", a
+        # 4-char pseudo-answer that slipped past every empty-check (parse_summary
+        # saw a non-blank string; classify's JSON extract choked on it) and
+        # failed silently while the HTTP call looked clean. As "" it flows into
+        # each caller's existing empty-handling: the summarize pass's
+        # parse_summary raises EmptySummaryError (its transient in-place retry),
+        # and classify's JSON extraction cleanly yields no value.
+        content = message.get("content") if isinstance(message, dict) else None
+        text = content if isinstance(content, str) else ""
         usage = body.get("usage") or {}
         total = usage.get("total_tokens")
         prompt = usage.get("prompt_tokens")

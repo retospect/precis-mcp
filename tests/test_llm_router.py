@@ -966,7 +966,9 @@ def test_dispatch_local_timeout_is_paused(monkeypatch: pytest.MonkeyPatch) -> No
         def __init__(self, config: object) -> None:
             pass
 
-        def complete(self, messages: list[dict[str, str]]) -> _FakeOpenAI:
+        def complete(
+            self, messages: list[dict[str, str]], *, extra_body: object = None
+        ) -> _FakeOpenAI:
             raise TimeoutError("timed out after 120.0s")
 
     monkeypatch.setattr(summ, "LlmClient", FakeClient)
@@ -1677,7 +1679,9 @@ def test_dispatch_failover_all_rungs_timeout_is_paused(
         def __init__(self, config: object) -> None:
             pass
 
-        def complete(self, messages: list[dict[str, str]]) -> _FakeOpenAI:
+        def complete(
+            self, messages: list[dict[str, str]], *, extra_body: object = None
+        ) -> _FakeOpenAI:
             raise TimeoutError("timed out after 120.0s")
 
     monkeypatch.setattr(summ, "LlmClient", FakeClient)
@@ -1702,7 +1706,9 @@ def test_dispatch_failover_all_rungs_4xx_stays_error_not_paused(
         def __init__(self, config: object) -> None:
             pass
 
-        def complete(self, messages: list[dict[str, str]]) -> _FakeOpenAI:
+        def complete(
+            self, messages: list[dict[str, str]], *, extra_body: object = None
+        ) -> _FakeOpenAI:
             raise HTTPError("http://x", 401, "Unauthorized", Message(), None)
 
     monkeypatch.setattr(summ, "LlmClient", FakeClient)
@@ -2393,6 +2399,79 @@ def test_dispatch_openai_compat_threads_the_pin(
     eb = captured["extra_body"]
     assert eb["provider"]["order"] == ["deepinfra"]  # type: ignore[index]
     assert eb["reasoning"] == {"effort": "high"}  # type: ignore[index]
+
+
+def _compat_capture_client(
+    monkeypatch: pytest.MonkeyPatch, captured: dict[str, object]
+) -> None:
+    """Wire a fake LlmClient that records the extra_body it was called with."""
+    import precis.workers.llm_summarize as summ
+
+    class _FakeClient:
+        def __init__(self, cfg: object) -> None:
+            pass
+
+        def complete(self, messages, *, extra_body=None):  # type: ignore[no-untyped-def]
+            captured["extra_body"] = extra_body
+            return summ.LlmResult(text="own", total_tokens=3)
+
+    monkeypatch.setattr(summ, "LlmClient", _FakeClient)
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "http://backend.example/v1")
+
+
+@pytest.mark.parametrize("tier", [Tier.SMALL, Tier.LOCAL_SMALL])
+def test_openai_compat_pins_reasoning_off_for_small_judge(
+    monkeypatch: pytest.MonkeyPatch, tier: Tier
+) -> None:
+    """A SMALL-tier tool-less call (classify/summarize/triage) pins reasoning
+    OFF, so a reasoning model (z-ai/glm-4.7-flash) emits its short JSON answer
+    instead of spending the whole 220-token budget on a reasoning trace and
+    returning empty content. Regression for the silent 'None' failure that
+    burned ~10k classify chunks."""
+    from precis.utils.llm.router import _dispatch_openai_compat
+
+    captured: dict[str, object] = {}
+    _compat_capture_client(monkeypatch, captured)
+    _dispatch_openai_compat(
+        LlmRequest(tier=tier, prompt="classify me", tools_needed=False),
+        "z-ai/glm-4.7-flash",
+    )
+    assert captured["extra_body"] == {"reasoning": {"enabled": False}}
+
+
+def test_openai_compat_honors_explicit_effort_over_reasoning_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the caller explicitly set an effort, honour it — don't force
+    reasoning off. The auto-off only guards the default (no-effort) SMALL
+    judge shape."""
+    from precis.utils.llm.router import _dispatch_openai_compat
+
+    captured: dict[str, object] = {}
+    _compat_capture_client(monkeypatch, captured)
+    _dispatch_openai_compat(
+        LlmRequest(tier=Tier.SMALL, prompt="p", tools_needed=False, effort="low"),
+        "z-ai/glm-4.7-flash",
+    )
+    assert captured["extra_body"]["reasoning"] == {"effort": "low"}  # type: ignore[index]
+
+
+def test_openai_compat_no_reasoning_off_for_non_small(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Larger / tool-using tiers are not force-disabled — the auto-off is scoped
+    to the SMALL tool-less judge shape only (a bigger tier may legitimately
+    reason)."""
+    from precis.utils.llm.router import _dispatch_openai_compat
+
+    captured: dict[str, object] = {}
+    _compat_capture_client(monkeypatch, captured)
+    # CLOUD_SUPER, no endpoint/effort → nothing to pin → bare call (extra_body {}).
+    _dispatch_openai_compat(
+        LlmRequest(tier=Tier.CLOUD_SUPER, prompt="p", tools_needed=False),
+        "z-ai/glm-5.2",
+    )
+    assert "reasoning" not in (captured["extra_body"] or {})  # type: ignore[operator]
 
 
 # ── _provider_api_key: host→vault-key mapping (gripe 159988) ───────────

@@ -610,8 +610,18 @@ instead of the busy local hardware, before falling to claude if that also
 errors (`docs/proposals/llm-openrouter-bypass.md` item 3). `Tier.LOCAL_SMALL`
 also gained a `backend`-aware branch in `select_transport` (`OPENAI_COMPAT`
 under `backend=openai`, item 2) — previously pinned unconditionally to the
-loopback litellm proxy with no hosted-backend escape at all. **ADR 0066
-Phase A** (dark/additive, no live caller yet — call-site sweep is Phase C):
+loopback litellm proxy with no hosted-backend escape at all. **SMALL judge
+pins reasoning off:** a tool-less `SMALL`/`LOCAL_SMALL` call with no explicit
+`effort` merges `reasoning:{enabled:false}` into the `openai_compat` body
+(`router.py::_dispatch_openai_compat`) — a reasoning model on that rung
+(`z-ai/glm-4.7-flash`, tier-floor medium) otherwise spends the whole
+`max_tokens` budget on a reasoning trace and returns empty `content`;
+`LlmClient.complete` now normalizes null/omitted content to `""` (not the old
+`str(None)`=`"None"`, a 4-char pseudo-answer that slipped past every
+empty-check and silently failed while `errored` stayed false), so the caller's
+empty-handling fires (classify no-value, summarize's `EmptySummaryError`
+retry). **ADR 0066 Phase A** (dark/additive, no live caller yet — call-site
+sweep is Phase C):
 `live_config.chain_override(tier)` + `router.py::resolve_chain` layer a
 per-tier `app_settings`-backed chain override in front of the compiled
 default. **Phase B (step 1, `resolve_chain` always-on):** `dispatch` /
