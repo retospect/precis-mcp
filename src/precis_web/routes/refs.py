@@ -1222,8 +1222,10 @@ async def index(
     )
 
 
-@router.get("/{kind}/{ref_id}", response_class=HTMLResponse)
-async def detail(request: Request, kind: str, ref_id: int) -> HTMLResponse:
+@router.get("/{kind}/{ref_id}", response_class=HTMLResponse, response_model=None)
+async def detail(
+    request: Request, kind: str, ref_id: int
+) -> HTMLResponse | RedirectResponse:
     """Read-only detail: the handler's own ``get`` output for this ref."""
     _require_kind(kind)
     store = get_store(request)
@@ -1231,6 +1233,11 @@ async def detail(request: Request, kind: str, ref_id: int) -> HTMLResponse:
     ref = refs.get(ref_id)
     if ref is None or ref.kind != kind:
         raise NotFound(f"{kind} id={ref_id} not found")
+
+    # Structures have a dedicated interactive 3D viewer at /structure/{slug};
+    # the generic handler-card render is just ASCII. Send humans to the viewer.
+    if kind == "structure" and ref.slug:
+        return RedirectResponse(url=f"/structure/{ref.slug}", status_code=303)
 
     # Conversations render as a human-readable chat transcript (one
     # turn per body chunk) rather than the handler's agent-facing

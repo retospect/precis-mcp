@@ -1217,7 +1217,9 @@ The master kinds table lives in the `precis-overview` skill.
   `precis-job-help`.
 - **`structure`** — atomistic cell+bond IR (ADR 0043); typed ops + in-memory
   probes, relax on the GPU node (derived-lane job, ADR 0044), cursors/measures
-  on `struct_measures`, web `/structure`. `slab` op hardened against messy LLM
+  on `struct_measures`, web `/structure` (3Dmol viewer: zoom + look-inside
+  near-clip sliders; generic `/refs/structure/{id}` 303-redirects here).
+  `slab` op hardened against messy LLM
   JSON (null/list params → clean `OpError`, not a crash); `invariants.py` gives a
   representation-invariant fingerprint (composition · per-layer · adsorbate site ·
   coordination) powering the **round-trip eval** (`scripts/llm_eval/roundtrip.py`,

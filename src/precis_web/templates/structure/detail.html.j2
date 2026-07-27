@@ -29,6 +29,18 @@
     <div id="mol" class="relative w-full rounded-lg border border-slate-200 bg-white"
          style="height: 460px;"></div>
 
+    {# zoom + look-inside controls #}
+    <div class="flex items-center gap-4 mt-2">
+      <label class="flex items-center gap-1.5 text-[11px] text-slate-500">
+        Zoom
+        <input type="range" id="sv-zoom" min="0.4" max="4" step="0.05" value="1" class="w-24">
+      </label>
+      <label class="flex items-center gap-1.5 text-[11px] text-slate-500">
+        Look inside
+        <input type="range" id="sv-clip" min="0" max="0.95" step="0.01" value="0" class="w-24">
+      </label>
+    </div>
+
     {# element legend — hover a chip to glow every atom of that element #}
     {% if viewer.legend %}
     <div class="flex flex-wrap gap-2 mt-2">
@@ -375,6 +387,24 @@
     const viewer = $3Dmol.createViewer(el, { backgroundColor: 'white' });
     let zoomed = false;
 
+    // ── zoom + look-inside (front-clip) controls ──
+    const zoomEl = document.getElementById('sv-zoom');
+    const clipEl = document.getElementById('sv-clip');
+    let lastZoom = 1;
+    let baseSlab = null;                       // captured after the first fit
+    function applyClip() {
+      if (!baseSlab) { return; }
+      const t = parseFloat(clipEl ? clipEl.value : 0);  // 0 = full, →0.95 clips the front
+      const span = baseSlab.far - baseSlab.near;
+      viewer.setSlab(baseSlab.near + t * span, baseSlab.far);
+      viewer.render();
+    }
+    if (zoomEl) zoomEl.addEventListener('input', () => {
+      const v = parseFloat(zoomEl.value);
+      viewer.zoom(v / lastZoom); lastZoom = v; viewer.render();
+    });
+    if (clipEl) clipEl.addEventListener('input', applyClip);
+
     // ── text → viewer highlight primitive ──
     let currentPos = {};   // label -> [x,y,z] for the solid geometry on screen
     let hlShapes = [];
@@ -440,13 +470,22 @@
       solid.atoms.forEach((a) => { currentPos[a.label] = a.cart; });
       hlShapes = [];
       drawMarkers();
-      if (!zoomed) { viewer.zoomTo(); zoomed = true; }
+      if (!zoomed) {
+        viewer.zoomTo();
+        zoomed = true;
+        baseSlab = viewer.getSlab();
+      }
       viewer.render();
       document.querySelectorAll('.sv-mode').forEach((btn) => {
         const on = btn.getAttribute('data-mode') === mode;
         btn.classList.toggle('bg-slate-700', on);
         btn.classList.toggle('text-white', on);
       });
+      // A mode switch removeAllModels()+re-adds but never re-fits (zoomTo runs
+      // once), so the camera zoom is already preserved — don't re-assert it or
+      // the multiplicative viewer.zoom() would compound. The slab is idempotent,
+      // so re-apply the clip as cheap insurance in case a redraw dropped it.
+      applyClip();
     }
 
     document.querySelectorAll('.sv-mode').forEach((btn) => {

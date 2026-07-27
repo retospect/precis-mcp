@@ -373,3 +373,18 @@ def test_structure_detail_route_renders_paper_provenance(store):
     assert "Yaghi et al. 2023" in resp.text
     assert "10.1000/yaghi2023" in resp.text
     assert "improves conductivity" in resp.text
+
+
+def test_structure_refs_detail_route_redirects_to_viewer(store):
+    """``/refs/structure/{id}`` is the generic ASCII handler-card render —
+    structures have a dedicated interactive 3D viewer at /structure/{slug},
+    so the generic route should send humans there instead."""
+    StructureHandler(hub=Hub(store=store)).put(id="sql_redir_pd", text=_SI2)
+    ref = resolve_live_slug_ref(store, kind="structure", id="sql_redir_pd")
+
+    rt = FakeRuntime(store)
+    app = create_app(runtime=rt, web_config=WebConfig(corpus_dir=None))
+    client = TestClient(app)
+    resp = client.get(f"/refs/structure/{ref.id}", follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"].endswith(f"/structure/{ref.slug}")
