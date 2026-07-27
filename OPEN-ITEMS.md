@@ -8,6 +8,32 @@ items are removed (history is `git log`).
 > regression that pins it.
 
 ---
+## catpath ssh_node jobs can't survive routine spark redeploys (poison-guard burns pre-compute)
+- Status: open · Severity: critical · Owner: `src/precis/workers/executors/ssh_node.py`
+  (+ `_common.py::reclaim_stale_running`) · Test: n/a yet.
+- `ssh_node` dispatch blocks the precis-worker thread synchronously for the whole
+  remote catpath run (module docstring). When ansible redeploys land on spark
+  (~96 worker restarts / 1.5 days, 7 forced SIGKILLs in one day), the worker gets
+  SIGTERM, can't drain the in-flight dispatch, and is SIGKILLed after systemd's
+  ~90 s stop timeout — each kill costs the job one attempt. Any catpath job whose
+  real runtime spans a deploy cycle (NO→NH₃ ammonia network at `seeds:[0,1,2]`
+  ≈ 90 min, `wall_seconds=5400`) is nearly guaranteed to exhaust
+  `ssh_node._MAX_ATTEMPTS=3` and fail `failure_class=infra` before catpath emits a
+  result. Evidence: job 172888 (quest 164903 / cand 172608) — 3 attempts
+  (2026-07-26 10:34 / 13:04 / 15:34 UTC) each SIGKILLed by a redeploy before any
+  NEB/relax progress logged; no catpath traceback (pure infra); CUDA OOM ruled
+  out. Blocks qu164903 from ever landing a `barrier_trusted` pathway, independent
+  of the catpath desorption/NEB fixes (ede15ea).
+- Secondary: `reclaim_stale_running` presumes death from `lease_until < now()`
+  only — never checks whether the worker is actually alive — so stale-detection
+  lags the real kill by up to ~1 h.
+- Fix directions (triage): drain-before-restart (don't SIGTERM the worker while a
+  catpath job is in flight) · async/non-blocking `ssh_node` dispatch so SIGTERM is
+  handled cleanly and the lease survives a restart · exclude spark from routine
+  redeploys · make the poison guard distinguish killed-by-restart from genuine
+  crash-looping (or raise `_MAX_ATTEMPTS`).
+
+---
 ## LLM routing: all tiers remote via OpenRouter (local-first DEFERRED)
 - Status: DONE (all-remote live 2026-07-26) · local-first DEFERRED per Reto ("just make it remote, the lot of it… revisit local in a bit") · Owner: `app_settings llm.chain.*` · Test: llm_call_log shows every OSS tier on openrouter.ai, no local served_by routing.
 - litellm `:4000` teardown = DONE: daemon booted out + plist retired on melchior, briefing crons cleared on balthazar (both reversible; on-host backups), repo footprint `f50894bf`.
