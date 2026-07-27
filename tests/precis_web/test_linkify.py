@@ -537,6 +537,32 @@ def test_markdown_inline_code_rendered() -> None:
     assert "<code" in out and "embed_one(q)" in out
 
 
+def test_markdown_italic_single_star_rendered() -> None:
+    # Single-* emphasis → <em> (parity with the LaTeX/docx exporters). ** stays
+    # bold, a spaced multiplication is left alone, and _ italic is NOT rendered
+    # (it collides with $x_1$ subscripts).
+    out = str(
+        linkify_refs("a *directly bonded* pair, **bold**, 2 * 3, x_1_", markdown=True)
+    )
+    assert "<em>directly bonded</em>" in out
+    assert "<strong>bold</strong>" in out and "<em>bold</em>" not in out
+    assert "2 * 3" in out  # spaced multiplication untouched
+    assert "<em>" in out and out.count("<em>") == 1  # the _..._ did not italicise
+
+
+def test_markdown_star_inside_math_not_emphasis() -> None:
+    # A * inside $…$ (multiplication) must stay math, not become <em>.
+    out = str(linkify_refs("the product $a*b$ here", markdown=True))
+    assert "$a*b$" in out and "<em>" not in out
+
+
+def test_markdown_empty_base_math_folds_base_in() -> None:
+    # Chemistry math with the base outside the $…$ (C$_{60}$) is repaired to
+    # $C_{60}$ so KaTeX renders a proper subscripted base — parity with export.
+    out = str(linkify_refs("the C$_{60}$ cage and UO$_2^{2+}$ ion", markdown=True))
+    assert "$C_{60}$" in out and "$UO_2^{2+}$" in out
+
+
 def test_markdown_off_by_default_keeps_raw() -> None:
     out = str(linkify_refs("a **b** c"))
     assert "<strong>" not in out and "**b**" in out

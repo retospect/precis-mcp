@@ -68,6 +68,16 @@
   .sd-dc { font-family: ui-monospace, monospace; font-size: 9px; color: #0ea5e9; }
 </style>
 
+{# KaTeX — same client-side $…$ / $$…$$ math render the classic /drafts reader
+   uses (detail.html.j2), so smartdraft renders LaTeX ($sp^3$, reactions) too.
+   mhchem registers \ce{}/\pu{}; auto-render's onload fires the initial pass
+   over #sd-content, and afterSwap() re-runs it after every no-reload nav. #}
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" />
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/mhchem.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+  onload="window.__sdRenderMath && window.__sdRenderMath()"></script>
+
 {# ProseMirror mount (window.__mountDraftPM) + the global draftEdit/
    tableEditor Alpine factories + their CSS — loaded ONCE here, OUTSIDE
    #sd-content, so a no-reload nav swap (swapFrom, below) never re-imports the
@@ -566,6 +576,27 @@
 </div>
 
 <script>
+// KaTeX render (parity with the classic /drafts reader, detail.html.j2).
+// __renderMath renders one element; __sdRenderMath does the whole panel and is
+// exposed on window so auto-render's onload can fire the initial pass. Both are
+// no-ops until KaTeX's deferred scripts have loaded (renderMathInElement).
+function __renderMath(el) {
+  if (!window.renderMathInElement || !el) return;
+  renderMathInElement(el, {
+    delimiters: [{left: '$$', right: '$$', display: true}, {left: '$', right: '$', display: false}],
+    throwOnError: false,
+  });
+}
+window.__sdRenderMath = function () { __renderMath(document.getElementById('sd-content')); };
+
+// Citation hover popovers load lazily via htmx AFTER the initial KaTeX pass, so
+// render math in each popover fragment as it swaps in (a cited quote has $…$
+// too). Same handler the classic reader uses; the swap target is .ref-popover.
+document.body.addEventListener('htmx:afterSwap', function (e) {
+  const t = (e.detail && e.detail.target) || e.target;
+  if (t && t.classList && t.classList.contains('ref-popover')) __renderMath(t);
+});
+
 // No-reload navigation: every TOC/result/toggle link + the search form + the
 // pin/tag/mark actions fetch the page and swap ONLY #sd-content (persistent
 // listeners below stay bound; Alpine re-inits the swapped components). Nav-state
@@ -604,6 +635,10 @@
     if (mid) mid.scrollIntoView({ block: 'center' });
     if (ST.q) highlightTerm(document.getElementById('sd-content'), ST.q);
     if (window.htmx) window.htmx.process(document.getElementById('sd-content'));
+    // Re-render $…$ / $$…$$ math over the freshly-swapped panel. On the very
+    // first DOMContentLoaded KaTeX's deferred scripts may not have loaded yet;
+    // auto-render's onload (window.__sdRenderMath) covers that initial pass.
+    __sdRenderMath();
   }
   async function navTo(dc) {
     const p = new URLSearchParams(location.search);

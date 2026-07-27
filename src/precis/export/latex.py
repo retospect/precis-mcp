@@ -106,6 +106,10 @@ _LATEX_SPECIALS = {
 _LATEX_SPECIALS_RE = re.compile("|".join(re.escape(k) for k in _LATEX_SPECIALS))
 
 _MD_BOLD = re.compile(r"\*\*(.+?)\*\*")
+#: Single-``*`` emphasis → ``\emph`` (parity with docx ``_SPAN`` / the web
+#: reader). Applied AFTER bold, so a consumed ``**…**`` never reaches it; the
+#: guard excludes ``**bold**``, ``a*b``, and a spaced ``2 * 3`` multiplication.
+_MD_ITALIC = re.compile(r"(?<![*\w])\*(?!\s)([^*]+?)(?<!\s)\*(?!\w)")
 _MD_CODE = re.compile(r"`([^`]+)`")
 _HTML_SUB = re.compile(r"<sub>(.+?)</sub>")
 _HTML_SUP = re.compile(r"<sup>(.+?)</sup>")
@@ -392,8 +396,10 @@ def _render_gap(text: str, ctx: _Ctx) -> str:
     )
     # 4. Escape the remaining prose, then translate any non-ASCII glyphs.
     s = _encode_unicode(_latex_escape(s))
-    # 5. Bold (the ** survived escaping — * is not a LaTeX special).
+    # 5. Bold then italic (the * survived escaping — not a LaTeX special).
+    #    Bold first so a ``**…**`` run is consumed before single-* italic.
     s = _MD_BOLD.sub(r"\\textbf{\1}", s)
+    s = _MD_ITALIC.sub(r"\\emph{\1}", s)
     # 6. Abbreviations → \gls (first use) / \glstip tooltip (later uses).
     s = _glsify(s, ctx.keymap, ctx.seen_acr)
     # 7. Restore the stashed verbatim spans.

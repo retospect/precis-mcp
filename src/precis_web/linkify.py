@@ -412,12 +412,27 @@ def _render_compact_cite(
     )
 
 
-# Inline-markdown: render **bold**, `code`, and <sub>/<sup> only. ``_``/``*``
-# italic is deliberately NOT rendered — it collides with LaTeX subscripts
-# ($x_1$) and is more trouble than it's worth in scientific prose. (Math
-# itself is left as $…$ for client-side KaTeX.)
+# Inline-markdown: render **bold**, *italic*, `code`, and <sub>/<sup>. The same
+# subset the LaTeX/docx exporters render (precis.export.{latex,docx}) so the
+# reader, PDF and Word show one thing. Only SINGLE-``*`` italic is honoured —
+# ``_`` italic stays literal because it collides with LaTeX subscripts
+# (``$x_1$``). Math is left as $…$ for client-side KaTeX (stashed here so ``*``
+# inside a formula, e.g. ``$a*b$``, is never mistaken for emphasis).
 _MD_CODE = re.compile(r"`([^`]+)`")
 _MD_BOLD = re.compile(r"\*\*(.+?)\*\*")
+#: Single-``*`` emphasis — the exact guard docx uses (export/docx ``_SPAN``):
+#: no adjacent ``*``/word char (so ``**bold**`` and ``a*b`` are excluded) and
+#: no space just inside the stars (so a stray ``2 * 3`` multiplication is left
+#: alone). Applied AFTER bold, so a consumed ``**…**`` never reaches it.
+_MD_ITALIC = re.compile(r"(?<![*\w])\*(?!\s)([^*]+?)(?<!\s)\*(?!\w)")
+#: ``$$…$$`` (display) before ``$…$`` (inline) — stashed verbatim for KaTeX.
+_MD_MATH = re.compile(r"\$\$.+?\$\$|\$[^$]+\$", re.DOTALL)
+#: Empty-base chemistry math (``C$_{60}$`` / ``UO$_2^{2+}$``): the author put
+#: the base outside the ``$…$``, which KaTeX renders as a floating subscript
+#: with an empty base. Pull the preceding token in (``C$_{60}$`` → ``$C_{60}$``)
+#: — the SAME repair the exporters do (export.latex ``_EMPTY_BASE_MATH`` /
+#: ``preprocess_draft_inline``), run before math is stashed.
+_MD_EMPTY_BASE_MATH = re.compile(r"(?<!\w)([A-Za-z0-9)\]]+)\$([_^][^$]+)\$")
 # Authors mix HTML sub/sup into prose (``NH<sub>2</sub>``, ``g<sup>-1</sup>``).
 # After escaping they're ``&lt;sub&gt;…&lt;/sub&gt;``; re-promote that exact
 # allowlisted pair back to real tags (content stays escaped → safe).
@@ -426,28 +441,39 @@ _MD_SUP = re.compile(r"&lt;sup&gt;(.+?)&lt;/sup&gt;")
 
 
 def _md_inline(escaped: str) -> str:
-    """Render the bold / code / sub / sup markdown subset over
+    """Render the bold / italic / code / sub / sup markdown subset over
     ALREADY-ESCAPED text.
 
-    Code spans are stashed first (so ``**`` inside backticks isn't bolded)
-    and restored last. Operating on escaped text keeps it injection-safe —
-    we only ever add a fixed allowlist of wrappers (``<strong>`` /
-    ``<code>`` / ``<sub>`` / ``<sup>``), never reinterpret arbitrary
-    content as HTML.
+    Math and code spans are stashed first (so ``**``/``*`` inside a formula or
+    backticks isn't treated as emphasis) and restored last — math verbatim (for
+    KaTeX), code wrapped. Operating on escaped text keeps it injection-safe: we
+    only ever add a fixed allowlist of wrappers (``<strong>`` / ``<em>`` /
+    ``<code>`` / ``<sub>`` / ``<sup>``), never reinterpreting content as HTML.
     """
-    stash: list[str] = []
+    # Repair empty-base chemistry math BEFORE stashing, so ``C$_{60}$`` becomes
+    # a well-formed ``$C_{60}$`` KaTeX renders (parity with the exporters).
+    escaped = _MD_EMPTY_BASE_MATH.sub(r"$\1\2$", escaped)
 
-    def _hide(m: re.Match[str]) -> str:
-        stash.append(m.group(1))
+    stash: list[tuple[str, str]] = []
+
+    def _hide(kind: str, body: str) -> str:
+        stash.append((kind, body))
         return f"\x00{len(stash) - 1}\x00"
 
-    s = _MD_CODE.sub(_hide, escaped)
+    # Carve out verbatim spans first — math ($…$, kept for KaTeX) then code.
+    s = _MD_MATH.sub(lambda m: _hide("math", m.group(0)), escaped)
+    s = _MD_CODE.sub(lambda m: _hide("code", m.group(1)), s)
+
+    # Bold before italic so a ``**…**`` run is consumed before single-* italic.
     s = _MD_BOLD.sub(r"<strong>\1</strong>", s)
+    s = _MD_ITALIC.sub(r"<em>\1</em>", s)
     s = _MD_SUB.sub(r"<sub>\1</sub>", s)
     s = _MD_SUP.sub(r"<sup>\1</sup>", s)
 
     def _restore(m: re.Match[str]) -> str:
-        body = stash[int(m.group(1))]
+        kind, body = stash[int(m.group(1))]
+        if kind == "math":
+            return body  # verbatim $…$ for client-side KaTeX
         return f'<code class="rounded bg-slate-100 px-1 text-[0.9em]">{body}</code>'
 
     return re.sub(r"\x00(\d+)\x00", _restore, s)

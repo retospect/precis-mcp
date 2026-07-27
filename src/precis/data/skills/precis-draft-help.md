@@ -280,9 +280,10 @@ move on; the prose that ties it to the argument is the actual writing.)
 
 **Style: plain prose, no emphasis markup.** Write in plain declarative
 sentences, one idea each. **Do not use bold or italics for emphasis.**
-`_italic_` and a single `*word*` are not rendered and leave literal `_`
-and `*` markers in the text; `**bold**` does render but reads as shouting
-in a research write-up. Let sentence structure carry the weight.
+`**bold**` and a single `*word*` italic both render (in the reader, PDF and
+Word) but read as shouting in a research write-up; `_italic_` is NOT rendered
+and leaves literal `_` markers in the text (it collides with `$x_1$` math
+subscripts). Let sentence structure carry the weight.
 **No em-dashes** (the `—` character): split the thought into separate
 sentences, or use a colon, comma, or parentheses instead. (Headings
 already stand out, so you do not need bold on top.)

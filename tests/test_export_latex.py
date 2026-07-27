@@ -90,6 +90,17 @@ def test_bold_code_sub_sup() -> None:
     assert r"\textsubscript{2}" in out and r"\textsuperscript{-1}" in out
 
 
+def test_italic_single_star_to_emph() -> None:
+    # Single-* emphasis → \emph (parity with the web reader + docx). ** stays
+    # bold (not italicised), spaced multiplication is left alone, and * inside
+    # math is protected (the formula passes through verbatim).
+    out, _ = _inline("a *directly bonded* pair, **not** 2 * 3, and $a*b$ math")
+    assert r"\emph{directly bonded}" in out
+    assert r"\textbf{not}" in out and r"\emph{not}" not in out
+    assert "2 * 3" in out  # spaced multiplication untouched
+    assert "$a*b$" in out  # star inside math not turned into emphasis
+
+
 def test_cross_ref_and_citation() -> None:
     out, ctx = _inline("As shown in [dc41] and [§kong24~3] and paper:smith2024.")
     assert r"\cref{chunk:dc41}" in out

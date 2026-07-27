@@ -179,6 +179,23 @@ def test_smartdraft_reader_renders_three_panes(
     assert "Collaborate" in body  # right pane header
 
 
+def test_smartdraft_reader_loads_katex_for_inline_math(
+    smartdraft_client: TestClient,
+) -> None:
+    """The reader loads KaTeX (CSS + katex.min.js + auto-render) and wires the
+    render into ``afterSwap``/``__sdRenderMath``, so inline LaTeX like ``$sp^3$``
+    renders — parity with the classic /drafts reader (detail.html.j2)."""
+    r = smartdraft_client.get("/smartdraft/sdt")
+    assert r.status_code == 200
+    body = r.text
+    assert "katex.min.css" in body  # stylesheet loaded
+    assert "katex.min.js" in body  # engine loaded
+    assert "auto-render.min.js" in body  # $…$ / $$…$$ scanner loaded
+    assert "renderMathInElement" in body  # render helper defined
+    # the initial pass + every no-reload nav swap re-render the panel
+    assert "window.__sdRenderMath" in body
+
+
 def test_smartdraft_reader_uses_shared_draft_edit(
     smartdraft_client: TestClient,
 ) -> None:
