@@ -42,10 +42,21 @@ polarity). Rubric: the labeling prompt in the proposal's Phase-1 notes.
    - **C · principle vs instance/formula** (3, `adjudicated:C-genus-species`):
      qualitative rule vs its formula/instance → `broader` (genus ⊃ species).
 
+## Augmentation (2026-07-28) — contradiction pass
+An Opus scan of all 422 citation claims for same-scope opposite-polarity
+pairs (pairs 201–208): only **1 genuine** contradiction found (AGNR
+metallic-vs-semiconducting, `needs_adjudication`, borderline coarse-vs-
+refined), plus **7 apparent-but-orthogonal** negatives (opposite-sounding
+but distinct scope — Au on pristine-vs-defect graphene, UiO-66 saline-vs-
+phosphate, DFT-vs-GW gaps, …). Those 7 are valuable: they exercise the
+contradiction-vs-scope-mismatch boundary (proposal open #8).
+
 ## Known gaps
-- **No `contradicts` examples** — contradictions are not nearest-neighbors
-  (opposing claims word themselves differently). Needs a targeted
-  contradiction-augmentation pass before the fixture exercises that edge.
+- **The corpus is genuinely thin on real contradictions** — dominated by
+  duplicate/restated claims and opposite-sounding pairs that resolve to
+  different scope. So the `contradicts` edge is under-covered (n=1) and a
+  real Phase-1 gate will need **synthetic contradictions** (negate real
+  claims at matched scope), not just corpus mining.
 - **Domain skew** toward nanoelectronics + NOx/catalysis (the corpus's
   actual mass), not an even MOF/Pd/NOx split.
-- 200 pairs is a v1 bar; expand as canonicalization is built against it.
+- 208 pairs is a v1 bar; expand as canonicalization is built against it.

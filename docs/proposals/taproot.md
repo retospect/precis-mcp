@@ -85,7 +85,9 @@ head"; `_is_premise()` is true for *either* `finding` or `kind:lemma`):
 They are the **empirical vs. inferred** split the argument graph was built
 around; they do not compete. This spec extends `finding`'s *evidence*
 side; ADR 0054 keeps the *inference* side. Both feed the one retraction
-ripple. Rule: **evidence edges → findings only; inference edges → either.**
+ripple. Rule: **evidence edges → `FROLE:claim` findings only; inference
+edges → either.** (Only *grounded world-claim* findings are hubs — see
+open #11 for the `FROLE:claim`/`FROLE:review` discriminator.)
 (Resolves former incoherence #3.)
 
 **Citation target (former incoherence #4).** `finding`'s contract
@@ -250,8 +252,23 @@ and record the terminal state per edge.
    **`PARTIAL`** (+ caveats) / **`NO-SUPPORT`** / **`CONTRADICTS`**.
    (`chase`'s `supports: yes/partial/no`.)
 
-Closed outcome enum: `UNACQUIRABLE · UNLOCATED · NOT-ORIGINATOR ·
-PARTIAL · NO-SUPPORT · CONTRADICTS · SUPPORTS`.
+**A citation is an edge with two ends — either can be missing.** The
+stages above catch the **source end** failing (`UNACQUIRABLE`,
+`UNLOCATED`). The **claim end** can fail too: a paragraph that is *pure
+pointer* — it cites a source but asserts nothing to ground ("See [12]", a
+Related-Work sentence that is only "[1,2,3]"). Detected at **claim
+extraction** (stage 1): if atomic-split yields **zero** groundable claims
+(or only a non-substantive meta-claim like "several studies exist"), the
+citation has no host claim →
+
+0'. **`NO-CLAIM`** (claim-end missing) — a dangling/orphan citation. Not a
+   support failure; there is nothing to support. In our draft this is a
+   hygiene defect (a citation must attach to an assertion); in an external
+   paper it is a **pure navigation node** in the citation graph, never
+   treated as evidence for anything.
+
+Closed outcome enum: `NO-CLAIM · UNACQUIRABLE · UNLOCATED · NOT-ORIGINATOR
+· PARTIAL · NO-SUPPORT · CONTRADICTS · SUPPORTS`.
 
 ## Axis B — integrity (retraction / correction), reason-relevant
 
@@ -371,6 +388,7 @@ Detection is identical for our drafts and external papers; only the
 
 | Outcome | Our draft (we own the text) → **fix** | External paper → **record** |
 |---|---|---|
+| `NO-CLAIM` | flag: "citation with no host claim — add the assertion or cut the cite" | mark chunk pure-pointer / non-evidential |
 | `UNACQUIRABLE` | flag; soften or swap to a held source | edge: "cites unverifiable source" |
 | `UNLOCATED` | whole-paper-cite warning → pin to chunk | low-confidence edge |
 | `NOT-ORIGINATOR` | re-target `\cite` to the primary | follow onward; mark `corroborates` |
@@ -561,27 +579,36 @@ before any `status: ready`).
     claim sentence's inline `[k]` markers. A chunk can be `own` overall
     yet NOT-ORIGINATOR for a claim it cites prior art for.
 
-11. **[INCOHERENCE — found in the fixture data]** The `finding` kind is
-    **polluted**: a large fraction of prod `finding` rows are editorial
-    review notes ("acronym unexpanded", "riyaz25 cited but Pd not
-    studied"), not grounded world-claims. The hub model assumes world-
-    claims. Taproot must either **split the `finding` kind** (world-claim
-    vs review-note) or filter by a marker. (The fixture sidestepped this
-    by drawing from `citation`, which is clean.) Reconcile before
-    `finding` becomes the hub in Phase 2.
+11. **[RESOLVED — discriminator tag, don't split the kind]** The `finding`
+    kind is **polluted**: many prod `finding` rows are editorial review
+    notes ("acronym unexpanded", "riyaz25 cited but Pd not studied"), not
+    grounded world-claims. **Decision** (repo-idiomatic — open-tag
+    pattern, ADR-0054 precedent of *not* minting a kind): keep one
+    `finding` kind, add a **closed discriminator tag** `FROLE:claim`
+    (grounded world-claim) vs `FROLE:review` (editorial/manuscript note).
+    **The taproot hub + evidence edges attach only to `FROLE:claim`
+    findings**; review notes stay findings but are excluded from the claim
+    graph. Backfill-classify existing findings with a cheap SMALL/local
+    pass (mirrors the `ROLE3` cascade). Must land before `finding` becomes
+    the hub in Phase 2. (The fixture sidestepped this by drawing from
+    `citation`, which is clean.)
 
-12. **[OPEN — fixture gap]** The v1 fixture has **no `contradicts`
-    examples** — contradictions aren't nearest-neighbours (opposing
-    claims word themselves differently), so NN-pairing can't surface
-    them. Needs a **targeted contradiction-augmentation pass** (search
-    opposite-polarity claim pairs deliberately) or the over-merge metric
-    never exercises the contradiction edge.
+12. **[PARTIAL — augmentation run, corpus is thin]** A targeted Opus scan
+    of all 422 citation claims for same-scope opposite-polarity pairs
+    found only **1 genuine** contradiction + **7 apparent-but-orthogonal**
+    negatives (now fixture pairs 201–208). **Finding:** the held corpus is
+    genuinely thin on real contradictions — dominated by restatements and
+    different-scope opposites. So a real Phase-1 gate needs **synthetic
+    contradictions** (negate real claims at matched scope), not just
+    corpus mining. The 7 negatives are kept — they exercise the
+    contradiction-vs-scope-mismatch boundary (#8).
 
-**Status after the 2026-07-28 pass:** #3,#4,#6,#8,#10 resolved · #1,#5
+**Status after the 2026-07-28 pass:** #3,#4,#6,#8,#10,#11 resolved · #1,#5
 designed-with-a-gate · #9 typed, function deferred · #7 needs a Phase-5
-pilot measurement · #11 (finding-pollution) + #12 (fixture contradiction
-gap) newly surfaced by building the fixture. Phase-1 fixture v1 exists
-(`tests/fixtures/taproot/`, 92% two-model agreement).
+pilot measurement · #12 partial (corpus thin on contradictions → needs
+synthetic). New outcome added: **`NO-CLAIM`** (claim-end of the citation
+edge missing — dangling/pure-pointer cite). Phase-1 fixture v1 exists
+(`tests/fixtures/taproot/`, 208 pairs, 92% two-model agreement).
 
 ## Build phasing
 
