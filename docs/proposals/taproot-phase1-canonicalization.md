@@ -129,9 +129,14 @@ validation harness the builder runs deliberately, not a CI unit test.
   canonicalizer. Not needed for offline eval; needed before live hub
   selection (Phase 2 predecessor).
 
-## Open items before `ready`
+## Ready to build
 
-1. **Synthetic-pair spot-check** — confirm the 30 `needs_adjudication`
-   synthetic pairs (209–238) are correct before they grade the judge.
-2. **Confirm the embedder** reused by `block` matches the card index
-   (`bge-m3`).
+All pre-build items are closed:
+- **Synthetic-pair spot-check** ✅ — 30 pairs human-signed-off 2026-07-28
+  (`human_approved`). One borderline corpus contradiction (pair 201) stays
+  flagged, non-blocking.
+- **Embedder** ✅ — `bge-m3` (the fixture was built on the card index's
+  bge-m3 embeddings; `block` reuses the same).
+
+No blocking design decisions remain. Buildable against the fixture at
+**over-merge = 0**.
