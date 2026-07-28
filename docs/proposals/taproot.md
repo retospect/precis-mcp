@@ -183,15 +183,17 @@ claims). Uncertainty defaults to keep-separate + link.
 Phase 1's `ready` bar. Cheap blocking (2) keeps the expensive judges (4)
 rare — load-bearing for cost, not just recall.
 
-> **v1 built (2026-07-28)** — `tests/fixtures/taproot/` holds 200
-> nearest-neighbour `citation`-claim pairs, dual-labeled by Opus + Fable
-> (blind), **92% inter-model agreement**; the 16 disagreements were
-> adjudicated by three cluster rules (see the fixture README). Two
-> findings fed back into this spec: the **atomic-split** need (step 1
-> above) and the **`finding`-pollution** issue (open #11). Gaps: no
-> `contradicts` pairs yet (open #12), nanoelectronics-skewed. The method
-> — nearest-neighbour pairs + two blind labelers + human adjudication of
-> only the disagreements — is the repeatable recipe for growing it.
+> **v1 complete (2026-07-28)** — `tests/fixtures/taproot/` holds **238**
+> pairs: 200 nearest-neighbour `citation`-claim pairs dual-labeled by
+> Opus + Fable (blind), **92% inter-model agreement**, the 16
+> disagreements adjudicated by three cluster rules **and human-signed-off**
+> (`human_approved`); plus 8 corpus + 22 synthetic contradiction pairs
+> (pairs 201–238) covering the `contradicts` edge. Two findings fed back
+> into this spec: the **atomic-split** need (step 1 above) and the
+> **`finding`-pollution** issue (open #11). The method — NN pairs + two
+> blind labelers + human adjudication of only the disagreements, then
+> targeted contradiction augmentation — is the repeatable recipe for
+> growing it.
 
 ## Non-goals — staying out of the formal-logic pit
 
@@ -593,22 +595,25 @@ before any `status: ready`).
     the hub in Phase 2. (The fixture sidestepped this by drawing from
     `citation`, which is clean.)
 
-12. **[PARTIAL — augmentation run, corpus is thin]** A targeted Opus scan
-    of all 422 citation claims for same-scope opposite-polarity pairs
-    found only **1 genuine** contradiction + **7 apparent-but-orthogonal**
-    negatives (now fixture pairs 201–208). **Finding:** the held corpus is
-    genuinely thin on real contradictions — dominated by restatements and
-    different-scope opposites. So a real Phase-1 gate needs **synthetic
-    contradictions** (negate real claims at matched scope), not just
-    corpus mining. The 7 negatives are kept — they exercise the
-    contradiction-vs-scope-mismatch boundary (#8).
+12. **[COVERED — via synthetic, corpus is thin]** A targeted Opus scan of
+    all 422 claims found only **1 genuine** contradiction + 7
+    apparent-but-orthogonal negatives — the held corpus is genuinely thin
+    on real contradictions (restatements + different-scope opposites
+    dominate). Closed with **22 synthetic scope-matched negations** + 8
+    scope-shifted hard-negatives (pairs 209–238, `needs_adjudication`),
+    giving the `contradicts` edge real coverage (n=23). *Caveat:*
+    coverage is now mostly synthetic — tests judge *logic*, not evidence
+    of real literature disputes.
 
-**Status after the 2026-07-28 pass:** #3,#4,#6,#8,#10,#11 resolved · #1,#5
-designed-with-a-gate · #9 typed, function deferred · #7 needs a Phase-5
-pilot measurement · #12 partial (corpus thin on contradictions → needs
-synthetic). New outcome added: **`NO-CLAIM`** (claim-end of the citation
-edge missing — dangling/pure-pointer cite). Phase-1 fixture v1 exists
-(`tests/fixtures/taproot/`, 208 pairs, 92% two-model agreement).
+**Status after the 2026-07-28 pass:** #3,#4,#6,#8,#10,#11,#12 resolved ·
+#1,#5 designed-with-a-gate · #9 typed, function deferred · #7 needs a
+Phase-5 pilot measurement. New outcome added: **`NO-CLAIM`** (claim-end
+of the citation edge missing — dangling/pure-pointer cite). **Phase-1
+fixture v1 complete** (`tests/fixtures/taproot/`, 238 pairs, 92%
+two-model agreement, 16 disagreements human-adjudicated + signed off,
+`contradicts` edge covered via synthetic). Only the synthetic-pair
+spot-check + writing the canonicalization sub-spec stand between here and
+Phase-1 build.
 
 ## Build phasing
 

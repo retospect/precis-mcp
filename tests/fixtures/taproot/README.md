@@ -42,21 +42,28 @@ polarity). Rubric: the labeling prompt in the proposal's Phase-1 notes.
    - **C · principle vs instance/formula** (3, `adjudicated:C-genus-species`):
      qualitative rule vs its formula/instance → `broader` (genus ⊃ species).
 
-## Augmentation (2026-07-28) — contradiction pass
-An Opus scan of all 422 citation claims for same-scope opposite-polarity
-pairs (pairs 201–208): only **1 genuine** contradiction found (AGNR
-metallic-vs-semiconducting, `needs_adjudication`, borderline coarse-vs-
-refined), plus **7 apparent-but-orthogonal** negatives (opposite-sounding
-but distinct scope — Au on pristine-vs-defect graphene, UiO-66 saline-vs-
-phosphate, DFT-vs-GW gaps, …). Those 7 are valuable: they exercise the
-contradiction-vs-scope-mismatch boundary (proposal open #8).
+238 pairs total. The 16 model-disagreements were **human-adjudicated and
+signed off 2026-07-28** (`human_approved` field on those rows).
+
+## Augmentation (2026-07-28)
+- **Corpus contradiction pass** (pairs 201–208): an Opus scan of all 422
+  claims found only **1 genuine** same-scope contradiction (AGNR
+  metallic-vs-semiconducting, borderline) + **7 apparent-but-orthogonal**
+  negatives (opposite-sounding, distinct scope) — the corpus is genuinely
+  thin on real contradictions (restatements + different-scope opposites
+  dominate).
+- **Synthetic contradictions** (pairs 209–238, `provenance:
+  synthetic:*`, all `needs_adjudication` — spot-check the constructions):
+  22 **scope-matched negations** of real claims (hold material/method/
+  regime, flip polarity → `contradicts`) + 8 **scope-shifted negatives**
+  (shift one scope axis so the opposed-sounding claim is `orthogonal`, not
+  a contradiction — hard negatives for open #8). Spread across all five
+  domains. These give the `contradicts` edge real coverage (n=23) that
+  corpus mining couldn't.
 
 ## Known gaps
-- **The corpus is genuinely thin on real contradictions** — dominated by
-  duplicate/restated claims and opposite-sounding pairs that resolve to
-  different scope. So the `contradicts` edge is under-covered (n=1) and a
-  real Phase-1 gate will need **synthetic contradictions** (negate real
-  claims at matched scope), not just corpus mining.
+- `contradicts` coverage is now mostly **synthetic** (n=22 of 23) — fine
+  for testing judge *logic*, but not evidence of real literature disputes.
 - **Domain skew** toward nanoelectronics + NOx/catalysis (the corpus's
-  actual mass), not an even MOF/Pd/NOx split.
-- 208 pairs is a v1 bar; expand as canonicalization is built against it.
+  actual mass).
+- 238 pairs is a v1 bar; expand as canonicalization is built against it.
