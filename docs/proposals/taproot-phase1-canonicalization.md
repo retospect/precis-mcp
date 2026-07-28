@@ -16,8 +16,8 @@ ingest wiring, no hierarchy — those are later phases.
 ## Goal / acceptance in one line
 
 `dedup_judge` run over the 238 fixture pairs in `tests/fixtures/taproot/`
-scores **over-merge rate ≤ the agreed bar** (see [open items](#open-items-before-ready)),
-every pair gets a verdict, and the four functions have unit tests.
+scores **zero over-merges** (bar = 0, see Decisions), every pair gets a
+verdict, and the four functions have unit tests.
 
 ## The four functions (`src/precis/taproot/canon.py`, new package)
 
@@ -103,7 +103,7 @@ other work without asserting anything, return none."
 
 `eval_canonicalization(fixture_path) -> Report` loads `claim_pairs.jsonl`,
 runs `dedup_judge` per pair, maps labels as above, prints
-over/under/confusion, and asserts `over_merge_rate <= BAR`. Wire it as a
+over/under/confusion, and asserts **zero over-merges** (bar = 0). Wire it as a
 test that is **gated/skipped without an LLM** (mark it, like the repo's
 other live-model tests) so it doesn't run in the offline gate — it's a
 validation harness the builder runs deliberately, not a CI unit test.
@@ -117,14 +117,21 @@ validation harness the builder runs deliberately, not a CI unit test.
 - No `FROLE` classifier build (that's the Phase-2 predecessor task) — for
   Phase-1 offline eval the fixture claims stand in for hubs.
 
+## Decisions (locked 2026-07-28)
+
+- **Over-merge bar = 0.** No fixture pair that should be `different` may be
+  predicted `same`. Any over-merge is investigated individually, not
+  averaged into a tolerated rate (an over-merge is the dangerous error).
+  Under-merges are counted but tolerated.
+- **Package = `src/precis/taproot/`** (not `quest/`).
+- **`FROLE` is a distinct concern** (finding = claim vs editorial note), a
+  standalone finding-classifier taproot *depends on* — not part of the
+  canonicalizer. Not needed for offline eval; needed before live hub
+  selection (Phase 2 predecessor).
+
 ## Open items before `ready`
 
-1. **Set the over-merge BAR** — a number (e.g. ≤2% of expected-`different`
-   pairs, or an absolute count). Needs one decision.
-2. **Synthetic-pair spot-check** — confirm the 30 `needs_adjudication`
+1. **Synthetic-pair spot-check** — confirm the 30 `needs_adjudication`
    synthetic pairs (209–238) are correct before they grade the judge.
-3. **Confirm the embedder/index** reused by `block` matches the card index
-   (`bge-m3`), and that `FROLE:claim` hub selection is available (depends
-   on #11's tag landing for live use; not needed for offline eval).
-4. Decide package location: `src/precis/taproot/` (proposed) vs folding
-   into `src/precis/quest/` beside the existing `claims.py` extractor.
+2. **Confirm the embedder** reused by `block` matches the card index
+   (`bge-m3`).

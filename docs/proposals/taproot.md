@@ -496,6 +496,12 @@ that already exist; **do not write a schema migration.** Verified:
 - **Edge metadata / integrity** = jsonb `meta` + the existing
   `refs.retraction_*` columns. Phase 1 (canonicalization) persists nothing.
 
+**Write-path guard.** Because relation validity is enforced in code (not by
+a DB CHECK), **every hub/edge write must go through the taproot handler** —
+a raw `INSERT` bypasses `_VALID_RELATIONS` and a typo'd relation becomes a
+silent junk edge (the exact error taproot exists to prevent). Single write
+path; guard against non-process writes (open #16).
+
 **Code touch points:** `handlers/{finding,citation,provenance}.py` ·
 `workers/{chase,inbound_chase}.py` + `_chase_llm.py` ·
 `backfill/citation_lens.py` + source-backfill · `store/_argument_ops.py`
@@ -534,12 +540,15 @@ before any `status: ready`).
    card — de-dup the embedding so search doesn't double-count N edges +
    the hub (mechanical; belongs in the `claim-hub-node` sub-spec).
 
-4. **[RESOLVED — cite-the-claim-expand-the-sources]** `finding`'s
-   "never in `\cite{}`" contract is kept: `\cite{fi…}` is authoring sugar
-   the exporter expands to the `establishes` papers at LaTeX/docx build.
-   The finding never enters the `.bib`. *Blast radius to verify:* the
-   docx/latex citation resolvers (`93f4ff93`, `f2c72265`) must learn the
-   finding→originators expansion.
+4. **[RESOLVED — cite-the-claim, resolve at export time]** You author a
+   reference to a **claim**, not a paper; the concrete citation is
+   **materialized at export time** (LaTeX/docx), not at write time. The
+   finding never enters the `.bib`. **Payoff — a living citation:** because
+   the cite points at the claim, when the true originator is later
+   discovered the *next export just improves on its own*; and a post-hoc
+   claim merge re-points cites automatically at next export (no draft
+   edit). *Blast radius:* the docx/latex resolvers (`93f4ff93`,
+   `f2c72265`) learn claim→current-best-originators expansion.
 
 5. **[BLOCKER → mostly deterministic + a small gate]** Reason-relevance.
    **Decided:** most of it is *not* an LLM call. RW reason codes cleave
@@ -626,6 +635,27 @@ before any `status: ready`).
     a v1 blocker (taproot doesn't touch `concept`); decide before any
     cross-wiring.
 
+14. **[RESOLVED — canonical text = best synthesis]** A hub's claim
+    sentence is the **best synthesis** of its supporters (not first-writer,
+    not most-general), **re-synthesized as evidence accrues**. Combined
+    with export-time resolution (#4), the hub is a *living* claim: both its
+    wording and its cited originators improve over time without touching
+    any draft.
+
+15. **[RESOLVED — only paper-sourced claims become hubs; drafts insulated]**
+    A hub is minted only from a claim **grounded in the corpus** (a paper
+    chunk). A draft's own *novel* assertions stay **draft-local** — they do
+    **not** enter the shared claim graph, so concurrent drafts can't
+    cross-contaminate each other's in-progress "made-up" claims. You may
+    still cite a paper, a chunk, or an existing claim directly.
+
+16. **[RESOLVED — risky merges are todos; guard the write path]** A
+    low-confidence `same` (merge) is **not auto-applied** — it files a
+    `kind='todo'` requesting human adjudication (an over-merge in prod is
+    the dangerous error). And **all hub/edge writes go through the taproot
+    handler** — never a raw insert; a non-process write bypasses relation
+    validation and is a defect to guard against (single write path).
+
 **Fully-subsumed?** No — taproot *partitions*, it does not swallow
 everything. It absorbs the **evidence-grounding** cluster (`citation` →
 per-edge artifact, `finding`-as-hub, the `chase` engine, `provenance`
@@ -634,17 +664,21 @@ integrity) into one hub, but **coexists with** the argument graph
 (#13). That boundary is deliberate, not an oversight — but it is a
 partition, not total unification.
 
-**Status after the 2026-07-28 pass:** #2,#3,#4,#6,#8,#10,#11,#12 resolved ·
-#1,#5 designed-with-a-gate · #9 typed, function deferred · #7 needs a
-Phase-5 pilot measurement · #13 (concept boundary) open, not a v1 blocker.
-**Simplified 2026-07-28:** canonicalization cut from a 5-relation
-subsumption lattice to **flat dedup** (`same`/`different`/`contradicts`);
-broader/narrower deferred to v2. New outcome: **`NO-CLAIM`** (dangling
-cite). **Phase-1 fixture v1 complete** (`tests/fixtures/taproot/`, 238
-pairs, 92% agreement, 16 disagreements signed off, `contradicts` covered;
-v1 grades collapsed). Only the synthetic-pair
-spot-check + writing the canonicalization sub-spec stand between here and
-Phase-1 build.
+**Status after the 2026-07-28 pass:**
+#2,#3,#4,#6,#8,#10,#11,#12,#14,#15,#16 resolved · #1,#5 designed-with-a-gate ·
+#9 typed, function deferred · #7 needs a Phase-5 pilot measurement · #13
+(concept boundary) open, not a v1 blocker. **Simplified 2026-07-28:**
+canonicalization cut from a 5-relation subsumption lattice to **flat dedup**
+(`same`/`different`/`contradicts`); broader/narrower deferred to v2. New
+outcome: **`NO-CLAIM`** (dangling cite). Storage = **tags+links overlay, no
+migration**. Citations resolve at **export time** (living citation, #4);
+canonical text = **best synthesis** (#14); only **paper-sourced** claims
+become hubs (drafts insulated, #15); risky merges → **todos** (#16).
+**Phase-1 fixture v1 complete** (`tests/fixtures/taproot/`, 238 pairs, 92%
+agreement, `contradicts` covered) and the **Phase-1 build ticket** is
+written (`taproot-phase1-canonicalization.md`; bar = **0 over-merges**,
+package `src/precis/taproot/`). Only the synthetic-pair spot-check stands
+between here and Phase-1 build.
 
 ## Build phasing
 
