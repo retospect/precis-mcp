@@ -83,7 +83,7 @@ values are from the cluster scan.
 | `PRECIS_DEEP_REVIEW` | Deep reviewer (opus, weekly) | off | `1` on melchior agent worker | ✅ Correct. |
 | `PRECIS_CHEM_ENABLED` | `route`/chem kind **surface** | off | `1` on melchior (web) | ✅ Correct — kind surface on gateway, compute routes to spark via `PRECIS_CHEM_ROUTE_NODE=spark`. |
 | `PRECIS_BIO_ENABLED` | `protein`/fold kind surface | off | `1` on melchior (web) | ✅ Correct — surface on gateway, `PRECIS_FOLD_NODE=spark`. |
-| `PRECIS_CATPATH_ENABLED` | `pathway`/catpath kind | off | `1` on melchior (web) **and** spark (worker) | ✅ Correct — surface on gateway, compute env on spark. |
+| `PRECIS_AUTOCATPATH_ENABLED` | `pathway`/autocatpath kind | off | `1` on melchior (web) **and** spark (worker) | ✅ Correct — surface on gateway, compute env on spark. |
 | `PRECIS_BRIEFING_AUDIO_ENABLED` | Daily briefing TTS pass | off | `1` on **spark** (TTS drop-in) | ✅ Correct — spark holds the `tts_render` capability + `precis-tts` image. |
 | `PRECIS_CAST_AUDIO_ENABLED` | Podcast cast TTS pass | off | `1` on spark | ✅ Correct. |
 | `PRECIS_OA_FETCH` | Unpaywall/OA fetch leg | `0` | `1` on **melchior** only | ✅ Correct — single fetcher avoids the shared-inbox race (CLAUDE.md, gripe history). |

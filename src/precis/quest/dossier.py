@@ -28,7 +28,7 @@ calls. The ledger holds the *strategic* tried/ruled-out/open ledger (a whole
 abandoned *direction*, not a single ruled-out structure — that per-candidate
 ledger already lives on ``structure`` tags, see ``tick.py``'s
 ``_ruled_out_handles``) so the loop can't silently lose its own trail on a
-rewrite that drops a rule-out from the free prose (the catpath dead-3-days
+rewrite that drops a rule-out from the free prose (the autocatpath dead-3-days
 spin). :func:`read_dossier` still joins the whole body (the ``view='dossier'``
 handler + history rely on it); only the tick *prompt* separates narrative from
 ledger (:func:`read_narrative`, :func:`read_ledger`).

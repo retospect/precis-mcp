@@ -65,7 +65,7 @@ def to_extxyz(scene: Scene, *, constraints: bool = False) -> str:
     ``constraints=True`` serialises the ``fixed`` mask too — a fully-frozen atom
     (``FIX_ALL``, e.g. a slab's bottom layers) becomes an ASE ``FixAtoms``. This
     path routes through ASE's own writer so it round-trips exactly into ASE's
-    reader (catpath hydrates the injected slab with ``ase.io.read``); it drops
+    reader (autocatpath hydrates the injected slab with ``ase.io.read``); it drops
     our per-atom ``label`` column, which the consumer does not need. Requires
     ASE — falls back to the label-carrying, constraint-free form when absent.
     """

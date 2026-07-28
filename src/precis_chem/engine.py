@@ -9,7 +9,7 @@ Three **transports** (ADR 0056 §4) — how the engine actually runs. The
 ``retrosynth`` job dispatches on this, not on the engine name:
 
 * **inprocess** — runs in the worker/handler process. The deterministic
-  :class:`StubEngine` is the slice-0 fallback (catpath's in-process EMT
+  :class:`StubEngine` is the slice-0 fallback (autocatpath's in-process EMT
   analogue): no chemistry deps, no cluster, so the whole compute-lane
   round-trip + the content-addressed cache are gate-testable.
 * **container** — a one-shot container the ``retrosynth`` job runs on a

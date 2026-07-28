@@ -125,7 +125,7 @@
 - name: Drop the precis-worker alphafold env drop-in (EnvironmentFile)
   ansible.builtin.template:
     src: precis-worker-alphafold.conf.j2
-    # 40- sorts after dft's 10- / catpath's 20- / aizynth's 30- ; all set
+    # 40- sorts after dft's 10- / autocatpath's 20- / aizynth's 30- ; all set
     # PRECIS_NODE to the same value, so order is immaterial.
     dest: /etc/systemd/system/precis-worker.service.d/40-alphafold.conf
     owner: root

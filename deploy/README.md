@@ -129,7 +129,7 @@ Populated so far:
       the retired `PRECIS_*_ENABLED` flags → `service_config.prio`)
 - [x] Phase-2 drift carried in (2026-07-19): `precis_worker_agent` role
       (run-as deploy + colima autostart + Linux/systemd review-worker branch +
-      container-executor env + catpath route), `playbooks/37` (`+inference`),
+      container-executor env + autocatpath route), `playbooks/37` (`+inference`),
       `site.yml` (retire imports 30/39), new `playbooks/retire-thin-timers.yml`.
 - [x] `ansible --check` rehearsal against the wired overlay: both trees resolve
       the same 4-host plan; the `precis-worker-agent` play converges — the only

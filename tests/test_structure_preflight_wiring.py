@@ -2,7 +2,7 @@
 .preflight`) into its handler seam: the structure handler's ``put``/``edit`` —
 a hard reject + undo (nothing persists on a failing verdict), gated behind
 ``PRECIS_STRUCTURE_PREFLIGHT`` (default off). The other seam
-(``quest.compute.dispatch_catpath``) has its own wiring tests in
+(``quest.compute.dispatch_autocatpath``) has its own wiring tests in
 ``test_quest_compute.py``.
 
 The base fixture is a real fcc(111) Pd slab (the ``slab`` bulk template, same

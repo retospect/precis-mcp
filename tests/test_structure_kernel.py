@@ -742,7 +742,7 @@ def test_pov_uniform_readout() -> None:
 
 def test_op_slab_builds_fcc111_with_frozen_bottom_layers() -> None:
     """The `slab` op re-seeds the scene with an fcc(111) surface and freezes the
-    bottom `fix_layers` layers (mirrors catpath's build_slab so the geometry can
+    bottom `fix_layers` layers (mirrors autocatpath's build_slab so the geometry can
     be injected into a barrier run)."""
     pytest.importorskip("ase.build")
     from precis.structure.scene import FIX_ALL
@@ -834,9 +834,9 @@ def test_op_slab_fix_layers_as_list_gets_count_hint() -> None:
     assert "count" in str(exc.value).lower()
 
 
-def test_slab_extxyz_carries_fixatoms_for_catpath() -> None:
+def test_slab_extxyz_carries_fixatoms_for_autocatpath() -> None:
     """constraints=True serialises the frozen layers as a FixAtoms that ASE's
-    own reader (catpath's slab hydrator) round-trips exactly."""
+    own reader (autocatpath's slab hydrator) round-trips exactly."""
     pytest.importorskip("ase.build")
     import io as _io
 

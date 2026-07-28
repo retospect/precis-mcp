@@ -1,0 +1,40 @@
+---
+# autocatpath role defaults — install the autocatpath reaction-pathway compute stack
+# (autocatpath[precis] + an ML backend) into the precis worker venv on the GPU node
+# and wire the worker env so it runs `autocatpath_explore` jobs pinned here.
+#
+# Mirrors roles/dft, but autocatpath IS a Python package (goes in the venv), whereas
+# precis-dft lives in a container image. Everything gates on the single topology
+# map (inventory/group_vars/all/topology.yml): this role runs where
+# `inventory_hostname in precis_capabilities.autocatpath`.
+
+# The precis worker venv this installs into (same one roles/precis_worker manages).
+autocatpath_worker_venv: "{{ precis_worker_venv | default('/opt/precis/venv') }}"
+
+# uv, per OS — same expression roles/precis_worker uses.
+autocatpath_uv_bin: "{{ '/opt/homebrew/bin/uv' if os_family == 'darwin' else '/root/.local/bin/uv' }}"
+
+# Where autocatpath is installed from. Override the ref to test a branch on the GPU node.
+autocatpath_git_url: "git+https://github.com/retospect/catpath"
+autocatpath_git_ref: main
+
+# The node this role targets / autocatpath_explore jobs pin themselves to. Must match
+# inventory_hostname so the target_node claim gate lets THIS node's worker run it.
+autocatpath_node: "{{ inventory_hostname }}"
+
+# The worker runs as this user.
+autocatpath_worker_user: deploy
+
+# The precis-worker unit's HOME (Environment=HOME in precis-worker.service).
+# MACE caches its model under $HOME/.cache/mace, so the pre-seed must use this
+# same HOME or the daemon won't find the warmed weights.
+autocatpath_worker_home: /var/lib/precis
+
+# The pip extras spec, derived from the topology in ONE expression:
+# 'precis,mace' on autocatpath_mace nodes (exactly one ML backend per env —
+# autocatpath's extras conflict), else 'precis' (EMT-only, dependency-free).
+# Single expression on purpose: chaining through a folded-scalar
+# `autocatpath_backend` mis-rendered to just 'precis', so the mace extra never
+# installed on a fresh node (it only worked where torch/mace pre-existed).
+autocatpath_extras: >-
+  {{ 'precis,mace' if inventory_hostname in (precis_capabilities.autocatpath_mace | default([])) else 'precis' }}

@@ -36,7 +36,7 @@ from precis_chem.persist import apply_route_result
 
 #: Env naming the compute node a ``retrosynth`` job pins to. Unset ⇒ the
 #: handler runs the (in-process) engine inline — the slice-0 fallback that
-#: keeps the round-trip testable without a cluster (catpath's EMT analogue).
+#: keeps the round-trip testable without a cluster (autocatpath's EMT analogue).
 ROUTE_NODE_ENV = "PRECIS_CHEM_ROUTE_NODE"
 
 

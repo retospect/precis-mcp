@@ -133,7 +133,7 @@ by `kind`):
 * **Compute services** (spark GPU, container-per-job via `ssh_node`) —
   struct_relax (GPAW/ML-potential), fold (AlphaFold3), retrosynth
   (AiZynth/ASKCOS+LinChemIn), TTS narration (cast_audio/briefing_audio,
-  Kokoro), and the next plugin, catpath/pathway.
+  Kokoro), and the next plugin, autocatpath/pathway.
 
 ## 3. Capability — three classes, not a boolean
 
@@ -1000,7 +1000,7 @@ tree** (build a wheel in a deploy pre-step, or `uv pip install <repo
 path>[extras]`), so a single commit changes a worker's behavior and its
 daemon/ansible config **atomically**, and `precis_web_git_ref` /
 `precis_worker_git_ref` disappear. (Genuinely-external installs —
-`catpath`, `remarkable-mcp`, `sortie-mcp` — stay `git+https`.)
+`autocatpath`, `remarkable-mcp`, `sortie-mcp` — stay `git+https`.)
 
 **Two things that decide clean-vs-mess** (both real work, not mechanical):
 1. **Path-scoped CI.** App PRs run pytest / ruff / mypy; `deploy/**` PRs run
@@ -1092,7 +1092,7 @@ see below; it retires with litellm.)**
 *installs the binary/image/model*; each **loses** the plist/unit + gate that
 used to *declare + run* it → becomes a probed capability + `service_config`
 prio, discovered by the worker:
-`llamacpp` (llama-swap stays), `ollama`, `dft`, `aizynth`, **`catpath`**,
+`llamacpp` (llama-swap stays), `ollama`, `dft`, `aizynth`, **`autocatpath`**,
 `alphafold`, `tts`, `alchemi`, `precis_eda`, `mcps` (external MCP venvs —
 rewire off "Hermes agent profiles" post-hermes), `sortie` (sortie-mcp, external
 `git+https`), `claude_code` (the `claude` CLI — **folds into the §13
@@ -1136,7 +1136,7 @@ that show the layering (00–19 infra · 20–39 capability · 40–49 precis ru
   `watch` pass on the same inbox — confirm acatome-extract isn't already
   superseded (two watchers, one inbox); if redundant, retire it outright.
 * `mcps` + `claude_code` — **shrink to "install external MCP venvs only"**
-  (sortie / catpath-mcp / remarkable, `git+https`). The §13 `precis-agent` image
+  (sortie / autocatpath-mcp / remarkable, `git+https`). The §13 `precis-agent` image
   bakes the `claude` CLI + precis MCP, so the on-host claude/hermes install goes
   away post-cutover.
 
@@ -1305,12 +1305,12 @@ the `PRECIS_*_ENABLED` env flag (in a plist / host_var / group_var), the plist's
 very existence, and (post-slice-2) `service_config.prio`. There are **14 such
 flags** live — `PRECIS_{ANKI,ANKI_FIX,ANKI_PROJECT,BACKLOG_GROOM,BIO,
 BRIEFING_AUDIO,CAST_AUDIO,CHEM,CLASSIFY,LLM_RECONCILE,PAPER_GLOSSARY,QUEST_LOOP,
-SANDBOX}_ENABLED` + `PRECIS_CATPATH_ENABLED` — and the worst (`CATPATH`×9,
+SANDBOX}_ENABLED` + `PRECIS_AUTOCATPATH_ENABLED` — and the worst (`AUTOCATPATH`×9,
 `CHEM`×6, `BIO`×6) are copy-pasted across many host files. Each conflates two
 questions the new model separates cleanly:
 
 * **Can it run here?** → **autodiscovery** (`capability_probe` → `resource_slots`).
-  Catpath not installed → the probe never advertises it → grayed in the console,
+  Autocatpath not installed → the probe never advertises it → grayed in the console,
   cannot run. This replaces the flag's "is the dependency present" half.
 * **Should it run here, at what weight?** → **`service_config.prio`**, set from
   the `/factory` console, `0 = off`. This replaces the flag's "do I want it on"

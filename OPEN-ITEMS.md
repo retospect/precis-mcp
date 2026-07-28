@@ -8,27 +8,61 @@ items are removed (history is `git log`).
 > regression that pins it.
 
 ---
-## catpath ssh_node jobs can't survive routine spark redeploys (poison-guard burns pre-compute)
+## Coordinated autocatpath rename deploy — execute in order, then delete this item
+- Status: open · Severity: critical · Owner: deploy (this repo) + `retospect/catpath` · Test: n/a (one-shot).
+- The `catpath`→`autocatpath` rename spans the plugin repo and this repo's
+  deployment surface. Both sides changed the wire strings (`catpath_explore`→
+  `autocatpath_explore`, `PRECIS_CATPATH_*`→`PRECIS_AUTOCATPATH_*`), so they MUST
+  deploy together. Required order:
+  1. **Push the plugin rename first.** Land the `autocatpath` package on
+     `retospect/catpath` `main` (GitHub repo name unchanged — only the PyPI/import
+     name is `autocatpath`). `roles/autocatpath` installs `autocatpath @
+     git+https://github.com/retospect/catpath@main`, so `main` must carry the
+     renamed package before this repo deploys or the pip install 404s the extra.
+  2. **Drain in-flight `catpath_explore` jobs.** After deploy, the plugin only
+     registers `autocatpath_explore` and `quest.compute.harvest_measures` only
+     matches `job_type = 'autocatpath_explore'`. Any queued/running
+     `catpath_explore` job in `precis_prod` is orphaned (no handler) and any
+     completed-but-unharvested one is never reharvested. Confirm none are pending
+     before `/go` (see the ssh_node redeploy-survival item below — spark jobs are
+     the likely holders).
+  3. **Edit the real cluster topology.** Only `topology.example.yml` is in git;
+     the operator's live `inventory/group_vars/all/topology.yml` still has
+     `catpath`/`catpath_mace`/`catpath_plugin` capability keys — rename them to
+     `autocatpath*` on the deploy host or `roles/autocatpath` runs nowhere.
+  4. **Run `44-autocatpath.yml`** (was `44-catpath.yml`). It regenerates
+     `autocatpath.env` from the template; the stale `catpath.env` on hosts is
+     inert but can be removed. The persisted `PRECIS_AUTOCATPATH_ROUTE_NODE`
+     value is re-templated, not migrated — reconfirm the route node.
+- One benign side effect: the plugin's forward migration re-applies under the new
+  namespace `autocatpath` (the `precis.migrations` entry-point key), leaving the
+  old `catpath` namespace rows in `schema_migrations`. Idempotent (`ON CONFLICT
+  DO NOTHING`); the `pathway`/`pathway_body` slugs are unchanged. The kind title
+  text still reads "(catpath)" in prod (DO NOTHING won't update it) — cosmetic;
+  a `0002` UPDATE migration in the plugin can fix it if desired.
+
+---
+## autocatpath ssh_node jobs can't survive routine spark redeploys (poison-guard burns pre-compute)
 - Status: open · Severity: critical · Owner: `src/precis/workers/executors/ssh_node.py`
   (+ `_common.py::reclaim_stale_running`) · Test: n/a yet.
 - `ssh_node` dispatch blocks the precis-worker thread synchronously for the whole
-  remote catpath run (module docstring). When ansible redeploys land on spark
+  remote autocatpath run (module docstring). When ansible redeploys land on spark
   (~96 worker restarts / 1.5 days, 7 forced SIGKILLs in one day), the worker gets
   SIGTERM, can't drain the in-flight dispatch, and is SIGKILLed after systemd's
-  ~90 s stop timeout — each kill costs the job one attempt. Any catpath job whose
+  ~90 s stop timeout — each kill costs the job one attempt. Any autocatpath job whose
   real runtime spans a deploy cycle (NO→NH₃ ammonia network at `seeds:[0,1,2]`
   ≈ 90 min, `wall_seconds=5400`) is nearly guaranteed to exhaust
-  `ssh_node._MAX_ATTEMPTS=3` and fail `failure_class=infra` before catpath emits a
+  `ssh_node._MAX_ATTEMPTS=3` and fail `failure_class=infra` before autocatpath emits a
   result. Evidence: job 172888 (quest 164903 / cand 172608) — 3 attempts
   (2026-07-26 10:34 / 13:04 / 15:34 UTC) each SIGKILLed by a redeploy before any
-  NEB/relax progress logged; no catpath traceback (pure infra); CUDA OOM ruled
+  NEB/relax progress logged; no autocatpath traceback (pure infra); CUDA OOM ruled
   out. Blocks qu164903 from ever landing a `barrier_trusted` pathway, independent
-  of the catpath desorption/NEB fixes (ede15ea).
+  of the autocatpath desorption/NEB fixes (ede15ea).
 - Secondary: `reclaim_stale_running` presumes death from `lease_until < now()`
   only — never checks whether the worker is actually alive — so stale-detection
   lags the real kill by up to ~1 h.
 - Fix directions (triage): drain-before-restart (don't SIGTERM the worker while a
-  catpath job is in flight) · async/non-blocking `ssh_node` dispatch so SIGTERM is
+  autocatpath job is in flight) · async/non-blocking `ssh_node` dispatch so SIGTERM is
   handled cleanly and the lease survives a restart · exclude spark from routine
   redeploys · make the poison guard distinguish killed-by-restart from genuine
   crash-looping (or raise `_MAX_ATTEMPTS`).
@@ -64,7 +98,7 @@ items are removed (history is `git log`).
 - `src/precis/structure/preflight.py::_slab_adsorbate_indices` falls back to a
   dominant-element heuristic (most-common element = the slab) whenever
   `atoms.info['n_slab']` isn't set — and today neither caller (the structure
-  handler's put/edit, `quest.compute.dispatch_catpath`) can set it, because
+  handler's put/edit, `quest.compute.dispatch_autocatpath`) can set it, because
   the Scene/Atom IR has no slab-vs-adsorbate provenance (no op records "these
   N atoms came from the `slab` op"). A doped slab (e.g. a Cu/Ag dopant swapped
   in via `set_element`) risks the `detached` check misreading the dopant as a
@@ -93,23 +127,23 @@ items are removed (history is `git log`).
   to whichever GPU-node role owns spark's provisioning.
 
 ---
-## 🔵 catpath harvest bookmark — multi-job concurrency edge case
+## 🔵 autocatpath harvest bookmark — multi-job concurrency edge case
 - Status: open · Severity: polish · Owner: `src/precis/quest/compute.py::harvest_measures`
-  · Test: none yet (unconfirmed whether concurrent catpath jobs per candidate
+  · Test: none yet (unconfirmed whether concurrent autocatpath jobs per candidate
   occur in practice).
 - Commit `3e746728` fixed `harvest_measures` advancing its
-  `quest_catpath_harvested_upto` bookmark past a still-unresolved catpath job
+  `quest_autocatpath_harvested_upto` bookmark past a still-unresolved autocatpath job
   (permanently losing that job's barrier once it did complete) — but only for
-  the single-in-flight-job case. `_fresh_catpath_jobs` returns *all* jobs
+  the single-in-flight-job case. `_fresh_autocatpath_jobs` returns *all* jobs
   newer than the bookmark, oldest-first; the loop still advances `cp_seen` to
   the newest job that yielded measures even if an *older* job in the same
-  batch is still unresolved. If a candidate ever has two catpath jobs in
+  batch is still unresolved. If a candidate ever has two autocatpath jobs in
   flight concurrently (e.g. a stale job from a superseded relax version still
   running alongside a fresh retry) and the newer one resolves first, the
   older job's `ref_id` falls at-or-below the new `cp_seen` and is permanently
   skipped once it does complete — same failure mode, now requiring 2+
   concurrent jobs instead of 1.
-- Not fixed inline: `dispatch_catpath` appears to mint one job per candidate
+- Not fixed inline: `dispatch_autocatpath` appears to mint one job per candidate
   today, so this is unconfirmed as a live scenario. Needs a design call before
   a fix — track the bookmark as the *min* over any still-pending job's
   predecessor, or switch to per-job harvested state instead of a single
@@ -786,15 +820,15 @@ by value.
 - **`precis quest status <id>` ops CLI** *(feature, SHIPPED).* Consolidates the
   five by-hand queries into one command: logbook tail, candidate structures +
   measures + `ruled-out:*` tags, sim-job status roll (`struct_relax`/
-  `catpath_explore` by `parent_id`, STATUS + created_at), coordinator-loop
+  `autocatpath_explore` by `parent_id`, STATUS + created_at), coordinator-loop
   `quest_tick` job_event trail, and per-quest LLM spend/errors (`llm_call_log
   WHERE ref_id=<q>`). Read-only. Owner: `precis/quest/status.py` + `cli/quest.py`.
-- **catpath lease `wall_seconds` wiring — confirmed correct, churn cause still
+- **autocatpath lease `wall_seconds` wiring — confirmed correct, churn cause still
   open** *(investigation, done; underlying churn unexplained)*. Traced
-  `PRECIS_CATPATH_WALL_SECONDS` end-to-end: it reaches the dispatched job's
+  `PRECIS_AUTOCATPATH_WALL_SECONDS` end-to-end: it reaches the dispatched job's
   `params.resources.wall_seconds`, which is exactly the field `ssh_node.
   _lease_seconds` reads — no wiring bug (regression test:
-  `TestDispatchCatpath.test_wall_seconds_env_reaches_the_job_and_the_ssh_node_lease`
+  `TestDispatchAutocatpath.test_wall_seconds_env_reaches_the_job_and_the_ssh_node_lease`
   in `tests/test_quest_compute.py`). The observed ~2.5h re-lease churn (164913:
   165035/165286→165386; Pt/Cu/Ni: 165611/165614/165617→165824/6/8) is therefore
   NOT explained by this value being dropped — needs live cluster-log evidence
@@ -823,7 +857,7 @@ by value.
   vacancies / holes), **add H** on the surface *and* subsurface/interstitial
   (hydride/subsurface-H chemistry), and subsurface dopant placement (not just
   adatoms). Each needs a compact op the `slab`-based proposal template can emit
-  and catpath can inject.
+  and autocatpath can inject.
 - **struct_relax infra failures no longer launder into a dead-end verdict**
   *(bug, FIXED — owner `workers/job_types/struct_relax.py` +
   `workers/executors/{_common,ssh_node,claude_inproc}.py` + `quest/compute.py`

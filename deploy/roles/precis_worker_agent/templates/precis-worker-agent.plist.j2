@@ -90,14 +90,14 @@
        chars), so a reactivated loop at today's cadence stays under cap. #}
     <key>PRECIS_QUEST_WEEKLY_CHARS</key>
     <string>{{ precis_quest_weekly_chars | default(2000000) }}</string>
-    {# Catalyst-quest barrier lane. dispatch_catpath runs HERE (quest ticks
+    {# Catalyst-quest barrier lane. dispatch_autocatpath runs HERE (quest ticks
        are claude_inproc, agent-profile only) and reads this env to pin the
-       minted `catpath_explore` job at the GPU node; unset → it force-EMTs
+       minted `autocatpath_explore` job at the GPU node; unset → it force-EMTs
        and the job never reaches the GPU node's MACE. Mirrors the precis-web plist,
        which sets the same var for the pathway-kind MCP surface. #}
-    {% if (precis_capabilities.catpath | default([])) | length > 0 %}
-    <key>PRECIS_CATPATH_ROUTE_NODE</key>
-    <string>{{ precis_capabilities.catpath | first }}</string>
+    {% if (precis_capabilities.autocatpath | default([])) | length > 0 %}
+    <key>PRECIS_AUTOCATPATH_ROUTE_NODE</key>
+    <string>{{ precis_capabilities.autocatpath | first }}</string>
     {% endif %}
     {# diagram_propose autonomous drawer — agentic path (claude_inproc). #}
     <key>PRECIS_DIAGRAM_AGENTIC</key>

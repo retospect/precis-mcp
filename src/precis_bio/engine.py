@@ -10,7 +10,7 @@ engine actually runs. The ``fold`` job dispatches on this, not the name:
 
 * **inprocess** — the deterministic :class:`StubFoldEngine`: no bio deps, no
   GPU, so the whole compute-lane round-trip + the content-addressed cache are
-  gate-testable without a cluster (catpath's in-process EMT analogue).
+  gate-testable without a cluster (autocatpath's in-process EMT analogue).
 * **container** — a one-shot GPU container the ``fold`` job runs on the fold
   node (the ``struct_relax`` / ``retrosynth`` pattern): the dispatch stages the
   AF3 input JSON, ssh's a ``docker run`` to the node, and parses the mmCIF +

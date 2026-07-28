@@ -18,7 +18,7 @@ short-circuits, so a caller can show every problem the candidate has at once.
 Wired into two seams, both gated on :func:`_preflight_enabled` (env
 ``PRECIS_STRUCTURE_PREFLIGHT``, default OFF so this lands dark): the
 structure handler's ``put``/``edit`` (a hard reject + undo — nothing persists
-on a failing verdict) and ``quest.compute.dispatch_catpath`` (a hard
+on a failing verdict) and ``quest.compute.dispatch_autocatpath`` (a hard
 dispatch gate — no job minted on a failing substrate, plus a dead-end
 logbook stamp so the proposer stops re-treading it).
 """
@@ -222,7 +222,7 @@ class PreflightVerdict:
 
 
 #: Ship-safe kill switch for both preflight seams (structure handler
-#: put/edit + quest.compute.dispatch_catpath) — default OFF so this lands
+#: put/edit + quest.compute.dispatch_autocatpath) — default OFF so this lands
 #: dark; flip on deliberately once live-tested. Mirrors the existing
 #: ``PRECIS_*`` boolean-flag idiom (e.g.
 #: :func:`precis.quest.tick.quest_loop_enabled`).
@@ -398,7 +398,7 @@ def _slab_adsorbate_indices(
     the caller already set it; otherwise the dominant-element heuristic.
 
     TODO: neither of the two current callers (the structure handler's
-    put/edit, ``quest.compute.dispatch_catpath``) can set ``n_slab`` today —
+    put/edit, ``quest.compute.dispatch_autocatpath``) can set ``n_slab`` today —
     the Scene/Atom IR carries no slab-vs-adsorbate provenance (no op records
     "these N atoms came from the `slab` op"). Until that's added at the
     slab-op layer, a doped slab (a Cu/Ag dopant swapped in via

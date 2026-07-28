@@ -49,7 +49,7 @@ BY_VALUES: frozenset[str] = frozenset({"human", "agent", "dream", "system"})
 DEFAULT_BY = "human"
 
 #: ``by`` stamp for a system-measured fact (a converged relax, a harvested
-#: catpath barrier, a ruled-out verdict) — never the model's own "agent"
+#: autocatpath barrier, a ruled-out verdict) — never the model's own "agent"
 #: attribution. This is what makes a measured result distinguishable from
 #: model narration in the logbook (gripes 171148/171149: a model-fabricated
 #: "result" entry was indistinguishable from a real measurement, so the loop

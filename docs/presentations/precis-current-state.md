@@ -113,7 +113,7 @@ Autonomous work rides the **todo tree** — a hierarchical task graph with jobs 
 
 A **quest** is a "striving": perpetual, unachievable, never done (only active / dormant / abandoned). The catalyst-discovery loop is one instance of a general engine.
 
-- **Each tick:** the LLM edits a `structure` → two compute jobs score it: an ML relax (stability / energy) and `catpath` (the reaction barrier).
+- **Each tick:** the LLM edits a `structure` → two compute jobs score it: an ML relax (stability / energy) and `autocatpath` (the reaction barrier).
 - Results harvest into the logbook; a generalised Pareto frontier ranks candidates on its objective axes.
 - Designs crossing the barrier ceiling graduate to `needs-experiment`.
 
@@ -202,7 +202,7 @@ One idea ties it together — everything is content-addressed by `content_sha`, 
 
 The same refs+chunks model absorbs wildly different domains behind the same 7 verbs.
 
-- **Science:** `protein` (AlphaFold3 on spark), `structure` / catalysis (DFT), `pathway` (catpath barriers).
+- **Science:** `protein` (AlphaFold3 on spark), `structure` / catalysis (DFT), `pathway` (autocatpath barriers).
 - **Engineering:** `cad` / `pcb` (EDA) — "keystone kinds" with an analytic IR; the LLM traverses a graph, never pixels.
 - **Literature & IP:** `paper`, `patent` (+ an authoring loop), `citation`, `concept`.
 - **Connectors:** `email` (live IMAP, read-only), `edgar`, `orcid`, `news`.

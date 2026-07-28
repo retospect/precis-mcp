@@ -23,7 +23,7 @@ coordinator loop, dossier link, typed logbook, and weekly recurring tick are
 reused (`src/precis/quest/`, `precis-quest-help`). The paper-writing tick is a
 **new tick body** with a **phase state machine** —
 `vocabulary → scaffold → integrate → maintain` — because a tick that runs the
-wrong phase for its inputs **dry-spins** (the catpath failure mode). A phase
+wrong phase for its inputs **dry-spins** (the autocatpath failure mode). A phase
 with unmet inputs parks on a **`blocked-by` todo + `auto_check` leaf**
 (`tag_present`/`discord_reply_received`) that auto-clears when the input lands
 (`workers/auto_check.py` flip + `dispatch.py` re-admission) — **no new quest
@@ -297,7 +297,7 @@ Multi-label. Per-domain separate; tooling topics cover **all** tooling (AI + non
 | `carbon-cad` | carbon-structure design/assembly tooling — CAD, AI, **+ script/pip interfaces for nanotube assembly** | new; tooling |
 | `mof-tools` | MOF design tooling (AI + scripts) | new; tooling |
 | `catalysis-tools` | catalyst design tooling (AI/ML + scripts) | new; ≠ the ammonia discovery quest |
-| — | NO→NH₃ ammonia catalysis | already a catalyst-discovery quest (`catpath`) |
+| — | NO→NH₃ ammonia catalysis | already a catalyst-discovery quest (`autocatpath`) |
 
 `llm-improvements` is also a 0060 seed.
 

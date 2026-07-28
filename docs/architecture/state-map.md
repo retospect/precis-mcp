@@ -322,7 +322,7 @@ every time), and a stolen job's stale `meta.reserved` slots are refunded
 before it re-reserves. Opt-in per caller — `claude_inproc`/`coordinator` are
 unchanged (they'd need their own ensure-dead story for a re-run). A live-lease
 running job is never stolen. Container dispatchers (dft) must reap their own
-handle before relaunch; catpath (in-process) has nothing to kill.
+handle before relaunch; autocatpath (in-process) has nothing to kill.
 
 **Job containers carry CPU-limit flags (nice-all-jobs).** Every spawned
 `docker/podman run` (`struct_relax`, `fold`, TTS, sandbox agents) splices
@@ -976,7 +976,7 @@ The master kinds table lives in the `precis-overview` skill.
   no migration) of strategic *tried/ruled-out/open* directions that survives
   every `rewrite_dossier` byte-identical and injects into the tick prompt as a
   "do NOT re-propose" constraint — so a rewrite that drops a rule-out can't
-  silently re-open ruled-out ground (the catpath dead-3-days spin; distinct
+  silently re-open ruled-out ground (the autocatpath dead-3-days spin; distinct
   from the per-*candidate* `ruled-out:` structure tags). The model pins entries
   via a `ledger_add` output field; a pre-0064 dossier heals its ledger lazily
   (`ensure_ledger_chunk`). The dossier **owner is any process**, not just a quest
@@ -1003,7 +1003,7 @@ The master kinds table lives in the `precis-overview` skill.
   completion (not a cron), with per-quest backpressure (no new batch while one is
   in flight) + a node-load starvation gate. The coordinator claim now honours
   `meta.params.target_node` (`coordinator._claim_jobs` passes `PRECIS_NODE`) so
-  the loop pins to the GPU/model node; catpath sims carry `resources.wall_seconds`
+  the loop pins to the GPU/model node; autocatpath sims carry `resources.wall_seconds`
   so a full reaction-network NEB can't lease-expire mid-run. A **failed/paused**
   tick (transient LLM 400/502, breaker/quota pause) backs off on the heartbeat and
   **retries** — a failure counts toward `PRECIS_QUEST_TICK_MAX_FAILURES` (default
@@ -1022,11 +1022,11 @@ The master kinds table lives in the `precis-overview` skill.
   **once** (`meta.quest_infra_retries`) so it goes non-terminal and the loop
   *awaits* it instead of drifting dry; a 2nd infra failure files a
   `quest-infra-failure` gripe and stops — never ruled out (no physical verdict).
-  The **barrier lane mirrors this** (§C completed): a failed `catpath_explore`
+  The **barrier lane mirrors this** (§C completed): a failed `autocatpath_explore`
   is *always* a crashed NEB (a compute failure, never a physical "no pathway"
-  verdict), so it retries once (`meta.quest_catpath_infra_retries`) then gripes
-  (`lane="catpath"`) and **never** rules out — `_latest_catpath_job` +
-  `dispatch_catpath` re-dispatch, same retry-once-then-gripe shape as relax.
+  verdict), so it retries once (`meta.quest_autocatpath_infra_retries`) then gripes
+  (`lane="autocatpath"`) and **never** rules out — `_latest_autocatpath_job` +
+  `dispatch_autocatpath` re-dispatch, same retry-once-then-gripe shape as relax.
   **Barrier quality gate** (`compute._pathway_quality`, gr172323): harvest
   lifts not only the scalar `barrier`/`span` but a trust verdict read from the
   linked pathway's `meta.warnings` — `barrier_trusted=False` iff any
@@ -1036,10 +1036,10 @@ The master kinds table lives in the `precis-overview` skill.
   never on the frontier; the raw value survives as
   `flags.barrier_untrusted_value` for the leaderboard's `⚠ non-converged` /
   `(excluded)` cell) and can **never graduate** (`graduate.py` belt-and-
-  suspenders gate on `_CATPATH_GATED_KEYS`). NB single-seed runs make catpath's
+  suspenders gate on `_AUTOCATPATH_GATED_KEYS`). NB single-seed runs make autocatpath's
   own `low_confidence` uninformative (always `n<2`), so the *warnings* are the
   signal, not that flag — the physical fix (endpoint desorption pre-flight,
-  bigger NEB budget, seed ensemble) is catpath-side + quest-config, tracked in
+  bigger NEB budget, seed ensemble) is autocatpath-side + quest-config, tracked in
   gr172323.
   Reaction (slab) candidates relax the box **in-plane** (`cell="inplane"`
   — a/b + γ free, c-axis/vacuum pinned) so stability is judged on a relaxed slab
@@ -1246,10 +1246,10 @@ The master kinds table lives in the `precis-overview` skill.
     each a **per-atom actionable reason** (names the atom handle + a fix verb).
     Wired two seams: `handlers/structure.py` `put`/`edit` **reject + undo** the
     edit before the version commits (fail-open on missing ASE/[dft]); and
-    `quest/compute.py::dispatch_catpath` **mints no job** for a failing substrate
+    `quest/compute.py::dispatch_autocatpath` **mints no job** for a failing substrate
     and stamps a `ruled-out:preflight` dead-end the proposer reads. Catches
     *authoring* faults (badly-placed / spongiform / out-of-box); *physical*
-    desorption of a well-authored slab stays the catpath-tier (MLIP) verdict.
+    desorption of a well-authored slab stays the autocatpath-tier (MLIP) verdict.
     Slab/adsorbate split falls back to a dominant-element heuristic (Scene has no
     slab provenance yet — OPEN-ITEMS follow-up).
   - **Structure ↔ literature loop (gr161578/gr161577).** `view='literature'`

@@ -7,9 +7,9 @@
 > orchestrates via tools, the compute is the referee.
 >
 > Status: **design of record.** No code yet. Grounded against the live
-> build (quest layer, `structure` kind, `catpath.precis` bridge) as read
-> 2026-07-17. Companion specs it composes: `docs/design/catpath-integration.md`,
-> `docs/design/catpath-pathway-tool-surface.md`, `docs/proposals/quest-layer.md`.
+> build (quest layer, `structure` kind, `autocatpath.precis` bridge) as read
+> 2026-07-17. Companion specs it composes: `docs/design/autocatpath-integration.md`,
+> `docs/design/autocatpath-pathway-tool-surface.md`, `docs/proposals/quest-layer.md`.
 
 ## 1. The idea in one paragraph
 
@@ -18,7 +18,7 @@ you strive, never finish). Beneath it, the achievable unit of work is a
 **catalyst design = a precis `structure`** (atoms in a cell). Each tick,
 the big model edits a structure (substitute an atom, add an adatom, change
 the facet, add water), then two compute jobs score it: an ML **relax** for
-stability/formation-energy, and **catpath** for the reaction's
+stability/formation-energy, and **autocatpath** for the reaction's
 rate-limiting **barrier**. Both results harvest into the quest's WORM
 logbook and onto the structure's measures. A **generalised Pareto frontier**
 ranks the designs on arbitrary named objectives (barrier, stability, …).
@@ -29,18 +29,18 @@ A design that crosses a declared barrier ceiling **graduates** to
 ## 2. The boundary (who owns what)
 
 The load-bearing architectural decision: **the `structure` owns all
-geometry; catpath is a barrier oracle over a *given* structure.** This
-supersedes the earlier "catpath builds its own fcc(111) slab from a label"
+geometry; autocatpath is a barrier oracle over a *given* structure.** This
+supersedes the earlier "autocatpath builds its own fcc(111) slab from a label"
 model and the "candidate = pathway" workaround.
 
 | Layer | Owner | Status today |
 |---|---|---|
-| Slab · alloy · adatom · facet · water (**the model**) | precis `structure` | edits exist; **`slab` fcc(111) build op BUILT** (Slice 4a, §7.4) — mirrors catpath's `build_slab`; molecule/adsorbate-add ops still to come |
+| Slab · alloy · adatom · facet · water (**the model**) | precis `structure` | edits exist; **`slab` fcc(111) build op BUILT** (Slice 4a, §7.4) — mirrors autocatpath's `build_slab`; molecule/adsorbate-add ops still to come |
 | Starting slabs (seed the model) | catalysis-library pull / `slab` op | **`slab` op built** (compact `{op:'slab', element, size, vacuum, fix_layers}` → an fcc(111) surface, no atom enumeration); library pull not built (§7.6) |
-| Reaction topology (intermediates, steps) | catpath | built (state library) |
+| Reaction topology (intermediates, steps) | autocatpath | built (state library) |
 | Adsorbate placement on an *arbitrary* slab | LLM anchors the active site (`eye`) → `place_fragments`; best-site search optional | v1 folds into Slice 2; search = Slice 5 (§7.5) |
-| NEB · barrier · uncertainty graph | catpath | **built** (`neb.py`, MACE backend) |
-| Persist a run + compare pathways (TOON) | `catpath.precis` bridge | **built, dark** (§7.1) |
+| NEB · barrier · uncertainty graph | autocatpath | **built** (`neb.py`, MACE backend) |
+| Persist a run + compare pathways (TOON) | `autocatpath.precis` bridge | **built, dark** (§7.1) |
 | Rank designs by barrier + stability | the generalised quest frontier | **built** (Slice 1) — ranks arbitrary named measures; barrier arrives on the candidate's own meta (§7.2) |
 | Strive · log · pace · escalate | quest frame | **live** (dark until enabled) |
 
@@ -52,7 +52,7 @@ space, deduped), and the objective, in one object.
 
 ## 3. What is already real (do not rebuild)
 
-Verified by reading the live build + the catpath repo (`/Users/reto/work/projects/code/catpath`):
+Verified by reading the live build + the autocatpath repo (`/Users/reto/work/projects/code/autocatpath`):
 
 - **The quest frame** — `kind='quest'` with logbook (WORM, typed entries),
   dossier (a `draft` the quest owns, `dossier-of`), gaps/health, the
@@ -70,40 +70,40 @@ Verified by reading the live build + the catpath repo (`/Users/reto/work/project
   `neighborhood`, `coordination`, `path`); a relax ladder
   (`clean` local geometry-repair · `ml` MACE/CHGNet · rented `dft-*`
   dispatched as `struct_relax`).
-- **The `catpath.precis` bridge — built and tested, but DARK.** In the
-  catpath repo as `catpath.precis`: a `pathway` kind handler (views
+- **The `autocatpath.precis` bridge — built and tested, but DARK.** In the
+  autocatpath repo as `autocatpath.precis`: a `pathway` kind handler (views
   `analysis · compare · intermediates · steps · profile · network · mermaid
-  · methods · config`), a **complete** `catpath_explore` job_type (routes to
-  a pinned GPU node via `PRECIS_CATPATH_ROUTE_NODE`, else in-process EMT),
+  · methods · config`), a **complete** `autocatpath_explore` job_type (routes to
+  a pinned GPU node via `PRECIS_AUTOCATPATH_ROUTE_NODE`, else in-process EMT),
   a content-addressed regen cache, and native structure ingest (relaxed
   intermediates → `structure` refs). Slices 0 + 1a built + verified, and
   **live on prod** — 4 `pathway` refs exist on `precis_prod` (verified
   2026-07-17). It is absent from *this dev worktree's* kind list only
-  because the catpath plugin isn't in the local venv — do **not** read that
+  because the autocatpath plugin isn't in the local venv — do **not** read that
   as "not deployed".
 - **The `compare` TOON leaderboard — LOCKED/built.** One row per candidate,
   reaction coordinate as columns, `‡` cells = step barrier Eₐ, always-present
   `RATE` (max single-step Eₐ) + `SPAN` (whole-path apparent barrier), rows
-  sorted best-first (`catpath/precis/toon_views.py`). Plus
+  sorted best-first (`autocatpath/precis/toon_views.py`). Plus
   `search(kind='pathway')` as a cross-candidate leaderboard and
   `view='analysis'` for selectivity. TOON = `precis.format.toon.dump`.
 
 ## 4. What is NOT real (the honest scope)
 
-- ~~catpath has **no structure-input path today**~~ **RESOLVED (Slice 2,
-  catpath-side built).** `Network.prebuilt_slab` + `Network.slab()` score an
+- ~~autocatpath has **no structure-input path today**~~ **RESOLVED (Slice 2,
+  autocatpath-side built).** `Network.prebuilt_slab` + `Network.slab()` score an
   injected slab instead of `build_slab`; `_build_net` stamps it from a runtime
   `cfg._prebuilt_slab` side-channel (one chokepoint → all `net.slab()` sites,
   and it never leaks into `to_dict`/`content_key`); `run_pathway(...,
   slab_extxyz=…)` hydrates the wire form. A round-tripped slab that lost ASE's
   `adsorbate_info` gets it transplanted from the cfg reference so named-site
   placement still resolves (clean-fcc(111) first cut). *Still precis-side
-  (Slice 3):* the `catpath_explore` job resolving a `structure_ref` → extxyz →
+  (Slice 3):* the `autocatpath_explore` job resolving a `structure_ref` → extxyz →
   `run_pathway`. (Structures already flow *out* via ingest; this is the *in*.)
-- catpath's default envelope is **fcc(111) single-metal, gas-phase vacuum**.
+- autocatpath's default envelope is **fcc(111) single-metal, gas-phase vacuum**.
   Alloy/dopant/adatom/facet all become **`structure` edits on the injected
   slab** (§2); solvent/pH/potential/coverage/temperature are still absent.
-- catpath does **not search for the best adsorption site** — sites are
+- autocatpath does **not search for the best adsorption site** — sites are
   hand-declared + *rattled*. But two hooks already exist: `poses()`
   (`structures.py:135`, an ensemble over sites×tilts — the unwired best-site
   finder) and `place_fragments()` (`structures.py:115`, explicit
@@ -114,23 +114,23 @@ Verified by reading the live build + the catpath repo (`/Users/reto/work/project
   arbitrary named measures (all numeric run fields + numeric `structure.meta`
   keys), so a quest ranks on `{barrier, formation_e, …}` via
   `meta.rubric_objectives`. The *producer* is now BUILT too (Slice 3):
-  `harvest_measures` lifts a completed `catpath_explore` job's `barrier`/`span`
-  onto the candidate's meta (idempotent, `meta.quest_catpath_harvested_upto`) +
-  links the evaluating pathway. The catpath bridge *emit-side* is BUILT +
-  verified too (the `catpath_explore` job accepts `slab_extxyz` + `structure_ref`
+  `harvest_measures` lifts a completed `autocatpath_explore` job's `barrier`/`span`
+  onto the candidate's meta (idempotent, `meta.quest_autocatpath_harvested_upto`) +
+  links the evaluating pathway. The autocatpath bridge *emit-side* is BUILT +
+  verified too (the `autocatpath_explore` job accepts `slab_extxyz` + `structure_ref`
   and emits scalar `barrier`/`span`/`pathway_ref` onto its meta). The precis
-  `dispatch_catpath` (export the candidate's extxyz, mint the pathway write-back
-  ref, pin the `catpath_explore` job on the candidate) is now BUILT + verified
+  `dispatch_autocatpath` (export the candidate's extxyz, mint the pathway write-back
+  ref, pin the `autocatpath_explore` job on the candidate) is now BUILT + verified
   round-trip too — what remains is minting the quest + the tick tools-loop that
-  sequences relax→catpath.
+  sequences relax→autocatpath.
 - The quest **tick is single-shot** (one LLM call, `tick.py:391`), not an
   agentic tool loop.
 - precis `structure` can *edit* atoms and now **build an fcc(111) slab** (the
   `slab` op, Slice 4a); adding an adsorbate/molecule template is still to come
-  (Slice 4b — for the catalyst quest catpath places the adsorbate, so the base
+  (Slice 4b — for the catalyst quest autocatpath places the adsorbate, so the base
   slab op is enough for first light).
 - `precis-dft` is **stale/deprecated** — not a path. DFT is deferred; the
-  ML barrier (catpath) is the objective.
+  ML barrier (autocatpath) is the objective.
 
 ## 5. The loop (end-to-end, once built)
 
@@ -142,7 +142,7 @@ strive (quest: "lowest R barrier on a Pd catalyst")
          set_element (alloy), add_atom (adatom), slab/facet, +H2O (later)
        for each proposed design (a new content-addressed `structure` serving the quest):
          ├─ relax(ml)   → struct_relax job → formation-E / stability
-         └─ catpath(structure) → catpath_explore job → rate_Ea + graph
+         └─ autocatpath(structure) → autocatpath_explore job → rate_Ea + graph
        harvest (automatic, later tick):
          each job result → a `result` logbook entry (logs exactly what happened)
          barrier + energy → measures on the candidate structure
@@ -167,27 +167,27 @@ slice is independently shippable.
 
 | # | Slice | Repo | Gist |
 |---|---|---|---|
-| 0 | **Bridge already live — verify, don't build** | ops | catpath is **deployed + live on prod** (4 `pathway` refs, verified 2026-07-17; `can_own_jobs` 8.22 + routed MACE jobs already ran). Only re-confirm `PRECIS_CATPATH_ROUTE_NODE` → the current GPU node and that the deployed bridge matches current precis. Effectively done. |
-| 1 | **Generalise the frontier** | precis-mcp | **DONE** — `_candidate_from_structure` ingests *arbitrary* named measures (run fields + numeric `structure.meta`) + `params` passthrough (§7.2); **by-total leaderboard** `view='leaderboard'` (TOON, §7.3). `TestGeneralizedFrontier` + `TestLeaderboard` green. **by-intermediate view deferred to Slice 3** (needs the candidate↔pathway link + catpath's graph→profile — same DRY block as source-3). |
-| 2 | **catpath structure-input seam + anchor placement** | catpath | **catpath-side DONE** — `Network.prebuilt_slab` + `run_pathway(slab_extxyz=…)` score an injected slab instead of `fcc111`-from-label; `adsorbate_info` transplanted for clean fcc(111). `test_network.py` (3) + `test_precis_runner_slab.py` (3) green. **Pending (Slice 3):** the `catpath_explore` job resolving a precis `structure_ref` → extxyz; the `eye` active-site anchor for edited slabs (§7.5). §7.1. |
-| 3 | **The quest, first light** | precis-mcp (config) + tick + catpath bridge | **Harvest barrier-lift BUILT** (`TestCatpathHarvest`). **catpath emit-side BUILT + VERIFIED** — `catpath_explore` accepts `slab_extxyz` + `structure_ref` and emits scalar `barrier`/`span`/`pathway_ref` onto the job meta (the harvest contract); end-to-end checked in the dev container (injected Pd slab → EMT → `barrier` returned). **Dispatch BUILT** — `dispatch_catpath` exports the candidate's extxyz, mints the `pathway` write-back ref, and pins a `catpath_explore` job **on the candidate** (so the harvest's `parent_id` query finds it); `TestDispatchCatpath` (5, incl. a dispatch→harvest round-trip) green in the catpath-enabled dev container. **Co-dispatch BUILT** — `run_compute_step` reads the quest's `meta.reaction_config` and, when set, co-dispatches catpath alongside the relax for each new candidate (independent lanes — catpath relaxes the injected slab internally, so no cross-tick sequencing needed for first light); `TestReactionCoDispatch` (3) green. **Quest seed BUILT** — `precis.quest.catalyst_seed.seed_catalyst_quest` (+ `precis quest seed-catalyst` CLI, idempotent by `meta.seed_key`) mints the NO→NH₃/Pd quest with `meta.reaction_config` (catpath's `no_to_nh3_pd.yaml`, MACE) + `rubric_objectives=[{barrier,min},{energy,min}]` + a `graduation` barrier ceiling + a `param_space`; `TestSeedCatalystQuest` (4) green. **NB: rank on `energy` not `formation_e`** — the latter isn't computed yet and declaring an unmet objective empties the frontier; formation-energy is the future refinement. **Remaining (precis-side):** run first light (`precis quest tick <id> --compute` → co-dispatch → harvest → `view='leaderboard'`) then the agentic **tick tools-loop** (§7.7, the strategic escalation where the big model drives instead of the deterministic co-dispatch). Auto-loop stays dark. |
-| 4 | **Structure model-building ops** | precis-mcp | **4a `slab` op BUILT** — `structure/ops.py` `_op_slab` builds an fcc(111) surface from a compact `{op:'slab', element, size, vacuum, fix_layers}` spec (mirrors catpath's `build_slab` via the same `ase.build.fcc111` → identical atom order/geometry, so the slab injects cleanly). `cell` is now optional in `put`/`ensure_candidate` when a `slab`/`set_cell` op establishes it; `to_extxyz(constraints=True)` serialises the frozen bottom layers as a `FixAtoms` (fixes a latent drop — the injected slab kept no constraints), used by `dispatch_catpath`. The tick prompt injects a **reaction-context block** for any quest with `meta.reaction_config` (the catalyst-slab proposal rules — build the slab, vary composition; substrate→target + `param_space` knobs), wiring the reasoning proposer to catpath-runnable candidates. `test_structure_kernel.py` (+3), `TestEnsureCandidate` (+1), `TestReactionContext` (+2) green. **First light proven** in the dev container: precis `slab` op → `to_extxyz(constraints=True)` → catpath `run_pathway(EMT)` over the NO→NH₃ ammonia network (16 states / 15 steps) → per-step barriers (rate-limiting ≈ 0.16 eV). **Remaining (4b):** adsorbate/molecule-add ops + facet beyond 111. §7.4. |
-| 5 | **Best-site search (optional rigor)** | precis + catpath | Wire catpath's `poses()` ensemble; precis narrows candidates via probes; catpath relaxes each + keeps lowest-energy. Upgrade over the v1 anchor, not a blocker. §7.5. |
+| 0 | **Bridge already live — verify, don't build** | ops | autocatpath is **deployed + live on prod** (4 `pathway` refs, verified 2026-07-17; `can_own_jobs` 8.22 + routed MACE jobs already ran). Only re-confirm `PRECIS_AUTOCATPATH_ROUTE_NODE` → the current GPU node and that the deployed bridge matches current precis. Effectively done. |
+| 1 | **Generalise the frontier** | precis-mcp | **DONE** — `_candidate_from_structure` ingests *arbitrary* named measures (run fields + numeric `structure.meta`) + `params` passthrough (§7.2); **by-total leaderboard** `view='leaderboard'` (TOON, §7.3). `TestGeneralizedFrontier` + `TestLeaderboard` green. **by-intermediate view deferred to Slice 3** (needs the candidate↔pathway link + autocatpath's graph→profile — same DRY block as source-3). |
+| 2 | **autocatpath structure-input seam + anchor placement** | autocatpath | **autocatpath-side DONE** — `Network.prebuilt_slab` + `run_pathway(slab_extxyz=…)` score an injected slab instead of `fcc111`-from-label; `adsorbate_info` transplanted for clean fcc(111). `test_network.py` (3) + `test_precis_runner_slab.py` (3) green. **Pending (Slice 3):** the `autocatpath_explore` job resolving a precis `structure_ref` → extxyz; the `eye` active-site anchor for edited slabs (§7.5). §7.1. |
+| 3 | **The quest, first light** | precis-mcp (config) + tick + autocatpath bridge | **Harvest barrier-lift BUILT** (`TestAutocatpathHarvest`). **autocatpath emit-side BUILT + VERIFIED** — `autocatpath_explore` accepts `slab_extxyz` + `structure_ref` and emits scalar `barrier`/`span`/`pathway_ref` onto the job meta (the harvest contract); end-to-end checked in the dev container (injected Pd slab → EMT → `barrier` returned). **Dispatch BUILT** — `dispatch_autocatpath` exports the candidate's extxyz, mints the `pathway` write-back ref, and pins a `autocatpath_explore` job **on the candidate** (so the harvest's `parent_id` query finds it); `TestDispatchAutocatpath` (5, incl. a dispatch→harvest round-trip) green in the autocatpath-enabled dev container. **Co-dispatch BUILT** — `run_compute_step` reads the quest's `meta.reaction_config` and, when set, co-dispatches autocatpath alongside the relax for each new candidate (independent lanes — autocatpath relaxes the injected slab internally, so no cross-tick sequencing needed for first light); `TestReactionCoDispatch` (3) green. **Quest seed BUILT** — `precis.quest.catalyst_seed.seed_catalyst_quest` (+ `precis quest seed-catalyst` CLI, idempotent by `meta.seed_key`) mints the NO→NH₃/Pd quest with `meta.reaction_config` (autocatpath's `no_to_nh3_pd.yaml`, MACE) + `rubric_objectives=[{barrier,min},{energy,min}]` + a `graduation` barrier ceiling + a `param_space`; `TestSeedCatalystQuest` (4) green. **NB: rank on `energy` not `formation_e`** — the latter isn't computed yet and declaring an unmet objective empties the frontier; formation-energy is the future refinement. **Remaining (precis-side):** run first light (`precis quest tick <id> --compute` → co-dispatch → harvest → `view='leaderboard'`) then the agentic **tick tools-loop** (§7.7, the strategic escalation where the big model drives instead of the deterministic co-dispatch). Auto-loop stays dark. |
+| 4 | **Structure model-building ops** | precis-mcp | **4a `slab` op BUILT** — `structure/ops.py` `_op_slab` builds an fcc(111) surface from a compact `{op:'slab', element, size, vacuum, fix_layers}` spec (mirrors autocatpath's `build_slab` via the same `ase.build.fcc111` → identical atom order/geometry, so the slab injects cleanly). `cell` is now optional in `put`/`ensure_candidate` when a `slab`/`set_cell` op establishes it; `to_extxyz(constraints=True)` serialises the frozen bottom layers as a `FixAtoms` (fixes a latent drop — the injected slab kept no constraints), used by `dispatch_autocatpath`. The tick prompt injects a **reaction-context block** for any quest with `meta.reaction_config` (the catalyst-slab proposal rules — build the slab, vary composition; substrate→target + `param_space` knobs), wiring the reasoning proposer to autocatpath-runnable candidates. `test_structure_kernel.py` (+3), `TestEnsureCandidate` (+1), `TestReactionContext` (+2) green. **First light proven** in the dev container: precis `slab` op → `to_extxyz(constraints=True)` → autocatpath `run_pathway(EMT)` over the NO→NH₃ ammonia network (16 states / 15 steps) → per-step barriers (rate-limiting ≈ 0.16 eV). **Remaining (4b):** adsorbate/molecule-add ops + facet beyond 111. §7.4. |
+| 5 | **Best-site search (optional rigor)** | precis + autocatpath | Wire autocatpath's `poses()` ensemble; precis narrows candidates via probes; autocatpath relaxes each + keeps lowest-energy. Upgrade over the v1 anchor, not a blocker. §7.5. |
 | 6 | **Catalysis-library pull** | precis-mcp | MP / OC20 / curated slab library → `structure` refs as seed designs + reference anchors. §7.6. |
 | 7 | **Optimizer advisor (Optuna)** | precis-mcp | `suggest_next(quest)` — reconstruct a multi-objective Optuna study from candidate history, suggest the next design point. Advisor, not driver. **Rider: stamp `meta.params` from Slice 1/3** so history accrues now. §7.8. |
 
 **Deferred axes (named, not scheduled):** explicit **solvation** (water as
 atoms-in-the-cell — bigger, noisier NEB; implicit solvation is a model
-catpath lacks); a **DFT confirmation rung** + multi-stage graduation
+autocatpath lacks); a **DFT confirmation rung** + multi-stage graduation
 (ML→DFT→experiment); an **embedding proposer** for candidate generation.
 
 ## 7. Component specs
 
-### 7.1 catpath structure-input seam (Slice 2, catpath repo)
+### 7.1 autocatpath structure-input seam (Slice 2, autocatpath repo)
 
 The slab was built only in `build_slab()` (`structures.py:48`, `fcc111(...)`);
 every placement function already takes a generic `slab: Atoms`, so the seam is
-an **input adapter, not a rewrite**. **BUILT (catpath repo):**
+an **input adapter, not a rewrite**. **BUILT (autocatpath repo):**
 `Network.prebuilt_slab` + `Network.slab()` return the injected slab (a copy;
 `adsorbate_info` transplanted from the cfg reference when a round-trip dropped
 it); `_build_net` stamps it from a runtime `cfg._prebuilt_slab` side-channel so
@@ -195,10 +195,10 @@ one chokepoint reaches all `net.slab()` call sites without leaking into
 `to_dict`/`content_key`; `run_pathway(..., slab_extxyz=…)` hydrates the extxyz
 wire form. What remains (Slice 3, precis-side):
 
-- `catpath_explore` gains a param `structure=<precis structure handle>` (or
+- `autocatpath_explore` gains a param `structure=<precis structure handle>` (or
   the config YAML carries a `structure_ref`). The bridge hydrates it to an
   ASE `Atoms` → extxyz and calls `run_pathway(slab_extxyz=…)`. (The
-  catpath-side entry already accepts the injected slab.)
+  autocatpath-side entry already accepts the injected slab.)
 - The network builder skips slab construction and places the reaction's
   declared adsorbates on the supplied slab. **First cut is scoped to clean
   fcc(111) slabs** so the existing site library (`fcc`/`hcp`/`top`) still
@@ -239,18 +239,18 @@ for the later optimizer advisor (§7.8) — never a ranking measure.
 
 **Why not a third "lift from the linked pathway" source (a spec change).**
 The original design lifted `rate_Ea → barrier` by traversing a
-structure↔pathway link. Reading the code killed that: (a) catpath stores no
+structure↔pathway link. Reading the code killed that: (a) autocatpath stores no
 scalar `rate_Ea`/`span` — they are *computed on demand* from `meta["graph"]`
-by `catpath.precis.analysis`, which lives in the **catpath** venv (absent
-from precis-mcp), so a frontier-side lift would either import catpath or
+by `autocatpath.precis.analysis`, which lives in the **autocatpath** venv (absent
+from precis-mcp), so a frontier-side lift would either import autocatpath or
 **re-derive the barrier from the graph — a DRY violation**; and (b) the
 candidate→evaluation-pathway link doesn't exist yet (today's `related-to`
 links a pathway to its *own* intermediate structures, not a candidate to its
 evaluation). So **source-3 collapses into source-2**: the harvest step
 (Slice 3) lifts the pathway's barrier onto the *candidate's own* `meta` once,
-and the frontier reads a plain scalar — no catpath import, no graph recompute.
+and the frontier reads a plain scalar — no autocatpath import, no graph recompute.
 The pathway link stays as **evidence** for the by-intermediate view (§7.3),
-not as a second measure-lift path. (Rider for Slice 2: catpath's
+not as a second measure-lift path. (Rider for Slice 2: autocatpath's
 `pathway_meta()` should also stamp scalar `rate_Ea`/`span`/`low_confidence`
 at persist time, so the harvest reads a scalar rather than recomputing.)
 
@@ -288,16 +288,16 @@ legibility (they don't change ranking — they render it):
   drift. Tests: `TestLeaderboard`.
 - **by-intermediate — DEFERRED to Slice 3.** One row per design, the reaction
   coordinate as columns (state rel-eV and `‡` step barriers) — the shape
-  catpath's `compare` view emits, lifted to the quest. Blocked on the same two
+  autocatpath's `compare` view emits, lifted to the quest. Blocked on the same two
   things as source-3 (§7.2): the candidate→pathway link doesn't exist yet, and
-  the per-path profile is computed by catpath's graph code (catpath venv), so
-  building it here would re-derive catpath logic. Lands when the harvest wires
-  the link + a catpath-side profile stamp.
+  the per-path profile is computed by autocatpath's graph code (autocatpath venv), so
+  building it here would re-derive autocatpath logic. Lands when the harvest wires
+  the link + a autocatpath-side profile stamp.
 
 **Canonical rule:** the **quest frontier is authoritative** for the striving
-(designs, multi-objective); catpath's own `compare` view is a compute-side
+(designs, multi-objective); autocatpath's own `compare` view is a compute-side
 diagnostic over sibling pathways. The two never drift into "which leaderboard
-is real": the quest's `leaderboard`/`frontier` views rank *designs*; catpath's
+is real": the quest's `leaderboard`/`frontier` views rank *designs*; autocatpath's
 `compare` ranks *pathways*.
 
 ### 7.4 Structure model-building ops (Slice 4, precis-mcp)
@@ -336,12 +336,12 @@ Trade-off: a local minimum *at the anchor*, not the global-best site. If
 placement matters, make it a **variable** — propose 2–3 anchors as separate
 candidates and let the frontier keep the winner.
 
-**Rigor (Slice 5, optional) — best-site search.** Wire catpath's existing
+**Rigor (Slice 5, optional) — best-site search.** Wire autocatpath's existing
 `poses()` (`structures.py:135`, an ensemble over sites×tilts): relax the
 adsorbate at each pose, keep the lowest-energy, thread it into the NEB.
 precis can *narrow* the poses geometrically first — `plane()` for the top
 layer, hollow/bridge/top over surface-atom triangles/edges, filtered by
-`coordination`/`neighborhood` — so catpath scores a short list, not a blind
+`coordination`/`neighborhood` — so autocatpath scores a short list, not a blind
 sweep. Cost: N poses × a relax per intermediate. A rigor upgrade, not a v1
 blocker.
 
@@ -368,7 +368,7 @@ tools-loop dispatch). Toolbox:
 edit_structure(parent, ops)     # deterministic ops → a new content-addressed structure
 propose_sites(structure)        # (Slice 5) probe-proposed adsorption anchors
 relax(structure, fidelity='ml') # struct_relax job → stability
-catpath(structure)              # catpath_explore job → barrier graph
+autocatpath(structure)              # autocatpath_explore job → barrier graph
 search_literature(q)            # grounding; papers serve the quest
 log(entry, type)                # WORM logbook append
 rewrite_dossier(text)           # living synthesis + frontier snapshot
@@ -413,8 +413,8 @@ Optuna study from the candidate history each call (`tell` all past trials,
 `ask` the next) — **no persistent study; the `serves`-graph IS the study.**
 Multi-objective sampler (MOTPE / NSGA-II) so the suggestion is drawn against
 the Pareto front, not a scalarization. Runs in-process (cheap, no GPU). A
-**pruner** maps onto the cheap-screen-before-catpath idea: a coarse signal
-(catpath `preview`, a quick relax) kills a bad point before the full NEB is
+**pruner** maps onto the cheap-screen-before-autocatpath idea: a coarse signal
+(autocatpath `preview`, a quick relax) kills a bad point before the full NEB is
 spent.
 
 **The LLM stays in charge.** It reads the suggestion, then either decodes it
@@ -427,12 +427,12 @@ that sharpens with data, not an oracle that finds the optimum.
 
 ## 8. Open decisions (for the build)
 
-1. **Site-finder ownership** (§7.5) — recommend precis-proposes / catpath-scores.
+1. **Site-finder ownership** (§7.5) — recommend precis-proposes / autocatpath-scores.
 2. **Seed slabs** (§7.4 vs §7.6) — slab-builder op now, or library import first.
 3. **Backend** — MACE (deployed) vs FAIRChem/UMA (better for adsorbates) —
    a per-quest choice; MACE for the first light.
 4. **First reaction R** — **DECIDED: NO → NH₃ on Pd(111)** (`network:
-   ammonia`), catpath's own worked Pd example (`examples/no_to_nh3_pd.yaml`):
+   ammonia`), autocatpath's own worked Pd example (`examples/no_to_nh3_pd.yaml`):
    substrate `NO`, target `NH3`, 3×3×4 slab, 10 Å vacuum, 2 fixed layers, EMT
    for dev / MACE for the real run. The dissociative-hydrogenation chain
    (NO → N+O → NH → NH₂ → NH₃) exercises the built `ammonia` state library, so

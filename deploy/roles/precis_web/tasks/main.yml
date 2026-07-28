@@ -58,24 +58,24 @@
   # have always notified their reload handler on install changes.
   notify: restart precis-web
 
-# catpath `pathway` kind surface (topology: catpath_plugin). Installs the
+# autocatpath `pathway` kind surface (topology: autocatpath_plugin). Installs the
 # LIGHT plugin extra only (no ML backend — the gateway mints jobs, it doesn't
 # compute). Must run BEFORE the migrate task below so `precis migrate`
-# discovers catpath's plugin migration and creates the `pathway` kind. The
+# discovers autocatpath's plugin migration and creates the `pathway` kind. The
 # plist enables it + routes compute to the pinned node (see the template).
-- name: Install catpath[precis] into the MCP venv (pathway kind surface)
+- name: Install autocatpath[precis] into the MCP venv (pathway kind surface)
   when:
     - os_family == "darwin"
-    - inventory_hostname in (precis_capabilities.catpath_plugin | default([]))
+    - inventory_hostname in (precis_capabilities.autocatpath_plugin | default([]))
   ansible.builtin.shell: |
     {{ uv_bin }} pip install --python {{ precis_web_venv }}/bin/python --upgrade \
-      --refresh-package catpath \
-      'catpath[precis] @ git+https://github.com/retospect/catpath'
+      --refresh-package autocatpath \
+      'autocatpath[precis] @ git+https://github.com/retospect/catpath'
   become: true
-  register: precis_web_catpath
+  register: precis_web_autocatpath
   changed_when: >-
-    'Installed' in (precis_web_catpath.stdout + precis_web_catpath.stderr)
-    or 'Updated' in (precis_web_catpath.stdout + precis_web_catpath.stderr)
+    'Installed' in (precis_web_autocatpath.stdout + precis_web_autocatpath.stderr)
+    or 'Updated' in (precis_web_autocatpath.stdout + precis_web_autocatpath.stderr)
   notify: restart precis-web
 
 # TeX toolchain for the draft → PDF export. The sync ``GET

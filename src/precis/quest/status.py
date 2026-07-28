@@ -2,7 +2,7 @@
 
 An operator debugging a stuck/misbehaving quest otherwise runs five separate
 by-hand queries: the logbook tail, the candidate structures + their measures +
-`ruled-out:*` tags, the sim-job status roll (`struct_relax`/`catpath_explore`
+`ruled-out:*` tags, the sim-job status roll (`struct_relax`/`autocatpath_explore`
 churn under each candidate), the autonomous coordinator loop's own
 `quest_tick` job_event trail, and the per-quest LLM spend/errors from
 `llm_call_log`. This module gathers all five in one pass; the CLI (`precis
@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from precis.store import Store
 
 #: The compute-lane job_types a quest's candidates mint (barrier + stability).
-_SIM_JOB_TYPES = ("struct_relax", "catpath_explore")
+_SIM_JOB_TYPES = ("struct_relax", "autocatpath_explore")
 
 #: The `job_event` chunk kind every job dispatcher writes its forensics to
 #: (see ``precis.workers.executors._common.JOB_EVENT_KIND``).
@@ -128,7 +128,7 @@ def _candidate_rows(
 def _sim_job_rows(
     store: Store, candidate_ids: list[int], *, limit: int
 ) -> list[SimJobRow]:
-    """The `struct_relax`/`catpath_explore` jobs under any of ``candidate_ids``,
+    """The `struct_relax`/`autocatpath_explore` jobs under any of ``candidate_ids``,
     newest first, with their current STATUS — so cancelled/retried churn (a job
     that keeps getting re-minted or stolen) is visible at a glance."""
     from precis.utils import handle_registry

@@ -110,7 +110,7 @@ class JobHandler(NumericRefHandler):
     def _plugin_owner_kinds(self) -> frozenset[str]:
         """Kinds that opted into owning compute-lane jobs via
         ``KindSpec.can_own_jobs`` (ADR 0044 plugin extension). Lets a
-        plugin kind (e.g. catpath's ``pathway``) own its derived build
+        plugin kind (e.g. autocatpath's ``pathway``) own its derived build
         job without a core edit to :data:`JOB_PARENT_KINDS`. Empty when
         the hub isn't reachable (defensive — falls back to built-ins)."""
         hub = getattr(self, "hub", None)

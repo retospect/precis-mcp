@@ -6,7 +6,7 @@
 # Each key is a capability; the value is the list of nodes that run it. Roles
 # and playbooks gate on membership, e.g.:
 #
-#     when: inventory_hostname in precis_capabilities.catpath
+#     when: inventory_hostname in precis_capabilities.autocatpath
 #
 # To move a capability to a different box: edit ONE line here and re-run that
 # capability's playbook. No role edits. Node names below are placeholders —
@@ -37,9 +37,9 @@ precis_capabilities:
 
   # --- GPU / compute node ---------------------------------------------------
   dft:             [node-gpu]
-  catpath:         [node-gpu]
-  catpath_mace:    [node-gpu]
-  catpath_plugin:  [node-gateway, node-gpu]
+  autocatpath:         [node-gpu]
+  autocatpath_mace:    [node-gpu]
+  autocatpath_plugin:  [node-gateway, node-gpu]
   chem_route:      [node-gpu]
   chem_plugin:     [node-gateway]
   bio_fold:        [node-gpu]

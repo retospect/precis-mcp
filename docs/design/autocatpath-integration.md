@@ -1,4 +1,4 @@
-# Native catpath integration — reaction pathways as first-class structures
+# Native autocatpath integration — reaction pathways as first-class structures
 
 > **Status:** design-of-record, not yet sliced into code. Present-tense
 > where it describes precis today; future-tense for the proposed build.
@@ -7,7 +7,7 @@
 
 ## 0. Thesis
 
-[catpath](https://github.com/retospect/catpath) is a computational-chemistry
+[autocatpath](https://github.com/retospect/catpath) is a computational-chemistry
 tool: give it a metal surface, a substrate, and a target; it builds a
 reaction network, relaxes every intermediate on an ML interatomic
 potential, finds transition-state barriers with climbing-image NEB, and
@@ -18,11 +18,11 @@ provenance-linked `methods.md`.
 
 That shape is not foreign to precis — it is the `structure` keystone kind
 (ADR 0043) plus the derived-compute lane (ADR 0044), almost exactly.
-catpath's intermediates **are** precis structures; its relaxations **are**
+autocatpath's intermediates **are** precis structures; its relaxations **are**
 run-cube rows; its uncertainty flag **is** the mission's no-precise-number
 pillar; its `methods.md` **is** an embeddable, citable chunk.
 
-**"Native" means:** every catpath intermediate becomes a first-class
+**"Native" means:** every autocatpath intermediate becomes a first-class
 `structure` ref, every relaxation lands in the existing `struct_runs`
 run-cube, and the reaction network sits on top as a thin new kind. The
 diagrams and numbers are **derived** — the config is authoritative, and
@@ -32,16 +32,16 @@ unchanged intermediates cost zero compute.
 This doc maps the two worlds, states what we reuse vs. build, and — the
 part that matters — enumerates the genuine messiness. §3 opens with four
 tensions that shape the whole design. **Note (post-review):** precis and
-catpath are *both* GPL-3.0-or-later under one owner, so tension #1
-(licensing) is resolved in favor of **importing catpath in-process** — this
+autocatpath are *both* GPL-3.0-or-later under one owner, so tension #1
+(licensing) is resolved in favor of **importing autocatpath in-process** — this
 propagates through the doc; the arms-length wrapping described in some
 passages is the rejected alternative, kept for contrast.
 
 ---
 
-## 1. catpath as a pipeline (the kernel we rent)
+## 1. autocatpath as a pipeline (the kernel we rent)
 
-catpath is a chain of content-addressable steps, which is what makes it
+autocatpath is a chain of content-addressable steps, which is what makes it
 integrable:
 
 ```
@@ -63,7 +63,7 @@ build graph              (graph.py — NetworkX DiGraph, node_link_data JSON)
 render + report          (render.py/viz.py — 3 PNGs; provenance.py — methods.md, config.snapshot.yaml)
 ```
 
-Key internal facts (verified against `src/catpath/`):
+Key internal facts (verified against `src/autocatpath/`):
 
 - **Structures are raw ASE `Atoms`** (`structures.py`), built `slab +
   adsorbate` with a hard invariant: *two states connected by a reaction
@@ -80,7 +80,7 @@ Key internal facts (verified against `src/catpath/`):
   `to_csv`; nodes carry `energy/energy_std/rel_energy/low_confidence`,
   edges carry `barrier/barrier_std/delta_e/delta_e_std/low_confidence`.
 - **Provenance is deterministic text, not a hash** (`provenance.py`):
-  catpath guarantees "same config → same methods paragraph" but does
+  autocatpath guarantees "same config → same methods paragraph" but does
   **no content-addressing**. precis must supply the cache key.
 - **License is GPL-3.0-or-later.** See §3.1 — this is load-bearing.
 
@@ -88,11 +88,11 @@ Key internal facts (verified against `src/catpath/`):
 
 ## 2. The native mapping
 
-| catpath concept | precis substrate | Fit |
+| autocatpath concept | precis substrate | Fit |
 |---|---|---|
 | `config.yaml` (substrate/target/slab/mlip/search) | body IR of a new **`pathway`** kind | authoritative intent, diffable, embeddable |
 | intermediate state (ASE Atoms) | **`structure`** ref (`Scene`, `struct_atoms`/`struct_bonds`) | **native** — but needs the missing ASE→Scene ingest (§3.2) |
-| a single relaxation | **`struct_runs`** row (fidelity=`ml`, `model`, `energy`, `final_geometry`, `cache_key`) | run-cube already exists; catpath fills it (§3, §5) |
+| a single relaxation | **`struct_runs`** row (fidelity=`ml`, `model`, `energy`, `final_geometry`, `cache_key`) | run-cube already exists; autocatpath fills it (§3, §5) |
 | NEB band + climbing image | new **`struct_neb`** job + **`struct_frames`** (already has `positions` for "MD/NEB") | schema anticipated it; job type is new (§3.3) |
 | `Estimate(mean±std, low_confidence)` | new pooled-uncertainty layer on the pathway edge/node | **no home today** (§3.4) |
 | reaction network (DiGraph) | the **`pathway`** kind's graph (nodes→structure links, edges as rows) | new kind (§4) |
@@ -110,35 +110,35 @@ Key internal facts (verified against `src/catpath/`):
 ### 3.1 License — RESOLVED: both are GPL-3.0-or-later, same owner
 
 **There is no license tension.** precis's `pyproject.toml` declares
-`license = "GPL-3.0-or-later"` — identical to catpath. And Reto owns
-catpath outright with full relicensing control. So precis may
-`import catpath` directly, in-process, today. The arms-length container
+`license = "GPL-3.0-or-later"` — identical to autocatpath. And Reto owns
+autocatpath outright with full relicensing control. So precis may
+`import autocatpath` directly, in-process, today. The arms-length container
 boundary this section originally demanded was purely a GPL firewall; there
 is no firewall to work around.
 
 This unlocks the **import-based architecture** (deeper and less total work
 than the arms-length wrap):
 
-> **precis imports catpath's pure core** (config parse, network builder,
+> **precis imports autocatpath's pure core** (config parse, network builder,
 > structure/slab builders, `graph`, `uncertainty.aggregate`, `provenance`)
 > and runs it in-process in the worker. **The heavy relax/NEB delegates
-> back through a `ComputeBackend` seam added inside catpath** (Reto owns
+> back through a `ComputeBackend` seam added inside autocatpath** (Reto owns
 > it) to precis's existing `struct_relax` GPU run-cube. Only the ML
 > backend calculators sit behind a container boundary — for an
 > *operational* reason (§3.5), not a legal one.
 
 Consequences that cascade:
-- The "build" list shrinks: precis reuses catpath's network/structure/
+- The "build" list shrinks: precis reuses autocatpath's network/structure/
   graph/uncertainty/provenance logic rather than reimplementing it (§5).
-- **One relaxer, one cache** — catpath's relax/NEB routes through precis's
+- **One relaxer, one cache** — autocatpath's relax/NEB routes through precis's
   run-cube instead of running its own. This dissolves the "two relaxers"
   messiness that an arms-length wrap would have created (§7.1).
-- Division of labor: **catpath owns the chemistry** (what the network is,
+- Division of labor: **autocatpath owns the chemistry** (what the network is,
   how states are built, how uncertainty pools); **precis owns
   persistence + the compute lane + the web interface.**
 
 The one design task this creates: co-design the `ComputeBackend` seam in
-catpath — a protocol catpath's `relax`/`neb` call to obtain energies/
+autocatpath — a protocol autocatpath's `relax`/`neb` call to obtain energies/
 forces/relaxed-geometry, which precis implements by minting `struct_relax`
 jobs. It mirrors the `ComputeBackend`/`Staging` seam already sketched in
 `sandbox-run.md`. Since both repos are ours, we shape the exact seam we
@@ -147,23 +147,23 @@ want rather than scraping output files.
 ### 3.2 The ASE→Scene ingest direction does not exist
 
 precis has `structure/export.py::_to_ase` (Scene → ASE Atoms) but **no
-reverse**. To make catpath intermediates native structures we must build
+reverse**. To make autocatpath intermediates native structures we must build
 `Scene.from_ase(atoms)`:
 
 - fractional positions ← `atoms.get_scaled_positions()`; cell ← `atoms.cell`;
   pbc ← `atoms.pbc`;
-- **fixed bitmask** ← ASE `FixAtoms` constraint (catpath freezes bottom
+- **fixed bitmask** ← ASE `FixAtoms` constraint (autocatpath freezes bottom
   slab layers via `fix_layers`) → precis `struct_atoms.fixed`;
-- **bond inference** — precis marks this "future (CrystalNN)"; catpath
+- **bond inference** — precis marks this "future (CrystalNN)"; autocatpath
   ships bond-free ASE Atoms, so nodes ingest with `provenance='inferred'`
   bonds or none. Slabs are large periodic cells; full bond inference may
   be unnecessary for a first slice (structures are legible by
   coordination/neighborhood probes without an explicit bond graph).
 - **label assignment** — the sharp edge. precis assigns stable
-  `aPd123`-style labels via `Scene.next_label`; catpath enforces *same
+  `aPd123`-style labels via `Scene.next_label`; autocatpath enforces *same
   atoms, same order* across a reaction pair. If precis re-labels or
   re-orders on ingest, **NEB interpolation between two ingested endpoints
-  breaks.** The adapter must preserve catpath's atom order verbatim and
+  breaks.** The adapter must preserve autocatpath's atom order verbatim and
   assign labels positionally, and the NEB job (§3.3) must key on ordered
   geometry, not precis's deliberately order-*independent* `structure_sha`
   (§6). Round-trip fidelity tests are mandatory.
@@ -175,7 +175,7 @@ structure and writes **one** `struct_runs` row. NEB operates on a **pair**
 of relaxed endpoints, interpolates N images, and runs a climbing image.
 
 **Decision: for slice 1 we do NOT model the elastic band natively.**
-catpath computes the barrier (its `barriers` step); precis stores the
+autocatpath computes the barrier (its `barriers` step); precis stores the
 **number**. We model:
 
 - the **endpoints** as `structure` refs (already the plan),
@@ -195,14 +195,14 @@ exists, and is deferred until then.
 
 ### 3.4 Ensembles and pooled uncertainty have no home
 
-precis's run-cube is **one deterministic run per cache key**. catpath runs
+precis's run-cube is **one deterministic run per cache key**. autocatpath runs
 `seeds: [0,1,2]` × multiple poses and **pools** into `Estimate(mean±std,
 low_confidence)`. Two options:
 
-- **(a) Ingest catpath's pooled numbers as-is** (slice 1). The pathway
+- **(a) Ingest autocatpath's pooled numbers as-is** (slice 1). The pathway
   node/edge carries `energy_mean/std/low_confidence`; the run-cube stores
-  whatever single geometry catpath returns as representative. Simple, but
-  precis can't *add* seeds later without re-running catpath.
+  whatever single geometry autocatpath returns as representative. Simple, but
+  precis can't *add* seeds later without re-running autocatpath.
 - **(b) Drive seeds from precis** (later). Each `(structure, model, seed)`
   is a distinct cache key → N run-cube rows → precis pools natively into a
   new `Estimate` at the pathway layer. Honest, cache-composable, but needs
@@ -219,9 +219,9 @@ citing *"barrier 0.8 ± 0.3 eV (low confidence)"* inherits the flag and the
 reader badges it. This closes the pillar end-to-end (pathway edge →
 citation → reader badge) reusing an existing field rather than new plumbing.
 
-**Reuse over reimplementation:** because catpath is imported (§3.1), even
+**Reuse over reimplementation:** because autocatpath is imported (§3.1), even
 "precis-driven pooling" (option b) is not a rewrite — precis calls
-catpath's `uncertainty.aggregate()` over run-cube rows. Slice-1 ingest and
+autocatpath's `uncertainty.aggregate()` over run-cube rows. Slice-1 ingest and
 slice-4 native pooling share the same code path.
 
 **Possible generalization (flag, don't build):** an `Estimate` — a measured
@@ -235,13 +235,13 @@ later; scoping it now is creep. Keep it pathway-local for slices 1–3.
 ### 3.5 One backend per environment → N container images, not one
 
 `struct_relax` today assumes **one** image (`precis-dft:cpu`) gated by
-**one** capability (`REQUIRES = {"has_gpaw"}`). catpath backends *cannot
+**one** capability (`REQUIRES = {"has_gpaw"}`). autocatpath backends *cannot
 co-install* — MACE, CHGNet, FAIRChem, GRACE each need their own env. So:
 
-- one container image **per backend** (`precis-catpath-mace`,
-  `precis-catpath-fairchem`, …), each large (FAIRChem/MACE weights);
+- one container image **per backend** (`precis-autocatpath-mace`,
+  `precis-autocatpath-fairchem`, …), each large (FAIRChem/MACE weights);
 - the job's image + `REQUIRES` become **parameterized by model**
-  (`has_catpath_mace`, `has_catpath_fairchem`), and GPU nodes advertise
+  (`has_autocatpath_mace`, `has_autocatpath_fairchem`), and GPU nodes advertise
   which they hold;
 - EMT is dependency-free and CPU-only — it can run in a tiny image (or
   even in-process, mirroring how the `ml` rung loads MACE locally today),
@@ -254,18 +254,18 @@ co-install* — MACE, CHGNet, FAIRChem, GRACE each need their own env. So:
 
 ### 3.6 Diagrams: harvest bitmaps vs. re-render native
 
-catpath renders 3 PNGs (energy profile w/ structure thumbnails, DAG
+autocatpath renders 3 PNGs (energy profile w/ structure thumbnails, DAG
 network, heatmap) with matplotlib + ASE. Two paths, both "regenerable"
 because both are keyed to the pathway's content address:
 
 - **harvest** the PNGs as figures/attachments (slice 1) — cheap, faithful,
-  but bitmaps: no interactivity, and they duplicate weights of catpath's
+  but bitmaps: no interactivity, and they duplicate weights of autocatpath's
   viz;
 - **re-render natively** in `precis_web` from the graph + run data (energy
   profile as SVG, DAG like `/structure`, heatmap) — regenerable,
   interactive, and unlocks the `/structure`-style **under-pointer
   structure popovers** (hover a node → see the relaxed geometry). This is
-  the real interface win catpath lacks, but it re-implements catpath's viz
+  the real interface win autocatpath lacks, but it re-implements autocatpath's viz
   and is a later slice.
 
 Recommendation: harvest in slice 1 (the PNG is derived and re-runs when the
@@ -274,12 +274,12 @@ data layer is proven.
 
 ---
 
-## 3.8 Grounding against the real catpath code (supersedes speculation above)
+## 3.8 Grounding against the real autocatpath code (supersedes speculation above)
 
-Reading the actual source (`src/catpath/`, ~3.5k LoC) sharpens the seam and
+Reading the actual source (`src/autocatpath/`, ~3.5k LoC) sharpens the seam and
 makes it *lighter* than §3.1's `ComputeBackend`-protocol framing implied:
 
-- **catpath is already built for an external orchestrator.**
+- **autocatpath is already built for an external orchestrator.**
   `pipeline.run_one_seed(cfg, seed)` is documented as *"deliberately
   standalone and JSON-serialisable so an orchestrator (Snakemake) can fan
   out seeds across jobs and call `aggregate_partials`."* **precis replaces
@@ -301,34 +301,34 @@ makes it *lighter* than §3.1's `ComputeBackend`-protocol framing implied:
   stashes the lowest-energy relaxed `Atoms` per state in a dict (kept out
   of the JSON partial because `Atoms` aren't serialisable). To ingest them
   as `structure` refs, the job must **serialise those Atoms** (extxyz) into
-  its out-dir. This is the one small catpath-side addition.
+  its out-dir. This is the one small autocatpath-side addition.
 
 ### The revised, code-grounded architecture
 
-**precis is "just another orchestrator" for catpath's existing fan-out
+**precis is "just another orchestrator" for autocatpath's existing fan-out
 unit.** The bridge:
 
 1. builds `cfg` from the `pathway` body YAML and the network in-process
    (`config`, `network.build_network` — pure, no ML deps);
-2. **fans out** one `catpath_explore` compute-lane job per `(model, seed)`,
+2. **fans out** one `autocatpath_explore` compute-lane job per `(model, seed)`,
    each running `run_one_seed` in the backend container on a capable node,
    **content-addressed + cached** on `sha(cfg-for-this-spec, seed,
-   catpath_version)` — precis's parallelism + cache is the win over
-   catpath's serial `run()`;
+   autocatpath_version)` — precis's parallelism + cache is the win over
+   autocatpath's serial `run()`;
 3. harvests each job's `partial.json` + serialised state structures;
 4. calls `aggregate_partials(cfg, partials)` in-process → node/edge
    `Estimate`s;
 5. ingests each relaxed state as a `structure` ref (`Scene.from_ase`, §3.2)
    and writes the `pathway` ref (edges, provenance, methods).
 
-**Minimal catpath-side change** (you own it): a thin per-seed entry —
-`catpath _seed <cfg> <seed> --out <dir>` (or an equivalent function) that
+**Minimal autocatpath-side change** (you own it): a thin per-seed entry —
+`autocatpath _seed <cfg> <seed> --out <dir>` (or an equivalent function) that
 runs `run_one_seed` and writes `partial.json` + `states/<name>.extxyz`.
 That's the container contract. **No `ComputeBackend` protocol needed for
 slices 0–2.**
 
 **Where the deeper `ComputeBackend` seam (§3.1) still earns its keep:** only
-if we later want catpath's *individual relaxes* to route through precis's
+if we later want autocatpath's *individual relaxes* to route through precis's
 `struct_runs` run-cube (one relaxer, per-state cache instead of per-seed
 cache). That is a slice-4+ optimisation — the relax/neb functions being
 already calc-parameterised means it's a clean refactor when we want it, but
@@ -339,15 +339,15 @@ we don't need it to ship.
 precis has a first-class **entry-points plugin system** (four groups), and
 **precis-dft is the live precedent** — a separate GPL sibling package that
 plugs into this same structure/GPU world and is installed only where the
-heavy deps live. catpath integrates the identical way: a **`precis-catpath`
-bridge package** (own repo, GPL, depends on *both* `precis` and `catpath`)
+heavy deps live. autocatpath integrates the identical way: a **`precis-autocatpath`
+bridge package** (own repo, GPL, depends on *both* `precis` and `autocatpath`)
 advertising:
 
-| entry-point group | contributes | catpath |
+| entry-point group | contributes | autocatpath |
 |---|---|---|
 | `precis.handlers` | a kind (Handler + KindSpec) | the `pathway` kind |
 | `precis.migrations` | schema | the `pathway_edges` table |
-| `precis.job_types` | a compute-lane job (`JobTypeSpec`) | `catpath_explore` |
+| `precis.job_types` | a compute-lane job (`JobTypeSpec`) | `autocatpath_explore` |
 | `precis.ref_passes` | a worker pass (returns `None` off-GPU) | heavy-backend dispatch |
 
 Why the bridge, not the two alternatives:
@@ -360,35 +360,35 @@ Why the bridge, not the two alternatives:
 - **vs. a CLI "calling mode":** the bridge gets a real kind, real tables, a
   real run-cube — not file-scraping a subprocess.
 
-The bridge keeps both sides clean: **catpath stays domain-pure** (no precis
-concepts), **precis-core stays chemistry-free** (no catpath dep). All glue —
-including precis's `ComputeBackend` implementation wiring catpath's injected
+The bridge keeps both sides clean: **autocatpath stays domain-pure** (no precis
+concepts), **precis-core stays chemistry-free** (no autocatpath dep). All glue —
+including precis's `ComputeBackend` implementation wiring autocatpath's injected
 relaxer to `struct_relax` — lives in the bridge.
 
 **Where "calling" survives:** only the innermost per-backend ML calculator
 (the §3.5 env-conflict layer), and even there it is precis's *own*
-compute-lane job dispatch, not a catpath CLI shell — EMT/cheap-ML in-process
+compute-lane job dispatch, not a autocatpath CLI shell — EMT/cheap-ML in-process
 (env coexists), MACE/FAIRChem as a per-backend container `struct_relax` job
-(env conflicts). The one catpath-side task: **expose the injection point**
+(env conflicts). The one autocatpath-side task: **expose the injection point**
 so `relax`/`neb` accept a supplied energy/force/relax provider instead of
 always building their own calculator.
 
 ## 4. The `pathway` kind
 
-A new kind (handle `pw<id>`), body = the catpath config YAML (the
+A new kind (handle `pw<id>`), body = the autocatpath config YAML (the
 authoritative intent), reusing the `structure`-adjacent machinery:
 
 - **body/IR:** the config YAML as an embedded chunk (searchable) + the
   harvested `methods.md` as a second chunk (citable). `meta` carries the
   resolved graph: node list (→ structure links), edge list (barriers,
-  deltas, low_confidence), backend, catpath version, provenance ref.
+  deltas, low_confidence), backend, autocatpath version, provenance ref.
 - **nodes:** each intermediate is a `structure` ref, linked
   `pathway-node`→structure (reserved relation, ADR 0027 style). Nodes
   cross-link, embed, and are browsable in `/structure`.
 - **edges:** elementary steps as rows (new `pathway_edges` table or
   `meta`) carrying `barrier/std`, `delta_e/std`, `low_confidence`,
   `neb_run_id` → the `struct_frames` band.
-- **compute:** a derived job (`catpath_explore`) owned by the pathway ref
+- **compute:** a derived job (`autocatpath_explore`) owned by the pathway ref
   (ADR 0044 compute lane). An intent todo that wants the barriers
   `requested`→links it; `derived_job_succeeded` closes on success, the
   `child-failed` bubble follows on failure. No rotation (artifact-owned).
@@ -418,7 +418,7 @@ an owning ref. Revisit if kind-proliferation becomes a concern.
 - `/structure` viewer scaffolding for node inspection; `provenance` kind;
   the citation/draft path for `methods.md`.
 
-**Reuse from catpath (imported, not rebuilt — §3.1):** config schema,
+**Reuse from autocatpath (imported, not rebuilt — §3.1):** config schema,
 network/intermediate builder, structure/slab builders, `graph`,
 `uncertainty.aggregate`, provenance text, and (optionally) `render`. precis
 does not reimplement the chemistry.
@@ -426,13 +426,13 @@ does not reimplement the chemistry.
 **Build (precis-side):**
 - `Scene.from_ase` ingest adapter (§3.2) — the critical, order-preserving,
   fixed-layer-aware, label-deterministic one; bond-free for slabs. +
-  round-trip tests. (precis-side regardless of license — catpath has no
+  round-trip tests. (precis-side regardless of license — autocatpath has no
   `Scene`.)
-- The **`ComputeBackend` seam inside catpath** (§3.1) + precis's
-  implementation of it that mints `struct_relax` jobs — so catpath's relax
+- The **`ComputeBackend` seam inside autocatpath** (§3.1) + precis's
+  implementation of it that mints `struct_relax` jobs — so autocatpath's relax
   routes through precis's one run-cube.
 - `pathway` kind: handler, migration (kind + `pathway_edges`), views, skill.
-- `catpath_explore` orchestration: run catpath's pure pipeline in-process,
+- `autocatpath_explore` orchestration: run autocatpath's pure pipeline in-process,
   dispatch heavy relax via the seam, harvest structures + run-cube rows +
   edges + methods + provenance into the `pathway` ref.
 - `model → image/capability` generalization of `struct_relax`'s single-
@@ -440,7 +440,7 @@ does not reimplement the chemistry.
   advertisement. **(Operational, not legal.)**
 - Pooled-uncertainty carrier on pathway node/edge + cite-time propagation
   via `citation.verifier_confidence` (§3.4).
-- Cache key that folds **catpath version + backend model-checkpoint
+- Cache key that folds **autocatpath version + backend model-checkpoint
   identity** (§7 trap).
 - (later) native SVG re-render of the 3 diagrams (§3.6); native
   `struct_neb` band (§3.3).
@@ -457,7 +457,7 @@ addressed:
   was built. But NEB needs *ordered* endpoints, so the `struct_neb` /
   edge cache key is a **separate, order-sensitive** hash (§3.3). Do not
   conflate them.
-- **Edit the config → re-mint `catpath_explore` → regenerate.** Unchanged
+- **Edit the config → re-mint `autocatpath_explore` → regenerate.** Unchanged
   intermediates hit the run-cube by `structure_sha` (zero compute, the way
   the `struct_relax` zero-compute cache hit was proven on prod
   2026-07-01). Only changed/new nodes and their incident edges recompute.
@@ -476,33 +476,33 @@ addressed:
 Beyond the four tensions in §3:
 
 1. **Two relaxers — RESOLVED by the seam (§3.1), not a residual.** With the
-   `ComputeBackend` seam, catpath's relax/NEB routes through precis's
+   `ComputeBackend` seam, autocatpath's relax/NEB routes through precis's
    `struct_relax` run-cube — one relaxer, one cache, one BFGS driver. This
    messiness only exists in the rejected arms-length model. (If slice 0
-   temporarily shells catpath before the seam lands, tag those run-cube
-   rows `produced_by='catpath'` so they never collide with precis-driven
+   temporarily shells autocatpath before the seam lands, tag those run-cube
+   rows `produced_by='autocatpath'` so they never collide with precis-driven
    rows; drop the distinction once the seam is in.)
-2. **Silent model-update cache trap.** catpath does no hashing; precis
-   owns the cache key. It **must** fold catpath version *and* the backend
+2. **Silent model-update cache trap.** autocatpath does no hashing; precis
+   owns the cache key. It **must** fold autocatpath version *and* the backend
    **checkpoint identity** (e.g. MACE-MP-0 revision), or a silent weights
    update yields stale cache hits reported as fresh numbers. Backends don't
    always expose checkpoint identity cleanly — this needs per-backend
    probing.
 3. **"auto" network detection is heuristic.** RDKit rule-based intermediate
-   detection is deterministic only given pinned catpath + RDKit versions.
+   detection is deterministic only given pinned autocatpath + RDKit versions.
    Reproducibility of the *graph shape* (not just energies) depends on
    pinning those in the cache key and the container image.
 4. **Cost / wall-time.** FAIRChem NEB is minutes–hours per edge; a full
    network is many edges × seeds × models. Leases/heartbeats cover long
    jobs already, but scheduling many heavy jobs needs the load-ceiling +
    `target_node` pinning, and probably a per-pathway concurrency cap.
-5. **Egress.** catpath compute needs **no network** (pure numerics on local
+5. **Egress.** autocatpath compute needs **no network** (pure numerics on local
    weights) — tighten the container to no-egress, simpler and safer than
    `sandbox_run`'s open-egress agentic containers.
-6. **Uncertainty semantics at the boundary.** catpath's `low_confidence`
+6. **Uncertainty semantics at the boundary.** autocatpath's `low_confidence`
    is `std > spread_tol OR n < 2`. precis must not silently re-threshold;
    ingest the flag *and* the raw spread so the reader can show both.
-7. **Diagram thumbnails need geometry.** catpath's energy-profile PNG
+7. **Diagram thumbnails need geometry.** autocatpath's energy-profile PNG
    embeds ASE structure thumbnails. Native re-render (§3.6) reproduces
    those from the ingested `structure` refs — a nice forcing function that
    validates the ingest fidelity (if the thumbnail looks wrong, the
@@ -511,9 +511,9 @@ Beyond the four tensions in §3:
    `put(kind='pathway', config=<yaml>)` auto-dispatches the explore job;
    `get(kind='pathway', view='profile'|'network'|'runs'|'compare')`;
    `edit` the config → regen. Needs a `precis-pathway-help` skill and a
-   `precis-toolpath` entry. Cross-model comparison (`catpath compare`) is a
+   `precis-toolpath` entry. Cross-model comparison (`autocatpath compare`) is a
    natural fan-out (one job per backend) + a synthesis render.
-9. **Where the interface lives.** catpath is CLI-only; precis supplies the
+9. **Where the interface lives.** autocatpath is CLI-only; precis supplies the
    interface it lacks — a `/pathway` web reader (energy profile + DAG +
    under-pointer structure popovers) with edit-by-prompt + a regen button,
    reusing the `structure_propose`/`cad_propose` derive pattern. This is
@@ -525,34 +525,34 @@ Beyond the four tensions in §3:
 ## 8. Slicing
 
 - **Slice 0 — plugin skeleton + in-process EMT. ✅ BUILT + verified.**
-  The `precis-catpath` bridge lives in the **catpath repo** as the
-  `catpath.precis` subpackage (option A — `pip install catpath[precis]`),
-  advertising `precis.handlers` (`pathway = catpath.precis:PathwayHandler`)
-  and `precis.migrations` (`catpath = catpath.precis.migrations`). It splits
-  into a **precis-free `runner.py`** (imports only catpath: runs `run()` +
+  The `precis-autocatpath` bridge lives in the **autocatpath repo** as the
+  `autocatpath.precis` subpackage (option A — `pip install autocatpath[precis]`),
+  advertising `precis.handlers` (`pathway = autocatpath.precis:PathwayHandler`)
+  and `precis.migrations` (`autocatpath = autocatpath.precis.migrations`). It splits
+  into a **precis-free `runner.py`** (imports only autocatpath: runs `run()` +
   assembles a JSON artifact — graph, `results.json`, `methods.md`,
   per-state extxyz geometries — mirroring `write_outputs` minus matplotlib)
-  and a **`handler.py`** (the `pathway` kind: `put` runs catpath on EMT
+  and a **`handler.py`** (the `pathway` kind: `put` runs autocatpath on EMT
   in-process and persists a slug-addressed ref + `pathway_body` methods
   chunk + graph/results/provenance in `meta`; `get` renders
   `profile`/`network`/`methods`/`config`; content-addressed regen is a
-  cache-hit; `PRECIS_CATPATH_ENABLED` dark-gate → `InitError`). Migration
+  cache-hit; `PRECIS_AUTOCATPATH_ENABLED` dark-gate → `InitError`). Migration
   `0001_pathway_kind.sql` seeds the `kinds` + `chunk_kinds` rows.
   **Verified** against the precis test DB: put→get→regen-cache-hit→delete
   round-trip + the gated-off path (5 tests green; EMT smoke run ~0.4s).
 - **Slice 1a — routing to the pinned node. ✅ BUILT + verified.** The
-  `catpath_explore` job type (`catpath.precis.job`, `precis.job_types` entry
+  `autocatpath_explore` job type (`autocatpath.precis.job`, `precis.job_types` entry
   point): `meta.executor='ssh_node'`, `REQUIRES=∅`, `target_node=<node>`;
-  its `dispatch` runs catpath **in-process on that node** (catpath[precis]+
+  its `dispatch` runs autocatpath **in-process on that node** (autocatpath[precis]+
   backend are in the node's worker venv) and writes the artifact back onto
   the pathway ref (shared `persist.py`). The handler routes when
-  `PRECIS_CATPATH_ROUTE_NODE` is set (mints the job, ref → `status:computing`)
+  `PRECIS_AUTOCATPATH_ROUTE_NODE` is set (mints the job, ref → `status:computing`)
   and runs in-process otherwise. **Precis-core enabler:** `pathway` owns its
   compute job via the new `KindSpec.can_own_jobs` flag (§8b) — no per-`(model,
   seed)` fan-out yet (whole `run()` in one job). **Verified**: dispatch
   write-back + a spark-pinned job minted end-to-end against the test DB.
 - **Slice 1b — fan-out + native structures.** (pending) Split the one job
-  into per-`(model, seed)` `catpath_explore` jobs (the `catpath _seed` entry,
+  into per-`(model, seed)` `autocatpath_explore` jobs (the `autocatpath _seed` entry,
   §3.8) with per-partial caching + `aggregate_partials`. Build `Scene.from_ase`
   (§3.2) and ingest each relaxed state as a `structure` ref linked
   `pathway-node` (needs the `Relation` core add, §8b). Nodes browsable in
@@ -566,7 +566,7 @@ Beyond the four tensions in §3:
   edit-by-prompt + regen button. Cite-time `low_confidence` badge via
   `citation.verifier_confidence` (§3.4).
 - **Slice 4 — unify relaxers (optional).** The deeper `ComputeBackend` seam
-  (§3.1/§3.8): route catpath's individual relaxes through precis's
+  (§3.1/§3.8): route autocatpath's individual relaxes through precis's
   `struct_runs` run-cube for per-state (not per-seed) caching + one relaxer.
   NEB band → `struct_frames` (§3.3). Only if the per-state cache economics
   justify it.
@@ -594,13 +594,13 @@ Discovered while building — feed into slice 1:
     either a matching core add (Literal member + relations seed) or reuse of
     an existing relation (`derived-from` is the least-bad). The same
     `can_own_jobs`-style extensibility could be applied here later.
-  - (`EXECUTOR_PROVIDES` — *not needed*: `catpath_explore` REQUIRES nothing
+  - (`EXECUTOR_PROVIDES` — *not needed*: `autocatpath_explore` REQUIRES nothing
     and rides `ssh_node`; the `target_node` pin does the routing.)
 - **`precis-mcp` on PyPI lags** (8.4.3) behind the deployed source (8.21).
-  The `catpath[precis]` extra pins `precis-mcp>=8.21,<9`, so a *fresh* PyPI
+  The `autocatpath[precis]` extra pins `precis-mcp>=8.21,<9`, so a *fresh* PyPI
   resolve fails. In practice the bridge installs into an env that already
   has precis (it's a precis plugin), where the pin is just a compat
-  assertion and resolves fine. If standalone `pip install catpath[precis]`
+  assertion and resolves fine. If standalone `pip install autocatpath[precis]`
   is ever wanted, point the extra at a git ref instead.
 - **`chunk_kind` is a hard FK to `chunk_kinds.slug`** — the body chunk kind
   (`pathway_body`) must be seeded in the plugin migration, else the body
@@ -612,11 +612,11 @@ Discovered while building — feed into slice 1:
 ## 9. Decisions needed
 
 1. **License — RESOLVED.** Both GPL-3.0-or-later, same owner; precis imports
-   catpath in-process. No relicensing, no arms-length rule. (§3.1)
-2. **catpath-side change is tiny (§3.8).** Not the full `ComputeBackend`
-   protocol — just a per-seed entry (`catpath _seed <cfg> <seed> --out
+   autocatpath in-process. No relicensing, no arms-length rule. (§3.1)
+2. **autocatpath-side change is tiny (§3.8).** Not the full `ComputeBackend`
+   protocol — just a per-seed entry (`autocatpath _seed <cfg> <seed> --out
    <dir>` writing `partial.json` + `states/*.extxyz`) so precis can fan out
-   `run_one_seed` and ingest structures. catpath is *already* orchestrator-
+   `run_one_seed` and ingest structures. autocatpath is *already* orchestrator-
    ready (`run_one_seed` serialisable + `aggregate_partials` pure). The full
    relax-injection seam is deferred to slice 4. Confirm this is the scope.
 3. **`Scene.from_ase` — CONFIRMED build.** precis-side, bond-free for slabs,

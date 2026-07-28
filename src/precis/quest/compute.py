@@ -158,46 +158,46 @@ def dispatch_relax(
     return f"relax[{fidelity}] dispatched for {ref.slug}"
 
 
-#: Env pin for the node that runs catpath (has the plugin + an ML backend). When
+#: Env pin for the node that runs autocatpath (has the plugin + an ML backend). When
 #: unset the job routes nowhere special and force-EMT keeps an in-process demo cheap.
-_CATPATH_ROUTE_NODE_ENV = "PRECIS_CATPATH_ROUTE_NODE"
+_AUTOCATPATH_ROUTE_NODE_ENV = "PRECIS_AUTOCATPATH_ROUTE_NODE"
 
 
-#: Env pin for the catpath NEB wall-time hint (see :func:`_catpath_wall_seconds`).
-_CATPATH_WALL_SECONDS_ENV = "PRECIS_CATPATH_WALL_SECONDS"
+#: Env pin for the autocatpath NEB wall-time hint (see :func:`_autocatpath_wall_seconds`).
+_AUTOCATPATH_WALL_SECONDS_ENV = "PRECIS_AUTOCATPATH_WALL_SECONDS"
 
 
-def _catpath_wall_seconds() -> int:
-    """Expected wall-time hint (s) for a catpath NEB, stamped into the job's
+def _autocatpath_wall_seconds() -> int:
+    """Expected wall-time hint (s) for a autocatpath NEB, stamped into the job's
     ``resources`` so the ssh_node lease outlives a full-network run.
 
-    Env-tunable (``PRECIS_CATPATH_WALL_SECONDS``, default 5400 = 90 min): a
+    Env-tunable (``PRECIS_AUTOCATPATH_WALL_SECONDS``, default 5400 = 90 min): a
     3×3×4 full ammonia-network run is ~15-20 min uncontended but can stretch
     under load. ssh_node leases at ``max(2h floor, wall_seconds + 1h margin)``,
     so 5400 → a 2.5h lease. Confirmed wired end-to-end (this value lands on
     the dispatched job's ``params.resources.wall_seconds``, which is exactly
     the field ``ssh_node._lease_seconds`` reads) by
-    ``TestDispatchCatpath.test_wall_seconds_env_reaches_the_job_and_the_ssh_node_lease``
+    ``TestDispatchAutocatpath.test_wall_seconds_env_reaches_the_job_and_the_ssh_node_lease``
     in ``tests/test_quest_compute.py``.
     """
     try:
-        n = int(os.environ.get(_CATPATH_WALL_SECONDS_ENV, "5400"))
+        n = int(os.environ.get(_AUTOCATPATH_WALL_SECONDS_ENV, "5400"))
     except ValueError:
         return 5400
     return max(60, min(86_400, n))
 
 
-def _catpath_content_key(config: dict[str, Any], slab_extxyz: str) -> str:
+def _autocatpath_content_key(config: dict[str, Any], slab_extxyz: str) -> str:
     """Stable idempotency key for a (reaction, exported slab) pair.
 
-    Its own hash (not catpath's ``content_key``) so this stays precis-native — a
+    Its own hash (not autocatpath's ``content_key``) so this stays precis-native — a
     re-dispatch of the same geometry + reaction collapses onto the in-flight job.
     """
     payload = _canonical_spec(config) + "\n" + slab_extxyz
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
-def dispatch_catpath(
+def dispatch_autocatpath(
     store: Store,
     structure_ref_id: int,
     config: dict[str, Any],
@@ -205,31 +205,33 @@ def dispatch_catpath(
     hub: Any | None = None,
     force_backend: str | None = None,
 ) -> str:
-    """Dispatch a catpath barrier evaluation on a candidate structure.
+    """Dispatch a autocatpath barrier evaluation on a candidate structure.
 
     Exports the candidate's (relaxed) geometry as extxyz, ensures a `pathway` ref
-    for the write-back, and mints a ``catpath_explore`` job **pinned on the
+    for the write-back, and mints a ``autocatpath_explore`` job **pinned on the
     candidate** — so :func:`harvest_measures` finds it under the structure's
     compute lane (it queries ``parent_id = candidate``, unlike the standalone
     `pathway` handler which parents on the pathway ref). The job hydrates the
-    extxyz into a prepared slab (catpath's injected-slab seam) and runs the
+    extxyz into a prepared slab (autocatpath's injected-slab seam) and runs the
     reaction network on the routed node; on completion it emits a scalar
     ``barrier`` onto its own meta, which the harvest lifts onto the candidate.
 
-    Precis-native (no catpath import — the `pathway` kind, if the plugin is
+    Precis-native (no autocatpath import — the `pathway` kind, if the plugin is
     installed, is reached only through the store) and **defensive**: degrades to a
     note on any error (missing plugin, unloadable scene) and never raises, so a
     compute hiccup can't fail the tick.
     """
     if not isinstance(config, dict) or not config:
-        return f"catpath skipped: no reaction config for structure {structure_ref_id}"
+        return (
+            f"autocatpath skipped: no reaction config for structure {structure_ref_id}"
+        )
     refs = store.fetch_refs_by_ids({structure_ref_id})
     ref = refs.get(structure_ref_id)
     if ref is None or ref.slug is None:
-        return f"catpath skipped: structure {structure_ref_id} not found"
+        return f"autocatpath skipped: structure {structure_ref_id} not found"
     hub = hub or _hub_for(store)
 
-    # Export the candidate geometry — the injected-slab seam catpath consumes.
+    # Export the candidate geometry — the injected-slab seam autocatpath consumes.
     try:
         from precis.structure import export
 
@@ -246,7 +248,7 @@ def dispatch_catpath(
                 verdict = _mlip_preflight(scene)
             except Exception as exc:
                 log.debug(
-                    "catpath preflight degraded (fail-open) for %s: %s",
+                    "autocatpath preflight degraded (fail-open) for %s: %s",
                     ref.slug,
                     exc,
                 )
@@ -257,21 +259,21 @@ def dispatch_catpath(
                 )
                 summary = "; ".join(r.message for r in verdict.reasons)
                 return (
-                    f"catpath skipped: {ref.slug} failed substrate preflight "
+                    f"autocatpath skipped: {ref.slug} failed substrate preflight "
                     f"— {summary}"
                 )
         # constraints=True → the slab's frozen bottom layers ride along as a
-        # FixAtoms, so catpath's injected-slab relax/NEB keeps them fixed.
+        # FixAtoms, so autocatpath's injected-slab relax/NEB keeps them fixed.
         slab_extxyz = export.to_extxyz(scene, constraints=True)
     except Exception as e:
-        return f"catpath dispatch failed for {ref.slug}: export ({e})"
+        return f"autocatpath dispatch failed for {ref.slug}: export ({e})"
 
-    node = os.environ.get(_CATPATH_ROUTE_NODE_ENV) or None
+    node = os.environ.get(_AUTOCATPATH_ROUTE_NODE_ENV) or None
     # Routed → run the config's own backend on the pinned node; unrouted → EMT
     # (an in-process demo has no ML backend). An explicit override wins either way.
     force = force_backend or (None if node else "emt")
-    # Routed nodes are the GPU boxes (topology: catpath → the CUDA node), so pin
-    # the ML potential to cuda there — catpath's MLIPConfig.device defaults to
+    # Routed nodes are the GPU boxes (topology: autocatpath → the CUDA node), so pin
+    # the ML potential to cuda there — autocatpath's MLIPConfig.device defaults to
     # "cpu", which otherwise leaves the GPU idle and the NEB CPU-bound (~20×
     # slower). Copy the config so we neither mutate the caller's dict nor churn
     # the content key when unrouted; an explicit mlip.device wins (setdefault).
@@ -279,7 +281,7 @@ def dispatch_catpath(
     if node:
         run_config = {**config, "mlip": {**(config.get("mlip") or {})}}
         run_config["mlip"].setdefault("device", "cuda")
-    key = _catpath_content_key(run_config, slab_extxyz)
+    key = _autocatpath_content_key(run_config, slab_extxyz)
     pslug = f"{ref.slug}-rx-{key[:10]}"
 
     # Ensure the pathway ref (status=computing) the job writes its graph back onto.
@@ -302,17 +304,17 @@ def dispatch_catpath(
                 )
             pathway_ref_id = int(pref.id)
     except Exception as e:
-        return f"catpath dispatch failed for {ref.slug}: pathway ref ({e})"
+        return f"autocatpath dispatch failed for {ref.slug}: pathway ref ({e})"
 
     # Mint the compute-lane job PINNED ON THE CANDIDATE (harvest queries parent_id).
     try:
         from precis.handlers.job import JobHandler
 
         JobHandler(hub=hub).put(
-            job_type="catpath_explore",
+            job_type="autocatpath_explore",
             executor="ssh_node",
             parent_id=structure_ref_id,
-            idem_key=f"catpath_explore:{key}",
+            idem_key=f"autocatpath_explore:{key}",
             params={
                 "pathway_ref_id": pathway_ref_id,
                 "pathway_slug": pslug,
@@ -327,12 +329,14 @@ def dispatch_catpath(
                 # a slow (contended) full-network run's lease clear of its
                 # runtime — otherwise it can lease-expire mid-run and get
                 # stolen/restarted (the churn the autonomous loop must avoid).
-                "resources": {"wall_seconds": _catpath_wall_seconds()},
+                "resources": {"wall_seconds": _autocatpath_wall_seconds()},
             },
         )
     except Exception as e:
-        return f"catpath dispatch failed for {ref.slug}: job mint ({e})"
-    return f"catpath[{force or 'config'}] dispatched for {ref.slug} → pathway {pslug}"
+        return f"autocatpath dispatch failed for {ref.slug}: job mint ({e})"
+    return (
+        f"autocatpath[{force or 'config'}] dispatched for {ref.slug} → pathway {pslug}"
+    )
 
 
 def _serving_quest_id(store: Store, structure_ref_id: int) -> int | None:
@@ -386,11 +390,11 @@ def _stamp_preflight_dead_end(
     )
 
 
-#: Job-meta spellings that carry catpath's rate-limiting barrier (eV). The
-#: `catpath_explore` job exposes a scalar summary so the quest can harvest it
-#: without importing catpath or reading the (plugin-kind) `pathway` ref.
-_CATPATH_BARRIER_KEYS: tuple[str, ...] = ("barrier", "rate_Ea", "rate_ea", "ea")
-_CATPATH_SPAN_KEYS: tuple[str, ...] = ("span",)
+#: Job-meta spellings that carry autocatpath's rate-limiting barrier (eV). The
+#: `autocatpath_explore` job exposes a scalar summary so the quest can harvest it
+#: without importing autocatpath or reading the (plugin-kind) `pathway` ref.
+_AUTOCATPATH_BARRIER_KEYS: tuple[str, ...] = ("barrier", "rate_Ea", "rate_ea", "ea")
+_AUTOCATPATH_SPAN_KEYS: tuple[str, ...] = ("span",)
 
 
 def _num_measure(v: Any) -> float | None:
@@ -402,8 +406,8 @@ def _num_measure(v: Any) -> float | None:
     return None
 
 
-def _catpath_measures_from_job(meta: dict[str, Any]) -> dict[str, float]:
-    """Lift the scalar barrier/span from a completed `catpath_explore` job's meta.
+def _autocatpath_measures_from_job(meta: dict[str, Any]) -> dict[str, float]:
+    """Lift the scalar barrier/span from a completed `autocatpath_explore` job's meta.
 
     Reads a ``result`` sub-dict if present (the bridge's summary), else the meta
     top level. The presence of a numeric barrier IS the "done" signal — a
@@ -411,12 +415,12 @@ def _catpath_measures_from_job(meta: dict[str, Any]) -> dict[str, float]:
     """
     src = meta.get("result") if isinstance(meta.get("result"), dict) else meta
     out: dict[str, float] = {}
-    for k in _CATPATH_BARRIER_KEYS:
+    for k in _AUTOCATPATH_BARRIER_KEYS:
         v = _num_measure(src.get(k))
         if v is not None:
             out["barrier"] = v
             break
-    for k in _CATPATH_SPAN_KEYS:
+    for k in _AUTOCATPATH_SPAN_KEYS:
         v = _num_measure(src.get(k))
         if v is not None:
             out["span"] = v
@@ -438,7 +442,7 @@ def _catpath_measures_from_job(meta: dict[str, Any]) -> dict[str, float]:
 _NEB_NOT_CONVERGED = "NEB not converged"
 _ADSORBATE_DETACHED = "detached"
 #: an endpoint that relaxed bound but through the WRONG atom — the reaction
-#: label's ``*`` designates a different binder (catpath ``validate.binding_site_ok``).
+#: label's ``*`` designates a different binder (autocatpath ``validate.binding_site_ok``).
 #: A barrier off a mis-bound endpoint is as untrustworthy as one off a desorbed one.
 _WRONG_BINDING_SITE = "wrong-site"
 
@@ -448,7 +452,7 @@ def _pathway_quality(meta: dict[str, Any]) -> dict[str, Any]:
 
     ``meta`` is the linked `pathway` ref's meta (``meta['warnings']`` — a list
     of human-readable strings — and ``meta['low_confidence']``, a *separate*,
-    less informative flag: a single-seed quest run always sets it (catpath's
+    less informative flag: a single-seed quest run always sets it (autocatpath's
     ``low_confidence = std>tol OR n<2``), so it rides along for visibility but
     never gates trust on its own). Counts warnings mentioning a non-converged
     NEB edge, a desorbed adsorbate, and a wrong-site (mis-bound) endpoint;
@@ -468,10 +472,10 @@ def _pathway_quality(meta: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _fresh_catpath_jobs(
+def _fresh_autocatpath_jobs(
     store: Store, structure_ref_id: int, upto: int
 ) -> list[tuple[int, dict[str, Any]]]:
-    """Completed `catpath_explore` jobs under a candidate, newer than ``upto``.
+    """Completed `autocatpath_explore` jobs under a candidate, newer than ``upto``.
 
     Returns ``(job_ref_id, meta)`` oldest-first so harvest is deterministic and
     the idempotency bookmark advances monotonically.
@@ -480,7 +484,7 @@ def _fresh_catpath_jobs(
         rows = conn.execute(
             "SELECT j.ref_id, j.meta FROM refs j "
             "WHERE j.parent_id = %s AND j.kind = 'job' AND j.deleted_at IS NULL "
-            "AND j.meta->>'job_type' = 'catpath_explore' AND j.ref_id > %s "
+            "AND j.meta->>'job_type' = 'autocatpath_explore' AND j.ref_id > %s "
             "ORDER BY j.ref_id ASC",
             (structure_ref_id, upto),
         ).fetchall()
@@ -490,7 +494,7 @@ def _fresh_catpath_jobs(
 def _link_pathway(store: Store, structure_ref_id: int, pathway_ref_id: int) -> None:
     """Wire the evaluating `pathway` into the quest graph (idempotent).
 
-    The catpath bridge creates the pathway ref; we link the candidate structure
+    The autocatpath bridge creates the pathway ref; we link the candidate structure
     to it so a later by-intermediate view can find the per-path profile.
     Symmetric ``related-to`` (the relation the bridge already uses, valid on any
     ref). Defensive: a missing pathway / relation must never break the harvest.
@@ -536,16 +540,16 @@ def _latest_relax_job(
     return str(row[0]), dict(row[1] or {})
 
 
-def _latest_catpath_job(
+def _latest_autocatpath_job(
     store: Store, structure_ref_id: int
 ) -> tuple[str, dict[str, Any]] | None:
-    """The latest ``catpath_explore`` job's ``(STATUS, meta)`` under this candidate.
+    """The latest ``autocatpath_explore`` job's ``(STATUS, meta)`` under this candidate.
 
     The sibling of :func:`_latest_relax_job` for the barrier lane. Unlike relax —
     where a ``failed`` job may carry a genuine *physical* verdict (non-convergence
-    ⇒ rule the candidate out) — a failed ``catpath_explore`` is **always** a
+    ⇒ rule the candidate out) — a failed ``autocatpath_explore`` is **always** a
     compute/infra failure: the NEB/barrier run crashed, which says nothing about
-    whether the material has a viable pathway. So the harvest treats every catpath
+    whether the material has a viable pathway. So the harvest treats every autocatpath
     failure as retry-eligible (ADR 0064 §C) and never rules out on it.
     """
     with store.pool.connection() as conn:
@@ -554,7 +558,7 @@ def _latest_catpath_job(
             "JOIN ref_tags rt ON rt.ref_id = j.ref_id "
             "JOIN tags t ON t.tag_id = rt.tag_id "
             "WHERE j.parent_id = %s AND j.kind = 'job' AND j.deleted_at IS NULL "
-            "AND j.meta->>'job_type' = 'catpath_explore' AND t.namespace = 'STATUS' "
+            "AND j.meta->>'job_type' = 'autocatpath_explore' AND t.namespace = 'STATUS' "
             "ORDER BY j.ref_id DESC LIMIT 1",
             (structure_ref_id,),
         ).fetchone()
@@ -589,7 +593,7 @@ def _file_infra_gripe(
     lane: str = "relax",
 ) -> None:
     """File a bounded, visible gripe for a candidate whose ``lane`` sim
-    (``relax`` or ``catpath``) has now infra-failed twice — never rules the
+    (``relax`` or ``autocatpath``) has now infra-failed twice — never rules the
     candidate out (still no physical verdict), just surfaces the persistent
     executor problem for a human."""
     from precis.handlers.gripe import GripeHandler
@@ -620,12 +624,12 @@ def harvest_measures(
     """Read finished sims back into the logbook + rule out failures.
 
     Every entry this function appends is a **system measurement** (a
-    converged relax, a harvested catpath barrier, a ruled-out verdict) — so
+    converged relax, a harvested autocatpath barrier, a ruled-out verdict) — so
     each is stamped ``by=MEASURED_BY`` ("system"), never the caller's ``by``
     (the model's own "agent" attribution). That is what makes a real
     measurement distinguishable from model narration in the logbook: gripes
     171148/171149 diagnosed a model-fabricated "result" entry (a barrier the
-    model invented, not one catpath measured) reading as indistinguishable
+    model invented, not one autocatpath measured) reading as indistinguishable
     ground truth, which made the loop believe the quest was solved and stop
     proposing candidates. ``by`` is kept in the signature for call-site
     compat (and used elsewhere in this module, e.g. dispatch notes are not
@@ -635,10 +639,10 @@ def harvest_measures(
 
     * newly-converged **relax** runs become `result` logbook entries (energy + a
       step-count cost proxy), tracked idempotently by ``meta.quest_harvested_upto``;
-    * completed **catpath** (`catpath_explore`) jobs contribute the rate-limiting
+    * completed **autocatpath** (`autocatpath_explore`) jobs contribute the rate-limiting
       **barrier** (and span): lifted onto the candidate's own ``meta`` (where the
       generalised frontier reads it), the evaluating pathway linked into the quest
-      graph, logged as a `result`, tracked by ``meta.quest_catpath_harvested_upto``;
+      graph, logged as a `result`, tracked by ``meta.quest_autocatpath_harvested_upto``;
     * a candidate whose latest relax job **failed for a genuine
       non-convergence reason** gets a one-shot ``ruled-out:relax-failed`` tag +
       a `dead-end` entry so the proposer stops re-treading it.
@@ -653,10 +657,10 @@ def harvest_measures(
       neither sense (no third dispatch, never ruled out). ``hub=None``
       (dry preview / callers that don't exercise this) preserves the
       original note-only behaviour.
-    * a candidate whose latest **catpath** (`catpath_explore`) job failed gets
+    * a candidate whose latest **autocatpath** (`autocatpath_explore`) job failed gets
       the *same* retry-once-then-gripe treatment on its own counter
-      (``meta.quest_catpath_infra_retries``), but **never** ruled out: a failed
-      catpath is always a crashed NEB (a compute/infra failure), never a
+      (``meta.quest_autocatpath_infra_retries``), but **never** ruled out: a failed
+      autocatpath is always a crashed NEB (a compute/infra failure), never a
       physical "no viable pathway" verdict, so — unlike relax non-convergence —
       it carries no verdict on the material (ADR 0064 §C, barrier-lane mirror).
     """
@@ -692,15 +696,15 @@ def harvest_measures(
         if fresh:
             _mark_harvested(store, s.id, max(int(r.get("id", 0)) for r in fresh))
 
-        # Harvest catpath barriers: a completed `catpath_explore` job under this
+        # Harvest autocatpath barriers: a completed `autocatpath_explore` job under this
         # candidate carries the rate-limiting barrier; lift it onto the
         # candidate's own meta (where the generalised frontier reads it), link
         # the evaluating pathway into the quest graph, and log a result entry.
-        cp_upto = int((s.meta or {}).get("quest_catpath_harvested_upto", 0) or 0)
-        cp_jobs = _fresh_catpath_jobs(store, s.id, cp_upto)
+        cp_upto = int((s.meta or {}).get("quest_autocatpath_harvested_upto", 0) or 0)
+        cp_jobs = _fresh_autocatpath_jobs(store, s.id, cp_upto)
         cp_seen = cp_upto
         for job_id, jmeta in cp_jobs:
-            measures = _catpath_measures_from_job(jmeta)
+            measures = _autocatpath_measures_from_job(jmeta)
             if not measures:
                 continue  # still running — do not advance the bookmark, retry next tick
             cp_seen = max(cp_seen, job_id)
@@ -725,13 +729,13 @@ def harvest_measures(
             append_entry(
                 store,
                 quest_id,
-                text=f"catpath result for {handle} ({name}): {b_s}",
+                text=f"autocatpath result for {handle} ({name}): {b_s}",
                 entry_type="result",
                 by=MEASURED_BY,
             )
             harvested += 1
         if cp_seen > cp_upto:
-            store.stamp_ref_meta(s.id, {"quest_catpath_harvested_upto": cp_seen})
+            store.stamp_ref_meta(s.id, {"quest_autocatpath_harvested_upto": cp_seen})
 
         # Rule out a candidate whose relax job failed for a genuine physical
         # reason (once) — but NOT an infra failure (container/executor died),
@@ -779,13 +783,13 @@ def harvest_measures(
                 ruled_out += 1
                 notes.append(f"ruled-out {handle}")
 
-        # Catpath (barrier-lane) infra failure — the ADR 0064 §C mirror of the
+        # Autocatpath (barrier-lane) infra failure — the ADR 0064 §C mirror of the
         # relax infra branch above, on the *barrier* lane. Unlike relax (where a
         # failed job can be a physical non-convergence verdict → rule out), a
-        # failed ``catpath_explore`` is ALWAYS a compute/infra failure: the NEB
+        # failed ``autocatpath_explore`` is ALWAYS a compute/infra failure: the NEB
         # run crashed, which says nothing about the material — so it NEVER rules
         # out. Same retry-once-then-gripe shape on its own per-candidate counter
-        # (``quest_catpath_infra_retries``); the re-dispatch puts a fresh sim
+        # (``quest_autocatpath_infra_retries``); the re-dispatch puts a fresh sim
         # back in flight so the loop *awaits* it instead of reading the crash as
         # a dry tick (the laundering §C names). Skipped for an already-ruled-out
         # candidate (a dead geometry earns no more barrier compute), and — like
@@ -794,39 +798,45 @@ def harvest_measures(
         cp_ruled_out = any(
             str(t).startswith("ruled-out:") for t in store.tags_for(s.id)
         )
-        catpath_job = _latest_catpath_job(store, s.id)
-        if not cp_ruled_out and catpath_job is not None and catpath_job[0] == "failed":
-            _cp_status, cp_job_meta = catpath_job
-            cp_retries = int((s.meta or {}).get("quest_catpath_infra_retries", 0) or 0)
+        autocatpath_job = _latest_autocatpath_job(store, s.id)
+        if (
+            not cp_ruled_out
+            and autocatpath_job is not None
+            and autocatpath_job[0] == "failed"
+        ):
+            _cp_status, cp_job_meta = autocatpath_job
+            cp_retries = int(
+                (s.meta or {}).get("quest_autocatpath_infra_retries", 0) or 0
+            )
             reaction = _quest_reaction_config(store, quest_id)
             if hub is None or reaction is None:
                 notes.append(
-                    f"catpath infra failure for {handle} "
+                    f"autocatpath infra failure for {handle} "
                     "(retry-eligible, not ruled out)"
                 )
             elif cp_retries < _MAX_INFRA_RETRIES:
-                dispatch_catpath(store, s.id, reaction, hub=hub)
+                dispatch_autocatpath(store, s.id, reaction, hub=hub)
                 store.stamp_ref_meta(
-                    s.id, {"quest_catpath_infra_retries": cp_retries + 1}
+                    s.id, {"quest_autocatpath_infra_retries": cp_retries + 1}
                 )
                 notes.append(
-                    f"catpath infra failure for {handle} → re-dispatched "
+                    f"autocatpath infra failure for {handle} → re-dispatched "
                     f"(retry {cp_retries + 1})"
                 )
             elif cp_retries < _MAX_INFRA_RETRIES + 1:
                 _file_infra_gripe(
-                    store, quest_id, handle, cp_job_meta, hub=hub, lane="catpath"
+                    store, quest_id, handle, cp_job_meta, hub=hub, lane="autocatpath"
                 )
                 store.stamp_ref_meta(
-                    s.id, {"quest_catpath_infra_retries": _MAX_INFRA_RETRIES + 1}
+                    s.id, {"quest_autocatpath_infra_retries": _MAX_INFRA_RETRIES + 1}
                 )
                 notes.append(
-                    f"catpath infra failure persists for {handle} → gripe filed"
+                    f"autocatpath infra failure persists for {handle} → gripe filed"
                 )
             else:
                 # Already gripe-filed on a prior harvest — dedup, no re-file.
                 notes.append(
-                    f"catpath infra failure persists for {handle} (gripe already filed)"
+                    f"autocatpath infra failure persists for {handle} (gripe already filed)"
                 )
     return ComputeStep(
         candidates_created=0,
@@ -840,10 +850,10 @@ def harvest_measures(
 def _quest_reaction_config(store: Store, quest_id: int) -> dict[str, Any] | None:
     """The reaction `R` a barrier quest evaluates every candidate against.
 
-    Stored on the quest's ``meta.reaction_config`` (a parsed catpath config, e.g.
+    Stored on the quest's ``meta.reaction_config`` (a parsed autocatpath config, e.g.
     ``{substrate: 'NO', target: 'NH3', network: 'ammonia'}`` for NO→NH₃ on Pd).
     Absent → the quest ranks on relax measures only (no barrier lane); present →
-    each new candidate also gets a catpath evaluation.
+    each new candidate also gets a autocatpath evaluation.
     """
     refs = store.fetch_refs_by_ids({quest_id})
     ref = refs.get(quest_id)
@@ -863,9 +873,9 @@ def run_compute_step(
     """Turn a tick's proposals into candidates + sims, then harvest results.
 
     Each candidate gets a **relax** (the stability / formation-energy lane) and,
-    when the quest declares a reaction (``meta.reaction_config``), a **catpath**
+    when the quest declares a reaction (``meta.reaction_config``), a **autocatpath**
     evaluation (the barrier lane) — both on the same structure. They are
-    independent measurements (catpath relaxes the injected slab internally), so
+    independent measurements (autocatpath relaxes the injected slab internally), so
     they co-dispatch; no cross-tick sequencing is needed for first light.
 
     ``dispatch=False`` records candidates without minting compute (useful for a
@@ -892,9 +902,9 @@ def run_compute_step(
             if note.startswith("relax["):
                 dispatched += 1
             if reaction is not None:
-                cnote = dispatch_catpath(store, sid, reaction, hub=hub)
+                cnote = dispatch_autocatpath(store, sid, reaction, hub=hub)
                 notes.append(cnote)
-                if cnote.startswith("catpath["):
+                if cnote.startswith("autocatpath["):
                     dispatched += 1
 
     harvest = harvest_measures(store, quest_id, by=by, hub=hub, relax_cell=relax_cell)
@@ -920,7 +930,7 @@ def run_compute_step(
 
 __all__ = [
     "ComputeStep",
-    "dispatch_catpath",
+    "dispatch_autocatpath",
     "dispatch_relax",
     "ensure_candidate",
     "harvest_measures",

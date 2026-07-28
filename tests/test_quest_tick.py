@@ -507,7 +507,7 @@ class TestModelCannotFabricateResults:
             "logbook": [
                 {
                     "entry_type": "result",
-                    "text": "catpath result: barrier=0.892 eV new leader",
+                    "text": "autocatpath result: barrier=0.892 eV new leader",
                 }
             ]
         }
@@ -652,7 +652,7 @@ def test_paper_relation_registered() -> None:
 
 class TestReactionContext:
     """A quest that declares `meta.reaction_config` gets catalyst-slab proposal
-    rules injected into its tick prompt (the lit-survey → catpath wire)."""
+    rules injected into its tick prompt (the lit-survey → autocatpath wire)."""
 
     def test_barrier_quest_prompt_asks_for_a_slab(self, store: Any) -> None:
         from precis.quest.catalyst_seed import seed_catalyst_quest
@@ -664,7 +664,7 @@ class TestReactionContext:
         assert "catalyst slab" in prompt
         assert '"op": "slab"' in prompt
         assert "NO → NH3" in prompt  # substrate → target
-        assert "ammonia" in prompt  # the catpath network
+        assert "ammonia" in prompt  # the autocatpath network
         # "adatom" is prose (one of the placement knobs the agent picks from —
         # "pick ANY dopant element ... its placement (an adatom on the
         # surface / ...)"), NOT a param_space enumeration — PARAM_SPACE

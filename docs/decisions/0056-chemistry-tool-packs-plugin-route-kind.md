@@ -21,7 +21,7 @@
   - [ADR 0007 — derived queue, no block jobs](./0007-derived-queue-no-block-jobs.md)
     — the idempotent content-addressed philosophy the route cache obeys
     (same target + engine digest + stock snapshot ⇒ zero recompute).
-  - **catpath integration** ([`docs/design/catpath-integration.md`](../design/catpath-integration.md))
+  - **autocatpath integration** ([`docs/design/autocatpath-integration.md`](../design/autocatpath-integration.md))
     — the first plugin tool-pack (`pathway` kind); its `can_own_jobs`
     spine is the first of the two seams this ADR relies on.
 
@@ -55,10 +55,10 @@ so each new tool is additive, swappable, and shippable dark.
    normalizer, run at route-ingest** (the Marker analogue) so "swap the
    engine, keep the schema" is enforced in one place. `protein` (AlphaFold)
    and `sequence` (design) are sibling kinds on the same substrate. Not
-   per-engine kinds; not folded into catpath's `pathway`.
+   per-engine kinds; not folded into autocatpath's `pathway`.
 
 3. **Tool-packs are plugins, not core kinds.** Each domain snaps in via
-   entry points and ships dark behind a flag, exactly like catpath's
+   entry points and ships dark behind a flag, exactly like autocatpath's
    `pathway`. Core stays lean; adding the *next* tool-pack touches no core
    code.
 

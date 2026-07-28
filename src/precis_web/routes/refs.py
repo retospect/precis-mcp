@@ -705,11 +705,11 @@ def _pathway_struct_row(
 
 
 async def _pathway_detail(request: Request, store: Any, ref: Any) -> HTMLResponse:
-    """Detail page for ``kind='pathway'`` — a catpath reaction-energetics
+    """Detail page for ``kind='pathway'`` — a autocatpath reaction-energetics
     network (candidate structure → adsorbate/intermediate structures →
     computed barriers).
 
-    ``pathway`` is an EXTERNAL plugin kind (the catpath bridge): its
+    ``pathway`` is an EXTERNAL plugin kind (the autocatpath bridge): its
     handler isn't loaded in every process (dev sessions, some workers),
     so — unlike most other kinds on this page — this never dispatches a
     ``get()`` verb. Everything renders off stored data already on the
@@ -784,7 +784,7 @@ async def _pathway_detail(request: Request, store: Any, ref: Any) -> HTMLRespons
             "n_structures": meta.get("n_structures"),
             "slice_num": meta.get("slice"),
             "produced_by": meta.get("produced_by"),
-            "catpath_version": meta.get("catpath_version"),
+            "autocatpath_version": meta.get("autocatpath_version"),
             "config_snapshot_yaml": meta.get("config_snapshot_yaml"),
             "has_graph": bool(meta.get("graph")),
             "candidate": candidate,
@@ -832,7 +832,7 @@ _REFS_BROWSABLE_KINDS: tuple[str, ...] = (
     # candidate link 400 with "no browse tab" even though they render fine.
     "quest",
     "structure",
-    # Catpath's reaction-energetics ref (candidate structure → adsorbate/
+    # Autocatpath's reaction-energetics ref (candidate structure → adsorbate/
     # intermediate structures → computed barriers). An EXTERNAL plugin
     # kind — its handler isn't loaded in every process — so its detail
     # page (``_pathway_detail``) renders entirely off stored data rather
@@ -1281,7 +1281,7 @@ async def detail(
     # Pathways render as a dedicated candidate→structures→energetics
     # page rather than the generic handler-card render — see
     # ``_pathway_detail``. ``pathway`` is an EXTERNAL plugin kind (the
-    # catpath bridge) so this never dispatches the handler's own
+    # autocatpath bridge) so this never dispatches the handler's own
     # ``get()``; everything comes off the stored ref meta + chunk.
     if kind == "pathway":
         return await _pathway_detail(request, store, ref)

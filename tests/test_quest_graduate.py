@@ -94,7 +94,7 @@ class TestGraduation:
 
 
 class TestBarrierQualityGate:
-    """A candidate that crosses a catpath barrier ceiling but whose pathway
+    """A candidate that crosses a autocatpath barrier ceiling but whose pathway
     did not converge (harvest stamped ``barrier_trusted=False``) is held
     back — the pathway warnings gate below OPEN-ITEMS/decided spec.
 

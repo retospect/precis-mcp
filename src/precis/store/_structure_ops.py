@@ -38,7 +38,7 @@ _SLUG_UNSAFE_RE = re.compile(r"[^a-z0-9]+")
 
 #: ``refs.meta`` keys ``structure_save`` itself computes fresh every call —
 #: anything else (e.g. ``barrier``/``span``/``quest_harvested_upto``/
-#: ``quest_catpath_harvested_upto``/``params`` stamped externally via
+#: ``quest_autocatpath_harvested_upto``/``params`` stamped externally via
 #: ``stamp_ref_meta``) must survive an edit, not be wholesale-replaced.
 _STRUCTURE_OWNED_META_KEYS = frozenset(
     {"lattice", "pbc", "version", "label_hi", "description", "last_relax"}

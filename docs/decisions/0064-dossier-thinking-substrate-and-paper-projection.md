@@ -37,7 +37,7 @@ in place every tick, so:
    rewrites wholesale. Nothing pins it. A rewrite that drops "ruled out Pt"
    silently re-opens ruled-out ground → re-propose → dry/recap ticks → the loop
    rests as "out of ideas" when it really "lost its own trail." This is the
-   catpath loop's dead-3-days failure mode.
+   autocatpath loop's dead-3-days failure mode.
 2. **Fabrication has no structural check in the dossier body.** The logbook path
    already clamps unverified model claims (`_sanitize_model_entry`, `tick.py`);
    the *dossier prose* has no equivalent — nothing forces a synthesis claim to
@@ -130,8 +130,8 @@ living-review process can now own — and therefore export — a dossier. See
 The coordinator tick *already* separates a failed/paused tick (own budget
 `_max_tick_failures`, rests `success=False`) from a dry tick — that layer is
 fine. The unaddressed layer is **compute**: a sim that failed for infra reasons
-(`struct_relax`/catpath `failure_class='infra'`, `compute.py:444-451`) produces
-*dispatched=0* and currently reads as a dry tick, laundering "catpath didn't
+(`struct_relax`/autocatpath `failure_class='infra'`, `compute.py:444-451`) produces
+*dispatched=0* and currently reads as a dry tick, laundering "autocatpath didn't
 run" into "out of ideas." Fix: on a sim-level infra failure, **retry the sim
 once; if it still fails, file a gripe** (bounded + visible) and do not let its
 absence count toward the dry/exhausted budget. Distinct from **honest
@@ -142,9 +142,9 @@ point **truthfully**, no retry, no fabricated number. Its own proposal.
 `harvest_measures` (`quest/compute.py`): the **relax** lane keys on
 `failure_class='infra'` (a non-convergence failure stays a physical rule-out),
 tracked by `meta.quest_infra_retries`; the **barrier** lane treats *every* failed
-`catpath_explore` as retry-eligible (a crashed NEB is never a physical "no
+`autocatpath_explore` as retry-eligible (a crashed NEB is never a physical "no
 pathway" verdict, so it never rules out), tracked by
-`meta.quest_catpath_infra_retries`. Both re-dispatch the sim so it goes
+`meta.quest_autocatpath_infra_retries`. Both re-dispatch the sim so it goes
 non-terminal and the loop *awaits* it instead of drifting dry; a second failure
 files a bounded `quest-infra-failure` gripe (`lane=` names which sim) and stops.
 

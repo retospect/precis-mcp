@@ -17,7 +17,7 @@ Scope, deliberately narrow to stay false-positive-free:
 - Only when the resolved branch is ``main``/``master``. Commits on any feature
   / ``worktree-*`` / ``docs-*`` branch pass untouched.
 - Only in a repo that actually has the ``scripts/ship`` gate this protects.
-  A sibling repo without it (e.g. ``catpath``, which legitimately ships
+  A sibling repo without it (e.g. ``autocatpath``, which legitimately ships
   direct-to-main + ``git push``) has no worktree/ship flow to bypass, so a
   commit on its ``main`` is not this footgun — it passes untouched.
 - Follows a leading ``cd <path>`` and ``git -C <path>`` so the branch is read
@@ -105,7 +105,7 @@ def evaluate(command: str, cwd: str) -> str | None:
         gc = _GIT_C_RE.search(seg)
         target = _resolve(cur, gc.group(2)) if gc else cur
         # Only guard a repo that has the scripts/ship gate this protects;
-        # a sibling repo without it (catpath) ships direct-to-main by design.
+        # a sibling repo without it (autocatpath) ships direct-to-main by design.
         root = _repo_root(target)
         if not root or not os.path.isfile(os.path.join(root, "scripts", "ship")):
             continue

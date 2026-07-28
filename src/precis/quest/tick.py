@@ -435,10 +435,10 @@ def _explorers_creed(store: Store, quest_id: int, *, fr: Any | None = None) -> s
 
 
 def _reaction_context(store: Store, quest: Ref, *, fr: Any | None = None) -> str:
-    """Proposal rules for a **barrier quest** that declares a reaction (catpath).
+    """Proposal rules for a **barrier quest** that declares a reaction (autocatpath).
 
     When the quest carries ``meta.reaction_config`` every candidate is a *catalyst
-    slab* — catpath places the reactants and measures the rate-limiting barrier,
+    slab* — autocatpath places the reactants and measures the rate-limiting barrier,
     so a proposal builds the reaction's slab with the compact ``slab`` op and
     varies only its surface composition. **Prose, not enumeration**: no closed
     element list, no fixed site/coadsorbate menu — the discovery agent picks
@@ -527,14 +527,14 @@ def _reaction_context(store: Store, quest: Ref, *, fr: Any | None = None) -> str
     creed = _explorers_creed(store, quest.id, fr=fr)
     return (
         "\n## Reaction R — this is a catalyst-barrier quest\n"
-        f"Every candidate is a **catalyst slab**. catpath places the reactants "
+        f"Every candidate is a **catalyst slab**. autocatpath places the reactants "
         f"(**{sub} → {tgt}** via the `{net}` network) on *your* slab and measures "
         f"the rate-limiting **barrier** (eV, an ML-potential NEB); a relax measures "
         f"the slab's **stability** (`energy`). You design the **surface**, NOT the "
         f"adsorbate — {knobs}. Minimise the barrier — beat the current best; "
         f"there is no fixed floor, only a better catalyst.\n\n"
         f"Build the slab with the compact `slab` op (do NOT hand-enumerate the {el} "
-        f"atoms — the op builds the fcc(111) geometry ASE-exact so catpath can "
+        f"atoms — the op builds the fcc(111) geometry ASE-exact so autocatpath can "
         f"inject it), then edit composition. Omit the top-level `cell` (the `slab` "
         f"op provides it).\n"
         f"- reference point (propose this verbatim first): `{base}`\n"
@@ -785,7 +785,7 @@ def _is_near_dup(text: str, existing: list[str]) -> bool:
 #: the tick's own tote accounting, never by the model's narration. A model
 #: "result" is at best an observation, never a trusted measurement (gripes
 #: 171148/171149: a model-fabricated "result" — a barrier it invented, not
-#: one catpath measured — was indistinguishable from a real one and made the
+#: one autocatpath measured — was indistinguishable from a real one and made the
 #: loop believe the quest was solved).
 _MODEL_ALLOWED_ENTRY_TYPES: frozenset[str] = frozenset(
     {"note", "observation", "hypothesis", "decision", "dead-end", "reflection"}
@@ -1102,7 +1102,7 @@ def run_quest_tick(
     # Ledger — pin any tried/ruled-out/open *directions* the model wants to
     # survive the whole-rewrite below. Applied BEFORE `rewrite_dossier` so a
     # same-tick rule-out is pinned even if the fresh narrative drops it
-    # (ADR 0064 §A — the structural fix for the catpath dead-3-days spin).
+    # (ADR 0064 §A — the structural fix for the autocatpath dead-3-days spin).
     ledger_added = 0
     for e in payload.get("ledger_add") or []:
         if not isinstance(e, dict):

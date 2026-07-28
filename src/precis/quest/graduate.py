@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from precis.quest.compute import _CATPATH_BARRIER_KEYS, _CATPATH_SPAN_KEYS
+from precis.quest.compute import _AUTOCATPATH_BARRIER_KEYS, _AUTOCATPATH_SPAN_KEYS
 from precis.quest.logbook import append_entry
 from precis.store import Tag
 
@@ -39,15 +39,17 @@ if TYPE_CHECKING:
 GRADUATED_TAG = "needs-experiment"
 _VALID_SENSES = frozenset({"min", "max"})
 
-#: Graduation keys that are catpath-measured barriers — a candidate crossing
+#: Graduation keys that are autocatpath-measured barriers — a candidate crossing
 #: the ceiling on one of these is only as good as the pathway it was measured
 #: over, so :func:`graduate_frontier` gates on the pathway quality verdict
 #: (:func:`precis.quest.compute._pathway_quality`) harvest stamped onto the
-#: candidate's own meta. Reuses ``compute``'s ``_CATPATH_BARRIER_KEYS`` /
-#: ``_CATPATH_SPAN_KEYS`` (the single source of truth for these key spellings)
+#: candidate's own meta. Reuses ``compute``'s ``_AUTOCATPATH_BARRIER_KEYS`` /
+#: ``_AUTOCATPATH_SPAN_KEYS`` (the single source of truth for these key spellings)
 #: rather than re-deriving them — energy-only graduation (``key="energy"``)
 #: is untouched.
-_CATPATH_GATED_KEYS = frozenset({*_CATPATH_BARRIER_KEYS, *_CATPATH_SPAN_KEYS})
+_AUTOCATPATH_GATED_KEYS = frozenset(
+    {*_AUTOCATPATH_BARRIER_KEYS, *_AUTOCATPATH_SPAN_KEYS}
+)
 
 
 def graduation_rule(store: Store, quest_id: int) -> tuple[str, str, float] | None:
@@ -90,7 +92,7 @@ def graduate_frontier(store: Store, quest_id: int, *, by: str = "agent") -> list
             continue
         if any(str(t) == GRADUATED_TAG for t in store.tags_for(c.ref_id)):
             continue
-        if key in _CATPATH_GATED_KEYS and c.flags.get("barrier_trusted") is False:
+        if key in _AUTOCATPATH_GATED_KEYS and c.flags.get("barrier_trusted") is False:
             n = c.flags.get("barrier_neb_failed") or 0
             m = c.flags.get("barrier_desorbed") or 0
             w = c.flags.get("barrier_wrong_site") or 0

@@ -93,7 +93,7 @@ standardized cell) for periodic slabs, RDKit **canonical SMILES / InChI** for
 molecules — matches up to lattice / translation / rotation / permutation within
 tolerance. Battle-tested library work, not research; the one real cost is
 tolerance calibration on slabs-with-vacuum. The `Fingerprint` type is the seam:
-swap the comparator, keep the loop. Orthogonal to this is the **catpath barrier
+swap the comparator, keep the loop. Orthogonal to this is the **autocatpath barrier
 oracle** ("is the built surface a *good catalyst*", not "the same structure") —
 a separate, expensive confirmation, deliberately **not** folded in here.
 

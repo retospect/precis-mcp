@@ -1,7 +1,7 @@
 # spark OOM lockout hardening (why we can't be locked out by a RAM-thrash)
 
 > spark is a single shared compute box (GB10). It runs the precis worker
-> (in-process MACE/NEB catpath compute), llama-swap, the bge-m3 embedder, and
+> (in-process MACE/NEB autocatpath compute), llama-swap, the bge-m3 embedder, and
 > PDF ingest (marker) all at once. When memory runs out the box thrashes into
 > swap and **sshd stops answering banner-exchange while the host still pings** —
 > and there is no remote power tool, so recovery meant a physical reboot.
@@ -24,7 +24,7 @@
    reachable); `--prefer` biases the kill toward the compute hogs
    (`python|precis|llama-server|llama-swap|ollama|marker`). The precis worker
    restarts via `Restart=always`, so culling it is the recoverable sacrifice;
-   an interrupted catpath NEB is re-driven by the ssh_node crash-recovery
+   an interrupted autocatpath NEB is re-driven by the ssh_node crash-recovery
    (lease-steal + poison-cap).
 
 3. *(optional, off by default)* a hard `MemoryMax` cap on

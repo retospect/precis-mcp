@@ -133,15 +133,15 @@ or a quest's id changes, edit in place — don't append a status history (live
 `STATUS` is a DB fact, query `get(kind='quest'|'todo', id=…)` for the current
 value, don't trust a snapshot here).
 
-- **catpath** ("lm-potential", "Pd/NO→NH₃", "the palladium catalyst quest",
+- **autocatpath** ("lm-potential", "Pd/NO→NH₃", "the palladium catalyst quest",
   "catalyst-discovery loop") — the autonomous catalyst-discovery loop.
-  "LM-potential" (the catpath/MACE machine-learned-potential barrier step) and
+  "LM-potential" (the autocatpath/MACE machine-learned-potential barrier step) and
   "lit" (the literature-grounding step) are two steps *inside* this quest's
   own compute cycle (setup → LM-potential → review/Pareto → lit → setup-new →
   maintain front), not separate projects. → quest `164903`
   (`get(kind='quest', id=164903)`); design docs
-  `docs/design/catpath-integration.md` ·
-  `docs/design/catalyst-discovery-quest.md`; catpath itself is a separate
+  `docs/design/autocatpath-integration.md` ·
+  `docs/design/catalyst-discovery-quest.md`; autocatpath itself is a separate
   repo, github.com/retospect/catpath, integrated into precis as the `pathway`
   kind. Sibling quest `161910` shares the Pd/NO→NH₃ theme. Dormant quests
   auto-cool after stale ticks — not a hard block.

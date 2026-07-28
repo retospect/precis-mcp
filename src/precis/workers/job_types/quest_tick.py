@@ -55,7 +55,7 @@ log = logging.getLogger(__name__)
 
 #: Sim job_types this quest's compute lane mints (barrier + stability). Their
 #: non-terminal count is the loop's wait set + backpressure signal.
-_SIM_JOB_TYPES = ("catpath_explore", "struct_relax")
+_SIM_JOB_TYPES = ("autocatpath_explore", "struct_relax")
 
 
 def _env_int(name: str, default: int, *, lo: int = 1, hi: int = 100_000) -> int:
@@ -160,7 +160,7 @@ DESCRIPTION = (
 def _pending_sim_ids(store: Any, quest_id: int) -> list[int]:
     """Non-terminal sim jobs under this quest's candidate structures.
 
-    A sim (``catpath_explore`` / ``struct_relax``) is parented on its *candidate
+    A sim (``autocatpath_explore`` / ``struct_relax``) is parented on its *candidate
     structure*, which ``serves`` the quest. This is the in-flight set the loop
     waits on and the per-quest backpressure signal (empty ⇒ safe to propose the
     next batch).
@@ -414,7 +414,7 @@ def _phase_weave_tick(
     simply heartbeats before the next one (still via the shared ``await``
     phase/``at_time`` wake, so the loop paces itself the same way; ``_phase_
     await``'s ``_pending_sim_ids`` query naturally returns empty for a weave
-    quest, since it never mints ``catpath_explore``/``struct_relax`` jobs, so
+    quest, since it never mints ``autocatpath_explore``/``struct_relax`` jobs, so
     the very next wake falls straight through to another tick). The give-up
     budgets are reused verbatim (consecutive-*failed* / consecutive-*punt*)
     so the loop still winds down + rests exactly like the catalyst path on

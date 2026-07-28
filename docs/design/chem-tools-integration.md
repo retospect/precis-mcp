@@ -3,7 +3,7 @@
 > Design-of-record for folding external chemistry / protein compute
 > tools (retrosynthesis planners, AlphaFold, sequence design, …) into
 > precis. **Present-tense where built; explicit about what is deferred.**
-> Companion to `catpath-integration.md` (the first tool-pack) and
+> Companion to `autocatpath-integration.md` (the first tool-pack) and
 > `sandbox-run.md` (the container-execution substrate). The decisions
 > log at the bottom is authoritative.
 
@@ -67,7 +67,7 @@ spark.
 ## 2. The canonical IR — one `route` kind
 
 **Decision: a single canonical `route` kind; engines normalize to it.**
-(Not per-engine kinds; not overloading catpath's `pathway`.) AiZynth,
+(Not per-engine kinds; not overloading autocatpath's `pathway`.) AiZynth,
 ASKCOS, and any future planner map their raw output into one route-graph
 IR: `target`, ordered `steps` (each with reaction SMARTS / template id,
 precursors, conditions, references), per-node stock status, confidence,
@@ -84,21 +84,21 @@ synchronous engine call.
 (inverse folding / design: spec → candidate sequences) are **sibling
 kinds** on the same substrate. `protein` output is a structure — it can
 feed the existing `structure` kind's viewer/IR via the `Scene.from_ase`
-path (also catpath slice-1b's next step; nice convergence).
+path (also autocatpath slice-1b's next step; nice convergence).
 
 ## 3. Plugin, not core — the tool-pack model
 
 **Decision: chemistry/protein ship as plugin tool-packs, not core
 kinds.** Precis core stays lean; each domain (retrosynth, protein,
 sequence-design) snaps in via entry points, ships dark behind a flag
-(e.g. `PRECIS_CHEM_ENABLED`), exactly like catpath's `pathway`. This is
+(e.g. `PRECIS_CHEM_ENABLED`), exactly like autocatpath's `pathway`. This is
 the "kitchen sink you add as the call comes in" model — the alternative
 (chem kinds in precis core, like structure/cad) works but means every new
 tool-pack edits core.
 
 A plugin tool-pack needs two core seams. **Both are now landed:**
 
-* **`KindSpec.can_own_jobs`** (shipped — catpath spine): lets a plugin
+* **`KindSpec.can_own_jobs`** (shipped — autocatpath spine): lets a plugin
   kind own a derived compute-lane job without a core edit to
   `JOB_PARENT_KINDS`. `JobHandler.put` unions the opt-in kinds.
 * **Open relation vocabulary** (shipped — this design's first slice): a
@@ -122,7 +122,7 @@ for no benefit). That gives a crisp, stable rule:
 | Property | In-process (ansible role) | Container (podman) |
 |---|---|---|
 | Examples | AlphaFold, DFT, MACE, GPU seq-design | AiZynthFinder, ASKCOS, LinChemIn, ChemCrow |
-| Install | pip into a node venv (`roles/dft`, `roles/catpath`) | `podman build` the wrapper image on the node |
+| Install | pip into a node venv (`roles/dft`, `roles/autocatpath`) | `podman build` the wrapper image on the node |
 | Best for | GPU-native, already-on-spark | portable CPU, upstream-maintained env |
 | Provenance | resolved venv versions | image digest (cleaner) |
 | GPU | native (no plumbing) | needs nvidia-container-runtime (deferred) |
@@ -198,15 +198,15 @@ Two tiers (ADR 0007 / 0044 no-block compute lane):
   public `deploy/playbooks/` + `deploy/roles/`, driven by that private
   overlay.
 
-This is exactly how catpath split: `catpath.precis` plugin (shareable) vs
-`roles/catpath` + `topology.yml` + `44-catpath.yml` (cluster-private). The
+This is exactly how autocatpath split: `autocatpath.precis` plugin (shareable) vs
+`roles/autocatpath` + `topology.yml` + `44-autocatpath.yml` (cluster-private). The
 refinement here: containerization moves "how to run an engine" *out* of
 the private repo into precis, shrinking the private repo to genuinely
 machine-specific glue.
 
 ## 8. Build order (slices)
 
-0. **Seams (done in this design's first ship):** `can_own_jobs` (catpath
+0. **Seams (done in this design's first ship):** `can_own_jobs` (autocatpath
    spine) + open relation vocabulary. Both dark; no consumer yet.
 1. **`route` kind + AiZynthFinder**, `job_type='retrosynth'`, containerized
    (wrapper `FROM upstream@digest`) on a Linux node. Prove the compute-lane
@@ -316,7 +316,7 @@ machine-specific glue.
   returns all edges regardless). Follow-up: source the read-time inverse
   map from the DB `relations.inverse_slug` column so plugin inverse pairs
   work end-to-end. This ship deliberately opens only the *write/validation*
-  path — the actual catpath-1b / route-step blocker.
+  path — the actual autocatpath-1b / route-step blocker.
 * **nvidia-container-runtime** is not wired; GPU tools stay in-process
   until it is. Wire it once if you want uniform containerization.
 * **Registry vs build-on-demand** — revisit if the compute fleet grows.
@@ -416,7 +416,7 @@ exists, ASKCOS reuses it unchanged — its container's normalize step just passe
 * **One canonical `route` kind**, engines normalize to it via LinChemIn at
   ingest. Not per-engine kinds; not folded into `pathway`.
 * **Plugin tool-packs, not core kinds.** Ship dark behind a flag, via entry
-  points, like catpath.
+  points, like autocatpath.
 * **Two engine styles**, split by GPU-native-in-process vs
   portable-CPU-container. AlphaFold stays in-process on spark.
 * **Build-on-demand containers**, no tarball store, no registry (yet).

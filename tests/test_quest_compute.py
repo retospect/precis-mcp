@@ -444,30 +444,30 @@ class TestHarvest:
         assert step2.ruled_out == 0
         assert len(gripe_calls) == 1  # unchanged
 
-    # ── catpath (barrier lane) — §C mirror; a crashed NEB never rules out ──
+    # ── autocatpath (barrier lane) — §C mirror; a crashed NEB never rules out ──
 
     def _reaction_quest(self, store: Any) -> int:
-        """A quest with a reaction config so the catpath (barrier) lane is live."""
+        """A quest with a reaction config so the autocatpath (barrier) lane is live."""
         qid = _mk_quest(store, "A NO→NH₃ catalyst")
         store.stamp_ref_meta(
             qid, {"reaction_config": {"substrate": "NO", "target": "NH3"}}
         )
         return qid
 
-    def _failed_catpath(self, store: Any, sid: int) -> None:
+    def _failed_autocatpath(self, store: Any, sid: int) -> None:
         from precis.store import Tag
 
         job = store.insert_ref(
             kind="job",
             slug=None,
-            title="catpath_explore",
-            meta={"job_type": "catpath_explore"},
+            title="autocatpath_explore",
+            meta={"job_type": "autocatpath_explore"},
             parent_id=sid,
         )
         store.add_tag(job.id, Tag.closed("STATUS", "failed"), set_by="system")
 
-    def test_failed_catpath_never_rules_out_candidate(self, store: Any) -> None:
-        """A failed ``catpath_explore`` (a crashed NEB — a compute/infra failure)
+    def test_failed_autocatpath_never_rules_out_candidate(self, store: Any) -> None:
+        """A failed ``autocatpath_explore`` (a crashed NEB — a compute/infra failure)
         must NOT rule out: a barrier crash is never a physical verdict on the
         material, unlike a relax non-convergence (ADR 0064 §C). Note-only with
         no hub (dry preview)."""
@@ -476,17 +476,17 @@ class TestHarvest:
             store, qid, {"name": "Fe", "structure": _SPEC}
         )
         assert sid is not None
-        self._failed_catpath(store, sid)
+        self._failed_autocatpath(store, sid)
 
         step = compute_mod.harvest_measures(store, qid)  # no hub → note-only
         assert step.ruled_out == 0
         assert not any(str(t).startswith("ruled-out:") for t in store.tags_for(sid))
 
-    def test_failed_catpath_with_hub_retries_once(
+    def test_failed_autocatpath_with_hub_retries_once(
         self, store: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Given a hub, a candidate's first catpath failure gets its barrier
-        re-dispatched (via ``dispatch_catpath`` against the quest's reaction
+        """Given a hub, a candidate's first autocatpath failure gets its barrier
+        re-dispatched (via ``dispatch_autocatpath`` against the quest's reaction
         config), the per-lane counter set to 1, and it is NOT ruled out — the
         re-dispatch is what keeps the loop awaiting instead of reading the crash
         as a dry tick (ADR 0064 §C)."""
@@ -495,11 +495,11 @@ class TestHarvest:
             store, qid, {"name": "Fe", "structure": _SPEC}
         )
         assert sid is not None
-        self._failed_catpath(store, sid)
+        self._failed_autocatpath(store, sid)
 
         calls: list[dict[str, Any]] = []
 
-        def _fake_catpath(
+        def _fake_autocatpath(
             _s: Any,
             structure_ref_id: int,
             config: Any,
@@ -510,9 +510,9 @@ class TestHarvest:
             calls.append(
                 {"structure_ref_id": structure_ref_id, "hub": hub, "config": config}
             )
-            return f"catpath[ml] dispatched for {structure_ref_id}"
+            return f"autocatpath[ml] dispatched for {structure_ref_id}"
 
-        monkeypatch.setattr(compute_mod, "dispatch_catpath", _fake_catpath)
+        monkeypatch.setattr(compute_mod, "dispatch_autocatpath", _fake_autocatpath)
 
         hub = object()
         step = compute_mod.harvest_measures(store, qid, hub=hub)
@@ -523,29 +523,35 @@ class TestHarvest:
         assert calls[0]["hub"] is hub
         assert calls[0]["config"] == {"substrate": "NO", "target": "NH3"}
         meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
-        assert meta.get("quest_catpath_infra_retries") == 1
+        assert meta.get("quest_autocatpath_infra_retries") == 1
 
-    def test_failed_catpath_second_time_files_a_gripe_not_a_third_dispatch(
+    def test_failed_autocatpath_second_time_files_a_gripe_not_a_third_dispatch(
         self, store: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A second consecutive catpath failure (retry already used) files a
-        bounded ``catpath``-lane gripe instead of retrying again — never rules
+        """A second consecutive autocatpath failure (retry already used) files a
+        bounded ``autocatpath``-lane gripe instead of retrying again — never rules
         out, and a subsequent harvest doesn't re-file (dedup)."""
         qid = self._reaction_quest(store)
         sid = compute_mod.ensure_candidate(
             store, qid, {"name": "Fe", "structure": _SPEC}
         )
         assert sid is not None
-        store.stamp_ref_meta(sid, {"quest_catpath_infra_retries": 1})  # retried once
-        self._failed_catpath(store, sid)
+        store.stamp_ref_meta(
+            sid, {"quest_autocatpath_infra_retries": 1}
+        )  # retried once
+        self._failed_autocatpath(store, sid)
 
         dispatch_calls: list[int] = []
 
-        def _fake_dispatch_catpath(_s: Any, sid: int, _config: Any, **_kw: Any) -> str:
+        def _fake_dispatch_autocatpath(
+            _s: Any, sid: int, _config: Any, **_kw: Any
+        ) -> str:
             dispatch_calls.append(sid)
-            return "catpath[ml]"
+            return "autocatpath[ml]"
 
-        monkeypatch.setattr(compute_mod, "dispatch_catpath", _fake_dispatch_catpath)
+        monkeypatch.setattr(
+            compute_mod, "dispatch_autocatpath", _fake_dispatch_autocatpath
+        )
 
         gripe_calls: list[dict[str, Any]] = []
 
@@ -564,11 +570,11 @@ class TestHarvest:
         assert not any(str(t).startswith("ruled-out:") for t in store.tags_for(sid))
         assert dispatch_calls == []  # no third dispatch
         assert len(gripe_calls) == 1
-        assert "catpath" in gripe_calls[0]["text"]
+        assert "autocatpath" in gripe_calls[0]["text"]
         assert f"quest {qid}" in gripe_calls[0]["text"]
         assert gripe_calls[0]["tags"] == ["quest-infra-failure"]
         meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
-        assert meta.get("quest_catpath_infra_retries") == 2
+        assert meta.get("quest_autocatpath_infra_retries") == 2
 
         # a re-harvest while still failed does not re-file (dedup)
         step2 = compute_mod.harvest_measures(store, qid, hub=hub)
@@ -632,7 +638,7 @@ def _cand(store: Any, sid: int) -> Candidate:
 
 class TestGeneralizedFrontier:
     """The candidate's measures come from the run *and* ``structure.meta``, so a
-    quest can rank on any named objective (e.g. a catpath ``barrier`` harvested
+    quest can rank on any named objective (e.g. a autocatpath ``barrier`` harvested
     onto the candidate) — not just the four relax columns."""
 
     def _two_candidates(self, store: Any) -> tuple[int, list[int]]:
@@ -658,7 +664,7 @@ class TestGeneralizedFrontier:
 
     def test_ranks_on_barrier_from_meta_plus_energy_from_run(self, store: Any) -> None:
         # energy from the relax run, barrier stamped on structure.meta (the way a
-        # harvested catpath result reaches the frontier). c0 wins on BOTH → sole
+        # harvested autocatpath result reaches the frontier). c0 wins on BOTH → sole
         # frontier; c1 dominated.
         qid, ids = self._two_candidates(store)
         store.stamp_ref_meta(
@@ -697,7 +703,7 @@ class TestGeneralizedFrontier:
         assert [c.ref_id for c in fr.dominated] == [ids[1]]
 
     def test_bookkeeping_meta_keys_excluded_from_measures(self, store: Any) -> None:
-        # `version`/`quest_harvested_upto`/`quest_catpath_harvested_upto` are
+        # `version`/`quest_harvested_upto`/`quest_autocatpath_harvested_upto` are
         # structure_save/harvest bookkeeping, not ranking measures — they must
         # not pollute Candidate.measures alongside a real stamped measure.
         qid, ids = self._two_candidates(store)
@@ -707,14 +713,14 @@ class TestGeneralizedFrontier:
                 "barrier": 0.5,
                 "version": 3,
                 "quest_harvested_upto": 7,
-                "quest_catpath_harvested_upto": 12,
+                "quest_autocatpath_harvested_upto": 12,
             },
         )
         c = _candidate_from_structure(store, store.fetch_refs_by_ids({ids[0]})[ids[0]])
         assert c.measures.get("barrier") == 0.5
         assert "version" not in c.measures
         assert "quest_harvested_upto" not in c.measures
-        assert "quest_catpath_harvested_upto" not in c.measures
+        assert "quest_autocatpath_harvested_upto" not in c.measures
 
     def test_barrier_tradeoff_puts_both_on_front(self, store: Any) -> None:
         # c0 lower energy but higher barrier; c1 the reverse → neither dominates.
@@ -976,10 +982,10 @@ class TestLeaderboard:
         assert "no candidate structures serve this quest yet" in body
 
 
-# ── catpath harvest: barrier → candidate meta → frontier (Slice 3) ────
+# ── autocatpath harvest: barrier → candidate meta → frontier (Slice 3) ────
 
 
-class TestCatpathHarvest:
+class TestAutocatpathHarvest:
     def _candidate(self, store: Any, qid: int, name: str = "Pd") -> int:
         sid = compute_mod.ensure_candidate(
             store, qid, {"name": name, "structure": _SPEC}
@@ -987,12 +993,12 @@ class TestCatpathHarvest:
         assert sid is not None
         return sid
 
-    def _catpath_job(self, store: Any, sid: int, meta: dict[str, Any]) -> int:
+    def _autocatpath_job(self, store: Any, sid: int, meta: dict[str, Any]) -> int:
         return store.insert_ref(
             kind="job",
             slug=None,
-            title="catpath_explore",
-            meta={"job_type": "catpath_explore", **meta},
+            title="autocatpath_explore",
+            meta={"job_type": "autocatpath_explore", **meta},
             parent_id=sid,
         ).id
 
@@ -1001,7 +1007,7 @@ class TestCatpathHarvest:
     ) -> None:
         qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
         sid = self._candidate(store, qid)
-        self._catpath_job(store, sid, {"result": {"barrier": 0.7, "span": 1.2}})
+        self._autocatpath_job(store, sid, {"result": {"barrier": 0.7, "span": 1.2}})
         step = compute_mod.harvest_measures(store, qid)
         assert step.results_harvested == 1
         meta = store.fetch_refs_by_ids({sid})[sid].meta
@@ -1024,7 +1030,7 @@ class TestCatpathHarvest:
             qid, {"rubric_objectives": [{"key": "barrier", "sense": "min"}]}
         )
         sid = self._candidate(store, qid)
-        # a converged relax makes it evaluable; catpath supplies the barrier
+        # a converged relax makes it evaluable; autocatpath supplies the barrier
         store.structure_record_run(
             sid,
             fidelity="ml",
@@ -1034,7 +1040,7 @@ class TestCatpathHarvest:
             max_disp=0.0,
             energy=-10.0,
         )
-        self._catpath_job(store, sid, {"result": {"barrier": 0.5}})
+        self._autocatpath_job(store, sid, {"result": {"barrier": 0.5}})
         compute_mod.harvest_measures(store, qid)
         fr = quest_frontier(store, qid)
         assert [c.ref_id for c in fr.frontier] == [sid]  # ranked on the barrier
@@ -1042,18 +1048,18 @@ class TestCatpathHarvest:
     def test_unfinished_job_contributes_nothing(self, store: Any) -> None:
         qid = _mk_quest(store, "A striving")
         sid = self._candidate(store, qid)
-        self._catpath_job(store, sid, {})  # no barrier scalar yet → still running
+        self._autocatpath_job(store, sid, {})  # no barrier scalar yet → still running
         step = compute_mod.harvest_measures(store, qid)
         assert step.results_harvested == 0
         assert "barrier" not in (store.fetch_refs_by_ids({sid})[sid].meta or {})
 
     def test_unfinished_job_is_retried_once_it_completes(self, store: Any) -> None:
-        # The idempotency bookmark (quest_catpath_harvested_upto) used to
+        # The idempotency bookmark (quest_autocatpath_harvested_upto) used to
         # advance past a still-running job the moment it was scanned, so its
         # barrier was permanently lost once the job later finished.
         qid = _mk_quest(store, "A striving")
         sid = self._candidate(store, qid)
-        job_id = self._catpath_job(store, sid, {})  # no scalar yet
+        job_id = self._autocatpath_job(store, sid, {})  # no scalar yet
         step = compute_mod.harvest_measures(store, qid)
         assert step.results_harvested == 0
         assert "barrier" not in (store.fetch_refs_by_ids({sid})[sid].meta or {})
@@ -1070,7 +1076,7 @@ class TestCatpathHarvest:
         target = store.insert_ref(
             kind="job", slug=None, title="pw", meta={}, parent_id=sid
         ).id
-        self._catpath_job(
+        self._autocatpath_job(
             store, sid, {"result": {"barrier": 0.4}, "pathway_ref": target}
         )
         compute_mod.harvest_measures(store, qid)
@@ -1098,7 +1104,7 @@ class TestCatpathHarvest:
             },
             parent_id=sid,
         ).id
-        self._catpath_job(
+        self._autocatpath_job(
             store, sid, {"result": {"barrier": 0.4}, "pathway_ref": target}
         )
         compute_mod.harvest_measures(store, qid)
@@ -1118,7 +1124,7 @@ class TestCatpathHarvest:
             meta={"warnings": [], "low_confidence": True},
             parent_id=sid,
         ).id
-        self._catpath_job(
+        self._autocatpath_job(
             store, sid, {"result": {"barrier": 0.4}, "pathway_ref": target}
         )
         compute_mod.harvest_measures(store, qid)
@@ -1147,7 +1153,7 @@ class TestCatpathHarvest:
             },
             parent_id=sid,
         ).id
-        self._catpath_job(
+        self._autocatpath_job(
             store, sid, {"result": {"barrier": 0.3}, "pathway_ref": target}
         )
         compute_mod.harvest_measures(store, qid)
@@ -1169,7 +1175,7 @@ class TestCatpathHarvest:
             meta={"warnings": [], "low_confidence": False},
             parent_id=sid,
         ).id
-        self._catpath_job(
+        self._autocatpath_job(
             store,
             sid,
             {
@@ -1185,7 +1191,9 @@ class TestCatpathHarvest:
     def test_missing_pathway_ref_stamps_no_trust_flags(self, store: Any) -> None:
         qid = _mk_quest(store, "A striving")
         sid = self._candidate(store, qid)
-        self._catpath_job(store, sid, {"result": {"barrier": 0.4}})  # no pathway_ref
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.4}}
+        )  # no pathway_ref
         step = compute_mod.harvest_measures(store, qid)
         assert step.results_harvested == 1
         meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
@@ -1194,19 +1202,19 @@ class TestCatpathHarvest:
         assert "barrier_neb_failed" not in meta
 
 
-def _catpath_registered() -> bool:
-    """The `catpath_explore` job_type (and `pathway` kind) come from the catpath
+def _autocatpath_registered() -> bool:
+    """The `autocatpath_explore` job_type (and `pathway` kind) come from the autocatpath
     plugin — present in the dev container, absent on the torch-free host."""
     from precis.workers.job_types import get_job_type
 
-    return get_job_type("catpath_explore") is not None
+    return get_job_type("autocatpath_explore") is not None
 
 
 @pytest.mark.skipif(
-    not _catpath_registered(), reason="catpath plugin not installed (host venv)"
+    not _autocatpath_registered(), reason="autocatpath plugin not installed (host venv)"
 )
-class TestDispatchCatpath:
-    """The candidate→catpath dispatch: mints a `catpath_explore` job pinned on
+class TestDispatchAutocatpath:
+    """The candidate→autocatpath dispatch: mints a `autocatpath_explore` job pinned on
     the candidate (so :func:`harvest_measures` finds it) carrying the exported
     slab, plus the `pathway` write-back ref. The round-trip test closes the loop
     with the harvest half."""
@@ -1214,15 +1222,15 @@ class TestDispatchCatpath:
     _RX = {"substrate": "NO", "target": "NH3", "network": "ammonia"}
 
     @pytest.fixture(autouse=True)
-    def _catpath_schema(self, store: Any) -> None:
-        """Guarantee the catpath plugin's `pathway` kind is registered on this
+    def _autocatpath_schema(self, store: Any) -> None:
+        """Guarantee the autocatpath plugin's `pathway` kind is registered on this
         worker's clone. A `fresh_db`-based migration test elsewhere in the suite
         rebuilds the clone with the plugin entry points monkeypatched out, which
         drops `pathway` — so ``insert_ref(kind='pathway')`` would then raise
         'unknown kind'. Re-applying migrations *through the plugin sources* is
         idempotent and restores the kind (a no-op when already present). Passing
         the bare dir would only load precis-core — ``discover_sources`` is what
-        pulls in the catpath plugin migration."""
+        pulls in the autocatpath plugin migration."""
         from precis.store import Migrator
         from tests.conftest import MIGRATIONS_DIR, _active_dsn
 
@@ -1238,9 +1246,9 @@ class TestDispatchCatpath:
     def test_mints_job_on_candidate_with_slab_and_pathway(self, store: Any) -> None:
         qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
         sid = self._candidate(store, qid)
-        note = compute_mod.dispatch_catpath(store, sid, self._RX)
-        assert note.startswith("catpath[")
-        jobs = compute_mod._fresh_catpath_jobs(store, sid, 0)
+        note = compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        assert note.startswith("autocatpath[")
+        jobs = compute_mod._fresh_autocatpath_jobs(store, sid, 0)
         assert len(jobs) == 1
         _job_id, jmeta = jobs[0]
         params = jmeta.get("params") or {}
@@ -1259,9 +1267,9 @@ class TestDispatchCatpath:
     def test_dispatch_is_idempotent(self, store: Any) -> None:
         qid = _mk_quest(store, "A striving")
         sid = self._candidate(store, qid)
-        compute_mod.dispatch_catpath(store, sid, self._RX)
-        compute_mod.dispatch_catpath(store, sid, self._RX)  # same geometry+config
-        assert len(compute_mod._fresh_catpath_jobs(store, sid, 0)) == 1
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)  # same geometry+config
+        assert len(compute_mod._fresh_autocatpath_jobs(store, sid, 0)) == 1
 
     def test_roundtrip_dispatch_then_harvest(self, store: Any) -> None:
         """Dispatch mints a job the harvest can read back — the two halves wire
@@ -1281,8 +1289,8 @@ class TestDispatchCatpath:
             max_disp=0.0,
             energy=-10.0,
         )
-        compute_mod.dispatch_catpath(store, sid, self._RX)
-        job_id, _jmeta = compute_mod._fresh_catpath_jobs(store, sid, 0)[0]
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        job_id, _jmeta = compute_mod._fresh_autocatpath_jobs(store, sid, 0)[0]
         # the ssh_node worker's dispatch emits the scalar summary onto the job meta
         store.stamp_ref_meta(job_id, {"barrier": 0.33, "span": 0.9})
         compute_mod.harvest_measures(store, qid)
@@ -1291,25 +1299,25 @@ class TestDispatchCatpath:
         assert [c.ref_id for c in fr.frontier] == [sid]  # ranked on the barrier
 
     def test_missing_structure_degrades(self, store: Any) -> None:
-        note = compute_mod.dispatch_catpath(store, 999_999, self._RX)
+        note = compute_mod.dispatch_autocatpath(store, 999_999, self._RX)
         assert "skipped" in note and "not found" in note
 
     def test_empty_config_skipped(self, store: Any) -> None:
         qid = _mk_quest(store, "A striving")
         sid = self._candidate(store, qid)
-        note = compute_mod.dispatch_catpath(store, sid, {})
+        note = compute_mod.dispatch_autocatpath(store, sid, {})
         assert "skipped" in note
-        assert compute_mod._fresh_catpath_jobs(store, sid, 0) == []
+        assert compute_mod._fresh_autocatpath_jobs(store, sid, 0) == []
 
     def test_routed_job_pins_cuda_device(self, store: Any, monkeypatch: Any) -> None:
-        """A GPU-routed catpath job gets ``mlip.device=cuda`` injected (catpath
+        """A GPU-routed autocatpath job gets ``mlip.device=cuda`` injected (autocatpath
         defaults to cpu → the GPU sits idle otherwise); the caller's config dict
         is not mutated and its other keys are preserved."""
-        monkeypatch.setenv(compute_mod._CATPATH_ROUTE_NODE_ENV, "spark")
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, "spark")
         qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
         sid = self._candidate(store, qid)
-        compute_mod.dispatch_catpath(store, sid, self._RX)
-        _job_id, jmeta = compute_mod._fresh_catpath_jobs(store, sid, 0)[0]
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        _job_id, jmeta = compute_mod._fresh_autocatpath_jobs(store, sid, 0)[0]
         cfg = (jmeta.get("params") or {})["config"]
         assert cfg["mlip"]["device"] == "cuda"
         assert cfg["substrate"] == "NO"  # original keys ride along
@@ -1318,17 +1326,17 @@ class TestDispatchCatpath:
     def test_wall_seconds_env_reaches_the_job_and_the_ssh_node_lease(
         self, store: Any, monkeypatch: Any
     ) -> None:
-        """``PRECIS_CATPATH_WALL_SECONDS`` must reach the dispatched job's
+        """``PRECIS_AUTOCATPATH_WALL_SECONDS`` must reach the dispatched job's
         ``resources.wall_seconds`` (the field ``ssh_node``'s ``_lease_seconds``
         reads to size the lease) — a wiring regression, not just a unit check
         of either side in isolation."""
         from precis.workers.executors import ssh_node
 
-        monkeypatch.setenv(compute_mod._CATPATH_WALL_SECONDS_ENV, "9000")
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_WALL_SECONDS_ENV, "9000")
         qid = _mk_quest(store, "A striving")
         sid = self._candidate(store, qid)
-        compute_mod.dispatch_catpath(store, sid, self._RX)
-        _job_id, jmeta = compute_mod._fresh_catpath_jobs(store, sid, 0)[0]
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        _job_id, jmeta = compute_mod._fresh_autocatpath_jobs(store, sid, 0)[0]
         params = jmeta.get("params") or {}
         assert params["resources"]["wall_seconds"] == 9000
         # the full job meta (as stored) is what ssh_node's claim loop reads
@@ -1340,11 +1348,11 @@ class TestDispatchCatpath:
     ) -> None:
         """Without a route node there's no GPU to pin — the config is passed
         through verbatim (in-process EMT demo path)."""
-        monkeypatch.delenv(compute_mod._CATPATH_ROUTE_NODE_ENV, raising=False)
+        monkeypatch.delenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, raising=False)
         qid = _mk_quest(store, "A striving")
         sid = self._candidate(store, qid)
-        compute_mod.dispatch_catpath(store, sid, self._RX)
-        _job_id, jmeta = compute_mod._fresh_catpath_jobs(store, sid, 0)[0]
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        _job_id, jmeta = compute_mod._fresh_autocatpath_jobs(store, sid, 0)[0]
         assert (jmeta.get("params") or {})["config"] == self._RX  # unchanged
 
     # ── preflight hard gate (PRECIS_STRUCTURE_PREFLIGHT, default off) ──────
@@ -1368,8 +1376,10 @@ class TestDispatchCatpath:
         monkeypatch.delenv(preflight_mod._PREFLIGHT_ENABLED_ENV, raising=False)
         qid = _mk_quest(store, "A striving")
         sid = self._bad_candidate(store, qid)
-        note = compute_mod.dispatch_catpath(store, sid, self._RX)
-        assert note.startswith("catpath[")  # current behaviour: dispatches regardless
+        note = compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        assert note.startswith(
+            "autocatpath["
+        )  # current behaviour: dispatches regardless
 
     def test_preflight_flag_on_skips_bad_candidate_and_stamps_dead_end(
         self, store: Any, monkeypatch: Any
@@ -1381,9 +1391,9 @@ class TestDispatchCatpath:
         qid = _mk_quest(store, "A striving")
         sid = self._bad_candidate(store, qid)
         monkeypatch.setenv(preflight_mod._PREFLIGHT_ENABLED_ENV, "1")
-        note = compute_mod.dispatch_catpath(store, sid, self._RX)
+        note = compute_mod.dispatch_autocatpath(store, sid, self._RX)
         assert "failed substrate preflight" in note
-        assert compute_mod._fresh_catpath_jobs(store, sid, 0) == []  # no job minted
+        assert compute_mod._fresh_autocatpath_jobs(store, sid, 0) == []  # no job minted
         tags = {str(t) for t in store.tags_for(sid)}
         assert any(t.startswith("ruled-out:preflight") for t in tags)
 
@@ -1393,38 +1403,38 @@ class TestDispatchCatpath:
         monkeypatch.setenv(preflight_mod._PREFLIGHT_ENABLED_ENV, "1")
         qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
         sid = self._candidate(store, qid)  # _SPEC — a single, in-box Fe atom
-        note = compute_mod.dispatch_catpath(store, sid, self._RX)
-        assert note.startswith("catpath[")
-        assert len(compute_mod._fresh_catpath_jobs(store, sid, 0)) == 1
+        note = compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        assert note.startswith("autocatpath[")
+        assert len(compute_mod._fresh_autocatpath_jobs(store, sid, 0)) == 1
 
 
 class TestReactionCoDispatch:
-    """A barrier quest (``meta.reaction_config`` set) co-dispatches catpath with
+    """A barrier quest (``meta.reaction_config`` set) co-dispatches autocatpath with
     the relax for each new candidate; a plain quest dispatches relax only. Both
     dispatch fns are stubbed — no real compute, no `pathway` kind needed."""
 
     def _stub_both(self, monkeypatch: Any) -> tuple[list[int], list[tuple[int, dict]]]:
         relax_calls: list[int] = []
-        catpath_calls: list[tuple[int, dict]] = []
+        autocatpath_calls: list[tuple[int, dict]] = []
 
         def _fake_relax(_store: Any, sid: int, **_kw: Any) -> str:
             relax_calls.append(sid)
             return f"relax[ml] dispatched for {sid}"
 
-        def _fake_catpath(_store: Any, sid: int, cfg: dict, **_kw: Any) -> str:
-            catpath_calls.append((sid, cfg))
-            return f"catpath[emt] dispatched for {sid} → pathway p"
+        def _fake_autocatpath(_store: Any, sid: int, cfg: dict, **_kw: Any) -> str:
+            autocatpath_calls.append((sid, cfg))
+            return f"autocatpath[emt] dispatched for {sid} → pathway p"
 
         monkeypatch.setattr(compute_mod, "dispatch_relax", _fake_relax)
-        monkeypatch.setattr(compute_mod, "dispatch_catpath", _fake_catpath)
-        return relax_calls, catpath_calls
+        monkeypatch.setattr(compute_mod, "dispatch_autocatpath", _fake_autocatpath)
+        return relax_calls, autocatpath_calls
 
     _RX = {"substrate": "NO", "target": "NH3", "network": "ammonia"}
 
-    def test_reaction_quest_codispatches_catpath(
+    def test_reaction_quest_codispatches_autocatpath(
         self, store: Any, monkeypatch: Any
     ) -> None:
-        relax_calls, catpath_calls = self._stub_both(monkeypatch)
+        relax_calls, autocatpath_calls = self._stub_both(monkeypatch)
         qid = _mk_quest(store, "Lowest-barrier Pd catalyst for NO→NH₃")
         store.stamp_ref_meta(qid, {"reaction_config": self._RX})
         step = compute_mod.run_compute_step(
@@ -1432,32 +1442,34 @@ class TestReactionCoDispatch:
         )
         assert step.candidates_created == 1
         assert len(relax_calls) == 1
-        # catpath fired for the same candidate, carrying the reaction config
-        assert len(catpath_calls) == 1
-        assert catpath_calls[0][0] == relax_calls[0]
-        assert catpath_calls[0][1] == self._RX
-        assert step.sims_dispatched == 2  # relax + catpath
+        # autocatpath fired for the same candidate, carrying the reaction config
+        assert len(autocatpath_calls) == 1
+        assert autocatpath_calls[0][0] == relax_calls[0]
+        assert autocatpath_calls[0][1] == self._RX
+        assert step.sims_dispatched == 2  # relax + autocatpath
 
     def test_plain_quest_dispatches_relax_only(
         self, store: Any, monkeypatch: Any
     ) -> None:
-        relax_calls, catpath_calls = self._stub_both(monkeypatch)
+        relax_calls, autocatpath_calls = self._stub_both(monkeypatch)
         qid = _mk_quest(store, "A striving")  # no reaction_config
         step = compute_mod.run_compute_step(
             store, qid, [{"name": "Fe", "structure": _SPEC}]
         )
         assert len(relax_calls) == 1
-        assert catpath_calls == []  # no reaction → no barrier lane
+        assert autocatpath_calls == []  # no reaction → no barrier lane
         assert step.sims_dispatched == 1
 
-    def test_no_catpath_when_dispatch_off(self, store: Any, monkeypatch: Any) -> None:
-        relax_calls, catpath_calls = self._stub_both(monkeypatch)
+    def test_no_autocatpath_when_dispatch_off(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        relax_calls, autocatpath_calls = self._stub_both(monkeypatch)
         qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
         store.stamp_ref_meta(qid, {"reaction_config": self._RX})
         compute_mod.run_compute_step(
             store, qid, [{"name": "Pd", "structure": _SPEC}], dispatch=False
         )
-        assert relax_calls == [] and catpath_calls == []  # preview: no compute
+        assert relax_calls == [] and autocatpath_calls == []  # preview: no compute
 
     def _stub_relax_cell(self, monkeypatch: Any) -> list[str | None]:
         """Capture the ``cell`` mode each relax dispatch is asked for."""
@@ -1471,7 +1483,7 @@ class TestReactionCoDispatch:
 
         monkeypatch.setattr(compute_mod, "dispatch_relax", _fake_relax)
         monkeypatch.setattr(
-            compute_mod, "dispatch_catpath", lambda *a, **k: "catpath[emt] → p"
+            compute_mod, "dispatch_autocatpath", lambda *a, **k: "autocatpath[emt] → p"
         )
         return seen
 

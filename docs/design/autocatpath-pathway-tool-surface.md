@@ -209,6 +209,6 @@ against every computed sibling sharing the same substrate→target. (A
 - `preview` / `intermediates` / `steps` already have their data
   (`network_topology`, `results_json`); this slice is the TOON *rendering* +
   the `analysis` computation + the `precis-pathway-help` skill.
-- Levers beyond today's config (dopant / facet / poison / pH) are catpath
+- Levers beyond today's config (dopant / facet / poison / pH) are autocatpath
   extensions added incrementally; the surface above doesn't change when they
   land — only the `lever` column gains values.

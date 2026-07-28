@@ -188,7 +188,7 @@
 - name: Drop the precis-worker aizynth env drop-in (EnvironmentFile)
   ansible.builtin.template:
     src: precis-worker-aizynth.conf.j2
-    # 30- sorts after dft's 10- and catpath's 20- ; all set PRECIS_NODE to the
+    # 30- sorts after dft's 10- and autocatpath's 20- ; all set PRECIS_NODE to the
     # same value, so order is immaterial.
     dest: /etc/systemd/system/precis-worker.service.d/30-aizynth.conf
     owner: root

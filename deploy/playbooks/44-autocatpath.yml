@@ -1,0 +1,27 @@
+---
+# 44-autocatpath.yml — install the autocatpath reaction-pathway compute stack on the
+# GPU node(s) and wire the worker to run `autocatpath_explore` jobs there.
+#
+# Targeting is driven entirely by the topology map
+# (inventory/group_vars/all/topology.yml): the role runs where
+# `inventory_hostname in precis_capabilities.autocatpath`. Move autocatpath to another
+# box by editing that one line, not this playbook.
+#
+# Run order: AFTER playbooks/20-precis-worker.yml (the worker unit must exist;
+# this drops the EnvironmentFile drop-in it reads, then restarts it). Like the
+# other worker plays, not part of site.yml — run explicitly:
+#
+#   ansible-playbook playbooks/44-autocatpath.yml
+#   # test a autocatpath branch on the GPU node first:
+#   ansible-playbook playbooks/44-autocatpath.yml -e autocatpath_git_ref=my-branch
+#
+# NOTE: the ML backend image (torch + MACE weights on the GPU) is heavy and is
+# selected by the `autocatpath_mace` capability; the first install pulls it. The
+# macOS gateway needs only the KIND SURFACE (autocatpath[precis] in the
+# web venv + PRECIS_AUTOCATPATH_ENABLED) — see roles/autocatpath/README.md.
+
+- name: Configure autocatpath reaction-pathway compute (topology-driven)
+  hosts: all
+  roles:
+    - role: autocatpath
+      when: inventory_hostname in (precis_capabilities.autocatpath | default([]))

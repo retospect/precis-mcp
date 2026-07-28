@@ -8,14 +8,14 @@ model: opus
 
 > Migrates gripes 161623 (defect/bulk-alloy realism) and 161622
 > (poisoning-awareness) out of the bug tracker. Both extend the
-> catalyst/catpath screening pipeline (`docs/design/catpath-integration.md`,
+> catalyst/autocatpath screening pipeline (`docs/design/autocatpath-integration.md`,
 > `docs/design/catalyst-discovery-quest.md`) on top of the `structure` kind
 > (ADR 0043) and, where an external DFT/ML-potential library is the source of
 > comparison data, ADR 0053's import path.
 
 ## Motivation / why
 
-The catalyst-discovery pipeline (quest `164903`, catpath as the rented
+The catalyst-discovery pipeline (quest `164903`, autocatpath as the rented
 kernel) screens candidates two ways that are cleaner than the chemistry it's
 supposed to predict:
 
@@ -72,7 +72,7 @@ and were filed as siblings, not because they're one build.
 ## Explicitly NOT in scope
 
 - **Any specific relaxer/DFT-engine/ML-potential choice.** Both directions
-  reuse whatever backend the pipeline already dispatches to (catpath/MACE
+  reuse whatever backend the pipeline already dispatches to (autocatpath/MACE
   today); backend selection and any external-library import rides ADR
   0053's ladder, not this proposal.
 - **New DFT methodology.** This is a *sampling and comparison* strategy
@@ -100,8 +100,8 @@ and were filed as siblings, not because they're one build.
 
 ## Target + blast radius
 
-- The catalyst/catpath screening pipeline (quest `164903`,
-  `docs/design/catpath-integration.md`, `docs/design/catalyst-discovery-quest.md`).
+- The catalyst/autocatpath screening pipeline (quest `164903`,
+  `docs/design/autocatpath-integration.md`, `docs/design/catalyst-discovery-quest.md`).
 - The `structure` kind and its run-cube (ADR 0043) — ensemble sampling and
   poisoning runs are new *uses* of `struct_relax`/run-cube content-addressing,
   not new storage shape.
@@ -117,9 +117,9 @@ and were filed as siblings, not because they're one build.
 
 - **Ensemble sample size vs. cost.** How many defect configurations per
   composition are enough to trust the aggregate (statistical significance)
-  without blowing the compute budget catpath/MACE already runs against?
-  catpath's existing `seeds:[0,1,2]` pooled-uncertainty pattern
-  (`docs/design/catpath-integration.md` §3.4) is a plausible template but
+  without blowing the compute budget autocatpath/MACE already runs against?
+  autocatpath's existing `seeds:[0,1,2]` pooled-uncertainty pattern
+  (`docs/design/autocatpath-integration.md` §3.4) is a plausible template but
   answers a different question (numerical spread of one geometry, not
   spread over many geometries) — not yet decided whether it's reusable
   as-is or needs its own pooling.

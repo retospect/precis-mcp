@@ -3,11 +3,11 @@
 A reproducible, **idempotent** minter for the flagship catalyst quest. It creates
 a `quest` whose meta wires the whole loop:
 
-* ``meta.reaction_config`` — catpath's worked NO→NH₃/Pd example
+* ``meta.reaction_config`` — autocatpath's worked NO→NH₃/Pd example
   (`examples/no_to_nh3_pd.yaml`). :func:`precis.quest.compute.run_compute_step`
-  reads it and co-dispatches a catpath barrier eval with every candidate's relax.
+  reads it and co-dispatches a autocatpath barrier eval with every candidate's relax.
 * ``meta.rubric_objectives`` — the two measured axes that actually land **today**:
-  the catpath ``barrier`` (min) and the relax ``energy`` (min, the stability
+  the autocatpath ``barrier`` (min) and the relax ``energy`` (min, the stability
   proxy). ``formation_e`` is a future refinement — declaring an objective nothing
   produces would leave every candidate *unevaluated* (an empty frontier), so we
   rank on ``energy`` until formation energy is computed.
@@ -40,12 +40,12 @@ SEED_KEY = "no_to_nh3_pd"
 STRIVING = (
     "Discover a palladium catalyst that minimises the rate-limiting barrier for "
     "NO→NH₃ (ammonia synthesis by NO reduction) on a Pd(111) surface, while "
-    "keeping the slab stable. Each candidate is a `structure` (the model); catpath "
+    "keeping the slab stable. Each candidate is a `structure` (the model); autocatpath "
     "measures its reaction barrier and a relax measures its stability; the Pareto "
     "frontier ranks the barrier/stability trade-off."
 )
 
-#: catpath config the barrier lane runs (verbatim `no_to_nh3_pd.yaml`, backend
+#: autocatpath config the barrier lane runs (verbatim `no_to_nh3_pd.yaml`, backend
 #: MACE per the design's first-light choice — an unrouted dev tick force-EMTs it).
 REACTION_CONFIG: dict[str, Any] = {
     "name": "no_to_nh3_pd",
@@ -66,7 +66,7 @@ REACTION_CONFIG: dict[str, Any] = {
     },
 }
 
-#: Rank on the two axes measured today: catpath barrier + relax energy (both min).
+#: Rank on the two axes measured today: autocatpath barrier + relax energy (both min).
 RUBRIC_OBJECTIVES: list[dict[str, str]] = [
     {"key": "barrier", "sense": "min"},
     {"key": "energy", "sense": "min"},

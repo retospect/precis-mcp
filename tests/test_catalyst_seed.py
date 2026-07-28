@@ -1,7 +1,7 @@
 """Tests for the catalyst-quest seed (`precis.quest.catalyst_seed`).
 
 The seed mints the NO→NH₃/Pd quest with the meta that wires first light:
-`reaction_config` (catpath's Pd example → co-dispatch), `rubric_objectives`
+`reaction_config` (autocatpath's Pd example → co-dispatch), `rubric_objectives`
 (barrier + energy), `graduation` ceiling, `param_space`. Idempotent by
 `meta.seed_key`. Runs against real PG (the ``store`` fixture).
 """
@@ -30,7 +30,7 @@ class TestSeedCatalystQuest:
         assert created is True
         meta = _meta(store, qid)
         assert meta["seed_key"] == SEED_KEY
-        # reaction config drives the catpath co-dispatch lane
+        # reaction config drives the autocatpath co-dispatch lane
         assert meta["reaction_config"] == REACTION_CONFIG
         assert _quest_reaction_config(store, qid) == REACTION_CONFIG
         # it is a live quest
@@ -52,8 +52,8 @@ class TestSeedCatalystQuest:
         assert created1 is True and created2 is False
         assert qid1 == qid2  # same quest, matched by seed_key
 
-    def test_reaction_config_is_a_valid_catpath_shape(self, store: Any) -> None:
-        # the config carries what the catpath bridge needs to build + run
+    def test_reaction_config_is_a_valid_autocatpath_shape(self, store: Any) -> None:
+        # the config carries what the autocatpath bridge needs to build + run
         assert REACTION_CONFIG["substrate"] == "NO"
         assert REACTION_CONFIG["target"] == "NH3"
         assert REACTION_CONFIG["network"] == "ammonia"

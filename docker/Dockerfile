@@ -336,26 +336,26 @@ RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
         ipdb \
         rich
 
-# catpath[precis] — the `pathway` kind plugin (catalyst-discovery quest). Its
+# autocatpath[precis] — the `pathway` kind plugin (catalyst-discovery quest). Its
 # third-party deps (ase/networkx/rdkit/numpy/scipy/matplotlib/pyyaml) already
 # arrive via `--all-extras` in the `deps` stage, and precis-mcp is
 # editable-installed in the `dev` stage below, so we install **--no-deps** here:
 # the layer is source-independent (cached) and never re-resolves precis. At
 # runtime precis discovers the plugin via entry points and `import
-# catpath.precis` resolves against the editable precis. This is the dev mirror
-# of cluster `roles/catpath` (which installs `catpath[precis,mace]` on spark).
-# Tracks catpath `main`. Docker keys this RUN's cache on command TEXT, not the
-# remote's HEAD, so a bare `@main` silently baked a stale catpath and never
+# autocatpath.precis` resolves against the editable precis. This is the dev mirror
+# of cluster `roles/autocatpath` (which installs `autocatpath[precis,mace]` on spark).
+# Tracks autocatpath `main`. Docker keys this RUN's cache on command TEXT, not the
+# remote's HEAD, so a bare `@main` silently baked a stale autocatpath and never
 # re-fetched on `--rebuild` (this is how the emit-side `_summarize` went missing
-# from the dev image). `scripts/build-image` resolves catpath's current main
-# HEAD on the host and threads it in as CATPATH_REV, so this layer busts (and
-# re-fetches) exactly when catpath main advances — no hash committed here, no
+# from the dev image). `scripts/build-image` resolves autocatpath's current main
+# HEAD on the host and threads it in as AUTOCATPATH_REV, so this layer busts (and
+# re-fetches) exactly when autocatpath main advances — no hash committed here, no
 # manual bump. A bare `docker build` with no arg falls back to `main`. Mirror of
-# cluster `roles/catpath` (installs `catpath[precis,mace]` on spark).
-ARG CATPATH_REV=main
+# cluster `roles/autocatpath` (installs `autocatpath[precis,mace]` on spark).
+ARG AUTOCATPATH_REV=main
 RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
-    uv pip install --python /opt/venv --no-deps --refresh-package catpath \
-        "catpath @ git+https://github.com/retospect/catpath@${CATPATH_REV}"
+    uv pip install --python /opt/venv --no-deps --refresh-package autocatpath \
+        "autocatpath @ git+https://github.com/retospect/catpath@${AUTOCATPATH_REV}"
 
 # =============================================================================
 # Stage: dev — final developer image. dev-system + venv (from dev-venv)

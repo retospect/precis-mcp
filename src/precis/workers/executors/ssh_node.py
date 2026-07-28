@@ -116,7 +116,7 @@ def run_ssh_node_pass(store: Any, *, limit: int = 1) -> dict[str, int]:
         # whose parent project is paused / halted / asking-user.
         # reclaim_stale_running: steal an expired-lease STATUS:running job whose
         # worker died mid-dispatch (e.g. a deploy restart) — the ssh_node
-        # dispatch is in-process (catpath) so a dead worker means dead compute;
+        # dispatch is in-process (autocatpath) so a dead worker means dead compute;
         # container dispatchers reap their own handle before relaunch.
         rows = claim_executor_jobs(
             conn,

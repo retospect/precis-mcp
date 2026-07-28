@@ -53,7 +53,7 @@ def validate_relation(rel: str | None, *, store: Store | None = None) -> Relatio
     store-free path — keeps the typo-safety guarantee). When a
     ``store`` is supplied, an *unknown* slug is checked against the
     live ``relations`` table so a **plugin**-registered relation
-    (seeded by the plugin's migration, e.g. catpath's ``pathway-node``
+    (seeded by the plugin's migration, e.g. autocatpath's ``pathway-node``
     or a chem route's ``consumes``/``produces``) is accepted without a
     core edit to the literal. The DB FK is the durable guard; this
     pre-flight just opens the friendly handler-layer check to plugins.

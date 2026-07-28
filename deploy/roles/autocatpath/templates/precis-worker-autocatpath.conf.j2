@@ -1,0 +1,6 @@
+# {{ ansible_managed }}
+# Sources the autocatpath env (PRECIS_AUTOCATPATH_ENABLED / PRECIS_NODE) into
+# precis-worker. `-` makes the file optional so the unit still starts when
+# autocatpath is absent.
+[Service]
+EnvironmentFile=-/etc/precis/autocatpath.env

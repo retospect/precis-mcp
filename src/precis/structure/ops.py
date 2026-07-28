@@ -3,9 +3,9 @@
 The LLM edits the *graph* (intent); the framework applies and re-derives. v1 op
 catalog floor: set_cell · add_atom · set_element · vacancy · displace · add_bond ·
 remove_bond · constrain. Bulk template ``slab`` (fcc(111), §5b) seeds a whole
-metal surface from a compact spec — mirrors catpath's ``build_slab`` (same ASE
+metal surface from a compact spec — mirrors autocatpath's ``build_slab`` (same ASE
 call → identical atom order + geometry) so the slab can be *injected* into a
-catpath barrier run and its NEB endpoints line up. The validator gate wiring
+autocatpath barrier run and its NEB endpoints line up. The validator gate wiring
 (§5c) is the next increment. ``apply_ops`` mutates the Scene in place
 and returns it; an unknown op or a bad reference raises ``OpError`` (the Edit
 contract surfaces this as a structured error, §5c).
@@ -268,9 +268,9 @@ def _op_remove_measure(scene: Scene, op: dict[str, Any]) -> None:
 def _op_slab(scene: Scene, op: dict[str, Any]) -> None:
     """Bulk template (§5b): build an fcc(111) metal slab and (re)seed the scene.
 
-    Mirrors catpath's ``build_slab`` exactly — same ``ase.build.fcc111`` call →
+    Mirrors autocatpath's ``build_slab`` exactly — same ``ase.build.fcc111`` call →
     identical atom order + geometry — so the resulting slab can be *injected*
-    into a catpath barrier run and its NEB endpoints line up. Params:
+    into a autocatpath barrier run and its NEB endpoints line up. Params:
     ``element`` (required), ``size`` ``[nx, ny, nz]`` (required), ``vacuum`` Å
     (default 10.0), ``fix_layers`` (bottom layers frozen, default 0), ``a``
     (lattice constant Å; default = ASE reference). A slab is a fresh base, so
@@ -317,7 +317,7 @@ def _op_slab(scene: Scene, op: dict[str, Any]) -> None:
         a=a,
     )
     slab.pbc = (True, True, True)
-    # Freeze the bottom `fix_layers` layers (mirror catpath: sort by z ascending).
+    # Freeze the bottom `fix_layers` layers (mirror autocatpath: sort by z ascending).
     frozen: set[int] = set()
     if fix_layers:
         order = np.argsort(slab.positions[:, 2])

@@ -141,7 +141,7 @@
 - name: Drop the precis-worker tts env drop-in (EnvironmentFile)
   ansible.builtin.template:
     src: precis-worker-tts.conf.j2
-    # 40- sorts after dft's 10-, catpath's 20-, aizynth's 30-.
+    # 40- sorts after dft's 10-, autocatpath's 20-, aizynth's 30-.
     dest: /etc/systemd/system/precis-worker.service.d/40-tts.conf
     owner: root
     group: root

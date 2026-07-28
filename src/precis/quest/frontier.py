@@ -67,8 +67,8 @@ class FrontierResult:
 #: keys (+ their ``*_LABEL``) and every caller (route + template) follows —
 #: nothing else moves.
 #:
-#: X = "highest barrier" → the catpath rate-limiting barrier
-#: :func:`compute._catpath_measures_from_job` stamps onto a candidate's own
+#: X = "highest barrier" → the autocatpath rate-limiting barrier
+#: :func:`compute._autocatpath_measures_from_job` stamps onto a candidate's own
 #: ``meta`` (harvested by :func:`_candidate_from_structure` above as the
 #: ``"barrier"`` measure) — an exact match, no substitution needed.
 #:
@@ -283,7 +283,7 @@ _RUN_NON_MEASURE: frozenset[str] = frozenset({"id", "ref_id", "on_version"})
 
 #: structure.meta bookkeeping keys that are never a ranking measure —
 #: ``version``/``label_hi`` are ``structure_save``'s own housekeeping and
-#: ``quest_harvested_upto``/``quest_catpath_harvested_upto`` are the
+#: ``quest_harvested_upto``/``quest_autocatpath_harvested_upto`` are the
 #: idempotency bookmarks ``harvest_measures`` (compute.py) stamps onto the
 #: candidate. ``label_hi``/``lattice``/``pbc`` are non-numeric already
 #: (``_numeric`` filters them), so only the numeric ones need listing here.
@@ -297,7 +297,7 @@ _META_NON_MEASURE: frozenset[str] = frozenset(
     {
         "version",
         "quest_harvested_upto",
-        "quest_catpath_harvested_upto",
+        "quest_autocatpath_harvested_upto",
         "barrier_neb_failed",
         "barrier_desorbed",
         "barrier_wrong_site",
@@ -327,9 +327,9 @@ def _candidate_from_structure(store: Store, s: Any) -> Candidate:
        run scalar, with no code change here;
     2. every numeric top-level key of ``structure.meta`` — the escape hatch a
        synthesis/harvest pass stamps computed measures onto. This is how the
-       reaction **barrier** reaches the frontier: a catpath run over the
+       reaction **barrier** reaches the frontier: a autocatpath run over the
        candidate is harvested onto the candidate's own ``meta`` (Slice 3), so
-       the frontier reads a plain scalar — no catpath import, no graph
+       the frontier reads a plain scalar — no autocatpath import, no graph
        recompute. Fill-only: a stamped measure never clobbers a real relax
        measure of the same name.
 
@@ -410,7 +410,7 @@ def leaderboard(
     flag. Ordered frontier → dominated → awaiting, and within each band sorted
     by the primary objective (best first). Pure over a :class:`FrontierResult`
     so it is trivially testable; the handler renders it via ``toon.dump``. This
-    is the striving's authoritative leaderboard — catpath's own ``compare`` view
+    is the striving's authoritative leaderboard — autocatpath's own ``compare`` view
     is a compute-side diagnostic over sibling pathways, not this.
     """
     obj_keys = [k for k, _ in fr.objectives]

@@ -49,15 +49,15 @@
     <string>web:reto</string>
     <key>PRECIS_PROCESS</key>
     <string>precis-web</string>
-    {% if inventory_hostname in (precis_capabilities.catpath_plugin | default([])) %}
-    {# catpath `pathway` kind: expose it on the MCP surface, and route compute
+    {% if inventory_hostname in (precis_capabilities.autocatpath_plugin | default([])) %}
+    {# autocatpath `pathway` kind: expose it on the MCP surface, and route compute
        to the pinned GPU node — the gateway has no ML backend, so an in-process
-       run here would be EMT-only. Topology: catpath_plugin / catpath. #}
-    <key>PRECIS_CATPATH_ENABLED</key>
+       run here would be EMT-only. Topology: autocatpath_plugin / autocatpath. #}
+    <key>PRECIS_AUTOCATPATH_ENABLED</key>
     <string>1</string>
-    {% if (precis_capabilities.catpath | default([])) | length > 0 %}
-    <key>PRECIS_CATPATH_ROUTE_NODE</key>
-    <string>{{ precis_capabilities.catpath | first }}</string>
+    {% if (precis_capabilities.autocatpath | default([])) | length > 0 %}
+    <key>PRECIS_AUTOCATPATH_ROUTE_NODE</key>
+    <string>{{ precis_capabilities.autocatpath | first }}</string>
     {% endif %}
     {% endif %}
     {% if inventory_hostname in (precis_capabilities.chem_plugin | default([])) %}
