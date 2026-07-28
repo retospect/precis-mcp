@@ -14,10 +14,6 @@ autocatpath_worker_venv: "{{ precis_worker_venv | default('/opt/precis/venv') }}
 # uv, per OS — same expression roles/precis_worker uses.
 autocatpath_uv_bin: "{{ '/opt/homebrew/bin/uv' if os_family == 'darwin' else '/root/.local/bin/uv' }}"
 
-# Where autocatpath is installed from. Override the ref to test a branch on the GPU node.
-autocatpath_git_url: "git+https://github.com/retospect/catpath"
-autocatpath_git_ref: main
-
 # The node this role targets / autocatpath_explore jobs pin themselves to. Must match
 # inventory_hostname so the target_node claim gate lets THIS node's worker run it.
 autocatpath_node: "{{ inventory_hostname }}"
@@ -30,11 +26,11 @@ autocatpath_worker_user: deploy
 # same HOME or the daemon won't find the warmed weights.
 autocatpath_worker_home: /var/lib/precis
 
-# The pip extras spec, derived from the topology in ONE expression:
-# 'precis,mace' on autocatpath_mace nodes (exactly one ML backend per env —
-# autocatpath's extras conflict), else 'precis' (EMT-only, dependency-free).
-# Single expression on purpose: chaining through a folded-scalar
-# `autocatpath_backend` mis-rendered to just 'precis', so the mace extra never
-# installed on a fresh node (it only worked where torch/mace pre-existed).
+# The precis-mcp extra to install, derived from the topology in ONE expression:
+# 'catalyst-gpu' (→ autocatpath[mace], the torch/MACE backend) on autocatpath_mace
+# nodes; else 'catalyst' (→ pure autocatpath, EMT-only, dependency-light). Exactly
+# one ML backend per env — autocatpath's mace/chgnet/… extras conflict — so the
+# GPU node takes catalyst-gpu and nothing else. Single expression on purpose (a
+# folded-scalar intermediate mis-rendered on fresh nodes before).
 autocatpath_extras: >-
-  {{ 'precis,mace' if inventory_hostname in (precis_capabilities.autocatpath_mace | default([])) else 'precis' }}
+  {{ 'catalyst-gpu' if inventory_hostname in (precis_capabilities.autocatpath_mace | default([])) else 'catalyst' }}

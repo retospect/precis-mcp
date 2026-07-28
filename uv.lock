@@ -314,6 +314,31 @@ wheels = [
 ]
 
 [[package]]
+name = "autocatpath"
+version = "0.4.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "ase" },
+    { name = "matplotlib" },
+    { name = "networkx" },
+    { name = "numpy" },
+    { name = "pyyaml" },
+    { name = "rdkit" },
+    { name = "scipy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/89/21/a7fd196aa32370a9fd2f0b0d135f01743e619cf9b6f1dd0c6a755a1b22ba/autocatpath-0.4.0.tar.gz", hash = "sha256:f5b3262424b5890e176d1907414f8fdfea668de655705ae6eb00f4f73881521d", size = 2649721, upload-time = "2026-07-28T15:51:00.803Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5e/2f/e9d723d794f05431526dbc2c79a72552ff4f88ee8bae2429c99cb442f0a4/autocatpath-0.4.0-py3-none-any.whl", hash = "sha256:7cf0c1a8cc2124017e8009689b885fa6d201cd69ab96aebd3b0ddd825c333175", size = 81929, upload-time = "2026-07-28T15:50:57.86Z" },
+]
+
+[package.optional-dependencies]
+mace = [
+    { name = "mace-torch" },
+    { name = "nvidia-cuda-nvrtc-cu12" },
+    { name = "torch" },
+]
+
+[[package]]
 name = "babel"
 version = "2.18.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2652,6 +2677,16 @@ wheels = [
 ]
 
 [[package]]
+name = "nvidia-cuda-nvrtc-cu12"
+version = "12.9.86"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b8/85/e4af82cc9202023862090bfca4ea827d533329e925c758f0cde964cb54b7/nvidia_cuda_nvrtc_cu12-12.9.86-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl", hash = "sha256:210cf05005a447e29214e9ce50851e83fc5f4358df8b453155d5e1918094dcb4", size = 89568129, upload-time = "2025-06-05T20:02:41.973Z" },
+    { url = "https://files.pythonhosted.org/packages/64/eb/c2295044b8f3b3b08860e2f6a912b702fc92568a167259df5dddb78f325e/nvidia_cuda_nvrtc_cu12-12.9.86-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:096d4de6bda726415dfaf3198d4f5c522b8e70139c97feef5cd2ca6d4cd9cead", size = 44528905, upload-time = "2025-06-05T20:02:29.754Z" },
+    { url = "https://files.pythonhosted.org/packages/52/de/823919be3b9d0ccbf1f784035423c5f18f4267fb0123558d58b813c6ec86/nvidia_cuda_nvrtc_cu12-12.9.86-py3-none-win_amd64.whl", hash = "sha256:72972ebdcf504d69462d3bcd67e7b81edd25d0fb85a2c46d3ea3517666636349", size = 76408187, upload-time = "2025-06-05T20:12:27.819Z" },
+]
+
+[[package]]
 name = "nvidia-cuda-runtime"
 version = "13.0.96"
 source = { registry = "https://pypi.org/simple" }
@@ -3149,6 +3184,12 @@ cad-step = [
 calc = [
     { name = "sympy" },
 ]
+catalyst = [
+    { name = "autocatpath" },
+]
+catalyst-gpu = [
+    { name = "autocatpath", extra = ["mace"] },
+]
 chem = [
     { name = "rdkit" },
 ]
@@ -3237,6 +3278,8 @@ requires-dist = [
     { name = "ase", marker = "extra == 'dft'", specifier = ">=3.22" },
     { name = "ase", marker = "extra == 'dft-ml'", specifier = ">=3.22" },
     { name = "ase", marker = "extra == 'import'", specifier = ">=3.22" },
+    { name = "autocatpath", marker = "extra == 'catalyst'", specifier = ">=0.4" },
+    { name = "autocatpath", extras = ["mace"], marker = "extra == 'catalyst-gpu'", specifier = ">=0.4" },
     { name = "cadquery-ocp-novtk", marker = "extra == 'cad-step'", specifier = ">=7.8" },
     { name = "discord-py", marker = "extra == 'asa'", specifier = ">=2.4" },
     { name = "easyeda2kicad", marker = "extra == 'pcb'", specifier = ">=0.8" },
@@ -3292,7 +3335,7 @@ requires-dist = [
     { name = "wolframalpha", marker = "extra == 'external'", specifier = ">=5.0" },
     { name = "youtube-transcript-api", marker = "extra == 'external'", specifier = ">=1.0" },
 ]
-provides-extras = ["embed", "asa", "asa-slack", "tts", "paper", "docx", "tex", "calc", "dft", "dft-ml", "plot", "external", "patent", "web", "cad-export", "cad-step", "pcb", "edgar", "chem", "mermaid", "import", "all"]
+provides-extras = ["embed", "asa", "asa-slack", "tts", "paper", "docx", "tex", "calc", "dft", "dft-ml", "catalyst", "catalyst-gpu", "plot", "external", "patent", "web", "cad-export", "cad-step", "pcb", "edgar", "chem", "mermaid", "import", "all"]
 
 [package.metadata.requires-dev]
 dev = [

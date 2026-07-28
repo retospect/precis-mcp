@@ -229,6 +229,20 @@ dft = ["ase>=3.22", "spglib>=2.1"]
 # install; rung-0 `clean` geometry repair needs none of this. GPAW/DFT
 # (`dft-gpaw`) runs as a cluster job, not inline.
 dft-ml = ["ase>=3.22", "mace-torch>=0.3"]
+# Catalyst reaction-pathway plugin (bundle-pathway-in-tree proposal): the
+# `pathway` kind's KIND SURFACE — the `precis_pathway` glue imports the pure
+# `autocatpath` engine (numpy/scipy/ase/rdkit, no ML backend). Split from the
+# compute extra below (mirrors dft/dft-ml) so a gateway venv can serve
+# get(kind='pathway') without pulling torch. Kept out of `all` (heavy,
+# host-specific like the other dft-ml/cad/pcb extras).
+catalyst = ["autocatpath>=0.4"]
+# Catalyst reaction-pathway COMPUTE: pulls autocatpath's `mace` extra (torch +
+# MACE-MP) for in-process NEB/relax on the pinned GPU node (bio's shape, not
+# chem's container). Kept out of `all` — see wrinkle 2 in
+# docs/proposals/bundle-pathway-in-tree-plugin.md (mutually-exclusive ML
+# backends + this repo's own dormant `dft-ml` torch extra targeting the same
+# GPU node).
+catalyst-gpu = ["autocatpath[mace]>=0.4"]
 # Declarative matplotlib plot renderer.
 plot = ["matplotlib>=3.7", "pydantic>=2.0"]
 # Paid web tools (perplexity / wolfram / youtube transcripts).
@@ -329,17 +343,26 @@ asa-slack = "asa_slack.__main__:main"
 # `precis_bio` is its protein sibling (slice 4): the `protein` kind, the
 # `fold` job_type (AlphaFold3 on the GPU node), and its migrations
 # (namespace `precis_bio`), dark behind PRECIS_BIO_ENABLED.
+# `precis_pathway` is the catalyst reaction-pathway sibling (bundle-pathway-
+# in-tree proposal): the `pathway` kind, the `autocatpath_explore` job_type
+# (autocatpath in-process on the GPU node), and its migrations — kept under
+# the `autocatpath` namespace (matches the value already applied in prod from
+# when the glue lived in the external autocatpath package), dark behind
+# PRECIS_AUTOCATPATH_ENABLED.
 [project.entry-points."precis.handlers"]
 route = "precis_chem.route:RouteHandler"
 protein = "precis_bio.protein:ProteinHandler"
+pathway = "precis_pathway.handler:PathwayHandler"
 
 [project.entry-points."precis.job_types"]
 retrosynth = "precis_chem.jobs:RETROSYNTH_SPEC"
 fold = "precis_bio.jobs:FOLD_SPEC"
+autocatpath_explore = "precis_pathway.job:SPEC"
 
 [project.entry-points."precis.migrations"]
 precis_chem = "precis_chem.migrations"
 precis_bio = "precis_bio.migrations"
+autocatpath = "precis_pathway.migrations"
 
 [dependency-groups]
 dev = [
@@ -373,7 +396,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/precis", "src/precis_web", "src/asa_bot", "src/asa_slack", "src/precis_chem", "src/precis_bio"]
+packages = ["src/precis", "src/precis_web", "src/asa_bot", "src/asa_slack", "src/precis_chem", "src/precis_bio", "src/precis_pathway"]
 
 # Note: hatchling ≥ 1.20 already includes non-Python files inside a
 # packaged directory (Jinja .j2 templates under

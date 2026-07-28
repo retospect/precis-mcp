@@ -6,11 +6,14 @@
 # pipeline (relax + NEB) locally via the installed backend, sinking the
 # reaction-network result into the `pathway` ref.
 #
-# Unlike precis-dft (which lives in a container image), autocatpath is a Python
-# package, so this role pip-installs autocatpath[precis(+backend)] into the worker
-# venv, then wires PRECIS_AUTOCATPATH_ENABLED / PRECIS_NODE via a systemd drop-in
-# (never touching the precis_worker unit template). Linux / compute node only —
-# the macOS MCP host gets the kind SURFACE via roles/precis_web (see README).
+# The `pathway` glue ships in-tree with precis-mcp (src/precis_pathway, like
+# precis_bio); the heavy engine is the PURE `autocatpath` PyPI package pulled by
+# the precis-mcp `[catalyst-gpu]` extra (autocatpath[mace]). So this role just
+# adds that extra to the worker venv precis_worker manages, then wires
+# PRECIS_AUTOCATPATH_ENABLED / PRECIS_NODE via a systemd drop-in (never touching
+# the precis_worker unit template). Linux / compute node only — the macOS MCP
+# host gets the kind SURFACE via roles/precis_web (the [catalyst] extra). See
+# roles/autocatpath/README.md and ADR 0069.
 
 - name: autocatpath targets the Linux compute node only
   ansible.builtin.assert:
@@ -21,11 +24,11 @@
       in the web venv + PRECIS_AUTOCATPATH_ENABLED) — wire that via roles/precis_web,
       not here. See roles/autocatpath/README.md.
 
-- name: Install autocatpath[{{ autocatpath_extras }}] into the precis worker venv
+- name: Install precis-mcp[{{ autocatpath_extras }}] (pulls the autocatpath engine) into the precis worker venv
   ansible.builtin.shell: |
     {{ autocatpath_uv_bin }} pip install --python {{ autocatpath_worker_venv }}/bin/python --upgrade \
       --refresh-package autocatpath \
-      'autocatpath[{{ autocatpath_extras }}] @ {{ autocatpath_git_url }}@{{ autocatpath_git_ref }}'
+      'precis-mcp[{{ autocatpath_extras }}] @ git+https://github.com/retospect/precis-mcp@{{ precis_worker_git_ref | default("main") }}'
   become: true
   register: autocatpath_install
   changed_when: >-
@@ -92,8 +95,8 @@
   become: true
   notify: restart precis-worker (autocatpath)
 
-- name: Verify autocatpath imports in the worker venv
+- name: Verify the bundled pathway plugin + engine import in the worker venv
   ansible.builtin.command:
-    cmd: "{{ autocatpath_worker_venv }}/bin/python -c 'import autocatpath.precis.runner; print(autocatpath.__version__)'"
+    cmd: "{{ autocatpath_worker_venv }}/bin/python -c 'import precis_pathway.handler, autocatpath; print(autocatpath.__version__)'"
   become: true
   changed_when: false

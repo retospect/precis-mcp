@@ -142,8 +142,11 @@ value, don't trust a snapshot here).
   (`get(kind='quest', id=164903)`); design docs
   `docs/design/autocatpath-integration.md` ·
   `docs/design/catalyst-discovery-quest.md`; autocatpath itself is a separate
-  repo, github.com/retospect/catpath, integrated into precis as the `pathway`
-  kind. Sibling quest `161910` shares the Pd/NO→NH₃ theme. Dormant quests
+  repo, github.com/retospect/catpath, published as a precis-free science
+  library — precis-mcp depends on it (`[catalyst]`/`[catalyst-gpu]` extras),
+  and the `pathway` kind's glue is bundled in-tree at `src/precis_pathway/`
+  (mirrors `src/precis_bio/`), not a plugin shipped from the catpath repo.
+  Sibling quest `161910` shares the Pd/NO→NH₃ theme. Dormant quests
   auto-cool after stale ticks — not a hard block.
 - **NOx to Ammonia** ("nox2nh3") — the DFT/operando-MS design-loop
   manuscript project; the write-up, distinct from quest `164903`'s ongoing

@@ -3,7 +3,10 @@
 > **Status:** design-of-record, not yet sliced into code. Present-tense
 > where it describes precis today; future-tense for the proposed build.
 > Companion to `structure-*` (ADR 0043), the derived-compute lane
-> (ADR 0044), and `sandbox-run.md`. Read those first.
+> (ADR 0044), and `sandbox-run.md`. Read those first. **Packaging (§3.7,
+> §8):** the glue ships bundled in-tree at `src/precis_pathway/`, not the
+> out-of-tree bridge package this doc originally designed — see
+> `docs/proposals/bundle-pathway-in-tree-plugin.md` and ADR 0069.
 
 ## 0. Thesis
 
@@ -334,44 +337,63 @@ cache). That is a slice-4+ optimisation — the relax/neb functions being
 already calc-parameterised means it's a clean refactor when we want it, but
 we don't need it to ship.
 
-## 3.7 Packaging — an out-of-tree plugin, not in-tree, not a CLI shell
+## 3.7 Packaging — bundled in-tree, autocatpath is a pure dependency
 
-precis has a first-class **entry-points plugin system** (four groups), and
-**precis-dft is the live precedent** — a separate GPL sibling package that
-plugs into this same structure/GPU world and is installed only where the
-heavy deps live. autocatpath integrates the identical way: a **`precis-autocatpath`
-bridge package** (own repo, GPL, depends on *both* `precis` and `autocatpath`)
-advertising:
+> **Superseded from the out-of-tree-bridge design below.** Per
+> `docs/proposals/bundle-pathway-in-tree-plugin.md` and ADR 0069, the glue
+> lives **in precis-mcp**, not a separate bridge repo — `precis_bio` is the
+> precedent, not precis-dft's container-boundary shape. Kept below for the
+> rejected-alternative record; the shipped mechanics are the block above
+> this note.
+
+precis has a first-class **entry-points plugin system** (four groups).
+`src/precis_pathway/` (mirrors `src/precis_bio/`) ships the `pathway` glue
+*inside* precis-mcp's own package and registers through precis-mcp's own
+`pyproject.toml` entry-points — no separate distribution:
 
 | entry-point group | contributes | autocatpath |
 |---|---|---|
-| `precis.handlers` | a kind (Handler + KindSpec) | the `pathway` kind |
-| `precis.migrations` | schema | the `pathway_edges` table |
-| `precis.job_types` | a compute-lane job (`JobTypeSpec`) | `autocatpath_explore` |
-| `precis.ref_passes` | a worker pass (returns `None` off-GPU) | heavy-backend dispatch |
+| `precis.handlers` | a kind (Handler + KindSpec) | `pathway` → `precis_pathway.handler:PathwayHandler` |
+| `precis.migrations` | schema | `autocatpath` namespace → `precis_pathway.migrations` (`0001_pathway_kind.sql`) |
+| `precis.job_types` | a compute-lane job (`JobTypeSpec`) | `autocatpath_explore` → `precis_pathway.job:SPEC` |
 
-Why the bridge, not the two alternatives:
-- **vs. in the precis tree:** the heavy ML stack (MACE/FAIRChem/torch) stays
-  out of precis-core's dependency graph — core stays slim, the plugin is
-  installed only on GPU/compute nodes (exactly how precis-dft deploys).
-  precis's loader also *catches and logs* a broken plugin rather than
-  bricking the MCP server (built-ins are trusted, plugins are not; a plugin
-  claiming a built-in kind loses to the built-in).
-- **vs. a CLI "calling mode":** the bridge gets a real kind, real tables, a
-  real run-cube — not file-scraping a subprocess.
+The dependency runs the other way from the design below: **precis-mcp
+depends on `autocatpath`**, not vice versa. Two extras split kind-surface
+from compute (`pyproject.toml`):
+- `precis-mcp[catalyst]` → `autocatpath` (pure numpy/scipy/ase/rdkit engine,
+  no ML backend) — enough to serve `get(kind='pathway')`.
+- `precis-mcp[catalyst-gpu]` → `autocatpath[mace]` (adds torch+MACE) — the
+  in-process NEB/relax compute on the pinned GPU node.
 
-The bridge keeps both sides clean: **autocatpath stays domain-pure** (no precis
-concepts), **precis-core stays chemistry-free** (no autocatpath dep). All glue —
-including precis's `ComputeBackend` implementation wiring autocatpath's injected
-relaxer to `struct_relax` — lives in the bridge.
+Both are kept out of `[all]` (heavy, host-specific, like `dft-ml`/`cad`/`pcb`).
+`autocatpath` itself has **no** `precis` dependency, extra, or entry-point —
+it is a domain-pure science library, published independently
+(github.com/retospect/catpath). `src/precis_pathway/handler.py` fails dark
+(`InitError`) when `autocatpath` isn't importable or
+`PRECIS_AUTOCATPATH_ENABLED` is unset — same fail-dark contract the
+out-of-tree design below describes, now enforced in-tree.
 
 **Where "calling" survives:** only the innermost per-backend ML calculator
 (the §3.5 env-conflict layer), and even there it is precis's *own*
-compute-lane job dispatch, not a autocatpath CLI shell — EMT/cheap-ML in-process
-(env coexists), MACE/FAIRChem as a per-backend container `struct_relax` job
-(env conflicts). The one autocatpath-side task: **expose the injection point**
-so `relax`/`neb` accept a supplied energy/force/relax provider instead of
-always building their own calculator.
+compute-lane job dispatch — EMT/cheap-ML in-process (env coexists),
+MACE/FAIRChem as a per-backend container `struct_relax` job (env conflicts).
+The one autocatpath-side task remains: **expose the injection point** so
+`relax`/`neb` accept a supplied energy/force/relax provider instead of always
+building their own calculator.
+
+### 3.7a Rejected alternative — an out-of-tree plugin (pre-ADR-0069 design)
+
+The original design put the glue in a separate **`precis-autocatpath`
+bridge package** (own repo, GPL, depends on both `precis` and `autocatpath`),
+on the theory that **precis-dft is the live precedent** — a separate GPL
+sibling package installed only where the heavy deps live. That shape forced
+a cross-repo version pin (`precis-mcp>=8.21,<9` in the bridge's
+`pyproject.toml`) that broke every time precis's plugin ABI moved, plus a
+bespoke `roles/autocatpath` git-install ansible role. Rejected in favor of
+the in-tree model above: `precis_bio`'s in-process-GPU-compute shape is the
+closer precedent than precis-dft's containerized one, and the same-owner
+GPL/GPL pairing means there's no cross-repo-ownership reason to keep the
+glue split out. Kept here for contrast, not as guidance.
 
 ## 4. The `pathway` kind
 
@@ -524,15 +546,18 @@ Beyond the four tensions in §3:
 
 ## 8. Slicing
 
-- **Slice 0 — plugin skeleton + in-process EMT. ✅ BUILT + verified.**
-  The `precis-autocatpath` bridge lives in the **autocatpath repo** as the
-  `autocatpath.precis` subpackage (option A — `pip install autocatpath[precis]`),
-  advertising `precis.handlers` (`pathway = autocatpath.precis:PathwayHandler`)
-  and `precis.migrations` (`autocatpath = autocatpath.precis.migrations`). It splits
-  into a **precis-free `runner.py`** (imports only autocatpath: runs `run()` +
-  assembles a JSON artifact — graph, `results.json`, `methods.md`,
-  per-state extxyz geometries — mirroring `write_outputs` minus matplotlib)
-  and a **`handler.py`** (the `pathway` kind: `put` runs autocatpath on EMT
+- **Slice 0 — plugin skeleton + in-process EMT. ✅ BUILT + verified**
+  (bundled in-tree per `docs/proposals/bundle-pathway-in-tree-plugin.md` /
+  ADR 0069 — supersedes the original out-of-tree build described here).
+  The glue lives **in precis-mcp** as `src/precis_pathway/`, registered via
+  precis-mcp's own `pyproject.toml` entry-points: `precis.handlers`
+  (`pathway = precis_pathway.handler:PathwayHandler`) and `precis.migrations`
+  (`autocatpath = precis_pathway.migrations`, namespace kept stable from the
+  prior external plugin). It splits into a **precis-free `runner.py`**
+  (imports only the pure `autocatpath` engine: runs `run()` + assembles a
+  JSON artifact — graph, `results.json`, `methods.md`, per-state extxyz
+  geometries — mirroring `write_outputs` minus matplotlib) and a
+  **`handler.py`** (the `pathway` kind: `put` runs autocatpath on EMT
   in-process and persists a slug-addressed ref + `pathway_body` methods
   chunk + graph/results/provenance in `meta`; `get` renders
   `profile`/`network`/`methods`/`config`; content-addressed regen is a
@@ -541,16 +566,17 @@ Beyond the four tensions in §3:
   **Verified** against the precis test DB: put→get→regen-cache-hit→delete
   round-trip + the gated-off path (5 tests green; EMT smoke run ~0.4s).
 - **Slice 1a — routing to the pinned node. ✅ BUILT + verified.** The
-  `autocatpath_explore` job type (`autocatpath.precis.job`, `precis.job_types` entry
-  point): `meta.executor='ssh_node'`, `REQUIRES=∅`, `target_node=<node>`;
-  its `dispatch` runs autocatpath **in-process on that node** (autocatpath[precis]+
-  backend are in the node's worker venv) and writes the artifact back onto
-  the pathway ref (shared `persist.py`). The handler routes when
-  `PRECIS_AUTOCATPATH_ROUTE_NODE` is set (mints the job, ref → `status:computing`)
-  and runs in-process otherwise. **Precis-core enabler:** `pathway` owns its
-  compute job via the new `KindSpec.can_own_jobs` flag (§8b) — no per-`(model,
-  seed)` fan-out yet (whole `run()` in one job). **Verified**: dispatch
-  write-back + a spark-pinned job minted end-to-end against the test DB.
+  `autocatpath_explore` job type (`precis_pathway.job:SPEC`, `precis.job_types`
+  entry point): `meta.executor='ssh_node'`, `REQUIRES=∅`, `target_node=<node>`;
+  its `dispatch` runs the pure autocatpath engine **in-process on that node**
+  (the `[catalyst]`/`[catalyst-gpu]` extra + backend are in the node's worker
+  venv) and writes the artifact back onto the pathway ref (shared
+  `persist.py`). The handler routes when `PRECIS_AUTOCATPATH_ROUTE_NODE` is
+  set (mints the job, ref → `status:computing`) and runs in-process
+  otherwise. **Precis-core enabler:** `pathway` owns its compute job via the
+  `KindSpec.can_own_jobs` flag (§8b) — no per-`(model, seed)` fan-out yet
+  (whole `run()` in one job). **Verified**: dispatch write-back + a
+  spark-pinned job minted end-to-end against the test DB.
 - **Slice 1b — fan-out + native structures.** (pending) Split the one job
   into per-`(model, seed)` `autocatpath_explore` jobs (the `autocatpath _seed` entry,
   §3.8) with per-partial caching + `aggregate_partials`. Build `Scene.from_ase`
@@ -596,12 +622,12 @@ Discovered while building — feed into slice 1:
     `can_own_jobs`-style extensibility could be applied here later.
   - (`EXECUTOR_PROVIDES` — *not needed*: `autocatpath_explore` REQUIRES nothing
     and rides `ssh_node`; the `target_node` pin does the routing.)
-- **`precis-mcp` on PyPI lags** (8.4.3) behind the deployed source (8.21).
-  The `autocatpath[precis]` extra pins `precis-mcp>=8.21,<9`, so a *fresh* PyPI
-  resolve fails. In practice the bridge installs into an env that already
-  has precis (it's a precis plugin), where the pin is just a compat
-  assertion and resolves fine. If standalone `pip install autocatpath[precis]`
-  is ever wanted, point the extra at a git ref instead.
+- **Cross-repo version pin — resolved by bundling.** The original
+  out-of-tree build (§3.7a) hit a `precis-mcp` PyPI-lag problem: the
+  `autocatpath[precis]` extra pinned `precis-mcp>=8.21,<9`, so a fresh PyPI
+  resolve of the bridge failed whenever PyPI trailed the deployed source.
+  Moving the glue into precis-mcp's own tree (§3.7) deletes this pin
+  entirely — there is no cross-repo ABI to pin against.
 - **`chunk_kind` is a hard FK to `chunk_kinds.slug`** — the body chunk kind
   (`pathway_body`) must be seeded in the plugin migration, else the body
   insert FK-violates. Done.
