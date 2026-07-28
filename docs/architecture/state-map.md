@@ -837,6 +837,50 @@ new `nh3-synthesis`, keyword substring-traps pruned (`tool use`, `agentic`).
   Backlog: `OPEN-ITEMS.md` § "Topic dossiers (ADR 0060)". Full design:
   `docs/decisions/0060-topic-dossiers.md` + `docs/design/topic-dossiers.md`.
 
+## Taproot canonicalization (Phase 1)
+
+Design: `docs/proposals/taproot.md` (the full evidence-graph spec, phased
+build); build ticket: `docs/proposals/taproot-phase1-canonicalization.md`.
+Phase 1 is the flat claim canonicalizer everything else in the spec gates
+on — **pure, no persistence, no migration** (a future phase's tags+links
+overlay on `finding`/`ref_tags`/`links` — no schema of its own).
+
+- **Package**: `src/precis/taproot/canon.py` — four functions, a cascade
+  mirroring the ADR-0047 classifier (cheap-and-wide → escalate the risky
+  bit): `extract_claim` (SMALL/local; chunk → `CanonicalClaim` sentence +
+  light scope, or `None` on a pure-pointer chunk — the `NO-CLAIM`
+  outcome) → `block` (no model; ANN over the `FROLE:claim`-tagged
+  `finding` card embeddings, bge-m3, `k` nearest) → `dedup_judge` (MEDIUM;
+  THE crux — one bounded pairwise `same`/`different`/`contradicts` call,
+  biased hard toward `different`) → `place` (deterministic branching; a
+  low-confidence `same` escalates to `merge_confirm`, BIG-tier, and a
+  merge that still isn't confidently confirmed comes back `needs_review`
+  rather than auto-attaching — over-merge is the one dangerous
+  direction). Every call routes through `precis.utils.llm.router`
+  (`source="taproot:extract"` / `"taproot:dedup"` / `"taproot:merge-confirm"`).
+- **`FROLE` namespace** (`FROLE_NAMESPACE`/`FROLE_CLAIM`/`FROLE_REVIEW` in
+  `canon.py`) is registered but **not yet written by any classifier** —
+  the discriminator pass that tags `finding` rows `FROLE:claim` (grounded
+  world-claim) vs `FROLE:review` (editorial note) is a Phase-2
+  predecessor (taproot.md open #11), not built here. `block` degrades
+  correctly with no tagged hubs (empty → brand-new claim).
+- **Eval**: `src/precis/taproot/eval_canon.py` (`eval_canonicalization`) runs
+  `dedup_judge` over `tests/fixtures/taproot/claim_pairs.jsonl` (238
+  pairs) and grades the fixture's 5-relation labels collapsed onto
+  `same`/`different`/`contradicts`; prints the 3×3 confusion + over/under-
+  merge rates. Gate: **over-merge (a false `same`) must be zero** —
+  under-merge is tolerated (the safe direction). `tests/test_taproot_eval_canon.py`
+  is the live-model harness test, skipped unless `PRECIS_TAPROOT_LIVE_EVAL=1`
+  (never runs in the offline gate — it makes ~238 real LLM calls).
+  `tests/test_taproot_canon.py` is the offline unit suite (mocked
+  dispatch): `place` branching, `NO-CLAIM` detection, label-collapse.
+- **Not yet built** (later phases, per taproot.md's build phasing): the
+  `finding`-as-hub node + typed evidence relation (Phase 2), forward
+  `chase` wiring (Phase 3), the integrity axis (Phase 4), corpus backfill
+  (Phase 5). Phase 1's fixture bar (over-merge = 0, live) is not yet
+  measured — the harness is built and runnable but prompt-tuning against
+  it is a deliberate follow-up, not blocking this ship.
+
 ## Other live affordances
 
 One line per affordance — code path + skill for the detail. The
