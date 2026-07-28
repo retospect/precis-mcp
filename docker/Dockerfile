@@ -336,14 +336,16 @@ RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
         ipdb \
         rich
 
-# autocatpath[precis] — the `pathway` kind plugin (catalyst-discovery quest). Its
+# autocatpath — the pure reaction-pathway ENGINE the in-tree `precis_pathway`
+# plugin imports (the `pathway` kind, catalyst-discovery quest; ADR 0069). Its
 # third-party deps (ase/networkx/rdkit/numpy/scipy/matplotlib/pyyaml) already
-# arrive via `--all-extras` in the `deps` stage, and precis-mcp is
-# editable-installed in the `dev` stage below, so we install **--no-deps** here:
-# the layer is source-independent (cached) and never re-resolves precis. At
-# runtime precis discovers the plugin via entry points and `import
-# autocatpath.precis` resolves against the editable precis. This is the dev mirror
-# of cluster `roles/autocatpath` (which installs `autocatpath[precis,mace]` on spark).
+# arrive via `--all-extras` in the `deps` stage, and precis-mcp (which now owns
+# `precis_pathway`) is editable-installed in the `dev` stage below, so we install
+# **--no-deps** here: the layer is source-independent (cached) and never
+# re-resolves precis. At runtime precis discovers the bundled plugin via its own
+# entry points and `precis_pathway`'s `import autocatpath` resolves against this
+# install. This is the dev mirror of cluster `roles/autocatpath` (which installs
+# `precis-mcp[catalyst-gpu]` → autocatpath[mace] on spark).
 # Tracks autocatpath `main`. Docker keys this RUN's cache on command TEXT, not the
 # remote's HEAD, so a bare `@main` silently baked a stale autocatpath and never
 # re-fetched on `--rebuild` (this is how the emit-side `_summarize` went missing

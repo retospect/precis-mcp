@@ -1,9 +1,9 @@
 ---
-# autocatpath role defaults — install the autocatpath reaction-pathway compute stack
-# (autocatpath[precis] + an ML backend) into the precis worker venv on the GPU node
-# and wire the worker env so it runs `autocatpath_explore` jobs pinned here.
+# autocatpath role defaults — add the reaction-pathway compute stack
+# (precis-mcp[catalyst-gpu] → autocatpath[mace]) to the precis worker venv on the
+# GPU node and wire the worker env so it runs `autocatpath_explore` jobs pinned here.
 #
-# Mirrors roles/dft, but autocatpath IS a Python package (goes in the venv), whereas
+# Mirrors roles/dft, but the engine IS a Python package (goes in the venv), whereas
 # precis-dft lives in a container image. Everything gates on the single topology
 # map (inventory/group_vars/all/topology.yml): this role runs where
 # `inventory_hostname in precis_capabilities.autocatpath`.

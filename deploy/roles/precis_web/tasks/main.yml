@@ -58,19 +58,22 @@
   # have always notified their reload handler on install changes.
   notify: restart precis-web
 
-# autocatpath `pathway` kind surface (topology: autocatpath_plugin). Installs the
-# LIGHT plugin extra only (no ML backend — the gateway mints jobs, it doesn't
-# compute). Must run BEFORE the migrate task below so `precis migrate`
-# discovers autocatpath's plugin migration and creates the `pathway` kind. The
-# plist enables it + routes compute to the pinned node (see the template).
-- name: Install autocatpath[precis] into the MCP venv (pathway kind surface)
+# autocatpath `pathway` kind surface (topology: autocatpath_plugin). The plugin
+# glue + migration ship in-tree with precis-mcp (src/precis_pathway, ADR 0069);
+# the `[catalyst]` extra pulls the LIGHT pure `autocatpath` engine (no ML backend
+# — the gateway mints jobs, it doesn't compute) so `precis_pathway`'s handler
+# imports and the `pathway` kind un-darks (else it InitErrors). Must run BEFORE
+# the migrate task so the pure engine is present when the plugin migration
+# (shipped via precis-mcp's own precis.migrations entry-point) creates the kind.
+# The plist enables it + routes compute to the pinned node (see the template).
+- name: Install precis-mcp[catalyst] into the MCP venv (pathway kind surface — pulls pure autocatpath)
   when:
     - os_family == "darwin"
     - inventory_hostname in (precis_capabilities.autocatpath_plugin | default([]))
   ansible.builtin.shell: |
     {{ uv_bin }} pip install --python {{ precis_web_venv }}/bin/python --upgrade \
       --refresh-package autocatpath \
-      'autocatpath[precis] @ git+https://github.com/retospect/catpath'
+      'precis-mcp[catalyst] @ git+https://github.com/retospect/precis-mcp@{{ precis_web_git_ref }}'
   become: true
   register: precis_web_autocatpath
   changed_when: >-

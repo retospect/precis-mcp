@@ -20,7 +20,7 @@
     that: os_family == "linux"
     fail_msg: >-
       The autocatpath role installs the compute backend on the Linux GPU node
-      (the GPU node). The macOS gateway needs only the KIND SURFACE (autocatpath[precis]
+      (the GPU node). The macOS gateway needs only the KIND SURFACE (precis-mcp[catalyst]
       in the web venv + PRECIS_AUTOCATPATH_ENABLED) — wire that via roles/precis_web,
       not here. See roles/autocatpath/README.md.
 
