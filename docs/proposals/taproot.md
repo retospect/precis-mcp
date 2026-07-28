@@ -482,13 +482,28 @@ SMALL or model-free.
 
 ## Target + blast radius
 
-`handlers/{finding,citation,provenance}.py` · `workers/{chase,
-inbound_chase}.py` + `_chase_llm.py` · `backfill/citation_lens.py` +
-source-backfill · `store/_argument_ops.py` (reason-graded ripple) ·
-`refs.retraction_*` consumers · a new `finding` evidence `view` +
-draft-outline hygiene surface · skills `precis-finding-help`,
-`precis-citation-help`, `precis-provenance-help`, `precis-argument-help`
-· env flags `PRECIS_CHASE_LLM`, `PRECIS_INBOUND_CHASE_ENABLED`.
+**Storage — no migration.** Taproot is a tags-and-links overlay on tables
+that already exist; **do not write a schema migration.** Verified:
+- **Hubs** = `finding` refs (kind already exists) — reuse, don't create.
+- **`FROLE:claim`/`review`** = rows in the existing **`ref_tags`** table;
+  register the closed namespace in code (like `ROLE3`). No column.
+- **Evidence + claim edges** (`establishes`/`corroborates`/`contradicts`)
+  = rows in **`links`**. `links.relation` is `text NOT NULL` with **no
+  value CHECK** — the vocabulary is enforced in *code*
+  (`_VALID_RELATIONS = get_args(Relation)` + `store.valid_relations()`,
+  `handlers/_link_tag_ops.py`). So new relations = **edit the `Relation`
+  type + the governance ADR**, not SQL.
+- **Edge metadata / integrity** = jsonb `meta` + the existing
+  `refs.retraction_*` columns. Phase 1 (canonicalization) persists nothing.
+
+**Code touch points:** `handlers/{finding,citation,provenance}.py` ·
+`workers/{chase,inbound_chase}.py` + `_chase_llm.py` ·
+`backfill/citation_lens.py` + source-backfill · `store/_argument_ops.py`
+(reason-graded ripple) · the `Relation` type + `ref_tags` writer · a new
+`finding` evidence `view` + draft-outline hygiene surface · skills
+`precis-finding-help`, `precis-citation-help`, `precis-provenance-help`,
+`precis-argument-help` · env flags `PRECIS_CHASE_LLM`,
+`PRECIS_INBOUND_CHASE_ENABLED`.
 
 ## Open questions / incoherences
 
