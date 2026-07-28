@@ -644,7 +644,8 @@ and validate before widening blast radius.
    → confirm risky merges, validated against the **eval fixture** (built,
    `tests/fixtures/taproot/`). Ships and is validated *before anything
    writes edges at scale.* Resolves open #1/#2. **Everything else waits on
-   this.**
+   this.** → build ticket:
+   [`taproot-phase1-canonicalization.md`](./taproot-phase1-canonicalization.md).
 2. **Phase 2 — hub node.** `finding`-as-hub, the typed graded evidence
    relation (`establishes`/`corroborates`/`contradicts`), the evidence
    `view`, the `citation`-card dedup (open #3 residual), the

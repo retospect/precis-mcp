@@ -1,0 +1,130 @@
+---
+status: draft
+title: Taproot Phase 1 — flat claim canonicalization (the gate)
+model: sonnet
+---
+
+# Taproot Phase 1 — flat claim canonicalization
+
+Build ticket for Phase 1 of `docs/proposals/taproot.md` (read that for the
+*why*; this is the *how*). Deliverable: a **pure, offline-validated claim
+canonicalizer** that decides, for a claim, whether it is the **same** as an
+existing claim (merge), **different** (new hub), or a **contradiction** —
+and passes the fixture at **over-merge ~0**. No live persistence, no
+ingest wiring, no hierarchy — those are later phases.
+
+## Goal / acceptance in one line
+
+`dedup_judge` run over the 238 fixture pairs in `tests/fixtures/taproot/`
+scores **over-merge rate ≤ the agreed bar** (see [open items](#open-items-before-ready)),
+every pair gets a verdict, and the four functions have unit tests.
+
+## The four functions (`src/precis/taproot/canon.py`, new package)
+
+```python
+@dataclass(frozen=True)
+class CanonicalClaim:
+    sentence: str                       # normalized claim sentence
+    scope: dict[str, str]               # {material?, method?, quantity?, regime?} — light, may be {}
+
+@dataclass(frozen=True)
+class Candidate:
+    hub_ref_id: int
+    claim: str
+    distance: float                     # cosine dist from the query claim
+
+def extract_claim(chunk_text: str) -> CanonicalClaim | None:
+    # SMALL/local LLM. Returns None when the chunk asserts no groundable
+    # claim (pure-pointer / meta) -> the NO-CLAIM outcome. v1 returns the
+    # single dominant claim; atomic-split of X∧Y is DEFERRED (a bundled
+    # chunk simply under-merges later, which the metric tolerates).
+
+def block(claim: CanonicalClaim, k: int = 10) -> list[Candidate]:
+    # No model. Embed `claim.sentence` (bge-m3, same embedder as the card
+    # index) and ANN-retrieve the k nearest existing FROLE:claim hubs.
+    # Empty -> brand-new claim.
+
+def dedup_judge(a: str, b: str) -> Verdict:            # Verdict = {verdict, confidence, rationale}
+    # MEDIUM LLM. verdict ∈ {"same","different","contradicts"}. THE crux —
+    # this is what the fixture grades. Merge only on genuinely same fact +
+    # same conditions; any real difference -> "different"; opposite polarity
+    # at the same scope -> "contradicts". Bias hard toward "different".
+
+def place(claim: CanonicalClaim, judged: list[tuple[Candidate, Verdict]]) -> Placement:
+    # Deterministic. If any confirmed "same" -> attach to that hub.
+    # elif any "contradicts" -> new hub + a `contradicts` link to it.
+    # else -> new hub. A "same" from dedup_judge with confidence below
+    # threshold is re-checked by a BIG merge-confirm call before attaching.
+```
+
+Routing (per taproot.md's tier table): `extract_claim` **SMALL/local** ·
+`block` **no model** · `dedup_judge` **MEDIUM** · merge-confirm **BIG**,
+only on a low-confidence `same`. Use `precis.utils.llm.router.dispatch`
+with `source="taproot:extract" / "taproot:dedup" / "taproot:merge-confirm"`.
+
+## What Phase 1 is validated against — the dedup-judge, specifically
+
+The fixture is **pairs** `(claim_a, claim_b, relation)`. The eval harness
+runs `dedup_judge(claim_a, claim_b)` for every pair and compares to the
+**collapsed** label:
+
+| fixture label | expected verdict |
+|---|---|
+| `equivalent` | `same` |
+| `broader` / `narrower` / `orthogonal` | `different` |
+| `contradicts` | `contradicts` |
+
+- **over-merge** = predicted `same` where expected `different` (**the
+  dangerous error — drive to ~0**).
+- **under-merge** = predicted `different` where expected `same` (tolerated).
+- Report the full 3×3 confusion + over/under rates.
+
+`block` (ANN recall), `extract_claim` (produces a claim / returns None on
+pure-pointer), and `place` (deterministic branching) get ordinary unit
+tests — they are not the risk. **The dedup-judge over the fixture is the
+gate.**
+
+## Prompts (skeletons; tune during build)
+
+**dedup-judge** (MEDIUM): "Here are two scientific claims. Are they the
+SAME claim (same fact, same conditions — material/method/quantity/regime —
+differing only in wording), a CONTRADICTION (same scope, opposite
+conclusion), or DIFFERENT? Default to DIFFERENT unless clearly the same.
+Return {verdict, confidence, one-line rationale}." Feed the labeling rubric
+that produced the fixture (`tests/fixtures/taproot/` provenance) so judge
+and key share definitions.
+
+**extract** (SMALL): "Does this passage assert a specific, citable
+scientific claim? If yes, return the claim as one normalized sentence plus
+any of {material, method, quantity, regime} it names. If it only points to
+other work without asserting anything, return none."
+
+## Eval harness (`src/precis/taproot/eval_canon.py` + a test)
+
+`eval_canonicalization(fixture_path) -> Report` loads `claim_pairs.jsonl`,
+runs `dedup_judge` per pair, maps labels as above, prints
+over/under/confusion, and asserts `over_merge_rate <= BAR`. Wire it as a
+test that is **gated/skipped without an LLM** (mark it, like the repo's
+other live-model tests) so it doesn't run in the offline gate — it's a
+validation harness the builder runs deliberately, not a CI unit test.
+
+## Explicitly NOT in Phase 1
+
+- No live persistence / ingest wiring (Phase 3), no `finding` writes.
+- No broader/narrower hierarchy (v2), no atomic-split, no scope beyond the
+  light note.
+- No integrity axis (Phase 4), no `chase` changes.
+- No `FROLE` classifier build (that's the Phase-2 predecessor task) — for
+  Phase-1 offline eval the fixture claims stand in for hubs.
+
+## Open items before `ready`
+
+1. **Set the over-merge BAR** — a number (e.g. ≤2% of expected-`different`
+   pairs, or an absolute count). Needs one decision.
+2. **Synthetic-pair spot-check** — confirm the 30 `needs_adjudication`
+   synthetic pairs (209–238) are correct before they grade the judge.
+3. **Confirm the embedder/index** reused by `block` matches the card index
+   (`bge-m3`), and that `FROLE:claim` hub selection is available (depends
+   on #11's tag landing for live use; not needed for offline eval).
+4. Decide package location: `src/precis/taproot/` (proposed) vs folding
+   into `src/precis/quest/` beside the existing `claims.py` extractor.
