@@ -421,6 +421,12 @@ def _catpath_measures_from_job(meta: dict[str, Any]) -> dict[str, float]:
         if v is not None:
             out["span"] = v
             break
+    # adsorption barrier the dissolving tether had to overcome to reseat a
+    # desorbing endpoint (pathway max). A trust/annotation diagnostic — NOT a
+    # Pareto objective (excluded from ranking via frontier._META_NON_MEASURE).
+    v = _num_measure(src.get("adsorption_barrier"))
+    if v is not None:
+        out["adsorption_barrier"] = v
     return out
 
 
@@ -431,6 +437,10 @@ def _catpath_measures_from_job(meta: dict[str, Any]) -> dict[str, float]:
 #: future caller (e.g. a diagnostic report) match on the same strings.
 _NEB_NOT_CONVERGED = "NEB not converged"
 _ADSORBATE_DETACHED = "detached"
+#: an endpoint that relaxed bound but through the WRONG atom — the reaction
+#: label's ``*`` designates a different binder (catpath ``validate.binding_site_ok``).
+#: A barrier off a mis-bound endpoint is as untrustworthy as one off a desorbed one.
+_WRONG_BINDING_SITE = "wrong-site"
 
 
 def _pathway_quality(meta: dict[str, Any]) -> dict[str, Any]:
@@ -441,17 +451,19 @@ def _pathway_quality(meta: dict[str, Any]) -> dict[str, Any]:
     less informative flag: a single-seed quest run always sets it (catpath's
     ``low_confidence = std>tol OR n<2``), so it rides along for visibility but
     never gates trust on its own). Counts warnings mentioning a non-converged
-    NEB edge and a desorbed adsorbate; ``barrier_trusted`` is False iff either
-    count is nonzero.
+    NEB edge, a desorbed adsorbate, and a wrong-site (mis-bound) endpoint;
+    ``barrier_trusted`` is False iff any of those counts is nonzero.
     """
     warnings = meta.get("warnings")
     warnings = warnings if isinstance(warnings, list) else []
     n_neb_failed = sum(1 for w in warnings if _NEB_NOT_CONVERGED in str(w))
     n_desorbed = sum(1 for w in warnings if _ADSORBATE_DETACHED in str(w))
+    n_wrong_site = sum(1 for w in warnings if _WRONG_BINDING_SITE in str(w))
     return {
-        "barrier_trusted": n_neb_failed == 0 and n_desorbed == 0,
+        "barrier_trusted": n_neb_failed == 0 and n_desorbed == 0 and n_wrong_site == 0,
         "barrier_neb_failed": n_neb_failed,
         "barrier_desorbed": n_desorbed,
+        "barrier_wrong_site": n_wrong_site,
         "barrier_low_confidence": bool(meta.get("low_confidence")),
     }
 

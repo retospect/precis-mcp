@@ -93,14 +93,15 @@ def graduate_frontier(store: Store, quest_id: int, *, by: str = "agent") -> list
         if key in _CATPATH_GATED_KEYS and c.flags.get("barrier_trusted") is False:
             n = c.flags.get("barrier_neb_failed") or 0
             m = c.flags.get("barrier_desorbed") or 0
+            w = c.flags.get("barrier_wrong_site") or 0
             append_entry(
                 store,
                 quest_id,
                 text=(
                     f"held back {c.handle} ({c.name}) — barrier {value:g} meets "
-                    f"ceiling but pathway did not converge ({n} NEB edge(s) "
-                    f"failed / {m} adsorbate(s) desorbed); needs a re-run "
-                    "before graduation"
+                    f"ceiling but pathway is untrusted ({n} NEB edge(s) "
+                    f"failed / {m} adsorbate(s) desorbed / {w} mis-bound); needs "
+                    "a re-run before graduation"
                 ),
                 entry_type="note",
                 by=by,

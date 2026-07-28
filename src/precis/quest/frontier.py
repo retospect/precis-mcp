@@ -287,10 +287,12 @@ _RUN_NON_MEASURE: frozenset[str] = frozenset({"id", "ref_id", "on_version"})
 #: idempotency bookmarks ``harvest_measures`` (compute.py) stamps onto the
 #: candidate. ``label_hi``/``lattice``/``pbc`` are non-numeric already
 #: (``_numeric`` filters them), so only the numeric ones need listing here.
-#: ``barrier_neb_failed``/``barrier_desorbed`` are the pathway-quality warning
-#: counts harvest_measures also stamps (``barrier_trusted``/
+#: ``barrier_neb_failed``/``barrier_desorbed``/``barrier_wrong_site`` are the
+#: pathway-quality warning counts harvest_measures also stamps (``barrier_trusted``/
 #: ``barrier_low_confidence`` are bools, already excluded by ``_numeric``) —
 #: diagnostics for :func:`leaderboard`'s quality flag, never a rank measure.
+#: ``adsorption_barrier`` is the tether's reseat barrier: a trust/annotation
+#: signal (activated-adsorption sniff), likewise not a Pareto objective.
 _META_NON_MEASURE: frozenset[str] = frozenset(
     {
         "version",
@@ -298,6 +300,8 @@ _META_NON_MEASURE: frozenset[str] = frozenset(
         "quest_catpath_harvested_upto",
         "barrier_neb_failed",
         "barrier_desorbed",
+        "barrier_wrong_site",
+        "adsorption_barrier",
     }
 )
 
@@ -368,9 +372,13 @@ def _candidate_from_structure(store: Store, s: Any) -> Candidate:
         flags["barrier_neb_failed"] = meta.get("barrier_neb_failed")
     if "barrier_desorbed" in meta:
         flags["barrier_desorbed"] = meta.get("barrier_desorbed")
+    if "barrier_wrong_site" in meta:
+        flags["barrier_wrong_site"] = meta.get("barrier_wrong_site")
+    if "adsorption_barrier" in meta:
+        flags["adsorption_barrier"] = meta.get("adsorption_barrier")
 
     # An untrusted barrier (its pathway had non-converged NEB edges / desorbed
-    # adsorbates) is noise, not a measurement — exclude it (and span, measured
+    # or mis-bound adsorbates) is noise, not a measurement — exclude it (and span, measured
     # over the same pathway) from ranking entirely so it can neither dominate
     # nor be dominated; it falls to `unevaluated` via the existing "missing a
     # declared objective" path. The raw value survives in `flags` so the

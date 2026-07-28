@@ -1126,6 +1126,61 @@ class TestCatpathHarvest:
         assert meta["barrier_trusted"] is True
         assert meta["barrier_neb_failed"] == 0
         assert meta["barrier_desorbed"] == 0
+        assert meta["barrier_wrong_site"] == 0
+
+    def test_wrong_site_pathway_is_untrusted(self, store: Any) -> None:
+        """A bound-but-mis-bound endpoint (the ``*`` designates a different atom)
+        flips ``barrier_trusted=False`` with a ``barrier_wrong_site`` count, so a
+        barrier off a flipped geometry never ranks as trustworthy."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        target = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="pw",
+            meta={
+                "warnings": [
+                    "NO seed=0 fragment NO (atoms 36-37) binds through O but the "
+                    "* designates N — wrong-site",
+                ],
+                "low_confidence": False,
+            },
+            parent_id=sid,
+        ).id
+        self._catpath_job(
+            store, sid, {"result": {"barrier": 0.3}, "pathway_ref": target}
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is False
+        assert meta["barrier_wrong_site"] == 1
+        assert meta["barrier_neb_failed"] == 0
+        assert meta["barrier_desorbed"] == 0
+
+    def test_adsorption_barrier_harvested_as_diagnostic(self, store: Any) -> None:
+        """The tether's reseat adsorption barrier is harvested onto the candidate
+        meta as an annotation (not a Pareto objective)."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        target = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="pw",
+            meta={"warnings": [], "low_confidence": False},
+            parent_id=sid,
+        ).id
+        self._catpath_job(
+            store,
+            sid,
+            {
+                "result": {"barrier": 0.4, "adsorption_barrier": 0.22},
+                "pathway_ref": target,
+            },
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["adsorption_barrier"] == 0.22
+        assert meta["barrier"] == 0.4  # still the ranked measure
 
     def test_missing_pathway_ref_stamps_no_trust_flags(self, store: Any) -> None:
         qid = _mk_quest(store, "A striving")
