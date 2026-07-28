@@ -141,12 +141,19 @@ own evidence. #1 and #2 are one problem, solved together.
 A cascade mirroring the ADR-0047 classifier (cheap-and-wide → escalate
 the hard bit):
 
-1. **Canonical form (linchpin).** A **normalized claim sentence + a
-   structured scope object** (`material`, `method`, `quantity`, `regime`)
-   — *not* full predicate-logic tuples (brittle over open science). The
-   scope object is what makes broader/narrower judgeable. You cannot
-   block or compare claims stated at inconsistent grain, so this is the
-   prerequisite that makes 2–4 work; identity and scope fuse here.
+1. **Atomic form (linchpin).** First **split any multi-assertion chunk
+   into atomic claims** — one independently-citable assertion each. The
+   fixture proved "one chunk = one claim" is *false* in the corpus
+   (10/200 pairs asserted X∧Y where a near-neighbour asserted just X).
+   Splitting is **one level, LLM-judged** ("does this make 2+
+   independently-citable claims?") — *not* recursive predicate
+   decomposition (see [Non-goals](#non-goals--staying-out-of-the-formal-logic-pit)).
+   Then normalize each atom to a **claim sentence + structured scope
+   object** (`material`, `method`, `quantity`, `regime`) — *not* full
+   predicate-logic tuples (brittle over open science). The scope object
+   makes broader/narrower judgeable. You cannot block or compare claims
+   stated at inconsistent grain, so this is the prerequisite that makes
+   2–4 work; identity and scope fuse here.
 2. **Block — no model.** Embed the canonical form; ANN-retrieve the top-K
    nearest existing hubs (reuse the `finding` card embeddings already
    indexed). Zero near neighbours ⇒ new hub, free.
@@ -169,12 +176,53 @@ toward not-merging** — under-merge is recoverable (merge later),
 over-merge is dangerous (a retraction ripples across fused-but-distinct
 claims). Uncertainty defaults to keep-separate + link.
 
-**Eval fixture (required before backfill).** ~200 human-labeled claim
-pairs across real corpus domains (MOFs, Pd catalysts, NOx), tagged with
-the five relations. Primary metric = **over-merge rate → target ~zero**,
-tolerating under-merge. This is Phase 1's `ready` bar. Cheap blocking (2)
-is what keeps the expensive judges (4) rare — load-bearing for cost, not
-just recall.
+**Eval fixture (required before backfill).** Primary metric =
+**over-merge rate → target ~zero**, tolerating under-merge. This is
+Phase 1's `ready` bar. Cheap blocking (2) keeps the expensive judges (4)
+rare — load-bearing for cost, not just recall.
+
+> **v1 built (2026-07-28)** — `tests/fixtures/taproot/` holds 200
+> nearest-neighbour `citation`-claim pairs, dual-labeled by Opus + Fable
+> (blind), **92% inter-model agreement**; the 16 disagreements were
+> adjudicated by three cluster rules (see the fixture README). Two
+> findings fed back into this spec: the **atomic-split** need (step 1
+> above) and the **`finding`-pollution** issue (open #11). Gaps: no
+> `contradicts` pairs yet (open #12), nanoelectronics-skewed. The method
+> — nearest-neighbour pairs + two blind labelers + human adjudication of
+> only the disagreements — is the repeatable recipe for growing it.
+
+## Non-goals — staying out of the formal-logic pit
+
+Canonicalization's atomic-split + subsumption DAG are the trailhead to an
+open-ended formal-KR project. They are **not** one here, and these are the
+hard limits that keep "well enough" from sliding into a bottomless
+description-logic build. Empirically the pragmatic path suffices: two
+models hit **92% agreement with zero logic** — bounded pairwise judgment,
+not inference.
+
+The line: **using a hierarchy (fine) vs. building a logic (the pit).**
+
+1. **Closed 5-relation vocabulary** — no arbitrary predicates, no
+   quantifiers. A claim relation is one of five, judged by a model on a
+   *pair* and graded against the fixture.
+2. **Pairwise judgment, never a reasoner** — we never *compute*
+   entailment or run a solver. No inference engine, no consistency
+   checking.
+3. **Atomic split is one level** — split an obvious multi-assertion chunk
+   (X∧Y) into X, Y and **stop**. No recursive decomposition of X into
+   sub-claims or logical constituents.
+4. **No transitive closure, no enforced global consistency** — edges are
+   recorded as proposed; a query walks them at read time (like the repo's
+   existing `cites`/`cited-by`). We do not maintain a provably-consistent
+   hierarchy. Contradictions are just edges, not constraints to solve.
+5. **Scope object is a flat bag of strings**, not an ontology.
+6. **"Well enough" = the fixture metric, not a correctness proof** — once
+   over-merge ~0 on the fixture, ship. The metric caps the ambition by
+   construction.
+
+**Decision rule for any future feature:** if it needs quantifiers, an
+entailment solver, consistency-enforcement, or unbounded recursive
+decomposition — that is the pit; say no.
 
 ## Axis A — the support-resolution pipeline
 
@@ -513,9 +561,27 @@ before any `status: ready`).
     claim sentence's inline `[k]` markers. A chunk can be `own` overall
     yet NOT-ORIGINATOR for a claim it cites prior art for.
 
+11. **[INCOHERENCE — found in the fixture data]** The `finding` kind is
+    **polluted**: a large fraction of prod `finding` rows are editorial
+    review notes ("acronym unexpanded", "riyaz25 cited but Pd not
+    studied"), not grounded world-claims. The hub model assumes world-
+    claims. Taproot must either **split the `finding` kind** (world-claim
+    vs review-note) or filter by a marker. (The fixture sidestepped this
+    by drawing from `citation`, which is clean.) Reconcile before
+    `finding` becomes the hub in Phase 2.
+
+12. **[OPEN — fixture gap]** The v1 fixture has **no `contradicts`
+    examples** — contradictions aren't nearest-neighbours (opposing
+    claims word themselves differently), so NN-pairing can't surface
+    them. Needs a **targeted contradiction-augmentation pass** (search
+    opposite-polarity claim pairs deliberately) or the over-merge metric
+    never exercises the contradiction edge.
+
 **Status after the 2026-07-28 pass:** #3,#4,#6,#8,#10 resolved · #1,#5
-designed-with-a-gate · #9 typed, function deferred · #7 the only item
-needing a measurement (a Phase-5 pilot), not more design.
+designed-with-a-gate · #9 typed, function deferred · #7 needs a Phase-5
+pilot measurement · #11 (finding-pollution) + #12 (fixture contradiction
+gap) newly surfaced by building the fixture. Phase-1 fixture v1 exists
+(`tests/fixtures/taproot/`, 92% two-model agreement).
 
 ## Build phasing
 
@@ -525,9 +591,10 @@ model is cross-cutting and splitting the document would invite drift. The
 self-contained branch off this spec; the phase boundary is where we stop
 and validate before widening blast radius.
 
-1. **Phase 1 — canonicalization (the gate).** Canonical-form extractor +
-   ANN blocking + pairwise lattice-judge + escalation, **plus the labeled
-   eval fixture** (five-relation pairs) measuring under/over-merge. Ships
+1. **Phase 1 — canonicalization (the gate).** Atomic-split → canonical-form
+   extractor → ANN blocking → pairwise lattice-judge → escalation,
+   validated against the **eval fixture** (v1 already built,
+   `tests/fixtures/taproot/`; grow it + add contradictions per #12). Ships
    and is validated *before anything writes edges at scale.* Resolves
    open #1/#2. **Everything else waits on this.**
 2. **Phase 2 — hub node.** `finding`-as-hub, the typed graded evidence

@@ -1,0 +1,1202 @@
+{
+"1": {
+"pair_id": 1,
+"relation": "orthogonal",
+"confidence": 0.9,
+"rationale": "CNTFET mobility-vs-Si claim vs NEGF-DFT ballistic-conductance formalism; different facts"
+},
+"2": {
+"pair_id": 2,
+"relation": "equivalent",
+"confidence": 0.8,
+"rationale": "Same RV16X-NANO chip, same core identity/fab; only minor framing differs"
+},
+"3": {
+"pair_id": 3,
+"relation": "equivalent",
+"confidence": 0.65,
+"rationale": "Same chip; each side lists different-but-comparable capability details, no scope divergence"
+},
+"4": {
+"pair_id": 4,
+"relation": "equivalent",
+"confidence": 0.9,
+"rationale": "Identical Au1-4/graphene adsorption energies, barriers, and mobility conclusion"
+},
+"5": {
+"pair_id": 5,
+"relation": "equivalent",
+"confidence": 0.97,
+"rationale": "Identical RQ=h/4e2=6.45kOhm M=2 quantum-resistance floor"
+},
+"6": {
+"pair_id": 6,
+"relation": "equivalent",
+"confidence": 0.75,
+"rationale": "Same RV16X-NANO; symmetric extras (first vs runs-programs)"
+},
+"7": {
+"pair_id": 7,
+"relation": "narrower",
+"confidence": 0.8,
+"rationale": "A adds the 'diffusive limit' regime condition to B's general mobility claim"
+},
+"8": {
+"pair_id": 8,
+"relation": "equivalent",
+"confidence": 0.9,
+"rationale": "Same chirality (n-m mod 3) metallic/semiconducting rule"
+},
+"9": {
+"pair_id": 9,
+"relation": "equivalent",
+"confidence": 0.75,
+"rationale": "Same claim: chirality uniquely fixes SWCNT electronic character"
+},
+"10": {
+"pair_id": 10,
+"relation": "orthogonal",
+"confidence": 0.85,
+"rationale": "Dark vs white-light adsorption capacities; different conditions/values"
+},
+"11": {
+"pair_id": 11,
+"relation": "equivalent",
+"confidence": 0.95,
+"rationale": "Identical Pd-CNT ballistic 4e2/h conductance and ~25uA/tube"
+},
+"12": {
+"pair_id": 12,
+"relation": "equivalent",
+"confidence": 0.8,
+"rationale": "Same 3nm/2nm/1nm roadmap status; B just adds date/IMEC attribution"
+},
+"13": {
+"pair_id": 13,
+"relation": "equivalent",
+"confidence": 0.6,
+"rationale": "Same HUST-38 FE/yield; asymmetric extras (mechanism vs HUST-39 control)"
+},
+"14": {
+"pair_id": 14,
+"relation": "broader",
+"confidence": 0.5,
+"rationale": "A validates same OD-Cu result over wider NO3- concentration range plus microstructure"
+},
+"15": {
+"pair_id": 15,
+"relation": "equivalent",
+"confidence": 0.85,
+"rationale": "Same 16-metal screening: Pb/Sn/In N2 via PCET, Co NH4+ via HAT"
+},
+"16": {
+"pair_id": 16,
+"relation": "equivalent",
+"confidence": 0.75,
+"rationale": "Same metal-selectivity finding; A omits/adds only minor detail"
+},
+"17": {
+"pair_id": 17,
+"relation": "equivalent",
+"confidence": 0.95,
+"rationale": "Identical PCN-222-MBA 714.3 mg/g, pH 6.1, 1 min, 6 cycles"
+},
+"18": {
+"pair_id": 18,
+"relation": "narrower",
+"confidence": 0.5,
+"rationale": "B adds solution-dispersion observation atop A's shared Au-Au>>Au-C clustering claim"
+},
+"19": {
+"pair_id": 19,
+"relation": "equivalent",
+"confidence": 0.65,
+"rationale": "Same 5nm graphene-contact CNT FET: 73 mV/dec, 0.4V, one-electron switching"
+},
+"20": {
+"pair_id": 20,
+"relation": "equivalent",
+"confidence": 0.9,
+"rationale": "Same 7-AGNR 26nm FET, ION/IOFF ~1e3"
+},
+"21": {
+"pair_id": 21,
+"relation": "equivalent",
+"confidence": 0.7,
+"rationale": "Same 5nm graphene-contact CNT FET, 73 mV/dec at 0.4V"
+},
+"22": {
+"pair_id": 22,
+"relation": "equivalent",
+"confidence": 0.8,
+"rationale": "Same RV16X-NANO >14,000 CNFET integration claim"
+},
+"23": {
+"pair_id": 23,
+"relation": "equivalent",
+"confidence": 0.8,
+"rationale": "Same tight-binding CNT bandgap formula; B's numeric is derivable"
+},
+"24": {
+"pair_id": 24,
+"relation": "orthogonal",
+"confidence": 0.45,
+"rationale": "Same performance numbers but stated dielectric differs (HfO2 vs Al2O3); likely distinct devices"
+},
+"25": {
+"pair_id": 25,
+"relation": "broader",
+"confidence": 0.55,
+"rationale": "A generalizes to small adsorbates/metals; B specific to Cu/Au/Pt"
+},
+"26": {
+"pair_id": 26,
+"relation": "equivalent",
+"confidence": 0.6,
+"rationale": "Same dual-phase Cu experiment; B reports extra metrics of the same result"
+},
+"27": {
+"pair_id": 27,
+"relation": "broader",
+"confidence": 0.5,
+"rationale": "A general GNRs vs B specific suspended CVD GNRs, same crossover phenomena"
+},
+"28": {
+"pair_id": 28,
+"relation": "equivalent",
+"confidence": 0.6,
+"rationale": "Same CVD/h-BN edge-contact GNR 100 mV/dec SS; asymmetric extras"
+},
+"29": {
+"pair_id": 29,
+"relation": "equivalent",
+"confidence": 0.9,
+"rationale": "Same CVD/h-BN edge-contact GNR SS 100 mV/dec vs 60 Boltzmann"
+},
+"30": {
+"pair_id": 30,
+"relation": "broader",
+"confidence": 0.85,
+"rationale": "A restates B's on-current claim verbatim then adds the zigzag-defect result"
+},
+"31": {
+"pair_id": 31,
+"relation": "equivalent",
+"confidence": 0.6,
+"rationale": "Same MACE-MP-0 capability; B adds only relax-verb app note"
+},
+"32": {
+"pair_id": 32,
+"relation": "equivalent",
+"confidence": 0.55,
+"rationale": "A's order-of-magnitude/free-diffusion claim is the same finding as B's numeric data"
+},
+"33": {
+"pair_id": 33,
+"relation": "orthogonal",
+"confidence": 0.6,
+"rationale": "Best CVD GNR-FETs (5-10uA) vs 9-AGNR OSS devices (50nA); different device classes"
+},
+"34": {
+"pair_id": 34,
+"relation": "equivalent",
+"confidence": 0.6,
+"rationale": "Same >10,000-device CNT integration claim; obstacle note is context"
+},
+"35": {
+"pair_id": 35,
+"relation": "equivalent",
+"confidence": 0.8,
+"rationale": "Same DLSA 100-200 CNTs/um on 10cm wafer; asymmetric minor extras"
+},
+"36": {
+"pair_id": 36,
+"relation": "orthogonal",
+"confidence": 0.5,
+"rationale": "A summary of two AGNR devices vs B detailed 9-AGNR distribution/current"
+},
+"37": {
+"pair_id": 37,
+"relation": "broader",
+"confidence": 0.7,
+"rationale": "A adds the thick-SiO2 comparison to B's thin-HfO2 result"
+},
+"38": {
+"pair_id": 38,
+"relation": "equivalent",
+"confidence": 0.85,
+"rationale": "Same Liu-et-al 100-200 CNTs/um on 10cm wafer exceeding Si"
+},
+"39": {
+"pair_id": 39,
+"relation": "equivalent",
+"confidence": 0.92,
+"rationale": "Same 9-AGNR 20nm thin-high-k ION/IOFF up to 1e5"
+},
+"40": {
+"pair_id": 40,
+"relation": "equivalent",
+"confidence": 0.85,
+"rationale": "Same aligned CNT array 100-200/um on 10cm wafer via self-alignment"
+},
+"41": {
+"pair_id": 41,
+"relation": "equivalent",
+"confidence": 0.55,
+"rationale": "Same MnN4/Ag(111) -0.69->-0.39V and SISSO; minor descriptor-detail differences"
+},
+"42": {
+"pair_id": 42,
+"relation": "equivalent",
+"confidence": 0.95,
+"rationale": "Identical AGNR Eg~1/W, sub-5nm-for-FET claim"
+},
+"43": {
+"pair_id": 43,
+"relation": "orthogonal",
+"confidence": 0.4,
+"rationale": "Different quantum-resistance formulations/values (3.25kOhm/M vs 6.45kOhm M=2)"
+},
+"44": {
+"pair_id": 44,
+"relation": "equivalent",
+"confidence": 0.8,
+"rationale": "Same claim: bottom-up OSS makes atomically precise GNRs/nanostructures"
+},
+"45": {
+"pair_id": 45,
+"relation": "orthogonal",
+"confidence": 0.5,
+"rationale": "Shared G0 constant but different substantive claims (molecular junctions vs metallic-wire steps)"
+},
+"46": {
+"pair_id": 46,
+"relation": "orthogonal",
+"confidence": 0.75,
+"rationale": "Same fibre, different measured quantities (3.19 mg/g seawater U vs 525.89 mg/g capacity/antimicrobial)"
+},
+"47": {
+"pair_id": 47,
+"relation": "orthogonal",
+"confidence": 0.5,
+"rationale": "CNT-CMOS current/pitch metrics vs graphene-contact SS mechanism; different reported facts"
+},
+"48": {
+"pair_id": 48,
+"relation": "narrower",
+"confidence": 0.5,
+"rationale": "B adds the Rh-best-scaling finding to A's shared within-factor-2 claim"
+},
+"49": {
+"pair_id": 49,
+"relation": "orthogonal",
+"confidence": 0.8,
+"rationale": "Plain PBE/RPBE vs dispersion-corrected D3 MAEs; different functionals/values"
+},
+"50": {
+"pair_id": 50,
+"relation": "equivalent",
+"confidence": 0.55,
+"rationale": "Same Au/graphene barriers 4-36 meV; asymmetric extras (robustness vs ads energies)"
+},
+"51": {
+"pair_id": 51,
+"relation": "equivalent",
+"confidence": 0.65,
+"rationale": "Same claim: FinFET/Si scaling near theoretical limit from short-channel/tunneling"
+},
+"52": {
+"pair_id": 52,
+"relation": "equivalent",
+"confidence": 0.9,
+"rationale": "Same first 7-AGNR SiO2 FET: ~5nA, ION/IOFF 3.6e3, Schottky-limited"
+},
+"53": {
+"pair_id": 53,
+"relation": "equivalent",
+"confidence": 0.85,
+"rationale": "Same claim: zwitterionic coatings give marine antifouling/adsorption resistance"
+},
+"54": {
+"pair_id": 54,
+"relation": "equivalent",
+"confidence": 0.7,
+"rationale": "Same claim: ASE Atoms class as canonical front-end for atomistic simulation"
+},
+"55": {
+"pair_id": 55,
+"relation": "equivalent",
+"confidence": 0.6,
+"rationale": "Same RuGa bcc numbers/FE and *HNO PDS; minor reactant-label difference"
+},
+"56": {
+"pair_id": 56,
+"relation": "equivalent",
+"confidence": 0.55,
+"rationale": "Same Au4^Y-becomes-ground-state-on-graphene reversal; A quantitative, B qualitative"
+},
+"57": {
+"pair_id": 57,
+"relation": "broader",
+"confidence": 0.5,
+"rationale": "A general porous MOFs/aqueous U-extraction subsumes B's amidoxime-MOF/seawater case"
+},
+"58": {
+"pair_id": 58,
+"relation": "orthogonal",
+"confidence": 0.7,
+"rationale": "13-AGNR OSS 468 mV/dec vs CVD/h-BN 100 mV/dec; different devices"
+},
+"59": {
+"pair_id": 59,
+"relation": "orthogonal",
+"confidence": 0.5,
+"rationale": "Full dark table vs mixed dark/light pair; overlapping one point, different sets/conditions"
+},
+"60": {
+"pair_id": 60,
+"relation": "narrower",
+"confidence": 0.5,
+"rationale": "B adds within-factor-2 claim to A's shared Rh-best-scaling statement"
+},
+"61": {
+"pair_id": 61,
+"relation": "orthogonal",
+"confidence": 0.7,
+"rationale": "CNT-array FET (1.3mA/um,<90mV/dec) vs 5nm single graphene-contact (73mV/dec); different devices"
+},
+"62": {
+"pair_id": 62,
+"relation": "equivalent",
+"confidence": 0.6,
+"rationale": "Same de novo design stack (RFdiffusion+ProteinMPNN); B adds SCUBA"
+},
+"63": {
+"pair_id": 63,
+"relation": "orthogonal",
+"confidence": 0.8,
+"rationale": "9-AGNR 34-37nm vs 7-AGNR ~30nm on Au(788); different ribbons/lengths"
+},
+"64": {
+"pair_id": 64,
+"relation": "orthogonal",
+"confidence": 0.75,
+"rationale": "9-AGNR (>1e4) vs 7-AGNR (~1e3); different ribbons/ratios"
+},
+"65": {
+"pair_id": 65,
+"relation": "equivalent",
+"confidence": 0.5,
+"rationale": "Both assert 3.25kOhm per-contact quantum-resistance floor"
+},
+"66": {
+"pair_id": 66,
+"relation": "equivalent",
+"confidence": 0.8,
+"rationale": "Same DLSA-array top-gate FET metrics; asymmetric extras"
+},
+"67": {
+"pair_id": 67,
+"relation": "broader",
+"confidence": 0.5,
+"rationale": "A restates B's GNR dimensions and adds the integration-difficulty claim"
+},
+"68": {
+"pair_id": 68,
+"relation": "broader",
+"confidence": 0.55,
+"rationale": "A's decade-long CNT maturation trajectory subsumes B's single-chip claim"
+},
+"69": {
+"pair_id": 69,
+"relation": "orthogonal",
+"confidence": 0.55,
+"rationale": "Specific 5-AGNR low-gap/mobility vs general Eg~1/W width law"
+},
+"70": {
+"pair_id": 70,
+"relation": "orthogonal",
+"confidence": 0.55,
+"rationale": "9-AGNR (+mobility) vs 13-AGNR (+h-BN comparison); different ribbons despite same 468 mV/dec"
+},
+"71": {
+"pair_id": 71,
+"relation": "orthogonal",
+"confidence": 0.55,
+"rationale": "A thick-SiO2 fabrication detail vs B thin-high-k performance; different claims"
+},
+"72": {
+"pair_id": 72,
+"relation": "equivalent",
+"confidence": 0.55,
+"rationale": "Same Pd-contact short-SWNT near-4e2/h ballistic transport"
+},
+"73": {
+"pair_id": 73,
+"relation": "orthogonal",
+"confidence": 0.5,
+"rationale": "Multigate 9-AGNR electrode-strategy comparison vs 12nm-finger-gate detail; different specifics"
+},
+"74": {
+"pair_id": 74,
+"relation": "orthogonal",
+"confidence": 0.5,
+"rationale": "3.19 mg/g seawater U vs 684.3 mg/g saturation, 30- vs 40-day; different measurements/likely materials"
+},
+"75": {
+"pair_id": 75,
+"relation": "equivalent",
+"confidence": 0.9,
+"rationale": "Same Fe-N4 SAC: FE ~75%, ~20,000 ug/h/mg, site-isolation prevents N-N coupling"
+},
+"76": {
+"pair_id": 76,
+"relation": "narrower",
+"confidence": 0.55,
+"rationale": "A specific GNR-type list+ZGNR spintronics is a special case of B's general OSS-precision claim"
+},
+"77": {
+"pair_id": 77,
+"relation": "orthogonal",
+"confidence": 0.5,
+"rationale": "Tfpy-PDA-S+CPU-leachate application vs full light-adsorption table; overlapping one value"
+},
+"78": {
+"pair_id": 78,
+"relation": "orthogonal",
+"confidence": 0.55,
+"rationale": "A mixes top-down+bottom-up routes; B lists only bottom-up (OSS/SPS/CVD); different taxonomies"
+},
+"79": {
+"pair_id": 79,
+"relation": "orthogonal",
+"confidence": 0.55,
+"rationale": "EPS-definition claim vs biofilm-composition claim; overlapping entities, different focus"
+},
+"80": {
+"pair_id": 80,
+"relation": "orthogonal",
+"confidence": 0.85,
+"rationale": "SciBERT vs BioBERT; parallel claims about different models/domains"
+},
+"81": {
+"pair_id": 81,
+"relation": "orthogonal",
+"confidence": 0.5,
+"rationale": "AGNR family (Nc mod 3) classification vs Eg~1/W width-scaling; different laws"
+},
+"82": {
+"pair_id": 82,
+"relation": "orthogonal",
+"confidence": 0.6,
+"rationale": "5nm-gate 0.64 G0 near-ballistic vs Pd-contact near-4e2/h; different devices/conductances"
+},
+"83": {
+"pair_id": 83,
+"relation": "orthogonal",
+"confidence": 0.55,
+"rationale": "70 tubes/um >99.9999% on quartz vs 100-200/um on 10cm wafer; different densities/substrates"
+},
+"84": {
+"pair_id": 84,
+"relation": "equivalent",
+"confidence": 0.6,
+"rationale": "Same AlphaFold CASP14 near-experimental-accuracy achievement"
+},
+"85": {
+"pair_id": 85,
+"relation": "orthogonal",
+"confidence": 0.55,
+"rationale": "Plain-DFT gaps vs DFT+GW gaps; different methods/ribbons/values"
+},
+"86": {
+"pair_id": 86,
+"relation": "narrower",
+"confidence": 0.6,
+"rationale": "A's <5nm short-channel struggle is a subset of B's multi-bottleneck+FinFET claim"
+},
+"87": {
+"pair_id": 87,
+"relation": "orthogonal",
+"confidence": 0.7,
+"rationale": "Simulated GAA CNT (1775uA/um) vs fabricated 5nm CNT CMOS metrics; different claims"
+},
+"88": {
+"pair_id": 88,
+"relation": "equivalent",
+"confidence": 0.6,
+"rationale": "Same core: two-step OSS yields atomically precise width/edge-controlled GNRs"
+},
+"89": {
+"pair_id": 89,
+"relation": "orthogonal",
+"confidence": 0.5,
+"rationale": "Nanogap/ribbon-count detail vs 12nm-finger-gate detail; overlapping architecture, different specifics"
+},
+"90": {
+"pair_id": 90,
+"relation": "orthogonal",
+"confidence": 0.8,
+"rationale": "COF optical absorption edges vs gold adsorption capacities; different quantities"
+},
+"91": {
+"pair_id": 91,
+"relation": "orthogonal",
+"confidence": 0.75,
+"rationale": "Flexible hBN GFET mobility vs RF cutoff frequencies; different quantities"
+},
+"92": {
+"pair_id": 92,
+"relation": "orthogonal",
+"confidence": 0.65,
+"rationale": "Same 300nm SWNT but cryogenic Fabry-Perot vs room-temperature Pd-ohmic; different regimes"
+},
+"93": {
+"pair_id": 93,
+"relation": "orthogonal",
+"confidence": 0.65,
+"rationale": "Metal-sulfide (non-MOF) vs amidoxime-MOF uranium capture; different material classes"
+},
+"94": {
+"pair_id": 94,
+"relation": "orthogonal",
+"confidence": 0.7,
+"rationale": "IrCu4 alloy vs COF-on-Cu; different catalysts/values despite shared HER-suppression theme"
+},
+"95": {
+"pair_id": 95,
+"relation": "equivalent",
+"confidence": 0.6,
+"rationale": "Same 2014 gram-scale chevron GNR (~1nm, 1.3eV); B adds 2008 origin, A adds Yamamoto"
+},
+"96": {
+"pair_id": 96,
+"relation": "orthogonal",
+"confidence": 0.65,
+"rationale": "10nm CNT vs 5nm CNT CMOS; different gate lengths/claims"
+},
+"97": {
+"pair_id": 97,
+"relation": "orthogonal",
+"confidence": 0.5,
+"rationale": "Specific experimental 9-AGNR 1.4eV gap vs DFT-values-plus-general-statement; different assertions"
+},
+"98": {
+"pair_id": 98,
+"relation": "equivalent",
+"confidence": 0.6,
+"rationale": "Both: OSS (Ullmann/two-step) yields atomically precise width/edge-controlled GNRs"
+},
+"99": {
+"pair_id": 99,
+"relation": "equivalent",
+"confidence": 0.65,
+"rationale": "Same 7-AGNR/Au(111) 150C/400C OSS process; A adds year/intermediate step"
+},
+"100": {
+"pair_id": 100,
+"relation": "orthogonal",
+"confidence": 0.5,
+"rationale": "Top-down-vs-bottom-up quality comparison vs bottom-up dimensions/integration; different claims"
+},
+"101": {
+"pair_id": 101,
+"relation": "orthogonal",
+"confidence": 0.45,
+"rationale": "Thin-HfO2 local-gate config vs 50nm-SiO2 back-gate/bridging stats; different specifics"
+},
+"102": {
+"pair_id": 102,
+"relation": "orthogonal",
+"confidence": 0.7,
+"rationale": "ZrO2-gate SS/mobility vs Pd-contact conductance/current; different aspects"
+},
+"103": {
+"pair_id": 103,
+"relation": "equivalent",
+"confidence": 0.65,
+"rationale": "Same principle: high-valence metal nodes + carboxylate linkers give water-stable MOFs"
+},
+"104": {
+"pair_id": 104,
+"relation": "orthogonal",
+"confidence": 0.5,
+"rationale": "Mott-transistor projection (with Si contrast) vs Si/FinFET-limits claim; different primary subjects"
+},
+"105": {
+"pair_id": 105,
+"relation": "orthogonal",
+"confidence": 0.6,
+"rationale": "Single-vs-film conductance claim vs 13-AGNR SS; different quantities"
+},
+"106": {
+"pair_id": 106,
+"relation": "orthogonal",
+"confidence": 0.7,
+"rationale": "O'Shea current UL position vs prior Munster/IBM roles; different facts"
+},
+"107": {
+"pair_id": 107,
+"relation": "equivalent",
+"confidence": 0.6,
+"rationale": "Same MACE-MP-0 foundation-MLIP/fine-tuning capability"
+},
+"108": {
+"pair_id": 108,
+"relation": "orthogonal",
+"confidence": 0.5,
+"rationale": "CBS-extrapolation/BSSE-tabulation vs counterpoise/MP2-single-point; different methodological details"
+},
+"109": {
+"pair_id": 109,
+"relation": "orthogonal",
+"confidence": 0.6,
+"rationale": "Adsorption-energy definition/formula vs actual Au/graphene values; different content"
+},
+"110": {
+"pair_id": 110,
+"relation": "orthogonal",
+"confidence": 0.6,
+"rationale": "OECT mechanism/synaptic use vs OECT highest-transconductance claim; different assertions"
+},
+"111": {
+"pair_id": 111,
+"relation": "orthogonal",
+"confidence": 0.5,
+"rationale": "Qualitative high-performance/tunability vs specific 50nA/3e5 stats; different framings"
+},
+"112": {
+"pair_id": 112,
+"relation": "equivalent",
+"confidence": 0.45,
+"rationale": "Same dual-gate graphene-electrode 5/9-AGNR ~25nm device; differing stated purpose only"
+},
+"113": {
+"pair_id": 113,
+"relation": "equivalent",
+"confidence": 0.6,
+"rationale": "Same inverse-diameter CNT bandgap scaling; B gives the formula"
+},
+"114": {
+"pair_id": 114,
+"relation": "broader",
+"confidence": 0.4,
+"rationale": "A's general Si-decline-drives-nanomaterials subsumes B's specific <5nm short-channel manifestation"
+},
+"115": {
+"pair_id": 115,
+"relation": "orthogonal",
+"confidence": 0.55,
+"rationale": "9K QD measurement (addition energies) vs QD device fabrication; different claims"
+},
+"116": {
+"pair_id": 116,
+"relation": "orthogonal",
+"confidence": 0.65,
+"rationale": "Sub-10nm 2.41mA/um 94mV/dec vs 5nm 73mV/dec CNT CMOS; different devices/nodes"
+},
+"117": {
+"pair_id": 117,
+"relation": "orthogonal",
+"confidence": 0.75,
+"rationale": "Anthracene-Au junction binding vs AuCl4-at-COF-N binding; different systems/energies"
+},
+"118": {
+"pair_id": 118,
+"relation": "equivalent",
+"confidence": 0.6,
+"rationale": "Same core: Cu uniquely binds *NO not *H -> NH3-selective; asymmetric extras"
+},
+"119": {
+"pair_id": 119,
+"relation": "orthogonal",
+"confidence": 0.75,
+"rationale": "Fe-HESA nanocages vs Co-MOF HUST-38; different catalysts/numbers"
+},
+"120": {
+"pair_id": 120,
+"relation": "orthogonal",
+"confidence": 0.55,
+"rationale": "Graphene-electrode gating efficiency in GNR vs 5nm CNT-FET SS; different devices/metrics"
+},
+"121": {
+"pair_id": 121,
+"relation": "orthogonal",
+"confidence": 0.75,
+"rationale": "Pd1Cu SAA vs dual-phase Cu; different catalysts/numbers"
+},
+"122": {
+"pair_id": 122,
+"relation": "orthogonal",
+"confidence": 0.55,
+"rationale": "Alkane-physisorption no-consensus claim vs PBE-D3/RPBE-D3 MAE values; different specifics"
+},
+"123": {
+"pair_id": 123,
+"relation": "orthogonal",
+"confidence": 0.8,
+"rationale": "Negative-capacitance FET vs CNT FET; different device types"
+},
+"124": {
+"pair_id": 124,
+"relation": "orthogonal",
+"confidence": 0.6,
+"rationale": "Reaction-energy MAEs vs adsorption-energy MAEs on Pt(111); different quantities/values"
+},
+"125": {
+"pair_id": 125,
+"relation": "orthogonal",
+"confidence": 0.55,
+"rationale": "AlphaFold DB scale/de-novo role vs AlphaFold architecture/CASP14; different claims"
+},
+"126": {
+"pair_id": 126,
+"relation": "orthogonal",
+"confidence": 0.6,
+"rationale": "IRDS/ITRS gate-length coverage vs IRDS contact-length/Rc projections; different metrics"
+},
+"127": {
+"pair_id": 127,
+"relation": "orthogonal",
+"confidence": 0.5,
+"rationale": "FC-blockade mechanism vs FC-blockade conductance formula; same phenomenon, different assertions"
+},
+"128": {
+"pair_id": 128,
+"relation": "narrower",
+"confidence": 0.6,
+"rationale": "Specific ProteinMPNN recovery numbers are a special case of B's general inverse-folding-DL claim"
+},
+"129": {
+"pair_id": 129,
+"relation": "orthogonal",
+"confidence": 0.65,
+"rationale": "Au-dimer formation energy vs Au1-4 cluster adsorption/barriers; different quantities"
+},
+"130": {
+"pair_id": 130,
+"relation": "orthogonal",
+"confidence": 0.5,
+"rationale": "VASPsol 0.1eV/trend claim vs VASPsol=SCCS/non-transferable claim; different specifics"
+},
+"131": {
+"pair_id": 131,
+"relation": "narrower",
+"confidence": 0.55,
+"rationale": "Specific 9-AGNR 250K CB is a special case of B's general GNR-SET 250K claim"
+},
+"132": {
+"pair_id": 132,
+"relation": "broader",
+"confidence": 0.6,
+"rationale": "A general FET-biosensor principle subsumes B's specific graphene/aptamer example"
+},
+"133": {
+"pair_id": 133,
+"relation": "narrower",
+"confidence": 0.55,
+"rationale": "A's ZGNR-spintronics claim is a subset of B's OSS-produces-many-GNR-types claim"
+},
+"134": {
+"pair_id": 134,
+"relation": "orthogonal",
+"confidence": 0.5,
+"rationale": "fmax/fT=0.9 record vs fT/fmax absolute values (ratio ~0.53); different devices/quantities"
+},
+"135": {
+"pair_id": 135,
+"relation": "broader",
+"confidence": 0.55,
+"rationale": "A's general antifouling-strategy list subsumes B's specific polyzwitterion coatings"
+},
+"136": {
+"pair_id": 136,
+"relation": "orthogonal",
+"confidence": 0.65,
+"rationale": "Au-Au interaction range vs Au1-4 adsorption energies/barriers; different quantities"
+},
+"137": {
+"pair_id": 137,
+"relation": "orthogonal",
+"confidence": 0.75,
+"rationale": "Glutarimidedioxime vs salicylaldoxime uranyl constants; different ligands/values"
+},
+"138": {
+"pair_id": 138,
+"relation": "orthogonal",
+"confidence": 0.5,
+"rationale": "Specific KI/I2-ferroelectric transfer >1e4 vs best-GNR-FET 1e5-1e6; different devices/values"
+},
+"139": {
+"pair_id": 139,
+"relation": "orthogonal",
+"confidence": 0.6,
+"rationale": "General CNTFET history/properties vs specific GAA CNT simulation; different claims"
+},
+"140": {
+"pair_id": 140,
+"relation": "orthogonal",
+"confidence": 0.75,
+"rationale": "Cu foam NORR vs Pd1Cu SAA; different catalysts/conditions"
+},
+"141": {
+"pair_id": 141,
+"relation": "orthogonal",
+"confidence": 0.7,
+"rationale": "80nm RF CNT transistor (168GHz) vs GAA 5nm simulation; different devices"
+},
+"142": {
+"pair_id": 142,
+"relation": "orthogonal",
+"confidence": 0.7,
+"rationale": "CVD/h-BN GNR mobility vs same-class SS; different quantities"
+},
+"143": {
+"pair_id": 143,
+"relation": "orthogonal",
+"confidence": 0.6,
+"rationale": "Polymer-free Au-membrane transfer vs conventional HF/KI/PMMA wet-etch; different methods"
+},
+"144": {
+"pair_id": 144,
+"relation": "orthogonal",
+"confidence": 0.5,
+"rationale": "SPS edge-functionalized transport devices vs OSS atomic-precision claim; different synthesis/focus"
+},
+"145": {
+"pair_id": 145,
+"relation": "orthogonal",
+"confidence": 0.6,
+"rationale": "GNR ballistic transmission formula/prediction vs 5-AGNR gap/mobility; different claims"
+},
+"146": {
+"pair_id": 146,
+"relation": "orthogonal",
+"confidence": 0.5,
+"rationale": "HfO2-dielectric convention vs 9-AGNR performance; different claims"
+},
+"147": {
+"pair_id": 147,
+"relation": "orthogonal",
+"confidence": 0.55,
+"rationale": "CVD/h-BN GNRs <10nm/>100um vs bottom-up OSS ~1nm/5-100nm; different methods/dimensions"
+},
+"148": {
+"pair_id": 148,
+"relation": "orthogonal",
+"confidence": 0.5,
+"rationale": "UiO-66/GO composite vs amidoxime-MOF; two distinct MOF systems for seawater U"
+},
+"149": {
+"pair_id": 149,
+"relation": "orthogonal",
+"confidence": 0.55,
+"rationale": "MOF porosity/surface-area claim vs MOF uranium-extraction claim; different assertions"
+},
+"150": {
+"pair_id": 150,
+"relation": "orthogonal",
+"confidence": 0.55,
+"rationale": "CB onset conditions vs Coulomb-diamond/addition-energy structure; different aspects"
+},
+"151": {
+"pair_id": 151,
+"relation": "orthogonal",
+"confidence": 0.45,
+"rationale": "No-Fermi-pinning claim vs tunable-Fermi-level band-alignment claim; different mechanisms"
+},
+"152": {
+"pair_id": 152,
+"relation": "orthogonal",
+"confidence": 0.55,
+"rationale": "9>7-AGNR ratio anomaly vs general 9-AGNR high performance; different claims"
+},
+"153": {
+"pair_id": 153,
+"relation": "narrower",
+"confidence": 0.5,
+"rationale": "A's hallucination claim is one item in B's documented LLM-chemistry failure list"
+},
+"154": {
+"pair_id": 154,
+"relation": "orthogonal",
+"confidence": 0.55,
+"rationale": "COF Kd values vs CPU-leachate removal %; different quantities, same selectivity conclusion"
+},
+"155": {
+"pair_id": 155,
+"relation": "orthogonal",
+"confidence": 0.55,
+"rationale": "GNR-vs-CNT comparison vs carbon-replaces-Si claim; different assertions"
+},
+"156": {
+"pair_id": 156,
+"relation": "narrower",
+"confidence": 0.55,
+"rationale": "A's gate-dielectric-tunneling claim is a subset of B's multi-bottleneck+FinFET claim"
+},
+"157": {
+"pair_id": 157,
+"relation": "orthogonal",
+"confidence": 0.7,
+"rationale": "DFT+U for TM oxides vs DFT for MOF screening; different applications"
+},
+"158": {
+"pair_id": 158,
+"relation": "orthogonal",
+"confidence": 0.7,
+"rationale": "EPS 985 mg/g vs PAO-PHMB-A 3.19 mg/g; different materials/conditions"
+},
+"159": {
+"pair_id": 159,
+"relation": "orthogonal",
+"confidence": 0.5,
+"rationale": "UiO-66 NaCl-stable/phosphate-unstable vs releases-in-all-buffers; overlapping, different media/claims"
+},
+"160": {
+"pair_id": 160,
+"relation": "orthogonal",
+"confidence": 0.5,
+"rationale": "General thiol-loading design trend vs specific Hg-binding energies; different claims"
+},
+"161": {
+"pair_id": 161,
+"relation": "orthogonal",
+"confidence": 0.5,
+"rationale": "RPBE+D3 dispersion-exclusion tuning vs PBE-D3/RPBE-D3 MAE values; different specifics"
+},
+"162": {
+"pair_id": 162,
+"relation": "orthogonal",
+"confidence": 0.5,
+"rationale": "General CNT contacts-critical claim vs specific 5nm 0.64 G0 transport; different focus"
+},
+"163": {
+"pair_id": 163,
+"relation": "orthogonal",
+"confidence": 0.65,
+"rationale": "Au-at-defect migration barrier vs Au-Au interaction range; different quantities"
+},
+"164": {
+"pair_id": 164,
+"relation": "orthogonal",
+"confidence": 0.6,
+"rationale": "In-N-C catalyst vs amidoxime-MOF; different materials for seawater U"
+},
+"165": {
+"pair_id": 165,
+"relation": "broader",
+"confidence": 0.5,
+"rationale": "A adds gap-magnitude/diameter scaling to B's shared chirality-classification rule"
+},
+"166": {
+"pair_id": 166,
+"relation": "orthogonal",
+"confidence": 0.5,
+"rationale": "Delamination-transfer parameters vs PMMA-removal difficulty; different claims"
+},
+"167": {
+"pair_id": 167,
+"relation": "broader",
+"confidence": 0.55,
+"rationale": "A's GNR-FET architecture list subsumes B's specific dual-gate QD device"
+},
+"168": {
+"pair_id": 168,
+"relation": "orthogonal",
+"confidence": 0.8,
+"rationale": "M3GNet vs CHGNet; parallel claims about different potentials"
+},
+"169": {
+"pair_id": 169,
+"relation": "equivalent",
+"confidence": 0.5,
+"rationale": "Both describe GC-DFT constant-potential free-energy method with implicit solvent"
+},
+"170": {
+"pair_id": 170,
+"relation": "orthogonal",
+"confidence": 0.45,
+"rationale": "<10nm current-control/leakage vs <5nm short-channel; different node thresholds/mechanisms"
+},
+"171": {
+"pair_id": 171,
+"relation": "narrower",
+"confidence": 0.55,
+"rationale": "A's sub-10nm-limit claim is a specific instance of B's general fundamental-limits claim"
+},
+"172": {
+"pair_id": 172,
+"relation": "orthogonal",
+"confidence": 0.5,
+"rationale": "No-FET-modulation claim vs CB+Kondo-demonstrated claim; different assertions"
+},
+"173": {
+"pair_id": 173,
+"relation": "orthogonal",
+"confidence": 0.8,
+"rationale": "COF BET surface areas vs COF optical absorption edges; different quantities"
+},
+"174": {
+"pair_id": 174,
+"relation": "orthogonal",
+"confidence": 0.5,
+"rationale": "Schottky-barrier contact-resistance mechanism vs ballistic-channel/contacts-critical; different claims"
+},
+"175": {
+"pair_id": 175,
+"relation": "orthogonal",
+"confidence": 0.75,
+"rationale": "UTSA-16 vs CuBTC@GO CO2 capacities; different MOFs/conditions"
+},
+"176": {
+"pair_id": 176,
+"relation": "orthogonal",
+"confidence": 0.6,
+"rationale": "Organic-electronics advantages vs OECT mechanism; different assertions"
+},
+"177": {
+"pair_id": 177,
+"relation": "equivalent",
+"confidence": 0.5,
+"rationale": "Both: OSS produced a diverse GNR-type catalogue; asymmetric extras"
+},
+"178": {
+"pair_id": 178,
+"relation": "narrower",
+"confidence": 0.5,
+"rationale": "A's hallucination/outdated claim is a subset of B's documented failure list"
+},
+"179": {
+"pair_id": 179,
+"relation": "orthogonal",
+"confidence": 0.55,
+"rationale": "BEEF-vdW CE39 (~0.31eV) vs BEEF-vdW 0.11eV vs RPA; different benchmarks/references"
+},
+"180": {
+"pair_id": 180,
+"relation": "orthogonal",
+"confidence": 0.5,
+"rationale": "MAD/SPS-hybrid transfer route vs standard OSS dehalogenation/cyclodehydrogenation; different methods"
+},
+"181": {
+"pair_id": 181,
+"relation": "orthogonal",
+"confidence": 0.75,
+"rationale": "PEI-ZIF-7-8 vs UiO-66-NH2/SO3 CO2 capacities; different MOFs"
+},
+"182": {
+"pair_id": 182,
+"relation": "narrower",
+"confidence": 0.5,
+"rationale": "A's ring-oscillator claim is a subset of B's full FET+RO metric set"
+},
+"183": {
+"pair_id": 183,
+"relation": "orthogonal",
+"confidence": 0.55,
+"rationale": "PEI-Zr-MOF composite antifouling vs zwitterion-coating antifouling; different materials"
+},
+"184": {
+"pair_id": 184,
+"relation": "equivalent",
+"confidence": 0.45,
+"rationale": "Both: Mulliken/Bader/Hirshfeld are alternative density-partitioning schemes; asymmetric extras"
+},
+"185": {
+"pair_id": 185,
+"relation": "orthogonal",
+"confidence": 0.5,
+"rationale": "Dark autocatalytic mechanism vs photoreduction site-regeneration; different mechanisms"
+},
+"186": {
+"pair_id": 186,
+"relation": "orthogonal",
+"confidence": 0.6,
+"rationale": "SWCNT quantum dots vs GNR QI/CB; different materials/phenomena"
+},
+"187": {
+"pair_id": 187,
+"relation": "orthogonal",
+"confidence": 0.55,
+"rationale": "Intrinsic graphene properties (high carrier density) vs graphene-electrode low-density gating; different contexts"
+},
+"188": {
+"pair_id": 188,
+"relation": "orthogonal",
+"confidence": 0.6,
+"rationale": "Hybrid MOF for CO2 capture vs hybrid MOF for seawater U; different applications"
+},
+"189": {
+"pair_id": 189,
+"relation": "orthogonal",
+"confidence": 0.6,
+"rationale": "SCAN-rVV10 single-point geometry error vs PBE-D3/RPBE-D3 MAE; different functionals/claims"
+},
+"190": {
+"pair_id": 190,
+"relation": "orthogonal",
+"confidence": 0.6,
+"rationale": "Thioether-MOF gold capture vs amidoxime-MOF uranium capture; different metals/functionalization"
+},
+"191": {
+"pair_id": 191,
+"relation": "orthogonal",
+"confidence": 0.7,
+"rationale": "Graphene-electrode work-function/band-alignment vs GNR Eg~1/W; different claims"
+},
+"192": {
+"pair_id": 192,
+"relation": "orthogonal",
+"confidence": 0.6,
+"rationale": "PCN-222-MBA synthesis vs its adsorption performance; different aspects of same material"
+},
+"193": {
+"pair_id": 193,
+"relation": "orthogonal",
+"confidence": 0.75,
+"rationale": "Graphene FET mobility vs 9-AGNR FET currents/ratios; different devices/quantities"
+},
+"194": {
+"pair_id": 194,
+"relation": "orthogonal",
+"confidence": 0.6,
+"rationale": "DFT computational-method setup vs actual Au/graphene results; different content"
+},
+"195": {
+"pair_id": 195,
+"relation": "orthogonal",
+"confidence": 0.6,
+"rationale": "MOF gas-sensor transduction modes vs FET-biosensor principle; different claims"
+},
+"196": {
+"pair_id": 196,
+"relation": "orthogonal",
+"confidence": 0.5,
+"rationale": "Polymer-wrapping hasn't reached >99.999% vs DLSA reaches >99.9999%; different methods, not same-scope"
+},
+"197": {
+"pair_id": 197,
+"relation": "orthogonal",
+"confidence": 0.6,
+"rationale": "Armchair CNT metallicity/pseudogap vs CNT quantum-dot CB/Kondo; different claims"
+},
+"198": {
+"pair_id": 198,
+"relation": "orthogonal",
+"confidence": 0.75,
+"rationale": "Ni@NC NORR vs Co-MOF HUST-38 NO3RR; different catalysts/numbers"
+},
+"199": {
+"pair_id": 199,
+"relation": "equivalent",
+"confidence": 0.5,
+"rationale": "Same core: Si scaling limits drive the search for nanomaterial/CNT channels"
+},
+"200": {
+"pair_id": 200,
+"relation": "equivalent",
+"confidence": 0.55,
+"rationale": "Same claim: ASE is the canonical Python calculator/front-end binding to DFT engines"
+}
+}
