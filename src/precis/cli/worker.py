@@ -904,17 +904,34 @@ def run(args: argparse.Namespace) -> None:
             def _classify_pass(batch_size: int) -> _ClsBatchResult:
                 from precis.workers.classify import run_classify_pass
 
-                # Live per-cycle knob (factory service_config slice 2,
-                # migration 0091): a `/categorizers` operator can raise the
-                # in-pass thread-pool width without a redeploy. NULL/no row
-                # -> 1 (today's serial behaviour); run_classify_pass clamps
-                # it again at PRECIS_CLASSIFY_MAX_CONCURRENCY regardless.
+                # Concurrency (thread-pool width). Two sources, env wins:
+                #  * PRECIS_CLASSIFY_CONCURRENCY — a *dedicated backfill* worker
+                #    (`--only classify`) sets this to run wide, ISOLATED from the
+                #    shared fleet: it bypasses the all-hosts `*` service_config
+                #    row so cranking the blitz never spikes the calm system
+                #    workers that read the live `/categorizers` knob.
+                #  * else the live per-cycle `service_config` knob (slice 2,
+                #    migration 0091): a `/categorizers` operator raises the pool
+                #    width without a redeploy. NULL/no row -> 1 (serial).
+                # run_classify_pass clamps either at PRECIS_CLASSIFY_MAX_CONCURRENCY.
+                _env_conc = int(os.environ.get("PRECIS_CLASSIFY_CONCURRENCY") or 0)
+                _concurrency = (
+                    _env_conc
+                    if _env_conc > 0
+                    else _svc_resolver.concurrency("classify", default=1)
+                )
+                # Rows claimed per cycle. The shared loop caps at 16 (bounded
+                # loop-hog); a backfill worker widens the claim via
+                # PRECIS_CLASSIFY_BATCH_SIZE to keep a wide pool fed. (claim_limit
+                # in run_classify_pass is max(batch_size, concurrency) regardless.)
+                _env_batch = int(os.environ.get("PRECIS_CLASSIFY_BATCH_SIZE") or 0)
+                _batch = _env_batch if _env_batch > 0 else min(batch_size, 16)
                 r = run_classify_pass(
                     store,
                     client=_cls_client,
-                    batch_size=min(batch_size, 16),
+                    batch_size=_batch,
                     escalate_client=_cls_escalate_client,
-                    concurrency=_svc_resolver.concurrency("classify", default=1),
+                    concurrency=_concurrency,
                 )
                 return _ClsBatchResult(
                     handler="classify",

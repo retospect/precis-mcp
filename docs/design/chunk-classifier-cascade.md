@@ -85,6 +85,30 @@ PRECIS_CLASSIFY_ENABLED=1 precis worker --profile system   # or --only classify
 PRECIS_CLASSIFY_ESCALATE_MODEL=claude-haiku-4-5 …          # enable Tier 2
 ```
 
+**In-pass concurrency + backfill blitz.** Each cascade row is 2–3 *blocking*
+cloud round-trips; a serial pass is almost all network-idle. `run_classify_pass`
+fans the per-row cascade across a thread pool (DB claim/enrich/write stay
+single-threaded on the main thread — psycopg connections aren't thread-safe).
+Two ways to set the pool width, **env wins**:
+
+```sh
+# live, fleet-wide, no redeploy: the /categorizers `*` service_config.concurrency
+# knob (migration 0091) — the calm shared-worker setting.
+# dedicated backfill blitz (isolated from that knob so it can't spike the fleet):
+PRECIS_CLASSIFY_ENABLED=1 PRECIS_CLASSIFY_CONCURRENCY=32 \
+  precis worker --only classify           # loops classify back-to-back (no 6.4-min
+                                          # shared-loop cadence), 32 calls in flight
+PRECIS_CLASSIFY_BATCH_SIZE=64 …           # widen the per-cycle claim (else 16 shared
+                                          # / max(batch,concurrency))
+```
+
+Both are clamped at `PRECIS_CLASSIFY_MAX_CONCURRENCY` (default 32 — raise it on a
+blitz worker to go wider). Throughput ≈ concurrency ÷ per-call latency, so a
+dedicated `--only classify` worker fixes the two real limiters — the shared
+loop only reaching classify once per ~6.4-min iteration, and the 16-row cap —
+that the concurrency pool alone can't (the pool just drains 16 rows faster). The
+budget breaker + `_is_unavailability` 429→pause are the automatic backstops.
+
 Forces `model=summarizer` (the node's `PRECIS_SUMMARIZE_MODEL=qwen` is a
 thinking model that returns empty). Node target: melchior (litellm proxy
 + the cheap alias). Ops quirks (passwordless `.pgpass` DSN, the
