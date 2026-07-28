@@ -15,6 +15,7 @@ from precis.workers.service_config import (
     ServiceConfigResolver,
     clear_service_config,
     list_service_config,
+    set_service_concurrency,
     set_service_model,
     set_service_prio,
 )
@@ -100,6 +101,62 @@ def test_model_pin_survives_prio_flip(store) -> None:
     row = rows[("melchior", "briefing")]
     assert row["prio"] == 0
     assert row["model_pref"] == "claude-opus-4-8"  # preserved by COALESCE
+
+
+# ---------------------------------------------------------------------------
+# concurrency (migration 0091) — mirrors the prio resolver tests above
+# ---------------------------------------------------------------------------
+
+
+def test_concurrency_defaults_when_no_row_or_value(store) -> None:
+    """No row, or a row with ``concurrency`` left NULL, both fall through to
+    the caller-supplied default (1, serial) — byte-identical to today."""
+    r = ServiceConfigResolver(store, host="melchior", ttl_s=0.0)
+    assert r.concurrency("classify", default=1) == 1
+    # a row that only sets prio (concurrency stays NULL) still defaults.
+    set_service_prio(store, "melchior", "classify", 3, actor="test")
+    r.invalidate()
+    assert r.concurrency("classify", default=1) == 1
+
+
+def test_concurrency_override_roundtrip(store) -> None:
+    set_service_concurrency(store, "melchior", "classify", 6, actor="test")
+    r = ServiceConfigResolver(store, host="melchior", ttl_s=0.0)
+    assert r.concurrency("classify", default=1) == 6
+
+
+def test_concurrency_exact_host_wins_over_wildcard(store) -> None:
+    """Same exact-host-over-``*`` precedence as ``prio``."""
+    set_service_concurrency(store, "*", "classify", 4, actor="test")
+    set_service_concurrency(store, "melchior", "classify", 8, actor="test")
+    r_mel = ServiceConfigResolver(store, host="melchior", ttl_s=0.0)
+    r_cas = ServiceConfigResolver(store, host="caspar", ttl_s=0.0)
+    assert r_mel.concurrency("classify", default=1) == 8
+    assert r_cas.concurrency("classify", default=1) == 4  # falls to the wildcard
+
+
+def test_concurrency_clear_reverts_to_default(store) -> None:
+    """Setting ``concurrency=None`` reverts to the default without touching
+    a separately-set prio."""
+    set_service_prio(store, "melchior", "classify", 3, actor="test")
+    set_service_concurrency(store, "melchior", "classify", 6, actor="test")
+    set_service_concurrency(store, "melchior", "classify", None, actor="test")
+    r = ServiceConfigResolver(store, host="melchior", ttl_s=0.0)
+    assert r.concurrency("classify", default=1) == 1
+    assert r.prio("classify", default=DEFAULT_PRIO) == 3  # untouched
+
+
+def test_set_service_concurrency_rejects_non_positive(store) -> None:
+    with pytest.raises(ValueError):
+        set_service_concurrency(store, "melchior", "classify", 0)
+    with pytest.raises(ValueError):
+        set_service_concurrency(store, "melchior", "classify", -1)
+
+
+def test_list_service_config_reports_concurrency(store) -> None:
+    set_service_concurrency(store, "melchior", "classify", 5, actor="reto")
+    rows = {(r["host"], r["service"]): r for r in list_service_config(store)}
+    assert rows[("melchior", "classify")]["concurrency"] == 5
 
 
 # ---------------------------------------------------------------------------

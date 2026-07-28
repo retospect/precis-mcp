@@ -27,7 +27,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +44,25 @@ OUTPUT_NAMESPACE = "ROLE3"
 ARTIFACT = f"classify:cascade-v{CLASSIFY_VERSION}"
 _AXES_DIR = Path(__file__).resolve().parent.parent / "data" / "axes"
 _ROLE3_VALS = {"own", "background", "furniture"}
+
+#: Env var hard-capping the effective in-pass concurrency (``run_classify_pass``'s
+#: ``concurrency=``) regardless of what a ``service_config`` row / caller asks
+#: for — guards a fat-fingered ``/categorizers`` value (or a bad caller) from
+#: stampeding the cloud endpoint / tripping the budget breaker. Clamped inside
+#: :func:`run_classify_pass` itself, not just the UI that writes the knob.
+MAX_CONCURRENCY_ENV = "PRECIS_CLASSIFY_MAX_CONCURRENCY"
+_DEFAULT_MAX_CONCURRENCY = 32
+
+
+def _max_concurrency() -> int:
+    raw = os.environ.get(MAX_CONCURRENCY_ENV)
+    if not raw:
+        return _DEFAULT_MAX_CONCURRENCY
+    try:
+        val = int(raw)
+    except ValueError:
+        return _DEFAULT_MAX_CONCURRENCY
+    return val if val >= 1 else _DEFAULT_MAX_CONCURRENCY
 
 
 def _load_axis(axis_id: str) -> dict:
@@ -129,6 +150,30 @@ def _classify_one(client: Any, axis: dict, row: dict) -> str | None:
     return (_extract_json(out.text) or {}).get("value")
 
 
+def _classify_row(
+    client: Any,
+    junk_axis: dict,
+    role3_axis: dict,
+    escalate_client: Any | None,
+    row: dict,
+) -> str | None:
+    """The per-chunk cascade — junk gate -> role3 -> optional Tier-2
+    escalate — lifted verbatim out of :func:`run_classify_pass`'s old serial
+    loop so it can be fanned out across a thread pool (each call only talks
+    to ``client``/``escalate_client``, never the DB — see that function's
+    docstring for the thread-safety argument). Returns the resolved value
+    (a member of :data:`_ROLE3_VALS` on success) or whatever
+    :func:`_classify_one` returned on a dispatch failure (``None``)."""
+    if _classify_one(client, junk_axis, row) == "junk":
+        return "furniture"
+    val = _classify_one(client, role3_axis, row)
+    if val == "own" and escalate_client is not None:
+        ev = _classify_one(escalate_client, role3_axis, row)  # Tier 2 re-judge
+        if ev in _ROLE3_VALS:
+            val = ev
+    return val
+
+
 # ---- DB: claim + enrich (gold-parity context) -------------------------
 
 
@@ -209,6 +254,7 @@ def run_classify_pass(
     batch_size: int = 16,
     escalate_client: Any | None = None,
     ref_ids: list[int] | None = None,
+    concurrency: int = 1,
 ) -> dict:
     """One claim→classify→write cycle. Returns {claimed, ok, failed}.
 
@@ -224,29 +270,60 @@ def run_classify_pass(
     ``ref_ids`` optionally restricts the claim to specific refs (targeted
     backfill / tests, mirroring ``classify_topics``); ``None`` sweeps the
     whole corpus (unchanged behaviour).
+
+    ``concurrency`` (live via ``service_config.concurrency``, ADR-adjacent
+    to slice 2 — see ``workers/service_config.py``) is the thread-pool width
+    the per-row LLM cascade (:func:`_classify_row`) fans out across. Each
+    call in the cascade is a blocking cloud round-trip and touches no DB
+    connection, so it is safe to run off the main thread; the claim, the
+    enrich, and every tag write stay single-threaded on the main thread
+    (psycopg connections are not thread-safe). ``client``/``escalate_client``
+    are shared across the pool workers — safe because ``DispatchClient``
+    (``utils/llm/router.py``, the production wiring) holds no per-call
+    mutable state: every field is set at construction and ``.complete()``
+    only reads ``self`` before delegating to the module-level ``dispatch()``;
+    this is the same client class ``llm_summarize`` already fans out this
+    way. Clamped at :data:`MAX_CONCURRENCY_ENV` regardless of what's asked
+    for. Default ``1`` is byte-identical to the old always-serial loop.
     """
     junk_axis = _load_axis("junk")
     role3_axis = _load_axis("role3")
 
+    concurrency = max(1, min(concurrency, _max_concurrency()))
+    # A cap wider than batch_size would otherwise starve the pool — claim
+    # enough rows to keep every worker fed.
+    claim_limit = max(batch_size, concurrency)
+
     with store.pool.connection() as conn:
-        rows = _claim(conn, limit=batch_size, ref_ids=ref_ids)
+        rows = _claim(conn, limit=claim_limit, ref_ids=ref_ids)
         _enrich(conn, rows)
         conn.commit()
     if not rows:
         return {"claimed": 0, "ok": 0, "failed": 0}
 
+    if concurrency <= 1:
+        # Byte-identical to the pre-concurrency serial loop.
+        values = [
+            _classify_row(client, junk_axis, role3_axis, escalate_client, row)
+            for row in rows
+        ]
+    else:
+        with ThreadPoolExecutor(max_workers=concurrency) as ex:
+            values = list(
+                ex.map(
+                    lambda row: _classify_row(
+                        client, junk_axis, role3_axis, escalate_client, row
+                    ),
+                    rows,
+                )
+            )
+
     ok = failed = 0
     dist: Counter = Counter()
-    for row in rows:
-        # cascade: junk gate -> role3 -> optional escalate
-        if _classify_one(client, junk_axis, row) == "junk":
-            val = "furniture"
-        else:
-            val = _classify_one(client, role3_axis, row)
-            if val == "own" and escalate_client is not None:
-                ev = _classify_one(escalate_client, role3_axis, row)  # Tier 2 re-judge
-                if ev in _ROLE3_VALS:
-                    val = ev
+    # Writes stay single-threaded and in claim order (ex.map preserves
+    # submission order) regardless of concurrency, so this loop — and its
+    # DB behaviour — is unchanged from the old serial version.
+    for row, val in zip(rows, values, strict=True):
         if val not in _ROLE3_VALS:
             failed += 1
             continue

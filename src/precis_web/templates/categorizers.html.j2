@@ -74,7 +74,7 @@
     <span class="w-28 shrink-0">Granularity</span>
     <span class="w-20 shrink-0">Active</span>
     <span class="w-44 shrink-0">Prereqs</span>
-    <span class="w-56 shrink-0">Toggle</span>
+    <span class="w-72 shrink-0">Toggle</span>
     <span class="w-24 shrink-0 text-right">Last run</span>
   </div>
   {% for row in axes + topics %}
@@ -117,7 +117,7 @@
     <span class="w-44 shrink-0 text-slate-400">
       {% if row.prereq %}{{ row.prereq | join(', ') }}{% else %}—{% endif %}
     </span>
-    <span class="w-56 shrink-0 flex items-center gap-1">
+    <span class="w-72 shrink-0 flex items-center gap-1">
       <form method="post" action="/categorizers/toggle" class="inline">
         <input type="hidden" name="service" value="{{ row.service }}">
         <input type="hidden" name="action" value="on">
@@ -132,6 +132,13 @@
         <input type="hidden" name="service" value="{{ row.service }}">
         <input type="hidden" name="action" value="default">
         <button type="submit" class="px-2 py-0.5 rounded border border-slate-200 text-slate-400 hover:bg-slate-50">Default</button>
+      </form>
+      <form method="post" action="/categorizers/concurrency" class="inline flex items-center gap-0.5"
+            title="in-pass LLM-call concurrency (thread-pool width); 1 = serial">
+        <input type="hidden" name="service" value="{{ row.service }}">
+        <input type="number" name="concurrency" min="1" value="{{ row.concurrency }}"
+               class="w-12 px-1 py-0.5 rounded border border-slate-200 text-slate-600 text-xs">
+        <button type="submit" class="px-1.5 py-0.5 rounded border border-slate-200 text-slate-400 hover:bg-slate-50">set</button>
       </form>
     </span>
     <span class="w-24 shrink-0 text-right text-slate-400 tabular-nums" id="lastproc-{{ row.name }}" title="last tag written">…</span>

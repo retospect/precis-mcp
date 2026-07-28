@@ -227,6 +227,26 @@ never in `ref_passes` and an On-flip was a silent no-op until a restart — the
 `/categorizers` "activated but nothing happens" bug.) CLI: `precis service
 prio|model|clear|list`.
 
+**Bounded in-pass concurrency — `service_config.concurrency` (migration
+0091).** A second live knob on the same table, resolved the same way as
+`prio` (`ServiceConfigResolver.concurrency`, exact-host-over-`*`, TTL-cached;
+`set_service_concurrency`/`list_service_config` on the write/inspect side).
+It's the thread-pool width a cloud-calling categorizer pass fans its per-row
+LLM cascade across — `classify` (ADR 0047 role3/junk) claims a batch then
+makes 2-3 blocking round-trips per chunk *serially*, almost entirely
+network-idle time; `workers/classify.py::run_classify_pass(concurrency=)`
+runs that cascade (`_classify_row`, DRY-lifted out of the old loop) over a
+`concurrent.futures.ThreadPoolExecutor`, while the claim/enrich/tag-write DB
+work stays single-threaded on the main thread. NULL/no row (default `1`) is
+byte-identical to the old always-serial pass. Clamped at a hard ceiling
+(`PRECIS_CLASSIFY_MAX_CONCURRENCY`, default 32) inside the worker regardless
+of what the knob asks for, so a fat-fingered console value can't stampede
+the cloud endpoint. `cli/worker.py`'s classify wiring reads the resolved
+value per cycle (same place the enable gate is read) and passes it through;
+`/categorizers` exposes a small number input alongside each row's On/Off/
+Default toggle (`POST /categorizers/concurrency`) — wired generically for
+every categorizer row, though only `classify` consumes it today.
+
 **Console — merged into System's Services tab.** The read-only host
 strip (`host_heartbeat` load + liveness) over one list per category of
 every registry service, joined to its live `service_config` prio and its

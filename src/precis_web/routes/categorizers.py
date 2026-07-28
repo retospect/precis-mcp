@@ -58,6 +58,7 @@ from precis.workers.service_config import (
     ServiceConfigResolver,
     clear_service_config,
     list_service_config,
+    set_service_concurrency,
     set_service_prio,
 )
 from precis_web.deps import get_store, templates
@@ -242,10 +243,13 @@ def _override_rows(store: Any) -> frozenset[str]:
 
 
 def _effective_state(store: Any) -> dict[str, dict[str, Any]]:
-    """``service -> {"enabled": bool, "overridden": bool}`` for every
-    service this page governs, scoped to the all-hosts (``*``) row — the
-    live ``service_config`` override wins over the env/profile default,
-    mirroring ``cli/worker.py``'s ``_pass_enabled`` contract."""
+    """``service -> {"enabled": bool, "overridden": bool, "concurrency": int}``
+    for every service this page governs, scoped to the all-hosts (``*``) row
+    — the live ``service_config`` override wins over the env/profile
+    default, mirroring ``cli/worker.py``'s ``_pass_enabled`` contract.
+    ``concurrency`` defaults to 1 (serial) when no row/value is set; only the
+    ``classify`` cascade (role3/junk) actually reads it today, but the knob
+    is exposed uniformly per row so any pass can pick it up later."""
     resolver = ServiceConfigResolver(store, ALL_HOSTS)
     overridden = _override_rows(store)
     axes_env = env_csv_set(_AXES_ENABLED_ENV)
@@ -262,12 +266,14 @@ def _effective_state(store: Any) -> dict[str, dict[str, Any]]:
                 "classify", default_on=env_flag(_CLASSIFY_ENABLED_ENV)
             ),
             "overridden": "classify" in overridden,
+            "concurrency": resolver.concurrency("classify", default=1),
         },
         # Retained as the global kill-switch state (ADR 0068) — each topic
         # now also carries its own independent ``topic:<slug>`` state below.
         "classify_topics": {
             "enabled": resolver.enabled("classify_topics", default_on=global_topics_on),
             "overridden": "classify_topics" in overridden,
+            "concurrency": resolver.concurrency("classify_topics", default=1),
         },
     }
     for axis in _load_axes():
@@ -278,6 +284,7 @@ def _effective_state(store: Any) -> dict[str, dict[str, Any]]:
         out[service] = {
             "enabled": resolver.enabled(service, default_on=axis_id in axes_env),
             "overridden": service in overridden,
+            "concurrency": resolver.concurrency(service, default=1),
         }
 
     topics_env = env_csv_set(_TOPICS_ENABLED_ENV)
@@ -291,6 +298,7 @@ def _effective_state(store: Any) -> dict[str, dict[str, Any]]:
                 service, default_on=global_topics_on or slug in topics_env
             ),
             "overridden": service in overridden,
+            "concurrency": resolver.concurrency(service, default=1),
         }
     return out
 
@@ -301,7 +309,11 @@ def _axis_row(
     axis_id = str(axis["id"])
     level = axis.get("level") or "ref"
     service = _governing_service(axis_id)
-    state = effective.get(service) or {"enabled": False, "overridden": False}
+    state = effective.get(service) or {
+        "enabled": False,
+        "overridden": False,
+        "concurrency": 1,
+    }
     shared_note = (
         "Shares the `classify` chunk cascade with role3/junk — toggling this "
         "flips the whole cascade."
@@ -332,6 +344,7 @@ def _axis_row(
         "status": "active" if state["enabled"] else "off",
         "active": bool(state["enabled"]),
         "overridden": bool(state["overridden"]),
+        "concurrency": int(state.get("concurrency") or 1),
         "shared_note": shared_note,
         "prompt_preview": _axis_prompt_preview(axis_id),
         "chips": chips,
@@ -344,7 +357,11 @@ def _topic_row(
     prompt_preview: dict[str, str] | None,
 ) -> dict[str, Any]:
     service = _topic_service(str(topic["slug"]))
-    state = effective.get(service) or {"enabled": False, "overridden": False}
+    state = effective.get(service) or {
+        "enabled": False,
+        "overridden": False,
+        "concurrency": 1,
+    }
     slug = str(topic["slug"])
     return {
         "kind": "topic",
@@ -358,6 +375,7 @@ def _topic_row(
         "status": "active" if state["enabled"] else "off",
         "active": bool(state["enabled"]),
         "overridden": bool(state["overridden"]),
+        "concurrency": int(state.get("concurrency") or 1),
         "shared_note": None,
         "prompt_preview": prompt_preview,
         "chips": [
@@ -666,6 +684,57 @@ async def toggle(
             "categorizers: toggle failed for service=%r action=%r",
             service,
             action,
+            exc_info=True,
+        )
+    return RedirectResponse(url="/categorizers", status_code=303)
+
+
+@router.post("/concurrency", response_model=None)
+async def set_concurrency(
+    request: Request,
+    service: str = Form(...),
+    concurrency: str | None = Form(default=None),
+) -> RedirectResponse:
+    """Live-write a categorizer's in-pass LLM-call concurrency.
+
+    Mirrors :func:`toggle` — same allowlist guard, same all-hosts (``*``)
+    scope, same "pick it up within one cache TTL" story. Every worker-side
+    consumer (today, only ``classify`` — ``cli/worker.py``) clamps this at
+    its own hard env ceiling (``PRECIS_CLASSIFY_MAX_CONCURRENCY``) before
+    use, so a fat-fingered value here can't stampede the cloud endpoint;
+    this route only rejects a non-positive / unparseable value outright.
+    An empty *or absent* ``concurrency`` field reverts to the default (1,
+    serial) — ``default=None`` (not ``Form(...)``) because some HTTP
+    clients drop a genuinely-empty form field instead of sending it blank.
+    """
+    if service not in _allowed_services():
+        log.warning(
+            "categorizers: rejected concurrency write for unknown service %r", service
+        )
+        return RedirectResponse(url="/categorizers", status_code=303)
+
+    raw = (concurrency or "").strip()
+    value: int | None
+    if not raw:
+        value = None
+    else:
+        try:
+            value = int(raw)
+        except ValueError:
+            log.warning("categorizers: rejected non-integer concurrency %r", raw)
+            return RedirectResponse(url="/categorizers", status_code=303)
+        if value < 1:
+            log.warning("categorizers: rejected non-positive concurrency %r", value)
+            return RedirectResponse(url="/categorizers", status_code=303)
+
+    store = get_store(request)
+    try:
+        set_service_concurrency(store, ALL_HOSTS, service, value, actor="web")
+    except Exception:
+        log.warning(
+            "categorizers: concurrency write failed for service=%r value=%r",
+            service,
+            value,
             exc_info=True,
         )
     return RedirectResponse(url="/categorizers", status_code=303)

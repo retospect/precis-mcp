@@ -23,6 +23,7 @@ from precis.workers.service_config import (
     ALL_HOSTS,
     clear_service_config,
     list_service_config,
+    set_service_concurrency,
     set_service_prio,
 )
 from precis_web.app import create_app
@@ -58,6 +59,10 @@ def test_categorizers_page_lists_axes_and_topics(client: TestClient) -> None:
     # Every row carries a toggle posting to the live service_config flip.
     assert 'action="/categorizers/toggle"' in body
     assert 'name="service"' in body
+
+    # Every row also carries the live concurrency knob (thread-pool width).
+    assert 'action="/categorizers/concurrency"' in body
+    assert 'name="concurrency"' in body
 
     # The heavy coverage panel is deferred to the htmx fragment (OOB swap
     # into per-row placeholders), not computed inline nor rendered as a
@@ -447,6 +452,70 @@ def test_toggle_endpoint_writes_row_and_rejects_unknown_service(
         assert (ALL_HOSTS, "axis:not-a-real-axis") not in _rows()
     finally:
         clear_service_config(store, ALL_HOSTS, "axis:domain")
+
+
+def test_concurrency_endpoint_writes_row_and_rejects_unknown_service(
+    real_client: TestClient, store: Store
+) -> None:
+    """POST /categorizers/concurrency upserts the concurrency column without
+    disturbing prio, reverts on an empty value, and refuses an unknown
+    service — mirroring the toggle endpoint's allow-list guard."""
+
+    def _rows() -> dict[tuple[str, str], dict[str, object]]:
+        return {
+            (str(r["host"]), str(r["service"])): r for r in list_service_config(store)
+        }
+
+    try:
+        set_service_prio(store, ALL_HOSTS, "classify", 5, actor="test")
+
+        r = real_client.post(
+            "/categorizers/concurrency",
+            data={"service": "classify", "concurrency": "6"},
+            follow_redirects=False,
+        )
+        assert r.status_code == 303
+        row = _rows()[(ALL_HOSTS, "classify")]
+        assert row["concurrency"] == 6
+        assert row["prio"] == 5  # untouched
+
+        # Empty value reverts to the default (NULL -> 1, serial).
+        real_client.post(
+            "/categorizers/concurrency",
+            data={"service": "classify", "concurrency": ""},
+            follow_redirects=False,
+        )
+        assert _rows()[(ALL_HOSTS, "classify")]["concurrency"] is None
+
+        # A non-positive value is rejected outright (no write).
+        real_client.post(
+            "/categorizers/concurrency",
+            data={"service": "classify", "concurrency": "0"},
+            follow_redirects=False,
+        )
+        assert _rows()[(ALL_HOSTS, "classify")]["concurrency"] is None
+
+        # An unknown service is rejected — no row written.
+        r = real_client.post(
+            "/categorizers/concurrency",
+            data={"service": "not-a-real-service", "concurrency": "4"},
+            follow_redirects=False,
+        )
+        assert r.status_code == 303
+        assert (ALL_HOSTS, "not-a-real-service") not in _rows()
+    finally:
+        clear_service_config(store, ALL_HOSTS, "classify")
+
+
+def test_axis_row_reports_concurrency(store: Store) -> None:
+    try:
+        set_service_concurrency(store, ALL_HOSTS, "classify", 4, actor="test")
+        eff = cz._effective_state(store)
+        rows = {str(a["id"]): cz._axis_row(a, eff) for a in cz._load_axes()}
+        assert rows["role3"]["concurrency"] == 4
+        assert rows["junk"]["concurrency"] == 4
+    finally:
+        clear_service_config(store, ALL_HOSTS, "classify")
 
 
 def test_toggle_endpoint_accepts_per_topic_service(

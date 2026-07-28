@@ -904,11 +904,17 @@ def run(args: argparse.Namespace) -> None:
             def _classify_pass(batch_size: int) -> _ClsBatchResult:
                 from precis.workers.classify import run_classify_pass
 
+                # Live per-cycle knob (factory service_config slice 2,
+                # migration 0091): a `/categorizers` operator can raise the
+                # in-pass thread-pool width without a redeploy. NULL/no row
+                # -> 1 (today's serial behaviour); run_classify_pass clamps
+                # it again at PRECIS_CLASSIFY_MAX_CONCURRENCY regardless.
                 r = run_classify_pass(
                     store,
                     client=_cls_client,
                     batch_size=min(batch_size, 16),
                     escalate_client=_cls_escalate_client,
+                    concurrency=_svc_resolver.concurrency("classify", default=1),
                 )
                 return _ClsBatchResult(
                     handler="classify",
