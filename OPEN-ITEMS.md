@@ -8,38 +8,30 @@ items are removed (history is `git log`).
 > regression that pins it.
 
 ---
-## Coordinated autocatpath rename deploy — execute in order, then delete this item
-- Status: open · Severity: critical · Owner: deploy (this repo) + `retospect/catpath` · Test: n/a (one-shot).
-- The `catpath`→`autocatpath` rename spans the plugin repo and this repo's
-  deployment surface. Both sides changed the wire strings (`catpath_explore`→
-  `autocatpath_explore`, `PRECIS_CATPATH_*`→`PRECIS_AUTOCATPATH_*`), so they MUST
-  deploy together. Required order:
-  1. **Push the plugin rename first.** Land the `autocatpath` package on
-     `retospect/catpath` `main` (GitHub repo name unchanged — only the PyPI/import
-     name is `autocatpath`). `roles/autocatpath` installs `autocatpath @
-     git+https://github.com/retospect/catpath@main`, so `main` must carry the
-     renamed package before this repo deploys or the pip install 404s the extra.
-  2. **Drain in-flight `catpath_explore` jobs.** After deploy, the plugin only
-     registers `autocatpath_explore` and `quest.compute.harvest_measures` only
-     matches `job_type = 'autocatpath_explore'`. Any queued/running
-     `catpath_explore` job in `precis_prod` is orphaned (no handler) and any
-     completed-but-unharvested one is never reharvested. Confirm none are pending
-     before `/go` (see the ssh_node redeploy-survival item below — spark jobs are
-     the likely holders).
-  3. **Edit the real cluster topology.** Only `topology.example.yml` is in git;
-     the operator's live `inventory/group_vars/all/topology.yml` still has
-     `catpath`/`catpath_mace`/`catpath_plugin` capability keys — rename them to
-     `autocatpath*` on the deploy host or `roles/autocatpath` runs nowhere.
-  4. **Run `44-autocatpath.yml`** (was `44-catpath.yml`). It regenerates
-     `autocatpath.env` from the template; the stale `catpath.env` on hosts is
-     inert but can be removed. The persisted `PRECIS_AUTOCATPATH_ROUTE_NODE`
-     value is re-templated, not migrated — reconfirm the route node.
-- One benign side effect: the plugin's forward migration re-applies under the new
-  namespace `autocatpath` (the `precis.migrations` entry-point key), leaving the
-  old `catpath` namespace rows in `schema_migrations`. Idempotent (`ON CONFLICT
-  DO NOTHING`); the `pathway`/`pathway_body` slugs are unchanged. The kind title
-  text still reads "(catpath)" in prod (DO NOTHING won't update it) — cosmetic;
-  a `0002` UPDATE migration in the plugin can fix it if desired.
+## autocatpath pathway plugin: CI test skips until the dev image is rebuilt
+- Status: open · Severity: feature · Owner: `tests/test_pathway_plugin.py` +
+  `scripts/build-image` · Test: this file (runs green once the image carries autocatpath).
+- `tests/test_pathway_plugin.py` opens with `pytest.importorskip("autocatpath")`, so
+  the ship gate SKIPS it silently: the baked precis-dev image predates the rename and
+  still carries the old `catpath` module, not `autocatpath` — the import fails and the
+  whole file is skipped. Verified manually 18/18 by mounting a pure `autocatpath`
+  checkout into the dev container (`-e UV_WITH="--with-editable /autocatpath" -v
+  <path>:/autocatpath`) — so the bundled `precis_pathway` plugin currently has NO CI
+  coverage in the gate.
+- Fix: `scripts/build-image` threads `AUTOCATPATH_REV`; a fresh build bakes autocatpath
+  0.4.0 into the image and the test auto-runs. Do it on the next image refresh.
+
+---
+## catalyst-gpu (autocatpath[mace]) vs dormant dft-ml torch pin — potential venv conflict on the GPU node
+- Status: open · Severity: feature · Owner: `pyproject.toml` extras (`catalyst-gpu`,
+  `dft-ml`) · Test: n/a yet.
+- Both `[catalyst-gpu]` (→ `autocatpath[mace]`, torch/MACE backend) and the dormant
+  `[dft-ml]` torch extra target the SAME GPU node (spark). uv universal resolution
+  resolves all extras together, so if `dft-ml` is ever activated there alongside
+  catalyst-gpu their torch pins can conflict in one venv. Today only catalyst-gpu is
+  installed on spark, so nothing bites. When dft-ml wakes: share one torch pin across
+  both extras, or mirror them into `[tool.uv] conflicts` so uv keeps them in separate
+  resolutions. File-and-watch; not urgent.
 
 ---
 ## autocatpath ssh_node jobs can't survive routine spark redeploys (poison-guard burns pre-compute)
