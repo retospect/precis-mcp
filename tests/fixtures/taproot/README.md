@@ -14,10 +14,17 @@ tolerated.
   labelings, kept for audit.
 
 ## Relations
-`equivalent` (merge — same claim, same scope) · `broader`/`narrower`
-(subsumption, directional: `broader` = ref_a more general than ref_b) ·
-`orthogonal` (distinct claims) · `contradicts` (same scope, opposite
-polarity). Rubric: the labeling prompt in the proposal's Phase-1 notes.
+Labels use the full 5-relation vocabulary: `equivalent` (same claim, same
+scope) · `broader`/`narrower` (subsumption, directional: `broader` = ref_a
+more general than ref_b) · `orthogonal` (distinct claims) · `contradicts`
+(same scope, opposite polarity).
+
+**v1 grades collapsed.** The shipped canonicalization is *flat dedup*
+(broader/narrower deferred to v2), so v1 maps labels to three verdicts:
+`equivalent`→**same**, `broader`/`narrower`/`orthogonal`→**different**,
+`contradicts`→**contradicts**. Primary metric: **over-merge rate ~0**
+(a `same` that should be `different`). The richer labels are retained so
+the same fixture serves a future v2 that restores the hierarchy.
 
 ## How it was built (2026-07-28)
 1. Drew from `kind='citation'` claims in `precis_prod` (clean world-claims;

@@ -129,104 +129,96 @@ was retracted":
 | **C · Currency** | Superseded / contradicted by later, stronger work? | lightly covered by `contradicts` edges + argument caveats; **not a focus here** |
 | **D · Reliability prior** | Venue, preprint, n-of-3 | **out of scope by prior decision** (ADR 0054 rejected trust-derivation) |
 
-## The crux — canonicalization = lattice placement, not flat dedup
+## The crux — canonicalization = flat claim dedup
 
-The gating problem (former open-question #1). The reframe that makes it
-tractable: **do not try to pick the "right" grain.** "MOFs are tunable"
-and "MOF-5 pore size scales with linker length" are *both* valid claims;
-forcing them onto one node is the mistake. Instead place every claim at
-its own grain and link them by broader/narrower edges — a **subsumption
-lattice**. The scope problem (former #2) dissolves into this: a too-broad
-claim becomes a **parent**; specific ones are **children** carrying their
-own evidence. #1 and #2 are one problem, solved together.
+The gating problem (former open-question #1). **v1 does the simplest thing
+that works: two claims are either the *same* (merge into one hub) or *not*
+(separate hubs) — plus a `contradicts` flag when they assert opposites.**
+No claim hierarchy. "MOFs are tunable" and "MOF-5 pore size scales with
+linker length" are *both* valid claims; if they aren't the *same* claim
+they simply become **separate hubs**. That's *under-merging*, the **safe**
+direction — a spurious separate hub is harmless; a wrong *merge* lets a
+retraction ripple across fused-but-distinct claims. Broader/narrower
+subsumption between claims — the "lattice" — is a **navigation nicety
+deferred to v2** (see [Non-goals](#non-goals--staying-out-of-the-formal-logic-pit)):
+it is *not* needed for grounding claims or finding senior papers, which was
+the actual goal.
 
 A cascade mirroring the ADR-0047 classifier (cheap-and-wide → escalate
 the hard bit):
 
-1. **Atomic form (linchpin).** First **split any multi-assertion chunk
-   into atomic claims** — one independently-citable assertion each. The
-   fixture proved "one chunk = one claim" is *false* in the corpus
-   (10/200 pairs asserted X∧Y where a near-neighbour asserted just X).
-   Splitting is **one level, LLM-judged** ("does this make 2+
-   independently-citable claims?") — *not* recursive predicate
-   decomposition (see [Non-goals](#non-goals--staying-out-of-the-formal-logic-pit)).
-   Then normalize each atom to a **claim sentence + structured scope
-   object** (`material`, `method`, `quantity`, `regime`) — *not* full
-   predicate-logic tuples (brittle over open science). The scope object
-   makes broader/narrower judgeable. You cannot block or compare claims
-   stated at inconsistent grain, so this is the prerequisite that makes
-   2–4 work; identity and scope fuse here.
-2. **Block — no model.** Embed the canonical form; ANN-retrieve the top-K
-   nearest existing hubs (reuse the `finding` card embeddings already
-   indexed). Zero near neighbours ⇒ new hub, free.
-3. **Pairwise lattice-judge — MEDIUM.** For each of the K, one bounded
-   call emits *one* relation: `equivalent` (merge) · `broader`/`narrower`
-   (subsumption edge) · `orthogonal` (separate) · `contradicts`
-   (contradiction edge). These five verdicts **are** the lattice edges —
-   the same call dedups, builds the hierarchy, and records disagreement.
-   The lattice is a **DAG, not a tree** (a claim can be narrower-than
-   several parents).
-4. **Escalate on conflict — BIG/FRONTIER, rare.** Only when (3) is
-   ambiguous, or a proposed merge would fuse claims with divergent scope
-   or opposite retraction implications (the dangerous over-merge). The
-   strong model decides merge / keep-separate / create-parent.
+1. **Canonical form.** Normalize the claim to a **claim sentence + a light
+   scope note** (material / method / quantity / regime) — enough to tell
+   claims apart, *not* a predicate-logic parse. (Splitting a
+   multi-assertion chunk `X∧Y` into atoms is **deferred**: without it, a
+   bundled `X∧Y` just fails to merge with a bare `X` — an under-merge,
+   which the metric tolerates. Add it later only if under-merge hurts.)
+2. **Block — no model.** Embed the claim; ANN-retrieve the top-K nearest
+   existing hubs (reuse the `finding` card embeddings already indexed).
+   Zero near neighbours ⇒ new hub, free.
+3. **Dedup-judge — MEDIUM.** For each of the K, one bounded call returns
+   one of **three** verdicts: `same` (→ merge into that hub) · `contradicts`
+   (→ separate hub + a contradiction link) · `different` (→ separate hub).
+   That is the whole judgment.
+4. **Escalate — BIG/FRONTIER, rare.** Only when (3) proposes a `same`
+   (merge) it isn't sure of — the single risky direction. The strong model
+   confirms merge or keeps separate.
 
-**Merge-vs-subsume rule (the over-merge guard).** `equivalent` (one node)
-**only** when scope objects match modulo paraphrase; **any** scope
-difference ⇒ a `narrower`/`broader` **edge**, never a merge. **Bias hard
-toward not-merging** — under-merge is recoverable (merge later),
+**Merge rule (the over-merge guard).** Return `same` **only** when the two
+state the *same fact under the same conditions* (same material/method/
+regime, differing only in wording). **Any** real difference ⇒ separate.
+**Bias hard toward separate** — under-merge is recoverable (merge later);
 over-merge is dangerous (a retraction ripples across fused-but-distinct
-claims). Uncertainty defaults to keep-separate + link.
+claims). Uncertain ⇒ separate.
 
-**Eval fixture (required before backfill).** Primary metric =
-**over-merge rate → target ~zero**, tolerating under-merge. This is
-Phase 1's `ready` bar. Cheap blocking (2) keeps the expensive judges (4)
-rare — load-bearing for cost, not just recall.
+**Eval fixture.** Primary metric = **over-merge rate → ~zero** (merges that
+should have been separate), tolerating under-merge. Phase 1's `ready` bar.
+The fixture carries richer 5-relation labels; v1 grades them **collapsed** —
+`equivalent`→`same`, `broader`/`narrower`/`orthogonal`→`different`,
+`contradicts`→`contradicts` — so the same fixture also serves a future v2
+that restores the hierarchy.
 
 > **v1 complete (2026-07-28)** — `tests/fixtures/taproot/` holds **238**
 > pairs: 200 nearest-neighbour `citation`-claim pairs dual-labeled by
 > Opus + Fable (blind), **92% inter-model agreement**, the 16
 > disagreements adjudicated by three cluster rules **and human-signed-off**
 > (`human_approved`); plus 8 corpus + 22 synthetic contradiction pairs
-> (pairs 201–238) covering the `contradicts` edge. Two findings fed back
-> into this spec: the **atomic-split** need (step 1 above) and the
-> **`finding`-pollution** issue (open #11). The method — NN pairs + two
-> blind labelers + human adjudication of only the disagreements, then
-> targeted contradiction augmentation — is the repeatable recipe for
-> growing it.
+> (pairs 201–238) covering the `contradicts` edge. Two findings surfaced:
+> multi-assertion chunks exist (motivated atomic-split, now **deferred** to
+> keep v1 simple — see step 1) and the **`finding`-pollution** issue (open
+> #11). v1 grades the fixture collapsed to `same`/`different`/`contradicts`
+> (see the canonicalization section). The method — NN pairs + two blind
+> labelers + human adjudication of only the disagreements, then targeted
+> contradiction augmentation — is the repeatable recipe for growing it.
 
 ## Non-goals — staying out of the formal-logic pit
 
-Canonicalization's atomic-split + subsumption DAG are the trailhead to an
-open-ended formal-KR project. They are **not** one here, and these are the
-hard limits that keep "well enough" from sliding into a bottomless
+A claim graph is the trailhead to an open-ended formal-KR project. These
+are the hard limits that keep "well enough" from sliding into a bottomless
 description-logic build. Empirically the pragmatic path suffices: two
 models hit **92% agreement with zero logic** — bounded pairwise judgment,
-not inference.
+not inference. v1 stays deliberately flat:
 
-The line: **using a hierarchy (fine) vs. building a logic (the pit).**
-
-1. **Closed 5-relation vocabulary** — no arbitrary predicates, no
-   quantifiers. A claim relation is one of five, judged by a model on a
-   *pair* and graded against the fixture.
-2. **Pairwise judgment, never a reasoner** — we never *compute*
-   entailment or run a solver. No inference engine, no consistency
-   checking.
-3. **Atomic split is one level** — split an obvious multi-assertion chunk
-   (X∧Y) into X, Y and **stop**. No recursive decomposition of X into
-   sub-claims or logical constituents.
-4. **No transitive closure, no enforced global consistency** — edges are
-   recorded as proposed; a query walks them at read time (like the repo's
-   existing `cites`/`cited-by`). We do not maintain a provably-consistent
-   hierarchy. Contradictions are just edges, not constraints to solve.
-5. **Scope object is a flat bag of strings**, not an ontology.
+1. **Deferred: broader/narrower subsumption between claims** (the
+   "lattice"/DAG). v1 is flat — claims merge or stay separate. The
+   hierarchy is a v2 navigation nicety, not core; without it you get more
+   separate hubs (safe under-merge), never a wrong merge.
+2. **Three-verdict judge** (`same` / `different` / `contradicts`) — no
+   arbitrary predicates, no quantifiers, judged pairwise and graded
+   against the fixture.
+3. **Pairwise judgment, never a reasoner** — we never *compute* entailment
+   or run a solver. No inference engine, no consistency checking. (With no
+   hierarchy in v1, "transitive closure" isn't even a temptation.)
+4. **Deferred: atomic-split** of multi-assertion chunks. If added later it
+   is **one level** only (split `X∧Y` → `X`, `Y`, stop) — never recursive
+   decomposition into logical constituents.
+5. **Scope is a light note**, not an ontology.
 6. **"Well enough" = the fixture metric, not a correctness proof** — once
-   over-merge ~0 on the fixture, ship. The metric caps the ambition by
-   construction.
+   over-merge ~0 on the fixture, ship. The metric caps the ambition.
 
 **Decision rule for any future feature:** if it needs quantifiers, an
-entailment solver, consistency-enforcement, or unbounded recursive
-decomposition — that is the pit; say no.
+entailment solver, consistency-enforcement, a maintained hierarchy, or
+recursive decomposition — that is the pit; say no.
 
 ## Axis A — the support-resolution pipeline
 
@@ -235,10 +227,10 @@ stage has exactly one failure exit. This closed set *is* the edge-status
 vocabulary — "review a paper" = walk its citations through this pipeline
 and record the terminal state per edge.
 
-0. **Identity** (silent, pre-stage) — is C one claim, or two fused? A bad
-   answer here poisons every downstream verdict. This is
-   [canonicalization](#the-crux--canonicalization--scope), the gating
-   risk; the pipeline below *assumes* C is well-formed.
+0. **Identity** (silent, pre-stage) — is C a claim we already have?
+   ([canonicalization](#the-crux--canonicalization--flat-claim-dedup), the
+   gating risk — a wrong merge poisons everything downstream). The pipeline
+   below *assumes* C is resolved to its hub.
 1. **Acquire P** → fail **`UNACQUIRABLE`**: not held, no OA, no PDF.
    (`chase` stub-without-blocking already handles the mechanics.)
 2. **Locate the passage in P** → fail **`UNLOCATED`**: whole-paper cite
@@ -259,8 +251,8 @@ stages above catch the **source end** failing (`UNACQUIRABLE`,
 `UNLOCATED`). The **claim end** can fail too: a paragraph that is *pure
 pointer* — it cites a source but asserts nothing to ground ("See [12]", a
 Related-Work sentence that is only "[1,2,3]"). Detected at **claim
-extraction** (stage 1): if atomic-split yields **zero** groundable claims
-(or only a non-substantive meta-claim like "several studies exist"), the
+extraction** (stage 1): if extraction yields **no** groundable claim (or
+only a non-substantive meta-claim like "several studies exist"), the
 citation has no host claim →
 
 0'. **`NO-CLAIM`** (claim-end missing) — a dangling/orphan citation. Not a
@@ -415,8 +407,8 @@ SMALL or model-free.
 | Blocking (nearest hubs) | **none — ANN** | high | vector search over existing embeddings |
 | Support verdict (yes/partial/no) | **MEDIUM** | high (per edge) | `chase` today, ~$0.01/verify |
 | Locate passage in target | **MEDIUM** (+ deterministic) | high | `chase:locate` is Tier.MEDIUM |
-| Pairwise lattice-judge | **MEDIUM → BIG** on ambiguity | medium (K/candidate) | bounded pairwise; escalate only if unsure |
-| Merge/split over-merge | **BIG → FRONTIER** | low (conflicts only) | fuses distinct claims — dangerous |
+| Dedup-judge (`same`/`different`/`contradicts`) | **MEDIUM** | medium (K/candidate) | bounded 3-way pairwise call |
+| Merge confirmation (a risky `same`) | **BIG → FRONTIER** | low (merges only) | a wrong merge fuses distinct claims — dangerous |
 | **Integrity reason-relevance** | **FRONTIER / BIG** | low (retracted only) | false "unrelated" keeps fraud live; default-invalidating |
 | Contradiction vs scope-mismatch | **BIG** | low | mislabel writes a false disagreement |
 | Seniority ordering | **none — graph** | — | centrality over `links` |
@@ -458,6 +450,10 @@ SMALL or model-free.
   reopened here.
 - **No currency/supersession engine** (axis C) beyond the `contradicts`
   edges that already exist.
+- **No claim hierarchy** (broader/narrower subsumption between claims) in
+  v1 — flat dedup only; the "lattice" is deferred to v2.
+- **No claim↔concept reconciliation** — the `concept` kind is left
+  untouched (loose end, open #13).
 - **No full transitive closure** of the citation graph — governed
   frontier only.
 - Backfill does **not** run corpus-wide until canonicalization is
@@ -499,20 +495,20 @@ draft-outline hygiene surface · skills `precis-finding-help`,
 Called out deliberately — several are **blocker-severity** (must resolve
 before any `status: ready`).
 
-1. **[BLOCKER — design now in [canonicalization](#the-crux--canonicalization--lattice-placement-not-flat-dedup)]**
-   The lattice approach (canonical form → ANN block → pairwise
-   lattice-judge → escalate-on-conflict) replaces the earlier
-   hand-waving, but it stays a blocker until it has its **own sub-spec +
-   a labeled eval fixture** measuring under/over-merge. Over-merge is
-   still the dangerous direction (a retraction rippling across fused-but-
-   distinct claims). **Nothing downstream runs at corpus scale until the
-   fixture passes.**
+1. **[BLOCKER — design in [canonicalization](#the-crux--canonicalization--flat-claim-dedup), simplified 2026-07-28]**
+   **v1 is flat dedup** (canonical form → ANN block → 3-way dedup-judge
+   `same`/`different`/`contradicts` → confirm risky merges) — the
+   broader/narrower "lattice" was cut to v2 (self-inflicted complexity;
+   not needed for grounding or seniority). Stays a blocker until it has a
+   **sub-spec** and passes the fixture at **over-merge ~0**. Over-merge is
+   the one dangerous direction. **Nothing downstream runs at corpus scale
+   until it passes.**
 
-2. **[BLOCKER — folded into #1]** Scope/granularity is no longer a
-   separate problem: the lattice places broad claims as *parents* and
-   specific ones as *children*, and the **canonical-form** step binds
-   claim + conditions so the matcher compares like with like. Remains a
-   blocker only insofar as #1 does (same sub-spec, same fixture).
+2. **[RESOLVED — by the flat-dedup simplification]** Scope/granularity is
+   no longer a problem to solve: claims that aren't the *same* just become
+   **separate hubs** (safe under-merge). No need to pick "the right grain"
+   or place claims in a hierarchy — that temptation (and the DAG /
+   transitive-closure risk) is gone in v1.
 
 3. **[RESOLVED — see [core model](#finding-vs-memorykindlemma--already-unified-nothing-retired)]**
    Nothing is retired. `finding` = grounded lemma (evidence edges);
@@ -553,7 +549,7 @@ before any `status: ready`).
 
 7. **[OPEN — needs a pilot number]** Backfill cost. **Decided shape:**
    dominant cost = MEDIUM calls × resolved edges (support + K
-   lattice-judges); attribution is SMALL, integrity mostly tier-0 lookup,
+   dedup-judges); attribution is SMALL, integrity mostly tier-0 lookup,
    blocking free. Governance = saliency-ordered + hard per-run token valve
    (reuse tracked `cost_sources`) + "N most-salient unresolved
    papers/day" throttle. The **absolute number is genuinely unknown**
@@ -561,11 +557,11 @@ before any `status: ready`).
    *can't* be closed from the armchair.
 
 8. **[RESOLVED — ties to #1]** Route the cited passage's claim through
-   canonicalization *before* the contradiction verdict. If it is
-   `orthogonal`/`narrower` to C, a "no support" is a **scope-mismatch**,
-   not a contradiction. `CONTRADICTS` = **same-scope, opposite-polarity**
-   only. The lattice-judge is the disambiguator; you cannot label
-   contradiction without first establishing same scope.
+   canonicalization *before* the contradiction verdict. If the dedup-judge
+   calls it `different` from C, a "no support" is a **scope-mismatch**, not
+   a contradiction. `CONTRADICTS` = **same claim, opposite-polarity** only.
+   The dedup-judge is the disambiguator; you cannot label contradiction
+   without first establishing it is the same claim.
 
 9. **[TYPED — function deferred to P2]** Claim confidence is an **ordinal**
    (`established / supported / contested / undermined`), not a float
@@ -605,13 +601,33 @@ before any `status: ready`).
     coverage is now mostly synthetic — tests judge *logic*, not evidence
     of real literature disputes.
 
-**Status after the 2026-07-28 pass:** #3,#4,#6,#8,#10,#11,#12 resolved ·
+13. **[OPEN — loose end from the simplification pass]** **`concept` is
+    unaddressed.** There are three claim-ish node types: the taproot hub
+    (`FROLE:claim` finding), `memory:kind:lemma` (derived lemma), and
+    `concept` (learner term + mastery). We reconciled the first two by rule
+    (grounded vs derived, #3), but never drew the claim↔concept boundary. A
+    concept ("catalytic activity") is a *term/topic*, not an *assertion* —
+    probably orthogonal to a claim — but the overlap was never pinned. Not
+    a v1 blocker (taproot doesn't touch `concept`); decide before any
+    cross-wiring.
+
+**Fully-subsumed?** No — taproot *partitions*, it does not swallow
+everything. It absorbs the **evidence-grounding** cluster (`citation` →
+per-edge artifact, `finding`-as-hub, the `chase` engine, `provenance`
+integrity) into one hub, but **coexists with** the argument graph
+(`memory:kind:lemma`, the *inference* axis) and leaves `concept` untouched
+(#13). That boundary is deliberate, not an oversight — but it is a
+partition, not total unification.
+
+**Status after the 2026-07-28 pass:** #2,#3,#4,#6,#8,#10,#11,#12 resolved ·
 #1,#5 designed-with-a-gate · #9 typed, function deferred · #7 needs a
-Phase-5 pilot measurement. New outcome added: **`NO-CLAIM`** (claim-end
-of the citation edge missing — dangling/pure-pointer cite). **Phase-1
-fixture v1 complete** (`tests/fixtures/taproot/`, 238 pairs, 92%
-two-model agreement, 16 disagreements human-adjudicated + signed off,
-`contradicts` edge covered via synthetic). Only the synthetic-pair
+Phase-5 pilot measurement · #13 (concept boundary) open, not a v1 blocker.
+**Simplified 2026-07-28:** canonicalization cut from a 5-relation
+subsumption lattice to **flat dedup** (`same`/`different`/`contradicts`);
+broader/narrower deferred to v2. New outcome: **`NO-CLAIM`** (dangling
+cite). **Phase-1 fixture v1 complete** (`tests/fixtures/taproot/`, 238
+pairs, 92% agreement, 16 disagreements signed off, `contradicts` covered;
+v1 grades collapsed). Only the synthetic-pair
 spot-check + writing the canonicalization sub-spec stand between here and
 Phase-1 build.
 
@@ -623,16 +639,17 @@ model is cross-cutting and splitting the document would invite drift. The
 self-contained branch off this spec; the phase boundary is where we stop
 and validate before widening blast radius.
 
-1. **Phase 1 — canonicalization (the gate).** Atomic-split → canonical-form
-   extractor → ANN blocking → pairwise lattice-judge → escalation,
-   validated against the **eval fixture** (v1 already built,
-   `tests/fixtures/taproot/`; grow it + add contradictions per #12). Ships
-   and is validated *before anything writes edges at scale.* Resolves
-   open #1/#2. **Everything else waits on this.**
+1. **Phase 1 — canonicalization (the gate).** Canonical-form extractor →
+   ANN blocking → **3-way dedup-judge** (`same`/`different`/`contradicts`)
+   → confirm risky merges, validated against the **eval fixture** (built,
+   `tests/fixtures/taproot/`). Ships and is validated *before anything
+   writes edges at scale.* Resolves open #1/#2. **Everything else waits on
+   this.**
 2. **Phase 2 — hub node.** `finding`-as-hub, the typed graded evidence
-   relation + lattice edges, the evidence `view`, the `citation`-card
-   dedup (open #3 residual), the `\cite{}`→originators export expansion
-   (open #4 residual). The schema/vocab foundation the rest writes to.
+   relation (`establishes`/`corroborates`/`contradicts`), the evidence
+   `view`, the `citation`-card dedup (open #3 residual), the
+   `\cite{}`→originators export expansion (open #4 residual). The
+   schema/vocab foundation the rest writes to.
 3. **Phase 3 — forward resolution.** Turn on + finish `chase`, wire the
    Axis-A pipeline to edges, draft-side response policies. First user
    value; runs on ingest only, bounded volume.
