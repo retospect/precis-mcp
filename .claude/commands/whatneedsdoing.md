@@ -1,7 +1,7 @@
 ---
 description: One honest "what needs doing" across the two work substrates — repo dev work (OPEN-ITEMS backlog + open gripes + open GitHub PRs + Dependabot alerts) and the prod factory queue (open/doable todos) — plus a repo-hygiene scan (migration-number collisions · orphan design docs · memory-index lint), a prod system-health read (per-host worker-log err/warn), and the latent LLM-confusion signal mined from prod agent transcripts.
 argument-hint: "[optional focus, e.g. 'dark-factory' or 'drafts']"
-allowed-tools: Read, Bash(grep:*), Bash(ssh:*), Bash(gh:*), Bash(scripts/migration-check:*), Bash(scripts/docs-orphans:*), Bash(scripts/memory-lint:*), Bash(scripts/backlog-lint:*), Bash(scripts/token-review:*), Bash(scripts/db-thrash-review:*), Bash(scripts/skill-search-review:*), Bash(scripts/nightly:*), Bash(scripts/coderef:*), mcp__precis__get, mcp__precis__search
+allowed-tools: Read, Bash(grep:*), Bash(ssh:*), Bash(gh:*), Bash(scripts/migration-check:*), Bash(scripts/docs-orphans:*), Bash(scripts/memory-lint:*), Bash(scripts/backlog-lint:*), Bash(scripts/token-review:*), Bash(scripts/db-thrash-review:*), Bash(scripts/skill-search-review:*), Bash(scripts/gripe-gc-review:*), Bash(scripts/nightly:*), Bash(scripts/coderef:*), mcp__precis__get, mcp__precis__search
 ---
 
 Work lives in **two different substrates** — do not merge them into one flat
@@ -35,8 +35,8 @@ Live GitHub — open PRs:
 Live GitHub — open Dependabot alerts (severity ⋅ package ⋅ #num ⋅ summary):
 !`gh api "repos/{owner}/{repo}/dependabot/alerts?state=open&per_page=50" --jq '.[] | "\(.security_advisory.severity)\t\(.dependency.package.name)\t#\(.number)\t\(.security_advisory.summary)"' 2>/dev/null || echo '(dependabot API unavailable — needs a token with repo security-read)'`
 
-Live repo hygiene — migration collisions ⋅ orphan design docs ⋅ code anchors ⋅ memory index ⋅ done-gunk ⋅ token-review cadence ⋅ db-thrash cadence ⋅ skill-search cadence ⋅ nightly build:
-!`scripts/migration-check --quiet 2>&1 || true; echo '— docs —'; scripts/docs-orphans 2>&1 | sed -n '1,2p;/^ORPHAN/,/^ADR-linked/p' || true; echo '— code anchors —'; scripts/coderef check docs 2>&1 | tail -6 || true; echo '— memory —'; scripts/memory-lint 2>&1 || true; echo '— backlog —'; scripts/backlog-lint 2>&1 | head -1 || true; echo '— tokens —'; scripts/token-review 2>&1 || true; echo '— db-thrash —'; scripts/db-thrash-review 2>&1 || true; echo '— skill-search —'; scripts/skill-search-review 2>&1 || true; echo '— nightly —'; scripts/nightly --check 2>&1 || true`
+Live repo hygiene — migration collisions ⋅ orphan design docs ⋅ code anchors ⋅ memory index ⋅ done-gunk ⋅ token-review cadence ⋅ db-thrash cadence ⋅ skill-search cadence ⋅ gripe-gc cadence ⋅ nightly build:
+!`scripts/migration-check --quiet 2>&1 || true; echo '— docs —'; scripts/docs-orphans 2>&1 | sed -n '1,2p;/^ORPHAN/,/^ADR-linked/p' || true; echo '— code anchors —'; scripts/coderef check docs 2>&1 | tail -6 || true; echo '— memory —'; scripts/memory-lint 2>&1 || true; echo '— backlog —'; scripts/backlog-lint 2>&1 | head -1 || true; echo '— tokens —'; scripts/token-review 2>&1 || true; echo '— db-thrash —'; scripts/db-thrash-review 2>&1 || true; echo '— skill-search —'; scripts/skill-search-review 2>&1 || true; echo '— gripe-gc —'; scripts/gripe-gc-review 2>&1 || true; echo '— nightly —'; scripts/nightly --check 2>&1 || true`
 
 ## Procedure
 
@@ -142,6 +142,18 @@ Live repo hygiene — migration collisions ⋅ orphan design docs ⋅ code ancho
      discovery fallback when they don't know a slug, yet nothing logs how well it
      works; the first pass found the matcher was doing atomic whole-query
      substring matching. Runbook has the pipeline.)
+   - **Gripe-GC cadence** (`scripts/gripe-gc-review`) — on **DUE** (last pass
+     >7 days ago) run the weekly gripe-GC backstop: list shipped-marked open
+     gripes (the script prints a best-effort count if prod is reachable), and
+     close the genuinely-fully-shipped ones — a one-line resolution comment
+     naming the sha, then soft-delete (same convention as step 2). **Leave
+     open** any gripe that shipped *with* open follow-ups — that's still real
+     work, just mislabeled. Then append a dated line to
+     `docs/runbooks/gripe-gc.md`. Inside the 7-day window it's quiet — skip
+     it. (This cadence exists because `issue-closer` only inspects the
+     single just-shipped commit, so multi-commit fixes, pre-issue-closer
+     gripes, and shipped commits that don't name the gripe all slip past it —
+     see the runbook.)
    - **Nightly build** (`scripts/nightly --check`) — the LOCAL full-suite health
      read (not GitHub). **`✗ RED`** means green main was broken by upstream
      dependency drift (the ship gate can't catch it — no code changed);

@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# scripts/gripe-gc-review — advisory 7-day cadence nudge for the weekly
+# gripe-GC backstop pass. Mirrors token-review/db-thrash-review: it does NOT
+# do the close-pass (that's a judgment step — see the runbook), it only tells
+# you WHEN one is due. Surfaced in `/whatneedsdoing`; always exits 0.
+#
+# Why this backstop exists: `issue-closer` runs post-`/land` but only
+# inspects the single just-shipped commit, so gripes fixed by multi-commit
+# work, filed before issue-closer existed, or whose shipped commit doesn't
+# name the gripe SLIP past it. This weekly pass catches those regardless.
+# Procedure + dated log:
+#   docs/runbooks/gripe-gc.md   (the `## Log` section is the clock)
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+LOG="docs/runbooks/gripe-gc.md"
+WINDOW_DAYS=7
+
+if [[ ! -f "$LOG" ]]; then
+    echo "gripe-gc-review: DUE (no runbook at $LOG)"; exit 0
+fi
+
+# newest dated line in the `## Log` section (entries are newest-first, so head -1)
+last=$(awk '/^## Log/{f=1;next} f' "$LOG" \
+    | grep -oE '\*\*[0-9]{4}-[0-9]{2}-[0-9]{2}\*\*' | head -1 | tr -d '*' || true)
+
+if [[ -z "$last" ]]; then
+    echo "gripe-gc-review: DUE (no dated entry in $LOG '## Log')"; exit 0
+fi
+
+# portable YYYY-MM-DD -> epoch seconds (BSD date on macOS, GNU date on CI/Linux)
+epoch_of() { date -j -f "%Y-%m-%d" "$1" +%s 2>/dev/null || date -d "$1" +%s 2>/dev/null; }
+last_e=$(epoch_of "$last" || true)
+now_e=$(date +%s)
+
+if [[ -z "$last_e" ]]; then
+    echo "gripe-gc-review: last entry '$last' unparseable — check $LOG"; exit 0
+fi
+
+days=$(( (now_e - last_e) / 86400 ))
+if (( days > WINDOW_DAYS )); then
+    echo "gripe-gc-review: DUE (last pass $last, ${days}d ago > ${WINDOW_DAYS}d) — list shipped-marked open gripes, close the genuinely-fully-shipped ones (soft-delete with a resolution comment naming the sha), append a dated line to $LOG. See the runbook."
+    # Best-effort nicety: how many are waiting, if prod is reachable. Never
+    # blocks or fails the clock — guarded with || true throughout.
+    count=$(scripts/prod-psql "SELECT count(*) FROM refs WHERE kind='gripe' AND deleted_at IS NULL AND title ILIKE '%shipped%';" 2>/dev/null | tr -d '[:space:]' || true)
+    if [[ -n "$count" && "$count" =~ ^[0-9]+$ ]]; then
+        echo "  ($count shipped-marked open gripe(s) in prod, at last check)"
+    fi
+else
+    echo "gripe-gc-review: ok (last pass $last, ${days}d ago; due in $(( WINDOW_DAYS - days ))d)"
+fi
+exit 0
