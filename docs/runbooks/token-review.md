@@ -53,5 +53,17 @@ first, so the script reads the top:
 
 ## Log
 
+- **2026-07-29** — first real pass (sampled 6 large 07-26–07-29 sessions across
+  worktrees). Two token-waste patterns found, **both fixed same session** by the
+  `bash-reflex-nudge` PreToolUse hook (`873f7ce2`): (1) `coderef-nudge` was
+  scoped to the native `Grep` tool only, so it never fired on Bash-invoked
+  `rg`/`grep` — ~100% of real code-search traffic (168 raw calls vs. 0
+  `search_code`/`navigator` across the sample); the hook's Rule A now nudges
+  bare-identifier Bash greps toward `coderef`/`search_code`. (2) cluster
+  ops/log/psql diagnosis (~30 raw `ssh`/`prod-psql` calls, up to 49 KB each) ran
+  inline on the Opus main loop instead of `cluster-ops`/`cluster-admin` during a
+  23h classify-throughput investigation (the single largest token-cost pattern);
+  the hook's Rule B now nudges `ssh <node>` / `scripts/prod-psql` toward those
+  agents.
 - **2026-07-18** — cadence established (this runbook + `scripts/token-review`).
   Baseline pass deferred to the first DUE firing; no findings yet.
