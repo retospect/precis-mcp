@@ -307,16 +307,21 @@ class MaterialMixin:
 
         Bounds are inclusive and in the property's canonical unit (v1
         does no conversion — the caller/handler is responsible for that
-        contract). Returns rows ordered by ``value_num`` ascending, each
-        carrying the owning material's ``ref_id``/``title``.
+        contract). The filter is an **interval overlap**, not a
+        point-in-range test: ``min_val``/``max_val`` are compared against
+        ``value_high``/``value_low`` (falling back to ``value_num`` when a
+        row has no band), so a banded value matches whenever its band
+        overlaps the query range — a point value (band NULL) keeps
+        matching exactly as before. Returns rows ordered by ``value_num``
+        ascending, each carrying the owning material's ``ref_id``/``title``.
         """
         clauses = ["mv.property_id = %s"]
         params: list[Any] = [property_id]
         if min_val is not None:
-            clauses.append("mv.value_num >= %s")
+            clauses.append("COALESCE(mv.value_high, mv.value_num) >= %s")
             params.append(min_val)
         if max_val is not None:
-            clauses.append("mv.value_num <= %s")
+            clauses.append("COALESCE(mv.value_low, mv.value_num) <= %s")
             params.append(max_val)
         if maturity is not None:
             clauses.append("mv.maturity = %s")

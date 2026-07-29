@@ -784,6 +784,15 @@ def put(
     # as_of= dates a value (e.g. cost_per_mass / unit_cost) — 'YYYY-MM-DD'.
     # Forwarded to both kinds' value insert.
     as_of: str | None = None,
+    # material / component: value_type= overrides mint-time value-type
+    # inference (quantity|ratio|categorical|boolean|text) — the only way to
+    # mint a categorical property/spec (pass allowed_values= alongside).
+    value_type: str | None = None,
+    allowed_values: list[Any] | None = None,
+    # material / component: value_low=/value_high= record an uncertainty
+    # band on a numeric value; omit value= to default it to the band's mean.
+    value_low: float | None = None,
+    value_high: float | None = None,
     # component (see precis-component-help): put(kind='component', id=<slug>,
     # title=…, category=…, uom=…, meta={mpn, manufacturer, ...}) upserts the
     # entity (category= required on create, mints a proposed category if
@@ -874,6 +883,10 @@ def put(
             "source": source,
             "chunk": chunk,
             "as_of": as_of,
+            "value_type": value_type,
+            "allowed_values": allowed_values,
+            "value_low": value_low,
+            "value_high": value_high,
             "spec": spec,
             "category": category,
             "uom": uom,

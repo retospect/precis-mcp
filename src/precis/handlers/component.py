@@ -52,6 +52,7 @@ from precis.utils import handle_registry
 _MATURITIES: tuple[str, ...] = ("commercial", "lab", "speculative")
 _SOURCE_KINDS: tuple[str, ...] = ("paper", "datasheet")
 _VIEWS: tuple[str, ...] = ("table", "specs", "categories")
+_VALUE_TYPES: tuple[str, ...] = ("quantity", "ratio", "categorical", "boolean", "text")
 
 
 class ComponentHandler(Handler):
@@ -105,6 +106,10 @@ class ComponentHandler(Handler):
         source: str | None = None,
         chunk: str | None = None,
         as_of: str | None = None,
+        value_type: str | None = None,
+        allowed_values: list[Any] | None = None,
+        value_low: float | None = None,
+        value_high: float | None = None,
         title: str | None = None,
         category: str | None = None,
         uom: str | None = None,
@@ -134,6 +139,10 @@ class ComponentHandler(Handler):
                 source=source,
                 chunk=chunk,
                 as_of=as_of,
+                value_type=value_type,
+                allowed_values=allowed_values,
+                value_low=value_low,
+                value_high=value_high,
             )
         else:
             resp = self._put_entity(
@@ -246,6 +255,10 @@ class ComponentHandler(Handler):
         source: str | None,
         chunk: str | None,
         as_of: str | None,
+        value_type: str | None = None,
+        allowed_values: list[Any] | None = None,
+        value_low: float | None = None,
+        value_high: float | None = None,
     ) -> Response:
         if not spec:
             raise BadInput(
@@ -263,17 +276,30 @@ class ComponentHandler(Handler):
         if conditions is not None and not isinstance(conditions, dict):
             raise BadInput("put(kind='component') conditions= must be a dict")
 
+        self._validate_type_args(value_type, allowed_values)
+
         component_category = (component_ref.meta or {}).get("category")
 
         spec_row = self.store.component_spec_get(spec)
         if spec_row is None:
             spec_row = self._mint_spec(
-                spec, value=value, unit=unit, category_id=component_category
+                spec,
+                value=value,
+                unit=unit,
+                category_id=component_category,
+                value_type=value_type,
+                allowed_values=allowed_values,
+            )
+        else:
+            self._check_type_consistency(
+                spec_row, value_type=value_type, allowed_values=allowed_values
             )
 
         self._check_applicability(spec_row, component_category)
         self._check_unit(spec_row, unit)
-        value_kwargs = self._route_value(spec_row, value)
+        value_kwargs = self._route_value(
+            spec_row, value, value_low=value_low, value_high=value_high
+        )
 
         if maturity is not None and maturity not in _MATURITIES:
             raise BadInput(
@@ -295,6 +321,15 @@ class ComponentHandler(Handler):
             as_of=as_of,
             **value_kwargs,
         )
+        display_value = _display_value(
+            {
+                "value_num": value_kwargs.get("value_num"),
+                "value_low": value_kwargs.get("value_low"),
+                "value_high": value_kwargs.get("value_high"),
+                "value_bool": value_kwargs.get("value_bool"),
+                "value_text": value_kwargs.get("value_text"),
+            }
+        )
         unit_note = f" {unit}" if unit else ""
         source_note = ""
         if source_ref_id is not None:
@@ -303,11 +338,60 @@ class ComponentHandler(Handler):
             source_note = f" (source_url={source_url!r})"
         return Response(
             body=(
-                f"recorded {slug}.{spec_row['spec_id']} = {value}{unit_note} "
+                f"recorded {slug}.{spec_row['spec_id']} = "
+                f"{display_value}{unit_note} "
                 f"(id={value_id}, maturity={maturity or 'lab'})"
                 f"{source_note}"
             )
         )
+
+    @staticmethod
+    def _validate_type_args(
+        value_type: str | None, allowed_values: list[Any] | None
+    ) -> None:
+        """Validate ``value_type=``/``allowed_values=`` shape, independent
+        of whether this write mints a fresh spec or targets an existing
+        one (``_check_type_consistency`` covers the latter)."""
+        if value_type is not None and value_type not in _VALUE_TYPES:
+            raise BadInput(
+                f"value_type={value_type!r} must be one of {list(_VALUE_TYPES)}",
+            )
+        if allowed_values is not None and value_type != "categorical":
+            raise BadInput(
+                "allowed_values= is only valid with value_type='categorical'",
+                next=(
+                    "put(kind='component', id=<slug>, spec=<spec_id>, "
+                    "value=..., value_type='categorical', "
+                    "allowed_values=['a', 'b'])"
+                ),
+            )
+
+    @staticmethod
+    def _check_type_consistency(
+        spec_row: dict[str, Any],
+        *,
+        value_type: str | None,
+        allowed_values: list[Any] | None,
+    ) -> None:
+        """An explicit ``value_type=``/``allowed_values=`` against an
+        *already-registered* spec must be consistent with it — this never
+        re-mints, it only guards against a silently-conflicting
+        declaration."""
+        if value_type is not None and value_type != spec_row["value_type"]:
+            raise BadInput(
+                f"{spec_row['spec_id']} is already registered as "
+                f"value_type={spec_row['value_type']!r} - "
+                f"value_type={value_type!r} conflicts with the registered "
+                "definition",
+            )
+        if allowed_values is not None:
+            registered = spec_row.get("allowed_values") or []
+            if set(allowed_values) != set(registered):
+                raise BadInput(
+                    f"{spec_row['spec_id']} is already registered with "
+                    f"allowed_values={registered!r} - allowed_values="
+                    f"{allowed_values!r} conflicts with the registered definition",
+                )
 
     def _check_applicability(
         self, spec_row: dict[str, Any], component_category: str | None
@@ -332,12 +416,20 @@ class ComponentHandler(Handler):
         value: Any,
         unit: str | None,
         category_id: str | None,
+        value_type: str | None = None,
+        allowed_values: list[Any] | None = None,
     ) -> dict[str, Any]:
         """Mint a fresh ``proposed`` spec when ``spec=`` is unknown, scoped
         to the *writing component's* category (never universal — see
         ``docs/proposals/component-kind.md``'s resolved "Runtime spec-mint
-        category" decision). Mirrors ``MaterialHandler._mint_property``'s
-        value-shape inference."""
+        category" decision).
+
+        With no explicit ``value_type=``, mirrors
+        ``MaterialHandler._mint_property``'s value-shape inference. An
+        explicit ``value_type=`` overrides inference — it's the only way
+        to mint a ``categorical`` spec (which requires a non-empty
+        ``allowed_values=``, and rejects ``unit=`` since categoricals are
+        dimensionless)."""
         if value is None:
             raise NotFound(
                 f"unknown spec {spec_id!r}",
@@ -350,28 +442,70 @@ class ComponentHandler(Handler):
                 ),
             )
         canonical_unit = None if unit is None else str(unit).strip() or None
+        name = spec_id.replace("_", " ").replace("-", " ").strip().title() or spec_id
+
+        if value_type is not None:
+            if value_type == "categorical":
+                if not allowed_values:
+                    raise BadInput(
+                        f"minting {spec_id!r} as categorical requires a "
+                        "non-empty allowed_values= list",
+                        next=(
+                            f"put(kind='component', id=<slug>, "
+                            f"spec={spec_id!r}, value=..., "
+                            "value_type='categorical', "
+                            "allowed_values=['a', 'b'])"
+                        ),
+                    )
+                if canonical_unit is not None:
+                    raise BadInput(
+                        f"cannot mint {spec_id!r} as categorical with "
+                        f"unit={unit!r} - categorical specs are "
+                        "dimensionless, drop unit=",
+                    )
+                dimension = "categorical"
+                canonical_unit = None
+            elif value_type in ("boolean", "text"):
+                if canonical_unit is not None:
+                    raise BadInput(
+                        f"cannot mint {spec_id!r} as {value_type} with "
+                        f"unit={unit!r} - {value_type} specs are "
+                        "dimensionless, drop unit=",
+                    )
+                dimension = "dimensionless"
+            else:  # quantity / ratio
+                dimension = canonical_unit or "dimensionless"
+            return self.store.component_spec_mint(
+                spec_id=spec_id,
+                name=name,
+                canonical_unit=canonical_unit,
+                dimension=dimension,
+                value_type=value_type,
+                category_id=category_id,
+                allowed_values=allowed_values,
+            )
+
         if isinstance(value, bool):
             if canonical_unit is not None:
                 raise BadInput(
                     f"cannot mint {spec_id!r} as boolean with unit={unit!r} - "
                     "boolean specs are dimensionless, drop unit=",
                 )
-            value_type = "boolean"
+            inferred_type = "boolean"
             dimension = "dimensionless"
         else:
             try:
                 float(value)
-                value_type = "quantity"
+                inferred_type = "quantity"
             except (TypeError, ValueError):
-                value_type = "text"
+                inferred_type = "text"
             dimension = canonical_unit or "dimensionless"
-        name = spec_id.replace("_", " ").replace("-", " ").strip().title() or spec_id
         return self.store.component_spec_mint(
             spec_id=spec_id,
             name=name,
             canonical_unit=canonical_unit,
             dimension=dimension,
-            value_type=value_type,
+            value_type=inferred_type,
             category_id=category_id,
         )
 
@@ -402,27 +536,66 @@ class ComponentHandler(Handler):
             )
 
     @staticmethod
-    def _route_value(spec_row: dict[str, Any], value: Any) -> dict[str, Any]:
+    def _route_value(
+        spec_row: dict[str, Any],
+        value: Any,
+        *,
+        value_low: float | None = None,
+        value_high: float | None = None,
+    ) -> dict[str, Any]:
         spec_id = spec_row["spec_id"]
         value_type = spec_row["value_type"]
+        has_band = value_low is not None or value_high is not None
+
+        if has_band and value_type not in ("quantity", "ratio"):
+            raise BadInput(
+                f"{spec_id} is a {value_type} spec - value_low=/value_high= "
+                "apply only to numeric (quantity/ratio) specs",
+            )
+
+        if value_type in ("quantity", "ratio"):
+            if (
+                value_low is not None
+                and value_high is not None
+                and value_low > value_high
+            ):
+                raise BadInput(
+                    f"value_low={value_low!r} must be <= value_high={value_high!r}",
+                )
+            if value is not None:
+                if isinstance(value, bool):
+                    raise BadInput(
+                        f"{spec_id} is a {value_type} spec - value= must be "
+                        f"numeric, got {value!r}"
+                    )
+                try:
+                    num = float(value)
+                except (TypeError, ValueError):
+                    raise BadInput(
+                        f"{spec_id} is a {value_type} spec - value= must be "
+                        f"numeric, got {value!r}"
+                    ) from None
+            elif value_low is not None and value_high is not None:
+                num = (float(value_low) + float(value_high)) / 2
+            elif has_band:
+                raise BadInput(
+                    f"put(kind='component', spec={spec_id!r}) needs "
+                    "value=, or both value_low= and value_high=",
+                )
+            else:
+                raise BadInput(
+                    f"put(kind='component', spec={spec_id!r}) needs value=",
+                )
+            out: dict[str, Any] = {"value_num": num}
+            if value_low is not None:
+                out["value_low"] = float(value_low)
+            if value_high is not None:
+                out["value_high"] = float(value_high)
+            return out
         if value is None:
             raise BadInput(
                 f"put(kind='component', spec={spec_id!r}) needs value=",
             )
-        if value_type in ("quantity", "ratio"):
-            if isinstance(value, bool):
-                raise BadInput(
-                    f"{spec_id} is a {value_type} spec - value= must be "
-                    f"numeric, got {value!r}"
-                )
-            try:
-                num = float(value)
-            except (TypeError, ValueError):
-                raise BadInput(
-                    f"{spec_id} is a {value_type} spec - value= must be "
-                    f"numeric, got {value!r}"
-                ) from None
-            return {"value_num": num}
         if value_type == "boolean":
             b = _coerce_bool(value)
             if b is None:
@@ -807,7 +980,12 @@ def _coerce_bool(value: Any) -> bool | None:
 
 def _display_value(v: dict[str, Any]) -> str:
     if v["value_num"] is not None:
-        return str(v["value_num"])
+        base = str(v["value_num"])
+        low = v.get("value_low")
+        high = v.get("value_high")
+        if low is not None and high is not None:
+            return f"{base} ({low}–{high})"
+        return base
     if v["value_bool"] is not None:
         return str(v["value_bool"])
     if v["value_text"] is not None:

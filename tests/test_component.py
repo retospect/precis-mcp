@@ -182,6 +182,242 @@ class TestProposedSpecMint:
         assert spec["canonical_unit"] is None
 
 
+# ── v1 trim (a): explicit value_type= / allowed_values= mint ────────
+
+
+class TestExplicitTypeMint:
+    def test_runtime_categorical_mint(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="m6-a2-bolt", title="M6x20 A2 socket cap", category="fastener")
+        h.put(
+            id="m6-a2-bolt",
+            spec="coating_color_a",
+            value="black",
+            value_type="categorical",
+            allowed_values=["black", "silver", "gold"],
+        )
+        spec = store.component_spec_get("coating_color_a")
+        assert spec is not None
+        assert spec["value_type"] == "categorical"
+        assert spec["allowed_values"] == ["black", "silver", "gold"]
+        assert spec["canonical_unit"] is None
+        ref = store.get_ref(kind="component", id="m6-a2-bolt")
+        values = store.component_values_for_ref(ref.id)
+        assert values[0]["value_text"] == "black"
+
+    def test_categorical_value_outside_allowed_values_is_rejected_on_mint(
+        self, store: Any
+    ) -> None:
+        h = _handler(store)
+        h.put(id="m6-a2-bolt", title="M6x20 A2 socket cap", category="fastener")
+        h.put(
+            id="m6-a2-bolt",
+            spec="coating_color_b",
+            value="black",
+            value_type="categorical",
+            allowed_values=["black", "silver", "gold"],
+        )
+        with pytest.raises(BadInput):
+            h.put(id="m6-a2-bolt", spec="coating_color_b", value="purple")
+
+    def test_categorical_mint_with_unit_is_rejected(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="m6-a2-bolt", title="M6x20 A2 socket cap", category="fastener")
+        with pytest.raises(BadInput):
+            h.put(
+                id="m6-a2-bolt",
+                spec="coating_color_c",
+                value="black",
+                unit="mm",
+                value_type="categorical",
+                allowed_values=["black", "silver"],
+            )
+
+    def test_categorical_mint_without_allowed_values_is_rejected(
+        self, store: Any
+    ) -> None:
+        h = _handler(store)
+        h.put(id="m6-a2-bolt", title="M6x20 A2 socket cap", category="fastener")
+        with pytest.raises(BadInput):
+            h.put(
+                id="m6-a2-bolt",
+                spec="coating_color_d",
+                value="black",
+                value_type="categorical",
+            )
+
+    def test_allowed_values_without_categorical_is_rejected(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="m6-a2-bolt", title="M6x20 A2 socket cap", category="fastener")
+        with pytest.raises(BadInput):
+            h.put(
+                id="m6-a2-bolt",
+                spec="brand_new_quantity",
+                value=1.5,
+                allowed_values=["a", "b"],
+            )
+
+    def test_explicit_value_type_overrides_inference_for_boolean_and_text(
+        self, store: Any
+    ) -> None:
+        h = _handler(store)
+        h.put(id="m6-a2-bolt", title="M6x20 A2 socket cap", category="fastener")
+        # value=1 would infer 'quantity'; value_type='text' overrides that.
+        h.put(id="m6-a2-bolt", spec="batch_code", value=1, value_type="text")
+        spec = store.component_spec_get("batch_code")
+        assert spec is not None
+        assert spec["value_type"] == "text"
+
+        h.put(
+            id="m6-a2-bolt",
+            spec="qc_pass",
+            value="1",
+            value_type="boolean",
+        )
+        spec2 = store.component_spec_get("qc_pass")
+        assert spec2 is not None
+        assert spec2["value_type"] == "boolean"
+
+    def test_conflicting_value_type_against_existing_spec_is_rejected(
+        self, store: Any
+    ) -> None:
+        h = _handler(store)
+        h.put(id="m6-a2-bolt", title="M6x20 A2 socket cap", category="fastener")
+        h.put(id="m6-a2-bolt", spec="mass", value=0.01, unit="kg")
+        with pytest.raises(BadInput) as excinfo:
+            h.put(
+                id="m6-a2-bolt",
+                spec="mass",
+                value="1",
+                value_type="boolean",
+            )
+        assert "quantity" in str(excinfo.value)
+
+    def test_bad_value_type_name_is_rejected(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="m6-a2-bolt", title="M6x20 A2 socket cap", category="fastener")
+        with pytest.raises(BadInput):
+            h.put(
+                id="m6-a2-bolt",
+                spec="brand_new",
+                value=1,
+                value_type="not_a_real_type",
+            )
+
+
+# ── v1 trim (b): value_low= / value_high= uncertainty band ───────────
+
+
+class TestBandedValues:
+    def test_band_alongside_value(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="m6-a2-bolt", title="M6x20 A2 socket cap", category="fastener")
+        h.put(
+            id="m6-a2-bolt",
+            spec="mass",
+            value=0.01,
+            unit="kg",
+            value_low=0.009,
+            value_high=0.011,
+        )
+        ref = store.get_ref(kind="component", id="m6-a2-bolt")
+        values = store.component_values_for_ref(ref.id)
+        assert values[0]["value_num"] == 0.01
+        assert values[0]["value_low"] == 0.009
+        assert values[0]["value_high"] == 0.011
+
+    def test_band_without_value_defaults_to_mean(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="m6-a2-bolt", title="M6x20 A2 socket cap", category="fastener")
+        h.put(
+            id="m6-a2-bolt",
+            spec="mass",
+            unit="kg",
+            value_low=0.01,
+            value_high=0.03,
+        )
+        ref = store.get_ref(kind="component", id="m6-a2-bolt")
+        values = store.component_values_for_ref(ref.id)
+        assert values[0]["value_num"] == 0.02
+        assert values[0]["value_low"] == 0.01
+        assert values[0]["value_high"] == 0.03
+
+    def test_low_greater_than_high_is_rejected(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="m6-a2-bolt", title="M6x20 A2 socket cap", category="fastener")
+        with pytest.raises(BadInput):
+            h.put(
+                id="m6-a2-bolt",
+                spec="mass",
+                unit="kg",
+                value_low=0.03,
+                value_high=0.01,
+            )
+
+    def test_one_sided_band_without_value_is_rejected(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="m6-a2-bolt", title="M6x20 A2 socket cap", category="fastener")
+        with pytest.raises(BadInput):
+            h.put(
+                id="m6-a2-bolt",
+                spec="mass",
+                unit="kg",
+                value_low=0.01,
+            )
+
+    def test_band_on_non_numeric_spec_is_rejected(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="m6-a2-bolt", title="M6x20 A2 socket cap", category="fastener")
+        with pytest.raises(BadInput):
+            h.put(
+                id="m6-a2-bolt",
+                spec="grade",
+                value="A2",
+                value_low=1,
+                value_high=2,
+            )
+
+
+# ── band-aware range search ────────────────────────────────────────────
+
+
+class TestBandSearch:
+    def test_banded_value_matches_min_inside_its_band(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="hose-a", title="Hose A", category="hose")
+        h.put(
+            id="hose-a",
+            spec="max_working_pressure",
+            value=25,
+            unit="MPa",
+            value_low=20,
+            value_high=30,
+        )
+        resp = h.search(spec="max_working_pressure", min=28)
+        assert "Hose A" in resp.body
+
+    def test_banded_value_matches_max_inside_its_band(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="hose-a", title="Hose A", category="hose")
+        h.put(
+            id="hose-a",
+            spec="max_working_pressure",
+            value=25,
+            unit="MPa",
+            value_low=20,
+            value_high=30,
+        )
+        resp = h.search(spec="max_working_pressure", max=22)
+        assert "Hose A" in resp.body
+
+    def test_point_value_still_matches_exactly(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="hose-b", title="Hose B", category="hose")
+        h.put(id="hose-b", spec="max_working_pressure", value=5, unit="MPa")
+        resp = h.search(spec="max_working_pressure", min=20)
+        assert "no component values match" in resp.body
+
+
 # ── unit_cost + as_of (AC #5) ──────────────────────────────────────────
 
 
@@ -425,7 +661,17 @@ class TestCoreParams:
         from precis.tools.core import put
 
         sig = inspect.signature(put)
-        for name in ("spec", "category", "made_of", "uom", "as_of"):
+        for name in (
+            "spec",
+            "category",
+            "made_of",
+            "uom",
+            "as_of",
+            "value_type",
+            "allowed_values",
+            "value_low",
+            "value_high",
+        ):
             assert name in sig.parameters, name
 
     def test_search_accepts_component_params_without_typeerror(self) -> None:

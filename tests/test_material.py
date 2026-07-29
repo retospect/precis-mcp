@@ -194,6 +194,243 @@ class TestCategorical:
         assert values[0]["value_bool"] is True
 
 
+# ── v1 trim (a): explicit value_type= / allowed_values= mint ────────
+
+
+class TestExplicitTypeMint:
+    def test_runtime_categorical_mint(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="6061-t6", title="Aluminum 6061-T6")
+        h.put(
+            id="6061-t6",
+            property="finish_color_a",
+            value="red",
+            value_type="categorical",
+            allowed_values=["red", "green", "blue"],
+        )
+        prop = store.material_property_get("finish_color_a")
+        assert prop is not None
+        assert prop["value_type"] == "categorical"
+        assert prop["allowed_values"] == ["red", "green", "blue"]
+        assert prop["canonical_unit"] is None
+        ref = store.get_ref(kind="material", id="6061-t6")
+        values = store.material_values_for_ref(ref.id)
+        assert values[0]["value_text"] == "red"
+
+    def test_categorical_value_outside_allowed_values_is_rejected_on_mint(
+        self, store: Any
+    ) -> None:
+        h = _handler(store)
+        h.put(id="6061-t6", title="Aluminum 6061-T6")
+        h.put(
+            id="6061-t6",
+            property="finish_color_b",
+            value="red",
+            value_type="categorical",
+            allowed_values=["red", "green", "blue"],
+        )
+        with pytest.raises(BadInput):
+            h.put(id="6061-t6", property="finish_color_b", value="purple")
+
+    def test_categorical_mint_with_unit_is_rejected(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="6061-t6", title="Aluminum 6061-T6")
+        with pytest.raises(BadInput):
+            h.put(
+                id="6061-t6",
+                property="finish_color_c",
+                value="red",
+                unit="mm",
+                value_type="categorical",
+                allowed_values=["red", "green"],
+            )
+
+    def test_categorical_mint_without_allowed_values_is_rejected(
+        self, store: Any
+    ) -> None:
+        h = _handler(store)
+        h.put(id="6061-t6", title="Aluminum 6061-T6")
+        with pytest.raises(BadInput):
+            h.put(
+                id="6061-t6",
+                property="finish_color_d",
+                value="red",
+                value_type="categorical",
+            )
+
+    def test_allowed_values_without_categorical_is_rejected(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="6061-t6", title="Aluminum 6061-T6")
+        with pytest.raises(BadInput):
+            h.put(
+                id="6061-t6",
+                property="brand_new_quantity",
+                value=1.5,
+                allowed_values=["a", "b"],
+            )
+
+    def test_explicit_value_type_overrides_inference_for_boolean_and_text(
+        self, store: Any
+    ) -> None:
+        h = _handler(store)
+        h.put(id="6061-t6", title="Aluminum 6061-T6")
+        # value=1 would infer 'quantity'; value_type='text' overrides that.
+        h.put(id="6061-t6", property="batch_code", value=1, value_type="text")
+        prop = store.material_property_get("batch_code")
+        assert prop is not None
+        assert prop["value_type"] == "text"
+
+        h.put(id="6061-t6", title="Aluminum 6061-T6")
+        h.put(
+            id="6061-t6",
+            property="qc_pass",
+            value="1",
+            value_type="boolean",
+        )
+        prop2 = store.material_property_get("qc_pass")
+        assert prop2 is not None
+        assert prop2["value_type"] == "boolean"
+
+    def test_conflicting_value_type_against_existing_property_is_rejected(
+        self, store: Any
+    ) -> None:
+        h = _handler(store)
+        h.put(id="6061-t6", title="Aluminum 6061-T6")
+        h.put(id="6061-t6", property="density", value=2700, unit="kg/m3")
+        with pytest.raises(BadInput) as excinfo:
+            h.put(
+                id="6061-t6",
+                property="density",
+                value="1",
+                value_type="boolean",
+            )
+        assert "quantity" in str(excinfo.value)
+
+    def test_bad_value_type_name_is_rejected(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="6061-t6", title="Aluminum 6061-T6")
+        with pytest.raises(BadInput):
+            h.put(
+                id="6061-t6",
+                property="brand_new",
+                value=1,
+                value_type="not_a_real_type",
+            )
+
+
+# ── v1 trim (b): value_low= / value_high= uncertainty band ───────────
+
+
+class TestBandedValues:
+    def test_band_alongside_value(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="6061-t6", title="Aluminum 6061-T6")
+        h.put(
+            id="6061-t6",
+            property="tensile_strength_yield",
+            value=276,
+            unit="MPa",
+            value_low=270,
+            value_high=290,
+        )
+        ref = store.get_ref(kind="material", id="6061-t6")
+        values = store.material_values_for_ref(ref.id)
+        assert values[0]["value_num"] == 276
+        assert values[0]["value_low"] == 270
+        assert values[0]["value_high"] == 290
+
+    def test_band_without_value_defaults_to_mean(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="6061-t6", title="Aluminum 6061-T6")
+        h.put(
+            id="6061-t6",
+            property="tensile_strength_yield",
+            unit="MPa",
+            value_low=270,
+            value_high=290,
+        )
+        ref = store.get_ref(kind="material", id="6061-t6")
+        values = store.material_values_for_ref(ref.id)
+        assert values[0]["value_num"] == 280
+        assert values[0]["value_low"] == 270
+        assert values[0]["value_high"] == 290
+
+    def test_low_greater_than_high_is_rejected(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="6061-t6", title="Aluminum 6061-T6")
+        with pytest.raises(BadInput):
+            h.put(
+                id="6061-t6",
+                property="tensile_strength_yield",
+                unit="MPa",
+                value_low=300,
+                value_high=290,
+            )
+
+    def test_one_sided_band_without_value_is_rejected(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="6061-t6", title="Aluminum 6061-T6")
+        with pytest.raises(BadInput):
+            h.put(
+                id="6061-t6",
+                property="tensile_strength_yield",
+                unit="MPa",
+                value_low=270,
+            )
+
+    def test_band_on_non_numeric_property_is_rejected(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="cu-single-crystal", title="Copper single crystal")
+        with pytest.raises(BadInput):
+            h.put(
+                id="cu-single-crystal",
+                property="crystal_structure",
+                value="FCC",
+                value_low=1,
+                value_high=2,
+            )
+
+
+# ── band-aware range search ────────────────────────────────────────────
+
+
+class TestBandSearch:
+    def test_banded_value_matches_min_inside_its_band(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="6061-t6", title="Aluminum 6061-T6")
+        h.put(
+            id="6061-t6",
+            property="tensile_strength_yield",
+            value=276,
+            unit="MPa",
+            value_low=270,
+            value_high=290,
+        )
+        resp = h.search(property="tensile_strength_yield", min=285)
+        assert "6061-t6" in resp.body or "Aluminum" in resp.body
+
+    def test_banded_value_matches_max_inside_its_band(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="6061-t6", title="Aluminum 6061-T6")
+        h.put(
+            id="6061-t6",
+            property="tensile_strength_yield",
+            value=276,
+            unit="MPa",
+            value_low=270,
+            value_high=290,
+        )
+        resp = h.search(property="tensile_strength_yield", max=275)
+        assert "6061-t6" in resp.body or "Aluminum" in resp.body
+
+    def test_point_value_still_matches_exactly(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="copper", title="Copper")
+        h.put(id="copper", property="tensile_strength_yield", value=100, unit="MPa")
+        resp = h.search(property="tensile_strength_yield", min=200)
+        assert "no material values match" in resp.body
+
+
 # ── get grouping + view='properties' (AC #7) ─────────────────────────
 
 
@@ -408,6 +645,10 @@ class TestCoreParams:
             "maturity",
             "source",
             "chunk",
+            "value_type",
+            "allowed_values",
+            "value_low",
+            "value_high",
         ):
             assert name in sig.parameters, name
 

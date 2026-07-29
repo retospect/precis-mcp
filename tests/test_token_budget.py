@@ -122,11 +122,17 @@ def test_tools_list_under_byte_budget() -> None:
     on ``put`` and ``property=``/``min=``/``max=``/``maturity=`` on
     ``search``, each with a short param-level comment. Schema-side growth
     only — same shape as the prior bumps.
+
+    2026-07-29 (2): cap raised from 19 KB → 20 KB to absorb the
+    ``material``/``component`` v1-trims kwargs on ``put``: ``value_type=``,
+    ``allowed_values=``, ``value_low=``, ``value_high=``, each with a short
+    param-level comment. Schema-side growth only — same shape as the prior
+    bumps.
     """
     serialised = json.dumps(_tools_list_wire_shape(), separators=(",", ":"))
     size = len(serialised.encode("utf-8"))
-    assert size < 19 * 1024, (
-        f"tools/list wire-shape JSON is {size} bytes (cap: 19 KB). "
+    assert size < 20 * 1024, (
+        f"tools/list wire-shape JSON is {size} bytes (cap: 20 KB). "
         "Investigate which verb description or schema grew. The "
         "per-verb description cap (1 KB) is the easier diff to "
         "spot; bump that test's verbosity if needed."

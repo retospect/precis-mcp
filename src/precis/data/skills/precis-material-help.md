@@ -110,10 +110,56 @@ put(kind="material", id="pfoo-1", property="glass_transition_temp", value=358, u
 ```
 
 Minting a **categorical** property (a closed `allowed_values` set, like the
-seeded `crystal_structure` FCC/BCC/HCP example) is not exposed at write
-time in v1 — categorical properties are curated additions to the registry.
-Writing a categorical *value* still works once the property exists: a
-value outside `allowed_values` is rejected, naming the allowed set.
+seeded `crystal_structure` FCC/BCC/HCP example) needs an explicit
+`value_type='categorical'` plus `allowed_values=` — inference alone can't
+produce one:
+
+```python
+put(
+    kind="material",
+    id="cu-single-crystal",
+    property="finish_color",
+    value="red",
+    value_type="categorical",
+    allowed_values=["red", "green", "blue"],
+)
+```
+
+`value_type=` also overrides inference for `quantity`/`ratio`/`boolean`/
+`text` (e.g. force `text` on a numeric-looking code you don't want treated
+as a `quantity`). `allowed_values=` is only accepted alongside
+`value_type='categorical'`. Passing either against an *already-registered*
+property is checked for consistency, not re-minted — a conflicting
+`value_type=`/`allowed_values=` is rejected, naming the registered
+definition. Writing a categorical *value* validates against
+`allowed_values` regardless of how the property was minted: a value
+outside the set is rejected, naming the allowed set.
+
+## Recording an uncertainty band
+
+`value_low=`/`value_high=` on a numeric (`quantity`/`ratio`) value record a
+range alongside (or instead of) the point value:
+
+```python
+put(
+    kind="material",
+    id="6061-t6",
+    property="tensile_strength_yield",
+    value=276,
+    unit="MPa",
+    value_low=270,
+    value_high=290,
+)
+# get/search render this as "276 (270–290)"
+```
+
+Omit `value=` and give both bounds to default the recorded value to their
+mean — `value_low=270, value_high=290` with no `value=` records `280`.
+Giving only one bound with no `value=` is rejected ("give value=, or both
+value_low= and value_high="); `value_low=` above `value_high=` is
+rejected. A band is numeric-only — `value_low=`/`value_high=` on a
+`boolean`/`categorical`/`text` property is rejected, naming the value
+type.
 
 ## Sourcing a value
 
@@ -162,10 +208,15 @@ search(kind="material", property="density", min=2500, max=2800, maturity="commer
 search(kind="material", q="aluminum")  # name/alias/class lexical match
 ```
 
-`min=`/`max=` bound `value_num` inclusively, **in the property's canonical
-unit** (no conversion — check `view='properties'` if you're not sure which
-unit that is). Omit either bound to leave that side open. A plain `q=`
-search matches the material entity's name, aliases, and `material_class`.
+`min=`/`max=` bound inclusively, **in the property's canonical unit** (no
+conversion — check `view='properties'` if you're not sure which unit that
+is). This is an **interval-overlap** match, not point-in-range: a value
+with a `value_low=`/`value_high=` band matches whenever the band overlaps
+`[min, max]`, not only when its point falls inside — a value banded
+`[270, 290]` matches both `min=285` and `max=275`. A point value (no band)
+matches exactly as you'd expect. Omit either bound to leave that side
+open. A plain `q=` search matches the material entity's name, aliases, and
+`material_class`.
 
 ## What's deliberately not here (v1)
 

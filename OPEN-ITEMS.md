@@ -8,15 +8,17 @@ items are removed (history is `git log`).
 > regression that pins it.
 
 ---
-## material: `pint` unit-conversion layer (`units=` read + convert-on-write)
-- Status: open · Severity: feature · Owner: new `src/precis/utils/units.py` (pint
-  helper) + `material` handler + `tools/core.py` (`units=` param) · Test: n/a yet.
-- v1 (ADR 0070) is canonical-units-only. Add the deferred layer: a `pint`-backed
-  `utils/units.py` as the single conversion authority; `put` accepts any unit
-  convertible to the property's canonical unit (normalize on write); `get`/`search`
-  take `units=` to serve each simulator its own units. Store canonical (temperatures
-  in Kelvin), convert on the read boundary. Do NOT fold into `calc` (SymPy) — one
-  conversion authority, not two engines. Own proposal; `blocked-by` nothing (material shipped).
+## material/component: unit conversion — DELEGATE to `calc`, do not build a second engine (DRY)
+- Status: deferred (low priority) · Severity: feature · Owner: `material`/`component` handlers
+  + `tools/core.py` (if a `units=` convenience is ever added) · Test: n/a yet.
+- **Decision (2026-07-29, Reto):** `calc` already does pint-backed unit conversion, so the
+  stores do NOT get their own conversion engine — that would duplicate the authority (DRY).
+  `material`/`component` stay **canonical-units-only** on write (a non-canonical `unit=` is
+  rejected, naming the canonical one); callers convert via `calc` before writing, and read
+  back canonical. This RETIRES the original "build a `utils/units.py` + convert-on-write"
+  plan. If a read-side `units=` convenience is ever wanted (serve a simulator its own
+  units), it must **delegate to `calc`'s pint**, not stand up a new engine. Until a concrete
+  consumer needs that convenience, nothing to build here.
 
 ---
 ## material: off-sample estimate / fitting layer (interpolation + published-model eval)
@@ -32,10 +34,15 @@ items are removed (history is `git log`).
 ---
 ## `component` kind follow-ons (shipped v1 = ADR 0071, migration 0093)
 - Status: open · Severity: feature · Owner: `component` handler/store · Test: extend `tests/test_component.py`. All `blocked-by` the shipped `component` kind.
-- **BOM / assemblies** — a `contains → component` relation pair (structural composition,
-  orthogonal to `made-of → material`) with a quantity edge, plus a recursive cost/mass
-  **rollup** over the assembly tree. Assembly-ness stays a graph property (a node with
-  `contains` children), not a spec/category — see ADR 0071.
+- **Queryable assembly tree** (preferred framing over a flat BOM; Reto 2026-07-29) — a
+  `contains → component` relation pair (structural composition, orthogonal to `made-of →
+  material`) with a quantity edge. The **tree is the source of truth; a flat BOM is a
+  *view* of it** (flatten to line-items + summed quantities on demand). Beyond cost/mass
+  **rollup**, the headline capability is **property-propagation queries over the tree** —
+  "does every component in this assembly (recursively) satisfy predicate P on spec S?"
+  (e.g. "are the washer AND the screw both galvanized?"), which a flat rollup can't
+  answer. Assembly-ness stays a graph property (a node with `contains` children), not a
+  spec/category — see ADR 0071.
 - **PCB granularity boundary (DECIDED — do not re-litigate).** A populated board is
   **one line item**: a single PCBA `component` on the parent BOM, NOT the ~N passives
   dissolved into general components. The specialized `pcb`/`part` subsystem (JLCPCB
@@ -58,18 +65,10 @@ items are removed (history is `git log`).
   — NOT for mirroring PCB internals. Optional variant for board traceability without
   losing granularity: a PCBA `component` may `realized_by → pcb` (the *design*), not a SKU.
 - **Category taxonomy tree** — parent/child categories with inherited spec sets (v1 flat).
-- **v1 trims** (shared with `material`): runtime spec-mint is numeric/boolean/text-only
-  (categoricals seed via migration); `value_low`/`value_high` columns exist without a
-  write path. Unit conversion + off-sample estimate are the shared cross-kind follow-ons.
-
----
-## material v1 known trims (fast-follows, not defects)
-- Status: open · Severity: polish · Owner: `material` handler (+ `tools/core.py`) · Test: extend `tests/test_material.py`.
-- Two deliberate v1 trims from ADR 0070: (a) runtime `proposed`-property mint is
-  numeric-only (categoricals must be seeded via migration) — add explicit
-  `value_type=`/`dimension=`/`allowed_values=` params to mint categoricals at runtime;
-  (b) no write path for `value_low`/`value_high` (columns exist) — add a range/uncertainty
-  write path for speculative values.
+- **Off-sample estimate / fitting** (the remaining shared cross-kind follow-on) — see the
+  `material` off-sample entry above; the same `model` value-type + interpolation applies to
+  component specs. (The categorical/typed-mint and `value_low`/`value_high` band trims are
+  now shipped for both kinds; unit conversion is retired to `calc` — see the DRY entry.)
 
 ---
 ## autocatpath pathway plugin: CI test skips until the dev image is rebuilt

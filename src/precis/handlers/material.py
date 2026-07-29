@@ -47,6 +47,7 @@ from precis.utils import handle_registry
 _MATURITIES: tuple[str, ...] = ("commercial", "lab", "speculative")
 _SOURCE_KINDS: tuple[str, ...] = ("paper", "datasheet")
 _VIEWS: tuple[str, ...] = ("table", "properties")
+_VALUE_TYPES: tuple[str, ...] = ("quantity", "ratio", "categorical", "boolean", "text")
 
 
 class MaterialHandler(Handler):
@@ -97,6 +98,10 @@ class MaterialHandler(Handler):
         source: str | None = None,
         chunk: str | None = None,
         as_of: str | None = None,
+        value_type: str | None = None,
+        allowed_values: list[Any] | None = None,
+        value_low: float | None = None,
+        value_high: float | None = None,
         title: str | None = None,
         meta: dict[str, Any] | None = None,
         **_kw: Any,
@@ -122,6 +127,10 @@ class MaterialHandler(Handler):
                 source=source,
                 chunk=chunk,
                 as_of=as_of,
+                value_type=value_type,
+                allowed_values=allowed_values,
+                value_low=value_low,
+                value_high=value_high,
             )
         return self._put_entity(slug, title=title, meta=meta)
 
@@ -165,6 +174,10 @@ class MaterialHandler(Handler):
         source: str | None,
         chunk: str | None,
         as_of: str | None = None,
+        value_type: str | None = None,
+        allowed_values: list[Any] | None = None,
+        value_low: float | None = None,
+        value_high: float | None = None,
     ) -> Response:
         if not property:
             raise BadInput(
@@ -183,12 +196,26 @@ class MaterialHandler(Handler):
         if conditions is not None and not isinstance(conditions, dict):
             raise BadInput("put(kind='material') conditions= must be a dict")
 
+        self._validate_type_args(value_type, allowed_values)
+
         prop = self.store.material_property_get(property)
         if prop is None:
-            prop = self._mint_property(property, value=value, unit=unit)
+            prop = self._mint_property(
+                property,
+                value=value,
+                unit=unit,
+                value_type=value_type,
+                allowed_values=allowed_values,
+            )
+        else:
+            self._check_type_consistency(
+                prop, value_type=value_type, allowed_values=allowed_values
+            )
 
         self._check_unit(prop, unit)
-        value_kwargs = self._route_value(prop, value)
+        value_kwargs = self._route_value(
+            prop, value, value_low=value_low, value_high=value_high
+        )
 
         if maturity is not None and maturity not in _MATURITIES:
             raise BadInput(
@@ -210,6 +237,15 @@ class MaterialHandler(Handler):
             as_of=as_of,
             **value_kwargs,
         )
+        display_value = _display_value(
+            {
+                "value_num": value_kwargs.get("value_num"),
+                "value_low": value_kwargs.get("value_low"),
+                "value_high": value_kwargs.get("value_high"),
+                "value_bool": value_kwargs.get("value_bool"),
+                "value_text": value_kwargs.get("value_text"),
+            }
+        )
         unit_note = f" {unit}" if unit else ""
         source_note = ""
         if source_ref_id is not None:
@@ -218,27 +254,82 @@ class MaterialHandler(Handler):
             source_note = f" (source_url={source_url!r})"
         return Response(
             body=(
-                f"recorded {slug}.{prop['prop_id']} = {value}{unit_note} "
+                f"recorded {slug}.{prop['prop_id']} = {display_value}{unit_note} "
                 f"(id={value_id}, maturity={maturity or 'lab'})"
                 f"{source_note}"
             )
         )
 
+    @staticmethod
+    def _validate_type_args(
+        value_type: str | None, allowed_values: list[Any] | None
+    ) -> None:
+        """Validate ``value_type=``/``allowed_values=`` shape, independent
+        of whether this write mints a fresh property or targets an existing
+        one (``_check_type_consistency`` covers the latter)."""
+        if value_type is not None and value_type not in _VALUE_TYPES:
+            raise BadInput(
+                f"value_type={value_type!r} must be one of {list(_VALUE_TYPES)}",
+            )
+        if allowed_values is not None and value_type != "categorical":
+            raise BadInput(
+                "allowed_values= is only valid with value_type='categorical'",
+                next=(
+                    "put(kind='material', id=<slug>, property=<prop_id>, "
+                    "value=..., value_type='categorical', "
+                    "allowed_values=['a', 'b'])"
+                ),
+            )
+
+    @staticmethod
+    def _check_type_consistency(
+        prop: dict[str, Any],
+        *,
+        value_type: str | None,
+        allowed_values: list[Any] | None,
+    ) -> None:
+        """An explicit ``value_type=``/``allowed_values=`` against an
+        *already-registered* property must be consistent with it — this
+        never re-mints, it only guards against a silently-conflicting
+        declaration."""
+        if value_type is not None and value_type != prop["value_type"]:
+            raise BadInput(
+                f"{prop['prop_id']} is already registered as "
+                f"value_type={prop['value_type']!r} - value_type={value_type!r} "
+                "conflicts with the registered definition",
+            )
+        if allowed_values is not None:
+            registered = prop.get("allowed_values") or []
+            if set(allowed_values) != set(registered):
+                raise BadInput(
+                    f"{prop['prop_id']} is already registered with "
+                    f"allowed_values={registered!r} - allowed_values="
+                    f"{allowed_values!r} conflicts with the registered definition",
+                )
+
     def _mint_property(
-        self, prop_id: str, *, value: Any, unit: str | None
+        self,
+        prop_id: str,
+        *,
+        value: Any,
+        unit: str | None,
+        value_type: str | None = None,
+        allowed_values: list[Any] | None = None,
     ) -> dict[str, Any]:
         """Mint a fresh ``proposed`` property when ``property=`` is unknown.
 
-        v1's MCP surface has no dedicated ``dimension=``/``value_type=``/
-        ``allowed_values=`` params (see the proposal's blast radius), so a
-        runtime mint infers ``value_type`` from ``value=``'s shape
-        (bool -> boolean, numeric -> quantity, else -> text; categorical is
-        core-seed-only in v1, since minting one needs ``allowed_values=``)
-        and derives ``dimension`` from the declared ``unit=`` (or
+        With no explicit ``value_type=``, a runtime mint infers it from
+        ``value=``'s shape (bool -> boolean, numeric -> quantity, else ->
+        text) and derives ``dimension`` from the declared ``unit=`` (or
         'dimensionless' when none) — dimension is descriptive-only in v1
         (the unit-conversion follow-on is what actually reads it), so this
         default is safe. ``unit=None`` is a valid declaration (a
         dimensionless quantity/ratio, e.g. poissons_ratio-shaped).
+
+        An explicit ``value_type=`` overrides inference — it's the only way
+        to mint a ``categorical`` property (which requires a non-empty
+        ``allowed_values=``, and rejects ``unit=`` since categoricals are
+        dimensionless).
         """
         if value is None:
             raise NotFound(
@@ -252,28 +343,69 @@ class MaterialHandler(Handler):
                 ),
             )
         canonical_unit = None if unit is None else str(unit).strip() or None
+        name = prop_id.replace("_", " ").replace("-", " ").strip().title() or prop_id
+
+        if value_type is not None:
+            if value_type == "categorical":
+                if not allowed_values:
+                    raise BadInput(
+                        f"minting {prop_id!r} as categorical requires a "
+                        "non-empty allowed_values= list",
+                        next=(
+                            f"put(kind='material', id=<slug>, "
+                            f"property={prop_id!r}, value=..., "
+                            "value_type='categorical', "
+                            "allowed_values=['a', 'b'])"
+                        ),
+                    )
+                if canonical_unit is not None:
+                    raise BadInput(
+                        f"cannot mint {prop_id!r} as categorical with "
+                        f"unit={unit!r} - categorical properties are "
+                        "dimensionless, drop unit=",
+                    )
+                dimension = "categorical"
+                canonical_unit = None
+            elif value_type in ("boolean", "text"):
+                if canonical_unit is not None:
+                    raise BadInput(
+                        f"cannot mint {prop_id!r} as {value_type} with "
+                        f"unit={unit!r} - {value_type} properties are "
+                        "dimensionless, drop unit=",
+                    )
+                dimension = "dimensionless"
+            else:  # quantity / ratio
+                dimension = canonical_unit or "dimensionless"
+            return self.store.material_property_mint(
+                prop_id=prop_id,
+                name=name,
+                canonical_unit=canonical_unit,
+                dimension=dimension,
+                value_type=value_type,
+                allowed_values=allowed_values,
+            )
+
         if isinstance(value, bool):
             if canonical_unit is not None:
                 raise BadInput(
                     f"cannot mint {prop_id!r} as boolean with unit={unit!r} - "
                     "boolean properties are dimensionless, drop unit=",
                 )
-            value_type = "boolean"
+            inferred_type = "boolean"
             dimension = "dimensionless"
         else:
             try:
                 float(value)
-                value_type = "quantity"
+                inferred_type = "quantity"
             except (TypeError, ValueError):
-                value_type = "text"
+                inferred_type = "text"
             dimension = canonical_unit or "dimensionless"
-        name = prop_id.replace("_", " ").replace("-", " ").strip().title() or prop_id
         return self.store.material_property_mint(
             prop_id=prop_id,
             name=name,
             canonical_unit=canonical_unit,
             dimension=dimension,
-            value_type=value_type,
+            value_type=inferred_type,
         )
 
     @staticmethod
@@ -303,27 +435,66 @@ class MaterialHandler(Handler):
             )
 
     @staticmethod
-    def _route_value(prop: dict[str, Any], value: Any) -> dict[str, Any]:
+    def _route_value(
+        prop: dict[str, Any],
+        value: Any,
+        *,
+        value_low: float | None = None,
+        value_high: float | None = None,
+    ) -> dict[str, Any]:
         prop_id = prop["prop_id"]
         value_type = prop["value_type"]
+        has_band = value_low is not None or value_high is not None
+
+        if has_band and value_type not in ("quantity", "ratio"):
+            raise BadInput(
+                f"{prop_id} is a {value_type} property - value_low=/"
+                "value_high= apply only to numeric (quantity/ratio) properties",
+            )
+
+        if value_type in ("quantity", "ratio"):
+            if (
+                value_low is not None
+                and value_high is not None
+                and value_low > value_high
+            ):
+                raise BadInput(
+                    f"value_low={value_low!r} must be <= value_high={value_high!r}",
+                )
+            if value is not None:
+                if isinstance(value, bool):
+                    raise BadInput(
+                        f"{prop_id} is a {value_type} property - value= must be "
+                        f"numeric, got {value!r}"
+                    )
+                try:
+                    num = float(value)
+                except (TypeError, ValueError):
+                    raise BadInput(
+                        f"{prop_id} is a {value_type} property - value= must be "
+                        f"numeric, got {value!r}"
+                    ) from None
+            elif value_low is not None and value_high is not None:
+                num = (float(value_low) + float(value_high)) / 2
+            elif has_band:
+                raise BadInput(
+                    f"put(kind='material', property={prop_id!r}) needs "
+                    "value=, or both value_low= and value_high=",
+                )
+            else:
+                raise BadInput(
+                    f"put(kind='material', property={prop_id!r}) needs value=",
+                )
+            out: dict[str, Any] = {"value_num": num}
+            if value_low is not None:
+                out["value_low"] = float(value_low)
+            if value_high is not None:
+                out["value_high"] = float(value_high)
+            return out
         if value is None:
             raise BadInput(
                 f"put(kind='material', property={prop_id!r}) needs value=",
             )
-        if value_type in ("quantity", "ratio"):
-            if isinstance(value, bool):
-                raise BadInput(
-                    f"{prop_id} is a {value_type} property - value= must be "
-                    f"numeric, got {value!r}"
-                )
-            try:
-                num = float(value)
-            except (TypeError, ValueError):
-                raise BadInput(
-                    f"{prop_id} is a {value_type} property - value= must be "
-                    f"numeric, got {value!r}"
-                ) from None
-            return {"value_num": num}
         if value_type == "boolean":
             b = _coerce_bool(value)
             if b is None:
@@ -671,7 +842,12 @@ def _coerce_bool(value: Any) -> bool | None:
 
 def _display_value(v: dict[str, Any]) -> str:
     if v["value_num"] is not None:
-        return str(v["value_num"])
+        base = str(v["value_num"])
+        low = v.get("value_low")
+        high = v.get("value_high")
+        if low is not None and high is not None:
+            return f"{base} ({low}–{high})"
+        return base
     if v["value_bool"] is not None:
         return str(v["value_bool"])
     if v["value_text"] is not None:

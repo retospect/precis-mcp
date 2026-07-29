@@ -146,9 +146,52 @@ put(kind="component", id="some-hose", spec="burst_pressure", value=60, unit="MPa
 # mints burst_pressure as a new proposed quantity spec, scoped to category='hose'
 ```
 
-Minting a **categorical** spec (a closed `allowed_values` set) is not
-exposed at write time in v1 — categorical specs are curated additions to
-the registry, same as `material`.
+Minting a **categorical** spec (a closed `allowed_values` set) needs an
+explicit `value_type='categorical'` plus `allowed_values=` — inference
+alone can't produce one, same as `material`:
+
+```python
+put(
+    kind="component",
+    id="m6-a2-bolt",
+    spec="coating_color",
+    value="black",
+    value_type="categorical",
+    allowed_values=["black", "silver", "gold"],
+)
+```
+
+`value_type=` also overrides inference for `quantity`/`ratio`/`boolean`/
+`text`. `allowed_values=` is only accepted alongside
+`value_type='categorical'`. Passing either against an *already-registered*
+spec is checked for consistency, not re-minted — a conflicting
+`value_type=`/`allowed_values=` is rejected, naming the registered
+definition.
+
+## Recording an uncertainty band
+
+`value_low=`/`value_high=` on a numeric (`quantity`/`ratio`) value record a
+range alongside (or instead of) the point value — identical to
+`material`'s band:
+
+```python
+put(
+    kind="component",
+    id="hose-a",
+    spec="max_working_pressure",
+    value=25,
+    unit="MPa",
+    value_low=20,
+    value_high=30,
+)
+# get/search render this as "25 (20–30)"
+```
+
+Omit `value=` and give both bounds to default the recorded value to their
+mean. Giving only one bound with no `value=` is rejected ("give value=, or
+both value_low= and value_high="); `value_low=` above `value_high=` is
+rejected. A band is numeric-only — `value_low=`/`value_high=` on a
+`boolean`/`categorical`/`text` spec is rejected, naming the value type.
 
 ## The canonical-unit rule
 
@@ -207,11 +250,16 @@ search(kind="component", spec="unit_cost", max=0.5)
 search(kind="component", q="M6")  # name/mpn/manufacturer/category lexical match
 ```
 
-`min=`/`max=` bound `value_num` inclusively, **in the spec's canonical
-unit**. `category=` optionally narrows the search to components in that
-category (useful when a spec_id collision is theoretically possible across
-categories, or just to keep results on-topic). A plain `q=` search matches
-the component entity's name, aliases, mpn, manufacturer, and category.
+`min=`/`max=` bound inclusively, **in the spec's canonical unit**. This is
+an **interval-overlap** match, not point-in-range: a value with a
+`value_low=`/`value_high=` band matches whenever the band overlaps `[min,
+max]`, not only when its point falls inside — a value banded `[20, 30]`
+matches both `min=28` and `max=22`. A point value (no band) matches
+exactly as you'd expect. `category=` optionally narrows the search to
+components in that category (useful when a spec_id collision is
+theoretically possible across categories, or just to keep results
+on-topic). A plain `q=` search matches the component entity's name,
+aliases, mpn, manufacturer, and category.
 
 ## What's deliberately not here (v1)
 
@@ -231,6 +279,3 @@ the component entity's name, aliases, mpn, manufacturer, and category.
   sets. v1 categories are flat.
 - **Unit conversion** and **off-sample estimation** — same v1 trims as
   `material`; convert on your side before writing.
-- **Runtime categorical/uncertainty writes** — runtime spec-mint is
-  numeric/boolean/text-only (categoricals seed via migration), and
-  `value_low`/`value_high` columns exist but have no write path yet.

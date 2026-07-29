@@ -403,17 +403,22 @@ class ComponentMixin:
 
         Bounds are inclusive and in the spec's canonical unit (v1 does no
         conversion — the caller/handler is responsible for that contract).
-        ``category_id=`` optionally narrows to components in that category.
-        Returns rows ordered by ``value_num`` ascending, each carrying the
-        owning component's ``ref_id``/``title``.
+        The filter is an **interval overlap**, not a point-in-range test:
+        ``min_val``/``max_val`` are compared against
+        ``value_high``/``value_low`` (falling back to ``value_num`` when a
+        row has no band), so a banded value matches whenever its band
+        overlaps the query range — a point value (band NULL) keeps
+        matching exactly as before. ``category_id=`` optionally narrows to
+        components in that category. Returns rows ordered by ``value_num``
+        ascending, each carrying the owning component's ``ref_id``/``title``.
         """
         clauses = ["cv.spec_id = %s"]
         params: list[Any] = [spec_id]
         if min_val is not None:
-            clauses.append("cv.value_num >= %s")
+            clauses.append("COALESCE(cv.value_high, cv.value_num) >= %s")
             params.append(min_val)
         if max_val is not None:
-            clauses.append("cv.value_num <= %s")
+            clauses.append("COALESCE(cv.value_low, cv.value_num) <= %s")
             params.append(max_val)
         if maturity is not None:
             clauses.append("cv.maturity = %s")
