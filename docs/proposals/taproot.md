@@ -488,11 +488,14 @@ that already exist; **do not write a schema migration.** Verified:
 - **`FROLE:claim`/`review`** = rows in the existing **`ref_tags`** table;
   register the closed namespace in code (like `ROLE3`). No column.
 - **Evidence + claim edges** (`establishes`/`corroborates`/`contradicts`)
-  = rows in **`links`**. `links.relation` is `text NOT NULL` with **no
-  value CHECK** — the vocabulary is enforced in *code*
-  (`_VALID_RELATIONS = get_args(Relation)` + `store.valid_relations()`,
-  `handlers/_link_tag_ops.py`). So new relations = **edit the `Relation`
-  type + the governance ADR**, not SQL.
+  = rows in **`links`**. **Correction (Phase 2, ADR 0073):** `links.relation`
+  is not free text — it has an **FK to `relations(slug)`**
+  (`links_relation_fkey`, `0001_initial.sql`). So a *new* slug needs a
+  **forward migration** seeding the `relations` row (plus the `Relation`
+  Literal edit as the static typo hint + `store.valid_relations()` at runtime).
+  In practice Phase 2 added **only** `establishes` (migration `0094`);
+  `corroborates` (0085) and `contradicts` (0001) already existed and are
+  reused. The "no SQL" claim originally here was wrong.
 - **Edge metadata / integrity** = jsonb `meta` + the existing
   `refs.retraction_*` columns. Phase 1 (canonicalization) persists nothing.
 

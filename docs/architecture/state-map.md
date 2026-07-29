@@ -895,11 +895,23 @@ overlay on `finding`/`ref_tags`/`links` — no schema of its own).
   `claude` CLI is unauthed and silently degrades every judgment to
   `different`).
 - **Phase 2 (in progress)** — build ticket
-  `docs/proposals/taproot-phase2-hub-node.md` (5 slices 2a–2e). **2a
-  (FROLE classifier)** is built (above). Not yet built: the evidence-relation
-  vocab + hub write-path (2b), the evidence `view` (2c), citation-card dedup
-  (2d), `\cite`→originators export (2e); then forward `chase` wiring
-  (Phase 3), the integrity axis (Phase 4), corpus backfill (Phase 5).
+  `docs/proposals/taproot-phase2-hub-node.md` (5 slices 2a–2e).
+  - **2a (FROLE classifier)** — built (above).
+  - **2b (evidence vocab + hub write-path)** — built (ADR 0073). One new
+    link relation `establishes` (paper → `FROLE:claim` hub; originator),
+    migration `0094`, seeded **without an inverse** — the hub reads evidence
+    via `links_for(direction='in', relation=…)`. The other two roles reuse
+    existing slugs (`corroborates` 0085, `contradicts` 0001); endpoint kinds
+    disambiguate. Single write door `src/precis/taproot/hub.py`
+    (`mint_hub` → `FROLE:claim` `finding`; `attach_evidence` →
+    `paper --role--> hub`, role-and-target-guarded; `apply_placement` routes
+    `canon.place()`, `needs_review` → `kind='todo'`, never auto-attach).
+    Evidence role is *derived* later (seniority); attached `corroborates` by
+    default. Edge `meta` shape defined, **populated by `chase` in Phase 3**;
+    unit-tested only here (`tests/test_taproot_hub.py`).
+  - Not yet built: the evidence `view` (2c), citation-card dedup (2d),
+    `\cite`→originators export (2e); then forward `chase` wiring (Phase 3),
+    the integrity axis (Phase 4), corpus backfill (Phase 5).
 
 ## Other live affordances
 

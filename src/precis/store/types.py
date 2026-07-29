@@ -202,6 +202,14 @@ Relation = Literal[
     # 0095_component_contains.sql.
     "contains",
     "part-of",
+    # Taproot Phase 2 — evidence-edge role (migration 0094, ADR 0073). A
+    # `paper` ref `establishes` the `FROLE:claim` `finding` hub it originated.
+    # The other two evidence roles reuse existing slugs (`corroborates` from
+    # 0085, `contradicts` from 0001) — endpoint kinds disambiguate. No
+    # inverse: the hub reads via `links_for(direction='in', relation=…)`.
+    # Keep in sync with the `relations` seed in
+    # 0094_taproot_evidence_relations.sql.
+    "establishes",
 ]
 ActorSlug = Literal["agent", "user", "system"]
 
