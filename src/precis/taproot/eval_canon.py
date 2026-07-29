@@ -159,27 +159,48 @@ def eval_canonicalization(
     fixture_path: str | Path,
     *,
     dedup_judge_fn: DispatchJudgeFn = dedup_judge,
+    progress: bool = True,
 ) -> Report:
     """Run ``dedup_judge_fn`` over every pair in ``fixture_path`` and grade
-    against the collapsed label. Prints the report and returns it.
+    against the collapsed label. Prints the report to stdout and returns it.
 
     ``dedup_judge_fn`` defaults to the real :func:`~precis.taproot.canon.dedup_judge`
     (a live MEDIUM-tier dispatch per pair) — inject a stub for an offline
     unit test.
+
+    ``progress`` streams one flushed line per pair to **stderr** as it is
+    judged (an over-merge is flagged inline with ``⚠``), so a live 238-pair
+    run is observable instead of a silent ~40-minute black box — and a run
+    that dies partway still shows every pair it judged. stdout stays the
+    clean final report. Silenced (``progress=False``) by the offline unit
+    tests that inject a stub judge.
     """
+    rows = _load_pairs(fixture_path)
+    total = len(rows)
     results: list[PairResult] = []
-    for row in _load_pairs(fixture_path):
+    for i, row in enumerate(rows, start=1):
         expected = collapse_label(row["relation"])
         verdict = dedup_judge_fn(row["claim_a"], row["claim_b"])
+        predicted = verdict["verdict"]
         results.append(
             PairResult(
                 pair_id=int(row["pair_id"]),
                 expected=expected,
-                predicted=verdict["verdict"],
+                predicted=predicted,
                 confidence=verdict["confidence"],
                 rationale=verdict["rationale"],
             )
         )
+        if progress:
+            over = expected == "different" and predicted == "same"
+            print(
+                f"[{i}/{total}] pair {row['pair_id']} "
+                f"exp={expected} got={predicted} "
+                f"conf={verdict['confidence']:.2f}"
+                f"{'  ⚠ OVER-MERGE' if over else ''}",
+                file=sys.stderr,
+                flush=True,
+            )
     report = Report(results=results)
     print(report.format())
     return report

@@ -303,7 +303,7 @@ def test_eval_canonicalization_scores_a_perfect_judge(tmp_path: Any) -> None:
         idx = len(calls)
         return _verdict(answers[idx], 0.9)
 
-    report = eval_canonicalization(fixture, dedup_judge_fn=stub_judge)
+    report = eval_canonicalization(fixture, dedup_judge_fn=stub_judge, progress=False)
     assert isinstance(report, Report)
     assert report.total == 3
     assert report.over_merges == []
@@ -320,7 +320,7 @@ def test_eval_canonicalization_flags_an_over_merge(tmp_path: Any) -> None:
     def bad_judge(a: str, b: str) -> Verdict:
         return _verdict("same", 0.9)  # wrong — should be "different"
 
-    report = eval_canonicalization(fixture, dedup_judge_fn=bad_judge)
+    report = eval_canonicalization(fixture, dedup_judge_fn=bad_judge, progress=False)
     assert len(report.over_merges) == 1
     assert report.over_merges[0].pair_id == 1
     assert report.over_merge_rate == 1.0
@@ -335,7 +335,9 @@ def test_eval_canonicalization_flags_an_under_merge_as_tolerated(tmp_path: Any) 
     def cautious_judge(a: str, b: str) -> Verdict:
         return _verdict("different", 0.9)  # under-merge — safe direction
 
-    report = eval_canonicalization(fixture, dedup_judge_fn=cautious_judge)
+    report = eval_canonicalization(
+        fixture, dedup_judge_fn=cautious_judge, progress=False
+    )
     assert report.over_merges == []
     assert len(report.under_merges) == 1
 
@@ -346,7 +348,7 @@ def test_report_format_renders_confusion_and_rates(tmp_path: Any) -> None:
         '{"pair_id": 1, "claim_a": "A", "claim_b": "B", "relation": "orthogonal"}\n'
     )
     report = eval_canonicalization(
-        fixture, dedup_judge_fn=lambda a, b: _verdict("different", 0.9)
+        fixture, dedup_judge_fn=lambda a, b: _verdict("different", 0.9), progress=False
     )
     text = report.format()
     assert "over-merge" in text

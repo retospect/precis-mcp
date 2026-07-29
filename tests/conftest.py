@@ -159,16 +159,24 @@ def _leaked_backends(dbname: str, before: set[int]) -> set[int]:
 
     A real leak — a live thread/generator holding a pooled connection — persists
     indefinitely. But a connection the fixture's own pool just closed can linger
-    in ``pg_stat_activity`` for a few ms after ``s.close()`` (and the pool may
-    have grown past ``before`` during dependent-fixture setup), so a single
-    snapshot false-positives under load. Confirm only what survives a bounded
-    settle poll: return as soon as the candidate set clears, else report what
-    still persists after ~1 s. The common no-candidate path pays nothing.
+    in ``pg_stat_activity`` after ``s.close()`` (and the pool may have grown past
+    ``before`` during dependent-fixture setup), so a single snapshot
+    false-positives under load. Confirm only what survives a bounded settle poll:
+    return as soon as the candidate set clears, else report what still persists.
+
+    The budget is generous on purpose. Under the ``-n6`` gate on a small box
+    (6 workers + their pg backends on ~4 CPUs), a just-closed backend can stay
+    ``active`` / ``idle in transaction`` well past a 1 s budget before it exits —
+    a load-induced false positive that flagged a *different* random test each
+    run (green on retry, the leak-check analogue of the ``_pin_load_gate_open``
+    flake). A genuine leak persists forever, so widening the budget only
+    lengthens the rare candidate path and can never hide a real leak; the common
+    no-candidate path still pays nothing (returns immediately above).
     """
     leaked = _live_backends(dbname) - before
     if not leaked:
         return leaked
-    for _ in range(20):  # ~1s budget, exits early the moment it clears
+    for _ in range(120):  # ~6s budget, exits early the moment it clears
         time.sleep(0.05)
         leaked = _live_backends(dbname) - before
         if not leaked:

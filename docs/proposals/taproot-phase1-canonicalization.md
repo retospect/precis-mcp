@@ -1,5 +1,5 @@
 ---
-status: draft
+status: done
 title: Taproot Phase 1 — flat claim canonicalization (the gate)
 model: sonnet
 ---
@@ -140,3 +140,25 @@ All pre-build items are closed:
 
 No blocking design decisions remain. Buildable against the fixture at
 **over-merge = 0**.
+
+## Built & validated (2026-07-29)
+
+Built (`src/precis/taproot/{canon,eval_canon}.py`) and the live gate run
+against all 238 fixture pairs: **over-merge = 0 / 238 — bar met.**
+under-merge 51/238 (21.4%), tolerated (the safe direction). Contradictions
+22/23. The eval harness (`eval_canon.py`) streams one flushed line per pair
+to stderr so the ~40-min live run is observable; run it with
+`uv run python -m precis.taproot.eval_canon` (host-native, uses the
+authenticated `claude` transport — the dev container's CLI is unauthed and
+would silently degrade every judgment to `different`).
+
+One prompt tune was needed to reach the bar: the raw judge over-merged
+**pair 113** (a qualitative principle `Eg ∝ 1/d` vs its specific
+tight-binding formula — a genus-species pair the two fixture labelers
+themselves split on, `opus: broader` / `fable: equivalent`). `_DEDUP_PROMPT`
+now carves out quantitative elaboration: a specific formula, value, or named
+mechanism one claim asserts and the other does not is **narrower →
+different**, not "the same fact in more detail." Recovering the
+equivalent-recall this conservatism costs (correct merges 19→10 of 63) is a
+Phase-2+ quality lever, better tuned against production base rates than this
+deliberately-adversarial fixture — not a Phase-1 gate concern.

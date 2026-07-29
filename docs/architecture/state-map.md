@@ -874,6 +874,14 @@ overlay on `finding`/`ref_tags`/`links` — no schema of its own).
   (never runs in the offline gate — it makes ~238 real LLM calls).
   `tests/test_taproot_canon.py` is the offline unit suite (mocked
   dispatch): `place` branching, `NO-CLAIM` detection, label-collapse.
+  Gate validated 2026-07-29: **over-merge = 0 / 238** (under-merge 21.4%,
+  tolerated), reached via a `_DEDUP_PROMPT` carve-out treating a specific
+  quantitative formula/value/mechanism as *narrower* than the qualitative
+  principle it instantiates (the pair-113 genus-species over-merge).
+  `eval_canonicalization` streams a flushed per-pair line to stderr so the
+  ~40-min live run is observable; run host-native (the dev container's
+  `claude` CLI is unauthed and silently degrades every judgment to
+  `different`).
 - **Not yet built** (later phases, per taproot.md's build phasing): the
   `finding`-as-hub node + typed evidence relation (Phase 2), forward
   `chase` wiring (Phase 3), the integrity axis (Phase 4), corpus backfill

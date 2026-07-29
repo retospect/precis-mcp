@@ -291,13 +291,21 @@ Here are two scientific claims. Decide their relationship:
 
 SAME       — they state the exact same fact under the same conditions
              (material/method/quantity/regime), differing only in wording
-             or level of detail that doesn't change what's being asserted.
+             or in extra descriptive detail that restates the same finding.
+             This does NOT extend to a specific quantitative formula,
+             numeric value, or named mechanism that one claim asserts and
+             the other does not — that added specificity is a narrower
+             claim (see DIFFERENT).
 CONTRADICTS — they share the same scope (same material/method/regime) but
              assert opposite conclusions.
 DIFFERENT  — anything else: a genuinely distinct claim, a broader/narrower
              claim, a different scope, or claims about different things
              entirely (even if they sound superficially similar or share a
-             method/definition).
+             method/definition). In particular, a specific quantitative
+             formula, value, or mechanism is NARROWER than the general or
+             qualitative principle it instantiates: a general trend and the
+             specific formula that quantifies it are DIFFERENT, not the same
+             fact stated in more detail.
 
 Default to DIFFERENT unless you are confident the claims are the SAME fact
 under the SAME conditions. A merge of two claims that are not really the
