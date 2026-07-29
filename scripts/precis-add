@@ -22,7 +22,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-INFRA_COMPOSE="${PRECIS_COMPOSE:-${HOME}/work/infrastructure/compose.yaml}"
+INFRA_COMPOSE="${PRECIS_COMPOSE:-${PWD}/docker/dev/compose.yaml}"
 if [[ ! -f "${INFRA_COMPOSE}" ]]; then
     echo "ERR: compose file not found at ${INFRA_COMPOSE}" >&2
     echo "     set PRECIS_COMPOSE=/path/to/compose.yaml to override" >&2

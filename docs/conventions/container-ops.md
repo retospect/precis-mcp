@@ -11,8 +11,9 @@ container stack, never a bare local binary pointed at ad-hoc state:
   databases only (dev pgvector container at `127.0.0.1:5432`,
   `POSTGRES_USER=postgres`). It does not reach prod — see
   `scripts/prod-psql` for that.
-- Compose file: `~/work/infrastructure/compose.yaml` (the shared stack
-  definition; not part of this repo).
+- Compose file: `docker/dev/compose.yaml` (checked into this repo; the
+  dev-loop scripts default to it, resolved relative to their own location —
+  override with `$PRECIS_COMPOSE` to point at a different/shared stack).
 
 The reason this is a hard rule rather than a preference: a bare local
 `pytest`/`psql`/`python` invocation on the host either targets the wrong
@@ -30,7 +31,7 @@ the "`cd` in a compound command can trigger a permission prompt" footgun
 for no benefit.
 
 Run commands bare; reach another directory with an **absolute path**
-instead of `cd` (`--git-dir=…`, `ls /Users/reto/work/infrastructure`,
+instead of `cd` (`--git-dir=…`, `ls /Users/reto/precis-mcp`,
 `scripts/prod-psql` with an explicit host var). A log audit found ~60% of
 Bash calls carried a redundant `cd` prefix — the single largest source of
 wasted tokens across the fleet, which is why this is called out explicitly

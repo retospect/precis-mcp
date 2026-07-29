@@ -12,15 +12,15 @@
 #   scripts/build-image                # builds the `precis` service
 #   scripts/build-image precis-dev     # builds the dev image
 #
-# The compose file lives outside this repo at
-# ~/work/infrastructure/compose.yaml (override with $PRECIS_COMPOSE).
+# The compose file lives in this repo at
+# docker/dev/compose.yaml (override with $PRECIS_COMPOSE).
 # This wrapper collects the values on the host and threads them in via
 # --build-arg so you don't have to edit the compose file by hand.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-INFRA_COMPOSE="${PRECIS_COMPOSE:-${HOME}/work/infrastructure/compose.yaml}"
+INFRA_COMPOSE="${PRECIS_COMPOSE:-${PWD}/docker/dev/compose.yaml}"
 if [[ ! -f "${INFRA_COMPOSE}" ]]; then
     echo "ERR: compose file not found at ${INFRA_COMPOSE}" >&2
     echo "     set PRECIS_COMPOSE=/path/to/compose.yaml to override" >&2

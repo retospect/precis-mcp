@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/precis-shell — standalone dev container, no compose required.
 #
-# Parallel to scripts/dev (which uses ~/work/infrastructure/compose.yaml).
+# Parallel to scripts/dev (which uses docker/dev/compose.yaml).
 # Use this when you don't have the infra repo checked out, or want a
 # self-contained one-liner. Bind-mounts mirror the compose service so
 # both wrappers behave the same way inside the container.

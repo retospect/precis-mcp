@@ -44,7 +44,7 @@ WORKTREE="$PWD"
 IMPACTED=0
 if [[ "${1:-}" == "--impacted" || "${1:-}" == "-i" ]]; then IMPACTED=1; shift; fi
 
-INFRA_COMPOSE="${PRECIS_COMPOSE:-${HOME}/work/infrastructure/compose.yaml}"
+INFRA_COMPOSE="${PRECIS_COMPOSE:-${PWD}/docker/dev/compose.yaml}"
 [[ -f "$INFRA_COMPOSE" ]] || {
     echo "ERR: compose file not found at ${INFRA_COMPOSE} (set PRECIS_COMPOSE)" >&2
     exit 1

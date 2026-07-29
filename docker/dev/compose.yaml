@@ -1,0 +1,52 @@
+# precis-mcp dev/test stack — the local dev-loop compose file.
+#
+# Checked into the repo so a fresh clone needs no external `~/work`
+# layout. The dev-loop scripts default to this file (resolved relative to
+# their own location); override with $PRECIS_COMPOSE if you run a
+# different / shared stack. It defines just the two services the loop
+# needs:
+#
+#   scripts/test   → `compose --profile dev up -d --wait precis-test-db`
+#                    then `compose run --rm --no-deps -v <wt>:/app precis-dev …`
+#   scripts/ship   → same test-db, then the gate. It first tries a warm
+#                    `precis-gate` service (undefined here → it prints a
+#                    WARNING and falls back to the per-run `precis-dev`
+#                    bind-mount, which is fine).
+#   scripts/build-image precis-dev → `docker compose build precis-dev`
+#
+# Prod is remote (caspar, over SSH); nothing here touches it.
+services:
+  # RAM-backed pgvector test DB, reached by service name over the compose
+  # network as postgresql://postgres@precis-test-db:5432/precis_test.
+  # tmpfs data dir = memory-speed per-worker CREATE DATABASE clones.
+  precis-test-db:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: precis_test
+      POSTGRES_HOST_AUTH_METHOD: trust
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d precis_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 40
+    # No published host port — the gate reaches it over the compose network.
+
+  # The dev image (torch + all extras + Marker/bge-m3 model cache baked).
+  # Built from the repo Dockerfile's `dev` stage. scripts bind-mount the
+  # current worktree at /app at run time, overriding the baked source.
+  # USER precis is uid 501 / gid 20 (Dockerfile ARG defaults) = the host
+  # macOS user, so bind-mount writes (ruff --fix, .testmondata) map cleanly.
+  #
+  # Build context is `../..` — the repo root relative to this file — so the
+  # image builds from whichever worktree/checkout holds this compose file,
+  # with no absolute host path baked in.
+  precis-dev:
+    image: precis-dev
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile
+      target: dev
+    working_dir: /app
