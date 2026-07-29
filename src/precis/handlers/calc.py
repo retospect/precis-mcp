@@ -102,6 +102,13 @@ class CalcHandler(Handler):
             # mix kwargs across tool-kinds and trip over the q= vs
             # id= split elsewhere. (MCP critic MINOR — calc recovery
             # hint uses id= while canonical example uses q=.)
+            if _is_unit_ish(expr_str):
+                raise BadInput(
+                    f"could not parse expression: {expr_str!r}. That looks "
+                    "like a unit conversion — calc converts units when you "
+                    "give it a 'to' clause.",
+                    next="get(kind='calc', q='3 ft to m')",
+                ) from e
             raise BadInput(
                 f"could not parse expression: {expr_str!r}",
                 next="get(kind='calc', q='2+3*4')",
@@ -211,6 +218,15 @@ class CalcHandler(Handler):
             # ``solve(Eq(...))`` because it's the concrete shape the
             # cause text recommends (giving sympy "more structure").
             # (c4 cleanup.)
+            if _is_unit_ish(expr_str):
+                # A bare unit word (``hogshead``) or ``5 miles`` sympifies
+                # to a lone/undecorated symbol — point at conversion, not
+                # solve(Eq(...)).
+                raise BadInput(
+                    f"{expr_str!r} names a unit but isn't a conversion. "
+                    "calc converts units when you give it a 'to' clause.",
+                    next="get(kind='calc', q='3 ft to m')",
+                )
             raise BadInput(
                 f"expression simplifies to itself: {expr_str!r}. "
                 "calc evaluates expressions with operators; for bare "
@@ -219,8 +235,19 @@ class CalcHandler(Handler):
                 next="get(kind='calc', q='solve(Eq(x+1, 3), x)')",
             )
 
+        # A result that still carries free symbols named after units
+        # (``3 feet`` → ``3*feet``) is a silent-garbage echo: the agent
+        # meant a quantity, not a symbolic product. Append the conversion
+        # nudge rather than let the echo read as success.
+        unit_note = ""
+        if free_symbols and _is_unit_ish(expr_str):
+            unit_note = (
+                "\n(names a unit — for a conversion use 'to', e.g. q='3 ft to m')"
+            )
         return Response(
-            body=f"{expr_str} = {_humanise(result)}" + _degrees_note(degrees, used)
+            body=f"{expr_str} = {_humanise(result)}"
+            + _degrees_note(degrees, used)
+            + unit_note
         )
 
     @staticmethod
@@ -282,6 +309,31 @@ _MAGNITUDE_UNIT_RE = re.compile(
     r"^\s*(?P<mag>[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)\s+(?P<unit>.+?)\s*$"
 )
 
+# Unit tokens for the "you named a unit but didn't ask to convert it"
+# near-miss nudge (``3 feet``, ``hogshead``). Only ≥2-char, low-collision
+# abbreviations + full names — bare ``m``/``g``/``l``/``in`` are omitted
+# because they clash with ordinary symbolic variables and the English word
+# "in". A number glued to one of these (``\d\s*<unit>``) is the strong
+# signal; a few unambiguous nouns (``hogshead``, ``gallon``) also fire on
+# their own. See _is_unit_ish — this only ever runs on already-degenerate
+# input (parse-fail / bare-symbol echo), never on valid math.
+_UNIT_TOKENS = (
+    "cm|mm|km|nm|um|ft|yd|inch|inches|foot|feet|meter|meters|metre|metres|"
+    "kilometer|kilometers|mile|miles|yard|yards|micron|microns|furlong|furlongs|"
+    "kg|mg|lb|lbs|oz|gram|grams|kilogram|kilograms|pound|pounds|ounce|ounces|"
+    "ton|tons|tonne|tonnes|stone|"
+    "ml|cl|dl|gal|liter|liters|litre|litres|gallon|gallons|pint|pints|"
+    "quart|quarts|cup|cups|hogshead|hogsheads|barrel|barrels|acre|acres|"
+    "celsius|fahrenheit|kelvin|degC|degF|degK|"
+    "joule|joules|calorie|calories|cal|kwh|watt|watts|psi|bar|atm|mph|kph|knot|knots"
+)
+_NUM_UNIT_RE = re.compile(rf"\d\s*(?:{_UNIT_TOKENS})\b", re.IGNORECASE)
+_STANDALONE_UNIT_RE = re.compile(
+    r"\b(?:hogshead|gallon|fahrenheit|celsius|kelvin|ounce|furlong|acre|"
+    r"tonne|litre|liter|kilometer|kilogram|fluid_ounce)s?\b",
+    re.IGNORECASE,
+)
+
 # A single UnitRegistry is expensive to build (parses the full
 # definitions file) and safe to share — it's an immutable lookup table
 # once constructed. Cache it for the life of the process.
@@ -302,6 +354,22 @@ def _split_conversion(expr_str: str) -> tuple[str, str] | None:
             if src and dst:
                 return src, dst
     return None
+
+
+def _is_unit_ish(expr_str: str) -> bool:
+    """True when the expression names a physical unit but *isn't* a
+    conversion — the ``3 feet`` / ``hogshead`` near-miss where an agent
+    reached for calc with a unit in hand but didn't use a ``to`` clause.
+
+    Returns False for a real conversion (already routed to pint) so we
+    never double-nudge. Callers gate this behind an already-degenerate
+    result (parse failure or a bare-symbol echo), so it never fires on
+    valid math — ``3 kg`` there is far more likely a unit than a stray
+    ``kg`` symbol worth echoing.
+    """
+    if _split_conversion(expr_str) is not None:
+        return False
+    return bool(_NUM_UNIT_RE.search(expr_str) or _STANDALONE_UNIT_RE.search(expr_str))
 
 
 def _unit_registry(pint: Any) -> Any:

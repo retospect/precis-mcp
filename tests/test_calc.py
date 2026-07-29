@@ -303,6 +303,73 @@ class TestErrorEnvelopeShape:
         self._assert_envelope(exc_info.value)
 
 
+# ── unit near-miss nudge (sympy path — no pint needed) ─────────────
+#
+# Discoverability catch: an agent that names a unit but doesn't use a
+# `to` clause (`3 feet`, `hogshead`) would otherwise get a silent garbage
+# echo (`3 feet = 3*feet`) or a solve(Eq()) hint. These paths now point at
+# the conversion syntax instead. Only fires on already-degenerate input —
+# valid math must never be nudged.
+
+
+class TestUnitNearMissNudge:
+    """`3 feet` / `hogshead` → point at the `to` conversion syntax instead
+    of a generic parse error or a silent `3*feet` echo."""
+
+    def test_number_space_unit_raises_with_nudge(self, handler: CalcHandler) -> None:
+        # "5 miles" — a number juxtaposed with a unit is a Python syntax
+        # error, so it hits the parse-fail branch; the recovery points at
+        # conversion rather than the generic 2+3*4 example.
+        with pytest.raises(BadInput) as exc:
+            handler.get(q="5 miles")
+        assert exc.value.next is not None
+        assert "ft to m" in exc.value.next
+
+    def test_feet_raises_with_nudge(self, handler: CalcHandler) -> None:
+        with pytest.raises(BadInput) as exc:
+            handler.get(q="3 feet")
+        assert exc.value.next is not None and "ft to m" in exc.value.next
+
+    def test_abbrev_unit_raises_with_nudge(self, handler: CalcHandler) -> None:
+        with pytest.raises(BadInput) as exc:
+            handler.get(q="2 kg")
+        assert exc.value.next is not None and "ft to m" in exc.value.next
+
+    def test_bare_unit_word_raises_with_conversion_next(
+        self, handler: CalcHandler
+    ) -> None:
+        # "hogshead" alone → simplifies-to-itself, but it's a unit → the
+        # recovery points at conversion, not solve(Eq(...)).
+        with pytest.raises(BadInput) as exc:
+            handler.get(q="hogshead")
+        assert exc.value.next is not None
+        assert "ft to m" in exc.value.next
+
+    def test_free_symbol_echo_gets_note(self, handler: CalcHandler) -> None:
+        # A unit-named free symbol surviving into the result ("gallon*2 + 3"
+        # → "2*gallon + 3") is a silent-garbage echo — append the nudge.
+        r = handler.get(q="gallon*2 + 3")
+        assert "names a unit" in r.body
+        assert "3 ft to m" in r.body
+
+    def test_valid_math_is_never_nudged(self, handler: CalcHandler) -> None:
+        # Plain arithmetic must not acquire a spurious unit note.
+        r = handler.get(q="2+3*4")
+        assert "14" in r.body
+        assert "unit" not in r.body.lower()
+
+    def test_trig_is_never_nudged(self, handler: CalcHandler) -> None:
+        # 'in' inside 'sin' / degree trig must not trip the nudge.
+        r = handler.get(q="sin(30)")
+        assert "1/2" in r.body
+        assert "names a unit" not in r.body
+
+    def test_symbolic_calculus_not_nudged(self, handler: CalcHandler) -> None:
+        r = handler.get(q="integrate(sin(x), x)", view="rad")
+        assert "cos" in r.body
+        assert "names a unit" not in r.body
+
+
 # ── unit conversion (pint) ─────────────────────────────────────────
 #
 # calc routes a query with a `to`/`in`/`->` clause to pint before sympy.

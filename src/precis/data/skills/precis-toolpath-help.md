@@ -83,6 +83,7 @@ adding a new value replaces the old within that prefix atomically.
 | Goal | Toolpath | Cost |
 |---|---|---|
 | Exact / symbolic math | `get(kind='calc', q='integrate(sin(x)**2, x)')` | free |
+| Unit conversion | `get(kind='calc', q='3 ft to m')` · `q='1 ton to kg'` (local, exact, disambiguates ton/gallon/oz) | free |
 | Real-world fact | `get(kind='math', q='speed of light in km/h')` | paid |
 | Fetch + extract a URL | `get(kind='web', q='https://example.com')` | free |
 | One Wikipedia article | `get(kind='wikipedia', q='CRISPR gene editing')` | free |
@@ -92,8 +93,10 @@ adding a new value replaces the old within that prefix atomically.
 
 `calc` reads numeric trig in degrees by default (`sin(30)`=1/2) but keeps
 symbolic arguments (`sin(x)` inside `integrate`/`diff`) in radians so
-calculus comes out clean; pass `view='rad'` to force radians everywhere.
-Paid tools cache automatically (`precis-cache`).
+calculus comes out clean; pass `view='rad'` to force radians everywhere. A
+`to`/`in`/`->` clause makes `calc` a **local unit converter** (`3 ft to m`,
+`100 degC to degF`) — reach for it, not paid `math`/Wolfram, for any
+ordinary conversion. Paid tools cache automatically (`precis-cache`).
 
 ## The todo tree (intent → execution → review)
 

@@ -269,7 +269,10 @@ def test_pathway_skill_discoverable() -> None:
 
     sk._SKILLS_MAP_CACHE = None  # re-scan so the bundled skill is seen
     body = sk._load_skills_map().get("precis-pathway-help", "")
-    assert body and "view='compare'" in body and "rate-limiting" in body
+    # The skill writes its example with double quotes (house style:
+    # `view="compare"`), matching every other precis skill — assert that
+    # form, not the single-quoted variant the test originally carried.
+    assert body and 'view="compare"' in body and "rate-limiting" in body
 
 
 # ─────────────────────────── slab input seam (pure) ─────────────────────
