@@ -18,47 +18,11 @@ Wired in .claude/settings.json (PreToolUse, matcher "Grep").
 from __future__ import annotations
 
 import json
-import re
 import sys
+from pathlib import Path
 
-_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-
-# Bare words that are almost never a symbol lookup worth a call-graph query —
-# keeps the nudge from firing on common English / keyword greps.
-_STOP = {
-    "test",
-    "todo",
-    "fixme",
-    "note",
-    "true",
-    "false",
-    "none",
-    "null",
-    "self",
-    "cls",
-    "def",
-    "class",
-    "import",
-    "return",
-    "async",
-    "await",
-    "the",
-    "and",
-    "for",
-    "not",
-    "with",
-    "type",
-    "data",
-    "value",
-    "error",
-    "name",
-    "path",
-    "file",
-    "line",
-    "text",
-    "main",
-    "init",
-}
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _symbol_heuristic import is_symbol_candidate
 
 
 def _python_target(ti: dict) -> bool:
@@ -82,7 +46,7 @@ def main() -> int:
     if not isinstance(pattern, str):
         return 0
     tok = pattern.strip()
-    if len(tok) < 3 or not _IDENT.match(tok) or tok.lower() in _STOP:
+    if not is_symbol_candidate(tok):
         return 0
     if not _python_target(ti):
         return 0
