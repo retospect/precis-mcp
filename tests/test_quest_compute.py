@@ -1352,6 +1352,39 @@ class TestDispatchAutocatpath:
         assert len(compute_mod._fresh_autocatpath_jobs(store, good, 0)) == 2
         assert len(compute_mod._fresh_autocatpath_jobs(store, bad, 0)) == 0
 
+    def test_reset_compute_wipes_stale_history_keeps_designs(self, store: Any) -> None:
+        """reset_compute nulls stale barrier measures + drops ruled-out and
+        graduation tags for a clean re-run, without deleting the candidate."""
+        from precis.store import Tag
+
+        qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
+        store.stamp_ref_meta(qid, {"reaction_config": self._RX})
+        sid = self._candidate(store, qid)
+        # simulate a stale, untrusted, graduated candidate
+        store.stamp_ref_meta(
+            sid,
+            {
+                "barrier": 0.64,
+                "barrier_trusted": False,
+                "barrier_neb_failed": 3,
+                "energy": -179.6,
+                "quest_autocatpath_harvested_upto": 42,
+            },
+        )
+        store.add_tag(sid, Tag.open("ruled-out:preflight"), set_by="system")
+        store.add_tag(sid, Tag.open("needs-experiment"), set_by="system")
+
+        note = compute_mod.reset_compute(store, qid)
+        assert "reset 1 candidate" in note
+
+        meta = store.fetch_refs_by_ids({sid})[sid].meta
+        assert meta.get("barrier") is None  # stale barrier nulled
+        assert meta.get("barrier_trusted") is None
+        assert meta.get("energy") == -179.6  # relax lane untouched
+        tags = {str(t) for t in store.tags_for(sid)}
+        assert not any(t.startswith("ruled-out:") for t in tags)  # rule-out dropped
+        assert "needs-experiment" not in tags  # false graduation dropped
+
     def test_roundtrip_dispatch_then_harvest(self, store: Any) -> None:
         """Dispatch mints a job the harvest can read back — the two halves wire
         together (the parent_id contract). Simulate the worker emitting a barrier

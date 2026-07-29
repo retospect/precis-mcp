@@ -1154,7 +1154,14 @@ The master kinds table lives in the `precis-overview` skill.
   warnings → all untrusted → `unevaluated`), never re-scored on the deployed 0.4.0
   (which relaxes the same geometries with 0 detached, trusted — confirmed on
   st165612). `compute.redispatch_candidates` (CLI `precis quest redispatch <id>`)
-  re-dispatches every non-ruled-out candidate on the deployed engine.
+  re-dispatches every non-ruled-out candidate on the deployed engine. When an
+  engine improvement invalidates not just the numbers but the *conclusions* drawn
+  from them, `compute.reset_compute` (CLI `precis quest reset-compute <id>`) first
+  surgically wipes the barrier-lane history — nulls stale measures/quality flags,
+  drops `ruled-out:*` + `needs-experiment` tags decided on stale barriers, resets
+  the dossier (the tick regenerates it from clean data so the discovery agent
+  stops reasoning from confabulated conclusions) — keeping the candidate designs +
+  papers; then `redispatch` re-scores.
   Reaction (slab) candidates relax the box **in-plane** (`cell="inplane"`
   — a/b + γ free, c-axis/vacuum pinned) so stability is judged on a relaxed slab
   (`quest/compute.py`; the `relax` op's variable-cell mode in `structure/relax.py`).

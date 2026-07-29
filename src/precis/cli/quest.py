@@ -126,6 +126,20 @@ def add_parser(subparsers: Any) -> None:
     )
     rd.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
+    rc = qsub.add_parser(
+        "reset-compute",
+        help="Surgically wipe the barrier-lane compute history (stale measures, "
+        "ruled-out + graduation tags, dossier) for a clean re-run — keeps the "
+        "candidate designs + papers. Follow with `redispatch`.",
+    )
+    rc.add_argument("id", type=int, help="Quest ref id.")
+    rc.add_argument(
+        "--keep-dossier",
+        action="store_true",
+        help="Leave the dossier intact (default resets it so the tick regenerates it).",
+    )
+    rc.add_argument("--database-url", default=None, help="Postgres DSN override.")
+
     st = qsub.add_parser(
         "status",
         help="Ops roll-up: logbook tail, candidates + measures, sim-job "
@@ -389,6 +403,13 @@ def _cmd_redispatch(store: Store, args: argparse.Namespace) -> None:
     print(f"quest {args.id}: {note}")
 
 
+def _cmd_reset_compute(store: Store, args: argparse.Namespace) -> None:
+    from precis.quest.compute import reset_compute
+
+    note = reset_compute(store, args.id, keep_dossier=args.keep_dossier)
+    print(f"quest {args.id}: {note}")
+
+
 def _cmd_status(store: Store, args: argparse.Namespace) -> None:
     from precis.quest.status import gather_quest_status, render_quest_status
 
@@ -417,6 +438,8 @@ def run(args: argparse.Namespace) -> None:
         _cmd_frontier(store, args)
     elif args.quest_cmd == "redispatch":
         _cmd_redispatch(store, args)
+    elif args.quest_cmd == "reset-compute":
+        _cmd_reset_compute(store, args)
     elif args.quest_cmd == "status":
         _cmd_status(store, args)
     elif args.quest_cmd == "seed-catalyst":

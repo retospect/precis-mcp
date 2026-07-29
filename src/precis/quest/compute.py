@@ -928,6 +928,88 @@ def redispatch_candidates(
     return f"re-dispatched {n} candidate(s) on the deployed engine"
 
 
+#: Candidate-meta keys the barrier lane stamps. :func:`reset_compute` nulls them
+#: so a stale (untrusted) barrier stops showing as an `(excluded)` frontier cell
+#: while the deployed engine re-scores — the harvest re-stamps real values.
+_AUTOCATPATH_MEASURE_KEYS: tuple[str, ...] = (
+    "barrier",
+    "span",
+    "barrier_trusted",
+    "barrier_neb_failed",
+    "barrier_desorbed",
+    "barrier_wrong_site",
+    "barrier_low_confidence",
+    "quest_autocatpath_harvested_upto",
+)
+
+
+def reset_compute(
+    store: Store,
+    quest_id: int,
+    *,
+    keep_dossier: bool = False,
+) -> str:
+    """Surgically wipe a quest's barrier-lane compute history for a clean
+    re-run — WITHOUT discarding the candidate designs or their linked papers.
+
+    The counterpart to :func:`redispatch_candidates` when an engine improvement
+    invalidates not just the numbers but the *conclusions* drawn from them. For
+    every candidate structure serving the quest it nulls the stamped barrier
+    measures + quality flags + harvest bookmark (so the frontier shows an honest
+    "awaiting" rather than a stale `(excluded)` cell), drops every ``ruled-out:*``
+    tag (rule-outs decided on stale barriers must not survive), and drops the
+    ``needs-experiment`` graduation tag (a milestone earned on an untrusted
+    barrier). Quest-level: unless ``keep_dossier``, resets the dossier to a stub
+    (the next tick regenerates it from clean data — otherwise the discovery agent
+    keeps reasoning from its confabulated conclusions) and logs a ``decision``
+    boundary entry. The relax ``energy`` (a separate lane) is left intact. Run
+    :func:`redispatch_candidates` afterwards to re-score on the deployed engine.
+    """
+    from precis.quest.dossier import rewrite_dossier
+
+    serves = store.links_for(quest_id, direction="in", relation="serves")
+    ids = {int(link.src_ref_id) for link in serves}
+    refs = store.fetch_refs_by_ids(ids)
+    struct_ids = [
+        i for i in ids if (r := refs.get(i)) is not None and r.kind == "structure"
+    ]
+    cleared_tags = 0
+    for sid in struct_ids:
+        store.stamp_ref_meta(sid, {k: None for k in _AUTOCATPATH_MEASURE_KEYS})
+        for t in store.tags_for(sid):
+            ts = str(t)
+            if ts.startswith("ruled-out:") or ts == "needs-experiment":
+                store.remove_tag(sid, Tag.open(ts))
+                cleared_tags += 1
+    if not keep_dossier:
+        rewrite_dossier(
+            store,
+            quest_id,
+            "# (dossier reset)\n\nPrior barriers were computed by a stale engine "
+            "and invalidated; any conclusions built on them are void. Re-running "
+            "on the deployed engine — this regenerates from the fresh, trusted "
+            "results.\n",
+        )
+    append_entry(
+        store,
+        quest_id,
+        text=(
+            f"compute history reset for a clean re-run across {len(struct_ids)} "
+            f"candidate(s): nulled barrier measures + dropped {cleared_tags} stale "
+            "ruled-out/graduation tag(s); prior barriers were stale-engine and are "
+            "invalidated. Next: `precis quest redispatch`."
+        ),
+        entry_type="decision",
+        by=MEASURED_BY,
+    )
+    return (
+        f"reset {len(struct_ids)} candidate(s): nulled measures + dropped "
+        f"{cleared_tags} stale tag(s)"
+        + ("" if keep_dossier else " + reset dossier")
+        + f" — now run `precis quest redispatch {quest_id}`"
+    )
+
+
 def run_compute_step(
     store: Store,
     quest_id: int,
@@ -1002,5 +1084,6 @@ __all__ = [
     "ensure_candidate",
     "harvest_measures",
     "redispatch_candidates",
+    "reset_compute",
     "run_compute_step",
 ]
