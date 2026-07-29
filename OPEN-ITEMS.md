@@ -36,6 +36,16 @@ items are removed (history is `git log`).
   orthogonal to `made-of → material`) with a quantity edge, plus a recursive cost/mass
   **rollup** over the assembly tree. Assembly-ness stays a graph property (a node with
   `contains` children), not a spec/category — see ADR 0071.
+- **PCB granularity boundary (DECIDED — do not re-litigate).** A populated board is
+  **one line item**: a single PCBA `component` on the parent BOM, NOT the ~N passives
+  dissolved into general components. The specialized `pcb`/`part` subsystem (JLCPCB
+  assemblability, Basic/turnover ranking, price ladders, stock) stays the owner of "which
+  SKU" and of the board's *internal* BOM; it rolls up its own built cost/mass, which
+  becomes the PCBA component's `unit_cost`/`mass`. So the `contains → component` rollup
+  treats a PCBA as a leaf and never descends into per-passive granularity — it needs to
+  know nothing about PCBs. Rationale: duplicating catalog parts into the general graph
+  would lose the specialization and match no real multi-level BOM; unified per-part
+  electrical analytics (if ever wanted) belong to the catalog/EDA side, not here.
 - **Laminate layer structure** — ordered layers (thickness / fiber orientation) for the
   `laminate` category + effective-property homogenization from the stack (v1 admits the
   category but not the structured layer model).
@@ -43,6 +53,10 @@ items are removed (history is `git log`).
   synthesize a component's intensive properties (density, modulus, …) from its material.
 - **`realized_by → part` binding** — link a generic `component` to a concrete JLCPCB
   catalog C-number + pull live price/stock; structured tiered price ladders land here.
+  **Scope (per the PCB boundary above):** this is for *discrete non-PCB procurable parts
+  that happen to be catalog SKUs* (a connector, a module, a fastener with an LCSC number)
+  — NOT for mirroring PCB internals. Optional variant for board traceability without
+  losing granularity: a PCBA `component` may `realized_by → pcb` (the *design*), not a SKU.
 - **Category taxonomy tree** — parent/child categories with inherited spec sets (v1 flat).
 - **v1 trims** (shared with `material`): runtime spec-mint is numeric/boolean/text-only
   (categoricals seed via migration); `value_low`/`value_high` columns exist without a
