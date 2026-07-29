@@ -187,13 +187,45 @@ def _autocatpath_wall_seconds() -> int:
     return max(60, min(86_400, n))
 
 
+#: Engine-version token folded into the autocatpath idem key so deploying a new
+#: autocatpath build auto-invalidates stale completed jobs. Without it, a
+#: re-dispatch of the same (config, slab) dedupes onto the old completed job and
+#: never exercises new engine code — the qu164903 "empty frontier" trap: all 21
+#: candidates were pinned on autocatpath 0.1.1's desorption false-positives (102
+#: phantom "detached" warnings → barrier_trusted=false) and never re-scored on
+#: 0.4.0, which relaxes the same geometries cleanly (0 detached, trusted). The
+#: ansible ``autocatpath`` role exports ``PRECIS_AUTOCATPATH_VERSION`` with the
+#: installed version/git-sha; absent that, ``_AUTOCATPATH_CACHE_EPOCH`` is the
+#: manual bump lever — changing it re-keys every candidate, forcing a clean
+#: re-dispatch on the deployed engine.
+_AUTOCATPATH_VERSION_ENV = "PRECIS_AUTOCATPATH_VERSION"
+_AUTOCATPATH_CACHE_EPOCH = "0.4.0"
+
+
+def _autocatpath_engine_token() -> str:
+    """Engine-version component of the idem key — the deployed version pinned by
+    the ansible role (``PRECIS_AUTOCATPATH_VERSION``), else the code-constant
+    cache epoch. A change in this value re-keys every (config, slab) pair, so a
+    new engine build re-evaluates candidates instead of reusing stale results."""
+    return os.environ.get(_AUTOCATPATH_VERSION_ENV) or _AUTOCATPATH_CACHE_EPOCH
+
+
 def _autocatpath_content_key(config: dict[str, Any], slab_extxyz: str) -> str:
-    """Stable idempotency key for a (reaction, exported slab) pair.
+    """Stable idempotency key for an (engine, reaction, exported slab) triple.
 
     Its own hash (not autocatpath's ``content_key``) so this stays precis-native — a
-    re-dispatch of the same geometry + reaction collapses onto the in-flight job.
+    re-dispatch of the same engine + geometry + reaction collapses onto the
+    in-flight job, while a new engine build (a changed
+    :func:`_autocatpath_engine_token`) deliberately misses the old job so the
+    candidate is re-scored.
     """
-    payload = _canonical_spec(config) + "\n" + slab_extxyz
+    payload = (
+        _autocatpath_engine_token()
+        + "\n"
+        + _canonical_spec(config)
+        + "\n"
+        + slab_extxyz
+    )
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
@@ -861,6 +893,41 @@ def _quest_reaction_config(store: Store, quest_id: int) -> dict[str, Any] | None
     return cfg if isinstance(cfg, dict) and cfg else None
 
 
+def redispatch_candidates(
+    store: Store,
+    quest_id: int,
+    *,
+    hub: Any | None = None,
+    include_ruled_out: bool = False,
+) -> str:
+    """Re-dispatch a autocatpath barrier eval for every candidate of a quest.
+
+    The maintenance action behind P0: after an engine deploy bumps
+    :func:`_autocatpath_engine_token`, each candidate's idem key changes, so this
+    mints *fresh* ``autocatpath_explore`` jobs on the deployed engine instead of
+    deduping onto stale ones. Idempotent per engine token — with an unchanged
+    token every call collapses onto the in-flight/completed job, so re-running is
+    safe. Ruled-out candidates are skipped by default (a dead geometry earns no
+    more compute); pass ``include_ruled_out=True`` to also re-evaluate candidates
+    whose rule-out was decided on now-suspect stale barriers.
+    """
+    hub = hub or _hub_for(store)
+    reaction = _quest_reaction_config(store, quest_id)
+    if reaction is None:
+        return f"redispatch skipped: quest {quest_id} has no reaction_config"
+    n = 0
+    for link in store.links_for(quest_id, direction="in", relation="serves"):
+        sid = int(link.src_ref_id)
+        if not include_ruled_out and any(
+            str(t).startswith("ruled-out:") for t in store.tags_for(sid)
+        ):
+            continue
+        note = dispatch_autocatpath(store, sid, reaction, hub=hub)
+        if note.startswith("autocatpath["):
+            n += 1
+    return f"re-dispatched {n} candidate(s) on the deployed engine"
+
+
 def run_compute_step(
     store: Store,
     quest_id: int,
@@ -934,5 +1001,6 @@ __all__ = [
     "dispatch_relax",
     "ensure_candidate",
     "harvest_measures",
+    "redispatch_candidates",
     "run_compute_step",
 ]

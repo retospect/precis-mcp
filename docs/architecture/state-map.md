@@ -1145,6 +1145,16 @@ The master kinds table lives in the `precis-overview` skill.
   signal, not that flag — the physical fix (endpoint desorption pre-flight,
   bigger NEB budget, seed ensemble) is autocatpath-side + quest-config, tracked in
   gr172323.
+  **Stale-engine invalidation** (P0b): `_autocatpath_content_key` folds an
+  engine-version token (`_autocatpath_engine_token` — env
+  `PRECIS_AUTOCATPATH_VERSION`, else the `_AUTOCATPATH_CACHE_EPOCH` constant), so
+  a new autocatpath deploy re-keys and re-scores instead of deduping onto stale
+  completed jobs. This was the qu164903 empty-frontier trap: 21 candidates pinned
+  on autocatpath 0.1.1's desorption false-positives (102 phantom `detached`
+  warnings → all untrusted → `unevaluated`), never re-scored on the deployed 0.4.0
+  (which relaxes the same geometries with 0 detached, trusted — confirmed on
+  st165612). `compute.redispatch_candidates` (CLI `precis quest redispatch <id>`)
+  re-dispatches every non-ruled-out candidate on the deployed engine.
   Reaction (slab) candidates relax the box **in-plane** (`cell="inplane"`
   — a/b + γ free, c-axis/vacuum pinned) so stability is judged on a relaxed slab
   (`quest/compute.py`; the `relax` op's variable-cell mode in `structure/relax.py`).

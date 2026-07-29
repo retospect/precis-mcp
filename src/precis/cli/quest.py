@@ -111,6 +111,21 @@ def add_parser(subparsers: Any) -> None:
     f.add_argument("id", type=int, help="Quest ref id.")
     f.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
+    rd = qsub.add_parser(
+        "redispatch",
+        help="Re-dispatch a barrier eval for every candidate on the deployed "
+        "engine — use after an autocatpath deploy to re-score stale results "
+        "(the idem key folds the engine version, so this only re-runs work an "
+        "engine change invalidated).",
+    )
+    rd.add_argument("id", type=int, help="Quest ref id.")
+    rd.add_argument(
+        "--include-ruled-out",
+        action="store_true",
+        help="Also re-evaluate candidates ruled out on now-suspect stale barriers.",
+    )
+    rd.add_argument("--database-url", default=None, help="Postgres DSN override.")
+
     st = qsub.add_parser(
         "status",
         help="Ops roll-up: logbook tail, candidates + measures, sim-job "
@@ -361,6 +376,19 @@ def _cmd_gaps(store: Store, args: argparse.Namespace) -> None:
     print(h.get(id=args.id, view="gaps").body)
 
 
+def _cmd_redispatch(store: Store, args: argparse.Namespace) -> None:
+    from precis.dispatch import Hub
+    from precis.quest.compute import redispatch_candidates
+
+    note = redispatch_candidates(
+        store,
+        args.id,
+        hub=Hub(store=store),
+        include_ruled_out=args.include_ruled_out,
+    )
+    print(f"quest {args.id}: {note}")
+
+
 def _cmd_status(store: Store, args: argparse.Namespace) -> None:
     from precis.quest.status import gather_quest_status, render_quest_status
 
@@ -387,6 +415,8 @@ def run(args: argparse.Namespace) -> None:
         _cmd_gaps(store, args)
     elif args.quest_cmd == "frontier":
         _cmd_frontier(store, args)
+    elif args.quest_cmd == "redispatch":
+        _cmd_redispatch(store, args)
     elif args.quest_cmd == "status":
         _cmd_status(store, args)
     elif args.quest_cmd == "seed-catalyst":

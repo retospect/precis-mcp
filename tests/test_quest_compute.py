@@ -1213,6 +1213,38 @@ def _autocatpath_registered() -> bool:
 @pytest.mark.skipif(
     not _autocatpath_registered(), reason="autocatpath plugin not installed (host venv)"
 )
+class TestAutocatpathContentKey:
+    """The idem key folds an engine-version token so a redeployed autocatpath
+    build re-keys (and re-scores) instead of reusing stale completed jobs."""
+
+    _RX = {"substrate": "NO", "target": "NH3", "network": "ammonia"}
+    _SLAB = 'Lattice="1 0 0 0 1 0 0 0 1"\nPd 0 0 0\n'
+
+    def test_engine_token_defaults_to_cache_epoch(self, monkeypatch: Any) -> None:
+        monkeypatch.delenv(compute_mod._AUTOCATPATH_VERSION_ENV, raising=False)
+        assert (
+            compute_mod._autocatpath_engine_token()
+            == compute_mod._AUTOCATPATH_CACHE_EPOCH
+        )
+
+    def test_engine_token_prefers_env(self, monkeypatch: Any) -> None:
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "deadbeef")
+        assert compute_mod._autocatpath_engine_token() == "deadbeef"
+
+    def test_key_stable_for_same_engine(self, monkeypatch: Any) -> None:
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "0.4.0")
+        k1 = compute_mod._autocatpath_content_key(self._RX, self._SLAB)
+        k2 = compute_mod._autocatpath_content_key(self._RX, self._SLAB)
+        assert k1 == k2
+
+    def test_key_changes_with_engine_token(self, monkeypatch: Any) -> None:
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "0.1.1")
+        old = compute_mod._autocatpath_content_key(self._RX, self._SLAB)
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "0.4.0")
+        new = compute_mod._autocatpath_content_key(self._RX, self._SLAB)
+        assert old != new
+
+
 class TestDispatchAutocatpath:
     """The candidate→autocatpath dispatch: mints a `autocatpath_explore` job pinned on
     the candidate (so :func:`harvest_measures` finds it) carrying the exported
@@ -1270,6 +1302,55 @@ class TestDispatchAutocatpath:
         compute_mod.dispatch_autocatpath(store, sid, self._RX)
         compute_mod.dispatch_autocatpath(store, sid, self._RX)  # same geometry+config
         assert len(compute_mod._fresh_autocatpath_jobs(store, sid, 0)) == 1
+
+    def test_engine_bump_forces_fresh_dispatch(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """A new autocatpath build (a changed engine token) must re-key so the
+        candidate is re-scored instead of deduping onto the stale job — the fix
+        for the qu164903 empty-frontier trap (21 candidates pinned on 0.1.1)."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "0.1.1")
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        # Same geometry + config, but the engine was redeployed → new token.
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "0.4.0")
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        # Two distinct jobs — the second did NOT collapse onto the stale one.
+        assert len(compute_mod._fresh_autocatpath_jobs(store, sid, 0)) == 2
+
+    def test_redispatch_candidates_reevaluates_all_non_ruled_out(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """P0: after an engine bump, redispatch_candidates mints fresh jobs for
+        every candidate (skipping ruled-out ones) instead of deduping onto the
+        stale completed jobs."""
+        from precis.store import Tag
+
+        qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
+        store.stamp_ref_meta(qid, {"reaction_config": self._RX})
+        # two DISTINCT candidates serving the quest; one gets ruled out
+        spec2 = {
+            "cell": {"a": 8.4, "b": 8.4, "c": 24.0, "pbc": [True, True, False]},
+            "ops": [{"op": "add_atom", "element": "Ni", "frac": [0.0, 0.0, 0.5]}],
+        }
+        good = compute_mod.ensure_candidate(
+            store, qid, {"name": "good", "structure": _SPEC}
+        )
+        bad = compute_mod.ensure_candidate(
+            store, qid, {"name": "bad", "structure": spec2}
+        )
+        assert good is not None and bad is not None and good != bad
+        store.add_tag(bad, Tag.open("ruled-out:preflight"), set_by="system")
+        # initial dispatch under the old engine
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "0.1.1")
+        compute_mod.dispatch_autocatpath(store, good, self._RX)
+        # engine redeployed → re-dispatch re-keys and re-scores the good one only
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "0.4.0")
+        note = compute_mod.redispatch_candidates(store, qid)
+        assert "re-dispatched 1 candidate" in note
+        assert len(compute_mod._fresh_autocatpath_jobs(store, good, 0)) == 2
+        assert len(compute_mod._fresh_autocatpath_jobs(store, bad, 0)) == 0
 
     def test_roundtrip_dispatch_then_harvest(self, store: Any) -> None:
         """Dispatch mints a job the harvest can read back — the two halves wire
