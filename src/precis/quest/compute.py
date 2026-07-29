@@ -931,6 +931,11 @@ def redispatch_candidates(
 #: Candidate-meta keys the barrier lane stamps. :func:`reset_compute` nulls them
 #: so a stale (untrusted) barrier stops showing as an `(excluded)` frontier cell
 #: while the deployed engine re-scores — the harvest re-stamps real values.
+#: Deliberately EXCLUDES ``quest_autocatpath_harvested_upto``: the harvest bookmark
+#: is left intact so the old, already-harvested stale jobs stay at/below it and are
+#: not re-processed — only the fresh redispatch jobs (higher ref ids) are harvested.
+#: Nulling it to 0 would make the next harvest re-read the stale completed job and
+#: re-stamp the very barrier this reset just cleared.
 _AUTOCATPATH_MEASURE_KEYS: tuple[str, ...] = (
     "barrier",
     "span",
@@ -939,7 +944,6 @@ _AUTOCATPATH_MEASURE_KEYS: tuple[str, ...] = (
     "barrier_desorbed",
     "barrier_wrong_site",
     "barrier_low_confidence",
-    "quest_autocatpath_harvested_upto",
 )
 
 
@@ -955,8 +959,10 @@ def reset_compute(
     The counterpart to :func:`redispatch_candidates` when an engine improvement
     invalidates not just the numbers but the *conclusions* drawn from them. For
     every candidate structure serving the quest it nulls the stamped barrier
-    measures + quality flags + harvest bookmark (so the frontier shows an honest
-    "awaiting" rather than a stale `(excluded)` cell), drops every ``ruled-out:*``
+    measures + quality flags (so the frontier shows an honest "awaiting" rather
+    than a stale `(excluded)` cell — but keeps the harvest bookmark, so the old
+    stale jobs aren't re-read and re-stamped; only the fresh redispatch jobs
+    land), drops every ``ruled-out:*``
     tag (rule-outs decided on stale barriers must not survive), and drops the
     ``needs-experiment`` graduation tag (a milestone earned on an untrusted
     barrier). Quest-level: unless ``keep_dossier``, resets the dossier to a stub

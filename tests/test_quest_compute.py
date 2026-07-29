@@ -1381,6 +1381,9 @@ class TestDispatchAutocatpath:
         assert meta.get("barrier") is None  # stale barrier nulled
         assert meta.get("barrier_trusted") is None
         assert meta.get("energy") == -179.6  # relax lane untouched
+        # bookmark PRESERVED — nulling it to 0 would re-harvest the stale
+        # completed job and re-stamp the barrier this reset just cleared.
+        assert meta.get("quest_autocatpath_harvested_upto") == 42
         tags = {str(t) for t in store.tags_for(sid)}
         assert not any(t.startswith("ruled-out:") for t in tags)  # rule-out dropped
         assert "needs-experiment" not in tags  # false graduation dropped
