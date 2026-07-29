@@ -893,6 +893,22 @@ def _quest_reaction_config(store: Store, quest_id: int) -> dict[str, Any] | None
     return cfg if isinstance(cfg, dict) and cfg else None
 
 
+def _candidate_struct_ids(store: Store, quest_id: int) -> list[int]:
+    """The `structure` candidates serving a quest — the barrier/relax targets.
+
+    A quest's ``serves`` in-links mix candidate structures with linked papers,
+    the dossier draft, coordinator todos, memories, etc.; only the structures
+    are compute candidates, so both re-dispatch and reset filter to this set
+    rather than acting on a paper (which would fail an autocatpath export).
+    """
+    ids = {
+        int(link.src_ref_id)
+        for link in store.links_for(quest_id, direction="in", relation="serves")
+    }
+    refs = store.fetch_refs_by_ids(ids)
+    return [i for i in ids if (r := refs.get(i)) is not None and r.kind == "structure"]
+
+
 def redispatch_candidates(
     store: Store,
     quest_id: int,
@@ -916,8 +932,7 @@ def redispatch_candidates(
     if reaction is None:
         return f"redispatch skipped: quest {quest_id} has no reaction_config"
     n = 0
-    for link in store.links_for(quest_id, direction="in", relation="serves"):
-        sid = int(link.src_ref_id)
+    for sid in _candidate_struct_ids(store, quest_id):
         if not include_ruled_out and any(
             str(t).startswith("ruled-out:") for t in store.tags_for(sid)
         ):
@@ -973,12 +988,7 @@ def reset_compute(
     """
     from precis.quest.dossier import rewrite_dossier
 
-    serves = store.links_for(quest_id, direction="in", relation="serves")
-    ids = {int(link.src_ref_id) for link in serves}
-    refs = store.fetch_refs_by_ids(ids)
-    struct_ids = [
-        i for i in ids if (r := refs.get(i)) is not None and r.kind == "structure"
-    ]
+    struct_ids = _candidate_struct_ids(store, quest_id)
     cleared_tags = 0
     for sid in struct_ids:
         store.stamp_ref_meta(sid, {k: None for k in _AUTOCATPATH_MEASURE_KEYS})

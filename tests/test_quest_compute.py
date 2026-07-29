@@ -1352,6 +1352,18 @@ class TestDispatchAutocatpath:
         assert len(compute_mod._fresh_autocatpath_jobs(store, good, 0)) == 2
         assert len(compute_mod._fresh_autocatpath_jobs(store, bad, 0)) == 0
 
+    def test_candidate_ids_ignore_non_structure_serves_links(self, store: Any) -> None:
+        """A quest's `serves` in-links mix structures with papers/dossier/todos;
+        redispatch + reset act on structures only (a paper has no slab to export)."""
+        qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
+        sid = self._candidate(store, qid)
+        other = _mk_quest(store, "some other ref")  # a non-structure serves-link
+        with store.tx() as conn:
+            store.add_link(
+                src_ref_id=other, dst_ref_id=qid, relation="serves", conn=conn
+            )
+        assert compute_mod._candidate_struct_ids(store, qid) == [sid]
+
     def test_reset_compute_wipes_stale_history_keeps_designs(self, store: Any) -> None:
         """reset_compute nulls stale barrier measures + drops ruled-out and
         graduation tags for a clean re-run, without deleting the candidate."""
