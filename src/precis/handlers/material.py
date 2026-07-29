@@ -96,6 +96,7 @@ class MaterialHandler(Handler):
         maturity: str | None = None,
         source: str | None = None,
         chunk: str | None = None,
+        as_of: str | None = None,
         title: str | None = None,
         meta: dict[str, Any] | None = None,
         **_kw: Any,
@@ -120,6 +121,7 @@ class MaterialHandler(Handler):
                 maturity=maturity,
                 source=source,
                 chunk=chunk,
+                as_of=as_of,
             )
         return self._put_entity(slug, title=title, meta=meta)
 
@@ -162,6 +164,7 @@ class MaterialHandler(Handler):
         maturity: str | None,
         source: str | None,
         chunk: str | None,
+        as_of: str | None = None,
     ) -> Response:
         if not property:
             raise BadInput(
@@ -204,6 +207,7 @@ class MaterialHandler(Handler):
             source_ref_id=source_ref_id,
             source_chunk=source_chunk,
             source_url=source_url,
+            as_of=as_of,
             **value_kwargs,
         )
         unit_note = f" {unit}" if unit else ""

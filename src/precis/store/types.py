@@ -186,6 +186,13 @@ Relation = Literal[
     # 0088_draft_copy_of_relation.sql.
     "copy-of",
     "has-copy",
+    # Component kind — migration 0093 (docs/proposals/component-kind.md).
+    # `made-of` binds a `component` (a discrete procurable thing) to the
+    # `material` it is made of — the one composition edge v1 ships; the
+    # inverse `used-in` lives on the material. Asymmetric, auto-mirrored.
+    # Keep in sync with the `relations` seed in 0093_component_kind.sql.
+    "made-of",
+    "used-in",
 ]
 ActorSlug = Literal["agent", "user", "system"]
 
@@ -273,6 +280,9 @@ _INVERSE_RELATIONS: dict[str, str] = {
     # Draft fork/deep-copy (0088).
     "copy-of": "has-copy",
     "has-copy": "copy-of",
+    # Component kind (0093).
+    "made-of": "used-in",
+    "used-in": "made-of",
 }
 
 

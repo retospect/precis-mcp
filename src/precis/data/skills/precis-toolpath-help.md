@@ -121,6 +121,9 @@ Paid tools cache automatically (`precis-cache`).
 | PCB netlist + placement | `kind='pcb'` + `kind='part'` / `kind='datasheet'` | `precis-pcb-help` |
 | Sourced material property (density, yield strength, ...) | `put(kind='material', id='<slug>', property='<prop_id>', value=..., unit='<canonical unit>')` — entity first, canonical units only | `precis-material-help` |
 | Materials with property in a range | `search(kind='material', property='thermal_conductivity', max=0.05)` | `precis-material-help` |
+| Sourced component spec (bolt/hose/bearing/...) | `put(kind='component', id='<slug>', spec='<spec_id>', value=..., unit='<canonical unit>')` — entity first (`category=` required), canonical units only | `precis-component-help` |
+| Component made of a material | `put(kind='component', id='<slug>', made_of='material:<slug>')` | `precis-component-help` |
+| Components with spec in a range | `search(kind='component', spec='max_working_pressure', min=20, category='hose')` | `precis-component-help` |
 | Organize artifacts | `kind='folder'` + `link(rel='parent')`; `search(folder=...)` | `precis-folder-help` |
 | Verified claim → source | `kind='citation'` / `kind='finding'` | `precis-citation-help`, `precis-finding-help` |
 | Reusable reasoning step beside a draft | `kind='memory'` tagged `kind:lemma`/`kind:inference`, `entails`/`derived-from` edges → `get(view='argument')` | `precis-argument-help` |

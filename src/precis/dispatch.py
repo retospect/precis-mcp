@@ -642,6 +642,7 @@ def boot(
         from precis.handlers.anki import AnkiHandler
         from precis.handlers.cad import CadHandler
         from precis.handlers.citation import CitationHandler
+        from precis.handlers.component import ComponentHandler
         from precis.handlers.concept import ConceptHandler
         from precis.handlers.conversation import ConversationHandler
         from precis.handlers.datasheet import DatasheetHandler
@@ -708,6 +709,10 @@ def boot(
         # (materials-handbook-kind proposal). Slug entity + typed property
         # registry + sourced value fact table; canonical-units-only in v1.
         _gated(MaterialHandler)
+        # component — general procurable-part store (docs/proposals/
+        # component-kind.md). Mirrors material's star schema plus a
+        # category-scoped spec registry; made-of links to a material.
+        _gated(ComponentHandler)
         _gated(OracleHandler)
         # Oracle YAML lives in the wheel; reconcile it against the
         # DB-recorded version on every boot so a wheel upgrade or

@@ -71,14 +71,16 @@ log = logging.getLogger(__name__)
 
 
 #: Hard cap on the skill index. Each entry costs ~40 tokens; at the
-#: current corpus (~90 active skills) the full index renders at ~3.7k
-#: tokens, so the cap keeps the cached system prompt under ~5k tokens
-#: even as the corpus grows. Sized to admit the whole active set today
-#: (a purely alphabetical truncation would otherwise drop late-sorted
-#: core skills like ``precis-tasks-help``). If a planner needs a skill
-#: beyond the cap it calls ``search(kind='skill', q='…')`` — that's the
-#: discovery mechanism by design.
-_SKILL_INDEX_MAX: int = 120
+#: current corpus (~140 active skills) the full index renders at ~5.6k
+#: tokens, so the cap keeps the cached system prompt bounded even as the
+#: corpus grows. Sized to admit the whole active set today (a purely
+#: alphabetical truncation would otherwise drop late-sorted core skills
+#: like ``precis-tasks-help`` — bumped 120 -> 160 on 2026-07-29 when the
+#: ``component`` kind's new skill tipped the corpus past the old cap and
+#: evicted exactly that one). If a planner needs a skill beyond the cap
+#: it calls ``search(kind='skill', q='…')`` — that's the discovery
+#: mechanism by design.
+_SKILL_INDEX_MAX: int = 160
 
 
 @dataclass(frozen=True)

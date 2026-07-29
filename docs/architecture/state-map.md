@@ -908,6 +908,24 @@ The master kinds table lives in the `precis-overview` skill.
   one); `search(property=, min=, max=, maturity=)` is the range-filter read.
   No card/embedding — the handbook page is a SQL join, not a search. Handle
   `ma<id>`. Skill: `precis-material-help`.
+- **`component`** (`docs/proposals/component-kind.md`) — general
+  procurable-part store (bolts/hoses/pipes/beams/gaskets/bearings/
+  adhesives/electronic parts), mirroring `material`'s star schema plus a
+  **category dimension**. Entity is a slug `refs` row (`kind='component'`,
+  `handlers/component.py`); `category=` required on create, resolves
+  against `component_categories` (flat, `core` curated by migration 0093 +
+  `proposed` mintable at write time); `component_specs` is the property-
+  registry analogue with a nullable `category_id` (NULL = universal —
+  `mass`/`unit_cost`/`length_overall` — non-null = scoped, handler-enforced
+  applicability at write time); `component_spec_values` is the fact table,
+  `component_ref_id` handler-enforced to `kind='component'`. An unknown
+  numeric `spec=` mints a `proposed` spec scoped to the writing component's
+  category. `made_of=` links to a `material` ref (`made-of`/`used-in`
+  relation pair) — the substance-composition edge; effective-property
+  inheritance over it is deferred, as is the `contains`/BOM structural-
+  composition follow-on. `search(spec=, min=, max=, maturity=, category=)`
+  is the range-filter read. Deliberately not `part` (the JLCPCB/LCSC
+  ingest-only catalog). Handle `cp<id>`. Skill: `precis-component-help`.
 - **`email`** — live, read-only IMAP mailbox browse (`handlers/email.py`,
   direct `Handler` — mirrors nothing, IMAP is source of truth). `precis.mail`
   = `account` (typed view over `email_account` row + JSONB config, provider

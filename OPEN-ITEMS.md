@@ -30,17 +30,23 @@ items are removed (history is `git log`).
   point-query call shape + `model_spec` JSON + one-sided-bracket behavior in its spec.
 
 ---
-## general `part`/`component` kind (bolts/hoses/electronics/adhesives/laminates)
-- Status: open · Severity: feature · Owner: new `component` kind · Test: n/a yet.
-- One kind, **category as growable typed data** (not a kind-per-category), reusing
-  `material`'s architecture (entity + typed registry + fact table + provenance) plus a
-  category-scoped spec registry, per-unit cost + UoM, and composition/provenance links
-  (`made_of → material` with edge meta; `contains → part` for BOM; `datasheet_of →
-  datasheet`; `realized_by →` the JLCPCB catalog `part`). Consumables = packaged
-  material (made_of absorbs the boundary); laminates = structured assemblies (ordered
-  layers w/ thickness/orientation), effective props computed later. Do NOT disturb the
-  existing JLCPCB `part` catalog — layer above it. Naming (`part` vs `component`
-  collision) decided in the spec. A full handoff prompt exists for this. `blocked-by` material.
+## `component` kind follow-ons (shipped v1 = ADR 0071, migration 0093)
+- Status: open · Severity: feature · Owner: `component` handler/store · Test: extend `tests/test_component.py`. All `blocked-by` the shipped `component` kind.
+- **BOM / assemblies** — a `contains → component` relation pair (structural composition,
+  orthogonal to `made-of → material`) with a quantity edge, plus a recursive cost/mass
+  **rollup** over the assembly tree. Assembly-ness stays a graph property (a node with
+  `contains` children), not a spec/category — see ADR 0071.
+- **Laminate layer structure** — ordered layers (thickness / fiber orientation) for the
+  `laminate` category + effective-property homogenization from the stack (v1 admits the
+  category but not the structured layer model).
+- **Effective-property inheritance** — walk `made-of → material` at read time to
+  synthesize a component's intensive properties (density, modulus, …) from its material.
+- **`realized_by → part` binding** — link a generic `component` to a concrete JLCPCB
+  catalog C-number + pull live price/stock; structured tiered price ladders land here.
+- **Category taxonomy tree** — parent/child categories with inherited spec sets (v1 flat).
+- **v1 trims** (shared with `material`): runtime spec-mint is numeric/boolean/text-only
+  (categoricals seed via migration); `value_low`/`value_high` columns exist without a
+  write path. Unit conversion + off-sample estimate are the shared cross-kind follow-ons.
 
 ---
 ## material v1 known trims (fast-follows, not defects)

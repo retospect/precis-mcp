@@ -97,6 +97,20 @@ class TestValuePut:
         with pytest.raises(NotFound):
             h.put(id="no-such-material", property="density", value=100, unit="kg/m3")
 
+    def test_as_of_is_forwarded_to_the_value_row(self, store: Any) -> None:
+        h = _handler(store)
+        h.put(id="6061-t6", title="Aluminum 6061-T6")
+        h.put(
+            id="6061-t6",
+            property="cost_per_mass",
+            value=3.5,
+            unit="USD/kg",
+            as_of="2026-07-01",
+        )
+        ref = store.get_ref(kind="material", id="6061-t6")
+        values = store.material_values_for_ref(ref.id)
+        assert str(values[0]["as_of"]) == "2026-07-01"
+
 
 # ── kind-scoped ref check (AC #5) ───────────────────────────────────
 

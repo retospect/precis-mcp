@@ -104,6 +104,10 @@ KIND_CODES: dict[str, str] = {
     # proposal) — a slug entity; per-value sourced facts live in
     # material_values, not a chunk table, so no CHUNK_CODES entry.
     "material": "ma",
+    # General procurable-part store (docs/proposals/component-kind.md) — a
+    # slug entity; per-value sourced facts live in component_spec_values,
+    # not a chunk table, so no CHUNK_CODES entry, same as material.
+    "component": "cp",
     # Organizational containers (ADR 0045)
     "folder": "fo",
     # reasoning artifacts (ADR 0051 §2b) — the plan is a chunk-tree sibling

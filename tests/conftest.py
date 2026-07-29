@@ -468,6 +468,7 @@ def _initialise_test_db() -> Iterator[None]:
             Migrator(PG_TEST_DSN, MIGRATIONS_DIR).apply_all()
             _truncate_data_tables(PG_TEST_DSN)
             _ensure_material_seed(PG_TEST_DSN)
+            _ensure_component_seed(PG_TEST_DSN)
         try:
             with psycopg.connect(admin_dsn, autocommit=True) as adm:
                 _ensure_template_cloneable(adm)
@@ -731,6 +732,8 @@ _PRESERVE_TABLES: frozenset[str] = frozenset(
         "kind_provider",  # vocab mapping, seeded by 0022
         "news_sources",  # seeded reference rows, 0033
         "material_properties",  # seeded property registry, 0092 (core + proposed)
+        "component_categories",  # seeded category registry, 0093 (core + proposed)
+        "component_specs",  # seeded spec registry, 0093 (core + proposed)
     }
 )
 
@@ -868,6 +871,44 @@ def _ensure_material_seed(dsn: str) -> None:
         # Same driver Migrator.apply_all uses for a migration's raw SQL body
         # (handles the file's own BEGIN/COMMIT under autocommit=True — see
         # the comment on that call site).
+        with conn.transaction():
+            with conn.cursor() as cur:
+                _execute_dump_sql(cur, seed_file.read_text(encoding="utf-8"))
+
+
+def _ensure_component_seed(dsn: str) -> None:
+    """Defensive reseed of ``component_categories``/``component_specs``'
+    ``core`` tiers — the ``component`` kind's analogue of
+    :func:`_ensure_material_seed`. Same rationale: the seed lives only in
+    tail migration ``0093_component_kind.sql``'s ``INSERT ... ON CONFLICT
+    DO NOTHING`` statements, so it needs the same defensive reseed guard
+    material needed (see that function's docstring for the full "why").
+
+    Re-executes 0093's own SQL directly (bypassing the ``_migrations``
+    ledger check) whenever the ``core`` category tier is missing. Safe to
+    call any time — the file is idempotent for exactly this reason.
+    """
+    seed_file = MIGRATIONS_DIR / "0093_component_kind.sql"
+    if not seed_file.exists():
+        return  # this checkout predates the component kind; nothing to seed
+    from precis.store.migrate import _execute_dump_sql
+
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        exists = conn.execute(
+            "SELECT to_regclass('public.component_categories') IS NOT NULL"
+        ).fetchone()
+        if not (exists and exists[0]):
+            return  # 0093 hasn't applied yet; apply_all's own run will seed it
+        core_count = conn.execute(
+            "SELECT count(*) FROM component_categories WHERE status = 'core'"
+        ).fetchone()
+        if core_count and core_count[0] > 0:
+            return  # seed intact — nothing to repair
+        log.warning(
+            "conftest: component_categories core seed missing on %r — "
+            "re-applying 0093's seed directly (see _ensure_component_seed)",
+            dsn,
+        )
         with conn.transaction():
             with conn.cursor() as cur:
                 _execute_dump_sql(cur, seed_file.read_text(encoding="utf-8"))

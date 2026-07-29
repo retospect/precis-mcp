@@ -463,6 +463,12 @@ def search(
     min: float | None = None,
     max: float | None = None,
     maturity: str | None = None,
+    # component range filter (see precis-component-help): search(kind='component',
+    # spec='max_working_pressure', min=20, category='hose') — same range-filter
+    # shape as material's property=, plus category= to narrow which component
+    # category the spec is being read against.
+    spec: str | None = None,
+    category: str | None = None,
 ) -> str:
     """Hybrid lexical + semantic search across kinds.
 
@@ -666,6 +672,12 @@ def search(
         payload["max"] = max
     if maturity is not None:
         payload["maturity"] = maturity
+    # component range filter — forwarded only when set so a plain search
+    # never trips the spec= interception path in the component handler.
+    if spec is not None:
+        payload["spec"] = spec
+    if category is not None:
+        payload["category"] = category
 
     # See ``get`` for the ``str | CallToolResult`` return contract.
     return _dispatch("search", payload)
@@ -768,6 +780,22 @@ def put(
     maturity: str | None = None,
     source: str | None = None,
     chunk: str | None = None,
+    # material / component (see precis-material-help / precis-component-help):
+    # as_of= dates a value (e.g. cost_per_mass / unit_cost) — 'YYYY-MM-DD'.
+    # Forwarded to both kinds' value insert.
+    as_of: str | None = None,
+    # component (see precis-component-help): put(kind='component', id=<slug>,
+    # title=…, category=…, uom=…, meta={mpn, manufacturer, ...}) upserts the
+    # entity (category= required on create, mints a proposed category if
+    # unknown); put(kind='component', id=<slug>, spec=<spec_id>, value=…,
+    # unit=…, ...) appends a sourced value (reuses property='s siblings
+    # above, keyed 'spec' for the category-scoped registry); put(kind=
+    # 'component', id=<slug>, made_of='material:<slug>') links the material
+    # it's made of.
+    spec: str | None = None,
+    category: str | None = None,
+    uom: str | None = None,
+    made_of: str | None = None,
 ) -> str:
     """Write or annotate. Creates new refs; for region rewrites use `edit`.
 
@@ -845,6 +873,11 @@ def put(
             "maturity": maturity,
             "source": source,
             "chunk": chunk,
+            "as_of": as_of,
+            "spec": spec,
+            "category": category,
+            "uom": uom,
+            "made_of": made_of,
         },
     )
 

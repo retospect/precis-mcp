@@ -45,6 +45,7 @@ from precis.store._blocks_ops import BlocksMixin
 from precis.store._cache_ops import CacheMixin
 from precis.store._cad_ops import CadMixin
 from precis.store._claude_quota_ops import ClaudeQuotaMixin
+from precis.store._component_ops import ComponentMixin
 from precis.store._draft_ops import DraftMixin, _AbbrevMixin
 from precis.store._email_ops import EmailAccountMixin
 from precis.store._events_ops import EventsMixin
@@ -91,6 +92,7 @@ class Store(
     StructureMixin,
     PcbMixin,
     MaterialMixin,
+    ComponentMixin,
     DraftMixin,
     _AbbrevMixin,
     TagsMixin,
