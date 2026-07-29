@@ -78,11 +78,16 @@
   changed_when: "'Successfully uninstalled' in asa_uninstall.stdout"
   failed_when: false
 
-- name: Install precis-mcp[asa] into asa venv
+- name: Install precis-mcp[asa,external] into asa venv
+  # asa_bot spawns `precis serve` in THIS venv, so the served runtime needs
+  # the data-source kinds (youtube/web/wolfram/news) that live in the
+  # `external` extra — without it those kinds fail at fetch time with
+  # "<pkg> is not installed" (e.g. youtube-transcript-api). Mirrors the
+  # worker/web roles, which likewise compose `external` into their venv.
   ansible.builtin.shell: |
     /opt/homebrew/bin/uv pip install --python /opt/asa/venv/bin/python --upgrade \
       --refresh-package precis-mcp \
-      'precis-mcp[asa] @ git+https://github.com/retospect/precis-mcp@{{ asa_git_ref | default("main") }}'
+      'precis-mcp[asa,external] @ git+https://github.com/retospect/precis-mcp@{{ asa_git_ref | default("main") }}'
   become: true
   register: asa_pip
   # uv prints "Installed/Updated N package(s)" to STDERR — check both
