@@ -1,7 +1,7 @@
 ---
 id: precis-calc-help
 title: precis — the calc kind (local SymPy CAS)
-summary: an exact, free, local computer-algebra system — arithmetic, calculus (integrals/derivatives/limits/sums/ODEs), equation solving, algebra, linear algebra, number theory; trig in degrees by default with a view='rad' switch
+summary: an exact, free, local computer-algebra system — arithmetic, calculus (integrals/derivatives/limits/sums/ODEs), equation solving, algebra, linear algebra, number theory; trig in degrees by default with a view='rad' switch; plus local unit conversion (3 ft to m; 1 ton to kg; 100 degC to degF) via pint
 applies-to: get (kind='calc')
 status: active
 ---
@@ -65,6 +65,45 @@ get(kind="calc", q="integrate(sin(x), x)", view="rad")  # → -cos(x)
 
 `view='deg'` is an explicit synonym for the default. No note appears in
 radian mode or when an expression uses no trig.
+
+## Unit conversion (local, via pint)
+
+A query with an explicit **`to`**, **`in`**, or **`->`** clause is a unit
+conversion — handled locally by `pint`, exact and offline, before SymPy
+ever sees it. No Wolfram, no API, no cost.
+
+```python
+get(kind="calc", q="3 ft to m")  # → 3 ft = 0.9144 m
+get(kind="calc", q="100 km -> mi")  # → 100 km = 62.1371 mi
+get(kind="calc", q="5 km in miles")  # → 5 km = 3.10686 mi
+get(kind="calc", q="ft to m")  # → ft = 0.3048 m   (bare factor, no magnitude)
+get(kind="calc", q="3 ft + 2 in to cm")  # → 3 ft + 2 in = 96.52 cm   (unit arithmetic)
+get(kind="calc", q="100 degC to degF")  # → 100 degC = 212 °F   (temperature)
+```
+
+**Disambiguation is the point.** Bare names resolve to a documented
+default; use the explicit name when you mean the other one. `pint`
+*raises* on an unknown unit rather than guessing — so a conversion is
+never silently wrong.
+
+| you write | you get | the other one |
+|-----------|---------|---------------|
+| `1 ton to kg` | `907.185 kg` (US short ton) | `1 metric_ton`/`1 tonne` → `1000 kg`; `1 long_ton` → `1016.05 kg` |
+| `1 gallon to L` | `3.78541 l` (US) | `1 imperial_gallon to L` → `4.54609 l` |
+| `1 oz to g` | `28.3495 g` (mass) | `1 fluid_ounce to mL` → `29.5735 ml` |
+
+(Units render with pint's abbreviated symbols — liter as `l`/`ml`,
+temperature as `°C`/`°F`. You may *write* `L` either way; pint accepts it.)
+
+Errors are actionable: `3 ft to kg` (incompatible dimensions) and
+`3 blorp to m` (unknown unit) both refuse with a copy-pasteable `next=`.
+For a **conversion factor** with math attached, both sides can carry
+units and arithmetic (`3 ft + 2 in to cm`); for pure symbolic math with
+no units, it's the plain SymPy path above.
+
+> `calc` conversions vs `math` (Wolfram): reach for `calc` for any
+> ordinary unit conversion — it's local, exact, free, and instant. `math`
+> stays for the natural-language / world-data long tail.
 
 ## Errors are actionable
 

@@ -301,3 +301,108 @@ class TestErrorEnvelopeShape:
         with pytest.raises(BadInput) as exc_info:
             handler.get()
         self._assert_envelope(exc_info.value)
+
+
+# ── unit conversion (pint) ─────────────────────────────────────────
+#
+# calc routes a query with a `to`/`in`/`->` clause to pint before sympy.
+# The selling point over sympy.physics.units is the curated, DISAMBIGUATING
+# registry — so the disambiguation cases (ton/gallon/oz) are the load-
+# bearing tests, not the happy-path length conversion. pint is an optional
+# [calc] dep; skip the whole module when it's absent so the suite stays
+# green on a torch-free / minimal install.
+
+pint = pytest.importorskip("pint")
+
+
+class TestUnitConversion:
+    """`3 ft to m` and friends — local, offline, exact."""
+
+    def test_length_to(self, handler: CalcHandler) -> None:
+        r = handler.get(q="3 ft to m")
+        assert "0.9144" in r.body
+        # The source side is echoed on the LHS, like the sympy path.
+        assert "3 ft =" in r.body
+
+    def test_arrow_form(self, handler: CalcHandler) -> None:
+        r = handler.get(q="100 km -> mi")
+        assert "62.13" in r.body  # 62.1371…
+
+    def test_in_separator(self, handler: CalcHandler) -> None:
+        r = handler.get(q="5 km in miles")
+        assert "3.106" in r.body  # 3.10686…
+
+    def test_unit_only_factor(self, handler: CalcHandler) -> None:
+        # No magnitude — a bare unit-to-unit conversion factor.
+        r = handler.get(q="ft to m")
+        assert "0.3048" in r.body
+
+    def test_unit_arithmetic_keeps_inch(self, handler: CalcHandler) -> None:
+        # Rightmost-` to ` split must leave the inch in the source intact:
+        # 3 ft + 2 in = 38 in = 96.52 cm.
+        r = handler.get(q="3 ft + 2 in to cm")
+        assert "96.52" in r.body
+
+
+class TestUnitDisambiguation:
+    """The reason pint beats sympy.physics.units: it keeps colliding unit
+    names distinct and resolves the bare name to a documented default."""
+
+    def test_ton_is_us_short_ton(self, handler: CalcHandler) -> None:
+        # Bare `ton` = US short ton = 907.185 kg (pint's documented default).
+        assert "907" in handler.get(q="1 ton to kg").body
+
+    def test_metric_ton(self, handler: CalcHandler) -> None:
+        assert "1000" in handler.get(q="1 metric_ton to kg").body
+        assert "1000" in handler.get(q="1 tonne to kg").body
+
+    def test_long_ton(self, handler: CalcHandler) -> None:
+        assert "1016" in handler.get(q="1 long_ton to kg").body  # 1016.05
+
+    def test_us_vs_imperial_gallon(self, handler: CalcHandler) -> None:
+        assert "3.785" in handler.get(q="1 gallon to L").body  # US
+        assert "4.546" in handler.get(q="1 imperial_gallon to L").body
+
+    def test_mass_vs_fluid_ounce(self, handler: CalcHandler) -> None:
+        assert "28.3" in handler.get(q="1 oz to g").body  # mass, 28.3495
+        assert "29.57" in handler.get(q="1 fluid_ounce to mL").body  # volume
+
+
+class TestTemperatureConversion:
+    """Offset units go through the Quantity() parser, not parse_expression."""
+
+    def test_celsius_to_fahrenheit(self, handler: CalcHandler) -> None:
+        assert "212" in handler.get(q="100 degC to degF").body
+
+    def test_fahrenheit_to_celsius(self, handler: CalcHandler) -> None:
+        assert "37.7" in handler.get(q="100 degF to degC").body  # 37.777…
+
+
+class TestConversionErrors:
+    """Ambiguity and nonsense fail loud with a copy-pasteable next=."""
+
+    def test_incompatible_dimensions(self, handler: CalcHandler) -> None:
+        with pytest.raises(BadInput) as exc:
+            handler.get(q="3 ft to kg")  # length → mass
+        assert exc.value.next is not None
+
+    def test_unknown_unit(self, handler: CalcHandler) -> None:
+        with pytest.raises(BadInput) as exc:
+            handler.get(q="3 blorp to m")
+        assert exc.value.next is not None
+
+
+class TestConversionDetectorDoesNotStealMath:
+    """The detector must only fire on a real `to`/`in`/`->` clause — plain
+    sympy expressions (which never contain a space-delimited to/in) fall
+    straight through unchanged."""
+
+    def test_plain_arithmetic_still_sympy(self, handler: CalcHandler) -> None:
+        assert "14" in handler.get(q="2+3*4").body
+
+    def test_trig_still_sympy(self, handler: CalcHandler) -> None:
+        # 'in' inside 'sin' is not space-delimited — no false route.
+        assert "1/2" in handler.get(q="sin(30)").body
+
+    def test_integrate_still_sympy(self, handler: CalcHandler) -> None:
+        assert "cos" in handler.get(q="integrate(sin(x), x)", view="rad").body

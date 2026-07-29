@@ -5,12 +5,19 @@ SymPy CAS — calculus, solve, algebra, linear algebra, number theory.
 Trig is **degrees by default for numeric arguments** (``sin(30)`` →
 ``1/2``); a *symbolic* argument (``sin(x)`` inside ``integrate``/``diff``)
 stays in sympy-native radians so calculus comes out clean. ``view='rad'``
-forces radians everywhere. Capability catalogue + examples live in the
-``precis-calc-help`` skill, not here (handler stays token-light).
+forces radians everywhere.
+
+A query with an explicit ``to`` / ``in`` / ``->`` clause (``3 ft to m``,
+``1 ton to kg``, ``100 degC to degF``) is a **unit conversion** — routed
+to ``pint`` (curated, disambiguating unit registry) before sympy ever
+sees it, so an agent gets local, offline, unambiguous conversions at no
+API cost. Capability catalogue + examples live in the ``precis-calc-help``
+skill, not here (handler stays token-light).
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any, ClassVar
 
 from precis.dispatch import Hub
@@ -29,7 +36,10 @@ class CalcHandler(Handler):
             "algebra. Pass an expression as `id` (or `q`); the result is the "
             "value. Numeric angles are degrees by default (sin(30)=1/2); "
             "symbolic args (sin(x) in a calculus op) stay in radians so "
-            "integrate/diff come out clean. Pass view='rad' to force radians."
+            "integrate/diff come out clean. Pass view='rad' to force radians. "
+            "A `to`/`in`/`->` clause is a local unit conversion via pint "
+            "(3 ft to m; 1 ton to kg; 100 degC to degF) — offline, exact, "
+            "disambiguating (metric_ton vs long_ton, US vs imperial_gallon)."
         ),
         supports_get=True,
         is_numeric=False,
@@ -63,6 +73,13 @@ class CalcHandler(Handler):
     ) -> Response:
         sympy = self._sympy
         expr_str = self._coerce_expr(id, q)
+        # A `to` / `in` / `->` clause means a unit conversion — hand it to
+        # pint before sympy ever sees it (sympy would parse "3 ft to m" as
+        # gibberish free symbols). Returns None when the query isn't a
+        # conversion, so ordinary math falls straight through unchanged.
+        unit_resp = _try_unit_conversion(expr_str)
+        if unit_resp is not None:
+            return unit_resp
         # Degrees is the **default** — this is an engineering-leaning
         # calculator (bolt circles, draft angles, cad poses are all in
         # degrees). ``view='rad'`` opts back into sympy's native radians
@@ -236,6 +253,143 @@ def _humanise(result: Any) -> str:
     """Render a sympy result, replacing opaque constants with English."""
     rendered = str(result)
     return _SYMPY_HUMAN_NAMES.get(rendered, rendered)
+
+
+# ── unit conversion (pint) ─────────────────────────────────────────
+#
+# calc's second job: local, offline, unambiguous unit conversion. A
+# query carrying an explicit ``to`` / ``in`` / ``->`` clause is routed
+# here *before* sympy — sympy would read ``3 ft to m`` as the product of
+# free symbols and cheerfully echo it. pint is chosen over
+# sympy.physics.units for the curated, disambiguating registry: it keeps
+# ``ton`` (US short) distinct from ``metric_ton``/``long_ton``, US
+# ``gallon`` from ``imperial_gallon``, mass ``oz`` from ``fluid_ounce``,
+# and *raises* on an unknown unit rather than silently inventing a
+# symbol — which is exactly the "unambiguous" property we want.
+
+
+# ``->`` is unambiguous; for the word separators we take the RIGHTMOST
+# ``to``/``in`` (greedy ``.+``) so ``3 ft + 2 in to cm`` splits at
+# `` to ``, leaving the inch in the source expression intact. ``to`` is
+# tried before ``in`` because ``in`` collides with the inch unit.
+_TO_RE = re.compile(r"^(?P<src>.+)\s+to\s+(?P<dst>\S.*)$", re.IGNORECASE)
+_IN_RE = re.compile(r"^(?P<src>.+)\s+in\s+(?P<dst>\S.*)$", re.IGNORECASE)
+
+# Split ``"100 degC"`` → magnitude ``100`` + unit ``degC`` for the offset-
+# unit (temperature) path, where the magnitude and unit must be handed to
+# pint's Quantity() separately (see _parse_quantity).
+_MAGNITUDE_UNIT_RE = re.compile(
+    r"^\s*(?P<mag>[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)\s+(?P<unit>.+?)\s*$"
+)
+
+# A single UnitRegistry is expensive to build (parses the full
+# definitions file) and safe to share — it's an immutable lookup table
+# once constructed. Cache it for the life of the process.
+_UREG: Any = None
+
+
+def _split_conversion(expr_str: str) -> tuple[str, str] | None:
+    """Split ``"3 ft to m"`` → ``("3 ft", "m")`` when the query is a
+    conversion, else ``None`` so ordinary math falls through to sympy."""
+    if "->" in expr_str:
+        src, _, dst = expr_str.partition("->")
+        src, dst = src.strip(), dst.strip()
+        return (src, dst) if src and dst else None
+    for pattern in (_TO_RE, _IN_RE):
+        m = pattern.match(expr_str)
+        if m:
+            src, dst = m.group("src").strip(), m.group("dst").strip()
+            if src and dst:
+                return src, dst
+    return None
+
+
+def _unit_registry(pint: Any) -> Any:
+    global _UREG
+    if _UREG is None:
+        _UREG = pint.UnitRegistry()
+    return _UREG
+
+
+def _parse_quantity(pint: Any, ureg: Any, text: str) -> Any:
+    """Parse the source side into a pint Quantity.
+
+    ``parse_expression`` handles unit arithmetic (``3 ft + 2 in``) but
+    rejects offset units (temperature) with ``OffsetUnitCalculusError``:
+    ``100 degC`` parses as ``100 * degC`` and multiplying a scalar by an
+    offset unit is ambiguous. The string form ``Quantity("100 degC")``
+    hits the same wall — the *only* form that works is magnitude and unit
+    passed **separately** (``Quantity(100.0, "degC")``), which reads
+    ``100 degC`` as a point on the scale, not a multiplication. So on the
+    offset error we split the leading numeric magnitude from the unit and
+    rebuild that way.
+
+    A bare unit with no magnitude (``ft`` in ``ft to m``) can come back
+    as a :class:`pint.Unit` rather than a Quantity on some pint versions;
+    normalise it to ``1 <unit>`` so the caller always gets a Quantity
+    with ``.magnitude`` / ``.to``.
+    """
+    try:
+        parsed = ureg.parse_expression(text)
+    except pint.OffsetUnitCalculusError:
+        m = _MAGNITUDE_UNIT_RE.match(text)
+        if m is None:
+            raise
+        parsed = ureg.Quantity(float(m.group("mag")), m.group("unit"))
+    if isinstance(parsed, pint.Unit):
+        return ureg.Quantity(1, parsed)
+    return parsed
+
+
+def _format_quantity(qty: Any) -> str:
+    """Compact, low-token rendering: magnitude at 6 significant figures +
+    the abbreviated unit symbol — ``0.9144 m``, ``96.52 cm``,
+    ``907.185 kg``."""
+    return f"{qty.magnitude:.6g} {qty.units:~}"
+
+
+def _try_unit_conversion(expr_str: str) -> Response | None:
+    """Return a converted-units :class:`Response`, or ``None`` when the
+    query isn't a conversion (so ``get`` proceeds to sympy)."""
+    split = _split_conversion(expr_str)
+    if split is None:
+        return None
+    src, dst = split
+    try:
+        import pint
+    except ImportError as e:
+        # Detected a conversion but the optional dep is absent — say so
+        # concretely rather than letting sympy mangle it downstream.
+        raise BadInput(
+            "unit conversion needs the optional 'pint' dependency; "
+            "install precis-mcp[calc].",
+            next="get(kind='calc', q='2+3*4')",
+        ) from e
+
+    ureg = _unit_registry(pint)
+    try:
+        converted = _parse_quantity(pint, ureg, src).to(dst)
+    except pint.UndefinedUnitError as e:
+        raise BadInput(
+            f"unknown unit in {expr_str!r}: {e}. Use a full, explicit unit "
+            "name to disambiguate — metric_ton / long_ton, imperial_gallon, "
+            "fluid_ounce.",
+            next="get(kind='calc', q='1 ton to kg')",
+        ) from e
+    except pint.DimensionalityError as e:
+        raise BadInput(
+            f"incompatible units in {expr_str!r}: {e}",
+            next="get(kind='calc', q='3 ft to m')",
+        ) from e
+    except (pint.PintError, ValueError, TypeError, AssertionError) as e:
+        # Everything else pint can throw (bad offset arithmetic, parse
+        # gaps) — keep the agent-facing message short + structural.
+        raise BadInput(
+            f"could not convert {expr_str!r}: {e}",
+            next="get(kind='calc', q='3 ft to m')",
+        ) from e
+
+    return Response(body=f"{src} = {_format_quantity(converted)}")
 
 
 def _wants_radians(view: str | None) -> bool:
