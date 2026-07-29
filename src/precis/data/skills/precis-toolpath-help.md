@@ -119,6 +119,8 @@ Paid tools cache automatically (`precis-cache`).
 | Parametric solid model | `kind='cad'` (node-list, analytic probes) | `precis-cad-help` |
 | Atomistic cell + bonds | `kind='structure'` (DFT ladder) | `precis-structure-help` |
 | PCB netlist + placement | `kind='pcb'` + `kind='part'` / `kind='datasheet'` | `precis-pcb-help` |
+| Sourced material property (density, yield strength, ...) | `put(kind='material', id='<slug>', property='<prop_id>', value=..., unit='<canonical unit>')` — entity first, canonical units only | `precis-material-help` |
+| Materials with property in a range | `search(kind='material', property='thermal_conductivity', max=0.05)` | `precis-material-help` |
 | Organize artifacts | `kind='folder'` + `link(rel='parent')`; `search(folder=...)` | `precis-folder-help` |
 | Verified claim → source | `kind='citation'` / `kind='finding'` | `precis-citation-help`, `precis-finding-help` |
 | Reusable reasoning step beside a draft | `kind='memory'` tagged `kind:lemma`/`kind:inference`, `entails`/`derived-from` edges → `get(view='argument')` | `precis-argument-help` |

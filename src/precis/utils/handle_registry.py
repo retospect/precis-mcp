@@ -100,6 +100,10 @@ KIND_CODES: dict[str, str] = {
     "pcb": "pb",
     "part": "pn",
     "datasheet": "da",
+    # CRC-handbook-style material properties store (materials-handbook-kind
+    # proposal) — a slug entity; per-value sourced facts live in
+    # material_values, not a chunk table, so no CHUNK_CODES entry.
+    "material": "ma",
     # Organizational containers (ADR 0045)
     "folder": "fo",
     # reasoning artifacts (ADR 0051 §2b) — the plan is a chunk-tree sibling

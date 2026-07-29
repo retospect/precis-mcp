@@ -442,6 +442,7 @@ def _initialise_test_db() -> Iterator[None]:
         if _claim_template_maintenance(admin_dsn):
             Migrator(PG_TEST_DSN, MIGRATIONS_DIR).apply_all()
             _truncate_data_tables(PG_TEST_DSN)
+            _ensure_material_seed(PG_TEST_DSN)
         try:
             with psycopg.connect(admin_dsn, autocommit=True) as adm:
                 _ensure_template_cloneable(adm)
@@ -704,6 +705,7 @@ _PRESERVE_TABLES: frozenset[str] = frozenset(
         "artifact_kinds",
         "kind_provider",  # vocab mapping, seeded by 0022
         "news_sources",  # seeded reference rows, 0033
+        "material_properties",  # seeded property registry, 0092 (core + proposed)
     }
 )
 
@@ -790,3 +792,57 @@ def _drop_all_public_objects(dsn: str) -> None:
         ).fetchall()
         for (name,) in funcs:
             _run_with_lock_retry(conn, f'DROP FUNCTION IF EXISTS "{name}" CASCADE')
+
+
+def _ensure_material_seed(dsn: str) -> None:
+    """Defensive reseed of ``material_properties``'s ``core`` tier.
+
+    Unlike ``kinds``/``relations`` — seeded by early migrations baked into
+    ``baseline/schema.sql``'s ``COPY`` blocks, so *every* full replay or
+    baseline-load restores them — the ``material`` kind's registry seed
+    lives only in tail migration ``0092_material_kind.sql``'s two
+    ``INSERT ... ON CONFLICT DO NOTHING`` statements. ``Migrator.apply_all``
+    treats a migration it has already recorded as done and skips it
+    unconditionally, so if anything ever empties this ONE table on the
+    shared template (e.g. an out-of-sync sibling worktree whose older
+    ``conftest.py`` lacks ``material_properties`` in its own
+    ``_PRESERVE_TABLES`` and ``TRUNCATE``s it out from under this one) the
+    seed never comes back on its own — every session clone descends from a
+    template stuck at "table exists, zero rows" forever.
+
+    Re-executes 0092's own SQL directly (bypassing the ``_migrations``
+    ledger check) whenever the ``core`` tier is missing. Safe to call any
+    time: the file is written idempotent for exactly this reason
+    (``CREATE TABLE IF NOT EXISTS`` / ``ON CONFLICT ... DO NOTHING``), so a
+    call that finds everything already seeded is a no-op read plus a
+    harmless re-INSERT-nothing. Called once per test run (see
+    ``_claim_template_maintenance``) against the shared template — every
+    per-session clone inherits the fix from there.
+    """
+    seed_file = MIGRATIONS_DIR / "0092_material_kind.sql"
+    if not seed_file.exists():
+        return  # this checkout predates the material kind; nothing to seed
+    from precis.store.migrate import _execute_dump_sql
+
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        exists = conn.execute(
+            "SELECT to_regclass('public.material_properties') IS NOT NULL"
+        ).fetchone()
+        if not (exists and exists[0]):
+            return  # 0092 hasn't applied yet; apply_all's own run will seed it
+        core_count = conn.execute(
+            "SELECT count(*) FROM material_properties WHERE status = 'core'"
+        ).fetchone()
+        if core_count and core_count[0] > 0:
+            return  # seed intact — nothing to repair
+        log.warning(
+            "conftest: material_properties core seed missing on %r — "
+            "re-applying 0092's seed directly (see _ensure_material_seed)",
+            dsn,
+        )
+        # Same driver Migrator.apply_all uses for a migration's raw SQL body
+        # (handles the file's own BEGIN/COMMIT under autocommit=True — see
+        # the comment on that call site).
+        with conn.transaction():
+            with conn.cursor() as cur:
+                _execute_dump_sql(cur, seed_file.read_text(encoding="utf-8"))

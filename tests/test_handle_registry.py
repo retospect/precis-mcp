@@ -61,6 +61,7 @@ EXPECTED_PERSISTENT_KINDS = frozenset(
         "pcb",
         "part",
         "datasheet",
+        "material",
         "plan",
         "figure",
         "mermaid",

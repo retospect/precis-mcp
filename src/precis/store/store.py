@@ -67,6 +67,7 @@ from precis.store._mappers import (
     _row_to_link,
     _row_to_ref,
 )
+from precis.store._material_ops import MaterialMixin
 from precis.store._pcb_ops import PcbMixin
 from precis.store._pdf_ops import PdfMixin
 from precis.store._refs_ops import RefsMixin
@@ -89,6 +90,7 @@ class Store(
     CadMixin,
     StructureMixin,
     PcbMixin,
+    MaterialMixin,
     DraftMixin,
     _AbbrevMixin,
     TagsMixin,

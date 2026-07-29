@@ -8,6 +8,50 @@ items are removed (history is `git log`).
 > regression that pins it.
 
 ---
+## material: `pint` unit-conversion layer (`units=` read + convert-on-write)
+- Status: open · Severity: feature · Owner: new `src/precis/utils/units.py` (pint
+  helper) + `material` handler + `tools/core.py` (`units=` param) · Test: n/a yet.
+- v1 (ADR 0070) is canonical-units-only. Add the deferred layer: a `pint`-backed
+  `utils/units.py` as the single conversion authority; `put` accepts any unit
+  convertible to the property's canonical unit (normalize on write); `get`/`search`
+  take `units=` to serve each simulator its own units. Store canonical (temperatures
+  in Kelvin), convert on the read boundary. Do NOT fold into `calc` (SymPy) — one
+  conversion authority, not two engines. Own proposal; `blocked-by` nothing (material shipped).
+
+---
+## material: off-sample estimate / fitting layer (interpolation + published-model eval)
+- Status: open · Severity: feature · Owner: `material` handler + a `model` value-type /
+  `model_spec` schema · Test: n/a yet.
+- Deferred from ADR 0070. Trust-ordered off-sample read: evaluate a published
+  correlation (`model` value-type: Sutherland/Arrhenius/Antoine/NASA-poly, form +
+  coeffs + validity range) → else return bracketing sourced points → else, only on an
+  explicit `estimate=`, a labeled in-range interpolation (`method='estimated'`, basis
+  points recorded, extrapolation refused). Never a silently-chosen fit. Define the
+  point-query call shape + `model_spec` JSON + one-sided-bracket behavior in its spec.
+
+---
+## general `part`/`component` kind (bolts/hoses/electronics/adhesives/laminates)
+- Status: open · Severity: feature · Owner: new `component` kind · Test: n/a yet.
+- One kind, **category as growable typed data** (not a kind-per-category), reusing
+  `material`'s architecture (entity + typed registry + fact table + provenance) plus a
+  category-scoped spec registry, per-unit cost + UoM, and composition/provenance links
+  (`made_of → material` with edge meta; `contains → part` for BOM; `datasheet_of →
+  datasheet`; `realized_by →` the JLCPCB catalog `part`). Consumables = packaged
+  material (made_of absorbs the boundary); laminates = structured assemblies (ordered
+  layers w/ thickness/orientation), effective props computed later. Do NOT disturb the
+  existing JLCPCB `part` catalog — layer above it. Naming (`part` vs `component`
+  collision) decided in the spec. A full handoff prompt exists for this. `blocked-by` material.
+
+---
+## material v1 known trims (fast-follows, not defects)
+- Status: open · Severity: polish · Owner: `material` handler (+ `tools/core.py`) · Test: extend `tests/test_material.py`.
+- Two deliberate v1 trims from ADR 0070: (a) runtime `proposed`-property mint is
+  numeric-only (categoricals must be seeded via migration) — add explicit
+  `value_type=`/`dimension=`/`allowed_values=` params to mint categoricals at runtime;
+  (b) no write path for `value_low`/`value_high` (columns exist) — add a range/uncertainty
+  write path for speculative values.
+
+---
 ## autocatpath pathway plugin: CI test skips until the dev image is rebuilt
 - Status: open · Severity: feature · Owner: `tests/test_pathway_plugin.py` +
   `scripts/build-image` · Test: this file (runs green once the image carries autocatpath).

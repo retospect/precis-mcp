@@ -653,6 +653,7 @@ def boot(
         from precis.handlers.gripe import GripeHandler
         from precis.handlers.job import JobHandler
         from precis.handlers.llm import LlmHandler
+        from precis.handlers.material import MaterialHandler
         from precis.handlers.memory import MemoryHandler
         from precis.handlers.mermaid import MermaidHandler
         from precis.handlers.message import MessageHandler
@@ -703,6 +704,10 @@ def boot(
         _gated(PcbHandler)
         _gated(PartHandler)
         _gated(DatasheetHandler)
+        # material — CRC-handbook-style engineering properties store
+        # (materials-handbook-kind proposal). Slug entity + typed property
+        # registry + sourced value fact table; canonical-units-only in v1.
+        _gated(MaterialHandler)
         _gated(OracleHandler)
         # Oracle YAML lives in the wheel; reconcile it against the
         # DB-recorded version on every boot so a wheel upgrade or

@@ -894,6 +894,20 @@ The master kinds table lives in the `precis-overview` skill.
 - **`folder`** — single-parent placement container for authored artifacts on
   `refs.parent_id` (ADR 0045); `handlers/_placement.py`, `KindSpec.role`,
   `search(folder=)` scopes a subtree. Skill: `precis-folder-help`.
+- **`material`** (`docs/proposals/materials-handbook-kind.md`, Phase-1) —
+  CRC-handbook-style engineering material properties store, **v1
+  canonical-units-only** (no `pint`/conversion/`units=`/off-sample estimate —
+  deferred follow-ons). Star schema: the entity is a slug `refs` row
+  (`kind='material'`, `handlers/material.py`); `material_properties` is a
+  typed, growable registry (`core` curated by migration 0092 + `proposed`
+  mintable at write time, must declare a canonical unit + dimension);
+  `material_values` is the fact table — one row per sourced measurement
+  (`value/conditions/maturity/source`), `material_ref_id` handler-enforced to
+  `kind='material'` (`refs` has no per-kind FK). `put` with `property=`
+  appends a value and rejects a non-canonical `unit=` (names the canonical
+  one); `search(property=, min=, max=, maturity=)` is the range-filter read.
+  No card/embedding — the handbook page is a SQL join, not a search. Handle
+  `ma<id>`. Skill: `precis-material-help`.
 - **`email`** — live, read-only IMAP mailbox browse (`handlers/email.py`,
   direct `Handler` — mirrors nothing, IMAP is source of truth). `precis.mail`
   = `account` (typed view over `email_account` row + JSONB config, provider

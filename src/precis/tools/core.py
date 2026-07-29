@@ -455,6 +455,14 @@ def search(
     sort: str | None = None,
     since: str | None = None,
     until: str | None = None,
+    # material range filter (see precis-material-help): search(kind='material',
+    # property='thermal_conductivity', max=0.05) — bounds are inclusive, in the
+    # property's canonical unit; maturity= narrows to commercial|lab|speculative.
+    # Declared at the verb level so strict-schema MCP clients don't strip them.
+    property: str | None = None,
+    min: float | None = None,
+    max: float | None = None,
+    maturity: str | None = None,
 ) -> str:
     """Hybrid lexical + semantic search across kinds.
 
@@ -648,6 +656,16 @@ def search(
         payload["since"] = since
     if until is not None:
         payload["until"] = until
+    # material range filter — forwarded only when set so a plain search
+    # never trips the property= interception path in the material handler.
+    if property is not None:
+        payload["property"] = property
+    if min is not None:
+        payload["min"] = min
+    if max is not None:
+        payload["max"] = max
+    if maturity is not None:
+        payload["maturity"] = maturity
 
     # See ``get`` for the ``str | CallToolResult`` return contract.
     return _dispatch("search", payload)
@@ -737,6 +755,19 @@ def put(
     entry: str | None = None,
     by: str | None = None,
     cost: float | None = None,
+    # material (see precis-material-help): put(kind='material', id=<slug>,
+    # title=…, meta={aliases, material_class}) upserts the entity;
+    # put(kind='material', id=<slug>, property=<prop_id>, value=…, unit=…,
+    # conditions={…}, maturity='lab', source='paper:<slug>', chunk='<slug>~5')
+    # appends a sourced value — v1 is canonical-unit-only (unit= must equal
+    # the property's canonical unit, or be omitted for a dimensionless one).
+    property: str | None = None,
+    value: Any = None,
+    unit: str | None = None,
+    conditions: dict[str, Any] | None = None,
+    maturity: str | None = None,
+    source: str | None = None,
+    chunk: str | None = None,
 ) -> str:
     """Write or annotate. Creates new refs; for region rewrites use `edit`.
 
@@ -807,6 +838,13 @@ def put(
             "entry": entry,
             "by": by,
             "cost": cost,
+            "property": property,
+            "value": value,
+            "unit": unit,
+            "conditions": conditions,
+            "maturity": maturity,
+            "source": source,
+            "chunk": chunk,
         },
     )
 
