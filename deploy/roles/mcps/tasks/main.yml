@@ -109,10 +109,17 @@
   # resolved for the branch and a fresh push doesn't deploy
   # until someone manually clears the cache. Same flag would
   # apply to any other ``@<branch>`` git dep that lands here.
+  #
+  # ``calc`` = sympy + pint. This is the agent-facing precis MCP venv, so
+  # ``[calc]`` is what makes local unit conversion — get(kind='calc',
+  # q='3 ft to m') — actually work for agents. sympy already rides in
+  # transitively via torch (acatome-store[embeddings]), but pint does NOT,
+  # so without ``calc`` the conversion path returns "install
+  # precis-mcp[calc]" (same extra-gap class as asa needing ``external``).
   ansible.builtin.shell: |
     {{ uv_bin }} pip install --python /opt/mcps/venv/bin/python --upgrade \
       --refresh-package precis-mcp \
-      'precis-mcp[patent,mermaid] @ git+https://github.com/retospect/precis-mcp@main' \
+      'precis-mcp[patent,mermaid,calc] @ git+https://github.com/retospect/precis-mcp@main' \
       acatome-meta \
       'acatome-store[embeddings]' \
       acatome-mcp \
