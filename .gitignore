@@ -91,6 +91,10 @@ memory/
 # scripts/nightly local full-build result (machine-specific state, not git)
 .nightly-status.md
 
+# scripts/deploy success marker (`<sha> <epoch>` of what's actually running on
+# the cluster) — machine-local state scripts/ship reads to report deploy lag.
+.deploy-state
+
 # rtk: keep project filters, ignore runtime tee logs/cache
 .rtk/*
 !.rtk/filters.toml

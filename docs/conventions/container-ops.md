@@ -36,3 +36,28 @@ instead of `cd` (`--git-dir=…`, `ls /Users/reto/precis-mcp`,
 Bash calls carried a redundant `cd` prefix — the single largest source of
 wasted tokens across the fleet, which is why this is called out explicitly
 rather than left as an assumed default.
+
+## Ship vs deploy — surfacing lag, never auto-deploying
+
+`scripts/ship` (commit → main) and `scripts/deploy` (main → cluster) are
+deliberately decoupled — deploy is a heavy outward action (bounces every
+daemon fleet-wide), so it stays an explicit, opt-in step (`scripts/deploy`
+or `/go`), never an automatic side effect of a ship. But main can silently
+accumulate shipped-but-undeployed commits, so `scripts/ship` **surfaces**
+that gap (never blocks on it):
+
+- On a **successful deploy**, `scripts/deploy` writes a gitignored
+  `.deploy-state` marker (`<sha> <epoch>`) at the repo root recording what's
+  actually running on the cluster.
+- At the **start** of a ship, if the oldest undeployed commit is older than
+  `PRECIS_DEPLOY_STALE_HOURS` (default `1`), `scripts/ship` prints a loud
+  `⚠ deploy lag` warning — the "begin of next ship burst" moment is the
+  cheapest place to notice drift.
+- At the **end** of a successful ship, it prints a one-line `📦 N commit(s)
+  … not yet deployed (oldest Xh ago)` summary (skipped silently if
+  `.deploy-state` is absent, e.g. never deployed from this worktree).
+
+All of this is best-effort git plumbing guarded with `|| true` — it can
+never fail or block a ship. A future `PRECIS_AUTODEPLOY_STALE=1` could opt
+into *actually* invoking `scripts/deploy` past the stale threshold, but
+that isn't implemented — this change only surfaces the lag.

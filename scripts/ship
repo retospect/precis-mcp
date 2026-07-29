@@ -56,9 +56,46 @@ CO_AUTHOR="Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 say() { printf '\n\033[1m▶ %s\033[0m\n' "$*"; }
 die() { printf '\n\033[31m✖ %s\033[0m\n' "$*" >&2; exit 1; }
 
+# ── deploy-lag helper (best-effort; NEVER blocks or fails a ship — every git
+# call below is guarded) ─────────────────────────────────────────────────
+# `.deploy-state` (gitignored, written by a successful scripts/deploy) holds
+# `<sha> <epoch>` of what's actually running on the cluster. Ship and deploy
+# are deliberately decoupled (deploy is a heavy outward action, opt-in only —
+# this never auto-invokes it), so main can accumulate unshipped-but-shipped-
+# to-main commits nobody has deployed yet. This helper surfaces that gap, used
+# both as a loud up-front warning (start of ship) and a summary (end of ship).
+#   PRECIS_DEPLOY_STALE_HOURS — threshold (hours) for the START warning,
+#     default 1. A future PRECIS_AUTODEPLOY_STALE=1 could opt into actually
+#     invoking scripts/deploy past this threshold — not implemented here.
+_deploy_lag_stats() {
+    # prints "<undeployed-commit-count> <oldest-undeployed-epoch>", or nothing
+    # if .deploy-state is missing/unreadable/stale-referencing a gone sha.
+    [[ -f "${WORKTREE}/.deploy-state" ]] || return 0
+    local deployed_sha count oldest
+    deployed_sha="$(awk '{print $1}' "${WORKTREE}/.deploy-state" 2>/dev/null || true)"
+    [[ -n "$deployed_sha" ]] || return 0
+    git cat-file -e "${deployed_sha}^{commit}" 2>/dev/null || return 0
+    count="$(git rev-list --count "${deployed_sha}..main" 2>/dev/null || true)"
+    [[ -n "$count" && "$count" != 0 ]] || return 0
+    oldest="$(git log "${deployed_sha}..main" --format=%ct 2>/dev/null | tail -1 || true)"
+    [[ -n "$oldest" ]] || return 0
+    printf '%s %s\n' "$count" "$oldest"
+}
+
 # ── 1. sanity ───────────────────────────────────────────────────────────
 [[ -n "$BRANCH" ]] || die "detached HEAD — check out a feature branch first."
 [[ "$BRANCH" != "main" ]] || die "on main — nothing to ship."
+
+# ── 1a. deploy-lag warning (loud, WARN-only — the "begin of next ship burst"
+# moment; never blocks) ───────────────────────────────────────────────────
+if stats="$(_deploy_lag_stats)" 2>/dev/null && [[ -n "$stats" ]]; then
+    read -r _lag_n _lag_oldest <<< "$stats"
+    _lag_age_h=$(( ( $(date +%s) - _lag_oldest ) / 3600 ))
+    _stale_h="${PRECIS_DEPLOY_STALE_HOURS:-1}"
+    if (( _lag_age_h > _stale_h )); then
+        printf '\n\033[33m⚠ deploy lag: oldest undeployed commit is %sh old (>%sh) — consider scripts/deploy or /go\033[0m\n' "$_lag_age_h" "$_stale_h"
+    fi
+fi
 
 # ── 1b. prebuild Tailwind CSS ────────────────────────────────────────────
 # Regenerate the production static stylesheet from the content scan so it
@@ -353,3 +390,11 @@ fi
 git fetch -q origin main
 say "shipped — main is now:"
 git log --oneline -1 origin/main
+
+# ── 8. deploy-lag summary (best-effort; skips silently if .deploy-state is
+# absent — e.g. never deployed from this worktree) ───────────────────────
+if stats="$(_deploy_lag_stats)" 2>/dev/null && [[ -n "$stats" ]]; then
+    read -r _lag_n _lag_oldest <<< "$stats"
+    _lag_age_h=$(( ( $(date +%s) - _lag_oldest ) / 3600 ))
+    printf '📦 %s commit(s) on main not yet deployed (oldest %sh ago) — scripts/deploy to flush.\n' "$_lag_n" "$_lag_age_h"
+fi

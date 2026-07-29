@@ -23,6 +23,11 @@ set -euo pipefail
 
 REF="${1:-main}"
 CLUSTER_DIR="${PRECIS_CLUSTER_DIR:-${HOME}/work/cluster}"
+# Repo root captured BEFORE any `cd` below (install-from-tree changes CLUSTER_DIR
+# to a subdir, and legacy mode's CLUSTER_DIR can be an entirely different
+# checkout) — the deploy-state marker always belongs at THIS repo's root, the
+# one scripts/ship reads it from, regardless of where ansible itself runs.
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 say() { printf '\n\033[1m▶ %s\033[0m\n' "$*"; }
 die() { printf '\n\033[31m✖ %s\033[0m\n' "$*" >&2; exit 1; }
@@ -79,3 +84,14 @@ else
 fi
 
 say "deployed — cluster is running '${REF}'."
+
+# ── 3. record the deploy-state marker (for scripts/ship's lag report) ────
+# Gitignored, local-only: `<sha> <epoch>` of what's now actually running on
+# the cluster, so a later `scripts/ship` can tell how many commits + how much
+# time have accumulated since. Best-effort — never fails a successful deploy.
+{
+    DEPLOYED_SHA="$(git -C "$REPO_ROOT" rev-parse "$REF" 2>/dev/null || true)"
+    if [[ -n "$DEPLOYED_SHA" ]]; then
+        printf '%s %s\n' "$DEPLOYED_SHA" "$(date +%s)" > "${REPO_ROOT}/.deploy-state"
+    fi
+} || true
