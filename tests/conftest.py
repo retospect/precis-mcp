@@ -342,6 +342,31 @@ def _force_mock_embedder_for_tests() -> None:
     os.environ.setdefault("PRECIS_ORACLE_AUTO_REINGEST", "0")
 
 
+@pytest.fixture(autouse=True)
+def _pin_load_gate_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Neutralise the 1-min load-average gate so load-gated worker passes
+    run deterministically under parallel test load.
+
+    The heavy passes — structural / deep_review / dream_agent reviews
+    (``precis.utils.load_gate.skip_if_high_load``) and sandbox job claim
+    (``executors.claude_docker._load_ok``) — *skip* when the host's 1-min
+    load exceeds ``PRECIS_LOAD_CEILING`` (default ``cpu_count * 1.5``).
+    Under ``pytest -n6`` the box runs 6 workers + their pg backends, so the
+    real load blows past that ceiling and those passes self-skip: the
+    happy-path tests then see ``claimed == 0`` and fail with ``0 == 1`` —
+    but only in parallel; serial ``-n0`` keeps load low and they pass. That
+    was the whole "green serially, red under the gate" flake.
+
+    Pin the ceiling absurdly high for every test so the gate is a no-op by
+    default. Tests that exercise the *skip* path override this with their
+    own ``monkeypatch.setenv("PRECIS_LOAD_CEILING", …)`` in the test body,
+    which runs after this fixture and wins (shared per-test monkeypatch);
+    ``test_load_gate.py`` likewise sets/deletes the env itself in each case,
+    so the gate's own coverage is untouched.
+    """
+    monkeypatch.setenv("PRECIS_LOAD_CEILING", "1000000")
+
+
 # Fixed 64-bit key for the session-wide advisory lock that serialises
 # concurrent pytest sessions against the shared ``precis_test`` DB.
 # Arbitrary but stable; ``0x70726563`` spells ``prec`` in ASCII.
