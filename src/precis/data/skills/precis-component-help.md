@@ -87,6 +87,80 @@ is made of; nothing yet *computes* the component's intensive properties
 (density, modulus, ...) from the linked material — that's a deferred
 follow-on (see below).
 
+### 4. contains — the assembly tree (BOM)
+
+```python
+put(kind="component", id="enclosure", contains="component:bracket", qty=1)
+put(kind="component", id="enclosure", contains="component:m6-bolt", qty=4)
+```
+
+`contains=` also rides on any `put(id=...)` call, independent of made_of/
+entity/value — same discipline. It resolves to a `component` ref (rejected,
+naming the resolved kind, otherwise) and records a `contains` edge (parent
+→ child), **orthogonal** to `made-of` (a bracket is *made of* aluminium and
+an enclosure *contains* the bracket — different edges, different meaning).
+
+`qty=` and `ref_designator=` (optional, e.g. `'J3'`) live on the edge:
+
+- On a **new** edge, `qty=` defaults to `1`.
+- **`qty=0` removes the edge** — add/update/remove through one param. The
+  response echoes it explicitly (`removed contains X -> Y`, or
+  `no such edge: X -> Y` for a typo'd detach).
+- `qty=` **omitted on an existing edge preserves its current quantity** —
+  it does not reset to 1. Only an explicit `qty=` changes it, so a re-put
+  that only sets `ref_designator=` doesn't clobber the quantity.
+- A `contains=` that would create a **cycle** — the child is the parent
+  itself, or already a transitive ancestor of the parent — is rejected
+  with `BadInput` naming the cycle. The tree is a DAG by construction.
+
+A component with no `contains` children is automatically a **leaf** — this
+is the PCB-leaf boundary (ADR 0071): a PCBA is one line item here, its
+internals stay in the `pcb`/`part` subsystem, and the rollup below never
+descends into it.
+
+```python
+get(kind="component", id="enclosure", view="tree")
+# assembly tree: Enclosure (enclosure)
+#
+# - Bracket (bracket) x1
+# - M6 bolt (m6-bolt) x4
+```
+
+`view='bom'` flattens the tree to leaf line items, multiplying `qty=` down
+each path and summing per distinct leaf (a leaf reached via two paths gets
+one combined row), plus **rollup totals**:
+
+```python
+get(kind="component", id="enclosure", view="bom")
+```
+
+Totals are `unit_cost total: Σ(path-qty × current unit_cost)` and `mass
+total: Σ(path-qty × current mass)`, each with a coverage note —
+`unit_cost: N of M leaves` — so a `0` total from "nothing priced" reads
+differently from a genuine zero. "Current" value, when a leaf carries
+several rows for the same spec (normal for `unit_cost`, price-break-dated),
+means the single most-recent one (`as_of` then `created_at`, descending) —
+the rollup never sums or averages multiple rows for one leaf.
+Price-break-aware costing (`conditions.qty_break`) is out of scope for v1;
+it always uses the latest single `unit_cost`.
+
+Add `spec=<spec_id>` for the **consistency query** — "does every part in
+this assembly agree on spec S?":
+
+```python
+get(kind="component", id="enclosure", view="bom", spec="coating")
+# coating: all 'galvanized' (3/3 leaves)
+# — or —
+# coating: MIXED — galvanized ×2, none ×1 (1 leaf has no coating)
+```
+
+An unregistered `spec=` is rejected with `BadInput` naming it; a spec no
+leaf records reads `coating: not recorded on any of N leaves` — never a
+false "uniform". This answers the motivating "are the washer *and* the
+screw both galvanized?" question directly; it's a **uniformity summary**
+(distinct values + counts), not a pass/fail against a target — an explicit
+comparator (`min=8.8` → violator list) is a deferred fast-follow.
+
 ## The category registry — core and proposed
 
 `get(kind='component', view='categories')` lists every category and its
@@ -236,6 +310,9 @@ get(
 )  # + this component's category specs
 get(kind="component", view="categories")  # the category registry
 get(kind="component")  # list every component
+get(kind="component", id="enclosure", view="tree")  # nested assembly tree
+get(kind="component", id="enclosure", view="bom")  # flat BOM + rollup
+get(kind="component", id="enclosure", view="bom", spec="coating")  # + consistency check
 ```
 
 The component page also shows the `made-of` material, if linked.
@@ -263,9 +340,16 @@ aliases, mpn, manufacturer, and category.
 
 ## What's deliberately not here (v1)
 
-- **BOM / assemblies** — a `contains → component` edge with quantity, and
-  recursive cost/mass rollup over the assembly tree. v1 stores flat
-  components and their `made-of` material only.
+- **Comparator / violator query** — `view='bom', spec=S` returns a
+  uniformity summary, not a pass/fail against a target (e.g. "is every
+  fastener grade ≥ 8.8?" → boolean + violator list). Deferred fast-follow
+  on the same tree walk.
+- **Price-break-aware rollup** — `unit_cost` totals use the single latest
+  value per leaf, ignoring `conditions.qty_break`. Ties into the deferred
+  unit-reconciliation follow-on.
+- **Quantity-unit reconciliation** — `qty=` is a dimensionless count of the
+  child's own `uom`; the rollup does naive `qty × spec` sums, it does not
+  reconcile a per-metre child against a per-each one.
 - **Laminate layer structure** — ordered layers and effective-property
   computation from the stack. v1 admits a `laminate` category (record its
   measured specs), but not the structured layer model.

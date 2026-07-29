@@ -99,6 +99,8 @@ class ComponentMixin:
     insert_ref: Any
     get_ref: Any
     add_link: Any
+    remove_link: Any
+    links_for: Any
 
     # -- entity ----------------------------------------------------------
 
@@ -350,6 +352,117 @@ class ComponentMixin:
             dst_ref_id=material_ref_id,
             relation="made-of",
         )
+
+    # -- assembly tree (contains) -----------------------------------------
+
+    def component_contains_edge_meta(
+        self, parent_ref_id: int, child_ref_id: int
+    ) -> dict[str, Any] | None:
+        """The existing ``contains`` edge's ``meta`` (``{qty, ref}``) for
+        ``(parent_ref_id, child_ref_id)``, or ``None`` if no such edge
+        exists. The handler uses this to PRESERVE the current ``qty`` on a
+        re-put that omits ``qty=`` (e.g. one only updating
+        ``ref_designator=``)."""
+        for link in self.links_for(parent_ref_id, direction="out", relation="contains"):
+            if link.dst_ref_id == child_ref_id:
+                return link.meta or {}
+        return None
+
+    def component_would_cycle(self, parent_ref_id: int, child_ref_id: int) -> bool:
+        """True if ``parent_ref_id --contains--> child_ref_id`` would create
+        a cycle: ``child_ref_id`` is ``parent_ref_id`` itself, or is already
+        a transitive ANCESTOR of ``parent_ref_id`` (adding the edge would
+        then close a loop). ``add_link`` only guards the direct self-loop;
+        this walks the ancestor chain (BFS over incoming ``contains`` edges)
+        to catch the deeper transitive case, keeping the tree a DAG."""
+        if child_ref_id == parent_ref_id:
+            return True
+        seen = {parent_ref_id}
+        frontier = [parent_ref_id]
+        while frontier:
+            next_frontier: list[int] = []
+            for ref_id in frontier:
+                for link in self.links_for(ref_id, direction="in", relation="contains"):
+                    ancestor_id = link.src_ref_id
+                    if ancestor_id == child_ref_id:
+                        return True
+                    if ancestor_id not in seen:
+                        seen.add(ancestor_id)
+                        next_frontier.append(ancestor_id)
+            frontier = next_frontier
+        return False
+
+    def component_add_contains(
+        self,
+        parent_ref_id: int,
+        child_ref_id: int,
+        *,
+        qty: int,
+        ref_designator: str | None = None,
+    ) -> None:
+        """Create/update the ``contains`` edge (parent -> child), storing
+        ``qty``/``ref_designator`` in the link ``meta``. ``merge_meta=True``
+        so a re-put updates the existing edge's meta rather than duplicating
+        it. Only sets ``meta['ref']`` when ``ref_designator`` is given, so a
+        qty-only re-put doesn't clobber a previously-recorded designator."""
+        meta: dict[str, Any] = {"qty": qty}
+        if ref_designator is not None:
+            meta["ref"] = ref_designator
+        self.add_link(
+            src_ref_id=parent_ref_id,
+            dst_ref_id=child_ref_id,
+            relation="contains",
+            meta=meta,
+            merge_meta=True,
+        )
+
+    def component_remove_contains(self, parent_ref_id: int, child_ref_id: int) -> bool:
+        """Remove the ``contains`` edge (parent -> child). Returns whether
+        an edge actually existed (so the handler can echo a real removal
+        vs. a no-op typo'd detach)."""
+        n = self.remove_link(
+            src_ref_id=parent_ref_id, dst_ref_id=child_ref_id, relation="contains"
+        )
+        return n > 0
+
+    def component_contains_children(self, ref_id: int) -> list[dict[str, Any]]:
+        """The direct ``contains`` children of ``ref_id``, each
+        ``{child_ref_id, qty, ref}`` from the link meta (``qty`` defaults to
+        1, ``ref`` to ``None``, for a hand-edited/legacy row missing a key).
+        Ordered by link creation — stable tree/BOM rendering. The tree-walk
+        (``view='tree'``/``'bom'``) recurses on this."""
+        out = []
+        for link in self.links_for(ref_id, direction="out", relation="contains"):
+            meta = link.meta or {}
+            out.append(
+                {
+                    "child_ref_id": link.dst_ref_id,
+                    "qty": meta.get("qty", 1),
+                    "ref": meta.get("ref"),
+                }
+            )
+        return out
+
+    def component_current_spec_value(
+        self, ref_id: int, spec_id: str
+    ) -> dict[str, Any] | None:
+        """THE single "current value" authority for one (component, spec):
+        the most-recent row (``ORDER BY as_of DESC NULLS LAST, created_at
+        DESC LIMIT 1``), or ``None`` if none is recorded. A
+        ``component_spec_values`` row is append-only and a (component,
+        spec) may legitimately hold many values (``unit_cost`` explicitly
+        so — as_of + price-break conditions); both the BOM rollup and the
+        consistency-query annotation resolve to exactly one value per leaf
+        per spec through this one helper, so they never disagree."""
+        cols = ", ".join(_VALUE_COLS.split(", "))
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                f"SELECT {cols} FROM component_spec_values "
+                "WHERE component_ref_id = %s AND spec_id = %s "
+                "ORDER BY as_of DESC NULLS LAST, created_at DESC LIMIT 1",
+                (ref_id, spec_id),
+            ).fetchone()
+        return None if row is None else _row_to_value(row)
 
     # -- search ----------------------------------------------------------
 

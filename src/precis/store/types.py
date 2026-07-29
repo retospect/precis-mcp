@@ -193,6 +193,15 @@ Relation = Literal[
     # Keep in sync with the `relations` seed in 0093_component_kind.sql.
     "made-of",
     "used-in",
+    # Component assembly tree — migration 0095
+    # (docs/proposals/component-assembly-tree.md). `contains` binds a
+    # `component` (parent) to each `component` (child) it structurally
+    # contains — a BOM edge, orthogonal to `made-of`'s substance
+    # composition. Inverse `part-of` lives on the child. Asymmetric,
+    # auto-mirrored. Keep in sync with the `relations` seed in
+    # 0095_component_contains.sql.
+    "contains",
+    "part-of",
 ]
 ActorSlug = Literal["agent", "user", "system"]
 
@@ -283,6 +292,9 @@ _INVERSE_RELATIONS: dict[str, str] = {
     # Component kind (0093).
     "made-of": "used-in",
     "used-in": "made-of",
+    # Component assembly tree (0095).
+    "contains": "part-of",
+    "part-of": "contains",
 }
 
 

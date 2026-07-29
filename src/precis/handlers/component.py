@@ -26,13 +26,22 @@ Two writes share one ``put``, discriminated by whether ``spec=`` is present:
 * ``put(kind='component', id=<slug>, made_of='material:<slug>')`` — on any
   put that carries ``made_of=``, resolve it to a ``material`` ref (rejected
   if it isn't one) and create the ``made-of`` link.
+* ``put(kind='component', id=<parent slug>, contains=<child component ref>,
+  qty=<int>=0, ref_designator=...)`` — the assembly tree (BOM edge,
+  docs/proposals/component-assembly-tree.md): ``contains=`` resolves to a
+  ``component`` ref; ``qty=0`` removes the edge; ``qty`` omitted on an
+  existing edge preserves its current quantity; a cycle (self or transitive
+  ancestor) is rejected.
 
 ``get`` renders the component page (specs grouped by spec, plus entity
 facts and the made-of material), ``view='table'`` (tidy one-row-per-value),
-``view='specs'`` (universal + this component's category specs), or
-``view='categories'`` (the category registry). ``search`` matches
-name/alias/mpn/manufacturer/category with ``q=``, or does the range-filter
-read (``spec=/min=/max=/maturity=``, optionally narrowed by ``category=``).
+``view='specs'`` (universal + this component's category specs),
+``view='categories'`` (the category registry), ``view='tree'`` (the nested
+assembly tree), or ``view='bom'`` (the flattened BOM with cost/mass rollup,
+optionally annotated by ``spec=`` for a cross-leaf consistency check).
+``search`` matches name/alias/mpn/manufacturer/category with ``q=``, or
+does the range-filter read (``spec=/min=/max=/maturity=``, optionally
+narrowed by ``category=``).
 
 See ``precis-component-help``.
 """
@@ -51,7 +60,7 @@ from precis.utils import handle_registry
 
 _MATURITIES: tuple[str, ...] = ("commercial", "lab", "speculative")
 _SOURCE_KINDS: tuple[str, ...] = ("paper", "datasheet")
-_VIEWS: tuple[str, ...] = ("table", "specs", "categories")
+_VIEWS: tuple[str, ...] = ("table", "specs", "categories", "tree", "bom")
 _VALUE_TYPES: tuple[str, ...] = ("quantity", "ratio", "categorical", "boolean", "text")
 
 
@@ -70,8 +79,13 @@ class ComponentHandler(Handler):
             "as_of=...) appends a sourced value — canonical-unit-only, "
             "spec must apply to the component's category. "
             "put(id=<slug>, made_of='material:<slug>') links the material "
-            "it's made of. get(id=<slug>) is the component page; "
-            "view='specs'/'categories' list the registries. "
+            "it's made of; put(id=<parent slug>, contains=<child component "
+            "ref>, qty=<int>=0, ref_designator=...) writes an assembly-tree "
+            "edge (qty=0 removes it). get(id=<slug>) is the component "
+            "page; view='specs'/'categories' list the registries; "
+            "view='tree' is the nested assembly tree; view='bom' is the "
+            "flattened BOM with cost/mass rollup (add spec=<spec_id> for a "
+            "cross-leaf consistency check). "
             "search(spec=<spec_id>, min=, max=, maturity=, category=) is "
             "the range filter read; plain q= matches name/mpn/manufacturer/"
             "category. See precis-component-help."
@@ -114,6 +128,9 @@ class ComponentHandler(Handler):
         category: str | None = None,
         uom: str | None = None,
         made_of: str | None = None,
+        contains: str | None = None,
+        qty: int | None = None,
+        ref_designator: str | None = None,
         meta: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
@@ -151,6 +168,14 @@ class ComponentHandler(Handler):
 
         if made_of is not None:
             resp = self._put_made_of(slug, made_of=str(made_of).strip(), base=resp)
+        if contains is not None:
+            resp = self._put_contains(
+                slug,
+                contains=str(contains).strip(),
+                qty=qty,
+                ref_designator=ref_designator,
+                base=resp,
+            )
         return resp
 
     def _put_entity(
@@ -242,6 +267,77 @@ class ComponentHandler(Handler):
         material_ref = self.store.get_ref(kind="material", id=target.ref_id)
         material_name = material_ref.title if material_ref is not None else made_of
         return Response(body=base.body + f"\nmade-of: {material_name} ({made_of})")
+
+    def _put_contains(
+        self,
+        slug: str,
+        *,
+        contains: str,
+        qty: int | None,
+        ref_designator: str | None,
+        base: Response,
+    ) -> Response:
+        """Write/update/remove the ``contains`` (assembly-tree) edge from
+        ``slug`` to ``contains=``. Mirrors ``_put_made_of``'s resolve-then-
+        link shape, plus: the cycle guard, and the qty=0-removes /
+        qty-omitted-preserves CRUD semantics
+        (docs/proposals/component-assembly-tree.md)."""
+        parent_ref = self.store.get_ref(kind="component", id=slug)
+        if parent_ref is None:
+            raise NotFound(
+                f"component {slug!r} not found - create the entity first",
+                next=(
+                    f"put(kind='component', id={slug!r}, title='...', category='...')"
+                ),
+            )
+        target = parse_link_target(contains, store=self.store)
+        if target.kind != "component":
+            raise BadInput(
+                f"contains={contains!r} resolves to kind={target.kind!r}; "
+                "contains= must resolve to a component ref",
+                next=(
+                    "put(kind='component', id=<slug>, "
+                    "contains='component:<child slug>', qty=1)"
+                ),
+            )
+        child_ref_id = target.ref_id
+        child_ref = self.store.get_ref(kind="component", id=child_ref_id)
+        child_label = f"{child_ref.title} ({contains})" if child_ref else contains
+
+        qty_arg = _validate_qty(qty) if qty is not None else None
+
+        if qty_arg == 0:
+            removed = self.store.component_remove_contains(parent_ref.id, child_ref_id)
+            note = (
+                f"removed contains {slug} -> {child_label}"
+                if removed
+                else f"no such edge: {slug} -> {child_label}"
+            )
+            return Response(body=base.body + f"\n{note}")
+
+        if self.store.component_would_cycle(parent_ref.id, child_ref_id):
+            raise BadInput(
+                f"contains={contains!r} would create a cycle - {child_label} "
+                f"is {slug!r} itself or already one of its ancestors",
+                next="the assembly tree must stay a DAG - pick a different "
+                "child, or restructure the tree",
+            )
+
+        if qty_arg is None:
+            existing_meta = self.store.component_contains_edge_meta(
+                parent_ref.id, child_ref_id
+            )
+            qty_final = existing_meta.get("qty", 1) if existing_meta is not None else 1
+        else:
+            qty_final = qty_arg
+
+        self.store.component_add_contains(
+            parent_ref.id, child_ref_id, qty=qty_final, ref_designator=ref_designator
+        )
+        note = f"contains: {child_label} (qty={qty_final})"
+        if ref_designator:
+            note += f" [{ref_designator}]"
+        return Response(body=base.body + f"\n{note}")
 
     def _put_value(
         self,
@@ -675,6 +771,7 @@ class ComponentHandler(Handler):
         *,
         id: str | int | None = None,
         view: str | None = None,
+        spec: str | None = None,
         **_kw: Any,
     ) -> Response:
         if view == "categories":
@@ -693,6 +790,10 @@ class ComponentHandler(Handler):
             )
         if view == "specs":
             return self._render_specs(category_id=(ref.meta or {}).get("category"))
+        if view == "tree":
+            return self._render_tree(ref)
+        if view == "bom":
+            return self._render_bom(ref, spec=str(spec).strip() if spec else None)
         values = self.store.component_values_for_ref(ref.id)
         if view == "table":
             return self._render_table(ref, values)
@@ -764,6 +865,135 @@ class ComponentHandler(Handler):
                 schema=["spec_id", "name", "unit", "category", "value_type", "status"],
             )
         )
+
+    # -- assembly tree views (view='tree' / 'bom') ----------------------
+
+    def _render_tree(self, ref: Any) -> Response:
+        label = f"{ref.title} ({ref.slug or ref.id})"
+        lines = [f"# assembly tree: {label}"]
+        if not self.store.component_contains_children(ref.id):
+            lines.append("")
+            lines.append("(leaf component — no contains children)")
+            return Response(body="\n".join(lines))
+        lines.append("")
+        self._append_tree_lines(lines, ref.id, indent=0)
+        return Response(body="\n".join(lines))
+
+    def _append_tree_lines(self, lines: list[str], ref_id: int, *, indent: int) -> None:
+        for child in self.store.component_contains_children(ref_id):
+            child_ref = self.store.get_ref(kind="component", id=child["child_ref_id"])
+            label = (
+                f"{child_ref.title} ({child_ref.slug or child_ref.id})"
+                if child_ref is not None
+                else str(child["child_ref_id"])
+            )
+            bits = f"{'  ' * indent}- {label} x{child['qty']}"
+            if child.get("ref"):
+                bits += f" [{child['ref']}]"
+            lines.append(bits)
+            self._append_tree_lines(lines, child["child_ref_id"], indent=indent + 1)
+
+    def _flatten_bom(
+        self, ref_id: int, *, multiplier: int = 1
+    ) -> list[tuple[int, int]]:
+        """Recursively flatten the assembly tree rooted at ``ref_id`` to
+        ``(leaf_ref_id, effective qty)`` pairs, multiplying qty down each
+        path. A component with no ``contains`` children is a leaf by
+        definition — the PCB-leaf boundary (ADR 0071): a PCBA is one line
+        item here, the rollup never descends into its internals."""
+        children = self.store.component_contains_children(ref_id)
+        if not children:
+            return [(ref_id, multiplier)]
+        pairs: list[tuple[int, int]] = []
+        for child in children:
+            pairs.extend(
+                self._flatten_bom(
+                    child["child_ref_id"], multiplier=multiplier * child["qty"]
+                )
+            )
+        return pairs
+
+    def _bom_leaves(self, ref_id: int) -> dict[int, int]:
+        """``{leaf_ref_id: summed qty}`` — the flat BOM, one entry per
+        distinct leaf even if it's reached via multiple paths."""
+        summed: dict[int, int] = {}
+        for leaf_id, qty in self._flatten_bom(ref_id):
+            summed[leaf_id] = summed.get(leaf_id, 0) + qty
+        return summed
+
+    def _render_bom(self, ref: Any, *, spec: str | None) -> Response:
+        spec_row: dict[str, Any] | None = None
+        if spec is not None:
+            spec_row = self.store.component_spec_get(spec)
+            if spec_row is None:
+                raise BadInput(
+                    f"unknown spec {spec!r}",
+                    next="get(kind='component', view='specs') to see the registry",
+                )
+
+        leaves = self._bom_leaves(ref.id)
+        n_leaves = len(leaves)
+        leaf_noun = "leaf" if n_leaves == 1 else "leaves"
+
+        schema = ["component", "qty", "unit_cost", "mass"]
+        if spec_row is not None:
+            schema.append(spec_row["spec_id"])
+
+        rows: list[dict[str, Any]] = []
+        total_cost = 0.0
+        cost_covered = 0
+        total_mass = 0.0
+        mass_covered = 0
+        spec_values: dict[int, str | None] = {}
+
+        for leaf_id, qty in leaves.items():
+            leaf_ref = self.store.get_ref(kind="component", id=leaf_id)
+            leaf_slug = (leaf_ref.slug or leaf_ref.id) if leaf_ref else leaf_id
+            leaf_name = leaf_ref.title if leaf_ref is not None else str(leaf_id)
+
+            cost_val = self.store.component_current_spec_value(leaf_id, "unit_cost")
+            cost_display = "—"
+            if cost_val is not None and cost_val["value_num"] is not None:
+                total_cost += qty * cost_val["value_num"]
+                cost_covered += 1
+                cost_display = _display_value(cost_val)
+
+            mass_val = self.store.component_current_spec_value(leaf_id, "mass")
+            mass_display = "—"
+            if mass_val is not None and mass_val["value_num"] is not None:
+                total_mass += qty * mass_val["value_num"]
+                mass_covered += 1
+                mass_display = _display_value(mass_val)
+
+            row: dict[str, Any] = {
+                "component": f"{leaf_name} ({leaf_slug})",
+                "qty": qty,
+                "unit_cost": cost_display,
+                "mass": mass_display,
+            }
+            if spec_row is not None:
+                v = self.store.component_current_spec_value(
+                    leaf_id, spec_row["spec_id"]
+                )
+                display = _display_value(v) if v is not None else None
+                spec_values[leaf_id] = display
+                row[spec_row["spec_id"]] = display if display is not None else "—"
+            rows.append(row)
+
+        lines = [
+            f"# BOM: {ref.title} ({ref.slug or ref.id}) — {n_leaves} {leaf_noun}",
+            render_agent_table(rows, schema=schema),
+            "",
+            f"unit_cost total: {total_cost:g} — "
+            f"unit_cost: {cost_covered} of {n_leaves} leaves",
+            f"mass total: {total_mass:g} — mass: {mass_covered} of {n_leaves} leaves",
+        ]
+
+        if spec_row is not None:
+            lines.append("")
+            lines.append(_spec_uniformity_summary(spec_row["spec_id"], spec_values))
+
+        return Response(body="\n".join(lines))
 
     def _render_table(self, ref: Any, values: list[dict[str, Any]]) -> Response:
         if not values:
@@ -964,6 +1194,49 @@ class ComponentHandler(Handler):
                 rows, schema=["component", "value", "conditions", "maturity", "source"]
             )
         )
+
+
+def _validate_qty(qty: Any) -> int:
+    """``qty=`` on a ``contains`` write must be a non-negative int (bools
+    excluded — ``isinstance(True, int)`` is True in Python)."""
+    if isinstance(qty, bool) or not isinstance(qty, int) or qty < 0:
+        raise BadInput(
+            f"qty={qty!r} must be a non-negative integer",
+            next="put(kind='component', id=<slug>, contains=<child>, qty=1)",
+        )
+    return qty
+
+
+def _spec_uniformity_summary(spec_id: str, spec_values: dict[int, str | None]) -> str:
+    """The ``view='bom', spec=S`` consistency-query summary: uniform (every
+    leaf carries the same current value), MIXED (distinct values + counts,
+    naming any leaf with no recorded value), or "not recorded on any" — the
+    latter is NEVER conflated with "uniform" (a spec no leaf carries is not
+    vacuously consistent)."""
+    n = len(spec_values)
+    recorded = {k: v for k, v in spec_values.items() if v is not None}
+    n_recorded = len(recorded)
+    missing = n - n_recorded
+
+    if n_recorded == 0:
+        return f"{spec_id}: not recorded on any of {n} leaves"
+
+    distinct = sorted(set(recorded.values()))
+    if len(distinct) == 1 and missing == 0:
+        return f"{spec_id}: all {distinct[0]!r} ({n_recorded}/{n} leaves)"
+
+    counts: dict[str, int] = {}
+    for v in recorded.values():
+        counts[v] = counts.get(v, 0) + 1
+    parts = [
+        f"{v} ×{c}" for v, c in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    ]
+    summary = f"{spec_id}: MIXED — " + ", ".join(parts)
+    if missing:
+        noun = "leaf" if missing == 1 else "leaves"
+        verb = "has" if missing == 1 else "have"
+        summary += f" ({missing} {noun} {verb} no {spec_id})"
+    return summary
 
 
 def _coerce_bool(value: Any) -> bool | None:

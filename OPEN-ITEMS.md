@@ -32,10 +32,15 @@ items are removed (history is `git log`).
   point-query call shape + `model_spec` JSON + one-sided-bracket behavior in its spec.
 
 ---
-## `component` kind follow-ons (shipped v1 = ADR 0071, migration 0093)
+## `component` kind follow-ons (shipped: v1 = ADR 0071/migration 0093; assembly tree = ADR 0072/migration 0094)
 - Status: open · Severity: feature · Owner: `component` handler/store · Test: extend `tests/test_component.py`. All `blocked-by` the shipped `component` kind.
-- **Assembly tree / BOM** — deferred (YAGNI); the full design + the PCB-leaf boundary
-  live in the dedicated **Assembly tree** section below.
+- **Assembly-tree follow-ons** (the `contains`/BOM v1 shipped, ADR 0072) — (a) **comparator /
+  violator query**: an explicit pass/fail against a target (`spec='grade' min=8.8` → boolean
+  verdict + violator list) on the same tree walk (v1 ships only the uniformity summary);
+  (b) **price-break-aware costing + uom reconciliation**: qty-break-tiered `unit_cost`
+  selection and mixed per-each/per-metre child rollup (ties into the `calc`/units path — v1
+  uses the latest single `unit_cost` via `component_current_spec_value`); (c) **optional-part
+  modelling**: a genuine "included at qty 0" line item (v1's `qty=0` means remove the edge).
 - **Laminate layer structure** — ordered layers (thickness / fiber orientation) for the
   `laminate` category + effective-property homogenization from the stack (v1 admits the
   category but not the structured layer model).
@@ -52,52 +57,6 @@ items are removed (history is `git log`).
   `material` off-sample entry above; the same `model` value-type + interpolation applies to
   component specs. (The categorical/typed-mint and `value_low`/`value_high` band trims are
   now shipped for both kinds; unit conversion is retired to `calc` — see the DRY entry.)
-
----
-## Assembly tree (component composition) — DESIGNED, YAGNI/deferred
-- Status: **deferred (YAGNI)** — designed, not building until a concrete consumer needs a
-  multi-level BOM. · Severity: feature · Owner: new `contains`/`part-of` relation pair +
-  `component` handler/store + a tree read/query surface · Test: n/a yet. `blocked-by`
-  nothing (the `component` store shipped, ADR 0071). When picked up, this warrants its own
-  proposal → `/ready` (recursive query + cycle semantics are real design surface).
-- **Core model.** A `contains → component` relation pair (inverse `part-of`) over the
-  existing `links` table, with the per-edge quantity + optional reference designator in the
-  link `meta` (e.g. `{qty: 4, ref: "M6×20 ×4"}`). Structural composition — **orthogonal to
-  `made-of → material`** (substance composition): a bracket is *made of* aluminium and an
-  enclosure *contains* that bracket. Assembly-ness is a **graph property** (a node with
-  `contains` children is an assembly; a leaf has none) — never a spec or a category, so no
-  `is_assembly` flag and no `assembly` category (see ADR 0071).
-- **Tree is the source of truth; a flat BOM is a *view*.** The stored structure is the
-  tree of `contains` edges; a flat BOM is derived on demand (recursively flatten to leaf
-  line-items, multiplying quantities down each path and summing equal leaves). So "give me
-  the flat BOM" and "give me the tree" are two renders of one graph, not two stores.
-- **Two query directions** (the reason this beats a flat list):
-  1. **Rollup (bottom-up aggregate)** — total cost/mass of an assembly = Σ over the tree of
-     `qty × leaf spec`, with the PCB-leaf rule below. Straightforward fold.
-  2. **Propagation / consistency (top-down predicate)** — "does *every* component in this
-     assembly (recursively) satisfy predicate P on spec S?" e.g. "are the washer AND the
-     screw both galvanized?", "is every fastener grade ≥ 8.8?", "is anything in here not
-     RoHS?". A flat rollup cannot answer these; this is the headline capability. Define the
-     query surface (a `view=` / a predicate arg) in the proposal.
-- **PCB granularity boundary (DECIDED — do not re-litigate).** A populated board is **one
-  line item**: a single PCBA `component` in the parent tree, NOT the ~N passives dissolved
-  into general components. The specialized `pcb`/`part` subsystem (JLCPCB assemblability,
-  Basic/turnover ranking, price ladders, stock) stays the owner of "which SKU" and of the
-  board's *internal* BOM; it rolls up its own built cost/mass into the PCBA component's
-  `unit_cost`/`mass`. So the `contains` rollup treats a PCBA as a **leaf** and never
-  descends into per-passive granularity — it needs to know nothing about PCBs. Rationale:
-  duplicating catalog parts into the general graph would lose the specialization and match
-  no real multi-level BOM; unified per-part electrical analytics (if ever wanted) belong to
-  the catalog/EDA side. Optional traceability without dissolving granularity: a PCBA
-  `component` may `realized_by → pcb` (the design) — see the `realized_by` follow-on.
-- **Open design points for the proposal.** Recursive-query semantics + depth handling;
-  **cycle prevention** (a component must not `contain` itself directly or transitively —
-  reject at link-write); quantity aggregation across repeated sub-assemblies; the read
-  verbs/views (`view='bom'` flat vs `view='tree'` vs a consistency-predicate query); how a
-  propagation predicate is expressed (which spec, which comparator/allowed-set).
-- **Why YAGNI now.** No consumer needs a multi-level BOM yet; the `component` store,
-  `made-of`, and the v1 trims cover current use. Capturing the design so it's build-ready
-  when a real assembly shows up — not building speculatively.
 
 ---
 ## autocatpath pathway plugin: CI test skips until the dev image is rebuilt

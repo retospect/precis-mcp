@@ -360,6 +360,13 @@ def get(
     # with id=. Declared at the verb level so strict-schema MCP clients
     # don't strip it.
     project: str | int | None = None,
+    # component (see precis-component-help): get(kind='component', id=…,
+    # view='bom', spec=<spec_id>) is the assembly-tree consistency query —
+    # annotates each BOM leaf with its current value of spec= plus a
+    # uniformity summary. Declared at the verb level (mirrors search()'s
+    # spec=/category= promotion) so strict-schema MCP clients don't strip
+    # it; other kinds' get() ignore it (swallowed by their **kwargs).
+    spec: str | None = None,
 ) -> str:
     """Read a ref or compute a value.
 
@@ -369,6 +376,8 @@ def get(
     for views that need them (callgraph, runtrace, ...); reserved
     keys (`kind`, `id`, `view`, `q`) inside `args=` are rejected.
     `project=` (draft only) looks up by owning project todo instead of id=.
+    `spec=` (component only) picks the spec for `view='bom'`'s consistency
+    query.
 
     Full reference: get(kind='skill', id='precis-get-help'), or
     search(kind='skill', q='reading a paper') for a topical lookup.
@@ -381,6 +390,11 @@ def get(
         payload["__extras__"] = dict(args)
     if project is not None:
         payload["project"] = project
+    # component range/consistency filter — forwarded only when set so a
+    # plain get() never trips the spec= interception path in the
+    # component handler (mirrors search()'s spec=/category= promotion).
+    if spec is not None:
+        payload["spec"] = spec
 
     # ``_dispatch`` returns ``str`` on success and ``CallToolResult``
     # with ``isError=True`` on failure. We propagate both verbatim;
@@ -800,11 +814,18 @@ def put(
     # unit=…, ...) appends a sourced value (reuses property='s siblings
     # above, keyed 'spec' for the category-scoped registry); put(kind=
     # 'component', id=<slug>, made_of='material:<slug>') links the material
-    # it's made of.
+    # it's made of; put(kind='component', id=<parent slug>,
+    # contains='component:<child slug>', qty=<int>=0, ref_designator=…)
+    # writes an assembly-tree edge — qty=0 removes it, qty omitted on an
+    # existing edge preserves its current quantity (docs/proposals/
+    # component-assembly-tree.md).
     spec: str | None = None,
     category: str | None = None,
     uom: str | None = None,
     made_of: str | None = None,
+    contains: str | None = None,
+    qty: int | None = None,
+    ref_designator: str | None = None,
 ) -> str:
     """Write or annotate. Creates new refs; for region rewrites use `edit`.
 
@@ -891,6 +912,9 @@ def put(
             "category": category,
             "uom": uom,
             "made_of": made_of,
+            "contains": contains,
+            "qty": qty,
+            "ref_designator": ref_designator,
         },
     )
 

@@ -671,6 +671,9 @@ class TestCoreParams:
             "allowed_values",
             "value_low",
             "value_high",
+            "contains",
+            "qty",
+            "ref_designator",
         ):
             assert name in sig.parameters, name
 
@@ -682,3 +685,279 @@ class TestCoreParams:
         sig = inspect.signature(search)
         for name in ("spec", "category", "min", "max", "maturity"):
             assert name in sig.parameters, name
+
+    def test_get_accepts_spec_param_without_typeerror(self) -> None:
+        import inspect
+
+        from precis.tools.core import get
+
+        sig = inspect.signature(get)
+        assert "spec" in sig.parameters
+
+
+# ---------------------------------------------------------------------------
+# Wire-level: get(kind='component', view='bom', spec=…) through precis.tools.core
+# ---------------------------------------------------------------------------
+#
+# Regression: `spec=` was missing from the `get()` tool function's own
+# parameter list (+ dispatch payload) in `precis.tools.core` — a real MCP
+# client's `spec=` kwarg raised ``TypeError: get() got an unexpected keyword
+# argument 'spec'`` before ever reaching ``ComponentHandler.get``, even though
+# every other test in this file calls the handler directly and so never
+# exercised that layer. Mirrors ``test_chunk_review.py``'s
+# ``test_mcp_edit_tool_records_review`` pattern.
+
+
+def test_mcp_get_tool_carries_spec_to_bom_consistency_query(
+    monkeypatch, hub: Hub, runtime_with_store: Any
+) -> None:
+    import precis.tools.core as core
+
+    monkeypatch.setattr(core, "_runtime", runtime_with_store)
+
+    h = ComponentHandler(hub=hub)
+    h.put(id="enclosure", title="Enclosure", category="fastener")
+    h.put(id="bracket", title="Bracket", category="fastener")
+    h.put(id="washer", title="Washer", category="fastener")
+    h.put(id="enclosure", contains="component:bracket", qty=1)
+    h.put(id="enclosure", contains="component:washer", qty=1)
+    h.put(id="bracket", spec="grade", value="A2")
+    h.put(id="washer", spec="grade", value="A2")
+
+    out = core.get(kind="component", id="enclosure", view="bom", spec="grade")
+    assert isinstance(out, str)
+    assert "all" in out
+    assert "A2" in out
+    assert "2/2 leaves" in out
+
+
+# ── assembly tree: contains write + cycle guard (component-assembly-tree.md) ─
+
+
+def _mint(h: ComponentHandler, slug: str, *, category: str = "fastener") -> None:
+    h.put(id=slug, title=slug, category=category)
+
+
+class TestContainsWrite:
+    def test_contains_creates_edge_and_tree_shows_qty(self, store: Any) -> None:
+        h = _handler(store)
+        _mint(h, "enclosure")
+        _mint(h, "bracket")
+        _mint(h, "m6-bolt")
+        h.put(id="enclosure", contains="component:bracket", qty=1)
+        h.put(id="enclosure", contains="component:m6-bolt", qty=4, ref_designator="J3")
+        resp = h.get(id="enclosure", view="tree")
+        assert "bracket" in resp.body
+        assert "x1" in resp.body
+        assert "m6-bolt" in resp.body
+        assert "x4" in resp.body
+        assert "J3" in resp.body
+
+    def test_leaf_component_tree_renders_gracefully(self, store: Any) -> None:
+        h = _handler(store)
+        _mint(h, "washer")
+        resp = h.get(id="washer", view="tree")
+        assert "leaf" in resp.body.lower()
+
+    def test_contains_self_is_rejected(self, store: Any) -> None:
+        h = _handler(store)
+        _mint(h, "enclosure")
+        with pytest.raises(BadInput):
+            h.put(id="enclosure", contains="component:enclosure")
+
+    def test_direct_cycle_is_rejected(self, store: Any) -> None:
+        h = _handler(store)
+        _mint(h, "a")
+        _mint(h, "b")
+        h.put(id="a", contains="component:b", qty=1)
+        with pytest.raises(BadInput):
+            h.put(id="b", contains="component:a", qty=1)
+
+    def test_transitive_cycle_is_rejected(self, store: Any) -> None:
+        h = _handler(store)
+        _mint(h, "a")
+        _mint(h, "b")
+        _mint(h, "c")
+        h.put(id="a", contains="component:b", qty=1)
+        h.put(id="b", contains="component:c", qty=1)
+        with pytest.raises(BadInput):
+            h.put(id="c", contains="component:a", qty=1)
+
+    def test_non_component_child_is_rejected(self, store: Any) -> None:
+        store.insert_ref(kind="paper", slug="not-a-component", title="Some paper")
+        h = _handler(store)
+        _mint(h, "enclosure")
+        with pytest.raises(BadInput):
+            h.put(id="enclosure", contains="paper:not-a-component")
+
+    def test_qty_zero_removes_edge(self, store: Any) -> None:
+        h = _handler(store)
+        _mint(h, "enclosure")
+        _mint(h, "bracket")
+        h.put(id="enclosure", contains="component:bracket", qty=1)
+        resp = h.put(id="enclosure", contains="component:bracket", qty=0)
+        assert "removed" in resp.body
+        tree = h.get(id="enclosure", view="tree")
+        assert "bracket" not in tree.body
+
+    def test_qty_zero_on_missing_edge_is_a_no_op_echo(self, store: Any) -> None:
+        h = _handler(store)
+        _mint(h, "enclosure")
+        _mint(h, "bracket")
+        resp = h.put(id="enclosure", contains="component:bracket", qty=0)
+        assert "no such edge" in resp.body
+
+    def test_reput_with_new_qty_updates_existing_edge_no_duplicate(
+        self, store: Any
+    ) -> None:
+        h = _handler(store)
+        _mint(h, "enclosure")
+        _mint(h, "bracket")
+        h.put(id="enclosure", contains="component:bracket", qty=1)
+        h.put(id="enclosure", contains="component:bracket", qty=3)
+        children = store.component_contains_children(
+            store.get_ref(kind="component", id="enclosure").id
+        )
+        assert len(children) == 1
+        assert children[0]["qty"] == 3
+
+    def test_qty_omitted_on_reput_preserves_current_qty(self, store: Any) -> None:
+        h = _handler(store)
+        _mint(h, "enclosure")
+        _mint(h, "m6-bolt")
+        h.put(id="enclosure", contains="component:m6-bolt", qty=4)
+        # ref_designator-only re-put — qty= omitted must NOT reset to 1.
+        h.put(id="enclosure", contains="component:m6-bolt", ref_designator="J3")
+        children = store.component_contains_children(
+            store.get_ref(kind="component", id="enclosure").id
+        )
+        assert len(children) == 1
+        assert children[0]["qty"] == 4
+        assert children[0]["ref"] == "J3"
+
+    def test_negative_qty_is_rejected(self, store: Any) -> None:
+        h = _handler(store)
+        _mint(h, "enclosure")
+        _mint(h, "bracket")
+        with pytest.raises(BadInput):
+            h.put(id="enclosure", contains="component:bracket", qty=-1)
+
+    def test_non_int_qty_is_rejected(self, store: Any) -> None:
+        h = _handler(store)
+        _mint(h, "enclosure")
+        _mint(h, "bracket")
+        with pytest.raises(BadInput):
+            h.put(id="enclosure", contains="component:bracket", qty=1.5)  # type: ignore[arg-type]
+
+
+# ── assembly tree: view='bom' flatten + rollup ────────────────────────────
+
+
+class TestBom:
+    def test_leaf_with_no_children_renders_as_single_leaf(self, store: Any) -> None:
+        h = _handler(store)
+        _mint(h, "washer")
+        resp = h.get(id="washer", view="bom")
+        assert "washer" in resp.body
+        assert "1 leaf" in resp.body
+
+    def test_multilevel_flatten_sums_quantities_per_leaf(self, store: Any) -> None:
+        h = _handler(store)
+        _mint(h, "enclosure")
+        _mint(h, "sub-assembly")
+        _mint(h, "m6-bolt")
+        _mint(h, "washer")
+        # enclosure contains 2x sub-assembly; sub-assembly contains 3x m6-bolt
+        # and 1x washer. m6-bolt also appears directly under enclosure once,
+        # so the flat total for m6-bolt is (2*3) + 1 = 7.
+        h.put(id="enclosure", contains="component:sub-assembly", qty=2)
+        h.put(id="sub-assembly", contains="component:m6-bolt", qty=3)
+        h.put(id="sub-assembly", contains="component:washer", qty=1)
+        h.put(id="enclosure", contains="component:m6-bolt", qty=1)
+        resp = h.get(id="enclosure", view="bom")
+        assert "2 leaves" in resp.body  # m6-bolt, washer — sub-assembly is not a leaf
+        assert "7" in resp.body  # summed m6-bolt qty
+
+    def test_rollup_latest_unit_cost_wins_over_two_rows(self, store: Any) -> None:
+        h = _handler(store)
+        _mint(h, "enclosure")
+        _mint(h, "bracket")
+        h.put(id="enclosure", contains="component:bracket", qty=2)
+        h.put(
+            id="bracket",
+            spec="unit_cost",
+            value=1.0,
+            unit="USD",
+            as_of="2026-01-01",
+        )
+        h.put(
+            id="bracket",
+            spec="unit_cost",
+            value=5.0,
+            unit="USD",
+            as_of="2026-06-01",
+        )
+        resp = h.get(id="enclosure", view="bom")
+        # latest (as_of 2026-06-01) unit_cost=5.0 wins -> total = 2 * 5.0 = 10
+        assert "10" in resp.body
+        assert "unit_cost: 1 of 1 leaves" in resp.body
+
+    def test_rollup_coverage_note_when_some_leaves_lack_spec(self, store: Any) -> None:
+        h = _handler(store)
+        _mint(h, "enclosure")
+        _mint(h, "bracket")
+        _mint(h, "washer")
+        h.put(id="enclosure", contains="component:bracket", qty=1)
+        h.put(id="enclosure", contains="component:washer", qty=1)
+        h.put(id="bracket", spec="unit_cost", value=2.0, unit="USD")
+        resp = h.get(id="enclosure", view="bom")
+        assert "unit_cost: 1 of 2 leaves" in resp.body
+
+    def test_spec_consistency_uniform(self, store: Any) -> None:
+        h = _handler(store)
+        _mint(h, "enclosure")
+        _mint(h, "bracket")
+        _mint(h, "washer")
+        h.put(id="enclosure", contains="component:bracket", qty=1)
+        h.put(id="enclosure", contains="component:washer", qty=1)
+        h.put(id="bracket", spec="grade", value="A2")
+        h.put(id="washer", spec="grade", value="A2")
+        resp = h.get(id="enclosure", view="bom", spec="grade")
+        assert "all" in resp.body
+        assert "A2" in resp.body
+        assert "2/2 leaves" in resp.body
+
+    def test_spec_consistency_mixed_with_missing_leaf(self, store: Any) -> None:
+        h = _handler(store)
+        _mint(h, "enclosure")
+        _mint(h, "bracket")
+        _mint(h, "washer")
+        _mint(h, "nut")
+        h.put(id="enclosure", contains="component:bracket", qty=1)
+        h.put(id="enclosure", contains="component:washer", qty=1)
+        h.put(id="enclosure", contains="component:nut", qty=1)
+        h.put(id="bracket", spec="grade", value="A2")
+        h.put(id="washer", spec="grade", value="A2")
+        h.put(id="nut", spec="grade", value="A4")
+        resp = h.get(id="enclosure", view="bom", spec="grade")
+        assert "MIXED" in resp.body
+        assert "A2" in resp.body
+        assert "A4" in resp.body
+
+    def test_spec_not_recorded_on_any_leaf_is_not_a_false_uniform(
+        self, store: Any
+    ) -> None:
+        h = _handler(store)
+        _mint(h, "enclosure")
+        _mint(h, "bracket")
+        h.put(id="enclosure", contains="component:bracket", qty=1)
+        resp = h.get(id="enclosure", view="bom", spec="grade")
+        assert "grade: not recorded on any of 1 leaves" in resp.body
+
+    def test_unregistered_spec_is_rejected(self, store: Any) -> None:
+        h = _handler(store)
+        _mint(h, "enclosure")
+        _mint(h, "bracket")
+        h.put(id="enclosure", contains="component:bracket", qty=1)
+        with pytest.raises(BadInput):
+            h.get(id="enclosure", view="bom", spec="totally-unregistered-spec")
