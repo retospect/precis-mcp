@@ -86,6 +86,20 @@
   to a ref or chunk. → `src/precis/handlers/_numeric_ref.py` · `src/precis/runtime/dispatch.py`
 - **admit** — the pre-flight fit-check that refuses a (context, model) pairing
   too big for the model's window, with the numbers. → `src/precis/utils/llm/admit.py`
+- **taproot** — the evidence-grounded claim graph: unify a claim into one hub
+  node, ground it in many papers as typed graded evidence, resolve citations
+  onto it. Phased build (1–5). → `docs/proposals/taproot.md` · `src/precis/taproot/`
+- **claim hub** — a `finding` tagged `FROLE:claim`, promoted to *the* node a
+  claim lives on; many papers attach as `establishes`/`corroborates`/
+  `contradicts` evidence edges (taproot Phase 2). → `docs/proposals/taproot-phase2-hub-node.md`
+- **FROLE** — the `finding`-ref discriminator axis: `FROLE:claim` (grounded
+  world-claim, a taproot hub) vs `FROLE:review` (editorial/manuscript note,
+  excluded from the claim graph). Classifier = `data/axes/frole.yaml` via
+  `axis_pass`. → `src/precis/data/axes/frole.yaml`
+- **establishes / corroborates** — taproot evidence-edge roles (paper → claim
+  hub): the *originator(s)* that first showed a claim `establishes` it; later
+  papers that cite them `corroborate`. Derived from the citation graph, not
+  hand-set. → `docs/proposals/taproot.md` §"Seniority is derived"
 
 ## Overloaded — which one?
 

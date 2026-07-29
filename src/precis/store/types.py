@@ -860,6 +860,19 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
     # blocking STATUS: transition. No author-facing `TRUST:` axis in v1 —
     # trust is the absence of a concern edge (§4, R3).
     "STALE": frozenset({"retracted-premise"}),
+    # Taproot Phase-2 predecessor (open #11, docs/proposals/
+    # taproot-phase2-hub-node.md). A `finding`-ref discriminator written by
+    # the `axis:frole` classifier pass (data/axes/frole.yaml): `FROLE:claim`
+    # = a grounded world-claim (the taproot claim hub + evidence edges attach
+    # only here), `FROLE:review` = an editorial/manuscript note (excluded from
+    # the claim graph). Registered here — like DENSITY — so the validation
+    # layer knows the namespace; unlike DENSITY it is a REF tag, so listing it
+    # is load-bearing: `search(kind='finding', tags=['FROLE:claim'])` routes
+    # through `parse_strict`, which rejects an unregistered UPPERCASE axis.
+    # NOT added to `finding`'s allowed-axes because `finding` is deliberately
+    # unlisted in `_KIND_ALLOWED_AXES` (unrestricted); listing it would strip
+    # its other axes. `canon.block()` reads these via raw SQL.
+    "FROLE": frozenset({"claim", "review"}),
 }
 
 # Bare flag values that collide with a closed-vocab value. Maintained as

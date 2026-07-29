@@ -613,7 +613,10 @@ before any `status: ready`).
     graph. Backfill-classify existing findings with a cheap SMALL/local
     pass (mirrors the `ROLE3` cascade). Must land before `finding` becomes
     the hub in Phase 2. (The fixture sidestepped this by drawing from
-    `citation`, which is clean.)
+    `citation`, which is clean.) **Built 2026-07-29 (Phase-2 slice 2a):**
+    `data/axes/frole.yaml`, a ref-level `axis_pass` classifier (`axis:frole`,
+    default-OFF); `FROLE` registered in `_CLOSED_VOCAB`. Fail-open (no
+    `default_unknown`).
 
 12. **[COVERED — via synthetic, corpus is thin]** A targeted Opus scan of
     all 422 claims found only **1 genuine** contradiction + 7
@@ -699,7 +702,9 @@ and validate before widening blast radius.
    relation (`establishes`/`corroborates`/`contradicts`), the evidence
    `view`, the `citation`-card dedup (open #3 residual), the
    `\cite{}`→originators export expansion (open #4 residual). The
-   schema/vocab foundation the rest writes to.
+   schema/vocab foundation the rest writes to. → build ticket:
+   [`taproot-phase2-hub-node.md`](./taproot-phase2-hub-node.md) (5 slices
+   2a–2e; the FROLE classifier (open #11) is slice 2a, the predecessor).
 3. **Phase 3 — forward resolution.** Turn on + finish `chase`, wire the
    Axis-A pipeline to edges, draft-side response policies. First user
    value; runs on ingest only, bounded volume.

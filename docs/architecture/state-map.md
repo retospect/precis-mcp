@@ -858,12 +858,24 @@ overlay on `finding`/`ref_tags`/`links` — no schema of its own).
   rather than auto-attaching — over-merge is the one dangerous
   direction). Every call routes through `precis.utils.llm.router`
   (`source="taproot:extract"` / `"taproot:dedup"` / `"taproot:merge-confirm"`).
-- **`FROLE` namespace** (`FROLE_NAMESPACE`/`FROLE_CLAIM`/`FROLE_REVIEW` in
-  `canon.py`) is registered but **not yet written by any classifier** —
-  the discriminator pass that tags `finding` rows `FROLE:claim` (grounded
-  world-claim) vs `FROLE:review` (editorial note) is a Phase-2
-  predecessor (taproot.md open #11), not built here. `block` degrades
-  correctly with no tagged hubs (empty → brand-new claim).
+- **`FROLE` classifier** (Phase-2 slice 2a, taproot.md open #11) — the
+  discriminator that tags `finding` rows `FROLE:claim` (grounded
+  world-claim, the taproot hub) vs `FROLE:review` (editorial note,
+  excluded from the claim graph). Built declaratively as a ref-level axis
+  `src/precis/data/axes/frole.yaml` driven by the generic
+  `workers/axis_pass.py` runner (no bespoke worker code); auto-registers
+  as the default-OFF `axis:frole` service (`discover_axis_ids`), opt-in via
+  `PRECIS_AXES_ENABLED` / `/categorizers`. `FROLE` is a registered closed
+  axis (`store/types.py::_CLOSED_VOCAB`) so `search(kind='finding',
+  tags=['FROLE:claim'])` filters; `finding` stays unlisted in
+  `_KIND_ALLOWED_AXES` (unrestricted). Fail-open: `frole.yaml` omits
+  `default_unknown`, so an ambiguous read is `failed`/re-claimable, never a
+  mis-tag. `canon.block` reads `FROLE:claim` hubs, so this makes live
+  canonicalization real. Constants `FROLE_NAMESPACE`/`FROLE_CLAIM`/
+  `FROLE_REVIEW` live in `canon.py`; `block` still degrades correctly with
+  no tagged hubs (empty → brand-new claim). Corpus batch is a deliberate
+  later run, not shipped on. Build ticket:
+  `docs/proposals/taproot-phase2-hub-node.md`.
 - **Eval**: `src/precis/taproot/eval_canon.py` (`eval_canonicalization`) runs
   `dedup_judge` over `tests/fixtures/taproot/claim_pairs.jsonl` (238
   pairs) and grades the fixture's 5-relation labels collapsed onto
@@ -882,12 +894,12 @@ overlay on `finding`/`ref_tags`/`links` — no schema of its own).
   ~40-min live run is observable; run host-native (the dev container's
   `claude` CLI is unauthed and silently degrades every judgment to
   `different`).
-- **Not yet built** (later phases, per taproot.md's build phasing): the
-  `finding`-as-hub node + typed evidence relation (Phase 2), forward
-  `chase` wiring (Phase 3), the integrity axis (Phase 4), corpus backfill
-  (Phase 5). Phase 1's fixture bar (over-merge = 0, live) is not yet
-  measured — the harness is built and runnable but prompt-tuning against
-  it is a deliberate follow-up, not blocking this ship.
+- **Phase 2 (in progress)** — build ticket
+  `docs/proposals/taproot-phase2-hub-node.md` (5 slices 2a–2e). **2a
+  (FROLE classifier)** is built (above). Not yet built: the evidence-relation
+  vocab + hub write-path (2b), the evidence `view` (2c), citation-card dedup
+  (2d), `\cite`→originators export (2e); then forward `chase` wiring
+  (Phase 3), the integrity axis (Phase 4), corpus backfill (Phase 5).
 
 ## Other live affordances
 

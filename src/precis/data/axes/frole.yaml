@@ -1,0 +1,57 @@
+# Taproot Phase-2 predecessor (open #11): split the `finding` kind into
+# grounded world-claims vs editorial/manuscript review notes. The taproot
+# claim hub + evidence edges attach ONLY to `FROLE:claim` findings; review
+# notes stay findings but are excluded from the claim graph.
+#
+# Ref-level (one verdict per finding, read from title + finding_body).
+# `default_unknown` is deliberately OMITTED: an ambiguous / unparseable read
+# is `failed` (re-claimable next pass), never a mis-tag — fail-open, matching
+# taproot's over-merge-safe posture.
+id: frole
+level: ref
+applies_to_kinds: [finding]
+version: 1
+question: "Is this finding a grounded world-claim, or an editorial review note about the manuscript?"
+select: one
+values: [claim, review]
+cost_tier: small
+prompt: |
+  You are shown one `finding` record from a research knowledge base. Decide
+  what KIND of statement it is:
+
+  - claim  : a grounded scientific world-claim — an assertion about
+             materials, methods, measurements, mechanisms, or results that
+             could in principle be supported or contradicted by evidence in
+             the literature. Test: could a paper "establish" or "contradict"
+             this? ("Pd/C catalyzes Suzuki coupling at RT", "MOF-5 pore size
+             scales with linker length", "the films reach 500 S/cm").
+  - review : an editorial / manuscript note — a comment about the writing,
+             citation hygiene, or presentation of a draft, NOT a claim about
+             the world. Test: it is about the TEXT, not about nature. ("the
+             acronym is unexpanded", "cited but not actually studied", "this
+             figure lacks a citation", "rephrase for clarity").
+
+  The load-bearing test: does the statement assert something about the
+  world that evidence could ground (claim), or does it critique/annotate a
+  manuscript (review)?
+
+  Return JSON: {"value": "claim"} or {"value": "review"}.
+examples:
+  - text: "Pd/C catalyzes Suzuki coupling at room temperature with a mild base."
+    value: claim
+    why: "an assertion about a catalytic result — a paper could establish it"
+  - text: "MOF-5 pore size scales linearly with linker length."
+    value: claim
+    why: "a quantitative world-claim, groundable to evidence"
+  - text: "Reduced graphene oxide films reach conductivities of 500 S/cm after thermal annealing."
+    value: claim
+    why: "a measured result about materials"
+  - text: "The acronym 'MOF' is used before it is expanded."
+    value: review
+    why: "a manuscript-hygiene note about the text, not the world"
+  - text: "riyaz25 is cited here but that paper does not actually study Pd catalysis."
+    value: review
+    why: "a citation-accuracy critique of the draft"
+  - text: "This paragraph asserts 500 S/cm but gives no supporting citation."
+    value: review
+    why: "an editorial gap note about the manuscript"
