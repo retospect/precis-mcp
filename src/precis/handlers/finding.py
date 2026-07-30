@@ -60,6 +60,7 @@ from precis.identity import make_finding_paper_id, make_pub_id
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store.types import BlockInsert, Ref, Tag
+from precis.taproot import seniority
 from precis.utils import handle_registry
 
 _STATUS_NAMESPACE = "STATUS"
@@ -363,6 +364,86 @@ class FindingHandler(NumericRefHandler):
                 f"substitutes the primary cite_key once STATUS:established)"
             )
         )
+
+    # ──────────────────────────────────────────────────────────────────
+    # get — intercept view='evidence' (Taproot Phase 2c), else base
+    # ──────────────────────────────────────────────────────────────────
+
+    def get(  # type: ignore[override]
+        self,
+        *,
+        id: str | int | None = None,
+        view: str | None = None,
+        q: str | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """``view='evidence'`` renders a claim hub's evidence, split by
+        derived seniority (originators/corroborators/contradicts — see
+        :func:`precis.taproot.seniority.derive_evidence`). Every other
+        view (bare get, ``links``/``log``/``raw``) falls through to the
+        base :class:`~precis.handlers._numeric_ref.NumericRefHandler`.
+        Deliberately kept off ``_BASE_VIEWS`` — it's finding-specific,
+        not something every numeric-ref kind should expose.
+        """
+        if view == "evidence":
+            ref_id = self._coerce_id(id)
+            ref = self._resolve_live_ref(ref_id)
+            return self._render_evidence_view(ref)
+        return super().get(id=id, view=view, q=q, **_kw)
+
+    def _render_evidence_view(self, ref: Ref) -> Response:
+        """Render ``view='evidence'``: the hub's edges by derived role."""
+        from precis.format import render_agent_table
+
+        evidence = seniority.derive_evidence(self.store, ref.id)
+        all_edges = (
+            evidence.originators + evidence.corroborators + evidence.contradictors
+        )
+
+        header = [f"# evidence for finding {ref.id}", "", ref.title]
+        if not all_edges:
+            header.append("")
+            header.append("no evidence edges yet for this claim hub")
+            return Response(body="\n".join(header))
+
+        def _table(edges: list[seniority.EvidenceEdge]) -> str:
+            rows: list[dict[str, str]] = []
+            for e in edges:
+                paper = e.title[:80] + ("…" if len(e.title) > 80 else "")
+                if e.is_originator:
+                    paper = f"★ {paper}"
+                rows.append(
+                    {
+                        "paper": paper,
+                        "year": str(e.year) if e.year is not None else "—",
+                        "support": e.support or "—",
+                        "integrity": e.integrity,
+                        "caveats": "; ".join(e.caveats) if e.caveats else "—",
+                    }
+                )
+            schema = ["paper", "year", "support", "integrity", "caveats"]
+            return render_agent_table(rows, schema=schema)
+
+        lines = list(header)
+        lines += ["", "## originators (establishes)", ""]
+        lines.append(_table(evidence.originators) if evidence.originators else "(none)")
+
+        lines += ["", "## corroborators", ""]
+        lines.append(
+            _table(evidence.corroborators) if evidence.corroborators else "(none)"
+        )
+        if evidence.coverage_note:
+            lines += ["", evidence.coverage_note]
+
+        lines += ["", "## contradicts", ""]
+        lines.append(
+            _table(evidence.contradictors) if evidence.contradictors else "(none)"
+        )
+
+        if not any(e.support for e in all_edges):
+            lines += ["", "support outcomes are populated by chase (Phase 3)"]
+
+        return Response(body="\n".join(lines))
 
     # ──────────────────────────────────────────────────────────────────
     # search — status-filtered TOON table

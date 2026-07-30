@@ -24,12 +24,19 @@ own worktree cycle.
 |---|---|---|---|
 | **2a** | **TAPROOT classifier** | tag each `finding` `TAPROOT:claim` vs `TAPROOT:review` (open #11) | — |
 | **2b** | **Evidence vocab + write-path** | `establishes`/`corroborates`/`contradicts` relations + the single taproot write door (`hub.py`) | 2a |
-| 2c | Evidence view | `finding` `view='evidence'`: edges by derived role, support/integrity/caveats, originators marked (acceptance #1); seniority derivation from `links` (acceptance #4) | 2b |
+| 2c | Evidence view — **built** | `finding` `view='evidence'`: edges by derived role, support/integrity/caveats, originators marked (acceptance #1); seniority derivation from `links` (acceptance #4) | 2b |
 | 2d | Citation-card dedup | stop double-counting citation cards vs the hub card in ANN (open #3 residual) | 2b |
 | 2e | Cite→originators export | `precis resolve` expands a claim-hub `\cite` to its current `establishes` paper(s) (open #4 residual) | 2b |
 
 **2a and 2b are this ticket's build target;** 2c/2d/2e are scoped here for
 follow-on sessions.
+
+**2c note:** `src/precis/taproot/seniority.py::derive_evidence` is
+read-time-only — no stored seniority, recomputed from `links` on every
+call. Fallback is conservative: no intra-supporter-set `cites` edges held
+→ every supporter stays `corroborates` (never guess an originator); the
+global S2-citation-count fallback taproot.md sketches is deferred to
+Phase 3, not built in 2c.
 
 ## Why 2a must come first (open #11)
 

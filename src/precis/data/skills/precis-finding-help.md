@@ -114,6 +114,9 @@ get(id="fi42")  # by handle (prefix infers kind)
 get(kind="finding", id=42)
 get(kind="finding", id="finding:42")  # legacy form, still resolves
 get(kind="finding", id=42, view="log")  # chase event history
+get(
+    kind="finding", id=42, view="evidence"
+)  # taproot claim-hub evidence (originators/corroborators/contradicts)
 ```
 
 ```text

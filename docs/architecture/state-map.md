@@ -909,9 +909,27 @@ overlay on `finding`/`ref_tags`/`links` — no schema of its own).
     Evidence role is *derived* later (seniority); attached `corroborates` by
     default. Edge `meta` shape defined, **populated by `chase` in Phase 3**;
     unit-tested only here (`tests/test_taproot_hub.py`).
-  - Not yet built: the evidence `view` (2c), citation-card dedup (2d),
-    `\cite`→originators export (2e); then forward `chase` wiring (Phase 3),
-    the integrity axis (Phase 4), corpus backfill (Phase 5).
+  - **2c (seniority derivation + evidence view)** — built. Pure read/derive
+    module `src/precis/taproot/seniority.py::derive_evidence` (no writes):
+    reads the hub's inbound `establishes`/`corroborates` edges as supporter
+    set S, walks `cites` edges *among S only* to find originators (a
+    supporter some *other* supporter cites), derives
+    `establishes`/`corroborates` **independent of the stored role slug**,
+    orders each group by `refs.year` asc (NULL last). Locked decision:
+    **no intra-S `cites` edges held → every supporter stays `corroborates`**
+    (never guess an originator); `HubEvidence.coverage_note` flags the
+    gap. The S2-global-citation-count fallback (taproot.md) is deferred to
+    Phase 3, not built here. `contradicts` edges form a separate group,
+    never folded into the split. Rendered via `finding`
+    `get(view='evidence')` (`handlers/finding.py::FindingHandler.get`
+    overrides the base — deliberately **not** added to `_numeric_ref.py`'s
+    `_BASE_VIEWS`, so no other numeric-ref kind picks it up): three
+    tables (originators/corroborators/contradicts), originator mark,
+    support/integrity/caveats columns, a Phase-3 placeholder note when no
+    edge carries `support` yet. Tests: `tests/test_taproot_seniority.py`.
+  - Not yet built: citation-card dedup (2d), `\cite`→originators export
+    (2e); then forward `chase` wiring (Phase 3), the integrity axis
+    (Phase 4), corpus backfill (Phase 5).
 
 ## Other live affordances
 
