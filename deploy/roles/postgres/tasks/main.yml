@@ -1,5 +1,5 @@
 ---
-# PostgreSQL + pgvector + pg_cron on the data node
+# PostgreSQL + pgvector on the data node
 #
 # macOS Homebrew: runs as deploy user, data in /opt/homebrew/var/postgresql@17
 # Linux: runs as postgres user (standard package)
@@ -15,7 +15,6 @@
     name:
       - postgresql@17
       - pgvector
-      - pg_cron
     state: present
   become: false
 
@@ -224,6 +223,50 @@
   become: true
   become_user: "{{ pg_user }}"
 
+# Defensive per-role timeouts on the application roles (2026-07-30 DB review).
+# statement_timeout / idle_in_transaction_session_timeout / lock_timeout are all
+# 0 (disabled) cluster-wide, so a runaway agent-built query or a wedged
+# transaction can run unbounded and pin locks. Scope conservative limits to the
+# APPLICATION roles only (agent_rw = MCP + workers + web, agent_ro = read-only
+# dogfood) via ALTER ROLE, so they attach to every pooled server connection at
+# login — the only mechanism that survives pgbouncer *transaction* pooling (a
+# session SET would leak across tenants). Superuser/deploy sessions keep 0, so
+# manual ops / REINDEX / pg_dump stay unbounded. Migrations also connect as
+# agent_rw but neutralise these per apply-transaction with SET LOCAL
+# (store/migrate.py), so a long backfill or lock-waiting DDL is never aborted.
+#   statement_timeout   120s — ~26x the slowest legitimate query (4.6s).
+#   idle_in_transaction 300s — reclaim an abandoned/wedged transaction while
+#                              tolerating slow app-side work between queries.
+#   lock_timeout          5s — fail fast instead of queueing behind a lock.
+# Run as the DB superuser (peer auth) so it can alter both roles — a migration
+# can't (agent_rw is a plain LOGIN role with no CREATEROLE, so ALTER ROLE
+# agent_ro from a migration would raise permission-denied). Role-existence
+# guarded, so it no-ops on a cluster that hasn't provisioned the roles.
+- name: Set defensive statement timeouts on the application roles
+  community.postgresql.postgresql_query:
+    db: precis_prod
+    query: |
+      DO $$
+      BEGIN
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'agent_rw') THEN
+          EXECUTE 'ALTER ROLE agent_rw SET statement_timeout = ''120s''';
+          EXECUTE 'ALTER ROLE agent_rw SET idle_in_transaction_session_timeout = ''300s''';
+          EXECUTE 'ALTER ROLE agent_rw SET lock_timeout = ''5s''';
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'agent_ro') THEN
+          EXECUTE 'ALTER ROLE agent_ro SET statement_timeout = ''120s''';
+          EXECUTE 'ALTER ROLE agent_ro SET idle_in_transaction_session_timeout = ''300s''';
+          EXECUTE 'ALTER ROLE agent_ro SET lock_timeout = ''5s''';
+        END IF;
+      END $$;
+    autocommit: true
+    login_user: "{{ pg_user }}"
+    login_unix_socket: /tmp
+  become: true
+  become_user: "{{ pg_user }}"
+  changed_when: false
+  check_mode: false  # autocommit is incompatible with check mode
+
 # Secrets-vault passphrase (precis ADR 0055): the pgcrypto pgp_sym key that
 # vault.reveal/set use. Set via ALTER SYSTEM (→ postgresql.auto.conf) + reload —
 # a SIGHUP-level GUC, so NO restart (no factory downtime). Held in server config,
@@ -254,9 +297,11 @@
   become_user: "{{ pg_user }}"
   changed_when: false
 
-# pg_cron maintenance jobs and the channel_prompts table both targeted the
-# retired `cluster` database (`psql -d cluster`). pg_cron is not installed on
-# precis_prod and channel_prompts is an empty asa_bot table living in the
-# `openclaw` (ex-`cluster`) DB. Both were removed here; if asa_bot still needs
-# channel_prompts it will be re-provisioned against precis_prod in a later pass.
-# Orphaned templates: pg_cron_jobs.sql.j2, channel_prompts.sql.j2.
+# pg_cron has been fully removed (library dropped from shared_preload_libraries
+# in postgresql.conf.j2, formula dropped from the install list above, template
+# deleted): the extension was never CREATEd in precis_prod, its jobs targeted
+# the retired `cluster`/`openclaw` DB, and maintenance is covered by autovacuum
+# + the in-app sweeper. The channel_prompts table likewise targeted the retired
+# `cluster` DB (an empty asa_bot table now in `openclaw`); if asa_bot still needs
+# it, re-provision against precis_prod in a later pass.
+# Orphaned template still present: channel_prompts.sql.j2.

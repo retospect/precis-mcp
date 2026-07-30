@@ -328,6 +328,17 @@ class Migrator:
         log.info("bootstrapping fresh DB from baseline %s", self.baseline)
         with conn.transaction():
             with conn.cursor() as cur:
+                # Same defensive neutralisation as the per-migration loop in
+                # apply_all: a fresh-DB rebuild runs the baseline COPY/DDL as
+                # agent_rw, which (via the postgres ansible role) already
+                # carries statement_timeout / lock_timeout defaults by the time
+                # migrate runs. A large baseline load could legitimately exceed
+                # them, so scope them off for the duration of the load.
+                cur.execute(
+                    "SET LOCAL statement_timeout = 0; "
+                    "SET LOCAL lock_timeout = 0; "
+                    "SET LOCAL idle_in_transaction_session_timeout = 0"
+                )
                 _execute_dump_sql(cur, sql)
         conn.execute("RESET search_path")
 
@@ -401,6 +412,23 @@ class Migrator:
                 log.info("applying migration %s/%s", f.plugin, f.version)
                 with conn.transaction():
                     with conn.cursor() as cur:
+                        # Migrations run as ``agent_rw`` (the same DSN the daemon
+                        # uses), and that role carries defensive statement_timeout
+                        # / lock_timeout defaults (set by the postgres ansible
+                        # role) to bound runaway app queries. A migration is
+                        # neither — it is a
+                        # controlled, forward-only step that may legitimately run
+                        # long (a bulk backfill) or wait on a lock (DDL behind a
+                        # live read). Aborting one half-way is far worse than
+                        # letting it finish, so neutralise both for the duration
+                        # of the apply transaction. ``SET LOCAL`` is scoped to
+                        # this transaction (pgbouncer-transaction-pool safe) and
+                        # auto-resets at COMMIT.
+                        cur.execute(
+                            "SET LOCAL statement_timeout = 0; "
+                            "SET LOCAL lock_timeout = 0; "
+                            "SET LOCAL idle_in_transaction_session_timeout = 0"
+                        )
                         _execute_dump_sql(cur, f.sql)
                         # Choose INSERT shape based on whether the
                         # plugin column exists *as of this attempt*.

@@ -27,9 +27,28 @@ effective_io_concurrency = {{ 0 if os_family == 'darwin' else 200 }}
 max_parallel_workers_per_gather = 4
 track_io_timing = on
 
-# WAL
+# WAL / checkpoints — spread checkpoint I/O and cut WAL churn. The defaults
+# (max_wal_size=1GB, checkpoint_timeout=5min) drove a checkpoint roughly every
+# 5 min and left backends flushing the overwhelming majority of dirty buffers
+# themselves (pg_stat: ~750M buffers written by backends vs ~10M by the
+# checkpointer) — the classic "checkpoints too small/frequent + bgwriter too
+# passive" signature on a write-heavy embedding store. A larger WAL ceiling and
+# longer timeout let checkpoints coalesce; wal_compression cuts WAL volume
+# (fewer checkpoints, smaller nightly B2 sync); a more aggressive bgwriter
+# absorbs eviction so backends don't. None of these allocate extra RAM — the
+# data node co-hosts the bge-m3 embedder + workers, so shared_buffers stays 8GB.
 wal_level = replica
 max_wal_senders = 3
+max_wal_size = '4GB'
+min_wal_size = '1GB'
+checkpoint_timeout = '15min'
+checkpoint_completion_target = 0.9
+# pglz (``on``) rather than lz4/zstd: universally available in every build, so a
+# deploy-time restart can't wedge on an unsupported compression method. Still a
+# meaningful WAL-volume cut on this insert-heavy workload.
+wal_compression = on
+bgwriter_lru_maxpages = 800
+bgwriter_delay = '100ms'
 
 # Timezone — UTC throughout. initdb bakes the host-detected zone ('GB' on
 # these Macs) into the base postgresql.conf; this conf.d override loads after
@@ -59,8 +78,14 @@ autovacuum_vacuum_cost_delay = '2ms'
 autovacuum_vacuum_cost_limit = 2000
 
 # Extensions
-shared_preload_libraries = 'pg_cron,pg_stat_statements'
-cron.database_name = 'precis_prod'
+# pg_cron was declared here but never wired up — the extension was never
+# CREATEd in precis_prod (no cron schema / cron.job table / jobs), so the
+# preloaded launcher was inert. Its jobs targeted the retired `cluster`/
+# `openclaw` DB, and routine maintenance is already covered (autovacuum, tuned
+# below, + the in-app sweeper worker's app-level GC). Removed to make the config
+# reflect reality; dropping the library needs a postmaster restart (the role's
+# restart handler provides it).
+shared_preload_libraries = 'pg_stat_statements'
 compute_query_id = on
 pg_stat_statements.max = 10000
 pg_stat_statements.track = top
