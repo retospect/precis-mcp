@@ -907,8 +907,8 @@ overlay on `finding`/`ref_tags`/`links` — no schema of its own).
     `paper --role--> hub`, role-and-target-guarded; `apply_placement` routes
     `canon.place()`, `needs_review` → `kind='todo'`, never auto-attach).
     Evidence role is *derived* later (seniority); attached `corroborates` by
-    default. Edge `meta` shape defined, **populated by `chase` in Phase 3**;
-    unit-tested only here (`tests/test_taproot_hub.py`).
+    default. Edge `meta` shape defined; **populated by `chase` — see Phase 3
+    slice W1, below**. Unit-tested here (`tests/test_taproot_hub.py`).
   - **2c (seniority derivation + evidence view)** — built. Pure read/derive
     module `src/precis/taproot/seniority.py::derive_evidence` (no writes):
     reads the hub's inbound `establishes`/`corroborates` edges as supporter
@@ -928,8 +928,53 @@ overlay on `finding`/`ref_tags`/`links` — no schema of its own).
     support/integrity/caveats columns, a Phase-3 placeholder note when no
     edge carries `support` yet. Tests: `tests/test_taproot_seniority.py`.
   - Not yet built: citation-card dedup (2d), `\cite`→originators export
-    (2e); then forward `chase` wiring (Phase 3), the integrity axis
-    (Phase 4), corpus backfill (Phase 5).
+    (2e).
+- **Phase 3 (in progress)** — forward `chase` wiring; slices land
+  independently, W1 first.
+  - **W1 (chase forward bridge)** — built. Default-OFF env flag
+    `PRECIS_TAPROOT_CHASE_ENABLED`, independent of `PRECIS_CHASE_LLM` — the
+    bridge fires only when it's on *and* the chase LLM verdict
+    (`with_llm=True`'s `verification`) is available, so the deterministic
+    chase path is untouched either way. On a finding's established-terminal
+    hop (`workers/chase.py::_taproot_bridge`, called from
+    `advance_finding` right after `_snapshot_chain`), builds a
+    `CanonicalClaim` directly from the finding's own title + `meta.scope`
+    (no `extract_claim` call — a chase finding is already a user-asserted
+    claim, not untrusted chunk text; an empty title is the analogous
+    NO-CLAIM skip) and runs it through `canon.block` → `dedup_judge` →
+    `place` → `hub.apply_placement`. Skips entirely (no hub, no edge, no
+    canon LLM calls) on `verification["supports"] == "no"` (NO-SUPPORT) or
+    a missing embedder (`canon.block` needs `.embed_one` — a construction
+    failure degrades to a logged no-op, never a chase crash).
+    Terminal-hop `verification` maps onto the evidence edge `meta`:
+    `support`/`support_reason` verbatim, `caveats` via the same
+    `_aggregate_caveats` helper `_snapshot_chain` uses for `meta.caveats`
+    (chain-wide, deduped), `source_handle=f"{paper_slug}~{chunk_ord}"`,
+    `char_offset=None` (no producer yet). `hub.apply_placement` grew a
+    `conn=` param (threaded from `mint_hub`/`attach_evidence`) so the
+    hub/edge write lands in the SAME transaction as chase's
+    `STATUS:established` flip; the bridge additionally wraps that write in
+    a psycopg nested-transaction (savepoint) so a taproot-side failure
+    rolls back only the taproot write, never the established flip. A
+    `needs_review` placement files a minimal `kind='todo'`
+    (`_file_taproot_review_todo`). Idempotent by construction: a
+    re-established finding's `block` call finds the already-minted hub
+    (same claim text → same ANN hit) and `place` returns `attach`, not a
+    second `mint_hub`; `attach_evidence`'s underlying `store.add_link` is
+    itself a no-op on a repeat `(src, dst, relation)` edge. The embedder
+    for `canon.block` is threaded from `cli/worker.py`'s `_chase_pass`
+    setup — reused from an already-booted `EmbedHandler` when one exists
+    (no extra model load), else constructed once (only when the flag is
+    on) and degraded to `None` on failure. Known interaction (tracked,
+    not fixed here — gripe 175806): a freshly-minted hub is itself a
+    `kind='finding'` `STATUS:tracing` ref, so `chase`'s own claim query
+    also picks it up next pass (harmless empty-chain → `dead_chain`, no
+    LLM cost, but `STATUS` vocabulary noise). Tests:
+    `tests/test_taproot_chase_bridge.py` (mapping, NO-SUPPORT/NO-CLAIM/
+    flag-off skips, no-embedder degrade, re-establish idempotency).
+  - Not yet built: further chase slices (S2-global-citation-count
+    fallback promotion, integrity axis (Phase 4), corpus backfill
+    (Phase 5)).
 
 ## Other live affordances
 

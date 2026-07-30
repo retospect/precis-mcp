@@ -45,6 +45,16 @@ from psycopg import Connection
 from psycopg.types.json import Jsonb
 
 from precis.ingest.citations import citations as fetch_s2_citations
+from precis.taproot.canon import (
+    TAPROOT_CLAIM,
+    TAPROOT_NAMESPACE,
+    CanonicalClaim,
+    Placement,
+    block,
+    dedup_judge,
+    place,
+)
+from precis.taproot.hub import apply_placement
 from precis.workers._chase_llm import (
     _disambiguate_candidates,
     _locate_chunk_in_target,
@@ -57,6 +67,13 @@ log = logging.getLogger(__name__)
 # (`get(kind='finding', view='log')`, cross-ref incident queries) filter
 # on this so chase activity is separable from segments / fetcher / etc.
 _SOURCE = "chase"
+
+# Taproot Phase-3 W1 forward bridge (mint/attach a claim hub off an
+# established finding's terminal verdict). Default-OFF, INDEPENDENT of
+# PRECIS_CHASE_LLM: the bridge only fires when this is on *and* the chase
+# LLM verdict is available (with_llm=True produced a `verification`), so
+# the deterministic chase path is unaffected either way.
+_TAPROOT_CHASE_ENV = "PRECIS_TAPROOT_CHASE_ENABLED"
 
 
 # ── Constants ──────────────────────────────────────────────────────
@@ -202,6 +219,14 @@ def claim_tracing_findings(
     outcome, so any progress resets the backoff to ``base``. Any other
     most-recent outcome (or none yet) leaves the finding eligible, so a
     chain that just advanced keeps moving promptly.
+
+    Excludes ``TAPROOT:claim`` findings (taproot hubs, :func:`~precis.
+    taproot.hub.mint_hub`). A hub is itself a ``kind='finding'`` ref
+    carrying ``STATUS:tracing`` (a fresh hub has no resolved originators
+    yet), so without this exclusion it re-enters this same claim query and
+    dies as an empty-chain ``dead_chain`` every pass — a wasted claim slot
+    plus telemetry noise (gripe 175806). Hubs are chased by the taproot
+    seniority derivation, not this worker.
     """
     if limit <= 0:
         raise ValueError("limit must be positive")
@@ -241,6 +266,16 @@ def claim_tracing_findings(
                     AND t.namespace = %(status_ns)s
                     AND t.value = %(tracing)s
                )
+           -- A taproot hub is a `finding` too (STATUS:tracing until its
+           -- originators resolve) but isn't a chase-owned chain -- skip
+           -- it here so it doesn't re-claim + die as an empty-chain
+           -- dead_chain every pass (gripe 175806).
+           AND NOT EXISTS (
+                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                  WHERE rt.ref_id = r.ref_id
+                    AND t.namespace = %(taproot_ns)s
+                    AND t.value = %(taproot_claim)s
+               )
            -- Skip only findings whose *most recent* chase outcome is a
            -- ``waiting`` still inside the exponential window. COALESCE
            -- makes the predicate NULL-safe: a finding with no chase
@@ -275,6 +310,8 @@ def claim_tracing_findings(
             "source": _SOURCE,
             "status_ns": _STATUS_NAMESPACE,
             "tracing": _TRACING,
+            "taproot_ns": TAPROOT_NAMESPACE,
+            "taproot_claim": TAPROOT_CLAIM,
             "base": float(waiting_backoff_minutes),
             "cap": float(waiting_backoff_max_minutes),
             "limit": limit,
@@ -295,6 +332,8 @@ def advance_finding(
     finding: FindingRow,
     *,
     with_llm: bool = False,
+    taproot_enabled: bool = False,
+    taproot_embedder: Any = None,
 ) -> tuple[str, _Event]:
     """Advance one finding by at most one hop.
 
@@ -302,6 +341,14 @@ def advance_finding(
     / ``"terminated"`` / ``"dead"`` / ``"multi"`` / ``"cycle"`` /
     ``"waiting"``) plus the populated :class:`_Event` the runner
     flushes to ``ref_events``.
+
+    ``taproot_enabled`` (Phase-3 W1 forward bridge) mints/attaches a
+    taproot claim hub off the terminal verdict when a chain establishes
+    -- see :func:`_taproot_bridge`. Only takes effect together with
+    ``with_llm`` (the bridge needs the LLM ``verification`` verdict);
+    ``taproot_embedder`` is the ``.embed_one``-shaped embedder
+    :func:`precis.taproot.canon.block` needs — ``None`` degrades the
+    bridge to a no-op (logged), never a crash.
     """
     ev = _Event()
     chain = list(finding.meta.get("chain") or [])
@@ -382,6 +429,17 @@ def advance_finding(
 
     if is_terminal:
         _snapshot_chain(conn, store, finding.ref_id, chain)
+        if taproot_enabled and verification is not None:
+            _taproot_bridge(
+                conn,
+                store,
+                finding,
+                chain=chain,
+                verification=verification,
+                target=target,
+                chunk_ord=chunk_ord,
+                embedder=taproot_embedder,
+            )
         return "terminated", ev
 
     s2_refs_loaded = _load_s2_references(target.get("identifiers") or {})
@@ -434,6 +492,8 @@ def run_finding_chase_pass(
     *,
     limit: int = 32,
     with_llm: bool | None = None,
+    taproot_enabled: bool | None = None,
+    taproot_embedder: Any = None,
 ) -> dict[str, int]:
     """Process up to ``limit`` ``STATUS:tracing`` findings.
 
@@ -441,12 +501,23 @@ def run_finding_chase_pass(
     doesn't poison the batch. ``with_llm`` defaults to the
     ``PRECIS_CHASE_LLM`` env (truthy values turn the LLM hooks on).
 
+    ``taproot_enabled`` (Phase-3 W1 forward bridge) defaults to the
+    ``PRECIS_TAPROOT_CHASE_ENABLED`` env — independent of
+    ``PRECIS_CHASE_LLM``/``with_llm``; it only has any effect on a
+    finding whose pass *also* ran with the LLM verifier (see
+    :func:`advance_finding`). ``taproot_embedder`` is threaded to
+    :func:`_taproot_bridge` for ``canon.block``'s ANN lookup — the caller
+    (``cli/worker.py``) constructs it once per boot; ``None`` degrades
+    the bridge to a no-op rather than erroring.
+
     Returns a dict suitable for ``BatchResult`` aggregation:
     ``{claimed, ok, failed}``. The expanded counts
     (advanced/terminated/dead/...) are visible in DEBUG logs.
     """
     if with_llm is None:
         with_llm = bool(int(os.environ.get("PRECIS_CHASE_LLM", "0") or "0"))
+    if taproot_enabled is None:
+        taproot_enabled = bool(int(os.environ.get(_TAPROOT_CHASE_ENV, "0") or "0"))
 
     # Stage 1: claim under a short-lived tx.
     with store.pool.connection() as conn:
@@ -461,7 +532,14 @@ def run_finding_chase_pass(
         t0 = time.perf_counter()
         try:
             with store.pool.connection() as conn:
-                outcome, ev = advance_finding(conn, store, finding, with_llm=with_llm)
+                outcome, ev = advance_finding(
+                    conn,
+                    store,
+                    finding,
+                    with_llm=with_llm,
+                    taproot_enabled=taproot_enabled,
+                    taproot_embedder=taproot_embedder,
+                )
                 duration_ms = int((time.perf_counter() - t0) * 1000)
                 _flush_event(store, conn, finding.ref_id, outcome, ev, duration_ms)
                 conn.commit()
@@ -943,6 +1021,23 @@ def _record_candidates(
         )
 
 
+def _aggregate_caveats(chain: list[dict[str, Any]]) -> list[str]:
+    """Caveats from every hop's ``verification.caveats``, deduped,
+    order-preserved. Shared by :func:`_snapshot_chain` (``meta.caveats``)
+    and :func:`_taproot_bridge` (the evidence-edge ``meta.caveats``), so
+    the two stay in lockstep rather than drifting apart."""
+    aggregated: list[str] = []
+    seen: set[str] = set()
+    for hop in chain:
+        v = hop.get("verification") or {}
+        for c in v.get("caveats") or []:
+            c_str = str(c).strip()
+            if c_str and c_str not in seen:
+                seen.add(c_str)
+                aggregated.append(c_str)
+    return aggregated
+
+
 def _snapshot_chain(
     conn: Connection, store: Any, finding_ref_id: int, chain: list[dict[str, Any]]
 ) -> None:
@@ -971,16 +1066,7 @@ def _snapshot_chain(
     # this is empty.
     via_cite_keys = cite_keys[1:-1] if len(cite_keys) > 2 else []
 
-    # Aggregate caveats across hops, deduped.
-    aggregated_caveats: list[str] = []
-    seen_caveats: set[str] = set()
-    for hop in chain:
-        v = hop.get("verification") or {}
-        for c in v.get("caveats") or []:
-            c_str = str(c).strip()
-            if c_str and c_str not in seen_caveats:
-                seen_caveats.add(c_str)
-                aggregated_caveats.append(c_str)
+    aggregated_caveats = _aggregate_caveats(chain)
 
     # Patch the finding's meta.
     store.update_ref(
@@ -1027,6 +1113,167 @@ def _snapshot_chain(
         replace_prefix=True,
         conn=conn,
     )
+
+
+def _taproot_bridge(
+    conn: Connection,
+    store: Any,
+    finding: FindingRow,
+    *,
+    chain: list[dict[str, Any]],
+    verification: dict[str, Any],
+    target: dict[str, Any],
+    chunk_ord: int,
+    embedder: Any,
+) -> None:
+    """Phase-3 W1 forward bridge: mint/attach a taproot claim hub for a
+    finding that just established, off the terminal hop's LLM verdict.
+
+    Called from :func:`advance_finding` right after :func:`_snapshot_chain`,
+    on the SAME ``conn`` — so the hub/edge write lands in the same
+    transaction as the ``STATUS:established`` flip. The
+    ``block``/``dedup_judge``/``place`` → :func:`~precis.taproot.hub.apply_placement`
+    write is wrapped in a nested transaction (savepoint): a taproot failure
+    (bad embedder, dispatch error, a genuine bug) rolls back only the
+    taproot write, never the surrounding established-flip -- the chase's
+    deterministic outcome must never depend on taproot's health.
+
+    Exception: a ``needs_review`` :class:`~precis.taproot.canon.Placement`
+    files a ``kind='todo'`` via ``_todo_fn`` -> :func:`_file_taproot_review_todo`,
+    which deliberately does NOT ride ``conn``/this savepoint -- it opens
+    and commits its own ``store.tx()``. Filing the review todo is a
+    side-effect for a human, not part of the atomic evidence write (there
+    is no hub/edge write to keep in lockstep with on a ``needs_review``
+    placement in the first place), so it stands on its own regardless of
+    what else this savepoint or the outer established-flip transaction
+    does.
+
+    Skips (no hub, no edge, no LLM canon calls) on:
+    * no embedder available (``block`` needs ``.embed_one`` — degrade
+      gracefully rather than crash the chase);
+    * ``verification["supports"] == "no"`` (NO-SUPPORT: never record a
+      non-supporting paper as evidence);
+    * an empty finding title (the NO-CLAIM equivalent here — see the
+      module-level note on why this doesn't call
+      :func:`~precis.taproot.canon.extract_claim`).
+    """
+    if embedder is None:
+        log.info(
+            "taproot: bridge skipped for finding ref_id=%s (no embedder)",
+            finding.ref_id,
+        )
+        return
+
+    supports = verification.get("supports")
+    if supports == "no":
+        return
+
+    # The finding's own title *is* the claim -- chase findings are
+    # already user-asserted claims being traced to a source, unlike a raw
+    # paper chunk that may or may not assert anything. So this builds the
+    # CanonicalClaim directly rather than routing it through
+    # canon.extract_claim's "does this passage assert a claim?" LLM gate
+    # (which exists for untrusted chunk text, not an already-a-claim
+    # finding) -- an empty title is the analogous NO-CLAIM skip.
+    sentence = (finding.title or "").strip()
+    if not sentence:
+        return
+    scope = {
+        str(k): str(v)
+        for k, v in (finding.meta.get("scope") or {}).items()
+        if v is not None
+    }
+    claim = CanonicalClaim(sentence=sentence, scope=scope)
+
+    try:
+        candidates = block(claim, store, embedder)
+        judged = [
+            (cand, dedup_judge(claim.sentence, cand.claim)) for cand in candidates
+        ]
+        placement = place(claim, judged)
+    except Exception:
+        log.warning(
+            "taproot: bridge canonicalization failed for finding ref_id=%s",
+            finding.ref_id,
+            exc_info=True,
+        )
+        return
+
+    paper_ref_id = int(chain[-1]["ref_id"])
+    paper_slug = target.get("slug") or f"ref:{paper_ref_id}"
+    edge_meta = {
+        "support": supports,
+        "support_reason": verification.get("support_reason"),
+        "caveats": _aggregate_caveats(chain),
+        "char_offset": None,  # no producer yet (deferred)
+        "source_handle": f"{paper_slug}~{chunk_ord}",
+    }
+
+    def _todo_fn(claim: CanonicalClaim, placement: Placement) -> None:
+        _file_taproot_review_todo(
+            store, claim, placement, finding_ref_id=finding.ref_id
+        )
+
+    try:
+        with conn.transaction():  # savepoint: isolate a taproot write failure
+            apply_placement(
+                store,
+                claim,
+                placement,
+                paper_ref_id=paper_ref_id,
+                meta=edge_meta,
+                todo_fn=_todo_fn,
+                set_by="chase",
+                conn=conn,
+            )
+    except Exception:
+        log.warning(
+            "taproot: bridge apply_placement failed for finding ref_id=%s",
+            finding.ref_id,
+            exc_info=True,
+        )
+
+
+def _file_taproot_review_todo(
+    store: Any,
+    claim: CanonicalClaim,
+    placement: Placement,
+    *,
+    finding_ref_id: int,
+) -> None:
+    """Minimal ``kind='todo'`` for a risky (``needs_review``) taproot merge
+    the bridge declined to auto-apply (taproot.md open #16).
+
+    Deliberately its own ``store.tx()``, NOT the ``conn`` the rest of
+    :func:`_taproot_bridge` threads through — see that function's
+    docstring. There is no hub/edge write on the ``needs_review`` path to
+    stay atomic with, so filing the todo stands alone rather than riding
+    the bridge's savepoint.
+    """
+    from precis.store.types import Tag
+
+    title = f"taproot: review merge for finding ref_id={finding_ref_id}"
+    with store.tx() as c:
+        todo = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title=title[:200],
+            meta={
+                "source": "taproot:chase",
+                "finding_ref_id": finding_ref_id,
+                "claim_sentence": claim.sentence,
+                "placement_reason": placement.reason,
+                "candidate_hub_ref_id": placement.hub_ref_id,
+            },
+            conn=c,
+        )
+        store.add_tag(
+            todo.id,
+            Tag.closed(_STATUS_NAMESPACE, "open"),
+            set_by="chase",
+            replace_prefix=True,
+            conn=c,
+        )
 
 
 def _set_status(

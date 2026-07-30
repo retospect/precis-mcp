@@ -8,15 +8,19 @@ single write door: mint a `TAPROOT:claim` hub, attach typed evidence edges
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import pytest
 
 from precis.errors import BadInput
+from precis.identity import make_pub_id, make_taproot_hub_paper_id
 from precis.store.types import Tag
 from precis.taproot.canon import CanonicalClaim, Placement
 from precis.taproot.hub import apply_placement, attach_evidence, mint_hub
 from tests.workers._helpers import seed_ref
+
+_PUB_ID_RE = re.compile(r"^[a-z2-7]{6}$")
 
 _CLAIM = CanonicalClaim(
     sentence="Pd/C catalyzes Suzuki coupling at room temperature with a mild base.",
@@ -39,6 +43,16 @@ def _edge(store: Any, src: int, dst: int) -> str | None:
         row = conn.execute(
             "SELECT relation FROM links WHERE src_ref_id = %s AND dst_ref_id = %s",
             (src, dst),
+        ).fetchone()
+    return row[0] if row else None
+
+
+def _pub_id(store: Any, ref_id: int) -> str | None:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT id_value FROM ref_identifiers "
+            "WHERE ref_id = %s AND id_kind = 'pub_id'",
+            (ref_id,),
         ).fetchone()
     return row[0] if row else None
 
@@ -67,6 +81,55 @@ def test_mint_hub_creates_a_taproot_claim_finding(store: Any) -> None:
     assert _ref_tag(store, hub, "TAPROOT") == "claim"
     assert _ref_tag(store, hub, "STATUS") == "tracing"
     assert _finding_body(store, hub) == _CLAIM.sentence
+
+
+def test_mint_hub_mints_a_citable_pub_id(store: Any) -> None:
+    hub = mint_hub(store, _CLAIM)
+
+    pub_id = _pub_id(store, hub)
+    assert pub_id is not None
+    assert _PUB_ID_RE.match(pub_id)
+
+
+def test_mint_hub_pub_id_is_deterministic_over_claim_content(store: Any) -> None:
+    # The pub_id a freshly-minted hub gets matches the pure seed derivation
+    # (make_taproot_hub_paper_id -> make_pub_id) for that same claim content
+    # -- i.e. the seed is a function of claim.sentence/claim.scope alone,
+    # not of ref_id or insertion order. (We don't mint a *second* hub for
+    # the identical claim here: canonicalization is supposed to prevent
+    # two hubs for one claim, and doing so would legitimately collide on
+    # the ref_identifiers (id_kind, id_value) UNIQUE constraint -- that's
+    # a real-dup guard, not something this determinism check exercises.)
+    hub = mint_hub(store, _CLAIM)
+
+    expected = make_pub_id(make_taproot_hub_paper_id(_CLAIM.sentence, _CLAIM.scope))
+    assert _pub_id(store, hub) == expected
+
+    # Same claim content via an equal-but-distinct CanonicalClaim instance
+    # (fresh dict) reproduces the identical seed/pub_id.
+    same_claim = CanonicalClaim(sentence=_CLAIM.sentence, scope=dict(_CLAIM.scope))
+    again = make_pub_id(
+        make_taproot_hub_paper_id(same_claim.sentence, same_claim.scope)
+    )
+    assert again == expected
+
+
+def test_mint_hub_pub_id_resolves_back_to_the_hub(store: Any) -> None:
+    # Mirrors resolve.py::_lookup_finding's query shape: pub_id -> ref_id.
+    hub = mint_hub(store, _CLAIM)
+    pub_id = _pub_id(store, hub)
+
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT r.ref_id FROM ref_identifiers ri "
+            "JOIN refs r ON r.ref_id = ri.ref_id "
+            "WHERE ri.id_kind = 'pub_id' AND ri.id_value = %s "
+            "AND r.deleted_at IS NULL",
+            (pub_id,),
+        ).fetchone()
+
+    assert row is not None
+    assert row[0] == hub
 
 
 # ── attach_evidence ─────────────────────────────────────────────────────

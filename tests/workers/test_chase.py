@@ -326,6 +326,33 @@ def test_claim_survives_huge_waiting_run(store) -> None:
     assert fid not in [f.ref_id for f in claimed]
 
 
+# ── claim excludes taproot hubs (gripe 175806) ───────────────────────
+
+
+def test_claim_excludes_taproot_claim_findings(store) -> None:
+    """A minted taproot hub is itself a `finding` carrying STATUS:tracing
+    (``mint_hub``'s "no resolved originators yet" tag) but is not a
+    chase-owned chain -- the claim query must not re-select it, or it just
+    dies as an empty-chain ``dead_chain`` every pass, wasting a claim slot
+    and polluting dead_chain telemetry (gripe 175806)."""
+    from precis.store.types import Tag
+    from precis.taproot.canon import TAPROOT_CLAIM, TAPROOT_NAMESPACE
+
+    _seed_paper(store, cite_key="hubpaper", blocks=["text"])
+    fid = _seed_finding(store, cite_key="hubpaper")
+    store.add_tag(
+        fid,
+        Tag.closed(TAPROOT_NAMESPACE, TAPROOT_CLAIM),
+        set_by="chase",
+        replace_prefix=True,
+    )
+
+    with store.pool.connection() as conn:
+        claimed = claim_tracing_findings(conn, limit=10)
+        conn.commit()
+    assert fid not in [f.ref_id for f in claimed]
+
+
 # ── terminal give-up: starve past WAITING_ABANDON_AFTER_DAYS ────────
 
 

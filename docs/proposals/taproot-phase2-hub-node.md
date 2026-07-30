@@ -129,7 +129,12 @@ quality is validated by a host-native spot-check, not the offline gate
 ## Explicitly NOT in Phase 2
 
 - **Running `chase` live** to populate edges — that is Phase 3. 2b defines +
-  unit-tests the write API; real edges come later.
+  unit-tests the write API; real edges come later. **Phase 3 slice W1 (the
+  forward bridge) has landed** — `chase` now mints/attaches through this
+  write door on an established finding's terminal verdict, default-OFF
+  behind `PRECIS_TAPROOT_CHASE_ENABLED`. See `docs/architecture/state-map.md`
+  §"Taproot canonicalization" for the current detail; Phase 3 has further
+  slices still open (S2-global-citation-count seniority fallback, etc.).
 - **Integrity axis** (retraction reason-relevance) — Phase 4.
 - **Corpus backfill** — Phase 5.
 - **Claim hierarchy** (broader/narrower) — v2.

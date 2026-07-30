@@ -417,6 +417,56 @@ def make_finding_paper_id(
     return f"finding:{digest}"
 
 
+def make_taproot_hub_paper_id(
+    sentence: str,
+    scope: Mapping[str, Any] | None,
+) -> str:
+    """Build the synthetic ``paper_id`` for a taproot claim-hub finding.
+
+    A taproot hub (:func:`precis.taproot.hub.mint_hub`) is minted by the
+    canonicalizer, not by an agent's ``put(kind='finding', cited_in=…)`` —
+    there is no citing occasion to anchor it, so it has no
+    ``initial_cite_pub_id`` and can't reuse :func:`make_finding_paper_id`
+    (which requires one). Instead the hub's identity is derived purely
+    from the canonicalized claim it represents: the normalized sentence
+    plus its scope. Same claim → same ``paper_id`` → same
+    :func:`make_pub_id`, mirroring the finding-side dedup design (same
+    inputs collide at the ``ref_identifiers (id_kind='pub_id')`` UNIQUE
+    constraint rather than minting a duplicate hub) — belt-and-suspenders
+    under the canonicalizer, whose own job is to prevent two hubs for the
+    same claim in the first place.
+
+    Returns ``f"taproot-hub:{hex}"`` where ``hex`` is the SHA-256 of a
+    canonical key built the same way as :func:`make_finding_paper_id`
+    (:func:`normalize_text_for_hash` on the sentence, sorted-keys
+    whitespace-free JSON on the scope) minus the citation anchor. The
+    ``taproot-hub:`` prefix keeps this out of the ``arxiv:`` / ``doi:`` /
+    ``sha256:`` / ``finding:`` namespaces already used by
+    :func:`make_paper_id` / :func:`make_finding_paper_id`.
+
+    Args:
+        sentence: The canonicalized claim sentence
+            (``CanonicalClaim.sentence``). Required non-empty.
+        scope: The claim's light scope dict (``CanonicalClaim.scope``).
+            Empty / None allowed.
+
+    Raises:
+        ValueError: when ``sentence`` is empty / whitespace-only.
+    """
+    if not sentence or not sentence.strip():
+        raise ValueError("make_taproot_hub_paper_id requires a non-empty sentence")
+    sentence_canonical = normalize_text_for_hash(sentence)
+    scope_canonical = json.dumps(
+        dict(scope) if scope else {},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    key = f"taproot-hub|sentence={sentence_canonical}|scope={scope_canonical}"
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+    return f"taproot-hub:{digest}"
+
+
 def make_pub_id(paper_id: str) -> str:
     """6-character base32 lowercase handle derived from ``paper_id``.
 
@@ -527,6 +577,7 @@ __all__ = [
     "make_paper_id",
     "make_pdf_sha256",
     "make_pub_id",
+    "make_taproot_hub_paper_id",
     "normalize_arxiv",
     "normalize_doi",
     "normalize_text_for_hash",

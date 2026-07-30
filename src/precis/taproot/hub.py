@@ -30,8 +30,11 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+from psycopg.errors import UniqueViolation
+
 from precis.errors import BadInput
 from precis.handlers._link_tag_ops import validate_relation
+from precis.identity import make_pub_id, make_taproot_hub_paper_id
 from precis.store.types import BlockInsert, Tag
 from precis.taproot.canon import (
     TAPROOT_CLAIM,
@@ -97,9 +100,46 @@ def mint_hub(
     ``TAPROOT:claim``. This is taproot's *system-writer* path — the agent-facing
     door is ``FindingHandler.put`` (pub_id dedup + a frontier ``derived-from``);
     taproot dedups upstream via canonicalization, so the hub write is direct.
-    """
 
-    def _do(c: Any) -> int:
+    Citability (slice F, ADR 0002): the hub also gets a ``pub_id`` written
+    to ``ref_identifiers`` — the same 6-char ``[a-z2-7]`` handle
+    ``FindingHandler.put`` mints — so agent draft prose can cite it as
+    ``[ab12c3]`` and ``precis resolve`` / ``refeye.resolve_link_targets``
+    (which already mine ``ref_identifiers(id_kind='pub_id')``) pick it up
+    for free. Seeded via :func:`make_taproot_hub_paper_id` — content-derived
+    off ``claim.sentence`` + ``claim.scope`` (a hub has no citing occasion
+    to anchor :func:`make_finding_paper_id`'s ``initial_cite_pub_id``) — so
+    the pub_id is deterministic per canonicalized claim.
+
+    **Converge-to-attach on a pub_id collision.** A freshly minted hub's
+    ``card_combined`` chunk + embedding are written *async* (ADR 0007 —
+    card_forge/embed run later), so :func:`~precis.taproot.canon.block` can
+    return zero candidates for a claim whose hub was just minted but not
+    yet embedded. Two findings asserting the identical claim (successive
+    chase passes, or concurrent workers) can then both resolve
+    ``place() == "new"`` and both call this function for the *same*
+    deterministic ``pub_id``. Because that's the identity contract
+    (same claim content -> same pub_id), the collision means the other
+    caller's hub already *is* the hub for this claim — so this looks the
+    pub_id up first (attach path, no write) and, if a second caller still
+    races past that check, catches the ``ref_identifiers`` PK
+    ``UniqueViolation`` on insert, rolls back only its own partial
+    ref/chunk/tags write (a savepoint — never the caller's surrounding
+    transaction), and resolves to the winner's ref_id. Either way the
+    caller always gets back a real hub ref_id to attach evidence to,
+    never a raised exception or a dropped edge.
+    """
+    paper_id = make_taproot_hub_paper_id(claim.sentence, claim.scope)
+    pub_id = make_pub_id(paper_id)
+
+    def _existing_hub(c: Any) -> int | None:
+        row = c.execute(
+            "SELECT ref_id FROM ref_identifiers WHERE id_kind = %s AND id_value = %s",
+            ("pub_id", pub_id),
+        ).fetchone()
+        return int(row[0]) if row is not None else None
+
+    def _mint(c: Any) -> int:
         ref = store.insert_ref(
             kind="finding",
             slug=None,
@@ -118,6 +158,17 @@ def mint_hub(
             ],
             conn=c,
         )
+        # pub_id — same (id_kind, id_value, ref_id, source) shape
+        # FindingHandler.put inserts, so the same resolve-side query
+        # (`ref_identifiers WHERE id_kind = 'pub_id'`) finds this hub.
+        # No ON CONFLICT: a collision here means a concurrent mint_hub
+        # call won the race for this exact claim (see the converge-to-
+        # attach note above) — caught by the caller, not swallowed here.
+        c.execute(
+            "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
+            "VALUES (%s, %s, %s, %s)",
+            ("pub_id", pub_id, ref.id, "taproot"),
+        )
         # STATUS:tracing — a fresh hub has no resolved originators yet
         # (system-set, mirrors FindingHandler).
         store.add_tag(
@@ -134,7 +185,37 @@ def mint_hub(
             replace_prefix=True,
             conn=c,
         )
+        log.info("taproot: minted hub ref_id=%s pub_id=%s", ref.id, pub_id)
         return int(ref.id)
+
+    def _do(c: Any) -> int:
+        existing = _existing_hub(c)
+        if existing is not None:
+            log.info(
+                "taproot: hub already exists for pub_id=%s ref_id=%s "
+                "(converged to attach, no new hub minted)",
+                pub_id,
+                existing,
+            )
+            return existing
+        try:
+            # Savepoint: isolates the ref/chunk/tags/pub_id write so a
+            # losing race (UniqueViolation on the pub_id PK) rolls back
+            # only this attempt, never the caller's surrounding
+            # transaction (e.g. the chase bridge's per-finding conn=).
+            with c.transaction():
+                return _mint(c)
+        except UniqueViolation:
+            resolved = _existing_hub(c)
+            if resolved is None:  # pragma: no cover — defensive
+                raise
+            log.info(
+                "taproot: mint_hub collided on pub_id=%s — converged to "
+                "existing hub ref_id=%s",
+                pub_id,
+                resolved,
+            )
+            return resolved
 
     if conn is not None:
         return _do(conn)
@@ -208,6 +289,7 @@ def apply_placement(
     meta: dict[str, Any] | None = None,
     todo_fn: Callable[[CanonicalClaim, Placement], Any] | None = None,
     set_by: str = "agent",
+    conn: Any = None,
 ) -> int | None:
     """Persist a canonicalizer :class:`Placement` through the write door.
 
@@ -223,6 +305,19 @@ def apply_placement(
     Returns the hub ref_id it attached to / minted, or ``None`` for
     ``needs_review``. ``role`` is the evidence role for the paper edge
     (default :data:`_DEFAULT_ROLE`); originator promotion is derived later.
+
+    ``conn`` (Phase 3 W1) lets a caller that already holds an open
+    transaction (chase's per-finding ``conn``) fold the hub mint + evidence
+    attach into it, so the write commits atomically with whatever else the
+    caller is doing in the same transaction. ``None`` (default) preserves
+    the original behaviour: ``attach`` writes standalone via
+    :func:`attach_evidence`'s own ``store.tx()``, and ``new``/
+    ``new_contradicts`` open one shared ``store.tx()`` for the mint +
+    attach (+ optional contradicts link) pair. ``needs_review`` is the one
+    exception: ``conn`` is never passed to ``todo_fn`` — filing the review
+    todo is an intentionally separate, self-committing side-effect (there
+    is no hub/edge write on this path to keep atomic with it), not part of
+    the evidence write ``conn`` exists to bundle.
     """
     action = placement.action
     if action == "attach":
@@ -235,11 +330,13 @@ def apply_placement(
             role=role,
             meta=meta,
             set_by=set_by,
+            conn=conn,
         )
         return placement.hub_ref_id
 
     if action in ("new", "new_contradicts"):
-        with store.tx() as c:
+
+        def _do(c: Any) -> int:
             hub = mint_hub(store, claim, set_by=set_by, conn=c)
             attach_evidence(
                 store,
@@ -264,7 +361,12 @@ def apply_placement(
                     set_by=set_by,
                     conn=c,
                 )
-        return hub
+            return hub
+
+        if conn is not None:
+            return _do(conn)
+        with store.tx() as c:
+            return _do(c)
 
     if action == "needs_review":
         if todo_fn is not None:
