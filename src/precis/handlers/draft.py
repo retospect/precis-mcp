@@ -445,7 +445,11 @@ class DraftHandler(Handler):
                 next="point it at a chunk handle: "
                 "get(kind='draft', id='dc123', view='review-diff')",
             )
-        if view is not None:
+        if view not in (None, "outline"):
+            # 'outline' is the default render (view omitted); accept it as an
+            # explicit value too — the model's intuitive guess (naming the
+            # concept the error itself calls "the outline") is otherwise a
+            # dead-end BadInput hit by many independent planner jobs.
             raise BadInput(
                 f"unknown draft view {view!r}",
                 next=(
@@ -453,7 +457,7 @@ class DraftHandler(Handler):
                     "per-section word counts vs targets, view='links' for the "
                     "link graph, view='integration' for the integration ledger "
                     "(a topic dossier only), view='review' for the approval "
-                    "ledger, or omit for the outline"
+                    "ledger, or omit (or view='outline') for the outline"
                 ),
             )
         return self._render_outline(s, ref)

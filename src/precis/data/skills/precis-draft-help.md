@@ -465,6 +465,9 @@ put(
 
 ```python
 get(kind="draft", id="nanotrans")  # outline: handle | §-path | gist
+get(
+    kind="draft", id="nanotrans", view="outline"
+)  # same — 'outline' is accepted explicitly
 get(id="dc12")  # one chunk, verbatim source
 get(id="dc12-5..3")  # that chunk + 5 before, 3 after
 ```

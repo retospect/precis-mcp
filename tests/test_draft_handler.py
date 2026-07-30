@@ -335,6 +335,22 @@ def test_outline_prefers_summary_then_keywords_then_text(
     assert "Bare paragraph text." in out  # raw-text fallback
 
 
+def test_explicit_outline_view_matches_default_render(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """view='outline' is accepted as an alias for the default outline render
+    (view omitted) — many independent planner jobs guessed the concept name
+    the error message itself uses and hit a dead-end BadInput."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    default = draft.get(id="nt").body
+    explicit = draft.get(id="nt", view="outline").body
+    assert explicit == default
+    # a genuinely-unknown view still raises, listing the real views
+    with pytest.raises(BadInput, match="unknown draft view"):
+        draft.get(id="nt", view="nope")
+
+
 def test_numeric_paper_ref_hints_chunk_handle_form(
     draft: DraftHandler, hub: Hub
 ) -> None:
