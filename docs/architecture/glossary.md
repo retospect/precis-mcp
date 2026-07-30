@@ -100,6 +100,14 @@
   hub): the *originator(s)* that first showed a claim `establishes` it; later
   papers that cite them `corroborate`. Derived from the citation graph, not
   hand-set. → `docs/proposals/taproot.md` §"Seniority is derived"
+- **fisheye** (eye) — a degree-of-interest render: focus one node and get it
+  plus its scaled-by-distance surroundings, not a bare chunk (ADR 0051 §6).
+  `get(..., view='fisheye'/'fisheye+1hop')`. → `src/precis/utils/fisheye.py`,
+  `src/precis/utils/eye_render.py` · skill `precis-fisheye-help`
+- **extent ladder** — the `kwd < summary < verbatim < fisheye < fisheye+1hop`
+  ordinal rungs (each strictly containing the previous) that `view=`
+  picks a point on. → `src/precis/workers/working_set.py::Extent` · skill
+  `precis-fisheye-help`
 
 ## Overloaded — which one?
 

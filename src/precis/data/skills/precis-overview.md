@@ -242,6 +242,9 @@ get(kind="skill", id="precis-cache")  # paid-tool caching, TTLs
 get(kind="skill", id="precis-paper-help")  # paper views, citation export
 get(kind="skill", id="precis-files-help")  # shared file-backed address grammar
 get(kind="skill", id="precis-toc-help")  # TOC navigation, sub-range zoom
+get(
+    kind="skill", id="precis-fisheye-help"
+)  # view='fisheye'/'fisheye+1hop' — read a chunk with its neighborhood
 get(kind="skill", id="precis-random-help")  # random corpus pick
 get(kind="skill", id="precis-folder-help")  # folders, placement, folder= search scope
 get(

@@ -353,6 +353,43 @@ def test_explicit_outline_view_matches_default_render(
         draft.get(id="nt", view="nope")
 
 
+def test_chunk_view_fisheye_routes_to_render_eye_not_silent_degrade(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """``view=`` is the sole door onto the ADR 0051 focus ladder on a draft
+    chunk. It used to fall through to the lone-chunk render (silent degrade)
+    when the label wasn't a recognised whole-chunk view; now a ladder label
+    routes to ``render_eye`` and anything unknown raises."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="Proposal", project=proj)
+    title_dc = _order(hub, "nt")[0].dc
+    intro = _add_heading(draft, hub, title_dc, "Introduction")
+    _add_para(draft, intro, "First paragraph text.")
+    mid = _dc(
+        draft.put(
+            id="nt",
+            chunk_kind="paragraph",
+            text="Second paragraph text.",
+            at={"into": intro, "last": True},
+        ).body
+    )
+    _add_para(draft, intro, "Third paragraph text.")
+
+    # default (view omitted) is unchanged: the lone chunk, no neighbours.
+    lone = draft.get(id=mid).body
+    assert "Second paragraph" in lone
+    assert "First paragraph" not in lone
+
+    fisheye = draft.get(id=mid, view="fisheye").body
+    assert "Second paragraph" in fisheye  # the focal chunk
+    assert "Introduction" in fisheye  # ancestor context
+    assert "First paragraph" in fisheye or "Third paragraph" in fisheye  # a neighbour
+
+    # a genuinely unknown view still raises — no silent chunk-render fallback.
+    with pytest.raises(BadInput, match="unknown draft chunk view"):
+        draft.get(id=mid, view="bogus")
+
+
 def test_numeric_paper_ref_hints_chunk_handle_form(
     draft: DraftHandler, hub: Hub
 ) -> None:

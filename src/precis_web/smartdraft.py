@@ -1,5 +1,4 @@
-"""Smartdraft — the fisheye rail's LLM-free relevance engine (design:
-``docs/proposals/draft-reader-fisheye-rail.md``).
+"""Smartdraft — the fisheye rail's LLM-free relevance engine.
 
 The whole surface is one primitive: **a prioritized list rendered at fidelity ∝
 priority, capped by a budget.** Priority is *eye-pressure* — how much a chunk

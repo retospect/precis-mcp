@@ -1,5 +1,4 @@
-"""Smartdraft tab — the fisheye-rail reader (design:
-``docs/proposals/draft-reader-fisheye-rail.md``).
+"""Smartdraft tab — the fisheye-rail reader.
 
 A **parallel** surface to `/drafts`: same draft data, a different lens. Three
 panes — left (fisheye TOC nav), middle (the focus + its neighbourhood), right

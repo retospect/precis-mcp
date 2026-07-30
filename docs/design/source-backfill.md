@@ -547,11 +547,13 @@ writer's context, the more discipline the prose needs.*
 
 1. **Semantic recall + Tier-0/1 cull + read-only workspace.** `text`
    lens (live search) → dedup vs cited → lesser-model gate → assemble eyes
-   → wire the dark render live (`get(args={'extent'})` +
-   `render_working_set`) with the cited/candidate annotations. No writes.
-   Proves the workspace. **— DONE** (`src/precis/backfill/`; `handlers/draft.py`
-   `get(extent=…, view='backfill')`; `tests/test_backfill.py`). Lesser-model
-   gate deferred into slice 4's cascade — slice 1 surfaces raw text-lens hits.
+   → wire the dark render live (`get(kind='draft', id='dc<section>',
+   view='backfill')` + `render_working_set`) with the cited/candidate
+   annotations. No writes. Proves the workspace. **— DONE**
+   (`src/precis/backfill/`; `handlers/draft.py`
+   `get(kind='draft', id='dc<section>', view='backfill')`;
+   `tests/test_backfill.py`). Lesser-model gate deferred into slice 4's
+   cascade — slice 1 surfaces raw text-lens hits.
 2. **Section-keyword rollup (union) + self-describing collapsed nodes +
    grounding line + scoped bidir.** The render contract in full. **— DONE**
    (`utils/section_keywords.py` roll-up wired into the composer's collapse

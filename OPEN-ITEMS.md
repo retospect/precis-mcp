@@ -8,6 +8,30 @@ items are removed (history is `git log`).
 > regression that pins it.
 
 ---
+## 🔍 Generalize fisheye discovery affordance beyond draft chunk reads
+
+Status: open · Severity: feature · Owner: `handlers/` per-kind chunk renders +
+`server.py` · Test: none yet — when generalized, add a per-kind assertion
+(parallel to `tests/test_draft_handler.py`'s fisheye-affordance test) that a
+plain single-chunk `get` on a paper/memory chunk carries the `→ view='fisheye'`
+affordance line.
+
+- The unprompted-discovery affordance footer (`→ view='fisheye' …`) was added
+  only to `DraftHandler._render_chunk` (`src/precis/handlers/draft.py`), gated to
+  single-chunk reads. But `paper`/`patent`/`web`/`datasheet`/`cfp`/`memory`/
+  `finding` chunk reads also have fisheye eyes
+  (`src/precis/utils/eye_render.py::render_eye` dispatches per-kind), and their
+  plain renders do NOT advertise it — so an agent reading those kinds unprompted
+  still can't discover fisheye. Generalize the teach-at-render affordance to
+  those kinds' plain chunk renders.
+- Related polish: the draft affordance is emitted on every single-chunk read
+  (stateless handler — no "seen once" damper). If it proves noisy in read loops,
+  add a session-scoped damper or truncation. (pre-ship reviewer finding,
+  2026-07-30)
+- Optional: a one-line fisheye mention in the top-level MCP server-instructions
+  string (`src/precis/server.py`) for session-start visibility.
+
+---
 ## 🔎 Residuals — whatneedsdoing triage 2026-07-30 (Opus-session, harvestable)
 
 Surfaced during the 2026-07-30 triage (fleet-health + prod transcript mining).

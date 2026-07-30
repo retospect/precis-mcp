@@ -44,6 +44,7 @@ ever helps the middle case; it never unblocks a blocked or errored call.
 | Find content by topic | `search(q='...')` (cross-kind) or `search(kind='paper', q='...')` | `precis-search-help` |
 | Read a thing you can name | `get(kind='paper', id='wang2020state')` / `get(kind='todo', id=122)` | `precis-get-help` |
 | Read one section / chunk | `get(id='pa5~40')` or a chunk handle `get(id='pc890282')` | `precis-addressing-help` |
+| Read a chunk + its neighborhood | `get(kind='draft', id='dc41', view='fisheye')` | `precis-fisheye-help` |
 | Browse a paper's structure | `get(kind='paper', id='wang2020state', view='toc')` | `precis-toc-help` |
 | Broad paper retrieval | `search(kind='paper', queries=[...], answers=[...HyDE], per_paper=N)` | `precis-search-help` |
 | Deep async paper campaign | `search(kind='paper', q='...', good=True)` → poll the job handle | `precis-search-help` |

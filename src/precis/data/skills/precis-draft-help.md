@@ -470,11 +470,15 @@ get(
 )  # same — 'outline' is accepted explicitly
 get(id="dc12")  # one chunk, verbatim source
 get(id="dc12-5..3")  # that chunk + 5 before, 3 after
+get(id="dc12", view="fisheye")  # verbatim center + graduated neighborhood
 ```
 
 Navigate the **outline** first (cheap — one line per chunk), then pull
 **verbatim** only for the region you act on. `dc<id>-2..3` is a
-reading window (B before, A after, in reading order).
+reading window (B before, A after, in reading order). `view='fisheye'`
+is the same idea done for you: verbatim center, fanning out to summary
+then keyword lines under the ancestor heading — see
+`precis-fisheye-help`.
 
 The outline ends with a **`## Work in progress`** block when todos are
 working on this draft and are stuck or in flight — walked
@@ -958,6 +962,9 @@ get(
     kind="skill", id="precis-stubs-help"
 )  # request a paper we don't have (acquisition backlog)
 get(kind="skill", id="precis-finding-help")  # flag a claim / chase an un-ingested DOI
+get(
+    kind="skill", id="precis-fisheye-help"
+)  # view='fisheye'/'fisheye+1hop' — a chunk + its neighborhood/reference ring
 get(
     kind="skill", id="precis-auto-tasks-help"
 )  # wait-on-ingest (paper_ingested) leaf pattern

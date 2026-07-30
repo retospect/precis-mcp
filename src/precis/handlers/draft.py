@@ -48,6 +48,7 @@ from precis.utils.authors import to_author_dicts
 from precis.utils.edit_resolve import format_unified_diff, normalize_dry_run
 from precis.utils.embed_query import query_vec_for
 from precis.utils.table_data import normalize_table, table_to_markdown
+from precis.workers.working_set import Extent
 
 log = logging.getLogger(__name__)
 
@@ -353,7 +354,6 @@ class DraftHandler(Handler):
         *,
         id: str | int | None = None,
         view: str | None = None,
-        extent: str | None = None,
         targets: list[str] | None = None,
         project: str | int | None = None,
         **_kw: Any,
@@ -374,18 +374,21 @@ class DraftHandler(Handler):
             return self._render_list()
         s = str(id).strip()
         if _is_draft_chunk_addr(s):
-            # ADR 0051 eye — render this node at a focus extent
-            # (kwd|summary|verbatim|fisheye|fisheye+1hop). Exposes the composer
-            # a single node at a time; ``view='backfill'`` composes many.
-            if extent is not None:
+            # ADR 0051 eye — render this node at a focus extent via ``view=``:
+            # the ladder kwd|summary|verbatim|fisheye|fisheye+1hop (labels
+            # derived from ``Extent`` so they can't drift from the enum).
+            # Exposes the composer one node at a time; ``view='backfill'``
+            # composes many.
+            extent_ladder = [e.label for e in Extent if e is not Extent.NONE]
+            if view in extent_ladder:
                 from precis.utils.eye_render import render_eye
 
                 try:
-                    return Response(body=render_eye(self.store, s, extent))
+                    return Response(body=render_eye(self.store, s, view))
                 except ValueError as e:
                     raise BadInput(
                         str(e),
-                        next="extent= ∈ kwd|summary|verbatim|fisheye|fisheye+1hop",
+                        next=f"view ∈ {'|'.join(extent_ladder)}",
                     ) from e
             if view == "backfill":  # source-backfill workspace for this section
                 from precis.backfill import render_backfill
@@ -405,6 +408,14 @@ class DraftHandler(Handler):
                 from precis.handlers._review_view import render_review_diff_view
 
                 return render_review_diff_view(self.store, s)
+            if view is not None:
+                # No silent degrade to the lone-chunk render (was the bug —
+                # an unrecognized view fell through here unnoticed).
+                raise BadInput(
+                    f"unknown draft chunk view {view!r}",
+                    next="view ∈ backfill|toc|wordcount|review-diff, or a "
+                    f"focus-ladder label {'|'.join(extent_ladder)}",
+                )
             return self._render_chunk(s)
         ref = resolve_live_slug_ref(self.store, kind="draft", id=s)
         if view == "backfill":
@@ -2165,7 +2176,26 @@ class DraftHandler(Handler):
         window_text = "\n\n".join(c.text for c in window)
         body += self._dangling_finding_hint(window_text)
         body += self._dangling_chunk_hint(window_text)
+        if len(window) == 1:
+            body += self._fisheye_affordance()
         return Response(body=body)
+
+    def _fisheye_affordance(self) -> str:
+        """Advertise the neighborhood render on the plain chunk read — the
+        *unprompted-discovery* channel for fisheye (ADR 0051 §6). A process
+        that just reads a bare chunk learns, at the point of relevance, that
+        it can get the node in context without having to already know the
+        feature exists or go searching the skill index. Gated to
+        single-chunk reads (``_render_chunk`` only calls this when
+        ``len(window) == 1``): the footer text says "this node" (singular),
+        wrong for a multi-chunk reading window, and a window read already
+        asked for surrounding context, so advertising fisheye there is
+        redundant."""
+        return (
+            "\n\n→ view='fisheye' renders this node with its neighbourhood "
+            "(nearby chunks + section path); view='fisheye+1hop' also shows what "
+            "it references. skill: precis-fisheye-help"
+        )
 
     #: ``[finding #<slug>]`` / ``citation pending — finding #<slug>`` — the
     #: author-written placeholder form. Note this is NOT draft markup

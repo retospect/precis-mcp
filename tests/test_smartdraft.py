@@ -1,6 +1,6 @@
-"""Smartdraft — the fisheye rail's LLM-free relevance engine (design:
-docs/proposals/draft-reader-fisheye-rail.md). Pins eye-pressure ranking + the
-fisheye-collapse TOC + the three-pane view model."""
+"""Smartdraft — the fisheye rail's LLM-free relevance engine. Pins
+eye-pressure ranking + the fisheye-collapse TOC + the three-pane view
+model."""
 
 from __future__ import annotations
 

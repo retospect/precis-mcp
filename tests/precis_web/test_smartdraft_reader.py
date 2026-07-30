@@ -1,5 +1,5 @@
 """Smartdraft reader route (``GET /smartdraft/{ident}``) — the fisheye-rail
-three-pane HTML surface (design: docs/proposals/draft-reader-fisheye-rail.md).
+three-pane HTML surface.
 
 The classic ``/drafts`` fixture (``tests/precis_web/test_drafts.py``'s
 ``DraftFakeStore``) predates the smartdraft reader: its chunk stand-in lacks

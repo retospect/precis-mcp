@@ -1600,6 +1600,19 @@ The master kinds table lives in the `precis-overview` skill.
   root); capture is unconditional (every message asa sees, human or bot, plus
   its own replies); per-person memory reuses `asa_bot.preamble.build()`'s
   existing `user:<handle>` mechanism unchanged. ADR: `docs/decisions/0062-asa-slack-bridge.md`.
+- **`fisheye`** — the degree-of-interest neighborhood render (ADR 0051 §6):
+  `get(..., view='fisheye'/'fisheye+1hop')` on a chunk returns it plus its
+  surroundings, not a bare chunk. Extent ladder `kwd < summary < verbatim <
+  fisheye < fisheye+1hop` (`workers/working_set.py::Extent`); per-kind
+  dispatch (`utils/eye_render.py::render_eye`) — tree kinds (`draft`/`plan`)
+  get the reading-order spatial span (`utils/fisheye.py`, ±5 full/±10
+  summary/±15 kwd, forward-biased, under the ancestor branch), doc kinds
+  (`paper`/`patent`/`web`/`datasheet`/`cfp`) get the F20 keyword-cluster eye,
+  link kinds (`memory`/`finding`/…) get the note + its 1-hop link ring.
+  `fisheye+1hop` adds the reference ring (`utils/refeye.py`) — cited refs,
+  cross-refs, linked notes, one edge out. Also surfaced by the smartdraft web
+  reader (`/smartdraft/<draft>?focus=dc<id>`). Pure read-time assembly, no new
+  storage. Skill: `precis-fisheye-help`.
 
 ## Web UI (`precis_web`)
 
