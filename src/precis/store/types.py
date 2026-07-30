@@ -366,6 +366,14 @@ class Ref:
     # 2 = cron tick spawns; 3..10 share the 1/N strategic rotation. See
     # docs/design/todo-tree-plan.md for the spawn-default table.
     prio: int | None = None
+    # Migration 0099 / alert dedup+lifecycle columns, promoted off jsonb
+    # `meta` so the ``kind='alert'`` open-uniqueness index
+    # (``uq_alert_open_source_fingerprint``) and the per-sighting dedup
+    # UPDATE no longer touch an indexed jsonb column (HOT-update fix).
+    # NULL for every non-alert ref.
+    alert_source: str | None = None
+    fingerprint: str | None = None
+    resolved_at: datetime | None = None
 
     @property
     def public_id(self) -> str:

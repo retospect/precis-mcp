@@ -38,7 +38,7 @@ def _rows(store: Any, *, state_tag: str, limit: int | None) -> list[dict[str, An
     sql = """
         SELECT r.ref_id,
                r.title,
-               r.meta->>'alert_source'   AS source,
+               r.alert_source            AS source,
                r.meta->>'severity'       AS severity,
                r.meta->>'detail'         AS detail,
                r.meta->>'subject_ref_id' AS subject_ref_id,

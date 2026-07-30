@@ -397,7 +397,8 @@ _REFS_COLS_FOR_CACHE = (
     "refs.retraction_url, refs.retraction_checked_at, "
     "refs.pdf_sha256, refs.pdf_pages::text AS pdf_pages, refs.pdf_role, "
     "refs.auto_refresh_days, refs.refreshed_at, "
-    "refs.parent_id, refs.prio"
+    "refs.parent_id, refs.prio, refs.alert_source, refs.fingerprint, "
+    "refs.resolved_at"
 )
 
 #: Number of ``cache_state`` columns appended after the ref projection

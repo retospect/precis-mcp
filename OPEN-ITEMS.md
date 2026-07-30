@@ -120,36 +120,34 @@ refused` casts.)*
 ---
 ## 🗄️ Postgres schema-audit residuals — 2026-07-30 (Opus-session, refs write-churn)
 
-From the 2026-07-30 DB schema+operation audit. The tuning batch (defensive
-`agent_*` timeouts, `chunk_embeddings` ANALYZE, checkpoint/WAL/bgwriter,
-per-table autovacuum on churn tables, `pg_cron` removal — main `da79761e`),
-the LLM-advertise no-op guard, and the chunk-family autovacuum-drift capture
-already shipped. These two `refs` write-churn fixes remain, both from the same
-audit; the second is gated on measuring the first.
+From the 2026-07-30 DB schema+operation audit. All the write-churn fixes have
+shipped: the tuning batch (defensive `agent_*` timeouts, `chunk_embeddings`
+ANALYZE, checkpoint/WAL/bgwriter, per-table autovacuum, `pg_cron` removal —
+`da79761e`), the LLM-advertise no-op guard + chunk-autovacuum-drift capture
+(`aa4e7c94`), and the alert-key promotion (`refs.meta` → `alert_source`/
+`fingerprint`/`resolved_at` columns, HOT-enabling index rebuild) + nursery
+`seen_count` throttle (migration `0099`). One pre-existing gap surfaced during
+that work, plus a deploy op:
 
-- **Nursery alert re-raise — throttle the per-pass `seen_count` bump**
-  *(perf · owner `workers/nursery.py` + `alerts.py::raise_alert` · Test: assert
-  a re-raise with unchanged content within the window issues no `refs` UPDATE).*
-  `run_nursery_pass` re-raises every open finding every minute; each hits
-  `raise_alert`'s dedup branch (statement A, 4.45M calls) and rewrites the alert
-  `refs` row (`seen_count` + `updated_at`), ~35M cumulative — the largest refs
-  write-amplifier. **DECISION PENDING (user):** either (a) skip the write when
-  title/detail/severity are unchanged AND last-written < ~15 min ago —
-  `seen_count` becomes coarse, no schema change; or (b) keep `seen_count` exact
-  via `first_seen`/`last_seen` columns (derive at read), which folds into the
-  alert-key promotion below. Proposed default = (a).
+- **Manual-ack alert path leaves a stuck row that blocks re-raise**
+  *(correctness · owner `alerts.py` / `handlers/alert.py` · pre-existing, not a
+  regression).* Acking an alert by flipping its tag directly
+  (`tag(id=N, add=['alert-state:resolved'], remove=['alert-state:open'])`, a
+  documented handler path) never sets `resolved_at`, so the row stays in the
+  `uq_alert_open_source_fingerprint` open-set. The next `raise_alert` for the
+  same `(alert_source, fingerprint)` then hits an **uncaught `UniqueViolation`**,
+  wedging that nursery detector until the row is fixed by hand. Same gap existed
+  under 0030's meta-expression index (the manual path never set
+  `meta.resolved_at` either) — 0099 just makes the failure louder. **Fix
+  options:** make the manual-ack tag path also stamp `resolved_at` (a tag hook,
+  or route acks through `resolve_stale_alerts`), and/or catch `UniqueViolation`
+  in `raise_alert` and fall back to the dedup-update.
 
-- **Promote alert dedup keys out of `refs.meta` → real columns (HOT fix)**
-  *(perf/schema · owner `alert` kind + migration · MEASURE-FIRST).* A dev-DB A/B
-  proved the expression index `uq_alert_open_source_fingerprint` on
-  `meta->>'alert_source'/'fingerprint'` forces EVERY `meta`-touching UPDATE on
-  `refs` to be non-HOT (100%→0%), table-wide — the root of refs' 16.8% HOT and
-  its index/WAL write-amplification. Fix: promote
-  `alert_source`/`fingerprint`/`resolved_at` to real scalar columns, rebuild the
-  unique index on them (brief `refs` write-lock at deploy — schedule the
-  window), + `fillfactor` on `refs` applied via `pg_repack`. **Gate:** land the
-  two write-elimination fixes (advertise ✓, nursery) and observe whether refs
-  write volume drops enough that this schema change is still worth it first.
+- **Deploy op — `pg_repack refs` after `0099` deploys** *(one-time).* `0099`
+  sets `fillfactor=85` on `refs`, but that only reaches existing pages on
+  rewrite. Run `pg_repack` (online, lock-light) on `refs` once post-deploy so
+  the now-unindexed-`meta` dedup updates can land HOT in-page; new/updated rows
+  adopt it immediately regardless.
 
 ---
 ## material/component: unit conversion — DELEGATE to `calc`, do not build a second engine (DRY)
