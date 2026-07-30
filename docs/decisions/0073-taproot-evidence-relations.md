@@ -51,18 +51,18 @@ change read-time mirroring for the draft-integration subsystem that owns it.
 **Single write path (taproot.md open #16).** Every hub-finding and every
 evidence edge is written through **`src/precis/taproot/hub.py`**:
 
-- `mint_hub` — create a `FROLE:claim` `finding` (reuse, not a new kind —
+- `mint_hub` — create a `TAPROOT:claim` `finding` (reuse, not a new kind —
   ADR 0054 precedent). Only paper-grounded claims become hubs (open #15).
 - `attach_evidence` — write one `paper --role--> hub` edge; `role` must be one
   of the three evidence roles **and** validate against the live `relations`
-  table, and the target must be a `FROLE:claim` finding (never a `FROLE:review`
+  table, and the target must be a `TAPROOT:claim` finding (never a `TAPROOT:review`
   note or a non-finding).
 - `apply_placement` — route a canonicalizer `Placement`: `attach` / `new` /
   `new_contradicts` write edges; **`needs_review` files a `kind='todo'` and
   attaches nothing** (a risky merge is never auto-applied, open #16).
 
 A raw `INSERT` / `store.add_link` for these relations elsewhere bypasses the
-role + `FROLE:claim` guards and is a defect. The FK is the durable backstop;
+role + `TAPROOT:claim` guards and is a defect. The FK is the durable backstop;
 `validate_relation` is the friendly pre-flight.
 
 **Evidence role is derived, not set at write time.** `establishes` vs

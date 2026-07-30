@@ -193,7 +193,7 @@ def test_discover_axis_ids_excludes_cascade_axes_and_lookup_tables() -> None:
         "studytype",
         "transport",
         "move",
-        "frole",
+        "taproot",
     }
     assert CASCADE_AXIS_IDS.isdisjoint(ids)
     assert ids == sorted(ids)  # deterministic registration order

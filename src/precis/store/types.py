@@ -203,7 +203,7 @@ Relation = Literal[
     "contains",
     "part-of",
     # Taproot Phase 2 — evidence-edge role (migration 0094, ADR 0073). A
-    # `paper` ref `establishes` the `FROLE:claim` `finding` hub it originated.
+    # `paper` ref `establishes` the `TAPROOT:claim` `finding` hub it originated.
     # The other two evidence roles reuse existing slugs (`corroborates` from
     # 0085, `contradicts` from 0001) — endpoint kinds disambiguate. No
     # inverse: the hub reads via `links_for(direction='in', relation=…)`.
@@ -882,17 +882,17 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
     "STALE": frozenset({"retracted-premise"}),
     # Taproot Phase-2 predecessor (open #11, docs/proposals/
     # taproot-phase2-hub-node.md). A `finding`-ref discriminator written by
-    # the `axis:frole` classifier pass (data/axes/frole.yaml): `FROLE:claim`
+    # the `axis:taproot` classifier pass (data/axes/taproot.yaml): `TAPROOT:claim`
     # = a grounded world-claim (the taproot claim hub + evidence edges attach
-    # only here), `FROLE:review` = an editorial/manuscript note (excluded from
+    # only here), `TAPROOT:review` = an editorial/manuscript note (excluded from
     # the claim graph). Registered here — like DENSITY — so the validation
     # layer knows the namespace; unlike DENSITY it is a REF tag, so listing it
-    # is load-bearing: `search(kind='finding', tags=['FROLE:claim'])` routes
+    # is load-bearing: `search(kind='finding', tags=['TAPROOT:claim'])` routes
     # through `parse_strict`, which rejects an unregistered UPPERCASE axis.
     # NOT added to `finding`'s allowed-axes because `finding` is deliberately
     # unlisted in `_KIND_ALLOWED_AXES` (unrestricted); listing it would strip
     # its other axes. `canon.block()` reads these via raw SQL.
-    "FROLE": frozenset({"claim", "review"}),
+    "TAPROOT": frozenset({"claim", "review"}),
 }
 
 # Bare flag values that collide with a closed-vocab value. Maintained as

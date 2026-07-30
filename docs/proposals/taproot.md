@@ -85,9 +85,9 @@ head"; `_is_premise()` is true for *either* `finding` or `kind:lemma`):
 They are the **empirical vs. inferred** split the argument graph was built
 around; they do not compete. This spec extends `finding`'s *evidence*
 side; ADR 0054 keeps the *inference* side. Both feed the one retraction
-ripple. Rule: **evidence edges → `FROLE:claim` findings only; inference
+ripple. Rule: **evidence edges → `TAPROOT:claim` findings only; inference
 edges → either.** (Only *grounded world-claim* findings are hubs — see
-open #11 for the `FROLE:claim`/`FROLE:review` discriminator.)
+open #11 for the `TAPROOT:claim`/`TAPROOT:review` discriminator.)
 (Resolves former incoherence #3.)
 
 **Citation target (former incoherence #4).** `finding`'s contract
@@ -485,7 +485,7 @@ SMALL or model-free.
 **Storage — no migration.** Taproot is a tags-and-links overlay on tables
 that already exist; **do not write a schema migration.** Verified:
 - **Hubs** = `finding` refs (kind already exists) — reuse, don't create.
-- **`FROLE:claim`/`review`** = rows in the existing **`ref_tags`** table;
+- **`TAPROOT:claim`/`review`** = rows in the existing **`ref_tags`** table;
   register the closed namespace in code (like `ROLE3`). No column.
 - **Evidence + claim edges** (`establishes`/`corroborates`/`contradicts`)
   = rows in **`links`**. **Correction (Phase 2, ADR 0073):** `links.relation`
@@ -609,16 +609,16 @@ before any `status: ready`).
     notes ("acronym unexpanded", "riyaz25 cited but Pd not studied"), not
     grounded world-claims. **Decision** (repo-idiomatic — open-tag
     pattern, ADR-0054 precedent of *not* minting a kind): keep one
-    `finding` kind, add a **closed discriminator tag** `FROLE:claim`
-    (grounded world-claim) vs `FROLE:review` (editorial/manuscript note).
-    **The taproot hub + evidence edges attach only to `FROLE:claim`
+    `finding` kind, add a **closed discriminator tag** `TAPROOT:claim`
+    (grounded world-claim) vs `TAPROOT:review` (editorial/manuscript note).
+    **The taproot hub + evidence edges attach only to `TAPROOT:claim`
     findings**; review notes stay findings but are excluded from the claim
     graph. Backfill-classify existing findings with a cheap SMALL/local
     pass (mirrors the `ROLE3` cascade). Must land before `finding` becomes
     the hub in Phase 2. (The fixture sidestepped this by drawing from
     `citation`, which is clean.) **Built 2026-07-29 (Phase-2 slice 2a):**
-    `data/axes/frole.yaml`, a ref-level `axis_pass` classifier (`axis:frole`,
-    default-OFF); `FROLE` registered in `_CLOSED_VOCAB`. Fail-open (no
+    `data/axes/taproot.yaml`, a ref-level `axis_pass` classifier (`axis:taproot`,
+    default-OFF); `TAPROOT` registered in `_CLOSED_VOCAB`. Fail-open (no
     `default_unknown`).
 
 12. **[COVERED — via synthetic, corpus is thin]** A targeted Opus scan of
@@ -633,7 +633,7 @@ before any `status: ready`).
 
 13. **[OPEN — loose end from the simplification pass]** **`concept` is
     unaddressed.** There are three claim-ish node types: the taproot hub
-    (`FROLE:claim` finding), `memory:kind:lemma` (derived lemma), and
+    (`TAPROOT:claim` finding), `memory:kind:lemma` (derived lemma), and
     `concept` (learner term + mastery). We reconciled the first two by rule
     (grounded vs derived, #3), but never drew the claim↔concept boundary. A
     concept ("catalytic activity") is a *term/topic*, not an *assertion* —
@@ -707,7 +707,7 @@ and validate before widening blast radius.
    `\cite{}`→originators export expansion (open #4 residual). The
    schema/vocab foundation the rest writes to. → build ticket:
    [`taproot-phase2-hub-node.md`](./taproot-phase2-hub-node.md) (5 slices
-   2a–2e; the FROLE classifier (open #11) is slice 2a, the predecessor).
+   2a–2e; the TAPROOT classifier (open #11) is slice 2a, the predecessor).
 3. **Phase 3 — forward resolution.** Turn on + finish `chase`, wire the
    Axis-A pipeline to edges, draft-side response policies. First user
    value; runs on ingest only, bounded volume.

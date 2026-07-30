@@ -1,6 +1,6 @@
-"""Taproot Phase-2 slice 2a — the FROLE claim/review classifier (open #11).
+"""Taproot Phase-2 slice 2a — the TAPROOT claim/review classifier (open #11).
 
-`data/axes/frole.yaml` is a ref-level axis over `finding` refs, driven by the
+`data/axes/taproot.yaml` is a ref-level axis over `finding` refs, driven by the
 generic `workers/axis_pass.py` runner (no bespoke worker code). These tests
 pin the wiring with a fake dispatch — the LLM *quality* of the prompt is a
 host-native spot-check, not the offline gate (live-model tests can't run in
@@ -35,7 +35,7 @@ class _FakeClient:
         return SimpleNamespace(text=f'{{"value": "{self.value}"}}', total_tokens=5)
 
 
-# A finding's body is flowing prose (the claim + setup); frole reads
+# A finding's body is flowing prose (the claim + setup); taproot reads
 # title + this first ord>=0 chunk via axis_pass._build_ref_prompt.
 _CLAIM_BODY = (
     "Pd/C catalyzes Suzuki coupling at room temperature with a mild base, "
@@ -66,68 +66,68 @@ def _seed_finding(store: Any, *, title: str, body: str) -> int:
 # ── the classifier writes the discriminator + marker ────────────────────
 
 
-def test_frole_tags_a_grounded_claim(store: Any) -> None:
+def test_taproot_tags_a_grounded_claim(store: Any) -> None:
     ref_id = _seed_finding(
         store, title="Pd/C catalyzes Suzuki coupling at RT", body=_CLAIM_BODY
     )
     client = _FakeClient("claim")
 
     result = run_axis_pass(
-        store, dispatch=client, axis_id="frole", batch_size=10, ref_ids=[ref_id]
+        store, dispatch=client, axis_id="taproot", batch_size=10, ref_ids=[ref_id]
     )
 
     assert result == {"claimed": 1, "ok": 1, "failed": 0, "dist": {"claim": 1}}
-    assert _ref_tag(store, ref_id, "FROLE") == "claim"
-    assert _ref_tag(store, ref_id, "FROLECASCADE") == "1"
+    assert _ref_tag(store, ref_id, "TAPROOT") == "claim"
+    assert _ref_tag(store, ref_id, "TAPROOTCASCADE") == "1"
 
 
-def test_frole_tags_an_editorial_note(store: Any) -> None:
+def test_taproot_tags_an_editorial_note(store: Any) -> None:
     ref_id = _seed_finding(
         store, title="acronym unexpanded; missing citation", body=_REVIEW_BODY
     )
     client = _FakeClient("review")
 
     result = run_axis_pass(
-        store, dispatch=client, axis_id="frole", batch_size=10, ref_ids=[ref_id]
+        store, dispatch=client, axis_id="taproot", batch_size=10, ref_ids=[ref_id]
     )
 
     assert result == {"claimed": 1, "ok": 1, "failed": 0, "dist": {"review": 1}}
-    assert _ref_tag(store, ref_id, "FROLE") == "review"
+    assert _ref_tag(store, ref_id, "TAPROOT") == "review"
 
 
-def test_frole_only_applies_to_findings(store: Any) -> None:
+def test_taproot_only_applies_to_findings(store: Any) -> None:
     """`applies_to_kinds: [finding]` — a `paper` ref must not be claimed."""
     paper_id = seed_ref(store, title="A paper about catalysis", kind="paper")
     seed_chunk(store, ref_id=paper_id, text=_CLAIM_BODY, ord=0)
     client = _FakeClient("claim")
 
     result = run_axis_pass(
-        store, dispatch=client, axis_id="frole", batch_size=10, ref_ids=[paper_id]
+        store, dispatch=client, axis_id="taproot", batch_size=10, ref_ids=[paper_id]
     )
 
     assert result == {"claimed": 0, "ok": 0, "failed": 0}
-    assert _ref_tag(store, paper_id, "FROLE") is None
+    assert _ref_tag(store, paper_id, "TAPROOT") is None
     assert client.calls == []
 
 
-def test_frole_idempotent_same_version_skipped(store: Any) -> None:
+def test_taproot_idempotent_same_version_skipped(store: Any) -> None:
     ref_id = _seed_finding(store, title="A grounded claim", body=_CLAIM_BODY)
     client = _FakeClient("claim")
 
     first = run_axis_pass(
-        store, dispatch=client, axis_id="frole", batch_size=10, ref_ids=[ref_id]
+        store, dispatch=client, axis_id="taproot", batch_size=10, ref_ids=[ref_id]
     )
     assert first["claimed"] == 1
 
     second = run_axis_pass(
-        store, dispatch=client, axis_id="frole", batch_size=10, ref_ids=[ref_id]
+        store, dispatch=client, axis_id="taproot", batch_size=10, ref_ids=[ref_id]
     )
     assert second == {"claimed": 0, "ok": 0, "failed": 0}
     assert len(client.calls) == 1  # only the first pass hit the model
 
 
-def test_frole_unparseable_output_stays_claimable(store: Any) -> None:
-    """Fail-open: `frole.yaml` omits `default_unknown`, so an unparseable /
+def test_taproot_unparseable_output_stays_claimable(store: Any) -> None:
+    """Fail-open: `taproot.yaml` omits `default_unknown`, so an unparseable /
     out-of-vocab read is `failed` (no tag, re-claimable), never a mis-tag."""
     ref_id = _seed_finding(store, title="An ambiguous finding", body=_CLAIM_BODY)
 
@@ -136,16 +136,20 @@ def test_frole_unparseable_output_stays_claimable(store: Any) -> None:
             return SimpleNamespace(text="sorry, I cannot decide", total_tokens=5)
 
     result = run_axis_pass(
-        store, dispatch=_JunkClient(), axis_id="frole", batch_size=10, ref_ids=[ref_id]
+        store,
+        dispatch=_JunkClient(),
+        axis_id="taproot",
+        batch_size=10,
+        ref_ids=[ref_id],
     )
     assert result == {"claimed": 1, "ok": 0, "failed": 1, "dist": {}}
-    assert _ref_tag(store, ref_id, "FROLE") is None
-    assert _ref_tag(store, ref_id, "FROLECASCADE") is None
+    assert _ref_tag(store, ref_id, "TAPROOT") is None
+    assert _ref_tag(store, ref_id, "TAPROOTCASCADE") is None
 
     retried = run_axis_pass(
         store,
         dispatch=_FakeClient("claim"),
-        axis_id="frole",
+        axis_id="taproot",
         batch_size=10,
         ref_ids=[ref_id],
     )
@@ -155,16 +159,16 @@ def test_frole_unparseable_output_stays_claimable(store: Any) -> None:
 # ── registration + vocab ────────────────────────────────────────────────
 
 
-def test_frole_is_a_discovered_axis() -> None:
-    assert "frole" in discover_axis_ids()
+def test_taproot_is_a_discovered_axis() -> None:
+    assert "taproot" in discover_axis_ids()
 
 
-def test_frole_closed_vocab_parses_and_rejects_typos() -> None:
+def test_taproot_closed_vocab_parses_and_rejects_typos() -> None:
     # Registered closed axis: valid values parse to a closed Tag on `finding`
     # (unrestricted kind), a bad value fails loud rather than silently.
     for value in ("claim", "review"):
-        tag = Tag.parse_strict(f"FROLE:{value}", kind="finding")
-        assert (tag.prefix, tag.value) == ("FROLE", value)
+        tag = Tag.parse_strict(f"TAPROOT:{value}", kind="finding")
+        assert (tag.prefix, tag.value) == ("TAPROOT", value)
 
     with pytest.raises(BadInput):
-        Tag.parse_strict("FROLE:bogus", kind="finding")
+        Tag.parse_strict("TAPROOT:bogus", kind="finding")

@@ -2,7 +2,7 @@
 
 DB-backed (real `refs`/`chunks`/`ref_tags`/`links` via the `store` fixture);
 no LLM — `CanonicalClaim`/`Placement` are constructed directly. Pins the
-single write door: mint a `FROLE:claim` hub, attach typed evidence edges
+single write door: mint a `TAPROOT:claim` hub, attach typed evidence edges
 (guarding role + target), and route every `place()` action.
 """
 
@@ -56,7 +56,7 @@ def _finding_body(store: Any, ref_id: int) -> str | None:
 # ── mint_hub ────────────────────────────────────────────────────────────
 
 
-def test_mint_hub_creates_a_frole_claim_finding(store: Any) -> None:
+def test_mint_hub_creates_a_taproot_claim_finding(store: Any) -> None:
     hub = mint_hub(store, _CLAIM)
 
     with store.pool.connection() as conn:
@@ -64,7 +64,7 @@ def test_mint_hub_creates_a_frole_claim_finding(store: Any) -> None:
             "SELECT kind FROM refs WHERE ref_id = %s", (hub,)
         ).fetchone()[0]
     assert kind == "finding"
-    assert _ref_tag(store, hub, "FROLE") == "claim"
+    assert _ref_tag(store, hub, "TAPROOT") == "claim"
     assert _ref_tag(store, hub, "STATUS") == "tracing"
     assert _finding_body(store, hub) == _CLAIM.sentence
 
@@ -109,10 +109,12 @@ def test_attach_evidence_rejects_unknown_role(store: Any) -> None:
 def test_attach_evidence_rejects_non_claim_target(store: Any) -> None:
     paper = seed_ref(store, title="Collins 2006", kind="paper")
 
-    # A finding NOT tagged FROLE:claim (an editorial review note).
+    # A finding NOT tagged TAPROOT:claim (an editorial review note).
     review = seed_ref(store, title="acronym unexpanded", kind="finding")
     with store.pool.connection() as conn:
-        store.add_tag(review, Tag.closed("FROLE", "review"), set_by="agent", conn=conn)
+        store.add_tag(
+            review, Tag.closed("TAPROOT", "review"), set_by="agent", conn=conn
+        )
         conn.commit()
     with pytest.raises(BadInput):
         attach_evidence(
@@ -154,7 +156,7 @@ def test_apply_placement_new_mints_and_attaches(store: Any) -> None:
     )
 
     assert hub is not None
-    assert _ref_tag(store, hub, "FROLE") == "claim"
+    assert _ref_tag(store, hub, "TAPROOT") == "claim"
     assert _edge(store, paper, hub) == "establishes"
 
 

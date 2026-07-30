@@ -7,7 +7,7 @@ claim dedup". Four functions, one cascade:
 1. :func:`extract_claim` — SMALL/local. A chunk of text -> a
    :class:`CanonicalClaim` (normalized sentence + light scope), or ``None``
    when the chunk asserts nothing groundable (the ``NO-CLAIM`` outcome).
-2. :func:`block` — no model. ANN over the existing ``FROLE:claim`` hub card
+2. :func:`block` — no model. ANN over the existing ``TAPROOT:claim`` hub card
    embeddings (bge-m3, same embedder as the rest of the card index) ->
    the ``k`` nearest :class:`Candidate` hubs.
 3. :func:`dedup_judge` — MEDIUM. THE crux call — one bounded pairwise
@@ -38,7 +38,7 @@ from precis.utils.llm.router import LlmRequest, Tier, dispatch
 
 log = logging.getLogger(__name__)
 
-# ── the closed FROLE namespace (see taproot.md open #11) ───────────────────
+# ── the closed TAPROOT namespace (see taproot.md open #11) ─────────────────
 #
 # Registered here (mirrors ROLE3, ``workers/classify.py``) even though the
 # Phase-1-predecessor classifier that *writes* these tags isn't built yet
@@ -46,9 +46,9 @@ log = logging.getLogger(__name__)
 # reads it so the query is correct the day the classifier lands; until then
 # it simply finds no tagged hubs and returns empty (brand-new claim), which
 # is the correct degrade.
-FROLE_NAMESPACE = "FROLE"
-FROLE_CLAIM = "claim"
-FROLE_REVIEW = "review"
+TAPROOT_NAMESPACE = "TAPROOT"
+TAPROOT_CLAIM = "claim"
+TAPROOT_REVIEW = "review"
 
 Verdict3 = Literal["same", "different", "contradicts"]
 
@@ -228,15 +228,15 @@ def block(
     k: int = 10,
     embedder_name: str = "bge-m3",
 ) -> list[Candidate]:
-    """The ``k`` nearest existing ``FROLE:claim`` hubs to ``claim`` — no model.
+    """The ``k`` nearest existing ``TAPROOT:claim`` hubs to ``claim`` — no model.
 
     Embeds ``claim.sentence`` with ``embedder`` (an
     :class:`~precis.embedder.Embedder`-shaped object — ``embed_one(text) ->
-    list[float]``) and ANN-retrieves over the ``FROLE:claim``-tagged
+    list[float]``) and ANN-retrieves over the ``TAPROOT:claim``-tagged
     ``finding`` refs' ``card_combined`` (``ord=-1``) embeddings — the same
     card index every other kind embeds into. Empty when no tagged hub
     exists yet (brand-new claim; also today's degrade, since the
-    classifier that writes ``FROLE:claim`` is a Phase-2 predecessor, not
+    classifier that writes ``TAPROOT:claim`` is a Phase-2 predecessor, not
     built here — see the build ticket).
 
     ``store`` / ``embedder`` are explicit, injected params (not resolved
@@ -262,8 +262,8 @@ def block(
     """
     params = {
         "vec": vector,
-        "ns": FROLE_NAMESPACE,
-        "val": FROLE_CLAIM,
+        "ns": TAPROOT_NAMESPACE,
+        "val": TAPROOT_CLAIM,
         "embedder": embedder_name,
         "k": k,
     }
@@ -513,10 +513,10 @@ def place(
 
 
 __all__ = [
-    "FROLE_CLAIM",
-    "FROLE_NAMESPACE",
-    "FROLE_REVIEW",
     "MERGE_CONFIDENCE_THRESHOLD",
+    "TAPROOT_CLAIM",
+    "TAPROOT_NAMESPACE",
+    "TAPROOT_REVIEW",
     "Candidate",
     "CanonicalClaim",
     "Placement",

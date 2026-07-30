@@ -6,12 +6,12 @@ ADR 0073; design: ``docs/proposals/taproot.md`` §"The core model".
 **Single write path (open #16, ADR 0073).** Every hub-finding and every
 ``establishes``/``corroborates``/``contradicts`` evidence edge is written
 through this module. A raw ``INSERT`` / ``store.add_link`` for these
-relations elsewhere bypasses the vocabulary + ``FROLE:claim`` guards below
+relations elsewhere bypasses the vocabulary + ``TAPROOT:claim`` guards below
 and is a defect — the exact silent-junk-edge error taproot exists to prevent.
 
 Three functions:
 
-1. :func:`mint_hub` — create a ``FROLE:claim`` ``finding`` hub for a
+1. :func:`mint_hub` — create a ``TAPROOT:claim`` ``finding`` hub for a
    paper-grounded claim (open #15: only paper-sourced claims become hubs).
 2. :func:`attach_evidence` — write one ``paper --role--> hub`` edge, ``role``
    in :data:`HUB_ROLES`, guarding the target is actually a claim hub.
@@ -34,8 +34,8 @@ from precis.errors import BadInput
 from precis.handlers._link_tag_ops import validate_relation
 from precis.store.types import BlockInsert, Tag
 from precis.taproot.canon import (
-    FROLE_CLAIM,
-    FROLE_NAMESPACE,
+    TAPROOT_CLAIM,
+    TAPROOT_NAMESPACE,
     CanonicalClaim,
     Placement,
 )
@@ -60,7 +60,7 @@ _STATUS_TRACING = "tracing"
 
 
 def _is_claim_hub(store: Any, ref_id: int, *, conn: Any) -> bool:
-    """True iff ``ref_id`` is a live ``finding`` carrying ``FROLE:claim``."""
+    """True iff ``ref_id`` is a live ``finding`` carrying ``TAPROOT:claim``."""
     row = conn.execute(
         """
         SELECT 1
@@ -71,7 +71,7 @@ def _is_claim_hub(store: Any, ref_id: int, *, conn: Any) -> bool:
         WHERE r.ref_id = %(rid)s AND r.kind = 'finding' AND r.deleted_at IS NULL
         LIMIT 1
         """,
-        {"ns": FROLE_NAMESPACE, "val": FROLE_CLAIM, "rid": ref_id},
+        {"ns": TAPROOT_NAMESPACE, "val": TAPROOT_CLAIM, "rid": ref_id},
     ).fetchone()
     return row is not None
 
@@ -83,7 +83,7 @@ def mint_hub(
     set_by: str = "agent",
     conn: Any = None,
 ) -> int:
-    """Create a new ``FROLE:claim`` ``finding`` hub. Returns its ref_id.
+    """Create a new ``TAPROOT:claim`` ``finding`` hub. Returns its ref_id.
 
     Only paper-grounded claims become hubs (open #15); the caller
     (:func:`apply_placement`, driven by the canonicalizer over a paper chunk)
@@ -94,7 +94,7 @@ def mint_hub(
     ``finding_body`` chunk at ``ord=0`` (so it embeds + full-text-searches,
     and the card pass emits the ``card_combined`` that :func:`canon.block`
     ANN-retrieves over); ``claim.scope`` → ``meta.scope``; ``STATUS:tracing``;
-    ``FROLE:claim``. This is taproot's *system-writer* path — the agent-facing
+    ``TAPROOT:claim``. This is taproot's *system-writer* path — the agent-facing
     door is ``FindingHandler.put`` (pub_id dedup + a frontier ``derived-from``);
     taproot dedups upstream via canonicalization, so the hub write is direct.
     """
@@ -129,7 +129,7 @@ def mint_hub(
         )
         store.add_tag(
             ref.id,
-            Tag.closed(FROLE_NAMESPACE, FROLE_CLAIM),
+            Tag.closed(TAPROOT_NAMESPACE, TAPROOT_CLAIM),
             set_by=set_by,
             replace_prefix=True,
             conn=c,
@@ -156,8 +156,8 @@ def attach_evidence(
 
     ``role`` must be one of :data:`HUB_ROLES` *and* a registered relation
     (checked via :func:`validate_relation` — the friendly pre-flight for the
-    ``links_relation_fkey`` FK). ``hub_ref_id`` must be a ``FROLE:claim``
-    finding — never attach evidence to a ``FROLE:review`` note or a non-finding
+    ``links_relation_fkey`` FK). ``hub_ref_id`` must be a ``TAPROOT:claim``
+    finding — never attach evidence to a ``TAPROOT:review`` note or a non-finding
     (that is what the classifier + this guard exist to prevent). The edge is
     directed **paper → hub**; the hub reads its evidence via
     ``links_for(direction='in', relation=role)``. ``meta`` carries the chase
@@ -176,10 +176,10 @@ def attach_evidence(
     def _do(c: Any) -> None:
         if not _is_claim_hub(store, hub_ref_id, conn=c):
             raise BadInput(
-                f"hub_ref_id={hub_ref_id} is not a FROLE:claim finding",
+                f"hub_ref_id={hub_ref_id} is not a TAPROOT:claim finding",
                 next=(
                     "evidence edges attach only to claim hubs — tag the "
-                    "finding FROLE:claim (axis:frole) or pick a claim hub"
+                    "finding TAPROOT:claim (axis:taproot) or pick a claim hub"
                 ),
             )
         store.add_link(

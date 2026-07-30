@@ -1,13 +1,13 @@
 # Taproot Phase-2 predecessor (open #11): split the `finding` kind into
 # grounded world-claims vs editorial/manuscript review notes. The taproot
-# claim hub + evidence edges attach ONLY to `FROLE:claim` findings; review
+# claim hub + evidence edges attach ONLY to `TAPROOT:claim` findings; review
 # notes stay findings but are excluded from the claim graph.
 #
 # Ref-level (one verdict per finding, read from title + finding_body).
 # `default_unknown` is deliberately OMITTED: an ambiguous / unparseable read
 # is `failed` (re-claimable next pass), never a mis-tag — fail-open, matching
 # taproot's over-merge-safe posture.
-id: frole
+id: taproot
 level: ref
 applies_to_kinds: [finding]
 version: 1

@@ -849,7 +849,7 @@ overlay on `finding`/`ref_tags`/`links` — no schema of its own).
   mirroring the ADR-0047 classifier (cheap-and-wide → escalate the risky
   bit): `extract_claim` (SMALL/local; chunk → `CanonicalClaim` sentence +
   light scope, or `None` on a pure-pointer chunk — the `NO-CLAIM`
-  outcome) → `block` (no model; ANN over the `FROLE:claim`-tagged
+  outcome) → `block` (no model; ANN over the `TAPROOT:claim`-tagged
   `finding` card embeddings, bge-m3, `k` nearest) → `dedup_judge` (MEDIUM;
   THE crux — one bounded pairwise `same`/`different`/`contradicts` call,
   biased hard toward `different`) → `place` (deterministic branching; a
@@ -858,21 +858,21 @@ overlay on `finding`/`ref_tags`/`links` — no schema of its own).
   rather than auto-attaching — over-merge is the one dangerous
   direction). Every call routes through `precis.utils.llm.router`
   (`source="taproot:extract"` / `"taproot:dedup"` / `"taproot:merge-confirm"`).
-- **`FROLE` classifier** (Phase-2 slice 2a, taproot.md open #11) — the
-  discriminator that tags `finding` rows `FROLE:claim` (grounded
-  world-claim, the taproot hub) vs `FROLE:review` (editorial note,
+- **`TAPROOT` classifier** (Phase-2 slice 2a, taproot.md open #11) — the
+  discriminator that tags `finding` rows `TAPROOT:claim` (grounded
+  world-claim, the taproot hub) vs `TAPROOT:review` (editorial note,
   excluded from the claim graph). Built declaratively as a ref-level axis
-  `src/precis/data/axes/frole.yaml` driven by the generic
+  `src/precis/data/axes/taproot.yaml` driven by the generic
   `workers/axis_pass.py` runner (no bespoke worker code); auto-registers
-  as the default-OFF `axis:frole` service (`discover_axis_ids`), opt-in via
-  `PRECIS_AXES_ENABLED` / `/categorizers`. `FROLE` is a registered closed
+  as the default-OFF `axis:taproot` service (`discover_axis_ids`), opt-in via
+  `PRECIS_AXES_ENABLED` / `/categorizers`. `TAPROOT` is a registered closed
   axis (`store/types.py::_CLOSED_VOCAB`) so `search(kind='finding',
-  tags=['FROLE:claim'])` filters; `finding` stays unlisted in
-  `_KIND_ALLOWED_AXES` (unrestricted). Fail-open: `frole.yaml` omits
+  tags=['TAPROOT:claim'])` filters; `finding` stays unlisted in
+  `_KIND_ALLOWED_AXES` (unrestricted). Fail-open: `taproot.yaml` omits
   `default_unknown`, so an ambiguous read is `failed`/re-claimable, never a
-  mis-tag. `canon.block` reads `FROLE:claim` hubs, so this makes live
-  canonicalization real. Constants `FROLE_NAMESPACE`/`FROLE_CLAIM`/
-  `FROLE_REVIEW` live in `canon.py`; `block` still degrades correctly with
+  mis-tag. `canon.block` reads `TAPROOT:claim` hubs, so this makes live
+  canonicalization real. Constants `TAPROOT_NAMESPACE`/`TAPROOT_CLAIM`/
+  `TAPROOT_REVIEW` live in `canon.py`; `block` still degrades correctly with
   no tagged hubs (empty → brand-new claim). Corpus batch is a deliberate
   later run, not shipped on. Build ticket:
   `docs/proposals/taproot-phase2-hub-node.md`.
@@ -896,14 +896,14 @@ overlay on `finding`/`ref_tags`/`links` — no schema of its own).
   `different`).
 - **Phase 2 (in progress)** — build ticket
   `docs/proposals/taproot-phase2-hub-node.md` (5 slices 2a–2e).
-  - **2a (FROLE classifier)** — built (above).
+  - **2a (TAPROOT classifier)** — built (above).
   - **2b (evidence vocab + hub write-path)** — built (ADR 0073). One new
-    link relation `establishes` (paper → `FROLE:claim` hub; originator),
+    link relation `establishes` (paper → `TAPROOT:claim` hub; originator),
     migration `0094`, seeded **without an inverse** — the hub reads evidence
     via `links_for(direction='in', relation=…)`. The other two roles reuse
     existing slugs (`corroborates` 0085, `contradicts` 0001); endpoint kinds
     disambiguate. Single write door `src/precis/taproot/hub.py`
-    (`mint_hub` → `FROLE:claim` `finding`; `attach_evidence` →
+    (`mint_hub` → `TAPROOT:claim` `finding`; `attach_evidence` →
     `paper --role--> hub`, role-and-target-guarded; `apply_placement` routes
     `canon.place()`, `needs_review` → `kind='todo'`, never auto-attach).
     Evidence role is *derived* later (seniority); attached `corroborates` by

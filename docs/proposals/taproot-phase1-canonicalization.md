@@ -41,7 +41,7 @@ def extract_claim(chunk_text: str) -> CanonicalClaim | None:
 
 def block(claim: CanonicalClaim, k: int = 10) -> list[Candidate]:
     # No model. Embed `claim.sentence` (bge-m3, same embedder as the card
-    # index) and ANN-retrieve the k nearest existing FROLE:claim hubs.
+    # index) and ANN-retrieve the k nearest existing TAPROOT:claim hubs.
     # Empty -> brand-new claim.
 
 def dedup_judge(a: str, b: str) -> Verdict:            # Verdict = {verdict, confidence, rationale}
@@ -114,7 +114,7 @@ validation harness the builder runs deliberately, not a CI unit test.
 - No broader/narrower hierarchy (v2), no atomic-split, no scope beyond the
   light note.
 - No integrity axis (Phase 4), no `chase` changes.
-- No `FROLE` classifier build (that's the Phase-2 predecessor task) — for
+- No `TAPROOT` classifier build (that's the Phase-2 predecessor task) — for
   Phase-1 offline eval the fixture claims stand in for hubs.
 
 ## Decisions (locked 2026-07-28)
@@ -124,7 +124,7 @@ validation harness the builder runs deliberately, not a CI unit test.
   averaged into a tolerated rate (an over-merge is the dangerous error).
   Under-merges are counted but tolerated.
 - **Package = `src/precis/taproot/`** (not `quest/`).
-- **`FROLE` is a distinct concern** (finding = claim vs editorial note), a
+- **`TAPROOT` is a distinct concern** (finding = claim vs editorial note), a
   standalone finding-classifier taproot *depends on* — not part of the
   canonicalizer. Not needed for offline eval; needed before live hub
   selection (Phase 2 predecessor).

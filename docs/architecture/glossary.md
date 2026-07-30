@@ -89,13 +89,13 @@
 - **taproot** — the evidence-grounded claim graph: unify a claim into one hub
   node, ground it in many papers as typed graded evidence, resolve citations
   onto it. Phased build (1–5). → `docs/proposals/taproot.md` · `src/precis/taproot/`
-- **claim hub** — a `finding` tagged `FROLE:claim`, promoted to *the* node a
+- **claim hub** — a `finding` tagged `TAPROOT:claim`, promoted to *the* node a
   claim lives on; many papers attach as `establishes`/`corroborates`/
   `contradicts` evidence edges (taproot Phase 2). → `docs/proposals/taproot-phase2-hub-node.md`
-- **FROLE** — the `finding`-ref discriminator axis: `FROLE:claim` (grounded
-  world-claim, a taproot hub) vs `FROLE:review` (editorial/manuscript note,
-  excluded from the claim graph). Classifier = `data/axes/frole.yaml` via
-  `axis_pass`. → `src/precis/data/axes/frole.yaml`
+- **TAPROOT** — the `finding`-ref discriminator axis: `TAPROOT:claim` (grounded
+  world-claim, a taproot hub) vs `TAPROOT:review` (editorial/manuscript note,
+  excluded from the claim graph). Classifier = `data/axes/taproot.yaml` via
+  `axis_pass`. → `src/precis/data/axes/taproot.yaml`
 - **establishes / corroborates** — taproot evidence-edge roles (paper → claim
   hub): the *originator(s)* that first showed a claim `establishes` it; later
   papers that cite them `corroborate`. Derived from the citation graph, not
