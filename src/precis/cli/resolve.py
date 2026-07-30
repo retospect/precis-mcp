@@ -75,7 +75,8 @@ from typing import Any
 
 from precis.cli._common import resolve_dsn
 from precis.store import Store
-from precis.taproot.seniority import EvidenceEdge, HubEvidence, derive_evidence
+from precis.taproot.cite import hub_cite_keys as _hub_evidence_cite_keys
+from precis.taproot.seniority import HubEvidence, derive_evidence
 from precis.utils import handle_registry
 from precis.utils.pub_id_lookup import PLACEHOLDER_RE as _PLACEHOLDER_RE
 from precis.utils.pub_id_lookup import lookup_pub_id_finding as _lookup_pub_id_finding
@@ -473,74 +474,6 @@ def _lookup_finding(store: Store, pub_id: str) -> dict[str, Any] | None:
     resolves to. Kept here under this name for existing test imports.
     """
     return _lookup_pub_id_finding(store, pub_id)
-
-
-def _cite_keys_for_group(
-    store: Store, edges: list[EvidenceEdge]
-) -> tuple[list[str], list[int]]:
-    """Resolve each edge's paper to its (oldest) ``cite_key`` alias.
-
-    Returns ``(cite_keys, skipped_ref_ids)`` — a paper with no
-    ``cite_key`` alias at all is dropped from the render rather than
-    failing the whole hub, and its ``ref_id`` is reported back so the
-    caller can warn about it.
-    """
-    cite_keys: list[str] = []
-    skipped: list[int] = []
-    for edge in edges:
-        aliases = store.ref_cite_keys(edge.paper_ref_id)
-        if aliases:
-            cite_keys.append(aliases[0])
-        else:
-            skipped.append(edge.paper_ref_id)
-    return cite_keys, skipped
-
-
-def _hub_evidence_cite_keys(
-    store: Store, evidence: HubEvidence
-) -> tuple[list[str], list[tuple[str, str]]]:
-    """Locked resolution policy for a claim hub's living citation.
-
-    1. Derived ``establishes`` originators, if any have a cite_key.
-    2. Else ``corroborators``, if any have a cite_key (best-available
-       fallback — the caller's warnings note these aren't derived
-       originators yet).
-    3. Else empty — the caller treats the hub as in-flight.
-
-    Returns ``(cite_keys, notes)`` where ``notes`` are ``(status,
-    detail)`` diagnostic pairs meant for ``_Summary.warnings``
-    (skipped no-cite_key papers, the corroborator-fallback flag).
-    """
-    notes: list[tuple[str, str]] = []
-    originator_keys, skipped = _cite_keys_for_group(store, evidence.originators)
-    for ref_id in skipped:
-        notes.append(
-            (
-                "established",
-                f"originator paper ref_id={ref_id} has no cite_key — skipped",
-            )
-        )
-    if originator_keys:
-        return originator_keys, notes
-
-    corroborator_keys, skipped = _cite_keys_for_group(store, evidence.corroborators)
-    for ref_id in skipped:
-        notes.append(
-            (
-                "established",
-                f"corroborator paper ref_id={ref_id} has no cite_key — skipped",
-            )
-        )
-    if corroborator_keys:
-        notes.append(
-            (
-                "established",
-                "resolved via corroborator(s) — no derived originator yet",
-            )
-        )
-        return corroborator_keys, notes
-
-    return [], notes
 
 
 def _resolve_pin_handle(store: Store, handle: str) -> tuple[int, str] | None:

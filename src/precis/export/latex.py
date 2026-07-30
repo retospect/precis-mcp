@@ -452,24 +452,28 @@ def _handle_cite_key(tgt: str, ctx: _Ctx) -> str | None:
     return resolved.public_id if resolved is not None else None
 
 
-def _finding_cite_key(tgt: str, ctx: _Ctx) -> str | None:
-    """A finding handle (``fi<id>``) → its bibliographic key: the primary
+def _finding_cite_key(tgt: str, ctx: _Ctx) -> list[str]:
+    """A finding handle (``fi<id>``) → its bibliographic cite_key(s), via
+    the ONE shared resolver (:func:`precis.taproot.cite.finding_cite_keys`)
+    ``precis resolve`` also uses. A plain finding resolves to its primary
     cite_key once the chase establishes it (so it merges with a direct
-    cite of that paper and ``build_bib`` renders a real entry), else the
-    ``pub_id`` placeholder (an in-flight finding gets a stub bib entry
-    until it resolves). ``None`` if it doesn't resolve to a live finding."""
+    cite of that paper and ``build_bib`` renders a real entry), else its
+    ``pub_id`` placeholder. A Taproot claim hub (``TAPROOT:claim``) — a
+    "living citation" — resolves instead to its *currently derived*
+    ``establishes`` originator(s), falling back to corroborators, so the
+    same hub cite improves on the next export as the evidence graph
+    grows. Empty when the target doesn't resolve to a live finding, or a
+    hub has no resolvable evidence yet (in-flight)."""
     if ctx.store is None:
-        return None
+        return []
     parsed = handle_registry.parse(tgt)
     if parsed is None:
-        return None
+        return []
     _kind, _is_chunk, pk = parsed
-    ref = ctx.store.fetch_refs_by_ids([pk]).get(pk)
-    if ref is None:
-        return None
-    meta = ref.meta or {}
-    key = meta.get("primary_cite_key") or meta.get("pub_id")
-    return str(key) if key else None
+    from precis.taproot.cite import finding_cite_keys
+
+    result = finding_cite_keys(ctx.store, pk)
+    return result.cite_keys
 
 
 def _render_target(tgt: str, surface: str | None, ctx: _Ctx) -> str:
@@ -504,8 +508,8 @@ def _render_target(tgt: str, surface: str | None, ctx: _Ctx) -> str:
                 return _source_footnote(slug, kind, excerpt, ctx)
             return _cite(slug, ctx)
         if kind == "finding":
-            slug = _finding_cite_key(tgt, ctx)
-            return _cite(slug, ctx) if slug else ""
+            keys = _finding_cite_key(tgt, ctx)
+            return _cite_keys(keys, ctx)
         if kind == "draft" and is_chunk:
             return _draft_xref(tgt, surface, ctx)
         return ""  # other record/chunk handle — provenance only
@@ -580,6 +584,32 @@ def _cite(slug: str, ctx: _Ctx) -> str:
     if base not in ctx.cited:
         ctx.cited.append(base)
     return f"\\cite{{{base}}}"
+
+
+def _cite_keys(keys: list[str], ctx: _Ctx) -> str:
+    """Render a finding's resolved cite_key(s) (:func:`_finding_cite_key`)
+    — the multi-key case a Taproot claim hub with several derived
+    originators needs.
+
+    ``[]`` → no cite (unresolvable / in-flight — unchanged from before
+    hubs existed). Exactly ONE key stays on the existing single-cite
+    :func:`_cite` path byte-for-byte, so an ordinary finding and a
+    single-originator hub are zero-regression-risk. More than one key
+    registers every base key on ``ctx.cited`` (so :func:`build_bib` emits
+    each entry) and emits one combined ``\\cite{k1,k2}`` (biblatex accepts
+    the comma list) — except in patent/footnote mode, which has no
+    multi-key form, so those fall back to per-key :func:`_cite`
+    concatenation (hubs are rare there; correctness over polish)."""
+    if not keys:
+        return ""
+    if len(keys) == 1:
+        return _cite(keys[0], ctx)
+    if ctx.patent_mode or ctx.footnote_refs:
+        return "".join(_cite(k, ctx) for k in keys)
+    for k in keys:
+        if k not in ctx.cited:
+            ctx.cited.append(k)
+    return f"\\cite{{{','.join(keys)}}}"
 
 
 #: Longest excerpt (chars) quoted into a reMarkable footnote before it's

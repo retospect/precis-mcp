@@ -537,22 +537,26 @@ def _handle_cite_key(tgt: str, ctx: _Ctx) -> tuple[str, int | None] | None:
     return resolved.public_id, resolved.chunk_id
 
 
-def _finding_cite_key(tgt: str, ctx: _Ctx) -> str | None:
-    """A finding handle (``fi<id>``) → its bibliographic key (primary
-    cite_key once the chase establishes it, else the ``pub_id`` stub).
-    Mirrors :func:`precis.export.latex._finding_cite_key`."""
+def _finding_cite_key(tgt: str, ctx: _Ctx) -> list[str]:
+    """A finding handle (``fi<id>``) → its bibliographic cite_key(s), via
+    the ONE shared resolver (:func:`precis.taproot.cite.finding_cite_keys`)
+    ``precis resolve`` and :func:`precis.export.latex._finding_cite_key`
+    also use. A plain finding resolves to its primary cite_key once the
+    chase establishes it, else its ``pub_id`` stub. A Taproot claim hub
+    resolves instead to its currently derived ``establishes`` originator(s)
+    (falling back to corroborators) — a living citation. Empty when the
+    target doesn't resolve to a live finding, or a hub has no resolvable
+    evidence yet (in-flight)."""
     if ctx.store is None:
-        return None
+        return []
     parsed = handle_registry.parse(tgt)
     if parsed is None:
-        return None
+        return []
     _kind, _is_chunk, pk = parsed
-    ref = ctx.store.fetch_refs_by_ids([pk]).get(pk)
-    if ref is None:
-        return None
-    meta = ref.meta or {}
-    key = meta.get("primary_cite_key") or meta.get("pub_id")
-    return str(key) if key else None
+    from precis.taproot.cite import finding_cite_keys
+
+    result = finding_cite_keys(ctx.store, pk)
+    return result.cite_keys
 
 
 def _render_target(tgt: str, surface: str | None, ctx: _Ctx, paragraph: Any) -> None:
@@ -580,8 +584,7 @@ def _render_target(tgt: str, surface: str | None, ctx: _Ctx, paragraph: Any) -> 
                 _cite(slug, ctx, paragraph, chunk_id=chunk_id)
             return
         if kind == "finding":
-            slug = _finding_cite_key(tgt, ctx)
-            if slug:
+            for slug in _finding_cite_key(tgt, ctx):
                 _cite(slug, ctx, paragraph)
             return
         # draft cross-ref / other record handle → not a citation.

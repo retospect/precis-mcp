@@ -707,3 +707,142 @@ def test_format_reference_datasheet_uses_vendor_subtype_part() -> None:
     assert "[Application note]" in line
     assert "Part C2934569" in line
     assert warnings == []
+
+
+# ── Taproot claim-hub finding handle (Phase 1 — living citations reach
+# draft export): a [fi<id>] finding handle that resolves to a
+# TAPROOT:claim hub cites its *derived* establishes originator(s) via the
+# ONE shared resolver (precis.taproot.cite), not a stored
+# primary_cite_key. Mirrors tests/test_export_latex.py's hub coverage.
+
+
+def _mint_hub_claim(store: Store) -> int:
+    from precis.taproot.canon import CanonicalClaim
+    from precis.taproot.hub import mint_hub
+
+    claim = CanonicalClaim(
+        sentence="Pd/C catalyzes Suzuki coupling at room temperature with a mild base.",
+        scope={"material": "Pd/C", "method": "Suzuki coupling", "regime": "RT"},
+    )
+    return mint_hub(store, claim)
+
+
+def _new_draft_project(hub: Hub) -> int:
+    return int(
+        TodoHandler(hub=hub)
+        .put(text="proj")
+        .body.split("id=")[1]
+        .split()[0]
+        .rstrip(",.()")
+    )
+
+
+def test_hub_finding_single_originator_renders_one_mark(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    from precis.taproot.hub import attach_evidence
+    from precis.utils import handle_registry
+
+    hub_ref = _mint_hub_claim(hub.store)
+    origin = hub.store.insert_ref(
+        kind="paper", slug="docxo01", title="Original report", year=2001, meta={}
+    ).id
+    follow = hub.store.insert_ref(
+        kind="paper", slug="docxf05", title="Follow-up", year=2005, meta={}
+    ).id
+    attach_evidence(
+        hub.store, hub_ref_id=hub_ref, paper_ref_id=origin, role="corroborates"
+    )
+    attach_evidence(
+        hub.store, hub_ref_id=hub_ref, paper_ref_id=follow, role="corroborates"
+    )
+    hub.store.add_link(src_ref_id=follow, dst_ref_id=origin, relation="cites")
+    finding_handle = handle_registry.format_handle("finding", hub_ref)
+
+    pid = _new_draft_project(hub)
+    draft.put(id="dhub1", title="T", project=pid)
+    draft.put(
+        id="dhub1",
+        chunk_kind="paragraph",
+        text=f"Living citation [{finding_handle}].",
+        at={"last": True},
+    )
+    ref = hub.store.get_ref(kind="draft", id="dhub1")
+    out = tmp_path / "dhub1.docx"
+    res = export_docx(hub.store, ref, target_path=out)
+
+    assert res.cited_slugs == ["docxo01"]  # the derived originator, not corroborator
+    text = "\n".join(p.text for p in docx.Document(str(out)).paragraphs)
+    assert "[1]" in text
+    assert "Original report" in text
+
+
+def test_hub_finding_multiple_originators_renders_two_marks(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    """docx has no ``\\cite{a,b}`` literal — a multi-originator hub emits
+    one numbered mark PER key, per-key calls into the existing ``_cite``
+    path (mirrors the LaTeX exporter's grouped-\\cite counterpart)."""
+    from precis.taproot.hub import attach_evidence
+    from precis.utils import handle_registry
+
+    hub_ref = _mint_hub_claim(hub.store)
+    a = hub.store.insert_ref(
+        kind="paper", slug="docxa01", title="A — first report", year=2001, meta={}
+    ).id
+    b = hub.store.insert_ref(
+        kind="paper", slug="docxb02", title="B — second report", year=2002, meta={}
+    ).id
+    citer = hub.store.insert_ref(
+        kind="paper", slug="docxc09", title="Citer", year=2009, meta={}
+    ).id
+    for p in (a, b, citer):
+        attach_evidence(
+            hub.store, hub_ref_id=hub_ref, paper_ref_id=p, role="corroborates"
+        )
+    hub.store.add_link(src_ref_id=citer, dst_ref_id=a, relation="cites")
+    hub.store.add_link(src_ref_id=citer, dst_ref_id=b, relation="cites")
+    finding_handle = handle_registry.format_handle("finding", hub_ref)
+
+    pid = _new_draft_project(hub)
+    draft.put(id="dhub2", title="T", project=pid)
+    draft.put(
+        id="dhub2",
+        chunk_kind="paragraph",
+        text=f"Living citation [{finding_handle}].",
+        at={"last": True},
+    )
+    ref = hub.store.get_ref(kind="draft", id="dhub2")
+    out = tmp_path / "dhub2.docx"
+    res = export_docx(hub.store, ref, target_path=out)
+
+    assert res.cited_slugs == ["docxa01", "docxb02"]
+    text = "\n".join(p.text for p in docx.Document(str(out)).paragraphs)
+    assert "[1]" in text and "[2]" in text
+    assert "A — first report" in text and "B — second report" in text
+
+
+def test_hub_finding_no_evidence_renders_no_cite(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    from precis.utils import handle_registry
+
+    hub_ref = _mint_hub_claim(hub.store)
+    finding_handle = handle_registry.format_handle("finding", hub_ref)
+
+    pid = _new_draft_project(hub)
+    draft.put(id="dhub3", title="T", project=pid)
+    draft.put(
+        id="dhub3",
+        chunk_kind="paragraph",
+        text=f"Pending [{finding_handle}] evidence.",
+        at={"last": True},
+    )
+    ref = hub.store.get_ref(kind="draft", id="dhub3")
+    out = tmp_path / "dhub3.docx"
+    res = export_docx(hub.store, ref, target_path=out)
+
+    assert res.cited_slugs == []
+    text = "\n".join(p.text for p in docx.Document(str(out)).paragraphs)
+    assert "[1]" not in text
+    assert "References" not in text

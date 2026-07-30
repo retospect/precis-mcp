@@ -106,6 +106,13 @@ def _is_claim_hub(store: Any, ref_id: int) -> bool:
     return row is not None
 
 
+def is_claim_hub(store: Any, ref_id: int) -> bool:
+    """Public wrapper over :func:`_is_claim_hub` — the one hub-detection
+    check other modules (e.g. :mod:`precis.taproot.cite`) should call
+    rather than reaching into the private name."""
+    return _is_claim_hub(store, ref_id)
+
+
 def _find_originators(store: Any, supporter_ids: list[int]) -> set[int]:
     """Supporters cited by at least one *other* supporter.
 
@@ -262,4 +269,5 @@ __all__ = [
     "EvidenceEdge",
     "HubEvidence",
     "derive_evidence",
+    "is_claim_hub",
 ]

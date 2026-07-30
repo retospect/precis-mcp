@@ -1346,27 +1346,29 @@ suite green, ruff/mypy clean, not shipped-and-live — dark behind
   deferred, separate scope)* — `related-to` + `meta.note`, deliberately not
   built alongside this; do not conflate with the `cites`-relation work above.
 
-## 🌱 Taproot living citations + A2 pins don't reach the draft authoring surface
+## 🌱 A2 pins don't reach the draft authoring surface
 
-Status: open · Severity: feature · Owner: `src/precis/export/latex.py`,
-`src/precis/export/docx.py::_finding_cite_key` · Test: none yet.
+Status: open · Severity: feature · Owner: `src/precis/utils/mentions.py`,
+`src/precis/export/latex.py`, `src/precis/export/docx.py` · Test: none yet.
 
-The A1/A2 living-citation + inline-pin machinery is implemented only in the
-`precis resolve` CLI (`cli/resolve.py`, base32 `[<pub_id>]` tokens on
-standalone manuscripts). The `kind='draft'` export
-(`export/latex.py`/`docx.py::_finding_cite_key`) cites a finding/hub by its
-`[fi<id>]` handle and resolves it off `primary_cite_key or pub_id` — it
-never calls `taproot/seniority.py::derive_evidence` and never parses A2
-pins. So an agent writing a draft (the primary authoring surface) can't use
-taproot living citations or pins. Fix: wire `_finding_cite_key` (latex +
-docx) to resolve a `TAPROOT:claim` hub to its derived `establishes`
-originator(s) via `derive_evidence`, and parse the `[fi<id>>pin]`/
-`[fi<id>+pin]` pin grammar in draft export. Needs a regression test:
-`[fi<id>]` for an established finding → `\cite{primary_cite_key}`; a hub →
-derived originators; a bare `[42]`/`[<pub_id>]` stays literal. Also folds
-in the `precis-finding-help` rewrite flagged this ship (⚠ hints added to
-the "Use a finding in your draft" section + create-example) — same fix,
-same doc.
+**Phase 1 shipped:** living citations (A1) now reach `kind='draft'`
+export — `_finding_cite_key` (latex + docx) resolves a `[fi<id>]` handle
+through the ONE shared policy (`taproot/cite.py::finding_cite_keys`,
+also used by `precis resolve`), so a `TAPROOT:claim` hub cites its
+currently derived `establishes` originator(s) (falling back to
+corroborators, then in-flight), recomputed on every export.
+
+**Still open — A2 pins.** `precis resolve`'s inline pin grammar
+(`[<pub_id>>pa5,pc293]` replace / `[<pub_id>+pa5]` supplement) is a
+`cli/resolve.py`-only overlay on top of the shared policy; it has no
+equivalent in the draft `mentions` grammar, so an agent authoring a
+draft can't pin a hub's cite the way a standalone-manuscript author
+can via `precis resolve`. Fix: extend the `mentions`/`handle_registry`
+grammar to carry an optional pin suffix on a `[fi<id>]` handle, parse
+it in `export/latex.py` / `export/docx.py` alongside the existing
+`finding_cite_keys` call, and reuse `cli/resolve.py`'s
+`_resolve_pin_handle` / `_apply_pin` logic (or a shared extraction of
+it) rather than re-deriving the pin semantics a third time.
 
 ## 👁️ Draft citation-groundwork pre-pass (ADR 0051 Level 2, unscoped)
 

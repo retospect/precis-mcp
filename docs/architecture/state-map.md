@@ -968,6 +968,31 @@ overlay on `finding`/`ref_tags`/`links` — no schema of its own).
     rather than cached, a later-discovered originator or a hub merge
     improves the `.bib` output on the *next* `resolve` — no manual re-cite.
     Tests: `tests/cli/test_resolve.py`.
+  - **Draft-export wiring, Phase 1 (living citations reach `kind='draft'`
+    export)** — built. The A1 resolution policy (`_cite_keys_for_group` /
+    `hub_cite_keys`, plus a `finding_cite_keys(store, ref_id) ->
+    FindingCite` entry point) moved out of `cli/resolve.py` into
+    `src/precis/taproot/cite.py` — the ONE module both `precis resolve`
+    and the draft exporters call, so the two surfaces can't diverge again.
+    `seniority.py` grew a public `is_claim_hub` wrapper (over the existing
+    private `_is_claim_hub`) for `cite.py` to call rather than reaching
+    into the private name. `export/latex.py::_finding_cite_key` and
+    `export/docx.py::_finding_cite_key` now return `list[str]` via
+    `finding_cite_keys` instead of a bare `primary_cite_key or pub_id`
+    lookup: a `[fi<id>]` handle resolving to a `TAPROOT:claim` hub cites
+    its currently derived `establishes` originator(s) (falling back to
+    corroborators, then in-flight — no cite), recomputed on every export,
+    exactly like `resolve`. A single resolved key stays on the pre-existing
+    single-cite path byte-for-byte (zero regression risk for an ordinary
+    finding); multiple keys render `\cite{k1,k2}` in LaTeX (a new
+    `_cite_keys` helper, falling back to per-key `_cite` concatenation in
+    patent/footnote mode) and one numbered `[n]` mark per key in docx
+    (which has no multi-key literal). **Not yet built (Phase 2):** A2 pins
+    (`[<pub_id>>...]` / `[<pub_id>+...]`) have no equivalent in the draft
+    `mentions` grammar — pinning a hub's cite from inside a draft still
+    requires round-tripping through `precis resolve`. Tests:
+    `tests/test_taproot_cite.py`, `tests/test_export_latex.py`,
+    `tests/test_export_docx.py`.
   - Not yet built: citation-card dedup (2d).
 - **Phase 3 (in progress)** — forward `chase` wiring; slices land
   independently, W1 first.

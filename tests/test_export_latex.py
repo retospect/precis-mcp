@@ -15,6 +15,9 @@ from pathlib import Path
 import pytest
 
 from precis.export import latex
+from precis.taproot.canon import CanonicalClaim
+from precis.taproot.hub import attach_evidence, mint_hub
+from precis.utils import handle_registry as _handle_registry
 
 # A real 1×1 PNG for figure-embed tests (a valid raster blob).
 _PNG = base64.b64decode(
@@ -68,6 +71,39 @@ class _PaperStore:
                 ref_id=99, kind="paper", public_id="kong24", chunk_id=10
             )
         return None
+
+
+class _FakeNonHubConn:
+    """Stub connection whose ``.execute(...).fetchone()`` always returns
+    ``None`` — used by :class:`_FindingStore` so
+    ``taproot.seniority.is_claim_hub`` sees "not a hub" without a real DB."""
+
+    def execute(self, *_args, **_kwargs):
+        return self
+
+    def fetchone(self):
+        return None
+
+
+class _FakeNonHubPool:
+    def connection(self):
+        import contextlib
+
+        return contextlib.nullcontext(_FakeNonHubConn())
+
+
+class _FindingStore:
+    """Minimal store for a plain (non-hub) finding handle: resolves
+    ``fetch_refs_by_ids`` from a caller-supplied ``{ref_id: ref}`` map, and
+    a ``pool`` stub so :func:`precis.taproot.seniority.is_claim_hub`'s
+    real-DB tag check sees "not a hub" without a Postgres connection."""
+
+    def __init__(self, refs):
+        self._refs = refs
+        self.pool = _FakeNonHubPool()
+
+    def fetch_refs_by_ids(self, ids):
+        return {i: self._refs[i] for i in ids if i in self._refs}
 
 
 def test_escapes_latex_specials() -> None:
@@ -296,20 +332,123 @@ def test_handle_patent_pk_renders_cite() -> None:
 
 def test_handle_finding_fi_renders_cite_via_meta() -> None:
     """[fi<id>] cites its primary_cite_key once established (so it merges
-    with a direct cite of that paper), else its pub_id placeholder."""
+    with a direct cite of that paper), else its pub_id placeholder. A
+    NON-hub finding — regression test: the single-key path is unchanged
+    by the Taproot hub-aware resolver (Phase 1)."""
     import types
 
     established = types.SimpleNamespace(meta={"primary_cite_key": "miller23"})
     inflight = types.SimpleNamespace(meta={"pub_id": "ab12c3"})
-    store = types.SimpleNamespace(
-        fetch_refs_by_ids=lambda ids: (
-            {7: established} if 7 in ids else {9: inflight} if 9 in ids else {}
-        )
-    )
+    store = _FindingStore({7: established, 9: inflight})
     ctx = latex._Ctx(keymap={}, known_handles=set(), store=store)
     out = latex._render_inline("est [fi7], inflight [fi9].", ctx)
     assert r"\cite{miller23}" in out  # established → primary cite_key
     assert r"\cite{ab12c3}" in out  # in-flight → pub_id placeholder
+
+
+def test_bare_number_and_bare_pub_id_brackets_stay_literal() -> None:
+    """Divergence lock (Taproot Phase 1): a bare ``[42]`` or a bare
+    ``[<pub_id>]`` (base32, e.g. ``ab12c3``) written directly in draft
+    prose is NOT the ``precis resolve`` placeholder grammar — the draft
+    ``mentions`` grammar only recognises a handle (``[fi42]``, 2-letter
+    prefix + digits), so both stay LITERAL text, never a ``\\cite{}``.
+    This pins the boundary between the two citation surfaces so a future
+    grammar change can't silently reconverge them (Phase 2 pins are a
+    distinct, explicit ``[<pub_id>>...]`` / ``[<pub_id>+...]`` syntax)."""
+    out, ctx = _inline("see [42] and [ab12c3] in the log.")
+    assert "[42]" in out
+    assert "[ab12c3]" in out
+    assert r"\cite" not in out
+    assert ctx.cited == []
+
+
+# ── Taproot claim-hub finding handle (Phase 1 — living citations reach
+# draft export): a [fi<id>] finding handle that resolves to a
+# TAPROOT:claim hub cites its *derived* establishes originator(s)
+# instead of a stored primary_cite_key. DB-backed, mirroring
+# tests/test_taproot_seniority.py's setup (mint_hub / attach_evidence +
+# a `cites` edge to split originators from corroborators).
+
+_HUB_CLAIM = CanonicalClaim(
+    sentence="Pd/C catalyzes Suzuki coupling at room temperature with a mild base.",
+    scope={"material": "Pd/C", "method": "Suzuki coupling", "regime": "RT"},
+)
+
+
+def _hub_finding_handle(hub_ref_id: int) -> str:
+    return _handle_registry.format_handle("finding", hub_ref_id)
+
+
+def test_hub_finding_single_originator_renders_single_cite(store) -> None:
+    hub = mint_hub(store, _HUB_CLAIM)
+    origin = store.insert_ref(
+        kind="paper", slug="latxo01", title="Original report", year=2001, meta={}
+    ).id
+    follow = store.insert_ref(
+        kind="paper", slug="latxf05", title="Follow-up", year=2005, meta={}
+    ).id
+    attach_evidence(store, hub_ref_id=hub, paper_ref_id=origin, role="corroborates")
+    attach_evidence(store, hub_ref_id=hub, paper_ref_id=follow, role="corroborates")
+    store.add_link(src_ref_id=follow, dst_ref_id=origin, relation="cites")
+
+    ctx = latex._Ctx(keymap={}, known_handles=set(), store=store)
+    out = latex._render_inline(f"see [{_hub_finding_handle(hub)}].", ctx)
+
+    # Single derived originator stays on the EXACT single-cite path.
+    assert r"\cite{latxo01}" in out
+    assert out.count(r"\cite{") == 1
+    assert ctx.cited == ["latxo01"]
+
+
+def test_hub_finding_multiple_originators_renders_multi_cite(store) -> None:
+    hub = mint_hub(store, _HUB_CLAIM)
+    a = store.insert_ref(
+        kind="paper", slug="latxa01", title="A — first report", year=2001, meta={}
+    ).id
+    b = store.insert_ref(
+        kind="paper", slug="latxb02", title="B — second report", year=2002, meta={}
+    ).id
+    citer = store.insert_ref(
+        kind="paper", slug="latxc09", title="Citer", year=2009, meta={}
+    ).id
+    for p in (a, b, citer):
+        attach_evidence(store, hub_ref_id=hub, paper_ref_id=p, role="corroborates")
+    store.add_link(src_ref_id=citer, dst_ref_id=a, relation="cites")
+    store.add_link(src_ref_id=citer, dst_ref_id=b, relation="cites")
+
+    ctx = latex._Ctx(keymap={}, known_handles=set(), store=store)
+    out = latex._render_inline(f"see [{_hub_finding_handle(hub)}].", ctx)
+
+    assert r"\cite{latxa01,latxb02}" in out
+    assert ctx.cited == ["latxa01", "latxb02"]  # both land in the .bib
+
+
+def test_hub_finding_corroborator_only_fallback(store) -> None:
+    # No intra-supporter `cites` edge held -> no derived originator; the
+    # living citation falls back to the corroborator(s) rather than
+    # going in-flight.
+    hub = mint_hub(store, _HUB_CLAIM)
+    only = store.insert_ref(
+        kind="paper", slug="latxd01", title="Sole supporter", year=2001, meta={}
+    ).id
+    attach_evidence(store, hub_ref_id=hub, paper_ref_id=only, role="corroborates")
+
+    ctx = latex._Ctx(keymap={}, known_handles=set(), store=store)
+    out = latex._render_inline(f"see [{_hub_finding_handle(hub)}].", ctx)
+
+    assert r"\cite{latxd01}" in out
+    assert ctx.cited == ["latxd01"]
+
+
+def test_hub_finding_no_evidence_renders_no_cite(store) -> None:
+    hub = mint_hub(store, _HUB_CLAIM)
+
+    ctx = latex._Ctx(keymap={}, known_handles=set(), store=store)
+    out = latex._render_inline(f"pending [{_hub_finding_handle(hub)}] evidence.", ctx)
+
+    # In-flight — no resolvable evidence yet: no cite, no dangling command.
+    assert r"\cite" not in out
+    assert ctx.cited == []
 
 
 # ── reMarkable send-to-tablet footnote mode (footnote_refs=True) ──────
