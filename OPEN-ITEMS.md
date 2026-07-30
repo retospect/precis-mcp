@@ -16,18 +16,52 @@ gaps finding/regex (`55f80b70`), typed-error dispatch regression test
 (`32b6e90b`; the `edit()`-° "bug" was a false positive — already fixed by
 `138ed8cf`, see `gripe:175738`), Dependabot #75 (blocked upstream → Snoozed),
 PR #35 `mcp<3` (merged `d3123538`), Windows CI (skipif pass `4a1b2e08`, now
-green), and the balthazar WARN-flood (host_var bound to the served id + deployed
-`32b6e90b`). Still open:
+green). Still open (two grew mid-session into much bigger finds):
 
-- **Agent-job transcript-capture gap** *(observability — owner worker dispatch
-  / job persistence).* Only `plan_tick` ever writes `meta.transcript`;
-  `quest_tick` / `catpath_explore` never do, so the step-6 confusion-mining
-  method is blind to those job types. Separately, `plan_tick` transcripts stop
-  dead at 2026-07-26 while other job types kept running — **verify whether
-  `plan_tick`/`quest_tick`/`catpath_explore` dispatch stalled on 07-26**, or it
-  was just the FRONTIER-quota pause starving the planner. **Next:** confirm
-  dispatch health; consider persisting transcripts for the other agent job
-  types.
+- **🔴 Agent lane stalled 4 days (`plan_tick`/`quest_tick`/`catpath_explore`) —
+  root-caused 2026-07-30, two latches, NEITHER quota** *(prod-ops + repo).* The
+  whole agent/planner lane died 2026-07-26, masked until now by the quota noise
+  ("waiting on quota to clear" was itself the trap). (1) **quest_tick /
+  catpath_explore**: melchior's `quest_loop_reconcile` pass (only minter of
+  fresh quest_tick jobs) stopped registering — the worker-agent process carried
+  a stale env with `PRECIS_QUEST_LOOP_ENABLED` off. **Restart attempted this
+  session** (full `bootout`+`bootstrap` of `com.precis.worker-agent`; the
+  service now reports env=1, state=running) **but the pass is STILL silent** —
+  under investigation as of 2026-07-30 ~13:15. Restart-depth was necessary but
+  not sufficient; a runtime diagnostic (process env vs. service config, worker
+  pass-loop health) is in flight. (2)
+  **plan_tick — PENDING owner-scope decision**: every open planner-coroutine
+  parent (nanobuds, methane-sponge, mechacard, nox_to_ammonia, nanotrans2, …)
+  carries a `child-failed:<job>` hard-block tag that never auto-clears, latched
+  by a 07-26 wave of mostly `swept:claim-orphaned` (infra/lease-expiry, not
+  content) failures. Unblock = clear the infra-class tags to re-dispatch.
+  **Design gaps** (Opus decisions): (a) a nursery/health check that flags a
+  known env-gated pass silently absent from a live worker's rotation for N
+  hours; (b) `child-failed` should distinguish infra-class (bounded auto-retry)
+  from content failures (permanent block). Also: `quest_tick`/`catpath_explore`
+  never persist `meta.transcript` (confusion-mining blind spot) — worth adding.
+
+- **🔴 Deploy daemon-bounce doesn't reload plist env changes — `kickstart -k`
+  vs `bootout`+`bootstrap`** *(repo/deploy bug, HIGH leverage — owner
+  `deploy/redeploy-precis.yml` "Bounce all precis daemons" play).* launchd
+  `kickstart -k` respawns a daemon's process from the ALREADY-LOADED plist
+  definition; a changed `<EnvironmentVariables>` on disk is ignored until a full
+  `bootout`+`bootstrap`. This silently swallowed BOTH the quest-loop env restore
+  AND the balthazar summarizer env this session — the deploy reported "changed"
+  but the running process kept the old env. **Fix:** when a daemon's rendered
+  plist env changed, the bounce must `bootout`+`bootstrap`, not `kickstart -k`.
+  Until then, every env-var change shipped via deploy is a no-op on already-
+  loaded daemons — a silent, fleet-wide footgun.
+
+- **balthazar summarizer flood — NOT fixed (corrects the earlier claim)**
+  *(ops/config — cosmetic).* The `precis_local_llm_model_override` host_var I set
+  is correct but INERT: the worker's `--summarizer-model` CLI arg (from
+  `precis_worker_summarizer`, fleet-default `rake-lemma`,
+  `deploy/roles/precis_worker/defaults/main.yml:38`) OVERRIDES the env. Two flood
+  sources (main worker → `llm:summarizer` via rake-lemma; classify worker →
+  `llm:qwen`). Real fix needs a decision: what should balthazar/the fleet
+  summarize with — the served local model, or keep `rake-lemma`? Cosmetic
+  (litellm fallback works). Host_var edit left in place (harmless).
 
 - **Post-deploy fleet-health assertion: `PRECIS_SUMMARIZE_MODEL` vs served
   `resource_slots`** *(feature — owner `deploy/` verify play or a `cluster-ops`
