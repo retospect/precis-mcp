@@ -14,6 +14,7 @@ The `fold` job_type is injected into the registry (no entry point at test time).
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any, cast
 
@@ -215,6 +216,12 @@ def test_build_af3_input() -> None:
     assert prot["templates"] == [] and prot["unpairedMsa"] == ""
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="hardcoded POSIX host paths ('/s/in', '/s/out') for the docker"
+    " -v mount args — build_fold_argv normalizes host-side paths through"
+    " Path, which becomes backslash-separated on Windows",
+)
 def test_build_fold_argv() -> None:
     argv = build_fold_argv(
         ref_id=7,

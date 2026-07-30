@@ -11,7 +11,16 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import sys
 from pathlib import Path
+
+import pytest
+
+_needs_posix_paths = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="hardcoded POSIX-style paths ('/repo', '/somewhere/else') — the"
+    " hook's cwd-resolution path comparison doesn't match on Windows",
+)
 
 _HOOK = (
     Path(__file__).resolve().parents[1]
@@ -141,6 +150,7 @@ def test_switch_in_worktree_is_allowed(monkeypatch) -> None:
 # ── cd / git -C resolution (mirrors guard-commit-on-main.py) ────────────────
 
 
+@_needs_posix_paths
 def test_leading_cd_into_primary_is_denied(monkeypatch) -> None:
     _patch(monkeypatch)
     reason = evaluate(f"cd {MAIN} && git checkout -b new-feature", "/somewhere/else")
@@ -152,6 +162,7 @@ def test_leading_cd_into_worktree_is_allowed(monkeypatch) -> None:
     assert evaluate(f"cd {WT} && git checkout -b new-feature", MAIN) is None
 
 
+@_needs_posix_paths
 def test_git_dash_c_into_primary_is_denied(monkeypatch) -> None:
     _patch(monkeypatch)
     reason = evaluate(f"git -C {MAIN} checkout -b new-feature", WT)

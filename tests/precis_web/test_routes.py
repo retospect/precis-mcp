@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 pytest.importorskip("fastapi")
@@ -814,6 +816,11 @@ def test_drive_deleted_state_toggle(runtime, client) -> None:
     assert "A deleted paper" in resp.text
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="hardcoded POSIX '/Volumes/nas/...' mount path — Path joins"
+    " render with backslashes on Windows",
+)
 def test_drive_watch_dir_panel_shows_dropzones(monkeypatch, client) -> None:
     """The drop-zone panel (reused from papers_needed.py) shows the
     watch-daemon's live paths when the plist is readable."""

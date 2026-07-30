@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -87,6 +88,11 @@ def _build_cases() -> dict[str, object]:
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="node's ESM loader rejects a Windows drive-letter absolute path"
+    " ('d:...') passed as a bare argv path — file:// scheme required there",
+)
 def test_browser_tessellator_matches_server(tmp_path: Path) -> None:
     cases_file = tmp_path / "cases.json"
     cases_file.write_text(json.dumps(_build_cases()))

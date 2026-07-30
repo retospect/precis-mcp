@@ -16,6 +16,7 @@ smoke test the existing ``test_cli.py`` uses for ``add``.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -257,6 +258,9 @@ class TestRunInProcessGroup:
     ``paper`` extra installed.
     """
 
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="POSIX-only os.killpg process-group reap"
+    )
     def test_reaps_detached_grandchild(self, tmp_path: Path) -> None:
         import os
         import sys

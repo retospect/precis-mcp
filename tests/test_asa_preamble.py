@@ -4,6 +4,10 @@ deployment-specific user detail into the source.
 
 from __future__ import annotations
 
+import sys
+
+import pytest
+
 from asa_bot.config import PreambleConfig
 from asa_bot.preamble import _render_conv_pointer, _render_operator_prefs
 
@@ -36,6 +40,11 @@ def test_unreadable_path_falls_back_to_inline(tmp_path):
     assert "inline fallback" in _render_operator_prefs(cfg)
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="hardcoded POSIX '.asa/SOUL.md' suffix — default soul_path"
+    " joins with os.sep, which is a backslash on Windows",
+)
 def test_generic_defaults_have_no_personal_paths():
     # Defaults must not hard-code any deployment's home/user.
     cfg = PreambleConfig()

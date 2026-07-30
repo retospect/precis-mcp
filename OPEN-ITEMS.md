@@ -68,18 +68,16 @@ deployed** (main `901f22ec`) — these are the parked residuals.
   branch existed — needs an admin override / not-required Windows check). See
   the Windows-CI item below for the root of the noise.
 
-- **Windows CI chronically red on main — platform-specific test rot** *(repo
-  health — owner `tests/` + `.github/workflows/check.yml`).* Surfaced
-  2026-07-30 while triaging PR #35. Every recent `check` run on main has the
-  `test-other (windows-latest, 3.12/3.13)` legs failing (~27 tests) while
-  Linux+macOS pass — so Windows red is pure noise that masks any real Windows
-  regression and blocks every Dependabot auto-merge. Causes are POSIX-only APIs
-  (`os.killpg` in `test_watch.py`), hardcoded POSIX paths (`/Volumes/nas/…`,
-  `.asa/SOUL.md`), running `.sh`/stubs as executables (`WinError 193`), and
-  backslash-vs-slash path assertions. **Fix:** either `skipif`/`xfail` the
-  platform-specific tests on Windows, or drop Windows from the CI matrix if it
-  isn't a supported target (decide which — is Windows a supported runtime for
-  precis at all?). Bounded but needs the supported-target decision first.
+- **Windows CI — residuals after the skipif pass** *(repo health — owner
+  `tests/`).* The 27 chronically-failing POSIX-only tests were `skipif(win32)`-
+  marked (Reto's call 2026-07-30: keep Windows a real green signal, don't drop
+  the leg); Windows CI should now be green. Two live residuals: (1) **watch
+  `tests/test_render_sandbox.py::test_no_output_is_reported`** — a real timing
+  flake (1 of 4 recent Windows runs), deliberately NOT skipped so it isn't
+  masked; if it becomes the lone red, fix the flake, don't skip it. (2) The
+  skipped tests are POSIX-only by *test harness*, not product — the underlying
+  behaviors aren't Windows-portability-tested at all; fine while Windows isn't a
+  deployed runtime, revisit only if that changes.
 
 *(Prod-ops, not repo backlog — tracked in substrate 2, noted here for
 continuity): FRONTIER Claude-subscription 7-day quota exhausted, pausing all

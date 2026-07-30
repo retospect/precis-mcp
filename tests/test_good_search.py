@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -455,6 +456,15 @@ _TRIAGE_META = {
 
 
 class TestTriageChild:
+    # Drives PRECIS_CLAUDE_BIN through a ``#!/usr/bin/env bash`` stub
+    # script — POSIX execute-shebang support required (Windows can't
+    # invoke a .sh as a native binary; same family as
+    # ``tests/test_claude_agent.py``).
+    pytestmark = pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="POSIX execute-shebang support required for the claude_stub.sh pattern",
+    )
+
     def test_stub_verdicts_written_as_job_result(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

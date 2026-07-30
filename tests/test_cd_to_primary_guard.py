@@ -10,7 +10,16 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import sys
 from pathlib import Path
+
+import pytest
+
+_needs_posix_paths = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="hardcoded POSIX-style path ('/repo') — the hook renders it with"
+    " backslashes on Windows, so the substring check fails",
+)
 
 _HOOK = (
     Path(__file__).resolve().parents[1] / "scripts" / "hooks" / "guard-cd-to-primary.py"
@@ -42,6 +51,7 @@ def _patch(monkeypatch) -> None:
 # ── the core footgun: `cd <primary> && <cmd>` from a worktree ───────────────
 
 
+@_needs_posix_paths
 def test_cd_to_primary_then_command_is_denied(monkeypatch) -> None:
     _patch(monkeypatch)
     reason = evaluate(f"cd {MAIN} && ls", WT)
@@ -120,6 +130,7 @@ def _run_main(monkeypatch, payload, capsys):
     return rc, (json.loads(out) if out.strip() else None)
 
 
+@_needs_posix_paths
 def test_main_denies_cd_to_primary_in_worktree(monkeypatch, capsys) -> None:
     _patch(monkeypatch)
     monkeypatch.delenv("ALLOW_CD_TO_PRIMARY", raising=False)

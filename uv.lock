@@ -3341,7 +3341,7 @@ requires-dist = [
     { name = "manifold3d", marker = "extra == 'cad-export'", specifier = ">=2.5" },
     { name = "marker-pdf", marker = "sys_platform != 'win32' and extra == 'paper'", specifier = ">=1.0" },
     { name = "matplotlib", marker = "extra == 'plot'", specifier = ">=3.7" },
-    { name = "mcp", extras = ["cli"], specifier = ">=1.0,<2" },
+    { name = "mcp", extras = ["cli"], specifier = ">=1.0,<3" },
     { name = "mermaidx", marker = "extra == 'mermaid'", specifier = ">=0.8" },
     { name = "numpy", specifier = ">=1.24" },
     { name = "pgvector", specifier = ">=0.3.0" },

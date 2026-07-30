@@ -10,6 +10,7 @@ gated: with no Freerouting backend the round-trip degrades to a .dsn-only pass
 from __future__ import annotations
 
 import stat
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,14 @@ import pytest
 from precis.dispatch import Hub
 from precis.handlers.pcb import PcbHandler
 from precis.pcb import export, route
+
+# ``_stub_router`` below writes a ``#!/bin/sh`` stub and execs it directly
+# — POSIX execute-shebang support required (Windows can't invoke a .sh as
+# a native binary; same family as ``tests/test_claude_agent.py``).
+_needs_posix_stub = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX execute-shebang support required for the frstub.sh pattern",
+)
 
 # ── a small placed board (centroid coords in mm) ─────────────────────
 _MODEL = {
@@ -265,6 +274,7 @@ def _stub_router(tmp_path: Path, *, unrouted: int) -> str:
     return str(script)
 
 
+@_needs_posix_stub
 def test_route_dsn_ok_with_stub(tmp_path, monkeypatch):
     monkeypatch.setenv("PRECIS_FREEROUTING_BIN", _stub_router(tmp_path, unrouted=0))
     dsn = tmp_path / "x.dsn"
@@ -274,6 +284,7 @@ def test_route_dsn_ok_with_stub(tmp_path, monkeypatch):
     assert res.ses.exists()
 
 
+@_needs_posix_stub
 def test_route_dsn_incomplete_with_stub(tmp_path, monkeypatch):
     monkeypatch.setenv("PRECIS_FREEROUTING_BIN", _stub_router(tmp_path, unrouted=3))
     dsn = tmp_path / "x.dsn"
@@ -321,6 +332,7 @@ def test_round_trip_clamps_zero_passes(tmp_path, monkeypatch):
     assert rt.passes == 1 and rt.dsn.exists()
 
 
+@_needs_posix_stub
 def test_round_trip_succeeds_with_stub(tmp_path, monkeypatch):
     monkeypatch.setenv("PRECIS_FREEROUTING_BIN", _stub_router(tmp_path, unrouted=0))
     rt = route.place_route_round_trip(

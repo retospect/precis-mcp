@@ -6,9 +6,23 @@ credentials, and every turn replied "Failed to authenticate." once those
 lapsed. The fix fills the token from ~/.claude_oauth_token.
 """
 
+import sys
+
+import pytest
+
 from asa_bot.oauth import ENV_VAR, ensure_oauth_token
 
+# ``ensure_oauth_token`` locates the token file via ``Path.home()``, which
+# reads ``USERPROFILE`` on Windows, not ``HOME`` — so monkeypatching
+# ``HOME`` (as these tests do to sandbox the lookup in tmp_path) is a
+# no-op there and the real user profile is consulted instead.
+_needs_posix_home_env = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Path.home() reads USERPROFILE on Windows, not the monkeypatched HOME",
+)
 
+
+@_needs_posix_home_env
 def test_fills_token_from_home_file(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     (tmp_path / ".claude_oauth_token").write_text("sk-ant-oat01-abc\n")
@@ -57,6 +71,7 @@ def test_falls_back_to_vault_when_no_file(tmp_path, monkeypatch):
     assert env[ENV_VAR] == "sk-ant-oat01-vault"
 
 
+@_needs_posix_home_env
 def test_file_wins_over_vault(tmp_path, monkeypatch):
     """The on-disk token still wins when present (vault is the fallback)."""
     monkeypatch.setenv("HOME", str(tmp_path))

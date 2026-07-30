@@ -4,12 +4,23 @@ path is pure (fake podman), so it runs without a TTS toolchain."""
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
 
 from precis.draft.narrate import NarrationSegment
 from precis.tts.render import render_episode, render_via_container
+
+# The fake podman helpers below parse a "<host-path>:/work/out"-style bind
+# mount by splitting on the first ':' — Windows host paths carry their own
+# drive-letter colon (e.g. "C:\\...\\tmp:/work/out"), so the split lands on
+# the wrong separator and mangles the path.
+_needs_posix_mount_paths = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="fake-podman mount-arg split on ':' collides with the Windows"
+    " drive-letter colon in the host path",
+)
 
 _SEGS = [
     NarrationSegment("Hello.", "af_heart", "en-us", "para"),
@@ -28,6 +39,7 @@ def _fake_podman(cmd, **kwargs):
     (outdir / "result.json").write_text(json.dumps({"segments": 2, "duration_s": 3.2}))
 
 
+@_needs_posix_mount_paths
 def test_render_via_container_stages_runs_and_copies(tmp_path):
     out = tmp_path / "ep.mp3"
     result = render_via_container(_SEGS, out, image="precis-tts:test", run=_fake_podman)
@@ -35,6 +47,7 @@ def test_render_via_container_stages_runs_and_copies(tmp_path):
     assert result == {"segments": 2, "duration_s": 3.2, "audio_path": str(out)}
 
 
+@_needs_posix_mount_paths
 def test_render_via_container_tolerates_legacy_m4a_image(tmp_path):
     # An older, un-rebuilt precis-tts image still writes out.m4a. The read-back
     # must publish it as m4a (matching bytes/mime) rather than dark-holing it.
@@ -50,6 +63,7 @@ def test_render_via_container_tolerates_legacy_m4a_image(tmp_path):
     assert not out.exists()
 
 
+@_needs_posix_mount_paths
 def test_render_episode_dispatches_to_container(tmp_path):
     out = tmp_path / "ep.mp3"
     result = render_episode(_SEGS, out, image="precis-tts:test", run=_fake_podman)
@@ -57,6 +71,7 @@ def test_render_episode_dispatches_to_container(tmp_path):
     assert result["audio_path"] == str(out)
 
 
+@_needs_posix_mount_paths
 def test_render_via_container_bounds_the_run_with_a_timeout(tmp_path):
     captured = {}
 

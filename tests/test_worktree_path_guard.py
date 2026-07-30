@@ -8,7 +8,16 @@ executable, not a package module), so it's loaded by path.
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
+
+import pytest
+
+_needs_posix_paths = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="hardcoded POSIX-style paths ('/repo/...') — Path normalizes to"
+    " backslashes on Windows so the corrected-twin comparison fails",
+)
 
 _HOOK = (
     Path(__file__).resolve().parents[1] / "scripts" / "hooks" / "guard-worktree-path.py"
@@ -32,6 +41,7 @@ def _never(_: str) -> bool:
     return False
 
 
+@_needs_posix_paths
 def test_main_path_with_worktree_twin_is_corrected() -> None:
     twin = evaluate(
         f"{MAIN}/src/precis/handlers/x.py", WT, MAIN, exists=_always, isdir=_always
@@ -87,6 +97,7 @@ def test_sibling_worktree_path_is_allowed() -> None:
     assert evaluate(sib, WT, MAIN, exists=_never, isdir=_never) is None
 
 
+@_needs_posix_paths
 def test_new_file_in_existing_worktree_dir_is_corrected() -> None:
     # Creating a new file via the main path, where the worktree dir exists:
     # still a mis-target — correct to the twin rather than deny.

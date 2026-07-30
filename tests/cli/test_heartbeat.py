@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -18,6 +19,20 @@ from precis.cli import heartbeat
 # attribute exists on the real module so it can be replaced. Windows
 # never has it, so the tests can't be exercised there.
 _NO_GETLOADAVG = not hasattr(os, "getloadavg")
+
+# These tests force ``platform.system() == "Darwin"`` via monkeypatch to
+# exercise ``read_temp_c``'s macOS branch on any host — they lean on the
+# IOKit probe's graceful-degrade fallback (``ctypes.CDLL(None)`` opening
+# the running process on POSIX rather than raising) to land on the
+# expected "no sensor" result. On Windows ``ctypes.CDLL(None)`` raises
+# ``TypeError`` instead, which isn't part of the degrade contract. Real
+# Windows hosts never hit this code path — ``platform.system()`` never
+# lies — so this is a test-harness limitation, not a product bug.
+_needs_posix_dlopen_none = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="macOS IOKit-probe fallback relies on POSIX ctypes.CDLL(None)"
+    " semantics; raises TypeError on Windows instead of degrading",
+)
 
 
 def test_parse_first_float() -> None:
@@ -96,6 +111,7 @@ def test_read_temp_via_cmd(monkeypatch) -> None:
     assert heartbeat.read_temp_c() == 58.4
 
 
+@_needs_posix_dlopen_none
 def test_read_temp_cmd_failure_falls_through(monkeypatch) -> None:
     monkeypatch.setenv("PRECIS_TEMP_CMD", "fake-sensor")
 
@@ -108,6 +124,7 @@ def test_read_temp_cmd_failure_falls_through(monkeypatch) -> None:
     assert heartbeat.read_temp_c() is None
 
 
+@_needs_posix_dlopen_none
 def test_read_temp_cmd_timeout_is_swallowed(monkeypatch) -> None:
     monkeypatch.setenv("PRECIS_TEMP_CMD", "slow-sensor")
 
@@ -143,6 +160,7 @@ def test_temp_from_linux_thermal(monkeypatch) -> None:
     assert heartbeat._temp_from_linux_thermal() == 62.0
 
 
+@_needs_posix_dlopen_none
 def test_read_temp_none_on_mac_without_cmd(monkeypatch) -> None:
     """Mac without ``osx-cpu-temp`` installed and without
     PRECIS_TEMP_CMD → None. Stub the macOS SMC probe to None so we
@@ -153,6 +171,7 @@ def test_read_temp_none_on_mac_without_cmd(monkeypatch) -> None:
     assert heartbeat.read_temp_c() is None
 
 
+@_needs_posix_dlopen_none
 def test_read_temp_uses_macos_smc_when_available(monkeypatch) -> None:
     """When ``osx-cpu-temp`` returns "47.5°C" we lift that float into
     the heartbeat reading."""
