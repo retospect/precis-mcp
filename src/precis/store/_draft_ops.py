@@ -2392,6 +2392,11 @@ class DraftMixin:
         `prev_text`. The handle (and references to it) survive; derived data
         re-derives on the sha mismatch.
 
+        ``handle`` must be the legacy ADR-0033 base-58 anchor
+        (``DraftChunk.handle``, optionally ``¶``-prefixed) — it's looked up
+        via ``chunks.handle``. The ADR-0036 universal ``.dc`` handle
+        (``dc42``/``pe42``) does NOT work here and raises ``NotFound``.
+
         Optimistic concurrency: pass ``base_sha`` (the ``content_sha`` the
         caller saw when it read the chunk) to fail the edit if the chunk
         changed underneath it — so two agents editing the same chunk don't

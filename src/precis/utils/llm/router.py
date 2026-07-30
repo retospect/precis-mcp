@@ -1378,7 +1378,7 @@ def dispatch(req: LlmRequest) -> LlmResult:
             Transport.OPENAI_TOOLS,
             Transport.OPENAI_COMPAT,
         ):
-            log.warning(
+            log.debug(
                 "llm-failover: local slot for %s is saturated — trying the "
                 "hosted fallback rung instead of failing the call "
                 "(capacity backoff, not a transport error)",

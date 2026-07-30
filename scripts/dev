@@ -18,6 +18,7 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+WORKTREE="$PWD"
 
 INFRA_COMPOSE="${PRECIS_COMPOSE:-${PWD}/docker/dev/compose.yaml}"
 if [[ ! -f "${INFRA_COMPOSE}" ]]; then
@@ -29,4 +30,4 @@ fi
 # `--no-deps` skips bringing up any depends_on services. precis-dev has
 # none right now, but make it explicit so we never accidentally spin up
 # heavier siblings (acatome-watch, corpus-server).
-exec docker compose -f "${INFRA_COMPOSE}" --profile dev run --rm --no-deps precis-dev "$@"
+exec docker compose -f "${INFRA_COMPOSE}" --profile dev run --rm --no-deps -v "${WORKTREE}":/app precis-dev "$@"
