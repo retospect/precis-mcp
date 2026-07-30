@@ -138,8 +138,7 @@ search(q="activation energy")  # cross-kind
 ```
 
 Hybrid lexical + semantic. Each hit row carries the block's `xc<id>`
-**handle** (the retired `<slug>~<block>` selector still resolves, but
-it is a legacy form, not the handle); order is the relevance signal.
+**handle**; order is the relevance signal.
 
 ## Edit literal LaTeX source
 

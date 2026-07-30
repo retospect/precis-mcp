@@ -23,13 +23,11 @@ get(
     kind="plaintext", id="lc481"
 )  # one paragraph by handle — canonical (prefix infers kind)
 get(kind="plaintext", id="logs/2026-05.txt")  # whole file by path (file-backed address)
-get(kind="plaintext", id="logs--2026-05")  # whole file by slug (legacy input)
+get(kind="plaintext", id="logs--2026-05")  # whole file by slug
 get(
     kind="plaintext", id="logs/2026-05.txt~3"
-)  # paragraph by pos (legacy input; output shows the lc<id> handle to paste)
-get(
-    kind="plaintext", id="logs/2026-05.txt~opened-laptop-at-0915"
-)  # by content slug (legacy input)
+)  # paragraph by pos (output shows the lc<id> handle to paste)
+get(kind="plaintext", id="logs/2026-05.txt~opened-laptop-at-0915")  # by content slug
 get(kind="plaintext", id="logs/2026-05.txt~L42-58")  # by line range
 get(kind="plaintext", id="logs/2026-05.txt/raw")  # full source
 ```
@@ -39,8 +37,7 @@ A paragraph's canonical address is its **handle** `lc<chunk_id>` (e.g.
 file is still addressable by path or slug (a legitimate file-backed address):
 both `.txt` and `.log` share one address space, the extension can appear in the
 path form, and the slug strips it and replaces `/` with `--`
-(`logs/2026-05.txt` ↔ `logs--2026-05`). The `~3` / `~<content-slug>` paragraph
-selectors are legacy input that still resolve.
+(`logs/2026-05.txt` ↔ `logs--2026-05`).
 
 `~L<n>-<m>` is the line-range selector — useful when something
 external (grep, a stack trace, the tail of a log) gave you line

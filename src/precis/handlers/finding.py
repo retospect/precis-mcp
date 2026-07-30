@@ -66,6 +66,14 @@ from precis.utils import handle_registry
 _STATUS_NAMESPACE = "STATUS"
 _STATUS_TRACING = "tracing"
 _DERIVED_FROM = "derived-from"
+# A taproot claim hub (``taproot/hub.py::mint_hub``) is a ``finding`` ref
+# tagged this closed value. Hubs are stamped ``STATUS:tracing`` (mirroring
+# an ordinary in-flight finding — see ``chase.py::claim_tracing_findings``,
+# which deliberately excludes ``TAPROOT:claim`` rows so hubs are never
+# re-claimed by the chase), so the default (no explicit ``status=``) search
+# cohort below unions this tag in alongside ``STATUS:established`` — a
+# minted hub should be visible without the ``status='*'`` workaround.
+_TAPROOT_CLAIM_TAG = "TAPROOT:claim"
 
 
 class FindingHandler(NumericRefHandler):
@@ -461,10 +469,7 @@ class FindingHandler(NumericRefHandler):
         """Lexical search across findings with a status-axis default.
 
         ``status=`` is a finding-specific shorthand for filtering by
-        the ``STATUS:`` closed-vocab tag. The default
-        (``status='established'``) is the natural "what evidence do
-        we have for X?" shape — the agent rarely wants in-flight
-        rows mixed in. Pass ``status='tracing'`` /
+        the ``STATUS:`` closed-vocab tag. Pass ``status='tracing'`` /
         ``'multi_candidate'`` / ``'dead_chain'`` to inspect each
         cohort, or ``status='*'`` to see all findings regardless.
 
@@ -473,14 +478,31 @@ class FindingHandler(NumericRefHandler):
         ``search(status='tracing', tags=['topic-co2'])`` works as
         expected.
 
+        **Default cohort (no explicit ``status=``):** ``STATUS:established``
+        findings **plus** taproot claim hubs (``TAPROOT:claim`` — minted by
+        ``taproot/hub.py::mint_hub`` with ``STATUS:tracing``, same as an
+        ordinary in-flight finding). This is the natural "what evidence do
+        we have for X?" shape — the agent rarely wants in-flight rows mixed
+        in, but a claim hub is a first-class answer even before its chain
+        resolves. An *explicit* ``status=`` (including ``status='established'``)
+        is an exact single-status filter and does NOT include hubs unless
+        asked for directly (``status='tracing'`` or ``status='*'``).
+
         Renders results as a TOON table (``id | title | setup |
         primary``) so the agent gets a scannable list — the begat
         chain detail lives behind ``get(kind='finding', id=N)``.
         """
-        # Translate status= shorthand to a closed-vocab tag filter,
-        # unless the caller asked for "any status" via '*'.
-        effective_tags: list[str] = list(tags) if tags else []
-        resolved_status = (status if status is not None else "established").strip()
+        base_tags: list[str] = list(tags) if tags else []
+
+        if status is None:
+            return self._search_default_cohort(
+                q=q, base_tags=base_tags, page_size=page_size
+            )
+
+        # Explicit status= (including '*') — exact single-status filter,
+        # unchanged from before hubs were surfaced in the default cohort.
+        effective_tags = base_tags
+        resolved_status = status.strip()
         if resolved_status and resolved_status != "*":
             tag_str = f"STATUS:{resolved_status}"
             if tag_str not in effective_tags:
@@ -531,6 +553,67 @@ class FindingHandler(NumericRefHandler):
             return Response(body=body)
 
         refs = [r for r, _rank in hits]
+        return self._render_finding_table(refs, query=q)
+
+    def _search_default_cohort(
+        self, *, q: str | None, base_tags: list[str], page_size: int
+    ) -> Response:
+        """The defaulted (``status is None``) search cohort: union of
+        ``STATUS:established`` rows and ``TAPROOT:claim`` hubs.
+
+        The store's tag filter (``Tag.normalize_filter`` →
+        ``build_tag_filter``) is AND-only over a single tag set — there's
+        no any-of/OR group to express "established OR hub" in one query.
+        So this runs the two tag-filtered queries separately (each still
+        ANDs in any caller-supplied ``tags=``) and unions the results by
+        ref id, established first (its natural rank/recency order) then
+        any hub not already present — least invasive given the store API,
+        and ``page_size`` is honoured by trimming the merged list.
+        """
+        established_tags = Tag.normalize_filter(
+            _tags_with(base_tags, f"{_STATUS_NAMESPACE}:established"), kind=self.kind
+        )
+        hub_tags = Tag.normalize_filter(
+            _tags_with(base_tags, _TAPROOT_CLAIM_TAG), kind=self.kind
+        )
+
+        if q is None or not q.strip():
+            established_refs = self.store.list_refs(
+                kind=self.kind, tags=established_tags, limit=page_size
+            )
+            hub_refs = self.store.list_refs(
+                kind=self.kind, tags=hub_tags, limit=page_size
+            )
+            refs = _merge_dedup(established_refs, hub_refs)[:page_size]
+            return self._render_finding_table(refs, query=None)
+
+        established_hits = self.store.search_refs_lexical(
+            q=q, kind=self.kind, tags=established_tags, limit=page_size
+        )
+        hub_hits = self.store.search_refs_lexical(
+            q=q, kind=self.kind, tags=hub_tags, limit=page_size
+        )
+        refs = _merge_dedup(
+            [r for r, _rank in established_hits],
+            [r for r, _rank in hub_hits],
+        )[:page_size]
+        if not refs:
+            body = f"no finding matches {q!r} with status='established'"
+            from precis.utils.next_block import render_next_section
+
+            nav: list[tuple[str, str]] = [
+                (
+                    f"search(kind='finding', q={q!r}, status='*')",
+                    "drop the status filter",
+                ),
+                (
+                    "search(kind='finding', q='broader term', status='established')",
+                    "loosen the query",
+                ),
+            ]
+            body += render_next_section(nav)
+            return Response(body=body)
+
         return self._render_finding_table(refs, query=q)
 
     def _render_finding_table(self, refs: list[Ref], *, query: str | None) -> Response:
@@ -1026,6 +1109,29 @@ def _extract_status_tag(tags: Any) -> str | None:
         if s.startswith("STATUS:"):
             return s.split(":", 1)[1]
     return None
+
+
+def _tags_with(base: list[str], tag: str) -> list[str]:
+    """Return ``base`` with ``tag`` appended, unless already present.
+
+    Mirrors the dedup already used for the explicit-status shorthand —
+    ``Tag.normalize_filter``/``build_tag_filter`` count *distinct* tags in
+    an AND ``HAVING COUNT(...)``, so passing the same tag twice would
+    silently require it to match two different tag rows and always miss.
+    """
+    return base if tag in base else [*base, tag]
+
+
+def _merge_dedup(primary: list[Ref], secondary: list[Ref]) -> list[Ref]:
+    """Union two ref lists by ``id``, keeping ``primary``'s order first
+    then any ``secondary`` entries not already present."""
+    seen = {r.id for r in primary}
+    merged = list(primary)
+    for r in secondary:
+        if r.id not in seen:
+            merged.append(r)
+            seen.add(r.id)
+    return merged
 
 
 __all__ = ["FindingHandler"]

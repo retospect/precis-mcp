@@ -9,11 +9,7 @@ status: stable
 # precis-addressing-help — one handle for every ref and chunk
 
 > **ADR 0036.** A handle is the single address form for every record and
-> addressable chunk. Legacy forms still resolve on **input** — paper slugs
-> `miller23` (slug-keyed kinds), bare numeric ids `158` **only for int-keyed
-> kinds** (memory/todo/job/…, *not* papers), `kind:slug~pos`, draft `¶<h>` — so
-> nothing you already know breaks, but **output now shows handles**, and a
-> handle is the thing to copy back into `get` / `link` / `like` /
+> addressable chunk. It is the thing to copy back into `get` / `link` / `like` /
 > `source_handle`. Authoritative source of the codes:
 > `src/precis/utils/handle_registry.py`.
 

@@ -13,15 +13,14 @@ Some `level:recurring` todos aren't ordinary scheduled work — they are
 on a schedule. The morning/evening **podcast casts** and the daily **news
 briefing** are the headline examples.
 
-Two ways a recurring tick can drive an automation (ADR 0061 folded the
-formerly-separate `kind='cron'` push mechanism onto `level:recurring`):
+Two ways a recurring tick can drive an automation:
 
 * **Push (`meta.deliver`)** — the recurring carries
   `meta.deliver={'target': 'conv:discord/<g>/<c>/<t>'}`. A due tick fires a
-  synthetic prompt at asa_bot (`pg_notify('precis.cron', ...)`, same wire
-  shape the retired `cron` kind used) built from the recurring's own text;
-  asa_bot drives a full Claude turn against it and posts the response. No
-  subtask lands in the doable queue — the tick's action *is* the delivery.
+  synthetic prompt at asa_bot via `pg_notify('precis.cron', ...)` built from
+  the recurring's own text; asa_bot drives a full Claude turn against it and
+  posts the response. No subtask lands in the doable queue — the tick's
+  action *is* the delivery.
 * **Deterministic job (`meta.executor` + `meta.job_type`)** — the recurring
   carries `meta.executor='claude_inproc'` + `meta.job_type='briefing'` (etc);
   a due tick mints a subtask child the `claude_inproc` dispatcher runs
@@ -58,8 +57,8 @@ schema change — `automation` is a normal open tag on `kind='todo'`.
 **Push-mode** (`meta.deliver` set): the automation's behaviour lives in the
 recurring's own text — that's the synthetic prompt fired on each tick.
 `edit(kind='todo', id=N, mode='replace', text='<revised prompt>')` changes it
-in place (todo `edit` supports rewriting the task line; unlike the retired
-cron kind's create-only `put`, no delete + re-create dance is needed).
+in place (todo `edit` supports rewriting the task line — no delete +
+re-create dance is needed).
 
 **Job-mode** (`meta.executor`/`meta.job_type` set): behaviour is mostly code
 (the job_type's implementation) plus its `meta.params` — those aren't

@@ -10,9 +10,7 @@ status: active
 
 Conversations are captured chat transcripts. One ref per conversation,
 one block per message turn. The canonical address is the **handle**
-`co<id>` (e.g. `co73`) shown in get/search output; the date-stamped slug
-(`2026-04-26-spec`), the `conv:` prefix, and numeric ref ids (`conv:73`)
-still resolve on input and as link targets.
+`co<id>` (e.g. `co73`) shown in get/search output.
 
 ## Read a past conversation
 ## Open a conversation by slug
@@ -21,11 +19,7 @@ still resolve on input and as link targets.
 ```python
 get(kind="conv", id="co73")  # overview + turn count (handle; prefix infers kind)
 get(kind="conv", id="co73/transcript")  # full transcript
-get(kind="conv", id="2026-04-26-spec")  # legacy slug, still resolves
-get(
-    kind="conv", id="2026-04-26-spec~14"
-)  # single turn (output shows the cc<id> handle)
-get(kind="conv", id="conv:2026-04-26-spec")  # prefix form (link-target shape)
+get(kind="conv", id="co73~14")  # single turn (output shows the cc<id> handle to cite)
 ```
 
 Turn selector is `~N` (single turn). Path view is `/transcript`. No
@@ -51,8 +45,7 @@ search(kind="conv", q="register endpoint", page_size=20)
 ```
 
 Lexical search over turn text. Each result is a turn chunk handle
-`cc<chunk_id>`; paste one as `id=` to read the turn (the legacy
-`slug~pos` form still resolves on input). Cross-kind search
+`cc<chunk_id>`; paste one as `id=` to read the turn. Cross-kind search
 (`search(kind='*', q='...')`) folds conv hits in with paper / memory
 matches when a question spans both.
 

@@ -16,8 +16,7 @@ SQL-only detectors, and raises a `kind='alert'` per condition (see
 one-shot Discord ping on a *new* `critical` condition (a thrashing or
 dead worker), delivered as a `kind='message'` to the Discord channel in
 `PRECIS_OPS_ALERT_TARGET` (a channel target `discord/<guild>/<channel>`,
-*not* a webhook URL; the deprecated `PRECIS_OPS_ALERT_WEBHOOK` alias is
-still accepted) — the same asa_bot channel as the daily news
+*not* a webhook URL) — the same asa_bot channel as the daily news
 briefing — unset by default, so the push merges dark and everything
 else stays pull-only. It
 used to write a `kind='memory'` digest tagged `tier:nursery`

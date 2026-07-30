@@ -15,7 +15,7 @@ post-edit validation differs.
 Address the block by the **handle** get/search hands you — `mc<id>` for a
 markdown block, `lc<id>` plaintext, `xc<id>` tex — and paste it straight into
 `id=`. Append a `~<selector>` to scope within it (`~L42`, `~L42-58`, a content
-slug, …). The legacy `<slug>~<selector>` form still resolves on input.
+slug, …).
 
 ## Change one token, cite, or literal in a file
 ## Replace a string somewhere I know exists
@@ -29,14 +29,6 @@ edit(
     find="the",
     before="over ",
     after=" fence",
-    text="a",
-)
-
-edit(
-    kind="markdown",
-    id="notes--foo~intro",  # legacy slug~selector, still resolves
-    mode="find-replace",
-    find="the",
     text="a",
 )
 ```

@@ -165,24 +165,6 @@ meditation `No module named '_sqlite3'` (host venv), several `Connection
 refused` casts.)*
 
 ---
-## 🌱 Taproot Phase-3 residuals (Opus-session, 2026-07-30)
-
-Surfaced while shipping the F+W1 forward bridge (`bb2eb73e`) and the taproot
-skill docs.
-
-- **Claim hubs are stuck at `STATUS:tracing` — hidden from the default
-  `finding` search** *(feature; owner `taproot/hub.py::mint_hub` + the finding
-  status model).* `mint_hub` tags a hub `STATUS:tracing` (mirroring
-  `FindingHandler`), but a hub isn't tracing a chain and never flips to
-  `established`, so `search(kind='finding', tags=['TAPROOT:claim'])` under the
-  default `status='established'` filter returns nothing — you must pass
-  `status='*'` (now documented in `precis-finding-help`). Fix properly: give a
-  hub a status that fits (no `STATUS`, or a dedicated `STATUS:claim`/`:hub`) and
-  make the default finding search surface hubs. Small slice; do before flipping
-  `PRECIS_TAPROOT_CHASE_ENABLED` on at scale. Test: a minted hub is returned by
-  a default-filter `finding` search (or by whatever the chosen surface is).
-
----
 ## 🗄️ Postgres schema-audit residuals — 2026-07-30 (Opus-session, refs write-churn)
 
 From the 2026-07-30 DB schema+operation audit. All the write-churn fixes have
@@ -1693,7 +1675,7 @@ Slice 1 (observability: boot-event row + `worker-restart`/`dead-worker` nursery
 detectors + Discord webhook) shipped + deployed. Owner `workers/nursery.py`,
 `cli/worker.py`, `alerts.py`, cluster repo.
 
-- **Set `PRECIS_OPS_ALERT_WEBHOOK` on system-profile workers** *(ops, open).*
+- **Set `PRECIS_OPS_ALERT_TARGET` on system-profile workers** *(ops, open).*
   Critical push is dark until set (cluster ansible env); until then
   worker-restart/dead-worker alerts only land in `/alerts`, not proactively.
 - **Tier B — lease as the single job-substrate liveness authority** *(open).* Let

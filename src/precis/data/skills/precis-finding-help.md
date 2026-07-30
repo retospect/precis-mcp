@@ -58,15 +58,12 @@ every `put`. Patent sources work the same way: `cited_in='patent:ep1234567b1'`.
 ## Pointer formats for the source of the claim
 ## How do I reference the paper or patent I'm citing?
 
-`cited_in=` takes a **handle** — the chunk where you read the claim.
-Legacy bare/prefixed forms still resolve:
+`cited_in=` takes a **handle** — the chunk where you read the claim
+(`pc<id>`, copied straight from search/get output):
 
 ```python
 cited_in = "pc42"  # chunk handle — what output hands you back
-cited_in = "miller23a"  # legacy bare cite_key (paper), still resolves
-cited_in = "miller23a~42"  # legacy bare cite_key + chunk, still resolves
-cited_in = "paper:miller23a~42"  # legacy explicit-kind prefix, still resolves
-cited_in = "patent:ep1234567b1"  # patent target
+cited_in = "patent:ep1234567b1"  # patent source, by DOCDB
 ```
 
 **A bare `doi:`/`arxiv:` is NOT accepted** — `cited_in='doi:10.1234/xyz'`
@@ -93,7 +90,7 @@ Every finding must point at the corpus chunk you read the claim in.
 If you have a claim but **no `cited_in` handle**, do *not* retry the
 same `put` — it will keep failing. Instead:
 
-- source in the corpus → cite it (`cited_in='miller23a~42'`);
+- source in the corpus → cite it (`cited_in='pc42'`);
 - source not ingested yet → `search(kind='paper', q='…')` to find it,
   or stub it (`put(kind='paper', doi='…')`) and cite the result;
 - your own synthesis with no single source → it is **not** a finding;
@@ -115,15 +112,13 @@ with `put(kind='memory', link='finding:<id>')`.
 ## Look up a finding by id
 ## What does finding 42 say?
 
-All three work — handle `id='fi42'`, bare `id=42`, and legacy `id='finding:42'`:
+Read by the finding's handle `fi<id>` (copy it from output):
 
 ```python
 get(id="fi42")  # by handle (prefix infers kind)
-get(kind="finding", id=42)
-get(kind="finding", id="finding:42")  # legacy form, still resolves
-get(kind="finding", id=42, view="log")  # chase event history
+get(id="fi42", view="log")  # chase event history
 get(
-    kind="finding", id=42, view="evidence"
+    id="fi42", view="evidence"
 )  # taproot claim-hub evidence (originators/corroborators/contradicts)
 ```
 
@@ -157,12 +152,13 @@ world-claim other papers' evidence can attach to) or `TAPROOT:review`
 (an editorial note on a draft, excluded from the claim graph).
 
 ```python
-search(kind="finding", tags=["TAPROOT:claim"], status="*")  # every claim hub
+search(kind="finding", tags=["TAPROOT:claim"])  # every claim hub
 ```
 
-A hub mints `STATUS:tracing` and stays there — pass `status='*'` or
-`status='tracing'`; the default `search` status filter (`established`)
-hides every hub. Drill one with `view='evidence'` (above).
+Claim hubs surface in the **default** `finding` search — no `status=`
+needed. (A hub carries `STATUS:tracing` under the hood, but the default
+cohort unions hubs in alongside `established` findings.) Drill one with
+`view='evidence'` (above).
 
 Hubs are **system-minted, not agent-created** — `put(kind='finding', ...)`
 makes a chase-target finding, never a claim hub. A hub + its evidence

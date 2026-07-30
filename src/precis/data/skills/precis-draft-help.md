@@ -424,8 +424,7 @@ put(
   edit(kind="draft", id="dc42", caption="New legend")  # caption only; data kept
   edit(kind="draft", id="dc42", regen={"source": "manual"})  # provenance only
   ```
-  (`dc<chunk_id>` is the chunk's address — `put` returns it; legacy `¶<handle>`
-  still resolves on input.)
+  (`dc<chunk_id>` is the chunk's address — `put` returns it.)
 
 ## Graph figures (computed from data)
 

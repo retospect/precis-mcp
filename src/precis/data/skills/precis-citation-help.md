@@ -74,7 +74,6 @@ put(
     kind="citation",
     text="MOF X improves CO2 reduction by 12%",  # the claim
     source_handle="pc7",  # the chunk it points at
-    #                  (legacy 'collins06~7' also resolves)
     verifier_confidence=0.95,
     link="pa5",
     rel="cites",
@@ -100,8 +99,6 @@ trail.
 
 ```python
 get(id="ci42")  # by handle (prefix infers kind)
-get(kind="citation", id=42)  # equivalent
-get(kind="citation", id="citation:42")  # legacy link-target form, equivalent
 ```
 
 ```text

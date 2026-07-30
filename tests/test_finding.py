@@ -15,6 +15,8 @@ from precis.dispatch import Hub
 from precis.errors import BadInput, Unsupported
 from precis.handlers.finding import FindingHandler
 from precis.identity import make_finding_paper_id, make_pub_id
+from precis.taproot.canon import CanonicalClaim
+from precis.taproot.hub import mint_hub
 
 
 def _make_handler(store):
@@ -563,6 +565,80 @@ class TestSearch:
         out = h.search(status="tracing")
         assert str(rid) in out.body
         assert "recency claim" in out.body
+
+
+class TestSearchSurfacesHubs:
+    """Regression: a taproot claim hub (``TAPROOT:claim``, ``STATUS:tracing``
+    — minted by ``taproot/hub.py::mint_hub``) must show up in the DEFAULT
+    finding search (no explicit ``status=``) alongside established
+    findings, without needing the ``status='*'`` workaround — while an
+    ordinary (non-hub) ``STATUS:tracing`` finding stays hidden from that
+    same default, and an explicit ``status='established'`` still excludes
+    the hub."""
+
+    _CLAIM = CanonicalClaim(
+        sentence="Perovskite solar cells degrade rapidly under ultraviolet exposure.",
+        scope={"material": "perovskite", "stressor": "UV"},
+    )
+
+    def test_default_tags_filter_surfaces_hub(self, store) -> None:
+        """``search(tags=['TAPROOT:claim'])`` with no status= returns the
+        hub — today the defaulted STATUS:established AND filter wrongly
+        excludes it."""
+        h = _make_handler(store)
+        hub_id = mint_hub(store, self._CLAIM)
+
+        out = h.search(tags=["TAPROOT:claim"])
+        assert str(hub_id) in out.body
+
+    def test_default_q_search_surfaces_hub(self, store) -> None:
+        """``search(q=<hub text>)`` with no status= returns the hub —
+        its title/body is the claim sentence, which is searchable."""
+        h = _make_handler(store)
+        hub_id = mint_hub(store, self._CLAIM)
+
+        out = h.search(q="Perovskite")
+        assert str(hub_id) in out.body
+
+    def test_default_search_still_hides_ordinary_tracing_finding(self, store) -> None:
+        """A plain STATUS:tracing (non-hub) finding stays hidden from the
+        default search — only hubs are surfaced, not all tracing rows."""
+        from precis.store.types import BlockInsert
+
+        h = _make_handler(store)
+        hub_id = mint_hub(store, self._CLAIM)
+
+        ref = store.insert_ref(
+            kind="paper", slug="perov-src", title="Perovskite source", meta={}
+        )
+        store.insert_blocks(
+            ref.id,
+            [BlockInsert(pos=0, text="Perovskite body chunk.", meta={})],
+        )
+        resp = h.put(
+            title="in-flight perovskite claim",
+            body="perovskite degradation claim body text",
+            cited_in="perov-src",
+        )
+        tracing_id = int(re.search(r"id=(\d+)", resp.body).group(1))
+
+        out = h.search(q="Perovskite")
+        assert str(hub_id) in out.body
+        assert f"\n{tracing_id}\t" not in out.body
+        assert "in-flight perovskite claim" not in out.body
+
+    def test_explicit_status_established_still_excludes_hub(self, store) -> None:
+        """An explicit ``status='established'`` is unchanged — the
+        defaulted-only OR does not leak into the explicit single-status
+        filter."""
+        h = _make_handler(store)
+        hub_id = mint_hub(store, self._CLAIM)
+
+        out = h.search(q="Perovskite", status="established")
+        assert str(hub_id) not in out.body
+
+        out_tags = h.search(tags=["TAPROOT:claim"], status="established")
+        assert str(hub_id) not in out_tags.body
 
 
 # ── edit(pick_candidate=...) — multi-candidate disambiguation ───────

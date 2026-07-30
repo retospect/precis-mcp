@@ -14,7 +14,7 @@ a searchable ref — useful for "what have I been nagging the user
 about this week?" introspection.
 
 Canonical address is the handle `ms<id>` (e.g. `ms42`), copied from
-get/search output; a bare numeric `id=42` still resolves on input.
+get/search output.
 Body lives as a `message_body` chunk.
 
 ## Post a message to a Discord channel/thread

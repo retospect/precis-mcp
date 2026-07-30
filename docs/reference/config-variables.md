@@ -225,7 +225,6 @@ on the anki-sync daemon) and `PRECIS_UNPAYWALL_EMAIL` (shared-env).
 | Var | Controls | Deployed | Assessment |
 |-----|----------|----------|------------|
 | `PRECIS_OPS_ALERT_TARGET` | Critical-alert Discord push target | `discord/<guild>/<channel>` (shared-env) | ✅ Set — critical nursery/quota alerts page instead of merging dark (CLAUDE.md warns the default-unset case is silent). Good that it's explicitly set. |
-| `PRECIS_OPS_ALERT_WEBHOOK` | Deprecated alias | not set | ✅ Superseded by target. |
 | `PRECIS_FIXER_DISCORD_WEBHOOK` / `PRECIS_FIXER_READYZ_URL` | Fixer push + readiness | not set here | ℹ️ Fixer is a **local `hephaestus` (laptop)** deploy — set in the laptop's env, not the cluster. |
 | `PRECIS_EMBEDDER_URL` | Remote embedder endpoint | `http://127.0.0.1:8181` (asa; workers via CLI) | ✅ Loopback to local `serve-embeddings`. |
 | `PRECIS_ASKCOS_URL` | ASKCOS chem endpoint | not set | ⚠️ Chem route uses the container lane, not ASKCOS HTTP. Expected unset. |

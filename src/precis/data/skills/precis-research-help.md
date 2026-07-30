@@ -106,7 +106,7 @@ job is durable). Details: `precis-search-help` → Broad retrieval.
 put(
     kind="citation",
     text="Peak QY 68 ± 4 % for CdSe/ZnS aqueous synthesis at 290 K",
-    source_handle="pc456",  # the paper-chunk handle, copied from search/get (a legacy slug~pos also resolves)
+    source_handle="pc456",  # the paper-chunk handle, copied from search/get
     source_quote="We measured a peak quantum yield of 68 ± 4 % across n=12 batches…",
     verifier_confidence=0.95,
     link="pa5",

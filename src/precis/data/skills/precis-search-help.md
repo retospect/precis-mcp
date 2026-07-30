@@ -23,12 +23,8 @@ search(kind="paper", q="photocatalysis")  # one kind
 search(kind="paper,patent", q="photocatalysis")  # several kinds
 search(kind="paper", q="X", page=2, page_size=20)  # paginate
 search(kind="paper", q="X", tags=["topic:noxrr"])  # tag-filter
-search(
-    kind="paper", q="X", scope="pa5"
-)  # search inside one ref (handle; slug still resolves)
-search(
-    kind="paper", q="X", exclude=["pa5", "pa12"]
-)  # skip refs by handle (slugs still resolve)
+search(kind="paper", q="X", scope="pa5")  # search inside one ref, by handle
+search(kind="paper", q="X", exclude=["pa5", "pa12"])  # skip refs by handle
 search(kind="patent", q="X", source="remote")  # patent-only knob
 search(kind="paper", q="1.523 eV", mode="lexical")  # exact string, no embedding
 search(
@@ -87,7 +83,7 @@ or `mode='verbatim'` (chunk tagged with all query words).
 | `source` | str | Patent only: `'both'` (default) / `'local'` / `'remote'`. |
 | `view` | str | Alternate result shape. `view='dreamable'` returns a salience-focus-region pick from the most-due seed (cross-kind only; `q=` not required for this view). `view='stubs'` returns the paper-acquisition backlog — paper refs with an external id but no PDF yet (`q=` ignored; see `precis-stubs-help`). |
 | `angle` | float | Salience-rotation search; pairs with `like=` (or `q=` for a seed). See `precis-dreaming-help`. |
-| `like` | str | Seed ref handle for `angle=` search; e.g. `like='pc40'` (a handle also works) or the legacy `like='paper:wang2020state~5'`. |
+| `like` | str | Seed ref handle for `angle=` search; e.g. `like='pc40'`. |
 | `status` | str | Shorthand for `tags=['STATUS:<value>']` on kinds with a STATUS axis. `finding` defaults to `'established'`, `gripe` to `'open'`; pass another value for a specific cohort, or `'*'` for all regardless. On kinds with no STATUS default it simply adds the filter when given, and is ignored when omitted. |
 | `queries` | list[str] | **Broad retrieval** (paper): extra question rephrasings, each fused as its own ranked leg. Up to 8. See below. |
 | `answers` | list[str] | **Broad retrieval** (paper): hypothetical answer passages (HyDE) — short paragraphs you'd *expect* a relevant chunk to read like; embedded and fused. Up to 8. See below. |
@@ -282,7 +278,6 @@ in the response header, never silent.
 
 ```python
 search(kind="paper", q="Z-scheme", scope="pa5")  # handle from get/search output
-search(kind="paper", q="Z-scheme", scope="wang2020state")  # legacy slug, still resolves
 search(kind="patent", q="heterojunction", scope="ep4123456a1")
 ```
 
@@ -295,9 +290,6 @@ paper does X come up?"
 
 ```python
 search(kind="paper", q="photocatalysis", exclude=["pa5", "pa12"])  # handles from output
-search(
-    kind="paper", q="photocatalysis", exclude=["wang2020state", "kim2024electro"]
-)  # legacy slugs, still resolve
 ```
 
 Ref-level — a handle (`pa<id>`), slug, chunk selector, or DOI all resolve to

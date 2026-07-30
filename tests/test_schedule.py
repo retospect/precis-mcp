@@ -11,8 +11,8 @@ Layers:
   backfill on/off);
 * the push-delivery tick path (``meta.deliver``, ADR 0061) and the
   one-shot resolve-and-retire path;
-* the PRIO column wiring (``put(prio=N)``, ``tag(prio=N)``,
-  back-compat ``PRIO:*`` tag alias);
+* the PRIO column wiring (``put(prio=N)``, ``tag(prio=N)``; the
+  ``PRIO:*`` tag is a plain searchable tag, not a column alias);
 * delete-protection on builtin refs.
 """
 
@@ -370,14 +370,17 @@ def test_put_rejects_out_of_range_prio(handler: TodoHandler) -> None:
         handler.put(text="bad", prio=0)
 
 
-def test_put_with_prio_tag_back_compat(handler: TodoHandler, store: Store) -> None:
+def test_put_with_prio_tag_is_stored_not_translated(
+    handler: TodoHandler, store: Store
+) -> None:
+    """``PRIO:*`` is a plain searchable tag (Layer B) — it is stored as-is
+    and does NOT set the ``prio`` column. Canonical is ``put(prio=N)``."""
     resp = handler.put(text="urgent", tags=["PRIO:urgent"])
     rid = _id_of(resp.body)
     ref = store.get_ref(kind="todo", id=rid)
-    assert ref is not None and ref.prio == 1
+    assert ref is not None and ref.prio is None
     tags = {str(t) for t in store.tags_for(rid)}
-    # Back-compat: the tag form is consumed; column carries the value.
-    assert "PRIO:urgent" not in tags
+    assert "PRIO:urgent" in tags
 
 
 def test_tag_prio_kwarg_writes_column(handler: TodoHandler, store: Store) -> None:
@@ -388,14 +391,18 @@ def test_tag_prio_kwarg_writes_column(handler: TodoHandler, store: Store) -> Non
     assert ref is not None and ref.prio == 3
 
 
-def test_tag_clears_prio_via_remove_prio_tag(
+def test_tag_remove_prio_tag_does_not_clear_column(
     handler: TodoHandler, store: Store
 ) -> None:
+    """Removing a ``PRIO:*`` tag no longer clears the ``prio`` column — that
+    translation shim is gone. The column only changes via explicit
+    ``prio=`` on put()/tag()."""
     resp = handler.put(text="y", prio=8)
     rid = _id_of(resp.body)
+    handler.tag(id=rid, add=["PRIO:low"])
     handler.tag(id=rid, remove=["PRIO:low"])
     ref = store.get_ref(kind="todo", id=rid)
-    assert ref is not None and ref.prio is None
+    assert ref is not None and ref.prio == 8
 
 
 # ── spawn loop ─────────────────────────────────────────────────────

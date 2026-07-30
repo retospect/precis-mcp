@@ -355,25 +355,18 @@ def _set_severity_tag(store: Store, ref_id: int, severity: str, *, conn: Any) ->
 #: The value is a **Discord channel target** — ``discord/<guild>/<channel>`` —
 #: NOT an outbound webhook URL. There are no Discord webhooks in this deployment
 #: (the bridge is the asa_bot bot via ``pg_notify('precis.messages')``), so a
-#: ``https://…`` URL here is silently undeliverable. ``PRECIS_OPS_ALERT_TARGET``
-#: is the canonical, honestly-named variable; ``PRECIS_OPS_ALERT_WEBHOOK`` is a
-#: deprecated alias kept only so an already-deployed env keeps working.
+#: ``https://…`` URL here is silently undeliverable.
 OPS_ALERT_TARGET_ENV = "PRECIS_OPS_ALERT_TARGET"
-OPS_ALERT_WEBHOOK_ENV = "PRECIS_OPS_ALERT_WEBHOOK"  # deprecated misnomer alias
 
 
 def _ops_alert_target() -> str:
     """Return the configured ops-alert **channel target** (not a webhook URL).
 
-    ``PRECIS_OPS_ALERT_TARGET`` is canonical (the value is a Discord channel
-    ``discord/<guild>/<channel>``); the historical ``PRECIS_OPS_ALERT_WEBHOOK``
-    name is a misnomer — kept as an accepted fallback so a deployment that set
-    it still pages — but it is NOT an outbound webhook and a URL there won't
-    deliver.
+    ``PRECIS_OPS_ALERT_TARGET`` is the value (a Discord channel
+    ``discord/<guild>/<channel>``) — NOT an outbound webhook, so a URL there
+    won't deliver.
     """
-    return os.environ.get(OPS_ALERT_TARGET_ENV, "") or os.environ.get(
-        OPS_ALERT_WEBHOOK_ENV, ""
-    )
+    return os.environ.get(OPS_ALERT_TARGET_ENV, "")
 
 
 def notify_critical_alert(
@@ -382,8 +375,8 @@ def notify_critical_alert(
     """Best-effort proactive push for a newly-raised critical alert.
 
     Queues a ``kind='message'`` to the Discord channel configured by
-    ``PRECIS_OPS_ALERT_TARGET`` (or the deprecated ``PRECIS_OPS_ALERT_WEBHOOK``
-    alias) and fires ``pg_notify('precis.messages', …)`` in the same tx, as
+    ``PRECIS_OPS_ALERT_TARGET`` and fires ``pg_notify('precis.messages', …)``
+    in the same tx, as
     ``MessageHandler.put`` / ``briefing._deliver`` do — asa_bot (the one
     process holding a Discord socket) then posts it. Returns ``True`` if a
     push was queued, ``False`` if no target is configured (the default —
@@ -433,7 +426,6 @@ def notify_critical_alert(
 __all__ = [
     "ALERT_RERAISE_THROTTLE_ENV",
     "OPS_ALERT_TARGET_ENV",
-    "OPS_ALERT_WEBHOOK_ENV",
     "SEVERITIES",
     "STATE_OPEN",
     "STATE_RESOLVED",

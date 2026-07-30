@@ -28,23 +28,22 @@ Re-adding the same `(source, target, rel)` is a no-op.
 ## What does target= take?
 ## How do I point at a block of a paper, not the whole paper?
 
-A target is a universal handle, or the legacy `kind:identifier[~selector]`.
+A target is a universal handle, or `kind:identifier[~selector]` —
+required for file-backed kinds (`markdown`, `plaintext`, `tex`), which
+have no handle.
 
 ```text
-pa5                                # a paper by handle (= paper:wang2020state)
+pa5                                # a paper by handle
 pc38                               # block 38 of that paper by handle
 td158                              # a todo by handle
-paper:wang2020state                # legacy ref-level form, still resolves
-paper:wang2020state~38             # legacy block form
-patent:ep4123456a1
-todo:158                           # numeric-id ref
+patent:ep4123456a1                 # DOCDB fetch key, kind: prefix required
 markdown:notes/foo.md
 markdown:notes/foo.md~intro        # block in a file
 ```
 
-A handle (`pa5`, `pc38`) self-identifies its kind. On the legacy form the
-`kind:` prefix is required — slug shapes overlap across kinds and the parser
-won't guess.
+A handle (`pa5`, `pc38`) self-identifies its kind. The `kind:identifier`
+form needs the `kind:` prefix — slug shapes overlap across kinds and the
+parser won't guess.
 
 ## Remove an edge I added earlier
 ## Drop a link between two refs
@@ -68,7 +67,7 @@ relation.
 |---|---|---|---|
 | `kind` | str | required | Kind of the source ref. |
 | `id` | str / int | required | Source ref id. |
-| `target` | str | required | `kind:identifier[~selector]`. |
+| `target` | str | required | A handle, or `kind:identifier[~selector]` (required for file-backed kinds). |
 | `rel` | str | `related-to` | Relation slug (see `precis-relations`). |
 | `mode` | str | `add` | `add` or `remove`. |
 
@@ -98,7 +97,7 @@ link(kind="memory", id=42, target="pa5~38", rel="annotates")
 ## Workflow blocker between tasks
 
 ```python
-link(kind="todo", id=158, target="gripe:7", rel="blocks")
+link(kind="todo", id=158, target="gr7", rel="blocks")
 ```
 
 ## Reparent a todo (`rel='parent'`)
@@ -108,7 +107,7 @@ Todos form a tree. `rel='parent'` places one todo under another;
 relation applies to `kind='todo'`.
 
 ```python
-link(kind="todo", id=141, target="todo:158", rel="parent")  # move 141 under 158
+link(kind="todo", id=141, target="td158", rel="parent")  # move 141 under 158
 link(kind="todo", id=141, rel="parent", mode="remove")  # detach 141 to a root
 ```
 

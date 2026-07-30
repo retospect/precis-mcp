@@ -1,7 +1,7 @@
 ---
 id: precis-recurring-help
 title: precis — scheduled work (recurring + one-shot + push delivery) via level:recurring
-summary: recurring task patterns — Watches umbrella, cron/every/at schedule shapes, per-tick subtask spawning or push delivery (meta.deliver, folded from the retired kind='cron', ADR 0061)
+summary: recurring task patterns — Watches umbrella, cron/every/at schedule shapes, per-tick subtask spawning or push delivery (meta.deliver)
 applies-to: put (kind='todo' with level:recurring + meta.schedule [+ meta.deliver]); precis worker --only schedule
 status: active
 ---
@@ -11,12 +11,10 @@ status: active
 All scheduled work — recurring (dreams, weather pulls, "look for new
 conferences", birthday reminders) **and** one-shot ("remind me in 10
 minutes") — lives in the same tree as everything else, under
-`level:recurring`. ADR 0061 (superseding ADR 0030) folded the formerly
-separate `kind='cron'` push-notification mechanism onto this same tag: a
-one-shot schedule is a `level:recurring` node that fires exactly once and
-retires itself; a schedule's `meta.deliver` decides whether a due tick
-mints a subtask into the doable queue (the original Slice-4 behaviour) or
-fires a push notification instead (the retired cron kind's behaviour).
+`level:recurring`. A one-shot schedule is a `level:recurring` node that
+fires exactly once and retires itself; a schedule's `meta.deliver`
+decides whether a due tick mints a subtask into the doable queue or
+fires a push notification instead.
 
 The recurring root never appears in the doable queue itself — it's the
 *pattern*; only a queue-mode tick's spawned subtask is an *action*.
@@ -68,10 +66,9 @@ Three shapes:
   * `1d` (every day at 00:00) — `2d`+ isn't a clean cron field, so
     use a weekly form (`every: mon 09:00`) for slower cadences
   * `mon|tue|...|sun HH:MM` (weekly at HH:MM on that dow)
-* `meta.schedule.at` — a one-shot ISO 8601 absolute fire time (ADR
-  0061's "remind me in/at" case, folded from the retired `cron`
-  kind). Mutually exclusive with `cron`/`every` — a schedule either
-  repeats or fires exactly once.
+* `meta.schedule.at` — a one-shot ISO 8601 absolute fire time.
+  Mutually exclusive with `cron`/`every` — a schedule either repeats
+  or fires exactly once.
 
 ```python
 # These three are equivalent (recurring):
@@ -100,13 +97,12 @@ marked expired instead of firing.
 
 `meta.deliver = {'target': 'conv:discord/<g>/<c>/<t>'}` marks a
 recurring for **push** delivery instead of queue-mode spawning: a due
-tick fires a synthetic prompt at asa_bot
-(`pg_notify('precis.cron', {cron_id, payload, target})` — the exact
-wire shape the retired `kind='cron'` used, so asa_bot's listener needed
-no change) built from the recurring's own title/text. asa_bot drives a
-full Claude turn against it and posts the response to the target
-conversation — **no subtask lands in the doable queue** for a
-delivery-mode tick; the tick's action *is* the delivery.
+tick fires a synthetic prompt at asa_bot via
+`pg_notify('precis.cron', {cron_id, payload, target})`, built from the
+recurring's own title/text. asa_bot drives a full Claude turn against
+it and posts the response to the target conversation — **no subtask
+lands in the doable queue** for a delivery-mode tick; the tick's
+action *is* the delivery.
 
 ```python
 # Recurring reminder, pushed rather than queued:
@@ -151,8 +147,8 @@ the recurring root per due tick. Three guards in order:
 3. **Backfill** — see `backfill_missed` above.
 
 **Delivery-mode** (`meta.deliver` set) fires the push notify directly
-— no child, so no collision-skip guard (nothing to collide with,
-matching the retired cron kind). Idempotency lives on a
+— no child, so no collision-skip guard (nothing to collide with).
+Idempotency lives on a
 `ref_events(source='schedule', event='deliver')` row instead of a
 child stamp.
 
@@ -216,6 +212,3 @@ backfills); the default rotation includes it alongside `auto_check`.
   worker-driven leaf pattern; orthogonal to `meta.schedule`)
 * `precis-automations` — the standing-automation convention
   (`automation` tag) for a push- or job-driven recurring
-* `precis-cron-help` — **retired**: `kind='cron'` is gone. See ADR
-  0061 (superseding ADR 0030) for why the push mechanism folded onto
-  `meta.deliver` here instead of staying a second kind.

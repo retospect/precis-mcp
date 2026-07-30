@@ -26,12 +26,10 @@ never appears in a bibliography.)
 ## Read the citations that cite a paper
 ## Who has cited this paper, and for what claim?
 
-Address the paper by its `pa<id>` handle (the slug still resolves as a
-legacy form):
+Address the paper by its `pa<id>` handle:
 
 ```python
 get(kind="paper", id="pa312", view="bibliography")  # pa<id> handle
-get(kind="paper", id="collins06", view="bibliography")  # slug (legacy)
 ```
 
 ```text
@@ -63,7 +61,6 @@ cited yet — that's the normal state for a freshly-ingested paper.
 ```python
 get(id="ci42")  # full record, by handle
 get(kind="citation", id=42)  # equivalent
-get(kind="citation", id="citation:42")  # legacy link-target form, equivalent
 ```
 
 ## Find citations across all papers

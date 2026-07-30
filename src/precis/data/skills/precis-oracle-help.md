@@ -12,8 +12,7 @@ Oracles are curated wisdom-tradition collections in the store
 (`stoic`, `zen`, `iching`, …). The canonical address is the tradition's
 **record handle** `or<id>` (e.g. `or7`) — list the traditions to read it
 off, then paste it back. Each tradition holds numbered entries you pull
-with `or<id>~N` (or at random). The legacy slug (`stoic`) and the
-`stoic~N` selector still resolve on input.
+with `or<id>~N` (or at random).
 
 ## List the available oracle traditions
 ## See what oracles I can consult
@@ -32,7 +31,6 @@ leads with the tradition's `or<id>` handle; copy it for the calls below.
 
 ```python
 get(id="or7")  # one random entry, by handle
-get(kind="oracle", id="stoic")  # legacy slug still resolves
 get(kind="oracle", id="zen")
 get(kind="oracle", id="iching")
 ```
@@ -83,11 +81,9 @@ three). The dream cycle uses `sci` for its per-pass stance.
 ```python
 get(id="or7", view="index")  # titled catalogue, by handle
 get(id="or7/index")  # path form
-get(kind="oracle", id="iching/index")  # legacy slug path → 64 hexagrams
 ```
 
-Rows are drillable: paste the entry selector (`or7~N`, or the legacy
-`slug~N`) as `id=`.
+Rows are drillable: paste the entry selector (`or7~N`) as `id=`.
 
 ## Fetch a specific oracle entry
 ## Read entry N of a tradition deterministically
@@ -95,7 +91,6 @@ Rows are drillable: paste the entry selector (`or7~N`, or the legacy
 
 ```python
 get(id="or7~4")  # entry 4 of stoic (or7), by handle
-get(kind="oracle", id="stoic~4")  # legacy slug~N still resolves
 get(kind="oracle", id="iching~49")  # Hexagram 49
 ```
 
@@ -118,8 +113,7 @@ lexical-only (keyword match over the entry text) when the embedder is
 absent or down, so a content query reliably surfaces matching entries.
 Each result leads with the entry handle `or<id>~N` (the deterministic
 address); order is the relevance signal. To fetch the entry, call
-`get(id='or<id>~N')` (legacy `get(kind='oracle', id='<tradition>~N')`
-still resolves).
+`get(id='or<id>~N')`.
 
 ## Cite an oracle entry in writing
 ## Quote a passage with provenance
@@ -134,12 +128,11 @@ put(
     source_quote="The impediment to action advances action.",
     link="me88",
     rel="supports",
-)  # legacy memory:88 still resolves
+)
 ```
 
-Cite by the entry handle `or<id>~N` (the legacy `oracle:<slug>~N` still
-resolves). The entry title and tradition name come back in the response
-header.
+Cite by the entry handle `or<id>~N`. The entry title and tradition name
+come back in the response header.
 
 ## Link or tag an oracle entry
 ## Annotate an oracle with a topic or relationship
@@ -147,9 +140,7 @@ header.
 
 ```python
 tag(kind="oracle", id="or7", add=["topic:decision-aid"])
-link(
-    kind="oracle", id="or7", target="me88", rel="supports"
-)  # legacy memory:88 still resolves
+link(kind="oracle", id="or7", target="me88", rel="supports")
 ```
 
 Open tags (`topic:*`, `project:*`) work freely. Tradition bodies are

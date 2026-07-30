@@ -4,7 +4,6 @@ title: precis — Perplexity (websearch / perplexity-reasoning / perplexity-rese
 summary: Perplexity Sonar tiers — websearch, perplexity-reasoning, perplexity-research; latency/cost trade-offs, import mode
 applies-to: get/search/put/tag/link (kind='websearch' | 'perplexity-reasoning' | 'perplexity-research')
 status: active
-renamed-kinds: kind 'think' → 'perplexity-reasoning'; kind 'research' → 'perplexity-research' (renamed 2026-06-15)
 ---
 
 # precis-perplexity-help — Perplexity Sonar, three tiers

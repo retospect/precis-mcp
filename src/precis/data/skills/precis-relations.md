@@ -53,9 +53,7 @@ id=<dossier-slug>, view='integration')`, not a mirrored `link()` read.
 ## How do I capture a citation edge?
 
 ```python
-link(
-    kind="memory", id=42, target="pa<id>", rel="cites"
-)  # ref handle (paper:wang2020state still resolves)
+link(kind="memory", id=42, target="pa<id>", rel="cites")  # ref handle
 
 link(
     kind="memory", id=42, target="pc38", rel="cites"
@@ -65,8 +63,7 @@ link(
 Use `cites` for any reference edge — bibliographic citation, in-body
 mention, or quoted passage. Block-level targets pin the citation to
 one paragraph. Lead targets with the ref/chunk **handle** (`pa<id>`,
-`pc38`); the legacy `kind:slug` / `kind:slug~pos` form
-(`paper:wang2020state`, `paper:wang2020state~38`) still resolves.
+`pc38`).
 
 ## Record evidential support or disagreement
 ## A backs / counters B — which rel?

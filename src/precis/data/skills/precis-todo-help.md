@@ -10,7 +10,6 @@ status: active
 
 Todos are work items in the store. The canonical address is the
 **handle** `td<id>` (e.g. `td122`) — copy it from search/get output.
-The legacy forms `id=122` and `id='todo:122'` still resolve on input.
 
 ## Create a todo
 ## Add a new task to my queue

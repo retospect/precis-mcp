@@ -138,9 +138,16 @@
 - **plan** — the `plan` kind (a thread's reasoning outline, ADR 0051) vs
   `plan_tick` (the planner-coroutine job).
   → `src/precis/handlers/plan.py` · `src/precis/workers/job_types/plan_tick.py`
-- **fetch / chase** — `fetch` / `fetch_oa` (acquire a paper PDF) vs finding-
-  `chase` (resolve an open finding). Both exponential-backoff.
-  → `src/precis/workers/fetch_oa.py` · `src/precis/workers/chase.py`
+- **fetch / chase** — `fetch` / `fetch_oa` (acquire a paper PDF) vs the finding-
+  `chase` verb (resolve an open finding; exponential-backoff). **`chase` is the
+  verb, not the graph** — keep it distinct from **taproot** (the claim graph it
+  feeds) and a **claim hub** (the `fi<id>` node). The verb now spans **three
+  independently-gated passes**, all dark (default-OFF): (1) outbound support-
+  verdict `PRECIS_CHASE_LLM` (`workers/chase.py` · `_chase_llm.py`), (2) inbound
+  corpus sweep `PRECIS_INBOUND_CHASE_ENABLED` (`workers/inbound_chase.py`), (3)
+  the **taproot forward-bridge** `PRECIS_TAPROOT_CHASE_ENABLED` that mints/
+  attaches claim-hub evidence edges (`workers/chase.py` + `taproot/hub.py`;
+  taproot Phase 3 W1, `bb2eb73e`). → `src/precis/workers/{fetch_oa,chase,inbound_chase}.py`
 - **source** — an episode's producer tag (`brief` / `meditation` / `news`) · a
   chunk's provenance (`meta.source`) · the OA fetch backoff arms on `fetcher:%`
   events. → `src/precis/audio_feed.py`

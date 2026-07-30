@@ -146,18 +146,6 @@ _TREE_GET_VIEWS: frozenset[str] = frozenset({"tree"})
 #: leaks into ``link`` for kinds where "parent" is meaningless.
 _RESERVED_PARENT_REL = "parent"
 
-#: Backwards-compat translation table for the old ``PRIO:`` closed-prefix
-#: tag (now superseded by the int column). When an agent / cached prompt
-#: still writes ``tags=['PRIO:urgent']``, the handler strips that tag
-#: from the list and writes the equivalent ``prio`` column value
-#: instead. New code should pass ``prio=N`` directly.
-_PRIO_TAG_TO_INT: dict[str, int] = {
-    "PRIO:urgent": 1,
-    "PRIO:high": 3,
-    "PRIO:normal": 5,
-    "PRIO:low": 8,
-}
-
 
 def _inherit_workspace_from_parent(store: Any, parent_id: int) -> dict[str, Any] | None:
     """Pull ``meta.workspace`` from the parent ref, or None if unset.
@@ -182,33 +170,6 @@ def _inherit_workspace_from_parent(store: Any, parent_id: int) -> dict[str, Any]
     if not isinstance(ws, dict):
         return None
     return ws
-
-
-def _split_prio_from_tags(
-    tags: list[str] | None,
-) -> tuple[list[str] | None, int | None]:
-    """Pull out the first ``PRIO:`` tag from ``tags`` and translate it.
-
-    Returns ``(filtered_tags, prio_from_tag)``. ``filtered_tags`` is
-    ``tags`` minus any ``PRIO:*`` entries. ``prio_from_tag`` is the
-    int translation of the *last* ``PRIO:`` tag in the list (so
-    callers writing ``['PRIO:low', 'PRIO:urgent']`` get the urgent
-    intent), or ``None`` when no ``PRIO:`` tag appeared.
-
-    Unknown ``PRIO:`` values pass through untouched so the strict
-    tag validator can surface them with the closed-vocab options
-    list — silently dropping a typo would be worse.
-    """
-    if not tags:
-        return tags, None
-    out: list[str] = []
-    found: int | None = None
-    for t in tags:
-        if t in _PRIO_TAG_TO_INT:
-            found = _PRIO_TAG_TO_INT[t]
-            continue
-        out.append(t)
-    return (out if out else None), found
 
 
 def _validate_prio(prio: int | None) -> int | None:
@@ -427,13 +388,6 @@ class TodoHandler(NumericRefHandler):
         body: str | None = None,
         **_kw: Any,
     ) -> Response:
-        # ``PRIO:*`` tag form is back-compat — translate to the int
-        # column write before the level-gradient guard so the tag
-        # never lands as an open-tag row. An explicit ``prio=`` kwarg
-        # always wins over the tag form.
-        tags, prio_from_tag = _split_prio_from_tags(tags)
-        if prio is None:
-            prio = prio_from_tag
         prio = _validate_prio(prio)
         # ``meta.schedule`` may carry the ``every:`` shorthand; validate
         # and rewrite to canonical cron so the runtime only ever sees
@@ -830,25 +784,7 @@ class TodoHandler(NumericRefHandler):
         prio: int | None = None,
         **_kw: Any,
     ) -> Response:
-        # ``PRIO:*`` form on ``add`` translates to a column write —
-        # same back-compat path as ``put``. Explicit ``prio=`` wins.
-        add, prio_from_tag = _split_prio_from_tags(add)
-        if prio is None:
-            prio = prio_from_tag
         prio = _validate_prio(prio)
-        # ``PRIO:*`` form on ``remove`` doesn't have a single column
-        # equivalent (which PRIO does the caller mean?). Strip the
-        # alias and clear the column outright if any ``PRIO:`` value
-        # showed up in ``remove``.
-        clear_prio = False
-        if remove:
-            kept: list[str] = []
-            for t in remove:
-                if t in _PRIO_TAG_TO_INT:
-                    clear_prio = True
-                    continue
-                kept.append(t)
-            remove = kept or None
         # Auto-redirect long ask-user:/halt: values into a chunk so the
         # tag stays a short structured label and the LLM's natural
         # explanation prose lands somewhere queryable. Triggers before
@@ -875,15 +811,12 @@ class TodoHandler(NumericRefHandler):
         check_workspace_compiles(self.store, self._coerce_id(id), add)
         guards.check_executor_tag(add)
         ref_id = self._coerce_id(id)
-        if prio is not None or clear_prio:
-            self.store.set_prio(ref_id, None if clear_prio else prio)
-        if not add and not remove and (prio is not None or clear_prio):
+        if prio is not None:
+            self.store.set_prio(ref_id, prio)
+        if not add and not remove and prio is not None:
             # Only a PRIO column write happened; the base handler
             # would reject an empty ``tag`` call.
-            return Response(
-                body=f"set prio={prio if not clear_prio else None} "
-                f"on {self._sense()} id={ref_id}"
-            )
+            return Response(body=f"set prio={prio} on {self._sense()} id={ref_id}")
         resp = super().tag(id=id, add=add, remove=remove, **_kw)
         # Picks-7d accounting (plan's Accounting section): when a
         # leaf flips to STATUS:done, append a ``status:done`` event

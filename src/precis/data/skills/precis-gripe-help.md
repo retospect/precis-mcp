@@ -14,8 +14,7 @@ prepare a candidate fix, retire when resolved. Same surface for
 humans and LLMs.
 
 The canonical address is the **handle** `gr<id>` (e.g. `gr42`) — copy
-it from search/get output. The legacy forms `id=42` and `id='gripe:42'`
-still resolve on input.
+it from search/get output.
 
 ## File a bug I just noticed
 ## File friction without breaking flow

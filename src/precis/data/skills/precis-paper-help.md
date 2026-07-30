@@ -11,17 +11,15 @@ status: active
 Papers are research articles in the store. The canonical address is
 the **record handle** `pa<id>` (e.g. `pa40`); individual blocks are
 chunk handles `pc<id>` (e.g. `pc512`). Copy the handle straight from
-search/get output back into `get`/`tag`/`link`. The legacy slug
-(`abazari2024design`) and a bare DOI still resolve on input.
+search/get output back into `get`/`tag`/`link`.
 
 ## Look up a paper when I have a handle
-## Open a paper by handle (or legacy slug / DOI)
+## Open a paper by handle (or DOI)
 ## I have a DOI — how do I read the paper?
 
 ```python
 get(kind="paper", id="pa40")  # full overview, by handle
 get(kind="paper", id="pa40", view="toc")  # TOC — the reading entry point
-get(kind="paper", id="abazari2024design")  # legacy slug still resolves
 get(kind="paper", id="10.1038/nature10352")  # bare DOI resolves via metadata
 get(kind="paper", id="10.1038/nature10352", view="abstract")  # DOI + view = kwarg only
 get(kind="paper", id="10.1038/nature10352", view="toc")
@@ -56,8 +54,7 @@ search(
 ```
 
 Hybrid lexical + semantic. Each result is a chunk handle `pc<chunk_id>`
-(paste back into `get`/`link`); order is the relevance signal. The legacy
-`slug~chunk` form still resolves on input.
+(paste back into `get`/`link`); order is the relevance signal.
 
 When one phrasing isn't finding it, escalate (details in
 `precis-search-help` → Broad retrieval):
@@ -165,9 +162,8 @@ get(id="pc512")  # single block by chunk handle
 get(kind="paper", id="pa40", view="abstract")
 get(kind="paper", id="pa40")  # full overview
 get(kind="paper", id="pa40/toc")  # path form = view='toc'
-get(kind="paper", id="<slug>~63..89")  # legacy: drill a slug range
-get(kind="paper", id="<slug>~63..89", view="toc")  # legacy: sub-TOC of a range
-get(kind="paper", id="<slug>~38")  # legacy slug~pos still resolves
+get(kind="paper", id="<slug>~63..89")  # drill a slug range
+get(kind="paper", id="<slug>~63..89", view="toc")  # sub-TOC of a range
 ```
 
 TOC rows are drillable: each row leads with the block handle (`pc<id>`,
@@ -193,7 +189,6 @@ and `slug/<view>` path are equivalent (except for DOIs — see above).
 ```python
 search(kind="paper", q="Z-scheme", scope="pa40")  # scope by handle
 search(kind="paper", q="Z-scheme", scope="pa40", page=2)
-search(kind="paper", q="Z-scheme", scope="<slug>")  # legacy slug still resolves
 ```
 
 Same hybrid search as cross-corpus, scoped to one paper's blocks.
@@ -217,7 +212,6 @@ marker; the legend is on the next block.
 
 ```python
 get(id="pc517")  # the figure block, by handle
-get(kind="paper", id="<slug>~45")  # legacy slug~pos still resolves
 ```
 
 ```text
@@ -237,9 +231,7 @@ tag(kind="paper", id="pa40", add=["topic:photocatalysis"])
 tag(kind="paper", id="pa40", add=["SRC:primary"])
 tag(kind="paper", id="pa40", remove=["topic:photocatalysis"])
 
-link(
-    kind="paper", id="pa40", target="pa57", rel="cites"
-)  # target is also a handle (legacy paper:<slug> resolves)
+link(kind="paper", id="pa40", target="pa57", rel="cites")  # target is also a handle
 ```
 
 Closed-prefix axes for paper: `SRC:`, `CACHE:`. Open tags

@@ -17,9 +17,7 @@ keywords that distinguish its range.
 ## How do I see what's inside a paper or skill?
 
 ```python
-get(
-    kind="paper", id="pa5", view="toc"
-)  # kwarg form (handle; legacy slug still resolves)
+get(kind="paper", id="pa5", view="toc")  # kwarg form (handle)
 get(kind="paper", id="pa5/toc")  # path form, equivalent
 get(kind="skill", id="precis-overview/toc")  # same on skills
 ```
@@ -42,10 +40,9 @@ pa5~15..29	keyword phrases for the next range
 
 Each row is a `<handle>~A..B` handle, where `<handle>` is the record's
 universal handle (`pa<id>` for a paper). Paste any row handle straight
-back as `id=` to read that range — it round-trips verbatim. (A cite-key
-slug, `vaswani17~0..14`, also resolves on input, so older copy-pastes
-still work.) Keywords are most-distinctive first — `keywords[0]` is
-what makes the range unique, not what the whole document is about.
+back as `id=` to read that range — it round-trips verbatim. Keywords
+are most-distinctive first — `keywords[0]` is what makes the range
+unique, not what the whole document is about.
 
 A short *top-level* TOC (under a page or so of chunks) renders one row
 per chunk — its keywords as the label — because there's nothing to

@@ -46,7 +46,6 @@ kwarg; there is no `slug/view` path form.
 
 ```python
 get(id="pk<chunk_id>")  # single block by handle
-get(kind="patent", id="ep1234567b1~5")  # legacy id~pos still resolves
 get(kind="patent", id="ep1234567b1~5..12")  # block range (ranges stay id~N..M)
 ```
 
@@ -145,12 +144,8 @@ tag(kind="patent", id="pt40", add=["topic:photocatalysis"])
 tag(kind="patent", id="pt40", add=["cpc:B01J27/24"])
 tag(kind="patent", id="pt40", remove=["topic:photocatalysis"])
 
-link(
-    kind="patent", id="pt40", target="pa57", rel="cited-by"
-)  # target handle (legacy paper:<slug> resolves)
-link(
-    kind="patent", id="pt40", target="me88", rel="annotates"
-)  # memory handle (legacy memory:<id> resolves)
+link(kind="patent", id="pt40", target="pa57", rel="cited-by")  # target handle
+link(kind="patent", id="pt40", target="me88", rel="annotates")  # memory handle
 ```
 
 Closed-prefix axes for patent: `SRC:`, `CACHE:`, `cpc:`, `ipc:`,
@@ -167,9 +162,7 @@ Patents are read-only — `put(kind='patent', ...)` raises
 `Unsupported`. Park notes on a `memory` and link it to the patent:
 
 ```python
-put(
-    kind="memory", text="<note>", link="pt40", rel="annotates"
-)  # legacy patent:<docdb> resolves
+put(kind="memory", text="<note>", link="pt40", rel="annotates")
 ```
 
 ## See also

@@ -92,8 +92,7 @@ delivery is just a DB write, idempotent per brief-date.
 precis worker --only briefing --once
 ```
 
-Read a past brief by its handle (`get(id='nw<id>')`) or, as a legacy
-convenience, by its dated slug `get(kind='news', id='briefing-2026-06-23')`.
+Read a past brief by its handle (`get(id='nw<id>')`).
 
 ## Scheduling (recurring todos, not OS timers)
 

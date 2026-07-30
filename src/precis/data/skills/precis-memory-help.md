@@ -14,8 +14,7 @@ Categorise with open tags (`topic:`, `project:`, `confidence-*`)
 and bare flags (`pinned`, `wip`). There is no enforced sub-kind.
 
 Server assigns an integer id on create. Its handle is `me<id>`
-(e.g. `me47`); `id=47` and `id='memory:47'` (link-target form) still
-resolve on input.
+(e.g. `me47`).
 
 **There is no slug/filename lookup — `id=` must be an integer (or a
 handle/link-target form that decodes to one).** This is a different
@@ -37,7 +36,7 @@ put(
     title="Wang2020 has the cleanest Z-scheme diagram",  # short header
     tags=["topic:noxrr"],
     link="pc38",
-)  # chunk handle (legacy paper:wang2020state~38 still resolves)
+)  # chunk handle
 # → returns integer id (e.g. 73)
 ```
 
@@ -103,7 +102,6 @@ tag slice.
 ```python
 get(id="me73")  # handle — prefix infers kind=
 get(kind="memory", id=73)
-get(kind="memory", id="memory:73")  # link-target form also works
 ```
 
 ## Link a memory to the paper or patent it came from
@@ -120,23 +118,20 @@ put(
     tags=["topic:noxrr"],
     link="pc38",
     rel="cites",
-)  # chunk handle (legacy paper:wang2020state~38 still resolves)
+)  # chunk handle
 ```
 
 After the fact, use `link()`:
 
 ```python
-link(
-    kind="memory", id=73, target="pa<id>", rel="related-to"
-)  # ref handle (legacy paper:wang2020state still resolves)
+link(kind="memory", id=73, target="pa<id>", rel="related-to")  # ref handle
 
 link(
     kind="memory", id=73, target="pa<id>", rel="contradicts"
 )  # the chen2021critique handle
 ```
 
-Targets lead with the ref/chunk **handle** (`pa<id>`, `pc38`); the
-legacy `kind:slug` form (`paper:wang2020state`) still resolves.
+Targets lead with the ref/chunk **handle** (`pa<id>`, `pc38`).
 Relation vocabulary (`cites`, `contradicts`, `supports`,
 `derived-from`, …) lives in `precis-relations`.
 

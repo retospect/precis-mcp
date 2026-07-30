@@ -121,7 +121,7 @@ writes through:
   applied to the parent.
 
 After this, `get(kind='paper', id='pa<id>')` reads the notice text
-by its handle (the `<notice-slug>` still resolves).
+by its handle.
 
 If the parent isn't in the store, the report is informational —
 nothing is written. Ingest first to capture the retraction graph.
