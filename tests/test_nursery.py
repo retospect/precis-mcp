@@ -33,6 +33,7 @@ from precis.workers.nursery import (
     DEAD_WORKER_SILENCE_MIN,
     DISPATCH_STALL_MINUTES,
     LONG_WAIT_DAYS,
+    ORPHANED_COORDINATOR_STALE_HOURS,
     PLAN_TICK_REMINT_24H,
     QUEST_LOOP_FAIL_24H,
     SPIN_LOOP_EVENTS_24H,
@@ -43,6 +44,7 @@ from precis.workers.nursery import (
     _detect_dead_workers,
     _detect_dispatch_stalls,
     _detect_long_waits,
+    _detect_orphaned_coordinator,
     _detect_orphans,
     _detect_plan_tick_spins,
     _detect_quest_loop_failures,
@@ -70,6 +72,23 @@ def _backdate_ref(store: Store, ref_id: int, hours: float) -> None:
     with store.pool.connection() as conn:
         conn.execute(
             "UPDATE refs SET created_at = now() - %s::interval WHERE ref_id = %s",
+            (f"{hours} hours", ref_id),
+        )
+        conn.commit()
+
+
+def _backdate_status_tag(store: Store, ref_id: int, hours: float) -> None:
+    """Move the ``STATUS:*`` ``ref_tags.created_at`` backwards for one ref."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            """
+            UPDATE ref_tags rt
+               SET created_at = now() - %s::interval
+              FROM tags t
+             WHERE rt.tag_id = t.tag_id
+               AND rt.ref_id = %s
+               AND t.namespace = 'STATUS'
+            """,
             (f"{hours} hours", ref_id),
         )
         conn.commit()
@@ -510,6 +529,157 @@ def test_quest_loop_failing_detector_ignores_succeeded_rests(store: Store) -> No
 
     findings = _detect_quest_loop_failures(store)
     assert q.id not in {f.ref_id for f in findings}
+
+
+# ── orphaned coordinator (silent-outage: zero re-mint attempts) ────────
+
+
+def _mk_active_quest(store: Store, title: str) -> int:
+    q = store.insert_ref(kind="quest", slug=None, title=title)
+    store.add_tag(q.id, Tag.closed("STATUS", "active"), set_by="system")
+    return int(q.id)
+
+
+def _mint_quest_loop(store: Store, quest_id: int, *, status: str) -> int:
+    ref = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="quest_tick loop",
+        meta={
+            "job_type": "quest_tick",
+            "executor": "coordinator",
+            "idem_key": f"quest_tick:{quest_id}",
+        },
+        parent_id=quest_id,
+    )
+    store.add_tag(ref.id, Tag.closed("STATUS", status), set_by="system")
+    return int(ref.id)
+
+
+def _mk_llm_planner(store: Store, title: str) -> int:
+    """A ``todo`` carrying the planner-coroutine ``LLM:*`` signature
+    (STATUS defaults to open — nothing else needed to make it a
+    candidate-eligible parent for ``_detect_orphaned_coordinator``)."""
+    p = store.insert_ref(kind="todo", slug=None, title=title)
+    store.add_tag(p.id, Tag.closed("LLM", "opus"), set_by="agent")
+    return int(p.id)
+
+
+def _mint_plan_tick(store: Store, parent_id: int, *, status: str) -> int:
+    ref = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="plan_tick",
+        meta={"job_type": "plan_tick"},
+        parent_id=parent_id,
+    )
+    store.add_tag(ref.id, Tag.closed("STATUS", status), set_by="system")
+    return int(ref.id)
+
+
+def test_orphaned_coordinator_detector_flags_dark_quest(store: Store) -> None:
+    """An active quest whose newest ``quest_tick`` loop rested
+    STATUS:failed past ORPHANED_COORDINATOR_STALE_HOURS, with nothing
+    newer minted, is a silent outage — flagged even though it's only
+    ONE failed row (below ``QUEST_LOOP_FAIL_24H``'s spin threshold)."""
+    q = _mk_active_quest(store, "Dark quest\nmore detail")
+    job_id = _mint_quest_loop(store, q, status="failed")
+    _backdate_status_tag(store, job_id, ORPHANED_COORDINATOR_STALE_HOURS + 1)
+
+    findings = _detect_orphaned_coordinator(store)
+    hits = [f for f in findings if f.ref_id == q]
+    assert len(hits) == 1
+    assert hits[0].category == "orphaned-coordinator"
+    assert hits[0].title == "Dark quest"
+    assert f"#{job_id}" in hits[0].detail
+
+    # Also confirmed critical severity through the real registration path.
+    from precis.workers.nursery import _SEVERITY
+
+    assert _SEVERITY["orphaned-coordinator"] == "critical"
+
+
+def test_orphaned_coordinator_detector_ignores_fresh_quest_failure(
+    store: Store,
+) -> None:
+    """A quest_tick that JUST rested failed hasn't had time for the
+    reconciler's own backoff to even elapse — not yet an outage."""
+    q = _mk_active_quest(store, "Recently failed quest")
+    _mint_quest_loop(store, q, status="failed")
+
+    findings = _detect_orphaned_coordinator(store)
+    assert q not in {f.ref_id for f in findings}
+
+
+def test_orphaned_coordinator_detector_ignores_quest_with_live_replacement(
+    store: Store,
+) -> None:
+    """A stale failed loop with a newer non-terminal (queued/running) loop
+    already minted is healthy — the reconciler IS re-arming it."""
+    q = _mk_active_quest(store, "Recovering quest")
+    old_job = _mint_quest_loop(store, q, status="failed")
+    _backdate_status_tag(store, old_job, ORPHANED_COORDINATOR_STALE_HOURS + 1)
+    _mint_quest_loop(store, q, status="running")  # newer, non-terminal
+
+    findings = _detect_orphaned_coordinator(store)
+    assert q not in {f.ref_id for f in findings}
+
+
+def test_orphaned_coordinator_detector_ignores_inactive_quest(store: Store) -> None:
+    """A quest that isn't ``STATUS:active`` (dormant/done) is not expected
+    to be ticking at all — a stale failed loop there is not an outage."""
+    q = store.insert_ref(kind="quest", slug=None, title="Dormant quest")
+    job_id = _mint_quest_loop(store, int(q.id), status="failed")
+    _backdate_status_tag(store, job_id, ORPHANED_COORDINATOR_STALE_HOURS + 1)
+
+    findings = _detect_orphaned_coordinator(store)
+    assert int(q.id) not in {f.ref_id for f in findings}
+
+
+def test_orphaned_coordinator_detector_flags_dark_planner(store: Store) -> None:
+    """An open, LLM:*-tagged planner parent whose newest ``plan_tick``
+    child rested STATUS:failed past the stale window, with no newer child
+    minted and no child-failed/halt tag on it, is dark — the planner-lane
+    analogue of the quest case (e.g. an infra-class retry per
+    ``handlers/_job_bubble.py`` that never got a dispatch pass to act
+    on it because dispatch itself is down)."""
+    p = _mk_llm_planner(store, "Dark planner\nmore")
+    job_id = _mint_plan_tick(store, p, status="failed")
+    _backdate_status_tag(store, job_id, ORPHANED_COORDINATOR_STALE_HOURS + 1)
+
+    findings = _detect_orphaned_coordinator(store)
+    hits = [f for f in findings if f.ref_id == p]
+    assert len(hits) == 1
+    assert hits[0].category == "orphaned-coordinator"
+    assert hits[0].title == "Dark planner"
+
+
+def test_orphaned_coordinator_detector_ignores_planner_with_live_replacement(
+    store: Store,
+) -> None:
+    """A stale failed plan_tick with a newer queued/running one is healthy."""
+    p = _mk_llm_planner(store, "Recovering planner")
+    old_job = _mint_plan_tick(store, p, status="failed")
+    _backdate_status_tag(store, old_job, ORPHANED_COORDINATOR_STALE_HOURS + 1)
+    _mint_plan_tick(store, p, status="queued")
+
+    findings = _detect_orphaned_coordinator(store)
+    assert p not in {f.ref_id for f in findings}
+
+
+def test_orphaned_coordinator_detector_ignores_planner_already_flagged(
+    store: Store,
+) -> None:
+    """A planner already carrying ``child-failed:*`` is already surfaced by
+    ``child-failed-parked`` — this detector is for the case nothing else
+    caught, so it stays quiet rather than double-alerting."""
+    p = _mk_llm_planner(store, "Already-latched planner")
+    job_id = _mint_plan_tick(store, p, status="failed")
+    _backdate_status_tag(store, job_id, ORPHANED_COORDINATOR_STALE_HOURS + 1)
+    store.add_tag(p, Tag.open(f"child-failed:{job_id}"), set_by="system")
+
+    findings = _detect_orphaned_coordinator(store)
+    assert p not in {f.ref_id for f in findings}
 
 
 def test_spin_loop_detector_ignores_quiet_ref(store: Store) -> None:

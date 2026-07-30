@@ -58,7 +58,17 @@ scheduling, execution, and review:
   the parent gets a `child-failed:<job_id>` open tag (the
   failure-bubble, `handlers/_job_bubble.py`); the doable view excludes
   bubbled parents so they stop re-entering the rotation until the
-  owner decides retry / switch / give up.
+  owner decides retry / switch / give up. **Infra vs content (fix for the
+  07-26 latch):** the bubble classifies by the child's own tags —
+  `INFRA_FAILURE_TAGS` (`swept:claim-orphaned`, the sweeper's lease-expiry
+  class) → a *bounded* auto-retry: the parent is **not** latched (stays a
+  candidate, re-mints a fresh child — safe since the todo-lane mint has no
+  idem_key and the swept child's lease is already dead), capped at
+  `ORPHAN_RETRY_CAP` (3) per `ORPHAN_RETRY_WINDOW_HOURS` (6h,
+  `meta.orphan_retry_count`/`_window_start`), past which it latches
+  `child-failed:` + `halt:orphan-retry-cap`. A content-class failure (no
+  infra tag) latches `child-failed:` immediately, unchanged — so a transient
+  orphan self-heals in a cycle instead of parking dark for days.
 * **Planner coroutines.** An `LLM:*`-tagged todo runs the `plan_tick`
   coroutine — each tick is a `kind='job'` that may mint children
   (`verdict: continue`) or yield (`ask-user:`) and still exit
@@ -136,7 +146,13 @@ cheap-but-real pass is never flagged.
   guards exhaustion loops), **child-failed-parked** (gripe 168886 tier 1
   — a todo carrying an open `child-failed:*` tag past
   `CHILD_FAILED_PARKED_HOURS` (6h), the blind spot `stuck-doable` misses
-  since it excludes anything with open tags), and **worker health** (daemon liveness, not
+  since it excludes anything with open tags), **orphaned-coordinator**
+  (`_detect_orphaned_coordinator`, `critical` — an active quest_tick or
+  planner coordinator whose *newest* job is terminal-`failed` and stale >
+  `ORPHANED_COORDINATOR_STALE_HOURS` (6h) with no live/queued replacement:
+  the "reconciler host down → zero re-mints" blind spot `_detect_quest_loop_
+  failures` structurally can't see, since it's one failed row not a spin —
+  the 4-day silent outage 2026-07-26→30), and **worker health** (daemon liveness, not
   the todo graph): **worker-restart** (a `(host, process)` emitting >
   `WORKER_RESTART_STORM_1H` (8) `worker: started` boot rows in 1h — the
   jetsam-cull signature that was invisible for 1.5 days; the boot row is

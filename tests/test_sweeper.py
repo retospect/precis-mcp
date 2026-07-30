@@ -44,6 +44,11 @@ def _id_of(body: str) -> int:
     return int(body.split("id=")[1].split()[0].rstrip(",.()"))
 
 
+def _query(store: Store, sql: str, params: tuple) -> list:
+    with store.pool.connection() as conn:
+        return conn.execute(sql, params).fetchall()
+
+
 def _insert_worker_log(store: Store, host: str, *, age_days: int) -> None:
     with store.pool.connection() as conn:
         conn.execute(
@@ -168,7 +173,14 @@ def test_fresh_running_job_is_left_alone(handler: TodoHandler, store: Store) -> 
 def test_stale_running_job_is_swept_and_parent_bubbled(
     handler: TodoHandler, store: Store
 ) -> None:
-    """Stale STATUS:running → STATUS:failed + swept tag + parent bubble."""
+    """Stale STATUS:running → STATUS:failed + swept tag.
+
+    The parent bubble itself is infra-class bounded auto-retry (see
+    ``test_infra_orphan_retry_*`` below) — a single sweep, under the
+    retry cap, must NOT latch ``child-failed:`` on the parent. The old
+    "always latches on the first sweep" behaviour is exactly the bug the
+    2026-07-26→30 incident was filed against.
+    """
     r = handler.put(text="parent")
     rid = _id_of(r.body)
     job_id = _mint_running_job(store, rid, backdate_hours=2.0)
@@ -182,7 +194,7 @@ def test_stale_running_job_is_swept_and_parent_bubbled(
     assert "STATUS:running" not in job_tags
     assert "swept:claim-orphaned" in job_tags
     parent_tags = {str(t) for t in store.tags_for(rid)}
-    assert f"child-failed:{job_id}" in parent_tags
+    assert f"child-failed:{job_id}" not in parent_tags
 
 
 def test_stale_running_job_with_live_lease_is_left_alone(
@@ -225,6 +237,113 @@ def test_stale_running_job_with_expired_lease_is_swept(
     job_tags = {str(t) for t in store.tags_for(job_id)}
     assert "STATUS:failed" in job_tags
     assert "swept:claim-orphaned" in job_tags
+
+
+# ── infra-class bounded auto-retry (2026-07-30 agent-lane stall) ──────
+
+
+def test_infra_orphan_retry_leaves_parent_a_candidate_and_re_mints(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A single sweep-caused (infra-class) child failure, under the retry
+    cap, must NOT latch ``child-failed:`` — the parent stays/re-becomes a
+    dispatch candidate WITHOUT any manual tag removal, and a fresh child
+    actually mints on the next dispatch tick (the whole point of the
+    bounded-retry fix: re-dispatch must be real, not just "tag absent")."""
+    from precis.workers.dispatch import _candidate_parent_ids, run_dispatch_pass
+
+    r = handler.put(
+        text="planner",
+        meta={"executor": "claude_inproc", "job_type": "fix_gripe", "params": {}},
+    )
+    rid = _id_of(r.body)
+    job_id = _mint_running_job(store, rid, backdate_hours=2.0)
+
+    result = run_sweeper_pass(store, limit=10)
+    assert result.ok == 1
+
+    parent_tags = {str(t) for t in store.tags_for(rid)}
+    assert f"child-failed:{job_id}" not in parent_tags
+    assert rid in _candidate_parent_ids(store, limit=50)
+
+    dispatch_result = run_dispatch_pass(store)
+    assert dispatch_result.claimed == 1
+    assert dispatch_result.ok == 1
+    child_job_ids = {
+        int(row[0])
+        for row in _query(
+            store,
+            "SELECT ref_id FROM refs WHERE parent_id = %s AND kind = 'job' "
+            "AND deleted_at IS NULL",
+            (rid,),
+        )
+    }
+    assert job_id in child_job_ids
+    assert len(child_job_ids) == 2  # the swept job + the freshly minted one
+    fresh_id = next(iter(child_job_ids - {job_id}))
+    fresh_tags = {str(t) for t in store.tags_for(fresh_id)}
+    assert "STATUS:queued" in fresh_tags
+
+
+def test_infra_orphan_retry_latches_past_the_cap(
+    handler: TodoHandler, store: Store
+) -> None:
+    """Repeated infra-class (sweeper) failures on the same parent, past
+    ``ORPHAN_RETRY_CAP``, DO latch — a persistently-orphaned coordinator
+    (dead executor, not a transient sweep) must stop instead of retrying
+    forever. Latches with both ``child-failed:`` and
+    ``halt:orphan-retry-cap`` for visibility."""
+    from precis.handlers._job_bubble import ORPHAN_RETRY_CAP
+    from precis.workers.dispatch import _candidate_parent_ids
+
+    r = handler.put(
+        text="chronically orphaned planner",
+        meta={"executor": "claude_inproc", "job_type": "fix_gripe", "params": {}},
+    )
+    rid = _id_of(r.body)
+
+    last_job_id = None
+    for i in range(ORPHAN_RETRY_CAP):
+        last_job_id = _mint_running_job(store, rid, backdate_hours=2.0)
+        result = run_sweeper_pass(store, limit=10)
+        assert result.ok == 1
+        if i < ORPHAN_RETRY_CAP - 1:
+            parent_tags = {str(t) for t in store.tags_for(rid)}
+            assert f"child-failed:{last_job_id}" not in parent_tags
+            assert "halt:orphan-retry-cap" not in parent_tags
+
+    parent_tags = {str(t) for t in store.tags_for(rid)}
+    assert f"child-failed:{last_job_id}" in parent_tags
+    assert "halt:orphan-retry-cap" in parent_tags
+    assert rid not in _candidate_parent_ids(store, limit=50)
+
+
+def test_infra_orphan_retry_never_fires_on_live_lease(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A child still within its lease is not sweep-eligible at all, so the
+    infra-retry counter must never bump — mirrors
+    ``test_stale_running_job_with_live_lease_is_left_alone``, plus asserts
+    the bounded-retry counter itself stayed untouched (lease-race safety:
+    an auto-retry must never fire while a live worker could still be
+    holding the job)."""
+    r = handler.put(text="parent")
+    rid = _id_of(r.body)
+    job_id = _mint_running_job(store, rid, backdate_hours=1.1, lease_offset_hours=0.5)
+
+    result = run_sweeper_pass(store, limit=10)
+
+    assert result.claimed == 0
+    assert result.ok == 0
+    job_tags = {str(t) for t in store.tags_for(job_id)}
+    assert "STATUS:running" in job_tags
+    assert "swept:claim-orphaned" not in job_tags
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta->'orphan_retry_count' FROM refs WHERE ref_id = %s", (rid,)
+        ).fetchone()
+    assert row is not None
+    assert row[0] is None
 
 
 def test_ssh_node_job_is_never_swept(handler: TodoHandler, store: Store) -> None:

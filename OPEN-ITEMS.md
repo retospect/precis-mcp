@@ -41,18 +41,12 @@ items are removed (history is `git log`).
 
 ## Residuals (2026-07-30 session — gr172886 ship)
 
-- **worker-agent daemon silent outage + monitoring blind spot** · Status: open ·
-  Severity: critical · Owner: `src/precis/workers/nursery.py::_detect_quest_loop_failures`
-  + ops. The melchior `com.precis.worker-agent` daemon (sole host of
-  `quest/loop.py::reconcile_quest_loops`, the quest self-heal) was SIGKILL'd and
-  stayed dead ~4 days (2026-07-26→30), silently stalling qu164903 + all
-  agent-profile work; `_detect_quest_loop_failures` (`QUEST_LOOP_FAIL_24H=3`)
-  structurally can't catch "reconciler host down → zero re-mints" (one `failed`
-  row, not a spin). Do: (1) investigate the `-9` (jetsam/OOM/crashloop); (2) add
-  a detector for "active quest, terminal-failed coordinator, no live/queued
-  replacement > N h". · Test: nursery emits an alert for a quest whose newest
-  `quest_tick:<id>` is terminal-failed and older than the RC1 backoff with no
-  live replacement. See memory `worker-agent-silent-outage`.
+- **worker-agent daemon silent outage — investigate the `-9` root cause** ·
+  Status: open · Severity: critical · Owner: ops (melchior
+  `com.precis.worker-agent` daemon). The daemon was SIGKILL'd and stayed dead
+  ~4 days (2026-07-26→30), silently stalling qu164903 + all agent-profile
+  work. Do: investigate the `-9` (jetsam/OOM/crashloop) so it doesn't happen
+  again. See memory `worker-agent-silent-outage`.
 - **tool-less BIG-tier LLM calls fragile + swallowed 400 body** · Status: open ·
   Severity: feature · Owner: `src/precis/utils/llm/router.py::resolve_chain`
   (ignores `tools_needed` for chain-override rungs) + `openai_tools.py`
@@ -131,32 +125,14 @@ gaps finding/regex (`55f80b70`), typed-error dispatch regression test
 PR #35 `mcp<3` (merged `d3123538`), Windows CI (skipif pass `4a1b2e08`, now
 green). Still open (two grew mid-session into much bigger finds):
 
-- **🟠 Agent lane stalled 4 days — quest half FIXED, plan_tick half PENDING**
-  *(prod-ops + repo).* The whole agent/planner lane died ~2026-07-26, masked by
-  the quota noise ("waiting on quota to clear" was itself the trap); NEITHER
-  half was quota. (1) **quest_tick / catpath_explore — ✅ FIXED + deployed +
-  prod-confirmed (`26dc102f`)**: `quest_loop_reconcile` registered (env gate)
-  but was **skipped every cycle** because its `ServiceSpec` omitted `enable_env`,
-  so run_loop's per-cycle `pass_gate` default (`_env_profile_default_on`, made
-  spec-derived by `e69c2b06`) resolved False. Not an env-drop and not a stale
-  venv (both disproven live) — the two gates simply disagreed. Fix = declare
-  `enable_env="PRECIS_QUEST_LOOP_ENABLED"` on the spec; regression test
-  `test_quest_loop_reconcile_gate_env_matches_registration`. Confirmed: pass
-  logging again + fresh quest_tick jobs 175884/175885 minted post-deploy. The
-  earlier bootout+bootstrap was necessary groundwork but not the fix. (2)
-  **plan_tick — 11 infra-class coroutines UNBLOCKED (2026-07-30)**: cleared the
-  `child-failed:` tags on the 11 planner-lane parents (plan_tick + cad) whose
-  child failed with `swept:claim-orphaned` (infra/lease-expiry from the 07-26
-  wave) — tags confirmed removed; dispatch re-ticks them on cadence (couldn't
-  catch the exact re-tick — the parent-link query field was wrong; **worth a
-  one-line confirm** that fresh jobs minted). Left the **32 content-class**
-  failures blocked (genuine task errors), and skipped 8 stale recurring
-  instances (old news-poll/cast watches that self-mint). **Design gaps** (Opus
-  decisions): (a) a nursery/health check that flags a
-  known env-gated pass silently absent from a live worker's rotation for N
-  hours; (b) `child-failed` should distinguish infra-class (bounded auto-retry)
-  from content failures (permanent block). Also: `quest_tick`/`catpath_explore`
-  never persist `meta.transcript` (confusion-mining blind spot) — worth adding.
+- **Nursery: detect a known env-gated pass silently absent from a live
+  worker's rotation** *(repo).* Surfaced by the 2026-07-26→30 agent-lane
+  stall — a `ServiceSpec` env-gate mismatch left `quest_loop_reconcile`
+  registered but skipped every cycle for days, and nothing flagged the pass
+  being silently absent from the worker's rotation. Do: a nursery/health
+  check that flags a known env-gated pass missing from a live worker's
+  rotation for N hours. Also: `quest_tick`/`catpath_explore` never persist
+  `meta.transcript` (confusion-mining blind spot) — worth adding.
 
 - **🟡 Bounce-coverage gap — not every daemon restarts on deploy** *(residual
   from the env-reload verify, 2026-07-30; owner `deploy/redeploy-precis.yml`).*

@@ -41,6 +41,13 @@ finding rows):
   the ceiling cadence — this surfaces it so a human fixes or abandons the quest
   rather than letting it burn compute invisibly. The re-mint spin sibling of
   ``plan-tick-spin``.
+* **orphaned coordinator** (``critical``) — an active quest / planner
+  coordinator whose newest loop rested ``STATUS:failed`` past the RC1
+  backoff ceiling with no newer loop minted since — the silent-outage
+  complement to ``quest-loop-failing`` / ``plan-tick-spin``, which both need
+  a *repeated* re-mint to fire and so miss "the reconciler stopped running
+  entirely" (one failed row, zero retries — the 2026-07-26→30 melchior
+  worker-agent outage).
 * **child-failed parked** — a todo carrying an open ``child-failed:*``
   tag (the failure-bubble, see :mod:`precis.handlers._job_bubble`) for
   more than ``CHILD_FAILED_PARKED_HOURS=6``. ``stuck-doable`` explicitly
@@ -126,6 +133,20 @@ PLAN_TICK_REMINT_24H = 16
 #: tolerable, so 3 keeps it above the noise while catching the standing break.
 QUEST_LOOP_FAIL_24H = 3
 
+#: An **active** coordinator (an active quest's ``quest_tick`` loop, or a
+#: planner parent's ``plan_tick`` loop) whose *newest* coordinator job rests
+#: terminal ``STATUS:failed`` for longer than this, with nothing newer minted
+#: since, is dark — not spinning (``quest-loop-failing`` / ``plan-tick-spin``
+#: need repeated re-mints to fire), just silent. That's the blind spot the
+#: 2026-07-26→30 incident exposed: the melchior worker-agent daemon died, so
+#: the reconciler that re-mints coordinator loops never ran at all — one
+#: failed row, zero retry attempts, invisible to every count-based detector.
+#: Sized to the quest lane's RC1 backoff ceiling (``quest/loop.py``'s
+#: ``_DEFAULT_FAIL_BACKOFF_MAX_S`` = 6h): a healthy reconciler always re-mints
+#: within that window, so a coordinator still dark past it means the
+#: reconciler itself isn't running, not merely backing off.
+ORPHANED_COORDINATOR_STALE_HOURS = 6
+
 #: A todo carrying an open ``child-failed:<job_id>`` tag longer than this is
 #: parked behind a failure-bubble with nothing acting on it. ``stuck-doable``
 #: excludes anything with an open tag by construction, so without this
@@ -189,8 +210,9 @@ DISPATCH_STALL_MINUTES = 15
 #: :func:`notify_critical_alert`). Spin loops and stuck claims/recurrings
 #: burn resources or block progress → ``warn``; orphans / long-waits /
 #: stuck-doable are hygiene nudges → ``info``. The worker-health detectors
-#: are the only ``critical`` ones — a dead or thrashing worker is an
-#: outage (the planner stalls cluster-wide), not drift.
+#: plus ``orphaned-coordinator`` are ``critical`` — a dead/thrashing worker,
+#: or a coordinator loop nothing is re-minting, is an outage (the planner or
+#: a quest stalls silently), not drift.
 _SEVERITY: dict[str, str] = {
     "spin-loop": "warn",
     "plan-tick-spin": "warn",
@@ -204,6 +226,7 @@ _SEVERITY: dict[str, str] = {
     "worker-restart": "critical",
     "dead-worker": "critical",
     "dispatch-stall": "critical",
+    "orphaned-coordinator": "critical",
 }
 
 
@@ -232,6 +255,7 @@ _DETECTORS: tuple[tuple[str, Callable[[Store], list[Finding]]], ...] = (
     ("spin-loop", lambda s: _detect_spin_loops(s)),
     ("plan-tick-spin", lambda s: _detect_plan_tick_spins(s)),
     ("quest-loop-failing", lambda s: _detect_quest_loop_failures(s)),
+    ("orphaned-coordinator", lambda s: _detect_orphaned_coordinator(s)),
     ("orphan", lambda s: _detect_orphans(s)),
     ("stale-claim", lambda s: _detect_stale_claims(s)),
     ("long-wait", lambda s: _detect_long_waits(s)),
@@ -828,6 +852,170 @@ def _detect_quest_loop_failures(store: Store) -> list[Finding]:
         )
         for r in rows
     ]
+
+
+# ── orphaned coordinator (dark: zero re-mint attempts) ─────────────
+
+
+def _detect_orphaned_coordinator(store: Store) -> list[Finding]:
+    """Active coordinators whose newest loop failed and nothing re-minted.
+
+    ``_detect_quest_loop_failures`` / ``_detect_plan_tick_spins`` both need
+    *repeated* re-mints (a count over a threshold) to fire — they catch a
+    spin, not a silence. A reconciler that stopped running entirely (the
+    2026-07-26→30 melchior worker-agent outage) produces exactly one failed
+    row and then nothing, forever — invisible to either counter. This
+    detector instead asks, per **active** coordinator lineage: is the
+    *newest* loop terminal ``STATUS:failed``, and has it been that way
+    longer than :data:`ORPHANED_COORDINATOR_STALE_HOURS`? Since "newest"
+    is definitionally the most recent job in the lineage, a failed newest
+    row already means no live/queued replacement exists — a fresh mint
+    would itself be the newest row instead.
+
+    Two coordinator lineages, unioned:
+
+    * **quest lane** — an active quest (``STATUS:active``) grouped by its
+      ``quest_tick`` / ``executor='coordinator'`` loop history.
+    * **planner lane** — an open/doing ``LLM:*``-tagged todo (the
+      planner-coroutine signature ``_candidate_parent_ids`` also keys on)
+      grouped by its ``plan_tick`` child-job history. Parents already
+      carrying a hard-block tag (``halt`` / ``halt:*`` / ``child-failed:*``)
+      are excluded — those are already surfaced (``child-failed-parked``,
+      ``halt:*`` on ``view='attention'``); this detector is for the case
+      where *nothing* flagged it at all, e.g. an infra-class failure inside
+      the bounded-retry window (:mod:`precis.handlers._job_bubble`) whose
+      retry never got a chance to run because dispatch itself is dark.
+
+    Degrade-safe: the two-lineage query is more involved than the sibling
+    single-table scans, so a read failure here (bad state, a schema drift)
+    is caught and logged rather than raised — ``run_pass`` (``workers/
+    runner.py``) wraps a whole ref-pass in try/except, so an uncaught
+    exception here would silently skip *every other* detector this cycle
+    too; catching locally keeps this detector's blast radius to itself.
+    """
+    try:
+        return _detect_orphaned_coordinator_unsafe(store)
+    except Exception:
+        log.warning("nursery: _detect_orphaned_coordinator raised", exc_info=True)
+        return []
+
+
+def _detect_orphaned_coordinator_unsafe(store: Store) -> list[Finding]:
+    with store.pool.connection() as conn:
+        quest_rows = conn.execute(
+            """
+            WITH newest AS (
+                SELECT DISTINCT ON (j.parent_id)
+                       j.parent_id AS coord_id, j.ref_id AS job_id,
+                       t.value AS status, rt.created_at AS status_at
+                  FROM refs j
+                  JOIN ref_tags rt ON rt.ref_id = j.ref_id
+                  JOIN tags t ON t.tag_id = rt.tag_id AND t.namespace = 'STATUS'
+                 WHERE j.kind = 'job' AND j.deleted_at IS NULL
+                   AND j.meta->>'job_type' = 'quest_tick'
+                   AND j.meta->>'executor' = 'coordinator'
+                   AND j.parent_id IS NOT NULL
+                 ORDER BY j.parent_id, j.ref_id DESC
+            )
+            SELECT n.coord_id, q.title, n.job_id, n.status_at
+              FROM newest n
+              JOIN refs q ON q.ref_id = n.coord_id
+             WHERE q.kind = 'quest' AND q.deleted_at IS NULL
+               AND EXISTS (
+                   SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                    WHERE rt.ref_id = q.ref_id
+                      AND t.namespace = 'STATUS' AND t.value = 'active'
+               )
+               AND n.status = 'failed'
+               AND n.status_at < now() - %(stale)s::interval
+             ORDER BY n.coord_id
+             LIMIT 50
+            """,
+            {"stale": f"{ORPHANED_COORDINATOR_STALE_HOURS} hours"},
+        ).fetchall()
+        planner_rows = conn.execute(
+            """
+            WITH newest AS (
+                SELECT DISTINCT ON (j.parent_id)
+                       j.parent_id AS coord_id, j.ref_id AS job_id,
+                       t.value AS status, rt.created_at AS status_at
+                  FROM refs j
+                  JOIN ref_tags rt ON rt.ref_id = j.ref_id
+                  JOIN tags t ON t.tag_id = rt.tag_id AND t.namespace = 'STATUS'
+                 WHERE j.kind = 'job' AND j.deleted_at IS NULL
+                   AND j.meta->>'job_type' = 'plan_tick'
+                   AND j.parent_id IS NOT NULL
+                 ORDER BY j.parent_id, j.ref_id DESC
+            )
+            SELECT n.coord_id, p.title, n.job_id, n.status_at
+              FROM newest n
+              JOIN refs p ON p.ref_id = n.coord_id
+             WHERE p.kind = 'todo' AND p.deleted_at IS NULL
+               AND COALESCE(
+                     (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                       WHERE rt.ref_id = p.ref_id AND t.namespace = 'STATUS' LIMIT 1),
+                     'open'
+                   ) IN ('open', 'doing')
+               AND EXISTS (
+                   SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                    WHERE rt.ref_id = p.ref_id AND t.namespace = 'LLM'
+               )
+               AND NOT EXISTS (
+                   SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                    WHERE rt.ref_id = p.ref_id AND t.namespace = 'OPEN'
+                      AND (
+                           t.value = 'halt'
+                        OR t.value LIKE 'halt:%%'
+                        OR t.value LIKE 'child-failed:%%'
+                      )
+               )
+               AND n.status = 'failed'
+               AND n.status_at < now() - %(stale)s::interval
+             ORDER BY n.coord_id
+             LIMIT 50
+            """,
+            {"stale": f"{ORPHANED_COORDINATOR_STALE_HOURS} hours"},
+        ).fetchall()
+
+    out: list[Finding] = []
+    for r in quest_rows:
+        coord_id, title, job_id, status_at = int(r[0]), r[1], int(r[2]), r[3]
+        dark_h = _hours_since(status_at)
+        out.append(
+            Finding(
+                category="orphaned-coordinator",
+                ref_id=coord_id,
+                title=_first_line(title),
+                detail=(
+                    f"quest #{coord_id} is active but its quest_tick loop's "
+                    f"newest job (#{job_id}) rested STATUS:failed "
+                    f"{dark_h:.1f}h ago (> {ORPHANED_COORDINATOR_STALE_HOURS}h "
+                    "RC1 backoff ceiling) with no newer loop minted — the "
+                    "reconciler that should have re-armed it isn't running "
+                    "(check the worker-agent daemon), not merely backing off"
+                ),
+            )
+        )
+    for r in planner_rows:
+        coord_id, title, job_id, status_at = int(r[0]), r[1], int(r[2]), r[3]
+        dark_h = _hours_since(status_at)
+        out.append(
+            Finding(
+                category="orphaned-coordinator",
+                ref_id=coord_id,
+                title=_first_line(title),
+                detail=(
+                    f"todo #{coord_id} is an active planner but its plan_tick "
+                    f"lineage's newest job (#{job_id}) rested STATUS:failed "
+                    f"{dark_h:.1f}h ago (> {ORPHANED_COORDINATOR_STALE_HOURS}h) "
+                    "with no newer child minted and no child-failed/halt tag — "
+                    "likely an infra retry (handlers/_job_bubble.py) that "
+                    "never got a dispatch pass to act on it; check whether "
+                    "dispatch is running"
+                ),
+            )
+        )
+    return out
 
 
 # ── worker health (daemon liveness, not the todo graph) ───────────

@@ -609,6 +609,67 @@ def test_bubble_helper_noop_for_orphan_job(store: Store) -> None:
     bubble_job_failure(store, job.id)
 
 
+def test_infra_retry_bump_rolls_back_with_callers_transaction(
+    handler: TodoHandler, store: Store
+) -> None:
+    """When the caller shares ``conn`` (the executor paths' pattern), the
+    orphan-retry counter bump must live in the *same* transaction as the
+    job-status write — a caller-side rollback (the status write "didn't
+    happen") must roll the counter increment back with it, not leave it
+    surviving on an independent connection."""
+    from precis.handlers._job_bubble import bubble_job_failure
+    from precis.store.types import Tag
+
+    r = handler.put(text="parent")
+    rid = id_of(r.body)
+    job = store.insert_ref(
+        kind="job", slug=None, title="orphaned", meta={}, parent_id=rid
+    )
+    store.add_tag(job.id, Tag.open("swept:claim-orphaned"), set_by="system")
+
+    class _Boom(Exception):
+        pass
+
+    with pytest.raises(_Boom), store.pool.connection() as conn:
+        bubble_job_failure(store, job.id, conn=conn)
+        raise _Boom()  # simulate the caller's own status write failing
+
+    with store.pool.connection() as check_conn:
+        row = check_conn.execute(
+            "SELECT meta->'orphan_retry_count' FROM refs WHERE ref_id = %s", (rid,)
+        ).fetchone()
+    assert row is not None
+    assert row[0] is None  # rolled back together with the caller's tx
+
+
+def test_infra_retry_bump_commits_with_callers_transaction(
+    handler: TodoHandler, store: Store
+) -> None:
+    """The positive case of the rollback test above: a clean exit of the
+    caller's shared transaction commits the bump exactly once."""
+    from precis.handlers._job_bubble import bubble_job_failure
+    from precis.store.types import Tag
+
+    r = handler.put(text="parent")
+    rid = id_of(r.body)
+    job = store.insert_ref(
+        kind="job", slug=None, title="orphaned", meta={}, parent_id=rid
+    )
+    store.add_tag(job.id, Tag.open("swept:claim-orphaned"), set_by="system")
+
+    with store.pool.connection() as conn:
+        bubble_job_failure(store, job.id, conn=conn)
+
+    with store.pool.connection() as check_conn:
+        row = check_conn.execute(
+            "SELECT meta->'orphan_retry_count' FROM refs WHERE ref_id = %s", (rid,)
+        ).fetchone()
+    assert row is not None
+    assert row[0] == 1
+    parent_tags = {str(t) for t in store.tags_for(rid)}
+    assert f"child-failed:{job.id}" not in parent_tags  # under the retry cap
+
+
 def test_job_handler_tag_bubbles_status_failed(
     handler: TodoHandler, store: Store
 ) -> None:
@@ -667,6 +728,75 @@ def test_job_handler_tag_other_status_does_not_bubble(
     job_handler.tag(id=job.id, add=["STATUS:succeeded"])
     parent_tags = {str(t) for t in store.tags_for(rid)}
     assert not any(t.startswith("child-failed:") for t in parent_tags)
+
+
+# ── content failures stay permanently blocked (infra-retry regression) ──
+
+
+def test_content_failure_latches_immediately_and_stays_blocked_past_infra_window(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A content-class failure (``JobHandler.tag(add=['STATUS:failed'])``,
+    no ``swept:claim-orphaned``) latches ``child-failed:`` on the very
+    first failure — unlike the infra-class bounded-retry path, there is no
+    grace window here. Regression guard: even after the infra-class retry
+    window (``ORPHAN_RETRY_WINDOW_HOURS``) has fully elapsed, the parent
+    must STILL be excluded from dispatch candidacy — a blind timer-based
+    "unlatch after N hours" would wrongly re-arm a genuinely broken task."""
+    from precis.handlers._job_bubble import ORPHAN_RETRY_WINDOW_HOURS
+    from precis.handlers.job import JobHandler
+    from precis.workers.dispatch import _candidate_parent_ids
+
+    job_handler = JobHandler(hub=Hub(store=store, embedder=None))
+    r = handler.put(
+        text="content-broken planner",
+        meta={"executor": "claude_inproc", "job_type": "fix_gripe", "params": {}},
+    )
+    rid = id_of(r.body)
+    job = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="will fail on real content",
+        meta={"job_type": "fix_gripe", "executor": "claude_inproc"},
+        parent_id=rid,
+    )
+    from precis.store.types import Tag
+
+    store.add_tag(
+        job.id, Tag.closed("STATUS", "queued"), set_by="agent", replace_prefix=True
+    )
+    job_handler.tag(id=job.id, add=["STATUS:failed"])
+
+    job_tags = {str(t) for t in store.tags_for(job.id)}
+    assert "swept:claim-orphaned" not in job_tags  # genuinely content-class
+    parent_tags = {str(t) for t in store.tags_for(rid)}
+    assert f"child-failed:{job.id}" in parent_tags
+    assert rid not in _candidate_parent_ids(store, limit=50)
+
+    # Advance the clock well past the infra-retry window — a content
+    # failure has no such window at all, so this must change nothing.
+    with store.pool.connection() as conn:
+        conn.execute(
+            """
+            UPDATE ref_tags rt
+               SET created_at = now() - %s::interval
+              FROM tags t
+             WHERE rt.tag_id = t.tag_id
+               AND rt.ref_id = %s
+               AND t.namespace = 'OPEN'
+               AND t.value = %s
+            """,
+            (
+                f"{ORPHAN_RETRY_WINDOW_HOURS + 24} hours",
+                rid,
+                f"child-failed:{job.id}",
+            ),
+        )
+        conn.commit()
+
+    parent_tags = {str(t) for t in store.tags_for(rid)}
+    assert f"child-failed:{job.id}" in parent_tags
+    assert rid not in _candidate_parent_ids(store, limit=50)
 
 
 # ── concurrency ──────────────────────────────────────────────────
