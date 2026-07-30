@@ -846,3 +846,129 @@ def test_hub_finding_no_evidence_renders_no_cite(
     text = "\n".join(p.text for p in docx.Document(str(out)).paragraphs)
     assert "[1]" not in text
     assert "References" not in text
+
+
+# ── Taproot Phase 2 — authorial pins reach draft export (docx) ─────────
+# Mirrors the LaTeX exporter's pin coverage (tests/test_export_latex.py) —
+# the SAME shared `precis.taproot.cite.apply_pin` policy applied through
+# the `mentions` grammar's optional `pin` capture group.
+
+
+def test_pin_replace_renders_pinned_not_derived_originator(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    from precis.taproot.hub import attach_evidence
+    from precis.utils import handle_registry
+
+    hub_ref = _mint_hub_claim(hub.store)
+    origin = hub.store.insert_ref(
+        kind="paper", slug="docxp01", title="Original report", year=2001, meta={}
+    ).id
+    follow = hub.store.insert_ref(
+        kind="paper", slug="docxq01", title="Follow-up", year=2005, meta={}
+    ).id
+    attach_evidence(
+        hub.store, hub_ref_id=hub_ref, paper_ref_id=origin, role="corroborates"
+    )
+    attach_evidence(
+        hub.store, hub_ref_id=hub_ref, paper_ref_id=follow, role="corroborates"
+    )
+    hub.store.add_link(src_ref_id=follow, dst_ref_id=origin, relation="cites")
+    pinned = hub.store.insert_ref(
+        kind="paper", slug="docxr01", title="Author's pick", meta={}
+    ).id
+    finding_handle = handle_registry.format_handle("finding", hub_ref)
+    pin_handle = handle_registry.format_handle("paper", pinned)
+
+    pid = _new_draft_project(hub)
+    draft.put(id="dpin1", title="T", project=pid)
+    draft.put(
+        id="dpin1",
+        chunk_kind="paragraph",
+        text=f"Living citation [{finding_handle}>{pin_handle}].",
+        at={"last": True},
+    )
+    ref = hub.store.get_ref(kind="draft", id="dpin1")
+    out = tmp_path / "dpin1.docx"
+    res = export_docx(hub.store, ref, target_path=out)
+
+    assert res.cited_slugs == ["docxr01"]  # pinned handle, not the derived originator
+    assert any("reconsider" in w for w in res.warnings)
+    text = "\n".join(p.text for p in docx.Document(str(out)).paragraphs)
+    assert "Author's pick" in text
+    assert "Original report" not in text
+
+
+def test_pin_supplement_renders_derived_plus_pinned(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    from precis.taproot.hub import attach_evidence
+    from precis.utils import handle_registry
+
+    hub_ref = _mint_hub_claim(hub.store)
+    origin = hub.store.insert_ref(
+        kind="paper", slug="docxp02", title="Original report", year=2001, meta={}
+    ).id
+    follow = hub.store.insert_ref(
+        kind="paper", slug="docxq02", title="Follow-up", year=2005, meta={}
+    ).id
+    attach_evidence(
+        hub.store, hub_ref_id=hub_ref, paper_ref_id=origin, role="corroborates"
+    )
+    attach_evidence(
+        hub.store, hub_ref_id=hub_ref, paper_ref_id=follow, role="corroborates"
+    )
+    hub.store.add_link(src_ref_id=follow, dst_ref_id=origin, relation="cites")
+    pinned = hub.store.insert_ref(
+        kind="paper", slug="docxr02", title="Extra evidence", meta={}
+    ).id
+    finding_handle = handle_registry.format_handle("finding", hub_ref)
+    pin_handle = handle_registry.format_handle("paper", pinned)
+
+    pid = _new_draft_project(hub)
+    draft.put(id="dpin2", title="T", project=pid)
+    draft.put(
+        id="dpin2",
+        chunk_kind="paragraph",
+        text=f"Living citation [{finding_handle}+{pin_handle}].",
+        at={"last": True},
+    )
+    ref = hub.store.get_ref(kind="draft", id="dpin2")
+    out = tmp_path / "dpin2.docx"
+    res = export_docx(hub.store, ref, target_path=out)
+
+    assert res.cited_slugs == ["docxp02", "docxr02"]  # derived + pinned, both present
+    assert not any("reconsider" in w for w in res.warnings)
+    text = "\n".join(p.text for p in docx.Document(str(out)).paragraphs)
+    assert "[1]" in text and "[2]" in text
+
+
+def test_pin_on_non_hub_finding_ignored_with_warning(
+    draft: DraftHandler, hub: Hub, tmp_path: Path
+) -> None:
+    from precis.handlers.finding import FindingHandler
+
+    _seed_paper(hub.store, "docxn01", "Established plain finding", 2019)
+    resp = FindingHandler(hub=hub).put(
+        title="t", body="b", scope={}, cited_in="docxn01"
+    )
+    ref_id = int(resp.body.split("id=")[1].split()[0].rstrip(",.()"))
+    hub.store.update_ref(ref_id, meta_patch={"primary_cite_key": "docxn01"})
+    from precis.utils import handle_registry
+
+    finding_handle = handle_registry.format_handle("finding", ref_id)
+
+    pid = _new_draft_project(hub)
+    draft.put(id="dpin3", title="T", project=pid)
+    draft.put(
+        id="dpin3",
+        chunk_kind="paragraph",
+        text=f"Established [{finding_handle}>pa5].",
+        at={"last": True},
+    )
+    ref = hub.store.get_ref(kind="draft", id="dpin3")
+    out = tmp_path / "dpin3.docx"
+    res = export_docx(hub.store, ref, target_path=out)
+
+    assert res.cited_slugs == ["docxn01"]  # unchanged — pin is meaningless here
+    assert any("pin on" in w and "ignored" in w for w in res.warnings)

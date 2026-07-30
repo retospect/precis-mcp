@@ -451,6 +451,101 @@ def test_hub_finding_no_evidence_renders_no_cite(store) -> None:
     assert ctx.cited == []
 
 
+# ── Taproot Phase 2 — authorial pins reach draft export ────────────────
+# `[fi<id>>pa5]` (replace) / `[fi<id>+pa5]` (supplement) — the shared
+# `precis.taproot.cite.apply_pin` policy applied through the `mentions`
+# grammar's optional `pin` capture group.
+
+
+def _hub_with_derived_originator(store, *, origin_key: str, follow_key: str) -> int:
+    hub = mint_hub(store, _HUB_CLAIM)
+    origin = store.insert_ref(
+        kind="paper", slug=origin_key, title="Original report", year=2001, meta={}
+    ).id
+    follow = store.insert_ref(
+        kind="paper", slug=follow_key, title="Follow-up", year=2005, meta={}
+    ).id
+    attach_evidence(store, hub_ref_id=hub, paper_ref_id=origin, role="corroborates")
+    attach_evidence(store, hub_ref_id=hub, paper_ref_id=follow, role="corroborates")
+    store.add_link(src_ref_id=follow, dst_ref_id=origin, relation="cites")
+    return hub
+
+
+def test_pin_replace_cites_pinned_not_derived_originator(store) -> None:
+    hub = _hub_with_derived_originator(
+        store, origin_key="latxp01", follow_key="latxq01"
+    )
+    pinned = store.insert_ref(
+        kind="paper", slug="latxr01", title="Author's pick", meta={}
+    ).id
+    handle = _handle_registry.format_handle("paper", pinned)
+
+    ctx = latex._Ctx(keymap={}, known_handles=set(), store=store)
+    out = latex._render_inline(f"see [{_hub_finding_handle(hub)}>{handle}].", ctx)
+
+    assert r"\cite{latxr01}" in out
+    assert "latxp01" not in out
+    assert ctx.cited == ["latxr01"]
+    # Replace-pin diverging from the derived originator adds a warning.
+    assert any("reconsider" in w for w in ctx.warnings)
+
+
+def test_pin_supplement_adds_to_derived_originators(store) -> None:
+    hub = _hub_with_derived_originator(
+        store, origin_key="latxp02", follow_key="latxq02"
+    )
+    pinned = store.insert_ref(
+        kind="paper", slug="latxr02", title="Extra evidence", meta={}
+    ).id
+    handle = _handle_registry.format_handle("paper", pinned)
+
+    ctx = latex._Ctx(keymap={}, known_handles=set(), store=store)
+    out = latex._render_inline(f"see [{_hub_finding_handle(hub)}+{handle}].", ctx)
+
+    assert r"\cite{latxp02,latxr02}" in out
+    assert ctx.cited == ["latxp02", "latxr02"]
+    # Supplement never diverges — no advisory.
+    assert not any("reconsider" in w for w in ctx.warnings)
+
+
+def test_pin_on_non_hub_finding_ignored_with_warning() -> None:
+    import types
+
+    established = types.SimpleNamespace(meta={"primary_cite_key": "latxn01"})
+    store = _FindingStore({7: established})
+    ctx = latex._Ctx(keymap={}, known_handles=set(), store=store)
+
+    out = latex._render_inline("see [fi7>pa5].", ctx)
+
+    # Unchanged — the pin is meaningless on a non-hub finding.
+    assert r"\cite{latxn01}" in out
+    assert any("pin on fi7 ignored" in w for w in ctx.warnings)
+
+
+def test_pin_passage_handle_resolves_to_parent_paper(store) -> None:
+    hub = _hub_with_derived_originator(
+        store, origin_key="latxp03", follow_key="latxq03"
+    )
+    pinned = store.insert_ref(
+        kind="paper", slug="latxr03", title="Grounded passage source", meta={}
+    ).id
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+            "VALUES (%s, 0, 'paragraph', 'a passage') RETURNING chunk_id",
+            (pinned,),
+        ).fetchone()
+        conn.commit()
+    assert row is not None
+    chunk_handle = f"pc{int(row[0])}"
+
+    ctx = latex._Ctx(keymap={}, known_handles=set(), store=store)
+    out = latex._render_inline(f"see [{_hub_finding_handle(hub)}>{chunk_handle}].", ctx)
+
+    assert r"\cite{latxr03}" in out
+    assert ctx.cited == ["latxr03"]
+
+
 # ── reMarkable send-to-tablet footnote mode (footnote_refs=True) ──────
 
 

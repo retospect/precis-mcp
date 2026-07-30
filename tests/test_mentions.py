@@ -10,6 +10,7 @@ by the DB-backed tests in ``test_memory.py``.
 from __future__ import annotations
 
 import re
+from typing import Any
 
 from precis.utils import mentions
 
@@ -244,3 +245,74 @@ def test_unbracketed_pubnum_never_links() -> None:
         patent_slugs={"us9927397b1": 70},
     )
     assert mentions.resolve_link_targets(store, "US9927397B1 was granted") == []
+
+
+# ---------------------------------------------------------------------------
+# BARE_BRACKET_REF_PATTERN — authorial pin (Taproot slice A2, Phase 2):
+# `[fi<id>>pa5,pc9]` (replace) / `[fi<id>+pa5]` (supplement). Additive
+# optional group — `bare` is captured byte-identically with or without a
+# pin, so every existing consumer that reads only `m.group("bare")` is
+# unaffected by a pin's presence.
+# ---------------------------------------------------------------------------
+
+
+def test_bare_bracket_pattern_no_pin_unchanged() -> None:
+    m = mentions.BARE_BRACKET_REF_PATTERN.fullmatch("[fi42]")
+    assert m is not None
+    assert m.group("bare") == "fi42"
+    assert m.group("pin") is None
+
+
+def test_bare_bracket_pattern_replace_pin() -> None:
+    m = mentions.BARE_BRACKET_REF_PATTERN.fullmatch("[fi42>pa5,pc9]")
+    assert m is not None
+    assert m.group("bare") == "fi42"
+    assert m.group("pin") == ">pa5,pc9"
+
+
+def test_bare_bracket_pattern_supplement_pin() -> None:
+    m = mentions.BARE_BRACKET_REF_PATTERN.fullmatch("[fi42+pa5]")
+    assert m is not None
+    assert m.group("bare") == "fi42"
+    assert m.group("pin") == "+pa5"
+
+
+def test_bare_bracket_pattern_non_finding_handles_have_no_pin() -> None:
+    for token in ("[me5]", "[pc10]", "[dc41]"):
+        m = mentions.BARE_BRACKET_REF_PATTERN.fullmatch(token)
+        assert m is not None, token
+        assert m.group("bare") == token[1:-1]
+        assert m.group("pin") is None
+
+
+def test_bare_bracket_pattern_sigil_forms_never_carry_a_pin() -> None:
+    # The `[¶§][^\[\]]+` alternative is greedy and consumes to the closing
+    # `]`, so a pin group can never attach to a sigil form — pins are
+    # finding-only. `[§foo~1]` still parses exactly as before.
+    m = mentions.BARE_BRACKET_REF_PATTERN.fullmatch("[§foo~1]")
+    assert m is not None
+    assert m.group("bare") == "§foo~1"
+    assert m.group("pin") is None
+
+
+def test_parse_pin_suffix() -> None:
+    assert mentions.parse_pin_suffix(None) == (None, [])
+    assert mentions.parse_pin_suffix(">pa5,pc9") == (">", ["pa5", "pc9"])
+    assert mentions.parse_pin_suffix("+pa5") == ("+", ["pa5"])
+
+
+def test_autolink_invariance_pin_ignored_for_link_targets(store: Any) -> None:
+    """A pin is a draft-export directive, not a link-graph edge — a pinned
+    finding handle must materialise the SAME autolink target as the bare
+    handle (:func:`resolve_link_targets`, which reads only `bare`), never a
+    broken/missing one."""
+    from precis.utils import handle_registry
+
+    ref = store.insert_ref(kind="finding", slug=None, title="t", meta={})
+    handle = handle_registry.format_handle("finding", ref.id)
+
+    plain = mentions.resolve_link_targets(store, f"see [{handle}]")
+    pinned = mentions.resolve_link_targets(store, f"see [{handle}>pa5]")
+
+    assert [(t.dst_ref_id, t.dst_pos) for t in plain] == [(ref.id, None)]
+    assert [(t.dst_ref_id, t.dst_pos) for t in pinned] == [(ref.id, None)]

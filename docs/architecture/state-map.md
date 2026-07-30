@@ -985,8 +985,8 @@ overlay on `finding`/`ref_tags`/`links` — no schema of its own).
     and the draft exporters call, so the two surfaces can't diverge again.
     `seniority.py` grew a public `is_claim_hub` wrapper (over the existing
     private `_is_claim_hub`) for `cite.py` to call rather than reaching
-    into the private name. `export/latex.py::_finding_cite_key` and
-    `export/docx.py::_finding_cite_key` now return `list[str]` via
+    into the private name. `export/latex.py::_render_finding_cite` and
+    `export/docx.py::_finding_cite_keys_pinned` resolve via
     `finding_cite_keys` instead of a bare `primary_cite_key or pub_id`
     lookup: a `[fi<id>]` handle resolving to a `TAPROOT:claim` hub cites
     its currently derived `establishes` originator(s) (falling back to
@@ -996,12 +996,29 @@ overlay on `finding`/`ref_tags`/`links` — no schema of its own).
     finding); multiple keys render `\cite{k1,k2}` in LaTeX (a new
     `_cite_keys` helper, falling back to per-key `_cite` concatenation in
     patent/footnote mode) and one numbered `[n]` mark per key in docx
-    (which has no multi-key literal). **Not yet built (Phase 2):** A2 pins
-    (`[<pub_id>>...]` / `[<pub_id>+...]`) have no equivalent in the draft
-    `mentions` grammar — pinning a hub's cite from inside a draft still
-    requires round-tripping through `precis resolve`. Tests:
-    `tests/test_taproot_cite.py`, `tests/test_export_latex.py`,
-    `tests/test_export_docx.py`.
+    (which has no multi-key literal).
+  - **Draft-export wiring, Phase 2 (A2 pins reach `kind='draft'`
+    export)** — built. `utils/mentions.py::BARE_BRACKET_REF_PATTERN` grew
+    an additive optional `pin` capture (`[fi<id>>pa5,pc9]` replace /
+    `[fi<id>+pa5]` supplement) alongside the unchanged `bare` handle group
+    — every existing `bare`-only consumer (autolinker, web `linkify`) is
+    byte-for-byte unaffected; `parse_pin_suffix` decodes it to `(op,
+    handles)`. `cli/resolve.py`'s `_resolve_pin_handle` / `_apply_pin` moved
+    into `taproot/cite.py` as `resolve_pin_handle` / `apply_pin` (returning
+    a `PinResult` instead of mutating `resolve.py`'s `_Summary`) — the ONE
+    pin-application policy now shared by `precis resolve`'s base32-token
+    grammar and the draft `mentions` grammar, so a pin behaves identically
+    wherever an author writes it; `FindingCite` grew an `evidence` field
+    (populated for a hub) so a caller can `apply_pin` without re-deriving.
+    `export/latex.py::_render_finding_cite` / `export/docx.py`'s pinned
+    finding path read the `pin` group, thread it through `apply_pin`, and
+    fold `PinResult.warnings` / a replace-divergence advisory into the
+    exporter's `ctx.warnings`; a pin on a non-hub finding is dropped with a
+    warning (a plain finding has no derived-originator set to override).
+    Tests: `tests/test_taproot_cite.py`, `tests/test_mentions.py`,
+    `tests/test_export_latex.py`, `tests/test_export_docx.py`,
+    `tests/precis_web/test_linkify.py`, `tests/cli/test_resolve.py`
+    (behavior-preserving refactor — pin CLI tests unchanged).
   - Not yet built: citation-card dedup (2d).
 - **Phase 3 (in progress)** — forward `chase` wiring; slices land
   independently, W1 first.

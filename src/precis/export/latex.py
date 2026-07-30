@@ -415,7 +415,7 @@ def _render_reference(m: re.Match[str], ctx: _Ctx) -> str:
     if m.group("disp") is not None:
         return _render_target(m.group("tgt"), m.group("disp"), ctx)
     if m.group("bare") is not None:
-        return _render_target(m.group("bare"), None, ctx)
+        return _render_target(m.group("bare"), None, ctx, pin=m.group("pin"))
     if m.group("ref") is not None:
         kind, raw_id = m.group("kind"), m.group("id")
         if kind == "paper":
@@ -452,7 +452,7 @@ def _handle_cite_key(tgt: str, ctx: _Ctx) -> str | None:
     return resolved.public_id if resolved is not None else None
 
 
-def _finding_cite_key(tgt: str, ctx: _Ctx) -> list[str]:
+def _render_finding_cite(tgt: str, pin: str | None, ctx: _Ctx) -> str:
     """A finding handle (``fi<id>``) → its bibliographic cite_key(s), via
     the ONE shared resolver (:func:`precis.taproot.cite.finding_cite_keys`)
     ``precis resolve`` also uses. A plain finding resolves to its primary
@@ -463,20 +463,52 @@ def _finding_cite_key(tgt: str, ctx: _Ctx) -> list[str]:
     ``establishes`` originator(s), falling back to corroborators, so the
     same hub cite improves on the next export as the evidence graph
     grows. Empty when the target doesn't resolve to a live finding, or a
-    hub has no resolvable evidence yet (in-flight)."""
+    hub has no resolvable evidence yet (in-flight).
+
+    ``pin`` (Taproot slice A2, Phase 2 — reaches the draft grammar via
+    :data:`precis.utils.mentions.BARE_BRACKET_REF_PATTERN`'s optional
+    ``pin`` group) overrides or extends a HUB's derived cite_keys through
+    the ONE shared :func:`precis.taproot.cite.apply_pin` policy — the same
+    one ``precis resolve``'s base32-token pin uses, so a pin behaves
+    identically wherever an author writes it. A pin on a non-hub finding
+    is meaningless (the finding already resolves off its own
+    ``primary_cite_key`` — there's no derived-originator set to
+    override) and is dropped with a warning rather than erroring."""
     if ctx.store is None:
-        return []
+        return ""
     parsed = handle_registry.parse(tgt)
     if parsed is None:
-        return []
+        return ""
     _kind, _is_chunk, pk = parsed
-    from precis.taproot.cite import finding_cite_keys
+    from precis.taproot.cite import apply_pin, finding_cite_keys
 
-    result = finding_cite_keys(ctx.store, pk)
-    return result.cite_keys
+    fc = finding_cite_keys(ctx.store, pk)
+    keys = fc.cite_keys
+    op, handles = mentions.parse_pin_suffix(pin)
+    if op is not None:
+        if fc.is_hub and fc.evidence is not None:
+            result = apply_pin(
+                ctx.store,
+                label=tgt,
+                op=op,
+                handles=handles,
+                derived_cite_keys=keys,
+                evidence=fc.evidence,
+            )
+            keys = result.cite_keys
+            ctx.warnings.extend(detail for _status, detail in result.warnings)
+            if result.diverged and result.divergence:
+                ctx.warnings.append(result.divergence)
+        else:
+            ctx.warnings.append(
+                f"pin on {tgt} ignored — pins only apply to a Taproot claim hub cite"
+            )
+    return _cite_keys(keys, ctx)
 
 
-def _render_target(tgt: str, surface: str | None, ctx: _Ctx) -> str:
+def _render_target(
+    tgt: str, surface: str | None, ctx: _Ctx, *, pin: str | None = None
+) -> str:
     """Render a bracket reference target (``dc<id>`` / ``pc<id>`` / ``§slug~n``
     / legacy ``¶h`` / URL).
 
@@ -508,8 +540,7 @@ def _render_target(tgt: str, surface: str | None, ctx: _Ctx) -> str:
                 return _source_footnote(slug, kind, excerpt, ctx)
             return _cite(slug, ctx)
         if kind == "finding":
-            keys = _finding_cite_key(tgt, ctx)
-            return _cite_keys(keys, ctx)
+            return _render_finding_cite(tgt, pin, ctx)
         if kind == "draft" and is_chunk:
             return _draft_xref(tgt, surface, ctx)
         return ""  # other record/chunk handle — provenance only
@@ -587,7 +618,7 @@ def _cite(slug: str, ctx: _Ctx) -> str:
 
 
 def _cite_keys(keys: list[str], ctx: _Ctx) -> str:
-    """Render a finding's resolved cite_key(s) (:func:`_finding_cite_key`)
+    """Render a finding's resolved cite_key(s) (:func:`_render_finding_cite`)
     — the multi-key case a Taproot claim hub with several derived
     originators needs.
 

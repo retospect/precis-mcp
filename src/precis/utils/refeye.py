@@ -260,8 +260,8 @@ def _mine_claim_hub_ids(
 def _resolve_pin_paper_ref_ids(store: Any, handles: list[str]) -> list[int]:
     """Resolve pin handles (Taproot slice A2) to paper ref_ids for the
     ring's render-only marking — a ``pc<id>`` (passage) handle resolves to
-    its parent paper, same as ``precis resolve``'s
-    :func:`~precis.cli.resolve._resolve_pin_handle`. Best-effort: an
+    its parent paper, same as the shared
+    :func:`~precis.taproot.cite.resolve_pin_handle`. Best-effort: an
     unresolvable handle is silently skipped (the ring only *reflects* a
     pin, it doesn't gate anything on it — ``precis resolve`` is where an
     unresolvable pin gets a warning)."""

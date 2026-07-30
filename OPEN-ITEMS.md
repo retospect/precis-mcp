@@ -1353,30 +1353,6 @@ suite green, ruff/mypy clean, not shipped-and-live — dark behind
   deferred, separate scope)* — `related-to` + `meta.note`, deliberately not
   built alongside this; do not conflate with the `cites`-relation work above.
 
-## 🌱 A2 pins don't reach the draft authoring surface
-
-Status: open · Severity: feature · Owner: `src/precis/utils/mentions.py`,
-`src/precis/export/latex.py`, `src/precis/export/docx.py` · Test: none yet.
-
-**Phase 1 shipped:** living citations (A1) now reach `kind='draft'`
-export — `_finding_cite_key` (latex + docx) resolves a `[fi<id>]` handle
-through the ONE shared policy (`taproot/cite.py::finding_cite_keys`,
-also used by `precis resolve`), so a `TAPROOT:claim` hub cites its
-currently derived `establishes` originator(s) (falling back to
-corroborators, then in-flight), recomputed on every export.
-
-**Still open — A2 pins.** `precis resolve`'s inline pin grammar
-(`[<pub_id>>pa5,pc293]` replace / `[<pub_id>+pa5]` supplement) is a
-`cli/resolve.py`-only overlay on top of the shared policy; it has no
-equivalent in the draft `mentions` grammar, so an agent authoring a
-draft can't pin a hub's cite the way a standalone-manuscript author
-can via `precis resolve`. Fix: extend the `mentions`/`handle_registry`
-grammar to carry an optional pin suffix on a `[fi<id>]` handle, parse
-it in `export/latex.py` / `export/docx.py` alongside the existing
-`finding_cite_keys` call, and reuse `cli/resolve.py`'s
-`_resolve_pin_handle` / `_apply_pin` logic (or a shared extraction of
-it) rather than re-deriving the pin semantics a third time.
-
 ## 👁️ Draft citation-groundwork pre-pass (ADR 0051 Level 2, unscoped)
 
 *(feature, open — owner: `workers/thread_persona.py` + `planner_prompt.py`,

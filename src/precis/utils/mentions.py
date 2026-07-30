@@ -140,7 +140,33 @@ DISPLAY_LINK_PATTERN = re.compile(r"\[(?P<disp>[^\[\]]*)\]\((?P<tgt>[^()]+)\)")
 #: forms ``[¶h]`` / ``[§p~n]``. The handle alternative is ``<2-char
 #: code><digits>``; resolution gates it against the registry, so a
 #: non-handle like ``[ab12]`` simply doesn't resolve and stays literal.
-BARE_BRACKET_REF_PATTERN = re.compile(r"\[(?P<bare>[¶§][^\[\]]+|[a-z]{2}\d+)\]")
+#:
+#: A finding handle may additionally carry an **authorial pin** (Taproot
+#: slice A2, ``precis resolve``'s ``[<pub_id>>…]`` / ``[<pub_id>+…]``
+#: overlay, now reaching the draft grammar): ``[fi42>pa5,pc9]`` (replace
+#: the derived originators) / ``[fi42+pa5]`` (supplement them). The pin
+#: is an ADDITIVE optional group — ``bare`` is captured identically
+#: whether or not a pin follows, so every existing consumer that reads
+#: ``m.group("bare")`` (the autolinker, the web linkifier) is unaffected
+#: and a pin never materialises a different/broken link target; only the
+#: draft exporters read ``m.group("pin")`` to override a hub's cite_keys.
+#: The ``[¶§][^\[\]]+`` alternative is greedy and consumes to the closing
+#: ``]``, so a pin group never applies to a ``¶``/``§`` sigil — correct,
+#: pins are finding-only.
+BARE_BRACKET_REF_PATTERN = re.compile(
+    r"\[(?P<bare>[¶§][^\[\]]+|[a-z]{2}\d+)"
+    r"(?P<pin>[>+][a-z]{2}\d+(?:,[a-z]{2}\d+)*)?\]"
+)
+
+
+def parse_pin_suffix(pin: str | None) -> tuple[str | None, list[str]]:
+    """A pin group (``'>pa5,pc9'`` / ``'+pa5'`` / ``None``) from
+    :data:`BARE_BRACKET_REF_PATTERN`'s ``pin`` capture → ``(op, handles)``:
+    ``('>' | '+', [handles])``, or ``(None, [])`` when there was no pin."""
+    if not pin:
+        return None, []
+    return pin[0], [h for h in pin[1:].split(",") if h]
+
 
 #: Bracketed patent *public number* — country code + serial (+ optional
 #: kind code), e.g. ``[US9927397B1]``, ``[EP1234567A1]``, or the app form

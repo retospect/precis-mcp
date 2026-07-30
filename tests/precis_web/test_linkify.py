@@ -442,6 +442,22 @@ def test_universal_handle_renders_anchor() -> None:
     assert 'href="/r/memory/5"' in out
 
 
+def test_pinned_finding_handle_renders_same_anchor_as_bare() -> None:
+    # Taproot slice A2 (Phase 2): `[fi42>pa5]` / `[fi42+pa5]` is an
+    # export-time directive, not reader content — the reader drops the
+    # pin and renders the SAME finding anchor as the bare handle. The
+    # popover id is a random per-call nonce, so normalize it before
+    # comparing.
+    def _norm(s: str) -> str:
+        return re.sub(r"refpop-[0-9a-f]{10}", "refpop-X", s)
+
+    bare = _norm(str(linkify_refs("see [fi42]")))
+    replace_pin = _norm(str(linkify_refs("see [fi42>pa5,pc9]")))
+    supplement_pin = _norm(str(linkify_refs("see [fi42+pa5]")))
+    assert bare == replace_pin == supplement_pin
+    assert 'href="/r/finding/42"' in bare
+
+
 def test_paper_chunk_handle_renders_hoverable_anchor() -> None:
     # A paper-chunk handle [pc10] is a ref to a paper chunk — it must hover
     # (the chunk preview) + click through, same as a draft chunk, not be

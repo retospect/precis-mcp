@@ -1,4 +1,5 @@
-"""Taproot Phase 1 — the ONE hub cite-key resolution policy.
+"""Taproot Phase 1 + 2 — the ONE hub cite-key resolution policy, plus the
+shared authorial-pin overlay.
 
 Both ``precis resolve`` (:mod:`precis.cli.resolve`) and the draft export
 (:mod:`precis.export.latex` / :mod:`precis.export.docx`) resolve a
@@ -8,15 +9,18 @@ then to in-flight when the hub has no supporting evidence at all. That
 policy is locked here, once, and imported by both surfaces so they can
 never quietly diverge (that divergence was the exact bug Phase 1 fixes).
 
-Pins (Taproot slice A2, ``[<pub_id>>…]`` / ``[<pub_id>+…]``) are a
-``precis resolve``-only overlay on top of this policy and stay in
-:mod:`precis.cli.resolve` — out of scope here (Phase 2 wires them into
-the draft ``mentions`` grammar).
+Pins (Taproot slice A2, ``[<pub_id>>…]`` / ``[<pub_id>+…]``) are the same
+story one level up: :func:`apply_pin` / :func:`resolve_pin_handle` are the
+ONE pin-application policy, shared by ``precis resolve`` (base32 ``[pub_id]``
+token grammar, :mod:`precis.cli.resolve`) and the draft ``mentions`` bracket
+grammar (Phase 2, :mod:`precis.utils.mentions`'s ``pin`` capture group,
+consumed by the draft exporters) — so a pin behaves identically wherever an
+author writes it.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from precis.taproot.seniority import (
@@ -103,6 +107,10 @@ class FindingCite:
     is_hub: bool
     inflight: bool  # a hub with no resolvable evidence
     notes: list[tuple[str, str]]  # (status, detail) diagnostics, for the caller
+    #: The hub's freshly-derived evidence — set only when ``is_hub`` (``None``
+    #: for a plain finding), so a caller can :func:`apply_pin` without
+    #: re-deriving it a second time.
+    evidence: HubEvidence | None = None
 
 
 def finding_cite_keys(store: Any, ref_id: int) -> FindingCite:
@@ -123,6 +131,7 @@ def finding_cite_keys(store: Any, ref_id: int) -> FindingCite:
             is_hub=True,
             inflight=not cite_keys,
             notes=notes,
+            evidence=evidence,
         )
 
     ref = store.fetch_refs_by_ids([ref_id]).get(ref_id)
@@ -139,4 +148,175 @@ def finding_cite_keys(store: Any, ref_id: int) -> FindingCite:
     )
 
 
-__all__ = ["FindingCite", "finding_cite_keys", "hub_cite_keys"]
+# ── Authorial pins (Taproot slice A2) ──────────────────────────────────
+#
+# A hub's living-citation default (`hub_cite_keys`) can be overridden
+# inline: `[<label>>pa5,pc293]` cites exactly those universal handles
+# instead of the derived originators (**replace**); `[<label>+pa5]` cites
+# the derived originators *plus* those (**supplement**, deduped). A
+# `pc<id>` (paper-chunk/passage) handle resolves to its parent paper's
+# cite_key. Purely syntactic — no storage, no draft-side edge. This is the
+# ONE application policy: `precis resolve` (the base32 `[pub_id]` token
+# grammar) and the draft ``mentions`` bracket grammar (Phase 2) both call
+# `apply_pin` so a pin behaves identically wherever an author writes it.
+
+
+def resolve_pin_handle(store: Any, handle: str) -> tuple[int, str] | None:
+    """Resolve one authorial pin handle to ``(paper_ref_id, cite_key)``.
+
+    A ``pc<id>`` (paper-chunk/passage) handle resolves to its **parent
+    paper** — the ``.bib`` is paper-level, so pinning a passage means
+    "grounded at this figure," not a separate citable unit.
+    :func:`~precis.store.Store.resolve_handle` already does that
+    parent-lookup for a chunk handle (``ResolvedHandle.ref_id`` is the
+    owning ref), so this reuses it rather than hand-rolling chunk→paper
+    resolution.
+
+    ``None`` when the handle isn't well-formed, doesn't resolve to a
+    live paper, or that paper has no ``cite_key`` alias — the caller
+    warns and skips.
+    """
+    resolved = store.resolve_handle(handle)
+    if resolved is None or resolved.kind != "paper":
+        return None
+    aliases = store.ref_cite_keys(resolved.ref_id)
+    if not aliases:
+        return None
+    return resolved.ref_id, aliases[0]
+
+
+@dataclass(frozen=True)
+class PinResult:
+    """The outcome of applying one authorial pin to a hub's derived
+    cite_keys."""
+
+    cite_keys: list[str]
+    diverged: bool = False
+    #: advisory text when a **replace** pin diverges from the derived
+    #: ``establishes`` originators; ``None`` when not diverged (or op=='+').
+    divergence: str | None = None
+    #: ``(status, detail)`` diagnostics — unresolvable pinned handle, an
+    #: empty-replace fallback, etc. Meant for the caller's warning log.
+    warnings: list[tuple[str, str]] = field(default_factory=list)
+
+
+def apply_pin(
+    store: Any,
+    *,
+    label: str,
+    op: str,
+    handles: list[str],
+    derived_cite_keys: list[str],
+    evidence: HubEvidence,
+) -> PinResult:
+    """Apply an authorial pin to a hub's derived cite_keys — ``op`` is
+    ``'>'`` (replace) or ``'+'`` (supplement).
+
+    Resolves each pinned handle (:func:`resolve_pin_handle`, deduped by
+    paper ref_id, first-seen order), warning + skipping an unresolvable
+    one. Reports a divergence advisory when the pinned paper set differs
+    from the hub's *actually derived* ``establishes`` originators (not the
+    corroborator-fallback set — a pin only "diverges" from a real
+    seniority split) — **replace (``>``) only**. A supplement (``+``) pin
+    is purely additive ("derived plus these"), so its handle set
+    legitimately differs from the full derived set on every normal use;
+    it has no divergence concept and never fires the advisory.
+
+    ``'>'`` (replace) with an empty resolved pin set falls back to
+    ``derived_cite_keys`` unchanged, with a warning — a citation must
+    never silently disappear because a pin went stale.
+
+    ``label`` is the pinned finding's display label (a base32 pub_id for
+    ``precis resolve``, a ``fi<id>`` handle for the draft grammar) —
+    used only in warning/divergence message text.
+    """
+    from precis.utils import handle_registry
+
+    warnings: list[tuple[str, str]] = []
+    pinned: list[tuple[int, str]] = []
+    seen_ref_ids: set[int] = set()
+    for handle in handles:
+        resolved = resolve_pin_handle(store, handle)
+        if resolved is None:
+            warnings.append(
+                (
+                    "pin",
+                    f"pinned handle {handle} did not resolve to a cited "
+                    "paper — skipped",
+                )
+            )
+            continue
+        ref_id, cite_key = resolved
+        if ref_id in seen_ref_ids:
+            continue
+        seen_ref_ids.add(ref_id)
+        pinned.append((ref_id, cite_key))
+
+    pinned_ref_ids = {ref_id for ref_id, _ in pinned}
+    pinned_keys = [cite_key for _, cite_key in pinned]
+
+    if op == ">":
+        # Divergence advisory — replace only (see docstring: a supplement
+        # pin has no divergence concept).
+        diverged = False
+        divergence: str | None = None
+        originator_ref_ids = {edge.paper_ref_id for edge in evidence.originators}
+        if (
+            pinned_ref_ids
+            and originator_ref_ids
+            and pinned_ref_ids != originator_ref_ids
+        ):
+            pinned_str = ", ".join(
+                sorted(
+                    handle_registry.format_handle("paper", r) for r in pinned_ref_ids
+                )
+            )
+            derived_str = ", ".join(
+                sorted(
+                    handle_registry.format_handle("paper", r)
+                    for r in originator_ref_ids
+                )
+            )
+            divergence = (
+                f"[{label}] pinned {{{pinned_str}}} but derived originator "
+                f"is {{{derived_str}}} — reconsider"
+            )
+            diverged = True
+
+        if pinned_keys:
+            return PinResult(
+                cite_keys=pinned_keys,
+                diverged=diverged,
+                divergence=divergence,
+                warnings=warnings,
+            )
+        warnings.append(
+            (
+                "pin",
+                "replace pin resolved to no usable cite_keys — falling "
+                "back to derived hub resolution",
+            )
+        )
+        return PinResult(
+            cite_keys=derived_cite_keys,
+            diverged=diverged,
+            divergence=divergence,
+            warnings=warnings,
+        )
+    # op == "+": supplement — derived originators first, pinned appended,
+    # deduped by cite_key, deterministic (pin order after derived order).
+    return PinResult(
+        cite_keys=derived_cite_keys
+        + [key for key in pinned_keys if key not in derived_cite_keys],
+        warnings=warnings,
+    )
+
+
+__all__ = [
+    "FindingCite",
+    "PinResult",
+    "apply_pin",
+    "finding_cite_keys",
+    "hub_cite_keys",
+    "resolve_pin_handle",
+]

@@ -37,6 +37,7 @@ from precis.export.latex import (
 from precis.utils import handle_registry
 from precis.utils.authors import build_byline
 from precis.utils.draft_markup import DRAFT_CITE_PATTERN
+from precis.utils.mentions import parse_pin_suffix
 from precis.utils.workspace import Workspace
 
 #: chunk depth → Word heading level (1..4); deeper collapses to 4.
@@ -506,7 +507,7 @@ def _render_reference(m: re.Match[str], ctx: _Ctx, paragraph: Any) -> None:
         _render_target(m.group("tgt"), m.group("disp"), ctx, paragraph)
         return
     if m.group("bare") is not None:
-        _render_target(m.group("bare"), None, ctx, paragraph)
+        _render_target(m.group("bare"), None, ctx, paragraph, pin=m.group("pin"))
         return
     if m.group("ref") is not None:
         if m.group("kind") == "paper":
@@ -537,29 +538,57 @@ def _handle_cite_key(tgt: str, ctx: _Ctx) -> tuple[str, int | None] | None:
     return resolved.public_id, resolved.chunk_id
 
 
-def _finding_cite_key(tgt: str, ctx: _Ctx) -> list[str]:
+def _finding_cite_keys_pinned(tgt: str, pin: str | None, ctx: _Ctx) -> list[str]:
     """A finding handle (``fi<id>``) → its bibliographic cite_key(s), via
     the ONE shared resolver (:func:`precis.taproot.cite.finding_cite_keys`)
-    ``precis resolve`` and :func:`precis.export.latex._finding_cite_key`
+    ``precis resolve`` and :func:`precis.export.latex._render_finding_cite`
     also use. A plain finding resolves to its primary cite_key once the
     chase establishes it, else its ``pub_id`` stub. A Taproot claim hub
     resolves instead to its currently derived ``establishes`` originator(s)
     (falling back to corroborators) — a living citation. Empty when the
     target doesn't resolve to a live finding, or a hub has no resolvable
-    evidence yet (in-flight)."""
+    evidence yet (in-flight).
+
+    ``pin`` (Taproot slice A2, Phase 2) overrides/extends a hub's derived
+    cite_keys through the ONE shared :func:`precis.taproot.cite.apply_pin`
+    policy — mirrors :func:`precis.export.latex._render_finding_cite`'s
+    pin handling so the docx and PDF paths agree. A pin on a non-hub
+    finding is meaningless and is dropped with a warning."""
     if ctx.store is None:
         return []
     parsed = handle_registry.parse(tgt)
     if parsed is None:
         return []
     _kind, _is_chunk, pk = parsed
-    from precis.taproot.cite import finding_cite_keys
+    from precis.taproot.cite import apply_pin, finding_cite_keys
 
-    result = finding_cite_keys(ctx.store, pk)
-    return result.cite_keys
+    fc = finding_cite_keys(ctx.store, pk)
+    keys = fc.cite_keys
+    op, handles = parse_pin_suffix(pin)
+    if op is not None:
+        if fc.is_hub and fc.evidence is not None:
+            result = apply_pin(
+                ctx.store,
+                label=tgt,
+                op=op,
+                handles=handles,
+                derived_cite_keys=keys,
+                evidence=fc.evidence,
+            )
+            keys = result.cite_keys
+            ctx.warnings.extend(detail for _status, detail in result.warnings)
+            if result.diverged and result.divergence:
+                ctx.warnings.append(result.divergence)
+        else:
+            ctx.warnings.append(
+                f"pin on {tgt} ignored — pins only apply to a Taproot claim hub cite"
+            )
+    return keys
 
 
-def _render_target(tgt: str, surface: str | None, ctx: _Ctx, paragraph: Any) -> None:
+def _render_target(
+    tgt: str, surface: str | None, ctx: _Ctx, paragraph: Any, *, pin: str | None = None
+) -> None:
     if tgt.startswith("§"):  # a citation — keep the consecutive-cite run
         cm = DRAFT_CITE_PATTERN.fullmatch(tgt)
         if cm is not None:
@@ -584,7 +613,7 @@ def _render_target(tgt: str, surface: str | None, ctx: _Ctx, paragraph: Any) -> 
                 _cite(slug, ctx, paragraph, chunk_id=chunk_id)
             return
         if kind == "finding":
-            for slug in _finding_cite_key(tgt, ctx):
+            for slug in _finding_cite_keys_pinned(tgt, pin, ctx):
                 _cite(slug, ctx, paragraph)
             return
         # draft cross-ref / other record handle → not a citation.
