@@ -42,18 +42,19 @@ gaps finding/regex (`55f80b70`), typed-error dispatch regression test
 PR #35 `mcp<3` (merged `d3123538`), Windows CI (skipif pass `4a1b2e08`, now
 green). Still open (two grew mid-session into much bigger finds):
 
-- **🔴 Agent lane stalled 4 days (`plan_tick`/`quest_tick`/`catpath_explore`) —
-  root-caused 2026-07-30, two latches, NEITHER quota** *(prod-ops + repo).* The
-  whole agent/planner lane died 2026-07-26, masked until now by the quota noise
-  ("waiting on quota to clear" was itself the trap). (1) **quest_tick /
-  catpath_explore**: melchior's `quest_loop_reconcile` pass (only minter of
-  fresh quest_tick jobs) stopped registering — the worker-agent process carried
-  a stale env with `PRECIS_QUEST_LOOP_ENABLED` off. **Restart attempted this
-  session** (full `bootout`+`bootstrap` of `com.precis.worker-agent`; the
-  service now reports env=1, state=running) **but the pass is STILL silent** —
-  under investigation as of 2026-07-30 ~13:15. Restart-depth was necessary but
-  not sufficient; a runtime diagnostic (process env vs. service config, worker
-  pass-loop health) is in flight. (2)
+- **🟠 Agent lane stalled 4 days — quest half FIXED, plan_tick half PENDING**
+  *(prod-ops + repo).* The whole agent/planner lane died ~2026-07-26, masked by
+  the quota noise ("waiting on quota to clear" was itself the trap); NEITHER
+  half was quota. (1) **quest_tick / catpath_explore — ✅ FIXED + deployed +
+  prod-confirmed (`26dc102f`)**: `quest_loop_reconcile` registered (env gate)
+  but was **skipped every cycle** because its `ServiceSpec` omitted `enable_env`,
+  so run_loop's per-cycle `pass_gate` default (`_env_profile_default_on`, made
+  spec-derived by `e69c2b06`) resolved False. Not an env-drop and not a stale
+  venv (both disproven live) — the two gates simply disagreed. Fix = declare
+  `enable_env="PRECIS_QUEST_LOOP_ENABLED"` on the spec; regression test
+  `test_quest_loop_reconcile_gate_env_matches_registration`. Confirmed: pass
+  logging again + fresh quest_tick jobs 175884/175885 minted post-deploy. The
+  earlier bootout+bootstrap was necessary groundwork but not the fix. (2)
   **plan_tick — PENDING owner-scope decision**: every open planner-coroutine
   parent (nanobuds, methane-sponge, mechacard, nox_to_ammonia, nanotrans2, …)
   carries a `child-failed:<job>` hard-block tag that never auto-clears, latched
