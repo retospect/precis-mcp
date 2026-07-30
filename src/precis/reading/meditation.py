@@ -369,16 +369,24 @@ def build_meditation(
         # profile. Tests always inject a fake client, so this branch stays out of
         # unit runs and off the cheap MCP import graph.
         #
-        # Folds through the router (ADR 0046) onto the FRONTIER reasoning
-        # tier (``claude_agent``, direct Anthropic OAuth) instead of holding a
-        # raw litellm client, so this cast composer gets the budget breaker +
-        # the route-log. ``tools_needed=True`` lands on ``claude_agent``
-        # (free-text final answer, system prompt honored, no tools advertised)
-        # rather than the tool-less ``claude_p`` judge shape, which would drop
-        # the nidra system prompt and demand a parseable JSON block this
-        # prose script never has. A ``PRECIS_MEDITATION_MODEL`` override still
-        # wins, but must now name a real model id (e.g. ``claude-opus-4-8``),
-        # not the retired litellm ``claude-opus`` alias.
+        # Folds through the router (ADR 0046) onto the ``claude_agent``
+        # transport (direct Anthropic OAuth) instead of holding a raw litellm
+        # client, so this cast composer gets the budget breaker + the route-log.
+        # ``tools_needed=True`` lands on ``claude_agent`` (free-text final
+        # answer, system prompt honored, no tools advertised) rather than the
+        # tool-less ``claude_p`` judge shape, which would drop the nidra system
+        # prompt and demand a parseable JSON block this prose script never has.
+        #
+        # Model **pinned to Sonnet 5** (was Opus 4.8, the FRONTIER default):
+        # a nidra is prose composition — Sonnet 5 is amply capable — and pinning
+        # an explicit claude id both cuts consumption ~⅕ (so the *unified*
+        # subscription quota lasts far longer under a crunch — the 07-24→30
+        # outage's original trigger) AND forces ``claude_agent`` regardless of
+        # the live ``llm.chain`` / backend, so a fleet ``llm.backend`` flip can't
+        # silently hijack this cast onto an OpenRouter OSS model (gripe 171782).
+        # Tier stays FRONTIER so the subscription-quota breaker still gates it
+        # (it *is* a subscription call). A ``PRECIS_MEDITATION_MODEL`` override
+        # still wins, but must name a real model id, not a retired litellm alias.
         import os
 
         from precis.utils.llm.router import DispatchClient, Tier
@@ -392,7 +400,7 @@ def build_meditation(
         # so it only bites a genuinely runaway single call).
         client = DispatchClient(
             tier=Tier.FRONTIER,
-            model=os.environ.get("PRECIS_MEDITATION_MODEL") or None,
+            model=os.environ.get("PRECIS_MEDITATION_MODEL") or "claude-sonnet-5",
             tools_needed=True,
             max_tokens=compose_max_tokens(profile, target_minutes=target),
             source="meditation",

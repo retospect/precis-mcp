@@ -794,16 +794,24 @@ def build_reading_briefing(
     # lands on claude_agent (free-text final answer + system prompt honored,
     # no tools advertised since mcp_config is left unset) rather than the
     # tool-less claude_p judge shape, which would drop the system prompt and
-    # demand a parseable JSON block this pass's prose brief never has. A
-    # PRECIS_READING_BRIEF_MODEL override still wins, but must now name a real
-    # model id (e.g. claude-opus-4-8), not the retired litellm claude-opus alias.
+    # demand a parseable JSON block this pass's prose brief never has.
+    #
+    # Model pinned to Sonnet 5 (was Opus 4.8, the FRONTIER default): the brief
+    # is prose composition — Sonnet 5 is amply capable — and pinning an explicit
+    # claude id both cuts consumption ~⅕ (so the *unified* subscription quota
+    # lasts far longer under a crunch — the 07-24→30 outage's original trigger)
+    # AND forces claude_agent regardless of the live llm.chain / backend, so a
+    # fleet llm.backend flip can't silently hijack this cast onto an OpenRouter
+    # OSS model (gripe 171782). Tier stays FRONTIER so the subscription-quota
+    # breaker still gates it. A PRECIS_READING_BRIEF_MODEL override still wins,
+    # but must name a real model id, not a retired litellm alias.
     # max_tokens restores the pre-migration litellm cap (compose_max_tokens, the
     # profile's word budget in token terms) — best-effort post-hoc truncation on
     # claude_agent (no native completion-length flag there), not a real
     # generation-time stop, but it keeps the cast bounded to its target length.
     llm = client or DispatchClient(
         tier=Tier.FRONTIER,
-        model=os.environ.get("PRECIS_READING_BRIEF_MODEL") or None,
+        model=os.environ.get("PRECIS_READING_BRIEF_MODEL") or "claude-sonnet-5",
         tools_needed=True,
         max_tokens=compose_max_tokens(profile),
         source="reading_brief",

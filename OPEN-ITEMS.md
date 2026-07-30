@@ -929,12 +929,29 @@ patent lingo → claims against a comprehensive FTO view → `plan` scoping ledg
 Daily reading-brief + nidra casts shipped + live. Owner: `reading/*`,
 `workers/cast_audio.py`. Skill `precis-audio-help`.
 
-- **Cast length calibration** *(polish, open — fix deployed, unverified).*
-  2026-07-15 nidra was ~18 min vs a 45-min budget; per-segment word targets
-  added in `ae37657a` but unmeasured — measure next nidra, raise the target if
-  short. Morning brief came out ~4 min vs 15-min target (single-call compose,
-  no floor, content-bound) — decide floor vs content-driven length. `wpm=110`
-  is accurate, leave it.
+- **Cast model = Sonnet 5 (pinned), not Opus** *(worktree, unshipped 2026-07-30).*
+  Both `build_reading_briefing` + `build_meditation` composed on the FRONTIER
+  default (Opus 4.8) via `claude_agent`; now **pin `model="claude-sonnet-5"`**
+  (env-overridable), tier stays `FRONTIER` so the subscription-quota breaker
+  still gates it. NOT `tier=BIG` — the live `llm.chain.big` routes to
+  `z-ai/glm-5.2` on OpenRouter, so `tier=BIG` would have shipped GLM, not Sonnet.
+  Pinning an explicit claude id (a) cuts cast consumption ~⅕ so the *unified*
+  subscription quota lasts far longer under a crunch (the 07-24→30 outage's
+  original trigger), and (b) forces `claude_agent` regardless of a fleet
+  `llm.backend` flip (hardens against gripe 171782). Validated on the manual
+  composes: brief ref 175895, nidra ref 175928. NB: fixes only the *quota*
+  failure mode — the 07-27→30 gap itself is the 🔴 agent-lane stall
+  (`child-failed` latch), not the model. Sonnet still shares the unified
+  subscription pool; for casts *fully* immune to the Claude quota they'd have to
+  route off-subscription (OpenRouter), a different non-Claude model.
+- **Cast length calibration** *(nidra RESOLVED; morning brief still short).*
+  Measured on the 2026-07-30 manual composes: **nidra ref 175928 = 4842 words ≈
+  44 min** against a 45-min target — the segmented per-segment word budget
+  (`ae37657a`) works; calibration closed. **Morning brief ref 175895 = 1972 words
+  ≈ 13 min** against a 20-min target — single-call compose, still content-bound
+  and ~⅓ short despite the "aim for {words}≈3000" contract line. Decide: a
+  segmented brief (like nidra) or a stronger length floor. `wpm` values accurate,
+  leave them.
 - **Wire the quest lane into the morning brief** *(feature, open; td161129).*
   `briefing_cast._lane_quest` is a degrade-to-empty stub; quest slice-1 (kind +
   `serves` + `quest_log`) is live, so surface per-active-quest momentum + recent
@@ -945,12 +962,6 @@ Daily reading-brief + nidra casts shipped + live. Owner: `reading/*`,
   'draft'`, `meta.cast`) accumulate + are embedded/searchable; add `meta.no_index`
   and/or a retention GC. Also remove leftover test drafts/episodes
   (`cast-nidra-test-546c21`, `nidra-test-546c21`).
-- **Verify the morning-brief depth rewrite live** *(polish, open —
-  verification, not code).* The depth-first prompt rewrite (papers get
-  context+claim+method+why grounded in the abstract, not a title-only
-  mention; active-only quest report + decaying dormant nudge;
-  `_MORNING_CONTRACT` in `reading/briefing_cast.py`) shipped with the 20-min
-  target bump; confirm it's landed on a deployed brief, not just shipped.
 
 ## 📚 Topic dossiers (ADR 0060) — standing paper classification + living syntheses
 

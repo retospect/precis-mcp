@@ -118,7 +118,8 @@ its sources but reads no URL aloud, so the link is the durable pointer): the
 drafts/quests `related-to`; the `nidra` walk links each walked concept
 `related-to`. So `links_for` on the cast draft reopens what it mentioned.
 
-Both compose with a **nice model** (`claude-opus`) and persist a standalone dated
+Both compose with a **capable model** (`claude-sonnet-5`, pinned — prose
+composition, quota-resilient vs the FRONTIER Opus default) and persist a standalone dated
 `draft` marked `meta.cast` (+ `meta.voice`), **filed under a Drive folder** ("Morning
 brief" / "Evening meditation") so the text shows up in `/drive` — the Drive row also
 links the published mp3 + compiled PDF. **TTS is a separate downstream step:**

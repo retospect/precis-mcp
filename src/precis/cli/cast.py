@@ -168,9 +168,9 @@ def install_cast_watches(store: Store) -> list[int]:
                     "cron": sched.cron,
                     "backfill_missed": sched.backfill_missed,
                 },
-                # claude_inproc (melchior) — the compose uses claude-opus via the
-                # melchior-loopback litellm proxy; TTS is a separate downstream
-                # pass on spark, so this once-a-day melchior compute is fine.
+                # claude_inproc (melchior) — the compose uses Sonnet 5 (pinned,
+                # claude_agent transport, FRONTIER band); TTS is a separate
+                # downstream pass on spark, so this once-a-day compute is fine.
                 "executor": "claude_inproc",
                 "job_type": profile.job_type,
                 "params": {},

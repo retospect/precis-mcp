@@ -447,7 +447,10 @@ executor's (`claude_inproc` plan_tick, etc.).
   **`claude_inproc`** job_types (melchior — both casts, `card_forge`, and the news
   briefing now compose via the LLM router's `Tier.FRONTIER` (`DispatchClient`,
   ADR 0046) onto `claude_agent` — a `claude -p` subprocess, direct Anthropic OAuth —
-  not the melchior-loopback litellm proxy; litellm now serves only `SMALL`)
+  not the melchior-loopback litellm proxy; litellm now serves only `SMALL`. The two
+  audio **casts** pin `model="claude-sonnet-5"` within the FRONTIER band — prose
+  composition, ~⅕ the subscription-quota draw; `card_forge`/news briefing keep the
+  FRONTIER Opus default)
   on daily `level:recurring` watches; **TTS is the separate downstream spark pass**, so the
   nice-model compose and the container narration never block each other. CLI:
   `precis cast run <reading|nidra> [--publish]` + `precis cast schedule [--now]`.
