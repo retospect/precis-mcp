@@ -59,7 +59,7 @@ HUB_ROLES: frozenset[str] = frozenset({"establishes", "corroborates", "contradic
 _DEFAULT_ROLE = "corroborates"
 
 _STATUS_NS = "STATUS"
-_STATUS_TRACING = "tracing"
+_STATUS_CANONICAL = "canonical"
 
 
 def _is_claim_hub(store: Any, ref_id: int, *, conn: Any) -> bool:
@@ -96,7 +96,7 @@ def mint_hub(
     ``claim.sentence`` → ``title`` (list-view scannability) *and* a
     ``finding_body`` chunk at ``ord=0`` (so it embeds + full-text-searches,
     and the card pass emits the ``card_combined`` that :func:`canon.block`
-    ANN-retrieves over); ``claim.scope`` → ``meta.scope``; ``STATUS:tracing``;
+    ANN-retrieves over); ``claim.scope`` → ``meta.scope``; ``STATUS:canonical``;
     ``TAPROOT:claim``. This is taproot's *system-writer* path — the agent-facing
     door is ``FindingHandler.put`` (pub_id dedup + a frontier ``derived-from``);
     taproot dedups upstream via canonicalization, so the hub write is direct.
@@ -169,11 +169,14 @@ def mint_hub(
             "VALUES (%s, %s, %s, %s)",
             ("pub_id", pub_id, ref.id, "taproot"),
         )
-        # STATUS:tracing — a fresh hub has no resolved originators yet
-        # (system-set, mirrors FindingHandler).
+        # STATUS:canonical — a canonicalized claim node, not an in-flight
+        # chase; its state is its derived evidence, not a chase lifecycle
+        # (system-set — deliberately NOT STATUS:tracing like a put() finding,
+        # which would drag the hub into the chase claim + hide it from the
+        # default finding search).
         store.add_tag(
             ref.id,
-            Tag.closed(_STATUS_NS, _STATUS_TRACING),
+            Tag.closed(_STATUS_NS, _STATUS_CANONICAL),
             set_by="system",
             replace_prefix=True,
             conn=c,

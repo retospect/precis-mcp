@@ -156,8 +156,9 @@ search(kind="finding", tags=["TAPROOT:claim"])  # every claim hub
 ```
 
 Claim hubs surface in the **default** `finding` search — no `status=`
-needed. (A hub carries `STATUS:tracing` under the hood, but the default
-cohort unions hubs in alongside `established` findings.) Drill one with
+needed. A hub mints `STATUS:canonical` (off the chase-status lifecycle,
+never `tracing`/`established`), and the default cohort unions hubs in by
+their `TAPROOT:claim` tag alongside `established` findings. Drill one with
 `view='evidence'` (above).
 
 Hubs are **system-minted, not agent-created** — `put(kind='finding', ...)`

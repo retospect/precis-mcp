@@ -221,11 +221,14 @@ def claim_tracing_findings(
     chain that just advanced keeps moving promptly.
 
     Excludes ``TAPROOT:claim`` findings (taproot hubs, :func:`~precis.
-    taproot.hub.mint_hub`). A hub is itself a ``kind='finding'`` ref
-    carrying ``STATUS:tracing`` (a fresh hub has no resolved originators
-    yet), so without this exclusion it re-enters this same claim query and
-    dies as an empty-chain ``dead_chain`` every pass — a wasted claim slot
-    plus telemetry noise (gripe 175806). Hubs are chased by the taproot
+    taproot.hub.mint_hub`). A hub now mints with ``STATUS:canonical``, off
+    this ``STATUS:tracing`` claim's own filter, so it no longer matches the
+    query on its own — but the explicit ``TAPROOT:claim`` exclusion stays
+    as a defensive belt-and-suspenders guard so a mis-statused hub can
+    never be chased: without it, a hub that somehow carried
+    ``STATUS:tracing`` would re-enter this same claim query and die as an
+    empty-chain ``dead_chain`` every pass — a wasted claim slot plus
+    telemetry noise (gripe 175806). Hubs are chased by the taproot
     seniority derivation, not this worker.
     """
     if limit <= 0:

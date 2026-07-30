@@ -13,7 +13,9 @@ from typing import Any
 
 import pytest
 
+from precis.dispatch import Hub
 from precis.errors import BadInput
+from precis.handlers.finding import FindingHandler
 from precis.identity import make_pub_id, make_taproot_hub_paper_id
 from precis.store.types import Tag
 from precis.taproot.canon import CanonicalClaim, Placement
@@ -79,8 +81,25 @@ def test_mint_hub_creates_a_taproot_claim_finding(store: Any) -> None:
         ).fetchone()[0]
     assert kind == "finding"
     assert _ref_tag(store, hub, "TAPROOT") == "claim"
-    assert _ref_tag(store, hub, "STATUS") == "tracing"
+    assert _ref_tag(store, hub, "STATUS") == "canonical"
     assert _finding_body(store, hub) == _CLAIM.sentence
+
+
+def test_mint_hub_surfaces_under_default_status_finding_search(store: Any) -> None:
+    """A hub carries ``STATUS:canonical``, off the chase-status axis, so a
+    ``tags=['TAPROOT:claim']`` search must find it *without* an explicit
+    ``status=`` — the ``established`` chase default would otherwise hide
+    every hub (the wart this fix closes)."""
+    hub = mint_hub(store, _CLAIM)
+    handler = FindingHandler(hub=Hub(store=store))
+
+    out = handler.search(tags=["TAPROOT:claim"])
+    assert str(hub) in out.body
+
+    # An explicit status= still wins verbatim: the hub is `canonical`, not
+    # `established`, so asking for `established` finds nothing.
+    established_only = handler.search(tags=["TAPROOT:claim"], status="established")
+    assert str(hub) not in established_only.body
 
 
 def test_mint_hub_mints_a_citable_pub_id(store: Any) -> None:

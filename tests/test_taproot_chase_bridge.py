@@ -386,12 +386,11 @@ def test_reestablished_finding_does_not_duplicate_hub_or_edge(store: Any) -> Non
             taproot_enabled=True,
             taproot_embedder=embedder,
         )
-    # Not asserting claimed==1 here: the freshly-minted hub is itself a
-    # `kind='finding'` ref carrying STATUS:tracing (hub.py's own
-    # "no resolved originators yet" tag), so this pass's claim also picks
-    # it up — a harmless empty-chain dead_chain for the hub, orthogonal to
-    # what this test is pinning down (see the gripe filed for this
-    # tracing-vocabulary overlap). failed==0 is what matters: no crash.
+    # Not pinning the exact claimed count here (hub.py now mints
+    # STATUS:canonical, off the STATUS:tracing claim query, so the hub
+    # itself no longer re-enters this pass — see claim_tracing_findings'
+    # TAPROOT:claim exclusion, still kept as a defensive belt-and-
+    # suspenders guard). failed==0 is what this test pins down: no crash.
     assert result["failed"] == 0
     assert _status(store, finding.ref_id) == "established"
 

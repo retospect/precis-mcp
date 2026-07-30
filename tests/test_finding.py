@@ -568,7 +568,7 @@ class TestSearch:
 
 
 class TestSearchSurfacesHubs:
-    """Regression: a taproot claim hub (``TAPROOT:claim``, ``STATUS:tracing``
+    """Regression: a taproot claim hub (``TAPROOT:claim``, ``STATUS:canonical``
     — minted by ``taproot/hub.py::mint_hub``) must show up in the DEFAULT
     finding search (no explicit ``status=``) alongside established
     findings, without needing the ``status='*'`` workaround — while an

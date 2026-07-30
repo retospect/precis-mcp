@@ -67,12 +67,13 @@ _STATUS_NAMESPACE = "STATUS"
 _STATUS_TRACING = "tracing"
 _DERIVED_FROM = "derived-from"
 # A taproot claim hub (``taproot/hub.py::mint_hub``) is a ``finding`` ref
-# tagged this closed value. Hubs are stamped ``STATUS:tracing`` (mirroring
-# an ordinary in-flight finding — see ``chase.py::claim_tracing_findings``,
-# which deliberately excludes ``TAPROOT:claim`` rows so hubs are never
-# re-claimed by the chase), so the default (no explicit ``status=``) search
-# cohort below unions this tag in alongside ``STATUS:established`` — a
-# minted hub should be visible without the ``status='*'`` workaround.
+# tagged this closed value. Hubs are stamped ``STATUS:canonical`` — off the
+# chase-status lifecycle (a hub is a canonicalized claim node, not an
+# in-flight chase), so they don't pollute the ``tracing`` cohort and
+# ``chase.py::claim_tracing_findings`` never re-claims them. Because the
+# default (no explicit ``status=``) search cohort below unions on this
+# *tag* rather than a status, a minted hub is visible without the
+# ``status='*'`` workaround regardless of the hub's status value.
 _TAPROOT_CLAIM_TAG = "TAPROOT:claim"
 
 
@@ -480,13 +481,15 @@ class FindingHandler(NumericRefHandler):
 
         **Default cohort (no explicit ``status=``):** ``STATUS:established``
         findings **plus** taproot claim hubs (``TAPROOT:claim`` — minted by
-        ``taproot/hub.py::mint_hub`` with ``STATUS:tracing``, same as an
-        ordinary in-flight finding). This is the natural "what evidence do
+        ``taproot/hub.py::mint_hub`` with ``STATUS:canonical``, off the
+        chase-status lifecycle). This is the natural "what evidence do
         we have for X?" shape — the agent rarely wants in-flight rows mixed
         in, but a claim hub is a first-class answer even before its chain
-        resolves. An *explicit* ``status=`` (including ``status='established'``)
-        is an exact single-status filter and does NOT include hubs unless
-        asked for directly (``status='tracing'`` or ``status='*'``).
+        resolves. The union keys off the ``TAPROOT:claim`` *tag*, so it holds
+        whatever status a hub carries. An *explicit* ``status=`` (including
+        ``status='established'``) is an exact single-status filter and does
+        NOT include hubs unless asked for directly (``status='canonical'`` or
+        ``status='*'``).
 
         Renders results as a TOON table (``id | title | setup |
         primary``) so the agent gets a scannable list — the begat

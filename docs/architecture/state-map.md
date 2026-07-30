@@ -985,11 +985,16 @@ overlay on `finding`/`ref_tags`/`links` — no schema of its own).
     for `canon.block` is threaded from `cli/worker.py`'s `_chase_pass`
     setup — reused from an already-booted `EmbedHandler` when one exists
     (no extra model load), else constructed once (only when the flag is
-    on) and degraded to `None` on failure. Known interaction (tracked,
-    not fixed here — gripe 175806): a freshly-minted hub is itself a
-    `kind='finding'` `STATUS:tracing` ref, so `chase`'s own claim query
-    also picks it up next pass (harmless empty-chain → `dead_chain`, no
-    LLM cost, but `STATUS` vocabulary noise). Tests:
+    on) and degraded to `None` on failure. A hub mints `STATUS:canonical`
+    (not `STATUS:tracing`) — off the chase-status lifecycle entirely, so
+    `chase`'s own claim query no longer re-picks it up (closes gripe
+    175806's `STATUS` vocabulary overlap); `claim_tracing_findings`' explicit
+    `TAPROOT:claim` exclusion stays as a defensive belt-and-suspenders
+    guard. `FindingHandler.search`'s default (`status is None`) cohort
+    (`_search_default_cohort`) unions `TAPROOT:claim` hubs in alongside
+    `STATUS:established` findings — keyed on the tag, so hubs surface in any
+    default search without an explicit `status=`; an explicit `status=`
+    stays an exact single-status filter. Tests:
     `tests/test_taproot_chase_bridge.py` (mapping, NO-SUPPORT/NO-CLAIM/
     flag-off skips, no-embedder degrade, re-establish idempotency).
   - **A2 (authorial cite pinning)** — built (ADR 0074, closes taproot.md

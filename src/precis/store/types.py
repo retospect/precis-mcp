@@ -744,6 +744,10 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
             "established",
             "multi_candidate",
             "dead_chain",
+            # taproot claim hub (hub.py::mint_hub) — a canonicalized claim
+            # node, off the chase-status lifecycle (never `tracing` /
+            # `established`).
+            "canonical",
             # gripe lifecycle (migration 0005 / handler rewrite).
             # ``open`` is shared with todo above; the rest are
             # gripe-only.
