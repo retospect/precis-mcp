@@ -110,6 +110,16 @@ Optional ship message from the user: `$ARGUMENTS`
     correctness gap — a latent bug, an incomplete fix, a message-only
     mitigation of a real root cause — **not** a feature extension or a
     nice-to-have.
+    - **Confusion-mined residuals: deploy-date-check FIRST.** A "latent bug"
+      pulled from a prod transcript or worker log may already be fixed —
+      transcripts persist forever, so an `[error:…]` in a "recent" job can be an
+      old failure echoed, or quoted text (see `whatneedsdoing` step 6's two
+      false-positive traps). Before persisting *or* investigating one,
+      `git log -S'<callsite>'` for a fix and confirm the real occurrences
+      postdate its deploy; if every occurrence predates the fix, it's already
+      fixed — resolve per the gripe convention (comment naming the sha →
+      soft-delete), don't file or chase it. (Skipping this once sent an
+      already-fixed `edit()`-° incident to a full root-cause pass — `gr175738`.)
     - **Persist first — it must survive compaction.** Before anything else,
       record every harvested residual durably: an `OPEN-ITEMS.md` "Residuals"
       block and/or `kind='todo'` / `gripe` rows. Free-text residuals get
