@@ -145,6 +145,24 @@ _ANCHOR_CLS = "text-sky-700 underline decoration-dotted hover:decoration-solid"
 _CITE_LOCAL_CLS = _ANCHOR_CLS
 _CITE_EXTERNAL_CLS = "text-amber-600 underline decoration-dotted hover:decoration-solid"
 
+#: A Taproot claim-hub cite — a violet marker so it reads distinctly from a
+#: sky ``§`` paper cite. Hover shows the claim + its evidence; click opens the
+#: ``/claim`` page.
+_CLAIM_ANCHOR_CLS = "text-violet-700 underline decoration-dotted hover:decoration-solid"
+_CLAIM_SIGIL = "◆"
+
+#: Inline claim-hub cite grammar — the same heads + pins
+#: :data:`precis.utils.pub_id_lookup.PLACEHOLDER_RE` mines, but with named
+#: groups so :func:`_linkify_prose`'s dispatch stays a group-name check. It
+#: sits AFTER the display-link pattern in :data:`_COMBINED_PATTERN` (so a
+#: ``[method](target)`` display link whose text is six lowercase letters is
+#: consumed whole first) and BEFORE the bare-bracket pattern (so a hub
+#: ``[fi123]`` becomes a claim anchor rather than a generic finding anchor).
+_CLAIM_CITE_PATTERN = re.compile(
+    r"\[(?P<claimhead>(?:fi[0-9]+)|(?:[a-z2-7]{6}))"
+    r"(?:(?P<claimop>[>+])(?P<claimpins>[a-z]{2}[0-9]+(?:,[a-z]{2}[0-9]+)*))?\]"
+)
+
 
 def _cite_style(key: str, local: frozenset[str] | None) -> tuple[str, str]:
     """``(anchor_cls, glyph)`` for a compact paper citation keyed by ``key``
@@ -393,6 +411,39 @@ def _render_bare_bracket(
             return _render_compact_cite(m.group("slug"), m.group("chunk"), local=local)
         return _render_anchor("paper", m.group("slug"), m.group("chunk"), label=bare)
     return escape(f"[{bare}]")
+
+
+def _render_claim_hub(
+    head: str,
+    *,
+    claims: frozenset[str] | None,
+    compact: bool = False,
+    local: frozenset[str] | None = None,
+    callouts: dict[str, str] | None = None,
+) -> str:
+    """A Taproot claim-hub cite (``[fi123]`` / ``[<pub_id>]``, optionally
+    pinned) whose ``head`` is a known hub for this window → a violet claim
+    anchor: hover shows the claim + its evidence, click opens ``/claim``.
+
+    A head that ISN'T a hub (or a call site with no ``claims`` map) falls
+    back to the ordinary rendering of the bare ``head`` — the export-only
+    pin (`>`/`+` …) is dropped either way (a reader shows the cite, not the
+    bibliography directive), so ``[fi42>pa5]`` renders identically to
+    ``[fi42]``, and nothing that used to be a plain finding anchor / literal
+    changes.
+    """
+    if claims is None or head not in claims:
+        return _render_bare_bracket(
+            head, compact=compact, local=local, callouts=callouts
+        )
+    safe_head = escape(head)
+    label = _CLAIM_SIGIL if compact else escape(head)
+    return _anchor_html(
+        href=f"/claim/{safe_head}",
+        preview_url=f"/preview/claim/{safe_head}",
+        label=label,
+        anchor_cls=_CLAIM_ANCHOR_CLS,
+    )
 
 
 def _render_compact_cite(
@@ -699,6 +750,7 @@ def linkify_refs(
     abbrevs: dict[str, object] | None = None,
     local: frozenset[str] | None = None,
     callouts: dict[str, str] | None = None,
+    claims: frozenset[str] | None = None,
 ) -> Markup:
     """Replace ``kind:ref`` mentions in ``value`` with hover-preview anchors.
 
@@ -731,6 +783,13 @@ def linkify_refs(
     instead of the ``¶`` sigil, still hover-previewing the part. ``None`` (every
     non-part reference / call site) is unchanged.
 
+    ``claims`` — the reader's set of hub-cite heads (``fi123`` / a 6-char
+    pub_id) that resolve to a live ``TAPROOT:claim`` hub in this window. A
+    matching ``[head]`` / ``[head>…]`` / ``[head+…]`` cite renders as a violet
+    claim anchor (hover = claim + evidence, click = ``/claim``). A head not in
+    the set — or ``None`` (every non-reader call site) — keeps its prior
+    rendering, so this is a no-op until a reader opts in.
+
     Returns a :class:`markupsafe.Markup` instance so Jinja's autoescape
     treats the result as already-safe HTML.
     """
@@ -743,6 +802,7 @@ def linkify_refs(
         compact=compact,
         local=local,
         callouts=callouts,
+        claims=claims,
     )
     if abbrevs:
         html = _highlight_abbrevs(html, abbrevs)
@@ -774,6 +834,8 @@ _COMBINED_PATTERN = re.compile(
     + r"|"
     + _DISPLAY_LINK_PATTERN.pattern
     + r"|"
+    + _CLAIM_CITE_PATTERN.pattern
+    + r"|"
     + _BARE_BRACKET_REF_PATTERN.pattern
     + r"|"
     r"(?P<ref>" + _REF_PATTERN.pattern + r")"
@@ -792,6 +854,7 @@ def _linkify_prose(
     compact: bool = False,
     local: frozenset[str] | None = None,
     callouts: dict[str, str] | None = None,
+    claims: frozenset[str] | None = None,
 ) -> str:
     """Replace every ``kind:ref``, bare conv handle, and bare paper
     cite_key in plain prose with an anchor — single pass so we never
@@ -821,6 +884,14 @@ def _linkify_prose(
             )
         if m.group("disp") is not None:
             return _render_display_link(m.group("disp"), m.group("tgt"), m.group(0))
+        if m.group("claimhead") is not None:
+            return _render_claim_hub(
+                m.group("claimhead"),
+                claims=claims,
+                compact=compact,
+                local=local,
+                callouts=callouts,
+            )
         if m.group("bare") is not None:
             return _render_bare_bracket(
                 m.group("bare"), compact=compact, local=local, callouts=callouts

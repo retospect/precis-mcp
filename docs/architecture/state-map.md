@@ -1848,6 +1848,26 @@ The master kinds table lives in the `precis-overview` skill.
     finding handle, `collect_ring` drops any hub ref_id present in Claims
     from Notes/Cross-refs so it renders once. Tests:
     `tests/test_refeye.py`.
+  - **R2 (reader web claim rendering)** — built. The web readers render a
+    cited hub (either the `[<pub_id>]` or `[fi<id>]` form) as a **violet
+    claim anchor**: `precis_web/linkify.py` gains a self-contained
+    `_CLAIM_CITE_PATTERN` branch (placed after the display-link pattern,
+    before bare — so a display link whose label is six lowercase letters
+    isn't eaten) gated on a new `claims` side-channel (the window's hub-cite
+    heads, via
+    `precis_web/claim_render.py::hub_cite_heads`); hover →
+    `/preview/claim/<head>`, click → `/claim/<head>` (`routes/claim.py` +
+    `templates/claim/`). `claim_render.render_claim_evidence` resolves a
+    head (fi-handle or pub_id) to its hub and derives evidence via
+    `taproot/cite.py::finding_cite_keys`, ★-marking the print-visible
+    originators (corroborator fallback, same policy as A1). Both `/drafts`
+    and `/smartdraft` thread `claims=` into every `linkify_refs` call and
+    list cited claims in a sidebar / right-rail panel. A non-hub `[fi<id>]`
+    (generic finding anchor) or bare `[pub_id]` (literal) renders unchanged
+    — the side-channel defaults off, so this is a no-op outside the readers.
+    Tests: `tests/precis_web/test_linkify.py`,
+    `tests/precis_web/test_claim_routes.py`,
+    `tests/precis_web/test_claim_reader_anchors.py`.
 
 ## Web UI (`precis_web`)
 

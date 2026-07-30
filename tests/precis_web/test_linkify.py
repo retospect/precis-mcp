@@ -864,3 +864,62 @@ def test_render_cloze_escapes_untrusted_text() -> None:
 
 def test_render_cloze_no_deletion_is_plain_escaped_text() -> None:
     assert str(render_cloze("no cloze here <b>")) == "no cloze here &lt;b&gt;"
+
+
+# ── Taproot claim-hub cites (the `claims` side-channel) ─────────────────
+# A hub cite head (`fi<id>` / a 6-char pub_id) in the `claims` set renders a
+# violet claim anchor; a head not in the set keeps its prior rendering, so
+# passing no `claims` (every non-reader call site) is a no-op.
+
+
+def test_claim_hub_head_renders_claim_anchor() -> None:
+    out = str(linkify_refs("see [fi123]", compact=True, claims=frozenset({"fi123"})))
+    assert 'href="/claim/fi123"' in out
+    assert 'hx-get="/preview/claim/fi123"' in out
+    assert "◆" in out  # compact claim sigil
+
+
+def test_pub_id_head_renders_claim_anchor_when_hub() -> None:
+    out = str(linkify_refs("x [ab23cd] y", compact=True, claims=frozenset({"ab23cd"})))
+    assert 'href="/claim/ab23cd"' in out
+
+
+def test_pinned_hub_cite_is_recognised() -> None:
+    out = str(linkify_refs("[fi123>pc9]", compact=True, claims=frozenset({"fi123"})))
+    assert 'href="/claim/fi123"' in out
+
+
+def test_fi_head_without_claims_map_stays_generic_finding_anchor() -> None:
+    """No `claims` → prior behaviour: a bare `[fi123]` is a generic finding
+    anchor, not a claim anchor."""
+    out = str(linkify_refs("[fi123]", compact=True))
+    assert 'href="/r/finding/123"' in out
+    assert "/claim/" not in out
+
+
+def test_non_hub_fi_head_falls_back_even_with_claims_map() -> None:
+    out = str(linkify_refs("[fi123]", compact=True, claims=frozenset({"fi999"})))
+    assert 'href="/r/finding/123"' in out
+    assert "/claim/" not in out
+
+
+def test_pub_id_shaped_token_stays_literal_when_not_a_hub() -> None:
+    assert str(linkify_refs("[ab23cd]", compact=True)) == "[ab23cd]"
+
+
+def test_claim_pattern_does_not_eat_display_links() -> None:
+    """Regression: `[method](paper:5)` is a display link whose text is six
+    lowercase letters — the claim pattern must not consume `[method]` and
+    strand `(paper:5)`."""
+    out = str(linkify_refs("[method](paper:5)", compact=True))
+    assert 'href="/r/paper/5"' in out
+    assert ">method</a>" in out
+    assert "/claim/" not in out
+
+
+def test_six_char_chunk_handle_unaffected_by_claim_pattern() -> None:
+    """A 6-char paper-chunk handle `[pc2345]` still resolves to its chunk
+    anchor (routed through the claim fallback, unchanged)."""
+    out = str(linkify_refs("[pc2345]", compact=True))
+    assert 'href="/c/pc2345"' in out
+    assert "/claim/" not in out

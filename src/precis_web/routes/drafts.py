@@ -115,6 +115,11 @@ from precis.utils.figure_source import resolve_figure_source
 from precis.utils.llm.router import PLANNER_MODEL_ALIASES as _PLANNER_MODELS
 from precis.utils.table_data import Scalar, table_payload
 from precis_web import draft_eyes
+from precis_web.claim_render import (
+    cite_heads_in,
+    hub_cite_heads,
+    render_claim_evidence,
+)
 from precis_web.deps import (
     await_dispatch,
     get_runtime,
@@ -784,6 +789,14 @@ def _build_rows(
     # external): one batched existence check over every paper cite in the
     # window, shared by all its rows.
     local_cites = _local_cites(store, chunk_objs, want)
+    # Taproot claim-hub cites (violet anchors): the hub heads cited anywhere
+    # in this window, resolved once and shared by every row's linkify call.
+    # Derive each unique hub's evidence ONCE for the whole window (the sidebar
+    # can cite the same popular hub from many paragraphs — `_build_rows` runs
+    # over the entire doc from `/rows`, so per-row re-derivation is an N+1 on
+    # the render hot path); rows look their own heads up in this cache.
+    claims = hub_cite_heads(store, [chunk_objs[i].text or "" for i in want])
+    claim_evidence = {h: render_claim_evidence(store, h) for h in claims}
     # Render-policy part numerals (ADR 0052): a bare ``[[dc…]]`` reference to a
     # patent part renders as its numeral. One map for the whole draft, shared
     # by every row's linkify.
@@ -902,6 +915,16 @@ def _build_rows(
                 # local-vs-external citation set for the compact linkifier
                 # (§ sky = paper we hold, ↗ amber = external reference).
                 "local": local_cites,
+                # Taproot claim-hub heads live in this window (violet anchor
+                # opt-in) plus this row's own claim-evidence sidebar entries —
+                # the row's cited heads that are hubs, looked up in the
+                # window-level cache (no per-row re-resolution / re-derivation).
+                "claims": claims,
+                "claims_evidence": [
+                    claim_evidence[h]
+                    for h in cite_heads_in(c.text or "")
+                    if h in claim_evidence
+                ],
                 "refs": _ref_chips(c.text, _cite_missing),
                 "requests": requests.get(c.handle, []),
                 # view slider: summary falls back to keywords → first line;

@@ -207,18 +207,18 @@
           <div class="overflow-x-auto">
             <table class="w-full border-collapse text-sm">
               {% if n.table.caption %}
-              <caption class="mb-1 text-left text-[13px] font-semibold text-slate-700">{{ n.table.caption | linkify_refs(markdown=True, compact=True) }}</caption>
+              <caption class="mb-1 text-left text-[13px] font-semibold text-slate-700">{{ n.table.caption | linkify_refs(markdown=True, compact=True, claims=claims) }}</caption>
               {% endif %}
               <thead><tr>
                 {% for h in n.table.header %}
-                <th class="border-b-2 border-slate-300 px-2 py-1 text-left align-top font-semibold text-slate-800">{{ h | linkify_refs(markdown=True, compact=True) }}</th>
+                <th class="border-b-2 border-slate-300 px-2 py-1 text-left align-top font-semibold text-slate-800">{{ h | linkify_refs(markdown=True, compact=True, claims=claims) }}</th>
                 {% endfor %}
               </tr></thead>
               <tbody>
                 {% for row in n.table.rows %}
                 <tr class="even:bg-slate-50">
                   {% for cell in row %}
-                  <td class="border-b border-slate-100 px-2 py-1 align-top text-slate-700 whitespace-pre-wrap break-words">{{ cell | linkify_refs(markdown=True, compact=True) }}</td>
+                  <td class="border-b border-slate-100 px-2 py-1 align-top text-slate-700 whitespace-pre-wrap break-words">{{ cell | linkify_refs(markdown=True, compact=True, claims=claims) }}</td>
                   {% endfor %}
                 </tr>
                 {% endfor %}
@@ -226,7 +226,7 @@
             </table>
           </div>
           {% else %}
-          <p class="whitespace-pre-wrap text-slate-800 {{ hd }}">{{ m.display | linkify_refs(markdown=True, compact=True) }}</p>
+          <p class="whitespace-pre-wrap text-slate-800 {{ hd }}">{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims) }}</p>
           {% endif %}
           {% endcall %}
         </div>
@@ -244,7 +244,7 @@
           </div>
           <figure class="rounded-md border border-slate-200 bg-white p-2">
             {{ draft_figures.figure_media(ident, n.base58, n.figure_render, n.text) }}
-            <figcaption class="mt-1.5 text-sm text-slate-700 whitespace-pre-wrap break-words">{{ m.display | linkify_refs(markdown=True, compact=True) }}</figcaption>
+            <figcaption class="mt-1.5 text-sm text-slate-700 whitespace-pre-wrap break-words">{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims) }}</figcaption>
             {{ draft_figures.clearance_badge(ident, n.base58, n.figure_origin, n.figure_cleared, n.figure_permission) }}
           </figure>
         </div>
@@ -263,7 +263,7 @@
             </div>
           </div>
           {# rendered view (with links) #}
-          <div class="whitespace-pre-wrap text-slate-800 {{ hd }}">{{ m.display | linkify_refs(markdown=True, compact=True) }}</div>
+          <div class="whitespace-pre-wrap text-slate-800 {{ hd }}">{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims) }}</div>
           {# tag row (the T search signal) — chips + type-ahead add #}
           <div class="mt-2 flex flex-wrap items-center gap-1 border-t border-amber-100 pt-1.5 text-[10px]">
             <span class="text-slate-400">🏷</span>
@@ -282,10 +282,10 @@
         </div>
         {% elif m.mode == 'doc' %}
         {# full-doc mode: every chunk verbatim, plain (focus is the amber box above) #}
-        <a href="{{ qs(n.dc) }}" class="block whitespace-pre-wrap rounded px-2 py-1 text-slate-700 hover:bg-slate-50 {{ hd }}">{% if debug %}<span class="font-mono text-[9px] text-sky-500">{{ n.dc }} </span>{% endif %}{{ m.display | linkify_refs(markdown=True, compact=True) }}</a>
+        <a href="{{ qs(n.dc) }}" class="block whitespace-pre-wrap rounded px-2 py-1 text-slate-700 hover:bg-slate-50 {{ hd }}">{% if debug %}<span class="font-mono text-[9px] text-sky-500">{{ n.dc }} </span>{% endif %}{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims) }}</a>
         {% elif m.mode in ('tail', 'head') %}
         {# ±1 neighbour: verbatim, truncated toward the focus (tail leads in, head flows out) #}
-        <a href="{{ qs(n.dc) }}" class="block whitespace-pre-wrap rounded px-2 py-1 text-slate-500 hover:bg-slate-50 {{ hd }}">{% if debug %}<span class="font-mono text-[9px] text-sky-500">{{ n.dc }} </span>{% endif %}{{ m.display | linkify_refs(markdown=True, compact=True) }}</a>
+        <a href="{{ qs(n.dc) }}" class="block whitespace-pre-wrap rounded px-2 py-1 text-slate-500 hover:bg-slate-50 {{ hd }}">{% if debug %}<span class="font-mono text-[9px] text-sky-500">{{ n.dc }} </span>{% endif %}{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims) }}</a>
         {% else %}
         {# ±2 neighbour: one-line summary #}
         <a href="{{ qs(n.dc) }}" class="block truncate rounded px-2 py-0.5 text-slate-400 hover:bg-slate-50 {{ hd }}" title="{{ n.text[:400] }}">{% if debug %}<span class="font-mono text-[9px] text-sky-500">{{ n.dc }} </span>{% endif %}· {{ m.display }}</a>
@@ -328,6 +328,22 @@
         <div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Cited sources</div>
         <div class="flex flex-wrap gap-1">
           {% for c in cited_sources %}{{ c }}{% endfor %}
+        </div>
+      </div>
+      {% endif %}
+
+      {# Taproot claim hubs cited in this window: the claim sentence + its
+         print-visible (★) supporters, linking through to the /claim page. #}
+      {% if claims_evidence %}
+      <div class="rounded border border-slate-200 bg-white p-1.5">
+        <div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Claims</div>
+        <div class="flex flex-wrap gap-1">
+          {% for entry in claims_evidence %}
+          {% set starred = (entry.originators + entry.corroborators) | selectattr('starred') | map(attribute='handle') | list %}
+          <a href="/claim/{{ entry.head }}"
+             class="max-w-[16rem] truncate rounded bg-violet-50 px-1.5 py-0.5 text-[11px] text-violet-700 hover:bg-violet-100"
+             title="{{ entry.claim }}">{{ entry.claim[:80] }}{% if entry.claim | length > 80 %}…{% endif %}{% if starred %} [{{ starred | join(', ') }}]{% endif %}</a>
+          {% endfor %}
         </div>
       </div>
       {% endif %}

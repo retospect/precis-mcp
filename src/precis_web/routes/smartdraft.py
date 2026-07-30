@@ -22,6 +22,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from precis.store.types import Tag
 from precis.utils.embed_query import embed_query
 from precis_web import draft_eyes, smartdraft
+from precis_web.claim_render import hub_cite_heads, render_claim_evidence
 from precis_web.deps import get_runtime, get_store, templates
 from precis_web.routes.drafts import (
     _DOC_TYPES,
@@ -136,6 +137,14 @@ async def reader(
         _cited_sources(store, view.focus.text) if view.focus is not None else []
     )
 
+    # Taproot claim-hub cites (violet anchors): the hub heads cited anywhere
+    # in the middle pane, resolved once and shared by every linkify call in
+    # the template; the right-rail "Claims" panel lists their evidence.
+    claims = hub_cite_heads(store, [m.node.text or "" for m in view.middle])
+    claims_evidence = [
+        e for h in claims if (e := render_claim_evidence(store, h)) is not None
+    ]
+
     # Tools pane (right-rail bottom): the export/metadata/lifecycle controls
     # ported from the classic reader. All reuse the classic /drafts/{ident}/…
     # endpoints, so this only needs the same context the classic route computes
@@ -166,6 +175,8 @@ async def reader(
             "needs": _needs_items(store, ref.id),
             "term_occurrences": term_occurrences,
             "cited_sources": cited_sources,
+            "claims": claims,
+            "claims_evidence": claims_evidence,
             "debug": debug.strip().lower() in ("1", "true", "on", "yes"),
             # ── Tools pane (right-rail bottom) — classic-reader parity ──
             "remarkable_ready": remarkable_configured(store),

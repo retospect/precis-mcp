@@ -89,6 +89,7 @@ def create_app(
         cad,
         categorizers,
         cfp,
+        claim,
         clusters,
         console,
         datasheets,
@@ -141,6 +142,7 @@ def create_app(
     app.include_router(alerts.router)
     app.include_router(gripes.router)
     app.include_router(agentlogs.router)
+    app.include_router(claim.router)
     app.include_router(preview.router)
     app.include_router(console.router)
     app.include_router(status.router)
