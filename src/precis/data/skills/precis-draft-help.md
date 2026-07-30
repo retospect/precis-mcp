@@ -506,8 +506,11 @@ bookmark) under its ancestor heading — so you read a section in context
 without pulling the whole draft. `fisheye+1hop` adds the reference ring:
 cited papers/patents/datasheets, cross-referenced `[dc…]`/`[¶…]` chunks,
 and notes linked to this one — grouped Cited / Cross-refs / Notes, one edge
-out. Only wired for `dc<id>`/`¶<base58>` chunk addresses on `kind='draft'`
-today, not `kind='plan'`.
+out. A cited `[pub_id]` that names a live Taproot claim hub gets its own
+**Claims** group, exploded into its derived originators + a corroborator/
+contradictor summary (`precis-fisheye-help`). Only wired for
+`dc<id>`/`¶<base58>` chunk addresses on `kind='draft'` today, not
+`kind='plan'`.
 
 ## Change a chunk's text
 

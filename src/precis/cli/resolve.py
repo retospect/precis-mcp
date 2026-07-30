@@ -58,14 +58,9 @@ from typing import Any
 
 from precis.cli._common import resolve_dsn
 from precis.store import Store
-from precis.taproot.canon import TAPROOT_CLAIM, TAPROOT_NAMESPACE
 from precis.taproot.seniority import EvidenceEdge, HubEvidence, derive_evidence
-
-# Placeholder grammar: ``[<6 base32 lowercase chars>]``. The same
-# alphabet :func:`precis.identity.make_pub_id` produces, so any pub
-# id ever minted matches and bracketed strings of other shapes
-# (cite keys, S2 ids, prose ALL-CAPS) don't.
-_PLACEHOLDER_RE = re.compile(r"\[([a-z2-7]{6})\]")
+from precis.utils.pub_id_lookup import PLACEHOLDER_RE as _PLACEHOLDER_RE
+from precis.utils.pub_id_lookup import lookup_pub_id_finding as _lookup_pub_id_finding
 
 # Render markers for in-flight findings. Unicode default; ASCII
 # fallback via --ascii so LaTeX targets without xetex/luatex still
@@ -388,48 +383,13 @@ def _lookup_finding(store: Store, pub_id: str) -> dict[str, Any] | None:
     living-citation claim hub, resolved via
     :func:`_hub_evidence_cite_keys` instead of the status/
     primary_cite_key path below (Taproot slice A1).
+
+    Thin wrapper over :func:`precis.utils.pub_id_lookup.lookup_pub_id_finding`
+    — the shared lookup :mod:`precis.utils.refeye`'s Claims mining (Taproot
+    slice R1) also uses, so the two surfaces agree on what a ``[pub_id]``
+    resolves to. Kept here under this name for existing test imports.
     """
-    with store.pool.connection() as conn:
-        row = conn.execute(
-            """
-            SELECT r.ref_id, r.kind, r.deleted_at, r.meta,
-                   (SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id)
-                     WHERE rt.ref_id = r.ref_id
-                       AND t.namespace = 'STATUS'
-                     LIMIT 1) AS status,
-                   r.human_verified_at,
-                   EXISTS (
-                     SELECT 1 FROM ref_tags rt2 JOIN tags t2 USING (tag_id)
-                      WHERE rt2.ref_id = r.ref_id
-                        AND t2.namespace = %(taproot_ns)s
-                        AND t2.value = %(taproot_claim)s
-                   ) AS is_hub
-              FROM ref_identifiers ri
-              JOIN refs r ON r.ref_id = ri.ref_id
-             WHERE ri.id_kind = 'pub_id' AND ri.id_value = %(pub_id)s
-            """,
-            {
-                "pub_id": pub_id,
-                "taproot_ns": TAPROOT_NAMESPACE,
-                "taproot_claim": TAPROOT_CLAIM,
-            },
-        ).fetchone()
-    if row is None:
-        return None
-    ref_id, kind, deleted_at, meta, status, human_verified_at, is_hub = row
-    if kind != "finding":
-        return None
-    if deleted_at is not None:
-        return None
-    meta = dict(meta or {})
-    return {
-        "ref_id": int(ref_id),
-        "status": status,
-        "primary_cite_key": meta.get("primary_cite_key"),
-        "dead_reason": meta.get("dead_reason"),
-        "human_verified": human_verified_at is not None,
-        "is_hub": bool(is_hub),
-    }
+    return _lookup_pub_id_finding(store, pub_id)
 
 
 def _cite_keys_for_group(

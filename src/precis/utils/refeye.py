@@ -11,6 +11,13 @@ graph**: "what does this section *point at*, one edge out." Focus a section at
 - **Notes** — memories and notes **linked to** the section (inbound
   ``related-to`` / ``see-also`` edges materialised by the mentions autolinker,
   ``utils.mentions``) — the "things noted on this."
+- **Claims** (Taproot slice R1) — a cited ``[pub_id]`` that resolves to a
+  live ``TAPROOT:claim`` hub explodes into its evidence: derived
+  ``establishes`` originators (marked, with the grounding chunk pointer
+  when the chase has populated one) plus a one-line corroborator/
+  contradictor summary, via :func:`precis.taproot.seniority.derive_evidence`.
+  A ``[pub_id]`` that resolves to a non-hub finding (or nothing) is left
+  alone — this only mines placeholders that name a claim hub.
 
 It follows **edges only** (deterministic, zero false positives). A memory that
 is merely *about* the section but was never linked is a similarity hit —
@@ -27,8 +34,10 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
+from precis.taproot.seniority import EvidenceEdge, HubEvidence, derive_evidence
 from precis.utils import handle_registry
 from precis.utils.mentions import resolve_link_targets
+from precis.utils.pub_id_lookup import PLACEHOLDER_RE, lookup_pub_id_finding
 
 #: Relations that carry *meaning* (as opposed to structure/plumbing). The ring
 #: follows these — which is where linked memories/notes live — and ignores the
@@ -103,6 +112,95 @@ def _group_for(kind: str) -> str:
     return "Notes"
 
 
+def _evidence_line(edge: EvidenceEdge, *, marked: bool) -> str:
+    """One originator/corroborator line: ``★ pa<id> — <title> (<year>) —
+    grounding: <handle>`` (star + grounding only when applicable)."""
+    handle = handle_registry.format_handle("paper", edge.paper_ref_id)
+    title = " ".join((edge.title or "").split())
+    if len(title) > 90:
+        title = title[:89].rstrip() + "…"
+    label = f"{handle} — {title}" if title else handle
+    year = f" ({edge.year})" if edge.year is not None else ""
+    grounding = f" — grounding: {edge.source_handle}" if edge.source_handle else ""
+    prefix = "★ " if marked else ""
+    return f"{prefix}{label}{year}{grounding}"
+
+
+def _claim_block(ref: Any, evidence: HubEvidence, *, cap: int) -> str:
+    """The Claims explosion for one cited hub — the claim line plus its
+    derived evidence, capped like the rest of the ring (§6: no silent
+    cap). Falls back to corroborators "as best-available" (mirroring
+    ``precis resolve``'s :func:`~precis.cli.resolve._hub_evidence_cite_keys`
+    policy) when no originator has been derived yet."""
+    lines = [_label(ref)]
+    if evidence.originators:
+        shown = evidence.originators[:cap]
+        lines += [f"  {_evidence_line(e, marked=True)}" for e in shown]
+        overflow = len(evidence.originators) - len(shown)
+        if overflow > 0:
+            lines.append(f"    +{overflow} more — focus to expand")
+        summary = []
+        if evidence.corroborators:
+            summary.append(f"+{len(evidence.corroborators)} corroborators")
+        if evidence.contradictors:
+            summary.append(f"⚠ {len(evidence.contradictors)} contradictors")
+        if summary:
+            lines.append(f"  {', '.join(summary)}")
+    elif evidence.corroborators:
+        lines.append("  (no originator derived yet — best-available below)")
+        shown = evidence.corroborators[:cap]
+        lines += [f"  {_evidence_line(e, marked=False)}" for e in shown]
+        overflow = len(evidence.corroborators) - len(shown)
+        if overflow > 0:
+            lines.append(f"    +{overflow} more — focus to expand")
+        if evidence.contradictors:
+            lines.append(f"  ⚠ {len(evidence.contradictors)} contradictors")
+    else:
+        lines.append("  (no evidence derived yet)")
+        if evidence.contradictors:
+            lines.append(f"  ⚠ {len(evidence.contradictors)} contradictors")
+    return "\n".join(lines)
+
+
+def _mine_claim_hub_ids(
+    store: Any, span: list[_Chunk], *, exclude_ref_id: int
+) -> list[int]:
+    """First-seen-ordered claim-hub ref_ids cited via ``[pub_id]`` in
+    ``span`` (Taproot slice R1) — the ring's ``resolve_link_targets`` walk
+    doesn't mine this placeholder grammar, so it's mined here separately.
+    A pub_id that resolves to nothing, or to a non-hub finding, is skipped
+    — left to the existing (currently: invisible) behaviour."""
+    seen: set[int] = set()
+    ordered: list[int] = []
+    for c in span:
+        for pub_id in PLACEHOLDER_RE.findall(c.text or ""):
+            lookup = lookup_pub_id_finding(store, pub_id)
+            if lookup is None or not lookup["is_hub"]:
+                continue
+            hub_ref_id = lookup["ref_id"]
+            if hub_ref_id == exclude_ref_id or hub_ref_id in seen:
+                continue
+            seen.add(hub_ref_id)
+            ordered.append(hub_ref_id)
+    return ordered
+
+
+def _render_claims_group(
+    store: Any, hub_ref_ids: list[int], *, cap: int
+) -> list[tuple[int, str]]:
+    if not hub_ref_ids:
+        return []
+    refs = store.fetch_refs_by_ids(hub_ref_ids)
+    entries: list[tuple[int, str]] = []
+    for hub_ref_id in hub_ref_ids:
+        ref = refs.get(hub_ref_id)
+        if ref is None or getattr(ref, "deleted_at", None) is not None:
+            continue
+        evidence = derive_evidence(store, hub_ref_id)
+        entries.append((hub_ref_id, _claim_block(ref, evidence, cap=cap)))
+    return entries
+
+
 def render_reference_ring(
     store: Any,
     target: _Chunk,
@@ -113,21 +211,28 @@ def render_reference_ring(
     """Assemble the reference ring for the section rooted at ``target`` (§6).
 
     ``chunks`` is the whole ref's ``reading_order``. Returns the rendered ring
-    (grouped Cited / Cross-refs / Notes, capped with an overflow line), or a
-    single ``— no references —`` line when the section points at nothing."""
-    return render_ring_groups(collect_ring(store, target, chunks), cap=cap)
+    (grouped Cited / Cross-refs / Notes / Claims, capped with an overflow
+    line), or a single ``— no references —`` line when the section points
+    at nothing."""
+    return render_ring_groups(collect_ring(store, target, chunks, cap=cap), cap=cap)
 
 
 def collect_ring(
     store: Any,
     target: _Chunk,
     chunks: list[_Chunk],
+    *,
+    cap: int = _RING_CAP,
 ) -> dict[str, list[tuple[int, str]]]:
     """The reference ring as **grouped ``(ref_id, label)`` pairs** — the
     dedup-able form, so a multi-eye composer can merge rings across eyes by
     ``ref_id`` before rendering. ``render_reference_ring`` is a thin renderer
-    over this. Groups: ``Cited`` / ``Cross-refs`` / ``Notes`` (empty groups
-    omitted); order within a group is first-seen."""
+    over this. Groups: ``Cited`` / ``Cross-refs`` / ``Notes`` / ``Claims``
+    (empty groups omitted); order within a group is first-seen. ``cap``
+    only bounds the Claims explosion's per-hub originator list (collected
+    eagerly, unlike the other groups' entry-count cap which is applied at
+    render time) — pass the same value you'll render with to keep the two
+    caps in sync."""
     span = _subtree(chunks, target)
     draft_ref = target.ref_id
 
@@ -149,20 +254,25 @@ def collect_ring(
         # is a refinement — links_for projects pos, not chunk_id.)
         inbound.add(int(link.src_ref_id))
 
+    # ── claims: [pub_id] cites that resolve to a live TAPROOT:claim hub ───
+    # (Taproot slice R1) — a separate mining pass, since resolve_link_targets
+    # doesn't mine this placeholder grammar.
+    claim_hub_ids = _mine_claim_hub_ids(store, span, exclude_ref_id=draft_ref)
+
     all_ids = (set(outbound) | inbound) - {draft_ref}
     groups: dict[str, list[tuple[int, str]]] = {
         "Cited": [],
         "Cross-refs": [],
         "Notes": [],
+        "Claims": _render_claims_group(store, claim_hub_ids, cap=cap),
     }
-    if not all_ids:
-        return {name: g for name, g in groups.items() if g}
-    refs = store.fetch_refs_by_ids(list(all_ids))
-    for rid in all_ids:
-        ref = refs.get(rid)
-        if ref is None or getattr(ref, "deleted_at", None) is not None:
-            continue
-        groups[_group_for(getattr(ref, "kind", "?"))].append((rid, _label(ref)))
+    if all_ids:
+        refs = store.fetch_refs_by_ids(list(all_ids))
+        for rid in all_ids:
+            ref = refs.get(rid)
+            if ref is None or getattr(ref, "deleted_at", None) is not None:
+                continue
+            groups[_group_for(getattr(ref, "kind", "?"))].append((rid, _label(ref)))
     return {name: g for name, g in groups.items() if g}
 
 
@@ -181,8 +291,17 @@ def render_ring_groups(
             continue
         any_rendered = True
         lines.append(f"{name}:")
-        for _rid, label in sorted(entries, key=lambda e: e[1])[:cap]:
-            lines.append(f"  · {label}")
+        if name == "Claims":
+            # Each entry is a pre-rendered multi-line evidence block
+            # (Taproot slice R1), not a flat label — citation order, not
+            # alphabetical, and only the first line gets the bullet.
+            for _rid, block in entries[:cap]:
+                block_lines = block.split("\n")
+                lines.append(f"  · {block_lines[0]}")
+                lines.extend(f"    {bl}" for bl in block_lines[1:])
+        else:
+            for _rid, label in sorted(entries, key=lambda e: e[1])[:cap]:
+                lines.append(f"  · {label}")
         overflow = len(entries) - cap
         if overflow > 0:
             lines.append(f"  +{overflow} more — focus to expand")

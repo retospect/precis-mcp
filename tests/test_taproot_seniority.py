@@ -292,6 +292,31 @@ def test_derive_evidence_surfaces_edge_meta_support_and_caveats(store: Any) -> N
     assert by_id[without_meta].caveats == []
 
 
+# ── EvidenceEdge.source_handle (Taproot slice R1 — refeye Claims) ───────
+
+
+def test_derive_evidence_surfaces_source_handle_from_edge_meta(store: Any) -> None:
+    hub = mint_hub(store, _CLAIM)
+    with_handle = _paper(store, title="Grounded", year=2001)
+    without_handle = _paper(store, title="No grounding pointer", year=2002)
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=with_handle,
+        role="corroborates",
+        meta={"source_handle": "pc4242"},
+    )
+    attach_evidence(
+        store, hub_ref_id=hub, paper_ref_id=without_handle, role="corroborates"
+    )
+
+    evidence = derive_evidence(store, hub)
+
+    by_id = {e.paper_ref_id: e for e in evidence.corroborators}
+    assert by_id[with_handle].source_handle == "pc4242"
+    assert by_id[without_handle].source_handle is None
+
+
 # ── guard: non-claim finding rejected ────────────────────────────────────
 
 

@@ -1652,6 +1652,22 @@ The master kinds table lives in the `precis-overview` skill.
   cross-refs, linked notes, one edge out. Also surfaced by the smartdraft web
   reader (`/smartdraft/<draft>?focus=dc<id>`). Pure read-time assembly, no new
   storage. Skill: `precis-fisheye-help`.
+  - **R1 (Claims explosion, Taproot slice)** — built. The ring gains a
+    fourth group, **Claims**: a `[pub_id]` mined from the section body
+    (`utils/pub_id_lookup.py`'s shared regex/lookup, factored out of
+    `cli/resolve.py::_lookup_finding` so `resolve` and the ring agree on
+    what a pub_id resolves to) that names a live `TAPROOT:claim` hub
+    explodes into its evidence via `taproot/seniority.py::derive_evidence`
+    — the claim line, its derived `establishes` originators (★-marked,
+    with the grounding chunk pointer when the chase has populated one —
+    `EvidenceEdge.source_handle`, read from edge `meta['source_handle']`),
+    and a one-line corroborator/contradictor summary. No originator
+    derived yet → falls back to corroborators "as best-available"
+    (mirrors A1's `_hub_evidence_cite_keys` policy), same as `resolve`. A
+    `[pub_id]` resolving to a non-hub finding (or nothing) is untouched —
+    `resolve_link_targets` still doesn't mine this grammar for the
+    ordinary Cited/Notes path. Rides the existing `fisheye+1hop` extent,
+    no new `Extent` value. Tests: `tests/test_refeye.py`.
 
 ## Web UI (`precis_web`)
 

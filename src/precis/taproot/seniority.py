@@ -64,6 +64,12 @@ class EvidenceEdge:
     caveats: list[str]
     #: 'clean' | 'retracted' | 'corrected' | 'expression_of_concern'.
     integrity: str
+    #: `links.meta['source_handle']` — the grounding chunk pointer
+    #: (`pc<chunk_id>` / `slug~ord`) the evidence edge points at, when the
+    #: chase has populated one (Phase 3). `None` until then — read by the
+    #: reference ring's Claims explosion (refeye, Taproot slice R1) to show
+    #: "cite -> claim -> grounding chunk" at pointer granularity.
+    source_handle: str | None = None
 
 
 @dataclass(frozen=True)
@@ -186,6 +192,7 @@ def _build_edge(
         support=meta.get("support"),
         caveats=list(meta.get("caveats") or []),
         integrity=retraction_status or "clean",
+        source_handle=meta.get("source_handle"),
     )
 
 
