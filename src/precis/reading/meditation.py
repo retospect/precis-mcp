@@ -377,18 +377,20 @@ def build_meditation(
         # tool-less ``claude_p`` judge shape, which would drop the nidra system
         # prompt and demand a parseable JSON block this prose script never has.
         #
-        # Model **pinned to Sonnet 5** (was Opus 4.8, the FRONTIER default):
-        # a nidra is prose composition — Sonnet 5 is amply capable — and pinning
-        # an explicit claude id both cuts consumption ~⅕ (so the *unified*
-        # subscription quota lasts far longer under a crunch — the 07-24→30
-        # outage's original trigger) AND forces ``claude_agent`` regardless of
-        # the live ``llm.chain`` / backend, so a fleet ``llm.backend`` flip can't
-        # silently hijack this cast onto an OpenRouter OSS model (gripe 171782).
-        # Tier stays FRONTIER so the subscription-quota breaker still gates it
-        # (it *is* a subscription call). A ``PRECIS_MEDITATION_MODEL`` override
-        # still wins, but must name a real model id, not a retired litellm alias.
-        import os
-
+        # Model default (Sonnet 5, not Opus 4.8, the FRONTIER default) + the
+        # PRECIS_MEDITATION_MODEL env hatch now live in the operation registry
+        # (utils/llm/operations.py, source "meditation") — dispatch() resolves
+        # them via source, and an operator can retune live with no redeploy via
+        # `llm.op.meditation` (docs/proposals/llm-operation-routing.md). The
+        # rationale: a nidra is prose composition — Sonnet 5 is amply capable —
+        # and pinning an explicit claude id both cuts consumption ~⅕ (so the
+        # *unified* subscription quota lasts far longer under a crunch — the
+        # 07-24→30 outage's original trigger) AND forces ``claude_agent``
+        # regardless of the live ``llm.chain`` / backend, so a fleet
+        # ``llm.backend`` flip can't silently hijack this cast onto an
+        # OpenRouter OSS model (gripe 171782). Tier stays FRONTIER so the
+        # subscription-quota breaker still gates it (it *is* a subscription
+        # call).
         from precis.utils.llm.router import DispatchClient, Tier
 
         # max_tokens restores the pre-migration litellm cap (compose_max_tokens,
@@ -400,7 +402,6 @@ def build_meditation(
         # so it only bites a genuinely runaway single call).
         client = DispatchClient(
             tier=Tier.FRONTIER,
-            model=os.environ.get("PRECIS_MEDITATION_MODEL") or "claude-sonnet-5",
             tools_needed=True,
             max_tokens=compose_max_tokens(profile, target_minutes=target),
             source="meditation",

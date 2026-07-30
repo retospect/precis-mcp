@@ -47,6 +47,11 @@ MODEL_KEY_PREFIX = "llm.model."
 #: ``{"placement": "cloud"|"local", "model": <str>, "transport": <str>}``
 #: (ADR 0066 §4). Same suffix vocabulary as :data:`MODEL_KEY_PREFIX`.
 CHAIN_KEY_PREFIX = "llm.chain."
+#: app_settings key prefix for a per-operation override (JSON
+#: ``{"tier": <str>?, "model": <str>?}``) — ``llm.op.<source>``
+#: (docs/proposals/llm-operation-routing.md). Kept in sync with
+#: :data:`precis.utils.llm.operations.OP_KEY_PREFIX` (the writer's mirror).
+OP_KEY_PREFIX = "llm.op."
 #: app_settings key for the cloud-throttle dial (ADR 0066 §5). ``"false"`` (or
 #: ``0``/``no``/``off``) forces every tier's chain to skip its cloud rungs →
 #: drop to whatever local rung the chain has; a tier left with no rung
@@ -74,6 +79,11 @@ def model_key(tier: Tier) -> str:
 def chain_key(tier: Tier) -> str:
     """The ``app_settings`` key a per-tier chain override lives under."""
     return f"{CHAIN_KEY_PREFIX}{tier.value}"
+
+
+def op_key(source: str) -> str:
+    """The ``app_settings`` key a per-operation override lives under."""
+    return f"{OP_KEY_PREFIX}{source}"
 
 
 def backend_override() -> str | None:
@@ -121,6 +131,33 @@ def chain_override(tier: Tier) -> list[dict] | None:
         log.warning(
             "live_config: ignoring non-list %s (got %s)",
             chain_key(tier),
+            type(parsed).__name__,
+        )
+        return None
+    return parsed
+
+
+def op_override(source: str) -> dict | None:
+    """The web-set ``{"tier": ..., "model": ...}`` override for ``source``, or
+    ``None`` (→ the operation registry's code default,
+    :func:`precis.utils.llm.operations.resolve_op`).
+
+    Degrade-safe like :func:`chain_override`: no store / no row / a value
+    that isn't valid JSON / JSON that isn't a dict all return ``None`` rather
+    than raising, so a malformed row can't dark an operation.
+    """
+    raw = _cached_setting(op_key(source))
+    if raw is None:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        log.warning("live_config: ignoring malformed JSON for %s", op_key(source))
+        return None
+    if not isinstance(parsed, dict):
+        log.warning(
+            "live_config: ignoring non-dict %s (got %s)",
+            op_key(source),
             type(parsed).__name__,
         )
         return None
@@ -189,6 +226,7 @@ __all__ = [
     "CHAIN_KEY_PREFIX",
     "CLOUD_ENABLED_KEY",
     "MODEL_KEY_PREFIX",
+    "OP_KEY_PREFIX",
     "backend_override",
     "bust_cache",
     "chain_key",
@@ -196,4 +234,6 @@ __all__ = [
     "cloud_enabled",
     "model_key",
     "model_override",
+    "op_key",
+    "op_override",
 ]

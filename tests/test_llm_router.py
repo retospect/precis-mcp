@@ -999,7 +999,13 @@ def test_dispatch_client_cloud_tier_splits_messages_to_prompt(
     ``workers/briefing``, ``reading/meditation``, ``reading/briefing_cast``) now
     share. ``messages`` (an OpenAI-shaped ``[system, user]`` pair) is split into
     ``system_prompt`` + ``prompt`` — the shape ``claude_agent`` actually reads —
-    and ``model``/``tier``/``source`` thread through unchanged."""
+    and ``model``/``tier``/``source`` thread through unchanged.
+
+    ``source`` here is a made-up, non-registered tag: a *registered* operation
+    (e.g. the real ``"meditation"``) has its model owned by the operations
+    registry (``utils/llm/operations.py``), which would clobber the explicit
+    ``model=`` pin this test asserts — see ``test_llm_operations.py`` for that
+    precedence."""
     from precis.utils.llm.router import DispatchClient
 
     seen: dict[str, object] = {}
@@ -1019,7 +1025,7 @@ def test_dispatch_client_cloud_tier_splits_messages_to_prompt(
         tier=Tier.FRONTIER,
         model="claude-opus-4-8",
         tools_needed=True,
-        source="meditation",
+        source="cloud_tier_test",
         log_call=True,
     )
     msgs = [

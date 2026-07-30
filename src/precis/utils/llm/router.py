@@ -1249,10 +1249,27 @@ def dispatch(req: LlmRequest) -> LlmResult:
     rung 0 against the hosted OSS endpoint (skipping the busy local hardware)
     before falling to the next rung.
     """
+    from dataclasses import replace as _replace
+
     backend = resolve_backend()
     if backend is Backend.OPENAI and not os.environ.get("PRECIS_LLM_BASE_URL"):
         backend = Backend.ANTHROPIC
-    model = req.model or resolve_model(req.tier, backend=backend)
+    # Per-operation routing (docs/proposals/llm-operation-routing.md, Phase 1):
+    # a *registered* (allow-listed) source has its effective tier + model owned
+    # by the registry default + any live `llm.op.<source>` override — the
+    # operation rung between the tier default and a call-site `req.model` pin.
+    # A non-registered source (functional pins like classify→"summarizer",
+    # router-bypassers) returns None → today's path, so this ships dark.
+    from precis.utils.llm import operations as _operations
+
+    _op = _operations.resolve_op(req.source) if req.source else None
+    if _op is not None:
+        _op_tier, _op_model = _op
+        if _op_tier != req.tier:
+            req = _replace(req, tier=_op_tier)
+        model = _op_model or resolve_model(req.tier, backend=backend)
+    else:
+        model = req.model or resolve_model(req.tier, backend=backend)
     # ADR 0066 gen-param passthrough: resolve the tier's (thinking, temperature)
     # default (_tier_gen_defaults) unless the caller already pinned one
     # explicitly. Reassigning `req` itself here (rather than threading two
@@ -1260,8 +1277,6 @@ def dispatch(req: LlmRequest) -> LlmResult:
     # copy — the FailoverProvider ladder's rungs, the slot/endpoint `replace`s
     # below, the route-log record — already carries the resolved values with
     # no per-transport re-derivation of tier logic.
-    from dataclasses import replace as _replace
-
     _default_thinking, _default_temperature = _tier_gen_defaults(req.tier)
     req = _replace(
         req,

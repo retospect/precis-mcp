@@ -136,6 +136,31 @@ def add_parser(subparsers: Any) -> None:
     )
     ev.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
+    op = lsub.add_parser(
+        "op",
+        help="Per-operation model routing — the steerable registry "
+        "(docs/proposals/llm-operation-routing.md).",
+    )
+    opsub = op.add_subparsers(dest="op_cmd", required=True)
+
+    opl = opsub.add_parser(
+        "list",
+        help="List registered operations, their defaults, and any live override.",
+    )
+    opl.add_argument("--database-url", default=None, help="Postgres DSN override.")
+
+    ops = opsub.add_parser("set", help="Set a live override for one operation.")
+    ops.add_argument("source", help="Operation source tag (e.g. reading_brief).")
+    ops.add_argument(
+        "--tier", default=None, help="Override tier (frontier/big/medium/small)."
+    )
+    ops.add_argument("--model", default=None, help="Override model id.")
+    ops.add_argument("--database-url", default=None, help="Postgres DSN override.")
+
+    opc = opsub.add_parser("clear", help="Clear the live override for one operation.")
+    opc.add_argument("source", help="Operation source tag (e.g. reading_brief).")
+    opc.add_argument("--database-url", default=None, help="Postgres DSN override.")
+
 
 def _cmd_seed(store: Store, *, frontier: bool = False, seed_all: bool = False) -> None:
     from precis.llm_catalog import seed_default_cards, seed_frontier_cards
@@ -339,6 +364,109 @@ def _cmd_eval(store: Store, args: argparse.Namespace) -> None:
         print(f"  skipped ({len(report.skipped)}): " + "; ".join(report.skipped))
 
 
+def _cmd_op_list(store: Store) -> None:
+    from precis.utils.llm import live_config, operations
+
+    print("registered operations (steerable):")
+    for source, default in operations.LLM_OPERATIONS.items():
+        override = live_config.op_override(source)
+        default_str = f"{default.tier.value}/{default.model or '(tier default)'}"
+        override_str = (
+            f"{override.get('tier', '—')}/{override.get('model', '—')}"
+            if override
+            else "—"
+        )
+        print(
+            f"  {source:<20} {default.label:<20} default={default_str:<28} "
+            f"override={override_str}"
+        )
+
+    print("\nexcluded operations (read-only, override is inert):")
+    for source, excluded in operations.EXCLUDED_OPERATIONS.items():
+        print(f"  {source:<20} {excluded.reason}")
+
+    # Best-effort: surface any stray llm.op.* rows for a source not in the
+    # registry (e.g. left over from a retired op, or a typo'd `set`).
+    known = set(operations.LLM_OPERATIONS) | set(operations.EXCLUDED_OPERATIONS)
+    try:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT key, value FROM app_settings WHERE key LIKE %s ORDER BY key",
+                (f"{operations.OP_KEY_PREFIX}%",),
+            ).fetchall()
+    except Exception:
+        rows = []
+    stray = [
+        (key, value)
+        for key, value in rows
+        if key[len(operations.OP_KEY_PREFIX) :] not in known
+    ]
+    if stray:
+        print("\nstray overrides (unknown source — currently inert):")
+        for key, value in stray:
+            print(f"  {key} = {value}")
+
+
+def _cmd_op_set(store: Store, args: argparse.Namespace) -> None:
+    import json
+
+    from precis.budget import settings as budget_settings
+    from precis.utils.llm import live_config, operations
+    from precis.utils.llm.router import Tier
+
+    if args.tier is None and args.model is None:
+        raise SystemExit("llm op set: at least one of --tier / --model is required")
+
+    payload: dict[str, str] = {}
+    if args.tier is not None:
+        try:
+            payload["tier"] = Tier(args.tier).value
+        except ValueError:
+            valid = ", ".join(t.value for t in Tier)
+            raise SystemExit(
+                f"llm op set: invalid --tier {args.tier!r} (valid: {valid})"
+            ) from None
+    if args.model is not None:
+        payload["model"] = args.model
+
+    budget_settings.set_setting(
+        store, live_config.op_key(args.source), json.dumps(payload)
+    )
+    live_config.bust_cache()
+    print(f"set {live_config.op_key(args.source)} = {payload}")
+
+    if args.source in operations.EXCLUDED_OPERATIONS:
+        reason = operations.EXCLUDED_OPERATIONS[args.source].reason
+        print(
+            f"WARNING: {args.source!r} is excluded from steering ({reason}) — "
+            "this override will be inert."
+        )
+    elif args.source not in operations.LLM_OPERATIONS:
+        print(
+            f"WARNING: {args.source!r} is not a registered operation — this "
+            "override has no effect until it's added to LLM_OPERATIONS "
+            "(utils/llm/operations.py)."
+        )
+
+
+def _cmd_op_clear(store: Store, args: argparse.Namespace) -> None:
+    from precis.budget import settings as budget_settings
+    from precis.utils.llm import live_config
+
+    budget_settings.clear_setting(store, live_config.op_key(args.source))
+    live_config.bust_cache()
+    print(f"cleared {live_config.op_key(args.source)}")
+
+
+def _cmd_op(store: Store, args: argparse.Namespace) -> None:
+    if args.op_cmd == "list":
+        _cmd_op_list(store)
+    elif args.op_cmd == "set":
+        _cmd_op_set(store, args)
+    elif args.op_cmd == "clear":
+        _cmd_op_clear(store, args)
+
+
 def run(args: argparse.Namespace) -> None:
     store = Store.connect(resolve_dsn(args.database_url))
     if args.llm_cmd == "seed":
@@ -359,3 +487,5 @@ def run(args: argparse.Namespace) -> None:
         _cmd_cost(store, args)
     elif args.llm_cmd == "eval":
         _cmd_eval(store, args)
+    elif args.llm_cmd == "op":
+        _cmd_op(store, args)

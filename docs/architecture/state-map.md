@@ -448,9 +448,12 @@ executor's (`claude_inproc` plan_tick, etc.).
   briefing now compose via the LLM router's `Tier.FRONTIER` (`DispatchClient`,
   ADR 0046) onto `claude_agent` — a `claude -p` subprocess, direct Anthropic OAuth —
   not the melchior-loopback litellm proxy; litellm now serves only `SMALL`. The two
-  audio **casts** pin `model="claude-sonnet-5"` within the FRONTIER band — prose
+  audio **casts** default to `claude-sonnet-5` within the FRONTIER band — prose
   composition, ~⅕ the subscription-quota draw; `card_forge`/news briefing keep the
-  FRONTIER Opus default)
+  FRONTIER Opus default. That cast default now lives in the per-operation registry
+  (`utils/llm/operations.py`, runtime-tunable via `llm.op.reading_brief`/`meditation`),
+  not a call-site `model=` arg — see the per-operation routing note in the LLM-router
+  section)
   on daily `level:recurring` watches; **TTS is the separate downstream spark pass**, so the
   nice-model compose and the container narration never block each other. CLI:
   `precis cast run <reading|nidra> [--publish]` + `precis cast schedule [--now]`.
@@ -708,6 +711,23 @@ alongside the legacy `opus`/`sonnet`/`haiku`/`local` names (`local` now pins
 claude-only rung (`FRONTIER`) waits rather than parking. Every transport
 already carries a wall-clock timeout (claude 600 s, openai_tools / litellm
 120 s), so a hang converts to that classified failure.
+
+**Per-operation routing (Phase 1 landed, `docs/proposals/llm-operation-routing.md`).**
+The rung *between* the tier default and a call-site `req.model` pin, keyed on
+`req.source`. `utils/llm/operations.py` is an **opt-in allow-list** (`LLM_OPERATIONS`)
+of `dispatch()`-routed, pin-free operations + their code defaults (`OpDefault(tier,
+model, env, label, …)`); `live_config.op_override(source)` reads a live
+`app_settings` `llm.op.<source>` JSON (`{tier?, model?}`). `dispatch` calls
+`operations.resolve_op(req.source)` just before the tier resolve: a *registered*
+source has its effective tier remapped + model resolved DB-override > legacy `env`
+hatch > registry literal (a *fallback* into `model or resolve_model`, so a
+`llm.chain.<tier>` rung's own model still wins); a *non-registered* source (incl.
+functional pins like `classify`→`"summarizer"`, and router-bypassers like
+`fix_gripe`, both in `EXCLUDED_OPERATIONS`) returns `None` → today's `req.model or
+resolve_model` path untouched, so it **ships dark**. The two casts' Sonnet-5 default
+migrated off their `model=` arg into the registry (`reading_brief`/`meditation`).
+CLI: `precis llm op {list,set,clear}`. Phase 2 (the `/status?tab=services` panel +
+AC6 full `source=` drift scan) is pending.
 
 ## Discovery layer (F20)
 
