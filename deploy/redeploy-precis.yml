@@ -316,20 +316,30 @@
     # binding, both 2026-07-30 — the deploy reported "changed" but the running
     # daemon kept the old env. Reload = bootout (unload) then bootstrap (load fresh from the
     # on-disk plist, picking up the new env). bootout's process teardown is
-    # ASYNC, so wait before re-bootstrapping — a too-eager bootstrap races the
-    # unload and fails with `Bootstrap failed: 5: Input/output error`. A rare
-    # transient bootstrap miss self-heals: the unconditional "Bootstrap … no-op
-    # if loaded" above runs first on the NEXT deploy and recovers it.
+    # ASYNC — it returns before launchd finishes unloading — so we must POLL
+    # until the label is actually gone before re-bootstrapping. A fixed
+    # `sleep 3` raced a slow teardown (~28s observed): the late unload reaped
+    # the freshly-bootstrapped daemon and, because bootout DEREGISTERS the label
+    # (KeepAlive can't respawn a label that's gone), left the system worker dead
+    # on a green deploy — a multi-day outage (gr176223). Same poll-until-gone
+    # guard as tasks/reload_launchd.yml — but this flat loop spans persistent AND
+    # periodic daemons, so it can't pid-assert the way that task does; it relies
+    # on the poll plus the unconditional "Bootstrap … no-op if loaded" above /
+    # next-deploy self-heal. Deeper per-daemon verification: audit gripe 176337.
     - name: Reload each remaining precis LaunchDaemon (macOS) — bootout+bootstrap so plist env changes take
       when:
         - os_family == "darwin"
         - precis_deploy_changed | default(true) | bool
-      ansible.builtin.shell: >-
-        launchctl bootout
-        system/{{ item.path | basename | regex_replace('\.plist$', '') }}
-        2>/dev/null || true;
-        sleep 3;
-        launchctl bootstrap system {{ item.path }}
+      ansible.builtin.shell: |
+        unit="{{ item.path | basename | regex_replace('\.plist$', '') }}"
+        launchctl bootout "system/${unit}" 2>/dev/null || true
+        # wait up to ~60s for the async teardown to fully complete
+        i=0
+        while launchctl print "system/${unit}" >/dev/null 2>&1 && [ "$i" -lt 120 ]; do
+          sleep 0.5; i=$((i + 1))
+        done
+        [ "$i" -ge 120 ] && echo "${unit}: still tearing down after 60s, bootstrapping anyway" >&2
+        launchctl bootstrap system "{{ item.path }}"
       loop: "{{ precis_plists.files }}"
       loop_control:
         label: "{{ item.path | basename }}"
