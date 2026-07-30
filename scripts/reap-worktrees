@@ -9,7 +9,10 @@
 # bucketing — never reimplemented here) and removes every worktree whose
 # `bucket` is exactly `safe_remove` (merged + clean + no live session). Every
 # other bucket (`self`, `live_session`, `needs_judgment`, `has_unmerged_work`,
-# `base`) is left untouched.
+# `base`) is left untouched. `safe_remove` also covers a `dead-lock#<pid>`
+# session (crashed without a clean SessionEnd, so its SessionStart lock —
+# scripts/hooks/session-start-lock.sh — was never released): `git worktree
+# remove` unconditionally refuses a locked worktree, so this unlocks first.
 #
 # Escape hatch: PRECIS_NO_AUTOREAP=1 → no-op.
 # Usage: scripts/reap-worktrees [--dry-run]
@@ -43,6 +46,11 @@ while IFS=$'\t' read -r name path branch; do
         REAPED+=("$name")
         continue
     fi
+    # `safe_remove` includes the dead-lock case (a session that crashed
+    # without a clean SessionEnd never released its SessionStart lock) —
+    # `git worktree remove` unconditionally refuses a locked worktree, so
+    # unlock first. Harmless no-op (swallowed) if it was never locked.
+    git worktree unlock "$path" >/dev/null 2>&1 || true
     if git worktree remove "$path" 2>/dev/null; then
         # safe_remove already means the bucket vetted mergedness (either a
         # true ancestor merge or squash-absorbed); -D deletes both, -d would

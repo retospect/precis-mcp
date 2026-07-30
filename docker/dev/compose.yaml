@@ -16,17 +16,32 @@
 #
 # Prod is remote (caspar, over SSH); nothing here touches it.
 services:
-  # RAM-backed pgvector test DB, reached by service name over the compose
-  # network as postgresql://postgres@precis-test-db:5432/precis_test.
-  # tmpfs data dir = memory-speed per-worker CREATE DATABASE clones.
+  # pgvector test DB, reached by service name over the compose network as
+  # postgresql://postgres@precis-test-db:5432/precis_test.
+  #
+  # pgdata lives on the container overlay (158GB), NOT a tmpfs. An unsized
+  # tmpfs caps at 50% of host RAM = ~3.9GB on the 8GB colima VM, and CONCURRENT
+  # -n6 ship gates across sibling worktrees clone the template DB per worker
+  # and overflow it → `DiskFull` / postgres crash / "recovery mode" (gr176231).
+  # Sizing the tmpfs bigger than RAM would just move the failure to an OOM, so
+  # we back it with unbounded disk instead. fsync / full_page_writes /
+  # synchronous_commit are off so a throwaway test DB stays near memory-speed
+  # despite being disk-backed — crash-safety is irrelevant for a DB that's
+  # rebuilt from migrations on every run.
   precis-test-db:
     image: pgvector/pgvector:pg17
     environment:
       POSTGRES_USER: postgres
       POSTGRES_DB: precis_test
       POSTGRES_HOST_AUTH_METHOD: trust
-    tmpfs:
-      - /var/lib/postgresql/data
+    command:
+      - postgres
+      - -c
+      - fsync=off
+      - -c
+      - full_page_writes=off
+      - -c
+      - synchronous_commit=off
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d precis_test"]
       interval: 2s

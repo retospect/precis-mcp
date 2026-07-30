@@ -15,6 +15,11 @@
 # `safe_remove`. Every other bucket (dirty, unmerged, live, primary) is left
 # untouched, so unshipped work is never lost.
 #
+# Also releases the `git worktree lock` acquired at SessionStart by
+# scripts/hooks/session-start-lock.sh — unconditionally, before the bucket
+# check, so a live#<pid> session that's genuinely ending doesn't keep
+# looking "locked+alive" to the next inflight/reap-worktrees run.
+#
 # Escape hatch: PRECIS_NO_AUTOREAP=1 → no-op.
 # Fire-and-forget: SessionEnd's exit code/stdout aren't read by the harness —
 # this is pure side effect and never reports back. Backstopped by
@@ -52,6 +57,13 @@ PRIMARY=$(dirname "$COMMON_DIR")
 # to stand for the removal.
 cd "$PRIMARY" 2>/dev/null || exit 0
 command -v git >/dev/null 2>&1 || exit 0
+
+# Release the SessionStart lock (scripts/hooks/session-start-lock.sh)
+# unconditionally — this is a genuine end-of-session, so whatever
+# inflight/reap-worktrees decide next (this run or a sibling's) must see this
+# worktree unlocked, not still parsed as `live#<pid>`.
+git worktree unlock "$REPO_ROOT" >/dev/null 2>&1 || true
+
 [ -x scripts/inflight ] || exit 0
 
 JSON=$(scripts/inflight --json 2>/dev/null) || exit 0
