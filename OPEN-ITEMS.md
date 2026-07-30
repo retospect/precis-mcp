@@ -14,16 +14,21 @@ Surfaced during the 2026-07-30 triage (fleet-health + prod transcript mining).
 The `draft view='outline'` MCP-fix from the same triage already **shipped +
 deployed** (main `901f22ec`) — these are the parked residuals.
 
-- **`edit()` on a multi-byte `°` → uncaught `[error:Internal] ValueError`**
-  *(latent MCP bug — owner `src/precis/handlers/draft.py` edit path).* One
-  temperature-normalization tick (`ref_id=46948`, 2026-07-01) burned 21
-  `edit()` calls, every `find='175 °C'`/`text='175°C'` shape failing with a
-  generic internal error that gives the model zero signal to self-correct.
-  Likely an offset/diff computation choking on multi-byte UTF-8. **Next:**
-  dispatch `root-cause` (reproduce `edit(kind='draft', find='175 °C',
-  text='175°C')`, read the server traceback), then fix + surface the real
-  cause in the BadInput. Also seen: 3 retries with `find='Chelex'` on one
-  chunk failing too — so possibly chunk-specific in addition to char-specific.
+- **Draft mutators return typed errors on stale handles — regression-test
+  the whole verb set** *(test coverage — owner `tests/`).* The `edit()`-°
+  incident harvested here (`ref_id=46948`, 2026-07-01) was a **false
+  positive**: root-cause (2026-07-30) proved the real defect — draft
+  chunk-mutators raising a bare `ValueError` for unknown/retired handles,
+  rendered as opaque `[error:Internal]` — was already fixed the next day
+  (`138ed8cf`, typed `Gone`/`NotFound`; adjacent find=/text= clobber fixed
+  `d23f607f`/`812911bf`). Degree-symbol content was incidental. The one
+  genuinely-new item: a cross-cutting dispatch-level test asserting **every**
+  draft chunk-mutator verb (`text=`, `find=`+`text=`, `move=`, `style=`,
+  `list_kind=`, `word_target=`, figure `origin=`/`permission=`) returns
+  `[error:Gone]`/`[error:NotFound]` — never `[error:Internal] … ValueError` —
+  for both an unknown and an already-retired `dc<id>`, guarding any future
+  mutator added without threading the typed-error convention. Hand to
+  `test-author`. (Process gap that filed this false residual: `gripe:175738`.)
 
 - **balthazar 15.6k WARN/24h flood — `llm:qwen` vs served `llm:qwen3.6-35b-…`
   served_by mismatch** *(config drift — owner LLM router / served_by seeding).*
