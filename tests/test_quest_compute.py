@@ -1484,6 +1484,58 @@ class TestDispatchAutocatpath:
         _job_id, jmeta = compute_mod._fresh_autocatpath_jobs(store, sid, 0)[0]
         assert (jmeta.get("params") or {})["config"] == self._RX  # unchanged
 
+    # ── gr172886: capability-map route resolution + null-route guard ───────
+
+    def test_capability_default_routes_to_gpu_host(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """With the env unset, a GPU-advertising host in resource_slots is
+        picked as the route node (deterministic, lowest-sorted GPU host) —
+        the out-of-daemon caller (e.g. ``precis quest redispatch`` from a
+        plain shell) no longer null-routes onto random EMT."""
+        monkeypatch.delenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, raising=False)
+        store.sync_host_resource_slots("spark", {"gpu": 1})
+        qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
+        sid = self._candidate(store, qid)
+        note = compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        assert note.startswith("autocatpath[")
+        _job_id, jmeta = compute_mod._fresh_autocatpath_jobs(store, sid, 0)[0]
+        params = jmeta.get("params") or {}
+        assert params["target_node"] == "spark"
+        assert params["force_backend"] != "emt"  # routed → the config's own backend
+        assert params["config"]["mlip"]["device"] == "cuda"
+
+    def test_null_route_raises_on_multihost_cluster_without_gpu(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """gr172886: env unset AND no host advertises `gpu`, but resource_slots
+        spans a real multi-node cluster — this is a prod misconfiguration, not
+        dev. Refuse loudly instead of silently minting an unrouted EMT job."""
+        monkeypatch.delenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, raising=False)
+        store.sync_host_resource_slots("caspar", {"cpu": 4})
+        store.sync_host_resource_slots("melchior", {"cpu": 4})
+        qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
+        sid = self._candidate(store, qid)
+        with pytest.raises(RuntimeError, match="gr172886"):
+            compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        assert compute_mod._fresh_autocatpath_jobs(store, sid, 0) == []
+
+    def test_dev_emt_path_preserved_when_resource_slots_empty(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """Env unset AND resource_slots empty (dev/CI, no cluster to misroute
+        onto) — falls through to the pre-existing unrouted EMT dispatch, no
+        raise."""
+        monkeypatch.delenv(compute_mod._AUTOCATPATH_ROUTE_NODE_ENV, raising=False)
+        assert store.all_resource_slots() == []
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        _job_id, jmeta = compute_mod._fresh_autocatpath_jobs(store, sid, 0)[0]
+        params = jmeta.get("params") or {}
+        assert params["target_node"] is None
+        assert params["force_backend"] == "emt"
+
     # ── preflight hard gate (PRECIS_STRUCTURE_PREFLIGHT, default off) ──────
 
     _BAD_SPEC = {

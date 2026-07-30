@@ -571,9 +571,12 @@ Beyond the four tensions in §3:
   its `dispatch` runs the pure autocatpath engine **in-process on that node**
   (the `[catalyst]`/`[catalyst-gpu]` extra + backend are in the node's worker
   venv) and writes the artifact back onto the pathway ref (shared
-  `persist.py`). The handler routes when `PRECIS_AUTOCATPATH_ROUTE_NODE` is
-  set (mints the job, ref → `status:computing`) and runs in-process
-  otherwise. **Precis-core enabler:** `pathway` owns its compute job via the
+  `persist.py`). The handler routes to `PRECIS_AUTOCATPATH_ROUTE_NODE` when
+  set, else to a `gpu`-advertising host from `resource_slots` (so an
+  out-of-daemon `redispatch` still routes); with neither, an unrouted job on a
+  multi-host cluster **raises** (gr172886 null-route guard) rather than
+  silently minting junk EMT, while empty/single-host `resource_slots` (dev/CI)
+  falls through to the in-process EMT path. **Precis-core enabler:** `pathway` owns its compute job via the
   `KindSpec.can_own_jobs` flag (§8b) — no per-`(model, seed)` fan-out yet
   (whole `run()` in one job). **Verified**: dispatch write-back + a
   spark-pinned job minted end-to-end against the test DB.

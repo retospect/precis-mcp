@@ -251,7 +251,10 @@ def dispatch_autocatpath(
     Precis-native (no autocatpath import — the `pathway` kind, if the plugin is
     installed, is reached only through the store) and **defensive**: degrades to a
     note on any error (missing plugin, unloadable scene) and never raises, so a
-    compute hiccup can't fail the tick.
+    compute hiccup can't fail the tick. The one exception is the gr172886
+    null-route guard below: on a real multi-node cluster with no GPU host
+    advertised in ``resource_slots``, this raises loudly rather than silently
+    minting an unrouted junk-EMT job.
     """
     if not isinstance(config, dict) or not config:
         return (
@@ -301,6 +304,30 @@ def dispatch_autocatpath(
         return f"autocatpath dispatch failed for {ref.slug}: export ({e})"
 
     node = os.environ.get(_AUTOCATPATH_ROUTE_NODE_ENV) or None
+    # Env unset → resolve the GPU node from the runtime capability map rather
+    # than degrading to an unrouted EMT job (gr172886). The env-set path (the
+    # coordinator daemon) never touches resource_slots, so this adds no new
+    # dependency to it.
+    if node is None:
+        slots = store.all_resource_slots()
+        gpu_hosts = {s.host for s in slots if s.resource == "gpu" and s.capacity > 0}
+        if gpu_hosts:
+            node = sorted(gpu_hosts)[0]
+        elif len({s.host for s in slots}) > 1:
+            # A real multi-node cluster with no GPU advertised is a prod
+            # misconfiguration — minting anyway would silently run junk EMT
+            # instead of the intended MACE-on-GPU. Fail loud. Empty/single-host
+            # resource_slots is the dev/CI shape (no cluster to misroute onto),
+            # so that still falls through to the in-process EMT path below.
+            hosts = {s.host for s in slots}
+            raise RuntimeError(
+                f"autocatpath dispatch for {ref.slug}: no GPU route node — env "
+                f"{_AUTOCATPATH_ROUTE_NODE_ENV} unset and no host advertises the "
+                f"'gpu' resource, but resource_slots spans {sorted(hosts)}. "
+                "Refusing to mint an unrouted EMT job on a cluster (gr172886). "
+                f"Set {_AUTOCATPATH_ROUTE_NODE_ENV} or fix the GPU host's "
+                "heartbeat/resource_slots."
+            )
     # Routed → run the config's own backend on the pinned node; unrouted → EMT
     # (an in-process demo has no ML backend). An explicit override wins either way.
     force = force_backend or (None if node else "emt")
