@@ -195,12 +195,15 @@
 # `precis_heartbeat` reuses /opt/precis/venv (installed by 20 above, hence the
 # ordering) but is its OWN role/playbook — 20 never runs it. Without this
 # import, a standard `/go`/`scripts/deploy` never re-templates
-# com.precis.heartbeat.plist: step 2 below still `kickstart`s the daemon (it
-# matches the generic `com.precis.*.plist` bounce), but kickstarting an
-# unchanged plist doesn't pick up new host_vars. Root cause of a stale
-# plist (mtime months behind HEAD) silently dropping a host-var override
+# com.precis.heartbeat.plist: step 2 below bounces the daemon (it matches the
+# generic `com.precis.*.plist` bounce), but a bounce of an UN-re-rendered plist
+# has no new env to load. Root cause of a stale plist (mtime months behind HEAD)
+# silently dropping a host-var override
 # (`precis_local_llm_model_override`/`precis_local_serve_config`) meant for
-# the heartbeat daemon — found 2026-07-23, gripe 170073.
+# the heartbeat daemon — found 2026-07-23, gripe 170073. (The complementary
+# half — the bounce itself now bootout+bootstraps so a freshly-rendered plist's
+# env actually loads, vs. the old `kickstart -k` that ignored it — landed
+# 2026-07-30; see the reload task below.)
 - name: "Re-render the heartbeat plist      (all nodes — picks up host_var overrides)"
   ansible.builtin.import_playbook: playbooks/40-precis-heartbeat.yml
 
@@ -305,13 +308,28 @@
       changed_when: false
       failed_when: false
 
-    - name: Kickstart each remaining precis LaunchDaemon (macOS)
+    # `kickstart -k` restarts the process but from the ALREADY-LOADED (in-memory)
+    # plist definition — a changed `<EnvironmentVariables>` on disk is IGNORED
+    # until a full bootout+bootstrap. That silently benched env-gated features
+    # whose plist env changed on deploy: PRECIS_QUEST_LOOP_ENABLED (the whole
+    # autonomous quest loop, dark ~4 days) and a per-host summarizer-model
+    # binding, both 2026-07-30 — the deploy reported "changed" but the running
+    # daemon kept the old env. Reload = bootout (unload) then bootstrap (load fresh from the
+    # on-disk plist, picking up the new env). bootout's process teardown is
+    # ASYNC, so wait before re-bootstrapping — a too-eager bootstrap races the
+    # unload and fails with `Bootstrap failed: 5: Input/output error`. A rare
+    # transient bootstrap miss self-heals: the unconditional "Bootstrap … no-op
+    # if loaded" above runs first on the NEXT deploy and recovers it.
+    - name: Reload each remaining precis LaunchDaemon (macOS) — bootout+bootstrap so plist env changes take
       when:
         - os_family == "darwin"
         - precis_deploy_changed | default(true) | bool
-      ansible.builtin.command: >-
-        launchctl kickstart -k
+      ansible.builtin.shell: >-
+        launchctl bootout
         system/{{ item.path | basename | regex_replace('\.plist$', '') }}
+        2>/dev/null || true;
+        sleep 3;
+        launchctl bootstrap system {{ item.path }}
       loop: "{{ precis_plists.files }}"
       loop_control:
         label: "{{ item.path | basename }}"
