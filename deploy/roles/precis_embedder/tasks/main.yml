@@ -64,7 +64,7 @@
   # resolution of the branch — without it, a fresh push wouldn't
   # actually pull the new SHA until someone cleared the uv cache.
   ansible.builtin.shell: |
-    {{ precis_embedder_uv_bin }} pip install --python {{ precis_embedder_venv }}/bin/python --upgrade \
+    {{ precis_embedder_uv_bin }} pip install {{ '-v' if (precis_embedder_trace | default(false) | bool) else '' }} --python {{ precis_embedder_venv }}/bin/python --upgrade \
       --refresh-package precis-mcp \
       'precis-mcp[embed] @ git+https://github.com/retospect/precis-mcp@{{ precis_embedder_git_ref }}'
   become: true
@@ -83,6 +83,44 @@
   changed_when: >-
     'Installed' in (precis_embedder_install.stdout + precis_embedder_install.stderr)
     or 'Updated' in (precis_embedder_install.stdout + precis_embedder_install.stderr)
+
+# ── In-situ deploy trace (gr172390) — opt-in, dormant by default ──
+# The embedder-venv assert fails "DID NOT CONVERGE" on the FIRST pass of every
+# real redeploy, then self-heals on an immediate re-run. uv is exonerated
+# (7 hypotheses eliminated in isolation — it lands a same-version/different-
+# commit sha in one shot); the surviving lead is an ansible orchestration/
+# timing artifact that ONLY manifests in the full multi-play sequence and so
+# cannot be reproduced by an isolated probe. Capturing it needs the real pass.
+# Run one deploy with `-e precis_embedder_trace=true` (the flag also flips the
+# uv install above to `-v`) and read these two tasks' output: the ref this host
+# actually received on pass 1 vs the frozen target, the install rc/changed/
+# attempt-count, and the commit_id uv actually left in direct_url.json. Off by
+# default → zero cost + zero noise on normal deploys; delete once root-caused.
+- name: TRACE — embedder install ref + result (gr172390)
+  when: precis_embedder_trace | default(false) | bool
+  ansible.builtin.debug:
+    msg:
+      - "received precis_embedder_git_ref = {{ precis_embedder_git_ref }}"
+      - "install rc={{ precis_embedder_install.rc }} changed={{ precis_embedder_install.changed }} attempts={{ precis_embedder_install.attempts | default('n/a') }}"
+      - "stdout tail: {{ precis_embedder_install.stdout[-2000:] | default('') }}"
+      - "stderr tail: {{ precis_embedder_install.stderr[-2000:] | default('') }}"
+
+- name: TRACE — installed commit_id in direct_url.json (gr172390)
+  when: precis_embedder_trace | default(false) | bool
+  ansible.builtin.shell: |
+    set -o pipefail
+    f=$(ls {{ precis_embedder_venv }}/lib/python*/site-packages/precis_mcp-*.dist-info/direct_url.json 2>/dev/null | head -1)
+    echo "direct_url path: ${f:-MISSING}"
+    [ -n "$f" ] && cat "$f" || true
+  become: true
+  register: precis_embedder_trace_durl
+  changed_when: false
+  failed_when: false
+
+- name: TRACE — show installed commit_id (gr172390)
+  when: precis_embedder_trace | default(false) | bool
+  ansible.builtin.debug:
+    var: precis_embedder_trace_durl.stdout
 
 - name: Ensure HF model cache dir
   ansible.builtin.file:
