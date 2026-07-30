@@ -28,9 +28,28 @@
     unit={{ reload_unit }}
     plist="/Library/LaunchDaemons/${unit}.plist"
     persistent={{ 'yes' if reload_persistent | bool else 'no' }}
+
+    # `launchctl bootout` is ASYNCHRONOUS: it returns before launchd has
+    # finished tearing the label down. A late-completing teardown reaps
+    # whatever is registered under that label — including a daemon we already
+    # bootstrapped in the meantime — and because bootout DEREGISTERS the label
+    # (not just kills the process), KeepAlive never respawns it. The old fixed
+    # `sleep 1` after bootout was not enough: a real teardown lagged 28.5s and
+    # killed a freshly-bootstrapped worker-agent while the deploy stayed green
+    # (gr176223 — a 4-day silent agent-lane outage). So POLL until the label is
+    # actually gone before bootstrapping, and re-assert after a settle window
+    # to catch any residual late kill.
+    gone() { ! launchctl print "system/${unit}" >/dev/null 2>&1; }
+    running_pid() {
+      launchctl print "system/${unit}" 2>/dev/null \
+        | sed -nE 's/^[[:space:]]*pid = ([0-9]+).*/\1/p' | head -1
+    }
     for attempt in 1 2 3 4 5; do
       launchctl bootout "system/${unit}" 2>/dev/null || true
-      sleep 1
+      # Wait up to ~60s for the async teardown to fully complete, so the
+      # bootstrap below can't race a still-in-flight removal.
+      i=0; while ! gone && [ "$i" -lt 120 ]; do sleep 0.5; i=$((i + 1)); done
+      gone || echo "${unit}: still tearing down after 60s, bootstrapping anyway (attempt ${attempt})" >&2
       # bootstrap is the modern replacement for `load` and gives richer
       # errors; fall back to `load -wF` on older launchds.
       launchctl bootstrap system "${plist}" 2>/dev/null \
@@ -39,16 +58,28 @@
       if [ "${persistent}" = "yes" ]; then
         launchctl kickstart "system/${unit}" 2>/dev/null || true
         sleep 1
-        if launchctl print "system/${unit}" 2>/dev/null | grep -qE 'pid = [0-9]+'; then
-          echo "${unit}: running (attempt ${attempt})"
-          exit 0
+        if [ -n "$(running_pid)" ]; then
+          # Settle re-assert: confirm it's STILL running after a window before
+          # calling the reload a success. A crash + KeepAlive respawn changes
+          # the pid but stays running (fine); only a vanished label — empty
+          # pid — means a late teardown bit us, so we retry.
+          sleep 8
+          if [ -n "$(running_pid)" ]; then
+            echo "${unit}: running (attempt ${attempt})"
+            exit 0
+          fi
+          echo "${unit}: vanished after start (late teardown?), retrying" >&2
         fi
       else
         # Periodic/one-shot: RunAtLoad / the interval fires it; we only
         # require it be registered in the domain. No kickstart, no pid.
-        if launchctl print "system/${unit}" >/dev/null 2>&1; then
-          echo "${unit}: loaded (attempt ${attempt})"
-          exit 0
+        if ! gone; then
+          sleep 8
+          if ! gone; then
+            echo "${unit}: loaded (attempt ${attempt})"
+            exit 0
+          fi
+          echo "${unit}: deregistered after load (late teardown?), retrying" >&2
         fi
       fi
       echo "${unit}: not ready after attempt ${attempt}, retrying" >&2
