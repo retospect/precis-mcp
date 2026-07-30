@@ -92,18 +92,6 @@ green). Still open (two grew mid-session into much bigger finds):
   from content failures (permanent block). Also: `quest_tick`/`catpath_explore`
   never persist `meta.transcript` (confusion-mining blind spot) — worth adding.
 
-- **✅ Deploy daemon-bounce now reloads plist env (`kickstart -k` →
-  `bootout`+`bootstrap`) — FIXED `81123521`, deployed, proven** *(was a HIGH-
-  leverage repo/deploy bug — owner `deploy/redeploy-precis.yml` "Bounce all
-  precis daemons" play).* `kickstart -k` respawned a daemon from the ALREADY-
-  LOADED plist, so a changed `<EnvironmentVariables>` on disk was ignored — this
-  silently swallowed env-var changes shipped via deploy (the quest-loop and
-  per-host summarizer env both bit this session). Now the bounce `bootout`s then
-  `bootstrap`s (with a teardown wait — a too-eager bootstrap races the async
-  unload → `5: I/O error`). Proven: a deploy-restarted daemon (pid 78772,
-  restarted at the deploy) now carries the freshly-added `PRECIS_STRUCTURE_
-  PREFLIGHT=1`, which `kickstart` never would have loaded.
-
 - **🟡 Bounce-coverage gap — not every daemon restarts on deploy** *(residual
   from the env-reload verify, 2026-07-30; owner `deploy/redeploy-precis.yml`).*
   After the `bootout`+`bootstrap` deploy, some precis processes still showed
@@ -114,15 +102,6 @@ green). Still open (two grew mid-session into much bigger finds):
   urgent — the nightly boot cycle will restart them and pick up the env**
   (Reto, 2026-07-30). Follow-up: confirm whether it's child procs vs. a real
   bounce gap, and if the latter, ensure the bounce covers all managed daemons.
-
-- **✅ `PRECIS_STRUCTURE_PREFLIGHT` enabled (first dark flag lit)** — set `"1"`
-  in `precis_shared_env` (2026-07-30), riding on the env-reload fix above.
-  Tier-0 structure geometry/element gate; low-risk (only adds validation).
-  Confirmed live on restarted daemons (see the bounce-coverage residual for the
-  stale-daemon caveat). The other audited dark flags (`backlog_groom`,
-  `agent_container`, `friction_reflect`, `mcp_db_role_enforce`) remain OFF — see
-  the dark-switch audit; `backlog_groom` needs a `service_config` flip + worker
-  restart to light.
 
 - **balthazar summarizer flood — NOT fixed (corrects the earlier claim)**
   *(ops/config — cosmetic).* The `precis_local_llm_model_override` host_var I set
