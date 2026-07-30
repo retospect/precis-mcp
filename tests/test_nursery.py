@@ -29,6 +29,7 @@ from precis.store import Store
 from precis.store.types import Tag
 from precis.workers.nursery import (
     CHILD_FAILED_PARKED_HOURS,
+    DEAD_WORKER_LOOKBACK_DAYS,
     DEAD_WORKER_SILENCE_MIN,
     DISPATCH_STALL_MINUTES,
     LONG_WAIT_DAYS,
@@ -892,6 +893,40 @@ def test_dead_worker_ignores_periodic_process(store: Store) -> None:
 
     findings = _detect_dead_workers(store)
     assert not any(f.category == "dead-worker" and host in f.title for f in findings)
+
+
+def test_dead_worker_still_flags_after_multi_day_silence(store: Store) -> None:
+    """A critical daemon dead for DAYS (not just minutes) must stay flagged —
+    the gr176223 regression. The old 24h lookback floor aged a >24h-dead
+    worker out of the candidate set, so the critical alert auto-resolved and a
+    4-day agent-worker outage read as fixed after day one. With the widened
+    floor a worker silent 4 days on a live host still fires."""
+    host = _host()
+    four_days_min = 4 * 24 * 60  # > 24h (old floor), < 30d (retention)
+    _seed_worker_log(store, host, "precis-worker-agent", minutes_ago=four_days_min)
+    _seed_heartbeat(store, host, minutes_ago=0)  # host alive (heartbeat daemon up)
+
+    findings = _detect_dead_workers(store)
+    key = f"dead-worker:{host}:precis-worker-agent"
+    hits = [f for f in findings if f.fingerprint_key == key]
+    assert len(hits) == 1
+    assert hits[0].category == "dead-worker"
+
+
+def test_dead_worker_ignores_daemon_gone_past_retention(store: Store) -> None:
+    """The floor still protects against a decommissioned daemon alarming
+    forever: a (host, process) last seen beyond DEAD_WORKER_LOOKBACK_DAYS is
+    treated as gone, not dead — natural log pruning, not an arbitrary 24h cap,
+    is what drops it."""
+    host = _host()
+    past_retention_min = (DEAD_WORKER_LOOKBACK_DAYS + 1) * 24 * 60
+    _seed_worker_log(store, host, "precis-worker-agent", minutes_ago=past_retention_min)
+    _seed_heartbeat(store, host, minutes_ago=0)
+
+    findings = _detect_dead_workers(store)
+    assert not any(
+        f.fingerprint_key == f"dead-worker:{host}:precis-worker-agent" for f in findings
+    )
 
 
 def test_run_nursery_pass_raises_critical_for_dead_worker(store: Store) -> None:

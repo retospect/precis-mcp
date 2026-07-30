@@ -160,6 +160,18 @@ DEAD_WORKER_SILENCE_MIN = 10
 #: dream) are excluded — their silence between runs is normal, not a fault.
 WORKER_CONTINUOUS_PROCESSES = ("precis-worker", "precis-worker-agent")
 
+#: How far back ``dead-worker`` will still consider a (host, process) it once
+#: saw. It exists only to stop a *decommissioned* daemon alarming forever — but
+#: set to 24h it became the blind spot behind a 4-day silent agent-worker outage
+#: (gr176223): once a critical daemon had been dead > 24h its last log row aged
+#: out of the window, the finding vanished, and ``resolve_stale_alerts``
+#: AUTO-RESOLVED the critical alert — so a still-broken worker read as *fixed*
+#: after day one. Widened to match the ``worker_logs`` retention the sweeper
+#: keeps (30d): a silent critical daemon stays flagged for as long as we retain
+#: any evidence it ran, then natural log pruning (not an arbitrary floor) drops
+#: a genuinely-gone one. A real outage never self-silences inside this window.
+DEAD_WORKER_LOOKBACK_DAYS = 30
+
 #: A ``claude_inproc`` job (plan_tick / fix_gripe / news / briefing) sitting
 #: ``STATUS:queued`` longer than this while **nothing** is running is a stalled
 #: planner: minting is cluster-wide but *execution* is agent-profile-only
@@ -913,8 +925,10 @@ def _detect_dead_workers(store: Store) -> list[Finding]:
     being alive — some other process on it logged recently, or its
     ``host_heartbeat`` is fresh — so a whole-host / DB outage doesn't
     fan out into one false "dead worker" per daemon (that is a different,
-    single failure). The 24h floor scopes it to daemons seen recently, so
-    a decommissioned worker doesn't alarm forever.
+    single failure). The :data:`DEAD_WORKER_LOOKBACK_DAYS` floor scopes it
+    to daemons seen within log retention so a decommissioned worker
+    eventually stops alarming — but is wide enough (30d) that a real
+    multi-day outage never ages out and self-resolves (gr176223).
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
@@ -923,7 +937,7 @@ def _detect_dead_workers(store: Store) -> list[Finding]:
                 SELECT host, process, max(ts) AS last_ts
                   FROM worker_logs
                  WHERE process = ANY(%(procs)s)
-                   AND ts > now() - interval '24 hours'
+                   AND ts > now() - (%(lookback_days)s || ' days')::interval
                  GROUP BY host, process
             ),
             host_alive AS (
@@ -944,6 +958,7 @@ def _detect_dead_workers(store: Store) -> list[Finding]:
             {
                 "procs": list(WORKER_CONTINUOUS_PROCESSES),
                 "silence_min": DEAD_WORKER_SILENCE_MIN,
+                "lookback_days": DEAD_WORKER_LOOKBACK_DAYS,
             },
         ).fetchall()
     out: list[Finding] = []
