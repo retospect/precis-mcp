@@ -127,6 +127,27 @@ def test_every_ref_pass_spec_is_wired() -> None:
     )
 
 
+def test_quest_loop_reconcile_gate_env_matches_registration() -> None:
+    """quest_loop_reconcile registers via a *direct* ``quest_loop_enabled()``
+    env check in cli/worker.py, but the per-cycle ``pass_gate`` derives its
+    default from this spec's ``enable_env``. If the two name different env vars
+    (or the spec omits ``enable_env``), the pass registers yet is skipped every
+    cycle — the 2026-07-30 dark-lane regression: ``e69c2b06`` switched the gate
+    default from blanket-true to ``_env_profile_default_on`` (spec-derived), so a
+    missing ``enable_env`` silently benched the whole autonomous quest loop for
+    days. Pin the registration gate and the per-cycle gate to the same var.
+    """
+    from precis.quest.tick import QUEST_LOOP_ENABLED_ENV
+
+    spec = SERVICES_BY_NAME["quest_loop_reconcile"]
+    assert spec.enable_env == QUEST_LOOP_ENABLED_ENV, (
+        "quest_loop_reconcile's per-cycle pass_gate default is derived from "
+        "spec.enable_env; it must equal the env var its cli/worker.py "
+        f"registration checks ({QUEST_LOOP_ENABLED_ENV!r}), else the pass "
+        "registers but is gated off every cycle."
+    )
+
+
 def test_derived_profiles_match_the_frozen_snapshot() -> None:
     """Slice 1 is a no-op refactor: derived sets == the old literals."""
     assert service_names_for_profile("system") == _EXPECTED_SYSTEM

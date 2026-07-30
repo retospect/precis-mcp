@@ -442,6 +442,14 @@ SERVICES: tuple[ServiceSpec, ...] = (
         kind=ServiceKind.PASS,
         ref_pass=True,
         uses_model=True,
+        # The pass registers via a direct `quest_loop_enabled()` env check
+        # (cli/worker.py), but the per-cycle `pass_gate` derives its default from
+        # this spec's `enable_env`. Without it the two gates DISAGREE: the pass
+        # registers yet is skipped every cycle (default_on=False), which is
+        # exactly how it silently went dark when `e69c2b06` switched the gate
+        # default from blanket-true to `_env_profile_default_on`. Keep this in
+        # lockstep with the registration env var.
+        enable_env="PRECIS_QUEST_LOOP_ENABLED",
         one_line=(
             "Ensures each active quest has one live quest_tick coordinator "
             "loop, re-arming a rested one (agent profile, dark gate)."
