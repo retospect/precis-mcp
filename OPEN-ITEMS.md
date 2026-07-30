@@ -8,6 +8,42 @@ items are removed (history is `git log`).
 > regression that pins it.
 
 ---
+
+## Residuals (2026-07-30 session — gr172886 ship)
+
+- **worker-agent daemon silent outage + monitoring blind spot** · Status: open ·
+  Severity: critical · Owner: `src/precis/workers/nursery.py::_detect_quest_loop_failures`
+  + ops. The melchior `com.precis.worker-agent` daemon (sole host of
+  `quest/loop.py::reconcile_quest_loops`, the quest self-heal) was SIGKILL'd and
+  stayed dead ~4 days (2026-07-26→30), silently stalling qu164903 + all
+  agent-profile work; `_detect_quest_loop_failures` (`QUEST_LOOP_FAIL_24H=3`)
+  structurally can't catch "reconciler host down → zero re-mints" (one `failed`
+  row, not a spin). Do: (1) investigate the `-9` (jetsam/OOM/crashloop); (2) add
+  a detector for "active quest, terminal-failed coordinator, no live/queued
+  replacement > N h". · Test: nursery emits an alert for a quest whose newest
+  `quest_tick:<id>` is terminal-failed and older than the RC1 backoff with no
+  live replacement. See memory `worker-agent-silent-outage`.
+- **tool-less BIG-tier LLM calls fragile + swallowed 400 body** · Status: open ·
+  Severity: feature · Owner: `src/precis/utils/llm/router.py::resolve_chain`
+  (ignores `tools_needed` for chain-override rungs) + `openai_tools.py`
+  `_UrllibTransport.post_json`/`run_tool_loop` (records `str(HTTPError)` only,
+  drops `exc.read()`). A chain override (`llm.chain.big`) captures tool-less
+  traffic (e.g. quest_tick's propose call) onto an OpenRouter model whose
+  provider pool can 400 a tools-absent request non-deterministically — killed
+  qu164903's coordinator 2026-07-26 (transient, not reproducing now). Do:
+  surface the real 400 body into `LlmResult.error`, and make override routing
+  `tools_needed`-aware (or pin a provider). · Test: a fake transport raising
+  `HTTPError(fp=<body>)` → `LlmResult.error` contains the body text, not just
+  "HTTP Error 400".
+- **N concurrent sessions gate against one local precis_test DB → saturation** ·
+  Status: open · Severity: feature · Owner: `scripts/ship`/`scripts/test` gate +
+  the shared `dev-precis-test-db-1`. Full-suite `-n6` runs from many worktrees
+  exhaust the DB pool / push it into recovery mode → pervasive spurious `E`rrors
+  (the gr172886 ship took 7 attempts, all infra). Do: bound gate concurrency
+  (the ship-lock helps but siblings' `scripts/test` bypass it), or a per-worktree
+  test DB. See memory `shared-test-db-concurrency-flake`.
+
+---
 ## 🚨 Deploy fresh-resolves deps instead of installing from `uv.lock` — gate-green can deploy-break
 
 Status: open · Severity: critical (prod-outage class) · Owner: `deploy/`
