@@ -11,31 +11,13 @@ items are removed (history is `git log`).
 ## 🔎 Residuals — whatneedsdoing triage 2026-07-30 (Opus-session, harvestable)
 
 Surfaced during the 2026-07-30 triage (fleet-health + prod transcript mining).
-The `draft view='outline'` MCP-fix from the same triage already **shipped +
-deployed** (main `901f22ec`) — these are the parked residuals.
-
-- **Draft mutators return typed errors on stale handles — regression-test
-  the whole verb set** *(test coverage — owner `tests/`).* The `edit()`-°
-  incident harvested here (`ref_id=46948`, 2026-07-01) was a **false
-  positive**: root-cause (2026-07-30) proved the real defect — draft
-  chunk-mutators raising a bare `ValueError` for unknown/retired handles,
-  rendered as opaque `[error:Internal]` — was already fixed the next day
-  (`138ed8cf`, typed `Gone`/`NotFound`; adjacent find=/text= clobber fixed
-  `d23f607f`/`812911bf`). Degree-symbol content was incidental. The one
-  genuinely-new item: a cross-cutting dispatch-level test asserting **every**
-  draft chunk-mutator verb (`text=`, `find=`+`text=`, `move=`, `style=`,
-  `list_kind=`, `word_target=`, figure `origin=`/`permission=`) returns
-  `[error:Gone]`/`[error:NotFound]` — never `[error:Internal] … ValueError` —
-  for both an unknown and an already-retired `dc<id>`, guarding any future
-  mutator added without threading the typed-error convention. Hand to
-  `test-author`. (Process gap that filed this false residual: `gripe:175738`.)
-
-- **balthazar 15.6k WARN/24h flood — `llm:qwen` vs served `llm:qwen3.6-35b-…`
-  served_by mismatch** *(config drift — owner LLM router / served_by seeding).*
-  Dispatch requests `llm:qwen`, the host advertises `llm:qwen3.6-35b-…`, every
-  call falls back to litellm and logs a WARNING. Not down (fallback works) but
-  floods the error surface. **Next:** align the requested alias with the
-  served_by id, or register the alias so the fallback is silent.
+**Most cleared the same day** — `draft view='outline'` (`901f22ec`), skill-doc
+gaps finding/regex (`55f80b70`), typed-error dispatch regression test
+(`32b6e90b`; the `edit()`-° "bug" was a false positive — already fixed by
+`138ed8cf`, see `gripe:175738`), Dependabot #75 (blocked upstream → Snoozed),
+PR #35 `mcp<3` (merged `d3123538`), Windows CI (skipif pass `4a1b2e08`, now
+green), and the balthazar WARN-flood (host_var bound to the served id + deployed
+`32b6e90b`). Still open:
 
 - **Agent-job transcript-capture gap** *(observability — owner worker dispatch
   / job persistence).* Only `plan_tick` ever writes `meta.transcript`;
@@ -47,26 +29,17 @@ deployed** (main `901f22ec`) — these are the parked residuals.
   dispatch health; consider persisting transcripts for the other agent job
   types.
 
-- **Skill-doc gaps** *(skill-edit — owner `src/precis/data/skills/`).* (a)
-  `precis-finding-help` should state up front that `finding` is
-  paper-citation-scoped only and requires the `title=`+`cited_in=<paper-chunk
-  handle>` pair — 12 jobs conflated `cited_in` with the plan slug. (b)
-  `precis-search-help`: regex mode is **draft-only**; a non-draft
-  `search(mode='regex')` dead-ends with "unknown search mode 'regex'" — point
-  abbreviation/pattern hunts on other kinds at `mode='lexical'`/`verbatim`.
-
-- **Dependabot #75 brace-expansion (high, DoS)** — **investigated 2026-07-30,
-  blocked upstream → moved to the Snoozed section below.** The only patched
-  release (5.0.8+) is incompatible with every `minimatch`; the tool crashes if
-  forced. Not the in-reach fix it first looked like.
-
-- **PR #35 (`mcp` `>=1,<3` bump)** — **investigated 2026-07-30: SAFE to merge.**
-  Windows CI red is **pre-existing platform rot, unrelated to the bump** — main
-  (still on the old `mcp<2` pin) fails the *same* Windows tests, and the PR's 23
-  failures are a strict subset of main's. Green Linux+macOS is the real signal.
-  **Action:** merge (the required Windows checks were already red before this
-  branch existed — needs an admin override / not-required Windows check). See
-  the Windows-CI item below for the root of the noise.
+- **Post-deploy fleet-health assertion: `PRECIS_SUMMARIZE_MODEL` vs served
+  `resource_slots`** *(feature — owner `deploy/` verify play or a `cluster-ops`
+  check).* The balthazar WARN-flood (fixed 2026-07-30) was a stale host_var —
+  its summarizer model resolved to the fleet-default `qwen` alias, which the
+  host doesn't serve, silently detouring every SMALL-tier call to litellm for
+  ~15.6k WARNINGs/day before anyone noticed. A post-`scripts/deploy` assertion
+  that each host's resolved `PRECIS_SUMMARIZE_MODEL` (and any `PRECIS_LOCAL_*`
+  model) equals a `model_id` present in that host's own `resource_slots` `llm:`
+  rows would surface this class of drift at deploy time instead of via a 24h
+  log-volume alert. This is the automated form of the S4 "Verification" step in
+  `docs/design/local-model-router-integration.md`.
 
 - **Windows CI — residuals after the skipif pass** *(repo health — owner
   `tests/`).* The 27 chronically-failing POSIX-only tests were `skipif(win32)`-
