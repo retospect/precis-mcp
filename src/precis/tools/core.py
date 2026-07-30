@@ -759,7 +759,7 @@ def put(
     # conversation (see precis-conv-help):
     author: str | None = None,
     msg_id: str | None = None,
-    # cron (see precis-cron-help):
+    # cron (see precis-recurring-help):
     target: str | None = None,
     when: str | None = None,
     in_: str | None = None,

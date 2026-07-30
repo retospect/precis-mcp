@@ -166,7 +166,7 @@ put(
 
 **`cited_in=` wants a corpus handle, not a DOI.** `cited_in='doi:…'` is
 **rejected** (the link parser has no `doi` kind). Point it at the paper
-chunk you actually read the claim in (`slug` or `slug~ord`). If that
+chunk you actually read the claim in (its `pc<id>` handle). If that
 source isn't in the corpus either, stub + wait for it first (above),
 then register the finding against its chunk. Full chase contract:
 [[precis-finding-help]].

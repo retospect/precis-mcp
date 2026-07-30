@@ -140,9 +140,9 @@ A short agent-facing skill documenting the whole loop:
   the payload (delete + re-put, since cron `put` rejects `id=`; or pause via
   `STATUS:paused`).
 - After producing an artifact, `link(rel='derived-into')` it back to the cron.
-- Cross-link to `precis-cron-help` (mechanism) and `precis-voice` (cast craft).
+- Cross-link to `precis-recurring-help` (mechanism) and `precis-voice` (cast craft).
 
-Also add a "Standing automations" pointer to `precis-cron-help` so the two
+Also add a "Standing automations" pointer to `precis-recurring-help` so the two
 skills reference each other.
 
 ## What this unblocks (the original request)
@@ -160,7 +160,7 @@ prompt, Reto's actual asks become **payload edits** (not code):
 
 ## Slice plan
 
-1. `automation` tag convention + `precis-automations` skill + `precis-cron-help`
+1. `automation` tag convention + `precis-automations` skill + `precis-recurring-help`
    pointer. *(Docs + convention; zero code risk.)*
 2. `cron` `/automations` list view + unit test.
 3. Status web "Automations" panel + route test.

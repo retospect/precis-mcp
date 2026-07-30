@@ -149,9 +149,11 @@ this change should do unattended.
   `search(kind='todo', view='roots')` surfaces.
 - The handle registry (`src/precis/utils/handle_registry.py`) drops
   the `cron`/`cp` record and chunk codes.
-- `precis-cron-help` is retired to a redirect stub pointing at
-  `precis-recurring-help` (kept, not deleted, so an agent that
-  remembers the old skill id still finds the new surface).
+- `precis-cron-help` was retired to a redirect stub pointing at
+  `precis-recurring-help`. **Superseded 2026-07-30:** the stub was
+  deleted — `kind='cron'` is fully retired in code and data (0 refs), so
+  a redirect kept only for a stale skill id is the legacy scaffolding the
+  one-way skill model drops.
   `precis-recurring-help` gains the `at`/`deliver` sections.
   `precis-automations` is rewritten for the unified model.
 - `docs/design/todo-tree-plan.md`'s foldability table row for `cron`

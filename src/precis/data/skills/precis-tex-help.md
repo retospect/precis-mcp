@@ -103,19 +103,17 @@ indent. Cycles terminate with a `⇺` marker. Targets outside
 ```text
 # TOC: main
 
-- \section{Introduction}  (`main~introduction-...`)
+- \section{Introduction}  (`xc12`)
   ⤷ \input{chapters/methods} → chapters--methods
-    - \section{Methods}  (`chapters--methods~methods-...`)
-      - \subsection{Kinetics}  (`chapters--methods~kinetics-...`)
+    - \section{Methods}  (`xc15`)
+      - \subsection{Kinetics}  (`xc16`)
   ⤷ \input{chapters/results} → chapters--results
-    - \section{Results}  (`chapters--results~results-...`)
-- \section{Conclusion}  (`main~conclusion-...`)
+    - \section{Results}  (`xc23`)
+- \section{Conclusion}  (`xc31`)
 ```
 
-Each backticked entry is a section **selector** in the legacy
-`slug~name` form — it still resolves as `id=`, but it is not the
-handle. The canonical address is the block's `xc<id>` **handle**, the
-form `get` and search print; paste that to read the block.
+Each backticked entry is the block's `xc<id>` **handle** — the canonical
+address `get` and search print. Paste it to read that section.
 
 Views: `toc` (sections + keywords, recursive across `\input`),
 `outline` (headings only), `raw` (full source).
