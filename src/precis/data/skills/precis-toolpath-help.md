@@ -130,6 +130,7 @@ ordinary conversion. Paid tools cache automatically (`precis-cache`).
 | Components with spec in a range | `search(kind='component', spec='max_working_pressure', min=20, category='hose')` | `precis-component-help` |
 | Organize artifacts | `kind='folder'` + `link(rel='parent')`; `search(folder=...)` | `precis-folder-help` |
 | Verified claim → source | `kind='citation'` / `kind='finding'` | `precis-citation-help`, `precis-finding-help` |
+| Find/cite a cross-paper claim hub | `search(kind='finding', tags=['TAPROOT:claim'])` → cite `[pub_id]` (living) or pin `[pub_id>pa5]` | `precis-taproot-help` |
 | Reusable reasoning step beside a draft | `kind='memory'` tagged `kind:lemma`/`kind:inference`, `entails`/`derived-from` edges → `get(view='argument')` | `precis-argument-help` |
 | Spaced-repetition cards (Anki) | **`search(kind='anki', q=…)` first (dedup)** → `put(kind='anki', text='… {{cN::…}} …', tags=['deck-<topic>'])` → syncs to AnkiWeb | `precis-cloze` (craft), `precis-anki-help` (ref) |
 | Cards I keep forgetting | `get(kind='anki', id='/leeches')` → fix the cloze (tag `precis-fix` in Anki) or study more | `precis-anki-help` |

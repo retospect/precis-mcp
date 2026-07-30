@@ -161,4 +161,7 @@ get(
 get(
     kind="skill", id="precis-relations"
 )  # link relation vocabulary (cites, see-also, …)
+get(
+    kind="skill", id="precis-taproot-help"
+)  # the Claims group's claim hubs, evidence edges
 ```

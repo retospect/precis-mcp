@@ -1,4 +1,4 @@
-# 0072 — Taproot evidence-edge relations + the single hub write-path
+# 0073 — Taproot evidence-edge relations + the single hub write-path
 
 - **Status**: accepted (2026-07-29) · **built + verified** (this commit;
   migration `0094_taproot_evidence_relations.sql`, `src/precis/taproot/hub.py`).

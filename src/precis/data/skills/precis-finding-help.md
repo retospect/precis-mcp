@@ -243,5 +243,8 @@ get(kind="skill", id="precis-citation-help")  # verifier-write side of citations
 get(kind="skill", id="precis-paper-help")  # chunk-handle grammar (~N, ~A..B)
 get(kind="skill", id="precis-search-help")  # query mechanics
 get(kind="skill", id="precis-bibliography-help")  # who cites this paper
+get(
+    kind="skill", id="precis-taproot-help"
+)  # claim hubs, evidence edges, living citation
 get(kind="skill", id="precis-overview")  # verbs and kinds
 ```

@@ -71,7 +71,7 @@ name/path.
 | `quest` | `qu7` | A **perpetual, unachievable striving** (the medieval Grail sense) that pulls work + knowledge into its service. Never `done` — lifecycle `active/dormant/abandoned`. Work `serves` it (a DAG of strivings above the todo tree); an append-only WORM logbook is the deed + cost ledger. Priority (`PRIO:` tag) flows down the `serves` DAG to reweight rotation / acquisition / reading (slice 2, live). See `precis-quest-help` (verbs/mechanics) and `precis-quest-writing-help` (judgment: writing a good striving). | store |
 | `llm` | `lm7` (model slug `claude-opus-4-8` also resolves) | A **model catalog card** — one ref per model (`emits_card`, so the capability prose is a vector; `search(kind='llm', q='careful SQL')` matches on capability). `meta` carries the facts: `model_id`, `tier_floor`, `offerings` (operating points), coarse 1–5 `capability` axes, `provenance`. A `llm_reconcile` pass keeps facts true against the live OpenRouter feed + flags proxy drift. Read-only, machine-maintained (`precis llm seed` / `reconcile`); never exported. Ships dark — empty catalog ⇒ today's behaviour (`Tier` stays the floor). See `docs/proposals/llm-catalog.md`, migration 0071. | store |
 | `citation` | `ci18` | Verified claim → source quote | store |
-| `finding` | `fi73` | Chain-of-evidence head over a citation chase | store |
+| `finding` | `fi73` | Chain-of-evidence head over a citation chase; a `TAPROOT:claim`-tagged finding is a cross-paper claim hub (see `precis-taproot-help`) | store |
 | `orcid` | `orcid:0000-0002-1825-0097` | Researcher identity (ORCID): resolves + stores an author node (dossier), links held works + reports missing ones (LLM-gated `enqueue=`), and is the `authored` link hub. See `precis-orcid-help`, ADR 0039. | `ORCID_CLIENT_ID` |
 | `job` | `jo55` | Execution attempt of a todo intent. **New jobs require `parent_id` pointing at a `kind='todo'`** — see `precis-job-help` + `precis-dispatch-help`. | store |
 | `message` | `ms11` | Proactive outbound (Discord post) | store |
@@ -245,6 +245,7 @@ get(
 )  # view='fisheye'/'fisheye+1hop' — read a chunk with its neighborhood
 get(kind="skill", id="precis-random-help")  # random corpus pick
 get(kind="skill", id="precis-folder-help")  # folders, placement, folder= search scope
+get(kind="skill", id="precis-taproot-help")  # cross-paper claim hubs, living citation
 get(
     kind="skill", id="precis-gripe-help"
 )  # hit a bug / tool friction? file a gripe (search existing first)

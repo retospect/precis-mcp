@@ -1095,6 +1095,32 @@ overlay on `finding`/`ref_tags`/`links` — no schema of its own).
     multi-hop attach + a seeded `cites` edge exercising the real
     originator/corroborator split, NO-SUPPORT skip, non-paper skip, no-
     verification bare-corroborator attach, re-establish idempotency.
+  - **A3 (authoring on-ramp — cite-seeded hub mint + draft write-hint)**
+    — built. A human/backfill door that mints a claim hub from a claim +
+    its already-known supporting paper cites, *without* the corpus chase:
+    `taproot/authoring.py::seed_claim_hub` wraps the existing
+    `mint_hub`/`attach_evidence` (no new write path), resolving supporter
+    handles via the shared `resolve_handle_target`/`resolve_handle_ref`
+    and kind-gating them to `paper`/`patent` — with a matching src-kind
+    backstop added to `hub.py::attach_evidence`, so a typo'd spec handle
+    (`dc<id>`/`me<id>`/a bare id) can't write a non-paper evidence edge
+    and breach the paper-sourced invariant (open #15). Exposed as
+    `precis taproot mint` (`cli/taproot.py` — `--spec`/`--json`,
+    `--dry-run` with full pre-flight resolution so a bad handle aborts
+    before any write, per-supporter attached/already/collapsed reporting).
+    Roles are written `corroborates`; seniority still derives
+    `establishes` at read time (W1/W2 unchanged). The write side gains a
+    nudge: `handlers/draft.py::_pc_cite_claim_hub_hint` (backed by
+    `taproot/lookup.py::hubs_grounded_by_paper` — one bounded
+    `links`→`ref_tags`→`ref_identifiers` query) fires on a draft
+    `put`/`edit` whenever a cited `[pc<id>]`/`[pa<id>]`'s paper already
+    grounds ≥1 hub, listing each `[pub_id]` (a paper can ground several —
+    the many-to-many case) so the author can switch to the living cite;
+    `_hygiene_lines` gains a draft-level "N of M cited passages have a
+    hub" scoreboard. Discoverability: new `precis-taproot-help` skill,
+    wired into `precis-overview`/`precis-toolpath-help` + the
+    draft/finding/fisheye/citation See-also blocks. Tests:
+    `tests/test_taproot_authoring.py`, `tests/test_taproot_cite_hint.py`.
   - Not yet built: further chase slices (S2-global-citation-count
     fallback promotion, integrity axis (Phase 4), corpus backfill
     (Phase 5)).

@@ -58,6 +58,12 @@ HUB_ROLES: frozenset[str] = frozenset({"establishes", "corroborates", "contradic
 #: (taproot.md §"Seniority is derived", Phase 2c/3), not a write-time guess.
 _DEFAULT_ROLE = "corroborates"
 
+#: :func:`attach_evidence`'s src-kind guard (open #15: only paper-sourced
+#: claims get evidence) — defense-in-depth behind
+#: :func:`precis.taproot.authoring.resolve_paper_ref_id`'s authoritative
+#: check, for any caller that reaches this door directly.
+_EVIDENCE_SRC_KINDS: frozenset[str] = frozenset({"paper", "patent"})
+
 _STATUS_NS = "STATUS"
 _STATUS_CANONICAL = "canonical"
 
@@ -265,6 +271,16 @@ def attach_evidence(
                     "evidence edges attach only to claim hubs — tag the "
                     "finding TAPROOT:claim (axis:taproot) or pick a claim hub"
                 ),
+            )
+        src = store.fetch_refs_by_ids([paper_ref_id], include_deleted=True).get(
+            paper_ref_id
+        )
+        if src is None or src.kind not in _EVIDENCE_SRC_KINDS:
+            kind_desc = "unknown" if src is None else src.kind
+            raise BadInput(
+                f"paper_ref_id={paper_ref_id} is a {kind_desc!r} ref, not a "
+                "paper/patent",
+                next="evidence edges attach only from a paper/patent source ref",
             )
         store.add_link(
             src_ref_id=paper_ref_id,

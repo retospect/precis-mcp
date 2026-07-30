@@ -113,6 +113,32 @@ def _find_whole_ref_citations(text: str) -> list[str]:
     return out
 
 
+def _find_paper_cite_tokens(text: str) -> list[str]:
+    """Every bare ``[pc<id>]``/``[pa<id>]``/``[pk<id>]`` handle in ``text``
+    naming a paper or patent — whole-ref *or* chunk-level, unlike
+    :func:`_find_whole_ref_citations` which wants only the whole-ref form.
+    Same ``BARE_BRACKET_REF_PATTERN`` + ``handle_registry.parse``
+    extraction, reused rather than a fresh regex; deduped, appearance
+    order. Feeds the Taproot claim-hub cite nudge (a ``[pc<id>]`` cite is
+    exactly the form worth checking against the evidence graph)."""
+    from precis.utils.mentions import BARE_BRACKET_REF_PATTERN
+
+    seen: set[str] = set()
+    out = []
+    for m in BARE_BRACKET_REF_PATTERN.finditer(text or ""):
+        bare = m.group("bare")
+        if bare[0] in "¶§" or bare in seen:
+            continue
+        parsed = handle_registry.parse(bare)
+        if parsed is None:
+            continue
+        kind, _is_chunk, _id = parsed
+        if kind in ("paper", "patent"):
+            seen.add(bare)
+            out.append(bare)
+    return out
+
+
 #: A figure's origin class (ADR 0034) — drives the clearance gate. ``original``
 #: is ours; ``own_graph`` is generated from data (ships a data supplement);
 #: ``third_party`` is reused under a publisher permission (carries the paper-trail).
@@ -927,6 +953,7 @@ class DraftHandler(Handler):
                 body += self._write_abbrev_hints(slug, ref.id, str(text), "")
                 body += self._citation_form_hint(str(text))
                 body += self._whole_paper_cite_hint(str(text), "")
+                body += self._pc_cite_claim_hub_hint(str(text))
                 body += self._literal_cite_hint(str(text))
                 body += self._temperature_form_hint(str(text))
             return Response(body=body)
@@ -1553,6 +1580,7 @@ class DraftHandler(Handler):
                 body += self._write_abbrev_hints(slug, c.ref_id, new_text, old_text)
                 body += self._citation_form_hint(new_text)
                 body += self._whole_paper_cite_hint(new_text, old_text)
+                body += self._pc_cite_claim_hub_hint(new_text)
                 body += self._literal_cite_hint(new_text)
                 body += self._temperature_form_hint(new_text)
                 body += self._dangling_edit_hint(new_text, old_text)
@@ -1579,6 +1607,7 @@ class DraftHandler(Handler):
                 body += self._write_abbrev_hints(slug, c.ref_id, str(text), old_text)
                 body += self._citation_form_hint(str(text))
                 body += self._whole_paper_cite_hint(str(text), old_text)
+                body += self._pc_cite_claim_hub_hint(str(text))
                 body += self._literal_cite_hint(str(text))
                 body += self._temperature_form_hint(str(text))
                 body += self._dangling_edit_hint(str(text), old_text)
@@ -1725,6 +1754,44 @@ class DraftHandler(Handler):
             "copied from search/get output, or drilled via "
             "get(kind='paper', id='<slug>~lo..hi', view='toc')."
         )
+
+    def _pc_cite_claim_hub_hint(self, text: str) -> str:
+        """Nudge toward an existing Taproot claim hub when a paper/patent
+        cite token (``[pc<id>]``/``[pa<id>]``/``[pk<id>]``) in ``text``
+        names a paper that already grounds one (:func:`~precis.taproot.
+        lookup.hubs_grounded_by_paper`). A ``[pub_id]`` cite is a *living*
+        citation (ADR 0074) — it always resolves to the current derived
+        originator(s), so it tracks new evidence without another edit,
+        unlike a cite frozen on one paper/chunk. A NUDGE, never a
+        refusal: the ``[pc<id>]``/``[pa<id>]`` cite stays exactly as valid
+        as it was — this only offers a stronger alternative, or the
+        ``[pub_id>handle]`` pin (ADR 0074 slice A2) to keep citing this
+        exact passage while still riding the living resolution. Scoped to
+        the cites actually present in ``text`` (the touched chunk), not
+        the whole draft — cheap on the write path. Deduped by
+        ``pub_id`` — a paper grounding the same hub via two cite tokens in
+        one chunk gets one nudge line."""
+        from precis.taproot.lookup import hubs_grounded_by_paper
+        from precis.utils.mentions import resolve_handle_target
+
+        seen_pub_ids: set[str] = set()
+        lines: list[str] = []
+        for tok in _find_paper_cite_tokens(text):
+            target = resolve_handle_target(self.store, tok)
+            if target is None:
+                continue
+            for hub in hubs_grounded_by_paper(self.store, target.dst_ref_id):
+                pub_id = hub["pub_id"]
+                if pub_id in seen_pub_ids:
+                    continue
+                seen_pub_ids.add(pub_id)
+                claim = hub["claim"] or ""
+                lines.append(
+                    f"\n\n◆ taproot: {tok} grounds claim hub [{pub_id}] "
+                    f'("{claim}") — cite [{pub_id}] for living resolution, '
+                    f"or [{pub_id}>{tok}] to pin this passage."
+                )
+        return "".join(lines)
 
     def _literal_cite_hint(self, text: str) -> str:
         r"""Flag a literal ``\cite{...}`` / ``\citequote{...}`` typed into a
@@ -2069,6 +2136,10 @@ class DraftHandler(Handler):
         * **whole-paper citations** — ``[pa<id>]``/``[pk<id>]`` (no chunk)
           anywhere in the draft, with the ``dc<id>`` they live in so
           they're locatable.
+
+        A third, informational-only line (never a ``⚠``) scoreboards how
+        many of the draft's cited passages have a Taproot claim hub
+        available to cite instead — see :meth:`_taproot_hub_scoreboard`.
         """
         out: list[str] = []
         text = "\n\n".join(c.text for c in chunks if c.text)
@@ -2100,9 +2171,49 @@ class DraftHandler(Handler):
                 "or get(kind='paper', id='<slug>~lo..hi', view='toc')."
             )
 
+        grounded, total = self._taproot_hub_scoreboard(chunks)
+        if grounded:
+            out.append(
+                f"ℹ taproot: {grounded} of {total} cited passages have a "
+                "claim hub available; cite [pub_id] to use it."
+            )
+
         if not out:
             return []
         return ["", "## Hygiene", *out]
+
+    def _taproot_hub_scoreboard(self, chunks: list[Any]) -> tuple[int, int]:
+        """``(grounded, total)`` over every paper/patent cite token in the
+        draft (:func:`_find_paper_cite_tokens`, one pass per chunk — a
+        token repeated in two chunks counts as two cited passages).
+        ``grounded`` is the subset whose paper resolves and already has
+        ≥1 Taproot claim hub (:func:`~precis.taproot.lookup.
+        hubs_grounded_by_paper`) available to cite instead. Caches the
+        per-paper hub check so a paper cited from many passages costs one
+        lookup, not N."""
+        from precis.taproot.lookup import hubs_grounded_by_paper
+        from precis.utils.mentions import resolve_handle_target
+
+        hub_cache: dict[int, bool] = {}
+        grounded = 0
+        total = 0
+        for c in chunks:
+            if not c.text:
+                continue
+            for tok in _find_paper_cite_tokens(c.text):
+                target = resolve_handle_target(self.store, tok)
+                if target is None:
+                    continue
+                total += 1
+                has_hub = hub_cache.get(target.dst_ref_id)
+                if has_hub is None:
+                    has_hub = bool(
+                        hubs_grounded_by_paper(self.store, target.dst_ref_id)
+                    )
+                    hub_cache[target.dst_ref_id] = has_hub
+                if has_hub:
+                    grounded += 1
+        return grounded, total
 
     def _work_lines(self, ref_id: int) -> list[str]:
         """Surface stuck / in-flight work on this draft (Fix A): the open

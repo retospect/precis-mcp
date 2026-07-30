@@ -991,4 +991,7 @@ get(
 get(
     kind="skill", id="precis-auto-tasks-help"
 )  # wait-on-ingest (paper_ingested) leaf pattern
+get(
+    kind="skill", id="precis-taproot-help"
+)  # cite a claim hub, the living [pub_id] citation
 ```

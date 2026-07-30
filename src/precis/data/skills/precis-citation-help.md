@@ -162,5 +162,8 @@ get(
 get(kind="skill", id="precis-search-help")  # find the chunk handle to cite
 get(kind="skill", id="precis-paper-help")  # fetch chunks; pc<id> / ~N grammar
 get(kind="skill", id="precis-link-help")  # cites and other graph relations
+get(
+    kind="skill", id="precis-taproot-help"
+)  # cross-paper claim hubs, [pub_id] living citation
 get(kind="skill", id="precis-overview")  # verbs and kinds
 ```

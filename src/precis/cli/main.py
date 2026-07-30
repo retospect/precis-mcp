@@ -58,6 +58,7 @@ from precis.cli import (
     service,
     stats,
     stubs,
+    taproot,
     tools,
     verify,
     watch,
@@ -236,6 +237,10 @@ def main() -> None:
         service.run(args)
         return
 
+    if args.cmd == "taproot":
+        taproot.run(args)
+        return
+
     if args.cmd == "email":
         email.run(args)
         return
@@ -299,6 +304,7 @@ def _build_parser() -> argparse.ArgumentParser:
     llm.add_parser(sub)
     heartbeat.add_parser(sub)
     service.add_parser(sub)
+    taproot.add_parser(sub)
     email.add_parser(sub)
 
     jobs = sub.add_parser("jobs", help="Run a one-shot maintenance job.")
