@@ -8,6 +8,29 @@ items are removed (history is `git log`).
 > regression that pins it.
 
 ---
+## 🚨 Deploy fresh-resolves deps instead of installing from `uv.lock` — gate-green can deploy-break
+
+Status: open · Severity: critical (prod-outage class) · Owner: `deploy/`
+(`redeploy-precis.yml` install step) · Test: a deploy/CI assertion that each
+managed venv's installed dep set matches `uv.lock` (or install via
+`uv sync --locked`).
+
+- 2026-07-30 incident: PR #35 (`d3123538`) widened `mcp` to `>=1.0,<3`. The
+  ship gate and local dev pin from `uv.lock` (`mcp 1.28.1`, works), but
+  `scripts/deploy` **fresh-resolves** deps when installing into the cluster
+  venvs, so it pulled `mcp 2.0.0` — which dropped `mcp.server.fastmcp` →
+  `precis serve` crashed on import → every stdio precis MCP (dev sessions **and
+  asa**) returned `-32000`. The gate never saw it (locked at 1.x); only
+  deployed venvs broke. Symptom fixed by pinning `mcp<2` (`74350e2d`), but the
+  class remains: any dependency whose newest in-range version diverges from the
+  lock can break prod while the gate stays green.
+- Fix direction: install the cluster venvs **from the lockfile**
+  (`uv sync --locked` / `uv pip sync` an exported lock) so deployed venvs equal
+  gate venvs; or add a post-deploy assertion that each venv's installed dep set
+  matches `uv.lock`. Same "green-here, broken-in-prod" family as the
+  deploy-extras-gap memory.
+
+---
 ## 🔍 Generalize fisheye discovery affordance beyond draft chunk reads
 
 Status: open · Severity: feature · Owner: `handlers/` per-kind chunk renders +
