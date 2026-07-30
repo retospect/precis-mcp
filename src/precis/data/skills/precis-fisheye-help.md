@@ -77,15 +77,15 @@ section *points at*, one edge out
 - **Cross-refs** — other draft/plan chunks it links (`[[dc41]]`)
 - **Notes** — memories/findings/etc. **linked to** the section (inbound
   edges — `related-to`, `see-also`, `cites`, …)
-- **Claims** (Taproot) — a `[pub_id]` cited in the section that resolves
-  to a live `TAPROOT:claim` hub explodes into its evidence: the claim,
-  its derived `establishes` originator(s) (★-marked, with the grounding
-  chunk pointer when the chase has populated one), and a one-line
+- **Claims** (Taproot) — a `[fi<id>]` (or `[pub_id]`) claim-hub cite in
+  the section explodes into its evidence: the claim, its derived
+  `establishes` originator(s) (★-marked, with the grounding chunk
+  pointer when the chase has populated one), and a one-line
   corroborator/contradictor summary — via
   `src/precis/taproot/seniority.py::derive_evidence`, recomputed on
-  every render. A `[pub_id]` naming an ordinary (non-hub) finding isn't
+  every render. A handle naming an ordinary (non-hub) finding isn't
   mined into the ring. An authorial pin (Taproot slice A2 —
-  `[<pub_id>>pa5]` / `[<pub_id>+pa5]`, same grammar `precis resolve`
+  `[fi<id>>pa5]` / `[fi<id>+pa5]`, same grammar the draft export
   reads) marks the pinned paper 📌 and, when it diverges from the
   derived originator, adds a short `(pinned; derived: pa99)` note.
   Evidence population depends on the forward chase

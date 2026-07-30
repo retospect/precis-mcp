@@ -1803,7 +1803,16 @@ The master kinds table lives in the `precis-overview` skill.
     `[pub_id]` resolving to a non-hub finding (or nothing) is untouched —
     `resolve_link_targets` still doesn't mine this grammar for the
     ordinary Cited/Notes path. Rides the existing `fisheye+1hop` extent,
-    no new `Extent` value. Tests: `tests/test_refeye.py`.
+    no new `Extent` value. The ring now mines the hub cite in **both**
+    forms — the content-hash `[pub_id]` and the finding handle `[fi<id>]`
+    (the preferred surface): `_mine_claim_hub_ids` interleaves both
+    grammars by text position, so first-seen order and an authorial pin on
+    either form survive, and a `[fi<id>]`-shaped span already claimed by a
+    `[pub_id]` match is skipped (the two grammars can collide on a pub_id
+    shaped `[a-z]{2}` + 4 digits). Because a `[fi<id>]` is also an ordinary
+    finding handle, `collect_ring` drops any hub ref_id present in Claims
+    from Notes/Cross-refs so it renders once. Tests:
+    `tests/test_refeye.py`.
 
 ## Web UI (`precis_web`)
 

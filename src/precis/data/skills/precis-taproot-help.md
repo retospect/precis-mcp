@@ -1,8 +1,8 @@
 ---
 id: precis-taproot-help
 title: precis — the cross-paper claim-evidence graph (Taproot)
-summary: claim hubs (finding tagged TAPROOT:claim) aggregate many papers as typed evidence edges; [pub_id] is a living citation that resolves to the current best originator(s)
-applies-to: get/search (kind='finding', tags=['TAPROOT:claim'], view='evidence'); citing [pub_id] in prose; precis taproot mint
+summary: claim hubs (finding tagged TAPROOT:claim) aggregate many papers as typed evidence edges; [fi<id>] is a living citation that resolves to the current best originator(s)
+applies-to: get/search (kind='finding', tags=['TAPROOT:claim'], view='evidence'); citing [fi<id>] in prose; precis taproot mint
 status: active
 ---
 
@@ -11,8 +11,15 @@ status: active
 **Taproot** is the cross-paper evidence graph: instead of fifty papers
 asserting the same fact as fifty disconnected citations, they converge
 on one **claim hub** — a `finding` tagged `TAPROOT:claim`
-(`STATUS:canonical`), the canonical node for that world-claim, with its
-own citable `pub_id`.
+(`STATUS:canonical`), the canonical node for that world-claim, citable
+as `[fi<id>]`.
+
+**`fi<id>` vs `pub_id`.** `fi<id>` (kind+serial, same family as
+`pc`/`dc`/`me`) is the handle you write when citing a hub. `pub_id`
+(a 6-char base32 content hash, e.g. `tbx2hd`) is the internal
+mint-time dedup key — identical claim text always hashes to the same
+`pub_id`, so concurrent mints of the same claim converge on one hub.
+Both resolve to the same hub; `[fi<id>]` is the one to author.
 
 ## Find a claim hub to cite
 ## Search for existing claim hubs before minting a new one
@@ -40,19 +47,22 @@ chunk pointer (`source_handle`) once the chase populates one. See
 cites a hub) for the read-time render of this same evidence.
 
 ## Cite a claim hub — the living citation
-## What does a bare [pub_id] cite resolve to?
+## What does a bare [fi<id>] cite resolve to?
 
-A bare `[<pub_id>]` resolves, at `precis resolve` and in the fisheye
-reference ring, to the hub's **current** derived `establishes`
+A bare `[fi<id>]` resolves, in a draft, the fisheye reference ring,
+and the draft export, to the hub's **current** derived `establishes`
 originator(s) — falling back to corroborators, then in-flight — freshly
-re-derived on every run (ADR 0074). A later-discovered originator or a
-hub merge improves the `.bib` output on the next `resolve`; no re-cite.
+re-derived on every render (ADR 0074). A later-discovered originator or
+a hub merge improves the cite on the next render; no re-cite.
+`precis resolve` (the standalone `.tex`/`.md` CLI, not draft export)
+still keys on the content-hash `[<pub_id>]` form instead — same
+resolution, different token.
 
 Pin it when you know better than the derivation:
 
 ```text
-[<pub_id>>pa5,pc293]   # replace — cite exactly these handles
-[<pub_id>+pa5]         # supplement — derived originators plus these
+[fi<id>>pa5,pc293]   # replace — cite exactly these handles
+[fi<id>+pa5]         # supplement — derived originators plus these
 ```
 
 A `pc<id>` (paper-chunk) handle pins a passage but resolves to its
@@ -63,7 +73,7 @@ advisory (it's purely additive).
 
 **One paper chunk can ground more than one claim hub.** A chunk that
 asserts two distinct claims can supply evidence to two different hubs
-— so a given `[pc<id>]` handle doesn't map to a single `[pub_id]`. Pick
+— so a given `[pc<id>]` handle doesn't map to a single `[fi<id>]`. Pick
 the hub for the specific claim your sentence makes, not just "the hub
 near this chunk."
 
@@ -87,9 +97,10 @@ entry per claim, each supporter a `{paper, role, source_handle}`:
 pub_id — not the chunk); `role` defaults `corroborates`;
 `source_handle` records the grounding `[pc<id>]` you'd otherwise cite
 inline. It mints the hub (or converges onto an existing one for
-identical claim content) and attaches each supporter's evidence edge,
-idempotently — a re-run of the same spec attaches nothing twice. Cite
-the resulting `[<pub_id>]` in your prose afterward.
+identical claim content, via the content-hash `pub_id`) and attaches
+each supporter's evidence edge, idempotently — a re-run of the same
+spec attaches nothing twice. Cite the resulting `[fi<id>]` in your
+prose afterward.
 
 ## Maturity — what's live vs dark
 

@@ -165,20 +165,25 @@ Hubs are **system-minted, not agent-created** — `put(kind='finding', ...)`
 makes a chase-target finding, never a claim hub. A hub + its evidence
 edges are populated by the chase's forward bridge, gated behind
 `PRECIS_TAPROOT_CHASE_ENABLED` (default-OFF — not yet run at corpus
-scale, so evidence is sparse/absent for now). Once minted, a hub carries
-its own `pub_id`, citable `[<pub_id>]`.
+scale, so evidence is sparse/absent for now). Once minted, a hub is
+citable by its finding handle, `[fi<id>]` — the same handle you'd
+`get(id='fi42')` with. It also carries an internal content-hash
+`pub_id` (mint-time convergence key: identical claim text always hashes
+to the same `pub_id`, so concurrent mints collapse to one hub); both
+`[fi<id>]` and `[<pub_id>]` resolve to the same hub, but `fi<id>` is
+the form to cite.
 
-`precis resolve` treats a hub cite as a **living citation**: it
-expands to the hub's *current* derived `establishes` originator(s)
-(falling back to corroborators, then in-flight, if none are derived
-yet) rather than a stored `primary_cite_key` — so a later-discovered
-originator or a claim merge improves the `.bib` output on the next
-`resolve`, with no re-cite needed. Multiple originators render as one
-multi-key cite: `\cite{a,b}` / `[a; b]`.
+Both a draft cite and `precis resolve` treat a hub cite as a **living
+citation**: it expands to the hub's *current* derived `establishes`
+originator(s) (falling back to corroborators, then in-flight, if none
+are derived yet) rather than a stored `primary_cite_key` — so a
+later-discovered originator or a claim merge improves the output on
+the next render, with no re-cite needed. Multiple originators render
+as one multi-key cite: `\cite{a,b}` / `[a; b]`.
 
 **Pin it inline** to override the living default (Taproot slice A2, no
-storage — the pin lives in the token): `[<pub_id>>pa5,pc293]` cites
-exactly those handles (replace); `[<pub_id>+pa5]` cites the derived
+storage — the pin lives in the token): `[fi<id>>pa5,pc293]` cites
+exactly those handles (replace); `[fi<id>+pa5]` cites the derived
 originators plus those (supplement, deduped). A `pc<id>` (paper-chunk)
 handle pins a passage but resolves to its parent paper's cite_key. A
 pin diverging from the current derivation prints a stderr advisory

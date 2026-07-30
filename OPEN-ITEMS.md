@@ -11,21 +11,38 @@ items are removed (history is `git log`).
 
 ## Residuals (2026-07-30 — taproot authoring on-ramp ship 02af6721)
 
-- **Whole-draft taproot backfill + make hub-cite the default** · Status: open ·
-  Severity: feature · Owner: `src/precis/cli/taproot.py` +
-  `src/precis/data/skills/precis-citation-help.md`. The A3 producer
-  (`taproot/authoring.py::seed_claim_hub`, `precis taproot mint`) mints one
-  claim-set at a time from a hand-authored spec — proven end-to-end on
-  dc1547610 (hubs `tbx2hd`/`7p7r2k`/`o6r4eg`/`3qi6xc`, refs 176272–176275).
-  Next: (1) a `--draft <slug>`/`--chunk <dc>` backfill that walks a chunk's
-  existing `[pc…]` cites, clusters per-sentence into candidate claims, mints
-  hubs (dedup via `canon.block` so it's idempotent), and rewrites the prose
-  `[pc…]`→`[pub_id]`; (2) once coverage grows off that, flip the citation
-  skills' primary recipe to lead with hub-cite ("cite the hub when one covers
-  your claim; `[pc…]` is the grounding primitive underneath"). Defaulting is
-  downstream of coverage — the backfill IS the coverage engine. · Test: a
-  backfill dry-run over dc1547610 re-derives the same 4 hubs it already has
-  (idempotent), 0 new mints.
+- **Whole-draft taproot backfill (mint-then-link, cite as `[fi<id>]`)** ·
+  Status: open · Severity: feature · Owner: `src/precis/cli/taproot.py`. The A3
+  producer (`taproot/authoring.py::seed_claim_hub`, `precis taproot mint`) mints
+  one claim-set at a time from a hand-authored spec — proven end-to-end on
+  dc1547610 (hubs refs 176272–176275). Next: a `--draft <slug>`/`--chunk <dc>`
+  backfill that walks a chunk's existing `[pc…]` cites, clusters per-sentence
+  into candidate claims, mints hubs, and rewrites the prose `[pc…]`→`[fi<id>]`
+  (the citation surface — decision below). Dedup: exact-claim convergence is
+  free (deterministic pub_id); near-dup claims are **linked, not merged** (see
+  `refines` item), so the backfill mint-then-links rather than running a `canon`
+  merge. Once coverage grows, flip the citation skills' primary recipe to lead
+  with hub-cite — defaulting is downstream of coverage, and the backfill is the
+  coverage engine. · Test: a backfill dry-run over dc1547610 re-derives its 4
+  existing hubs, 0 new mints.
+  - **Decision (fi<id> as cite surface):** the content-hash `pub_id` (`tbx2hd`)
+    stays the mint-time convergence/dedup key in `ref_identifiers`, but authors
+    + the fisheye cite a hub by its kind+serial handle `[fi<id>]` (a hub IS a
+    `finding`; consistent with `pc`/`dc`/`me`, LLM-legible). Draft export
+    already resolves `[fi<id>]` (`cite.py::finding_cite_keys`, ref_id-keyed);
+    round 2 (ship after 0a03a92f) teaches `refeye.py::_mine_claim_hub_ids` + the
+    draft write-hint + the skills the same. `precis resolve` (legacy `.tex`)
+    stays pub_id-keyed — parity deferred.
+- **Claim→claim `refines` links (link, don't merge)** · Status: open ·
+  Severity: feature · Owner: `taproot/` + ADR 0073 relation vocab +
+  `utils/refeye.py`. A reworded/sharpened claim is NOT auto-merged: mint the new
+  hub and add a claim→claim link (`refines`, or `related-to` for v1) so the
+  fisheye Claims ring surfaces "see also: sharper form `[fi<id>]`" and the next
+  editor decides. **Advisory only in v1 — evidence does NOT flow across the
+  link** (auto-propagation is the deferred v2 lattice, taproot.md #13); aligns
+  with #16 (risky merges → human). · Test: hub A `refines` hub B → B's fisheye
+  Claims ring shows A as a related sharper claim; A's evidence does not appear
+  under B.
 - **Evidence edge records one grounding pointer when a paper grounds a claim
   via >1 passage** · Status: open · Severity: polish · Owner:
   `src/precis/taproot/authoring.py::seed_claim_hub` +

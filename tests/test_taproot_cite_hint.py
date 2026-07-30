@@ -13,6 +13,7 @@ from precis.dispatch import Hub
 from precis.handlers.draft import DraftHandler
 from precis.store.store import Store
 from precis.taproot.authoring import seed_claim_hub
+from precis.utils import handle_registry
 from tests.workers._helpers import seed_chunk, seed_ref
 
 
@@ -61,10 +62,11 @@ def test_pc_cite_hints_grounded_hub(draft: DraftHandler, hub: Hub) -> None:
         at={"after": "¶" + th},
     )
 
+    hub_handle = handle_registry.format_handle("finding", out["hub_ref_id"])
     assert "taproot" in r.body
     assert f"pc{chunk_id}" in r.body
-    assert f"[{out['pub_id']}]" in r.body
-    assert f"[{out['pub_id']}>pc{chunk_id}]" in r.body
+    assert f"[{hub_handle}]" in r.body
+    assert f"[{hub_handle}>pc{chunk_id}]" in r.body
     assert "grounds claim hub" in r.body
 
 
@@ -91,8 +93,9 @@ def test_pc_cite_hint_via_edit(draft: DraftHandler, hub: Hub) -> None:
     )
     dc = "dc" + str(_order(hub, "nt")[-1].chunk_id)
 
+    hub_handle = handle_registry.format_handle("finding", out["hub_ref_id"])
     r = draft.edit(id=dc, text=f"On-currents are strong [pc{chunk_id}].")
-    assert f"[{out['pub_id']}]" in r.body
+    assert f"[{hub_handle}]" in r.body
     assert "grounds claim hub" in r.body
 
     # find-replace edit path too.
@@ -101,7 +104,7 @@ def test_pc_cite_hint_via_edit(draft: DraftHandler, hub: Hub) -> None:
         find="strong",
         text=f"very strong [pc{chunk_id}]",
     )
-    assert f"[{out['pub_id']}]" in r2.body
+    assert f"[{hub_handle}]" in r2.body
 
 
 def test_pc_cite_many_to_many_lists_both_hubs(draft: DraftHandler, hub: Hub) -> None:
@@ -133,8 +136,10 @@ def test_pc_cite_many_to_many_lists_both_hubs(draft: DraftHandler, hub: Hub) -> 
         at={"after": "¶" + th},
     )
 
-    assert f"[{out_a['pub_id']}]" in r.body
-    assert f"[{out_b['pub_id']}]" in r.body
+    hub_a_handle = handle_registry.format_handle("finding", out_a["hub_ref_id"])
+    hub_b_handle = handle_registry.format_handle("finding", out_b["hub_ref_id"])
+    assert f"[{hub_a_handle}]" in r.body
+    assert f"[{hub_b_handle}]" in r.body
 
 
 def test_pc_cite_no_hub_emits_no_hint(draft: DraftHandler, hub: Hub) -> None:

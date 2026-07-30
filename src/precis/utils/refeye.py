@@ -11,12 +11,13 @@ graph**: "what does this section *point at*, one edge out." Focus a section at
 - **Notes** — memories and notes **linked to** the section (inbound
   ``related-to`` / ``see-also`` edges materialised by the mentions autolinker,
   ``utils.mentions``) — the "things noted on this."
-- **Claims** (Taproot slice R1) — a cited ``[pub_id]`` that resolves to a
-  live ``TAPROOT:claim`` hub explodes into its evidence: derived
+- **Claims** (Taproot slice R1) — a cited ``[pub_id]`` (content-hash) or
+  ``[fi<id>]`` (kind+serial handle — the preferred form) that resolves to
+  a live ``TAPROOT:claim`` hub explodes into its evidence: derived
   ``establishes`` originators (marked, with the grounding chunk pointer
   when the chase has populated one) plus a one-line corroborator/
   contradictor summary, via :func:`precis.taproot.seniority.derive_evidence`.
-  A ``[pub_id]`` that resolves to a non-hub finding (or nothing) is left
+  Either form that resolves to a non-hub finding (or nothing) is left
   alone — this only mines placeholders that name a claim hub.
 
 It follows **edges only** (deterministic, zero false positives). A memory that
@@ -32,11 +33,21 @@ node), capped per group with a visible overflow line — no silent truncation.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Protocol
 
-from precis.taproot.seniority import EvidenceEdge, HubEvidence, derive_evidence
+from precis.taproot.seniority import (
+    EvidenceEdge,
+    HubEvidence,
+    derive_evidence,
+    is_claim_hub,
+)
 from precis.utils import handle_registry
-from precis.utils.mentions import resolve_link_targets
+from precis.utils.mentions import (
+    BARE_BRACKET_REF_PATTERN,
+    parse_pin_suffix,
+    resolve_link_targets,
+)
 from precis.utils.pub_id_lookup import PLACEHOLDER_RE, lookup_pub_id_finding, parse_pin
 
 #: Relations that carry *meaning* (as opposed to structure/plumbing). The ring
@@ -226,30 +237,77 @@ def _claim_block(
     return "\n".join(lines)
 
 
+#: The handle alternative of :data:`~precis.utils.mentions.
+#: BARE_BRACKET_REF_PATTERN`'s ``bare`` group (``[a-z]{2}\d+``) — used to
+#: tell a finding-handle cite (``fi42``) apart from the ``¶``/``§`` sigil
+#: forms that same group also matches, which this scan ignores.
+_HANDLE_BARE_RE = re.compile(r"^[a-z]{2}\d+$")
+
+
 def _mine_claim_hub_ids(
     store: Any, span: list[_Chunk], *, exclude_ref_id: int
 ) -> list[tuple[int, str | None, list[str]]]:
-    """First-seen-ordered ``(hub_ref_id, pin_op, pin_handles)`` cited via
-    ``[pub_id]`` (optionally pinned, Taproot slice A2: ``[pub_id>…]`` /
-    ``[pub_id+…]``) in ``span`` (Taproot slice R1) — the ring's
-    ``resolve_link_targets`` walk doesn't mine this placeholder grammar,
-    so it's mined here separately. A pub_id that resolves to nothing, or
-    to a non-hub finding, is skipped — left to the existing (currently:
-    invisible) behaviour. ``pin_op`` is ``None`` for a bare (unpinned)
-    cite."""
+    """First-seen-ordered ``(hub_ref_id, pin_op, pin_handles)`` cited via a
+    content-hash ``[pub_id]`` or a finding handle ``[fi<id>]`` (either
+    optionally pinned, Taproot slice A2: ``[…>…]`` / ``[…+…]``) in
+    ``span`` (Taproot slice R1) — the ring's ``resolve_link_targets`` walk
+    doesn't mine either placeholder grammar, so both are mined here
+    separately. A cite that resolves to nothing, or to a non-hub finding,
+    is skipped — left to the existing (currently: invisible) behaviour.
+
+    Both grammars are scanned per chunk and their matches **interleaved
+    in ``match.start()`` order**, not one grammar's full pass then the
+    other's: the same hub cited via both forms in one chunk is deduped by
+    the shared ``seen`` set, and processing in text order means whichever
+    occurrence comes FIRST — in either form — wins the ``seen`` slot and
+    keeps its pin. Scanning grammar-by-grammar instead would silently
+    drop a pin when the unpinned form happens to be mined first (e.g.
+    ``"[fi42>pa5] ... [tbx2hd]"`` citing the same hub — the pub_id pass
+    would claim ``seen`` unpinned before the handle pass ever saw the
+    pin). ``pin_op`` is ``None`` for a bare (unpinned) cite."""
     seen: set[int] = set()
     ordered: list[tuple[int, str | None, list[str]]] = []
     for c in span:
-        for match in PLACEHOLDER_RE.finditer(c.text or ""):
-            # Decode via the one shared parser `resolve` also uses, rather
-            # than hand-rolling the group split here.
-            parsed = parse_pin(match.group(0))
-            assert parsed is not None  # PLACEHOLDER_RE already matched this span
-            pub_id, op, handles = parsed
-            lookup = lookup_pub_id_finding(store, pub_id)
-            if lookup is None or not lookup["is_hub"]:
-                continue
-            hub_ref_id = lookup["ref_id"]
+        text = c.text or ""
+        pub_matches = list(PLACEHOLDER_RE.finditer(text))
+        # A pub_id shaped like a 2-letter code + digits (e.g. ``fi2345``)
+        # matches BOTH grammars — the pub_id lookup (a finding minted
+        # with that content-hash pub_id) and the handle scan (``fi2345``
+        # -> ref_id 2345, an unrelated row). Track the spans the pub_id
+        # scan claims so the handle branch below can skip an overlapping
+        # match — one token can't yield two Claims blocks.
+        pub_spans = [m.span() for m in pub_matches]
+        handle_matches = list(BARE_BRACKET_REF_PATTERN.finditer(text))
+        events: list[tuple[int, str, re.Match[str]]] = [
+            (m.start(), "pubid", m) for m in pub_matches
+        ] + [(m.start(), "handle", m) for m in handle_matches]
+        events.sort(key=lambda e: e[0])
+        for _pos, tag, match in events:
+            if tag == "pubid":
+                # Decode via the one shared parser `resolve` also uses,
+                # rather than hand-rolling the group split here.
+                parsed = parse_pin(match.group(0))
+                assert parsed is not None  # PLACEHOLDER_RE already matched
+                pub_id, op, handles = parsed
+                lookup = lookup_pub_id_finding(store, pub_id)
+                if lookup is None or not lookup["is_hub"]:
+                    continue
+                hub_ref_id = lookup["ref_id"]
+            else:
+                if any(match.start() < pe and ps < match.end() for ps, pe in pub_spans):
+                    continue  # already claimed by the pub_id scan (Bug 2)
+                bare = match.group("bare")
+                if not _HANDLE_BARE_RE.match(bare):
+                    continue  # the ¶/§ sigil alternative — not a finding handle
+                parsed_handle = handle_registry.parse(bare)
+                if parsed_handle is None:
+                    continue
+                kind, is_chunk, hub_ref_id = parsed_handle
+                if is_chunk or kind != "finding":
+                    continue
+                if not is_claim_hub(store, hub_ref_id):
+                    continue
+                op, handles = parse_pin_suffix(match.group("pin"))
             if hub_ref_id == exclude_ref_id or hub_ref_id in seen:
                 continue
             seen.add(hub_ref_id)
@@ -397,6 +455,20 @@ def collect_ring(
             if ref is None or getattr(ref, "deleted_at", None) is not None:
                 continue
             groups[_group_for(getattr(ref, "kind", "?"))].append((rid, _label(ref)))
+
+    # A hub cited via its `fi<id>` handle (unlike a bare `[pub_id]`, which
+    # isn't a generic handle) is ALSO picked up by the outbound
+    # `resolve_link_targets` walk above, landing it in Notes/Cross-refs too.
+    # Claims is strictly richer (claim + derived evidence), so drop the
+    # redundant flat copy wherever the same ref_id already exploded there —
+    # a non-hub ref keeps its Notes/Cross-refs entry untouched.
+    claim_ref_ids = {rid for rid, _block in groups["Claims"]}
+    if claim_ref_ids:
+        for name in ("Notes", "Cross-refs"):
+            groups[name] = [
+                (rid, label) for rid, label in groups[name] if rid not in claim_ref_ids
+            ]
+
     return {name: g for name, g in groups.items() if g}
 
 

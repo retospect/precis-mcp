@@ -15,7 +15,7 @@ from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import attach_evidence, mint_hub
 from precis.utils import handle_registry
 from precis.utils.fisheye import render_fisheye
-from precis.utils.refeye import render_reference_ring
+from precis.utils.refeye import collect_ring, render_reference_ring
 
 
 def _handles(body: str) -> list[str]:
@@ -424,3 +424,195 @@ def test_ring_claims_group_pin_overflow_gets_more_line(
     assert "Claims:" in ring
     assert "📌" in ring
     assert "+2 more — focus to expand" in ring  # 10 extra pins - cap 8
+
+
+# ── Claims group — [fi<id>] finding-handle claim-hub cite (kind+serial) ──
+
+
+def test_ring_claims_group_explodes_cited_hub_via_finding_handle(
+    hub: Hub, plan: PlanHandler
+) -> None:
+    """A hub cited by its ``fi<id>`` handle (the preferred form) explodes
+    into evidence exactly like the content-hash ``[pub_id]`` form."""
+    store = hub.store
+    claim_hub = mint_hub(store, _CLAIM)
+    originator = store.insert_ref(
+        kind="paper", slug="fihorig1", title="The original report", year=2001
+    ).id
+    follower = store.insert_ref(
+        kind="paper", slug="fihfoll1", title="Follows the original", year=2005
+    ).id
+    attach_evidence(
+        store,
+        hub_ref_id=claim_hub,
+        paper_ref_id=originator,
+        role="corroborates",
+        meta={"source_handle": "pc999"},
+    )
+    attach_evidence(
+        store, hub_ref_id=claim_hub, paper_ref_id=follower, role="corroborates"
+    )
+    _cites(store, src=follower, dst=originator)  # promotes `originator`
+
+    hub_handle = handle_registry.format_handle("finding", claim_hub)
+    sec_chunk, chunks = _plan_section_citing(
+        hub, plan, f"This claim is grounded: [{hub_handle}]."
+    )
+
+    ring = render_reference_ring(store, sec_chunk, chunks)
+
+    assert "Claims:" in ring
+    assert "The original report" in ring  # claim hub title
+    assert "★" in ring  # derived originator marked
+    assert "grounding: pc999" in ring  # the grounding chunk pointer
+    assert "+1 corroborators" in ring  # follower is a corroborator, not shown flat
+
+    # the hub explodes ONLY under Claims — the generic outbound handle walk
+    # also resolves `[fi<id>]` as an ordinary finding link, but that flat
+    # Notes/Cross-refs copy is redundant noise now that Claims has the
+    # richer render, so it's deduped out.
+    groups = collect_ring(store, sec_chunk, chunks)
+    assert claim_hub in {rid for rid, _block in groups["Claims"]}
+    for name in ("Notes", "Cross-refs"):
+        assert claim_hub not in {rid for rid, _label in groups.get(name, [])}
+
+
+def test_ring_claims_group_marks_pinned_paper_via_finding_handle(
+    hub: Hub, plan: PlanHandler
+) -> None:
+    """A ``[fi<id>>...]`` replace pin — same pin marking as the ``[pub_id>...]``
+    form, via the finding-handle cite."""
+    store = hub.store
+    claim_hub = mint_hub(store, _CLAIM)
+    originator = store.insert_ref(
+        kind="paper", slug="fihpinorig1", title="The pinned original report", year=2001
+    ).id
+    follower = store.insert_ref(
+        kind="paper", slug="fihpinfoll1", title="Follows the original", year=2005
+    ).id
+    attach_evidence(
+        store, hub_ref_id=claim_hub, paper_ref_id=originator, role="corroborates"
+    )
+    attach_evidence(
+        store, hub_ref_id=claim_hub, paper_ref_id=follower, role="corroborates"
+    )
+    _cites(store, src=follower, dst=originator)
+
+    hub_handle = handle_registry.format_handle("finding", claim_hub)
+    origin_handle = handle_registry.format_handle("paper", originator)
+    sec_chunk, chunks = _plan_section_citing(
+        hub, plan, f"This claim is grounded: [{hub_handle}>{origin_handle}]."
+    )
+
+    ring = render_reference_ring(store, sec_chunk, chunks)
+
+    assert "Claims:" in ring
+    assert "📌" in ring
+    assert "(pinned; derived:" not in ring  # pin matches derived — no divergence note
+
+
+def test_ring_claims_group_dedups_hub_cited_via_both_forms(
+    hub: Hub, plan: PlanHandler
+) -> None:
+    """A hub cited via BOTH ``[pub_id]`` and ``[fi<id>]`` in one span
+    explodes once, not twice."""
+    store = hub.store
+    claim_hub = mint_hub(store, _CLAIM)
+    originator = store.insert_ref(
+        kind="paper", slug="fihdedup1", title="The original report", year=2001
+    ).id
+    attach_evidence(
+        store, hub_ref_id=claim_hub, paper_ref_id=originator, role="corroborates"
+    )
+
+    pub_id = _hub_pub_id(store, claim_hub)
+    hub_handle = handle_registry.format_handle("finding", claim_hub)
+    sec_chunk, chunks = _plan_section_citing(
+        hub, plan, f"Grounded here: [{pub_id}] and again here: [{hub_handle}]."
+    )
+
+    ring = render_reference_ring(store, sec_chunk, chunks)
+
+    assert "Claims:" in ring
+    assert ring.count("The original report") == 1  # exploded once, not twice
+
+
+# ── Claims group — interleaved mining across the two grammars ───────────
+
+_CLAIM_B = CanonicalClaim(
+    sentence="Nickel foam electrodes reduce overpotential in alkaline OER.",
+    scope={"material": "Ni foam", "method": "OER"},
+)
+
+
+def test_ring_claims_group_orders_across_grammars_by_text_position(
+    hub: Hub, plan: PlanHandler
+) -> None:
+    """A ``[fi<id>]`` cite earlier in the text than a ``[pub_id]`` cite of
+    a DIFFERENT hub must still render hubA before hubB — the two grammars
+    are mined as one interleaved, position-sorted pass, not sequentially
+    (which would put every ``[pub_id]`` hit ahead of every handle hit
+    regardless of where each actually sits in the text)."""
+    store = hub.store
+    hub_a = mint_hub(store, _CLAIM)
+    hub_b = mint_hub(store, _CLAIM_B)
+    paper_a = store.insert_ref(kind="paper", slug="ordera1", title="Paper A").id
+    paper_b = store.insert_ref(kind="paper", slug="orderb1", title="Paper B").id
+    attach_evidence(store, hub_ref_id=hub_a, paper_ref_id=paper_a, role="corroborates")
+    attach_evidence(store, hub_ref_id=hub_b, paper_ref_id=paper_b, role="corroborates")
+
+    hub_a_handle = handle_registry.format_handle("finding", hub_a)
+    pub_id_b = _hub_pub_id(store, hub_b)
+    sec_chunk, chunks = _plan_section_citing(
+        hub,
+        plan,
+        f"First cites hubA: [{hub_a_handle}]. Then cites hubB: [{pub_id_b}].",
+    )
+
+    ring = render_reference_ring(store, sec_chunk, chunks)
+
+    assert "Claims:" in ring
+    pos_a = ring.index(_CLAIM.sentence)
+    pos_b = ring.index(_CLAIM_B.sentence)
+    assert pos_a < pos_b  # hubA cited first in text -> rendered first
+
+
+def test_ring_claims_group_keeps_pin_when_pinned_form_seen_first(
+    hub: Hub, plan: PlanHandler
+) -> None:
+    """The SAME hub cited twice in one chunk — pinned via its ``fi<id>``
+    handle FIRST, then bare via ``[pub_id]`` later — must keep the pin:
+    the first-in-text occurrence wins the ``seen`` slot, so scanning the
+    two grammars sequentially (which would let the later, unpinned
+    ``[pub_id]`` position claim ``seen`` first if pub_ids are scanned
+    before handles) would silently drop the pin."""
+    store = hub.store
+    claim_hub = mint_hub(store, _CLAIM)
+    originator = store.insert_ref(
+        kind="paper", slug="pinfirst1", title="The pinned original report", year=2001
+    ).id
+    follower = store.insert_ref(
+        kind="paper", slug="pinfirst2", title="Follows the original", year=2005
+    ).id
+    attach_evidence(
+        store, hub_ref_id=claim_hub, paper_ref_id=originator, role="corroborates"
+    )
+    attach_evidence(
+        store, hub_ref_id=claim_hub, paper_ref_id=follower, role="corroborates"
+    )
+    _cites(store, src=follower, dst=originator)
+
+    hub_handle = handle_registry.format_handle("finding", claim_hub)
+    origin_handle = handle_registry.format_handle("paper", originator)
+    pub_id = _hub_pub_id(store, claim_hub)
+    sec_chunk, chunks = _plan_section_citing(
+        hub,
+        plan,
+        f"Pinned first: [{hub_handle}>{origin_handle}]. Bare again: [{pub_id}].",
+    )
+
+    ring = render_reference_ring(store, sec_chunk, chunks)
+
+    assert "Claims:" in ring
+    assert ring.count(_CLAIM.sentence) == 1  # still deduped to one block
+    assert "📌" in ring  # the pin from the first-seen occurrence survives

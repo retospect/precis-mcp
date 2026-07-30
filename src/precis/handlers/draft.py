@@ -1759,37 +1759,40 @@ class DraftHandler(Handler):
         """Nudge toward an existing Taproot claim hub when a paper/patent
         cite token (``[pc<id>]``/``[pa<id>]``/``[pk<id>]``) in ``text``
         names a paper that already grounds one (:func:`~precis.taproot.
-        lookup.hubs_grounded_by_paper`). A ``[pub_id]`` cite is a *living*
-        citation (ADR 0074) — it always resolves to the current derived
+        lookup.hubs_grounded_by_paper`). A ``[fi<id>]`` cite (the hub's
+        kind+serial handle — the preferred form) is a *living* citation
+        (ADR 0074) — it always resolves to the current derived
         originator(s), so it tracks new evidence without another edit,
         unlike a cite frozen on one paper/chunk. A NUDGE, never a
         refusal: the ``[pc<id>]``/``[pa<id>]`` cite stays exactly as valid
         as it was — this only offers a stronger alternative, or the
-        ``[pub_id>handle]`` pin (ADR 0074 slice A2) to keep citing this
+        ``[fi<id>>handle]`` pin (ADR 0074 slice A2) to keep citing this
         exact passage while still riding the living resolution. Scoped to
         the cites actually present in ``text`` (the touched chunk), not
         the whole draft — cheap on the write path. Deduped by
-        ``pub_id`` — a paper grounding the same hub via two cite tokens in
-        one chunk gets one nudge line."""
+        ``hub_ref_id`` — a paper grounding the same hub via two cite
+        tokens in one chunk gets one nudge line."""
         from precis.taproot.lookup import hubs_grounded_by_paper
+        from precis.utils import handle_registry
         from precis.utils.mentions import resolve_handle_target
 
-        seen_pub_ids: set[str] = set()
+        seen_hub_ref_ids: set[int] = set()
         lines: list[str] = []
         for tok in _find_paper_cite_tokens(text):
             target = resolve_handle_target(self.store, tok)
             if target is None:
                 continue
             for hub in hubs_grounded_by_paper(self.store, target.dst_ref_id):
-                pub_id = hub["pub_id"]
-                if pub_id in seen_pub_ids:
+                hub_ref_id = hub["hub_ref_id"]
+                if hub_ref_id in seen_hub_ref_ids:
                     continue
-                seen_pub_ids.add(pub_id)
+                seen_hub_ref_ids.add(hub_ref_id)
                 claim = hub["claim"] or ""
+                hub_handle = handle_registry.format_handle("finding", hub_ref_id)
                 lines.append(
-                    f"\n\n◆ taproot: {tok} grounds claim hub [{pub_id}] "
-                    f'("{claim}") — cite [{pub_id}] for living resolution, '
-                    f"or [{pub_id}>{tok}] to pin this passage."
+                    f"\n\n◆ taproot: {tok} grounds claim hub [{hub_handle}] "
+                    f'("{claim}") — cite [{hub_handle}] for living '
+                    f"resolution, or [{hub_handle}>{tok}] to pin this passage."
                 )
         return "".join(lines)
 
