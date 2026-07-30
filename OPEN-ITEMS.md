@@ -944,29 +944,13 @@ patent lingo → claims against a comprehensive FTO view → `plan` scoping ledg
 Daily reading-brief + nidra casts shipped + live. Owner: `reading/*`,
 `workers/cast_audio.py`. Skill `precis-audio-help`.
 
-- **Cast model = Sonnet 5 (pinned), not Opus** *(worktree, unshipped 2026-07-30).*
-  Both `build_reading_briefing` + `build_meditation` composed on the FRONTIER
-  default (Opus 4.8) via `claude_agent`; now **pin `model="claude-sonnet-5"`**
-  (env-overridable), tier stays `FRONTIER` so the subscription-quota breaker
-  still gates it. NOT `tier=BIG` — the live `llm.chain.big` routes to
-  `z-ai/glm-5.2` on OpenRouter, so `tier=BIG` would have shipped GLM, not Sonnet.
-  Pinning an explicit claude id (a) cuts cast consumption ~⅕ so the *unified*
-  subscription quota lasts far longer under a crunch (the 07-24→30 outage's
-  original trigger), and (b) forces `claude_agent` regardless of a fleet
-  `llm.backend` flip (hardens against gripe 171782). Validated on the manual
-  composes: brief ref 175895, nidra ref 175928. NB: fixes only the *quota*
-  failure mode — the 07-27→30 gap itself is the 🔴 agent-lane stall
-  (`child-failed` latch), not the model. Sonnet still shares the unified
-  subscription pool; for casts *fully* immune to the Claude quota they'd have to
-  route off-subscription (OpenRouter), a different non-Claude model.
-- **Cast length calibration** *(nidra RESOLVED; morning brief still short).*
-  Measured on the 2026-07-30 manual composes: **nidra ref 175928 = 4842 words ≈
-  44 min** against a 45-min target — the segmented per-segment word budget
-  (`ae37657a`) works; calibration closed. **Morning brief ref 175895 = 1972 words
-  ≈ 13 min** against a 20-min target — single-call compose, still content-bound
-  and ~⅓ short despite the "aim for {words}≈3000" contract line. Decide: a
-  segmented brief (like nidra) or a stronger length floor. `wpm` values accurate,
-  leave them.
+- **Cast length calibration — morning brief still short** *(polish, open).*
+  Measured on the 2026-07-30 manual compose: morning brief ref 175895 = 1972
+  words ≈ 13 min against a 20-min target — single-call compose, still
+  content-bound and ~⅓ short despite the "aim for {words}≈3000" contract line.
+  Decide: a segmented brief (like nidra, whose per-segment word budget in
+  `ae37657a` now hits its 45-min target) or a stronger length floor. `wpm`
+  values accurate, leave them.
 - **Wire the quest lane into the morning brief** *(feature, open; td161129).*
   `briefing_cast._lane_quest` is a degrade-to-empty stub; quest slice-1 (kind +
   `serves` + `quest_log`) is live, so surface per-active-quest momentum + recent
