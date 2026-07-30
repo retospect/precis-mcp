@@ -53,7 +53,7 @@ class _NudgeStore:
 
 class TestLanesDegrade:
     def test_unbuilt_lanes_are_empty(self, store: Any) -> None:
-        assert _lane_reading(store) == ""  # booklet unbuilt
+        assert _lane_reading(store, now=datetime.now(UTC)) == ""  # no papers opened
         assert _lane_quest(store, now=datetime.now(UTC)) == ""  # no quests
 
 
@@ -144,6 +144,77 @@ class TestPaperLane:
         out = _render_papers(papers)  # no total → the named count
         assert out.startswith("Papers acquired or updated (1)")
         assert "more not listed" not in out
+
+
+class TestReadingLane:
+    """``chunks.last_seen`` past the ingest default is the "human opened this
+    paper" signal; a paper whose chunks were never opened (``last_seen`` still
+    at its ingest default) must not surface."""
+
+    def _seed_paper(self, store: Any, *, title: str) -> Any:
+        paper = store.insert_ref(
+            kind="paper",
+            slug=f"paper-{uuid.uuid4().hex[:8]}",
+            title=title,
+            meta={"abstract": "An abstract."},
+        )
+        store.add_chunks(
+            ref_id=paper.id,
+            chunk_kind="paragraph",
+            text="Body text.",
+            split=True,
+            kind="paper",
+        )
+        return paper
+
+    def test_recently_opened_paper_surfaces_with_a_related_to_source(
+        self, store: Any
+    ) -> None:
+        opened = self._seed_paper(store, title="Opened paper — Pd catalyst")
+        # Simulate a human open: last_seen jumps well past created_at (the
+        # ingest default), the way store.bump_salience_for_ref stamps it.
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE chunks SET last_seen = now() + interval '2 hours' "
+                "WHERE ref_id = %s",
+                (opened.id,),
+            )
+
+        src: list[Any] = []
+        out = _lane_reading(store, now=datetime.now(UTC), sources=src)
+
+        assert "Opened paper — Pd catalyst" in out
+        assert out.startswith("READING")
+        assert (int(opened.id), "related-to") in src
+
+    def test_never_opened_paper_is_excluded(self, store: Any) -> None:
+        # last_seen defaults to created_at (== ingest time) — never opened.
+        self._seed_paper(store, title="Never-opened paper")
+
+        out = _lane_reading(store, now=datetime.now(UTC), sources=[])
+
+        assert "Never-opened paper" not in out
+        assert out == ""
+
+    def test_reading_lane_wired_through_gather_lanes(self, store: Any) -> None:
+        from precis.reading.briefing_cast import _gather_lanes
+
+        opened = self._seed_paper(store, title="Wired-in paper")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE chunks SET last_seen = now() + interval '2 hours' "
+                "WHERE ref_id = %s",
+                (opened.id,),
+            )
+        now = datetime.now(UTC)
+        lanes, sources = _gather_lanes(
+            store,
+            date_tag="2999-01-01",
+            cutoff=now - timedelta(hours=_LOOKBACK_HOURS),
+            now=now,
+        )
+        assert "Wired-in paper" in lanes["reading"]
+        assert (int(opened.id), "related-to") in sources
 
 
 class TestBuild:

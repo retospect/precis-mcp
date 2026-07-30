@@ -24,6 +24,7 @@ from precis_web.routes.status import (
     _background_anomalies,
     _backlog_counts,
     _liveness,
+    _llm_ops_ctx,
     _recent_passes,
 )
 
@@ -264,3 +265,30 @@ def test_liveness_scheduled_signal_clears_when_fresh(store: Any) -> None:
 
     by_label = {r["label"]: r for r in _liveness(store)}
     assert by_label["Morning briefing"]["stale"] is False
+
+
+def test_llm_ops_ctx_ignores_stale_override_on_non_steerable_source(store: Any) -> None:
+    """Finding 1 (Phase 2 review) — a ``llm.op.<source>`` row left over from
+    before an operation was demoted into ``EXCLUDED_OPERATIONS`` (or one
+    that was simply never registered) must NOT surface as "effective":
+    ``resolve_op()`` only reads the override for a *registered* source, so
+    a non-steerable row is dead data the router already ignores. The panel
+    must show the default (or "—"), never the stale model."""
+    from precis.budget import settings as budget_settings
+    from precis.utils.llm import live_config
+
+    # "classify" is excluded (a functional model pin) — simulate a stale
+    # override row somehow present under it.
+    budget_settings.set_setting(
+        store, live_config.op_key("classify"), '{"model": "stale-ghost-model"}'
+    )
+    try:
+        ctx = _llm_ops_ctx(store)
+        by_source = {r["source"]: r for r in ctx["rows"]}
+        row = by_source["classify"]
+        assert row["steerable"] is False
+        assert row["override"] is None
+        assert "stale-ghost-model" not in row["effective"]
+        assert row["effective"] == "—"
+    finally:
+        budget_settings.clear_setting(store, live_config.op_key("classify"))

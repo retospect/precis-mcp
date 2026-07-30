@@ -1224,6 +1224,7 @@ def _services_ctx(store: Any, host: str) -> dict[str, Any]:
         "service_kinds": [k.value for k in ServiceKind],
         "quests": _factory_quests(store),
         "llm_chains": _llm_chain_ctx(store),
+        "llm_ops": _llm_ops_ctx(store),
     }
 
 
@@ -1272,6 +1273,126 @@ def _llm_chain_ctx(store: Any) -> dict[str, Any]:
             ],
             "cloud_enabled": True,
         }
+
+
+def _llm_op_stats(store: Any) -> dict[str, dict[str, Any]]:
+    """One ``GROUP BY source`` rollup over ``llm_call_log`` — last-run,
+    7-day call volume, and last-seen model per observed ``source``, for the
+    operations panel's row set (:func:`_llm_ops_ctx`) and its activity
+    columns. Migration ``0078`` dropped the ``(source, ts)`` composite index
+    as unused; a live join is fine at today's table size (the proposal's
+    blast-radius note). Degrades to ``{}`` on any surprise.
+    """
+    try:
+        with _connect(store) as conn:
+            cur = conn.execute(
+                "SELECT source, max(ts) AS last_run, "
+                "count(*) FILTER (WHERE ts > now() - interval '7 days') AS calls_7d, "
+                "(array_agg(model ORDER BY ts DESC))[1] AS last_seen_model "
+                "FROM llm_call_log "
+                "WHERE source IS NOT NULL AND source <> '' "
+                "GROUP BY source"
+            )
+            rows = cur.fetchall()
+    except Exception:
+        log.warning("status: llm_call_log source rollup failed", exc_info=True)
+        return {}
+    return {
+        r[0]: {"last_run": r[1], "calls_7d": int(r[2] or 0), "last_seen_model": r[3]}
+        for r in rows
+    }
+
+
+def _llm_ops_ctx(store: Any) -> dict[str, Any]:
+    """Per-operation LLM routing panel state (``docs/proposals/
+    llm-operation-routing.md`` item 4 / AC5) — one row per operation over
+    **union(registry LLM_OPERATIONS keys, EXCLUDED_OPERATIONS keys, observed
+    ``llm_call_log.source`` values)**, sorted last-run desc (never-run
+    operations sort last). Excluded ops are unioned in unconditionally
+    (not only when observed) so AC8's "non-steerable ops are visible but
+    inert" holds even before any excluded op has actually run.
+
+    Reads go through an explicit ``store`` via ``budget_settings.get_setting``
+    (not ``live_config``'s cached readers), mirroring :func:`_llm_chain_ctx`;
+    degrades to an empty row list on any surprise.
+    """
+    try:
+        from precis.budget import settings as budget_settings
+        from precis.utils.llm import live_config, operations
+
+        stats = _llm_op_stats(store)
+        sources = (
+            set(operations.LLM_OPERATIONS)
+            | set(operations.EXCLUDED_OPERATIONS)
+            | set(stats)
+        )
+
+        rows = []
+        for source in sources:
+            default = operations.op_default(source)
+            st = stats.get(source, {})
+            steerable = operations.is_steerable(source)
+
+            # A stale ``llm.op.<source>`` row from before an operation was
+            # demoted into EXCLUDED_OPERATIONS (or never registered) must
+            # NOT surface as "effective" — resolve_op() only reads the
+            # override for a *registered* source, so a non-steerable row is
+            # dead data the router already ignores. Only read/show it here
+            # when steerable, so the display can't lie about what's live.
+            override = None
+            if steerable:
+                raw = budget_settings.get_setting(store, live_config.op_key(source))
+                if raw:
+                    try:
+                        parsed = json.loads(raw)
+                    except (json.JSONDecodeError, TypeError, ValueError):
+                        parsed = None
+                    if isinstance(parsed, dict):
+                        override = parsed
+
+            if override and override.get("model"):
+                effective = str(override["model"])
+            elif override and override.get("tier"):
+                effective = f"{override['tier']} (tier)"
+            elif default is not None:
+                effective = f"{default.tier.value} / {default.model or '—'}"
+            else:
+                effective = "—"
+
+            last_run = st.get("last_run")
+            rows.append(
+                {
+                    "source": source,
+                    "label": default.label if default else source,
+                    "description": default.description if default else "",
+                    "note": default.note if default else None,
+                    "default_tier": default.tier.value if default else None,
+                    "default_model": default.model if default else None,
+                    "steerable": steerable,
+                    "excluded_reason": operations.excluded_reason(source),
+                    "override": override,
+                    "effective": effective,
+                    "last_run": _ago(last_run) if last_run else None,
+                    "last_seen_model": st.get("last_seen_model"),
+                    "calls_7d": int(st.get("calls_7d") or 0),
+                    "_last_run_ts": last_run,
+                }
+            )
+
+        rows.sort(
+            key=lambda r: (
+                (0, -r["_last_run_ts"].timestamp())
+                if r["_last_run_ts"] is not None
+                else (1, 0.0)
+            )
+        )
+        for r in rows:
+            del r["_last_run_ts"]
+
+        return {"rows": rows, "models": _factory_llm_models(store)}
+    except Exception:
+        log.warning("status: _llm_ops_ctx failed", exc_info=True)
+        return {"rows": [], "models": []}
 
 
 #: Representative ``tools_needed`` per capability tier for the active-routing

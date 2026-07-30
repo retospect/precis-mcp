@@ -18,7 +18,10 @@ layers land):
 - **Recall** (PARTIAL) — Anki leeches (carrying the card body + note so the brief
   can *teach* the idea, not just restate it) + concepts newly seen; degrades where
   the intake loop is unbuilt.
-- **Reading** (stub) — the weekly booklet gist; lights up at reading-prep slice 2.
+- **Reading** (LIVE) — papers the human has actually opened in the reader
+  recently (``chunks.last_seen`` past the ingest default), named so they can
+  pick the thread back up; distinct from the "acquired overnight" system-
+  activity lane above.
 - **Quest** (LIVE) — per **active** quest: its momentum + latest deed; the brief's
   closing "on to the quests" report. When nothing is active, a *decaying* nudge
   about the dormant strivings takes its place (doubling cadence, so it fades
@@ -146,6 +149,13 @@ _MORNING_CONTRACT = (
     "supports, copied verbatim (brackets and all). These markers are SILENT — "
     "they become a citation link on the page and are removed entirely from the "
     "audio — so cite freely; they never disrupt what is read aloud.\n"
+    "- ON YOUR READING LIST: these are papers the person has actually been reading "
+    "(opened them in the reader), as distinct from what was auto-acquired overnight "
+    "above. Reconnect them briefly — name the paper and, in a sentence, what it is "
+    "about and why they may have picked it up — so they can take the thread back up. "
+    "Keep this lighter than the PAPERS section above: a 'where you left off' nudge, "
+    "not a fresh deep-dive. If a paper here already appeared under the overnight "
+    "papers, don't repeat it.\n"
     "- RECALL AND FLASHCARDS: for the cards that keep slipping, actually TEACH "
     "the underlying idea — explain the reasoning behind the answer, connect it "
     "to adjacent concepts, and where it helps, name the mistake that is easy to "
@@ -160,8 +170,8 @@ _MORNING_CONTRACT = (
     "low-key prompt to revive or rest one — a single sentence or two, not a "
     "full report.\n\n"
     "Structure the brief roughly as: a brief orientation, then the news, then "
-    "the papers, then what moved and what needs you, then recall, and finish "
-    "on the quests.\n\n"
+    "the papers, then what you have been reading, then what moved and what "
+    "needs you, then recall, and finish on the quests.\n\n"
     "TONE: grounded, specific, and technical-but-plain. NOT inspirational, "
     "vague, or 'newagey' — no affirmations, no motivational filler. Trust the "
     "material to carry the brief.\n\n"
@@ -182,6 +192,12 @@ _PAPER_DEPTH_CAP = 6
 _PAPER_ABSTRACT_CHARS = 700
 #: How many active quests the closing "on to the quests" report covers.
 _QUEST_DEPTH_CAP = 5
+#: How far back the "reading" lane looks for a human-opened paper (7 days —
+#: wider than the overnight window, since "picked it back up mid-week" is
+#: still worth reconnecting).
+_READING_LOOKBACK_HOURS = 168
+#: How many recently-opened papers the "reading" lane names.
+_READING_CAP = 8
 #: ``app_state`` key holding the decaying-nudge cursor (JSON: last-fired date +
 #: fire count) for the "you have dormant strivings" reminder.
 _DORMANT_NUDGE_KEY = "reading_brief:dormant_nudge"
@@ -521,9 +537,58 @@ def _lane_recall(store: Any, *, cutoff: datetime) -> str:
     return "RECALL TODAY:\n" + "\n".join(f"- {p}" for p in parts)
 
 
-def _lane_reading(store: Any) -> str:
-    """This week's booklet gist. Empty until reading-prep slice 2 (booklet) lands."""
-    return ""
+def _lane_reading(
+    store: Any, *, now: datetime, sources: list[Source] | None = None
+) -> str:
+    """Papers the human has actually opened recently — "where you left off".
+
+    ``chunks.last_seen`` is bumped whenever a human opens a paper in the web
+    reader (``store.bump_salience_for_ref``, guarded against background-actor
+    reads) — the "actively reading" stamp. It defaults to the chunk's ingest
+    time, so a paper that was merely acquired overnight (and never opened)
+    would otherwise look "recently seen" too; the ``created_at + 1 hour``
+    predicate below separates a real open from that default. This is a
+    lighter-weight nudge than :func:`_lane_system_activity`'s overnight
+    PAPERS section (title only, no abstract) — LIVE today; a future clean
+    signal (``refs.last_viewed_at`` via :meth:`store.touch_viewed`) can
+    replace the join once enough history accumulates (see
+    ``routes/papers.py``).
+    """
+    cutoff = now - timedelta(hours=_READING_LOOKBACK_HOURS)
+    try:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT r.ref_id, r.title, MAX(c.last_seen) AS opened "
+                "FROM refs r JOIN chunks c ON c.ref_id = r.ref_id "
+                "  AND c.ord >= 0 AND c.retired_at IS NULL "
+                "WHERE r.kind = 'paper' AND r.deleted_at IS NULL "
+                "  AND c.last_seen > %s "
+                "  AND c.last_seen > r.created_at + interval '1 hour' "
+                "GROUP BY r.ref_id, r.title "
+                "ORDER BY opened DESC "
+                "LIMIT %s",
+                (cutoff, _READING_CAP),
+            ).fetchall()
+    except Exception:  # pragma: no cover - defensive, mirrors _lane_recall
+        log.debug("reading brief: reading lane unavailable", exc_info=True)
+        return ""
+
+    lines = []
+    surfaced: list[tuple[int, str]] = []
+    for ref_id, title, _opened in rows:
+        label = (title or "").strip()
+        if not label:
+            continue
+        lines.append(f"  * {label}")
+        surfaced.append((int(ref_id), "related-to"))
+    if not lines:
+        return ""
+    if sources is not None:
+        sources.extend(surfaced)
+    return (
+        "READING (papers you've opened recently — where you left off):\n"
+        + "\n".join(lines)
+    )
 
 
 def _quest_report(store: Any, quest: Any, *, status: str) -> str:
@@ -720,7 +785,9 @@ def _gather_lanes(
             lambda: _lane_system_activity(store, cutoff=cutoff, now=now, sources=src),
             src,
         ),
-        "reading": _safe_lane("reading", lambda: _lane_reading(store)),
+        "reading": _safe_lane(
+            "reading", lambda: _lane_reading(store, now=now, sources=src), src
+        ),
         "recall": _safe_lane("recall", lambda: _lane_recall(store, cutoff=cutoff)),
         "quest": _safe_lane(
             "quest", lambda: _lane_quest(store, now=now, sources=src), src

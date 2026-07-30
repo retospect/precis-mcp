@@ -955,8 +955,15 @@ Daily reading-brief + nidra casts shipped + live. Owner: `reading/*`,
   `briefing_cast._lane_quest` is a degrade-to-empty stub; quest slice-1 (kind +
   `serves` + `quest_log`) is live, so surface per-active-quest momentum + recent
   deeds. Nidra could bias its concept walk toward active-quest concepts.
-- **Booklet (reading) lane** *(feature, blocked on reading-prep slice 2).*
-  `briefing_cast._lane_reading` stub; lights up when the weekly booklet exists.
+- **Booklet (reading) lane — upgrade past the interim signal** *(feature,
+  blocked on reading-prep slice 2).* `briefing_cast._lane_reading` is now LIVE
+  off `chunks.last_seen` (papers opened in the web reader, gated past the
+  ingest-time default) — a "where you left off" nudge, not the weekly booklet
+  gist this item originally scoped. `routes/papers.py`'s reader now also
+  stamps `refs.last_viewed_at` (`store.touch_viewed`) alongside the existing
+  `bump_salience_for_ref` call — a cleaner, search-hit-free open signal the
+  lane can migrate onto once it has accumulated enough history. The actual
+  weekly booklet still lights up only when reading-prep slice 2 lands.
 - **Cast-draft corpus hygiene** *(polish, open).* Daily cast drafts (`kind=
   'draft'`, `meta.cast`) accumulate + are embedded/searchable; add `meta.no_index`
   and/or a retention GC. Also remove leftover test drafts/episodes

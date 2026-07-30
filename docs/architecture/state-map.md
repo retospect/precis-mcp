@@ -419,11 +419,14 @@ executor's (`claude_inproc` plan_tick, etc.).
 * `cast_audio` — the daily audio **casts** (docs/design/reading-prep-loop.md
   §Audio). Two standing casts ride one produce→narrate→publish spine, two voice
   profiles: **`reading`** (morning situational-awareness brief, `bm_george`,
-  ~20 min — `reading/briefing_cast.py` unions news/activity/recall/quest lanes, each
-  degrade-to-empty; depth-first prompt, papers carry abstracts + a `[[pa<id>]]`
-  cite marker (dropped inline per claim → a `§` link in `/drafts`, stripped from
-  audio by `narrate.speakable`) + true overnight paper count (not the naming cap),
-  leech cards carry bodies, active-only quest report with a decaying dormant nudge
+  ~20 min — `reading/briefing_cast.py` unions news/activity/reading/recall/quest
+  lanes, each degrade-to-empty; depth-first prompt, papers carry abstracts + a
+  `[[pa<id>]]` cite marker (dropped inline per claim → a `§` link in `/drafts`,
+  stripped from audio by `narrate.speakable`) + true overnight paper count (not
+  the naming cap), the reading lane names papers opened in the web reader
+  recently (`chunks.last_seen` past its ingest-time default — the "where you
+  left off" nudge, distinct from the overnight-acquired papers above), leech
+  cards carry bodies, active-only quest report with a decaying dormant nudge
   that links its strivings; papers/findings
   `cites`, news wire `derived-from`, drafts/quests `related-to`) and **`nidra`**
   (evening concept-graph meditation, `af_nicole`, ~45 min segmented walk —
@@ -712,7 +715,7 @@ claude-only rung (`FRONTIER`) waits rather than parking. Every transport
 already carries a wall-clock timeout (claude 600 s, openai_tools / litellm
 120 s), so a hang converts to that classified failure.
 
-**Per-operation routing (Phase 1 landed, `docs/proposals/llm-operation-routing.md`).**
+**Per-operation routing (Phases 1+2 landed, `docs/proposals/llm-operation-routing.md`).**
 The rung *between* the tier default and a call-site `req.model` pin, keyed on
 `req.source`. `utils/llm/operations.py` is an **opt-in allow-list** (`LLM_OPERATIONS`)
 of `dispatch()`-routed, pin-free operations + their code defaults (`OpDefault(tier,
@@ -726,8 +729,14 @@ functional pins like `classify`→`"summarizer"`, and router-bypassers like
 `fix_gripe`, both in `EXCLUDED_OPERATIONS`) returns `None` → today's `req.model or
 resolve_model` path untouched, so it **ships dark**. The two casts' Sonnet-5 default
 migrated off their `model=` arg into the registry (`reading_brief`/`meditation`).
-CLI: `precis llm op {list,set,clear}`. Phase 2 (the `/status?tab=services` panel +
-AC6 full `source=` drift scan) is pending.
+CLI: `precis llm op {list,set,clear}`. **Phase 2 (landed):** the
+`/status?tab=services` ops panel (`status.py::_llm_ops_ctx`/`_llm_op_stats`,
+`factory.py::set_llm_op` = `POST /factory/llm/op`, `_status_services.html.j2`) —
+one row per op over union(registry, observed `llm_call_log.source`) sorted last-run
+desc, steerable ops editable (`default/frontier/big/medium/small/pinned` + model
+picker, blank/`default` clears), excluded/unregistered read-only with reason,
+`effective` steerable-gated. Still open: AC6 full `source=` drift scan; routing
+`fix_gripe` through `dispatch()`.
 
 ## Discovery layer (F20)
 

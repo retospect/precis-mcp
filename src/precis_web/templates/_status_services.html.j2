@@ -65,6 +65,96 @@
   </div>
 </section>
 
+{# ── LLM operations — per-source model routing (Phase 2) ───────── #}
+<section class="mb-6">
+  <div class="rounded-lg border border-slate-200 bg-white p-4">
+    <h2 class="text-sm font-semibold mb-2">LLM operations (operator)</h2>
+    <p class="text-[11px] text-slate-400 mb-2">
+      One row per LLM call site (<code>source=</code>), registry ∪ excluded ∪
+      observed, most-recently-run first. Steerable rows write/clear
+      <code>llm.op.&lt;source&gt;</code> — the tier select and the model
+      select are mutually exclusive: "default" reverts to the registry
+      default, a capability tier remaps the operation to that tier (its
+      model select is ignored), and "pinned" pins the chosen model (its
+      tier is ignored). Non-steerable rows (router-bypassers, functional
+      pins) are read-only.
+    </p>
+    <div class="overflow-x-auto rounded-lg border border-slate-200">
+      <table class="min-w-full text-xs">
+        <thead class="bg-slate-50 text-slate-500">
+          <tr>
+            <th class="text-left font-medium px-3 py-2">operation</th>
+            <th class="text-left font-medium px-3 py-2">default</th>
+            <th class="text-left font-medium px-3 py-2">effective</th>
+            <th class="text-left font-medium px-3 py-2">control</th>
+            <th class="text-left font-medium px-3 py-2">last-seen model</th>
+            <th class="text-left font-medium px-3 py-2">last run</th>
+            <th class="text-left font-medium px-3 py-2">7d calls</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-100">
+          {% for op in llm_ops.rows %}
+          <tr class="align-top">
+            <td class="px-3 py-2">
+              <div class="font-medium"
+                   {% if op.description or op.note %}
+                   title="{{ op.description }}{% if op.note %}&#10;&#10;{{ op.note }}{% endif %}"
+                   {% endif %}>
+                {{ op.label }}
+              </div>
+              <div class="text-[11px] text-slate-400 font-mono">{{ op.source }}</div>
+            </td>
+            <td class="px-3 py-2 font-mono text-[11px] text-slate-500">
+              {% if op.default_tier %}{{ op.default_tier }} / {{ op.default_model or '—' }}{% else %}—{% endif %}
+            </td>
+            <td class="px-3 py-2 font-mono text-[11px]">{{ op.effective }}</td>
+            <td class="px-3 py-2">
+              {% if op.steerable %}
+              {% set is_pinned = op.override and op.override.model %}
+              <form method="post" action="/factory/llm/op" class="flex items-center gap-1">
+                <input type="hidden" name="source" value="{{ op.source }}">
+                <select name="tier" class="rounded border border-slate-300 text-[11px] px-1 py-0.5"
+                        onchange="var m=this.form.elements['model']; m.disabled = (this.value !== 'pinned');">
+                  <option value="default" {% if not op.override %}selected{% endif %}>default</option>
+                  {% for t in ("frontier", "big", "medium", "small") %}
+                  <option value="{{ t }}" {% if op.override and op.override.tier == t %}selected{% endif %}>{{ t }}</option>
+                  {% endfor %}
+                  <option value="pinned" {% if is_pinned %}selected{% endif %}>pinned</option>
+                </select>
+                <select name="model" class="rounded border border-slate-300 text-[11px] px-1 py-0.5"
+                        {% if not is_pinned %}disabled{% endif %}>
+                  <option value="">(pick a model)</option>
+                  {% for m in llm_ops.models %}
+                  <option value="{{ m }}" {% if op.override and op.override.model == m %}selected{% endif %}>{{ m }}</option>
+                  {% endfor %}
+                </select>
+                <button class="rounded bg-sky-600 text-white text-[11px] px-2 py-0.5 hover:bg-sky-700 transition">Save</button>
+              </form>
+              {% else %}
+              <span class="text-[11px] text-amber-700">
+                {{ op.excluded_reason or "not in the steerable registry" }}
+              </span>
+              {% endif %}
+            </td>
+            <td class="px-3 py-2">{{ op.last_seen_model or '—' }}</td>
+            <td class="px-3 py-2">{{ op.last_run or "never" }}</td>
+            <td class="px-3 py-2">{{ op.calls_7d }}</td>
+          </tr>
+          {% endfor %}
+          {% if not llm_ops.rows %}
+          <tr><td class="px-3 py-2 text-slate-400" colspan="7">No operations observed.</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+    <p class="text-[11px] text-slate-400 mt-2">
+      Tier and model are mutually exclusive — picking a capability tier
+      ignores the model select (and vice versa); "pinned" with no model
+      selected is a no-op (leaves the prior override, if any, untouched).
+    </p>
+  </div>
+</section>
+
 {# ── One list per category ───────────────────────────────────── #}
 {% for cat in categories %}
 <section class="mb-6">

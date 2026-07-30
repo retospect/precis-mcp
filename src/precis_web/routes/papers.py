@@ -489,6 +489,10 @@ async def detail(
     # redirect above (the follow-up slug request does the bump).
     try:
         store.bump_salience_for_ref(ref.id)
+        # Also stamp refs.last_viewed_at — a clean, search-hit-free open signal
+        # (chunks.last_seen is bumped by search too) that the reading-brief's
+        # "reading" lane can migrate onto once enough history has accumulated.
+        store.touch_viewed(ref.id)
     except Exception:
         pass
     return _render_detail(

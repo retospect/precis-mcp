@@ -3219,6 +3219,27 @@ def test_status_services_tab_renders_llm_chain_editor(client) -> None:
         assert f'value="{tier}"' in resp.text
 
 
+def test_status_services_tab_renders_llm_operations_panel(client) -> None:
+    """Phase 2 of ``docs/proposals/llm-operation-routing.md`` (item 4 / AC5):
+    the operations panel renders one row per registered operation, plus
+    excluded operations shown read-only with their reason."""
+    resp = client.get("/status?tab=services")
+    assert resp.status_code == 200
+    assert "LLM operations (operator)" in resp.text
+    assert 'action="/factory/llm/op"' in resp.text
+
+    # Registered, steerable operations show their label + registry default.
+    assert "Morning brief" in resp.text
+    assert "Evening meditation" in resp.text
+    assert "frontier / claude-sonnet-5" in resp.text
+
+    # An excluded operation renders read-only with its reason, no form control
+    # scoped to it — assert via the surrounding row rather than a global
+    # form-count (the steerable rows also render forms).
+    assert "classify" in resp.text
+    assert "model pinned in code for correctness" in resp.text
+
+
 def test_status_budget_tab_renders_tote_and_caps(client) -> None:
     """``?tab=budget`` renders the retired Budget page's content."""
     resp = client.get("/status?tab=budget")

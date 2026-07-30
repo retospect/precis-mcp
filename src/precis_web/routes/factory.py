@@ -498,6 +498,83 @@ async def set_llm_chain(
     return RedirectResponse(url="/status?tab=services", status_code=303)
 
 
+def _set_op_override(store: Any, source: str, tier: str, model: str) -> None:
+    """Write (or, for blank/"default" ``tier``, clear) one operation's
+    override (``docs/proposals/llm-operation-routing.md`` item 4).
+
+    Guarded to the steerable allow-list — an excluded or unregistered
+    ``source`` is a no-op (the template renders those rows read-only; this
+    is defense-in-depth, not the only guard).
+
+    ``tier`` and ``model`` are **mutually exclusive** — a single combined
+    control on the form — so ``model`` is read ONLY when ``tier ==
+    "pinned"``; a plain capability tier (``frontier``/``big``/``medium``/
+    ``small``) always wins and ignores any stale ``model`` field, so
+    changing only the tier dropdown on a pinned op can never be silently
+    discarded:
+
+    - blank or ``"default"`` → clear the row (registry default).
+    - a recognized capability tier (in :data:`_CHAIN_TIERS`) → ``{"tier": ...}``.
+    - ``"pinned"`` → ``{"model": ...}`` if ``model`` is non-blank, else a
+      no-op (leaves the prior override, if any, untouched).
+    - anything else (an unrecognized tier) → a no-op.
+    """
+    from precis.utils.llm import operations
+
+    if not operations.is_steerable(source):
+        log.warning(
+            "factory: ignoring llm/op override for non-steerable source=%s", source
+        )
+        return
+
+    tier = tier.strip()
+    model = model.strip()
+
+    payload: dict[str, str]
+    if not tier or tier == "default":
+        budget_settings.clear_setting(store, live_config.op_key(source))
+        live_config.bust_cache()
+        return
+    elif tier in _CHAIN_TIERS:
+        payload = {"tier": tier}
+    elif tier == "pinned":
+        if not model:
+            log.warning(
+                "factory: ignoring pinned llm/op override for source=%s "
+                "with no model selected",
+                source,
+            )
+            return
+        payload = {"model": model}
+    else:
+        log.warning("factory: ignoring unknown tier=%r for op source=%s", tier, source)
+        return
+
+    budget_settings.set_setting(store, live_config.op_key(source), json.dumps(payload))
+    live_config.bust_cache()
+
+
+@router.post("/llm/op", response_model=None)
+async def set_llm_op(
+    request: Request,
+    source: str = Form(...),
+    tier: str = Form(""),
+    model: str = Form(""),
+) -> RedirectResponse:
+    """Write (or clear) an operator override for one steerable operation
+    (``docs/proposals/llm-operation-routing.md`` item 4 / AC5) — blank/
+    ``"default"`` ``tier`` reverts to the registry default; ``model`` is
+    only honoured when ``tier == "pinned"``, so a plain capability tier
+    can never be discarded by a stale sticky model selection. A
+    non-steerable ``source`` (excluded or unregistered) is a no-op."""
+    store = get_store(request)
+    try:
+        _set_op_override(store, source, tier, model)
+    except Exception:
+        log.warning("factory: set_llm_op failed", exc_info=True)
+    return RedirectResponse(url="/status?tab=services", status_code=303)
+
+
 def _set_cloud_enabled(store: Any, enabled: bool) -> None:
     """Write the ADR 0066 §5 cloud-throttle dial. ``True`` clears the row
     (back to default-on); only an explicit ``False`` writes ``"false"``."""

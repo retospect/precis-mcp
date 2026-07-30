@@ -6,13 +6,20 @@ model: opus
 
 # Per-operation model routing — DB-backed, UI-editable, defaults visible
 
-> **Phase 1 landed** (router resolution layer + `utils/llm/operations.py`
-> registry + `live_config.op_override` + `precis llm op` CLI + cast-pin
-> migration), ships dark. **Phase 2** (the `/status?tab=services` panel, In-scope
-> item 4) is the remaining work. AC6's full `source=`-literal drift scan (flag a
-> code source with neither a registry entry nor an excluded marker) is deferred
-> to Phase 2 — Phase 1 ships the registry/excluded disjoint + well-formed guard
-> and the classify-not-clobbered precedence guard, not the whole-codebase scan.
+> **Phases 1 + 2 landed.** Phase 1: router resolution layer +
+> `utils/llm/operations.py` registry + `live_config.op_override` + `precis llm op`
+> CLI + cast-pin migration (ships dark). Phase 2: the editable
+> `/status?tab=services` ops panel — one row per operation (union of registry +
+> observed `llm_call_log.source`, last-run desc), steerable ops get a
+> `default/frontier/big/medium/small/pinned` control + model picker (`POST
+> /factory/llm/op`, blank/`default` clears), excluded/unregistered ops render
+> read-only with their reason; `effective` is steerable-gated so a stale row on a
+> demoted op never shows as live. **Still open:** AC6's full `source=`-literal
+> drift scan (flag a code source with neither a registry entry nor an excluded
+> marker) — the registry/excluded disjoint + well-formed guard and the
+> classify-not-clobbered precedence guard ship, but not the whole-codebase scan.
+> Named follow-up: route `fix_gripe` through `dispatch()` (closes its
+> read-only-op exclusion + `glm-fleet-flip-safety.md` Part 3).
 
 ## Motivation / why
 
