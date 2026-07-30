@@ -171,6 +171,14 @@ edges are populated by the chase's forward bridge, gated behind
 scale, so evidence is sparse/absent for now). Once minted, a hub carries
 its own `pub_id`, citable `[<pub_id>]`.
 
+`precis resolve` treats a hub cite as a **living citation**: it
+expands to the hub's *current* derived `establishes` originator(s)
+(falling back to corroborators, then in-flight, if none are derived
+yet) rather than a stored `primary_cite_key` — so a later-discovered
+originator or a claim merge improves the `.bib` output on the next
+`resolve`, with no re-cite needed. Multiple originators render as one
+multi-key cite: `\cite{a,b}` / `[a; b]`.
+
 ## Use a finding in your draft
 
 Drop the id in square brackets:

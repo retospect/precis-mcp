@@ -17,6 +17,17 @@ time:
 * **Dead-chain** finding → fail unless ``--keep-id``; with
   ``--keep-id`` the placeholder is annotated with the failure
   reason inline.
+* **Taproot claim hub** (Taproot slice A1, "living citation") → a
+  ``[pub_id]`` that resolves to a ``TAPROOT:claim`` hub instead
+  expands to its *current* derived ``establishes`` originator(s)
+  (:func:`precis.taproot.seniority.derive_evidence`), falling back
+  to corroborators when no originator is derived yet, and to
+  in-flight when the hub has no supporting evidence at all. Because
+  the split is recomputed on every run, a later-discovered
+  originator or a claim merge improves the ``.bib`` output on the
+  *next* ``resolve`` — the cite never needs hand-editing. Multiple
+  originators render as a multi-key cite: ``\\cite{a,b}`` (LaTeX) /
+  ``[a; b]`` (plain/markdown).
 
 In-flight visibility markers (deliberately obvious during proof-
 reading so authors don't ship placeholders by accident):
@@ -47,6 +58,8 @@ from typing import Any
 
 from precis.cli._common import resolve_dsn
 from precis.store import Store
+from precis.taproot.canon import TAPROOT_CLAIM, TAPROOT_NAMESPACE
+from precis.taproot.seniority import EvidenceEdge, HubEvidence, derive_evidence
 
 # Placeholder grammar: ``[<6 base32 lowercase chars>]``. The same
 # alphabet :func:`precis.identity.make_pub_id` produces, so any pub
@@ -265,11 +278,20 @@ def _resolve_text(
     """
     summary = _Summary()
     lookups: dict[str, dict[str, Any] | None] = {}
+    hub_cache: dict[str, tuple[list[str], list[tuple[str, str]]]] = {}
 
     def _lookup(pub_id: str) -> dict[str, Any] | None:
         if pub_id not in lookups:
             lookups[pub_id] = _lookup_finding(store, pub_id)
         return lookups[pub_id]
+
+    def _lookup_hub_keys(
+        pub_id: str, hub_ref_id: int
+    ) -> tuple[list[str], list[tuple[str, str]]]:
+        if pub_id not in hub_cache:
+            evidence = derive_evidence(store, hub_ref_id)
+            hub_cache[pub_id] = _hub_evidence_cite_keys(store, evidence)
+        return hub_cache[pub_id]
 
     def _sub(match: re.Match[str]) -> str:
         pub_id = match.group(1)
@@ -279,6 +301,29 @@ def _resolve_text(
             # Don't touch the text — almost certainly real prose
             # bracket content that happens to match the alphabet.
             return match.group(0)
+        if finding["is_hub"]:
+            # Living citation (Taproot slice A1): a claim hub never
+            # resolves off its own STATUS tag or a stored
+            # primary_cite_key — the seniority split is re-derived
+            # from the evidence graph on every run, so a later-
+            # discovered originator or a hub merge improves the
+            # output next time this command runs, with no manual
+            # re-cite needed.
+            cite_keys, notes = _lookup_hub_keys(pub_id, finding["ref_id"])
+            for note_status, detail in notes:
+                summary.warnings.append((pub_id, note_status, detail))
+            if not cite_keys:
+                summary.inflight_pub_ids.append(pub_id)
+                summary.warnings.append(
+                    (
+                        pub_id,
+                        "tracing",
+                        "claim hub has no resolvable evidence yet — still tracing",
+                    )
+                )
+                return _render_inflight(pub_id, format, ascii_mode)
+            summary.resolved_count += 1
+            return _render_established_multi(cite_keys, format)
         status = finding["status"] or "tracing"
         if status == "established":
             primary = finding.get("primary_cite_key")
@@ -337,8 +382,12 @@ def _lookup_finding(store: Store, pub_id: str) -> dict[str, Any] | None:
     matching finding (different kind, no such row, soft-deleted).
 
     Returns ``{ref_id, status, primary_cite_key, dead_reason,
-    human_verified}``. ``human_verified`` is a bool —
+    human_verified, is_hub}``. ``human_verified`` is a bool —
     ``--strict-verified`` reads it to decide whether to substitute.
+    ``is_hub`` is True iff the finding carries ``TAPROOT:claim`` — a
+    living-citation claim hub, resolved via
+    :func:`_hub_evidence_cite_keys` instead of the status/
+    primary_cite_key path below (Taproot slice A1).
     """
     with store.pool.connection() as conn:
         row = conn.execute(
@@ -348,16 +397,26 @@ def _lookup_finding(store: Store, pub_id: str) -> dict[str, Any] | None:
                      WHERE rt.ref_id = r.ref_id
                        AND t.namespace = 'STATUS'
                      LIMIT 1) AS status,
-                   r.human_verified_at
+                   r.human_verified_at,
+                   EXISTS (
+                     SELECT 1 FROM ref_tags rt2 JOIN tags t2 USING (tag_id)
+                      WHERE rt2.ref_id = r.ref_id
+                        AND t2.namespace = %(taproot_ns)s
+                        AND t2.value = %(taproot_claim)s
+                   ) AS is_hub
               FROM ref_identifiers ri
               JOIN refs r ON r.ref_id = ri.ref_id
-             WHERE ri.id_kind = 'pub_id' AND ri.id_value = %s
+             WHERE ri.id_kind = 'pub_id' AND ri.id_value = %(pub_id)s
             """,
-            (pub_id,),
+            {
+                "pub_id": pub_id,
+                "taproot_ns": TAPROOT_NAMESPACE,
+                "taproot_claim": TAPROOT_CLAIM,
+            },
         ).fetchone()
     if row is None:
         return None
-    ref_id, kind, deleted_at, meta, status, human_verified_at = row
+    ref_id, kind, deleted_at, meta, status, human_verified_at, is_hub = row
     if kind != "finding":
         return None
     if deleted_at is not None:
@@ -369,13 +428,92 @@ def _lookup_finding(store: Store, pub_id: str) -> dict[str, Any] | None:
         "primary_cite_key": meta.get("primary_cite_key"),
         "dead_reason": meta.get("dead_reason"),
         "human_verified": human_verified_at is not None,
+        "is_hub": bool(is_hub),
     }
 
 
+def _cite_keys_for_group(
+    store: Store, edges: list[EvidenceEdge]
+) -> tuple[list[str], list[int]]:
+    """Resolve each edge's paper to its (oldest) ``cite_key`` alias.
+
+    Returns ``(cite_keys, skipped_ref_ids)`` — a paper with no
+    ``cite_key`` alias at all is dropped from the render rather than
+    failing the whole hub, and its ``ref_id`` is reported back so the
+    caller can warn about it.
+    """
+    cite_keys: list[str] = []
+    skipped: list[int] = []
+    for edge in edges:
+        aliases = store.ref_cite_keys(edge.paper_ref_id)
+        if aliases:
+            cite_keys.append(aliases[0])
+        else:
+            skipped.append(edge.paper_ref_id)
+    return cite_keys, skipped
+
+
+def _hub_evidence_cite_keys(
+    store: Store, evidence: HubEvidence
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """Locked resolution policy for a claim hub's living citation.
+
+    1. Derived ``establishes`` originators, if any have a cite_key.
+    2. Else ``corroborators``, if any have a cite_key (best-available
+       fallback — the caller's warnings note these aren't derived
+       originators yet).
+    3. Else empty — the caller treats the hub as in-flight.
+
+    Returns ``(cite_keys, notes)`` where ``notes`` are ``(status,
+    detail)`` diagnostic pairs meant for ``_Summary.warnings``
+    (skipped no-cite_key papers, the corroborator-fallback flag).
+    """
+    notes: list[tuple[str, str]] = []
+    originator_keys, skipped = _cite_keys_for_group(store, evidence.originators)
+    for ref_id in skipped:
+        notes.append(
+            (
+                "established",
+                f"originator paper ref_id={ref_id} has no cite_key — skipped",
+            )
+        )
+    if originator_keys:
+        return originator_keys, notes
+
+    corroborator_keys, skipped = _cite_keys_for_group(store, evidence.corroborators)
+    for ref_id in skipped:
+        notes.append(
+            (
+                "established",
+                f"corroborator paper ref_id={ref_id} has no cite_key — skipped",
+            )
+        )
+    if corroborator_keys:
+        notes.append(
+            (
+                "established",
+                "resolved via corroborator(s) — no derived originator yet",
+            )
+        )
+        return corroborator_keys, notes
+
+    return [], notes
+
+
 def _render_established(primary_cite_key: str, format: str) -> str:
+    return _render_established_multi([primary_cite_key], format)
+
+
+def _render_established_multi(cite_keys: list[str], format: str) -> str:
+    """Render one or more cite_keys — the multi-key case a Taproot
+    claim hub with several derived originators needs.
+
+    LaTeX: comma-joined into one ``\\cite{...}`` (biblatex multi-key).
+    Plain/markdown: semicolon-space-joined inside one bracket pair.
+    """
     if format == "latex":
-        return f"\\cite{{{primary_cite_key}}}"
-    return f"[{primary_cite_key}]"
+        return f"\\cite{{{','.join(cite_keys)}}}"
+    return f"[{'; '.join(cite_keys)}]"
 
 
 def _render_inflight(pub_id: str, format: str, ascii_mode: bool) -> str:

@@ -927,8 +927,25 @@ overlay on `finding`/`ref_tags`/`links` — no schema of its own).
     tables (originators/corroborators/contradicts), originator mark,
     support/integrity/caveats columns, a Phase-3 placeholder note when no
     edge carries `support` yet. Tests: `tests/test_taproot_seniority.py`.
-  - Not yet built: citation-card dedup (2d), `\cite`→originators export
-    (2e).
+  - **A1 (`\cite`→originators export, "living citation")** — built.
+    `cli/resolve.py::_resolve_text` detects a `[pub_id]` placeholder that
+    resolves to a `TAPROOT:claim` hub (`_lookup_finding`'s `is_hub` flag,
+    an `EXISTS` over `ref_tags`) and, instead of the ordinary
+    `primary_cite_key` substitution, calls
+    `seniority.derive_evidence(store, hub_ref_id)` fresh on every run and
+    resolves cite_keys via `Store.ref_cite_keys` (oldest alias): derived
+    `establishes` originators first; if none have a cite_key (or none are
+    derived yet — `coverage_note`), falls back to `corroborators`
+    (best-available, flagged in the stderr diagnostic); a paper with no
+    `cite_key` alias at all is skipped (with a warning) rather than
+    failing the whole hub; no supporters/keys at all → in-flight, same
+    `--strict` exit-3 gate as an ordinary tracing finding. Multi-originator
+    hubs render a multi-key cite: `\cite{a,b}` (LaTeX, comma-joined) /
+    `[a; b]` (plain/markdown). Because the split is recomputed per run
+    rather than cached, a later-discovered originator or a hub merge
+    improves the `.bib` output on the *next* `resolve` — no manual re-cite.
+    Tests: `tests/cli/test_resolve.py`.
+  - Not yet built: citation-card dedup (2d).
 - **Phase 3 (in progress)** — forward `chase` wiring; slices land
   independently, W1 first.
   - **W1 (chase forward bridge)** — built. Default-OFF env flag
