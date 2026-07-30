@@ -9,6 +9,34 @@ items are removed (history is `git log`).
 
 ---
 
+## Residuals (2026-07-30 — taproot authoring on-ramp ship 02af6721)
+
+- **Whole-draft taproot backfill + make hub-cite the default** · Status: open ·
+  Severity: feature · Owner: `src/precis/cli/taproot.py` +
+  `src/precis/data/skills/precis-citation-help.md`. The A3 producer
+  (`taproot/authoring.py::seed_claim_hub`, `precis taproot mint`) mints one
+  claim-set at a time from a hand-authored spec — proven end-to-end on
+  dc1547610 (hubs `tbx2hd`/`7p7r2k`/`o6r4eg`/`3qi6xc`, refs 176272–176275).
+  Next: (1) a `--draft <slug>`/`--chunk <dc>` backfill that walks a chunk's
+  existing `[pc…]` cites, clusters per-sentence into candidate claims, mints
+  hubs (dedup via `canon.block` so it's idempotent), and rewrites the prose
+  `[pc…]`→`[pub_id]`; (2) once coverage grows off that, flip the citation
+  skills' primary recipe to lead with hub-cite ("cite the hub when one covers
+  your claim; `[pc…]` is the grounding primitive underneath"). Defaulting is
+  downstream of coverage — the backfill IS the coverage engine. · Test: a
+  backfill dry-run over dc1547610 re-derives the same 4 hubs it already has
+  (idempotent), 0 new mints.
+- **Evidence edge records one grounding pointer when a paper grounds a claim
+  via >1 passage** · Status: open · Severity: polish · Owner:
+  `src/precis/taproot/authoring.py::seed_claim_hub` +
+  `taproot/seniority.py::EvidenceEdge` + `utils/refeye.py`. Two supporters that
+  collapse to the same `(paper, hub, role)` keep only the first `source_handle`
+  (now surfaced via the return's `collapsed`, not silently dropped — that was
+  the review fix). To record both passages, widen the edge meta to a
+  `source_handles` list and teach `EvidenceEdge`/the ring's Claims render to
+  show a list. · Test: seed one paper as two-passage supporter of one claim →
+  both grounding handles survive on the single edge.
+
 ## Residuals (2026-07-30 session — gr172886 ship)
 
 - **worker-agent daemon silent outage + monitoring blind spot** · Status: open ·
