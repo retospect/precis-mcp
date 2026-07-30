@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import base64
 import re
+from typing import Any
 
 import pytest
 
@@ -1225,6 +1227,179 @@ def test_edit_text_store_op_typed_errors(store: Store) -> None:
         store.edit_text(handle, "new text")
     with pytest.raises(NotFound):
         store.edit_text("zzzznotarealhandle", "x")
+
+
+# ---------------------------------------------------------------------------
+# OPEN-ITEMS follow-on to gripe #45083 / 138ed8cf: that fix typed only
+# ``edit_text``'s path (the ``text=`` whole-chunk rewrite). Nothing pinned
+# that the REST of the draft chunk-mutator verb set also returns a typed
+# error — through the real dispatch path, which does the PrecisError →
+# rendered-``[error:…]``-string mapping (``PrecisRuntime.dispatch_with_
+# status``), not the bare handler/store call. A future mutator added
+# without threading the typed-error convention would regress silently
+# (opaque ``[error:Internal] internal error in edit`` / a bare traceback)
+# and nothing here would catch it. Two contracts, both driven through
+# ``dispatch_with_status``:
+#
+#   * a ``dc<id>`` that was NEVER allocated -> typed NotFound
+#   * an already-retired handle -> typed Gone (except ``delete``, which is
+#     a deliberate idempotent no-op on a retired target — see the
+#     dedicated test below)
+# ---------------------------------------------------------------------------
+
+_PNG_1X1 = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAA"
+    "C0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+)
+
+#: A chunk_id that a fresh per-test DB will never have allocated.
+_UNKNOWN_DC = "dc999999999"
+
+
+@pytest.mark.parametrize(
+    "shape_id,verb,args",
+    [
+        ("edit-text", "edit", {"text": "new text"}),
+        ("edit-find-replace", "edit", {"find": "x", "text": "y"}),
+        ("edit-move", "edit", {"move": {"before": _UNKNOWN_DC}}),
+        ("edit-style", "edit", {"style": "intro"}),
+        ("edit-list-kind", "edit", {"list_kind": "olist"}),
+        ("edit-word-target", "edit", {"word_target": {"min": 1, "max": 10}}),
+        ("edit-figure-origin", "edit", {"origin": "original"}),
+        ("edit-figure-permission", "edit", {"permission": {"status": "granted"}}),
+        ("delete", "delete", {}),
+    ],
+)
+def test_dispatch_typed_error_unknown_chunk_all_mutator_shapes(
+    runtime_with_store: Any, shape_id: str, verb: str, args: dict[str, Any]
+) -> None:
+    """Every draft chunk-mutator verb shape, on a ``dc<id>`` that never
+    existed, returns typed [error:NotFound] through the real dispatch
+    path — never the opaque [error:Internal] ValueError fallback."""
+    body, is_error = runtime_with_store.dispatch_with_status(
+        verb, {"kind": "draft", "id": _UNKNOWN_DC, **args}
+    )
+    assert is_error, f"{shape_id}: expected an error, got {body!r}"
+    assert "[error:NotFound]" in body, f"{shape_id}: {body!r}"
+    assert "[error:Internal]" not in body, f"{shape_id}: {body!r}"
+    assert "ValueError" not in body, f"{shape_id}: {body!r}"
+
+
+@pytest.mark.parametrize(
+    "shape_id,chunk_kind,seed_text,build_args",
+    [
+        ("edit-text", "paragraph", "doomed body", lambda title_dc: {"text": "fixed"}),
+        (
+            "edit-find-replace",
+            "paragraph",
+            "doomed body",
+            lambda title_dc: {"find": "doomed", "text": "fixed"},
+        ),
+        (
+            "edit-move",
+            "paragraph",
+            "doomed body",
+            lambda title_dc: {"move": {"before": title_dc}},
+        ),
+        ("edit-style", "heading", "Sec", lambda title_dc: {"style": "intro"}),
+        ("edit-list-kind", "ulist", "", lambda title_dc: {"list_kind": "olist"}),
+        (
+            "edit-word-target",
+            "heading",
+            "Sec",
+            lambda title_dc: {"word_target": {"min": 1, "max": 10}},
+        ),
+    ],
+)
+def test_dispatch_typed_error_retired_chunk_all_mutator_shapes(
+    runtime_with_store: Any,
+    shape_id: str,
+    chunk_kind: str,
+    seed_text: str,
+    build_args: Any,
+) -> None:
+    """Every draft chunk-mutator verb shape, on an already-retired handle,
+    returns typed [error:Gone] through the real dispatch path — never the
+    opaque [error:Internal] ValueError fallback (gripe #45083 / 138ed8cf
+    fixed only the ``edit_text`` path; this pins the whole verb set)."""
+    store = runtime_with_store.store
+    proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
+    ref, title = store.create_draft(
+        name=f"rt-{shape_id}", title="T", project_ref_id=proj
+    )
+    target = store.add_chunks(
+        ref_id=ref.id,
+        chunk_kind=chunk_kind,
+        text=seed_text,
+        at={"after": title.handle},
+    )[0]
+    store.retire_chunk(target.handle)
+    args = {"kind": "draft", "id": target.dc, **build_args(title.dc)}
+    body, is_error = runtime_with_store.dispatch_with_status("edit", args)
+    assert is_error, f"{shape_id}: expected an error, got {body!r}"
+    assert "[error:Gone]" in body, f"{shape_id}: {body!r}"
+    assert "[error:Internal]" not in body, f"{shape_id}: {body!r}"
+    assert "ValueError" not in body, f"{shape_id}: {body!r}"
+
+
+@pytest.mark.parametrize(
+    "arg_name,arg_value",
+    [("origin", "original"), ("permission", {"status": "granted"})],
+)
+def test_dispatch_typed_error_retired_figure_provenance(
+    runtime_with_store: Any, arg_name: str, arg_value: Any
+) -> None:
+    """The figure-provenance edit shape (``origin=``/``permission=``) on an
+    already-retired figure chunk also returns typed [error:Gone]."""
+    store = runtime_with_store.store
+    proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
+    ref, title = store.create_draft(
+        name=f"rtfig-{arg_name}", title="T", project_ref_id=proj
+    )
+    fig = store.add_figure(
+        ref_id=ref.id,
+        caption="c",
+        origin="original",
+        image=_PNG_1X1,
+        mime="image/png",
+        at={"after": title.handle},
+    )
+    store.retire_chunk(fig.handle)
+    body, is_error = runtime_with_store.dispatch_with_status(
+        "edit", {"kind": "draft", "id": fig.dc, arg_name: arg_value}
+    )
+    assert is_error, body
+    assert "[error:Gone]" in body, body
+    assert "[error:Internal]" not in body and "ValueError" not in body, body
+
+
+def test_dispatch_delete_already_retired_chunk_is_idempotent_not_error(
+    runtime_with_store: Any,
+) -> None:
+    """``delete`` on an already-retired handle is a deliberate idempotent
+    no-op (the store's ``retire_chunk`` returns silently when
+    ``retired_at`` is already set) — a success body, not a typed error.
+    Pinned separately from the Gone/NotFound contract above so a future
+    change that makes it raise (or, worse, blow up with a bare
+    ValueError) is caught either way."""
+    store = runtime_with_store.store
+    proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
+    ref, title = store.create_draft(
+        name="rt-delete-idempotent", title="T", project_ref_id=proj
+    )
+    target = store.add_chunks(
+        ref_id=ref.id,
+        chunk_kind="paragraph",
+        text="doomed body",
+        at={"after": title.handle},
+    )[0]
+    store.retire_chunk(target.handle)
+    body, is_error = runtime_with_store.dispatch_with_status(
+        "delete", {"kind": "draft", "id": target.dc}
+    )
+    assert not is_error, body
+    assert "retired" in body
+    assert "[error:Internal]" not in body and "ValueError" not in body
 
 
 def test_authors_edit_sets_byline_with_affiliation(
