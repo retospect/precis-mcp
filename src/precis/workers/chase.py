@@ -54,7 +54,7 @@ from precis.taproot.canon import (
     dedup_judge,
     place,
 )
-from precis.taproot.hub import apply_placement
+from precis.taproot.hub import apply_placement, attach_evidence
 from precis.workers._chase_llm import (
     _disambiguate_candidates,
     _locate_chunk_in_target,
@@ -650,7 +650,7 @@ def _flush_event(
 
 
 def _fetch_ref(conn: Connection, ref_id: int) -> dict[str, Any] | None:
-    """Minimal ref-row fetch (id, slug, deleted, identifiers JSONB)."""
+    """Minimal ref-row fetch (id, slug, kind, deleted, identifiers JSONB)."""
     row = conn.execute(
         """
         SELECT r.ref_id,
@@ -664,7 +664,8 @@ def _fetch_ref(conn: Connection, ref_id: int) -> dict[str, Any] | None:
                  (SELECT jsonb_object_agg(id_kind, id_value)
                     FROM ref_identifiers WHERE ref_id = r.ref_id),
                  '{}'::jsonb
-               ) AS identifiers
+               ) AS identifiers,
+               r.kind
           FROM refs r
          WHERE r.ref_id = %s
         """,
@@ -672,7 +673,12 @@ def _fetch_ref(conn: Connection, ref_id: int) -> dict[str, Any] | None:
     ).fetchone()
     if row is None or row[2] is not None:
         return None
-    return {"ref_id": int(row[0]), "slug": row[1], "identifiers": dict(row[3] or {})}
+    return {
+        "ref_id": int(row[0]),
+        "slug": row[1],
+        "identifiers": dict(row[3] or {}),
+        "kind": row[4],
+    }
 
 
 def _fetch_chunks(conn: Connection, ref_id: int) -> list[tuple[int, int, str]]:
@@ -1038,6 +1044,36 @@ def _aggregate_caveats(chain: list[dict[str, Any]]) -> list[str]:
     return aggregated
 
 
+def _evidence_edge_meta(
+    verification: dict[str, Any] | None,
+    chain: list[dict[str, Any]],
+    *,
+    slug: str,
+    ord_: int | None,
+) -> dict[str, Any]:
+    """Map one hop's ``verification`` dict to a taproot evidence edge's
+    ``meta`` shape. Shared by :func:`_taproot_bridge`'s terminal write
+    (W1) and its intermediate-hop corroborator attach (W2), so the two
+    stay in lockstep rather than drifting apart.
+
+    ``caveats`` is always the whole-chain aggregate (:func:`_aggregate_caveats`)
+    -- the same value on every edge for a given chain -- while
+    ``source_handle`` is per-hop (``slug``/``ord_`` are the attaching
+    hop's own, not the terminal's). ``verification=None`` (a hop that was
+    never LLM-verified, e.g. an untouched intermediate frontier) yields a
+    minimal meta with ``support``/``support_reason`` left ``None`` rather
+    than fabricating a verdict.
+    """
+    v = verification or {}
+    return {
+        "support": v.get("supports"),
+        "support_reason": v.get("support_reason"),
+        "caveats": _aggregate_caveats(chain),
+        "char_offset": None,  # no producer yet (deferred)
+        "source_handle": f"{slug}~{ord_}" if ord_ is not None else slug,
+    }
+
+
 def _snapshot_chain(
     conn: Connection, store: Any, finding_ref_id: int, chain: list[dict[str, Any]]
 ) -> None:
@@ -1201,13 +1237,9 @@ def _taproot_bridge(
 
     paper_ref_id = int(chain[-1]["ref_id"])
     paper_slug = target.get("slug") or f"ref:{paper_ref_id}"
-    edge_meta = {
-        "support": supports,
-        "support_reason": verification.get("support_reason"),
-        "caveats": _aggregate_caveats(chain),
-        "char_offset": None,  # no producer yet (deferred)
-        "source_handle": f"{paper_slug}~{chunk_ord}",
-    }
+    edge_meta = _evidence_edge_meta(
+        verification, chain, slug=paper_slug, ord_=chunk_ord
+    )
 
     def _todo_fn(claim: CanonicalClaim, placement: Placement) -> None:
         _file_taproot_review_todo(
@@ -1216,7 +1248,7 @@ def _taproot_bridge(
 
     try:
         with conn.transaction():  # savepoint: isolate a taproot write failure
-            apply_placement(
+            hub_ref_id = apply_placement(
                 store,
                 claim,
                 placement,
@@ -1226,11 +1258,92 @@ def _taproot_bridge(
                 set_by="chase",
                 conn=conn,
             )
+            if hub_ref_id is not None:  # None only on needs_review (no hub)
+                _attach_intermediate_corroborators(
+                    conn,
+                    store,
+                    chain=chain,
+                    hub_ref_id=hub_ref_id,
+                    terminal_ref_id=paper_ref_id,
+                )
     except Exception:
         log.warning(
             "taproot: bridge apply_placement failed for finding ref_id=%s",
             finding.ref_id,
             exc_info=True,
+        )
+
+
+def _attach_intermediate_corroborators(
+    conn: Connection,
+    store: Any,
+    *,
+    chain: list[dict[str, Any]],
+    hub_ref_id: int,
+    terminal_ref_id: int,
+) -> None:
+    """Phase-3 W2: attach every INTERMEDIATE chain hop (every entry but
+    the terminal ``chain[-1]``, which the caller already attached per W1)
+    that is a live paper as a ``corroborates`` evidence edge on the same
+    hub -- giving the hub a real multi-supporter set so
+    :func:`~precis.taproot.seniority.derive_evidence` can actually split
+    establishes vs corroborators instead of degenerating to a
+    single-supporter no-op.
+
+    Called from inside the SAME savepoint as the terminal attach (the
+    caller's ``conn.transaction()``) -- one taproot write failure here
+    rolls back the whole bridge write for this finding, never the
+    surrounding established-flip. ``role`` is always written
+    ``'corroborates'`` -- :mod:`~precis.taproot.seniority` derives
+    establishes at *read* time from the ``cites`` graph; W2 never guesses
+    it at write time.
+
+    A hop is skipped, not attached, when it:
+
+    * duplicates the terminal paper, the hub itself, or an earlier hop in
+      this same chain (de-dup via ``seen`` -- ``add_link``'s own
+      ``ON CONFLICT`` would no-op a repeat anyway, but skipping avoids the
+      redundant write and log noise);
+    * isn't a live ``kind='paper'`` ref (defensive -- the chain should
+      only ever hold papers, but a finding/hub/soft-deleted ref must
+      never become taproot evidence);
+    * carries ``verification['supports'] == 'no'`` (NO-SUPPORT is never
+      evidence, mirroring the terminal's own skip).
+
+    A hop with no ``verification`` at all (never LLM-verified -- e.g. an
+    intermediate frontier the chain grew past deterministically, or the
+    initial ``cited_in`` hop) still gets attached, as a bare corroborator
+    with a minimal meta (:func:`_evidence_edge_meta` called with
+    ``verification=None``) -- the goal here is supporter *membership* for
+    the seniority split, not a support verdict this hop never produced.
+    """
+    seen: set[int] = {terminal_ref_id, hub_ref_id}
+    for hop in chain[:-1]:  # every hop but the terminal (chain[-1], W1)
+        hop_ref_id = int(hop["ref_id"])
+        if hop_ref_id in seen:
+            continue
+        seen.add(hop_ref_id)
+
+        hop_ref = _fetch_ref(conn, hop_ref_id)
+        if hop_ref is None or hop_ref["kind"] != "paper":
+            continue  # deleted, missing, or not a paper -- never evidence
+
+        hop_verification = hop.get("verification")
+        if hop_verification and hop_verification.get("supports") == "no":
+            continue  # NO-SUPPORT: never record as evidence
+
+        hop_slug = hop_ref["slug"] or f"ref:{hop_ref_id}"
+        hop_meta = _evidence_edge_meta(
+            hop_verification, chain, slug=hop_slug, ord_=hop.get("ord")
+        )
+        attach_evidence(
+            store,
+            hub_ref_id=hub_ref_id,
+            paper_ref_id=hop_ref_id,
+            role="corroborates",
+            meta=hop_meta,
+            set_by="chase",
+            conn=conn,
         )
 
 

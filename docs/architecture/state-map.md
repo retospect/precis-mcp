@@ -972,6 +972,28 @@ overlay on `finding`/`ref_tags`/`links` — no schema of its own).
     LLM cost, but `STATUS` vocabulary noise). Tests:
     `tests/test_taproot_chase_bridge.py` (mapping, NO-SUPPORT/NO-CLAIM/
     flag-off skips, no-embedder degrade, re-establish idempotency).
+  - **W2 (per-hop corroborators)** — built. Same gate/flag as W1, same
+    savepoint. After W1's terminal attach resolves a `hub_ref_id`,
+    `_taproot_bridge` also walks every INTERMEDIATE `meta.chain` hop
+    (everything but the terminal `chain[-1]`) and attaches each one that's
+    a live `kind='paper'` ref as a `corroborates` evidence edge on the SAME
+    hub (`_attach_intermediate_corroborators`) — so the hub actually gets a
+    multi-supporter set for `seniority.derive_evidence` to split, instead of
+    W1's single-supporter case where the split never exercised. Meta mapping
+    is shared with W1 via `_evidence_edge_meta(verification, chain, slug=,
+    ord_=)`: `caveats` is always the whole-chain aggregate
+    (`_aggregate_caveats`), `source_handle` is per-hop. A hop is skipped
+    when it's a dup (terminal/hub/an earlier hop — de-dup set, on top of
+    `add_link`'s own `ON CONFLICT` no-op), isn't a live paper (defensive),
+    or its own `verification["supports"] == "no"` (NO-SUPPORT, mirrors the
+    terminal skip). A hop with no `verification` at all (never LLM-verified)
+    still attaches — as a bare corroborator with `support`/`support_reason`
+    left `None` rather than fabricating a verdict; role is always written
+    `corroborates` — seniority derives `establishes` at *read* time from the
+    `cites` graph, W2 never guesses it at write time. Tests (same file):
+    multi-hop attach + a seeded `cites` edge exercising the real
+    originator/corroborator split, NO-SUPPORT skip, non-paper skip, no-
+    verification bare-corroborator attach, re-establish idempotency.
   - Not yet built: further chase slices (S2-global-citation-count
     fallback promotion, integrity axis (Phase 4), corpus backfill
     (Phase 5)).

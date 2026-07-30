@@ -1,4 +1,5 @@
-"""Taproot Phase-3 slice W1 — the chase forward bridge.
+"""Taproot Phase-3 slices W1 (terminal attach) + W2 (per-hop corroborators)
+— the chase forward bridge.
 
 ``precis.workers.chase._taproot_bridge`` (reached from ``advance_finding``'s
 established-terminal path, gated by ``taproot_enabled=`` /
@@ -9,6 +10,16 @@ here (no live model) — the canonicalizer's own ``dedup_judge`` dispatch only
 fires once a candidate hub exists, so most scenarios below never reach it:
 the "no candidates yet -> mint a new hub" path exercises the real
 ``block``/``place`` logic against a deterministic ``MockEmbedder``.
+
+W2 (``_attach_intermediate_corroborators``) attaches every INTERMEDIATE
+chain hop (everything but the W1-attached terminal) that's a live paper as
+a ``corroborates`` evidence edge too, so :func:`~precis.taproot.seniority.
+derive_evidence` gets a real multi-supporter set to split. Those scenarios
+build a multi-hop ``meta.chain`` by hand (mirroring the shape
+``FindingHandler.put``/the chase's own hop-growth produce) rather than
+driving a live S2-mocked multi-pass chase — :func:`_taproot_bridge` only
+ever reads ``finding.meta['chain']``, so this is a faithful, much cheaper
+substitute for exercising it.
 """
 
 from __future__ import annotations
@@ -21,6 +32,7 @@ from precis.dispatch import Hub
 from precis.handlers.finding import FindingHandler
 from precis.store.types import BlockInsert, Tag
 from precis.taproot.canon import TAPROOT_CLAIM, TAPROOT_NAMESPACE
+from precis.taproot.seniority import derive_evidence
 from precis.workers.chase import FindingRow, advance_finding, run_finding_chase_pass
 from tests.workers._helpers import make_mock_bge_m3
 
@@ -71,6 +83,34 @@ def _seed_finding(
             "SELECT title, meta FROM refs WHERE ref_id = %s", (fid,)
         ).fetchone()
     return FindingRow(ref_id=fid, title=row[0], meta=dict(row[1] or {}))
+
+
+def _seed_finding_with_chain(
+    store: Any,
+    *,
+    terminal_cite_key: str,
+    intermediate_hops: list[dict[str, Any]],
+    title: str = "The device sustains 2.4 kV without breakdown.",
+    scope: dict[str, str] | None = None,
+) -> FindingRow:
+    """Like :func:`_seed_finding` but prepends ``intermediate_hops`` ahead
+    of the terminal frontier entry in ``meta.chain`` -- mirrors the shape
+    the chase's own hop-growth (``_pick_next_hop``) and
+    ``FindingHandler.put``'s initial ``cited_in`` hop produce, without
+    driving a live multi-pass S2-mocked chase (``_taproot_bridge`` only
+    ever reads ``finding.meta['chain']``, so this is a faithful, much
+    cheaper substitute)."""
+    finding = _seed_finding(store, cite_key=terminal_cite_key, title=title, scope=scope)
+    terminal_chain = list(finding.meta.get("chain") or [])
+    full_chain = [*intermediate_hops, *terminal_chain]
+    with store.pool.connection() as conn:
+        store.update_ref(finding.ref_id, meta_patch={"chain": full_chain}, conn=conn)
+        conn.commit()
+    return FindingRow(
+        ref_id=finding.ref_id,
+        title=finding.title,
+        meta={**finding.meta, "chain": full_chain},
+    )
 
 
 def _advance(store: Any, finding: FindingRow, **kwargs: Any) -> tuple[str, Any]:
@@ -426,3 +466,294 @@ def test_two_findings_same_claim_without_pre_embedding_converge_to_one_hub(
     edges_b = _edges_from(store, paper_b)
     assert len(edges_a) == 1 and edges_a[0][0] == hub
     assert len(edges_b) == 1 and edges_b[0][0] == hub  # not dropped
+
+
+# ── W2: per-hop corroborators ────────────────────────────────────────────
+
+
+def test_intermediate_hop_attached_as_corroborator_multi_supporter_split(
+    store: Any,
+) -> None:
+    """A multi-hop chain (intermediate + terminal) attaches BOTH papers
+    as evidence on the hub -- giving ``derive_evidence`` a real
+    multi-supporter set to split. Seeding a ``cites`` edge from the
+    terminal onto the intermediate paper makes the intermediate one the
+    derived originator (``establishes``); the terminal, cited by nobody,
+    stays a corroborator."""
+    mid = _seed_paper(store, cite_key="mid", blocks=["Earlier context statement."])
+    term = _seed_paper(
+        store, cite_key="term", blocks=["A direct measurement statement."]
+    )
+    # The terminal cites the intermediate -- makes "mid" the originator.
+    store.add_link(src_ref_id=term, dst_ref_id=mid, relation="cites")
+
+    finding = _seed_finding_with_chain(
+        store,
+        terminal_cite_key="term",
+        intermediate_hops=[
+            {
+                "ref_id": mid,
+                "chunk_id": None,
+                "ord": 0,
+                "verification": {
+                    "supports": "yes",
+                    "support_reason": "cited earlier context",
+                    "caveats": ["mid caveat"],
+                    "cited_others": [],
+                    "terminal": False,
+                },
+            }
+        ],
+    )
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+        outcome, _ev = _advance(
+            store,
+            finding,
+            with_llm=True,
+            taproot_enabled=True,
+            taproot_embedder=make_mock_bge_m3(),
+        )
+    assert outcome == "terminated"
+    assert _status(store, finding.ref_id) == "established"
+
+    hubs = _hub_ref_ids(store)
+    assert len(hubs) == 1
+    hub = hubs[0]
+
+    # term_edges also carries the seeded `cites` edge onto mid -- filter
+    # to the evidence edge (dst == hub) the bridge itself wrote.
+    term_edges = [e for e in _edges_from(store, term) if e[0] == hub]
+    assert len(term_edges) == 1
+    assert term_edges[0][1] == "corroborates"
+
+    mid_edges = _edges_from(store, mid)
+    assert len(mid_edges) == 1
+    dst, relation, meta = mid_edges[0]
+    assert dst == hub
+    assert relation == "corroborates"  # W2 always writes corroborates
+    assert meta == {
+        "support": "yes",
+        "support_reason": "cited earlier context",
+        # whole-chain aggregate (both hops' caveats), same helper as W1.
+        "caveats": ["mid caveat", "only tested at room temperature"],
+        "char_offset": None,
+        "source_handle": "mid~0",
+    }
+
+    evidence = derive_evidence(store, hub)
+    supporters = {
+        e.paper_ref_id for e in (*evidence.originators, *evidence.corroborators)
+    }
+    assert supporters == {mid, term}
+    assert [e.paper_ref_id for e in evidence.originators] == [mid]
+    assert [e.paper_ref_id for e in evidence.corroborators] == [term]
+
+
+def test_intermediate_hop_with_no_support_verdict_is_skipped(store: Any) -> None:
+    """An intermediate hop whose OWN verification says ``supports: no``
+    is never recorded as evidence, mirroring the terminal's NO-SUPPORT
+    skip -- only the terminal ends up attached."""
+    mid = _seed_paper(store, cite_key="midno", blocks=["Unrelated context."])
+    term = _seed_paper(store, cite_key="termno", blocks=["A direct statement."])
+
+    finding = _seed_finding_with_chain(
+        store,
+        terminal_cite_key="termno",
+        intermediate_hops=[
+            {
+                "ref_id": mid,
+                "chunk_id": None,
+                "ord": 0,
+                "verification": {
+                    "supports": "no",
+                    "support_reason": "unrelated",
+                    "caveats": [],
+                    "cited_others": [],
+                    "terminal": False,
+                },
+            }
+        ],
+    )
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+        outcome, _ev = _advance(
+            store,
+            finding,
+            with_llm=True,
+            taproot_enabled=True,
+            taproot_embedder=make_mock_bge_m3(),
+        )
+    assert outcome == "terminated"
+    hub = _hub_ref_ids(store)[0]
+
+    assert len(_edges_from(store, term)) == 1
+    assert _edges_from(store, mid) == []  # NO-SUPPORT hop never attached
+
+
+def test_intermediate_hop_that_is_not_a_live_paper_is_skipped(store: Any) -> None:
+    """A chain hop pointing at a non-paper ref (defensive -- the chain
+    should only ever hold papers) is never attached as evidence."""
+    not_a_paper = store.insert_ref(kind="gripe", slug=None, title="stray ref", meta={})
+    term = _seed_paper(store, cite_key="termnp", blocks=["A direct statement."])
+
+    finding = _seed_finding_with_chain(
+        store,
+        terminal_cite_key="termnp",
+        intermediate_hops=[{"ref_id": not_a_paper.id, "chunk_id": None, "ord": 0}],
+    )
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+        outcome, _ev = _advance(
+            store,
+            finding,
+            with_llm=True,
+            taproot_enabled=True,
+            taproot_embedder=make_mock_bge_m3(),
+        )
+    assert outcome == "terminated"
+    hub = _hub_ref_ids(store)[0]
+
+    assert len(_edges_from(store, term)) == 1
+    assert _edges_from(store, not_a_paper.id) == []
+
+
+def test_intermediate_hop_with_no_verification_attached_as_bare_corroborator(
+    store: Any,
+) -> None:
+    """A hop that was never LLM-verified (no ``verification`` key at
+    all -- e.g. the initial ``cited_in`` hop, or a hop the chain grew
+    past deterministically) still becomes a corroborator: supporter
+    *membership* is the point, not a fabricated support verdict."""
+    mid = _seed_paper(store, cite_key="midbare", blocks=["Context, unverified."])
+    term = _seed_paper(store, cite_key="termbare", blocks=["A direct statement."])
+
+    finding = _seed_finding_with_chain(
+        store,
+        terminal_cite_key="termbare",
+        intermediate_hops=[{"ref_id": mid, "chunk_id": None, "ord": 0}],
+    )
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+        outcome, _ev = _advance(
+            store,
+            finding,
+            with_llm=True,
+            taproot_enabled=True,
+            taproot_embedder=make_mock_bge_m3(),
+        )
+    assert outcome == "terminated"
+    hub = _hub_ref_ids(store)[0]
+
+    mid_edges = _edges_from(store, mid)
+    assert len(mid_edges) == 1
+    dst, relation, meta = mid_edges[0]
+    assert dst == hub
+    assert relation == "corroborates"
+    assert meta["support"] is None
+    assert meta["support_reason"] is None
+    assert meta["source_handle"] == "midbare~0"
+
+    evidence = derive_evidence(store, hub)
+    supporters = {
+        e.paper_ref_id for e in (*evidence.originators, *evidence.corroborators)
+    }
+    assert supporters == {mid, term}
+
+
+def test_reestablished_finding_does_not_duplicate_intermediate_edges(
+    store: Any,
+) -> None:
+    """Re-running the bridge for a re-tracing/re-established finding
+    must not double-attach the intermediate hop either (mirrors the W1
+    terminal idempotency test)."""
+    embedder = make_mock_bge_m3()
+    mid = _seed_paper(store, cite_key="midreest", blocks=["Context statement."])
+    term = _seed_paper(
+        store, cite_key="termreest", blocks=["A direct measurement statement."]
+    )
+
+    finding = _seed_finding_with_chain(
+        store,
+        terminal_cite_key="termreest",
+        intermediate_hops=[
+            {
+                "ref_id": mid,
+                "chunk_id": None,
+                "ord": 0,
+                "verification": {
+                    "supports": "yes",
+                    "support_reason": "cited context",
+                    "caveats": [],
+                    "cited_others": [],
+                    "terminal": False,
+                },
+            }
+        ],
+    )
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES):
+        outcome, _ev = _advance(
+            store,
+            finding,
+            with_llm=True,
+            taproot_enabled=True,
+            taproot_embedder=embedder,
+        )
+    assert outcome == "terminated"
+    hub = _hub_ref_ids(store)[0]
+    assert len(_edges_from(store, mid)) == 1
+    assert len(_edges_from(store, term)) == 1
+
+    # Simulate the async card_forge + embed pass landing (same trick as
+    # the W1 idempotency test) so the second bridge pass's ``block`` ANN
+    # lookup actually finds the existing hub instead of racing a mint.
+    with store.pool.connection() as conn:
+        card = conn.execute(
+            "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+            "VALUES (%s, -1, 'card_combined', %s) RETURNING chunk_id",
+            (hub, finding.title),
+        ).fetchone()
+        assert card is not None
+        conn.execute(
+            "INSERT INTO chunk_embeddings (chunk_id, embedder, vector, status) "
+            "VALUES (%s, %s, %s, 'ok')",
+            (card[0], "bge-m3", embedder.embed_one(finding.title)),
+        )
+        conn.commit()
+
+    # Re-fetch the finding's (chase-untouched) meta -- ``update_ref``'s
+    # STATUS flip below doesn't change meta, so the original multi-hop
+    # chain is still exactly what a re-run should see.
+    store.add_tag(
+        finding.ref_id,
+        Tag.closed("STATUS", "tracing"),
+        set_by="chase",
+        replace_prefix=True,
+    )
+
+    with (
+        patch(_VERIFY_PATH, return_value=_VERIFY_YES),
+        patch(
+            _DEDUP_PATH,
+            return_value={
+                "verdict": "same",
+                "confidence": 0.99,
+                "rationale": "identical claim text",
+            },
+        ),
+    ):
+        outcome2, _ev2 = _advance(
+            store,
+            finding,
+            with_llm=True,
+            taproot_enabled=True,
+            taproot_embedder=embedder,
+        )
+    assert outcome2 == "terminated"
+
+    # Still exactly one hub, one edge per paper -- the second pass
+    # converged onto the existing hub/edges rather than duplicating.
+    assert _hub_ref_ids(store) == [hub]
+    assert len(_edges_from(store, mid)) == 1
+    assert len(_edges_from(store, term)) == 1
