@@ -68,6 +68,12 @@ Scores are never comparable *across* modes (RRF score vs. cosine
 distance vs. lexical rank) — within a result list, more-relevant is
 always first.
 
+There is no `mode='regex'` here — that only exists on `kind='draft'`
+(`precis-draft-help`, "Find & substitute by regex") and errors with
+`unknown search mode 'regex'` on any other scope. For a literal/pattern
+hunt on other kinds, use `mode='lexical'` (exact string/keyword match)
+or `mode='verbatim'` (chunk tagged with all query words).
+
 | Arg | Type | Meaning |
 |---|---|---|
 | `q` | str | Free-text query. |

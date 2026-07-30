@@ -46,6 +46,14 @@ Required: `title`, `body`, `cited_in`. Recommended: `scope` (dict —
 filters search and dedups identical `(body, scope, cited_in)`
 re-submissions so two agents writing the same claim collapse).
 
+**`cited_in=` is the SOURCE you read the claim in — a paper/patent
+chunk handle — never the plan/deck/project you're writing into.**
+`cited_in='deck-hook'` (a plan slug) is wrong and fails with
+`requires cited_in=…`; so does omitting `title=`. `finding` is not a
+free-text note tied to your current plan the way `memory`/`gripe`
+are — both `title=` and a source-chunk `cited_in=` are mandatory on
+every `put`. Patent sources work the same way: `cited_in='patent:ep1234567b1'`.
+
 ## What `cited_in=` accepts
 ## Pointer formats for the source of the claim
 ## How do I reference the paper or patent I'm citing?
