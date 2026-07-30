@@ -8,6 +8,65 @@ items are removed (history is `git log`).
 > regression that pins it.
 
 ---
+## 🔎 Residuals — whatneedsdoing triage 2026-07-30 (Opus-session, harvestable)
+
+Surfaced during the 2026-07-30 triage (fleet-health + prod transcript mining).
+The `draft view='outline'` MCP-fix from the same triage already **shipped +
+deployed** (main `901f22ec`) — these are the parked residuals.
+
+- **`edit()` on a multi-byte `°` → uncaught `[error:Internal] ValueError`**
+  *(latent MCP bug — owner `src/precis/handlers/draft.py` edit path).* One
+  temperature-normalization tick (`ref_id=46948`, 2026-07-01) burned 21
+  `edit()` calls, every `find='175 °C'`/`text='175°C'` shape failing with a
+  generic internal error that gives the model zero signal to self-correct.
+  Likely an offset/diff computation choking on multi-byte UTF-8. **Next:**
+  dispatch `root-cause` (reproduce `edit(kind='draft', find='175 °C',
+  text='175°C')`, read the server traceback), then fix + surface the real
+  cause in the BadInput. Also seen: 3 retries with `find='Chelex'` on one
+  chunk failing too — so possibly chunk-specific in addition to char-specific.
+
+- **balthazar 15.6k WARN/24h flood — `llm:qwen` vs served `llm:qwen3.6-35b-…`
+  served_by mismatch** *(config drift — owner LLM router / served_by seeding).*
+  Dispatch requests `llm:qwen`, the host advertises `llm:qwen3.6-35b-…`, every
+  call falls back to litellm and logs a WARNING. Not down (fallback works) but
+  floods the error surface. **Next:** align the requested alias with the
+  served_by id, or register the alias so the fallback is silent.
+
+- **Agent-job transcript-capture gap** *(observability — owner worker dispatch
+  / job persistence).* Only `plan_tick` ever writes `meta.transcript`;
+  `quest_tick` / `catpath_explore` never do, so the step-6 confusion-mining
+  method is blind to those job types. Separately, `plan_tick` transcripts stop
+  dead at 2026-07-26 while other job types kept running — **verify whether
+  `plan_tick`/`quest_tick`/`catpath_explore` dispatch stalled on 07-26**, or it
+  was just the FRONTIER-quota pause starving the planner. **Next:** confirm
+  dispatch health; consider persisting transcripts for the other agent job
+  types.
+
+- **Skill-doc gaps** *(skill-edit — owner `src/precis/data/skills/`).* (a)
+  `precis-finding-help` should state up front that `finding` is
+  paper-citation-scoped only and requires the `title=`+`cited_in=<paper-chunk
+  handle>` pair — 12 jobs conflated `cited_in` with the plan slug. (b)
+  `precis-search-help`: regex mode is **draft-only**; a non-draft
+  `search(mode='regex')` dead-ends with "unknown search mode 'regex'" — point
+  abbreviation/pattern hunts on other kinds at `mode='lexical'`/`verbatim`.
+
+- **Dependabot #75 brace-expansion (high, DoS)** *(dev-tooling dep — owner
+  `scripts/code-search/package-lock.json`).* NOT snoozed; JS tooling for the
+  claude-context code search, not the deployed Python package (so a `/land`,
+  not a `/go`). Bounded `npm audit fix`. **The clear next in-reach fix.**
+
+- **PR #35 (`mcp` `>=1,<3` bump)** — Linux+macOS green, **Windows 3.12/3.13
+  CI failing**; auto-merge blocked. Determine whether `mcp<3` breaks Windows or
+  it's a pre-existing Windows-runner flake before merging.
+
+*(Prod-ops, not repo backlog — tracked in substrate 2, noted here for
+continuity): FRONTIER Claude-subscription 7-day quota exhausted, pausing all
+paid work fleet-wide (44 child-failed todos; auto-clears 11:00 UTC daily) — an
+ops/routing decision, not a code fix. Plus non-quota prod stalls: nidra
+meditation `No module named '_sqlite3'` (host venv), several `Connection
+refused` casts.)*
+
+---
 ## material/component: unit conversion — DELEGATE to `calc`, do not build a second engine (DRY)
 - Status: deferred (low priority) · Severity: feature · Owner: `material`/`component` handlers
   + `tools/core.py` (if a `units=` convenience is ever added) · Test: n/a yet.
