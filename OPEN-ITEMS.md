@@ -60,6 +60,40 @@ meditation `No module named '_sqlite3'` (host venv), several `Connection
 refused` casts.)*
 
 ---
+## 🗄️ Postgres schema-audit residuals — 2026-07-30 (Opus-session, refs write-churn)
+
+From the 2026-07-30 DB schema+operation audit. The tuning batch (defensive
+`agent_*` timeouts, `chunk_embeddings` ANALYZE, checkpoint/WAL/bgwriter,
+per-table autovacuum on churn tables, `pg_cron` removal — main `da79761e`),
+the LLM-advertise no-op guard, and the chunk-family autovacuum-drift capture
+already shipped. These two `refs` write-churn fixes remain, both from the same
+audit; the second is gated on measuring the first.
+
+- **Nursery alert re-raise — throttle the per-pass `seen_count` bump**
+  *(perf · owner `workers/nursery.py` + `alerts.py::raise_alert` · Test: assert
+  a re-raise with unchanged content within the window issues no `refs` UPDATE).*
+  `run_nursery_pass` re-raises every open finding every minute; each hits
+  `raise_alert`'s dedup branch (statement A, 4.45M calls) and rewrites the alert
+  `refs` row (`seen_count` + `updated_at`), ~35M cumulative — the largest refs
+  write-amplifier. **DECISION PENDING (user):** either (a) skip the write when
+  title/detail/severity are unchanged AND last-written < ~15 min ago —
+  `seen_count` becomes coarse, no schema change; or (b) keep `seen_count` exact
+  via `first_seen`/`last_seen` columns (derive at read), which folds into the
+  alert-key promotion below. Proposed default = (a).
+
+- **Promote alert dedup keys out of `refs.meta` → real columns (HOT fix)**
+  *(perf/schema · owner `alert` kind + migration · MEASURE-FIRST).* A dev-DB A/B
+  proved the expression index `uq_alert_open_source_fingerprint` on
+  `meta->>'alert_source'/'fingerprint'` forces EVERY `meta`-touching UPDATE on
+  `refs` to be non-HOT (100%→0%), table-wide — the root of refs' 16.8% HOT and
+  its index/WAL write-amplification. Fix: promote
+  `alert_source`/`fingerprint`/`resolved_at` to real scalar columns, rebuild the
+  unique index on them (brief `refs` write-lock at deploy — schedule the
+  window), + `fillfactor` on `refs` applied via `pg_repack`. **Gate:** land the
+  two write-elimination fixes (advertise ✓, nursery) and observe whether refs
+  write volume drops enough that this schema change is still worth it first.
+
+---
 ## material/component: unit conversion — DELEGATE to `calc`, do not build a second engine (DRY)
 - Status: deferred (low priority) · Severity: feature · Owner: `material`/`component` handlers
   + `tools/core.py` (if a `units=` convenience is ever added) · Test: n/a yet.

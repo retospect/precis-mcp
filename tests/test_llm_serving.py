@@ -104,6 +104,39 @@ def test_advertise_prunes_a_gone_model(store: Any, monkeypatch: Any) -> None:
     assert "llm:m-gone-test" not in slots  # slot retracted with the entry
 
 
+def test_advertise_skips_noop_write_but_writes_on_change(
+    store: Any, monkeypatch: Any
+) -> None:
+    """The refs UPDATE only fires when served_by actually changes — a repeat
+    cycle with the same discovery is a byte-identical served_by and must not
+    re-issue ``update_ref``; a genuinely changed served_by (new max_parallel)
+    must."""
+    monkeypatch.setattr(
+        llm_serving, "discover_local_models", lambda base: {"qwen-dirty-test": 2}
+    )
+    llm_serving.advertise_local_llm(store, "spark", base_url="http://x/v1")
+
+    calls = []
+    orig_update_ref = store.update_ref
+
+    def counting_update_ref(*args: Any, **kwargs: Any) -> Any:
+        calls.append((args, kwargs))
+        return orig_update_ref(*args, **kwargs)
+
+    monkeypatch.setattr(store, "update_ref", counting_update_ref)
+
+    # Same discovery again — served_by rebuilds to the identical value.
+    llm_serving.advertise_local_llm(store, "spark", base_url="http://x/v1")
+    assert calls == []
+
+    # A genuinely different served_by (max_parallel changed) must still write.
+    monkeypatch.setattr(
+        llm_serving, "discover_local_models", lambda base: {"qwen-dirty-test": 4}
+    )
+    llm_serving.advertise_local_llm(store, "spark", base_url="http://x/v1")
+    assert len(calls) == 1
+
+
 def test_advertise_noop_without_local_server(store: Any, monkeypatch: Any) -> None:
     monkeypatch.setattr(llm_serving, "local_serve_url", lambda: None)
     assert llm_serving.advertise_local_llm(store, "spark") == (0, 0)

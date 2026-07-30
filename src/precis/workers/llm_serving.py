@@ -119,6 +119,18 @@ def _auto_prose(model_id: str) -> str:
     )
 
 
+def _served_by_signature(served: list[dict[str, Any]]) -> frozenset[tuple[Any, ...]]:
+    """Order-insensitive fingerprint of a ``served_by`` list.
+
+    The rebuild filters out this host's OLD entry then appends its NEW entry at
+    the end, so a plain list ``==`` against the stored value can differ purely
+    by ordering when other hosts have entries on the same card. Compare as a
+    set of sorted-item tuples instead, so the dirty-check below only fires a
+    write when the served_by content actually changed.
+    """
+    return frozenset(tuple(sorted(e.items())) for e in served)
+
+
 def advertise_local_llm(
     store: Any, host: str, *, base_url: str | None = None
 ) -> tuple[int, int]:
@@ -155,13 +167,23 @@ def advertise_local_llm(
                 store, model_id=model_id, text=_auto_prose(model_id), served_by=[entry]
             )
         else:
-            served = [
-                e
-                for e in ((card.meta or {}).get("served_by") or [])
-                if e.get("host") != host
-            ]
+            current = (card.meta or {}).get("served_by") or []
+            served = [e for e in current if e.get("host") != host]
             served.append(entry)
-            store.update_ref(card.id, meta_patch={"served_by": served})
+            # Dirty-check: skip the refs write when the rebuilt served_by is,
+            # order-insensitively, unchanged from what's already stored. Safe
+            # to skip — dispatch liveness comes from the resource_slots
+            # reservation + served_by.endpoint, re-read on a process-local
+            # 60s timer, not from this write's cadence or updated_at.
+            if _served_by_signature(served) != _served_by_signature(current):
+                store.update_ref(card.id, meta_patch={"served_by": served})
+            else:
+                log.debug(
+                    "llm_serving: served_by unchanged for %s on %s, skipping "
+                    "refs write",
+                    model_id,
+                    host,
+                )
         advertised += 1
 
     pruned = 0
@@ -169,10 +191,17 @@ def advertise_local_llm(
         model_id = (card.meta or {}).get("model_id")
         served = (card.meta or {}).get("served_by") or []
         if model_id not in discovered and any(e.get("host") == host for e in served):
-            store.update_ref(
-                card.id,
-                meta_patch={"served_by": [e for e in served if e.get("host") != host]},
-            )
+            pruned_served = [e for e in served if e.get("host") != host]
+            # Same dirty-check as the advertise path above.
+            if _served_by_signature(pruned_served) != _served_by_signature(served):
+                store.update_ref(card.id, meta_patch={"served_by": pruned_served})
+            else:
+                log.debug(
+                    "llm_serving: served_by unchanged pruning %s on %s, "
+                    "skipping refs write",
+                    model_id,
+                    host,
+                )
             pruned += 1
 
     # Re-derive the llm: slot rows from the now-updated cards (cards are the truth;
