@@ -52,6 +52,15 @@ log = logging.getLogger(__name__)
 #: :func:`validate_relation` against the live ``relations`` table before write.
 HUB_ROLES: frozenset[str] = frozenset({"establishes", "corroborates", "contradicts"})
 
+#: Claim→claim advisory link relations a hub may carry to ANOTHER hub
+#: (migration 0100, ADR 0073 amendment). ``refines`` = "source hub is a
+#: sharper/reworded version of the target hub" — link-don't-merge, NO
+#: evidence flow (each hub keeps its own paper→hub edges). Written through
+#: :func:`link_claims` (the single write door), distinct from the paper→hub
+#: evidence edges of :data:`HUB_ROLES`. A frozenset so v1's one relation can
+#: grow (e.g. a future ``related-to`` claim-link) without touching callers.
+CLAIM_LINK_RELATIONS: frozenset[str] = frozenset({"refines"})
+
 #: The default role :func:`apply_placement` attaches with. ``corroborates`` is
 #: the *safe* assumption — never falsely claim a paper is the originator.
 #: Promotion to ``establishes`` is a derivation over the citation graph
@@ -298,6 +307,85 @@ def attach_evidence(
             _do(c)
 
 
+def link_claims(
+    store: Any,
+    *,
+    from_hub_ref_id: int,
+    to_hub_ref_id: int,
+    relation: str = "refines",
+    set_by: str = "agent",
+    conn: Any = None,
+) -> bool:
+    """Write one hub ``--relation--> hub`` advisory claim-link. Returns
+    ``True`` if a new edge was written, ``False`` if it already existed.
+
+    ``relation`` must be one of :data:`CLAIM_LINK_RELATIONS` (v1: ``refines``)
+    *and* a registered relation (checked via :func:`validate_relation` — the
+    friendly pre-flight for the ``links_relation_fkey`` FK). **Both**
+    endpoints must be live ``TAPROOT:claim`` findings — a claim-link joins two
+    claim hubs (never a paper, a review note, or a non-finding), and the two
+    must differ (a hub can't refine itself).
+
+    This is the single write door for claim→claim links, the sibling of
+    :func:`attach_evidence` for paper→hub evidence edges (ADR 0073 open #16).
+    Unlike evidence, a claim-link carries **no evidence flow** — the hubs keep
+    their own paper→hub edges; the link is surfaced read-only by the fisheye
+    Claims ring (:mod:`precis.utils.refeye`). Idempotent: an identical
+    ``(from, to, relation)`` edge already present is a no-op returning
+    ``False``, so a re-run of the same authoring step writes nothing.
+    """
+    if relation not in CLAIM_LINK_RELATIONS:
+        raise BadInput(
+            f"invalid claim-link relation: {relation!r}",
+            options=sorted(CLAIM_LINK_RELATIONS),
+            next=f"relation must be one of {sorted(CLAIM_LINK_RELATIONS)}",
+        )
+    if from_hub_ref_id == to_hub_ref_id:
+        raise BadInput(
+            f"a claim hub cannot {relation} itself (ref_id={from_hub_ref_id})",
+            next="from and to must be two distinct claim hubs",
+        )
+    # FK/vocab pre-flight (raises BadInput on an unregistered slug).
+    validated = validate_relation(relation, store=store)
+
+    def _do(c: Any) -> bool:
+        for ref_id, label in ((from_hub_ref_id, "from"), (to_hub_ref_id, "to")):
+            if not _is_claim_hub(store, ref_id, conn=c):
+                raise BadInput(
+                    f"{label}_hub_ref_id={ref_id} is not a TAPROOT:claim finding",
+                    next=(
+                        "claim-links join two claim hubs — mint the sharper "
+                        "claim as its own hub (precis taproot mint) first"
+                    ),
+                )
+        existing = c.execute(
+            "SELECT 1 FROM links WHERE src_ref_id = %s AND dst_ref_id = %s "
+            "AND relation = %s",
+            (from_hub_ref_id, to_hub_ref_id, validated),
+        ).fetchone()
+        if existing is not None:
+            return False
+        store.add_link(
+            src_ref_id=from_hub_ref_id,
+            dst_ref_id=to_hub_ref_id,
+            relation=validated,
+            set_by=set_by,
+            conn=c,
+        )
+        log.info(
+            "taproot: linked hub %s --%s--> hub %s",
+            from_hub_ref_id,
+            validated,
+            to_hub_ref_id,
+        )
+        return True
+
+    if conn is not None:
+        return _do(conn)
+    with store.tx() as c:
+        return _do(c)
+
+
 def apply_placement(
     store: Any,
     claim: CanonicalClaim,
@@ -401,8 +489,10 @@ def apply_placement(
 
 
 __all__ = [
+    "CLAIM_LINK_RELATIONS",
     "HUB_ROLES",
     "apply_placement",
     "attach_evidence",
+    "link_claims",
     "mint_hub",
 ]

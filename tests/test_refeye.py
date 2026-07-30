@@ -12,7 +12,7 @@ import pytest
 from precis.dispatch import Hub
 from precis.handlers.plan import PlanHandler
 from precis.taproot.canon import CanonicalClaim
-from precis.taproot.hub import attach_evidence, mint_hub
+from precis.taproot.hub import attach_evidence, link_claims, mint_hub
 from precis.utils import handle_registry
 from precis.utils.fisheye import render_fisheye
 from precis.utils.refeye import collect_ring, render_reference_ring
@@ -535,6 +535,86 @@ def test_ring_claims_group_dedups_hub_cited_via_both_forms(
 
     assert "Claims:" in ring
     assert ring.count("The original report") == 1  # exploded once, not twice
+
+
+# ── Claims group — refines advisory neighbours (migration 0100) ─────────
+
+
+def test_ring_claims_group_surfaces_refined_by_when_a_sharper_hub_exists(
+    hub: Hub, plan: PlanHandler
+) -> None:
+    """Citing the ORIGINAL claim surfaces an advisory ``↰ refined by`` line
+    naming the sharper hub — the "a sharper version exists" nudge."""
+    store = hub.store
+    original = mint_hub(store, _CLAIM)
+    sharper = mint_hub(
+        store,
+        CanonicalClaim(
+            sentence="Pd/C: Suzuki at 25 °C, K2CO3, aqueous EtOH, >90% yield.",
+            scope={},
+        ),
+    )
+    link_claims(store, from_hub_ref_id=sharper, to_hub_ref_id=original)
+
+    orig_handle = handle_registry.format_handle("finding", original)
+    sharper_handle = handle_registry.format_handle("finding", sharper)
+    sec_chunk, chunks = _plan_section_citing(
+        hub, plan, f"The original claim: [{orig_handle}]."
+    )
+
+    ring = render_reference_ring(store, sec_chunk, chunks)
+
+    assert "Claims:" in ring
+    assert "refined by" in ring
+    assert sharper_handle in ring  # names the sharper hub by its fi<id>
+    assert "Suzuki at 25 °C" in ring  # the sharper claim's sentence
+
+
+def test_ring_claims_group_surfaces_refines_when_citing_the_sharper_hub(
+    hub: Hub, plan: PlanHandler
+) -> None:
+    """Citing the SHARPER claim surfaces an advisory ``↳ refines`` line
+    naming the coarser hub it sharpens."""
+    store = hub.store
+    original = mint_hub(store, _CLAIM)
+    sharper = mint_hub(
+        store,
+        CanonicalClaim(
+            sentence="Pd/C: Suzuki at 25 °C, K2CO3, aqueous EtOH, >90% yield.",
+            scope={},
+        ),
+    )
+    link_claims(store, from_hub_ref_id=sharper, to_hub_ref_id=original)
+
+    original_handle = handle_registry.format_handle("finding", original)
+    sharper_handle = handle_registry.format_handle("finding", sharper)
+    sec_chunk, chunks = _plan_section_citing(
+        hub, plan, f"The sharper claim: [{sharper_handle}]."
+    )
+
+    ring = render_reference_ring(store, sec_chunk, chunks)
+
+    assert "Claims:" in ring
+    assert "refines" in ring
+    assert original_handle in ring  # names the coarser original by its fi<id>
+
+
+def test_ring_claims_group_no_refines_lines_when_hub_has_no_claim_links(
+    hub: Hub, plan: PlanHandler
+) -> None:
+    """A cited hub with no ``refines`` neighbours renders no advisory lines."""
+    store = hub.store
+    claim_hub = mint_hub(store, _CLAIM)
+    hub_handle = handle_registry.format_handle("finding", claim_hub)
+    sec_chunk, chunks = _plan_section_citing(
+        hub, plan, f"A lone claim: [{hub_handle}]."
+    )
+
+    ring = render_reference_ring(store, sec_chunk, chunks)
+
+    assert "Claims:" in ring
+    assert "refined by" not in ring
+    assert "↳ refines" not in ring
 
 
 # ── Claims group — interleaved mining across the two grammars ───────────

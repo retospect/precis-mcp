@@ -208,6 +208,91 @@ def _sort_group(edges: list[EvidenceEdge]) -> list[EvidenceEdge]:
     return sorted(edges, key=lambda e: (e.year is None, e.year or 0, e.paper_ref_id))
 
 
+_REFINES_RELATION = "refines"
+
+
+@dataclass(frozen=True)
+class ClaimRef:
+    """A neighbouring claim hub reached over a ``refines`` link — its ref_id
+    plus its claim sentence (the finding ``title``), for the ring's advisory
+    "see also" line."""
+
+    hub_ref_id: int
+    sentence: str
+
+
+@dataclass(frozen=True)
+class ClaimLinks:
+    """A claim hub's advisory ``refines`` neighbourhood (migration 0100).
+
+    Both directions of the directed, no-inverse ``refines`` edge, read via
+    explicit ``src``/``dst`` filtering (never :func:`store.links_for`, whose
+    inverse rewrite doesn't apply to a no-inverse slug but which we avoid for
+    the same clarity reason :func:`_fetch_evidence_rows` does):
+
+    * :attr:`refines` — coarser hubs this hub sharpens (outbound: src=hub).
+    * :attr:`refined_by` — sharper hubs that refine this one (inbound:
+      dst=hub); "a sharper version of this claim exists."
+    """
+
+    refines: list[ClaimRef]
+    refined_by: list[ClaimRef]
+
+
+def derive_refines(store: Any, hub_ref_id: int) -> ClaimLinks:
+    """Read a claim hub's ``refines`` neighbours in both directions.
+
+    Pure read. Only live ``TAPROOT:claim`` finding neighbours are returned
+    (a soft-deleted or non-hub endpoint is dropped) — the endpoint guard
+    :func:`~precis.taproot.hub.link_claims` enforces at write time is
+    re-checked here so a later delete/untag can't surface a stale neighbour.
+    Each group is ordered by neighbour ref_id ascending (deterministic).
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT l.src_ref_id, l.dst_ref_id
+            FROM links l
+            JOIN refs a ON a.ref_id = l.src_ref_id
+            JOIN refs b ON b.ref_id = l.dst_ref_id
+            JOIN ref_tags rt ON rt.ref_id = (
+                CASE WHEN l.src_ref_id = %(hub)s THEN l.dst_ref_id
+                     ELSE l.src_ref_id END)
+            JOIN tags t ON t.tag_id = rt.tag_id
+                       AND t.namespace = %(ns)s AND t.value = %(val)s
+            WHERE l.relation = %(rel)s
+              AND (l.src_ref_id = %(hub)s OR l.dst_ref_id = %(hub)s)
+              AND a.kind = 'finding' AND a.deleted_at IS NULL
+              AND b.kind = 'finding' AND b.deleted_at IS NULL
+            """,
+            {
+                "hub": hub_ref_id,
+                "rel": _REFINES_RELATION,
+                "ns": TAPROOT_NAMESPACE,
+                "val": TAPROOT_CLAIM,
+            },
+        ).fetchall()
+
+    neighbour_ids = {
+        (dst if src == hub_ref_id else src) for src, dst in rows if src != dst
+    }
+    titles = _fetch_paper_facts(store, neighbour_ids)  # (title, year, retraction)
+
+    def _ref(ref_id: int) -> ClaimRef:
+        title = titles.get(ref_id, (f"<claim {ref_id}>", None, None))[0]
+        return ClaimRef(hub_ref_id=ref_id, sentence=title or f"<claim {ref_id}>")
+
+    refines = sorted(
+        (_ref(dst) for src, dst in rows if src == hub_ref_id and dst != hub_ref_id),
+        key=lambda cr: cr.hub_ref_id,
+    )
+    refined_by = sorted(
+        (_ref(src) for src, dst in rows if dst == hub_ref_id and src != hub_ref_id),
+        key=lambda cr: cr.hub_ref_id,
+    )
+    return ClaimLinks(refines=refines, refined_by=refined_by)
+
+
 def derive_evidence(store: Any, hub_ref_id: int) -> HubEvidence:
     """Derive a claim hub's evidence, split into originators/corroborators/
     contradictors. Pure read — writes nothing.
@@ -266,8 +351,11 @@ def derive_evidence(store: Any, hub_ref_id: int) -> HubEvidence:
 
 
 __all__ = [
+    "ClaimLinks",
+    "ClaimRef",
     "EvidenceEdge",
     "HubEvidence",
     "derive_evidence",
+    "derive_refines",
     "is_claim_hub",
 ]

@@ -1147,9 +1147,28 @@ overlay on `finding`/`ref_tags`/`links` — no schema of its own).
     wired into `precis-overview`/`precis-toolpath-help` + the
     draft/finding/fisheye/citation See-also blocks. Tests:
     `tests/test_taproot_authoring.py`, `tests/test_taproot_cite_hint.py`.
+  - **Claim→claim `refines` links (link-don't-merge)** — built (migration
+    `0100`, ADR 0073 amendment). A sharper/reworded version of an existing
+    claim is minted as its OWN hub (own pub_id/`fi<id>`) and linked to the
+    original with a directed `refines` edge (sharper → coarser), **not**
+    merged into it — so both wordings stay citable and the next editor can
+    choose. **Advisory only, no evidence flow**: each hub keeps its own
+    paper→hub evidence; `refines` carries none. Single write door
+    `taproot/hub.py::link_claims` (sibling of `attach_evidence`): guards both
+    endpoints are live `TAPROOT:claim` hubs, `from != to`, relation in
+    `CLAIM_LINK_RELATIONS`, FK pre-flight, idempotent. No inverse slug — read
+    both directions via direct src/dst SQL (`seniority.py::derive_refines`),
+    dodging the `links_for` inverse-rewrite trap. Surfaced read-only in the
+    fisheye Claims ring (`refeye.py::_claim_links_lines`): each cited hub gets
+    `↰ refined by fi<id> — <sentence>` (a sharper version exists) + `↳ refines
+    fi<id> — …` (what it sharpens), capped. Authored via `precis taproot
+    refine --from <fi/pub_id> --to <fi/pub_id>` (`--dry-run`), resolving both
+    handles through `authoring.py::resolve_hub_ref_id`. Tests:
+    `tests/test_taproot_hub.py`, `tests/test_taproot_seniority.py`,
+    `tests/test_refeye.py`, `tests/test_taproot_authoring.py`.
   - Not yet built: further chase slices (S2-global-citation-count
     fallback promotion, integrity axis (Phase 4), corpus backfill
-    (Phase 5)).
+    (Phase 5)); `refines` evidence-flow (v1 is advisory-only).
 
 ## Other live affordances
 

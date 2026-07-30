@@ -18,8 +18,15 @@ import pytest
 from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.finding import FindingHandler
-from precis.taproot.authoring import resolve_paper_ref_id, seed_claim_hub
+from precis.taproot.authoring import (
+    resolve_hub_ref_id,
+    resolve_paper_ref_id,
+    seed_claim_hub,
+)
+from precis.taproot.canon import CanonicalClaim
+from precis.taproot.hub import mint_hub
 from precis.taproot.seniority import derive_evidence
+from precis.utils import handle_registry
 from tests.conftest import _active_dsn
 from tests.workers._helpers import seed_ref
 
@@ -418,3 +425,79 @@ def test_cli_mint_dry_run_new_supporter_on_existing_hub_reports_attached(
         ).fetchone()
     assert row[0] == 1
     assert not _edges(store, src=paper2, dst=existing["hub_ref_id"])
+
+
+# ── resolve_hub_ref_id + `precis taproot refine` (migration 0100) ───────
+
+_CLAIM_A = CanonicalClaim(sentence="Claim A: the original wording.", scope={})
+_CLAIM_B = CanonicalClaim(sentence="Claim B: a sharper wording.", scope={})
+
+
+def test_resolve_hub_ref_id_by_handle_and_int(store: Any) -> None:
+    hub = mint_hub(store, _CLAIM_A)
+    handle = handle_registry.format_handle("finding", hub)
+
+    assert resolve_hub_ref_id(store, hub) == hub  # bare ref_id
+    assert resolve_hub_ref_id(store, handle) == hub  # fi<id> handle
+
+
+def test_resolve_hub_ref_id_rejects_non_hub(store: Any) -> None:
+    paper = seed_ref(store, title="Not a hub", kind="paper")
+    with pytest.raises(BadInput):
+        resolve_hub_ref_id(store, paper)
+
+
+def _cli_refine_args(**overrides: Any) -> argparse.Namespace:
+    base = {
+        "from_hub": None,
+        "to_hub": None,
+        "dry_run": False,
+        "set_by": "agent",
+        "database_url": _active_dsn(),
+        "taproot_cmd": "refine",
+    }
+    base.update(overrides)
+    return argparse.Namespace(**base)
+
+
+def test_cli_refine_writes_a_refines_edge(store: Any, capsys: Any) -> None:
+    from precis.cli import taproot as taproot_cli
+
+    original = mint_hub(store, _CLAIM_A)
+    sharper = mint_hub(store, _CLAIM_B)
+    from_h = handle_registry.format_handle("finding", sharper)
+    to_h = handle_registry.format_handle("finding", original)
+
+    taproot_cli.run(_cli_refine_args(from_hub=from_h, to_hub=to_h))
+
+    out = capsys.readouterr().out
+    assert "linked" in out
+    assert _edges(store, src=sharper, dst=original)  # edge written
+
+
+def test_cli_refine_dry_run_writes_nothing(store: Any, capsys: Any) -> None:
+    from precis.cli import taproot as taproot_cli
+
+    original = mint_hub(store, _CLAIM_A)
+    sharper = mint_hub(store, _CLAIM_B)
+    from_h = handle_registry.format_handle("finding", sharper)
+    to_h = handle_registry.format_handle("finding", original)
+
+    taproot_cli.run(_cli_refine_args(from_hub=from_h, to_hub=to_h, dry_run=True))
+
+    out = capsys.readouterr().out
+    assert "DRY-RUN" in out
+    assert not _edges(store, src=sharper, dst=original)  # nothing written
+
+
+def test_cli_refine_bad_hub_exits_nonzero(store: Any) -> None:
+    from precis.cli import taproot as taproot_cli
+
+    original = mint_hub(store, _CLAIM_A)
+    paper = seed_ref(store, title="Not a hub", kind="paper")
+    to_h = handle_registry.format_handle("finding", original)
+    paper_h = handle_registry.format_handle("paper", paper)
+
+    with pytest.raises(SystemExit) as exc:
+        taproot_cli.run(_cli_refine_args(from_hub=paper_h, to_hub=to_h))
+    assert exc.value.code == 1

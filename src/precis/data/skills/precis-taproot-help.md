@@ -2,7 +2,7 @@
 id: precis-taproot-help
 title: precis — the cross-paper claim-evidence graph (Taproot)
 summary: claim hubs (finding tagged TAPROOT:claim) aggregate many papers as typed evidence edges; [fi<id>] is a living citation that resolves to the current best originator(s)
-applies-to: get/search (kind='finding', tags=['TAPROOT:claim'], view='evidence'); citing [fi<id>] in prose; precis taproot mint
+applies-to: get/search (kind='finding', tags=['TAPROOT:claim'], view='evidence'); citing [fi<id>] in prose; precis taproot mint / refine
 status: active
 ---
 
@@ -102,6 +102,27 @@ each supporter's evidence edge, idempotently — a re-run of the same
 spec attaches nothing twice. Cite the resulting `[fi<id>]` in your
 prose afterward.
 
+## Sharpen a claim — link a reworded version (don't merge)
+
+When you have a sharper/reworded version of an existing claim, **mint it
+as its own hub, then link it** — don't try to edit or merge the original.
+Both wordings stay independently citable, and the fisheye Claims ring
+shows the next editor that a sharper version exists.
+
+```bash
+# 1. mint the sharper claim (its own hub / fi<id>)
+precis taproot mint --json '[{"sentence":"…sharper wording…","scope":{},"supporters":[…]}]'
+# 2. link sharper --refines--> original
+precis taproot refine --from fi<sharper> --to fi<original>   # --dry-run to preview
+```
+
+`--from`/`--to` each accept an `fi<id>` handle, a pub_id, or a bare
+ref_id; both must resolve to live `TAPROOT:claim` hubs. The link is
+**directed** (sharper → coarser), **advisory-only** (no evidence flows —
+each hub keeps its own paper→hub edges), and **idempotent**. In the
+Claims ring the original then shows `↰ refined by fi<sharper>` and the
+sharper one shows `↳ refines fi<original>`.
+
 ## Maturity — what's live vs dark
 
 | | |
@@ -110,6 +131,7 @@ prose afterward.
 | Seniority derivation (originator/corroborator split) | live |
 | Living-citation resolve + authorial pins (`precis resolve`) | live |
 | Fisheye reference-ring Claims explosion | live |
+| Claim→claim `refines` links (`precis taproot refine`) | live (advisory-only, no evidence flow) |
 | Corpus-wide forward chase bridge (`PRECIS_TAPROOT_CHASE_ENABLED`) | dark, default-OFF |
 | `axis:taproot` `TAPROOT:claim`/`TAPROOT:review` classifier (`PRECIS_AXES_ENABLED`) | dark, default-OFF |
 

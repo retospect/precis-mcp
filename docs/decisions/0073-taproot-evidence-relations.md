@@ -88,3 +88,35 @@ default (`corroborates` — never falsely claim originator); promotion is later.
   would perturb the draft-integration subsystem.
 - **A distinct `corroborated-by`/taproot-only corroborator slug** — rejected as
   needless vocabulary; endpoint kinds already disambiguate the shared slug.
+
+## Amendment (2026-07-30) — claim→claim `refines` link
+
+Migration `0100` adds **one more slug to the taproot vocabulary**, but it is
+**not** an evidence edge — it is a *claim→claim* advisory link, so it lives
+alongside the three evidence roles here rather than in its own ADR.
+
+**`refines` (sharper claim hub → coarser claim hub), directed, no inverse.**
+When an editor derives a sharper/reworded version of an already-minted claim,
+the sharper wording is minted as its **own** hub (its own content-hash pub_id /
+`fi<id>`) and linked to the original with `refines` — **link, don't merge**.
+Both wordings stay independently citable; the next editor chooses. This is the
+deliberate alternative to collapsing the two claims into one hub (which would
+lose the coarser wording and its distinct evidence).
+
+- **Not an evidence edge — no evidence flows.** Each hub keeps its own
+  paper→hub evidence set; `refines` carries none, and `seniority.derive_evidence`
+  never reads it. It is surfaced **read-only** by the fisheye Claims ring
+  (`refeye`): a cited hub shows `↰ refined by fi<id>` (a sharper version
+  exists) and `↳ refines fi<id>` (what it sharpens).
+- **No inverse** (matches `establishes`): both directions are read via direct
+  `src`/`dst` SQL (`seniority.derive_refines`), not `links_for` — keeping the
+  inverse-rewrite trap (`_fetch_evidence_rows`) out of reach for this slug too.
+- **Single write door.** A `refines` edge is written only through
+  `hub.py::link_claims` (the sibling of `attach_evidence`): both endpoints must
+  be live `TAPROOT:claim` hubs, `from != to`, relation in
+  `CLAIM_LINK_RELATIONS`, idempotent. A raw `add_link('refines')` elsewhere
+  bypasses the two-hub guard and is a defect, exactly as for the evidence
+  roles. Authored via `precis taproot refine --from <h> --to <h>`.
+
+v1 is advisory-only; a future evidence-flow semantics (a refined claim
+inheriting/superseding its parent's evidence) is explicitly deferred.

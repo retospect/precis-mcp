@@ -20,8 +20,8 @@ from precis.errors import BadInput
 from precis.handlers.finding import FindingHandler
 from precis.store.types import Tag
 from precis.taproot.canon import CanonicalClaim
-from precis.taproot.hub import attach_evidence, mint_hub
-from precis.taproot.seniority import derive_evidence
+from precis.taproot.hub import attach_evidence, link_claims, mint_hub
+from precis.taproot.seniority import derive_evidence, derive_refines
 from tests.workers._helpers import seed_chunk, seed_ref
 
 _CLAIM = CanonicalClaim(
@@ -371,3 +371,48 @@ def test_finding_view_evidence_empty_hub(store: Any) -> None:
     resp = handler.get(id=hub, view="evidence")
 
     assert "no evidence edges yet for this claim hub" in resp.body
+
+
+# ── derive_refines — claim→claim advisory neighbours (migration 0100) ────
+
+
+def _sharper_hub(store: Any, sentence: str) -> int:
+    return mint_hub(store, CanonicalClaim(sentence=sentence, scope={}))
+
+
+def test_derive_refines_reads_both_directions(store: Any) -> None:
+    original = mint_hub(store, _CLAIM)
+    sharper = _sharper_hub(store, "Pd/C: Suzuki at 25 °C, K2CO3, >90% yield.")
+    link_claims(store, from_hub_ref_id=sharper, to_hub_ref_id=original)
+
+    # From the ORIGINAL's view: a sharper version refines it (inbound).
+    orig_links = derive_refines(store, original)
+    assert [cr.hub_ref_id for cr in orig_links.refined_by] == [sharper]
+    assert orig_links.refines == []
+
+    # From the SHARPER's view: it refines the original (outbound).
+    sharp_links = derive_refines(store, sharper)
+    assert [cr.hub_ref_id for cr in sharp_links.refines] == [original]
+    assert sharp_links.refined_by == []
+    # The neighbour sentence is carried for the ring's "see also" line.
+    assert sharp_links.refines[0].sentence == _CLAIM.sentence
+
+
+def test_derive_refines_empty_when_no_links(store: Any) -> None:
+    hub = mint_hub(store, _CLAIM)
+    links = derive_refines(store, hub)
+    assert links.refines == []
+    assert links.refined_by == []
+
+
+def test_derive_refines_drops_a_soft_deleted_neighbour(store: Any) -> None:
+    original = mint_hub(store, _CLAIM)
+    sharper = _sharper_hub(store, "Pd/C: Suzuki at 25 °C, K2CO3, >90% yield.")
+    link_claims(store, from_hub_ref_id=sharper, to_hub_ref_id=original)
+
+    with store.pool.connection() as conn:
+        conn.execute("UPDATE refs SET deleted_at = now() WHERE ref_id = %s", (sharper,))
+        conn.commit()
+
+    # The original no longer surfaces the deleted sharper hub as a neighbour.
+    assert derive_refines(store, original).refined_by == []

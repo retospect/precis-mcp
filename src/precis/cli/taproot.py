@@ -23,7 +23,7 @@ from precis.cli._common import resolve_dsn
 
 
 def add_parser(subparsers: Any) -> None:
-    """Register the ``taproot`` subcommand group (currently just ``mint``)."""
+    """Register the ``taproot`` subcommand group (``mint`` / ``refine``)."""
     p = subparsers.add_parser(
         "taproot", help="Taproot claim-hub authoring (mint hubs from citations)."
     )
@@ -55,6 +55,35 @@ def add_parser(subparsers: Any) -> None:
         help="set_by actor slug for the writes (default: agent).",
     )
     m.add_argument("--database-url", default=None, help="Override PRECIS_DATABASE_URL.")
+
+    r = tsub.add_parser(
+        "refine",
+        help="Link one claim hub as a sharper/reworded version of another "
+        "(mint the sharper claim first, then refine).",
+    )
+    r.add_argument(
+        "--from",
+        dest="from_hub",
+        required=True,
+        help="Sharper/newer claim hub (fi<id> handle, pub_id, or ref_id).",
+    )
+    r.add_argument(
+        "--to",
+        dest="to_hub",
+        required=True,
+        help="Coarser/original claim hub this one refines (same forms).",
+    )
+    r.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Resolve both hubs + print what WOULD be linked; write nothing.",
+    )
+    r.add_argument(
+        "--set-by",
+        default="agent",
+        help="set_by actor slug for the write (default: agent).",
+    )
+    r.add_argument("--database-url", default=None, help="Override PRECIS_DATABASE_URL.")
 
 
 def _load_spec(args: argparse.Namespace) -> list[dict[str, Any]]:
@@ -209,10 +238,49 @@ def _run_mint(args: argparse.Namespace) -> None:
     _print_results(results, args.format)
 
 
+def _run_refine(args: argparse.Namespace) -> None:
+    from precis.errors import BadInput
+    from precis.store import Store
+    from precis.taproot.authoring import resolve_hub_ref_id
+    from precis.taproot.hub import link_claims
+
+    store = Store.connect(resolve_dsn(args.database_url))
+    try:
+        from_hub = resolve_hub_ref_id(store, args.from_hub)
+        to_hub = resolve_hub_ref_id(store, args.to_hub)
+        if from_hub == to_hub:
+            print(
+                "taproot refine: error: --from and --to resolve to the same "
+                f"hub (ref_id={from_hub}); a claim can't refine itself",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if args.dry_run:
+            print(
+                f"[DRY-RUN] would link fi{from_hub} --refines--> fi{to_hub}",
+            )
+            return
+        wrote = link_claims(
+            store,
+            from_hub_ref_id=from_hub,
+            to_hub_ref_id=to_hub,
+            set_by=args.set_by,
+        )
+        verb = "linked" if wrote else "already linked"
+        print(f"{verb}: fi{from_hub} --refines--> fi{to_hub}")
+    except BadInput as exc:
+        print(f"taproot refine: error: {exc.cause}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        store.close()
+
+
 def run(args: argparse.Namespace) -> None:
     """Execute ``precis taproot <taproot_cmd>``."""
     if args.taproot_cmd == "mint":
         _run_mint(args)
+    elif args.taproot_cmd == "refine":
+        _run_refine(args)
     else:
         print(f"taproot: unknown subcommand {args.taproot_cmd!r}", file=sys.stderr)
         sys.exit(2)

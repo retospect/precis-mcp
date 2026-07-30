@@ -19,13 +19,28 @@ from precis.handlers.finding import FindingHandler
 from precis.identity import make_pub_id, make_taproot_hub_paper_id
 from precis.store.types import Tag
 from precis.taproot.canon import CanonicalClaim, Placement
-from precis.taproot.hub import apply_placement, attach_evidence, mint_hub
+from precis.taproot.hub import (
+    apply_placement,
+    attach_evidence,
+    link_claims,
+    mint_hub,
+)
 from tests.workers._helpers import seed_ref
 
 _PUB_ID_RE = re.compile(r"^[a-z2-7]{6}$")
 
 _CLAIM = CanonicalClaim(
     sentence="Pd/C catalyzes Suzuki coupling at room temperature with a mild base.",
+    scope={"material": "Pd/C", "method": "Suzuki coupling", "regime": "RT"},
+)
+
+#: A sharper wording of ``_CLAIM`` — a distinct claim (distinct pub_id/hub),
+#: the kind an editor mints then links back to the original via ``refines``.
+_SHARPER_CLAIM = CanonicalClaim(
+    sentence=(
+        "Pd/C catalyzes aryl-halide Suzuki coupling at 25 °C with K2CO3 in "
+        "aqueous ethanol, >90% yield."
+    ),
     scope={"material": "Pd/C", "method": "Suzuki coupling", "regime": "RT"},
 )
 
@@ -262,6 +277,68 @@ def test_apply_placement_new_contradicts_links_the_hubs(store: Any) -> None:
     assert hub != existing
     assert _edge(store, paper, hub) == "corroborates"  # paper supports the new claim
     assert _edge(store, hub, existing) == "contradicts"  # hub <-> hub opposition
+
+
+# ── link_claims — the claim→claim advisory write door (migration 0100) ──
+
+
+def test_link_claims_writes_a_refines_edge(store: Any) -> None:
+    original = mint_hub(store, _CLAIM)
+    sharper = mint_hub(store, _SHARPER_CLAIM)
+
+    wrote = link_claims(store, from_hub_ref_id=sharper, to_hub_ref_id=original)
+
+    assert wrote is True
+    # Directed sharper -> original; no auto-mirror.
+    assert _edge(store, sharper, original) == "refines"
+    assert _edge(store, original, sharper) is None
+
+
+def test_link_claims_is_idempotent(store: Any) -> None:
+    original = mint_hub(store, _CLAIM)
+    sharper = mint_hub(store, _SHARPER_CLAIM)
+
+    assert link_claims(store, from_hub_ref_id=sharper, to_hub_ref_id=original) is True
+    # Re-running the same authoring step writes nothing and reports it.
+    assert link_claims(store, from_hub_ref_id=sharper, to_hub_ref_id=original) is False
+
+    with store.pool.connection() as conn:
+        n = conn.execute(
+            "SELECT count(*) FROM links WHERE src_ref_id = %s AND dst_ref_id = %s "
+            "AND relation = 'refines'",
+            (sharper, original),
+        ).fetchone()[0]
+    assert n == 1
+
+
+def test_link_claims_rejects_self_link(store: Any) -> None:
+    hub = mint_hub(store, _CLAIM)
+    with pytest.raises(BadInput):
+        link_claims(store, from_hub_ref_id=hub, to_hub_ref_id=hub)
+
+
+def test_link_claims_rejects_unknown_relation(store: Any) -> None:
+    original = mint_hub(store, _CLAIM)
+    sharper = mint_hub(store, _SHARPER_CLAIM)
+    with pytest.raises(BadInput):
+        link_claims(
+            store,
+            from_hub_ref_id=sharper,
+            to_hub_ref_id=original,
+            relation="related-to",  # not a claim-link relation (v1: only refines)
+        )
+
+
+def test_link_claims_rejects_non_hub_endpoints(store: Any) -> None:
+    hub = mint_hub(store, _CLAIM)
+    paper = seed_ref(store, title="Not a hub", kind="paper")
+
+    # `from` is not a claim hub.
+    with pytest.raises(BadInput):
+        link_claims(store, from_hub_ref_id=paper, to_hub_ref_id=hub)
+    # `to` is not a claim hub.
+    with pytest.raises(BadInput):
+        link_claims(store, from_hub_ref_id=hub, to_hub_ref_id=paper)
 
 
 def test_apply_placement_needs_review_files_todo_and_attaches_nothing(

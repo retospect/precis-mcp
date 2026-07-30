@@ -210,6 +210,15 @@ Relation = Literal[
     # Keep in sync with the `relations` seed in
     # 0094_taproot_evidence_relations.sql.
     "establishes",
+    # Taproot claim→claim advisory link — migration 0100 (ADR 0073 amendment).
+    # `refines` (sharper claim hub → coarser claim hub) — link-don't-merge: a
+    # reworded/sharpened claim is minted as its own hub and linked to the one
+    # it refines, NOT merged into it. NOT an evidence edge — no evidence flows;
+    # the fisheye Claims ring surfaces it read-only ("a sharper version exists").
+    # No inverse: read both directions via `links_for(direction='in'|'out',
+    # relation='refines')`. Keep in sync with the `relations` seed in
+    # 0100_taproot_refines_relation.sql.
+    "refines",
 ]
 ActorSlug = Literal["agent", "user", "system"]
 

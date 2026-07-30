@@ -26,7 +26,7 @@ from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import _DEFAULT_ROLE, HUB_ROLES, attach_evidence, mint_hub
 from precis.utils.mentions import resolve_handle_ref, resolve_handle_target
 
-__all__ = ["resolve_paper_ref_id", "seed_claim_hub"]
+__all__ = ["resolve_hub_ref_id", "resolve_paper_ref_id", "seed_claim_hub"]
 
 
 #: Supporter refs must be one of these kinds (ADR 0073 / hub.py open #15:
@@ -83,6 +83,52 @@ def resolve_paper_ref_id(store: Any, paper: int | str) -> int:
         next=(
             "pass a paper ref_id (int), a 'pa<id>' handle, a cite_key, or a "
             "pub_id slug for a live paper ref"
+        ),
+    )
+
+
+def resolve_hub_ref_id(store: Any, hub: int | str) -> int:
+    """Resolve a claim-hub reference to a live ``TAPROOT:claim`` hub ref_id.
+
+    Accepts a bare ``ref_id`` (``int``), a ``fi<id>`` finding handle, a
+    cite_key, or a ``pub_id`` slug — reusing the same resolvers
+    :func:`resolve_paper_ref_id` does (:func:`resolve_handle_target` /
+    :func:`resolve_handle_ref`), then gating on the resolved ref actually
+    being a claim hub (the ``precis taproot refine`` endpoints, and the
+    :func:`~precis.taproot.hub.link_claims` guard, both require a hub — this
+    is the friendly pre-flight, so a typo'd/wrong handle fails with a clear
+    message before the write door's raw ``BadInput``).
+
+    Raises:
+        BadInput: ``hub`` doesn't resolve to a live ref, or resolves to one
+            that isn't a ``TAPROOT:claim`` finding.
+    """
+    from precis.taproot.seniority import is_claim_hub
+
+    if isinstance(hub, bool):  # bool is an int subclass -- guard the footgun
+        raise BadInput(f"cannot resolve claim hub: {hub!r}")
+
+    ref_id: int | None
+    if isinstance(hub, int):
+        ref_id = hub
+    else:
+        token = hub.strip()
+        target = resolve_handle_target(store, token)
+        if target is not None:
+            ref_id = target.dst_ref_id
+        else:
+            ref = resolve_handle_ref(store, token, include_deleted=False)
+            ref_id = int(ref.id) if ref is not None else None
+
+    if ref_id is not None and is_claim_hub(store, ref_id):
+        return ref_id
+
+    raise BadInput(
+        f"cannot resolve claim hub: {hub!r}",
+        next=(
+            "pass a hub ref_id (int), a 'fi<id>' finding handle, a cite_key, "
+            "or a pub_id slug for a live TAPROOT:claim hub — mint it first "
+            "with 'precis taproot mint' if it doesn't exist yet"
         ),
     )
 

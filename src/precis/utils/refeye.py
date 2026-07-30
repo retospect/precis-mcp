@@ -17,8 +17,12 @@ graph**: "what does this section *point at*, one edge out." Focus a section at
   ``establishes`` originators (marked, with the grounding chunk pointer
   when the chase has populated one) plus a one-line corroborator/
   contradictor summary, via :func:`precis.taproot.seniority.derive_evidence`.
-  Either form that resolves to a non-hub finding (or nothing) is left
-  alone — this only mines placeholders that name a claim hub.
+  Each cited hub also surfaces its advisory ``refines`` neighbours
+  (migration 0100) — ``↰ refined by`` (a sharper version of this claim
+  exists) and ``↳ refines`` (what this hub sharpens) — via
+  :func:`precis.taproot.seniority.derive_refines`; link-only, no evidence
+  flows across it. Either cite form that resolves to a non-hub finding (or
+  nothing) is left alone — this only mines placeholders that name a claim hub.
 
 It follows **edges only** (deterministic, zero false positives). A memory that
 is merely *about* the section but was never linked is a similarity hit —
@@ -37,9 +41,11 @@ import re
 from typing import Any, Protocol
 
 from precis.taproot.seniority import (
+    ClaimLinks,
     EvidenceEdge,
     HubEvidence,
     derive_evidence,
+    derive_refines,
     is_claim_hub,
 )
 from precis.utils import handle_registry
@@ -139,6 +145,37 @@ def _evidence_line(edge: EvidenceEdge, *, marked: bool, pinned: bool = False) ->
     return f"{prefix}{label}{year}{grounding}"
 
 
+def _claim_link_line(prefix: str, cr: Any) -> str:
+    """One advisory claim→claim line: ``↳ refines fi<id> — <sentence>``
+    (migration 0100). Read-only reflection of a ``refines`` edge — no
+    evidence, no resolution decision."""
+    handle = handle_registry.format_handle("finding", cr.hub_ref_id)
+    sentence = " ".join((cr.sentence or "").split())
+    if len(sentence) > 90:
+        sentence = sentence[:89].rstrip() + "…"
+    return f"{prefix} {handle} — {sentence}" if sentence else f"{prefix} {handle}"
+
+
+def _claim_links_lines(links: ClaimLinks, *, cap: int) -> list[str]:
+    """Advisory ``refines`` / ``refined by`` lines for a cited hub, capped
+    (§6: no silent cap). ``refined by`` (a sharper version exists) is listed
+    first — it's the "you may want the newer wording" nudge; ``refines``
+    (what this hub sharpens) second. Empty when the hub has no claim-links."""
+    lines: list[str] = []
+    for label, group, prefix in (
+        ("refined by", links.refined_by, "  ↰ refined by"),
+        ("refines", links.refines, "  ↳ refines"),
+    ):
+        if not group:
+            continue
+        shown = group[:cap]
+        lines += [_claim_link_line(prefix, cr) for cr in shown]
+        overflow = len(group) - len(shown)
+        if overflow > 0:
+            lines.append(f"    +{overflow} more {label} — focus to expand")
+    return lines
+
+
 def _claim_block(
     ref: Any,
     evidence: HubEvidence,
@@ -146,6 +183,7 @@ def _claim_block(
     cap: int,
     pin: tuple[str, list[int]] | None = None,
     pin_labels: dict[int, str] | None = None,
+    claim_links: ClaimLinks | None = None,
 ) -> str:
     """The Claims explosion for one cited hub — the claim line plus its
     derived evidence, capped like the rest of the ring (§6: no silent
@@ -233,6 +271,12 @@ def _claim_block(
                 )
             )
             lines.append(f"  (pinned; derived: {derived_str})")
+
+    # Advisory claim→claim `refines` neighbours (migration 0100) — appended
+    # after the evidence, so the block reads "the claim, its evidence, then
+    # see-also". No evidence flows across the link; this is a read-only nudge.
+    if claim_links is not None:
+        lines += _claim_links_lines(claim_links, cap=cap)
 
     return "\n".join(lines)
 
@@ -373,11 +417,19 @@ def _render_claims_group(
         if ref is None or getattr(ref, "deleted_at", None) is not None:
             continue
         evidence = derive_evidence(store, hub_ref_id)
+        claim_links = derive_refines(store, hub_ref_id)
         pin = (op, pins[hub_ref_id]) if op is not None else None
         entries.append(
             (
                 hub_ref_id,
-                _claim_block(ref, evidence, cap=cap, pin=pin, pin_labels=pin_labels),
+                _claim_block(
+                    ref,
+                    evidence,
+                    cap=cap,
+                    pin=pin,
+                    pin_labels=pin_labels,
+                    claim_links=claim_links,
+                ),
             )
         )
     return entries
