@@ -1346,6 +1346,28 @@ suite green, ruff/mypy clean, not shipped-and-live — dark behind
   deferred, separate scope)* — `related-to` + `meta.note`, deliberately not
   built alongside this; do not conflate with the `cites`-relation work above.
 
+## 🌱 Taproot living citations + A2 pins don't reach the draft authoring surface
+
+Status: open · Severity: feature · Owner: `src/precis/export/latex.py`,
+`src/precis/export/docx.py::_finding_cite_key` · Test: none yet.
+
+The A1/A2 living-citation + inline-pin machinery is implemented only in the
+`precis resolve` CLI (`cli/resolve.py`, base32 `[<pub_id>]` tokens on
+standalone manuscripts). The `kind='draft'` export
+(`export/latex.py`/`docx.py::_finding_cite_key`) cites a finding/hub by its
+`[fi<id>]` handle and resolves it off `primary_cite_key or pub_id` — it
+never calls `taproot/seniority.py::derive_evidence` and never parses A2
+pins. So an agent writing a draft (the primary authoring surface) can't use
+taproot living citations or pins. Fix: wire `_finding_cite_key` (latex +
+docx) to resolve a `TAPROOT:claim` hub to its derived `establishes`
+originator(s) via `derive_evidence`, and parse the `[fi<id>>pin]`/
+`[fi<id>+pin]` pin grammar in draft export. Needs a regression test:
+`[fi<id>]` for an established finding → `\cite{primary_cite_key}`; a hub →
+derived originators; a bare `[42]`/`[<pub_id>]` stays literal. Also folds
+in the `precis-finding-help` rewrite flagged this ship (⚠ hints added to
+the "Use a finding in your draft" section + create-example) — same fix,
+same doc.
+
 ## 👁️ Draft citation-groundwork pre-pass (ADR 0051 Level 2, unscoped)
 
 *(feature, open — owner: `workers/thread_persona.py` + `planner_prompt.py`,

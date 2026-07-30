@@ -37,9 +37,9 @@ put(
     },
     cited_in="pc42",
 )
-# → created finding id=42
-#   placeholder: [42]   (drop in draft; precis resolve substitutes
-#                        the primary cite_key once established)
+# → created finding id=42  pub_id=ab12c3
+#   placeholder: [ab12c3]   (the base32 pub_id; precis resolve
+#                            substitutes the cite_key once established)
 ```
 
 Required: `title`, `body`, `cited_in`. Recommended: `scope` (dict —
@@ -186,16 +186,23 @@ pin diverging from the current derivation prints a stderr advisory
 
 ## Use a finding in your draft
 
-Drop the id in square brackets:
+> **⚠ Outdated — needs rewrite.** This section describes the standalone
+> `precis resolve` CLI (hand-maintained `.tex`/`.md` files), which cites by
+> base32 `[<pub_id>]`. It does NOT cover citing inside a `kind='draft'`
+> document, where you cite a finding by its `[fi<id>]` handle instead (see
+> `precis-draft-help`). The two surfaces don't interoperate; this section
+> needs rewriting to say so.
 
-> The gate was held at 2.4 kV for 30 s [42].
+Drop the pub_id in square brackets:
+
+> The gate was held at 2.4 kV for 30 s [ab12c3].
 
 At finalisation:
 
 ```bash
 precis resolve manuscript.tex --format latex --strict
 # → \cite{fischer13} substituted where established
-#   in-flight placeholders kept as \cite{42}\,\textsuperscript{⏳}
+#   in-flight placeholders kept as \cite{ab12c3}\,\textsuperscript{⏳}
 #   --strict exits 3 if anything still in flight (CI gate)
 ```
 

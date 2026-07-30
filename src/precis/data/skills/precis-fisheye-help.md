@@ -88,6 +88,10 @@ section *points at*, one edge out
   `[<pub_id>>pa5]` / `[<pub_id>+pa5]`, same grammar `precis resolve`
   reads) marks the pinned paper 📌 and, when it diverges from the
   derived originator, adds a short `(pinned; derived: pa99)` note.
+  Evidence population depends on the forward chase
+  (`PRECIS_TAPROOT_CHASE_ENABLED`, default-off, not yet run at corpus
+  scale) — most hubs today show the claim with little or no derived
+  evidence, so a populated Claims group is rare.
 
 It follows **edges only**, both directions, capped per group with a
 visible `+N more — focus to expand` line — never a silent truncation.

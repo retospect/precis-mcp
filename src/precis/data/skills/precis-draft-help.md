@@ -780,19 +780,21 @@ Once defined or silenced, a token stops being hinted. Reference a term with
 terms win over auto-detected ones. **Notes** (memory / think / other
 drafts) are referenceable but **not citeable** — they get a
 `[<handle>]` `related-to` link only, never a bibliography entry. (A
-`finding` is the one exception: an in-flight `[fi<id>]` is a citation
-form, a placeholder that resolves to a real `[pc<id>]` on a re-tick.)
+`finding` is the one exception: `[fi<id>]` is a citation form that exports
+directly to `\cite{}` — the real `cite_key` once established, else a stub
+off its `pub_id`. Swapping it for a direct paper cite is an optional
+editorial pass on a later tick, not something the system rewrites for you.)
 Math is `$…$` / `$$…$$` (LaTeX, rendered by KaTeX on the web).
 
-**Don't write `[finding #<name>]`.** A finding is addressed by its base32
-`pub_id` by its `fi<id>` handle (`[fi<id>]`), **not** by a
-made-up `#slug`. A `[finding #amine-uptake]` /
-`[citation pending — finding #…]` marker resolves to **nothing** — it
-never autolinks, never exports, and on a verbatim read is flagged as an
-**⚠ unresolved finding reference**. If you mean to cite a finding,
-reference its real `[fi<id>]` handle; if it doesn't exist yet,
-`put(kind='finding', …)` it first (an in-flight `[fi<id>]` is a
-citation form — it resolves to a real `[pc<id>]` on a re-tick). Don't
+**Don't write `[finding #<name>]`.** A finding is addressed by its
+`[fi<id>]` handle, **not** by a made-up `#slug`. A `[finding
+#amine-uptake]` / `[citation pending — finding #…]` marker resolves to
+**nothing** — it never autolinks, never exports, and on a verbatim read
+is flagged as an **⚠ unresolved finding reference**. If you mean to cite
+a finding, reference its real `[fi<id>]` handle; if it doesn't exist
+yet, `put(kind='finding', …)` it first (`[fi<id>]` is a citation form
+that exports directly to `\cite{}`; swapping it for a direct paper cite
+later is an optional editorial choice, not an automatic rewrite). Don't
 leave dangling `#name` placeholders in the prose.
 
 **Formatting.** Prose is plain text with a small markup subset:
