@@ -78,28 +78,51 @@ green). Still open (two grew mid-session into much bigger finds):
   `test_quest_loop_reconcile_gate_env_matches_registration`. Confirmed: pass
   logging again + fresh quest_tick jobs 175884/175885 minted post-deploy. The
   earlier bootout+bootstrap was necessary groundwork but not the fix. (2)
-  **plan_tick — PENDING owner-scope decision**: every open planner-coroutine
-  parent (nanobuds, methane-sponge, mechacard, nox_to_ammonia, nanotrans2, …)
-  carries a `child-failed:<job>` hard-block tag that never auto-clears, latched
-  by a 07-26 wave of mostly `swept:claim-orphaned` (infra/lease-expiry, not
-  content) failures. Unblock = clear the infra-class tags to re-dispatch.
-  **Design gaps** (Opus decisions): (a) a nursery/health check that flags a
+  **plan_tick — 11 infra-class coroutines UNBLOCKED (2026-07-30)**: cleared the
+  `child-failed:` tags on the 11 planner-lane parents (plan_tick + cad) whose
+  child failed with `swept:claim-orphaned` (infra/lease-expiry from the 07-26
+  wave) — tags confirmed removed; dispatch re-ticks them on cadence (couldn't
+  catch the exact re-tick — the parent-link query field was wrong; **worth a
+  one-line confirm** that fresh jobs minted). Left the **32 content-class**
+  failures blocked (genuine task errors), and skipped 8 stale recurring
+  instances (old news-poll/cast watches that self-mint). **Design gaps** (Opus
+  decisions): (a) a nursery/health check that flags a
   known env-gated pass silently absent from a live worker's rotation for N
   hours; (b) `child-failed` should distinguish infra-class (bounded auto-retry)
   from content failures (permanent block). Also: `quest_tick`/`catpath_explore`
   never persist `meta.transcript` (confusion-mining blind spot) — worth adding.
 
-- **🔴 Deploy daemon-bounce doesn't reload plist env changes — `kickstart -k`
-  vs `bootout`+`bootstrap`** *(repo/deploy bug, HIGH leverage — owner
-  `deploy/redeploy-precis.yml` "Bounce all precis daemons" play).* launchd
-  `kickstart -k` respawns a daemon's process from the ALREADY-LOADED plist
-  definition; a changed `<EnvironmentVariables>` on disk is ignored until a full
-  `bootout`+`bootstrap`. This silently swallowed BOTH the quest-loop env restore
-  AND the balthazar summarizer env this session — the deploy reported "changed"
-  but the running process kept the old env. **Fix:** when a daemon's rendered
-  plist env changed, the bounce must `bootout`+`bootstrap`, not `kickstart -k`.
-  Until then, every env-var change shipped via deploy is a no-op on already-
-  loaded daemons — a silent, fleet-wide footgun.
+- **✅ Deploy daemon-bounce now reloads plist env (`kickstart -k` →
+  `bootout`+`bootstrap`) — FIXED `81123521`, deployed, proven** *(was a HIGH-
+  leverage repo/deploy bug — owner `deploy/redeploy-precis.yml` "Bounce all
+  precis daemons" play).* `kickstart -k` respawned a daemon from the ALREADY-
+  LOADED plist, so a changed `<EnvironmentVariables>` on disk was ignored — this
+  silently swallowed env-var changes shipped via deploy (the quest-loop and
+  per-host summarizer env both bit this session). Now the bounce `bootout`s then
+  `bootstrap`s (with a teardown wait — a too-eager bootstrap races the async
+  unload → `5: I/O error`). Proven: a deploy-restarted daemon (pid 78772,
+  restarted at the deploy) now carries the freshly-added `PRECIS_STRUCTURE_
+  PREFLIGHT=1`, which `kickstart` never would have loaded.
+
+- **🟡 Bounce-coverage gap — not every daemon restarts on deploy** *(residual
+  from the env-reload verify, 2026-07-30; owner `deploy/redeploy-precis.yml`).*
+  After the `bootout`+`bootstrap` deploy, some precis processes still showed
+  stale ~8h-old start times (pids 11645/12410) and lacked the new env, while
+  others (78772) restarted and picked it up. So the reload mechanism works but
+  doesn't uniformly cover every daemon — either those are child/subprocesses,
+  or the bounce skips/silently-fails on some (`failed_when: false`). **Not
+  urgent — the nightly boot cycle will restart them and pick up the env**
+  (Reto, 2026-07-30). Follow-up: confirm whether it's child procs vs. a real
+  bounce gap, and if the latter, ensure the bounce covers all managed daemons.
+
+- **✅ `PRECIS_STRUCTURE_PREFLIGHT` enabled (first dark flag lit)** — set `"1"`
+  in `precis_shared_env` (2026-07-30), riding on the env-reload fix above.
+  Tier-0 structure geometry/element gate; low-risk (only adds validation).
+  Confirmed live on restarted daemons (see the bounce-coverage residual for the
+  stale-daemon caveat). The other audited dark flags (`backlog_groom`,
+  `agent_container`, `friction_reflect`, `mcp_db_role_enforce`) remain OFF — see
+  the dark-switch audit; `backlog_groom` needs a `service_config` flip + worker
+  restart to light.
 
 - **balthazar summarizer flood — NOT fixed (corrects the earlier claim)**
   *(ops/config — cosmetic).* The `precis_local_llm_model_override` host_var I set
