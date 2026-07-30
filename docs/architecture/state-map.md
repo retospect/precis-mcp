@@ -989,6 +989,37 @@ overlay on `finding`/`ref_tags`/`links` — no schema of its own).
     LLM cost, but `STATUS` vocabulary noise). Tests:
     `tests/test_taproot_chase_bridge.py` (mapping, NO-SUPPORT/NO-CLAIM/
     flag-off skips, no-embedder degrade, re-establish idempotency).
+  - **A2 (authorial cite pinning)** — built (ADR 0074, closes taproot.md
+    open #4 alongside A1). A1's living default stays the default; an author
+    can pin a hub cite inline, syntactically, no storage:
+    `[<pub_id>>pa5,pc293]` (**replace** — cite exactly these handles,
+    ignoring the derived `establishes` set) / `[<pub_id>+pa5]`
+    (**supplement** — derived originators plus these, deduped).
+    `pub_id_lookup.py::PLACEHOLDER_RE` grew an optional trailing
+    `(op)(comma-handle-list)` group both `resolve` and the reference ring
+    parse (a bare `[pub_id]` still matches with the group `None` —
+    unchanged pre-A2 grammar). A `pc<id>` (paper-chunk/passage) handle
+    resolves to its parent paper — `.bib` is paper-level, the passage
+    granularity just records *where* the author read the grounding.
+    `cli/resolve.py::_resolve_pin_handle` reuses `Store.resolve_handle` +
+    `Store.ref_cite_keys` (no hand-rolled chunk-to-paper lookup). Both
+    `resolve` and the ring decode the token (pub_id + optional pin) via
+    the one shared `pub_id_lookup.py::parse_pin`. A **replace** pin
+    diverging from the hub's *currently* derived `establishes` originator
+    fires a stderr advisory (`resolve: [<pub_id>] pinned {pa5} but derived
+    originator is {pa99} — reconsider`); `--strict-pins` (mirrors
+    `--strict-verified`) turns that into a CI-gate exit 3. A **supplement**
+    pin is purely additive (derived plus these) and never diverges — no
+    advisory, never trips `--strict-pins`. An unresolvable pinned handle
+    warns + is skipped; an emptied `>`-replace pin falls
+    through to the normal hub resolution rather than dropping the citation;
+    a pin on a non-hub finding is meaningless and is ignored with a
+    warning. `utils/refeye.py`'s Claims group reflects the same pin at read
+    time (non-blocking, best-effort): the pinned paper renders a `📌`
+    marker wherever it appears (including as an extra line when it isn't
+    part of the derived evidence at all), plus a `(pinned; derived: pa99)`
+    note on divergence. Tests: `tests/cli/test_resolve.py`,
+    `tests/test_refeye.py`.
   - **W2 (per-hop corroborators)** — built. Same gate/flag as W1, same
     savepoint. After W1's terminal attach resolves a `hub_ref_id`,
     `_taproot_bridge` also walks every INTERMEDIATE `meta.chain` hop

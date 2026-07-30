@@ -84,7 +84,10 @@ section *points at*, one edge out
   corroborator/contradictor summary — via
   `src/precis/taproot/seniority.py::derive_evidence`, recomputed on
   every render. A `[pub_id]` naming an ordinary (non-hub) finding isn't
-  mined into the ring.
+  mined into the ring. An authorial pin (Taproot slice A2 —
+  `[<pub_id>>pa5]` / `[<pub_id>+pa5]`, same grammar `precis resolve`
+  reads) marks the pinned paper 📌 and, when it diverges from the
+  derived originator, adds a short `(pinned; derived: pa99)` note.
 
 It follows **edges only**, both directions, capped per group with a
 visible `+N more — focus to expand` line — never a silent truncation.

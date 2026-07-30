@@ -37,7 +37,7 @@ from typing import Any, Protocol
 from precis.taproot.seniority import EvidenceEdge, HubEvidence, derive_evidence
 from precis.utils import handle_registry
 from precis.utils.mentions import resolve_link_targets
-from precis.utils.pub_id_lookup import PLACEHOLDER_RE, lookup_pub_id_finding
+from precis.utils.pub_id_lookup import PLACEHOLDER_RE, lookup_pub_id_finding, parse_pin
 
 #: Relations that carry *meaning* (as opposed to structure/plumbing). The ring
 #: follows these — which is where linked memories/notes live — and ignores the
@@ -112,9 +112,11 @@ def _group_for(kind: str) -> str:
     return "Notes"
 
 
-def _evidence_line(edge: EvidenceEdge, *, marked: bool) -> str:
-    """One originator/corroborator line: ``★ pa<id> — <title> (<year>) —
-    grounding: <handle>`` (star + grounding only when applicable)."""
+def _evidence_line(edge: EvidenceEdge, *, marked: bool, pinned: bool = False) -> str:
+    """One originator/corroborator line: ``📌 ★ pa<id> — <title> (<year>) —
+    grounding: <handle>`` (each prefix marker only when applicable). ``📌``
+    (Taproot slice A2) flags a paper the author pinned via ``[<pub_id>>…]``
+    / ``[<pub_id>+…]``."""
     handle = handle_registry.format_handle("paper", edge.paper_ref_id)
     title = " ".join((edge.title or "").split())
     if len(title) > 90:
@@ -122,20 +124,67 @@ def _evidence_line(edge: EvidenceEdge, *, marked: bool) -> str:
     label = f"{handle} — {title}" if title else handle
     year = f" ({edge.year})" if edge.year is not None else ""
     grounding = f" — grounding: {edge.source_handle}" if edge.source_handle else ""
-    prefix = "★ " if marked else ""
+    prefix = ("📌 " if pinned else "") + ("★ " if marked else "")
     return f"{prefix}{label}{year}{grounding}"
 
 
-def _claim_block(ref: Any, evidence: HubEvidence, *, cap: int) -> str:
+def _claim_block(
+    ref: Any,
+    evidence: HubEvidence,
+    *,
+    cap: int,
+    pin: tuple[str, list[int]] | None = None,
+    pin_labels: dict[int, str] | None = None,
+) -> str:
     """The Claims explosion for one cited hub — the claim line plus its
     derived evidence, capped like the rest of the ring (§6: no silent
     cap). Falls back to corroborators "as best-available" (mirroring
     ``precis resolve``'s :func:`~precis.cli.resolve._hub_evidence_cite_keys`
-    policy) when no originator has been derived yet."""
+    policy) when no originator has been derived yet.
+
+    ``pin`` — an author's pin (Taproot slice A2: ``(op, pinned_paper_ref_ids)``
+    mined from the citing ``[<pub_id>>…]`` / ``[<pub_id>+…]`` token) — marks
+    the pinned papers ``📌`` wherever they already appear below, surfaces a
+    pinned paper that isn't part of the derived evidence at all (still
+    "cited" via the pin even though seniority hasn't derived it, using
+    ``pin_labels`` for its ``pa<id> — <title>`` line), and, **replace
+    (``>``) only**, adds a short divergence note when the pin disagrees
+    with the derived originator(s). A supplement (``+``) pin is purely
+    additive — "derived plus these" — so it never diverges and never gets
+    the note. Purely a render annotation — no resolution/dedup decision
+    happens here, that's ``precis resolve``'s job for the actual ``.bib``
+    output; the ring is read-only reflection of the author's choice.
+    """
+    pin_op, pinned_ref_ids = pin if pin is not None else (None, [])
+    pinned_set = set(pinned_ref_ids)
+    pin_labels = pin_labels or {}
+
     lines = [_label(ref)]
+
+    known_ref_ids = {
+        e.paper_ref_id
+        for group in (
+            evidence.originators,
+            evidence.corroborators,
+            evidence.contradictors,
+        )
+        for e in group
+    }
+    extra_pins = [r for r in pinned_ref_ids if r not in known_ref_ids]
+    shown_extra_pins = extra_pins[:cap]
+    for r in shown_extra_pins:
+        label = pin_labels.get(r) or handle_registry.format_handle("paper", r)
+        lines.append(f"  📌 {label} (pinned)")
+    extra_pins_overflow = len(extra_pins) - len(shown_extra_pins)
+    if extra_pins_overflow > 0:
+        lines.append(f"    +{extra_pins_overflow} more — focus to expand")
+
     if evidence.originators:
         shown = evidence.originators[:cap]
-        lines += [f"  {_evidence_line(e, marked=True)}" for e in shown]
+        lines += [
+            f"  {_evidence_line(e, marked=True, pinned=e.paper_ref_id in pinned_set)}"
+            for e in shown
+        ]
         overflow = len(evidence.originators) - len(shown)
         if overflow > 0:
             lines.append(f"    +{overflow} more — focus to expand")
@@ -149,7 +198,10 @@ def _claim_block(ref: Any, evidence: HubEvidence, *, cap: int) -> str:
     elif evidence.corroborators:
         lines.append("  (no originator derived yet — best-available below)")
         shown = evidence.corroborators[:cap]
-        lines += [f"  {_evidence_line(e, marked=False)}" for e in shown]
+        lines += [
+            f"  {_evidence_line(e, marked=False, pinned=e.paper_ref_id in pinned_set)}"
+            for e in shown
+        ]
         overflow = len(evidence.corroborators) - len(shown)
         if overflow > 0:
             lines.append(f"    +{overflow} more — focus to expand")
@@ -159,21 +211,41 @@ def _claim_block(ref: Any, evidence: HubEvidence, *, cap: int) -> str:
         lines.append("  (no evidence derived yet)")
         if evidence.contradictors:
             lines.append(f"  ⚠ {len(evidence.contradictors)} contradictors")
+
+    if pin_op == ">" and pinned_set:
+        originator_ref_ids = {e.paper_ref_id for e in evidence.originators}
+        if originator_ref_ids and pinned_set != originator_ref_ids:
+            derived_str = ", ".join(
+                sorted(
+                    handle_registry.format_handle("paper", r)
+                    for r in originator_ref_ids
+                )
+            )
+            lines.append(f"  (pinned; derived: {derived_str})")
+
     return "\n".join(lines)
 
 
 def _mine_claim_hub_ids(
     store: Any, span: list[_Chunk], *, exclude_ref_id: int
-) -> list[int]:
-    """First-seen-ordered claim-hub ref_ids cited via ``[pub_id]`` in
-    ``span`` (Taproot slice R1) — the ring's ``resolve_link_targets`` walk
-    doesn't mine this placeholder grammar, so it's mined here separately.
-    A pub_id that resolves to nothing, or to a non-hub finding, is skipped
-    — left to the existing (currently: invisible) behaviour."""
+) -> list[tuple[int, str | None, list[str]]]:
+    """First-seen-ordered ``(hub_ref_id, pin_op, pin_handles)`` cited via
+    ``[pub_id]`` (optionally pinned, Taproot slice A2: ``[pub_id>…]`` /
+    ``[pub_id+…]``) in ``span`` (Taproot slice R1) — the ring's
+    ``resolve_link_targets`` walk doesn't mine this placeholder grammar,
+    so it's mined here separately. A pub_id that resolves to nothing, or
+    to a non-hub finding, is skipped — left to the existing (currently:
+    invisible) behaviour. ``pin_op`` is ``None`` for a bare (unpinned)
+    cite."""
     seen: set[int] = set()
-    ordered: list[int] = []
+    ordered: list[tuple[int, str | None, list[str]]] = []
     for c in span:
-        for pub_id in PLACEHOLDER_RE.findall(c.text or ""):
+        for match in PLACEHOLDER_RE.finditer(c.text or ""):
+            # Decode via the one shared parser `resolve` also uses, rather
+            # than hand-rolling the group split here.
+            parsed = parse_pin(match.group(0))
+            assert parsed is not None  # PLACEHOLDER_RE already matched this span
+            pub_id, op, handles = parsed
             lookup = lookup_pub_id_finding(store, pub_id)
             if lookup is None or not lookup["is_hub"]:
                 continue
@@ -181,23 +253,75 @@ def _mine_claim_hub_ids(
             if hub_ref_id == exclude_ref_id or hub_ref_id in seen:
                 continue
             seen.add(hub_ref_id)
-            ordered.append(hub_ref_id)
+            ordered.append((hub_ref_id, op, handles))
     return ordered
 
 
+def _resolve_pin_paper_ref_ids(store: Any, handles: list[str]) -> list[int]:
+    """Resolve pin handles (Taproot slice A2) to paper ref_ids for the
+    ring's render-only marking — a ``pc<id>`` (passage) handle resolves to
+    its parent paper, same as ``precis resolve``'s
+    :func:`~precis.cli.resolve._resolve_pin_handle`. Best-effort: an
+    unresolvable handle is silently skipped (the ring only *reflects* a
+    pin, it doesn't gate anything on it — ``precis resolve`` is where an
+    unresolvable pin gets a warning)."""
+    ref_ids: list[int] = []
+    seen: set[int] = set()
+    for handle in handles:
+        resolved = store.resolve_handle(handle)
+        if resolved is None or getattr(resolved, "kind", None) != "paper":
+            continue
+        ref_id = int(resolved.ref_id)
+        if ref_id in seen:
+            continue
+        seen.add(ref_id)
+        ref_ids.append(ref_id)
+    return ref_ids
+
+
 def _render_claims_group(
-    store: Any, hub_ref_ids: list[int], *, cap: int
+    store: Any,
+    hub_cites: list[tuple[int, str | None, list[str]]],
+    *,
+    cap: int,
 ) -> list[tuple[int, str]]:
-    if not hub_ref_ids:
+    if not hub_cites:
         return []
+    hub_ref_ids = [hub_ref_id for hub_ref_id, _op, _handles in hub_cites]
     refs = store.fetch_refs_by_ids(hub_ref_ids)
+
+    # Resolve every pin up front so a pinned paper's title is available for
+    # the "surfaced even though not derived evidence" line, one batch fetch
+    # rather than N per-hub round trips.
+    pins: dict[int, list[int]] = {}
+    all_pinned_ref_ids: set[int] = set()
+    for hub_ref_id, op, handles in hub_cites:
+        if op is None:
+            continue
+        pinned_ref_ids = _resolve_pin_paper_ref_ids(store, handles)
+        pins[hub_ref_id] = pinned_ref_ids
+        all_pinned_ref_ids.update(pinned_ref_ids)
+    pin_labels: dict[int, str] = {}
+    if all_pinned_ref_ids:
+        pinned_refs = store.fetch_refs_by_ids(list(all_pinned_ref_ids))
+        for ref_id, pref in pinned_refs.items():
+            handle = handle_registry.format_handle("paper", ref_id)
+            title = " ".join((getattr(pref, "title", None) or "").split())
+            pin_labels[ref_id] = f"{handle} — {title}" if title else handle
+
     entries: list[tuple[int, str]] = []
-    for hub_ref_id in hub_ref_ids:
+    for hub_ref_id, op, _handles in hub_cites:
         ref = refs.get(hub_ref_id)
         if ref is None or getattr(ref, "deleted_at", None) is not None:
             continue
         evidence = derive_evidence(store, hub_ref_id)
-        entries.append((hub_ref_id, _claim_block(ref, evidence, cap=cap)))
+        pin = (op, pins[hub_ref_id]) if op is not None else None
+        entries.append(
+            (
+                hub_ref_id,
+                _claim_block(ref, evidence, cap=cap, pin=pin, pin_labels=pin_labels),
+            )
+        )
     return entries
 
 

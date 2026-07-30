@@ -179,6 +179,14 @@ originator or a claim merge improves the `.bib` output on the next
 `resolve`, with no re-cite needed. Multiple originators render as one
 multi-key cite: `\cite{a,b}` / `[a; b]`.
 
+**Pin it inline** to override the living default (Taproot slice A2, no
+storage — the pin lives in the token): `[<pub_id>>pa5,pc293]` cites
+exactly those handles (replace); `[<pub_id>+pa5]` cites the derived
+originators plus those (supplement, deduped). A `pc<id>` (paper-chunk)
+handle pins a passage but resolves to its parent paper's cite_key. A
+pin diverging from the current derivation prints a stderr advisory
+(`--strict-pins` turns that into a CI-gate exit 3).
+
 ## Use a finding in your draft
 
 Drop the id in square brackets:

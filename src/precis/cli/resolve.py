@@ -29,6 +29,23 @@ time:
   originators render as a multi-key cite: ``\\cite{a,b}`` (LaTeX) /
   ``[a; b]`` (plain/markdown).
 
+  **Authorial pin (Taproot slice A2).** The living default can be
+  overridden inline: ``[<pub_id>>pa5,pc293]`` cites exactly those
+  universal handles instead of the derived originators (**replace**);
+  ``[<pub_id>+pa5]`` cites the derived originators *plus* those
+  (**supplement**, deduped). A ``pc<id>`` (paper-chunk/passage) handle
+  resolves to its parent paper's cite_key. Purely syntactic — no
+  storage, no draft-side edge. When a **replace** pin diverges from the
+  current derived ``establishes`` set, a stderr advisory fires
+  (``resolve: [<pub_id>] pinned {...} but derived originator is {...}
+  — reconsider``); ``--strict-pins`` turns that into a CI-gate exit 3.
+  A **supplement** pin is purely additive and has no divergence concept
+  — it never fires the advisory or trips ``--strict-pins``. A pin on a
+  non-hub finding is meaningless and is ignored (with a warning); an
+  unresolvable pinned handle is skipped (with a warning), and an empty
+  ``>``-replace set falls through to the normal hub resolution rather
+  than dropping the citation.
+
 In-flight visibility markers (deliberately obvious during proof-
 reading so authors don't ship placeholders by accident):
 
@@ -59,8 +76,10 @@ from typing import Any
 from precis.cli._common import resolve_dsn
 from precis.store import Store
 from precis.taproot.seniority import EvidenceEdge, HubEvidence, derive_evidence
+from precis.utils import handle_registry
 from precis.utils.pub_id_lookup import PLACEHOLDER_RE as _PLACEHOLDER_RE
 from precis.utils.pub_id_lookup import lookup_pub_id_finding as _lookup_pub_id_finding
+from precis.utils.pub_id_lookup import parse_pin as _parse_pin
 
 # Render markers for in-flight findings. Unicode default; ASCII
 # fallback via --ascii so LaTeX targets without xetex/luatex still
@@ -114,6 +133,15 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "established findings as in-flight. Implies --strict. "
         "Use when a manuscript requires every cite chain to have "
         "been human-reviewed via ``precis verify``.",
+    )
+    p.add_argument(
+        "--strict-pins",
+        action="store_true",
+        help="Exit code 3 if any authorial pin (Taproot slice A2, "
+        "``[<pub_id>>...]`` / ``[<pub_id>+...]``) diverges from the "
+        "current derived originator(s). Mirrors --strict-verified but "
+        "for author overrides — use as a CI gate to catch a pin gone "
+        "stale after the evidence graph moved on.",
     )
     p.add_argument(
         "--keep-id",
@@ -174,6 +202,12 @@ def run(args: argparse.Namespace) -> None:
             f"resolve: [{pub_id}] {status}: {detail}",
             file=sys.stderr,
         )
+    # Pin divergence advisories (Taproot slice A2) — a distinct format
+    # from the generic warnings above, always shown regardless of
+    # --strict-pins (advisory by default; the flag only affects the
+    # exit code).
+    for message in summary.pin_divergences:
+        print(f"resolve: {message}", file=sys.stderr)
 
     if args.bib and args.format == "latex" and summary.inflight_pub_ids:
         Path(args.bib).write_text(_emit_stub_bib(summary.inflight_pub_ids))
@@ -201,6 +235,13 @@ def run(args: argparse.Namespace) -> None:
         print(
             f"resolve: {flag}: {len(summary.inflight_pub_ids)} "
             "placeholder(s) still in flight; exiting 3",
+            file=sys.stderr,
+        )
+        sys.exit(3)
+    if args.strict_pins and summary.diverged_pub_ids:
+        print(
+            f"resolve: --strict-pins: {len(summary.diverged_pub_ids)} "
+            "pin divergence(s); exiting 3",
             file=sys.stderr,
         )
         sys.exit(3)
@@ -254,6 +295,12 @@ class _Summary:
         self.inflight_pub_ids: list[str] = []
         self.dead_pub_ids: list[str] = []
         self.resolved_count: int = 0
+        # Taproot slice A2 (authorial cite pinning): a pin diverging from
+        # the current derived `establishes` set. `pin_divergences` holds
+        # ready-to-print stderr lines (advisory, always shown);
+        # `diverged_pub_ids` is what --strict-pins gates the exit code on.
+        self.pin_divergences: list[str] = []
+        self.diverged_pub_ids: list[str] = []
 
 
 def _resolve_text(
@@ -273,23 +320,34 @@ def _resolve_text(
     """
     summary = _Summary()
     lookups: dict[str, dict[str, Any] | None] = {}
-    hub_cache: dict[str, tuple[list[str], list[tuple[str, str]]]] = {}
+    hub_evidence_cache: dict[str, HubEvidence] = {}
+    hub_keys_cache: dict[str, tuple[list[str], list[tuple[str, str]]]] = {}
 
     def _lookup(pub_id: str) -> dict[str, Any] | None:
         if pub_id not in lookups:
             lookups[pub_id] = _lookup_finding(store, pub_id)
         return lookups[pub_id]
 
+    def _evidence_for(pub_id: str, hub_ref_id: int) -> HubEvidence:
+        if pub_id not in hub_evidence_cache:
+            hub_evidence_cache[pub_id] = derive_evidence(store, hub_ref_id)
+        return hub_evidence_cache[pub_id]
+
     def _lookup_hub_keys(
         pub_id: str, hub_ref_id: int
     ) -> tuple[list[str], list[tuple[str, str]]]:
-        if pub_id not in hub_cache:
-            evidence = derive_evidence(store, hub_ref_id)
-            hub_cache[pub_id] = _hub_evidence_cite_keys(store, evidence)
-        return hub_cache[pub_id]
+        if pub_id not in hub_keys_cache:
+            evidence = _evidence_for(pub_id, hub_ref_id)
+            hub_keys_cache[pub_id] = _hub_evidence_cite_keys(store, evidence)
+        return hub_keys_cache[pub_id]
 
     def _sub(match: re.Match[str]) -> str:
-        pub_id = match.group(1)
+        # Taproot slice A2: decode the token (pub_id + optional pin) via
+        # the one shared parser both `resolve` and the reference ring use,
+        # rather than hand-rolling the group split here.
+        parsed = _parse_pin(match.group(0))
+        assert parsed is not None  # PLACEHOLDER_RE already matched this span
+        pub_id, pin_op, pin_handles = parsed
         finding = _lookup(pub_id)
         if finding is None:
             # No finding with this pub_id (or it's a different kind).
@@ -307,6 +365,18 @@ def _resolve_text(
             cite_keys, notes = _lookup_hub_keys(pub_id, finding["ref_id"])
             for note_status, detail in notes:
                 summary.warnings.append((pub_id, note_status, detail))
+            if pin_op is not None:
+                # Authorial pin (Taproot slice A2) — override or extend
+                # the living default, syntactically, no storage.
+                cite_keys = _apply_pin(
+                    store,
+                    pub_id=pub_id,
+                    op=pin_op,
+                    handles=pin_handles,
+                    derived_cite_keys=cite_keys,
+                    evidence=_evidence_for(pub_id, finding["ref_id"]),
+                    summary=summary,
+                )
             if not cite_keys:
                 summary.inflight_pub_ids.append(pub_id)
                 summary.warnings.append(
@@ -319,6 +389,19 @@ def _resolve_text(
                 return _render_inflight(pub_id, format, ascii_mode)
             summary.resolved_count += 1
             return _render_established_multi(cite_keys, format)
+        if pin_op is not None:
+            # A pin on a non-hub finding is meaningless — the finding
+            # already resolves off its own primary_cite_key, there's no
+            # "derived originator" set to override. Warn and resolve
+            # normally rather than erroring.
+            summary.warnings.append(
+                (
+                    pub_id,
+                    "pin-ignored",
+                    "pin only applies to a Taproot claim hub cite — "
+                    "ignored for a regular finding",
+                )
+            )
         status = finding["status"] or "tracing"
         if status == "established":
             primary = finding.get("primary_cite_key")
@@ -458,6 +541,126 @@ def _hub_evidence_cite_keys(
         return corroborator_keys, notes
 
     return [], notes
+
+
+def _resolve_pin_handle(store: Store, handle: str) -> tuple[int, str] | None:
+    """Resolve one authorial pin handle (Taproot slice A2) to
+    ``(paper_ref_id, cite_key)``.
+
+    A ``pc<id>`` (paper-chunk/passage) handle resolves to its **parent
+    paper** — the ``.bib`` is paper-level, so pinning a passage means
+    "grounded at this figure," not a separate citable unit.
+    :func:`~precis.store.Store.resolve_handle` already does that
+    parent-lookup for a chunk handle (``ResolvedHandle.ref_id`` is the
+    owning ref), so this reuses it rather than hand-rolling chunk→paper
+    resolution.
+
+    ``None`` when the handle isn't well-formed, doesn't resolve to a
+    live paper, or that paper has no ``cite_key`` alias — the caller
+    warns and skips.
+    """
+    resolved = store.resolve_handle(handle)
+    if resolved is None or resolved.kind != "paper":
+        return None
+    aliases = store.ref_cite_keys(resolved.ref_id)
+    if not aliases:
+        return None
+    return resolved.ref_id, aliases[0]
+
+
+def _apply_pin(
+    store: Store,
+    *,
+    pub_id: str,
+    op: str,
+    handles: list[str],
+    derived_cite_keys: list[str],
+    evidence: HubEvidence,
+    summary: _Summary,
+) -> list[str]:
+    """Apply an authorial pin (Taproot slice A2) to a hub's derived
+    cite_keys — ``op`` is ``'>'`` (replace) or ``'+'`` (supplement).
+
+    Resolves each pinned handle (:func:`_resolve_pin_handle`, deduped by
+    paper ref_id, first-seen order), warning + skipping an unresolvable
+    one. Records a divergence advisory on ``summary`` when the pinned
+    paper set differs from the hub's *actually derived* ``establishes``
+    originators (not the corroborator-fallback set — a pin only
+    "diverges" from a real seniority split) — **replace (``>``) only**.
+    A supplement (``+``) pin is purely additive ("derived plus these"),
+    so its handle set legitimately differs from the full derived set on
+    every normal use; it has no divergence concept and never fires the
+    advisory or trips ``--strict-pins``.
+
+    ``'>'`` (replace) with an empty resolved pin set falls back to
+    ``derived_cite_keys`` unchanged, with a warning — a citation must
+    never silently disappear because a pin went stale.
+    """
+    pinned: list[tuple[int, str]] = []
+    seen_ref_ids: set[int] = set()
+    for handle in handles:
+        resolved = _resolve_pin_handle(store, handle)
+        if resolved is None:
+            summary.warnings.append(
+                (
+                    pub_id,
+                    "pin",
+                    f"pinned handle {handle} did not resolve to a cited "
+                    "paper — skipped",
+                )
+            )
+            continue
+        ref_id, cite_key = resolved
+        if ref_id in seen_ref_ids:
+            continue
+        seen_ref_ids.add(ref_id)
+        pinned.append((ref_id, cite_key))
+
+    pinned_ref_ids = {ref_id for ref_id, _ in pinned}
+    pinned_keys = [cite_key for _, cite_key in pinned]
+
+    if op == ">":
+        # Divergence advisory — replace only (see docstring: a supplement
+        # pin has no divergence concept).
+        originator_ref_ids = {edge.paper_ref_id for edge in evidence.originators}
+        if (
+            pinned_ref_ids
+            and originator_ref_ids
+            and pinned_ref_ids != originator_ref_ids
+        ):
+            pinned_str = ", ".join(
+                sorted(
+                    handle_registry.format_handle("paper", r) for r in pinned_ref_ids
+                )
+            )
+            derived_str = ", ".join(
+                sorted(
+                    handle_registry.format_handle("paper", r)
+                    for r in originator_ref_ids
+                )
+            )
+            summary.pin_divergences.append(
+                f"[{pub_id}] pinned {{{pinned_str}}} but derived originator "
+                f"is {{{derived_str}}} — reconsider"
+            )
+            summary.diverged_pub_ids.append(pub_id)
+
+        if pinned_keys:
+            return pinned_keys
+        summary.warnings.append(
+            (
+                pub_id,
+                "pin",
+                "replace pin resolved to no usable cite_keys — falling "
+                "back to derived hub resolution",
+            )
+        )
+        return derived_cite_keys
+    # op == "+": supplement — derived originators first, pinned appended,
+    # deduped by cite_key, deterministic (pin order after derived order).
+    return derived_cite_keys + [
+        key for key in pinned_keys if key not in derived_cite_keys
+    ]
 
 
 def _render_established(primary_cite_key: str, format: str) -> str:

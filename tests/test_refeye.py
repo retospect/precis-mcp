@@ -13,6 +13,7 @@ from precis.dispatch import Hub
 from precis.handlers.plan import PlanHandler
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import attach_evidence, mint_hub
+from precis.utils import handle_registry
 from precis.utils.fisheye import render_fisheye
 from precis.utils.refeye import render_reference_ring
 
@@ -271,3 +272,155 @@ def test_ring_claims_group_falls_back_to_corroborators_when_undetermined(
     assert "no originator derived yet" in ring
     assert "Supporter A" in ring and "Supporter B" in ring
     assert "★" not in ring
+
+
+# ── Claims group — authorial pin marker (Taproot slice A2) ─────────────
+
+
+def test_ring_claims_group_marks_pinned_paper(hub: Hub, plan: PlanHandler) -> None:
+    """A ``[<pub_id>>...]`` replace pin naming the derived originator
+    itself just marks it 📌 (no divergence — pin matches the derived
+    set)."""
+    store = hub.store
+    claim_hub = mint_hub(store, _CLAIM)
+    originator = store.insert_ref(
+        kind="paper", slug="pinorig1", title="The pinned original report", year=2001
+    ).id
+    follower = store.insert_ref(
+        kind="paper", slug="pinfoll1", title="Follows the original", year=2005
+    ).id
+    attach_evidence(
+        store, hub_ref_id=claim_hub, paper_ref_id=originator, role="corroborates"
+    )
+    attach_evidence(
+        store, hub_ref_id=claim_hub, paper_ref_id=follower, role="corroborates"
+    )
+    _cites(store, src=follower, dst=originator)
+
+    pub_id = _hub_pub_id(store, claim_hub)
+    origin_handle = handle_registry.format_handle("paper", originator)
+    sec_chunk, chunks = _plan_section_citing(
+        hub, plan, f"This claim is grounded: [{pub_id}>{origin_handle}]."
+    )
+
+    ring = render_reference_ring(store, sec_chunk, chunks)
+
+    assert "Claims:" in ring
+    assert "📌" in ring
+    assert "(pinned; derived:" not in ring  # pin matches derived — no divergence note
+
+
+def test_ring_claims_group_notes_pin_divergence(hub: Hub, plan: PlanHandler) -> None:
+    """A pin naming a *different* paper than the derived originator gets
+    both the 📌 marker (surfaced even though it isn't part of the derived
+    evidence) and a short divergence note."""
+    store = hub.store
+    claim_hub = mint_hub(store, _CLAIM)
+    originator = store.insert_ref(
+        kind="paper", slug="divorig1", title="The original report", year=2001
+    ).id
+    follower = store.insert_ref(
+        kind="paper", slug="divfoll1", title="Follows the original", year=2005
+    ).id
+    pinned_paper = store.insert_ref(
+        kind="paper", slug="divpin1", title="Author's pick", year=2010
+    ).id
+    attach_evidence(
+        store, hub_ref_id=claim_hub, paper_ref_id=originator, role="corroborates"
+    )
+    attach_evidence(
+        store, hub_ref_id=claim_hub, paper_ref_id=follower, role="corroborates"
+    )
+    _cites(store, src=follower, dst=originator)
+
+    pub_id = _hub_pub_id(store, claim_hub)
+    pinned_handle = handle_registry.format_handle("paper", pinned_paper)
+    sec_chunk, chunks = _plan_section_citing(
+        hub, plan, f"This claim is grounded: [{pub_id}>{pinned_handle}]."
+    )
+
+    ring = render_reference_ring(store, sec_chunk, chunks)
+
+    assert "Claims:" in ring
+    assert "📌" in ring
+    assert "Author's pick" in ring  # surfaced even though not derived evidence
+    assert "(pinned; derived:" in ring
+    origin_handle = handle_registry.format_handle("paper", originator)
+    assert origin_handle in ring
+
+
+def test_ring_claims_group_supplement_pin_never_notes_divergence(
+    hub: Hub, plan: PlanHandler
+) -> None:
+    """A `+` supplement pin naming a paper the derivation never picked is
+    correct usage (derived plus this), not a divergence — only `>` gets
+    the `(pinned; derived: ...)` note."""
+    store = hub.store
+    claim_hub = mint_hub(store, _CLAIM)
+    originator = store.insert_ref(
+        kind="paper", slug="supporig1", title="The original report", year=2001
+    ).id
+    follower = store.insert_ref(
+        kind="paper", slug="supfoll1", title="Follows the original", year=2005
+    ).id
+    pinned_paper = store.insert_ref(
+        kind="paper", slug="suppin1", title="Extra evidence", year=2010
+    ).id
+    attach_evidence(
+        store, hub_ref_id=claim_hub, paper_ref_id=originator, role="corroborates"
+    )
+    attach_evidence(
+        store, hub_ref_id=claim_hub, paper_ref_id=follower, role="corroborates"
+    )
+    _cites(store, src=follower, dst=originator)
+
+    pub_id = _hub_pub_id(store, claim_hub)
+    pinned_handle = handle_registry.format_handle("paper", pinned_paper)
+    sec_chunk, chunks = _plan_section_citing(
+        hub, plan, f"This claim is grounded: [{pub_id}+{pinned_handle}]."
+    )
+
+    ring = render_reference_ring(store, sec_chunk, chunks)
+
+    assert "Claims:" in ring
+    assert "📌" in ring  # still marked as pinned/cited
+    assert "Extra evidence" in ring
+    assert "(pinned; derived:" not in ring  # supplement never diverges
+
+
+def test_ring_claims_group_pin_overflow_gets_more_line(
+    hub: Hub, plan: PlanHandler
+) -> None:
+    """More pinned-but-not-derived-evidence papers than `cap` still get a
+    visible `+N more` line — the ring never silently truncates (§6)."""
+    store = hub.store
+    claim_hub = mint_hub(store, _CLAIM)
+    originator = store.insert_ref(
+        kind="paper", slug="ovorig1", title="The original report", year=2001
+    ).id
+    follower = store.insert_ref(
+        kind="paper", slug="ovfoll1", title="Follows the original", year=2005
+    ).id
+    attach_evidence(
+        store, hub_ref_id=claim_hub, paper_ref_id=originator, role="corroborates"
+    )
+    attach_evidence(
+        store, hub_ref_id=claim_hub, paper_ref_id=follower, role="corroborates"
+    )
+    _cites(store, src=follower, dst=originator)
+
+    extra_papers = [
+        store.insert_ref(kind="paper", slug=f"ovextra{i}", title=f"Extra {i}").id
+        for i in range(10)
+    ]
+    pub_id = _hub_pub_id(store, claim_hub)
+    handles = ",".join(handle_registry.format_handle("paper", r) for r in extra_papers)
+    sec_chunk, chunks = _plan_section_citing(
+        hub, plan, f"This claim is grounded: [{pub_id}+{handles}]."
+    )
+
+    ring = render_reference_ring(store, sec_chunk, chunks, cap=8)
+
+    assert "Claims:" in ring
+    assert "📌" in ring
+    assert "+2 more — focus to expand" in ring  # 10 extra pins - cap 8

@@ -11,6 +11,23 @@ agree on what it resolves to:
 
 Factored here so both agree on the regex + the ``ref_identifiers`` /
 ``TAPROOT:claim`` lookup rather than drifting apart.
+
+**Authorial cite pinning (Taproot slice A2).** A hub cite is a *living
+default* — it resolves to whatever ``seniority.derive_evidence`` currently
+derives. An author can pin it inside the token itself (syntactic, no
+storage, no draft-side edge — we own the rendering so the grammar is
+ours):
+
+- ``[<pub_id>>pa5,pc293]`` — **replace**: cite exactly these handles,
+  overriding the derived originators.
+- ``[<pub_id>+pa5]`` — **supplement**: the derived originators plus these
+  (deduped).
+
+Handles are universal handles (:mod:`precis.utils.handle_registry`):
+``pa5`` names a paper, ``pc293`` a paper *chunk*/passage — a passage
+handle resolves to its parent paper's cite_key (the ``.bib`` is
+paper-level; the passage granularity is the author saying "grounded at
+this figure"). A plain ``[pub_id]`` (no pin) parses exactly as before.
 """
 
 from __future__ import annotations
@@ -20,11 +37,38 @@ from typing import Any
 
 from precis.taproot.canon import TAPROOT_CLAIM, TAPROOT_NAMESPACE
 
-#: Placeholder grammar: ``[<6 base32 lowercase chars>]``. The same
+#: Placeholder grammar: ``[<6 base32 lowercase chars>]`` — the same
 #: alphabet :func:`precis.identity.make_pub_id` produces, so any pub id
 #: ever minted matches and bracketed strings of other shapes (cite keys,
-#: S2 ids, prose ALL-CAPS) don't.
-PLACEHOLDER_RE = re.compile(r"\[([a-z2-7]{6})\]")
+#: S2 ids, prose ALL-CAPS) don't — plus an optional **pin** (Taproot slice
+#: A2): an op char (``>`` replace / ``+`` supplement) followed by a
+#: comma-separated list of universal handles (``pa5``, ``pc293``, …).
+#: Group 1 = pub_id, group 2 = op or ``None``, group 3 = the raw
+#: comma-separated handle list or ``None``. A bare ``[pub_id]`` (no pin)
+#: leaves groups 2/3 ``None``, matching the pre-A2 grammar exactly.
+PLACEHOLDER_RE = re.compile(
+    r"\[([a-z2-7]{6})(?:([>+])([a-z]{2}[0-9]+(?:,[a-z]{2}[0-9]+)*))?\]"
+)
+
+
+def parse_pin(
+    token: str,
+) -> tuple[str, str | None, list[str]] | None:
+    """Decode a full placeholder token (e.g. ``[ab12c3>pa5,pc293]``) into
+    ``(pub_id, op, handles)``.
+
+    ``op`` is ``'>'`` (replace) / ``'+'`` (supplement) / ``None`` (no
+    pin — a plain ``[pub_id]``). ``handles`` is the comma-split handle
+    list, empty when there's no pin. Returns ``None`` when ``token``
+    isn't a well-formed placeholder at all (callers that already matched
+    via :data:`PLACEHOLDER_RE` won't hit this).
+    """
+    m = PLACEHOLDER_RE.fullmatch(token)
+    if m is None:
+        return None
+    pub_id, op, handles_raw = m.group(1), m.group(2), m.group(3)
+    handles = handles_raw.split(",") if handles_raw else []
+    return pub_id, op, handles
 
 
 def lookup_pub_id_finding(store: Any, pub_id: str) -> dict[str, Any] | None:
@@ -80,4 +124,4 @@ def lookup_pub_id_finding(store: Any, pub_id: str) -> dict[str, Any] | None:
     }
 
 
-__all__ = ["PLACEHOLDER_RE", "lookup_pub_id_finding"]
+__all__ = ["PLACEHOLDER_RE", "lookup_pub_id_finding", "parse_pin"]

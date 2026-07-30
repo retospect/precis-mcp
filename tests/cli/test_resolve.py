@@ -16,11 +16,15 @@ the ordinary ``primary_cite_key`` path.
 
 from __future__ import annotations
 
+import argparse
 from typing import Any
 
-from precis.cli.resolve import _lookup_finding, _resolve_text
+import pytest
+
+from precis.cli.resolve import _lookup_finding, _resolve_text, add_parser, run
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import attach_evidence, mint_hub
+from precis.utils import handle_registry
 
 _CLAIM = CanonicalClaim(
     sentence="Pd/C catalyzes Suzuki coupling at room temperature with a mild base.",
@@ -283,3 +287,296 @@ def test_non_hub_finding_still_uses_primary_cite_key(store: Any) -> None:
     assert "[plain23a]" in out
     assert summary.resolved_count == 1
     assert paper_ref.id > 0  # sanity: paper actually landed
+
+
+# ── Taproot slice A2 — authorial cite pinning ─────────────────────────
+#
+# A hub cite is a *living default* — resolves to the current derived
+# `establishes` set. An author can pin it inline: `[<pub_id>>...]`
+# (replace) / `[<pub_id>+...]` (supplement). Purely syntactic — no
+# storage, no draft-side edge.
+
+
+def _paper_chunk(store: Any, ref_id: int, *, ord: int = 0) -> int:
+    """Insert a minimal body chunk directly (no ingest pipeline needed) so
+    a `pc<chunk_id>` passage handle has something real to resolve to."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+            "VALUES (%s, %s, 'paragraph', %s) RETURNING chunk_id",
+            (ref_id, ord, "a grounded passage"),
+        ).fetchone()
+        conn.commit()
+    assert row is not None
+    return int(row[0])
+
+
+def _hub_with_derived_originator(
+    store: Any, *, origin_key: str, follow_key: str
+) -> tuple[str, int]:
+    """A hub whose derived `establishes` originator is the paper
+    `origin_key` — mirrors the A1 fixture shape the divergence/replace/
+    supplement tests all start from. Returns ``(pub_id, origin_ref_id)``."""
+    hub = mint_hub(store, _CLAIM)
+    pub_id = _hub_pub_id(store, hub)
+    origin = _paper(store, cite_key=origin_key, title="Original report", year=2001)
+    follow = _paper(store, cite_key=follow_key, title="Follow-up", year=2005)
+    attach_evidence(store, hub_ref_id=hub, paper_ref_id=origin, role="corroborates")
+    attach_evidence(store, hub_ref_id=hub, paper_ref_id=follow, role="corroborates")
+    _cites(store, src=follow, dst=origin)  # follow cites origin -> origin is originator
+    return pub_id, origin
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    add_parser(sub)
+    return parser
+
+
+def test_pin_replace_cites_pinned_handle_not_derived_originator(store: Any) -> None:
+    pub_id, _origin = _hub_with_derived_originator(
+        store, origin_key="orig30a", follow_key="foll30a"
+    )
+    pinned = _paper(store, cite_key="pin30a", title="Author's pick")
+    handle = handle_registry.format_handle("paper", pinned)
+
+    out, summary = _resolve(store, f"[{pub_id}>{handle}]", format="plain")
+
+    assert "[pin30a]" in out
+    assert "orig30a" not in out
+    assert summary.resolved_count == 1
+
+
+def test_pin_supplement_adds_to_derived_originators(store: Any) -> None:
+    pub_id, _origin = _hub_with_derived_originator(
+        store, origin_key="orig31a", follow_key="foll31a"
+    )
+    pinned = _paper(store, cite_key="pin31a", title="Extra evidence")
+    handle = handle_registry.format_handle("paper", pinned)
+
+    out, summary = _resolve(store, f"[{pub_id}+{handle}]", format="plain")
+
+    assert "[orig31a; pin31a]" in out
+    assert summary.resolved_count == 1
+    # A supplement is purely additive — its handle set (just pin31a) always
+    # differs from the full derived originator set (orig31a), and that must
+    # NOT be flagged as a divergence (supplement has no divergence concept).
+    assert summary.pin_divergences == []
+    assert summary.diverged_pub_ids == []
+
+
+def test_pin_supplement_never_diverges_even_when_handles_differ_from_derived(
+    store: Any,
+) -> None:
+    """Regression for the reviewed bug: a supplement pin whose own handles
+    differ from the full derived `establishes` set is correct usage, not a
+    divergence — `+` never fires the advisory, only `>` does."""
+    pub_id, origin = _hub_with_derived_originator(
+        store, origin_key="orig41a", follow_key="foll41a"
+    )
+    pinned = _paper(store, cite_key="pin41a", title="Extra evidence")
+    handle = handle_registry.format_handle("paper", pinned)
+
+    _out, summary = _resolve(store, f"[{pub_id}+{handle}]", format="plain")
+
+    assert summary.pin_divergences == []
+    assert summary.diverged_pub_ids == []
+    assert origin > 0  # sanity: the derived originator really differs from pin41a
+
+
+def test_strict_pins_does_not_exit_on_supplement_pin(store: Any) -> None:
+    """A `--strict-pins` run over a legitimate supplement pin must exit 0 —
+    supplement never diverges, so it never trips the gate."""
+    pub_id, _origin = _hub_with_derived_originator(
+        store, origin_key="orig42a", follow_key="foll42a"
+    )
+    pinned = _paper(store, cite_key="pin42a", title="Extra evidence")
+    handle = handle_registry.format_handle("paper", pinned)
+
+    ns = _parser().parse_args(
+        [
+            "resolve",
+            "--text",
+            f"[{pub_id}+{handle}]",
+            "--strict-pins",
+            "--database-url",
+            store.pool.conninfo,
+        ]
+    )
+    run(ns)  # must not raise SystemExit
+
+
+def test_pin_supplement_dedups_when_pin_matches_derived(store: Any) -> None:
+    pub_id, origin = _hub_with_derived_originator(
+        store, origin_key="orig32a", follow_key="foll32a"
+    )
+    handle = handle_registry.format_handle("paper", origin)
+
+    out, summary = _resolve(store, f"[{pub_id}+{handle}]", format="plain")
+
+    assert out.count("orig32a") == 1  # not duplicated
+    assert summary.resolved_count == 1
+
+
+def test_pin_passage_handle_resolves_to_parent_paper(store: Any) -> None:
+    pub_id, _origin = _hub_with_derived_originator(
+        store, origin_key="orig33a", follow_key="foll33a"
+    )
+    pinned = _paper(store, cite_key="pin33a", title="Grounded passage source")
+    chunk_id = _paper_chunk(store, pinned)
+    handle = f"pc{chunk_id}"
+
+    out, summary = _resolve(store, f"[{pub_id}>{handle}]", format="plain")
+
+    assert "[pin33a]" in out
+    assert summary.resolved_count == 1
+
+
+def test_pin_divergence_advisory_fires_when_pinned_differs_from_derived(
+    store: Any,
+) -> None:
+    pub_id, origin = _hub_with_derived_originator(
+        store, origin_key="orig34a", follow_key="foll34a"
+    )
+    pinned = _paper(store, cite_key="pin34a", title="Author's pick")
+    handle = handle_registry.format_handle("paper", pinned)
+
+    _out, summary = _resolve(store, f"[{pub_id}>{handle}]", format="plain")
+
+    assert summary.diverged_pub_ids == [pub_id]
+    assert len(summary.pin_divergences) == 1
+    message = summary.pin_divergences[0]
+    assert pub_id in message
+    assert "reconsider" in message
+    assert handle in message
+    assert handle_registry.format_handle("paper", origin) in message
+
+
+def test_pin_matching_derived_originator_no_divergence(store: Any) -> None:
+    pub_id, origin = _hub_with_derived_originator(
+        store, origin_key="orig35a", follow_key="foll35a"
+    )
+    handle = handle_registry.format_handle("paper", origin)
+
+    _out, summary = _resolve(store, f"[{pub_id}>{handle}]", format="plain")
+
+    assert summary.diverged_pub_ids == []
+    assert summary.pin_divergences == []
+
+
+def test_strict_pins_exits_nonzero_on_divergence(store: Any) -> None:
+    pub_id, _origin = _hub_with_derived_originator(
+        store, origin_key="orig36a", follow_key="foll36a"
+    )
+    pinned = _paper(store, cite_key="pin36a", title="Author's pick")
+    handle = handle_registry.format_handle("paper", pinned)
+
+    ns = _parser().parse_args(
+        [
+            "resolve",
+            "--text",
+            f"[{pub_id}>{handle}]",
+            "--strict-pins",
+            "--database-url",
+            store.pool.conninfo,
+        ]
+    )
+    with pytest.raises(SystemExit) as exc:
+        run(ns)
+    assert exc.value.code == 3
+
+
+def test_without_strict_pins_divergence_is_advisory_only(
+    store: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    pub_id, _origin = _hub_with_derived_originator(
+        store, origin_key="orig37a", follow_key="foll37a"
+    )
+    pinned = _paper(store, cite_key="pin37a", title="Author's pick")
+    handle = handle_registry.format_handle("paper", pinned)
+
+    ns = _parser().parse_args(
+        [
+            "resolve",
+            "--text",
+            f"[{pub_id}>{handle}]",
+            "--database-url",
+            store.pool.conninfo,
+        ]
+    )
+    run(ns)  # no SystemExit — advisory only
+
+    err = capsys.readouterr().err
+    assert "reconsider" in err
+
+
+def test_pin_unresolvable_handle_falls_back_to_derived_hub_resolution(
+    store: Any,
+) -> None:
+    pub_id, _origin = _hub_with_derived_originator(
+        store, origin_key="orig38a", follow_key="foll38a"
+    )
+    bogus_handle = "pa9999999"  # no such ref_id
+
+    out, summary = _resolve(store, f"[{pub_id}>{bogus_handle}]", format="plain")
+
+    assert "[orig38a]" in out
+    assert summary.resolved_count == 1
+    skip_notes = [
+        w for w in summary.warnings if w[0] == pub_id and "did not resolve" in w[2]
+    ]
+    assert skip_notes, f"missing pin-skip warning; got {summary.warnings}"
+    fallback_notes = [
+        w for w in summary.warnings if w[0] == pub_id and "falling back" in w[2]
+    ]
+    assert fallback_notes, f"missing pin-fallback warning; got {summary.warnings}"
+
+
+def test_pin_ignored_on_non_hub_finding(store: Any) -> None:
+    import re as _re
+
+    from precis.dispatch import Hub as DispatchHub
+    from precis.handlers.finding import FindingHandler
+    from precis.store.types import Tag
+
+    paper_ref = store.insert_ref(
+        kind="paper", slug="plain39a", title="a plain paper", meta={}
+    )
+    handler = FindingHandler(hub=DispatchHub(store=store))
+    resp = handler.put(title="t", body="b", scope={}, cited_in="plain39a")
+    ref_id = int(_re.search(r"id=(\d+)", resp.body).group(1))
+    pub_id = _re.search(r"pub_id=(\w+)", resp.body).group(1)
+    store.update_ref(ref_id, meta_patch={"primary_cite_key": "plain39a"})
+    store.add_tag(
+        ref_id,
+        Tag.closed("STATUS", "established"),
+        set_by="chase",
+        replace_prefix=True,
+    )
+
+    handle = handle_registry.format_handle("paper", paper_ref.id)
+    out, summary = _resolve(store, f"[{pub_id}>{handle}]", format="plain")
+
+    assert "[plain39a]" in out  # resolved normally, pin ignored
+    assert summary.resolved_count == 1
+    ignore_notes = [
+        w for w in summary.warnings if w[0] == pub_id and w[1] == "pin-ignored"
+    ]
+    assert ignore_notes, f"missing pin-ignored warning; got {summary.warnings}"
+
+
+def test_plain_pub_id_unaffected_by_extended_pin_regex(store: Any) -> None:
+    """Regression: the extended ``PLACEHOLDER_RE`` (Taproot slice A2)
+    still parses a bare, unpinned ``[pub_id]`` exactly as before."""
+    pub_id, origin = _hub_with_derived_originator(
+        store, origin_key="orig40a", follow_key="foll40a"
+    )
+
+    out, summary = _resolve(store, f"[{pub_id}]", format="plain")
+
+    assert "[orig40a]" in out
+    assert summary.resolved_count == 1
+    assert summary.pin_divergences == []
+    assert summary.diverged_pub_ids == []
+    assert origin > 0  # sanity
