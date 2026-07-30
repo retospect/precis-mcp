@@ -40,8 +40,13 @@ kind, so the ladder generalizes but its shape does not:
   corpus position to be a neighbor of) — ``toc``/``none`` collapse to a
   one-line bookmark, anything richer is the verbatim body.
 
-Ships dark; the composer (:func:`precis.utils.working_set_render`) dispatches
-non-tree eyes here.
+Wired for ``draft`` via ``src/precis/handlers/draft.py::DraftHandler.get``'s
+``extent=`` kwarg, which calls :func:`render_eye` directly. Not yet wired for ``plan``
+(``PlanHandler.get`` has no ``extent=`` kwarg and silently ignores one). The
+composer (:func:`precis.utils.working_set_render.render_working_set`) also
+dispatches non-tree eyes here, for multi-eye working-set assembly
+(planner/dream passes) — that composer's own eye-placement loop is
+worker-internal, not an agent-facing verb.
 """
 
 from __future__ import annotations

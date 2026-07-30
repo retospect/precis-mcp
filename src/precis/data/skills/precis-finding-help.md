@@ -149,6 +149,28 @@ search(kind="finding", q="...", status="tracing")
 search(kind="finding", q="...", status="*")  # all states
 ```
 
+## Find claim hubs — taproot's cross-paper evidence aggregation (opt-in)
+
+Behind `axis:taproot` (default-OFF; `PRECIS_AXES_ENABLED` /
+`/categorizers`), a finding classifies `TAPROOT:claim` (a grounded
+world-claim other papers' evidence can attach to) or `TAPROOT:review`
+(an editorial note on a draft, excluded from the claim graph).
+
+```python
+search(kind="finding", tags=["TAPROOT:claim"], status="*")  # every claim hub
+```
+
+A hub mints `STATUS:tracing` and stays there — pass `status='*'` or
+`status='tracing'`; the default `search` status filter (`established`)
+hides every hub. Drill one with `view='evidence'` (above).
+
+Hubs are **system-minted, not agent-created** — `put(kind='finding', ...)`
+makes a chase-target finding, never a claim hub. A hub + its evidence
+edges are populated by the chase's forward bridge, gated behind
+`PRECIS_TAPROOT_CHASE_ENABLED` (default-OFF — not yet run at corpus
+scale, so evidence is sparse/absent for now). Once minted, a hub carries
+its own `pub_id`, citable `[<pub_id>]`.
+
 ## Use a finding in your draft
 
 Drop the id in square brackets:

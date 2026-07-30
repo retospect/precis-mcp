@@ -16,8 +16,12 @@ Scope: the DraftMixin-backed tree kinds (``draft`` / ``plan``), which share
 (a different chunk-op family) is a follow-up.
 
 This module renders; it does **not** place or decay eyes (that is
-``workers.working_set`` + the fisheye slice's decay machinery). It ships dark
-until the render-loop wires it in.
+``workers.working_set`` + the fisheye slice's decay machinery).
+
+Wired for ``draft``: ``src/precis/handlers/draft.py::DraftHandler.get``'s
+``extent=`` kwarg dispatches through ``utils.eye_render.render_eye`` to
+:func:`render_fisheye`. Not yet wired for ``plan`` — ``PlanHandler.get`` has
+no ``extent=`` kwarg and silently ignores one if passed.
 """
 
 from __future__ import annotations

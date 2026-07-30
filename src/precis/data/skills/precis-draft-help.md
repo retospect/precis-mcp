@@ -490,6 +490,25 @@ or dropping it (`tag` off the `child-failed:` bubble + `STATUS:done`).
 This is how a failed enrichment job *registers on the draft* instead of
 silently stalling.
 
+## Focus a chunk with its neighborhood, not alone (fisheye)
+
+```python
+get(id="dc12", extent="kwd")  # ancestor path + one-line bookmark
+get(id="dc12", extent="summary")  # the chunk's gloss, alone
+get(id="dc12", extent="verbatim")  # the chunk's full text, alone
+get(id="dc12", extent="fisheye")  # verbatim center + reading-order neighbors
+get(id="dc12", extent="fisheye+1hop")  # fisheye + everything it points at
+```
+
+Each rung strictly contains the previous. `fisheye` adds a graduated,
+forward-biased span of the chunks around it (±5 full text, ±10 gloss, ±15
+bookmark) under its ancestor heading — so you read a section in context
+without pulling the whole draft. `fisheye+1hop` adds the reference ring:
+cited papers/patents/datasheets, cross-referenced `[dc…]`/`[¶…]` chunks,
+and notes linked to this one — grouped Cited / Cross-refs / Notes, one edge
+out. Only wired for `dc<id>`/`¶<base58>` chunk addresses on `kind='draft'`
+today, not `kind='plan'`.
+
 ## Change a chunk's text
 
 ```python
