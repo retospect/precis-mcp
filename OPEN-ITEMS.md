@@ -69,24 +69,6 @@ were **deferred** at user request ("ship only") — run them in a later session:
 
 ## Residuals (2026-07-30 — taproot authoring on-ramp ship 02af6721)
 
-- **Whole-draft taproot backfill (mint-then-link, cite as `[fi<id>]`)** ·
-  Status: open · Severity: feature · Owner: `src/precis/cli/taproot.py`. The A3
-  producer (`taproot/authoring.py::seed_claim_hub`, `precis taproot mint`) mints
-  one claim-set at a time from a hand-authored spec — proven end-to-end on
-  dc1547610 (hubs refs 176272–176275). Next: a `--draft <slug>`/`--chunk <dc>`
-  backfill that walks a chunk's existing `[pc…]` cites, clusters per-sentence
-  into candidate claims, mints hubs, and rewrites the prose `[pc…]`→`[fi<id>]`
-  (the citation surface — `[fi<id>]` the kind+serial handle, `pub_id` stays
-  the mint-time dedup key in `ref_identifiers`; the ring/write-hint/skills
-  already recognize it, shipped `766d39fc`). Dedup: exact-claim convergence is
-  free (deterministic pub_id); near-dup claims are **linked, not merged** via
-  `precis taproot refine` (the `refines` claim-link, shipped — advisory-only),
-  so the backfill mint-then-links rather than running a `canon` merge. Once
-  coverage grows, flip the citation skills' primary recipe to lead with
-  hub-cite — defaulting is downstream of coverage, and the backfill is the
-  coverage engine. · Test: a backfill dry-run over dc1547610 re-derives its 4
-  existing hubs, 0 new mints.
-
 - **Taproot chase forward-bridge PILOT — ⚡ LIVE (enabled 2026-07-31, gateway/system worker)** ·
   Status: monitoring · Severity: feature · Owner: `precis_worker` deploy role + melchior
   host_var + `src/precis/workers/chase.py::_taproot_bridge` (chase.py:1157). The

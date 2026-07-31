@@ -2,7 +2,7 @@
 id: precis-taproot-help
 title: precis — the cross-paper claim-evidence graph (Taproot)
 summary: claim hubs (finding tagged TAPROOT:claim) aggregate many papers as typed evidence edges; [fi<id>] is a living citation that resolves to the current best originator(s)
-applies-to: get/search (kind='finding', tags=['TAPROOT:claim'], view='evidence'); citing [fi<id>] in prose; precis taproot mint / refine
+applies-to: get/search (kind='finding', tags=['TAPROOT:claim'], view='evidence'); citing [fi<id>] in prose; precis taproot mint / refine / backfill
 status: active
 ---
 
@@ -88,6 +88,31 @@ the hub for the specific claim your sentence makes, not just "the hub
 near this chunk."
 
 ## Turn a draft's [pc<id>] cites into a hub cite
+
+Most legacy prose cites raw paper chunks (`[pc<id>]`), written before claim
+hubs existed. `precis taproot backfill` converts a draft chunk's `[pc<id>]`
+cites into hub `[fi<id>]` cites — **dry-run by default**:
+
+```bash
+precis taproot backfill --chunk dc1652005              # dry-run: report the plan
+precis taproot backfill --chunk dc1652005 --apply      # mint/converge + rewrite prose
+precis taproot backfill --draft my-draft-slug          # every body chunk in a draft
+```
+
+It anchors on the `[pc<id>]` markers (a claim is what a citation grounds —
+**not** a sentence split): each cite's preceding prose is the claim span, and
+adjacent pc-cites (`[pc1][pc2]`) grounding one span collapse to **one** hub
+with two evidence edges → a single `[fi<hub>]`. Each claim runs the full
+canonicalizer cascade (`extract → block → dedup_judge → place`), so it
+**converges onto an existing hub** rather than minting a near-duplicate; a
+risky merge files a review `todo` and leaves the `[pc…]` untouched, and a
+pointer-only span (no groundable claim) is left as-is. The prose rewrite goes
+through the draft edit door (DELETE+INSERT, embeddings re-run). Idempotent at
+the draft level — a re-run finds no `[pc…]` left to convert.
+
+It is **on-demand, one chunk/draft at a time** — not a corpus sweep. Run the
+dry-run, eyeball the plan, then `--apply`.
+
 ## Mint a claim hub from a claim I've already sourced
 
 Hubs are paper-sourced and system/tooling-minted, **never**
@@ -148,6 +173,7 @@ sharper one shows `↳ refines fi<original>`.
 | Living-citation resolve + authorial pins (`precis resolve`) | live |
 | Fisheye reference-ring Claims explosion | live |
 | Claim→claim `refines` links (`precis taproot refine`) | live (advisory-only, no evidence flow) |
+| Whole-draft `[pc<id>]`→`[fi<id>]` backfill (`precis taproot backfill`) | live (on-demand, dry-run default; not a corpus sweep) |
 | Corpus-wide forward chase bridge (`PRECIS_TAPROOT_CHASE_ENABLED`) | dark, default-OFF |
 | Hub-refine pass (`workers/hub_refine.py`, `PRECIS_TAPROOT_REFINE_ENABLED`) | dark, default-OFF |
 | `axis:taproot` `TAPROOT:claim`/`TAPROOT:review` classifier (`PRECIS_AXES_ENABLED`) | dark, default-OFF |

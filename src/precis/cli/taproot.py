@@ -23,7 +23,8 @@ from precis.cli._common import resolve_dsn
 
 
 def add_parser(subparsers: Any) -> None:
-    """Register the ``taproot`` subcommand group (``mint`` / ``refine``)."""
+    """Register the ``taproot`` subcommand group (``mint`` / ``refine`` /
+    ``backfill``)."""
     p = subparsers.add_parser(
         "taproot", help="Taproot claim-hub authoring (mint hubs from citations)."
     )
@@ -84,6 +85,37 @@ def add_parser(subparsers: Any) -> None:
         help="set_by actor slug for the write (default: agent).",
     )
     r.add_argument("--database-url", default=None, help="Override PRECIS_DATABASE_URL.")
+
+    b = tsub.add_parser(
+        "backfill",
+        help="Convert a draft chunk's legacy [pc<id>] cites into claim-hub "
+        "[fi<id>] cites, converging onto existing hubs (dry-run by default).",
+    )
+    b_target = b.add_mutually_exclusive_group(required=True)
+    b_target.add_argument("--chunk", help="One draft chunk handle, e.g. dc1652005.")
+    b_target.add_argument(
+        "--draft", help="A draft slug — backfill every body chunk in it."
+    )
+    b.add_argument(
+        "--apply",
+        action="store_true",
+        help="Mint/converge hubs + rewrite prose. Default (omitted) is a "
+        "read-only dry-run that writes nothing.",
+    )
+    b.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        help="Output format (default: text).",
+    )
+    b.add_argument(
+        "--set-by",
+        default="agent",
+        help="set_by actor slug for the writes (default: agent; edges are "
+        "fingerprinted by meta.origin='draft-backfill', distinct from the "
+        "chase pilot's set_by='chase').",
+    )
+    b.add_argument("--database-url", default=None, help="Override PRECIS_DATABASE_URL.")
 
     bg = tsub.add_parser(
         "backfill-grounding",
@@ -323,6 +355,125 @@ def _run_refine(args: argparse.Namespace) -> None:
         store.close()
 
 
+def _resolve_backfill_chunks(store: Any, args: argparse.Namespace) -> list[int]:
+    """The draft body chunk_ids to backfill: one for ``--chunk``, all of a
+    draft's body chunks (in reading order) for ``--draft``."""
+    from precis.errors import BadInput
+
+    if args.chunk:
+        token = args.chunk.strip().removeprefix("dc")
+        if not token.isdigit():
+            raise BadInput(f"--chunk must be a dc<id> handle, got {args.chunk!r}")
+        return [int(token)]
+
+    # A draft slug lives in ref_identifiers (id_kind='cite_key'), not a
+    # refs.slug column — resolve through the canonical store lookup, not
+    # hand-rolled SQL (which drifted against the schema, gr schema-drift test).
+    ref = store.get_ref(kind="draft", id=args.draft.strip())
+    if ref is None:
+        raise BadInput(f"no live draft with slug {args.draft.strip()!r}")
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT chunk_id FROM chunks WHERE ref_id = %s AND ord >= 0 "
+            "AND retired_at IS NULL ORDER BY ord",
+            (int(ref.id),),
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
+def _print_backfill(results: list[Any], fmt: str, *, applied: bool) -> None:
+    if fmt == "json":
+        payload = [
+            {
+                "chunk_id": r.chunk_id,
+                "draft_ref_id": r.draft_ref_id,
+                "applied": applied,
+                "rewritten": r.rewritten_text is not None,
+                "groups": [
+                    {
+                        "action": p.action,
+                        "handles": p.group.handles,
+                        "hub_ref_id": p.hub_ref_id,
+                        "claim": p.claim.sentence if p.claim else None,
+                        "note": p.note,
+                    }
+                    for p in r.plans
+                ],
+            }
+            for r in results
+        ]
+        print(json.dumps(payload, indent=2))
+        return
+
+    tag = "" if applied else "  [DRY-RUN]"
+    for r in results:
+        if not r.plans:
+            print(f"dc{r.chunk_id}: no [pc<id>] cites (already converted){tag}")
+            continue
+        counts: dict[str, int] = {}
+        for p in r.plans:
+            counts[p.action] = counts.get(p.action, 0) + 1
+        summary = ", ".join(f"{n} {a}" for a, n in sorted(counts.items()))
+        print(f"dc{r.chunk_id}: {len(r.plans)} cite-group(s) — {summary}{tag}")
+        for p in r.plans:
+            handles = "+".join(p.group.handles)
+            if p.action == "attach":
+                arrow = f"→ fi{p.hub_ref_id} (converge)"
+            elif p.action in ("new", "new_contradicts"):
+                arrow = f"→ fi{p.hub_ref_id}" if p.hub_ref_id else "→ new hub"
+            else:
+                arrow = f"({p.action})"
+            claim = (p.claim.sentence[:70] + "…") if p.claim else p.note
+            print(f"    [{handles}] {arrow}  {claim}")
+
+
+def _run_backfill(args: argparse.Namespace) -> None:
+    from precis.config import load_config
+    from precis.errors import BadInput
+    from precis.runtime import build_runtime
+    from precis.taproot.backfill import apply_chunk, plan_chunk
+
+    cfg = load_config()
+    dsn = resolve_dsn(args.database_url)
+    if dsn:
+        cfg = cfg.model_copy(update={"database_url": dsn})
+    runtime = build_runtime(cfg)
+    store = runtime.store
+    embedder = getattr(runtime.hub, "embedder", None)
+    if store is None:
+        print("taproot backfill: no database configured", file=sys.stderr)
+        sys.exit(2)
+    if embedder is None:
+        print(
+            "taproot backfill: no embedder configured — the hub ANN "
+            "convergence step needs one (set config.embedder / PRECIS_EMBEDDER_URL)",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    results: list[Any] = []
+    try:
+        chunk_ids = _resolve_backfill_chunks(store, args)
+        draft_handler = runtime.hub.handler_for("draft") if args.apply else None
+        for cid in chunk_ids:
+            if args.apply:
+                results.append(
+                    apply_chunk(store, embedder, draft_handler, cid, set_by=args.set_by)
+                )
+            else:
+                results.append(plan_chunk(store, embedder, cid))
+    except BadInput as exc:
+        print(f"taproot backfill: error: {exc.cause}", file=sys.stderr)
+        if results:
+            _print_backfill(results, args.format, applied=args.apply)
+        sys.exit(1)
+    finally:
+        if hasattr(store, "close"):
+            store.close()
+
+    _print_backfill(results, args.format, applied=args.apply)
+
+
 _DRAFT_REF_LEVEL_MENTION_SQL = """
     SELECT {select}
     FROM links l
@@ -501,6 +652,8 @@ def run(args: argparse.Namespace) -> None:
         _run_mint(args)
     elif args.taproot_cmd == "refine":
         _run_refine(args)
+    elif args.taproot_cmd == "backfill":
+        _run_backfill(args)
     elif args.taproot_cmd == "backfill-grounding":
         _run_backfill_grounding(args)
     else:

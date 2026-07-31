@@ -1190,9 +1190,31 @@ overlay on `finding`/`ref_tags`/`links` — no schema of its own).
     handles through `authoring.py::resolve_hub_ref_id`. Tests:
     `tests/test_taproot_hub.py`, `tests/test_taproot_seniority.py`,
     `tests/test_refeye.py`, `tests/test_taproot_authoring.py`.
+  - **Whole-draft `[pc<id>]`→`[fi<id>]` backfill** — built
+    (`taproot/backfill.py`, `precis taproot backfill --chunk dc<id>` /
+    `--draft <slug>`, dry-run default + `--apply`). Walks a draft chunk's
+    legacy bare `[pc<id>]` cites, **cite-group anchored** (the pc markers
+    partition the prose into grounded spans — not a sentence split; adjacent
+    `[pc1][pc2]` collapse to one hub with two evidence edges → one
+    `[fi<hub>]`), and runs each claim through the **same** cascade as the
+    forward bridge (`extract_claim → block → dedup_judge → place →
+    apply_placement`, cascade fns injected for tests) so it **converges onto
+    an existing hub** instead of the `pub_id`-only byte-match of
+    `seed_claim_hub`; `apply_chunk` re-derives per-group so a later group's
+    ANN sees earlier in-chunk mints. `needs_review` files a review `todo` and
+    leaves the `[pc…]`; a no-claim / unresolvable span is left as-is. Prose
+    rewrite goes through the draft edit door (DELETE+INSERT, embeddings
+    re-run), never a raw UPDATE. **On-demand, one chunk/draft at a time — not
+    a corpus sweep** (194 unconverted chunks as of build; the corpus-wide
+    converging pass stays a future worker, reconciled with hub-refine).
+    Idempotent at the draft level. Edges carry `meta.origin='draft-backfill'`
+    (fingerprint) under the seeded `set_by='agent'` actor — distinct from the
+    chase pilot's `set_by='chase'`, all filling the same graph. Tests:
+    `tests/test_taproot_backfill.py`.
   - Not yet built: further chase slices (S2-global-citation-count
-    fallback promotion, integrity axis (Phase 4), corpus backfill
-    (Phase 5)); `refines` evidence-flow (v1 is advisory-only).
+    fallback promotion, integrity axis (Phase 4), corpus-wide backfill
+    *sweep* (a worker pass — the per-chunk CLI above is its manual
+    predecessor)); `refines` evidence-flow (v1 is advisory-only).
 - **Hub-refine (periodic corroborator enrichment)** — built, dark
   (`PRECIS_TAPROOT_REFINE_ENABLED`, default-OFF like every taproot flag).
   Build ticket: `docs/proposals/taproot-hub-refine.md`. Closes a gap W1/W2/A3
