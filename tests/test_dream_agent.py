@@ -222,6 +222,17 @@ def test_happy_path_dispatches_with_files(
     # WebFetch / WebSearch disabled.
     assert "WebFetch" in captured["disallowed"]
     assert "WebSearch" in captured["disallowed"]
+    # gr179501: put-only for the corpus — edit/delete/link of existing
+    # refs are denied, but ``put`` (new memory) AND ``tag`` (promoting its
+    # own memory to tier:synthetic-insight, dream-prompt.md Step 7) stay.
+    for denied in (
+        "mcp__precis__edit",
+        "mcp__precis__delete",
+        "mcp__precis__link",
+    ):
+        assert denied in captured["disallowed"]
+    assert "mcp__precis__put" not in captured["disallowed"]
+    assert "mcp__precis__tag" not in captured["disallowed"]
 
 
 def test_pass_counts_failure_on_dispatch_error(

@@ -214,9 +214,11 @@ def build_run_argv(
     the OAuth token passed by **key only** (``--env
     CLAUDE_CODE_OAUTH_TOKEN`` — podman reads the value from the executor
     env, so it never lands in argv / ``ref_events``); **no** ``--bare``,
-    **no** ``ANTHROPIC_API_KEY``; cgroup caps present; and **no**
-    ``--device`` (never a GPU). The resolved model is passed as a
-    non-secret env value for the image entrypoint.
+    **no** ``ANTHROPIC_API_KEY``; cgroup caps present; **no**
+    ``--device`` (never a GPU); and the ``image`` pinned as the IMAGE
+    positional behind a ``--`` end-of-options sentinel (gr179503). The
+    resolved model is passed as a non-secret env value for the image
+    entrypoint.
     """
     return [
         podman_bin,
@@ -244,6 +246,12 @@ def build_run_argv(
         # this (trusted) executor; the container sees only files.
         "-v",
         f"{work_dir}:/work",
+        # ``--`` end-of-options sentinel: even though ``image`` is format-
+        # validated by ``sandbox_run.semantic_rejection`` (rejecting a
+        # leading ``-``), pin it as the IMAGE positional here too so a
+        # ``-``-leading value can never be parsed as a podman flag
+        # (gr179503 — defense in depth at the argv sink).
+        "--",
         image,
     ]
 

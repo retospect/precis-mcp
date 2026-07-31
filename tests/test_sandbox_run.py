@@ -219,6 +219,26 @@ class TestValidateSubmit:
         )
         assert err is not None and "secrets" in err
 
+    def test_rejects_flag_like_image(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # gr179503: an ``image`` beginning with ``-`` would be parsed by
+        # podman's cobra parser as a flag, not the IMAGE positional.
+        self._env(monkeypatch)
+        for bad in ("--privileged", "-v/etc:/etc", "code task", "a;b", "", "img\n"):
+            err = sandbox_run.validate_submit(None, params=_valid_params(image=bad))
+            assert err is not None and "image" in err, f"{bad!r} should be rejected"
+
+    def test_accepts_valid_image_refs(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._env(monkeypatch)
+        for ok in (
+            "code-task:latest",
+            "localhost:5000/ns/name:tag",
+            "repo@sha256:" + "a" * 64,
+        ):
+            assert (
+                sandbox_run.validate_submit(None, params=_valid_params(image=ok))
+                is None
+            ), f"{ok!r} should pass"
+
     def test_rejects_melchior(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._env(monkeypatch)
         # Even if an operator mistakenly allowlists it.
@@ -273,8 +293,10 @@ def test_build_run_argv_invariants() -> None:
     assert "--memory" in argv and "--cpus" in argv and "--pids-limit" in argv
     # never a GPU
     assert "--device" not in argv
-    # the image is the final token
+    # the image is the final token, pinned as the IMAGE positional by a
+    # ``--`` end-of-options sentinel (gr179503)
     assert argv[-1] == "code-task:abc"
+    assert argv[-2] == "--"
 
 
 # ── dispatch mint (acceptance #1) ──────────────────────────────────

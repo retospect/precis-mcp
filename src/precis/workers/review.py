@@ -70,6 +70,28 @@ from precis.workers.runner import BatchResult
 
 log = logging.getLogger(__name__)
 
+#: Tier-1 tool deny for every standing reviewer pass (gr179501). A reviewer
+#: reads the corpus and emits a plain-text digest — the worker writes that
+#: stdout as the tier-tagged memory, so the reviewer must NOT ``put`` a
+#: memory itself. Its one sanctioned write is the gripe carve-out in
+#: :func:`_footer_block`, so ``mcp__precis__put`` stays allowed; everything
+#: that mutates existing refs, writes the filesystem, runs a shell, or hits
+#: the open web is denied explicitly here rather than trusted to the prompt
+#: footer (these standing passes never set an envelope, so it defaults
+#: permissive — the enforcement gap the gripe flags).
+_REVIEWER_DISALLOWED_TOOLS: tuple[str, ...] = (
+    "Bash",
+    "Write",
+    "Edit",
+    "NotebookEdit",
+    "WebFetch",
+    "WebSearch",
+    "mcp__precis__edit",
+    "mcp__precis__delete",
+    "mcp__precis__tag",
+    "mcp__precis__link",
+)
+
 
 # ── shared boilerplate modules (the ADR 0038 step-3 dedup win) ────
 #
@@ -222,6 +244,9 @@ def run_review_pass(reviewer: Reviewer, store: Store) -> BatchResult:
             mcp_config=_mcp_config_path(),
             max_turns=reviewer.max_turns,
             timeout_s=reviewer.timeout_s,
+            # Explicit tier-1 deny (gr179501): read + emit a digest + the
+            # gripe carve-out only; no mutate/fs-write/shell/web.
+            disallowed_tools=_REVIEWER_DISALLOWED_TOOLS,
             # Stream-json gets us cost/turns from the result event; the
             # digest writer sees the unwrapped plain text.
             output_format="stream-json",

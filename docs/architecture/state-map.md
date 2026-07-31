@@ -197,6 +197,18 @@ cheap-but-real pass is never flagged.
 * `deep_review` — opus, weekly dedup, agent profile. Allen-style
   archive / prune / rebalance / long-wait review.
 
+**Explicit tier-1 tool-deny for the standing passes (gr179501).** These
+passes never set an `meta.envelope`, so the envelope defaults permissive —
+they now pass an explicit `disallowed_tools` to the router instead of
+trusting the prompt footer. Reviewers (`_REVIEWER_DISALLOWED_TOOLS`,
+`review.py`) deny mutate-existing verbs + fs-write + shell + web, keeping
+`mcp__precis__put` for the `_footer_block` gripe carve-out; `dream_agent`
+(`_DREAM_DISALLOWED_TOOLS`) denies edit/delete/link + web but keeps
+`put` (new memory) and `tag` (its Step-7 `tier:synthetic-insight`
+promotion — a needed cooperative-tier residual the tool-level deny can't
+scope by kind), since its fisheye pulls unvetted paper/patent summaries
+into the prompt.
+
 ## Workers
 
 **Service registry (the declarative source of truth).** Profile
@@ -403,7 +415,11 @@ quick-restart-mid-lease latency it leaves is deferred to
   `--only llm_summarize`; enabled on melchior as a deliberate trickle.
   `job_claude_docker` is opt-in on top too — env `PRECIS_SANDBOX_ENABLED=1`
   or `--only job_claude_docker`; default-OFF so the slice merges dark,
-  meant only for the `agent_sandbox_host` nodes, **never melchior**.
+  meant only for the `agent_sandbox_host` nodes, **never melchior**. The
+  agent-supplied `image` param is format-validated in
+  `sandbox_run.semantic_rejection` (`_IMAGE_RE` — rejects a leading `-` /
+  shell chars) and pinned behind a `--` sentinel in `build_run_argv`, so a
+  `-`-leading value can't be parsed as a podman flag (gr179503).
   `inbound_chase` is opt-in on top too — env
   `PRECIS_INBOUND_CHASE_ENABLED=1`; default-OFF, dark until the global
   spend circuit breaker ships — see

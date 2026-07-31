@@ -142,7 +142,10 @@ def test_pass_writes_digest_on_happy_path(
     monkeypatch.setenv("PRECIS_DEEP_REVIEW", "1")
     handler.put(text="Strategic A", tags=["level:strategic"])
 
+    captured: dict = {}
+
     def _ok(*a, **kw) -> AgentResult:
+        captured["disallowed"] = kw.get("disallowed_tools")
         return AgentResult(
             final_text="Weekly review: nothing to archive.",
             cost_usd=1.4,
@@ -154,6 +157,18 @@ def test_pass_writes_digest_on_happy_path(
     result = run_deep_review_pass(store)
     assert result.claimed == 1
     assert result.ok == 1
+    # gr179501: reviewers get an explicit tier-1 deny — no mutate/fs-write/
+    # shell/web — but keep ``put`` for the _footer_block gripe carve-out.
+    disallowed = captured["disallowed"] or ()
+    for denied in (
+        "Bash",
+        "mcp__precis__edit",
+        "mcp__precis__delete",
+        "mcp__precis__tag",
+        "mcp__precis__link",
+    ):
+        assert denied in disallowed
+    assert "mcp__precis__put" not in disallowed
     with store.pool.connection() as conn:
         row = conn.execute(
             """

@@ -35,6 +35,7 @@ target); only ``agent_sandbox_host`` nodes may run it.
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 from precis.utils.llm.router import Tier, resolve_model
@@ -50,6 +51,18 @@ _EXCLUDED_NODES: frozenset[str] = frozenset({"melchior", "melchior.local"})
 #: This slice supports only the build lane and no precis DB access.
 _SUPPORTED_MODE = "build"
 _SUPPORTED_PRECIS_ACCESS = "none"
+
+#: Accepted shape for an agent-supplied ``image`` param. The container
+#: runtime is exec'd (no shell), so the only real risk is *argument*
+#: injection — an ``image`` beginning with ``-`` is parsed by podman's
+#: cobra parser as a flag (``--privileged``, ``--help``), not the IMAGE
+#: positional (gr179503). We require it to start alphanumeric and contain
+#: only image-reference characters, which rejects a leading ``-`` and any
+#: whitespace / shell metacharacter. Covers ``code-task:latest``,
+#: ``localhost:5000/ns/name:tag``, ``repo@sha256:<hex>``. Anchored with
+#: ``\Z`` (not ``$``, which also matches before a single trailing newline —
+#: so ``"code-task:latest\n"`` would slip through and taint the meta/log).
+_IMAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:@-]*\Z")
 
 
 PARAMS_SCHEMA: dict[str, Any] = {
@@ -156,6 +169,16 @@ def semantic_rejection(params: dict[str, Any]) -> str | None:
             "sandbox_run: params.secrets is not supported in slice 1 "
             "(task secrets are a later slice)"
         )
+    image = params.get("image")
+    if image is not None:
+        if not isinstance(image, str) or not image.strip():
+            return "sandbox_run: params.image must be a non-empty string"
+        if not _IMAGE_RE.match(image):
+            return (
+                f"sandbox_run: params.image {image!r} is not a valid image "
+                "reference (must start alphanumeric; no leading '-', "
+                "whitespace, or shell metacharacters)"
+            )
     target_node = params.get("target_node")
     if not target_node or not isinstance(target_node, str):
         return "sandbox_run: params.target_node is required (an agent_sandbox_host)"

@@ -102,6 +102,25 @@ _DEFAULT_MAX_TURNS = 20
 # 10-min default is the conservative upgrade.
 _DEFAULT_TIMEOUT_S = 600
 
+# Tier-1 tool deny for the dream pass (gr179501). Dream writes NEW
+# memories (``mcp__precis__put`` stays) and promotes its own verified
+# memory to ``tier:synthetic-insight`` (dream-prompt.md Step 7 —
+# ``mcp__precis__tag`` stays, a needed cooperative-tier residual the
+# tool-level deny can't scope by kind). It never edits/deletes/links refs,
+# so those are denied: its fisheye draws recent paper/patent summaries into
+# the prompt unvetted, and a crafted summary must not be able to steer it
+# into ``delete``/``edit``/``link`` of arbitrary refs. Web stays off too
+# (dreams run on corpus state; the precis ``web``/``websearch`` kinds go via
+# ``get``/``search``, not the built-in WebFetch/WebSearch). Explicit here
+# rather than via the opt-in envelope these standing passes never set.
+_DREAM_DISALLOWED_TOOLS: tuple[str, ...] = (
+    "WebFetch",
+    "WebSearch",
+    "mcp__precis__edit",
+    "mcp__precis__delete",
+    "mcp__precis__link",
+)
+
 
 def run_dream_pass(store: Store) -> BatchResult:
     """One dream cycle. Counters:
@@ -187,9 +206,9 @@ def run_dream_pass(store: Store) -> BatchResult:
             mcp_config=mcp_path,
             max_turns=_DEFAULT_MAX_TURNS,
             timeout_s=_DEFAULT_TIMEOUT_S,
-            # Dreams don't fan out to the open web — keep them on
-            # corpus state. Same as the bash script's flag set.
-            disallowed_tools=("WebFetch", "WebSearch"),
+            # Dreams don't fan out to the open web and never mutate
+            # existing refs — put-only for the corpus (gr179501).
+            disallowed_tools=_DREAM_DISALLOWED_TOOLS,
             # Stream-json gets us cost/turns from the result event.
             output_format="stream-json",
             extra_args=("--verbose",),
