@@ -11,6 +11,7 @@ from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.draft import DraftHandler
 from precis.handlers.todo import TodoHandler
+from precis.store import Store
 
 
 def _proj(hub: Hub, text: str = "Project root") -> int:
@@ -182,6 +183,45 @@ def test_sub_apply_raises_on_concurrent_edit(
         draft.edit(id=seeded["slug"], sub={"find": "—", "replace": ", "}, apply=True)
     # the concurrent writer's text survives untouched — no clobber
     assert hub.store.get_draft_chunk(seeded["p1"]).text == "raced in first"
+
+
+def test_regex_mode_reaches_draft_handler_via_search_boundary(
+    seeded: dict[str, str], store: Store
+) -> None:
+    """gr178511: the unified search() tool-boundary validator whitelisted
+    only hybrid|lexical|semantic|verbatim and rejected mode='regex' for
+    EVERY kind before dispatch — so the draft handler's regex grep (which
+    IS implemented, backed by draft_regex.py) was unreachable through the
+    MCP search tool. The validator now permits 'regex' when kind=='draft'
+    and still rejects it for other kinds. Exercised through the real
+    ``tools.core.search`` boundary, not the handler directly."""
+    from precis.config import PrecisConfig
+    from precis.dispatch import boot
+    from precis.runtime import PrecisRuntime
+    from precis.tools import core as tools_core
+
+    def _body(out: object) -> str:
+        content = getattr(out, "content", None)
+        return content[0].text if content is not None else str(out)
+
+    rt = PrecisRuntime(config=PrecisConfig(), hub=boot(store=store))
+    prev = tools_core._runtime
+    tools_core._runtime = rt
+    try:
+        # draft + regex passes the boundary and reaches the handler, which
+        # finds the two **bold** spans in the seeded draft.
+        ok = _body(
+            tools_core.search(
+                kind="draft", q=r"\*\*\w+\*\*", mode="regex", scope=seeded["slug"]
+            )
+        )
+        assert "unknown search mode" not in ok
+        assert "match(es)" in ok
+        # a non-draft kind still rejects regex at the boundary
+        bad = _body(tools_core.search(kind="paper", q="x", mode="regex"))
+        assert "unknown search mode 'regex'" in bad
+    finally:
+        tools_core._runtime = prev
 
 
 def test_sub_skips_table_chunk(draft: DraftHandler, seeded: dict[str, str]) -> None:

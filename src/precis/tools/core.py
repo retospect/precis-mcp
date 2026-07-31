@@ -537,13 +537,15 @@ def search(
 
     # Validate the ranking mode at the boundary so an unknown value
     # surfaces as the canonical BadInput envelope, not a silent
-    # default-to-hybrid that hides a typo.
-    if mode is not None and mode.strip().lower() not in (
-        "hybrid",
-        "lexical",
-        "semantic",
-        "verbatim",
-    ):
+    # default-to-hybrid that hides a typo. ``regex`` is a draft-only mode
+    # (grep over draft chunks, handled by DraftHandler._regex_find) — accept
+    # it here only when the kind is draft, else it stays an unknown mode.
+    # gr178511: the draft handler implemented regex find but this validator
+    # rejected it for every kind before dispatch could reach the handler.
+    _allowed_modes = {"hybrid", "lexical", "semantic", "verbatim"}
+    if (kind or "").strip().lower() == "draft":
+        _allowed_modes.add("regex")
+    if mode is not None and mode.strip().lower() not in _allowed_modes:
         runtime = _get_runtime()
         return _validation_error(
             runtime.render_error(
