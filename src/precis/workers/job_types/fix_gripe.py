@@ -472,6 +472,10 @@ def _spawn_claude(
             "--dangerously-skip-permissions",
             "--model",
             cfg.claude_model,
+            # ``--`` end-of-options sentinel: the prompt embeds verbatim gripe
+            # body/comment text (agent-filable) and must never be parsed as a
+            # CLI flag. Same guard as claude_agent/claude_p.
+            "--",
             prompt,
         ],
         cwd=str(cwd),

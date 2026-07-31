@@ -359,6 +359,10 @@ def build_claude_command(
             "--settings",
             json.dumps({"permissions": {"deny": list(disallowed_tools)}}),
         ]
+    # ``--`` end-of-options sentinel before the (untrusted) prompt, matching
+    # claude_agent._resolve_agent_args — so a dash-leading prompt can't be
+    # parsed as a CLI flag if this builder is ever wired to a live executor.
+    argv.append("--")
     argv.append(prompt)
     return argv
 

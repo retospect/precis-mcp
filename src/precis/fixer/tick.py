@@ -201,6 +201,11 @@ def _spawn_claude(
             "--dangerously-skip-permissions",
             "--model",
             model,
+            # ``--`` end-of-options sentinel: the prompt embeds proposal spec
+            # text and must never be parsed as a CLI flag if it starts with a
+            # dash. Same guard as claude_agent/claude_p (safe here today only
+            # by the prompt's fixed literal prefix — don't rely on that).
+            "--",
             prompt,
         ],
         cwd=str(cwd),

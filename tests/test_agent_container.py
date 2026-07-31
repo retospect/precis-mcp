@@ -164,6 +164,15 @@ def test_claude_command_mirrors_inproc_argv() -> None:
     assert "--bare" not in argv  # oauth mode uses the token, not the API key
 
 
+def test_claude_command_sentinel_before_prompt() -> None:
+    """The prompt rides after a ``--`` end-of-options sentinel so a
+    dash-leading prompt can't be parsed as a CLI flag (same guard as
+    claude_agent._resolve_agent_args)."""
+    argv = ac.build_claude_command(model="qwen", prompt="-- MARK --", mode="oauth")
+    assert argv[-2] == "--"
+    assert argv[-1] == "-- MARK --"
+
+
 def test_claude_command_api_mode_is_bare() -> None:
     argv = ac.build_claude_command(model="qwen", prompt="p", mode="api")
     assert "--bare" in argv

@@ -121,6 +121,42 @@ def test_dispatch_fails_on_uncleared_figure(hub: Hub) -> None:
     assert any("not cleared" in f for f in ctx.failures), ctx.failures
 
 
+def test_put_rejects_traversal_slug(hub: Hub) -> None:
+    """A draft slug becomes an export path segment (draft_export writes
+    <export-root>/<slug>/main.tex), so path separators / `.`/`..` are rejected
+    at creation — a traversal draft like `../../etc/x` can't be minted."""
+    import pytest
+
+    from precis.errors import BadInput
+
+    pid, _ = _make_project_and_draft(hub)
+    for bad in ("../../etc/evil", "a/b", "..", "x\\y"):
+        with pytest.raises(BadInput, match="path separator"):
+            DraftHandler(hub=hub).put(id=bad, title="T", project=pid)
+
+
+def test_resolve_out_dir_contains_traversal_slug(
+    monkeypatch: Any, tmp_path: Any
+) -> None:
+    """Defense in depth at the write sink: even if a traversal slug reached
+    the export (e.g. a pre-existing draft), the temp-dir fallback refuses to
+    resolve outside the export root."""
+    import pytest
+
+    from precis.workers.job_types import draft_export
+
+    monkeypatch.delenv("PRECIS_ROOT", raising=False)
+    monkeypatch.setenv("PRECIS_EXPORT_DIR", str(tmp_path))
+    ctx = _FakeCtx(store=None, meta={})
+    # A plain slug resolves inside the export root...
+    out, in_ws = draft_export._resolve_out_dir(ctx, "nanotrans")
+    assert out == (tmp_path / "nanotrans").resolve()
+    assert in_ws is False
+    # ...an escaping one is rejected before any mkdir/write.
+    with pytest.raises(ValueError, match="escapes the export root"):
+        draft_export._resolve_out_dir(ctx, "../../../etc/evil")
+
+
 def test_dispatch_fails_on_unknown_draft(hub: Hub) -> None:
     spec = get_job_type("draft_export")
     ctx = _FakeCtx(store=hub.store, meta={"params": {"draft": "nope"}})

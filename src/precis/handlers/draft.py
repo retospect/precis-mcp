@@ -884,6 +884,17 @@ class DraftHandler(Handler):
                 next="put(kind='draft', id='nanotrans', title='…', project=<todo-id>)",
             )
         slug = str(id).strip()
+        # A draft slug becomes a filesystem path segment at export time
+        # (draft_export writes `<export-root>/<slug>/main.tex`), and the DB
+        # enforces no slug format. Reject path separators / traversal segments
+        # here so a slug like `../../etc/x` can never be created — defence in
+        # depth behind draft_export's own containment check.
+        if "/" in slug or "\\" in slug or "\x00" in slug or slug in {".", ".."}:
+            raise BadInput(
+                f"put(kind='draft') slug {slug!r} may not contain a path "
+                "separator or be a '.'/'..' segment",
+                next="use a plain slug, e.g. put(kind='draft', id='nanotrans', …)",
+            )
 
         if chunk_kind == "figure" and image is not None:
             ref = resolve_live_slug_ref(self.store, kind="draft", id=slug)

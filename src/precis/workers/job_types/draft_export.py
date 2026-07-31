@@ -81,7 +81,18 @@ def _resolve_out_dir(ctx: Any, slug: str) -> tuple[Path, bool]:
                 "draft_export: workspace resolve failed; using temp dir",
                 exc_info=True,
             )
-    return _export_root() / slug, False
+    # Containment: the draft slug is agent-controlled and unvalidated at the
+    # DB layer (`slug` is just `text NOT NULL` — no format CHECK), so a slug
+    # like `../../etc/cron.d/x` would let this bare join escape the export
+    # root and write main.tex/refs.bib/sources (then run latexmk) at an
+    # arbitrary location. Reject any slug whose resolved dir isn't under the
+    # export root — mirrors the `.resolve()` + `relative_to()` guard every
+    # file-kind handler applies.
+    root = _export_root().resolve()
+    out = (root / slug).resolve()
+    if out != root and root not in out.parents:
+        raise ValueError(f"draft slug {slug!r} escapes the export root {root}")
+    return out, False
 
 
 def _resolve_doc_type(ctx: Any) -> str:
@@ -131,7 +142,11 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         return
 
     include_sources = bool(params.get("include_sources"))
-    out_dir, in_workspace = _resolve_out_dir(ctx, slug)
+    try:
+        out_dir, in_workspace = _resolve_out_dir(ctx, slug)
+    except ValueError as exc:
+        ctx.record_failure(f"draft_export: {exc}")
+        return
     where = (
         "project workspace (shows on the task page)" if in_workspace else "export dir"
     )
