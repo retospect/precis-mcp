@@ -129,6 +129,7 @@ from precis_web.deps import (
     redirect_or_error,
     templates,
 )
+from precis_web.draft_links import chunk_links
 from precis_web.linkify import popover_chip
 
 router = APIRouter(tags=["drafts"])
@@ -514,101 +515,15 @@ def _local_cites(store: Any, chunk_objs: list[Any], want: list[int]) -> frozense
     return frozenset(store.live_paper_cites(handles, slugs))
 
 
-#: Request lifecycle ordering for the per-block list: active first, then
-#: done/abandoned (which now *persist* so you can click in and debug the
-#: LLM run, rather than vanishing on completion).
-_REQUEST_ORDER = {"open": 0, "scheduled": 1, "doing": 2, "paused": 3}
-
-
 def _requests_by_handle(
     store: Any, handles: list[str]
 ) -> dict[str, list[dict[str, Any]]]:
-    """ALL change-request todos anchored at each chunk (``meta.anchor =
-    '¶<handle>'``), grouped by handle — including **done / won't-do**, so a
-    finished request hangs around to click into (its ``plan_tick`` job's
-    captured LLM transcript is the debugging surface). Active requests
-    sort first. ``started`` (a job minted) + ``done`` + ``failed`` drive
-    the close-X: it shows on not-yet-started, done, or failed requests,
-    and is suppressed only while a request is actively running."""
-    if not handles:
-        return {}
-    # Match both the new bare ``dc<id>`` anchors and any legacy ``¶<handle>``
-    # ones still stored (transition); the group key below normalises to bare.
-    anchors = list(handles) + [f"¶{h}" for h in handles]
-    sql = (
-        "SELECT r.ref_id, r.title, r.meta->>'anchor' AS anchor, "
-        "  (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
-        "    WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1) AS status, "
-        "  EXISTS (SELECT 1 FROM refs j WHERE j.parent_id = r.ref_id "
-        "          AND j.kind = 'job') AS started, "
-        "  (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
-        "    WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN' "
-        "      AND t.value LIKE 'ask-user:%%' LIMIT 1) AS asking, "
-        "  (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
-        "    WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN' "
-        "      AND t.value LIKE 'child-failed:%%' LIMIT 1) AS failed_tag, "
-        # AUDIT:<category> — a content-QA audit stamps this on the anchored
-        # change-request todo so the reader badges the chunk by category.
-        "  (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
-        "    WHERE rt.ref_id = r.ref_id AND t.namespace = 'AUDIT' LIMIT 1) AS audit "
-        "FROM refs r "
-        "WHERE r.kind = 'todo' AND r.deleted_at IS NULL "
-        "  AND r.meta->>'anchor' = ANY(%s)"
-    )
-    out: dict[str, list[dict[str, Any]]] = {}
-    with store.pool.connection() as conn:
-        rows = conn.execute(sql, (anchors,)).fetchall()
-    for ref_id, title, anchor, status, started, asking, failed_tag, audit in rows:
-        status = status or "open"
-        handle = (anchor or "").lstrip("¶")
-        # ``OPEN:ask-user:<value>`` → the human question. The value is
-        # either the literal question or a ``see-chunk-N`` redirect handle
-        # for prose that overflowed the 80-char tag cap into a chunk;
-        # resolve_ask_question reads the chunk back so we show the real
-        # question, not the opaque "see chunk 0" slug. ``ask_tag`` keeps the
-        # raw tag so the inline answer form can strip it on submit.
-        ask_tag = asking or ""
-        ask = (
-            store.resolve_ask_question(ref_id, ask_tag.split("ask-user:", 1)[-1])
-            if ask_tag
-            else ""
-        )
-        # A failed child job parks the parent behind a ``child-failed:<id>``
-        # bubble — surface *why* (its job_summary), not just "failed".
-        fail_reason = ""
-        fail_job_id: int | None = None
-        if failed_tag:
-            job_id = failed_tag.split("child-failed:", 1)[-1].strip()
-            if job_id.isdigit():
-                fail_job_id = int(job_id)
-                fail_reason = store.job_fail_reason(fail_job_id) or ""
-        out.setdefault(handle, []).append(
-            {
-                "ref_id": ref_id,
-                "title": (title or "").split("\n", 1)[0][:60],
-                # Full first line of the original request, for the promoted
-                # "needs you" panel (the chip's title is truncated).
-                "request": (title or "").split("\n", 1)[0][:400],
-                "status": status,
-                "done": status in ("done", "won't-do"),
-                # "started" = a plan_tick (or other) job minted; the
-                # X-to-cancel only shows before that.
-                "started": bool(started),
-                # attention: waiting on the user, or a failed child job.
-                "asking": ask,
-                "ask_tag": ask_tag,
-                "failed": bool(failed_tag),
-                "fail_reason": fail_reason,
-                # The failed child job id — the ▶ restart button posts to it.
-                "fail_job_id": fail_job_id,
-                # AUDIT:<category> if this request came from a content-QA
-                # audit (missing-citation / empty-stub / …); '' otherwise.
-                "audit": audit or "",
-            }
-        )
-    for reqs in out.values():
-        reqs.sort(key=lambda r: _REQUEST_ORDER.get(r["status"], 9))
-    return out
+    """ALL change-request todos anchored at each chunk, grouped by handle —
+    the per-block change-request cards. Thin wrapper over
+    :meth:`Store.anchored_todos` (moved there so
+    :func:`precis_web.draft_links.chunk_links`'s ``flags`` reads the SAME
+    query, not a second copy — gripe 178766)."""
+    return store.anchored_todos(handles)
 
 
 def _block_views(
@@ -905,6 +820,11 @@ def _build_rows(
         # to parsing the GFM text for any table chunk lacking meta.table.
         is_table = c.chunk_kind == "table"
         table = table_payload(getattr(c, "meta", None), c.text) if is_table else None
+        # In/out link-edges (gripe 178766) — the SAME data path the
+        # smartdraft reader assembles from (precis_web.draft_links.
+        # chunk_links); passing the already-batched conns/requests maps so
+        # this is a pure split, no extra query per row.
+        links = chunk_links(store, ref.id, c.handle, conns=conns, flags=requests)
         rows.append(
             {
                 "handle": c.handle,
@@ -1003,6 +923,10 @@ def _build_rows(
                 # Connections surface: graph links + folded neighbours + churn.
                 "connections": _connection_chips(conns.get(c.handle, [])),
                 "nearby": _connection_chips(nearby),
+                # In/out link-edges, split by direction (gripe 178766) — the
+                # dedicated block below the connections disclosure.
+                "links_out": _connection_chips(links["links_out"]),
+                "links_in": _connection_chips(links["links_in"]),
                 "edits": est.get("edits", 0),
                 "edited_at": est.get("last_at"),
             }

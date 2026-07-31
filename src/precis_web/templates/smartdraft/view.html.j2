@@ -332,6 +332,39 @@
       </div>
       {% endif %}
 
+      {# ── Links (gripe 178766): the FOCUS chunk's full connectivity — graph
+           edges in AND out (precis_web.draft_links.chunk_links, split by
+           `direction` off store.chunk_connections — the SAME data path the
+           classic /drafts reader assembles from, just rendered here) plus
+           any standalone anchored change-request ("flag it in the draft" —
+           store.anchored_todos), which is invisible everywhere else: no
+           project link, no job, so neither the fisheye ring nor the
+           outline's "Work in progress" block ever shows it. Omitted
+           entirely when the focus has no edges/flags. #}
+      {% if links_out or links_in or flags %}
+      <div class="rounded border border-slate-200 bg-white p-1.5">
+        <div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Links</div>
+        {% if links_out %}
+        <div class="mb-1 flex flex-wrap items-center gap-1">
+          <span class="text-[10px] text-slate-400" title="this chunk links to →">out</span>
+          {% for c in links_out %}{{ c }}{% endfor %}
+        </div>
+        {% endif %}
+        {% if links_in %}
+        <div class="mb-1 flex flex-wrap items-center gap-1">
+          <span class="text-[10px] text-slate-400" title="← links to this chunk">in</span>
+          {% for c in links_in %}{{ c }}{% endfor %}
+        </div>
+        {% endif %}
+        {% if flags %}
+        <div class="flex flex-wrap items-center gap-1">
+          <span class="text-[10px] text-slate-400" title="anchored change-request todos">flags</span>
+          {% for c in flags %}{{ c }}{% endfor %}
+        </div>
+        {% endif %}
+      </div>
+      {% endif %}
+
       {# Taproot claim hubs cited in this window: the claim sentence + its
          print-visible (★) supporters, linking through to the /claim page. #}
       {% if claims_evidence %}

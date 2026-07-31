@@ -426,6 +426,18 @@ class FakeStore:
         # empty Discussion state.
         return []
 
+    def chunk_connections(self, ref_id, handles):
+        # No graph edges in the base fake corpus — DraftFakeStore /
+        # SmartDraftFakeStore (and gripe-178766 link-panel tests) override
+        # this with canned in/out rows keyed by handle.
+        return {}
+
+    def anchored_todos(self, handles):
+        # No anchored change-request todos ("flags", gripe 178766) in the
+        # base fake corpus — a test overrides this with canned cards keyed
+        # by (bare) handle.
+        return {}
+
     # Figure medium resolver (ADR 0058) — safe defaults; DraftFakeStore
     # overrides for its blob-backed figure fixtures.
     def has_chunk_blob(self, chunk_id) -> bool:

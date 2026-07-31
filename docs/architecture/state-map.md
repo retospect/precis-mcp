@@ -1886,6 +1886,15 @@ The master kinds table lives in the `precis-overview` skill.
   cross-refs, linked notes, one edge out. Also surfaced by the smartdraft web
   reader (`/smartdraft/<draft>?focus=dc<id>`). Pure read-time assembly, no new
   storage. Skill: `precis-fisheye-help`.
+  - **Per-chunk links panel (both readers)** — a focused `dc<id>` shows all its
+    graph edges IN and OUT plus anchored change-request todos/flags: classic
+    `/drafts` reader (`_row.html.j2` Col B, after Connections) and the smartdraft
+    right pane (after Cited sources). One shared data path —
+    `store.anchored_todos` + `precis_web/draft_links.py::chunk_links` (splits
+    `store.chunk_connections`'s `direction`); the two readers differ only in
+    rendering. Fixes the smartdraft gap where anchored flags rendered nowhere
+    (gripe 178766). Tests: `tests/precis_web/test_drafts.py`,
+    `test_smartdraft_reader.py`, `tests/test_draft_handler.py`.
   - **R1 (Claims explosion, Taproot slice)** — built. The ring gains a
     fourth group, **Claims**: a `[pub_id]` mined from the section body
     (`utils/pub_id_lookup.py`'s shared regex/lookup, factored out of

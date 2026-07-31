@@ -486,6 +486,78 @@ def test_smartdraft_cited_sources_panel_omitted_when_focus_has_no_cites(
     assert "Cited sources" not in r.text
 
 
+def test_smartdraft_links_panel_lists_in_out_edges_and_anchored_flag(
+    smartdraft_client: TestClient,
+    smartdraft_runtime: FakeRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gripe 178766: the FOCUS chunk's full connectivity — an outbound edge,
+    an inbound edge, and a standalone anchored change-request ("flag it in
+    the draft" — no project link, no job, so it's otherwise invisible here)
+    — all render in the new Links panel, via the SAME
+    ``precis_web.draft_links.chunk_links`` data path the classic reader
+    assembles from (``store.chunk_connections`` split by direction +
+    ``store.anchored_todos``)."""
+    store = smartdraft_runtime.store  # default focus = chunk 2, handle H000002
+
+    def fake_conns(
+        ref_id: object, handles: object
+    ) -> dict[str, list[dict[str, object]]]:
+        return {
+            "H000002": [
+                {
+                    "relation": "derived-from",
+                    "direction": "out",
+                    "kind": "memory",
+                    "ident": "20",
+                    "title": "A decision",
+                },
+                {
+                    "relation": "cites",
+                    "direction": "in",
+                    "kind": "memory",
+                    "ident": "21",
+                    "title": "A citing dream",
+                },
+            ]
+        }
+
+    def fake_flags(handles: object) -> dict[str, list[dict[str, object]]]:
+        return {
+            "H000002": [
+                {
+                    "ref_id": 99,
+                    "title": "tighten this claim",
+                    "status": "open",
+                    "audit": "",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(store, "chunk_connections", fake_conns)
+    monkeypatch.setattr(store, "anchored_todos", fake_flags)
+
+    r = smartdraft_client.get("/smartdraft/sdt")
+    assert r.status_code == 200
+    body = r.text
+    assert "Links" in body
+    panel = body[body.index(">Links<") : body.index("Pinned:")]
+    assert 'href="/r/memory/20"' in panel and "A decision" in panel  # out
+    assert 'href="/r/memory/21"' in panel and "A citing dream" in panel  # in
+    assert 'href="/r/todo/99"' in panel and "tighten this claim" in panel  # flag
+
+
+def test_smartdraft_links_panel_omitted_when_focus_has_no_edges_or_flags(
+    smartdraft_client: TestClient,
+) -> None:
+    """No panel at all when the focus chunk has no edges/flags (the base
+    ``SmartDraftFakeStore`` fixture — its ``FakeStore`` defaults both to
+    empty)."""
+    r = smartdraft_client.get("/smartdraft/sdt")
+    assert r.status_code == 200
+    assert ">Links<" not in r.text
+
+
 def test_smartdraft_reader_popover_is_teleported_to_body(
     smartdraft_client: TestClient,
 ) -> None:

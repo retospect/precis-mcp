@@ -24,9 +24,12 @@ from precis.utils.embed_query import embed_query
 from precis_web import draft_eyes, smartdraft
 from precis_web.claim_render import hub_cite_heads, render_claim_evidence
 from precis_web.deps import get_runtime, get_store, templates
+from precis_web.draft_links import chunk_links
+from precis_web.linkify import popover_chip
 from precis_web.routes.drafts import (
     _DOC_TYPES,
     RefChip,
+    _connection_chips,
     _draft_author_lines,
     _draft_ref,
     _owner_workspace,
@@ -138,6 +141,21 @@ async def reader(
         _cited_sources(store, view.focus.text) if view.focus is not None else []
     )
 
+    # In/out link-edges + anchored flags for the FOCUS chunk (gripe 178766) —
+    # the SAME data path the classic reader assembles from
+    # (precis_web.draft_links.chunk_links), rendered here rather than baked
+    # into ChunkNode/build_nodes: it's a per-request, focus-only lookup
+    # (one small query), mirroring how cited_sources/term_occurrences above
+    # are computed for just the focus, not cached into every node.
+    focus_links = (
+        chunk_links(store, ref.id, view.focus.base58)
+        if view.focus is not None
+        else {"links_out": [], "links_in": [], "flags": []}
+    )
+    links_out = _connection_chips(focus_links["links_out"])
+    links_in = _connection_chips(focus_links["links_in"])
+    flags = _flag_chips(focus_links["flags"])
+
     # Taproot claim-hub cites (violet anchors): the hub heads cited anywhere
     # in the middle pane, resolved once and shared by every linkify call in
     # the template; the right-rail "Claims" panel lists their evidence.
@@ -176,6 +194,9 @@ async def reader(
             "needs": _needs_items(store, ref.id),
             "term_occurrences": term_occurrences,
             "cited_sources": cited_sources,
+            "links_out": links_out,
+            "links_in": links_in,
+            "flags": flags,
             "claims": claims,
             "claims_evidence": claims_evidence,
             "debug": debug.strip().lower() in ("1", "true", "on", "yes"),
@@ -215,6 +236,25 @@ def _cited_sources(store: Any, text: str) -> list[RefChip]:
 
     chips = _ref_chips(text or "", is_missing=is_missing)
     return [c for c in chips if c.kind == "paper" and not c.is_chunk]
+
+
+def _flag_chips(flags: list[dict[str, Any]]) -> list[Any]:
+    """Render ``chunk_links``'s ``flags`` (anchored change-request todos,
+    ``store.anchored_todos``) as hover chips — the standalone-anchor case
+    gripe 178766 filed on: no project link, no job, so neither the fisheye
+    ring nor the outline's "Work in progress" block ever surfaces it. Shares
+    :func:`precis_web.linkify.popover_chip` with ``_connection_chips``
+    (the links_out/links_in chips), just a different field shape (a todo
+    dict, not a ``links`` row) so it isn't reused directly."""
+    chips: list[Any] = []
+    for f in flags:
+        label = f.get("title") or f"todo:{f.get('ref_id')}"
+        if f.get("audit"):
+            label += f" [{f['audit']}]"
+        if f.get("status"):
+            label += f" · {f['status']}"
+        chips.append(popover_chip(label, f"/r/todo/{f.get('ref_id')}", None))
+    return chips
 
 
 def _needs_items(store: Any, ref_id: int) -> list[dict[str, Any]]:

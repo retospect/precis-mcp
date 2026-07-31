@@ -914,6 +914,39 @@ def test_chunk_connections_and_edit_stats(draft: DraftHandler, hub: Hub) -> None
     assert stats[para.handle]["edits"] >= 1
 
 
+def test_anchored_todos_groups_by_handle_and_keeps_done(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """``Store.anchored_todos`` (gripe 178766) is the single query BOTH the
+    classic reader's change-request cards (``_requests_by_handle``, now a
+    thin wrapper) and ``precis_web.draft_links.chunk_links``'s ``flags``
+    read — a standalone anchored todo (no project link, no job) is
+    otherwise invisible outside the block it's pinned to. Matches the
+    legacy ``¶<handle>`` anchor AND the newer bare ``dc<id>``/handle form,
+    groups by the bare handle, and keeps done/won't-do (clickable, just
+    de-emphasised) rather than dropping them."""
+    from precis.store.types import Tag
+
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    para_h = _order(hub, "nt")[0].handle
+    open_todo = hub.store.insert_ref(kind="todo", slug=None, title="tighten this")
+    hub.store.stamp_ref_meta(open_todo.id, {"anchor": f"¶{para_h}"})
+    done_todo = hub.store.insert_ref(kind="todo", slug=None, title="already fixed")
+    hub.store.stamp_ref_meta(done_todo.id, {"anchor": para_h})  # bare form too
+    hub.store.add_tag(done_todo.id, Tag.closed("STATUS", "done"))
+
+    out = hub.store.anchored_todos([para_h])
+    reqs = out.get(para_h, [])
+    assert {r["ref_id"] for r in reqs} == {open_todo.id, done_todo.id}
+    done = next(r for r in reqs if r["ref_id"] == done_todo.id)
+    assert done["done"] is True and done["status"] == "done"
+    # active-first ordering (_REQUEST_ORDER): open sorts ahead of done.
+    assert reqs[0]["ref_id"] == open_todo.id
+    # unrelated handle sees no anchored todos.
+    assert hub.store.anchored_todos(["ZZZZZZ"]) == {}
+
+
 # ── queued UX fixes: abbrev scoping, promote hint, link redirect ──
 
 

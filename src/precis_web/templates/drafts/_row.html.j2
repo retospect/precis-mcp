@@ -326,6 +326,27 @@
       </div>
     </div>
     {% endif %}
+    {# In/out link-edges (gripe 178766) — the SAME rows the connections
+       disclosure above shows, but split by direction (the direction the
+       merged view discards), so it's legible which end of a link this
+       chunk is. Assembled by precis_web.draft_links.chunk_links — the one
+       data path this reader and smartdraft both consume. #}
+    {% if r.links_out or r.links_in %}
+    <div class="space-y-0.5 text-[11px]">
+      {% if r.links_out %}
+      <div class="flex flex-wrap items-center gap-1">
+        <span class="text-slate-400" title="this chunk links to →">out:</span>
+        {% for c in r.links_out %}{{ c }}{% endfor %}
+      </div>
+      {% endif %}
+      {% if r.links_in %}
+      <div class="flex flex-wrap items-center gap-1">
+        <span class="text-slate-400" title="← links to this chunk">in:</span>
+        {% for c in r.links_in %}{{ c }}{% endfor %}
+      </div>
+      {% endif %}
+    </div>
+    {% endif %}
     {# Edit churn: how many times this block changed (chunk_events). #}
     {% if r.edits %}
     <div class="text-[10px] text-slate-400" title="edits since creation">

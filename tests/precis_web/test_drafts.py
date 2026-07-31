@@ -2133,6 +2133,73 @@ def test_reader_shows_connections_and_edits(draft_client: TestClient) -> None:
     assert "changed 2×" in r.text
 
 
+def test_reader_shows_links_in_out_and_anchored_flag(
+    draft_client: TestClient,
+    draft_runtime: FakeRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The In/Out link-edges block (gripe 178766): an outbound edge AND an
+    inbound edge on the same chunk render split by direction — the split
+    ``precis_web.draft_links.chunk_links`` derives from
+    ``store.chunk_connections`` (which already returns both directions;
+    the merged Connections disclosure above just discards ``direction``).
+    The anchored change-request ("flag") still renders as its own card too
+    — both surfaces read the SAME ``store.anchored_todos`` data."""
+    store = draft_runtime.store
+
+    def fake_conns(
+        ref_id: object, handles: object
+    ) -> dict[str, list[dict[str, object]]]:
+        return {
+            "BBBBBB": [
+                {
+                    "relation": "derived-from",
+                    "direction": "out",
+                    "kind": "memory",
+                    "ident": "20",
+                    "title": "A decision",
+                },
+                {
+                    "relation": "cites",
+                    "direction": "in",
+                    "kind": "memory",
+                    "ident": "21",
+                    "title": "A citing dream",
+                },
+            ]
+        }
+
+    def fake_flags(handles: object) -> dict[str, list[dict[str, object]]]:
+        return {
+            "BBBBBB": [
+                {
+                    "ref_id": 99,
+                    "title": "tighten this claim",
+                    "request": "tighten this claim",
+                    "status": "open",
+                    "done": False,
+                    "started": False,
+                    "asking": "",
+                    "ask_tag": "",
+                    "failed": False,
+                    "fail_reason": "",
+                    "fail_job_id": None,
+                    "audit": "",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(store, "chunk_connections", fake_conns)
+    monkeypatch.setattr(store, "anchored_todos", fake_flags)
+
+    r = draft_client.get("/drafts/nt")
+    assert r.status_code == 200
+    body = r.text
+    assert "/r/memory/20" in body and "A decision" in body  # out edge
+    assert "/r/memory/21" in body and "A citing dream" in body  # in edge
+    assert "tighten this claim" in body  # anchored flag's change-request card
+
+
 # ── author byline editor (pipe-delimited textarea) ────────────────────
 
 
