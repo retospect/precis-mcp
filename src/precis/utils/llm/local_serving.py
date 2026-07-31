@@ -147,6 +147,33 @@ def _served_resources(store: object, host: str) -> set[str]:
     return _served.get(host, set())
 
 
+def _same_family(a: str, b: str) -> bool:
+    """True when two model names look like the *same* served model under a
+    naming variant — a served_by mismatch worth flagging — rather than two
+    unrelated models. Either name is a token-boundary prefix of the other (a
+    dropped quant/precision suffix, ``qwen3-next-80b`` vs the served
+    ``qwen3-next-80b-a3b-q4_k_m``), or they share a two-token vendor+series
+    stem (``gpt-oss-120b`` vs ``gpt-oss-20b``). A frontier cloud model shares
+    neither with a served OSS model (``claude-opus-4-8`` vs ``qwen3-next-…``),
+    so its mismatch warning is the false alarm gr178888 flagged."""
+    if a == b or a.startswith(b + "-") or b.startswith(a + "-"):
+        return True
+    ta, tb = a.split("-"), b.split("-")
+    return len(ta) >= 2 and len(tb) >= 2 and ta[:2] == tb[:2]
+
+
+def _plausibly_served_here(model: str, served_resources: set[str]) -> bool:
+    """Whether ``model`` looks like it *should* have been served on this host —
+    it shares a model family (:func:`_same_family`) with some ``llm:`` resource
+    the host actually serves. Only then is a fallback-to-litellm a likely
+    ``served_by`` naming mistake worth a warning; for an unrelated (cloud) model
+    the fallback is the intended path, not a misconfiguration (gr178888)."""
+    return any(
+        _same_family(model, r[4:] if r.startswith("llm:") else r)
+        for r in served_resources
+    )
+
+
 def acquire(model: str) -> LocalSlot | None:
     """Reserve a local serving slot for ``model`` if this host serves it.
 
@@ -171,17 +198,26 @@ def acquire(model: str) -> LocalSlot | None:
     served_resources = _served_resources(store, host)
     if resource not in served_resources:
         # A host that serves *other* llm: resources but not this one is usually a
-        # served_by name mismatch worth flagging. But the SMALL-tier loopback
-        # aliases (``summarizer`` / ``rake-lemma``) are local-only by design —
-        # they route through the litellm loopback proxy, never a reserved
-        # llama-swap slot — so "falling back to litellm" is the *intended* path,
-        # not a misconfiguration. Warning on them is a false alarm that, because
-        # the dedup is in-process, floods the log once per short-lived summarize
-        # worker (gr178498: 3907 hits/48h on melchior, all ``summarizer``). Skip
-        # those; a genuine served-model name mismatch still warns.
+        # served_by name mismatch worth flagging — but only when the requested
+        # model *plausibly should* be served here. Two false-alarm classes are
+        # suppressed:
+        #   • SMALL-tier loopback aliases (``summarizer`` / ``rake-lemma``) route
+        #     through the litellm loopback proxy by design, never a reserved
+        #     llama-swap slot, so "falling back to litellm" is intended. The
+        #     in-process dedup meant this flooded once per short-lived summarize
+        #     worker (gr178498: 3907 hits/48h on melchior, all ``summarizer``).
+        #   • Legitimately-cloud models (``claude-opus-4-8`` and other frontier
+        #     tiers melchior is never expected to serve) — falling back to the
+        #     cloud is correct, not a misconfiguration (gr178888).
+        # So warn only for a model in the same family as something served here
+        # (a real quant/suffix naming near-miss); an unrelated model stays dark.
         from precis.utils.llm.router import _LOCAL_ONLY_MODEL_ALIASES
 
-        if served_resources and model not in _LOCAL_ONLY_MODEL_ALIASES:
+        if (
+            served_resources
+            and model not in _LOCAL_ONLY_MODEL_ALIASES
+            and _plausibly_served_here(model, served_resources)
+        ):
             warned = _mismatch_warned.setdefault(host, set())
             if resource not in warned:
                 warned.add(resource)

@@ -92,6 +92,33 @@ def test_no_warning_for_local_only_alias_mismatch(store, caplog) -> None:
     assert not caplog.records
 
 
+def test_no_warning_for_cloud_model_mismatch(store, caplog) -> None:
+    """A legitimately-cloud model (frontier tier) shares no family with the OSS
+    models a host serves locally, so falling back to litellm/cloud is CORRECT,
+    not a served_by misconfiguration — it must NOT warn (gr178888: the same
+    false-alarm class as the summarizer aliases, but for frontier models like
+    ``claude-opus-4-8`` observed on melchior)."""
+    meter.bind_store(store)
+    _serve(store, "testnode", "qwen3-next-80b-a3b-q4_k_m", 2)
+    with caplog.at_level("WARNING", logger="precis.utils.llm.local_serving"):
+        assert local_serving.acquire("claude-opus-4-8") is None
+        assert local_serving.acquire("gpt-5") is None
+    assert not caplog.records
+
+
+def test_warning_for_same_family_quant_mismatch(store, caplog) -> None:
+    """A genuine served_by near-miss — same model family, a dropped quant/suffix
+    (``qwen3-next-80b`` vs the served ``qwen3-next-80b-a3b-q4_k_m``) — is exactly
+    what the warning exists to catch, and must still fire (gr178888 must not
+    over-suppress real mismatches)."""
+    meter.bind_store(store)
+    _serve(store, "testnode", "qwen3-next-80b-a3b-q4_k_m", 2)
+    with caplog.at_level("WARNING", logger="precis.utils.llm.local_serving"):
+        assert local_serving.acquire("qwen3-next-80b") is None
+    assert len(caplog.records) == 1
+    assert "llm:qwen3-next-80b" in caplog.records[0].getMessage()
+
+
 def test_mismatch_warning_not_repeated_within_cache_window(store, caplog) -> None:
     """Same (host, resource) mismatch on a second call within the same 60s
     cache window logs only once — rate-limited, not silent-forever."""
