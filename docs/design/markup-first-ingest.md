@@ -274,6 +274,19 @@ pipeline's chunks**. Two cases now exist for an identifier hit:
   fast-path, which would otherwise wrongly no-op since the hash is already
   known). See gripe 161905 and `src/precis/workers/fetch_oa.py`'s
   `_run_markup_cascade`/`_run_cascade`/`_publish_markup_trigger`.
+- **Spent trigger retirement.** After that recovery runs, the markup itself
+  is known-unparseable and always will be, so `_ingest_markup` raises
+  `MarkupTriggerSpent` (a terminal signal, *distinct* from `precis_add`
+  returning `None` for transient claim contention). `watch.py::process_pdf`
+  catches it and moves the spent `.xml`/`.tex`/`.html` trigger — plus its
+  `.precis-fetch.json` sidecar — out of the live inbox into
+  `inbox/completed/markup-unparsed/` (a `_MANAGED_DIRS` member, so
+  `_should_skip` keeps every backfill from re-scanning it). Without this the
+  trigger returned a bare `None`, the watcher mistook it for contention and
+  left it in place, and the inbox accumulated one dead `.xml` + sidecar per
+  markup-parse failure, re-parse-failing them on every backfill (the
+  inbox-litter leak). A sidecar-less *manual* markup drop that fails to parse
+  is a genuine operator error and goes to `errors/` instead.
 
 ### 6. Idempotency
 

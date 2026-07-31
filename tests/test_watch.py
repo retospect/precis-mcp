@@ -30,10 +30,12 @@ from precis.cli.watch import (
     _PdfHandler,
     _should_skip,
     _wait_stable,
+    _walk_unmanaged_files,
     _write_error,
     process_pdf,
 )
-from precis.ingest.add import IngestResult
+from precis.ingest.add import IngestResult, MarkupTriggerSpent
+from precis.ingest.fetch_sidecar import sidecar_path, write_sidecar
 
 # ---------------------------------------------------------------------------
 # _is_pdf / _should_skip — pure
@@ -352,6 +354,43 @@ class TestBackfillOrder:
         handler.backfill()
 
         assert seen == ["small.pdf"]
+
+    def test_backfill_does_not_descend_into_staging(self, tmp_path: Path) -> None:
+        """Regression: the watcher used ``rglob`` for backfill, which descends
+        into every subdir including ``.staging`` — the fetcher's not-yet-
+        published area, routinely owned by a different uid on the NFS inbox.
+        When the daemon uid couldn't traverse ``.staging``, ``rglob`` raised
+        and the watcher crash-looped (~16k restarts / 6-day stall). Backfill
+        must prune ``.staging`` and never enqueue its contents."""
+        handler = self._make_handler(tmp_path)
+        (handler.watch_dir / "good.pdf").write_bytes(b"x" * 10)
+        staging = handler.watch_dir / ".staging"
+        staging.mkdir()
+        # A fetcher-staged bundle sitting mid-publish — must NOT be ingested.
+        (staging / "palladium00.xml").write_bytes(b"<article/>")
+        (staging / "palladium00.xml.precis-fetch.json").write_bytes(b"{}")
+
+        seen: list[str] = []
+        handler._enqueue = lambda p: seen.append(p.name)  # type: ignore[method-assign]
+        handler.backfill()  # must not raise
+
+        assert seen == ["good.pdf"]
+
+    def test_walk_unmanaged_prunes_all_managed_dirs(self, tmp_path: Path) -> None:
+        watch_dir = tmp_path / "watch"
+        watch_dir.mkdir()
+        (watch_dir / "root.pdf").write_bytes(b"a")
+        nested = watch_dir / "papers" / "sub"
+        nested.mkdir(parents=True)
+        (nested / "deep.xml").write_bytes(b"b")
+        for managed in ("errors", "completed", ".staging"):
+            d = watch_dir / managed
+            d.mkdir()
+            (d / "buried.pdf").write_bytes(b"c")
+
+        names = {p.name for p in _walk_unmanaged_files(watch_dir)}
+        assert names == {"root.pdf", "deep.xml"}
+        assert "buried.pdf" not in names
 
 
 class TestWaitStable:
@@ -771,6 +810,96 @@ class TestProcessPdf:
             p for p in errors_dir.iterdir() if p.is_dir() and p.name != "duplicates"
         ]
         assert ts_buckets == []
+
+    def test_markup_spent_fetched_trigger_retired_and_sidecar_cleared(
+        self, tmp_path: Path
+    ):
+        """A fetched markup trigger that fails to parse (precis_add raises
+        MarkupTriggerSpent after recovering the paper via the companion PDF)
+        must be retired to completed/markup-unparsed/ and its sidecar cleared
+        — not left to re-scan every backfill (the inbox-litter leak)."""
+        watch_dir, errors_dir, duplicates_dir, corpus_dir = self._layout(tmp_path)
+        xml = watch_dir / "smith24.xml"
+        xml.write_bytes(b"<article>not parseable jats</article>")
+        # Fetched trigger carries a sidecar (fold target + companion).
+        write_sidecar(
+            xml,
+            ref_id=99,
+            identifiers={"doi": "10.1/x"},
+            source="fetcher:europepmc_jats",
+            source_format="jats",
+            companion_pdf="smith24.pdf",
+        )
+        assert sidecar_path(xml).exists()
+
+        with patch(
+            "precis.cli.watch.precis_add",
+            side_effect=MarkupTriggerSpent("no <body>", fmt="jats"),
+        ):
+            dest = process_pdf(
+                xml,
+                store=object(),  # type: ignore[arg-type]
+                watch_dir=watch_dir,
+                corpus_dir=corpus_dir,
+                corpus_pres_dir=corpus_dir.parent / "corpus_pres",
+                errors_dir=errors_dir,
+                duplicates_dir=duplicates_dir,
+                debounce=0.01,
+                user="owner",
+            )
+
+        assert dest is None
+        # Trigger left the live inbox…
+        assert not xml.exists()
+        # …into the managed, backfill-skipped retirement dir.
+        retired = watch_dir / "completed" / "markup-unparsed" / "smith24.xml"
+        assert retired.exists()
+        assert _should_skip(retired, watch_dir)
+        # Sidecar purged from the inbox (not dragged along, not left behind).
+        assert not sidecar_path(xml).exists()
+        assert not (retired.parent / (retired.name + ".precis-fetch.json")).exists()
+        # A benign markup→PDF fallback is NOT filed as an operator error.
+        ts_buckets = [
+            p for p in errors_dir.iterdir() if p.is_dir() and p.name != "duplicates"
+        ]
+        assert ts_buckets == []
+
+    def test_markup_spent_manual_drop_goes_to_errors(self, tmp_path: Path):
+        """A manually-dropped markup file (no sidecar) that fails to parse is
+        a genuine 'your file didn't parse' — surfaced under errors/ with an
+        .error.txt, not silently retired."""
+        watch_dir, errors_dir, duplicates_dir, corpus_dir = self._layout(tmp_path)
+        xml = watch_dir / "manual.xml"
+        xml.write_bytes(b"<xml>not real jats</xml>")
+        assert not sidecar_path(xml).exists()  # manual drop: no sidecar
+
+        with patch(
+            "precis.cli.watch.precis_add",
+            side_effect=MarkupTriggerSpent("no <body>", fmt="jats"),
+        ):
+            dest = process_pdf(
+                xml,
+                store=object(),  # type: ignore[arg-type]
+                watch_dir=watch_dir,
+                corpus_dir=corpus_dir,
+                corpus_pres_dir=corpus_dir.parent / "corpus_pres",
+                errors_dir=errors_dir,
+                duplicates_dir=duplicates_dir,
+                debounce=0.01,
+                user="owner",
+            )
+
+        assert dest is None
+        assert not xml.exists()  # moved to errors/
+        # Not retired to completed/ — this one is a real failure.
+        assert not (watch_dir / "completed" / "markup-unparsed" / "manual.xml").exists()
+        ts_buckets = [
+            p for p in errors_dir.iterdir() if p.is_dir() and p.name != "duplicates"
+        ]
+        assert len(ts_buckets) == 1
+        err_files = list(ts_buckets[0].glob("*.error.txt"))
+        assert len(err_files) == 1
+        assert "no <body>" in err_files[0].read_text()
 
 
 # ---------------------------------------------------------------------------

@@ -29,6 +29,7 @@ from precis.ingest.add import (
     DoiInput,
     IngestResult,
     MarkupInput,
+    MarkupTriggerSpent,
     PdfInput,
     _reconcile_orphan_stub,
     _valid_fold_stub,
@@ -610,12 +611,15 @@ class TestMarkupParseFailureRecovery:
             "precis.ingest.pipeline.extract_paper_from_markup",
             side_effect=MarkupParseError("no <body>", fmt="jats"),
         ):
-            result = precis_add(
-                MarkupInput(markup_path=markup, fmt="jats", fold_ref_id=stub.id),
-                store=store,
-            )
+            # Terminal parse failure now signals the spent trigger to the
+            # watcher via MarkupTriggerSpent (distinct from the claim-
+            # contention ``None``) — after the recovery below has run.
+            with pytest.raises(MarkupTriggerSpent):
+                precis_add(
+                    MarkupInput(markup_path=markup, fmt="jats", fold_ref_id=stub.id),
+                    store=store,
+                )
 
-        assert result is None
         pdf_sc = read_sidecar(pdf)
         assert pdf_sc is not None
         assert pdf_sc.printable_only is False
@@ -684,12 +688,14 @@ class TestMarkupParseFailureRecovery:
                 return_value=full_paper,
             ),
         ):
-            result = precis_add(
-                MarkupInput(markup_path=markup, fmt="jats", fold_ref_id=stub.id),
-                store=store,
-            )
+            # The markup trigger is spent (raises), but the synchronous OCR
+            # fallback on the stored companion copy still runs first.
+            with pytest.raises(MarkupTriggerSpent):
+                precis_add(
+                    MarkupInput(markup_path=markup, fmt="jats", fold_ref_id=stub.id),
+                    store=store,
+                )
 
-        assert result is None  # the markup ingest itself still returns None
         with store.pool.connection() as conn:
             nchunks = conn.execute(
                 "SELECT count(*) FROM chunks WHERE ref_id=%s", (stub.id,)
@@ -697,15 +703,16 @@ class TestMarkupParseFailureRecovery:
         assert nchunks == 2  # the OCR fallback populated the body (+ card)
 
     def test_no_recovery_without_fold_ref_id(self, tmp_path: Path, store) -> None:
-        # A manually-dropped markup file (no sidecar, no fold target) —
-        # nothing to recover, must not raise.
+        # A manually-dropped markup file (no sidecar, no fold target) — there's
+        # nothing to OCR-recover, but the trigger is still terminally
+        # unparseable, so it signals MarkupTriggerSpent (the watcher routes a
+        # sidecar-less spent trigger to errors/). The recovery attempt itself
+        # must no-op cleanly, not raise some *other* error.
         markup = tmp_path / "manual.xml"
         markup.write_bytes(b"<xml>not real jats</xml>")
         with patch(
             "precis.ingest.pipeline.extract_paper_from_markup",
             side_effect=MarkupParseError("no <body>", fmt="jats"),
         ):
-            result = precis_add(
-                MarkupInput(markup_path=markup, fmt="jats"), store=store
-            )
-        assert result is None
+            with pytest.raises(MarkupTriggerSpent):
+                precis_add(MarkupInput(markup_path=markup, fmt="jats"), store=store)

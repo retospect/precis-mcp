@@ -56,6 +56,7 @@ from precis.corpus_layout import corpus_pdf_dest
 from precis.ingest.add import (
     IngestResult,
     MarkupInput,
+    MarkupTriggerSpent,
     PdfInput,
     PresInput,
     precis_add,
@@ -483,11 +484,20 @@ class _PdfHandler(FileSystemEventHandler):
                 # Push errors to the end without crashing the sort.
                 return 2**63 - 1
 
-        candidates = [
-            p
-            for p in sorted(self.watch_dir.rglob("*.pdf"), key=_size_key)
-            if not _should_skip(p, self.watch_dir)
-        ]
+        # One managed-dir-pruning, error-tolerant walk feeds both scans, so a
+        # single inaccessible subtree (e.g. an NFS ``.staging`` the daemon uid
+        # can't traverse) can never crash-loop the watcher — see
+        # :func:`_walk_unmanaged_files`. ``_should_skip`` stays as a secondary
+        # result filter (nested managed-named dirs / symlinks).
+        all_files = _walk_unmanaged_files(self.watch_dir)
+        candidates = sorted(
+            (
+                p
+                for p in all_files
+                if _is_pdf(p) and not _should_skip(p, self.watch_dir)
+            ),
+            key=_size_key,
+        )
 
         # Markup triggers left over across a restart. Enqueued *before*
         # PDFs (below) so the markup body wins the has_body race for any
@@ -497,8 +507,8 @@ class _PdfHandler(FileSystemEventHandler):
         markup_candidates = sorted(
             (
                 p
-                for p in self.watch_dir.rglob("*")
-                if p.is_file() and _is_markup(p) and not _should_skip(p, self.watch_dir)
+                for p in all_files
+                if _is_markup(p) and not _should_skip(p, self.watch_dir)
             ),
             key=_size_key,
         )
@@ -808,6 +818,34 @@ def process_pdf(
 
     try:
         result = precis_add(input_, store=store)
+    except MarkupTriggerSpent as exc:
+        # Terminal markup parse failure: the ``.xml`` (or ``.tex``/``.html``)
+        # trigger is unparseable and always will be. precis_add already ran
+        # the companion-PDF OCR recovery, so the paper's body is handled
+        # elsewhere — but the spent trigger + its sidecar must leave the inbox
+        # or they pile up and get re-scanned on every backfill (the litter
+        # leak). A fetched trigger (carries a sidecar) is an *expected*
+        # markup→PDF fallback, retired quietly; a manual drop (no sidecar) is
+        # a real "your file didn't parse" the operator should see in errors/.
+        if sidecar is not None:
+            retired = _retire_markup_trigger(pdf, watch_dir)
+            log.info(
+                "precis watch: retired unparsed %s markup trigger %s to %s "
+                "(body recovered via companion PDF)",
+                exc.fmt or "markup",
+                pdf.name,
+                retired.parent.name,
+            )
+        else:
+            log.warning(
+                "precis watch: manual markup drop %s failed to parse (%s); "
+                "moving to errors/",
+                pdf.name,
+                exc,
+            )
+            _handle_failure(pdf, exc, errors_dir=errors_dir)
+        clear_sidecar(pdf)
+        return None
     except FileNotFoundError as exc:
         # Race on a shared inbox: another host ingested this PDF and
         # moved it between our ``_wait_stable`` success and the read
@@ -1172,6 +1210,41 @@ def _should_skip(path: Path, watch_dir: Path) -> bool:
     return bool(parts) and parts[0] in _MANAGED_DIRS
 
 
+def _walk_unmanaged_files(watch_dir: Path) -> list[Path]:
+    """Return every regular file under ``watch_dir``, **pruning** the
+    ``_MANAGED_DIRS`` subtrees (``errors``/``completed``/``.staging``) at the
+    directory level so the walk never descends into them.
+
+    This replaces ``Path.rglob`` in :meth:`_PdfHandler.backfill`, which walked
+    the *entire* tree — ``_should_skip`` filters the *results* but cannot stop
+    ``rglob`` from descending. Two failure modes that used to crash-loop the
+    whole watcher on startup are closed here:
+
+    * ``.staging`` on the shared NFS inbox is the fetcher's not-yet-published
+      staging area (gr170349) and is routinely owned by a *different* uid; a
+      daemon that couldn't traverse it got ``PermissionError`` from ``rglob``
+      and the daemon exited, launchd re-spawned it, and it looped (a real
+      incident: Errno 1 on the inbox, ~16k restarts over ~6 days). Pruning
+      managed dirs means the descent — and the error — never happens.
+    * Any *other* unreadable subtree (broken mount, a raced deletion) is now
+      tolerated via ``os.walk``'s ``onerror`` hook: logged and skipped, never
+      fatal to the backfill.
+    """
+    out: list[Path] = []
+
+    def _onerror(exc: OSError) -> None:
+        log.warning("precis watch: backfill skipping unreadable path (%s)", exc)
+
+    for dirpath, dirnames, filenames in os.walk(watch_dir, onerror=_onerror):
+        if Path(dirpath) == watch_dir:
+            # Managed dirs are direct children of the watch dir — prune them
+            # here so os.walk never recurses into them.
+            dirnames[:] = [d for d in dirnames if d not in _MANAGED_DIRS]
+        for name in filenames:
+            out.append(Path(dirpath) / name)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Path → ingest input routing
 # ---------------------------------------------------------------------------
@@ -1304,6 +1377,25 @@ def _move_to(src: Path, dest_dir: Path) -> Path:
         # report the would-be destination.
         log.info("precis watch: %s already moved by another host", src.name)
     return dest
+
+
+#: Where a spent (unparseable) markup trigger is retired to. Under
+#: ``completed/`` — a ``_MANAGED_DIRS`` member, so ``_should_skip`` keeps
+#: both backfill and live events from ever re-enqueuing it.
+_MARKUP_UNPARSED_SUBDIR = ("completed", "markup-unparsed")
+
+
+def _retire_markup_trigger(pdf: Path, watch_dir: Path) -> Path:
+    """Move a spent markup trigger out of the live inbox into
+    ``<watch_dir>/completed/markup-unparsed/``.
+
+    The trigger parsed-failed terminally (see
+    :class:`~precis.ingest.add.MarkupTriggerSpent`); its paper, if any, was
+    recovered from the companion PDF. Parking it in a managed subdir (skipped
+    by :func:`_should_skip`) stops the every-backfill re-scan while keeping
+    the file for forensics rather than deleting it. Returns the post-move
+    path; tolerates a concurrent multi-host move like :func:`_move_to`."""
+    return _move_to(pdf, watch_dir.joinpath(*_MARKUP_UNPARSED_SUBDIR))
 
 
 def _move_to_pres_corpus(pdf: Path, *, slug: str, corpus_pres_dir: Path) -> Path:

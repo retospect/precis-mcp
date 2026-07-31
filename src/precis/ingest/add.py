@@ -202,6 +202,34 @@ class IngestResult:
     kind: str = "paper"
 
 
+class MarkupTriggerSpent(Exception):
+    """A markup trigger failed to parse and never will — the trigger file
+    is *spent* and must be retired from the inbox, not retried.
+
+    Raised by :func:`_ingest_markup` after a
+    :class:`~precis.ingest.markup.MarkupParseError`, once the companion-PDF
+    OCR recovery (:func:`_recover_markup_parse_failure`, gr161905) has run.
+    It is deliberately distinct from ``precis_add`` returning ``None``:
+
+    * ``None`` = **claim contention** (another host holds the advisory lock).
+      *Transient* — the watcher leaves the file in place so the owning host
+      finishes and clears the sidecar on its own success.
+    * ``MarkupTriggerSpent`` = **terminal parse failure**. The same bytes
+      fail identically every pass, so a "leave it for retry" would strand
+      the ``.xml`` trigger and its ``.precis-fetch.json`` sidecar in the
+      inbox forever (the inbox-litter leak) and re-scan them on every
+      backfill. The watcher catches this and moves the spent trigger out
+      of the inbox instead. The paper's body, if recoverable, was already
+      folded from the companion PDF inside the recovery step above.
+
+    Carries the source format for the watcher's log / error record.
+    """
+
+    def __init__(self, message: str, *, fmt: str = "") -> None:
+        super().__init__(message)
+        self.fmt = fmt
+
+
 # ---------------------------------------------------------------------------
 # precis_add — the public entry point
 # ---------------------------------------------------------------------------
@@ -746,7 +774,12 @@ def _ingest_markup(
             input.markup_path.name,
         )
         _recover_markup_parse_failure(input, store=store)
-        return None
+        # The markup itself is unparseable and always will be — the paper's
+        # body (if any) now comes from the companion PDF's OCR above, not this
+        # trigger. Signal the watcher to retire the spent trigger + sidecar
+        # rather than return a bare ``None`` it would mistake for claim
+        # contention and leave in the inbox to be re-scanned forever.
+        raise MarkupTriggerSpent(str(exc), fmt=input.fmt) from exc
 
     if input.as_kind != paper.kind:
         paper = replace(paper, kind=input.as_kind)
