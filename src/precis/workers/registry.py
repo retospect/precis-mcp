@@ -508,6 +508,21 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-search-help",
     ),
     ServiceSpec(
+        name="hub_refine",
+        label="Taproot hub refine",
+        category="discovery",
+        kind=ServiceKind.PASS,
+        ref_pass=True,
+        enable_env="PRECIS_TAPROOT_REFINE_ENABLED",
+        uses_model=True,
+        cost_sources=("hub_refine",),
+        one_line=(
+            "Periodic, converging enrichment of existing taproot claim "
+            "hubs with corpus corroborators."
+        ),
+        doc_skill="precis-taproot-help",
+    ),
+    ServiceSpec(
         name="llm_reconcile",
         label="LLM catalog reconcile",
         category="review",

@@ -188,6 +188,7 @@ _REF_PASS_PRIORITY: dict[str, PassBand] = {
     "_nursery_pass": PassBand.HEALTH,
     "_chase_pass": PassBand.BACKGROUND,
     "_inbound_chase_pass": PassBand.BACKGROUND,
+    "_hub_refine_pass": PassBand.BACKGROUND,
     "_fetch_pass": PassBand.BACKGROUND,
     "_gp_fetch_pass": PassBand.BACKGROUND,
     "_llm_summarize_pass": PassBand.BACKGROUND,
@@ -675,6 +676,51 @@ def run(args: argparse.Namespace) -> None:
                 )
 
             ref_passes.append(_inbound_chase_pass)
+
+        # hub_refine — periodic, converging enrichment of EXISTING taproot
+        # claim hubs (docs/proposals/taproot-hub-refine.md): per due hub,
+        # semantic-search the corpus for corroborating paper chunks,
+        # LLM-verify, attach the survivors. Default-OFF
+        # (PRECIS_TAPROOT_REFINE_ENABLED=1 / --only hub_refine) — dark like
+        # every other taproot flag. Needs an embedder for discovery (no
+        # separate --with-llm gate: reaching this pass at all already
+        # implies paying for the verify calls); reuse the already-booted
+        # EmbedHandler's embedder when one exists, else construct fresh —
+        # any construction failure degrades to a logged no-op rather than
+        # taking the whole worker down (mirrors the chase forward bridge's
+        # own embedder-unavailable degrade, see workers/hub_refine.py's
+        # module docstring).
+        if _pass_enabled("hub_refine"):
+            from precis.workers.embed import EmbedHandler as _HubRefineEmbedHandler
+            from precis.workers.hub_refine import run_hub_refine_pass
+            from precis.workers.runner import BatchResult as _HubRefineBatchResult
+
+            _hub_refine_embed_handler = next(
+                (h for h in handlers if isinstance(h, _HubRefineEmbedHandler)), None
+            )
+            if _hub_refine_embed_handler is not None:
+                hub_refine_embedder = _hub_refine_embed_handler.embedder
+            else:
+                try:
+                    hub_refine_embedder = _resolve_embedder(args, store)
+                except Exception:
+                    log.warning(
+                        "hub_refine: embedder unavailable -- pass will "
+                        "degrade to no-op",
+                        exc_info=True,
+                    )
+                    hub_refine_embedder = None
+
+            def _hub_refine_pass(batch_size: int) -> _HubRefineBatchResult:
+                r = run_hub_refine_pass(store, embedder=hub_refine_embedder)
+                return _HubRefineBatchResult(
+                    handler="hub_refine",
+                    claimed=r["claimed"],
+                    ok=r["ok"],
+                    failed=r["failed"],
+                )
+
+            ref_passes.append(_hub_refine_pass)
 
         # Hierarchical SOM cluster maps (precis-web /clusters grid).
         # Time-gated full rebuild per scope; see workers/clusterize.py.

@@ -9,6 +9,37 @@ items are removed (history is `git log`).
 
 ---
 
+## Residuals (2026-07-31 — taproot hub-refine ship)
+
+- **Enable hub-refine in prod** · Status: deferred · Severity: feature ·
+  Owner: precis-worker role env. `src/precis/workers/hub_refine.py` ships
+  dark (`PRECIS_TAPROOT_REFINE_ENABLED=0`); flipping it on is a separate,
+  deliberate deploy — set `PRECIS_TAPROOT_REFINE_ENABLED=1` in the
+  precis-worker role env and redeploy, once the corpus has enough minted
+  hubs to be worth the per-run LLM spend. v2 follow-ups (ingest-triggered
+  watermark, `TAPROOT:saturated` long-backoff after K empty passes,
+  paper-version memo invalidation) live in
+  `docs/proposals/taproot-hub-refine.md`'s "Out of scope" section, not
+  here.
+
+- **Confirm ref-pass single-instance before enabling hub-refine** · Status:
+  open · Severity: latent-correctness (inherited). The claim query commits and
+  releases its `FOR UPDATE ... SKIP LOCKED` lock before `_refine_one_hub`'s
+  per-hub write connection opens (same two-phase shape as
+  `workers/inbound_chase.py`). Concurrent instances of the pass could
+  double-claim a hub → duplicate LLM verify + a lost-update on the
+  `meta['taproot_rejected']` read-modify-write (self-heals: re-verified next
+  cadence). Harmless while dark; verify the ref-pass runs single-instance (or
+  make the memo write conflict-safe) as part of the enable-in-prod step above.
+
+- **Give `_evidence_edge_exists` an optional `conn=`** · Status: open ·
+  Severity: efficiency. `taproot/authoring.py::_evidence_edge_exists` opens its
+  own pool connection per call; `seed_claim_hub` (mint) still calls it once per
+  supporter in its loop. (hub-refine no longer uses it — it dedups at the
+  **paper** level via a single `_attached_paper_ids` query per hub, which also
+  fixes a convergence bug the chunk-scoped edge model introduced.) Thread the
+  caller's `conn` through for the mint path.
+
 ## Residuals (2026-07-31 — citation-edge chunk-grounding ship)
 
 Code shipped (draft autolinker `src_pos`, evidence `src_chunk_id`, pc/dc

@@ -149,6 +149,7 @@ sharper one shows `↳ refines fi<original>`.
 | Fisheye reference-ring Claims explosion | live |
 | Claim→claim `refines` links (`precis taproot refine`) | live (advisory-only, no evidence flow) |
 | Corpus-wide forward chase bridge (`PRECIS_TAPROOT_CHASE_ENABLED`) | dark, default-OFF |
+| Hub-refine pass (`workers/hub_refine.py`, `PRECIS_TAPROOT_REFINE_ENABLED`) | dark, default-OFF |
 | `axis:taproot` `TAPROOT:claim`/`TAPROOT:review` classifier (`PRECIS_AXES_ENABLED`) | dark, default-OFF |
 
 Both dark flags default off — evidence stays sparse until a corpus run

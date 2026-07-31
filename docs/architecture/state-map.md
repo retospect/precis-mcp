@@ -1193,6 +1193,39 @@ overlay on `finding`/`ref_tags`/`links` — no schema of its own).
   - Not yet built: further chase slices (S2-global-citation-count
     fallback promotion, integrity axis (Phase 4), corpus backfill
     (Phase 5)); `refines` evidence-flow (v1 is advisory-only).
+- **Hub-refine (periodic corroborator enrichment)** — built, dark
+  (`PRECIS_TAPROOT_REFINE_ENABLED`, default-OFF like every taproot flag).
+  Build ticket: `docs/proposals/taproot-hub-refine.md`. Closes a gap W1/W2/A3
+  leave open: evidence attaches to a hub only as a *side effect* of chasing a
+  finding or a human's `precis taproot mint` — nothing ever revisits an
+  **existing** hub and asks what else in the corpus supports it. New pass
+  `src/precis/workers/hub_refine.py::run_hub_refine_pass`, wired into
+  `cli/worker.py` beside `inbound_chase`
+  (`workers/registry.py::ServiceSpec` `name="hub_refine"`,
+  `doc_skill="precis-taproot-help"`). Per pass:
+  `_claim_hubs_due_for_refine` claims up to `PRECIS_TAPROOT_REFINE_HUBS_PER_PASS`
+  (default 8) `TAPROOT:claim`/`STATUS:canonical` findings whose
+  `meta.last_refined_at` is absent or older than
+  `PRECIS_TAPROOT_REFINE_INTERVAL_H` (default weekly), oldest-first,
+  `SKIP LOCKED`; `_refine_one_hub` embeds the hub's claim sentence
+  (`utils/embed_query.py::embed_query`) and runs
+  `store.search_blocks(mode="semantic", kind="paper")` for the top-K
+  (`PRECIS_TAPROOT_REFINE_TOPK`, default 8) candidate paper chunks, skips a
+  candidate already carrying a `corroborates` edge on the hub
+  (`taproot/authoring.py::_evidence_edge_exists`, checked **before** any LLM
+  spend) or already recorded `no` in the hub's rejection memo
+  (`finding.meta["taproot_rejected"]`), then verifies survivors with
+  `workers/_chase_llm.py::_verify_support_with_caveats` — `yes`/`partial` →
+  `taproot/hub.py::attach_evidence` (role `corroborates`); `no` → append to
+  the rejection memo. `meta.last_refined_at` is stamped unconditionally, even
+  on an empty pass, so the claim query's cadence gate holds. Convergence is
+  the whole point, never a periodic re-scan: idempotent attach + the
+  pre-verify edge-exists check + the rejection memo + the per-hub cadence
+  stamp together bound per-run LLM spend and let a saturated hub drop out of
+  the claim query on its own. Grows only the *supporter* set — originator
+  (★) derivation stays `seniority.py::derive_evidence`'s job, unchanged. No
+  embedder wired → the whole pass logs a warning and no-ops (mirrors the
+  forward bridge's own degrade). Tests: `tests/workers/test_hub_refine.py`.
 
 ## Other live affordances
 
