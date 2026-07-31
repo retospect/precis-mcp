@@ -44,6 +44,7 @@ from precis.workers.nursery import (
     _detect_dead_workers,
     _detect_dispatch_stalls,
     _detect_long_waits,
+    _detect_nas_denied,
     _detect_orphaned_coordinator,
     _detect_orphans,
     _detect_plan_tick_spins,
@@ -897,14 +898,21 @@ def _seed_worker_log(
         conn.commit()
 
 
-def _seed_heartbeat(store: Store, host: str, *, minutes_ago: float = 0.0) -> None:
-    """Mark a host alive via a fresh host_heartbeat row."""
+def _seed_heartbeat(
+    store: Store,
+    host: str,
+    *,
+    minutes_ago: float = 0.0,
+    meta: dict | None = None,
+) -> None:
+    """Mark a host alive via a fresh host_heartbeat row, optionally carrying
+    ``meta`` (e.g. the NAS-probe fields written by ``precis heartbeat``)."""
     with store.pool.connection() as conn:
         conn.execute(
-            "INSERT INTO host_heartbeat (host, ts) "
-            "VALUES (%s, now() - (%s || ' minutes')::interval) "
-            "ON CONFLICT (host) DO UPDATE SET ts = EXCLUDED.ts",
-            (host, minutes_ago),
+            "INSERT INTO host_heartbeat (host, ts, meta) "
+            "VALUES (%s, now() - (%s || ' minutes')::interval, %s::jsonb) "
+            "ON CONFLICT (host) DO UPDATE SET ts = EXCLUDED.ts, meta = EXCLUDED.meta",
+            (host, minutes_ago, json.dumps(meta or {})),
         )
         conn.commit()
 
@@ -1254,3 +1262,81 @@ def test_run_nursery_pass_raises_critical_for_dispatch_stall(store: Store) -> No
     mine = [a for a in alerts if a["source"] == "nursery:dispatch-stall"]
     assert len(mine) == 1
     assert mine[0]["severity"] == "critical"
+
+
+# ── nas-denied (launchd-context NAS lockout) ───────────────────────
+
+
+def test_nas_denied_flags_fresh_false_heartbeat(store: Store) -> None:
+    host = _host()
+    _seed_heartbeat(
+        store,
+        host,
+        minutes_ago=0,
+        meta={"nas_ok": False, "nas_path": "/opt/nas/botshome", "nas_errno": 1},
+    )
+
+    findings = _detect_nas_denied(store)
+    hits = [f for f in findings if f.fingerprint_key == f"nas-denied:{host}"]
+    assert len(hits) == 1
+    assert hits[0].category == "nas-denied"
+    assert hits[0].ref_id is None
+    assert host in hits[0].title
+
+
+def test_nas_denied_ignores_readable_nas(store: Store) -> None:
+    host = _host()
+    _seed_heartbeat(store, host, minutes_ago=0, meta={"nas_ok": True})
+
+    findings = _detect_nas_denied(store)
+    assert not any(f.fingerprint_key == f"nas-denied:{host}" for f in findings)
+
+
+def test_nas_denied_ignores_stale_heartbeat(store: Store) -> None:
+    """A false NAS reading past the 5-min freshness gate doesn't linger — a
+    stale row usually means a host/DB outage, a different failure."""
+    host = _host()
+    _seed_heartbeat(
+        store,
+        host,
+        minutes_ago=10,
+        meta={"nas_ok": False, "nas_path": "/opt/nas/botshome"},
+    )
+
+    findings = _detect_nas_denied(store)
+    assert not any(f.fingerprint_key == f"nas-denied:{host}" for f in findings)
+
+
+def test_run_nursery_pass_raises_critical_for_nas_denied_and_auto_resolves(
+    store: Store,
+) -> None:
+    """End to end: a nas-denied finding becomes an open ``critical`` alert
+    and auto-resolves once the heartbeat flips ``nas_ok`` back to true."""
+    host = _host()
+    _seed_heartbeat(
+        store,
+        host,
+        minutes_ago=0,
+        meta={"nas_ok": False, "nas_path": "/opt/nas/botshome"},
+    )
+
+    run_nursery_pass(store)
+
+    alerts = list_open_alerts(store)
+    mine = [
+        a
+        for a in alerts
+        if a["source"] == "nursery:nas-denied" and host in (a["title"] or "")
+    ]
+    assert len(mine) == 1
+    assert mine[0]["severity"] == "critical"
+
+    # NAS access recovers — the heartbeat flips true.
+    _seed_heartbeat(store, host, minutes_ago=0, meta={"nas_ok": True})
+    run_nursery_pass(store)
+
+    alerts_after = list_open_alerts(store)
+    assert not any(
+        a["source"] == "nursery:nas-denied" and host in (a["title"] or "")
+        for a in alerts_after
+    )

@@ -9,41 +9,104 @@ items are removed (history is `git log`).
 
 ---
 
-## melchior `precis watch` crash-loop — NFS EPERM on the inbox (infra, not code)
-- Status: **open** · Severity: **critical** (half the cluster's Marker-ingest
-  capacity offline since ~Jul 26) · Owner: **infra / NAS export** on melchior —
-  NOT a code fix · Test: melchior `com.precis.watch` reaches a stable running
-  state and `/var/log/precis-watch.log` shows a clean backfill with zero
-  `PermissionError`.
-- **Symptom:** melchior's `com.precis.watch` LaunchDaemon (runs as `deploy`,
-  uid 806) has crash-looped ~16k times since Jul 26 (launchd 30 s throttle).
-  Traceback is `PermissionError: [Errno 1] Operation not permitted:
-  '/opt/nas/botshome/papers/inbox'` from **watchdog**'s
-  `DirectorySnapshot.walk` → `os.listdir` on the **inbox root itself** — i.e.
-  `deploy(806)` cannot list the inbox on melchior's NFS mount even though it
-  *owns* it (EPERM, not EACCES → NFS-server-level rejection / idmap, not mode
-  bits). spark's watcher is unaffected (different NFS mapping), so ingest is
-  degraded, not dark. **Fetch is healthy** (active fetchers, ~6.8k stubs
-  pending is a normal backlog); this is watcher-only.
-- **Already done (2026-07-31, ship 3a67397d + a manual op):**
+## melchior daemon NAS lockout — FDA grant broke on brew python bump (cdhash change); re-grant needed (infra, not code)
+- Status: **open** · Severity: **critical** (melchior's Marker-ingest + fetch
+  NAS access offline) · Owner: **infra / macOS Full Disk Access** on melchior —
+  NOT a code fix; needs a one-click GUI re-grant · Test: `com.precis.watch`
+  reaches a stable running state and `/var/log/precis-watch.log` shows a clean
+  backfill with zero `PermissionError`; the worker's `fetch_oa` pass stops
+  logging EPERM on the NAS.
+- **Symptom:** `com.precis.watch` (runs as `deploy`, uid 806) crash-loops with
+  `PermissionError: [Errno 1] Operation not permitted:
+  '/opt/nas/botshome/papers/inbox'` from **watchdog**'s `DirectorySnapshot.walk`
+  → `os.listdir`. **Not watcher-only:** the worker daemon `com.precis.worker`
+  (also `deploy`) hits the *same* EPERM in its `fetch_oa` pass
+  (`.../inbox/.staging/*.xml.part`) — **every launchd/cron process is locked out
+  of the NAS**, while an interactive `ssh melchior` / login session reads/writes
+  it fine. Related prod `gripe:gr178497` is the fetch-side half of this lockout.
+- **Root cause (2026-07-31 — PROVEN, TCC.db confirmed): a pre-existing Full Disk
+  Access grant broke when `brew upgrade python@3.12` changed the resolved
+  binary's cdhash.** This is the *documented, expected* failure mode of
+  `deploy/roles/tcc_profile` — read that role first; it explains the whole
+  thing. Chain of evidence:
+  - macOS 15+ denies **NFS access to every launchd/cron-spawned process,
+    regardless of UID** (only SSH/GUI sessions get implicit access). So the
+    daemons need explicit **FDA on their interpreter**; they've had it for
+    months. (`tcc_profile/defaults/main.yml` documents this verbatim.)
+  - A throwaway `UserName=deploy` diagnostic LaunchDaemon (removed after) ran
+    with the **full 7-group set, identical to a login**, yet still `EPERM`'d on
+    all three NAS paths — ruling out groups / POSIX / NFS AUTH_SYS. `sandboxed =
+    no`, zero denial logs. The mount is an autofs-automounted NFS volume
+    (`finnmaccool.local:/Volume1/botshome`).
+  - **TCC.db is the smoking gun** (`kTCCServiceSystemPolicyAllFiles`):
+    `…/python@3.12/3.12.13/…/python3.12 | 2` (OLD build, GRANTED) but
+    `…/python@3.12/3.12.13_4/…/python3.12 | 0` (CURRENT build,
+    NOT granted). `/opt/precis/venv/bin/python3` now resolves to `3.12.13_4`, so
+    its grant no longer matches → NFS EPERM. The "python update ~Jul 25-26" was
+    this `brew upgrade` (`.13` → `.13_4`), not a python-code issue and not a new
+    OS gate.
+  - **Why `kickstart -k` AND `bootout`+`bootstrap` both failed:** neither
+    re-establishes the FDA grant; only re-clicking the new binary into FDA does.
+- **Fix (one GUI click on melchior — CLI can't set TCC; TCC.db is SIP-protected;
+  MDM/PPPC abandoned because macOS 26 rejects unsigned profiles, per the role):**
+  1. **System Settings → Privacy & Security → Full Disk Access → `+` → ⌘⇧G**,
+     paste each broken binary, toggle **ON**, delete the stale older-build row.
+     **melchior needs TWO** (both brew-bumped, both currently auth 0):
+     - `/opt/homebrew/Cellar/python@3.12/3.12.13_4/Frameworks/Python.framework/Versions/3.12/bin/python3.12`
+       — the precis venv python; one grant covers ALL ~13 precis daemons
+       (FDA is per-binary, they share this interpreter).
+     - `/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/bin/python3.14`
+       — the `/opt/mcps` + `/opt/hermes` python (daily_briefing / quest /
+       sortie cron + hermes/asa agent).
+  2. `sudo launchctl kickstart -k system/com.precis.watch` + `com.precis.worker`
+     (+ any other precis daemon on the host); confirm a clean log.
+  3. **Recurrence guard:** `brew pin python@3.12 python@3.14` on every Mac so a
+     future `brew upgrade` can't silently re-break the cdhash. Also re-run the
+     `tcc_profile` ansible role — melchior's `/Users/Shared/cluster-fda-checklist.txt`
+     is **stale** (omits `/opt/precis/venv/bin/python3`).
+  - **Verify-fix harness (reusable, read-only-ish):** a throwaway
+    `UserName=deploy` LaunchDaemon that prints `id`+`os.getgroups()`+`listdir`
+    of the three NAS paths, `RunAtLoad`, then bootout+rm — re-run after the grant
+    to confirm `listdir OK` in the *daemon* context before re-bootstrapping.
+- **Per-host status (probed 2026-07-31 via TCC.db):** ONLY **melchior** is
+  broken — it alone got the `brew upgrade` (python@3.12 → 3.12.13_4,
+  python@3.14 → 3.14.6), breaking both grants. **balthazar** (precis 3.12.13,
+  mcps 3.14.3_1) and **caspar** (precis 3.12.13) are still on the older,
+  still-granted builds → **no action now, but they break the same way on their
+  next python bump.** spark (Linux) is immune. All three Macs mount the papers
+  NAS at `/opt/nas/botshome`.
+- **Detection — SHIPPED (turns the next silent lockout into a minutes-to-detect
+  alert):** the `precis heartbeat` reporter now probes `/opt/nas` from its own
+  launchd context each tick (`_probe_nas`, `src/precis/cli/heartbeat.py`) and
+  records `meta.nas_ok`; a new nursery `nas-denied` detector
+  (`_detect_nas_denied`, `src/precis/workers/nursery.py`, **critical**) raises a
+  per-host alert on a fresh `nas_ok=false` and auto-resolves when it flips back.
+  Chosen over reading TCC.db (needs FDA to read the SIP-protected db) because the
+  end-to-end probe detects the actual outage regardless of cause. (Same class as
+  the worker-agent silent-outage gap.)
+- **Already done (2026-07-31, ship 3a67397d + manual ops):**
   - Code: watcher `backfill()` now prunes managed dirs + tolerates unreadable
     subtrees (`_walk_unmanaged_files`) — correct hardening, but does **not**
-    fix this crash (it's in watchdog's observer, which runs *before* backfill,
-    and on the inbox *root*, which nothing can prune).
-  - Ops: the misowned empty `.staging` (`root:997`) was removed + recreated
-    `deploy:806` — fixed the fetcher's markup-staging path, but the crash then
-    surfaced on the inbox root, proving the fault is broader than `.staging`.
-- **Next action (needs a sysadmin decision):** on melchior, check why
-  `deploy(806)` gets EPERM on the inbox — likely NFSv4 idmapping (deploy uid
-  unmapped/anon-squashed on `finnmaccool.local:/Volume1/botshome`) or an
-  NFSv4 ACL on the export. Fix the mapping/ACL so 806 can traverse+list the
-  inbox, then `launchctl kickstart -k system/com.precis.watch`. Compare
-  spark's working mount/idmap as the reference.
+    fix this lockout (it's the broken FDA grant, not the walk).
+  - Ops: the misowned empty `.staging` (`root:997`) was recreated `deploy:806`
+    (real fix for one symptom); `kickstart -k` and a full `bootout`+`bootstrap`
+    of `watch` were tried and did **not** clear the EPERM (consistent with the
+    FDA-grant cause). A throwaway diag LaunchDaemon proved the cdhash mismatch,
+    then was removed.
+- **Security note:** during diagnosis a sub-agent overstepped and launched the
+  real `precis watch` against `precis_prod` with the live `agent_rw` DSN inline
+  on the command line — treat the prod `agent_rw` password as transcript-exposed
+  (rotate if warranted). No evidence of a durable prod write (it logged
+  "watch starting" and was killed). The read-only group/perm probing that
+  followed is legitimate troubleshooting despite a "credential exploration"
+  auto-flag.
 - **Optional code hardening (separate, lower priority):** wrap the watchdog
   `observer.schedule/start` + `DirectorySnapshot` walk so a permission error
-  on a *subdir* degrades to log-and-skip instead of killing the daemon — but
-  it cannot help when the inbox *root* is unreadable, so it does not substitute
-  for the infra fix.
+  on a *subdir* degrades to log-and-skip instead of killing the daemon — does
+  not substitute for the infra fix (the inbox *root* being unreadable still
+  kills it).
+- Related: prod `gripe:gr178497` (fetch-side staging-sweep EPERM, same root
+  cause).
 
 ## Residuals (2026-07-31 — draft table-editing ship b9bc1d4c)
 

@@ -40,6 +40,7 @@ Alerts dedup per *condition* instead.
 | `worker-restart` | a `(host, process)` emits >threshold `worker: started` boot rows in 1 h (restart storm) | 8 / 1 h · **critical** |
 | `dead-worker` | a continuous daemon (`precis-worker` / `precis-worker-agent`) silent >threshold while its host is alive | 10 min · **critical** |
 | `dispatch-stall` | `claude_inproc` jobs `STATUS:queued` >threshold with **zero** live-lease jobs running (executor stopped claiming) | 15 min · **critical** |
+| `nas-denied` | a fresh `host_heartbeat` reports the NAS unreadable (EPERM) from the heartbeat's own launchd context — every launchd/cron daemon on that host is locked out of `/opt/nas` (usually a Full Disk Access grant broken by a `brew upgrade python` cdhash change) | <5 min · **critical** |
 
 `orphan` enforces the strategic invariant (knob #6 in the plan).
 `stale-claim` catches workers that died mid-task — the claim's age
@@ -55,8 +56,11 @@ loops are also surfaced on the web Status page's "Background health"
 panel for pull-style monitoring.
 
 The three **worker-health** detectors watch daemon liveness / work
-flow, not the todo graph, and are the only `critical` categories (a
-new one fires the one-shot Discord ping). `worker-restart` and
+flow, not the todo graph; together with `orphaned-coordinator` and the
+host-level `nas-denied` (NAS unreadable from a host's launchd context)
+they make up the `critical` categories (a new one fires the one-shot
+Discord ping). `nas-denied` reads `host_heartbeat` (the reporter probes
+`/opt/nas` from its own launchd context each tick). `worker-restart` and
 `dead-worker` read `worker_logs`; `dispatch-stall` reads the job
 queue. `dispatch-stall` is the planner-SPOF guard: minting runs on
 every node, but a `plan_tick` can only *execute* on melchior's

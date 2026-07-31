@@ -167,7 +167,10 @@ cheap-but-real pass is never flagged.
   SPOF, gripe 55748. The "nothing running" gate distinguishes a dead
   executor from a healthy-but-backlogged one; symptom-level, so it also
   catches an agent worker that never started — which has no log rows for
-  dead-worker to age). These three are the only
+  dead-worker to age). These three, plus `orphaned-coordinator` and the
+  host-level **nas-denied** (`_detect_nas_denied` — a host's fresh
+  `host_heartbeat` reports `/opt/nas` unreadable from the reporter's own
+  launchd context; the FDA-grant-broke-on-brew-python-bump lockout), are the
   `critical` categories — a thrashing/dead/stalled worker stalls the planner
   cluster-wide, so on the *first* sighting `raise_alert` (now returning
   `(ref_id, is_new)`) fires a one-shot `notify_critical_alert` — a

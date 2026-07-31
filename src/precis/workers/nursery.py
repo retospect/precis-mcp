@@ -73,6 +73,11 @@ graph) — all ``critical``, so a *new* one pages once via
   agent-profile executor (melchior) stopped claiming, so the planner is
   frozen cluster-wide (gripe 55748). Symptom-level, so it also catches an
   agent worker that never started (no log rows for dead-worker to age).
+* **nas-denied** — a fresh ``host_heartbeat`` reporting the NAS unreadable
+  (EPERM) from the heartbeat's own launchd context — every launchd/cron
+  daemon on that host is locked out of ``/opt/nas``. Almost always a Full
+  Disk Access grant broken by a ``brew upgrade python`` cdhash change (see
+  OPEN-ITEMS "melchior daemon NAS lockout").
 
 Each finding becomes an ``alert`` under ``alert_source =
 nursery:<category>``, deduped on ``fingerprint = "<category>:<ref_id>"``
@@ -227,6 +232,7 @@ _SEVERITY: dict[str, str] = {
     "dead-worker": "critical",
     "dispatch-stall": "critical",
     "orphaned-coordinator": "critical",
+    "nas-denied": "critical",
 }
 
 
@@ -264,6 +270,7 @@ _DETECTORS: tuple[tuple[str, Callable[[Store], list[Finding]]], ...] = (
     ("stalled-recurring", lambda s: _detect_stalled_recurrings(s)),
     ("worker-restart", lambda s: _detect_worker_restart_storms(s)),
     ("dead-worker", lambda s: _detect_dead_workers(s)),
+    ("nas-denied", lambda s: _detect_nas_denied(s)),
     ("dispatch-stall", lambda s: _detect_dispatch_stalls(s)),
 )
 
@@ -1164,6 +1171,48 @@ def _detect_dead_workers(store: Store) -> list[Finding]:
                     "host is otherwise alive — the daemon is dead or wedged. "
                     "If it is the agent worker, plan_tick / claude_inproc jobs "
                     "stall cluster-wide; `launchctl kickstart -k` to recover."
+                ),
+            )
+        )
+    return out
+
+
+def _detect_nas_denied(store: Store) -> list[Finding]:
+    """Hosts whose latest heartbeat reports the NAS unreadable from the
+    launchd context — every launchd/cron daemon there is locked out of
+    /opt/nas. Gated on a fresh (<5 min) heartbeat so a stale row (host/DB
+    outage — a different failure) doesn't linger as a false NAS alert.
+    Root cause is almost always a Full Disk Access grant broken by a brew
+    python upgrade; see OPEN-ITEMS 'melchior daemon NAS lockout'.
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT host, meta->>'nas_path' AS path, meta->>'nas_errno' AS errno
+              FROM host_heartbeat
+             WHERE ts > now() - interval '5 minutes'
+               AND meta->>'nas_ok' = 'false'
+             ORDER BY host
+             LIMIT 50
+            """
+        ).fetchall()
+    out: list[Finding] = []
+    for host, path, _errno in rows:
+        out.append(
+            Finding(
+                category="nas-denied",
+                ref_id=None,
+                fingerprint_key=f"nas-denied:{host}",
+                title=f"{host} launchd context locked out of the NAS",
+                detail=(
+                    f"{host}: EPERM reading {path or '/opt/nas/botshome'} from the "
+                    "heartbeat's launchd context — every launchd/cron daemon on "
+                    f"{host} is denied NAS access (ingest/fetch stalled). Almost "
+                    "always a Full Disk Access grant that broke when `brew upgrade` "
+                    "changed the venv python's cdhash. Re-grant FDA to the resolved "
+                    "python in System Settings > Full Disk Access, then "
+                    "`launchctl kickstart -k` the precis daemons. "
+                    "See OPEN-ITEMS 'melchior daemon NAS lockout'."
                 ),
             )
         )

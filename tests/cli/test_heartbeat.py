@@ -216,6 +216,66 @@ def test_temp_from_macos_smc_returns_none_when_binary_missing(monkeypatch) -> No
     assert heartbeat._temp_from_macos_smc() is None
 
 
+# ── NAS launchd-context probe ─────────────────────────────────────────────
+
+
+class _FakeScandirIter:
+    """Minimal ``os.scandir`` context-manager stand-in."""
+
+    def __enter__(self):
+        return iter([])
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_probe_nas_readable(monkeypatch) -> None:
+    monkeypatch.setenv("PRECIS_NAS_PROBE_PATH", "/opt/nas/botshome")
+    monkeypatch.setattr(heartbeat.os, "scandir", lambda _p: _FakeScandirIter())
+    assert heartbeat._probe_nas() == {
+        "nas_ok": True,
+        "nas_path": "/opt/nas/botshome",
+    }
+
+
+def test_probe_nas_permission_denied(monkeypatch) -> None:
+    monkeypatch.setenv("PRECIS_NAS_PROBE_PATH", "/opt/nas/botshome")
+
+    def _boom(_p):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(heartbeat.os, "scandir", _boom)
+    result = heartbeat._probe_nas()
+    assert result == {
+        "nas_ok": False,
+        "nas_path": "/opt/nas/botshome",
+        "nas_errno": 1,
+    }
+
+
+def test_probe_nas_path_absent_is_silent(monkeypatch) -> None:
+    monkeypatch.setenv("PRECIS_NAS_PROBE_PATH", "/opt/nas/botshome")
+
+    def _missing(_p):
+        raise FileNotFoundError("no such path")
+
+    monkeypatch.setattr(heartbeat.os, "scandir", _missing)
+    assert heartbeat._probe_nas() == {}
+
+
+def test_probe_nas_other_oserror_is_recorded_not_alerted(monkeypatch) -> None:
+    monkeypatch.setenv("PRECIS_NAS_PROBE_PATH", "/opt/nas/botshome")
+
+    def _boom(_p):
+        raise OSError("stale NFS file handle")
+
+    monkeypatch.setattr(heartbeat.os, "scandir", _boom)
+    result = heartbeat._probe_nas()
+    assert result["nas_path"] == "/opt/nas/botshome"
+    assert "stale NFS file handle" in result["nas_probe_err"]
+    assert "nas_ok" not in result
+
+
 # ── slice 6b: the resource-slot self-probe wiring ────────────────────────
 
 

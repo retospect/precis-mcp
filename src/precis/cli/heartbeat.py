@@ -133,6 +133,37 @@ def collect_top_cpu(n: int = 3) -> list[dict[str, Any]]:
     return procs[:n]
 
 
+def _probe_nas() -> dict[str, Any]:
+    """Probe NAS readability from THIS process's context.
+
+    The heartbeat runs as ``deploy`` under launchd — the same context the
+    watch/worker daemons use — so an EPERM here means every launchd/cron
+    process on this host is locked out of the NAS. That happens when the
+    venv python's Full Disk Access grant breaks after ``brew upgrade
+    python`` changes its cdhash (OPEN-ITEMS: 'melchior daemon NAS lockout').
+
+    Returns meta fields merged into the heartbeat row:
+      - readable NAS      -> {'nas_ok': True,  'nas_path': <p>}
+      - EPERM (the break) -> {'nas_ok': False, 'nas_path': <p>, 'nas_errno': <n>}
+      - path absent       -> {}  (host doesn't mount the NAS -> no signal, never alerts)
+      - other OSError     -> {'nas_probe_err': <str>, 'nas_path': <p>}  (transient; recorded, not alerted)
+    Never raises — heartbeat liveness must not depend on the NAS.
+    """
+    path = os.environ.get("PRECIS_NAS_PROBE_PATH", "/opt/nas/botshome")
+    try:
+        with os.scandir(path) as it:
+            next(
+                it, None
+            )  # force an actual directory read (triggers the perm check / automount)
+    except PermissionError as e:
+        return {"nas_ok": False, "nas_path": path, "nas_errno": e.errno}
+    except (FileNotFoundError, NotADirectoryError):
+        return {}
+    except OSError as e:
+        return {"nas_probe_err": str(e), "nas_path": path}
+    return {"nas_ok": True, "nas_path": path}
+
+
 def _parse_first_float(text: str) -> float | None:
     m = _FLOAT_RE.search(text)
     if m is None:
@@ -347,6 +378,7 @@ def run(args: argparse.Namespace) -> None:
         "release": platform.release(),
         "top_cpu": collect_top_cpu(),
     }
+    meta.update(_probe_nas())
 
     dsn = resolve_dsn(getattr(args, "database_url", None))
     store = Store.connect(dsn)
