@@ -966,7 +966,15 @@ class PaperSearchResultRenderer:
                             "and spread across papers (per_paper=)",
                         )
                     )
-                body += render_next_section(nav)
+
+        # Render the trailer whenever any nav item was collected. This
+        # sits at function scope on purpose: it used to be nested inside
+        # the ``len(hits) != 1`` branch, which silently dropped the
+        # singleton-hit widen hint (and the "read the full text" hint
+        # for fully-shown result sets) — a single ``Next:`` trailer for
+        # the whole response, per the ordering documented above.
+        if nav:
+            body += render_next_section(nav)
 
         return Response(body=body)
 

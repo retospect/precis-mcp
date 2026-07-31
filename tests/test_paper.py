@@ -289,40 +289,30 @@ class TestViews:
         resp = handler.get(id="wang2020state", view="abstract")
         assert "no abstract" in resp.body
 
-    @pytest.mark.xfail(
-        reason=(
-            "ADR 0018 moved view='toc' off the on-demand chunk-walking "
-            "renderer and onto persistent ref_segments rows populated "
-            "by the segment_toc worker. The seed here doesn't run the "
-            "worker, so the response is the 'segments not yet computed' "
-            "placeholder. Fix in a follow-up by either running "
-            "run_paper_segments_pass in the seed or rewriting the "
-            "assertions against the placeholder text."
-        ),
-        strict=True,
-    )
     def test_toc(self, store: Store, handler: PaperHandler) -> None:
+        """F20 (ADR 0018 superseded): view='toc' renders a flat
+        per-chunk keyword table — one TOON row per chunk — off the
+        ``chunks.keywords`` discovery layer, not a heading hierarchy."""
         _seed_paper(store, blocks=["Block A", "Block B", "Block C"])
         resp = handler.get(id="wang2020state", view="toc")
         body = resp.body
-        # Header counts blocks + sections.
+        # Header counts chunks (F20 renamed the old "N blocks" count).
         assert "TOC" in body
-        assert "3 blocks" in body
-        # No headings detected → single implicit section spanning all
-        # blocks. Range column shows ``~0..2`` and a preview of the
-        # first block surfaces in the row label.
-        assert "~0..2" in body
-        assert "Block A" in body  # preview from pos=0
-        assert "<untitled>" in body
+        assert "3 chunks" in body
+        # TOON table with one row per chunk. Keyword cells are empty
+        # until the chunk_keywords worker runs (not run in this seed),
+        # so we assert on the stable per-chunk handle suffixes.
+        assert "keywords}" in body
+        for pos in range(3):
+            assert f"~{pos}" in body
 
-    @pytest.mark.xfail(
-        reason="ADR 0018 — view='toc' needs ref_segments populated; see test_toc.",
-        strict=True,
-    )
-    def test_toc_with_headings_is_hierarchical(
+    def test_toc_is_flat_not_hierarchical(
         self, store: Store, handler: PaperHandler
     ) -> None:
-        """Phase 3.5: blocks matching heading patterns produce sections."""
+        """F20 superseded ADR 0018's H1/H2 hierarchy: heading-like
+        blocks no longer produce indented ■-marked sections. Every
+        chunk is a flat TOON row — this guards that the hierarchy
+        renderer stays retired."""
         _seed_paper(
             store,
             blocks=[
@@ -338,30 +328,19 @@ class TestViews:
         )
         resp = handler.get(id="wang2020state", view="toc")
         body = resp.body
-        # All three top-level sections appear with the ■ marker.
-        assert "■ INTRODUCTION" in body
-        assert "■ METHODS" in body
-        assert "■ RESULTS" in body
-        # Subsection appears with deeper indent (no ■ marker).
-        materials_line = next(
-            line
-            for line in body.splitlines()
-            if "Materials" in line and "■" not in line
-        )
-        methods_line = next(line for line in body.splitlines() if "■ METHODS" in line)
-        materials_indent = len(materials_line) - len(materials_line.lstrip())
-        methods_indent = len(methods_line) - len(methods_line.lstrip())
-        assert materials_indent > methods_indent
-        # Drill-down hint trailer present.
-        assert "Next:" in body
-        assert "drill into" in body
+        assert "TOC" in body
+        assert "8 chunks" in body
+        # Flat: one row per chunk, addressed by handle suffix.
+        for pos in range(8):
+            assert f"~{pos}" in body
+        # No heading-hierarchy markers from the retired ADR-0018 renderer.
+        assert "■ INTRODUCTION" not in body
+        assert "■ METHODS" not in body
 
-    @pytest.mark.xfail(
-        reason="ADR 0018 — view='toc' needs ref_segments populated; see test_toc.",
-        strict=True,
-    )
     def test_toc_drilldown_via_id(self, store: Store, handler: PaperHandler) -> None:
-        """`get(id='slug~A..B/toc')` returns a TOC scoped to the range."""
+        """`get(id='slug~A..B/toc')` returns a TOC scoped to the range —
+        range-scoping survived the F20 rewrite; only chunks inside the
+        range render."""
         _seed_paper(
             store,
             blocks=[
@@ -376,12 +355,16 @@ class TestViews:
         )
         resp = handler.get(id="wang2020state~2..4/toc")
         body = resp.body
-        # Range label appears in header.
+        # Range label appears in header and the scope is honoured:
+        # only chunks 2..4 render, 0..1 and 5..6 are excluded.
         assert "~2..4" in body
-        # Only METHODS overlaps the range.
-        assert "■ METHODS" in body
-        assert "■ INTRO" not in body
-        assert "■ RESULTS" not in body
+        assert "3 chunks" in body
+        for pos in (2, 3, 4):
+            assert f"~{pos}" in body
+        assert "~0" not in body
+        assert "~1" not in body
+        assert "~5" not in body
+        assert "~6" not in body
 
     def test_bibtex(self, store: Store, handler: PaperHandler) -> None:
         _seed_paper(store)
@@ -582,15 +565,6 @@ class TestSearch:
         # for DOI misses - we know widening won't help.
         assert "widen the lexical net" not in body
 
-    @pytest.mark.xfail(
-        reason=(
-            "Search response renderer dropped the ``page_size=10`` widen "
-            "hint when porting to the TOON-table response shape. "
-            "Either re-add the hint to the new renderer or update "
-            "the assertion to the current trailer vocabulary."
-        ),
-        strict=True,
-    )
     def test_singleton_hit_no_redundant_trailer(
         self, store: Store, handler: PaperHandler
     ) -> None:
@@ -845,13 +819,6 @@ class TestSearch:
         # And at least one of the non-excluded papers' chunk handles is present.
         assert any(chunk_handle(store, f"paper-{ch}") in body for ch in "bcd")
 
-    @pytest.mark.xfail(
-        reason=(
-            "Same renderer change as test_singleton_hit_no_redundant_trailer "
-            "— search trailer vocabulary moved off ``page_size=10`` widen hint."
-        ),
-        strict=True,
-    )
     def test_search_exclude_trailer_singleton_keeps_widen(
         self, store: Store, handler: PaperHandler
     ) -> None:
