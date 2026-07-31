@@ -1732,3 +1732,35 @@ class TestTickProposals:
         assert out.candidates_created == 1
         assert out.sims_dispatched == 1
         assert len(calls) == 1  # relax was dispatched (stubbed)
+
+    def test_compute_step_raise_never_crashes_the_tick(
+        self, store: Any, monkeypatch: Any, caplog: Any
+    ) -> None:
+        """gr172886: run_compute_step's dispatch lane (dispatch_autocatpath)
+        raises loudly on the no-GPU null-route misconfiguration. That raise must
+        NOT propagate out of run_quest_tick — otherwise it reaches the
+        coordinator's blanket except and terminalizes the whole coordinator job,
+        losing the mid-slice checkpoint. The tick honors its documented
+        'a raise here must never crash the tick' contract: log it loudly, then
+        degrade to a zero-dispatch (backed-off) outcome so the stall/escalation
+        ladder takes over."""
+
+        def _boom(*_a: Any, **_kw: Any) -> Any:
+            raise RuntimeError("autocatpath dispatch: no GPU route node (gr172886)")
+
+        monkeypatch.setattr(compute_mod, "run_compute_step", _boom)
+        qid = _mk_quest(store, "A striving")
+        payload = {
+            "logbook": [],
+            "dossier_markdown": "",
+            "proposals": [{"name": "Fe", "rationale": "x", "structure": _SPEC}],
+        }
+        with caplog.at_level("ERROR", logger="precis.quest.tick"):
+            out = run_quest_tick(
+                store, qid, dispatch_fn=_fake_dispatch(payload), compute=True
+            )
+        # did not crash; degraded to a zero-dispatch backed-off outcome
+        assert out.sims_dispatched == 0
+        assert out.candidates_created == 0
+        # the misconfig stayed loud in the logs (not silently swallowed)
+        assert any("compute step raised" in r.getMessage() for r in caplog.records)

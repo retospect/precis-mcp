@@ -1178,12 +1178,30 @@ def run_quest_tick(
     if compute:
         from precis.quest.compute import run_compute_step
 
-        step = run_compute_step(store, quest_id, proposals, by=by)
-        created = step.candidates_created
-        dispatched = step.sims_dispatched
-        harvested = step.results_harvested
-        ruled = step.ruled_out
-        graduated = step.graduated
+        # A raise here must never crash the tick (mirrors _phase_weave_tick and
+        # the commit-ladder try/except). run_compute_step's dispatch lane
+        # (dispatch_autocatpath) raises loudly on the gr172886 no-GPU null-route
+        # misconfiguration; without this guard that RuntimeError propagates out
+        # of run_quest_tick to the coordinator's blanket except, which
+        # terminalizes the WHOLE coordinator job and loses the mid-slice
+        # checkpoint. Log it loudly (the misconfig stays visible) and degrade to
+        # a zero-dispatch outcome — the stall counter then advances and the
+        # escalation ladder handles the persistent failure.
+        try:
+            step = run_compute_step(store, quest_id, proposals, by=by)
+        except Exception:
+            log.exception(
+                "run_quest_tick: compute step raised for quest %s — degrading "
+                "to a backed-off (zero-dispatch) outcome",
+                quest_id,
+            )
+            step = None
+        if step is not None:
+            created = step.candidates_created
+            dispatched = step.sims_dispatched
+            harvested = step.results_harvested
+            ruled = step.ruled_out
+            graduated = step.graduated
 
         # Commit re-prompt + tier-escalation ladder: a structural guarantee
         # that the AGENT is asked to act — never a code-chosen dispatch. A
