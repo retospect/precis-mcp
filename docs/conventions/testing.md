@@ -24,6 +24,14 @@ Runs pytest in the dev container against your worktree (bind-mount) with
 the RAM-backed test DB wired up, terse output, `-n6` parallelism by
 default.
 
+Each worktree gets its **own** Compose project (`precis-test-<worktree>`,
+derived in `scripts/lib/compose-project.sh`), so its `precis-test-db` is
+isolated from every sibling's `scripts/test`/`scripts/ship` gate rather than
+all colliding on one shared instance — a sibling's `-n6` run can no longer
+crash your gate into recovery mode (gr176375). The per-worktree project is torn
+down (`docker compose -p … down -v`) when the worktree is reaped
+(`scripts/hooks/session-end-reap.sh`, backstopped by `scripts/reap-worktrees`).
+
 ```
 scripts/test                         # full suite (-n6)
 scripts/test tests/test_x.py -k …    # subset; args pass through to pytest

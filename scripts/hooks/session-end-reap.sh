@@ -58,6 +58,12 @@ PRIMARY=$(dirname "$COMMON_DIR")
 cd "$PRIMARY" 2>/dev/null || exit 0
 command -v git >/dev/null 2>&1 || exit 0
 
+# Per-worktree compose-project teardown (gr176375): this is the PRIMARY reap
+# path (SessionStart's scripts/reap-worktrees is only the backstop), so the
+# per-worktree test-DB project must be reclaimed here or it leaks in the common
+# case. Guarded — an older primary checkout without the helper simply skips it.
+[ -f scripts/lib/compose-project.sh ] && source scripts/lib/compose-project.sh
+
 # Release the SessionStart lock (scripts/hooks/session-start-lock.sh)
 # unconditionally — this is a genuine end-of-session, so whatever
 # inflight/reap-worktrees decide next (this run or a sibling's) must see this
@@ -90,5 +96,14 @@ if git worktree remove "$TARGET" 2>/dev/null; then
     # safe_remove already vetted mergedness (ancestor OR squash-absorbed);
     # -D deletes both, -d would refuse the squash case despite it being safe.
     git branch -D "$TARGET_BRANCH" >/dev/null 2>&1 || true
+    # Reclaim this worktree's isolated test-DB project now the tree is gone —
+    # `down -p <name>` finds it by label, no compose file needed (gr176375).
+    # Best-effort: missing docker / an already-gone project must never matter
+    # (this hook is fire-and-forget; its exit code is not read).
+    if command -v docker >/dev/null 2>&1 && command -v compose_project_for >/dev/null 2>&1; then
+        PROJ="$(compose_project_for "$TARGET" 2>/dev/null || true)"
+        [ -n "$PROJ" ] && env UID="$(id -u)" GID="$(id -g)" \
+            docker compose -p "$PROJ" down -v >/dev/null 2>&1 || true
+    fi
 fi
 exit 0

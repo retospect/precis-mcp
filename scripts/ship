@@ -142,7 +142,13 @@ fi
 INFRA_COMPOSE="${PRECIS_COMPOSE:-${PWD}/docker/dev/compose.yaml}"
 [[ -f "$INFRA_COMPOSE" ]] || die "compose file not found at ${INFRA_COMPOSE} (set PRECIS_COMPOSE)."
 
-compose() { env UID="$(id -u)" GID="$(id -g)" docker compose -f "$INFRA_COMPOSE" --profile dev "$@"; }
+# Per-worktree compose project so this worktree's gate DB (precis-test-db) is
+# isolated from every sibling's `scripts/test`/`scripts/ship`, instead of all
+# colliding on the default project `dev` (gr176375). See
+# scripts/lib/compose-project.sh.
+source "${WORKTREE}/scripts/lib/compose-project.sh"
+COMPOSE_PROJECT="$(compose_project_for "$WORKTREE")"
+compose() { env UID="$(id -u)" GID="$(id -g)" docker compose -f "$INFRA_COMPOSE" -p "$COMPOSE_PROJECT" --profile dev "$@"; }
 
 # Co-located tmpfs test DB: a RAM-backed pgvector on precis-dev's own compose
 # network, so the gate's per-worker CREATE DATABASE clones run at memory speed

@@ -28,6 +28,10 @@ then remove.
   git worktree unlock <path>     # only if it was locked by a dead session
   git worktree remove <path>
   git branch -d worktree-<name>
+  # reclaim the worktree's isolated test-DB project (gr176375) — by name, so no
+  # compose file is needed after removal; best-effort, skip if docker is absent
+  source scripts/lib/compose-project.sh 2>/dev/null && \
+    docker compose -p "$(compose_project_for <path>)" down -v 2>/dev/null || true
   ```
   Use `-d` (safe delete), never `-D` — if it refuses, that means the branch
   isn't actually fully merged and you stop and report it rather than forcing

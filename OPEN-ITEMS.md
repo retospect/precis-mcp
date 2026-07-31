@@ -193,14 +193,6 @@ were **deferred** at user request ("ship only") — run them in a later session:
   `tools_needed`-aware (or pin a provider). · Test: a fake transport raising
   `HTTPError(fp=<body>)` → `LlmResult.error` contains the body text, not just
   "HTTP Error 400".
-- **N concurrent sessions gate against one local precis_test DB → saturation** ·
-  Status: open · Severity: feature · Owner: `scripts/ship`/`scripts/test` gate +
-  the shared `dev-precis-test-db-1`. Full-suite `-n6` runs from many worktrees
-  exhaust the DB pool / push it into recovery mode → pervasive spurious `E`rrors
-  (the gr172886 ship took 7 attempts, all infra). Do: bound gate concurrency
-  (the ship-lock helps but siblings' `scripts/test` bypass it), or a per-worktree
-  test DB. See memory `shared-test-db-concurrency-flake`.
-
 ---
 ## 🚨 Deploy fresh-resolves deps instead of installing from `uv.lock` — gate-green can deploy-break
 

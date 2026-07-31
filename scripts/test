@@ -49,7 +49,12 @@ INFRA_COMPOSE="${PRECIS_COMPOSE:-${PWD}/docker/dev/compose.yaml}"
     echo "ERR: compose file not found at ${INFRA_COMPOSE} (set PRECIS_COMPOSE)" >&2
     exit 1
 }
-compose() { env UID="$(id -u)" GID="$(id -g)" docker compose -f "$INFRA_COMPOSE" --profile dev "$@"; }
+# Per-worktree compose project so this worktree's precis-test-db is isolated
+# from every sibling's, instead of all colliding on the default project `dev`
+# (gr176375). See scripts/lib/compose-project.sh.
+source "${WORKTREE}/scripts/lib/compose-project.sh"
+COMPOSE_PROJECT="$(compose_project_for "$WORKTREE")"
+compose() { env UID="$(id -u)" GID="$(id -g)" docker compose -f "$INFRA_COMPOSE" -p "$COMPOSE_PROJECT" --profile dev "$@"; }
 
 # Co-located RAM test DB (the same service scripts/ship's gate uses). If it
 # can't start, fall back to whatever PRECIS_TEST_PG_URL the container carries.

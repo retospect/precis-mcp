@@ -30,6 +30,12 @@ command -v git >/dev/null 2>&1 || exit 0
 git rev-parse --git-dir >/dev/null 2>&1 || exit 0
 [ -x scripts/inflight ] || exit 0
 
+# Per-worktree compose-project teardown (gr176375): each worktree runs its gate
+# against its OWN precis-test-db project; reaping the tree must also tear that
+# project down or the container/volume leaks. Guarded — an older checkout
+# without this helper simply skips the teardown below.
+[ -f scripts/lib/compose-project.sh ] && source scripts/lib/compose-project.sh
+
 # Defense in depth: never remove the PRIMARY working tree, whatever bucket it
 # lands in (inflight already buckets it `base`, but a destructive op earns its
 # own guard — git refuses anyway, we just don't rely on that).
@@ -56,6 +62,16 @@ while IFS=$'\t' read -r name path branch; do
         # true ancestor merge or squash-absorbed); -D deletes both, -d would
         # refuse the squash case despite it being safe.
         git branch -D "$branch" >/dev/null 2>&1 || true
+        # Reclaim this worktree's isolated test-DB project (container + volume)
+        # now the tree is gone — `down -p <name>` finds it by label, no compose
+        # file needed (gr176375). Only after a successful removal, so a
+        # still-wanted tree never loses its DB. Best-effort: missing docker / an
+        # already-gone project must never break the reap.
+        if command -v docker >/dev/null 2>&1 && command -v compose_project_for >/dev/null 2>&1; then
+            proj="$(compose_project_for "$path" 2>/dev/null || true)"
+            [ -n "$proj" ] && env UID="$(id -u)" GID="$(id -g)" \
+                docker compose -p "$proj" down -v >/dev/null 2>&1 || true
+        fi
         REAPED+=("$name")
     fi
 done < <(printf '%s' "$JSON" | python3 -c '
