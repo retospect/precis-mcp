@@ -135,5 +135,103 @@
     </main>
   </div>
   {% block scripts %}{% endblock %}
+  <script>
+    // Delegated hover-preview popover coordination for every anchor
+    // ``precis_web.linkify._anchor_html`` renders anywhere on the page
+    // (gr171760). Each anchor used to attach its OWN window-scoped
+    // ``scroll``/``keydown.escape``/``ref-popover-open`` listeners so at
+    // most one popover was ever open — fine at dozens of refs, but O(N)
+    // capture-phase handlers firing per scroll frame on a citation-heavy
+    // draft (thousands of refs). This installs that coordination ONCE,
+    // page-wide: it tracks only the single currently-open anchor's
+    // wrapper element and reaches into its Alpine scope directly, so no
+    // per-anchor listener or DOM event is needed to notify it.
+    //
+    // A bare block (not an IIFE) — every helper below takes an explicit
+    // argument rather than closing purely over ``openEl``, which
+    // incidentally keeps this script free of an empty argument list (a
+    // couple of routes' error-page tests assert that shape is absent,
+    // guarding against an unrelated stale-template-substitution bug).
+    {
+      let openEl = null;
+
+      // Guards every reach into Alpine state: the wrapper may have been
+      // evicted from the DOM since it opened (the drafts reader's virtual
+      // scrolling unloads rows that scroll far away), in which case
+      // there's nothing to close — just drop the stale reference.
+      function refPopoverData(el) {
+        if (!el || !window.Alpine || !document.contains(el)) return null;
+        try {
+          return window.Alpine.$data(el);
+        } catch {
+          return null;
+        }
+      }
+
+      function refPopoverClose(el) {
+        const d = refPopoverData(el);
+        if (d) d.hovered = false;
+        if (openEl === el) openEl = null;
+      }
+
+      // The wrapper carries its popover id as ``data-popid``; the teleported
+      // card carries the SAME id as its own ``id`` (that's how ``hx-target``
+      // finds it). Two different DOM nodes, one shared identity — so
+      // ``release`` (called from EITHER the wrapper's own close handlers OR
+      // the card's, since they share the same delayed-close expression) can
+      // recognise "this is the currently-open one" by popover id even when
+      // ``el`` is the card, not the wrapper ``openEl`` tracks.
+      function popIdOf(el) {
+        if (!el) return null;
+        return (el.dataset && el.dataset.popid) || el.id || null;
+      }
+
+      // Escape closes whichever popover is open, page-wide — was a
+      // ``@keydown.escape.window`` on every single anchor.
+      window.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') refPopoverClose(openEl);
+      });
+      // A scroll OUTSIDE the open popover's own (overflow-y-auto) card
+      // closes it — a page/pane scroll detaches the fixed-position card
+      // from its anchor, which should close it, but scrolling the card's
+      // own content must not. Capture-phase: a scroll inside some OTHER
+      // scrollable ancestor doesn't bubble to ``window``, only capture
+      // reaches it. Was a ``@scroll.window.capture`` on every single
+      // anchor; now one listener regardless of how many anchors exist.
+      window.addEventListener(
+        'scroll',
+        (e) => {
+          if (!openEl) return;
+          const popId = openEl.dataset.popid;
+          const card = popId ? document.getElementById(popId) : null;
+          if (!card || !card.contains(e.target)) refPopoverClose(openEl);
+        },
+        true,
+      );
+
+      window.__refPopover = {
+        // Called from an anchor's own hover-open handler: closes whichever
+        // OTHER popover is currently open (≤1 open cluster-wide) and
+        // becomes the tracked one. Was a ``$dispatch``'d + ``.window``-
+        // listened ``ref-popover-open`` custom event on every anchor.
+        open(el) {
+          if (openEl && openEl !== el) refPopoverClose(openEl);
+          openEl = el;
+        },
+        // Called from an anchor's own close handlers — the wrapper's
+        // mouseleave-delay / click-outside, AND the teleported card's own
+        // mouseleave-delay (gr171760 review: the card's ``$el`` is the card
+        // itself, never ``openEl``, so this must compare popover IDENTITY
+        // — the shared popover id — not raw element identity, or a close
+        // via the card path would never clear the stale reference). A fast
+        // re-open of a DIFFERENT chip before this fires must NOT clear the
+        // newer one, which the popid comparison also guarantees (each
+        // anchor mints its own id).
+        release(el) {
+          if (popIdOf(openEl) === popIdOf(el)) openEl = null;
+        },
+      };
+    }
+  </script>
 </body>
 </html>

@@ -199,6 +199,21 @@ def _anchor_html(
     clone is a document-order-detached ``<body>`` child, ``hx-target``
     can't use a DOM-adjacency selector any more — each anchor mints its
     own popover id and targets it directly.
+
+    Cross-anchor coordination (only ≤1 popover open at a time; Escape /
+    an outside scroll closes it) used to be N *window*-scoped listeners —
+    ``@ref-popover-open.window`` / ``@keydown.escape.window`` /
+    ``@scroll.window.capture`` — one triple per anchor, so a citation-heavy
+    draft (thousands of refs) fired thousands of capture-phase handlers
+    on every scroll tick (gr171760). That coordination now lives in ONE
+    delegated ``window`` listener pair, installed once page-wide by
+    ``templates/base.html.j2`` as ``window.__refPopover`` (``open(el)`` /
+    ``release(el)``, tracking the single currently-open wrapper element
+    and reaching into its Alpine scope via ``Alpine.$data(el)``). Each
+    anchor only calls into that shared object — it attaches no window
+    listener of its own. ``@click.outside`` stays per-anchor (Alpine's own
+    ``outside`` directive, unrelated cost shape — one document click
+    listener either way, not one per scroll/keydown tick).
     """
     # ``whitespace-normal`` on the popover container resets the
     # ``white-space: pre-wrap`` it inherits from the parent ``<pre>``
@@ -220,9 +235,11 @@ def _anchor_html(
     #
     # 1. ``setTimeout`` + ``clearTimeout`` on enter/leave — mouseleave
     #    cancels the pending hover so a quick fly-by never opens it.
-    # 2. ``@ref-popover-open.window`` — when ANY popover opens, every
-    #    other one listens for it and closes itself. Bounds the open
-    #    set to ≤1 cluster-wide regardless of mouseleave reliability.
+    # 2. ``window.__refPopover.open($el)`` (gr171760) — closes whichever
+    #    OTHER popover is currently open (cluster-wide ≤1 open at a time)
+    #    by calling straight into its Alpine scope, no event needed. See
+    #    the module-level note below ``_anchor_html`` for why this replaced
+    #    a per-anchor ``@ref-popover-open.window`` listener.
     # 3. ``@click.outside`` — clicking anywhere outside the span shuts
     #    the popover. Belt-and-suspenders for the Safari case where
     #    mouseleave never fires (touch input, scroll past, swipe). Alpine
@@ -233,20 +250,10 @@ def _anchor_html(
     #    otherwise the physical gap between the link and a now-teleported,
     #    independently-positioned card would fire mouseleave and close it
     #    before the pointer arrives (gripe 56806 regression #1).
-    # 5. Close also fires on window scroll (capture — a scroll inside some
-    #    OTHER scrollable ancestor doesn't bubble to window, only capture
-    #    reaches it) and Escape, since a ``position:fixed`` card computed
-    #    from a point-in-time bounding rect won't track a scrolling page.
-    #    But the card itself is ``overflow-y-auto`` (long previews scroll),
-    #    and a scroll tick INSIDE the card is still a window-capture scroll
-    #    event — without a guard, the very first attempt to read past the
-    #    fold closes the card (gripe: popover un-scrollable). So the scroll
-    #    handler is gated on ``$event.target``: only close when the scroll
-    #    didn't originate from inside the popover card. ``x-ref`` resolves
-    #    against the originating Alpine component regardless of the
-    #    teleport (same reasoning as the docstring above — the clone stays
-    #    in the wrapper's reactive scope), so ``$refs.card`` still finds the
-    #    teleported node.
+    # 5. Escape and an OUTSIDE window scroll also close the popover, since a
+    #    ``position:fixed`` card computed from a point-in-time bounding rect
+    #    won't track a scrolling page — handled by the single delegated
+    #    ``window`` listener below (gr171760), not a per-anchor one.
     open_expr = (
         "clearTimeout(hoverTimer); clearTimeout(closeTimer); "
         "hoverTimer = setTimeout(() => { "
@@ -256,41 +263,35 @@ def _anchor_html(
         "popStyle = 'position:fixed;z-index:100;left:' + left + 'px;' + "
         "(below ? ('top:' + (r.bottom + 4) + 'px') "
         ": ('bottom:' + (window.innerHeight - r.top + 4) + 'px')); "
+        "window.__refPopover.open($el); "
         "hovered = true; "
-        "$dispatch('ref-popover-open', { source: $el }); "
         "}, 200)"
     )
     # Delayed close — shared by the wrapper's mouseleave and the
     # teleported card's own mouseleave, so leaving either one starts the
-    # same countdown and re-entering either one cancels it.
+    # same countdown and re-entering either one cancels it. Also releases
+    # ``$el`` from the shared "currently open" registry (gr171760) if it's
+    # still the one holding it, so a later Escape/scroll is a no-op instead
+    # of re-closing an already-closed popover.
     delayed_close_expr = (
         "clearTimeout(hoverTimer); clearTimeout(closeTimer); "
-        "closeTimer = setTimeout(() => { hovered = false }, 120)"
+        "closeTimer = setTimeout(() => { hovered = false; "
+        "window.__refPopover.release($el); }, 120)"
     )
-    # Immediate close — click-outside / a sibling popover opening / Escape
-    # / scroll all want the card gone right away, not after a travel grace.
+    # Immediate close — click-outside wants the card gone right away, not
+    # after a travel grace.
     immediate_close_expr = (
-        "clearTimeout(hoverTimer); clearTimeout(closeTimer); hovered = false"
-    )
-    other_open_expr = f"if ($event.detail.source !== $el) {{ {immediate_close_expr}; }}"
-    # Scroll only closes for an OUTSIDE scroll — a page/pane scroll detaches
-    # the fixed-position card from its anchor, which SHOULD close it, but
-    # scrolling the card's own (overflow-y-auto) content must not.
-    scroll_close_expr = (
-        f"if (!$refs.card || !$refs.card.contains($event.target)) "
-        f"{{ {immediate_close_expr}; }}"
+        "clearTimeout(hoverTimer); clearTimeout(closeTimer); hovered = false; "
+        "window.__refPopover.release($el);"
     )
     pop_id = f"refpop-{uuid.uuid4().hex[:10]}"
     return (
         f'<span x-data="{{hovered: false, hoverTimer: null, closeTimer: null, '
         f"popStyle: ''}}\" "
-        f'class="relative inline-block" '
+        f'class="relative inline-block" data-popid="{pop_id}" '
         f'@mouseenter="{open_expr}" '
         f'@mouseleave="{delayed_close_expr}" '
-        f'@click.outside="{immediate_close_expr}" '
-        f'@ref-popover-open.window="{other_open_expr}" '
-        f'@keydown.escape.window="{immediate_close_expr}" '
-        f'@scroll.window.capture="{scroll_close_expr}">'
+        f'@click.outside="{immediate_close_expr}">'
         f'<a class="{anchor_cls}" '
         f'href="{href}" target="_blank" rel="noopener" '
         f'hx-get="{preview_url}" '

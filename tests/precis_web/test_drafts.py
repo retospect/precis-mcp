@@ -1683,6 +1683,75 @@ def test_ref_chips_missing_pdf_marker_on_pa_handle() -> None:
     assert "&#9650;" in str(chips[0])
 
 
+def test_ref_chips_carry_structured_kind_discriminant() -> None:
+    """gr171761: every chip is tagged with its structured ``(kind, is_chunk)``
+    (:class:`precis_web.routes.drafts.RefChip`) — a caller like smartdraft's
+    ``_cited_sources`` filters on that, not the rendered href. A ``§`` paper
+    citation is ``kind="paper", is_chunk=False``; a ``¶`` intra-draft xref
+    (not a paper citation at all) is excluded by that predicate even though
+    it also navigates via an anchor."""
+    from precis_web.routes.drafts import RefChip, _ref_chips
+
+    chips = _ref_chips("see [§kong24~2] and also [¶abc123]")
+    by_kind = {c.kind: c for c in chips}
+    assert isinstance(by_kind["paper"], RefChip)
+    assert by_kind["paper"].is_chunk is False
+    # the ¶ xref is not a paper citation — the "cited sources" predicate
+    # (kind == "paper" and not is_chunk) must reject it despite it also
+    # rendering as an anchor chip.
+    assert by_kind["chunk"].is_chunk is True
+    selected = [c for c in chips if c.kind == "paper" and not c.is_chunk]
+    assert len(selected) == 1
+    assert selected[0] is by_kind["paper"]
+
+
+def test_ref_chips_paper_chunk_handle_excluded_from_paper_source_filter() -> None:
+    """A universal *chunk*-form paper handle (``pc10``) still has
+    ``kind == "paper"`` but navigates into the chunk (``/c/pc10``), not a
+    whole-paper view — the structured filter must key on ``is_chunk`` too,
+    not just ``kind``, to match the historical ``/r/paper/`` href-only
+    behaviour."""
+    from precis.utils import handle_registry
+    from precis_web.routes.drafts import _ref_chips
+
+    h = handle_registry.format_handle("paper", 10, chunk=True)
+    chips = _ref_chips(f"[{h}]")
+    assert chips[0].kind == "paper"
+    assert chips[0].is_chunk is True
+    assert [c for c in chips if c.kind == "paper" and not c.is_chunk] == []
+
+
+def test_cited_sources_filters_by_kind_not_href_shape(monkeypatch) -> None:
+    """gr171761: ``_cited_sources`` selects chips by their structured
+    ``(kind, is_chunk)`` tag, not by sniffing ``'href="/r/paper/'`` out of
+    the rendered HTML — so a chip whose href is constructed completely
+    differently still classifies correctly as long as it's a non-chunk
+    paper chip, and a same-shaped-looking href on a non-paper kind (or a
+    chunk-form paper handle) is still excluded."""
+    from markupsafe import Markup
+
+    import precis_web.routes.drafts as drafts_mod
+    from precis_web.routes import smartdraft
+    from precis_web.routes.drafts import RefChip
+
+    weird_paper_chip = RefChip(
+        "paper", False, Markup('<a href="/totally/different/path">weird</a>')
+    )
+    lookalike_href_chip = RefChip(
+        "memory", False, Markup('<a href="/r/paper/not-really">lookalike</a>')
+    )
+    chunk_paper_chip = RefChip("paper", True, Markup('<a href="/c/pc10">chunk</a>'))
+    fake_chips = [weird_paper_chip, lookalike_href_chip, chunk_paper_chip]
+
+    def _fake_ref_chips(text: str, is_missing=None) -> list[RefChip]:
+        return fake_chips
+
+    monkeypatch.setattr(drafts_mod, "_ref_chips", _fake_ref_chips)
+
+    result = smartdraft._cited_sources(object(), "irrelevant text")
+    assert result == [weird_paper_chip]
+
+
 class _FakeRef:
     def __init__(
         self,

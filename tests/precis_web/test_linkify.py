@@ -157,7 +157,7 @@ def test_teleported_card_has_its_own_pointer_bridge() -> None:
     card_start = out.index('<template x-teleport="body">')
     card = out[card_start:]
     assert '@mouseenter="clearTimeout(closeTimer); hovered = true"' in card
-    assert "closeTimer = setTimeout(() => { hovered = false }, 120)" in card
+    assert "closeTimer = setTimeout(() => { hovered = false; " in card
 
 
 def test_wrapper_close_is_delayed_not_immediate() -> None:
@@ -170,35 +170,49 @@ def test_wrapper_close_is_delayed_not_immediate() -> None:
     assert "closeTimer = setTimeout" in wrapper_leave
 
 
-def test_popover_scroll_close_is_guarded_to_outside_scrolls() -> None:
-    """The card is ``overflow-y-auto`` (long previews scroll), so the
-    ``@scroll.window.capture`` close handler must NOT fire for a scroll
-    whose target is the card itself — only for a scroll elsewhere (the
-    page/pane, which detaches the fixed-position card from its anchor).
-    Otherwise the first attempt to scroll a long preview closes it."""
+def test_anchor_has_no_per_anchor_window_listeners() -> None:
+    """gr171760: an anchor-heavy draft (thousands of refs) used to attach
+    THREE window-scoped listeners PER anchor (``@scroll.window.capture``,
+    ``@keydown.escape.window``, ``@ref-popover-open.window``) — thousands of
+    capture-phase handlers firing on every scroll tick. That coordination
+    now lives in one delegated listener pair installed once, page-wide, by
+    ``templates/base.html.j2`` (``window.__refPopover``) — so a single
+    anchor's markup must carry none of these three any more."""
     out = str(linkify_refs("paper:acheson26"))
-    scroll_idx = out.index("@scroll.window.capture=")
-    attr_start = out.index('"', scroll_idx) + 1
-    attr_end = out.index('"', attr_start)
-    scroll_expr = out[attr_start:attr_end]
-    # Guarded: only closes when the event target is NOT inside the card.
-    assert "if (!$refs.card || !$refs.card.contains($event.target))" in scroll_expr
-    assert "hovered = false" in scroll_expr
-    # The card carries the x-ref the guard resolves against, and it's on
-    # the teleported node (out.index confirms it, since the card is
-    # rendered inside <template x-teleport="body">).
+    assert "@scroll.window.capture=" not in out
+    assert "@keydown.escape.window=" not in out
+    assert "@ref-popover-open.window=" not in out
+    assert "$dispatch('ref-popover-open'" not in out
+
+
+def test_anchor_delegates_open_close_to_shared_popover_registry() -> None:
+    """Each anchor calls into the shared ``window.__refPopover`` registry
+    instead of managing cross-anchor coordination itself: ``open($el)`` on
+    hover-in (closes whichever OTHER popover is open, tracks this one) and
+    ``release($el)`` on every close path (mouseleave-delay / click-outside /
+    card mouseleave), so a later page-wide Escape/scroll is a no-op once
+    this popover has already closed."""
+    out = str(linkify_refs("paper:acheson26"))
+    assert "window.__refPopover.open($el)" in out
+    assert out.count("window.__refPopover.release($el)") >= 2
+    # The wrapper carries its popover id as a data attribute so the shared,
+    # delegated scroll listener (base.html.j2) can find its teleported card
+    # without needing Alpine's own (per-component) ``$refs``.
+    m = re.search(r'id="(refpop-[0-9a-f]+)"', out)
+    assert m is not None
+    assert f'data-popid="{m.group(1)}"' in out
+
+
+def test_popover_card_own_mouseleave_still_shares_close_expr() -> None:
+    """The teleported card's own mouseleave still schedules the SAME
+    delayed-close (which also releases it from the shared registry) as the
+    wrapper's — leaving either one starts one countdown, re-entering either
+    one cancels it (gripe 56806's "pointer bridge")."""
+    out = str(linkify_refs("paper:acheson26"))
     card_start = out.index('<template x-teleport="body">')
     card = out[card_start:]
-    assert 'x-ref="card"' in card
-
-
-def test_only_one_popover_open_at_a_time() -> None:
-    """When one popover opens it dispatches ``ref-popover-open``; every
-    other popover listens via ``@ref-popover-open.window`` and closes
-    itself. Bounds the open set to ≤1 even if mouseleave misfires."""
-    out = str(linkify_refs("paper:acheson26"))
-    assert "$dispatch('ref-popover-open'" in out
-    assert "@ref-popover-open.window=" in out
+    assert "closeTimer = setTimeout(() => { hovered = false; " in card
+    assert "window.__refPopover.release($el); }, 120)" in card
 
 
 def test_popover_closes_on_click_outside() -> None:
@@ -923,3 +937,74 @@ def test_six_char_chunk_handle_unaffected_by_claim_pattern() -> None:
     out = str(linkify_refs("[pc2345]", compact=True))
     assert 'href="/c/pc2345"' in out
     assert "/claim/" not in out
+
+
+# ---- gr171760: the page-wide delegated popover registry --------------
+#
+# The registry itself is a browser-side singleton (``window.__refPopover``
+# in ``templates/base.html.j2``) with no server-side unit surface — these
+# checks are necessarily structural (the script text every page ships),
+# not behavioral (that needs a real DOM + Alpine runtime, out of reach for
+# this pure-Python test module). They pin the delegation contract every
+# ``_anchor_html`` call site above already exercises the calling half of.
+
+
+def _base_template_script() -> str:
+    from pathlib import Path
+
+    import precis_web
+
+    path = Path(precis_web.__file__).parent / "templates" / "base.html.j2"
+    return path.read_text()
+
+
+def test_base_template_installs_one_delegated_popover_registry() -> None:
+    """``window.__refPopover`` is defined exactly once, page-wide (not per
+    anchor), and exposes the ``open``/``release`` calls every anchor's
+    markup invokes (see ``test_anchor_delegates_open_close_to_shared_
+    popover_registry``)."""
+    html = _base_template_script()
+    assert html.count("window.__refPopover = ") == 1
+    assert "open(el) {" in html
+    assert "release(el) {" in html
+    # gr171760 also caught a real regression: this template renders on
+    # EVERY page (including error pages), and a couple of routes' tests
+    # assert no bare, empty ``()`` leaks into an error page's rendered
+    # text (an unrelated stale-template-substitution symptom) — so this
+    # script must never introduce one (no zero-argument IIFE/call).
+    assert "()" not in html
+
+
+def test_base_template_registry_installs_one_scroll_and_keydown_listener() -> None:
+    """The Escape-closes / outside-scroll-closes behavior that used to be a
+    ``@keydown.escape.window`` + ``@scroll.window.capture`` pair PER anchor
+    is now exactly one ``keydown`` and one capture-phase ``scroll`` listener
+    on ``window``, regardless of how many refs the page renders."""
+    html = _base_template_script()
+    assert html.count("window.addEventListener('keydown'") == 1
+    assert html.count("window.addEventListener(\n        'scroll',") == 1
+    assert "e.key === 'Escape'" in html
+    # Same outside-the-card guard the old per-anchor scroll handler had,
+    # just resolved via the tracked element's popover id instead of Alpine's
+    # per-component ``$refs``.
+    assert "card.contains(e.target)" in html
+
+
+def test_base_template_release_compares_by_popid_not_raw_element() -> None:
+    """Review fix: ``release(el)`` is called from BOTH the wrapper's own
+    close handlers (``$el`` = the wrapper, which ``openEl`` tracks) AND the
+    teleported card's own mouseleave (``$el`` = the CARD — a different DOM
+    node than ``openEl``, since the wrapper and card share only their
+    popover id, not identity). Comparing raw element identity (``openEl ===
+    el``) would silently never match — and never clear ``openEl`` — on the
+    card-mouseleave path, leaving a stale reference until the next
+    open/Escape/scroll lazily reconciled it. ``release`` must instead
+    resolve both sides to their shared popover id (``popIdOf``) before
+    comparing."""
+    html = _base_template_script()
+    assert "function popIdOf(el)" in html
+    release_start = html.index("release(el) {")
+    release_body = html[release_start : html.index("},", release_start)]
+    assert "popIdOf(openEl) === popIdOf(el)" in release_body
+    # The old (buggy) raw-identity comparison must be gone from this method.
+    assert "openEl === el" not in release_body

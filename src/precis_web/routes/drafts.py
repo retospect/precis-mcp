@@ -78,6 +78,7 @@ import re
 import tempfile
 from collections import OrderedDict
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
@@ -90,6 +91,7 @@ from fastapi.responses import (
     RedirectResponse,
     Response,
 )
+from markupsafe import Markup
 
 from precis.draft.scaffolds import DOC_TYPE_BRIEF as _DOC_TYPE_BRIEF
 from precis.draft.scaffolds import DOC_TYPES as _DOC_TYPES
@@ -326,30 +328,68 @@ def _ancestor_headings(chunk_objs: list[Any]) -> dict[str, list[str]]:
 _MISSING_PDF_WARN = "PDF missing — this cited paper is held but its file isn't on disk"
 
 
+@dataclass(frozen=True, slots=True)
+class RefChip:
+    """A rendered reference chip plus the structured discriminant a caller
+    can filter on (gr171761) — e.g. smartdraft's ``_cited_sources`` wants
+    just the paper-citation chips, and used to sniff for that by testing
+    ``'href="/r/paper/'`` against the rendered HTML, which silently breaks
+    if the href shape ever changes. ``kind`` is the cited ref's precis kind
+    (``"paper"``, ``"memory"``, ``"web"`` for an external URL, …); ``is_chunk``
+    is True when the chip navigates into a chunk (``/c/<handle>``) rather
+    than a whole-ref view (``/r/<kind>/<id>``) — a distinction ``kind`` alone
+    can't carry since a chunk-form handle (``pc10``) still has ``kind ==
+    "paper"``.
+
+    Implements ``__html__`` so it renders exactly like the ``Markup`` it
+    wraps wherever a chip is printed directly (Jinja templates, ``str()``
+    call sites, existing tests)."""
+
+    kind: str
+    is_chunk: bool
+    html: Markup
+
+    def __html__(self) -> str:
+        return str(self.html)
+
+    def __str__(self) -> str:
+        return str(self.html)
+
+
 def _ref_chips(
     text: str, is_missing: Callable[[str, str], bool] | None = None
-) -> list[Any]:
+) -> list[RefChip]:
     """The references a block makes, as terse hover-preview chips — the
     superset grammar (bracket/sigil forms ∪ bare ``kind:ref``), deduped
     by their navigate target so ``§kong24~2`` and ``paper:kong24~2`` (the
     same chunk) collapse to one chip. Each chip carries the cited quote
-    on hover (``popover_chip``). Reuses the shared parser/grammar (DRY).
+    on hover (``popover_chip``), tagged with its structured ``(kind,
+    is_chunk)`` (:class:`RefChip`) so a caller can filter without parsing
+    the rendered HTML. Reuses the shared parser/grammar (DRY).
 
     ``is_missing(kind, ident)`` — when supplied — flags a cited paper whose
     PDF is missing on disk; its chip then carries a red ▲ marker."""
     seen: set[str] = set()
-    chips: list[Any] = []
+    chips: list[RefChip] = []
 
     def _warn(kind: str, ident: str) -> str | None:
         return _MISSING_PDF_WARN if is_missing and is_missing(kind, ident) else None
 
     def add(
-        label: str, href: str, preview: str | None, warn: str | None = None
+        label: str,
+        href: str,
+        preview: str | None,
+        *,
+        kind: str,
+        is_chunk: bool,
+        warn: str | None = None,
     ) -> None:
         if href in seen:
             return
         seen.add(href)
-        chips.append(popover_chip(label, href, preview, warn=warn))
+        chips.append(
+            RefChip(kind, is_chunk, popover_chip(label, href, preview, warn=warn))
+        )
 
     def paper(slug: str, chunk: str | None, label: str) -> None:
         # chunk here is the regex group incl. leading ``~`` (or None).
@@ -358,38 +398,65 @@ def _ref_chips(
             label,
             f"/r/paper/{slug}{suffix}",
             f"/preview/paper/{slug}{suffix}",
+            kind="paper",
+            is_chunk=False,
             warn=_warn("paper", slug),
         )
 
     for ref in draft_markup.parse_references(text):
         if ref.cls == draft_markup.XREF:
             h = ref.target.lstrip("¶")
-            add(ref.surface or ref.target, f"/c/{h}", f"/preview/chunk/{h}")
+            # A ``¶handle`` may itself be an ADR 0036 universal handle (e.g.
+            # a paper chunk ``pc10``) — parse it lexically (no DB) so the
+            # chip carries its real kind, not a generic placeholder.
+            parsed = handle_registry.parse(h)
+            xref_kind = parsed[0] if parsed is not None else "chunk"
+            add(
+                ref.surface or ref.target,
+                f"/c/{h}",
+                f"/preview/chunk/{h}",
+                kind=xref_kind,
+                is_chunk=True,
+            )
         elif ref.cls == draft_markup.CITE:
             m = mentions.DRAFT_CITE_PATTERN.fullmatch(ref.target)
             if m:
                 paper(m.group("slug"), m.group("chunk"), ref.surface or ref.target)
         elif ref.cls == draft_markup.WEB:
-            add(ref.surface or ref.target, ref.target, None)
+            add(ref.surface or ref.target, ref.target, None, kind="web", is_chunk=False)
         else:  # AUTHORING — a bare universal handle [me6184] or [[kind:id]]
             parsed = handle_registry.parse(ref.target)
             if parsed is not None:  # a universal handle → chunk or record
                 kind, is_chunk, pk = parsed
                 if is_chunk:
                     h = handle_registry.normalize(ref.target)
-                    add(ref.surface or ref.target, f"/c/{h}", f"/preview/chunk/{h}")
+                    add(
+                        ref.surface or ref.target,
+                        f"/c/{h}",
+                        f"/preview/chunk/{h}",
+                        kind=kind,
+                        is_chunk=True,
+                    )
                 else:
                     add(
                         ref.surface or ref.target,
                         f"/r/{kind}/{pk}",
                         f"/preview/{kind}/{pk}",
+                        kind=kind,
+                        is_chunk=False,
                         warn=_warn(kind, str(pk)),
                     )
                 continue
             m = mentions.REF_PATTERN.fullmatch(ref.target)
             if m and m.group("kind") in mentions.LINKIFY_KINDS:
                 k, i = m.group("kind"), m.group("id").lstrip("#")
-                add(ref.surface or ref.target, f"/r/{k}/{i}", f"/preview/{k}/{i}")
+                add(
+                    ref.surface or ref.target,
+                    f"/r/{k}/{i}",
+                    f"/preview/{k}/{i}",
+                    kind=k,
+                    is_chunk=False,
+                )
     for kind, ident, chunk in mentions.extract_handles(text):
         i = ident.lstrip("#")
         if kind == "paper":  # collapse with the § form (same target)
@@ -400,6 +467,8 @@ def _ref_chips(
             f"{kind}:{ident}{chunk or ''}",
             f"/r/{kind}/{i}{suffix}",
             f"/preview/{kind}/{i}{suffix}",
+            kind=kind,
+            is_chunk=False,
         )
     return chips
 

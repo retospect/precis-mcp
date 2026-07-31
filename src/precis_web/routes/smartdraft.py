@@ -26,6 +26,7 @@ from precis_web.claim_render import hub_cite_heads, render_claim_evidence
 from precis_web.deps import get_runtime, get_store, templates
 from precis_web.routes.drafts import (
     _DOC_TYPES,
+    RefChip,
     _draft_author_lines,
     _draft_ref,
     _owner_workspace,
@@ -189,24 +190,31 @@ async def reader(
     )
 
 
-def _cited_sources(store: Any, text: str) -> list[Any]:
+def _cited_sources(store: Any, text: str) -> list[RefChip]:
     """The paper (``pc``/``pa``) sources the focus block cites, as
     hover-preview chips (gripe 56635) — reuses the classic ``/drafts``
     reader's block-scoped cite parser (:func:`precis_web.routes.drafts.
     _ref_chips`) rather than re-implementing cite parsing, then narrows its
-    output to just the paper citations (that parser also yields intra-draft
-    ``¶`` xrefs / other-kind mentions, which this rail doesn't want). Each
-    chip is a :func:`precis_web.linkify.popover_chip` — its anchor already
-    carries ``target=\"_blank\" rel=\"noopener\"`` (no ``data-dc``), so it
-    opens the paper reader in a new tab and the no-reload nav interceptor
-    leaves it alone."""
+    output to just the paper *citation* chips (that parser also yields
+    intra-draft ``¶`` xrefs / other-kind mentions, which this rail doesn't
+    want). Each chip is a :func:`precis_web.linkify.popover_chip` — its
+    anchor already carries ``target=\"_blank\" rel=\"noopener\"`` (no
+    ``data-dc``), so it opens the paper reader in a new tab and the
+    no-reload nav interceptor leaves it alone.
+
+    Filters on each chip's structured ``(kind, is_chunk)``
+    (:class:`precis_web.routes.drafts.RefChip`) rather than string-sniffing
+    the rendered href (gr171761) — ``is_chunk=False`` excludes a chunk-form
+    paper handle (``pc10`` → ``/c/pc10``, not a whole-paper source chip),
+    matching the historical ``/r/paper/`` filter's behaviour without
+    depending on the href's literal shape."""
     from precis_web.routes.drafts import _paper_pdf_missing, _ref_chips
 
     def is_missing(kind: str, ident: str) -> bool:
         return kind == "paper" and _paper_pdf_missing(store, ident)
 
     chips = _ref_chips(text or "", is_missing=is_missing)
-    return [c for c in chips if 'href="/r/paper/' in str(c)]
+    return [c for c in chips if c.kind == "paper" and not c.is_chunk]
 
 
 def _needs_items(store: Any, ref_id: int) -> list[dict[str, Any]]:
