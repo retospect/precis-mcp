@@ -26,6 +26,8 @@
 #                             auto-fix ruff (amended) then ruff/format/mypy/pytest
 #                             (a docs/config-only diff runs a light ruff + doc-
 #                             pointer gate instead). Red gate aborts (never red).
+#                             --impacted (/land) narrows pytest to testmon's
+#                             affected-tests set; full suite otherwise (/go).
 #                    · ship   squash `commit-tree` onto origin/main + a
 #                             `--force-with-lease` CAS push. If main advanced
 #                             during the gate (ancestor check) or the lease is
@@ -39,6 +41,8 @@
 #
 # Usage:  scripts/ship "fix(x): one-line summary of the branch"
 #         scripts/ship            # falls back to a generated message
+#         scripts/ship --impacted "…"   # /land: testmon-selected pytest, not the
+#                                        # full suite (also via PRECIS_SHIP_IMPACTED=1)
 #
 # Plain git, no git-town: this repo runs flat feature branches on main, so the
 # only thing git-town did here was `fetch + merge main`. Its `ship` does
@@ -50,6 +54,17 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 WORKTREE="$PWD"
 BRANCH="$(git branch --show-current)"
+
+# --impacted (or PRECIS_SHIP_IMPACTED=1): gate pytest with testmon impact
+# selection — run ONLY the tests this change affects, not the full suite. /land
+# opts in (fast inner-loop ship); /go and a bare scripts/ship stay on the full
+# authoritative suite before a deploy. Safe fallback baked in: with no testmon
+# map (fresh worktree, first ever /land) testmon runs everything and builds the
+# map, so the first impacted ship is a full run and later ones are the fast
+# selection. mypy + ruff always run in full regardless of this flag.
+IMPACTED="${PRECIS_SHIP_IMPACTED:-0}"
+if [[ "${1:-}" == "--impacted" ]]; then IMPACTED=1; shift; fi
+
 MSG="${1:-}"
 CO_AUTHOR="Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
@@ -186,16 +201,39 @@ sync_from_container() {
         | tar -C "$WORKTREE" --no-same-owner -xf -
 }
 
-# Run one gate command in the chosen gate. Warm: sync worktree in → exec → sync
-# ruff fixes back (always, even on a red gate, so the fixes stay staged for the
-# human). Bind fallback: the classic per-run container with the worktree
-# mounted at /app. NB `env UID=…` — a bare `UID=…` fails (UID readonly).
+# Carry the testmon map (./.testmondata*, gitignored → NOT in `git archive`, so
+# the warm sync above wipes it) into the warm container before the gate and back
+# out after, so impacted selection keeps its persistent test↔code map across
+# ships. No-op in full mode (nothing built one) and harmless if absent. In bind
+# mode the map lives on the mounted worktree already, so neither is needed.
+testmon_into_container() {
+    ls "${WORKTREE}"/.testmondata* >/dev/null 2>&1 || return 0
+    tar -C "$WORKTREE" -cf - .testmondata* \
+        | compose exec -T precis-gate tar -C /app --no-same-owner -xf - || true
+}
+testmon_from_container() {
+    # Glob INSIDE the container (`sh -c`): on a first-ever impacted ship the
+    # host worktree has no map yet, so a local `.testmondata*` would stay
+    # literal and tar would miss the file testmon just built in /app.
+    compose exec -T precis-gate sh -c 'ls /app/.testmondata* >/dev/null 2>&1' || return 0
+    compose exec -T precis-gate sh -c 'cd /app && tar -cf - .testmondata*' \
+        | tar -C "$WORKTREE" --no-same-owner -xf - || true
+}
+
+# Run one gate command in the chosen gate. Warm: sync worktree in → (carry the
+# testmon map in for impacted mode) → exec → sync ruff fixes back (always, even
+# on a red gate, so the fixes stay staged for the human) → carry the updated
+# testmon map back out. Bind fallback: the classic per-run container with the
+# worktree mounted at /app (the map is on the mount already). NB `env UID=…` — a
+# bare `UID=…` fails (UID readonly).
 run_gate() {
     if [[ "$GATE_MODE" == warm ]]; then
         sync_to_container || { echo "✖ could not sync source into precis-gate" >&2; return 90; }
+        [[ "$IMPACTED" == 1 ]] && testmon_into_container
         local rc=0
         compose exec -T precis-gate bash -lc "$1" || rc=$?
         sync_from_container || true
+        [[ "$IMPACTED" == 1 ]] && testmon_from_container
         return "$rc"
     fi
     compose run --rm --no-deps "${TEST_DB_ENV[@]+"${TEST_DB_ENV[@]}"}" \
@@ -311,8 +349,19 @@ for attempt in 1 2 3; do
         run_gate 'uv run ruff check --fix . && uv run ruff format . && uv run ruff check . && uv run ruff format --check . && uv run pytest -q -n0 tests/test_doc_pointers.py' \
             || die "light gate is RED — not shipping. Fix the failure above and re-run scripts/ship."
     else
-        say "integration gate (ruff autofix · mypy · pytest) — ${GATE_MODE} gate, -n ${PYTEST_N}"
-        run_gate "uv run ruff check --fix . && uv run ruff format . && uv run ruff check . && uv run ruff format --check . && uv run mypy src tests && uv run pytest -q -n ${PYTEST_N}" \
+        # Impacted mode (/land): testmon selects only the tests this change
+        # touches, at /app/.testmondata (the map run_gate carries in/out of the
+        # warm container, or the bind mount directly). -n0 is forced — testmon
+        # is per-process, so xdist would fragment its map. Full mode (/go, bare):
+        # the whole suite at -n6. mypy + ruff run in full either way.
+        if [[ "$IMPACTED" == 1 ]]; then
+            PYTEST_CMD='TESTMON_DATAFILE=/app/.testmondata uv run --with pytest-testmon pytest -q --testmon -n0'
+            say "integration gate (ruff autofix · mypy · pytest --impacted) — ${GATE_MODE} gate"
+        else
+            PYTEST_CMD="uv run pytest -q -n ${PYTEST_N}"
+            say "integration gate (ruff autofix · mypy · pytest) — ${GATE_MODE} gate, -n ${PYTEST_N}"
+        fi
+        run_gate "uv run ruff check --fix . && uv run ruff format . && uv run ruff check . && uv run ruff format --check . && uv run mypy src tests && ${PYTEST_CMD}" \
             || die "gate is RED — not shipping. Fix the failure above and re-run scripts/ship."
     fi
 

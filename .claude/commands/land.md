@@ -55,12 +55,18 @@ Optional ship message from the user: `$ARGUMENTS`
 4. **Run the script.** It is idempotent — re-running after a fix resumes
    cleanly.
    ```
-   scripts/ship "<message>"
+   scripts/ship --impacted "<message>"
    ```
+   The `--impacted` flag narrows the gate's **pytest** to the tests testmon
+   says this change affects (fast inner-loop ship); `ruff · format · mypy`
+   still run in full, and `/go` runs the full suite before a deploy. On a fresh
+   worktree with no testmon map, the first `--impacted` ship runs everything
+   once and builds the map, then later ones are the fast selection.
+
    `scripts/ship` does, in order: refuse-if-on-main → commit any WIP → sync
    (`git fetch` + `git merge` origin/main) → **integration gate against this
    worktree** in the precis-dev container (it auto-fixes ruff `--fix` +
-   `format` and amends them, then runs the authoritative
+   `format` and amends them, then runs
    `ruff · format · mypy · pytest`) → squash-merge to `main` via `commit-tree`
    + a `--force-with-lease` CAS push → delete the remote feature branch →
    reset the feature branch to the shipped `main` (zero divergence) →

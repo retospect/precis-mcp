@@ -26,11 +26,13 @@
 2. **Do the work** — implement, test, iterate.
 3. **`/land`** (ship) **or `/go`** (ship + deploy). Both run
    `scripts/ship`: commit WIP → sync (`fetch` + `merge` main) → container
-   gate (auto-fix ruff, then authoritative `ruff` + `mypy` + `pytest`) →
+   gate (auto-fix ruff, then `ruff` + `mypy` + `pytest`) →
    squash-merge to `main` if green → reset branch to shipped `main` →
-   local-main fast-forward. `/go` also runs `scripts/deploy`
-   (`ansible-playbook redeploy-precis.yml`). Both abort+report on gate
-   failure; scripts are idempotent, so fix and re-run.
+   local-main fast-forward. **`/land` runs `scripts/ship --impacted`** — pytest
+   narrowed to testmon's affected-tests set (ruff/mypy still full); **`/go`
+   runs the full suite** (authoritative before a deploy) and also
+   `scripts/deploy` (`ansible-playbook redeploy-precis.yml`). Both abort+report
+   on gate failure; scripts are idempotent, so fix and re-run.
 
 `scripts/ship` squashes onto `main` via `commit-tree` + `--force-with-lease`
 CAS push, then resets the branch to shipped `main`. Merge target is `main` —

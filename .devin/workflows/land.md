@@ -31,10 +31,15 @@ The user may pass a ship message after the command; otherwise write one.
 
 4. **Run the script** (idempotent — re-running after a fix resumes cleanly):
    ```
-   scripts/ship "<message>"
+   scripts/ship --impacted "<message>"
    ```
+   `--impacted` narrows the gate's **pytest** to testmon's affected-tests set
+   (ruff/mypy still full) — the fast `/land` path; `/go` runs the full suite
+   before a deploy. First `--impacted` ship on a fresh worktree runs everything
+   once to build the map, then later ones are the fast selection.
+
    It does: refuse-if-on-main → commit WIP → sync (`git fetch` + `git merge`
-   origin/main) → container gate (auto-fix ruff, then authoritative
+   origin/main) → container gate (auto-fix ruff, then
    `ruff · format · mypy · pytest`) → squash-merge to `main` via `commit-tree`
    + `--force-with-lease` CAS push → reset the branch to shipped `main` →
    fast-forward local `main` → print the new sha.

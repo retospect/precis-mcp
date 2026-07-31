@@ -51,7 +51,9 @@ Optional ship message from the user: `$ARGUMENTS`
    commit WIP → sync (`git fetch` + `git merge` main) → the container gate
    (auto-fixes ruff, then authoritative `ruff · format · mypy · pytest`) →
    squash-merge to `main` → reset the branch to the shipped `main` →
-   local-main fast-forward.
+   local-main fast-forward. `/go` deliberately runs the **full** pytest suite
+   here (no `--impacted`) — a deploy ships this code to the whole cluster, so
+   the gate must be authoritative, unlike `/land`'s testmon-narrowed run.
    ```
    scripts/ship "<message>"
    ```
