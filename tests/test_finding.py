@@ -414,6 +414,37 @@ class TestRoundTrip:
         assert "misattributed via:" in body
         assert "badcite99~0" in body
 
+    def test_hub_get_suppresses_redundant_claim_echo(self, store) -> None:
+        """A taproot claim hub's body IS its title verbatim (mint_hub
+        writes the sentence to both). The get render should show ``title:``
+        once and NOT echo the identical sentence back under ``claim:`` —
+        that duplication reads as accidental, not DRY."""
+        claim = CanonicalClaim(
+            sentence="Graphene exhibits ballistic electron transport at 300 K.",
+            scope={"material": "graphene"},
+        )
+        hub_id = mint_hub(store, claim)
+        h = _make_handler(store)
+        body = h.get(id=hub_id).body
+        assert f"title: {claim.sentence}" in body
+        assert "\nclaim:\n" not in body  # no redundant echo block
+
+    def test_plain_finding_still_shows_claim_body(self, store) -> None:
+        """A non-hub finding's body carries the setup envelope, so it
+        differs from the title and the ``claim:`` block still renders."""
+        _seed_paper(store)
+        h = _make_handler(store)
+        resp = h.put(
+            title="short title",
+            body="the full claim plus its setup context, longer than the title",
+            scope={},
+            cited_in="miller23a",
+        )
+        ref_id = int(re.search(r"id=(\d+)", resp.body).group(1))
+        body = h.get(id=ref_id).body
+        assert "claim:" in body
+        assert "setup context" in body
+
 
 # ── search override ─────────────────────────────────────────────────
 

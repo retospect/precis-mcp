@@ -85,6 +85,26 @@ def add_parser(subparsers: Any) -> None:
     )
     r.add_argument("--database-url", default=None, help="Override PRECIS_DATABASE_URL.")
 
+    bg = tsub.add_parser(
+        "backfill-grounding",
+        help="Upgrade ref-level taproot/draft citation edges to chunk-grounded "
+        "(pc/dc).",
+    )
+    bg.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report what WOULD be grounded/resynced; write nothing.",
+    )
+    bg.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+        help="Output format (default: text).",
+    )
+    bg.add_argument(
+        "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
+    )
+
 
 def _load_spec(args: argparse.Namespace) -> list[dict[str, Any]]:
     if args.spec:
@@ -105,7 +125,7 @@ def _dry_run_result(store: Any, entry: dict[str, Any]) -> dict[str, Any]:
         find_hub_by_pub_id,
         resolve_paper_ref_id,
     )
-    from precis.taproot.hub import _DEFAULT_ROLE
+    from precis.taproot.hub import _DEFAULT_ROLE, _grounding_chunk_ord
 
     sentence = entry.get("sentence", "")
     scope = entry.get("scope") or {}
@@ -116,29 +136,42 @@ def _dry_run_result(store: Any, entry: dict[str, Any]) -> dict[str, Any]:
 
     attached = 0
     already = 0
+    ungrounded = 0
     for supporter in supporters:
         # Resolution only -- raises BadInput on an unresolvable (or
         # non-paper/patent) paper, same as the real (write) path would, so
         # a dry-run catches a bad spec before anything is minted.
         paper_ref_id = resolve_paper_ref_id(store, supporter.get("paper"))
         role = supporter.get("role") or _DEFAULT_ROLE
+        src_ord = _grounding_chunk_ord(
+            store,
+            paper_ref_id=paper_ref_id,
+            meta={"source_handle": supporter.get("source_handle")},
+        )
         # A brand-new hub has no existing evidence at all -- every
         # supporter would be a fresh attach. For a pre-existing hub, check
-        # the actual (paper, hub, role) edge -- reporting every supporter
-        # as "already" just because the hub pre-exists was inaccurate for
-        # a genuinely new supporter on an old hub.
+        # the actual (paper, hub, role, chunk) edge -- reporting every
+        # supporter as "already" just because the hub pre-exists was
+        # inaccurate for a genuinely new supporter/passage on an old hub.
         if hub_ref_id is not None and _evidence_edge_exists(
-            store, paper_ref_id=paper_ref_id, hub_ref_id=hub_ref_id, role=role
+            store,
+            paper_ref_id=paper_ref_id,
+            hub_ref_id=hub_ref_id,
+            role=role,
+            src_ord=src_ord,
         ):
             already += 1
         else:
             attached += 1
+            if src_ord is None:
+                ungrounded += 1
 
     return {
         "pub_id": pub_id,
         "hub_ref_id": hub_ref_id,
         "attached": attached,
         "already": already,
+        "ungrounded": ungrounded,
         "sentence": sentence,
         "dry_run": True,
     }
@@ -174,6 +207,7 @@ def _print_results(results: list[dict[str, Any]], fmt: str) -> None:
         print(json.dumps(results, indent=2))
         return
 
+    total_ungrounded = 0
     for r in results:
         snippet = (r.get("sentence") or "").strip()
         if len(snippet) > 60:
@@ -181,10 +215,24 @@ def _print_results(results: list[dict[str, Any]], fmt: str) -> None:
         suffix = "  [DRY-RUN]" if r.get("dry_run") else ""
         collapsed = r.get("collapsed") or []
         collapsed_note = f", {len(collapsed)} collapsed" if collapsed else ""
+        ungrounded = int(r.get("ungrounded") or 0)
+        total_ungrounded += ungrounded
+        ungrounded_note = f", {ungrounded} ungrounded" if ungrounded else ""
         print(
             f"{r['pub_id']}  {snippet}  "
             f"(+{r['attached']} evidence, {r['already']} already"
-            f"{collapsed_note}){suffix}"
+            f"{collapsed_note}{ungrounded_note}){suffix}"
+        )
+
+    # Nudge: an ungrounded edge cites the whole paper (pa<id>), not the
+    # passage (pc<id>) — supplying source_handle makes the citation tree
+    # resolve to the supporting chunk.
+    if total_ungrounded:
+        print(
+            f"note: {total_ungrounded} evidence edge(s) attached ref-level "
+            "(no grounding chunk) — add source_handle=<pc<id>> per supporter "
+            "so the edge cites the passage, not just the paper.",
+            file=sys.stderr,
         )
 
 
@@ -275,12 +323,186 @@ def _run_refine(args: argparse.Namespace) -> None:
         store.close()
 
 
+_DRAFT_REF_LEVEL_MENTION_SQL = """
+    SELECT {select}
+    FROM links l
+    JOIN refs r ON r.ref_id = l.src_ref_id
+    WHERE r.kind = 'draft'
+      AND l.relation IN ('cites', 'related-to')
+      AND l.meta->>'auto' = 'mention'
+      AND l.src_chunk_id IS NULL
+"""
+
+_PAPER_EVIDENCE_CANDIDATE_SQL = """
+    SELECT l.link_id, l.src_ref_id, l.dst_ref_id, l.relation, l.meta
+    FROM links l
+    JOIN refs s ON s.ref_id = l.src_ref_id
+    WHERE s.kind IN ('paper', 'patent')
+      AND l.relation IN ('corroborates', 'establishes', 'contradicts')
+      AND l.src_chunk_id IS NULL
+      AND l.meta->>'source_handle' IS NOT NULL
+      AND l.meta->>'source_handle' <> 'null'
+"""
+
+
+def _backfill_grounding(store: Any, *, dry_run: bool) -> dict[str, Any]:
+    """Upgrade ref-level taproot/draft citation edges to chunk-grounded.
+
+    Two independent passes, both idempotent (a live edge that's already
+    grounded, or one that stays unresolvable, is a no-op — never an
+    error) and both re-runnable (safe to invoke again after new drafts /
+    evidence edges land):
+
+    PART A — draft ``cites``/``related-to`` auto-mention edges. Re-running
+    the (already-fixed) draft autolinker
+    (:meth:`~precis.handlers.draft.DraftHandler._sync_draft_links`) over
+    every draft that still carries a ref-level auto-mention edge migrates
+    it to chunk-grounded — the resync drops the stale ref-level rows and
+    re-adds them at the citing chunk's ord.
+
+    PART B — paper/patent evidence edges (``corroborates`` / ``establishes``
+    / ``contradicts``) that carry a ``meta.source_handle`` but were never
+    grounded (written before the grounding fix, or via a path that didn't
+    thread ``src_pos``). Resolves the handle to its chunk via
+    :func:`precis.taproot.hub._grounding_chunk_ord` and sets
+    ``src_chunk_id`` directly with a bare ``UPDATE`` — there's no handler
+    write path for "re-ground an existing edge in place". A
+    ``UniqueViolation`` (a chunk-grounded edge for that exact tuple already
+    exists) is caught per-row and counted, never aborting the run.
+
+    ``dry_run=True`` writes nothing — every count below reports what WOULD
+    happen.
+    """
+    from psycopg.errors import UniqueViolation
+
+    from precis.dispatch import Hub
+    from precis.handlers.draft import DraftHandler
+    from precis.taproot.hub import _grounding_chunk_ord
+
+    result: dict[str, Any] = {
+        "dry_run": dry_run,
+        "drafts_found": 0,
+        "drafts_resynced": 0,
+        "draft_edges_before": 0,
+        "draft_edges_after": 0,
+        "paper_candidates": 0,
+        "paper_edges_grounded": 0,
+        "unresolved": 0,
+        "skipped_collision": 0,
+    }
+
+    # ── Part A: draft cites/related-to resync ───────────────────────────
+    with store.pool.connection() as conn:
+        draft_ref_ids = [
+            int(row[0])
+            for row in conn.execute(
+                _DRAFT_REF_LEVEL_MENTION_SQL.format(select="DISTINCT l.src_ref_id")
+            ).fetchall()
+        ]
+        draft_edges_before = int(
+            conn.execute(
+                _DRAFT_REF_LEVEL_MENTION_SQL.format(select="count(*)")
+            ).fetchone()[0]
+        )
+    result["drafts_found"] = len(draft_ref_ids)
+    result["draft_edges_before"] = draft_edges_before
+
+    if dry_run:
+        # Nothing is written; every candidate draft WOULD be resynced.
+        result["drafts_resynced"] = len(draft_ref_ids)
+        result["draft_edges_after"] = draft_edges_before
+    else:
+        handler = DraftHandler(hub=Hub(store=store))
+        for ref_id in draft_ref_ids:
+            handler._sync_draft_links(ref_id)
+        result["drafts_resynced"] = len(draft_ref_ids)
+        with store.pool.connection() as conn:
+            result["draft_edges_after"] = int(
+                conn.execute(
+                    _DRAFT_REF_LEVEL_MENTION_SQL.format(select="count(*)")
+                ).fetchone()[0]
+            )
+
+    # ── Part B: paper/patent evidence edges with a stored source_handle ─
+    with store.pool.connection() as conn:
+        candidates = conn.execute(_PAPER_EVIDENCE_CANDIDATE_SQL).fetchall()
+    result["paper_candidates"] = len(candidates)
+
+    for link_id, src_ref_id, _dst_ref_id, _relation, meta in candidates:
+        ord_ = _grounding_chunk_ord(store, paper_ref_id=src_ref_id, meta=meta or {})
+        if ord_ is None:
+            result["unresolved"] += 1
+            continue
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT chunk_id FROM chunks WHERE ref_id = %s AND ord = %s",
+                (src_ref_id, ord_),
+            ).fetchone()
+        if row is None:
+            result["unresolved"] += 1
+            continue
+        if dry_run:
+            result["paper_edges_grounded"] += 1
+            continue
+        chunk_id = int(row[0])
+        try:
+            with store.pool.connection() as conn:
+                conn.execute(
+                    "UPDATE links SET src_chunk_id = %s WHERE link_id = %s",
+                    (chunk_id, int(link_id)),
+                )
+        except UniqueViolation:
+            result["skipped_collision"] += 1
+            continue
+        result["paper_edges_grounded"] += 1
+
+    return result
+
+
+def _print_backfill_grounding(result: dict[str, Any], fmt: str) -> None:
+    if fmt == "json":
+        print(json.dumps(result, indent=2))
+        return
+
+    suffix = "  [DRY-RUN]" if result["dry_run"] else ""
+    print(
+        f"drafts: {result['drafts_found']} candidate(s), "
+        f"{result['draft_edges_before']} ref-level auto-mention edge(s) -- "
+        f"resynced {result['drafts_resynced']} draft(s){suffix}"
+    )
+    if not result["dry_run"]:
+        print(
+            "  ref-level auto-mention edges remaining after resync: "
+            f"{result['draft_edges_after']}"
+        )
+    print(
+        f"paper/patent evidence: {result['paper_candidates']} candidate(s) -- "
+        f"grounded {result['paper_edges_grounded']}, "
+        f"unresolved {result['unresolved']}, "
+        f"skipped_collision {result['skipped_collision']}{suffix}"
+    )
+
+
+def _run_backfill_grounding(args: argparse.Namespace) -> None:
+    from precis.store import Store
+
+    store = Store.connect(resolve_dsn(args.database_url))
+    try:
+        result = _backfill_grounding(store, dry_run=args.dry_run)
+    finally:
+        store.close()
+
+    _print_backfill_grounding(result, args.format)
+
+
 def run(args: argparse.Namespace) -> None:
     """Execute ``precis taproot <taproot_cmd>``."""
     if args.taproot_cmd == "mint":
         _run_mint(args)
     elif args.taproot_cmd == "refine":
         _run_refine(args)
+    elif args.taproot_cmd == "backfill-grounding":
+        _run_backfill_grounding(args)
     else:
         print(f"taproot: unknown subcommand {args.taproot_cmd!r}", file=sys.stderr)
         sys.exit(2)

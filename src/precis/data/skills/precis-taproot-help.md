@@ -41,10 +41,20 @@ originator (★) is **derived at read time**, not stored — it's whichever
 supporter(s) the *other* supporters' citations converge on
 (`src/precis/taproot/seniority.py::derive_evidence`, over the held
 `cites` graph). No intra-supporter citation edge held → every supporter
-stays `corroborates` (never guessed). Each edge carries a grounding
-chunk pointer (`source_handle`) once the chase populates one. See
-`precis-fisheye-help`'s Claims group (`fisheye+1hop` on prose that
-cites a hub) for the read-time render of this same evidence.
+stays `corroborates` (never guessed).
+
+**Edges are chunk-grounded.** An evidence edge names the *specific
+passage* that supports the claim: supply a supporter's `source_handle`
+(a `[pc<id>]` paper chunk) and the edge is stored `pc<id>`-granular, so
+the link graph — and every reader on it (the finding's link table, the
+citation tree) — resolves to that passage, not just the whole paper.
+Two distinct passages of one paper become **two edges** ("the set of
+chunks that support this point"). Omit `source_handle` and the edge
+falls back to a coarse ref-level `pa<id>` — the whole paper, no passage
+— which is exactly what makes a claim tree hard to walk. Always ground
+the edge when you know the chunk. See `precis-fisheye-help`'s Claims
+group (`fisheye+1hop` on prose that cites a hub) for the read-time
+render of this same evidence.
 
 ## Cite a claim hub — the living citation
 ## What does a bare [fi<id>] cite resolve to?
@@ -94,13 +104,19 @@ precis taproot mint --dry-run --spec spec.json  # resolve + report, write nothin
 `spec.json` is a JSON array of `{sentence, scope, supporters}` — one
 entry per claim, each supporter a `{paper, role, source_handle}`:
 `paper` is the supporting paper (its `pa<id>` handle, cite_key, or
-pub_id — not the chunk); `role` defaults `corroborates`;
-`source_handle` records the grounding `[pc<id>]` you'd otherwise cite
-inline. It mints the hub (or converges onto an existing one for
+pub_id); `role` defaults `corroborates`; **`source_handle` is the
+grounding `[pc<id>]` paper chunk and you should always supply it** — it
+lands on the edge as `src_chunk_id`, so the edge cites the passage
+(`pc<id>`), not just the paper (`pa<id>`). List the same paper's
+different supporting passages as separate supporters (same `paper`,
+different `source_handle`) to attach the whole set. Omit it only when
+you genuinely can't name the chunk; the edge then stays coarse
+ref-level. It mints the hub (or converges onto an existing one for
 identical claim content, via the content-hash `pub_id`) and attaches
 each supporter's evidence edge, idempotently — a re-run of the same
-spec attaches nothing twice. Cite the resulting `[fi<id>]` in your
-prose afterward.
+spec attaches nothing twice (the dedup key includes the grounding
+chunk, so re-running never duplicates a passage). Cite the resulting
+`[fi<id>]` in your prose afterward.
 
 ## Sharpen a claim — link a reworded version (don't merge)
 

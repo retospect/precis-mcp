@@ -20,7 +20,12 @@ verbatim), `delete` (soft-retire), `search` (lexical / semantic over
 prose). A draft is **not** taggable or linkable as a whole (`tag`/`link`
 on `kind='draft'` raise `Unsupported`) — cross-references are markdown
 refs embedded in prose, and the per-chunk autolinker materialises a
-`related-to` backlink for each (see *References in prose*).
+backlink for each — a `cites` edge to a citable source
+(paper/patent/finding), `related-to` otherwise (see *References in
+prose*). The edge is grounded on **both** ends: it records the `dc<id>`
+chunk the reference sits in (source) as well as the target chunk, so a
+reader can see *which paragraph* cites a finding/paper, not just that the
+draft as a whole does.
 
 ## Search a draft (lexical / semantic)
 

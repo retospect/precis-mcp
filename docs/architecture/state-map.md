@@ -957,6 +957,14 @@ overlay on `finding`/`ref_tags`/`links` — no schema of its own).
     Evidence role is *derived* later (seniority); attached `corroborates` by
     default. Edge `meta` shape defined; **populated by `chase` — see Phase 3
     slice W1, below**. Unit-tested here (`tests/test_taproot_hub.py`).
+    **Source-side chunk grounding**: `attach_evidence` resolves the edge's
+    `meta.source_handle` (a `pc<id>` handle or `slug~ord`) to the grounding
+    chunk via `hub.py::_grounding_chunk_ord` and stores it as the edge's
+    `src_chunk_id`, so the edge cites the supporting *passage* (`pc<id>`), not
+    just the paper (`pa<id>`); two passages of one paper are two edges. Absent
+    a resolvable handle it stays ref-level. `seed_claim_hub`'s dedup key
+    includes the grounding chunk (so passages don't collapse); the CLI mint
+    reports an `ungrounded` count nudging authors to supply `source_handle`.
   - **2c (seniority derivation + evidence view)** — built. Pure read/derive
     module `src/precis/taproot/seniority.py::derive_evidence` (no writes):
     reads the hub's inbound `establishes`/`corroborates` edges as supporter

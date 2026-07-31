@@ -56,6 +56,56 @@ class TestRenderLinksSection:
         section = render_links_section(store, ref)
         assert "cited by" in section
 
+    def test_chunk_level_endpoints_render_pc_and_dc_handles(self, store: Store) -> None:
+        """A chunk-grounded edge renders the *chunk* handle (``pc<id>`` /
+        ``dc<id>``), not the coarse record handle — the granular address
+        that lets the citation tree resolve to the supporting passage.
+        The ``how to get`` column is chunk-scoped too: ``slug~ord`` for a
+        paper, the ``dc<id>`` handle for a draft."""
+        from precis.store.types import BlockInsert
+
+        fin = store.insert_ref(kind="finding", slug=None, title="a canonical claim")
+        # paper chunk (ord 0) --corroborates--> finding
+        paper = store.insert_ref(kind="paper", slug="wu2022a", title="Rotaxane paper")
+        store.insert_blocks(
+            paper.id, [BlockInsert(pos=0, text="the supporting passage", meta={})]
+        )
+        store.add_link(
+            src_ref_id=paper.id, src_pos=0, dst_ref_id=fin.id, relation="corroborates"
+        )
+        # draft chunk (ord 0) --cites--> finding
+        dref = store.insert_ref(kind="draft", slug="nano-computer", title="A draft")
+        store.insert_blocks(
+            dref.id, [BlockInsert(pos=0, text="cites the claim", meta={})]
+        )
+        store.add_link(
+            src_ref_id=dref.id, src_pos=0, dst_ref_id=fin.id, relation="cites"
+        )
+
+        with store.pool.connection() as conn:
+            pc_id = int(
+                conn.execute(
+                    "SELECT chunk_id FROM chunks WHERE ref_id = %s", (paper.id,)
+                ).fetchone()[0]
+            )
+            dc_id = int(
+                conn.execute(
+                    "SELECT chunk_id FROM chunks WHERE ref_id = %s", (dref.id,)
+                ).fetchone()[0]
+            )
+
+        ref = store.get_ref(kind="finding", id=fin.id)
+        assert ref is not None
+        section = render_links_section(store, ref)
+        # related-to column: the granular chunk handles, NOT pa<id>/dr<id>
+        assert f"pc{pc_id}" in section
+        assert f"dc{dc_id}" in section
+        assert f"pa{paper.id}" not in section
+        assert f"dr{dref.id}" not in section
+        # how-to-get column: chunk-scoped retrieval per kind
+        assert "id='wu2022a~0'" in section  # paper → slug~ord
+        assert f"id='dc{dc_id}'" in section  # draft → dc<id> handle
+
 
 # ---------------------------------------------------------------------------
 # render_links_view — the Response wrapper Handler-direct kinds use

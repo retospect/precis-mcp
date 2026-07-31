@@ -169,6 +169,101 @@ def test_paper_chunk_ref_is_a_cites_edge_not_related_to(
     assert paper.id not in related  # the paper is NOT a provenance link
 
 
+def test_cites_edge_grounds_at_source_draft_chunk(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """A ``[pc<id>]`` citation records WHICH draft chunk cites (the edge's
+    ``src`` is that ``dc<id>`` chunk), not just the draft as a whole — so a
+    reader / the citation tree can resolve back to the originating
+    paragraph. Before grounding, every draft cite landed ref-level
+    (``src_pos is None``)."""
+    from precis.store.types import BlockInsert
+
+    paper = hub.store.insert_ref(kind="paper", slug="wu2022a", title="Paper")
+    hub.store.insert_blocks(
+        paper.id, [BlockInsert(pos=0, text="Rotaxane nanomachines.", meta={})]
+    )
+    with hub.store.pool.connection() as conn:
+        chunk_id = int(
+            conn.execute(
+                "SELECT chunk_id FROM chunks WHERE ref_id = %s ORDER BY ord LIMIT 1",
+                (paper.id,),
+            ).fetchone()[0]
+        )
+    pc = handle_registry.format_handle("paper", chunk_id, chunk=True)
+
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    ref = hub.store.get_ref(kind="draft", id="nt")
+    title_h = hub.store.reading_order(ref.id)[0].handle
+    draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text=f"the effect holds [{pc}]",
+        at={"after": "¶" + title_h},
+    )
+
+    # the citing paragraph is the source chunk of the cites edge
+    para = hub.store.reading_order(ref.id)[1]
+    para_ord = hub.store.chunk_ord_map(ref.id)[para.chunk_id]
+    cites = [
+        link
+        for link in hub.store.links_for(ref.id, direction="out", relation="cites")
+        if (link.meta or {}).get("auto") == "mention"
+    ]
+    assert len(cites) == 1
+    assert cites[0].src_pos == para_ord  # grounded at the paragraph…
+    assert cites[0].src_chunk_id == para.chunk_id  # …not ref-level (None)
+
+
+def test_same_ref_cited_from_two_chunks_is_two_edges(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """Two different paragraphs each citing the same paper chunk yield two
+    distinct chunk-grounded edges (one per citing paragraph), not one
+    collapsed ref-level edge — each passage keeps its own provenance."""
+    from precis.store.types import BlockInsert
+
+    paper = hub.store.insert_ref(kind="paper", slug="miller23", title="Paper")
+    hub.store.insert_blocks(
+        paper.id, [BlockInsert(pos=0, text="We measured 12% FE.", meta={})]
+    )
+    with hub.store.pool.connection() as conn:
+        chunk_id = int(
+            conn.execute(
+                "SELECT chunk_id FROM chunks WHERE ref_id = %s ORDER BY ord LIMIT 1",
+                (paper.id,),
+            ).fetchone()[0]
+        )
+    pc = handle_registry.format_handle("paper", chunk_id, chunk=True)
+
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    ref = hub.store.get_ref(kind="draft", id="nt")
+    title_h = hub.store.reading_order(ref.id)[0].handle
+    draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text=f"first mention [{pc}]",
+        at={"after": "¶" + title_h},
+    )
+    para1_h = hub.store.reading_order(ref.id)[1].handle
+    draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text=f"second mention [{pc}]",
+        at={"after": "¶" + para1_h},
+    )
+
+    cites = [
+        link
+        for link in hub.store.links_for(ref.id, direction="out", relation="cites")
+        if (link.meta or {}).get("auto") == "mention" and link.dst_ref_id == paper.id
+    ]
+    assert len(cites) == 2  # one edge per citing paragraph
+    assert len({link.src_chunk_id for link in cites}) == 2  # distinct sources
+
+
 def test_intra_draft_xref_is_not_an_edge(draft: DraftHandler, hub: Hub) -> None:
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)

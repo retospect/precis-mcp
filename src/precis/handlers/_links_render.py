@@ -80,13 +80,17 @@ def render_links_section(store: Store, ref: Ref) -> str:
     for link, direction in combined:
         if direction == "out":
             other_id, other_pos = link.dst_ref_id, link.dst_pos
+            other_chunk_id = link.dst_chunk_id
             rel_marker = _format_outbound_rel(link.relation)
         else:
             other_id, other_pos = link.src_ref_id, link.src_pos
+            other_chunk_id = link.src_chunk_id
             rel_marker = _format_inbound_rel(link.relation)
-        target = _format_target_handle(other_id, other_pos, endpoints)
+        target = _format_target_handle(other_id, other_pos, other_chunk_id, endpoints)
         teaser = _teaser_for(endpoints.get(other_id))
-        get_call = _get_call_for(endpoints.get(other_id), other_id)
+        get_call = _get_call_for(
+            endpoints.get(other_id), other_id, pos=other_pos, chunk_id=other_chunk_id
+        )
         rows.append(
             {
                 "related to": f"{rel_marker} {target}".strip(),
@@ -143,27 +147,39 @@ def _format_inbound_rel(relation: str) -> str:
 
 
 def _format_target_handle(
-    ref_id: int, pos: int | None, endpoints: dict[int, Ref]
+    ref_id: int, pos: int | None, chunk_id: int | None, endpoints: dict[int, Ref]
 ) -> str:
-    """Build ``kind:identifier[~pos]`` for the link row."""
+    """Build the ADR 0036 universal handle for the link row's endpoint.
+
+    Chunk-level edge (``chunk_id`` set) → the *chunk* handle ``pc<id>`` /
+    ``dc<id>`` (the granular, durable address that lets the citation tree
+    resolve to the exact supporting passage). Ref-level edge → the record
+    handle ``pa<id>`` / ``dr<id>``. A ``pos`` with no ``chunk_id`` (should
+    not happen — ``pos`` derives from the chunk join) falls back to the
+    legacy ``kind:slug~pos`` form.
+    """
     ref = endpoints.get(ref_id)
     if ref is None:
         handle = f"<unknown ref {ref_id}>"
+        if chunk_id is not None:
+            handle += f" chunk {chunk_id}"
+        elif pos is not None:
+            handle += f"~{pos}"
+        return handle
+    if chunk_id is not None:
+        handle = (
+            handle_registry.try_format(ref.kind, chunk_id, chunk=True)
+            or f"{ref.kind}:chunk:{chunk_id}"
+        )
+    elif pos is None:
+        handle = handle_registry.try_format(ref.kind, ref.id) or (
+            f"{ref.kind}:{ref.slug if ref.slug is not None else ref.id}"
+        )
     else:
         ident = ref.slug if ref.slug is not None else str(ref.id)
-        # ADR 0036: ref-level → record universal handle; block-level keeps
-        # the legacy ``kind:slug~pos`` (valid input; chunk_id unavailable).
-        if pos is None:
-            handle = handle_registry.try_format(ref.kind, ref.id) or (
-                f"{ref.kind}:{ident}"
-            )
-        else:
-            handle = f"{ref.kind}:{ident}~{pos}"
-        if ref.deleted_at is not None:
-            handle += " (deleted)"
-        return handle
-    if pos is not None:
-        handle += f"~{pos}"
+        handle = f"{ref.kind}:{ident}~{pos}"
+    if ref.deleted_at is not None:
+        handle += " (deleted)"
     return handle
 
 
@@ -177,11 +193,39 @@ def _teaser_for(ref: Ref | None) -> str:
     return title
 
 
-def _get_call_for(ref: Ref | None, fallback_id: int) -> str:
-    """Render the exact ``get(...)`` call to retrieve the link target."""
+#: Kinds whose chunks are addressed in ``get`` by their ADR 0036 chunk
+#: handle (``dc<id>``) rather than the paper-family ``slug~ord`` selector.
+#: The draft/plan/figure/mermaid chunk-tree family (see
+#: ``handlers/draft.py`` ``_is_draft_chunk_addr``); everything else
+#: (paper/patent/…) reads a chunk via ``slug~pos``.
+_CHUNK_HANDLE_GET_KINDS = frozenset({"draft", "plan", "figure", "mermaid"})
+
+
+def _get_call_for(
+    ref: Ref | None,
+    fallback_id: int,
+    *,
+    pos: int | None = None,
+    chunk_id: int | None = None,
+) -> str:
+    """Render the exact ``get(...)`` call to retrieve the link target.
+
+    A chunk-level endpoint (``chunk_id`` set) renders the chunk-scoped
+    retrieval, not the whole-document one: the draft family reads a chunk
+    by its ``dc<id>`` handle; the paper family reads it by ``slug~ord``.
+    ``ref is None`` (target row not fetched) or a chunk with no resolvable
+    address falls back to the record-level get.
+    """
     if ref is None:
         return f"get(id={fallback_id})"
     ident = ref.slug if ref.slug is not None else ref.id
+    if chunk_id is not None:
+        if ref.kind in _CHUNK_HANDLE_GET_KINDS:
+            chunk_handle = handle_registry.try_format(ref.kind, chunk_id, chunk=True)
+            if chunk_handle is not None:
+                return f"get(kind={ref.kind!r}, id={chunk_handle!r})"
+        elif pos is not None and ref.slug is not None:
+            return f"get(kind={ref.kind!r}, id={f'{ref.slug}~{pos}'!r})"
     ident_repr = repr(ident) if isinstance(ident, str) else str(ident)
     return f"get(kind={ref.kind!r}, id={ident_repr})"
 

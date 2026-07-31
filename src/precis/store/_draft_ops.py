@@ -568,6 +568,27 @@ class DraftMixin:
                 stack.extend((k, depth + 1) for k in reversed(kids))
         return out
 
+    def chunk_ord_map(self, ref_id: int) -> dict[int, int]:
+        """``chunk_id → ord`` for every live body chunk of ``ref_id``.
+
+        The link layer addresses a chunk endpoint by its ``ord``
+        (``add_link(src_pos=…)`` translates ord→chunk_id), but
+        :class:`DraftChunk` (from :meth:`reading_order`) exposes only the
+        fractional ``pos`` string, not the int ``ord``. The draft
+        autolinker needs each source chunk's ``ord`` to write a
+        chunk-level ``cites`` edge (``dc<id>``-granular), so this returns
+        the mapping in one indexed scan rather than a per-chunk lookup.
+        Card variants (``ord < 0``) are excluded — only real body chunks
+        are link endpoints.
+        """
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT chunk_id, ord FROM chunks "
+                "WHERE ref_id = %s AND retired_at IS NULL AND ord >= 0",
+                (ref_id,),
+            ).fetchall()
+        return {int(r[0]): int(r[1]) for r in rows}
+
     def chunk_connections(
         self, ref_id: int, handles: list[str]
     ) -> dict[str, list[dict[str, Any]]]:

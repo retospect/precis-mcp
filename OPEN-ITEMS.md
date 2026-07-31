@@ -9,6 +9,33 @@ items are removed (history is `git log`).
 
 ---
 
+## Residuals (2026-07-31 — citation-edge chunk-grounding ship)
+
+Code shipped (draft autolinker `src_pos`, evidence `src_chunk_id`, pc/dc
+render, `precis taproot backfill-grounding` CLI). The prod data backfills
+were **deferred** at user request ("ship only") — run them in a later session:
+
+- **Run the deterministic backfill against prod** · Status: deferred ·
+  Severity: feature · Owner: `src/precis/cli/taproot.py::_backfill_grounding`.
+  `precis taproot backfill-grounding --dry-run` first (via prod `--database-url`,
+  see memory `prod-one-off-cli-write`), then without `--dry-run`. Verified
+  read-only vs prod 2026-07-31: **16 drafts / 951 draft `cites` edges** →
+  `dc`-grounded, **212 paper evidence edges** (all `pc<id>` handles resolve to a
+  live same-paper chunk) → `pc`-grounded, 0 unresolved / 0 collisions. This is
+  what makes finding 177720's "cited by dr42995" render as `dc<id>`.
+- **Semantic grounding of the 766 null-`source_handle` paper→hub edges** ·
+  Status: deferred · Severity: feature · Owner: new apply path + agent fan-out.
+  These evidence edges have no stored grounding chunk (incl. 177720's
+  `corroborates pa4137`). Plan (user-approved shape): fan out ~40 **read-only**
+  agents over batches; each reads the claim (hub title) + semantic-searches the
+  paper's chunks (`search(kind='paper', scope=<slug>, q=<claim>)`) and proposes
+  `{link_id, pc<id>, confidence, quote}`; main loop reviews proposals (dry run)
+  then applies `src_chunk_id` for confident ones after sign-off. Agents propose
+  only (dogfood read-only); main loop writes. BILLABLE + prod writes.
+- **Deploy** · Status: deferred · the render fix (`pc`/`dc` in the link table)
+  only reaches the melchior web reader after `scripts/deploy` (`/go`); this ship
+  was `/land` only.
+
 ## Residuals (2026-07-30 — taproot authoring on-ramp ship 02af6721)
 
 - **Whole-draft taproot backfill (mint-then-link, cite as `[fi<id>]`)** ·

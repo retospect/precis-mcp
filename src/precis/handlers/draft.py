@@ -1876,49 +1876,74 @@ class DraftHandler(Handler):
         cross-refs, ``§``/``[pc<id>]`` citations). A reference to a
         **citable source** (paper/patent/finding) becomes a ``cites``
         edge; every other reference (a memory, another draft) is a
-        ``related-to`` provenance edge. Recomputed over the *whole* draft
-        on each write, replacing the prior ``auto='mention'`` set in BOTH
-        relations so a removed reference loses its edge. Best-effort: a
-        resolution failure never fails the write — mirrors the note
-        autolinker (`_numeric_ref._sync_mention_links`).
+        ``related-to`` provenance edge.
+
+        Edges are **chunk-grounded on the source side**: each reference is
+        resolved against the individual chunk it sits in, so the edge
+        carries that draft chunk as ``src_pos`` (``dc<id>``-granular) — a
+        reader can then see *which passage* cites a finding/paper, not just
+        that the draft as a whole does, which is what lets the citation
+        tree resolve to the originating paragraph. (Resolving over the
+        whole concatenated draft, as this once did, threw the source chunk
+        away and every edge landed ref-level ``dr<id>``.)
+
+        Recomputed over the whole draft on each write, replacing the prior
+        ``auto='mention'`` set in BOTH relations so a removed reference
+        loses its edge. Best-effort: a resolution failure never fails the
+        write — mirrors the note autolinker
+        (`_numeric_ref._sync_mention_links`).
         """
         from precis.utils import draft_markup
 
         try:
             chunks = self.store.reading_order(ref_id)
-            text = "\n\n".join(c.text for c in chunks)
-            targets = draft_markup.resolve_draft_link_targets(
-                self.store, text, exclude_ref_id=ref_id
-            )
-            refs_by_id = self.store.fetch_refs_by_ids([t.dst_ref_id for t in targets])
-            # (dst_ref_id, dst_pos) → desired relation, routed by kind.
-            wanted: dict[tuple[int, int | None], str] = {}
-            for t in targets:
+            ord_by_chunk = self.store.chunk_ord_map(ref_id)
+            # Resolve per chunk so the source draft chunk (its ord) is
+            # preserved. (src_ord, dst_ref_id, dst_pos) → desired relation.
+            resolved: list[tuple[int | None, Any]] = []
+            dst_ids: set[int] = set()
+            for c in chunks:
+                targets = draft_markup.resolve_draft_link_targets(
+                    self.store, c.text, exclude_ref_id=ref_id
+                )
+                if not targets:
+                    continue
+                src_ord = ord_by_chunk.get(c.chunk_id)
+                for t in targets:
+                    resolved.append((src_ord, t))
+                    dst_ids.add(t.dst_ref_id)
+            refs_by_id = self.store.fetch_refs_by_ids(list(dst_ids))
+            wanted: dict[tuple[int | None, int, int | None], str] = {}
+            for src_ord, t in resolved:
                 tref = refs_by_id.get(t.dst_ref_id)
                 rel = (
                     "cites"
                     if tref is not None and tref.kind in self._CITABLE_KINDS
                     else "related-to"
                 )
-                wanted[(t.dst_ref_id, t.dst_pos)] = rel
+                wanted[(src_ord, t.dst_ref_id, t.dst_pos)] = rel
             # Drop stale auto-mention edges in BOTH relations (a removed
-            # reference, or one whose routed relation changed).
+            # reference, one whose routed relation changed, or one that
+            # moved to a different source chunk).
             for relation in ("cites", "related-to"):
                 for link in self.store.links_for(
                     ref_id, direction="out", relation=relation
                 ):
                     if (link.meta or {}).get("auto") != "mention":
                         continue
-                    if wanted.get((link.dst_ref_id, link.dst_pos)) != relation:
+                    key = (link.src_pos, link.dst_ref_id, link.dst_pos)
+                    if wanted.get(key) != relation:
                         self.store.remove_link(
                             src_ref_id=ref_id,
+                            src_pos=link.src_pos,
                             dst_ref_id=link.dst_ref_id,
                             dst_pos=link.dst_pos,
                             relation=relation,
                         )
-            for (dst, pos), relation in wanted.items():
+            for (src_ord, dst, pos), relation in wanted.items():
                 self.store.add_link(
                     src_ref_id=ref_id,
+                    src_pos=src_ord,
                     dst_ref_id=dst,
                     dst_pos=pos,
                     relation=relation,

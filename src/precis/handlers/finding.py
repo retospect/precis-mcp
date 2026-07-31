@@ -937,9 +937,15 @@ class FindingHandler(NumericRefHandler):
 
         # The claim body lives in the finding_body chunk; pull it
         # via the standard chunks API so we don't duplicate it on
-        # the ref itself.
+        # the ref itself. For a taproot claim hub the body IS the title
+        # verbatim (mint_hub writes the sentence to both — refs.title for
+        # list-view scannability, the chunk for embedding/search); showing
+        # both back reads as accidental duplication, so suppress the
+        # ``claim:`` echo when it adds nothing over ``title:``. A plain
+        # finding's body carries the setup envelope too, so it differs and
+        # still renders.
         body_text = self._fetch_body(ref.id)
-        if body_text:
+        if body_text and body_text.strip() != (ref.title or "").strip():
             lines.append("")
             lines.append("claim:")
             for ln in body_text.splitlines():

@@ -77,6 +77,90 @@ _STATUS_NS = "STATUS"
 _STATUS_CANONICAL = "canonical"
 
 
+def _grounding_chunk_ord(
+    store: Any, *, paper_ref_id: int, meta: dict[str, Any] | None
+) -> int | None:
+    """Resolve an evidence edge's grounding chunk to its ``ord``, or ``None``.
+
+    Taproot's ``meta.source_handle`` (a ``pc<chunk_id>`` universal handle,
+    the "grounded at this passage" pointer the chase verdict / authoring
+    spec carries) names the *specific paper chunk* that supports the claim.
+    Storing it only in ``meta`` left the edge itself ref-level, so the link
+    graph — and every reader built on it (the ``fi`` link table, the
+    citation tree) — could only ever cite the whole paper (``pa<id>``), not
+    the passage (``pc<id>``). Returning the chunk's ``ord`` here lets
+    :func:`attach_evidence` pass ``src_pos`` to ``store.add_link``, which
+    materialises ``src_chunk_id`` so the edge renders ``pc<id>`` and two
+    distinct passages of the same paper become two edges ("the set of
+    chunks that support this point"), not one collapsed ref-level edge.
+
+    Two ``source_handle`` forms are recognised — the ``pc<chunk_id>``
+    universal handle (the authoring / mint spec form) and the ``slug~ord``
+    pointer the chase writes per hop (:func:`~precis.workers.chase._evidence_edge_meta`).
+
+    Best-effort and defensive: a missing / unresolvable ``source_handle``,
+    one that isn't a chunk, one whose chunk belongs to a *different* paper
+    than this edge's source (a spec/verdict bug), or an ``ord`` with no
+    live chunk yields ``None`` — the edge stays ref-level rather than
+    grounding at the wrong paper or handing ``add_link`` a non-existent
+    ``(ref, ord)`` (which would raise and fail the write).
+    """
+    if not meta:
+        return None
+    handle = meta.get("source_handle")
+    if not handle or not isinstance(handle, str):
+        return None
+
+    # Resolve the handle to a *candidate* ord, by form:
+    candidate: int | None = None
+
+    # Form 1: pc<chunk_id> universal handle → resolve to (ref, ord).
+    try:
+        resolved = store.resolve_handle(handle)
+    except Exception:  # defensive — a malformed handle never fails the write
+        resolved = None
+    if resolved is not None and resolved.chunk_id is not None:
+        if resolved.chunk_ord is None:
+            return None
+        if resolved.ref_id != paper_ref_id:
+            log.warning(
+                "taproot: source_handle %r resolves to ref_id=%s, not the "
+                "edge's paper ref_id=%s — attaching ref-level (no grounding)",
+                handle,
+                resolved.ref_id,
+                paper_ref_id,
+            )
+            return None
+        candidate = resolved.chunk_ord
+    else:
+        # Form 2: slug~ord (chase's per-hop pointer). The ord is the chunk
+        # position within this edge's paper; trust paper_ref_id
+        # (authoritative) and take the ord from the tail.
+        _, sep, tail = handle.rpartition("~")
+        if not sep:
+            return None
+        try:
+            candidate = int(tail)
+        except ValueError:
+            return None
+
+    # Shared live-body-chunk verification for BOTH forms: ground only at a
+    # live (``retired_at IS NULL``) real body chunk (``ord >= 0``) of this
+    # paper. Guards the resolve_handle path — which does NOT filter retired
+    # rows or card variants — against grounding at a soft-retired passage
+    # (re-ingest/dedup) or an ``ord < 0`` card chunk, and keeps a stale
+    # ``add_link(src_pos=ord)`` from a since-removed passage from raising.
+    if candidate is None or candidate < 0:
+        return None
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM chunks WHERE ref_id = %s AND ord = %s AND "
+            "retired_at IS NULL AND ord >= 0",
+            (paper_ref_id, candidate),
+        ).fetchone()
+    return candidate if row is not None else None
+
+
 def _is_claim_hub(store: Any, ref_id: int, *, conn: Any) -> bool:
     """True iff ``ref_id`` is a live ``finding`` carrying ``TAPROOT:claim``."""
     row = conn.execute(
@@ -291,8 +375,14 @@ def attach_evidence(
                 "paper/patent",
                 next="evidence edges attach only from a paper/patent source ref",
             )
+        # Ground the edge at the specific supporting passage when the
+        # verdict/spec named one (meta.source_handle → src_chunk_id), so the
+        # edge is pc<id>-granular. Falls back to a ref-level (pa<id>) edge
+        # when no chunk was named or it can't be resolved to this paper.
+        src_pos = _grounding_chunk_ord(store, paper_ref_id=paper_ref_id, meta=meta)
         store.add_link(
             src_ref_id=paper_ref_id,
+            src_pos=src_pos,
             dst_ref_id=hub_ref_id,
             relation=validated,
             meta=meta,

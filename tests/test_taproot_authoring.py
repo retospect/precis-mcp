@@ -17,6 +17,7 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.errors import BadInput
+from precis.handlers.draft import DraftHandler
 from precis.handlers.finding import FindingHandler
 from precis.taproot.authoring import (
     resolve_hub_ref_id,
@@ -95,6 +96,96 @@ def test_seed_claim_hub_happy_path(store: Any) -> None:
     assert paper in corroborator_ids
     matching = [e for e in evidence.corroborators if e.paper_ref_id == paper]
     assert matching[0].source_handle == "pc123"
+
+
+# ── chunk grounding (source_handle → src_chunk_id) ────────────────────────
+
+
+def _src_chunk_id(store: Any, *, src: int, dst: int, relation: str) -> int | None:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT src_chunk_id FROM links WHERE src_ref_id = %s "
+            "AND dst_ref_id = %s AND relation = %s",
+            (src, dst, relation),
+        ).fetchone()
+    return None if row is None else row[0]
+
+
+def test_source_handle_grounds_edge_at_paper_chunk(store: Any) -> None:
+    """A supporter whose ``source_handle`` resolves to a real paper chunk
+    lands on the edge as ``src_chunk_id`` — the edge cites the passage
+    (``pc<id>``), not just the paper (ref-level ``pa<id>``)."""
+    from precis.store.types import BlockInsert
+
+    paper = seed_ref(store, title="Wu 2022", kind="paper")
+    store.insert_blocks(paper, [BlockInsert(pos=0, text="Rotaxane passage.", meta={})])
+    with store.pool.connection() as conn:
+        chunk_id = int(
+            conn.execute(
+                "SELECT chunk_id FROM chunks WHERE ref_id = %s ORDER BY ord LIMIT 1",
+                (paper,),
+            ).fetchone()[0]
+        )
+    pc = handle_registry.format_handle("paper", chunk_id, chunk=True)
+
+    out = seed_claim_hub(
+        store,
+        sentence="Rotaxanes act as molecular machines.",
+        scope={},
+        supporters=[{"paper": paper, "role": "corroborates", "source_handle": pc}],
+    )
+    assert out["attached"] == 1
+    assert (
+        _src_chunk_id(store, src=paper, dst=out["hub_ref_id"], relation="corroborates")
+        == chunk_id
+    )
+
+
+def test_two_passages_of_one_paper_are_two_edges(store: Any) -> None:
+    """Two supporters, same paper, different grounding chunks → two edges
+    (the ``set of chunks that support this point``), not one collapsed
+    ref-level edge. The dedup key now includes the grounding chunk."""
+    from precis.store.types import BlockInsert
+
+    paper = seed_ref(store, title="Wu 2022", kind="paper")
+    store.insert_blocks(
+        paper,
+        [
+            BlockInsert(pos=0, text="First supporting passage.", meta={}),
+            BlockInsert(pos=1, text="Second supporting passage.", meta={}),
+        ],
+    )
+    with store.pool.connection() as conn:
+        ids = [
+            int(r[0])
+            for r in conn.execute(
+                "SELECT chunk_id FROM chunks WHERE ref_id = %s ORDER BY ord", (paper,)
+            ).fetchall()
+        ]
+    pc0 = handle_registry.format_handle("paper", ids[0], chunk=True)
+    pc1 = handle_registry.format_handle("paper", ids[1], chunk=True)
+
+    out = seed_claim_hub(
+        store,
+        sentence="Rotaxanes act as molecular machines.",
+        scope={},
+        supporters=[
+            {"paper": paper, "role": "corroborates", "source_handle": pc0},
+            {"paper": paper, "role": "corroborates", "source_handle": pc1},
+        ],
+    )
+    assert out["attached"] == 2
+    assert not out["collapsed"]
+    with store.pool.connection() as conn:
+        src_chunks = {
+            r[0]
+            for r in conn.execute(
+                "SELECT src_chunk_id FROM links WHERE src_ref_id = %s "
+                "AND dst_ref_id = %s AND relation = 'corroborates'",
+                (paper, out["hub_ref_id"]),
+            ).fetchall()
+        }
+    assert src_chunks == {ids[0], ids[1]}
 
 
 # ── idempotency ──────────────────────────────────────────────────────────
@@ -501,3 +592,173 @@ def test_cli_refine_bad_hub_exits_nonzero(store: Any) -> None:
     with pytest.raises(SystemExit) as exc:
         taproot_cli.run(_cli_refine_args(from_hub=paper_h, to_hub=to_h))
     assert exc.value.code == 1
+
+
+# ── `precis taproot backfill-grounding` ─────────────────────────────────
+
+
+def test_backfill_grounding_part_b_grounds_paper_evidence_edge(store: Any) -> None:
+    """A ref-level ``corroborates`` edge carrying a resolvable
+    ``source_handle`` gets its ``src_chunk_id`` set to the referenced
+    chunk."""
+    from precis.cli.taproot import _backfill_grounding
+    from precis.store.types import BlockInsert
+
+    paper = seed_ref(store, title="Wu 2022", kind="paper")
+    store.insert_blocks(paper, [BlockInsert(pos=0, text="Rotaxane passage.", meta={})])
+    with store.pool.connection() as conn:
+        chunk_id = int(
+            conn.execute(
+                "SELECT chunk_id FROM chunks WHERE ref_id = %s ORDER BY ord LIMIT 1",
+                (paper,),
+            ).fetchone()[0]
+        )
+    pc = handle_registry.format_handle("paper", chunk_id, chunk=True)
+
+    hub_ref_id = mint_hub(
+        store, CanonicalClaim(sentence="A backfillable claim.", scope={})
+    )
+    # Ref-level edge (no src_pos) -- the pre-fix shape this backfills.
+    store.add_link(
+        src_ref_id=paper,
+        dst_ref_id=hub_ref_id,
+        relation="corroborates",
+        meta={"source_handle": pc},
+    )
+    assert (
+        _src_chunk_id(store, src=paper, dst=hub_ref_id, relation="corroborates") is None
+    )
+
+    result = _backfill_grounding(store, dry_run=False)
+
+    assert result["paper_candidates"] == 1
+    assert result["paper_edges_grounded"] == 1
+    assert result["unresolved"] == 0
+    assert result["skipped_collision"] == 0
+    assert (
+        _src_chunk_id(store, src=paper, dst=hub_ref_id, relation="corroborates")
+        == chunk_id
+    )
+
+    # Idempotent: nothing left to ground on a second pass.
+    second = _backfill_grounding(store, dry_run=False)
+    assert second["paper_candidates"] == 0
+    assert second["paper_edges_grounded"] == 0
+
+
+def test_backfill_grounding_part_a_resyncs_draft_cites_edge(store: Any) -> None:
+    """A draft paragraph that cites a paper chunk already produces a
+    chunk-grounded ``cites`` edge -- simulate the pre-fix ref-level shape
+    by nulling ``src_chunk_id``, then confirm the backfill's resync
+    restores the grounding at the citing paragraph."""
+    from precis.cli.taproot import _backfill_grounding
+    from precis.store.types import BlockInsert
+
+    paper = seed_ref(store, title="Wu 2022", kind="paper")
+    store.insert_blocks(
+        paper, [BlockInsert(pos=0, text="Rotaxane nanomachines.", meta={})]
+    )
+    with store.pool.connection() as conn:
+        chunk_id = int(
+            conn.execute(
+                "SELECT chunk_id FROM chunks WHERE ref_id = %s ORDER BY ord LIMIT 1",
+                (paper,),
+            ).fetchone()[0]
+        )
+    pc = handle_registry.format_handle("paper", chunk_id, chunk=True)
+
+    proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
+    draft = DraftHandler(hub=Hub(store=store))
+    draft.put(id="bg-nt", title="T", project=proj)
+    ref = store.get_ref(kind="draft", id="bg-nt")
+    title_h = store.reading_order(ref.id)[0].handle
+    draft.put(
+        id="bg-nt",
+        chunk_kind="paragraph",
+        text=f"the effect holds [{pc}]",
+        at={"after": "¶" + title_h},
+    )
+    para = store.reading_order(ref.id)[1]
+
+    def _cites() -> list[Any]:
+        return [
+            link
+            for link in store.links_for(ref.id, direction="out", relation="cites")
+            if (link.meta or {}).get("auto") == "mention"
+        ]
+
+    cites = _cites()
+    assert len(cites) == 1
+    assert cites[0].src_chunk_id == para.chunk_id  # already grounded
+
+    # Simulate the legacy ref-level shape this backfill exists to fix.
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE links SET src_chunk_id = NULL WHERE link_id = %s",
+            (cites[0].id,),
+        )
+    assert _cites()[0].src_chunk_id is None
+
+    result = _backfill_grounding(store, dry_run=False)
+
+    assert result["drafts_found"] == 1
+    assert result["drafts_resynced"] == 1
+    assert result["draft_edges_before"] == 1
+    assert result["draft_edges_after"] == 0
+
+    cites_after = _cites()
+    assert len(cites_after) == 1
+    assert cites_after[0].src_chunk_id == para.chunk_id
+
+
+def test_backfill_grounding_dry_run_writes_nothing(store: Any) -> None:
+    from precis.cli.taproot import _backfill_grounding
+    from precis.store.types import BlockInsert
+
+    paper = seed_ref(store, title="Wu 2022", kind="paper")
+    store.insert_blocks(paper, [BlockInsert(pos=0, text="Rotaxane passage.", meta={})])
+    with store.pool.connection() as conn:
+        chunk_id = int(
+            conn.execute(
+                "SELECT chunk_id FROM chunks WHERE ref_id = %s ORDER BY ord LIMIT 1",
+                (paper,),
+            ).fetchone()[0]
+        )
+    pc = handle_registry.format_handle("paper", chunk_id, chunk=True)
+    hub_ref_id = mint_hub(store, CanonicalClaim(sentence="A dry-run claim.", scope={}))
+    store.add_link(
+        src_ref_id=paper,
+        dst_ref_id=hub_ref_id,
+        relation="corroborates",
+        meta={"source_handle": pc},
+    )
+
+    result = _backfill_grounding(store, dry_run=True)
+
+    assert result["dry_run"] is True
+    assert result["paper_edges_grounded"] >= 1
+    # Nothing written -- the edge is still ref-level.
+    assert (
+        _src_chunk_id(store, src=paper, dst=hub_ref_id, relation="corroborates") is None
+    )
+
+
+def _cli_backfill_args(**overrides: Any) -> argparse.Namespace:
+    base = {
+        "dry_run": False,
+        "format": "text",
+        "database_url": _active_dsn(),
+        "taproot_cmd": "backfill-grounding",
+    }
+    base.update(overrides)
+    return argparse.Namespace(**base)
+
+
+def test_cli_backfill_grounding_smoke(store: Any, capsys: Any) -> None:
+    from precis.cli import taproot as taproot_cli
+
+    taproot_cli.run(_cli_backfill_args())
+
+    out = capsys.readouterr().out
+    assert "drafts:" in out
+    assert "paper/patent evidence:" in out

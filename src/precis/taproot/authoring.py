@@ -23,7 +23,13 @@ from typing import Any
 from precis.errors import BadInput
 from precis.identity import make_pub_id, make_taproot_hub_paper_id
 from precis.taproot.canon import CanonicalClaim
-from precis.taproot.hub import _DEFAULT_ROLE, HUB_ROLES, attach_evidence, mint_hub
+from precis.taproot.hub import (
+    _DEFAULT_ROLE,
+    HUB_ROLES,
+    _grounding_chunk_ord,
+    attach_evidence,
+    mint_hub,
+)
 from precis.utils.mentions import resolve_handle_ref, resolve_handle_target
 
 __all__ = ["resolve_hub_ref_id", "resolve_paper_ref_id", "seed_claim_hub"]
@@ -134,14 +140,31 @@ def resolve_hub_ref_id(store: Any, hub: int | str) -> int:
 
 
 def _evidence_edge_exists(
-    store: Any, *, paper_ref_id: int, hub_ref_id: int, role: str
+    store: Any,
+    *,
+    paper_ref_id: int,
+    hub_ref_id: int,
+    role: str,
+    src_ord: int | None = None,
 ) -> bool:
-    """True iff a ``paper --role--> hub`` edge is already written."""
+    """True iff a ``paper --role--> hub`` edge grounded at ``src_ord`` exists.
+
+    ``src_ord`` is the grounding chunk's ordinal (``None`` for a ref-level
+    edge). Chunk-scoped so two passages of the same paper are distinct
+    edges: re-running a spec re-finds the *exact* (paper, hub, role, chunk)
+    edge rather than any edge for the paper — which would have let the
+    second passage collapse into the first (the ref-level limitation this
+    grounding work removes). The ``chunks`` LEFT JOIN maps ``src_chunk_id``
+    back to ``ord`` (NULL for a ref-level edge), and ``IS NOT DISTINCT
+    FROM`` makes NULL==NULL match so a ref-level lookup still works.
+    """
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT 1 FROM links WHERE src_ref_id = %s AND dst_ref_id = %s "
-            "AND relation = %s",
-            (paper_ref_id, hub_ref_id, role),
+            "SELECT 1 FROM links l "
+            "LEFT JOIN chunks c ON c.chunk_id = l.src_chunk_id "
+            "WHERE l.src_ref_id = %s AND l.dst_ref_id = %s AND l.relation = %s "
+            "AND c.ord IS NOT DISTINCT FROM %s",
+            (paper_ref_id, hub_ref_id, role, src_ord),
         ).fetchone()
     return row is not None
 
@@ -189,13 +212,17 @@ def seed_claim_hub(
     exists — so re-running with an identical spec mints no second hub and
     attaches no duplicate edge.
 
-    Returns ``{'pub_id', 'hub_ref_id', 'attached', 'already', 'collapsed'}``
-    — ``attached``/``already`` count new vs. skipped-as-already-present
-    evidence edges; ``collapsed`` is a list of supporter dicts that mapped
-    to the *same* ``(paper, hub, role)`` edge as an earlier supporter **in
-    this same call** (the edge dedup key can only carry one ``meta``, so a
-    second supporter differing only by e.g. ``source_handle`` would
-    otherwise vanish silently — this surfaces it instead of hiding it in
+    Returns ``{'pub_id', 'hub_ref_id', 'attached', 'already', 'collapsed',
+    'ungrounded'}`` — ``attached``/``already`` count new vs.
+    skipped-as-already-present evidence edges; ``ungrounded`` counts how
+    many of the *newly attached* edges landed ref-level (no resolvable
+    ``source_handle`` chunk), i.e. cite the whole paper rather than a
+    passage — the CLI surfaces it as a nudge to supply ``source_handle``.
+    ``collapsed`` is a list of supporter dicts that mapped to the *same*
+    ``(paper, hub, role, chunk)`` edge as an earlier supporter **in this
+    same call** (the edge dedup key can only carry one ``meta``, so a
+    second supporter differing only by e.g. ``support`` would otherwise
+    vanish silently — this surfaces it instead of hiding it in
     ``already``; the earlier supporter's meta always wins).
 
     Raises:
@@ -209,8 +236,12 @@ def seed_claim_hub(
 
     attached = 0
     already = 0
+    ungrounded = 0
     collapsed: list[dict[str, Any]] = []
-    seen_edges: set[tuple[int, str]] = set()
+    # Dedup key is (paper, role, grounding-chunk): two passages of the same
+    # paper are distinct edges now that grounding lands on src_chunk_id, so
+    # only a supporter naming the *same* passage collapses.
+    seen_edges: set[tuple[int, str, int | None]] = set()
     for supporter in supporters:
         paper = supporter.get("paper")
         if paper is None:
@@ -223,8 +254,13 @@ def seed_claim_hub(
                 next=f"role must be one of {sorted(HUB_ROLES)}",
             )
         paper_ref_id = resolve_paper_ref_id(store, paper)
+        src_ord = _grounding_chunk_ord(
+            store,
+            paper_ref_id=paper_ref_id,
+            meta={"source_handle": supporter.get("source_handle")},
+        )
 
-        edge_key = (paper_ref_id, role)
+        edge_key = (paper_ref_id, role, src_ord)
         if edge_key in seen_edges:
             collapsed.append(
                 {
@@ -237,7 +273,11 @@ def seed_claim_hub(
             continue
 
         if _evidence_edge_exists(
-            store, paper_ref_id=paper_ref_id, hub_ref_id=hub_ref_id, role=role
+            store,
+            paper_ref_id=paper_ref_id,
+            hub_ref_id=hub_ref_id,
+            role=role,
+            src_ord=src_ord,
         ):
             already += 1
             seen_edges.add(edge_key)
@@ -257,6 +297,8 @@ def seed_claim_hub(
             set_by=set_by,
         )
         attached += 1
+        if src_ord is None:
+            ungrounded += 1
         seen_edges.add(edge_key)
 
     return {
@@ -265,4 +307,5 @@ def seed_claim_hub(
         "attached": attached,
         "already": already,
         "collapsed": collapsed,
+        "ungrounded": ungrounded,
     }
