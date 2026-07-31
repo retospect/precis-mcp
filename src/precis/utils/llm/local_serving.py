@@ -170,7 +170,18 @@ def acquire(model: str) -> LocalSlot | None:
     resource = f"llm:{model}"
     served_resources = _served_resources(store, host)
     if resource not in served_resources:
-        if served_resources:  # host serves *something* locally — a name mismatch
+        # A host that serves *other* llm: resources but not this one is usually a
+        # served_by name mismatch worth flagging. But the SMALL-tier loopback
+        # aliases (``summarizer`` / ``rake-lemma``) are local-only by design —
+        # they route through the litellm loopback proxy, never a reserved
+        # llama-swap slot — so "falling back to litellm" is the *intended* path,
+        # not a misconfiguration. Warning on them is a false alarm that, because
+        # the dedup is in-process, floods the log once per short-lived summarize
+        # worker (gr178498: 3907 hits/48h on melchior, all ``summarizer``). Skip
+        # those; a genuine served-model name mismatch still warns.
+        from precis.utils.llm.router import _LOCAL_ONLY_MODEL_ALIASES
+
+        if served_resources and model not in _LOCAL_ONLY_MODEL_ALIASES:
             warned = _mismatch_warned.setdefault(host, set())
             if resource not in warned:
                 warned.add(resource)

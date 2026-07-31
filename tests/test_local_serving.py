@@ -78,6 +78,20 @@ def test_warning_when_host_serves_others_but_not_this_one(store, caplog) -> None
     assert "llm:qwen" in msg
 
 
+def test_no_warning_for_local_only_alias_mismatch(store, caplog) -> None:
+    """The SMALL-tier loopback aliases (``summarizer`` / ``rake-lemma``) are
+    local-only by design — they route through the litellm loopback proxy, not a
+    reserved llama-swap slot — so a served host being asked for one is the
+    *intended* path, not a misconfiguration, and must NOT warn (gr178498: the
+    false-alarm flood, 3907 hits/48h on melchior, all ``summarizer``)."""
+    meter.bind_store(store)
+    _serve(store, "testnode", "qwen", 2)
+    with caplog.at_level("WARNING", logger="precis.utils.llm.local_serving"):
+        assert local_serving.acquire("summarizer") is None
+        assert local_serving.acquire("rake-lemma") is None
+    assert not caplog.records
+
+
 def test_mismatch_warning_not_repeated_within_cache_window(store, caplog) -> None:
     """Same (host, resource) mismatch on a second call within the same 60s
     cache window logs only once — rate-limited, not silent-forever."""
