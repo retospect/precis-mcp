@@ -51,9 +51,9 @@ items are removed (history is `git log`).
   feature · Owner: `meta.table` schema + both exporters. Represent column
   alignment, `\multicolumn`/`\multirow` spans, rule placement, and footnote
   markers as *structured* fields — NOT stored LaTeX (breaks Word export, per
-  the proposal's rejection). Item 3 in
-  `docs/proposals/draft-table-editing.md`; should graduate as its own
-  proposal (the `ready` gate should flag it if left combined with items 1-2).
+  the proposal's rejection). Specified in its own proposal
+  `docs/proposals/draft-table-structured-enrichment.md` (graduated out of
+  `draft-table-editing.md` item 3); awaits the `ready` gate + a build.
 
 ## Residuals (2026-07-31 — taproot hub-refine ship)
 
