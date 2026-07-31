@@ -609,6 +609,16 @@ def _resolve_agent_args(
         }
         args.extend(["--settings", _json.dumps(settings_payload)])
     args.extend(extra_args)
+    # ``--`` end-of-options sentinel, then the prompt as the sole trailing
+    # positional. The prompt is UNTRUSTED — asa_bot passes raw Discord
+    # messages straight through as ``LlmRequest.prompt`` — and claude's
+    # Commander.js CLI parses any argv token starting with ``-`` as an option,
+    # not the positional prompt. Without ``--``, a message beginning with a
+    # dash exits the binary 1 with "unknown option '<msg>'" (Tom Pepper's
+    # ``-- MARK --`` Discord turn, 2026-07-31). ``--`` forces every following
+    # token to be positional, so the prompt may begin with any dash sequence.
+    # MUST stay after ``extra_args`` and immediately precede the prompt.
+    args.append("--")
     args.append(prompt)
 
     log.debug(

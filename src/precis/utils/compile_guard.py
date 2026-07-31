@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from precis.errors import BadInput
+from precis.utils.tex_hardening import hardened_latex_env
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -102,6 +103,10 @@ def check_workspace_compiles(
         proc = subprocess.run(
             cmd,
             cwd=ws_root,
+            # Disable engine shell-escape: the workspace is agent-authored, so
+            # ``\write18`` in its tex is an out-of-band RCE channel outside the
+            # agent's tool boundary. Zero-regression — see tex_hardening.
+            env=hardened_latex_env(),
             capture_output=True,
             text=True,
             timeout=timeout_s,

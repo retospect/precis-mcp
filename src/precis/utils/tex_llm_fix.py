@@ -85,13 +85,17 @@ def attempt_llm_fix(
             [
                 claude_bin,
                 "-p",
-                prompt,
                 "--model",
                 sonnet_model,
                 "--max-turns",
                 "1",
                 "--permission-mode",
                 "default",
+                # ``--`` end-of-options, prompt last and positional: TeX source
+                # spliced into the prompt can begin with ``-`` and must not be
+                # parsed as a CLI flag. Same hardening as claude_agent / claude_p.
+                "--",
+                prompt,
             ],
             capture_output=True,
             text=True,

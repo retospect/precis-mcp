@@ -552,7 +552,10 @@ Peer to `utils/claude_p.py` (one-shot JSON judge). Carries the
 agentic flag set (`--mcp-config` / `--strict-mcp-config`,
 `--append-system-prompt`, `--max-turns`, `--permission-mode`,
 optional `--bare`, `--disallowed-tools`) + cost cap + wall-clock
-timeout + structured `log_event` to `ref_events`. The reviewers,
+timeout + structured `log_event` to `ref_events`. The (untrusted —
+asa passes raw Discord text) prompt is the sole trailing positional,
+emitted after a `--` end-of-options sentinel so a dash-leading message
+can't be parsed as a CLI flag (same guard in `claude_p` / `tex_llm_fix`). The reviewers,
 `dream_agent`, and the web "ask a follow-up" path all share this
 surface. Stub-binary tests via `PRECIS_CLAUDE_BIN`. A non-zero exit
 that is a **resumable exhaustion** — the `--max-turns` ceiling or the

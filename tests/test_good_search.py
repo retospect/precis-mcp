@@ -714,7 +714,10 @@ _E2E_BLOCKS_B = [
 _E2E_STUB = """\
 #!/usr/bin/env python3
 import json, re, sys
-prompt = sys.argv[2] if len(sys.argv) > 2 else ""
+# The prompt is the sole trailing positional (emitted after a ``--``
+# end-of-options sentinel by the claude argv builders); read it from the
+# end rather than a fixed index.
+prompt = sys.argv[-1] if len(sys.argv) > 1 else ""
 handles = re.findall(r"handle=(\\S+)", prompt)
 verdicts = [
     {"candidate_handle": h, "keep": True, "relevance": 0.9, "why": "on point"}

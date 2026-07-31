@@ -364,6 +364,44 @@ def test_text_output_omits_verbose() -> None:
     assert _argv_for("text").count("--verbose") == 0
 
 
+def test_prompt_is_last_positional_after_sentinel() -> None:
+    """The prompt must be the final argv token, immediately preceded by a
+    ``--`` end-of-options sentinel. asa_bot passes raw Discord messages through
+    as the prompt; without ``--`` any message beginning with ``-`` is parsed by
+    claude's Commander.js CLI as an option (Tom Pepper's ``-- MARK --`` turn
+    exited the binary 1 with "unknown option '-- MARK --'")."""
+    argv = _argv_for("text")
+    assert argv[-1] == "hi"
+    assert argv[-2] == "--"
+    # Exactly one sentinel — the prompt is the only thing after it.
+    assert argv.count("--") == 1
+
+
+def test_leading_dash_prompt_survives_after_sentinel() -> None:
+    """A prompt beginning with a dash lands after ``--`` as a positional, not
+    parsed as a flag — the exact argument-injection case."""
+    from precis.utils.claude_agent import _resolve_agent_args
+
+    for hostile in ("-- MARK --", "--dangerously-skip-permissions", "-rf /"):
+        _, argv, *_ = _resolve_agent_args(
+            prompt=hostile,
+            model="claude-opus-4-8",
+            system_prompt=None,
+            mcp_config=None,
+            max_turns=5,
+            timeout_s=10.0,
+            max_usd=1.0,
+            permission_mode="bypassPermissions",
+            output_format="text",
+            bare=False,
+            disallowed_tools=(),
+            envelope=None,
+            extra_args=(),
+        )
+        assert argv[-1] == hostile
+        assert argv[-2] == "--"
+
+
 def test_bare_flag_emitted_when_requested(stub_bin: Path) -> None:
     stub_bin.write_text(
         textwrap.dedent(

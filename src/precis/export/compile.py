@@ -38,6 +38,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from precis.utils.tex_hardening import hardened_latex_env
+
 log = logging.getLogger(__name__)
 
 
@@ -116,6 +118,10 @@ def compile_pdf(
         proc = subprocess.run(
             cmd,
             cwd=project_dir,
+            # Disable engine shell-escape on this agent-authored project — same
+            # out-of-band ``\write18`` RCE channel as compile_guard. See
+            # tex_hardening; zero-regression for the draft pipeline.
+            env=hardened_latex_env(),
             capture_output=True,
             text=True,
             timeout=timeout_s,

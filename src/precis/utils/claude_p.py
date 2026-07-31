@@ -141,7 +141,6 @@ def call_claude_p(
     args = [
         binary,
         "-p",
-        prompt,
         "--model",
         model,
         "--max-budget-usd",
@@ -152,6 +151,13 @@ def call_claude_p(
         "--permission-mode",
         "bypassPermissions",
         *extra_args,
+        # ``--`` end-of-options sentinel, prompt last and positional: a prompt
+        # that begins with ``-`` (tex/paper text, a template edge) must never
+        # be parsed by claude's Commander.js CLI as a flag. Same hardening as
+        # claude_agent._resolve_agent_args (the agentic lane). Keep the prompt
+        # the final token, right after ``--``.
+        "--",
+        prompt,
     ]
 
     # Bootstrap the OAuth token into the subprocess env. call_claude_p is
