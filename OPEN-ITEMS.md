@@ -29,33 +29,40 @@ items are removed (history is `git log`).
   coverage engine. · Test: a backfill dry-run over dc1547610 re-derives its 4
   existing hubs, 0 new mints.
 
-- **Run the taproot chase forward-bridge PILOT (flip the flag)** · Status: open ·
-  Severity: feature · Owner: chase-worker env + `src/precis/workers/chase.py::_taproot_bridge`
+- **Taproot chase forward-bridge PILOT — ⚡ LIVE (enabled 2026-07-31)** · Status:
+  monitoring · Severity: feature · Owner: chase-worker env + `src/precis/workers/chase.py::_taproot_bridge`
   (chase.py:1157). The **automatic** hub-population engine (complement to the manual
-  `precis taproot mint` on-ramp above) is BUILT + tested (W1 bridge, W2 corroborators)
-  but **dark**. Graph state (verified live 2026-07-31 on `precis_prod`): **236
-  `TAPROOT:claim` hubs** (classifier-tagged, all carry a `pub_id`) but **~2 evidence
-  edges corpus-wide** — everything downstream (living citations + pins in draft export,
-  both shipped this session; `view='evidence'`; the `/claim` reader) now *works* but
-  resolves to little until edges exist.
-  **To pilot:** set BOTH `PRECIS_TAPROOT_CHASE_ENABLED=1` AND `PRECIS_CHASE_LLM=1` on
-  the chase worker (agent profile — melchior; via the deploy-role daemon env + redeploy,
-  or `export`+bounce for a quick run). An embedder is auto-built per worker boot
-  (`cli/worker.py`; `None` degrades the bridge to a no-op, never errors). Then as
-  `STATUS:tracing` findings establish *via the LLM verifier*, `_taproot_bridge` runs
-  `canon.block → dedup_judge → place → apply_placement`, writing a hub + evidence edge
-  in the SAME tx as the `STATUS:established` flip — **savepoint-isolated** (a taproot
-  failure rolls back only the taproot write, never the chase outcome). `canon.block`
-  ANN-matches an establishing claim against the existing 236 hubs → attaches evidence to
-  a match (populating the empty hubs) or mints a new hub. This is NOT a corpus backfill
-  (Phase 5) — it's bounded by the finding-establishment rate; cost = LLM dedup-judge
-  calls per established finding. **Watch it work:**
-  `scripts/prod-psql "SELECT relation, count(*) FROM links WHERE relation IN ('establishes','corroborates','contradicts') GROUP BY relation"`
-  (grows from ~2). **Disable** = unset the env + bounce the daemon (default-OFF, so
-  reverting is trivial). Precondition met: hub-status wart fixed (`STATUS:canonical`),
-  export wiring done. · Test: host-native e2e already specified (plan verification
-  section) — both flags on, one terminal chase pass over a seeded finding → a hub is
-  minted/attached + an evidence edge carrying `meta.source_handle`.
+  `precis taproot mint` on-ramp above), W1 bridge + W2 corroborators, is now **ON**.
+  **⚡ ENABLED STATE:** both `PRECIS_TAPROOT_CHASE_ENABLED=1` and `PRECIS_CHASE_LLM=1`
+  were added directly to the `EnvironmentVariables` dict of melchior's
+  `/Library/LaunchDaemons/com.precis.worker-agent.plist` (via `PlistBuddy`, **not** the
+  deploy-role template) and the daemon bounced — so a `scripts/deploy` / `/go` redeploy
+  regenerates the plist from the role and **auto-reverts the pilot** (fail-safe toward
+  OFF). Worker rebooted clean 2026-07-31 11:03 (pid 76156 at enable), embedder present
+  (reuses the profile's `EmbedHandler`), no `"embedder unavailable"` / `"no LLM hook"`
+  warnings.
+  **⚠ Cost note:** `PRECIS_CHASE_LLM=1` turns on the LLM verifier for **all** chase
+  passes on this worker, not just taproot — capped by the daemon's existing
+  `PRECIS_DAILY_COST_CEILING=50.0` / `PRECIS_MAX_TODO_USD=5.0`.
+  **Watch it (clean attribution — the graph is ALSO being filled by the sibling manual
+  on-ramp, so the raw edge count is noisy; `set_by='chase'` is the pilot's unique
+  fingerprint, baseline 0):**
+  `scripts/prod-psql "SELECT relation, count(*) FROM links WHERE relation IN ('corroborates','contradicts','establishes') AND set_by='chase' GROUP BY relation"`
+  — any row > 0 means the bridge fired. (Sibling on-ramp writes `set_by='agent'`; ~980
+  such edges already exist.) Bridge fires only when a finding establishes *via the LLM
+  verifier* during a chase pass, so growth is bounded by the establishment rate — expect
+  minutes-to-hours to first edge, not instant. `canon.block` ANN-matches each
+  establishing claim against the existing hubs → attaches to a match or mints a new hub;
+  write rides the `STATUS:established` flip tx, **savepoint-isolated** (taproot failure
+  never breaks the chase).
+  **DISABLE** (either works): (a) run `scripts/deploy` / `/go` — regenerates the plist,
+  both flags gone; or (b) on melchior:
+  `sudo /usr/libexec/PlistBuddy -c "Delete :EnvironmentVariables:PRECIS_TAPROOT_CHASE_ENABLED" /Library/LaunchDaemons/com.precis.worker-agent.plist`
+  (+ same for `PRECIS_CHASE_LLM`), then bounce:
+  `sudo launchctl bootout system/com.precis.worker-agent && sudo launchctl bootstrap system /Library/LaunchDaemons/com.precis.worker-agent.plist`.
+  · Test: host-native e2e already specified (plan verification section) — both flags on,
+  one terminal chase pass over a seeded finding → a hub minted/attached + an evidence
+  edge carrying `meta.source_handle`.
 - **Evidence edge records one grounding pointer when a paper grounds a claim
   via >1 passage** · Status: open · Severity: polish · Owner:
   `src/precis/taproot/authoring.py::seed_claim_hub` +
