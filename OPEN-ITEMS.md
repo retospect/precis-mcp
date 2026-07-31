@@ -9,6 +9,42 @@ items are removed (history is `git log`).
 
 ---
 
+## melchior `precis watch` crash-loop — NFS EPERM on the inbox (infra, not code)
+- Status: **open** · Severity: **critical** (half the cluster's Marker-ingest
+  capacity offline since ~Jul 26) · Owner: **infra / NAS export** on melchior —
+  NOT a code fix · Test: melchior `com.precis.watch` reaches a stable running
+  state and `/var/log/precis-watch.log` shows a clean backfill with zero
+  `PermissionError`.
+- **Symptom:** melchior's `com.precis.watch` LaunchDaemon (runs as `deploy`,
+  uid 806) has crash-looped ~16k times since Jul 26 (launchd 30 s throttle).
+  Traceback is `PermissionError: [Errno 1] Operation not permitted:
+  '/opt/nas/botshome/papers/inbox'` from **watchdog**'s
+  `DirectorySnapshot.walk` → `os.listdir` on the **inbox root itself** — i.e.
+  `deploy(806)` cannot list the inbox on melchior's NFS mount even though it
+  *owns* it (EPERM, not EACCES → NFS-server-level rejection / idmap, not mode
+  bits). spark's watcher is unaffected (different NFS mapping), so ingest is
+  degraded, not dark. **Fetch is healthy** (active fetchers, ~6.8k stubs
+  pending is a normal backlog); this is watcher-only.
+- **Already done (2026-07-31, ship 3a67397d + a manual op):**
+  - Code: watcher `backfill()` now prunes managed dirs + tolerates unreadable
+    subtrees (`_walk_unmanaged_files`) — correct hardening, but does **not**
+    fix this crash (it's in watchdog's observer, which runs *before* backfill,
+    and on the inbox *root*, which nothing can prune).
+  - Ops: the misowned empty `.staging` (`root:997`) was removed + recreated
+    `deploy:806` — fixed the fetcher's markup-staging path, but the crash then
+    surfaced on the inbox root, proving the fault is broader than `.staging`.
+- **Next action (needs a sysadmin decision):** on melchior, check why
+  `deploy(806)` gets EPERM on the inbox — likely NFSv4 idmapping (deploy uid
+  unmapped/anon-squashed on `finnmaccool.local:/Volume1/botshome`) or an
+  NFSv4 ACL on the export. Fix the mapping/ACL so 806 can traverse+list the
+  inbox, then `launchctl kickstart -k system/com.precis.watch`. Compare
+  spark's working mount/idmap as the reference.
+- **Optional code hardening (separate, lower priority):** wrap the watchdog
+  `observer.schedule/start` + `DirectorySnapshot` walk so a permission error
+  on a *subdir* degrades to log-and-skip instead of killing the daemon — but
+  it cannot help when the inbox *root* is unreadable, so it does not substitute
+  for the infra fix.
+
 ## Residuals (2026-07-31 — draft table-editing ship b9bc1d4c)
 
 - **Fix the `table=` dict backslash double-encoding (gr178512)** · Status:
