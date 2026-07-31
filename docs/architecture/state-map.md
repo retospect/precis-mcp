@@ -1878,7 +1878,11 @@ The master kinds table lives in the `precis-overview` skill.
   `view='review'` ledger is unchanged.
 - **SSRF guard** — `src/precis/utils/safe_fetch.py` (used by `handlers/web.py`
   + `workers/fetch_oa.py`); DNS-resolves + revalidates every redirect against the
-  private/loopback/link-local/cloud-metadata blocklist.
+  private/loopback/link-local/cloud-metadata blocklist. **Resolve-once /
+  dial-the-validated-IP** (`resolve_pinned_ip` + `_pinned_request`, gr179502):
+  each hop rewrites the outbound request to the checked IP literal (`Host` +
+  `sni_hostname` preserved), so httpcore does no second connect-time lookup —
+  closing the DNS-rebinding TOCTOU. Direct tests in `tests/test_safe_fetch.py`.
 - **Ingest hygiene** — pysbd sentence splitter in the chunker fallback chain;
   dehyphenation in `marker._clean_text`; HNSW index on `chunk_embeddings.vector`.
 - **`asa-slack`** — Slack bridge sibling to `asa_bot` (`src/asa_slack/`), Socket

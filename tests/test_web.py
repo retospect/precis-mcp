@@ -32,7 +32,13 @@ class _StubResp:
 
 
 class _StubClient:
-    """Drop-in for `httpx.Client(...)` context manager."""
+    """Drop-in for `httpx.Client(...)` context manager.
+
+    `safe_get` drives the client via `build_request` + `send` (so it can
+    IP-pin the request); we mirror that surface. `build_request` returns a
+    real `httpx.Request` (only `httpx.Client` is stubbed), so the SSRF
+    guard's resolve-and-pin runs for real against the (public) test host.
+    """
 
     last_url: str | None = None
     response: _StubResp | None = None
@@ -47,8 +53,13 @@ class _StubClient:
     def __exit__(self, *_e: Any) -> None:
         pass
 
-    def get(self, url: str) -> _StubResp:
-        type(self).last_url = url
+    def build_request(self, method: str, url: str, **kw: Any) -> Any:
+        import httpx
+
+        return httpx.Request(method, url, **kw)
+
+    def send(self, request: Any, **_kw: Any) -> _StubResp:
+        type(self).last_url = str(request.url)
         if type(self).raise_on_get is not None:
             raise type(self).raise_on_get  # type: ignore[misc]
         resp = type(self).response
