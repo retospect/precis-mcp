@@ -750,7 +750,10 @@ def put(
     # draft data/table chunk (chunk_kind='table', ADR 0035): canonical data
     # in table={header,rows}; the markdown text is derived. caption= is the
     # legend; regen= records how the data was produced (provenance, inert).
-    table: dict[str, Any] | None = None,
+    # table= also accepts a JSON string (same backslash-safe channel as
+    # caption=) — the nested-dict form is subject to client-side backslash
+    # doubling on some MCP clients (gr178512).
+    table: str | dict[str, Any] | None = None,
     caption: str | None = None,
     regen: dict[str, Any] | None = None,
     # draft figure (chunk_kind='figure'): image=<base64> for an uploaded image
@@ -965,7 +968,10 @@ def edit(
     # text= sets one field — both keep backslash-safe LaTeX cell content
     # on the string text= channel. Plain text= (no find=/cell=) is still
     # rejected — a table's markdown is derived, never hand-edited.
-    table: dict[str, Any] | None = None,
+    # table= also accepts a JSON string (same backslash-safe channel as
+    # caption=) — the nested-dict form is subject to client-side backslash
+    # doubling on some MCP clients (gr178512).
+    table: str | dict[str, Any] | None = None,
     caption: str | None = None,
     regen: dict[str, Any] | None = None,
     cell: str | dict[str, Any] | None = None,

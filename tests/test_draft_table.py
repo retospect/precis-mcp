@@ -58,6 +58,32 @@ def test_normalize_rejects_ragged_and_nonscalar() -> None:
     assert norm == {"header": ["1", "gap"], "rows": [["Si", 1.12]]}
 
 
+def test_normalize_table_string_channel_backslash_survives_single() -> None:
+    """table= accepted as a top-level JSON string (item 2b, gr178512) — the
+    same reliable string channel caption= already has. A single logical
+    backslash in the JSON payload (doubled to ``\\\\`` per JSON escaping)
+    decodes to exactly one backslash in the stored cell — the round-trip
+    the nested-dict MCP wire path corrupts client-side."""
+    norm = normalize_table('{"header": ["x"], "rows": [["$\\\\sim$3 aJ"]]}')
+    assert norm["rows"][0][0] == "$\\sim$3 aJ"
+    assert norm["rows"][0][0].count("\\") == 1  # single backslash, not doubled
+
+
+def test_normalize_table_rejects_malformed_json_string() -> None:
+    with pytest.raises(BadInput, match="not valid JSON"):
+        normalize_table("{not json")
+
+
+def test_normalize_table_dict_form_never_doubles_backslash() -> None:
+    # A real Python dict (not the JSON-string channel) with a single
+    # backslash cell comes back UNCHANGED — proves the server path never
+    # touches backslashes; the doubling gr178512 reports is purely the MCP
+    # client transport serializing a nested dict arg, not this function.
+    norm = normalize_table({"header": ["x"], "rows": [["$\\sim$3 aJ"]]})
+    assert norm["rows"][0][0] == "$\\sim$3 aJ"
+    assert norm["rows"][0][0].count("\\") == 1
+
+
 def test_markdown_is_single_block_and_escapes() -> None:
     md = table_to_markdown(
         {"header": ["a|b", "n"], "rows": [["x\ny", 2], [None, True]]},
@@ -420,5 +446,29 @@ def test_edit_table_backslash_roundtrip_latex_export(
     ref = hub.store.get_ref(kind="draft", id="d")
     body = latex.render_body(hub.store, ref).body
     assert r"$\sim$3 zJ" in body
+    assert r"$\\sim$" not in body
+    assert "textbackslash" not in body
+
+
+def test_edit_table_string_channel_roundtrip_latex_export(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """table= accepted as a JSON string (item 2b, gr178512), verified
+    end-to-end: edit via the string channel stores a single backslash and
+    LaTeX export emits it unescaped — mirrors the cell=/text= round-trip
+    above, now proving the table= string path too."""
+    tc = _seed_table(draft, hub)
+    draft.edit(
+        id=tc.dc,
+        table='{"header": ["gap"], "rows": [["$\\\\sim$3 aJ"]]}',
+    )
+    meta = hub.store.draft_chunk_meta(tc.handle)
+    cell_val = meta["table"]["rows"][0][0]
+    assert cell_val == "$\\sim$3 aJ"
+    assert cell_val.count("\\") == 1  # single backslash, not doubled
+
+    ref = hub.store.get_ref(kind="draft", id="d")
+    body = latex.render_body(hub.store, ref).body
+    assert r"$\sim$3 aJ" in body
     assert r"$\\sim$" not in body
     assert "textbackslash" not in body

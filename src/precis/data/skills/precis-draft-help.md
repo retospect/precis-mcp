@@ -460,10 +460,15 @@ put(
   passed per edit.
 
   For a cell holding raw LaTeX (`$\sim$` and friends), prefer `cell=`/`text=`
-  or find-replace over resending the whole `table=` dict: the new value
+  or find-replace over resending the whole `table=` **dict**: the new value
   arrives on the string `text=` channel, which round-trips a single
-  backslash correctly, whereas a value nested inside `table=` doesn't
-  (gr178512).
+  backslash correctly, whereas a value nested inside a `table=` dict doubles
+  its backslashes (gr178512 — a client-side arg-serialization bug). When you
+  must set a whole grid that contains backslashes, pass `table=` as a JSON
+  **string** (not a dict): `table='{"header": [...], "rows": [["$\\sim$3 aJ"]]}'`.
+  A string `table=` is `json.loads`-decoded once server-side — the same
+  reliable channel `caption=` uses — so single backslashes survive; the dict
+  form does not.
 
 ## Graph figures (computed from data)
 

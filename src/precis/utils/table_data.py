@@ -18,6 +18,7 @@ recipe (§2) and its sandbox (§3) are a later build step.
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from typing import Any
@@ -36,10 +37,22 @@ def normalize_table(obj: Any) -> dict[str, Any]:
     type (so ``1.523`` stays a number, not ``"1.523"``). Every row must be
     the same width as the header. Raises :class:`BadInput` with a
     copy-ready ``next=`` on any malformed input.
+
+    ``obj`` may also be a top-level JSON **string** (decoded once via
+    ``json.loads`` before the dict validation below) — the reliable string
+    channel `caption=` already has, given to `table=` too so an agent isn't
+    forced through the nested-dict MCP wire path where a client-side
+    backslash-doubling bug corrupts cell strings like ``$\\sim$`` (gr178512).
+    The server never touches backslashes itself either way.
     """
     nxt = (
         "table={'header': ['element', 'gap_eV'], 'rows': [['Si', 1.12], ['Ge', 0.67]]}"
     )
+    if isinstance(obj, str):
+        try:
+            obj = json.loads(obj)
+        except json.JSONDecodeError as e:
+            raise BadInput(f"table= string is not valid JSON: {e}", next=nxt) from e
     if not isinstance(obj, dict):
         raise BadInput(f"table must be an object, got {type(obj).__name__}", next=nxt)
     header_raw = obj.get("header")

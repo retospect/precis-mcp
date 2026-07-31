@@ -100,13 +100,15 @@ A **layered** fix, cheapest-and-highest-value first:
      column. The value is type-inferred back to a JSON scalar (int → float
      → bool/null → str, Excel-style on-entry inference) so a number stays a
      number for the numerics index.
-2. **Harden the `table=` dict path against backslash doubling.** Pin the
-   decode boundary with a reproduction (see Open questions), then either
-   (a) normalise so a doubled-backslash cell collapses to its
-   single-backslash intent on the way into `meta.table`, and/or
-   (b) accept a `table=` that arrived as a JSON **string** and
-   `json.loads` it server-side through one deterministic decode — so an
-   agent can pass it the same reliable way it passes `caption=`.
+2. **Harden the `table=` dict path against backslash doubling.** ✅ **Shipped
+   (2b).** The decode boundary was pinned to the **client** (a regression test
+   proves `normalize_table` never doubles a dict cell's backslashes — server
+   path is clean), so path (a) — server-side "un-doubling" — was rejected as
+   fundamentally lossy: a legitimate `\\` (a LaTeX row-break) is
+   indistinguishable from a doubled `\`. Path (b) shipped: `normalize_table`
+   now accepts a top-level JSON **string** `table=`, `json.loads`-decoded once
+   server-side, so an agent passes it the same reliable way it passes
+   `caption=`. Regression: `test_*_string_channel_*` in `tests/test_draft_table.py`.
 3. **(Deferred, separate proposal) Structured enrichment for rich
    tables.** Represent column alignment, `\multicolumn`/`\multirow` spans,
    rule placement, and footnote markers as **structured fields on
@@ -180,13 +182,15 @@ A **layered** fix, cheapest-and-highest-value first:
 
 ## Open questions / decisions log
 
-- **Pin gr178512's decode boundary.** Reproduce against a **dev-DB**
-  precis (not the session MCP, which is prod/read-only): `put` a table
-  with a single-backslash cell and inspect the stored `meta.table` vs. the
-  same string passed as `caption=`. Determines whether the double is
-  purely client-side (favours item 1 + 2b string channel) or has a
-  server-side contributor (favours item 2a normalisation). Undecided until
-  reproduced.
+- **DECIDED — gr178512's decode boundary is client-side.** Pinned by test,
+  not a live repro: `test_normalize_table_dict_form_never_doubles_backslash`
+  passes a real Python dict with a single-backslash cell straight to
+  `normalize_table` and the cell comes back unchanged — the server never
+  touches backslashes, so the doubling is purely the MCP client serializing a
+  nested-dict arg. That rules out a server-side contributor (so item 2a
+  normalisation is both unnecessary and unsafe) and confirms the 2b string
+  channel as the fix — a top-level JSON-string `table=` rides the same
+  reliable path as `caption=`. Shipped.
 - **DECIDED — coordinate addressing surface.** `cell=` string address
   (`'B2'` A1 notation) or `cell={row, col}` (1-based ints), with the new
   value on the top-level `text=` string param (keeps it backslash-safe).

@@ -47,19 +47,6 @@ items are removed (history is `git log`).
 
 ## Residuals (2026-07-31 — draft table-editing ship b9bc1d4c)
 
-- **Fix the `table=` dict backslash double-encoding (gr178512)** · Status:
-  open · Severity: feature · Owner: `src/precis/utils/table_data.py` + the
-  MCP dict-param decode boundary. b9bc1d4c shipped a backslash-*safe*
-  alternative (`cell=`/`find=` via the top-level `text=` string param), but
-  the reported root bug — a value nested in the `table=` dict double-encodes
-  its backslashes — is still live. Item 2 in
-  `docs/proposals/draft-table-editing.md`: (a) pin the decode boundary with a
-  **dev-DB** reproduction (the session MCP is prod/read-only, so the write
-  can't be tested there), then (b) normalize doubled backslashes into
-  `meta.table` and/or accept a JSON-string `table=` decoded once
-  server-side. Test: a single-backslash cell passed via `table=` round-trips
-  to `$\sim$` (not `$\\sim$`, not `\textbackslash{}`).
-
 - **Structured enrichment for rich tables** · Status: deferred · Severity:
   feature · Owner: `meta.table` schema + both exporters. Represent column
   alignment, `\multicolumn`/`\multirow` spans, rule placement, and footnote
