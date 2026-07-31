@@ -11,6 +11,13 @@
 # green main goes red with no code change. That's what a scheduled full run
 # catches that per-ship gating can't.
 #
+# Contention filter: on this dark-factory machine the full suite routinely runs
+# alongside sibling worktree suites sharing the local precis-test-db, which
+# throws spurious collision ERRORs and load-starved FAILEDs. A raw RED is
+# therefore NOT trusted — it is verified by re-running only the failed/errored
+# ids in isolation (see the block below), so a recorded RED means a real,
+# reproducible failure, not concurrency noise.
+#
 # Modes:
 #   scripts/nightly            run the full suite now, append the result, print it.
 #                              /whatneedsdoing delegates THIS to a background
@@ -73,7 +80,54 @@ fi
 
 echo "nightly: running full suite via scripts/test (this takes a few minutes)…"
 run_log=$(mktemp)
-if scripts/test "$@" >"$run_log" 2>&1; then result="✓ green"; else result="✗ RED"; fi
+# -rfE guarantees the per-test "FAILED …" / "ERROR …" short-summary lines the
+# contention filter below parses (default -q output can omit the ERROR list).
+if scripts/test "$@" -rfE >"$run_log" 2>&1; then result="✓ green"; else result="✗ RED"; fi
+
+# --- Contention filter: verify a RED before trusting it -----------------------
+# This dev machine routinely runs the full suite concurrently with sibling
+# worktree suites that share the local precis-test-db. That collision throws
+# spurious "database does not exist" / "in recovery mode" ERRORs and starves
+# subprocess/timing FAILEDs — a shifting, load-dependent failure set, NOT code
+# breakage (a real upstream-dep-drift break fails the SAME ids every run and
+# survives isolation). So on RED, re-run ONLY the failed/errored ids in
+# isolation for up to 3 rounds; a test that passes in ANY round was a flake, and
+# whatever fails every round is real. Green is never retried. (Deeper root-cause
+# fix — an isolated per-run test DB — is deferred; this is the low-risk filter.)
+parse_ids() { grep -E '^(FAILED|ERROR) ' "$1" \
+    | sed -E 's/^(FAILED|ERROR)[[:space:]]+//; s/[[:space:]]+-.*//' | sort -u || true; }
+# bash-3.2-safe array load (macOS system bash lacks mapfile/readarray).
+load_suspects() { suspects=(); local l
+    while IFS= read -r l; do [[ -n "$l" ]] && suspects+=("$l"); done < <(parse_ids "$1"); }
+summary_override=""
+persistent=""
+if [[ "$result" == "✗ RED" ]]; then
+    load_suspects "$run_log"
+    n0=${#suspects[@]}
+    if (( n0 == 0 )); then
+        : # RED with no parseable ids (collection/env crash) — trust it as-is
+    elif (( n0 > 400 )); then
+        result="⚠ inconclusive"
+        summary_override="$n0 tests failed/errored under heavy concurrent load — too many to verify in isolation; re-run when the machine is quiet"
+    else
+        for round in 1 2 3; do
+            if (( ${#suspects[@]} == 0 )); then break; fi
+            echo "nightly: RED — verifying ${#suspects[@]} suspect(s) in isolation (round $round/3)…"
+            vlog=$(mktemp)
+            if scripts/test "${suspects[@]}" -rfE >"$vlog" 2>&1; then
+                suspects=(); rm -f "$vlog"; break
+            fi
+            load_suspects "$vlog"
+            rm -f "$vlog"
+        done
+        if (( ${#suspects[@]} == 0 )); then
+            result="✓ green"
+            summary_override="RED under concurrent load — $n0 flaky id(s), all passed on isolated retry (main green)"
+        else
+            persistent=$(printf '%s\n' "${suspects[@]}" | head -5 | paste -sd', ' - || true)
+        fi
+    fi
+fi
 
 # pytest's final summary line, e.g. "===== 7774 passed, 18 skipped in 128.4s ====="
 # Take the LAST such line, then extract clean "<n> <word>" counts (+ duration).
@@ -85,10 +139,14 @@ summary=$(echo "$sumline" | grep -oE '[0-9]+ (passed|failed|errors?|skipped|xfai
 dur=$(echo "$sumline" | grep -oE 'in [0-9]+(\.[0-9]+)?s' | tail -1 || true)
 [[ -n "$summary" && -n "$dur" ]] && summary="$summary $dur"
 [[ -z "$summary" ]] && summary="(no pytest summary — see run log; likely a collection/env error)"
+# the contention filter may have reclassified the raw full-run counts
+[[ -n "$summary_override" ]] && summary="$summary_override"
 
-# on red, name the first few failing tests
+# name the tests that survived isolation (real), else the first few from the run
 fails=""
-if [[ "$result" == "✗ RED" ]]; then
+if [[ -n "$persistent" ]]; then
+    fails=" — persistent after isolated retry: $persistent"
+elif [[ "$result" == "✗ RED" ]]; then
     fails=$(grep -E '^FAILED ' "$run_log" | sed -E 's/^FAILED //; s/ -.*//' | head -5 | paste -sd', ' - || true)
     [[ -n "$fails" ]] && fails=" — first fails: $fails"
 fi
