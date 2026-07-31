@@ -1,137 +1,138 @@
 ---
 status: draft
-title: Isolate the ml/MLIP relax rung — never run MACE in-process in the shared worker
+title: Isolate in-process GPU-MLIP compute in the worker (spark wedge — autocatpath NEB)
 model: opus
 ---
 
-# Isolate the ml/MLIP relax rung — never run MACE in-process in the shared worker
+# Isolate in-process GPU-MLIP compute in the worker (spark wedge)
+
+> **Revised after prod forensics (2026-07-31).** An earlier draft of this
+> spec blamed `structure/relax.py`'s in-process `ml` relax. Investigation
+> reclassified the root cause: the active wedger is **`autocatpath_explore`**
+> (in-process MACE reaction-network NEB on spark), not the structure relax
+> rung. The structure-relax isolation is retained below as a **secondary /
+> latent** fix. See gr180096 for the full evidence trail.
 
 ## Motivation / why
 
-spark's `precis-worker` (system profile) wedges immediately after every
-restart: CPU spins to 2+ cores, no logging, and SIGTERM is ignored until
-systemd's ~90s `TimeoutStopSec` elapses and SIGKILLs it ("State
-'stop-sigterm' timed out. Killing." on every restart in journal history).
-A restart never recovers it — it re-wedges on the next claim (gripe
-180096).
+spark's `precis-worker` (system profile) wedges repeatedly: CPU spins at
+2+ cores, no logging, SIGTERM ignored until systemd's ~90 s `TimeoutStopSec`
+SIGKILLs it — for hours, recurring for days. A restart re-wedges within a
+minute (gr180096).
 
-**Root cause (confirmed by live forensics on spark, 2026-07-31):** the
-worker PID itself holds 904 MiB of GPU memory and `/dev/nvidia*` handles;
-its last log line is a **MACE** model load → CUDA init (CUDA 13.0,
-aarch64). GPU sits at 89 % SM utilisation with zero forward progress
-while the worker's main thread spins on-CPU inside the native CUDA/torch
-call. Because that C call never returns to the Python interpreter, the
-SIGTERM handler (`cli/worker.py::_install_signal_handlers`, which only
-sets a flag) never runs, `run_loop`'s `should_stop` is never re-checked,
-and the process is un-interruptible → SIGKILL.
+**Confirmed root cause (prod job history + live forensics):**
 
-The MACE compute is an **`ml`-rung structure relax running in-process**.
-`StructureHandler._run_ops` (`handlers/structure.py:1306`) runs
-`run_relax(fidelity="ml", model="mace_mp")` **in-process first**, and only
-falls back to minting the isolated `struct_relax` container job in the
-`except RelaxUnsupported` branch (`structure.py:1319`) — i.e. **only when
-the local MLIP backend is absent**. spark is the one node with the
-`[dft-ml]` extra installed, so on spark the backend *is* importable and
-MACE runs in-process in the long-lived worker. Every other node lacks the
-backend → raises `RelaxUnsupported` → dispatches a `struct_relax` job that
-runs in a **container with a `_relax_timeout_s` wall-clock cap** and, on
-`TimeoutExpired`, self-aborts via `kill_container()` + `reset_gpu()` — the
-exact GPU-driver-wedge protection added under gripe 171381
-(`workers/job_types/struct_relax.py:494-522`).
+- **`autocatpath_explore` is the active wedger.** 81 job *starts*, **zero**
+  completions/results over 2 days — every one `no_to_nh3_pd backend=mace
+  (injected structure)`, the active NO→NH₃-on-Pd catalyst quest. It runs a
+  MACE relax + reaction-network **NEB in-process** in spark's system worker
+  (`executor="ssh_node"`, the `autocatpath[mace]` backend installed in the
+  *worker venv* — **not** containerized like `struct_relax`). The quest loop
+  re-dispatches a content-addressed job; spark re-claims it every restart,
+  re-runs the in-process NEB, wedges the GPU (89 % SM, no progress, native
+  CUDA call that never returns to the interpreter → SIGTERM handler can't
+  run → SIGKILL), repeats. This is why a plain restart re-wedges instantly.
 
-**The masking defect:** gripe 171381 already solved "a GPU-driver-wedged
-relax must self-abort" — but only for the *dispatched container* path. The
-*in-process* path on the backend-bearing node was left unguarded. So the
-one node that can actually GPU-wedge (the GPU node) is the one node that
-bypasses the protection. `quest/compute.py::dispatch_relax` — despite its
-name — only truly *dispatches* on backend-less nodes; on spark it calls
-`StructureHandler.edit(op=relax, fidelity=ml)` which runs synchronously
-in-process. Restarting masks nothing (re-wedges); disabling MACE on spark
-would stop this wedge but mask the architectural gap — any future hung
-kernel re-wedges the shared worker un-interruptibly.
+- **MACE itself is not broken.** Two faithful repros on spark's GB10 (a
+  small molecule; a Pd(111) slab + N/O adsorbates + `inplane` variable-cell
+  BFGS-200) both converge in seconds; 25 lighter in-process single-structure
+  `ml` relaxes (`dispatch_relax`) have succeeded. torch 2.13.0+cu130 supports
+  the GB10; no Xid/ECC errors. The wedge is specific to the **heavy
+  reaction-network NEB workload** (many images, long runtime) under GPU
+  co-tenancy — a true hang or an unbounded runtime that never completes
+  within the job lease.
+
+- **The `struct_relax` container path can't absorb it as-is.** ml has
+  **never** succeeded via the `struct_relax` container job (2 attempts ever:
+  one docker name-conflict rc=125, one wedged mid-run). So "just route it to
+  the existing container" is blocked until that path is fixed and proven.
 
 ## In scope
 
-- Route the **`ml` / MLIP (GPU) rung through the isolated, timeout-guarded
-  `struct_relax` container path even when the local backend is importable**
-  — so a GPU wedge self-aborts (existing 171381 guard) instead of taking
-  down the shared worker. Concretely: `_run_ops` returns `_NeedsDispatch`
-  for the `ml` rung when a GPU route node exists, rather than calling
-  `run_relax` in-process.
-- Keep the cheap, torch-free **`clean` / `emt` rungs in-process** —
-  they can't GPU-wedge and are the preflight/repair lane the dispatch
-  path itself depends on.
-- Preserve the existing preflight-clean-before-dispatch and content-address
-  caching behaviour (the `except RelaxUnsupported` branch already does
-  this; the `ml`-always-dispatch path must reuse it, not duplicate it).
+A layered fix — the wedge is a rare/heavy nondeterministic hang that an
+**in-process native CUDA call cannot self-abort**, so prevention (isolation)
++ containment (reap) + backpressure (circuit-break) are all needed:
+
+1. **Isolate autocatpath's GPU compute (primary).** `autocatpath_explore`
+   must not run MACE in-process in the shared worker. Either run it in a
+   **container** (as `struct_relax` does — GPU-memory-bounded via
+   `container_limit_flags()`, `_relax_timeout_s`-guarded, `kill_container` +
+   `reset_gpu` on overrun), or run its pipeline in a **killable subprocess
+   with a wall-clock timeout**, so a wedge/overrun self-aborts and the worker
+   survives. (Touches the ssh_node dispatch boundary and/or the external
+   `autocatpath` package's entrypoint.)
+2. **Quest circuit-breaker (backpressure).** After N consecutive
+   `autocatpath_explore` failures/timeouts on the same content key, stop
+   re-dispatching and dead-end the candidate (mirror `harvest_measures`'s
+   `ruled-out:` / `dead-end` pattern) — so a poison workload can't
+   infinitely re-wedge the worker.
+3. **External worker-watchdog reaper (containment, path-agnostic).** Detect a
+   wedged `precis-worker` (CPU-spinning + no `worker_logs` progress for T +
+   holding `/dev/nvidia*`) and SIGKILL→systemd-restart it, turning a
+   multi-day silent stall into a self-healing minutes blip. Only safe when
+   paired with (2), else it loops on the same poison job. Model it on the
+   existing `precis_embedder_watchdog` role.
+4. **Secondary / latent: `structure/relax.py` ml isolation.** `_run_ops`
+   (:1306) runs the `ml` rung in-process whenever the local backend imports
+   (only spark has `[dft-ml]`), bypassing the container path — a latent
+   repeat of the same hazard even though it isn't today's active wedger.
+   Route it through the isolated path too **once that path is proven for ml**
+   (blocked on the prerequisite below).
 
 ## Explicitly NOT in scope
 
-- **Fixing the MACE-on-aarch64 / CUDA-13.0 hang itself** (why the kernel
-  wedges at 89 % SM). That is a real, separate defect — file/track it
-  independently; this proposal removes its blast radius, it does not
-  diagnose the CUDA hang.
-- **Reworking `run_loop`'s SIGTERM model** (it can never interrupt a
-  native call mid-flight; isolating GPU compute removes the main offender,
-  which is sufficient). Not touching the signal wiring.
-- Changing the `struct_relax` container contract, GPAW/DFT rungs, or the
-  run-cube cache schema.
+- **A deterministic MACE/CUDA code patch.** Ruled out — the stack works in
+  isolation; the failure is heavy-NEB + contention, not a library bug.
+- **Rewriting `run_loop`'s SIGTERM model** (it can't interrupt a native call
+  mid-flight; isolation + reap is the answer).
+- **Redesigning the catalyst reaction-network NEB numerics** — if the NEB is
+  merely too slow (not truly hung), tuning image count / convergence is a
+  separate autocatpath-package concern.
 
 ## Acceptance criteria
 
-- On a GPU node with `[dft-ml]` installed and a GPU route node advertised,
-  a quest-tick / `StructureHandler.edit` `ml`-rung relax **mints a
-  `struct_relax` job** (container) — it does **not** load MACE in the
-  worker process. Verifiable: the worker PID holds no `/dev/nvidia*`
-  handles and no GPU memory during an `ml` relax.
-- A simulated GPU-wedged `ml` relax **self-aborts** via the existing
-  container `_relax_timeout_s` path and records an `infra` failure; the
-  worker stays responsive to SIGTERM throughout (finishes its batch and
-  exits well under the systemd stop timeout).
-- The `clean` / `emt` in-process rungs are unchanged (still run locally,
-  still serve as the dispatch preflight).
-- A regression test asserts the `ml` rung returns `_NeedsDispatch` (or
-  mints a `struct_relax` job) **even when the local MLIP backend imports
-  successfully**, given a GPU route node — the condition that currently
-  fails on spark.
+- A wedged/overrunning `autocatpath_explore` on spark **self-aborts** (via
+  container timeout or subprocess wall-clock kill) and records a failure; the
+  `precis-worker` main loop stays responsive to SIGTERM throughout and keeps
+  running its other system-profile passes.
+- After N consecutive same-content `autocatpath_explore` failures, the quest
+  **stops re-dispatching** that content key (verifiable: no new job minted;
+  candidate dead-ended).
+- The worker-watchdog reaps a wedged worker within T minutes (not hours),
+  proven by an injected-hang test or a documented drill.
+- **Prerequisite for routing any ml to the container:** a `struct_relax`
+  `ml`/MACE job completes end-to-end in prod (fix the docker-name-conflict;
+  confirm the `precis-dft` image runs MACE; confirm `_relax_timeout_s` +
+  `kill_container` + `reset_gpu` fire on an injected wedge). Until then, `ml`
+  stays in-process (backed by 25 successes) and is covered only by the
+  watchdog reaper.
 
 ## Target + blast radius
 
-- `src/precis/handlers/structure.py::_run_ops` — the `ml`-rung branch
-  (the `run_relax` call at :1306 and the `RelaxUnsupported → _NeedsDispatch`
-  fallback at :1319); factor so `ml` routes to `_NeedsDispatch` up front
-  when a GPU route node exists.
-- `src/precis/quest/compute.py::dispatch_relax` — verify it still behaves
-  (it goes through `StructureHandler.edit`, so it inherits the routing).
-- Route-node detection: reuse the GPU-host resolution already in
-  `quest/compute.py:311-318` (`store.all_resource_slots()` → hosts
-  advertising `resource == "gpu"`), so the dev/CI single-node shape (no
-  GPU advertised) keeps the in-process fallback — see Open questions.
-- No migration; no worker unit change.
+- `autocatpath_explore` execution: the `ssh_node` dispatch boundary
+  (`src/precis/workers/executors/ssh_node.py`) and/or the external
+  `autocatpath` package entrypoint; the `precis-mcp[catalyst-gpu]` install.
+- Quest circuit-breaker: `src/precis/quest/compute.py`
+  (`dispatch_autocatpath` / `harvest_measures` dead-end path).
+- Worker-watchdog: a new `deploy/roles/precis_worker_watchdog` (model on
+  `precis_embedder_watchdog`).
+- Secondary: `src/precis/handlers/structure.py::_run_ops` (:1306/:1319) +
+  the `struct_relax` container ml path (`workers/job_types/struct_relax.py`).
 
 ## Open questions / decisions log
 
-- **Single-node / dev fallback.** Forcing `ml → dispatch` unconditionally
-  would strand the job on a box with no GPU route node (dev/CI, or a
-  single-node deploy). `quest/compute.py` already models this: "single-host
-  resource_slots is the dev/CI shape … falls through to the in-process EMT
-  path." Decision to confirm: route `ml` to the container path **only when
-  a GPU route node is advertised**; otherwise keep the current in-process
-  behaviour (dev convenience, no shared-worker risk because dev isn't the
-  cluster). This keeps the fix cluster-only.
-- **Does the `struct_relax` container actually run the `ml`/MACE rung, or
-  only GPAW?** The `_dispatch` runner stages `params.json` with
-  `{fidelity, model, steps}` and calls `build_run_argv` → the container's
-  `precis-dft-run`. Confirm the container image handles `fidelity="ml"`
-  (mace_mp) and not just `gpaw-relax` before making `ml` always-dispatch —
-  otherwise the fix trades a wedge for an unsupported-rung failure. (The
-  content-addressed `struct_relax` jobs spark already runs *from other
-  nodes* are the existing proof it does; verify.)
-- **Immediate mitigation while this ships** (operational, not code — for
-  the human to pick): (a) remove/hide the `[dft-ml]` extra from spark's
-  *worker* venv so `run_relax(ml)` raises `RelaxUnsupported` → dispatches
-  to the container (which has its own backend) — needs confirming the
-  worker venv and container image are separate; or (b) `service_config`
-  prio-0 the quest/autocatpath initiator on spark so it stops originating
-  in-process `ml` relaxes. Both are deploy/config decisions, not part of
-  this code change.
+- **Fix ordering / which layers to build now.** Options range from an
+  immediate operational stop-gap (service_config prio-0 the autocatpath
+  compute service on spark, or pause the `no_to_nh3_pd` quest — stops the
+  bleeding, no code) → the watchdog reaper + circuit-breaker (self-healing,
+  path-agnostic, aligns with the health-watchdog work) → full autocatpath
+  containerization (proper isolation, largest, partly external-package).
+  Needs a human decision — it touches the active catalyst research quest.
+- **Is the autocatpath NEB truly hung or merely too slow?** Determines
+  whether the fix is pure isolation+timeout (self-abort a legit-but-slow run)
+  or also requires diagnosing a real CUDA-NEB hang on Blackwell. Capture a
+  py-spy dump of a live wedged autocatpath job to settle it.
+- **Containerize vs subprocess-isolate autocatpath.** Container reuses the
+  proven `struct_relax` guard machinery but needs an image carrying
+  `autocatpath[mace]` + weights; a killable subprocess is lighter but needs a
+  clean autocatpath CLI entrypoint and its own timeout+GPU-reset wrapper.
