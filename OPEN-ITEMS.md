@@ -123,16 +123,6 @@ were **deferred** at user request ("ship only") — run them in a later session:
   `/Library/LaunchDaemons/com.precis.worker.plist` + bounce
   `system/com.precis.worker`).
 
-- **Taproot completeness inflow #1 — claim-hub evidence backfill ("chase every claim once")** ·
-  Status: open · Severity: feature (slow-burn) · Owner: new pass, likely `src/precis/workers/`.
-  The forward bridge only attaches evidence when a *new* tracing finding ANN-matches a hub;
-  the 236 evidence-empty hubs (and any under-supported hub) are never actively chased,
-  because hubs are excluded from the outbound queue. Need a backfill that walks the claim
-  hubs (prioritize evidence-empty), and for each runs the chase's `locate + verify` against
-  candidate papers to attach `corroborates`/`contradicts` edges — WITHOUT minting duplicate
-  findings. Slow burn is fine. · Test: run over N empty hubs → each gains ≥1 verified
-  evidence edge or a recorded "no support found" terminal.
-
 - **Taproot completeness inflow #2 — ground each incoming paper against the claim set** ·
   Status: open · Severity: feature (slow-burn) · Owner: ingest/`inbound_chase`. The user's
   "any new paper should be checked support/deny against claims" intent. Adjacent engine
