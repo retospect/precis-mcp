@@ -28,6 +28,34 @@ items are removed (history is `git log`).
   hub-cite — defaulting is downstream of coverage, and the backfill is the
   coverage engine. · Test: a backfill dry-run over dc1547610 re-derives its 4
   existing hubs, 0 new mints.
+
+- **Run the taproot chase forward-bridge PILOT (flip the flag)** · Status: open ·
+  Severity: feature · Owner: chase-worker env + `src/precis/workers/chase.py::_taproot_bridge`
+  (chase.py:1157). The **automatic** hub-population engine (complement to the manual
+  `precis taproot mint` on-ramp above) is BUILT + tested (W1 bridge, W2 corroborators)
+  but **dark**. Graph state (verified live 2026-07-31 on `precis_prod`): **236
+  `TAPROOT:claim` hubs** (classifier-tagged, all carry a `pub_id`) but **~2 evidence
+  edges corpus-wide** — everything downstream (living citations + pins in draft export,
+  both shipped this session; `view='evidence'`; the `/claim` reader) now *works* but
+  resolves to little until edges exist.
+  **To pilot:** set BOTH `PRECIS_TAPROOT_CHASE_ENABLED=1` AND `PRECIS_CHASE_LLM=1` on
+  the chase worker (agent profile — melchior; via the deploy-role daemon env + redeploy,
+  or `export`+bounce for a quick run). An embedder is auto-built per worker boot
+  (`cli/worker.py`; `None` degrades the bridge to a no-op, never errors). Then as
+  `STATUS:tracing` findings establish *via the LLM verifier*, `_taproot_bridge` runs
+  `canon.block → dedup_judge → place → apply_placement`, writing a hub + evidence edge
+  in the SAME tx as the `STATUS:established` flip — **savepoint-isolated** (a taproot
+  failure rolls back only the taproot write, never the chase outcome). `canon.block`
+  ANN-matches an establishing claim against the existing 236 hubs → attaches evidence to
+  a match (populating the empty hubs) or mints a new hub. This is NOT a corpus backfill
+  (Phase 5) — it's bounded by the finding-establishment rate; cost = LLM dedup-judge
+  calls per established finding. **Watch it work:**
+  `scripts/prod-psql "SELECT relation, count(*) FROM links WHERE relation IN ('establishes','corroborates','contradicts') GROUP BY relation"`
+  (grows from ~2). **Disable** = unset the env + bounce the daemon (default-OFF, so
+  reverting is trivial). Precondition met: hub-status wart fixed (`STATUS:canonical`),
+  export wiring done. · Test: host-native e2e already specified (plan verification
+  section) — both flags on, one terminal chase pass over a seeded finding → a hub is
+  minted/attached + an evidence edge carrying `meta.source_handle`.
 - **Evidence edge records one grounding pointer when a paper grounds a claim
   via >1 passage** · Status: open · Severity: polish · Owner:
   `src/precis/taproot/authoring.py::seed_claim_hub` +
