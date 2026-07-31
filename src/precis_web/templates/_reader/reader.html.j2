@@ -153,17 +153,22 @@
                class="mt-2 text-[10px] text-slate-400">verbatim body, reading order — click a row to jump; hover to expand</p>
             <ul class="mt-1 space-y-1.5">
               <template x-for="(r, i) in rawChunks" :key="i">
+                {# A div, not a button, so the verbatim body is selectable
+                   (button content can't be copied). Click still jumps the
+                   PDF; gotoRaw bails when a text selection is active so a
+                   copy-drag ending on the row doesn't also jump. #}
                 <li>
-                  <button type="button" @click="gotoRaw(r, i)"
-                          class="nav-result w-full rounded border border-slate-200 p-2 text-left hover:border-amber-300"
-                          :class="{'active': activeRawIdx === i}"
-                          :title="'chunk ord ' + r.ord">
+                  <div role="button" tabindex="0" @click="gotoRaw(r, i, $event)"
+                       @keydown.enter.prevent="gotoRaw(r, i)" @keydown.space.prevent="gotoRaw(r, i)"
+                       class="nav-result w-full cursor-pointer select-text rounded border border-slate-200 p-2 text-left hover:border-amber-300"
+                       :class="{'active': activeRawIdx === i}"
+                       :title="'chunk ord ' + r.ord">
                     <div class="flex items-center justify-between text-[10px] text-slate-400">
                       <span class="font-mono">#<span x-text="r.ord"></span><template x-if="r.page"> · p<span x-text="r.page"></span></template></span>
                       <span class="nav-kw" x-text="r.chunk_kind"></span>
                     </div>
                     <p class="nav-clamp mt-0.5 text-xs leading-snug text-slate-700 whitespace-pre-wrap" x-text="r.text"></p>
-                  </button>
+                  </div>
                 </li>
               </template>
             </ul>

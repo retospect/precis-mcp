@@ -34,6 +34,15 @@
       <span x-show="!editing">✎ Edit metadata</span>
       <span x-show="editing" x-cloak>Cancel</span>
     </button>
+    {% if not is_triage %}
+    <form method="post" action="/papers/{{ paper.id }}/retriage" class="inline">
+      <button type="submit"
+              class="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-amber-800 hover:bg-amber-100"
+              title="re-add needs-triage — send this paper back to the review queue">
+        ⚑ Mark for review
+      </button>
+    </form>
+    {% endif %}
     <form method="post" action="/papers/{{ paper.id }}/delete" class="inline"
           onsubmit="return confirm('Delete paper #{{ paper.id }}? This soft-deletes it (removes it from listings).');">
       <input type="hidden" name="return_to" value="{{ '/papers/triage' if is_triage else '/papers' }}" />
@@ -43,6 +52,26 @@
       </button>
     </form>
   </div>
+
+  {# Replace a corrupted PDF with a good copy — a straight file swap that
+     skips OCR/ingest (chunks + metadata are kept). Needs a cite_key to name
+     the file on disk. #}
+  {% if paper.slug %}
+  <form method="post" action="/papers/{{ paper.id }}/replace-pdf"
+        enctype="multipart/form-data" class="mt-2 border-t border-slate-100 pt-2"
+        x-data="{ picked: false }">
+    <p class="text-slate-500">Replace PDF <span class="text-slate-400">— upload a good copy of a corrupted file. Swaps the stored PDF only; skips OCR, keeps chunks &amp; metadata.</span></p>
+    <div class="mt-1 flex items-center gap-2">
+      <input type="file" name="file" accept="application/pdf" required
+             @change="picked = $event.target.files.length > 0"
+             class="min-w-0 flex-1 text-slate-600 file:mr-2 file:rounded file:border-0 file:bg-slate-100 file:px-2 file:py-1 file:text-slate-700" />
+      <button type="submit" :disabled="!picked"
+              class="shrink-0 rounded bg-sky-600 px-3 py-1.5 text-white hover:bg-sky-700 disabled:opacity-40">
+        Upload
+      </button>
+    </div>
+  </form>
+  {% endif %}
 
   <form x-show="editing" x-cloak method="post" action="/papers/{{ paper.id }}/edit"
         class="mt-2 space-y-2" x-data="{ slug: '{{ slug_default }}' }">

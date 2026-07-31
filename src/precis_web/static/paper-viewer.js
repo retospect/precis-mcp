@@ -167,7 +167,12 @@ function paperDoc(paperId, citedOrd, hasPdf, initialTab) {
       } catch (e) { this.rawChunks = []; }
       this.rawLoaded = true;
     },
-    gotoRaw(r, i) {
+    gotoRaw(r, i, ev) {
+      // The row is selectable (so the verbatim body can be copied); a click
+      // that ends a text selection is the user copying, not navigating — so
+      // don't also jump the PDF in that case.
+      const sel = window.getSelection ? window.getSelection().toString() : '';
+      if (ev && sel) return;
       this.activeRawIdx = i;
       this.findInPdf(this._phrase(r.text || ''), r.page);
     },

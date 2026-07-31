@@ -16,11 +16,12 @@ triage-lookup / tag / delete affordances, none of which moved.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 from typing import Any
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -753,6 +754,72 @@ async def pdf(request: Request, ref_id: int) -> FileResponse:
     )
 
 
+@router.post("/{ref_id}/replace-pdf", response_model=None)
+async def replace_pdf(
+    request: Request,
+    ref_id: int,
+    file: UploadFile = File(...),
+) -> Response:
+    """Overwrite a paper's on-disk PDF with an operator-uploaded copy —
+    **without** re-ingesting or re-OCRing.
+
+    Some stored PDFs are corrupted (the bytes won't render) even though the
+    text chunks + metadata extracted at ingest are fine. This is the repair:
+    a straight file swap so the viewer (:func:`pdf`) streams good bytes,
+    leaving chunks/embeddings/metadata untouched. Safe because the viewer
+    and the ``corpus_reconcile`` worker both resolve a PDF by *path /
+    existence*, never by re-hashing the file against the stored
+    ``pdf_sha256`` — so a swapped file is served immediately and still
+    counts as "held".
+
+    Writes to the file's currently-resolved location when it has one (so a
+    PDF filed off-convention stays put), else to the canonical
+    ``corpus_pdf_dest`` under the primary corpus root. Requires a cite_key
+    to name the file; rejects a non-PDF upload (``%PDF`` magic). The stored
+    ``pdf_sha256`` is intentionally left as-is (the swap is a bypass), but
+    the authoritative ``storage_path`` pointer is refreshed so the resolver
+    prefers the path we just wrote."""
+    store = get_store(request)
+    refs = store.fetch_refs_by_ids([ref_id], include_deleted=False)
+    ref = refs.get(ref_id)
+    if ref is None or ref.kind not in _DOC_FAMILY:
+        raise NotFound(f"document id={ref_id} not found")
+    cite_key = ref.slug or ""
+    if not cite_key:
+        raise BadInput(
+            f"paper id={ref_id} has no cite_key to name a PDF file — "
+            "mint a short handle (Edit metadata) before replacing the PDF."
+        )
+
+    data = await file.read()
+    if not data:
+        raise BadInput("no file uploaded — choose a PDF to replace with.")
+    if not data.startswith(b"%PDF"):
+        raise BadInput(
+            "uploaded file is not a PDF (missing %PDF header) — "
+            "this replaces the stored file verbatim, so it must be a PDF."
+        )
+
+    cfg = get_web_config(request)
+    dest = _resolve_pdf_for_ref(store, cfg.corpus_dirs, ref)
+    if dest is None:
+        dest = corpus_pdf_dest(cite_key, cfg.corpus_dirs[0])
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    # Atomic swap: write a sibling temp then os.replace, so a viewer never
+    # sees a half-written file (and a failed write leaves the old bytes).
+    tmp = dest.with_name(dest.name + ".upload.tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, dest)
+
+    # Keep pdf_sha256 as-is (bypass), but point the authoritative resolver
+    # at the path we just wrote so it never re-guesses a stale shard.
+    sha = getattr(ref, "pdf_sha256", None)
+    if sha:
+        store.set_pdf_storage_path(sha, str(dest))
+
+    return RedirectResponse(url=f"/papers/{ref_id}", status_code=303)
+
+
 # ---- Edit + delete ----------------------------------------------------
 #
 # ``edit`` flows through ``runtime.dispatch(edit)`` so the handler's
@@ -1189,6 +1256,30 @@ async def untriage(
         {"kind": "paper", "id": ref_id, "remove": [_TRIAGE_TAG]},
         redirect=_safe_papers_redirect(return_to),
         error_title="Untriage error",
+    )
+
+
+@router.post("/{ref_id}/retriage", response_model=None)
+async def retriage(
+    request: Request,
+    ref_id: int,
+    return_to: str = Form(""),
+) -> Response:
+    """Re-flag an already-accepted paper for review — the inverse of
+    :func:`untriage`. Re-adds the ``needs-triage`` tag so the paper rejoins
+    the Drive triage queue even after it left it (a metadata slip spotted
+    later, a bad OCR body, a corrupted PDF the operator is about to
+    replace). Idempotent: adding an already-present tag is a no-op.
+
+    Mirrors ``untriage``'s named-preset-over-``tag``-verb shape so vocabulary
+    validation and error surfacing stay single-sourced. ``return_to``
+    defaults to the paper's own Meta tab (where the button lives)."""
+    return await redirect_or_error(
+        request,
+        "tag",
+        {"kind": "paper", "id": ref_id, "add": [_TRIAGE_TAG]},
+        redirect=_safe_papers_redirect(return_to or f"/papers/{ref_id}?tab=Meta"),
+        error_title="Mark-for-review error",
     )
 
 

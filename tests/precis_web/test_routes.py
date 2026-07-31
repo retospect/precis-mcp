@@ -1381,6 +1381,49 @@ def test_paper_untriage_surfaces_dispatch_error(client, runtime) -> None:
     assert "invalid tag" in resp.text
 
 
+def test_paper_retriage_adds_tag_and_redirects(client, runtime) -> None:
+    """The "Mark for review" button dispatches a tag-*add* of
+    ``needs-triage`` (the inverse of untriage) and returns to the paper's
+    own Meta tab, so an already-accepted paper can rejoin the queue."""
+    resp = client.post("/papers/10/retriage", follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/papers/10?tab=Meta"
+    verb, args = runtime.calls[-1]
+    assert verb == "tag"
+    assert args == {"kind": "paper", "id": 10, "add": ["needs-triage"]}
+
+
+def test_paper_replace_pdf_swaps_file_bypassing_ocr(client, runtime, tmp_path) -> None:
+    """Uploading a replacement PDF overwrites the on-disk corpus file (so
+    the viewer serves good bytes) and refreshes the storage_path pointer —
+    without re-ingesting. Paper 10 (slug ``smith2024``) has no file yet, so
+    the write lands at the canonical shard ``<root>/s/smith2024.pdf``."""
+    good = b"%PDF-1.7\nreplacement body\n"
+    resp = client.post(
+        "/papers/10/replace-pdf",
+        files={"file": ("fixed.pdf", good, "application/pdf")},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/papers/10"
+    dest = tmp_path / "s" / "smith2024.pdf"
+    assert dest.read_bytes() == good
+    # pointer refreshed for the paper's sha ("abc") to the path we wrote.
+    assert ("abc", str(dest)) in runtime.store.storage_path_writes
+
+
+def test_paper_replace_pdf_rejects_non_pdf(client, runtime, tmp_path) -> None:
+    """A non-PDF upload is rejected (this writes the file verbatim, so it
+    must actually be a PDF) — no file is written."""
+    resp = client.post(
+        "/papers/10/replace-pdf",
+        files={"file": ("nope.txt", b"just some text", "application/pdf")},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 400
+    assert not (tmp_path / "s" / "smith2024.pdf").exists()
+
+
 def test_paper_edit_duplicate_identifier_renders_resolver(
     client, runtime, tmp_path
 ) -> None:
