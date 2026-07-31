@@ -762,7 +762,13 @@ class DraftHandler(Handler):
 
         written = 0
         for _slug, c, new_text, _n in changes:
-            res = self.store.edit_text(c.handle, new_text)
+            # base_sha = the sha of the text this chunk was scoped against
+            # (``old``, folded into ``changes`` above) — a concurrent edit
+            # between scoping and this write raises BadInput instead of
+            # silently clobbering it (gr176088).
+            res = self.store.edit_text(
+                c.handle, new_text, base_sha=content_sha(c.text or "")
+            )
             if res is not None:
                 self._sync_draft_links(res.ref_id)
                 self._attribute_touch([res.chunk_id])

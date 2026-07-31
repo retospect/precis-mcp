@@ -153,6 +153,37 @@ def test_sub_no_match(draft: DraftHandler, seeded: dict[str, str]) -> None:
     assert "no substitutable matches" in out.body
 
 
+def test_sub_apply_raises_on_concurrent_edit(
+    draft: DraftHandler,
+    seeded: dict[str, str],
+    hub: Hub,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr176088: `_substitute` reads chunks via `_scope_chunks`, computes the
+    per-chunk rewrite, then writes each back via `edit_text` — a concurrent
+    edit landing between that read and the write must raise, not silently
+    clobber the concurrent writer's text. Simulate the race by mutating p1
+    (force edit_text, no base_sha — a second agent's write) right after
+    `_substitute`'s own read returns, before it reaches the write loop."""
+    real_scope_chunks = draft.__class__._scope_chunks
+
+    def _racing_scope_chunks(
+        self: DraftHandler, raw_scope: str | int | None, *, allow_all: bool
+    ):
+        pairs, where = real_scope_chunks(self, raw_scope, allow_all=allow_all)
+        # a concurrent writer changes p1's content right after our read
+        # (edit_text wants the legacy base-58 handle, not the dc<id> address)
+        p1_handle = hub.store.get_draft_chunk(seeded["p1"]).handle
+        hub.store.edit_text(p1_handle, "raced in first")
+        return pairs, where
+
+    monkeypatch.setattr(draft.__class__, "_scope_chunks", _racing_scope_chunks)
+    with pytest.raises(BadInput, match="changed since you read"):
+        draft.edit(id=seeded["slug"], sub={"find": "—", "replace": ", "}, apply=True)
+    # the concurrent writer's text survives untouched — no clobber
+    assert hub.store.get_draft_chunk(seeded["p1"]).text == "raced in first"
+
+
 def test_sub_skips_table_chunk(draft: DraftHandler, seeded: dict[str, str]) -> None:
     # a table whose derived markdown contains the word 'bold' must be skipped
     draft.put(

@@ -245,6 +245,26 @@ def test_edit_text_in_place(store: Store) -> None:
     assert _events(store, p.chunk_id) == [("created", None), ("edited", "old")]
 
 
+def test_edit_text_stale_base_sha_raises(store: Store) -> None:
+    """gr176088: the caller reads a chunk (capturing its content_sha), a
+    concurrent writer then edits the chunk (simulated here by a force
+    edit_text with no base_sha), and the caller's now-stale base_sha must
+    raise BadInput rather than silently clobbering the concurrent write."""
+    from precis.store._draft_ops import content_sha
+
+    proj = _project(store)
+    ref, title = store.create_draft(name="nt", title="T", project_ref_id=proj)
+    p = store.add_chunks(
+        ref_id=ref.id, chunk_kind="paragraph", text="v1", at={"after": title.handle}
+    )[0]
+    stale = content_sha(p.text)  # what our caller "saw" on read
+    store.edit_text(p.handle, "v2")  # a concurrent writer lands in between
+    with pytest.raises(BadInput, match="changed since you read"):
+        store.edit_text(p.handle, "v3", base_sha=stale)
+    # the concurrent writer's text survives untouched — no clobber
+    assert store.get_draft_chunk(p.handle).text == "v2"
+
+
 def test_move_reorder_and_reparent(store: Store) -> None:
     proj = _project(store)
     ref, title = store.create_draft(name="nt", title="T", project_ref_id=proj)

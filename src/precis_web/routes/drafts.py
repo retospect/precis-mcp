@@ -2569,7 +2569,18 @@ async def split_block(
         )
         else "paragraph"
     )
-    store.edit_text(handle, before)
+    # base_sha = the sha of the pre-split text this handler read above — a
+    # concurrent edit of this chunk between that read and this write raises
+    # BadInput instead of silently clobbering it (gr176088). Mirror the
+    # edit_text_inline/edit_table_inline conflict shape so the client's XHR
+    # handler gets a consistent, machine-readable 409 — any other BadInput
+    # (a genuinely bad request) still surfaces via the global handler.
+    try:
+        store.edit_text(handle, before, base_sha=content_sha(chunk.text or ""))
+    except BadInput as exc:
+        if "changed since you read" in str(exc):
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
+        raise
     new = store.add_chunks(
         ref_id=ref.id,
         chunk_kind=tail_kind,
@@ -2614,6 +2625,14 @@ async def merge_prev_block(
     if text != "" and prev.chunk_kind not in _MERGE_KINDS:
         return JSONResponse({"ok": True, "noop": True})
     caret = len(prev.text or "")
+    # NB: no base_sha guard here yet (unlike split_block / _substitute). This
+    # path does a retire_chunk + an edit_text that must be atomic — retire
+    # first (its own noop-on-children guard is the "is this mergeable" check),
+    # then append. Adding an optimistic base_sha to the edit alone can't be
+    # made loss-free without wrapping both ops in one transaction: retire-first
+    # orphans the retire on a conflict; edit-first defeats the childless guard.
+    # Deferred to gr176088 Part 2 (structural-op locking / transactional draft
+    # mutations), where retire+edit can be guarded as a unit.
     try:
         store.retire_chunk(handle)  # childless prose; refuses (→ noop) if it has kids
     except BadInput:
