@@ -958,10 +958,17 @@ def edit(
     not_abbrev: list[str] | None = None,
     # draft data/table chunk (chunk_kind='table', ADR 0035): replace the
     # canonical data (table={header,rows}) / legend (caption=) / provenance
-    # (regen=); the markdown text re-derives. text= is rejected on a table.
+    # (regen=); the markdown text re-derives. Field-level edits (docs/
+    # proposals/draft-table-editing.md item 1) instead of resending the
+    # whole grid: find=/text= (or sub=) find-replace across cells, or
+    # cell='B2' (A1, row 1 = header) / cell={'row':,'col':} (1-based) +
+    # text= sets one field — both keep backslash-safe LaTeX cell content
+    # on the string text= channel. Plain text= (no find=/cell=) is still
+    # rejected — a table's markdown is derived, never hand-edited.
     table: dict[str, Any] | None = None,
     caption: str | None = None,
     regen: dict[str, Any] | None = None,
+    cell: str | dict[str, Any] | None = None,
     # draft review ledger (paper-writing pipeline rung 3, see
     # precis-draft-help): review='human'|'cites'|'flow'|… records that
     # checker's approval of this chunk at its current content_sha;
@@ -1027,6 +1034,7 @@ def edit(
         "table": table,
         "caption": caption,
         "regen": regen,
+        "cell": cell,
         "review": review,
         "verdict": verdict,
         "scaffold": scaffold,

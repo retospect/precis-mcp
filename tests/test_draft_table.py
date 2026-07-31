@@ -9,10 +9,17 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.errors import BadInput
+from precis.export import latex
 from precis.handlers.draft import DraftHandler
 from precis.utils.table_data import (
+    col_letters_to_index,
+    find_replace_cells,
+    index_to_col_letters,
+    infer_scalar,
     normalize_table,
+    parse_cell_address,
     parse_markdown_table,
+    set_cell,
     table_payload,
     table_to_markdown,
 )
@@ -200,3 +207,218 @@ def test_edit_table_on_non_table_chunk_errors(draft: DraftHandler, hub: Hub) -> 
     para = hub.store.reading_order(ref.id)[-1]  # the paragraph just added
     with pytest.raises(BadInput, match="only to a chunk_kind='table'"):
         draft.edit(id=para.dc, table={"header": ["x"], "rows": [[1]]})
+
+
+# ── field-level table editing (docs/proposals/draft-table-editing.md #1) ──
+# ── pure helpers ─────────────────────────────────────────────────────────
+
+
+def test_infer_scalar_excel_style() -> None:
+    assert infer_scalar("42") == 42 and isinstance(infer_scalar("42"), int)
+    assert infer_scalar("1.523") == 1.523 and isinstance(infer_scalar("1.523"), float)
+    assert infer_scalar("true") is True
+    assert infer_scalar("FALSE") is False
+    assert infer_scalar("Si") == "Si"
+    assert infer_scalar("") == ""  # empty string stays a string, not None
+
+
+def test_infer_scalar_non_finite_stays_string() -> None:
+    # float('nan'/'inf'/...) parses fine in Python but is not valid RFC-8259
+    # JSON (jsonb rejects it) and 'NaN' is a legit "not measured" placeholder
+    # — both must stay the original string, never a non-finite float.
+    for raw in ("NaN", "nan", "inf", "-inf", "Infinity", "-Infinity"):
+        v = infer_scalar(raw)
+        assert v == raw and isinstance(v, str), f"{raw!r} -> {v!r}"
+    # a normal finite float still infers correctly
+    assert infer_scalar("1.5") == 1.5 and isinstance(infer_scalar("1.5"), float)
+
+
+def test_col_letter_roundtrip() -> None:
+    assert col_letters_to_index("A") == 0
+    assert col_letters_to_index("Z") == 25
+    assert col_letters_to_index("AA") == 26
+    for i in (0, 1, 25, 26, 27, 51, 52, 701, 702):
+        assert col_letters_to_index(index_to_col_letters(i)) == i
+
+
+def test_parse_cell_address_a1_and_dict() -> None:
+    # row 1 = header; data rows are 2..1+n_rows
+    assert parse_cell_address("B2", n_rows=3, n_cols=3) == (2, 1)
+    assert parse_cell_address("A1", n_rows=3, n_cols=3) == (1, 0)
+    assert parse_cell_address({"row": 2, "col": 2}, n_rows=3, n_cols=3) == (2, 1)
+
+
+def test_parse_cell_address_out_of_range_and_malformed() -> None:
+    with pytest.raises(BadInput, match="out of range"):
+        parse_cell_address("D2", n_rows=2, n_cols=2)  # only 2 cols (A, B)
+    with pytest.raises(BadInput, match="out of range"):
+        parse_cell_address("A9", n_rows=2, n_cols=2)  # only 1(header)+2 rows
+    with pytest.raises(BadInput, match="not valid A1 notation"):
+        parse_cell_address("2B", n_rows=2, n_cols=2)
+    with pytest.raises(BadInput, match="must have both"):
+        parse_cell_address({"row": 1}, n_rows=2, n_cols=2)
+    with pytest.raises(BadInput, match="A1 string or"):
+        parse_cell_address(1.5, n_rows=2, n_cols=2)  # type: ignore[arg-type]
+
+
+def test_set_cell_header_and_data_cell() -> None:
+    table = {"header": ["el", "gap_eV"], "rows": [["Si", 1.12], ["Ge", 0.67]]}
+    # data cell: numeric edit stays a number
+    norm = set_cell(table, "B2", "1.523")
+    assert norm["rows"][0] == ["Si", 1.523]
+    assert isinstance(norm["rows"][0][1], float)
+    # header rename (row 1)
+    norm2 = set_cell(table, "B1", "gap (eV)")
+    assert norm2["header"] == ["el", "gap (eV)"]
+    assert norm2["rows"] == table["rows"]  # unrelated data untouched
+    # dict address form (row 3 = 2nd data row, col 2 = gap_eV)
+    norm3 = set_cell(table, {"row": 3, "col": 2}, "0.7")
+    assert norm3["rows"][1] == ["Ge", 0.7]
+
+
+def test_find_replace_cells_string_only_and_count() -> None:
+    table = {
+        "header": ["element", "note"],
+        "rows": [["Si", "band gap aJ"], ["Ge", "band gap aJ"], [1, "aJ scale"]],
+    }
+    norm, n = find_replace_cells(table, "aJ", "zJ", regex=False)
+    assert n == 3
+    assert norm["rows"][0][1] == "band gap zJ"
+    assert norm["rows"][1][1] == "band gap zJ"
+    assert norm["rows"][2][1] == "zJ scale"
+    assert norm["rows"][2][0] == 1  # non-string cell untouched, stays an int
+    assert norm["header"] == ["element", "note"]  # no match in header
+
+
+def test_find_replace_cells_regex_backreference() -> None:
+    table = {"header": ["x"], "rows": [["value: 12"]]}
+    norm, n = find_replace_cells(table, r"(\d+)", r"[\1]", regex=True)
+    assert n == 1
+    assert norm["rows"][0][0] == "value: [12]"
+
+
+# ── handler-level ─────────────────────────────────────────────────────
+
+
+def _seed_table(draft: DraftHandler, hub: Hub, *, caption: str = "Cap") -> Any:
+    proj = _proj(hub)
+    draft.put(id="d", title="T", project=proj)
+    draft.put(
+        id="d",
+        chunk_kind="table",
+        table={
+            "header": ["element", "gap_eV"],
+            "rows": [["Si", 1.12], ["Ge", 0.67]],
+        },
+        caption=caption,
+        at={"last": True},
+    )
+    return _table_chunk(hub, "d")
+
+
+def test_edit_table_find_replace_only_matching_cells_and_caption_untouched(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    tc = _seed_table(draft, hub, caption="Band gaps (Si)")
+    draft.edit(id=tc.dc, find="Si", text="silicon")
+    meta = hub.store.draft_chunk_meta(tc.handle)
+    assert meta["table"]["rows"] == [["silicon", 1.12], ["Ge", 0.67]]
+    # non-target cell (Ge, both numbers) untouched, caption untouched
+    assert meta["caption"] == "Band gaps (Si)"
+    chunk = hub.store.get_draft_chunk(tc.dc)
+    assert "**Band gaps (Si)**" in chunk.text  # markdown re-derived, caption kept
+
+
+def test_edit_table_find_no_match_refuses_and_leaves_chunk_untouched(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    tc = _seed_table(draft, hub)
+    before = hub.store.draft_chunk_meta(tc.handle)
+    with pytest.raises(BadInput, match="no cell matches"):
+        draft.edit(id=tc.dc, find="xenon", text="Xe")
+    after = hub.store.draft_chunk_meta(tc.handle)
+    assert after == before
+
+
+def test_edit_table_cell_a1_string_and_dict_address(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    tc = _seed_table(draft, hub)
+    draft.edit(id=tc.dc, cell="B2", text="1.523")
+    meta = hub.store.draft_chunk_meta(tc.handle)
+    assert meta["table"]["rows"][0] == ["Si", 1.523]
+    assert isinstance(meta["table"]["rows"][0][1], float)  # numerics-indexable
+
+    draft.edit(id=tc.dc, cell={"row": 3, "col": 2}, text="0.7")
+    meta2 = hub.store.draft_chunk_meta(tc.handle)
+    assert meta2["table"]["rows"][1] == ["Ge", 0.7]
+
+
+def test_edit_table_cell_requires_text(draft: DraftHandler, hub: Hub) -> None:
+    tc = _seed_table(draft, hub)
+    with pytest.raises(BadInput, match="needs text="):
+        draft.edit(id=tc.dc, cell="B2")
+
+
+def test_edit_table_cell_nan_stays_string_no_crash(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    # 'NaN' is a legit "not measured" placeholder — must store as the
+    # string "NaN", not float('nan') (which jsonb would reject outright).
+    tc = _seed_table(draft, hub)
+    draft.edit(id=tc.dc, cell="B2", text="NaN")
+    meta = hub.store.draft_chunk_meta(tc.handle)
+    val = meta["table"]["rows"][0][1]
+    assert val == "NaN" and isinstance(val, str)
+
+
+def test_edit_table_conflicting_selectors_rejected(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    tc = _seed_table(draft, hub)
+    before = hub.store.draft_chunk_meta(tc.handle)
+    with pytest.raises(BadInput, match="only one of table=/cell=/find=/sub="):
+        draft.edit(
+            id=tc.dc,
+            table={"header": ["x"], "rows": [[1]]},
+            cell="B2",
+            text="x",
+        )
+    after = hub.store.draft_chunk_meta(tc.handle)
+    assert after == before  # nothing applied — neither selector silently won
+
+
+def test_edit_table_cell_header_rename(draft: DraftHandler, hub: Hub) -> None:
+    tc = _seed_table(draft, hub)
+    draft.edit(id=tc.dc, cell="B1", text="gap (eV)")
+    meta = hub.store.draft_chunk_meta(tc.handle)
+    assert meta["table"]["header"] == ["element", "gap (eV)"]
+    chunk = hub.store.get_draft_chunk(tc.dc)
+    assert "| gap (eV) |" in chunk.text
+
+
+def test_edit_table_sub_regex_find_replace(draft: DraftHandler, hub: Hub) -> None:
+    tc = _seed_table(draft, hub)
+    draft.edit(id=tc.dc, sub={"find": r"^Si$", "replace": "silicon"})
+    meta = hub.store.draft_chunk_meta(tc.handle)
+    assert meta["table"]["rows"][0][0] == "silicon"
+
+
+def test_edit_table_backslash_roundtrip_latex_export(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """The item-1 backslash-safe channel: a single-backslash LaTeX cell set
+    via cell=/text= stores a single backslash in meta.table and LaTeX export
+    emits it unescaped (proves gr178512's fix for the supported edit path)."""
+    tc = _seed_table(draft, hub)
+    draft.edit(id=tc.dc, cell="B2", text=r"$\sim$3 zJ")
+    meta = hub.store.draft_chunk_meta(tc.handle)
+    cell_val = meta["table"]["rows"][0][1]
+    assert cell_val == r"$\sim$3 zJ"
+    assert cell_val.count("\\") == 1  # single backslash, not doubled
+
+    ref = hub.store.get_ref(kind="draft", id="d")
+    body = latex.render_body(hub.store, ref).body
+    assert r"$\sim$3 zJ" in body
+    assert r"$\\sim$" not in body
+    assert "textbackslash" not in body

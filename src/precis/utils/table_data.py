@@ -18,6 +18,7 @@ recipe (§2) and its sandbox (§3) are a later build step.
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any
 
@@ -69,6 +70,195 @@ def normalize_table(obj: Any) -> dict[str, Any]:
                 )
         rows.append(list(row))
     return {"header": header, "rows": rows}
+
+
+def infer_scalar(s: str) -> Scalar:
+    """Excel-style on-entry type inference for a data-cell edit's raw
+    string value: try ``int``, then ``float``, then ``bool`` (``'true'``/
+    ``'false'``, case-insensitive), else keep the string verbatim
+    (including ``''`` — an empty edit stays an empty string, never becomes
+    ``None``). Used by :func:`set_cell` so a numeric edit lands as a JSON
+    number in ``meta.table``, keeping the numerics index working.
+
+    A ``float()`` parse that comes back non-finite (``'nan'``/``'inf'``/
+    ``'-inf'``/``'infinity'``, case-insensitive — all valid Python float
+    literals) is treated as NOT a number: it's kept as the original
+    string. Two reasons: (1) it's a legitimate "not measured" cell
+    placeholder (``'NaN'``), not a numeric value; (2) ``NaN``/``Infinity``
+    are not valid RFC-8259 JSON tokens — ``json.dumps`` still emits them,
+    but Postgres ``jsonb`` rejects them outright, so a non-finite float
+    would crash the write rather than merely mis-type the cell."""
+    if s == "":
+        return s
+    try:
+        return int(s)
+    except ValueError:
+        pass
+    try:
+        f = float(s)
+    except ValueError:
+        f = None
+    if f is not None:
+        if math.isfinite(f):
+            return f
+        # non-finite (nan/inf/-inf) — fall through, keep as string below
+    low = s.strip().lower()
+    if low == "true":
+        return True
+    if low == "false":
+        return False
+    return s
+
+
+def col_letters_to_index(letters: str) -> int:
+    """A1 column letters → 0-based column index, bijective base-26
+    (``'A'``→0, ``'Z'``→25, ``'AA'``→26 — no digit ``0``, so this is not
+    plain base-26)."""
+    idx = 0
+    for ch in letters.upper():
+        if not ("A" <= ch <= "Z"):
+            raise BadInput(
+                f"{letters!r} is not a valid A1 column (letters only)",
+                next="cell='B2'  # column letters + row number",
+            )
+        idx = idx * 26 + (ord(ch) - ord("A") + 1)
+    return idx - 1
+
+
+def index_to_col_letters(index: int) -> str:
+    """0-based column index → A1 column letters (inverse of
+    :func:`col_letters_to_index`)."""
+    n = index + 1
+    letters = ""
+    while n > 0:
+        n, rem = divmod(n - 1, 26)
+        letters = chr(ord("A") + rem) + letters
+    return letters
+
+
+_A1_RE = re.compile(r"^([A-Za-z]+)(\d+)$")
+
+
+def parse_cell_address(
+    cell: str | dict[str, Any], *, n_rows: int, n_cols: int
+) -> tuple[int, int]:
+    """Resolve a caller-supplied cell address to ``(row1, col0)`` — a
+    1-based row where **row 1 is the header row** (data rows are
+    2..1+``n_rows``), and a 0-based column index.
+
+    Accepts an A1 string (``'B2'``) or ``{'row': int, 'col': int}`` with
+    1-based ints for both. Raises :class:`BadInput` (with the actual table
+    dimensions named in ``next=``) on a malformed address or one out of
+    range."""
+    nxt = "cell='B2'  # A1 notation (row 1 = header) — or cell={'row': 2, 'col': 2}"
+    if isinstance(cell, dict):
+        if "row" not in cell or "col" not in cell:
+            raise BadInput(
+                f"cell={cell!r} must have both 'row' and 'col' (1-based ints)",
+                next=nxt,
+            )
+        try:
+            row1 = int(cell["row"])
+            col1 = int(cell["col"])
+        except (TypeError, ValueError) as exc:
+            raise BadInput(
+                f"cell row/col must be ints, got {cell!r}", next=nxt
+            ) from exc
+        col0 = col1 - 1
+    elif isinstance(cell, str):
+        m = _A1_RE.match(cell.strip())
+        if not m:
+            raise BadInput(
+                f"cell={cell!r} is not valid A1 notation (column letters + "
+                "row number, e.g. 'B2')",
+                next=nxt,
+            )
+        col0 = col_letters_to_index(m.group(1))
+        row1 = int(m.group(2))
+    else:
+        raise BadInput(
+            f"cell must be an A1 string or {{'row':int,'col':int}}, got "
+            f"{type(cell).__name__}",
+            next=nxt,
+        )
+    max_row1 = 1 + n_rows
+    if row1 < 1 or row1 > max_row1:
+        raise BadInput(
+            f"cell row {row1} out of range — table has {n_rows} data row(s) "
+            f"(+1 header row), valid rows are 1..{max_row1}",
+            next=nxt,
+        )
+    if col0 < 0 or col0 >= n_cols:
+        raise BadInput(
+            f"cell column out of range — table has {n_cols} column(s) "
+            f"(A..{index_to_col_letters(n_cols - 1)})",
+            next=nxt,
+        )
+    return row1, col0
+
+
+def set_cell(
+    table: dict[str, Any], cell: str | dict[str, Any], value_str: str
+) -> dict[str, Any]:
+    """Return a NEW normalised table with one field set — the coordinate
+    edit path (docs/proposals/draft-table-editing.md item 1). Row 1 (the
+    header) coerces the value to ``str`` (a header is always a name); a
+    data-row cell is type-inferred via :func:`infer_scalar` so a numeric
+    edit stays a JSON number."""
+    header = list(table["header"])
+    rows = [list(r) for r in table["rows"]]
+    row1, col0 = parse_cell_address(cell, n_rows=len(rows), n_cols=len(header))
+    if row1 == 1:
+        header[col0] = str(value_str)
+    else:
+        rows[row1 - 2][col0] = infer_scalar(value_str)
+    return normalize_table({"header": header, "rows": rows})
+
+
+def find_replace_cells(
+    table: dict[str, Any], find: str, replace: str, *, regex: bool
+) -> tuple[dict[str, Any], int]:
+    """Find-replace over every STRING cell (header + body) of ``table`` —
+    the cell-level counterpart of the draft's whole-chunk find/``sub``
+    (docs/proposals/draft-table-editing.md item 1). Non-string cells
+    (numbers, bools, ``None``) are never touched, and a string cell that
+    survives the replace stays a string (no re-inference — an edited
+    string cell doesn't silently become a number). ``regex=False`` is a
+    literal ``str.replace``; ``regex=True`` is ``re.sub`` (backreferences
+    in ``replace`` resolve). Returns the new normalised table plus the
+    total replacement count across every cell."""
+    if not find:
+        raise BadInput(
+            "find/sub pattern must be a non-empty string",
+            next="edit(kind='draft', id='dc<chunk_id>', find='old', text='new')",
+        )
+    pattern: re.Pattern[str] | None = None
+    if regex:
+        try:
+            pattern = re.compile(find)
+        except re.error as exc:
+            raise BadInput(
+                f"invalid regex {find!r}: {exc}",
+                next="check the pattern — it is Python regex (\\w, \\d, groups, …)",
+            ) from exc
+
+    count = 0
+
+    def _apply(s: str) -> str:
+        nonlocal count
+        if pattern is not None:
+            new_s, n = pattern.subn(replace, s)
+        else:
+            n = s.count(find)
+            new_s = s.replace(find, replace)
+        count += n
+        return new_s
+
+    header = [_apply(h) if isinstance(h, str) else h for h in table["header"]]
+    rows = [
+        [_apply(c) if isinstance(c, str) else c for c in row] for row in table["rows"]
+    ]
+    return normalize_table({"header": header, "rows": rows}), count
 
 
 def _cell_md(value: Scalar) -> str:

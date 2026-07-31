@@ -92,9 +92,12 @@ edit(kind="draft", id="nanotrans", sub="s/  / /", apply=True)  # collapse double
 Substitution always replaces **every** occurrence in each chunk. Each
 rewritten chunk goes through the **normal edit path** — re-embed, keywords,
 gist, autolinks all re-derive, and the prior text is kept in chunk history
-(so a bad `s///` is recoverable). **Table and figure chunks are skipped**
-(their text is derived / a caption — edit the data, not the text); the
-report names any that matched.
+(so a bad `s///` is recoverable). When the scope is a **slug or a section**
+(a `dc<id>` heading covering many chunks), **table and figure chunks are
+skipped** (their text is derived / a caption — edit the data, not the text);
+the report names any that matched. Point `find=`/`sub=` at a table chunk's
+own `dc<id>` directly, though, and it edits that table's *cells* instead —
+see "Data / table chunks".
 
 **Scope (both find and substitute)** is the same axis as search, three
 levels:
@@ -419,17 +422,48 @@ put(
   table is findable by it.
 * **`regen=`** records provenance / how to rebuild the data (a sim, a command,
   an ingest pointer). It is **inert metadata** — recorded, never executed.
-* **Editing:** change the data, not the rendered text. `text=` is *rejected*
-  on a table chunk.
+* **Editing:** change the data, not the rendered text — plain `text=` is
+  still *rejected* on a table chunk. Four ways, whole-grid down to one field:
 
   ```python
+  # whole grid
   edit(
       kind="draft", id="dc42", table={"header": [...], "rows": [...]}
   )  # re-derives markdown
-  edit(kind="draft", id="dc42", caption="New legend")  # caption only; data kept
-  edit(kind="draft", id="dc42", regen={"source": "manual"})  # provenance only
+
+  # one cell — A1 address (row 1 = header) or {'row':,'col':} (1-based), + text=
+  edit(kind="draft", id="dc42", cell="B2", text="1.523")  # row 2, col B
+  edit(
+      kind="draft", id="dc42", cell={"row": 1, "col": 2}, text="gap_eV_2"
+  )  # rename header B
+
+  # find-replace across cells (string cells only; numbers/bools untouched)
+  edit(kind="draft", id="dc42", find="aJ", text="zJ")  # literal
+  edit(kind="draft", id="dc42", sub="s/aJ/zJ/")  # regex — commits immediately, no dry-run
+
+  # metadata only, data untouched
+  edit(kind="draft", id="dc42", caption="New legend")
+  edit(kind="draft", id="dc42", regen={"source": "manual"})
   ```
   (`dc<chunk_id>` is the chunk's address — `put` returns it.)
+
+  A `cell=` value is type-inferred Excel-style (int → finite float → bool →
+  else string), so `text='1.523'` lands as a JSON number and stays
+  numerics-indexable; a header cell (row 1) is always stored as a string,
+  and a non-finite `NaN`/`inf` stays a string. Inference is Excel-eager, so
+  a leading-zero code like `007` becomes int `7`: to keep a numeric-looking
+  value AS a string (or force any explicit type), use the full `table=`
+  payload instead. An out-of-range or malformed
+  `cell=` is refused, naming the table's actual dimensions; find-replace with
+  zero matches is refused too (chunk untouched, same guard as prose
+  find-replace), and only one of `table=`/`cell=`/`find=`/`sub=` may be
+  passed per edit.
+
+  For a cell holding raw LaTeX (`$\sim$` and friends), prefer `cell=`/`text=`
+  or find-replace over resending the whole `table=` dict: the new value
+  arrives on the string `text=` channel, which round-trips a single
+  backslash correctly, whereas a value nested inside `table=` doesn't
+  (gr178512).
 
 ## Graph figures (computed from data)
 

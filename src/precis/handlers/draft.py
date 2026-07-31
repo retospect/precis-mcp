@@ -47,7 +47,12 @@ from precis.utils import draft_regex, handle_registry
 from precis.utils.authors import to_author_dicts
 from precis.utils.edit_resolve import format_unified_diff, normalize_dry_run
 from precis.utils.embed_query import query_vec_for
-from precis.utils.table_data import normalize_table, table_to_markdown
+from precis.utils.table_data import (
+    find_replace_cells,
+    normalize_table,
+    set_cell,
+    table_to_markdown,
+)
 from precis.workers.working_set import Extent
 
 log = logging.getLogger(__name__)
@@ -701,6 +706,30 @@ class DraftHandler(Handler):
         post = line[col + n : hi] + ("…" if hi < len(line) else "")
         return f"{pre}»{mid}«{post}"
 
+    def _parse_sub_expr(self, sub: dict[str, Any] | str) -> tuple[str, str, str]:
+        """Parse a ``sub=`` param — ``{'find':…, 'replace':…, 'flags':…}`` or
+        a ``s/find/replace/flags`` string — into ``(find, replace, flags)``.
+        Pure parsing, no scope/chunk involved; shared by the whole-draft/
+        subtree substitute (:meth:`_substitute`) and the table cell-level
+        find-replace (:meth:`_edit_table`, docs/proposals/draft-table-editing.md
+        item 1)."""
+        if isinstance(sub, str):
+            return draft_regex.parse_sed(sub)
+        if isinstance(sub, dict):
+            if "find" not in sub or "replace" not in sub:
+                raise BadInput(
+                    "sub= needs both 'find' and 'replace' keys",
+                    next="sub={'find': '\\*\\*(\\w+)\\*\\*', 'replace': '\\\\1'}  # strip bold",
+                )
+            find = str(sub["find"])
+            replace = str(sub["replace"])
+            flags = str(sub.get("flags") or "")
+            return find, replace, flags
+        raise BadInput(
+            "sub= must be {'find':…,'replace':…} or a 's/find/replace/' string",
+            next="sub={'find':'—', 'replace':', '}  or  sub='s/—/, /'",
+        )
+
     def _substitute(
         self, scope: str | int | None, sub: dict[str, Any] | str, *, apply: bool
     ) -> Response:
@@ -711,22 +740,7 @@ class DraftHandler(Handler):
         (re-embed / keywords / links cascade). Replacement is a Python regex
         template, so ``\\1`` backreferences resolve. Table/figure chunks are
         skipped (derived / blob text)."""
-        if isinstance(sub, str):
-            find, replace, flags = draft_regex.parse_sed(sub)
-        elif isinstance(sub, dict):
-            if "find" not in sub or "replace" not in sub:
-                raise BadInput(
-                    "sub= needs both 'find' and 'replace' keys",
-                    next="sub={'find': '\\*\\*(\\w+)\\*\\*', 'replace': '\\\\1'}  # strip bold",
-                )
-            find = str(sub["find"])
-            replace = str(sub["replace"])
-            flags = str(sub.get("flags") or "")
-        else:
-            raise BadInput(
-                "sub= must be {'find':…,'replace':…} or a 's/find/replace/' string",
-                next="sub={'find':'—', 'replace':', '}  or  sub='s/—/, /'",
-            )
+        find, replace, flags = self._parse_sub_expr(sub)
         rx = draft_regex.compile_pattern(find, flags)
         pairs, where = self._scope_chunks(scope, allow_all=False)
 
@@ -1289,6 +1303,7 @@ class DraftHandler(Handler):
         table: dict[str, Any] | None = None,
         caption: str | None = None,
         regen: dict[str, Any] | None = None,
+        cell: str | dict[str, Any] | None = None,
         meta: dict[str, Any] | None = None,
         voice: str | None = None,
         lang: str | None = None,
@@ -1411,7 +1426,19 @@ class DraftHandler(Handler):
                     next="edit(kind='draft', id=<scope>, sub={...})  # preview; "
                     "add apply=True to commit",
                 )
-            return self._substitute(id, sub, apply=bool(apply))
+            # A ``sub=`` addressed straight at a chunk_kind='table' chunk (not
+            # a slug/subtree scope) is the regex cell-level find-replace from
+            # docs/proposals/draft-table-editing.md item 1 — fall through to
+            # the normal handle/_base resolution below so the ``is_table``
+            # branch routes it to ``_edit_table``. Otherwise (a slug, a
+            # subtree, or a non-table chunk) keep the original multi-chunk
+            # substitute, which treats 'table' as a derived kind and skips it
+            # (draft_regex.DERIVED_KINDS).
+            _sub_target = None
+            if id is not None and _is_draft_chunk_addr(str(id).strip()):
+                _sub_target = self.store.get_draft_chunk(str(id).strip())
+            if _sub_target is None or _sub_target.chunk_kind != "table":
+                return self._substitute(id, sub, apply=bool(apply))
         handle = self._require_chunk_id(id, verb="edit")
         # Normalize a ``dc<id>`` address to the legacy base-58 anchor the
         # store mutators still key on; the agent-facing emit uses ``.dc``.
@@ -1523,6 +1550,10 @@ class DraftHandler(Handler):
                 table=table,
                 caption=caption,
                 regen=regen,
+                cell=cell,
+                find=find,
+                text=text,
+                sub=sub,
                 base_sha=base_sha,
             )
         # ``find=`` substitutes *within* the chunk — never a wholesale
@@ -2036,29 +2067,120 @@ class DraftHandler(Handler):
         table: dict[str, Any] | None,
         caption: str | None,
         regen: dict[str, Any] | None,
+        cell: str | dict[str, Any] | None = None,
+        find: str | None = None,
+        text: str | None = None,
+        sub: dict[str, Any] | str | None = None,
         base_sha: str | None,
     ) -> Response:
-        """Re-derive a table chunk's markdown from new canonical data /
-        legend / provenance. ``text=`` is rejected — a table's text is
-        derived (ADR 0035 §1), never hand-edited."""
+        """Edit a chunk_kind='table' chunk — precedence (docs/proposals/
+        draft-table-editing.md item 1): (1) ``table=`` replaces the whole
+        canonical structure; (2) ``cell=`` (A1 string or ``{row,col}``, 1-based,
+        row 1 = header) + ``text=`` sets ONE field via :func:`set_cell`; (3)
+        ``find=`` (literal, paired with ``text=`` as the replacement) or
+        ``sub=`` (regex, ``{find,replace,flags}``/``s/…/…/``) find-replaces
+        across every string cell via :func:`find_replace_cells`, refusing (chunk
+        untouched) on zero matches — mirrors the prose find-replace guard;
+        (4) ``caption=``/``regen=`` alone patch metadata only; (5) otherwise a
+        table's ``text=`` is derived, never hand-edited (ADR 0035 §1) — reject.
+        Whichever path fires, the markdown is re-derived from the SAME
+        resolved data + caption and persisted through one ``edit_text`` call."""
         if chunk is None or chunk.chunk_kind != "table":
             raise BadInput(
-                "table=/regen= apply only to a chunk_kind='table' chunk",
+                "table=/cell=/find=/sub=/caption=/regen= apply only to a "
+                "chunk_kind='table' chunk",
                 next="edit(kind='draft', id='dc<chunk_id>', table={…})",
             )
-        if table is None and caption is None and regen is None:
+        # Exactly one *mutation selector* per edit — table=/cell=/find=/sub=
+        # each pick a different data-mutation path (full replace / one field
+        # / cell find-replace), and silently favoring one over the others
+        # (the old table > cell > find/sub fallthrough) is a footgun: a
+        # caller who passes two believes both applied. caption=/regen= are
+        # NOT selectors — they're metadata that may legitimately ride along
+        # with table= (set data + legend together); text= is the operand for
+        # cell=/find=, not a selector itself.
+        _selectors = [
+            name
+            for name, val in (
+                ("table", table),
+                ("cell", cell),
+                ("find", find),
+                ("sub", sub),
+            )
+            if val is not None
+        ]
+        if len(_selectors) > 1:
             raise BadInput(
-                "a table chunk's text is derived from its data — pass "
-                "table={header,rows}, caption=, or regen= (not text=)",
-                next="edit(kind='draft', id='dc<chunk_id>', table={'header': […], 'rows': […]})",
+                f"conflicting table edit selectors: {', '.join(s + '=' for s in _selectors)} "
+                "— pass only one of table=/cell=/find=/sub= per edit",
+                next=f"edit(kind='draft', id={chunk.dc!r}, {_selectors[0]}=…)  "
+                "# one selector at a time",
             )
         cur = self.store.draft_chunk_meta(handle)
-        norm = normalize_table(table) if table is not None else cur.get("table")
-        if not norm:
-            raise BadInput(
-                "this table chunk has no stored data — pass table={header, rows}",
-                next="edit(kind='draft', id='dc<chunk_id>', table={'header': […], 'rows': […]})",
+        cur_table = cur.get("table")
+        no_data_err = BadInput(
+            "this table chunk has no stored data — pass table={header, rows}",
+            next="edit(kind='draft', id='dc<chunk_id>', table={'header': […], 'rows': […]})",
+        )
+        replace_count: int | None = None
+        if table is not None:
+            norm = normalize_table(table)
+        elif cell is not None:
+            if text is None:
+                raise BadInput(
+                    "cell= addresses one field and needs text= for its new value",
+                    next=f"edit(kind='draft', id={chunk.dc!r}, cell={cell!r}, "
+                    "text='…')",
+                )
+            if not cur_table:
+                raise no_data_err
+            norm = set_cell(cur_table, cell, str(text))
+        elif find is not None or sub is not None:
+            if not cur_table:
+                raise no_data_err
+            if find is not None:
+                if not find:
+                    raise BadInput(
+                        "find= must be a non-empty string (the exact cell "
+                        "text to locate)",
+                        next=f"edit(kind='draft', id={chunk.dc!r}, "
+                        "find='old', text='new')",
+                    )
+                if text is None:
+                    raise BadInput(
+                        "find-replace requires text= (the replacement "
+                        "value; pass '' to blank the matched cell content)",
+                        next=f"edit(kind='draft', id={chunk.dc!r}, "
+                        f"find={find!r}, text='')",
+                    )
+                pattern, replacement, is_regex = find, str(text), False
+            else:
+                assert sub is not None
+                f, r, flags = self._parse_sub_expr(sub)
+                # find_replace_cells takes a bare pattern (no separate flags
+                # arg) — fold the vi-style case-fold/dot-all letters in as an
+                # inline group; 'm' (multiline) is a no-op on a single cell.
+                prefix = "".join(f"(?{c})" for c in flags if c in "is")
+                pattern, replacement, is_regex = prefix + f, r, True
+            norm, replace_count = find_replace_cells(
+                cur_table, pattern, replacement, regex=is_regex
             )
+            if replace_count == 0:
+                raise BadInput(
+                    f"no cell matches /{pattern}/ in {chunk.dc} — nothing "
+                    "replaced, the table was left unchanged.",
+                    next=f"get(kind='draft', id={chunk.dc!r})",
+                )
+        elif caption is not None or regen is not None:
+            norm = cur_table
+        else:
+            raise BadInput(
+                "a table chunk's text is derived from its data — pass "
+                "find=, cell=, table=, or caption= (not text=)",
+                next=f"edit(kind='draft', id={chunk.dc!r}, find='old', text='new')",
+            )
+        if not norm:
+            raise no_data_err
         # Caption: an explicit string (even "") replaces the legend; None
         # keeps the stored one. Derive the markdown from the SAME resolved
         # caption we persist, so clearing a caption drops the ``**…**`` lead
@@ -2080,8 +2202,10 @@ class DraftHandler(Handler):
             self._attribute_touch([c.chunk_id])
             self._sync_draft_links(c.ref_id)
         rows, cols = len(norm["rows"]), len(norm["header"])
+        extra = f" ({replace_count} replacement(s))" if replace_count else ""
         return Response(
-            body=f"edited table {(c or chunk).dc} ({rows}×{cols}); markdown re-derived"
+            body=f"edited table {(c or chunk).dc} ({rows}×{cols}){extra}; "
+            "markdown re-derived"
         )
 
     def _resolve_project(self, project: str | int) -> int:
