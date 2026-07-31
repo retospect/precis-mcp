@@ -92,6 +92,21 @@
     <key>PRECIS_CLASSIFY_ENABLED</key>
     <string>1</string>
     {% endif %}
+    {# taproot chase forward-bridge (ADR 0073 / Phase-3 W1) — default OFF
+       everywhere; enabled per-host (the gateway) because it needs the LLM
+       verifier verdict (PRECIS_CHASE_LLM turns the verifier on for ALL chase
+       passes on this host, capped by PRECIS_DAILY_COST_CEILING) plus the
+       remote embedder — both of which only resolve on the gateway. When a
+       finding establishes via the verifier, chase mints/attaches a
+       TAPROOT:claim hub + evidence edge (set_by='chase'), populating the
+       claim graph as a complement to the manual `precis taproot mint`
+       on-ramp. Watch: links WHERE set_by='chase'. #}
+    {% if precis_worker_taproot_chase | default(false) %}
+    <key>PRECIS_TAPROOT_CHASE_ENABLED</key>
+    <string>1</string>
+    <key>PRECIS_CHASE_LLM</key>
+    <string>1</string>
+    {% endif %}
     {# llm-catalog reconcile (llm-catalog slice 1) — default OFF; enabled on
        the gateway, where the loopback llama.cpp /props (local-model windows) + the
        outbound OpenRouter feed are both reachable. Single-runner (advisory xact

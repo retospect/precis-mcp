@@ -29,40 +29,69 @@ items are removed (history is `git log`).
   coverage engine. · Test: a backfill dry-run over dc1547610 re-derives its 4
   existing hubs, 0 new mints.
 
-- **Taproot chase forward-bridge PILOT — ⚡ LIVE (enabled 2026-07-31)** · Status:
-  monitoring · Severity: feature · Owner: chase-worker env + `src/precis/workers/chase.py::_taproot_bridge`
-  (chase.py:1157). The **automatic** hub-population engine (complement to the manual
-  `precis taproot mint` on-ramp above), W1 bridge + W2 corroborators, is now **ON**.
-  **⚡ ENABLED STATE:** both `PRECIS_TAPROOT_CHASE_ENABLED=1` and `PRECIS_CHASE_LLM=1`
-  were added directly to the `EnvironmentVariables` dict of melchior's
-  `/Library/LaunchDaemons/com.precis.worker-agent.plist` (via `PlistBuddy`, **not** the
-  deploy-role template) and the daemon bounced — so a `scripts/deploy` / `/go` redeploy
-  regenerates the plist from the role and **auto-reverts the pilot** (fail-safe toward
-  OFF). Worker rebooted clean 2026-07-31 11:03 (pid 76156 at enable), embedder present
-  (reuses the profile's `EmbedHandler`), no `"embedder unavailable"` / `"no LLM hook"`
-  warnings.
-  **⚠ Cost note:** `PRECIS_CHASE_LLM=1` turns on the LLM verifier for **all** chase
-  passes on this worker, not just taproot — capped by the daemon's existing
-  `PRECIS_DAILY_COST_CEILING=50.0` / `PRECIS_MAX_TODO_USD=5.0`.
-  **Watch it (clean attribution — the graph is ALSO being filled by the sibling manual
-  on-ramp, so the raw edge count is noisy; `set_by='chase'` is the pilot's unique
-  fingerprint, baseline 0):**
-  `scripts/prod-psql "SELECT relation, count(*) FROM links WHERE relation IN ('corroborates','contradicts','establishes') AND set_by='chase' GROUP BY relation"`
-  — any row > 0 means the bridge fired. (Sibling on-ramp writes `set_by='agent'`; ~980
-  such edges already exist.) Bridge fires only when a finding establishes *via the LLM
-  verifier* during a chase pass, so growth is bounded by the establishment rate — expect
-  minutes-to-hours to first edge, not instant. `canon.block` ANN-matches each
-  establishing claim against the existing hubs → attaches to a match or mints a new hub;
-  write rides the `STATUS:established` flip tx, **savepoint-isolated** (taproot failure
-  never breaks the chase).
-  **DISABLE** (either works): (a) run `scripts/deploy` / `/go` — regenerates the plist,
-  both flags gone; or (b) on melchior:
-  `sudo /usr/libexec/PlistBuddy -c "Delete :EnvironmentVariables:PRECIS_TAPROOT_CHASE_ENABLED" /Library/LaunchDaemons/com.precis.worker-agent.plist`
-  (+ same for `PRECIS_CHASE_LLM`), then bounce:
-  `sudo launchctl bootout system/com.precis.worker-agent && sudo launchctl bootstrap system /Library/LaunchDaemons/com.precis.worker-agent.plist`.
-  · Test: host-native e2e already specified (plan verification section) — both flags on,
-  one terminal chase pass over a seeded finding → a hub minted/attached + an evidence
-  edge carrying `meta.source_handle`.
+- **Taproot chase forward-bridge PILOT — ⚡ LIVE (enabled 2026-07-31, gateway/system worker)** ·
+  Status: monitoring · Severity: feature · Owner: `precis_worker` deploy role + melchior
+  host_var + `src/precis/workers/chase.py::_taproot_bridge` (chase.py:1157). The
+  **automatic** forward hub-population engine (claim→paper; complement to the manual
+  `precis taproot mint` on-ramp above), W1 bridge + W2 corroborators.
+  **CORRECT PROFILE:** the finding-chase pass is `default_profiles=_SYS` (system-only,
+  `registry.py`) — it runs on the **`com.precis.worker`** (system) daemon, NOT the agent
+  worker. (An initial enable mistakenly landed on `com.precis.worker-agent`, where the
+  flags are inert; reverted 2026-07-31.)
+  **⚡ ENABLED — durable (survives redeploy):** a gated block in
+  `deploy/roles/precis_worker/templates/precis-worker.plist.j2`
+  (`{% if precis_worker_taproot_chase %}` → `PRECIS_TAPROOT_CHASE_ENABLED=1` +
+  `PRECIS_CHASE_LLM=1`), default `false`, turned **true** on the gateway via
+  `deploy/inventory/host_vars/melchior.yml` (private overlay). Made live immediately by
+  a matching direct `PlistBuddy` add to melchior's `com.precis.worker` plist + bounce;
+  a `scripts/deploy` regenerates the identical env, so it stays on. Only melchior gets it
+  (it alone has the LLM verifier route + remote embedder).
+  **⚠ Cost note:** `PRECIS_CHASE_LLM=1` turns the LLM verifier on for **all** chase passes
+  on melchior's system worker — capped by `PRECIS_DAILY_COST_CEILING=50.0`.
+  **⚠ EMPTY-QUEUE CAVEAT (why edges may not appear):** the forward chase queue is
+  currently **0 `STATUS:tracing` findings** — all drained to `established` (276) /
+  `dead_chain` (55) / `multi_candidate` (5). The forward bridge only fires when a finding
+  establishes, so with no tracing inflow it produces nothing until new findings arrive
+  (quest loop, extraction) **or** a claim-hub backfill feeds it (see the completeness items
+  below). The 942 claim hubs are `STATUS:canonical` and **excluded** from the outbound
+  chase — so the 236 evidence-empty hubs are NOT self-filled by this pilot; that needs the
+  backfill.
+  **Watch (clean attribution; graph is also filled by the manual on-ramp `set_by='agent'`,
+  so raw counts are noisy — `set_by='chase'` is this pilot's unique fingerprint, baseline 0):**
+  `scripts/prod-psql "SELECT relation, count(*) FROM links WHERE relation IN ('corroborates','contradicts','establishes') AND set_by='chase' GROUP BY relation"`.
+  Write rides the `STATUS:established` flip tx, **savepoint-isolated**.
+  **DISABLE:** flip `precis_worker_taproot_chase: false` in `host_vars/melchior.yml` +
+  redeploy the worker role (or `PlistBuddy Delete` both keys from
+  `/Library/LaunchDaemons/com.precis.worker.plist` + bounce
+  `system/com.precis.worker`).
+
+- **Taproot completeness inflow #1 — claim-hub evidence backfill ("chase every claim once")** ·
+  Status: open · Severity: feature (slow-burn) · Owner: new pass, likely `src/precis/workers/`.
+  The forward bridge only attaches evidence when a *new* tracing finding ANN-matches a hub;
+  the 236 evidence-empty hubs (and any under-supported hub) are never actively chased,
+  because hubs are excluded from the outbound queue. Need a backfill that walks the claim
+  hubs (prioritize evidence-empty), and for each runs the chase's `locate + verify` against
+  candidate papers to attach `corroborates`/`contradicts` edges — WITHOUT minting duplicate
+  findings. Slow burn is fine. · Test: run over N empty hubs → each gains ≥1 verified
+  evidence edge or a recorded "no support found" terminal.
+
+- **Taproot completeness inflow #2 — ground each incoming paper against the claim set** ·
+  Status: open · Severity: feature (slow-burn) · Owner: ingest/`inbound_chase`. The user's
+  "any new paper should be checked support/deny against claims" intent. Adjacent engine
+  **already exists but is dark**: `workers/inbound_chase.py` (`inbound_chase` service,
+  `enable_env=PRECIS_INBOUND_CHASE_ENABLED`, system profile) does an exhaustive one-hop
+  *citation* sweep (who cites an activated paper; yes/partial/no engagement) — citation-graph
+  shaped, not claim-hub shaped, and it carries an **unshipped cost-guard caveat** (landmark
+  papers with thousands of citers have no circuit breaker; see "Budget guardrails Piece B").
+  Two sub-tasks: (a) evaluate + (cost-guard first) enable `inbound_chase`; (b) a *claim-hub*
+  variant — ANN-match a newly-ingested paper's chunks against the hub embeddings, verify,
+  attach evidence — so support/contradiction is found even absent a citation edge. · Test:
+  ingest a paper known to support an existing hub → an evidence edge appears without a
+  citation path.
+
+- **Taproot completeness inflow #3 — full corpus backfill (Phase 5)** · Status: deferred ·
+  Severity: feature (slow-burn) · The exhaustive papers × claims pass. Subsumes #1/#2 at
+  scale once their per-item mechanics are proven; keep as the batch backstop. Slow burn.
 - **Evidence edge records one grounding pointer when a paper grounds a claim
   via >1 passage** · Status: open · Severity: polish · Owner:
   `src/precis/taproot/authoring.py::seed_claim_hub` +

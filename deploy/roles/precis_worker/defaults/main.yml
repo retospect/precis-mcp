@@ -48,6 +48,12 @@ precis_worker_summarize_timeout: 120
 # (the litellm `summarizer` alias host) like llm_summarize.
 precis_worker_classify: false
 
+# taproot chase forward-bridge (ADR 0073 / Phase-3 W1). Default OFF; enable on
+# the gateway (needs the LLM verifier verdict + remote embedder). Emits
+# PRECIS_TAPROOT_CHASE_ENABLED=1 + PRECIS_CHASE_LLM=1 on the system worker so an
+# establishing chase finding mints/attaches a claim hub + evidence edge.
+precis_worker_taproot_chase: false
+
 # markup-first ingest leg (devin). Default OFF; enable on the OA-fetch
 # host (the gateway) so the flag only bites where the fetch pass runs.
 precis_worker_fetch_markup: false
