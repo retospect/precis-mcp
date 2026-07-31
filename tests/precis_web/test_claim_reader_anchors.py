@@ -1,6 +1,6 @@
-"""Taproot claim-hub cites render as ``/claim/`` anchors inline in BOTH
-draft readers — proves the ``claims=`` side-channel is actually threaded
-through the reader routes into their ``linkify_refs`` calls (not just
+"""Taproot claim-hub cites render as ``/claim/`` anchors inline in the
+smartdraft reader — proves the ``claims=`` side-channel is actually threaded
+through the reader route into its ``linkify_refs`` calls (not just
 plumbed in ``claim_render.py``/``linkify.py``, which have their own unit
 coverage). Uses the real DB-backed ``hub``/``runtime_with_store`` fixtures
 (``tests/conftest.py``) rather than the readers' usual ``FakeStore`` — the
@@ -60,16 +60,6 @@ def _draft_citing_a_hub(hub: Hub) -> str:
         at={"last": True},
     )
     return str(ref.slug)
-
-
-def test_classic_drafts_reader_renders_claim_anchor(
-    reader_client: TestClient, hub: Hub
-) -> None:
-    slug = _draft_citing_a_hub(hub)
-    r = reader_client.get(f"/drafts/{slug}")
-    assert r.status_code == 200
-    assert "/claim/" in r.text
-    assert _CLAIM.sentence in r.text  # the claims_evidence sidebar entry
 
 
 def test_smartdraft_reader_renders_claim_anchor(

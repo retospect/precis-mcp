@@ -10,6 +10,9 @@
    — same drafts/_figures.html.j2 the classic /drafts reader uses, so a
    figure looks and behaves identically in both readers. #}
 {% import "drafts/_figures.html.j2" as draft_figures %}
+{# Shared full-document reading-block macro (also used by the /blocks lazy
+   hydrate endpoint) so an on-scroll-hydrated block matches the initial render. #}
+{% import "smartdraft/_block.html.j2" as sd_block %}
 {# One URL builder for the whole panel — every control overrides one param.
    Params are to_* so they don't shadow the render-context globals they
    default to (a macro can't see template-level {% set %} vars). #}
@@ -17,6 +20,42 @@
 /smartdraft/{{ ident }}?focus={{ to_focus if to_focus is not none else focus_dc }}&relevance={{ '1' if (to_rel if to_rel is not none else relevance) else '0' }}&q={{ (to_q if to_q is not none else q) | urlencode }}&sig={{ to_sig if to_sig is not none else active_sig }}&sview={{ to_view if to_view is not none else sview }}&debug={{ '1' if (to_debug if to_debug is not none else debug) else '0' }}
 {%- endmacro %}
 {% macro qs(dc) %}{{ slink(to_focus=dc) }}{% endmacro %}
+
+{# Human sign-off ✓ (migration-0086 ledger) — ported from the classic
+   reader's per-row control (since retired). ``review`` is the focus block's
+   ledger status: None = not reviewable (no ✓); a dict otherwise. ``.on`` =
+   reviewed at the current text; ``.dirty`` = reviewed but the text changed
+   since (re-check). One-way (click only ever marks reviewed). smartReview()
+   POSTs the shared /human-review JSON endpoint then refreshes the panel. #}
+{% macro sd_review_check(dc, review) %}
+{%- if review is not none -%}
+{% set hr = review.human %}
+<button type="button" onclick="smartReview('{{ dc }}')" data-dc="{{ dc }}"
+        title="{% if hr and not hr.dirty %}reviewed by you{% elif hr %}reviewed, but changed since — mark reviewed again{% else %}mark reviewed{% endif %}"
+        class="sd-review leading-none text-slate-300 hover:text-emerald-600{% if hr and not hr.dirty %} on{% elif hr %} dirty{% endif %}">✓</button>
+{%- endif -%}
+{% endmacro %}
+
+{# Run a standard reviewer on this heading's subtree — ported from the
+   classic reader's per-row control (since retired). Files an anchored
+   review-todo → plan_tick (surfaces in
+   the "Needs · in-flight" rail). Posts to the shared /drafts/{ident}/review
+   endpoint (303-redirects to the reader); the submit interceptor below catches
+   it and refreshes in place instead of following the redirect. #}
+{% macro sd_review_menu(ident, handle) %}
+<div class="relative" x-data="{ rev: false }" @click.outside="rev = false">
+  <button @click="rev = !rev" class="text-slate-400 hover:text-sky-600" title="run a reviewer on this section">review ▾</button>
+  <div x-show="rev" x-cloak class="absolute right-0 z-30 mt-1 w-40 rounded border border-slate-200 bg-white text-left text-xs shadow-lg">
+    {% for rv, label in [('structural', 'Structural'), ('deep_review', 'Deep review'), ('all', 'All (sequential)')] %}
+    <form method="post" action="/drafts/{{ ident }}/review">
+      <input type="hidden" name="handle" value="{{ handle }}" />
+      <input type="hidden" name="reviewer" value="{{ rv }}" />
+      <button class="block w-full px-2 py-1 text-left hover:bg-slate-100">{{ label }}</button>
+    </form>
+    {% endfor %}
+  </div>
+</div>
+{% endmacro %}
 
 {# one kept-body / collapsed-run row under a heading section (the fisheye detail
    layer). q/focus_dc/debug are render-context globals a macro can see; hit_dcs
@@ -66,10 +105,15 @@
   .sd-collapse:hover { background: #f8fafc; color: #64748b; }
   .sd-badge { flex-shrink: 0; font-size: 10px; }
   .sd-dc { font-family: ui-monospace, monospace; font-size: 9px; color: #0ea5e9; }
+  /* Human sign-off ✓ (migration-0086 ledger) — parity with the classic
+     reader's .dr-review (since retired): emerald when reviewed, amber when
+     the review is stale (text changed since). */
+  .sd-review.on { color: #059669; }      /* emerald-600 — reviewed */
+  .sd-review.dirty { color: #d97706; }   /* amber-600 — stale review */
 </style>
 
 {# KaTeX — same client-side $…$ / $$…$$ math render the classic /drafts reader
-   uses (detail.html.j2), so smartdraft renders LaTeX ($sp^3$, reactions) too.
+   used (since retired), so smartdraft renders LaTeX ($sp^3$, reactions) too.
    mhchem registers \ce{}/\pu{}; auto-render's onload fires the initial pass
    over #sd-content, and afterSwap() re-runs it after every no-reload nav. #}
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" />
@@ -89,7 +133,6 @@
   <h1 class="truncate text-base font-semibold">{{ ref.title }}</h1>
   <div class="flex items-center gap-3 text-[11px] text-slate-500">
     <a href="{{ slink(to_debug=(not debug)) }}" class="{% if debug %}text-sky-700{% else %}hover:text-slate-800{% endif %}" title="show chunk ids (debug)">ids</a>
-    <a href="/drafts/{{ ident }}" class="hover:text-slate-800">open in classic ↗</a>
   </div>
 </div>
 
@@ -198,9 +241,12 @@
         <div id="mid-focus" class="rounded border border-amber-200 bg-amber-50 p-2">
           <div class="mb-1 flex items-center gap-2 text-[10px] text-amber-700">
             <span>{% if debug %}<span class="font-mono text-sky-500">{{ n.dc }}</span> {% endif %}{% if n.locked %}🔒{% endif %}</span>
-            <button onclick="smartPin('{{ n.dc }}')"
-                    class="ml-auto {% if focus_pinned %}font-semibold text-amber-800{% else %}text-slate-400 hover:text-amber-700{% endif %}"
-                    title="pin/unpin this para (key: p)">📌 {{ 'unpin' if focus_pinned else 'pin' }}</button>
+            <div class="ml-auto flex items-center gap-2">
+              {{ sd_review_check(n.dc, focus_review) }}
+              <button onclick="smartPin('{{ n.dc }}')"
+                      class="{% if focus_pinned %}font-semibold text-amber-800{% else %}text-slate-400 hover:text-amber-700{% endif %}"
+                      title="pin/unpin this para (key: p)">📌 {{ 'unpin' if focus_pinned else 'pin' }}</button>
+            </div>
           </div>
           {% call draft_editors.draft_table_editor(ident, n.base58, n.sha, _seed) %}
           {% if n.table %}
@@ -238,9 +284,12 @@
         <div id="mid-focus" class="rounded border border-amber-200 bg-amber-50 p-2">
           <div class="mb-1 flex items-center gap-2 text-[10px] text-amber-700">
             <span>{% if debug %}<span class="font-mono text-sky-500">{{ n.dc }}</span> {% endif %}{% if n.locked %}🔒{% endif %}</span>
-            <button onclick="smartPin('{{ n.dc }}')"
-                    class="ml-auto {% if focus_pinned %}font-semibold text-amber-800{% else %}text-slate-400 hover:text-amber-700{% endif %}"
-                    title="pin/unpin this para (key: p)">📌 {{ 'unpin' if focus_pinned else 'pin' }}</button>
+            <div class="ml-auto flex items-center gap-2">
+              {{ sd_review_check(n.dc, focus_review) }}
+              <button onclick="smartPin('{{ n.dc }}')"
+                      class="{% if focus_pinned %}font-semibold text-amber-800{% else %}text-slate-400 hover:text-amber-700{% endif %}"
+                      title="pin/unpin this para (key: p)">📌 {{ 'unpin' if focus_pinned else 'pin' }}</button>
+            </div>
           </div>
           <figure class="rounded-md border border-slate-200 bg-white p-2">
             {{ draft_figures.figure_media(ident, n.base58, n.figure_render, n.text) }}
@@ -254,6 +303,8 @@
           <div class="mb-1 flex items-center gap-2 text-[10px] text-amber-700">
             <span>{% if debug %}<span class="font-mono text-sky-500">{{ n.dc }}</span> {% endif %}{% if n.locked %}🔒{% endif %}</span>
             <div class="ml-auto flex items-center gap-2">
+              {% if n.is_heading %}{{ sd_review_menu(ident, n.base58) }}{% endif %}
+              {{ sd_review_check(n.dc, focus_review) }}
               <button onclick="smartPin('{{ n.dc }}')"
                       class="{% if focus_pinned %}font-semibold text-amber-800{% else %}text-slate-400 hover:text-amber-700{% endif %}"
                       title="pin/unpin this para (key: p)">📌 {{ 'unpin' if focus_pinned else 'pin' }}</button>
@@ -281,11 +332,20 @@
           {% endcall %}
         </div>
         {% elif m.mode == 'doc' %}
-        {# full-doc mode: every chunk verbatim, plain (focus is the amber box above) #}
-        <a href="{{ qs(n.dc) }}" class="block whitespace-pre-wrap rounded px-2 py-1 text-slate-700 hover:bg-slate-50 {{ hd }}">{% if debug %}<span class="font-mono text-[9px] text-sky-500">{{ n.dc }} </span>{% endif %}{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims) }}</a>
+        {# full-doc mode: a chunk in the server-rendered window around the focus,
+           verbatim (see smartdraft/_block.html.j2 for why it's a <div>). #}
+        {{ sd_block.sd_doc_block(n, m.display, debug, claims) }}
+        {% elif m.mode == 'skel' %}
+        {# full-doc lazy spacer: a distant chunk, sized by its height estimate
+           and hydrated to a real doc block on scroll (IntersectionObserver →
+           /smartdraft/{ident}/blocks). Keeps the initial full-doc page O(window)
+           instead of O(N) on a 10k-chunk draft. #}
+        <div data-dc="{{ n.dc }}" data-ph class="block rounded px-2 py-1" style="min-height: {{ m.est }}px"></div>
         {% elif m.mode in ('tail', 'head') %}
-        {# ±1 neighbour: verbatim, truncated toward the focus (tail leads in, head flows out) #}
-        <a href="{{ qs(n.dc) }}" class="block whitespace-pre-wrap rounded px-2 py-1 text-slate-500 hover:bg-slate-50 {{ hd }}">{% if debug %}<span class="font-mono text-[9px] text-sky-500">{{ n.dc }} </span>{% endif %}{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims) }}</a>
+        {# ±1 neighbour: verbatim, truncated toward the focus (tail leads in,
+           head flows out). <div> not <a> for the same nested-anchor reason as
+           the doc-mode block above. #}
+        <div data-dc="{{ n.dc }}" class="block cursor-pointer whitespace-pre-wrap rounded px-2 py-1 text-slate-500 hover:bg-slate-50 {{ hd }}">{% if debug %}<span class="font-mono text-[9px] text-sky-500">{{ n.dc }} </span>{% endif %}{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims) }}</div>
         {% else %}
         {# ±2 neighbour: one-line summary #}
         <a href="{{ qs(n.dc) }}" class="block truncate rounded px-2 py-0.5 text-slate-400 hover:bg-slate-50 {{ hd }}" title="{{ n.text[:400] }}">{% if debug %}<span class="font-mono text-[9px] text-sky-500">{{ n.dc }} </span>{% endif %}· {{ m.display }}</a>
@@ -449,7 +509,7 @@
     </div>
 
     {# ── Tools pane (right-rail bottom) — export / doc-metadata / lifecycle
-         controls ported from the classic /drafts reader (detail.html.j2).
+         controls ported from the classic /drafts reader (since retired).
          Tabbed (Export · Meta · Actions) so the resting footprint stays a
          tab-bar + one short row — the rail is a `sticky` element and a pane
          tall enough to exceed the viewport would strand its own bottom. Every
@@ -625,7 +685,7 @@
 </div>
 
 <script>
-// KaTeX render (parity with the classic /drafts reader, detail.html.j2).
+// KaTeX render (parity with the classic /drafts reader, since retired).
 // __renderMath renders one element; __sdRenderMath does the whole panel and is
 // exposed on window so auto-render's onload can fire the initial pass. Both are
 // no-ops until KaTeX's deferred scripts have loaded (renderMathInElement).
@@ -688,6 +748,77 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
     // first DOMContentLoaded KaTeX's deferred scripts may not have loaded yet;
     // auto-render's onload (window.__sdRenderMath) covers that initial pass.
     __sdRenderMath();
+    installDocHydrator();   // full-doc (📄) lazy block hydration, if present
+  }
+  // ── Full-document lazy hydration ─────────────────────────────────────
+  // In 📄 (relevance-off) mode only a window around the focus renders real
+  // blocks; the rest are `data-ph` spacers (sized by a server estimate). An
+  // IntersectionObserver hydrates a batch of near-viewport placeholders at a
+  // time by fetching /blocks and swapping the real blocks in place, so a
+  // 10k-chunk draft loads a screenful, not all N. Grow-only (no de-hydration)
+  // — simple, and the win (cheap initial page) is already banked. Re-installed
+  // by afterSwap() so it survives no-reload nav swaps; no-op when there are no
+  // placeholders (fisheye mode).
+  function installDocHydrator() {
+    const cont = document.getElementById('sd-content');
+    if (!cont || !cont.querySelector('[data-ph]')) {
+      if (window.__sdDocObs) { window.__sdDocObs.disconnect(); window.__sdDocObs = null; }
+      return;
+    }
+    if (window.__sdDocObs) window.__sdDocObs.disconnect();
+    const pending = new Set();
+    const io = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) hydrateSoon();
+    }, { rootMargin: '1200px 0px' });
+    window.__sdDocObs = io;
+    cont.querySelectorAll('[data-ph]').forEach((el) => { pending.add(el); io.observe(el); });
+    let scheduled = false;
+    async function hydrateSoon() {
+      if (scheduled) return;
+      scheduled = true;
+      await new Promise((r) => setTimeout(r, 30));
+      scheduled = false;
+      const vh = window.innerHeight;
+      const batch = [];
+      for (const el of pending) {
+        const r = el.getBoundingClientRect();
+        if (r.top < vh + 1500 && r.bottom > -1500) batch.push(el);
+        if (batch.length >= 25) break;
+      }
+      if (!batch.length) return;
+      // Claim this batch OUT of `pending` (and stop observing it) BEFORE the
+      // await, so a scroll that fires the observer again mid-fetch can't
+      // re-pick the same placeholders and duplicate the request; on failure
+      // they're re-added below so a later scroll retries.
+      batch.forEach((el) => { pending.delete(el); io.unobserve(el); });
+      const dcs = batch.map((el) => el.getAttribute('data-dc'));
+      try {
+        const url = `/smartdraft/${IDENT}/blocks?dcs=` + encodeURIComponent(dcs.join(','));
+        const html = await (await fetch(url, { cache: 'no-store' })).text();
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        const inserted = [];
+        for (const el of batch) {
+          const dc = el.getAttribute('data-dc');
+          const fresh = doc.querySelector(`[data-dc="${CSS.escape(dc)}"]`);
+          if (fresh) { const node = fresh.cloneNode(true); el.replaceWith(node); inserted.push(node); }
+          else { el.removeAttribute('data-ph'); }   // unknown handle → drop the spacer
+        }
+        inserted.forEach((node) => {
+          if (window.Alpine && window.Alpine.initTree) window.Alpine.initTree(node);
+          if (window.htmx) window.htmx.process(node);
+          __renderMath(node);
+        });
+      } catch (e) {
+        // fetch failed — re-queue the batch (still in the DOM) so a later
+        // scroll retries it instead of leaving permanent blank spacers.
+        batch.forEach((el) => {
+          if (el.isConnected && el.hasAttribute('data-ph')) { pending.add(el); io.observe(el); }
+        });
+        return;
+      }
+      if (pending.size) hydrateSoon();   // keep filling what's still in view
+    }
+    hydrateSoon();   // fill whatever is already on screen at install
   }
   async function navTo(dc) {
     const p = new URLSearchParams(location.search);
@@ -732,20 +863,34 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
   // and the search form swap #sd-content instead of a full page navigation.
   const INT = 'a[href^="/smartdraft/' + IDENT + '?"]';
   document.addEventListener('click', (e) => {
+    if (e.metaKey || e.ctrlKey) return;
     const a = e.target.closest ? e.target.closest('a') : null;
-    if (!a || e.metaKey || e.ctrlKey) return;
-    if (!a.closest('#sd-content')) return;   // header links (ids/debug) full-nav
-    // Focus-nav rows carry a short data-dc (not a full URL — that bloated the
-    // page ~90 bytes/row over ~2k rows); navTo preserves the current params.
-    const dc = a.getAttribute('data-dc');
-    if (dc) { e.preventDefault(); navTo(dc); return; }
-    // Control links (signal/relevance/view/clear toggles) carry a full slink URL
-    // with the changed param — swap to it in place.
-    if (a.matches(INT)) {
-      e.preventDefault();
-      const href = a.getAttribute('href');
-      history.pushState({}, '', href);
-      swapFrom(href);
+    if (a && a.closest('#sd-content')) {
+      // Focus-nav rows carry a short data-dc (not a full URL — that bloated the
+      // page ~90 bytes/row over ~2k rows); navTo preserves the current params.
+      const dc = a.getAttribute('data-dc');
+      if (dc) { e.preventDefault(); navTo(dc); return; }
+      // Control links (signal/relevance/view/clear toggles) carry a full slink
+      // URL with the changed param — swap to it in place.
+      if (a.matches(INT)) {
+        e.preventDefault();
+        const href = a.getAttribute('href');
+        history.pushState({}, '', href);
+        swapFrom(href);
+        return;
+      }
+      // Any other in-panel anchor is a citation / cited-source / claim chip
+      // (its own <a> with target="_blank") — let it behave normally.
+      return;
+    }
+    // Neighbour-paragraph body: the doc/tail/head blocks are <div data-dc> (NOT
+    // <a> — an <a> can't wrap the citation <a>s inside the linkified text, or
+    // the parser auto-closes it at the first cite and splits the paragraph).
+    // A click anywhere in one that isn't on an inner anchor moves the focus.
+    const block = e.target.closest ? e.target.closest('[data-dc]') : null;
+    if (block && block.closest('#sd-content')) {
+      const dc = block.getAttribute('data-dc');
+      if (dc) { e.preventDefault(); navTo(dc); }
     }
   });
   document.addEventListener('submit', (e) => {
@@ -784,7 +929,7 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
     // listed: fork + delete, which correctly navigate away (new copy / drafts
     // list). Respect a cancelled confirm — the auto-author toggle's @submit
     // may already have preventDefault()'d when the user declined.
-    const inPlace = ['authors', 'workspace', 'authoring', 'export.pdf', 'remarkable'];
+    const inPlace = ['authors', 'workspace', 'authoring', 'export.pdf', 'remarkable', 'review'];
     if (f.closest('#sd-content') && inPlace.some((ep) => act === `/drafts/${IDENT}/${ep}`)) {
       if (e.defaultPrevented) return;
       e.preventDefault();
@@ -862,6 +1007,15 @@ function smartClearPins() {
   fetch(`/drafts/{{ ident }}/marks`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ op: 'clear' }),
+  }).then(() => window.__sdRefresh()).catch(() => {});
+}
+// Human sign-off ✓ (migration-0086 ledger) — POSTs the shared /human-review
+// JSON endpoint (reused as-is from the classic reader) then refreshes the
+// panel so the ✓ re-renders its on/dirty state from the ledger.
+function smartReview(dc) {
+  fetch(`/drafts/{{ ident }}/human-review`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dc }),
   }).then(() => window.__sdRefresh()).catch(() => {});
 }
 // Chunk tags (the T search signal). Add/remove refresh so the chip + search reflect it.

@@ -419,13 +419,13 @@ def _tag_chips(raw_tags: Any) -> list[dict[str, Any]]:
 
 
 def _quest_draft_url(store: Any, draft_ref_id: int) -> str:
-    """``/drafts/<ident>`` for a draft ref id — slug when the draft has
+    """``/smartdraft/<ident>`` for a draft ref id — slug when the draft has
     one (the human-legible address), else the numeric id (the reader
     route resolves both, ``_draft_ref`` in ``routes/drafts.py``)."""
     refs = store.fetch_refs_by_ids([draft_ref_id])
     dref = refs.get(draft_ref_id)
     ident = getattr(dref, "slug", None) if dref is not None else None
-    return f"/drafts/{ident or draft_ref_id}"
+    return f"/smartdraft/{ident or draft_ref_id}"
 
 
 def _quest_last_agentlog_id(store: Any, qid: int) -> int | None:
@@ -520,8 +520,12 @@ async def _quest_detail(request: Request, store: Any, ref: Any) -> HTMLResponse:
     # the hub just links it when some other writer has.
     pid = dossier_mod.paper_ref_id(store, qid)
     paper_url = _quest_draft_url(store, pid) if pid is not None else None
-    paper_docx_url = f"{paper_url}/export.docx" if paper_url else None
-    paper_pdf_url = f"{paper_url}/pdf" if paper_url else None
+    # The .docx/.pdf export endpoints still live under the classic
+    # /drafts/{ident}/… path (unmoved by the smartdraft migration), so
+    # derive them from the ident rather than paper_url's /smartdraft/ prefix.
+    paper_ident = paper_url.rsplit("/", 1)[-1] if paper_url else None
+    paper_docx_url = f"/drafts/{paper_ident}/export.docx" if paper_ident else None
+    paper_pdf_url = f"/drafts/{paper_ident}/pdf" if paper_ident else None
 
     # Frontier + gaps — the same markdown a `get(view=…)` call returns,
     # rendered inline (the template applies the same ``linkify_toon``

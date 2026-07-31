@@ -525,6 +525,12 @@ class FakeStore:
         # fake reports OFF; a test can subclass to exercise the ON branch.
         return False
 
+    def review_status_for_draft(self, ref_id: int) -> list[dict[str, object]]:
+        # Migration-0086 human/checker review ledger (the ✓ sign-off). The fake
+        # reports no reviewable chunks; a subclass returns rows to exercise the
+        # rendered ✓ state (see SmartDraftFakeStore).
+        return []
+
     def live_paper_cites(self, handles: set[str], slugs: set[str]) -> set[str]:
         # Draft-reader local-vs-external citation colouring. The fake pool
         # parses no SQL, so default to "every cite is local" (unchanged sky

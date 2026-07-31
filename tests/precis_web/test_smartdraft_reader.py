@@ -140,6 +140,29 @@ class SmartDraftFakeStore(FakeStore):
             base[700] = _DRAFT
         return base
 
+    def review_status_for_draft(self, ref_id):
+        # chunk 2 reviewable but never reviewed (checker=None); chunk 3 reviewed
+        # by a human, clean (dirty=False) — exercises the ✓ port's on/plain
+        # states in the focus header (test below).
+        return [
+            {
+                "chunk_id": 2,
+                "checker": None,
+                "approved_sha": None,
+                "verdict": None,
+                "at": None,
+                "dirty": True,
+            },
+            {
+                "chunk_id": 3,
+                "checker": "human",
+                "approved_sha": "abc",
+                "verdict": "approved",
+                "at": None,
+                "dirty": False,
+            },
+        ]
+
     def get_chunk_blob(self, handle):
         if handle == "H000005":
             return (b"\x89PNG\r\n\x1a\n", "image/png")
@@ -164,6 +187,72 @@ def smartdraft_client(smartdraft_runtime: FakeRuntime, tmp_path) -> TestClient:
     return TestClient(app)
 
 
+class BigDraftFakeStore(SmartDraftFakeStore):
+    """A heading + 100 body paragraphs — enough to exceed the full-document
+    render window (``smartdraft._FULLDOC_WINDOW`` = 40) so distant chunks become
+    lazy ``data-ph`` placeholders."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        # Each paragraph is long (> the 140-char TOC-summary cap) with a unique
+        # END-marker at the tail: the marker survives ONLY in a fully-rendered
+        # middle block, never in the truncated TOC summary — the virtualization
+        # probe (a placeholder chunk ships neither its body nor its marker).
+        filler = "lorem ipsum dolor sit amet " * 8
+        self._chunks = [_sd_chunk(1, "heading", "Big draft", 0)] + [
+            _sd_chunk(i, "paragraph", f"Para {i}. {filler} tail{i}end.", 1)
+            for i in range(2, 102)
+        ]
+
+    def review_status_for_draft(self, ref_id):
+        return []
+
+
+@pytest.fixture
+def big_draft_client(tmp_path) -> TestClient:
+    app = create_app(
+        runtime=FakeRuntime(BigDraftFakeStore()),
+        web_config=WebConfig(corpus_dir=tmp_path),
+    )
+    return TestClient(app)
+
+
+def test_smartdraft_full_doc_virtualizes_long_draft(
+    big_draft_client: TestClient,
+) -> None:
+    """Full-document (📄) mode renders only a window of real blocks around the
+    focus; distant chunks are lazy ``data-ph`` spacers (hydrated on scroll via
+    /blocks) — so a long draft's initial page is O(window), not O(N)."""
+    r = big_draft_client.get("/smartdraft/sdt?relevance=0&focus=dc1")
+    assert r.status_code == 200
+    body = r.text
+    # a distant chunk (dc90) is a placeholder — its body text was NOT shipped
+    assert '<div data-dc="dc90" data-ph' in body
+    assert "tail90end" not in body
+    # a near chunk (dc5) IS a real middle block with its full body text
+    assert "tail5end" in body
+    # many placeholders exist (not everything rendered server-side)
+    assert body.count("data-ph") > 30
+
+
+def test_smartdraft_blocks_endpoint_hydrates_requested_dcs(
+    big_draft_client: TestClient,
+) -> None:
+    """GET /smartdraft/{ident}/blocks?dcs=… returns the real reading blocks for
+    a window of placeholder handles — the lazy-hydrate fetch. Same block markup
+    the initial render uses (a ``<div data-dc>``, not a placeholder)."""
+    r = big_draft_client.get("/smartdraft/sdt/blocks?dcs=dc90,dc91")
+    assert r.status_code == 200
+    body = r.text
+    assert '<div data-dc="dc90"' in body and "data-ph" not in body
+    assert "tail90end" in body
+    assert "tail91end" in body
+    # a handle not in the draft is silently skipped (no crash, no block)
+    r2 = big_draft_client.get("/smartdraft/sdt/blocks?dcs=dc9999")
+    assert r2.status_code == 200
+    assert 'data-dc="dc9999"' not in r2.text
+
+
 def test_smartdraft_reader_renders_three_panes(
     smartdraft_client: TestClient,
 ) -> None:
@@ -177,6 +266,140 @@ def test_smartdraft_reader_renders_three_panes(
     assert 'data-dc="' in body  # left pane: TOC rows keyed by dc
     assert 'id="mid-focus"' in body  # middle pane: the rendered focus chunk
     assert "Collaborate" in body  # right pane header
+
+
+def test_smartdraft_full_doc_cited_block_is_div_not_nested_anchor(
+    smartdraft_client: TestClient,
+) -> None:
+    """Regression (the "[pc…] starts a new paragraph" bug): in full-document
+    mode a body paragraph that cites a source (chunk 2 → ``paper:acheson26``,
+    which linkifies to a ``§`` ``<a>`` anchor) must render inside a
+    ``<div data-dc>`` block, NOT a block-level ``<a>``. An ``<a>`` may not wrap
+    another ``<a>`` — the HTML parser runs the adoption-agency algorithm and
+    auto-closes the outer block anchor at the first citation, spilling the rest
+    of the paragraph onto a new visual line. The focus-nav click on the whole
+    block is preserved by the ``data-dc`` delegated handler instead of an href.
+    """
+    # Full-document mode, focused on the heading (dc1) so the citing body para
+    # (chunk 2) is a NON-focus "doc" neighbour — the block that used to break.
+    dc1 = handle_registry.format_handle("draft", 1, chunk=True)
+    dc2 = handle_registry.format_handle("draft", 2, chunk=True)
+    r = smartdraft_client.get(f"/smartdraft/sdt?relevance=0&focus={dc1}")
+    assert r.status_code == 200
+    body = r.text
+    # the cited neighbour block renders as a <div data-dc> (focus-nav preserved
+    # via the delegated data-dc click handler, not an href) …
+    open_tag = f'<div data-dc="{dc2}"'
+    assert open_tag in body
+    seg = body[body.index(open_tag) : body.index("</div>", body.index(open_tag))]
+    # … the citation IS linkified into its own hover-preview <a> inside the
+    # block (so the nesting the fix avoids was genuinely in play) …
+    assert "data-popid=" in seg and "<a " in seg
+    # … and the offending wrapper — a block-level <a> around wrap-preserving
+    # body text (which the parser would auto-close at the first inner <a>) — is
+    # gone (the neighbour <div>s use "block cursor-pointer …"; the focus <div>
+    # uses "whitespace-pre-wrap" without a leading "block").
+    assert 'class="block whitespace-pre-wrap' not in body
+
+
+def test_smartdraft_focus_human_review_check_reflects_ledger(
+    smartdraft_client: TestClient,
+) -> None:
+    """Ported human sign-off ✓ (migration 0086): the focus header shows a
+    ``sd-review`` button whose class reflects the ledger — plain for a
+    reviewable-but-unreviewed block (chunk 2), ``on`` for a clean reviewed
+    block (chunk 3). It POSTs the shared /human-review JSON endpoint."""
+    dc2 = handle_registry.format_handle("draft", 2, chunk=True)
+    dc3 = handle_registry.format_handle("draft", 3, chunk=True)
+    # Focus chunk 2 (reviewable, never reviewed): ✓ present, not "on".
+    r2 = smartdraft_client.get(f"/smartdraft/sdt?focus={dc2}")
+    assert r2.status_code == 200
+    assert 'class="sd-review leading-none' in r2.text  # button rendered
+    assert "smartReview(" in r2.text  # POSTs the shared /human-review endpoint
+    # Focus chunk 3 (reviewed, clean): the ✓ carries the emerald "on" state.
+    r3 = smartdraft_client.get(f"/smartdraft/sdt?focus={dc3}")
+    assert 'sd-review leading-none text-slate-300 hover:text-emerald-600 on"' in r3.text
+
+
+def test_smartdraft_focus_heading_shows_review_menu(
+    smartdraft_client: TestClient,
+) -> None:
+    """Ported per-heading ``review ▾`` (structural/deep_review/all): rendered
+    only when the focus is a heading, POSTing the shared /drafts/{ident}/review
+    endpoint (intercepted + refreshed in place, not a bounce to classic)."""
+    dc1 = handle_registry.format_handle("draft", 1, chunk=True)  # heading
+    dc2 = handle_registry.format_handle("draft", 2, chunk=True)  # body para
+    rh = smartdraft_client.get(f"/smartdraft/sdt?focus={dc1}")
+    assert 'action="/smartdraft/sdt/review"' not in rh.text  # posts to /drafts/…
+    assert 'action="/drafts/sdt/review"' in rh.text
+    assert 'name="reviewer" value="structural"' in rh.text
+    # a non-heading focus has no review▾ menu
+    rp = smartdraft_client.get(f"/smartdraft/sdt?focus={dc2}")
+    assert 'action="/drafts/sdt/review"' not in rp.text
+
+
+def test_smartdraft_focus_shows_connections_links_and_flags(
+    smartdraft_client: TestClient,
+    smartdraft_runtime: FakeRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The focus Connections rail (gripe 178766, migrated from the retired
+    classic reader): the focus chunk's out/in link-edges (`store.chunk_connections`,
+    split by direction) and its anchored change-request flags (`store.anchored_todos`)
+    render as hover chips. Both surfaces are computed for the focus by
+    `draft_links.chunk_links` → `_connection_chips`/`_flag_chips`."""
+    store = smartdraft_runtime.store
+
+    def fake_conns(ref_id, handles):
+        return {
+            "H000002": [  # chunk 2's base58 (the default focus)
+                {
+                    "relation": "derived-from",
+                    "direction": "out",
+                    "kind": "memory",
+                    "ident": "20",
+                    "title": "A decision",
+                },
+                {
+                    "relation": "cites",
+                    "direction": "in",
+                    "kind": "memory",
+                    "ident": "21",
+                    "title": "A citing dream",
+                },
+            ]
+        }
+
+    def fake_flags(handles):
+        return {
+            "H000002": [{"ref_id": 99, "title": "tighten this claim", "status": "open"}]
+        }
+
+    monkeypatch.setattr(store, "chunk_connections", fake_conns)
+    monkeypatch.setattr(store, "anchored_todos", fake_flags)
+    dc2 = handle_registry.format_handle("draft", 2, chunk=True)
+    r = smartdraft_client.get(f"/smartdraft/sdt?focus={dc2}")
+    assert r.status_code == 200
+    body = r.text
+    assert "/r/memory/20" in body and "A decision" in body  # out edge
+    assert "/r/memory/21" in body and "A citing dream" in body  # in edge
+    assert "tighten this claim" in body and "/r/todo/99" in body  # anchored flag
+
+
+def test_smartdraft_focus_accepts_base58_handle(
+    smartdraft_client: TestClient,
+) -> None:
+    """The app-wide ``/c/<handle>`` + agentlog deep links focus by the legacy
+    base58 anchor (``chunks.handle``), not the ``dc<id>`` form. ``focus_index``
+    accepts either, so ``?focus=<base58>`` lands on the same chunk as
+    ``?focus=dc<id>`` — otherwise every ¶/§ citation click would degrade to the
+    first body chunk."""
+    dc2 = handle_registry.format_handle("draft", 2, chunk=True)  # "dc2"
+    # H000002 is chunk 2's base58 (SmartDraftFakeStore._sd_chunk).
+    r = smartdraft_client.get("/smartdraft/sdt?focus=H000002")
+    assert r.status_code == 200
+    # the resolved focus is chunk 2 — its dc drives the hidden focus field.
+    assert f'name="focus" value="{dc2}"' in r.text
 
 
 def test_smartdraft_reader_loads_katex_for_inline_math(

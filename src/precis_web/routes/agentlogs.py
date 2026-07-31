@@ -82,7 +82,9 @@ def _touched_chunks(store: Any, log_id: int) -> list[dict[str, Any]]:
     for ref_id, slug, kind, handle, clip in rows:
         ident = slug or str(ref_id)
         href = (
-            f"/drafts/{ident}#c-{handle}" if kind == "draft" else f"/r/{kind}/{ident}"
+            f"/smartdraft/{ident}?focus={handle}"
+            if kind == "draft"
+            else f"/r/{kind}/{ident}"
         )
         out.append(
             {

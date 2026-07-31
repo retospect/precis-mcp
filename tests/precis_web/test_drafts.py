@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
 
+from precis.utils import handle_registry
 from precis_web.app import create_app
 from precis_web.config import WebConfig
 
@@ -38,6 +39,9 @@ def _chunk(
         parent_chunk_id=parent_chunk_id,
         ref_id=ref_id,
         meta=meta,
+        # the universal dc<id> handle (ADR 0036) — smartdraft's ?focus=
+        # anchor scheme, distinct from `handle`'s base-58 DOM key.
+        dc=handle_registry.format_handle("draft", chunk_id, chunk=True),
     )
 
 
@@ -350,89 +354,6 @@ def test_new_draft_blank_description_falls_back(
     assert "LLM:opus" in args["tags"]
 
 
-def test_reader_stamps_last_viewed(
-    draft_client: TestClient, draft_runtime: FakeRuntime
-) -> None:
-    """Opening the reader stamps the draft's access (drives the drafts
-    list's most-recently-opened order). The full page-load does it; the
-    poll/skeleton/version endpoints must not."""
-    store = draft_runtime.store
-    assert store.viewed == []
-    assert draft_client.get("/drafts/nt").status_code == 200
-    assert store.viewed == [500]
-    # the live-poll endpoints don't re-stamp (else an open tab pins it).
-    draft_client.get("/drafts/nt/skeleton")
-    draft_client.get("/drafts/nt/version")
-    assert store.viewed == [500]
-
-
-def test_reader_renders_per_block_grid(draft_client: TestClient) -> None:
-    r = draft_client.get("/drafts/nt")
-    assert r.status_code == 200
-    # one row per block, anchored by handle
-    assert 'id="c-AAAAAA"' in r.text and 'id="c-BBBBBB"' in r.text
-    # raw source linkified in the content column: paper ref → resolver,
-    # ¶ ref → chunk route
-    assert "/r/paper/smith2024" in r.text
-    assert 'href="/c/AAAAAA"' in r.text
-    # collapse mechanics (vanilla, imperative — no per-node Alpine binding):
-    # the heading carries data-heading + a data-toggle caret; BBBBBB carries
-    # its ancestor heading in data-anc so the JS hides it when AAAAAA
-    # collapses. The anc JSON MUST be single-quoted (tojson emits double
-    # quotes; a double-quoted attribute would terminate mid-array).
-    assert 'data-heading="AAAAAA"' in r.text
-    assert 'data-toggle="AAAAAA"' in r.text
-    assert "collapse all" in r.text
-    assert "data-anc='[\"AAAAAA\"]'" in r.text  # BBBBBB's ancestors json
-    assert 'data-anc="["AAAAAA"]"' not in r.text
-    # the old Alpine per-node collapse binding is gone (the 10k-block lag)
-    assert "x-show='vis(" not in r.text
-    # rows are tagged for the collapse/observer machinery
-    assert "dr-block" in r.text
-    # per-block change box posts to the anchored-todo route
-    assert 'action="/drafts/nt/request"' in r.text
-    # ADR 0036: the gray per-block indicator shows the universal handle
-    # (dc<chunk_id>), not the legacy ¶<base58> anchor. The DOM/nav key stays
-    # the base-58 handle (id="c-…"), so only the visible label changes.
-    assert ">dc1<" in r.text and ">dc2<" in r.text
-    assert ">¶AAAAAA<" not in r.text
-    # Compact-mode fix: a ref hover-popover must escape the scrolled meta
-    # column (overflow-y:auto clips X too) so it pops over the change column
-    # rather than hiding under it. The :has() rule lifts the clipping while a
-    # popover is open.
-    assert '.ref-popover:not([style*="display: none"])' in r.text
-
-
-def test_citation_colour_splits_local_vs_external(draft_client: TestClient) -> None:
-    """Compact paper cites colour local (in-corpus) vs external: a paper we
-    hold renders a sky ``§``, an external reference an amber ``↗`` — so a
-    reader sees at a glance which citations are grounded (the color-pc-refs
-    feature). BBBBBB cites smith2024 (local) and ghost404 (external)."""
-    r = draft_client.get("/drafts/nt")
-    assert r.status_code == 200
-    block = r.text.split('id="c-BBBBBB"', 1)[1].split('id="c-', 1)[0]
-    # local cite → sky § anchor (class precedes href; glyph is the anchor body)
-    smith = block.split('href="/r/paper/smith2024"', 1)
-    assert len(smith) == 2, "smith2024 cite not rendered"
-    assert "text-sky-700" in smith[0].rsplit("<a ", 1)[1]
-    assert smith[1].split("</a>", 1)[0].endswith(">§")
-    # external cite → amber ↗ anchor
-    ghost = block.split('href="/r/paper/ghost404"', 1)
-    assert len(ghost) == 2, "ghost404 cite not rendered"
-    assert "text-amber-600" in ghost[0].rsplit("<a ", 1)[1]
-    assert ghost[1].split("</a>", 1)[0].endswith(">↗")
-
-
-def test_reader_has_include_sources_controls(draft_client: TestClient) -> None:
-    """The export toolbar offers the include-referenced-sources checkbox and
-    the download-papers zip link (the two new affordances)."""
-    r = draft_client.get("/drafts/nt")
-    assert r.status_code == 200
-    assert 'x-model="withSources"' in r.text
-    assert "/drafts/nt/papers.zip" in r.text
-    assert 'name="sources"' in r.text  # threaded into the export→project form
-
-
 def test_papers_zip_route_streams_zip(
     draft_client: TestClient, monkeypatch, tmp_path
 ) -> None:
@@ -453,43 +374,6 @@ def test_papers_zip_route_streams_zip(
     assert r.status_code == 200
     assert r.headers["content-type"] == "application/zip"
     assert "nt-papers.zip" in r.headers.get("content-disposition", "")
-
-
-def test_figure_renders_img_and_origin_chip(draft_client: TestClient) -> None:
-    # ADR 0034 — a figure block renders an <img> pointed at the blob route,
-    # an origin chip, and a clearance badge (original ⇒ cleared).
-    r = draft_client.get("/drafts/nt")
-    assert r.status_code == 200
-    assert 'src="/drafts/blob/FIGFIG"' in r.text
-    assert "original" in r.text and "cleared" in r.text
-
-
-def test_table_renders_as_html_table(draft_client: TestClient) -> None:
-    # ADR 0035 §1 — a chunk_kind='table' renders as a real <table> with a
-    # header row + the caption, not the raw pipe markdown.
-    r = draft_client.get("/drafts/nt")
-    assert r.status_code == 200
-    assert 'id="c-TBLTBL"' in r.text
-    # isolate the table block's content column (up to its raw "cookie")
-    block = r.text.split('id="c-TBLTBL"', 1)[1].split('x-show="raw"', 1)[0]
-    assert "<table" in block and "<thead>" in block
-    assert "<th" in block and ">ID<" in block and ">Title<" in block
-    assert ">I1<" in block and ">alpha<" in block
-    assert "Issue register" in block
-    # the rendered body is a real table, not the dumped pipe markdown
-    assert "| ID | Title |" not in block
-
-
-def test_table_offers_grid_editor(draft_client: TestClient) -> None:
-    # ADR 0035 §1 — the table block carries the ⊞ grid editor (tableEditor
-    # scope + edit button), the structured-only edit affordance.
-    r = draft_client.get("/drafts/nt")
-    assert r.status_code == 200
-    block = r.text.split('id="c-TBLTBL"', 1)[1].split('x-show="raw"', 1)[0]
-    assert "tableEditor(" in block
-    assert "⊞ edit table" in block
-    # the editor seeds from the canonical data (header names present in x-data)
-    assert '"ID"' in block and '"Title"' in block
 
 
 def test_edit_table_dispatches_structured_edit(
@@ -558,15 +442,6 @@ def test_edit_table_surfaces_linter_error_422(
     assert r.json()["ok"] is False and "rejected by handler" in r.json()["error"]
 
 
-def test_reader_shows_all_clear_note(draft_client: TestClient) -> None:
-    # Both fixture figures are cleared (original + granted third-party), so
-    # the end-of-document all-clear note shows and no warning banner.
-    r = draft_client.get("/drafts/nt")
-    assert r.status_code == 200
-    assert "cleared to ship" in r.text
-    assert "not cleared to ship" not in r.text
-
-
 def test_blob_route_serves_bytes_with_mime(draft_client: TestClient) -> None:
     r = draft_client.get("/drafts/blob/FIGFIG")
     assert r.status_code == 200
@@ -577,25 +452,6 @@ def test_blob_route_serves_bytes_with_mime(draft_client: TestClient) -> None:
 def test_blob_route_404_when_no_blob(draft_client: TestClient) -> None:
     r = draft_client.get("/drafts/blob/AAAAAA")  # a heading — no blob
     assert r.status_code == 404
-
-
-def test_figure_permission_popover_and_edit_form(draft_client: TestClient) -> None:
-    # The third-party figure's badge shows the paper-trail (hover popover)
-    # and a prefilled edit form posting to the permission edit route.
-    r = draft_client.get("/drafts/nt")
-    assert r.status_code == 200
-    # provenance details visible (popover)
-    assert "Springer Nature" in r.text and "SNCSC-2026-0451" in r.text
-    assert "2026-06-18" in r.text and "smith19" in r.text
-    # click-to-edit form points at the edit route, prefilled
-    assert 'action="/drafts/nt/figure/FIGTPF/permission"' in r.text
-    assert 'value="SNCSC-2026-0451"' in r.text
-
-
-def test_upload_form_has_field_legends(draft_client: TestClient) -> None:
-    r = draft_client.get("/drafts/nt")
-    assert "Date requested" in r.text and "Date granted" in r.text
-    assert "Publisher permission" in r.text
 
 
 def test_edit_figure_permission_dispatches_edit(
@@ -620,44 +476,6 @@ def test_edit_figure_permission_dispatches_edit(
     assert args["origin"] == "third_party"
     assert args["permission"]["publisher"] == "Elsevier"
     assert args["permission"]["permission_id"] == "EL-999"
-
-
-def test_set_section_style_dispatches_edit(
-    draft_client: TestClient, draft_runtime: FakeRuntime
-) -> None:
-    # The per-heading "style ▾" dropdown → edit(kind='draft', style=…) (ADR 0037).
-    r = draft_client.post(
-        "/drafts/nt/style",
-        data={"handle": "AAAAAA", "style": "patent-claim"},
-        follow_redirects=False,
-    )
-    assert r.status_code == 303
-    assert r.headers["location"] == "/drafts/nt#c-AAAAAA"
-    verb, args = draft_runtime.calls[-1]
-    assert verb == "edit"
-    # bare ``chunks.handle`` posted → resolved to the canonical ``dc<id>``.
-    assert args["kind"] == "draft" and args["id"] == "dc1"
-    assert args["style"] == "patent-claim"
-
-
-def test_clear_section_style_dispatches_empty(
-    draft_client: TestClient, draft_runtime: FakeRuntime
-) -> None:
-    draft_client.post(
-        "/drafts/nt/style",
-        data={"handle": "AAAAAA", "style": ""},
-        follow_redirects=False,
-    )
-    verb, args = draft_runtime.calls[-1]
-    assert verb == "edit" and args["style"] == ""
-
-
-def test_reader_has_genre_editor(draft_client: TestClient) -> None:
-    # The header carries the post-creation genre + project-context editor.
-    r = draft_client.get("/drafts/nt")
-    assert r.status_code == 200
-    assert 'action="/drafts/nt/workspace"' in r.text
-    assert 'name="doctype"' in r.text and 'name="brief"' in r.text
 
 
 def test_set_workspace_writes_genre_and_brief(
@@ -792,57 +610,6 @@ def list_client(list_runtime: FakeRuntime, tmp_path) -> TestClient:
     return TestClient(app)
 
 
-def test_set_list_kind_dispatches_edit(
-    list_client: TestClient, list_runtime: FakeRuntime
-) -> None:
-    r = list_client.post(
-        "/drafts/lst/listkind",
-        data={"handle": "OL", "kind": "olist"},
-        follow_redirects=False,
-    )
-    assert r.status_code == 303
-    assert r.headers["location"] == "/drafts/lst#c-OL"
-    verb, args = list_runtime.calls[-1]
-    assert verb == "edit"
-    # The reader posts the bare ``chunks.handle``; the route resolves it to
-    # the canonical ``dc<chunk_id>`` address edit(kind='draft') requires.
-    assert args["kind"] == "draft" and args["id"] == "dc701010"
-    assert args["list_kind"] == "olist"
-
-
-def test_dissolve_list_redirects_to_top(
-    list_client: TestClient, list_runtime: FakeRuntime
-) -> None:
-    # A 'normal' dissolve retires the container, so we don't anchor at it.
-    r = list_client.post(
-        "/drafts/lst/listkind",
-        data={"handle": "OL", "kind": "normal"},
-        follow_redirects=False,
-    )
-    assert r.headers["location"] == "/drafts/lst"
-    _verb, args = list_runtime.calls[-1]
-    assert args["id"] == "dc701010" and args["list_kind"] == "normal"
-
-
-def test_reader_renders_list_markers_and_toggle(list_client: TestClient) -> None:
-    r = list_client.get("/drafts/lst")
-    assert r.status_code == 200
-    # ordered items numbered, unordered bulleted
-    assert ">1.<" in r.text and ">2.<" in r.text
-    assert ">•<" in r.text
-    # container rows name the list type and host the ul/ol/normal toggle
-    assert "numbered list" in r.text and "bullet list" in r.text
-    assert 'action="/drafts/lst/listkind"' in r.text
-
-
-def test_reader_has_add_figure_control(draft_client: TestClient) -> None:
-    r = draft_client.get("/drafts/nt")
-    assert r.status_code == 200
-    assert 'action="/drafts/nt/figure"' in r.text
-    assert 'enctype="multipart/form-data"' in r.text
-    assert 'name="origin"' in r.text  # the origin selector
-
-
 def test_figure_upload_dispatches_put(
     draft_client: TestClient, draft_runtime: FakeRuntime
 ) -> None:
@@ -895,135 +662,8 @@ def test_figure_upload_third_party_assembles_permission(
 
 def test_singular_alias_redirects(draft_client: TestClient) -> None:
     r = draft_client.get("/draft/nt", follow_redirects=False)
-    assert r.status_code == 303
-    assert r.headers["location"] == "/drafts/nt"
-
-
-def test_row_fragment_renders_single_block(draft_client: TestClient) -> None:
-    r = draft_client.get("/drafts/nt/row/BBBBBB")
-    assert r.status_code == 200
-    assert 'id="c-BBBBBB"' in r.text and 'action="/drafts/nt/request"' in r.text
-    # only the one row — the other block's id is absent
-    assert 'id="c-AAAAAA"' not in r.text
-
-
-def test_version_endpoint_returns_token(draft_client: TestClient) -> None:
-    r = draft_client.get("/drafts/nt/version")
-    assert r.status_code == 200
-    assert "version" in r.json()
-
-
-def test_rows_fragment_has_all_blocks_no_chrome(draft_client: TestClient) -> None:
-    # The live-refresh poll swaps this into #doc — rows only, no <h1>/nav.
-    r = draft_client.get("/drafts/nt/rows")
-    assert r.status_code == 200
-    assert 'id="c-AAAAAA"' in r.text and 'id="c-BBBBBB"' in r.text
-    assert "<h1" not in r.text and "draftDoc(" not in r.text
-
-
-def test_small_draft_renders_fully_in_the_window(draft_client: TestClient) -> None:
-    # The fixture has fewer blocks than INITIAL_WINDOW, so every block is in
-    # the server-rendered window — full content, and the spacer is zero.
-    r = draft_client.get("/drafts/nt")
-    assert r.status_code == 200
-    # the virtual-scroll shell is present
-    assert (
-        'id="dr-win"' in r.text and 'id="dr-top"' in r.text and 'id="dr-bot"' in r.text
-    )
-    assert 'id="dr-skel"' in r.text  # embedded skeleton
-    # full content present (linkified ref proves the row is server-rendered)
-    assert "/r/paper/smith2024" in r.text
-    # nothing off-window → bottom spacer is zero height
-    assert 'id="dr-bot" style="height:0px"' in r.text
-
-
-def test_reader_windows_only_first_blocks(
-    draft_client: TestClient, monkeypatch
-) -> None:
-    # Shrink the initial window to 1: only the first block (the AAAAAA
-    # heading) is server-rendered in #dr-win; the rest live ONLY in the
-    # skeleton (no DOM node — the whole point), with a non-zero bottom
-    # spacer reserving their space.
-    from precis_web.routes import drafts as drafts_mod
-
-    monkeypatch.setattr(drafts_mod, "INITIAL_WINDOW", 1)
-    r = draft_client.get("/drafts/nt")
-    assert r.status_code == 200
-    # first block is a real server-rendered row (its change box is present)
-    assert 'id="c-AAAAAA"' in r.text
-    win = r.text.split('id="dr-win"', 1)[1].split('id="dr-bot"', 1)[0]
-    assert 'action="/drafts/nt/request"' in win  # the one window row is hydrated
-    # BBBBBB is NOT a DOM node — it lives in the skeleton JSON only
-    assert 'id="c-BBBBBB"' not in r.text
-    assert '"h": "BBBBBB"' in r.text or '"h":"BBBBBB"' in r.text
-    # bottom spacer reserves the off-window blocks (non-zero height)
-    assert 'id="dr-bot" style="height:0px"' not in r.text
-
-
-def test_skeleton_endpoint_returns_blocks_and_version(draft_client: TestClient) -> None:
-    # The live poll refetches this to re-window after an edit.
-    r = draft_client.get("/drafts/nt/skeleton")
-    assert r.status_code == 200
-    data = r.json()
-    assert "version" in data
-    handles = [b["h"] for b in data["skeleton"]]
-    assert handles == ["AAAAAA", "BBBBBB", "FIGFIG", "FIGTPF", "TBLTBL"]
-    # BBBBBB is nested under the AAAAAA heading (collapse ancestry preserved)
-    bbb = next(b for b in data["skeleton"] if b["h"] == "BBBBBB")
-    assert bbb["anc"] == ["AAAAAA"]
-
-
-def test_skeleton_carries_view_aware_short_estimate(draft_client: TestClient) -> None:
-    # The summary / keywords views collapse each body block to one line, so
-    # the scroller needs a *short* per-view estimate (estS) — without it the
-    # body-length estimate over-reserves space and the bottom of the doc is
-    # stranded behind a giant spacer (the "doesn't scroll in summary mode"
-    # bug). Headings / figures render identically across views → estS == est.
-    data = draft_client.get("/drafts/nt/skeleton").json()
-    blocks = {b["h"]: b for b in data["skeleton"]}
-    for b in blocks.values():
-        assert "estS" in b
-    bbb = blocks["BBBBBB"]  # a body paragraph
-    assert bbb["estS"] < bbb["est"]  # collapses to one line in summary/keywords
-    aaa = blocks["AAAAAA"]  # a heading
-    assert aaa["estS"] == aaa["est"]
-    fig = blocks["FIGFIG"]  # a figure
-    assert fig["estS"] == fig["est"]
-
-
-def test_row_route_hydrates_a_windowed_block(draft_client: TestClient) -> None:
-    # The fragment the scroller fetches as a block enters the window — the
-    # full, enriched row for one block (linkified refs + change box).
-    r = draft_client.get("/drafts/nt/row/BBBBBB")
-    assert r.status_code == 200
-    assert 'id="c-BBBBBB"' in r.text
-    assert "/r/paper/smith2024" in r.text  # linkified
-    assert 'action="/drafts/nt/request"' in r.text  # change box
-    assert 'id="c-AAAAAA"' not in r.text  # only the one block
-
-
-def test_rows_batch_hydrates_multiple_blocks_in_one_request(
-    draft_client: TestClient,
-) -> None:
-    # The reader hydrates a whole window of placeholders in ONE request
-    # (?handles=a,b) instead of one HTTP per block. Rows come back in
-    # document order, no page chrome.
-    r = draft_client.get("/drafts/nt/rows?handles=BBBBBB,AAAAAA")
-    assert r.status_code == 200
-    assert 'id="c-AAAAAA"' in r.text and 'id="c-BBBBBB"' in r.text
-    assert "/r/paper/smith2024" in r.text  # BBBBBB hydrated + linkified
-    assert "<h1" not in r.text and "draftDoc(" not in r.text
-    # a figure block is not in the batch
-    assert 'id="c-FIGFIG"' not in r.text
-
-
-def test_reader_has_delete_button_and_name_confirm(draft_client: TestClient) -> None:
-    r = draft_client.get("/drafts/nt")
-    assert r.status_code == 200
-    assert 'action="/drafts/nt/delete"' in r.text
-    assert 'name="confirm"' in r.text
-    # the form prompts for the draft's title
-    assert "Type the draft name" in r.text
+    assert r.status_code == 307
+    assert r.headers["location"] == "/smartdraft/nt"
 
 
 def test_delete_draft_with_matching_name_soft_deletes(
@@ -1074,7 +714,9 @@ def test_delete_draft_blank_confirm_does_nothing(
 def test_chunk_handle_redirects_into_reader(draft_client: TestClient) -> None:
     r = draft_client.get("/c/BBBBBB", follow_redirects=False)
     assert r.status_code == 303
-    assert r.headers["location"] == "/drafts/nt#c-BBBBBB"
+    location = r.headers["location"]
+    assert location.startswith("/smartdraft/nt")
+    assert "focus=" in location
 
 
 def test_unknown_chunk_handle_404s(draft_client: TestClient) -> None:
@@ -1123,50 +765,6 @@ def test_chunk_preview_missing_is_graceful(draft_client: TestClient) -> None:
     r = draft_client.get("/preview/chunk/ZZZZZZ")
     assert r.status_code == 200
     assert "no such" in r.text  # popover 'missing' branch
-
-
-def test_change_request_dispatches_anchored_todo(
-    draft_client: TestClient, draft_runtime: FakeRuntime
-) -> None:
-    r = draft_client.post(
-        "/drafts/nt/request",
-        data={"handle": "BBBBBB", "text": "tighten this"},
-        follow_redirects=False,
-    )
-    assert r.status_code == 303
-    assert r.headers["location"] == "/drafts/nt#c-BBBBBB"
-    verb, args = draft_runtime.calls[-1]
-    assert verb == "put" and args["kind"] == "todo"
-    assert args["parent_id"] == 1  # the draft-of project
-    assert args["meta"]["anchor"] == "BBBBBB"
-
-
-def test_change_request_omits_parent_when_project_soft_deleted(tmp_path) -> None:
-    """A draft whose ``draft-of`` project todo was soft-deleted must NOT
-    parent the change request on the dead todo (``put`` rejects a
-    soft-deleted ``parent_id`` with NotFound). ``_project_id`` skips it,
-    so the anchored todo files as a root instead of 400ing."""
-
-    class DeadProjectStore(DraftFakeStore):
-        def get_ref(self, *, kind, id):
-            # The project todo (id=1) was soft-deleted → no live row.
-            if kind == "todo" and id == 1:
-                return None
-            return super().get_ref(kind=kind, id=id)
-
-    runtime = FakeRuntime(DeadProjectStore())
-    app = create_app(runtime=runtime, web_config=WebConfig(corpus_dir=tmp_path))
-    client = TestClient(app)
-    r = client.post(
-        "/drafts/nt/request",
-        data={"handle": "BBBBBB", "text": "tighten this"},
-        follow_redirects=False,
-    )
-    assert r.status_code == 303
-    verb, args = runtime.calls[-1]
-    assert verb == "put" and args["kind"] == "todo"
-    assert "parent_id" not in args  # filed as a root, not parented on the dead todo
-    assert args["meta"]["anchor"] == "BBBBBB"
 
 
 class _NoProjectStore(DraftFakeStore):
@@ -1437,25 +1035,6 @@ def test_human_review_route_404s_for_missing_draft(tmp_path) -> None:
     assert r.status_code == 404
 
 
-def test_row_review_status_reflects_the_ledger() -> None:
-    """The reader's per-row payload (``_build_rows``, via ``_one_row``)
-    carries the review ledger's status: never-reviewed is a present-but-empty
-    dict (the ✓ shows, unclicked); a recorded human review shows non-dirty;
-    editing after review would go dirty (exercised at the store level, not
-    re-derived here since this fake doesn't model content_sha)."""
-    from precis_web.routes.drafts import _one_row
-
-    store = ReviewFakeStore()
-    row = _one_row(store, _DRAFT, "BBBBBB")
-    assert row is not None
-    assert row["review"] == {}  # reviewable, never reviewed
-
-    store.record_review(2, "human", verdict="approved")  # BBBBBB is chunk_id=2
-    row = _one_row(store, _DRAFT, "BBBBBB")
-    assert row["review"]["human"]["dirty"] is False
-    assert row["review"]["human"]["verdict"] == "approved"
-
-
 class _DatetimeReviewStore(ReviewFakeStore):
     """A review ledger that stamps a real ``datetime`` ``at`` — what the DB
     actually returns — unlike ``ReviewFakeStore``'s ``at=None``. This is the
@@ -1469,57 +1048,6 @@ class _DatetimeReviewStore(ReviewFakeStore):
             "dirty": False,
         }
         return "shaX"
-
-
-def test_reader_survives_datetime_review_at(tmp_path) -> None:
-    """Regression: the reader embeds the whole-draft review ledger in the
-    virtual-scroll skeleton and ``tojson``s it (and serves it raw from
-    ``/skeleton``). A recorded review carries a real ``datetime`` ``at``, so
-    the raw value 500'd the page (``TypeError: Object of type datetime is not
-    JSON serializable``). ``_review_entry`` ISO-stringifies ``at`` at the
-    single source both the row and skeleton read, keeping both serializable."""
-    store = _DatetimeReviewStore()
-    store.record_review(2, "human")  # BBBBBB / dc2
-    app = create_app(
-        runtime=FakeRuntime(store), web_config=WebConfig(corpus_dir=tmp_path)
-    )
-    client = TestClient(app)
-
-    # The inline skeleton (`{{ skeleton | tojson }}` in detail.html.j2).
-    r = client.get("/drafts/nt")
-    assert r.status_code == 200  # was 500
-
-    # The /skeleton JSON endpoint serializes the same ledger.
-    skel = client.get("/drafts/nt/skeleton")
-    assert skel.status_code == 200
-    rv = next(
-        row["rv"]
-        for row in skel.json()["skeleton"]
-        if (row.get("rv") or {}).get("human")
-    )
-    assert (
-        rv["human"]["at"] == "2026-07-26T12:23:34+00:00"
-    )  # ISO string, not a datetime
-
-
-def test_reader_renders_the_human_review_checkbox(draft_client: TestClient) -> None:
-    """The ✓ gutter button is wired into the reader's markup — dispatches
-    ``draft-review`` (the Alpine listener ``onReview`` posts through)."""
-    r = draft_client.get("/drafts/nt")
-    assert r.status_code == 200
-    assert "dr-review" in r.text
-    assert "$dispatch('draft-review', {dc:'dc2'})" in r.text
-
-
-def test_reader_has_duplicate_button(draft_client: TestClient) -> None:
-    """The reader toolbar exposes the web fork affordance (Phase-1 fork): a
-    ⧉ duplicate control whose reveal-form posts to /drafts/<ident>/fork with
-    a project name."""
-    r = draft_client.get("/drafts/nt")
-    assert r.status_code == 200
-    assert "duplicate" in r.text
-    assert 'action="/drafts/nt/fork"' in r.text
-    assert 'name="project"' in r.text
 
 
 def test_fork_route_dispatches_put_copy_of(
@@ -1556,48 +1084,6 @@ def test_fork_route_blank_project_is_a_noop(
     assert not any(v == "put" and "copy_of" in a for v, a in draft_runtime.calls)
 
 
-def test_checker_flag_strip_renders_per_lens_state(tmp_path) -> None:
-    """The meta-column checker strip (rung 3d) renders one glyph per lens:
-    current (✓) when reviewed at the live text, stale (~) when the
-    approved sha is behind the current one, unreviewed (–) otherwise. No
-    "findings" glyph — reviewers don't stamp which lens filed a request."""
-    rt, client = _review_client(tmp_path)
-    store = rt.store
-    store.record_review(2, "cites", verdict="approved")  # cites: current
-    store._reviews[2]["structure"] = {
-        "approved_sha": "stale-sha",
-        "verdict": "approved",
-        "at": None,
-        "dirty": True,
-    }  # structure: stale (approved sha is behind)
-    # flow / adversarial: never reviewed
-    r = client.get("/drafts/nt")
-    assert r.status_code == 200
-    html = r.text
-    assert 'title="cites: reviewed at the current text">C✓' in html
-    assert 'title="structure: reviewed, but changed since — stale">S~' in html
-    assert 'title="flow: never reviewed">F–' in html
-    assert 'title="adversarial: never reviewed">A–' in html
-
-
-def test_authored_badge_and_border_render_for_machine_authored_chunk(
-    tmp_path,
-) -> None:
-    """A chunk carrying ``meta.authored_by`` (the grounded-authoring
-    reviewer's new-chunk stamp) renders the amber "authored" badge and its
-    content column gets an amber left border — the reviewer's cue that this
-    prose is machine-written and starts unreviewed."""
-    store = DraftFakeStore()
-    store._chunks[1].meta = {"authored_by": "review:cites"}  # BBBBBB, chunk_id=2
-    rt = FakeRuntime(store)
-    app = create_app(runtime=rt, web_config=WebConfig(corpus_dir=tmp_path))
-    client = TestClient(app)
-    r = client.get("/drafts/nt")
-    assert r.status_code == 200
-    assert "✎ authored (cites)" in r.text
-    assert "border-l-4 border-amber-300 pl-1" in r.text
-
-
 def test_set_authoring_route_writes_ref_meta(
     draft_client: TestClient, draft_runtime: FakeRuntime
 ) -> None:
@@ -1614,18 +1100,6 @@ def test_set_authoring_route_writes_ref_meta(
     )
     assert r.status_code in (302, 303)
     assert draft_runtime.store.meta_writes[-1] == (500, {"authoring_enabled": False})
-
-
-def test_reader_shows_auto_author_toggle_state(draft_client: TestClient) -> None:
-    """The reader defaults to ``auto-author: OFF`` and flips to ``ON`` once
-    the toggle route has been posted (the toolbar control, 3e)."""
-    r = draft_client.get("/drafts/nt")
-    assert r.status_code == 200
-    assert "auto-author: OFF" in r.text
-
-    draft_client.post("/drafts/nt/authoring", data={"enabled": "1"})
-    r = draft_client.get("/drafts/nt")
-    assert "auto-author: ON" in r.text
 
 
 def test_smartdraft_index_lists_drafts(draft_client: TestClient) -> None:
@@ -1812,43 +1286,6 @@ def test_paper_pdf_missing() -> None:
     )
 
 
-def test_delete_change_request_dispatches_todo_delete(
-    draft_client: TestClient, draft_runtime: FakeRuntime
-) -> None:
-    r = draft_client.post("/drafts/nt/todo/777/delete", follow_redirects=False)
-    assert r.status_code == 303
-    verb, args = draft_runtime.calls[-1]
-    assert verb == "delete" and args["kind"] == "todo" and args["id"] == 777
-
-
-def test_retry_change_request_dispatches_job_retry(
-    draft_client: TestClient, draft_runtime: FakeRuntime
-) -> None:
-    """▶ restart posts the failed *job* id → put(kind='job', mode='retry')
-    and redirects back to the draft (not the tasks page)."""
-    r = draft_client.post("/drafts/nt/todo/888/retry", follow_redirects=False)
-    assert r.status_code == 303
-    assert r.headers["location"] == "/drafts/nt"
-    verb, args = draft_runtime.calls[-1]
-    assert verb == "put"
-    assert args["kind"] == "job" and args["id"] == 888 and args["mode"] == "retry"
-    # No model swap when the picker is left on "same".
-    assert "model" not in args
-
-
-def test_retry_change_request_forwards_model_swap(
-    draft_client: TestClient, draft_runtime: FakeRuntime
-) -> None:
-    """Picking a tier threads ``model=`` into the retry so the re-minted
-    tick runs on a different model."""
-    r = draft_client.post(
-        "/drafts/nt/todo/888/retry", data={"model": "sonnet"}, follow_redirects=False
-    )
-    assert r.status_code == 303
-    _verb, args = draft_runtime.calls[-1]
-    assert args["model"] == "sonnet"
-
-
 def test_draft_pdf_503_without_latexmk(draft_client: TestClient, monkeypatch) -> None:
     """No TeX toolchain on the host → a friendly 503, not a 500."""
     monkeypatch.setenv("PRECIS_LATEXMK_BIN", "definitely-no-such-binary-xyz")
@@ -1895,124 +1332,6 @@ def test_pdf_cache_token_includes_ref_updated_at(monkeypatch) -> None:
     assert drafts_mod._pdf_cache_token(None, no_ts) == "42.0"
 
 
-def _render_row(requests: list[SimpleNamespace]) -> str:
-    """Render the ``draft_row`` macro with a synthetic block carrying the
-    given change-request chips (the raw-SQL request loader is bypassed in
-    the fake store, so drive the template directly)."""
-    from precis_web.deps import templates
-
-    r = SimpleNamespace(
-        handle="BBBBBB",
-        is_heading=False,
-        ancestors=[],
-        depth=1,
-        chunk_kind="paragraph",
-        text="Some prose.",
-        summary="",
-        keywords="",
-        refs=[],
-        connections=[],
-        nearby=[],
-        edits=0,
-        edited_at=None,
-        abbrevs={},
-        requests=requests,
-        review=None,
-        authored=None,
-    )
-    ref = SimpleNamespace(ident="nt")
-    tmpl = templates.env.get_template("drafts/_row.html.j2")
-    return tmpl.module.draft_row(r, ref)  # type: ignore[attr-defined]  # Jinja macro, runtime-defined
-
-
-def _req(
-    ref_id: int,
-    *,
-    started: bool,
-    done: bool,
-    failed: bool,
-    status: str,
-    audit: str = "",
-):
-    return SimpleNamespace(
-        ref_id=ref_id,
-        status=status,
-        title=f"req {ref_id}",
-        started=started,
-        done=done,
-        failed=failed,
-        asking="",
-        audit=audit,
-    )
-
-
-def test_change_request_close_x_on_terminal_and_unstarted_only() -> None:
-    """The close-X (delete form) shows on not-yet-started, done, and
-    failed requests, but NOT on a request that's actively running."""
-    rows = _render_row(
-        [
-            _req(1, started=False, done=False, failed=False, status="open"),
-            _req(2, started=True, done=False, failed=False, status="doing"),
-            _req(3, started=True, done=True, failed=False, status="done"),
-            _req(4, started=True, done=False, failed=True, status="failed"),
-        ]
-    )
-    assert "/drafts/nt/todo/1/delete" in rows  # unstarted → cancel
-    assert "/drafts/nt/todo/3/delete" in rows  # done → close
-    assert "/drafts/nt/todo/4/delete" in rows  # failed → close
-    assert "/drafts/nt/todo/2/delete" not in rows  # running → no X
-
-
-def test_audit_category_badge_renders_on_chunk() -> None:
-    """A change-request todo carrying an AUDIT:<category> tag renders its
-    category as a ⚑ badge on the chunk — so a content-QA audit finding is
-    visible in the draft reader (not buried in the gripe bug-tracker)."""
-    rows = _render_row(
-        [
-            _req(
-                7,
-                started=False,
-                done=False,
-                failed=False,
-                status="open",
-                audit="missing-citation",
-            )
-        ]
-    )
-    assert "⚑ missing-citation" in rows
-
-    # A plain change request (no audit tag) shows no ⚑ badge.
-    plain = _render_row(
-        [_req(8, started=False, done=False, failed=False, status="open")]
-    )
-    assert "⚑" not in plain
-
-
-def test_inline_editor_xdata_is_single_quoted() -> None:
-    """The per-block inline editor's `x-data="draftEdit(...)"` must pass its
-    string args **single-quoted**. Rendering them via `| tojson` emits DOUBLE
-    quotes (`draftEdit("nt", …)`) which terminate the double-quoted `x-data`
-    attribute, so Alpine never builds the component and every `editing`/`raw`/
-    `err` reference throws `Can't find variable` (the click-to-edit-dead bug).
-    A plain substring check for `draftEdit(` passes even on the broken form,
-    so assert the quoting explicitly."""
-    rows = _render_row([])
-    assert "x-data=\"draftEdit('nt', 'BBBBBB'" in rows  # single-quoted args
-    assert 'draftEdit("' not in rows  # the tojson double-quote that broke it
-
-
-def test_wordcount_badge_xdata_is_attribute_safe(draft_client: TestClient) -> None:
-    """The word-count badge embeds a JSON object in `x-data`. Rendered via
-    `| tojson` alone, its double quotes terminate the double-quoted attribute
-    (`x-data="{ wc: {"` → Alpine 'Unexpected token'), so the live poll is dead.
-    It must be `forceescape`d so the browser decodes valid JSON. Regression:
-    the badge renders and is NOT in the attribute-breaking bare-quote form."""
-    r = draft_client.get("/drafts/nt")
-    assert r.status_code == 200
-    assert "{ wc:" in r.text  # the badge renders
-    assert 'x-data="{ wc: {"' not in r.text  # not the bare-quote (broken) form
-
-
 def test_tasks_gist_summarises_long_bodies_only() -> None:
     """A multi-line / long todo body gets a 3-keyword RAKE gist; a short
     single-line one is shown verbatim (no gist)."""
@@ -2026,181 +1345,6 @@ def test_tasks_gist_summarises_long_bodies_only() -> None:
     )
     g = _gist(long_body)
     assert g and " · " in g  # joined keyword phrases
-
-
-def test_hydrated_rows_reprocess_htmx(draft_client: TestClient) -> None:
-    """Each row the scroller fetches into the window must have htmx re-wire
-    its injected hover-preview chips — else citation/¶ mouseovers open an
-    empty slot. The virtual scroller htmx.process()es each inserted node."""
-    r = draft_client.get("/drafts/nt")
-    assert r.status_code == 200
-    assert "htmx.process(node)" in r.text
-
-
-def test_reader_has_view_slider(draft_client: TestClient) -> None:
-    """The body/summary/keywords 3-stop slider + per-block view spans."""
-    r = draft_client.get("/drafts/nt")
-    assert r.status_code == 200
-    assert "setView(" in r.text  # the radio control
-    assert "view === 'summary'" in r.text and "view === 'keywords'" in r.text
-
-
-def test_review_dropdown_and_dispatch(
-    draft_client: TestClient, draft_runtime: FakeRuntime
-) -> None:
-    """Heading rows offer a review ▾ menu; selecting one files an anchored
-    review-todo (parented on the project) via the put verb."""
-    page = draft_client.get("/drafts/nt")
-    assert "review ▾" in page.text and "/drafts/nt/review" in page.text
-    r = draft_client.post(
-        "/drafts/nt/review",
-        data={"handle": "AAAAAA", "reviewer": "structural"},
-        follow_redirects=False,
-    )
-    assert r.status_code == 303
-    verb, args = draft_runtime.calls[-1]
-    assert verb == "put" and args["kind"] == "todo"
-    assert args["parent_id"] == 1 and args["meta"]["anchor"] == "AAAAAA"
-    assert (
-        args["meta"]["review"] == "structural" and "Structural review" in args["text"]
-    )
-
-
-def test_find_verbatim_doc_order(draft_client: TestClient) -> None:
-    """Verbatim find = case-insensitive substring in document order."""
-    r = draft_client.get("/drafts/nt/find", params={"q": "intro", "mode": "verbatim"})
-    assert r.status_code == 200
-    body = r.json()
-    assert body["mode"] == "verbatim"
-    assert body["handles"] == ["BBBBBB"]  # only the intro para matches
-    # a miss returns no handles
-    assert (
-        draft_client.get("/drafts/nt/find", params={"q": "zzzzz"}).json()["handles"]
-        == []
-    )
-
-
-def test_find_semantic_degrades_without_embedder(draft_client: TestClient) -> None:
-    """No embedder wired (the fake runtime has no hub) → semantic falls
-    back to a verbatim find rather than 500ing."""
-    r = draft_client.get("/drafts/nt/find", params={"q": "intro", "mode": "semantic"})
-    assert r.status_code == 200
-    body = r.json()
-    assert body["mode"] == "verbatim" and body["handles"] == ["BBBBBB"]
-
-
-def test_find_semantic_ranked(tmp_path) -> None:
-    """With an embedder, semantic find returns the draft's chunks
-    cosine-ranked (best-first), mapped chunk_id→handle."""
-
-    class _Emb:
-        def embed_one(self, q):
-            return [0.1, 0.2, 0.3]
-
-    rt = FakeRuntime(DraftFakeStore())
-    rt.hub = SimpleNamespace(embedder=_Emb())
-    client = TestClient(
-        create_app(runtime=rt, web_config=WebConfig(corpus_dir=tmp_path))
-    )
-    r = client.get("/drafts/nt/find", params={"q": "nano", "mode": "semantic"})
-    assert r.status_code == 200
-    body = r.json()
-    assert body["mode"] == "semantic"
-    # search_blocks_semantic ranked chunk 1 (AAAAAA) before chunk 2 (BBBBBB)
-    assert body["handles"] == ["AAAAAA", "BBBBBB"]
-
-
-def test_reader_highlights_defined_abbrev(draft_client: TestClient) -> None:
-    """Recall: a defined abbreviation (PEI) is wrapped in an instant-tooltip
-    <abbr.pa> whose .pa-pop carries the definition (no laggy native title);
-    the .pa tooltip CSS is present on the page."""
-    r = draft_client.get("/drafts/nt")
-    assert r.status_code == 200
-    assert '<abbr class="pa"' in r.text
-    # The definition rides in a .pa-def span inside the .pa-pop tooltip (ADR
-    # 0052 rich hover — a part additionally shows MPN/manufacturer/datasheet).
-    assert '<span class="pa-def">polyethyleneimine</span>' in r.text
-    assert ".pa>.pa-pop" in r.text  # the instant-tooltip CSS shipped
-
-
-def test_reader_shows_connections_and_edits(draft_client: TestClient) -> None:
-    """The Connections surface: graph links (memory:20) render as chips
-    with a count, and the edit-churn chip shows 'changed 2×'."""
-    r = draft_client.get("/drafts/nt")
-    assert r.status_code == 200
-    assert "1 connection" in r.text
-    assert "/r/memory/20" in r.text and "A decision" in r.text
-    assert "changed 2×" in r.text
-
-
-def test_reader_shows_links_in_out_and_anchored_flag(
-    draft_client: TestClient,
-    draft_runtime: FakeRuntime,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The In/Out link-edges block (gripe 178766): an outbound edge AND an
-    inbound edge on the same chunk render split by direction — the split
-    ``precis_web.draft_links.chunk_links`` derives from
-    ``store.chunk_connections`` (which already returns both directions;
-    the merged Connections disclosure above just discards ``direction``).
-    The anchored change-request ("flag") still renders as its own card too
-    — both surfaces read the SAME ``store.anchored_todos`` data."""
-    store = draft_runtime.store
-
-    def fake_conns(
-        ref_id: object, handles: object
-    ) -> dict[str, list[dict[str, object]]]:
-        return {
-            "BBBBBB": [
-                {
-                    "relation": "derived-from",
-                    "direction": "out",
-                    "kind": "memory",
-                    "ident": "20",
-                    "title": "A decision",
-                },
-                {
-                    "relation": "cites",
-                    "direction": "in",
-                    "kind": "memory",
-                    "ident": "21",
-                    "title": "A citing dream",
-                },
-            ]
-        }
-
-    def fake_flags(handles: object) -> dict[str, list[dict[str, object]]]:
-        return {
-            "BBBBBB": [
-                {
-                    "ref_id": 99,
-                    "title": "tighten this claim",
-                    "request": "tighten this claim",
-                    "status": "open",
-                    "done": False,
-                    "started": False,
-                    "asking": "",
-                    "ask_tag": "",
-                    "failed": False,
-                    "fail_reason": "",
-                    "fail_job_id": None,
-                    "audit": "",
-                }
-            ]
-        }
-
-    monkeypatch.setattr(store, "chunk_connections", fake_conns)
-    monkeypatch.setattr(store, "anchored_todos", fake_flags)
-
-    r = draft_client.get("/drafts/nt")
-    assert r.status_code == 200
-    body = r.text
-    assert "/r/memory/20" in body and "A decision" in body  # out edge
-    assert "/r/memory/21" in body and "A citing dream" in body  # in edge
-    assert "tighten this claim" in body  # anchored flag's change-request card
-
-
-# ── author byline editor (pipe-delimited textarea) ────────────────────
 
 
 def test_parse_author_lines_pipe_delimited() -> None:
@@ -2244,10 +1388,3 @@ def test_draft_author_lines_empty() -> None:
     from precis_web.routes.drafts import _draft_author_lines
 
     assert _draft_author_lines(make_ref(kind="draft", authors=None)) == ""
-
-
-def test_reader_shows_author_editor_form(draft_client: TestClient) -> None:
-    r = draft_client.get("/drafts/nt")
-    assert r.status_code == 200
-    assert 'action="/drafts/nt/authors"' in r.text
-    assert 'name="authors"' in r.text

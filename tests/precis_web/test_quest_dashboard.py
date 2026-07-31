@@ -143,10 +143,10 @@ def test_quest_detail_panels_render_with_data(client, runtime, monkeypatch) -> N
     # Dossier panel.
     assert "MOF linkers look like the best lead so far." in resp.text
     assert "zeolite Y" in resp.text
-    assert "/drafts/quest-97-dossier" in resp.text
+    assert "/smartdraft/quest-97-dossier" in resp.text
 
     # Paper hub links.
-    assert "/drafts/quest-97-paper" in resp.text
+    assert "/smartdraft/quest-97-paper" in resp.text
     assert "/drafts/quest-97-paper/export.docx" in resp.text
     assert "/drafts/quest-97-paper/pdf" in resp.text
 
@@ -328,9 +328,9 @@ def test_quest_draft_url_prefers_slug_falls_back_to_id() -> None:
             501: SimpleNamespace(id=501, slug="quest-97-dossier"),
         }
     )
-    assert refs_mod._quest_draft_url(store, 501) == "/drafts/quest-97-dossier"
+    assert refs_mod._quest_draft_url(store, 501) == "/smartdraft/quest-97-dossier"
 
     store_no_slug = SimpleNamespace(
         fetch_refs_by_ids=lambda ids: {502: SimpleNamespace(id=502, slug=None)}
     )
-    assert refs_mod._quest_draft_url(store_no_slug, 502) == "/drafts/502"
+    assert refs_mod._quest_draft_url(store_no_slug, 502) == "/smartdraft/502"

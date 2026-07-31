@@ -2256,6 +2256,19 @@ by `deploy` with no `agent_rw`/`agent_ro` grants — add an ACL diff/re-grant st
   with `requires_env`/`requires_secret`, then flip `PrecisConfig.extra` to `forbid`.
 - **Tighten broad `except Exception`** (317 across 141 files; many hide spin loops).
 - **Add headless-browser tests for the draft editor** (also above).
+- **Smartdraft review-parity remainder** — the retired classic reader had a
+  read-only per-block **F/C/S/A checker-flag strip** (mirroring `view='review'`:
+  ✓ current / ~ stale / – unreviewed) and a **machine-authored** border marker
+  for grounded-authoring-reviewer edits. Neither is ported to `/smartdraft`
+  (which surfaces review state via the focus ✓ + the "Needs · in-flight" rail);
+  the `chunk_review` ledger + `view='review'` are unchanged, so this is UI-only.
+  Port into the smartdraft focus/TOC if the per-block lens view is still wanted.
+  Also unported: the classic reader's `POST /drafts/{id}/around` bulk
+  "expand around here into eyes over the reference ring" affordance
+  (`draft_eyes.expand_around`, ADR 0051 §6) — retired with the page; smartdraft
+  has single pin/unpin but no bulk-expand. `expand_around` is still in
+  `draft_eyes.py` (only its route + UI went), so re-wiring it into smartdraft is
+  a UI-only add if the working-set bulk-expand is still wanted.
 
 **P3 — type/platform/debt:**
 - **Burn down the five disabled mypy categories** (`pyproject.toml`; ~184 across

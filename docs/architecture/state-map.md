@@ -1836,10 +1836,24 @@ The master kinds table lives in the `precis-overview` skill.
 - **`chunks.numerics TEXT[]`** — GIN-indexed lexical filter
   (`WHERE numerics @> ARRAY['1.523 eV']`); direct-SQL only, not yet in search verbs.
 - **`precis web`** — browser UI (Tasks/Papers/Console/Conversations/Status).
-  Two-pane paper reader (`routes/papers.py` + vendored pdf.js); the **draft
-  reader** (`routes/drafts.py`) is a true virtual scroller for 10k-block drafts
-  (skeleton + windowed DOM, no IntersectionObserver — see git log for the
-  feedback-loop lesson). `precis_web` is a sibling package over the handlers (ADR 0026).
+  Two-pane paper reader (`routes/papers.py` + vendored pdf.js); the **sole draft
+  reader is `/smartdraft`** (`routes/smartdraft.py` + `smartdraft.py`) — the
+  three-pane fisheye reader (left TOC · middle focus+neighbourhood · right
+  collaborate). The classic virtual-scroll reader (`GET /drafts/{ident}`) was
+  **retired**: that path (and `/draft/{ident}`, and every `¶`/`§` `/c/{handle}`
+  deep link, `refs._quest_draft_url`, agentlog back-links) now 307/303-redirects
+  into smartdraft, focused by `?focus=<dc|base58>` (`focus_index` accepts both).
+  `routes/drafts.py` **remains** as the shared backend + library smartdraft
+  reuses (~20 endpoints: all editing/export/figure/lifecycle, plus the ported
+  `/human-review` + `/review`); only the reader page + its reader-only endpoints
+  (`/skeleton`,`/rows`,`/row`,`/version`,`/wordcount`,`/find`,`/around`,
+  `/listkind`,`/style`,`/prompt`,`/todo/*`) and templates (`detail`/`_row*`/
+  `prompt_preview`) were removed. Smartdraft's **fisheye** mode is budget-bounded
+  (`_TOC_BUDGET`); its **full-document** mode (📄, `relevance=0`) renders a
+  window around the focus and lazily hydrates distant chunks on scroll
+  (IntersectionObserver → `GET /smartdraft/{ident}/blocks`, `_FULLDOC_WINDOW`),
+  so a 10k-chunk draft loads O(window), not O(N). `precis_web` is a sibling
+  package over the handlers (ADR 0026).
   **Export can bundle the cited sources** (`export/sources.py`,
   `collect_cited_sources`/`build_sources_zip`): the reader's `+ sources`
   checkbox appends every cited paper/datasheet PDF the host holds to the PDF as
@@ -1850,13 +1864,15 @@ The master kinds table lives in the `precis-overview` skill.
   `corpus_reconcile` (`corpus_layout.rebase_onto_local`); the corpus being
   per-host, unlocatable sources are listed in the manifest rather than failing.
   **Review surface** (paper-writing-pipeline `chunk_review` ledger,
-  `OPEN-ITEMS.md` § "Topic dossiers"): a ✓ gutter checkoff per block
-  (`POST /drafts/{id}/human-review` → `edit(review='human')`, one-way), a
-  read-only per-chunk F/C/S/A checker-flag strip mirroring
-  `view='review'` (✓ current / ~ stale / – unreviewed), a machine-authored
-  marker for grounded-authoring-reviewer edits, and a toolbar toggle for
-  the per-draft `authoring_enabled` flag (`edit(kind='draft',
-  authoring=)`).
+  `OPEN-ITEMS.md` § "Topic dossiers"): a ✓ sign-off on the smartdraft **focus**
+  block (`POST /drafts/{id}/human-review` → `edit(review='human')`, one-way;
+  emerald=reviewed / amber=stale) and a per-heading **review ▾** menu
+  (structural / deep_review / all → `POST /drafts/{id}/review`, files an
+  anchored review-todo), plus a toolbar toggle for the per-draft
+  `authoring_enabled` flag (`edit(kind='draft', authoring=)`). The classic
+  reader's read-only per-block F/C/S/A checker-flag strip + machine-authored
+  marker were retired with it (not yet ported to smartdraft); the underlying
+  `view='review'` ledger is unchanged.
 - **SSRF guard** — `src/precis/utils/safe_fetch.py` (used by `handlers/web.py`
   + `workers/fetch_oa.py`); DNS-resolves + revalidates every redirect against the
   private/loopback/link-local/cloud-metadata blocklist.
@@ -1974,7 +1990,8 @@ Every bespoke list this replaced — `/items`, `/papers` (+`/papers/triage`),
 `/drafts`, `/papers-needed`, `/refs/{oracle,patent}`, `/cfp` — is now a
 307-redirect to a Drive kind/tag/state preset (e.g.
 `/drive?k=paper&submitted=1`); each kind's **detail reader** (`/papers/{id}`,
-`/drafts/{id}`, …) is untouched — only the *list* retired. The 🔍 loupe and
+…) is untouched — only the *list* retired (a draft opens in `/smartdraft/{id}`,
+and the legacy `/drafts/{id}` reader path now 307-redirects there). The 🔍 loupe and
 the flag-toggle bounce-back (`src/precis_web/routes/flags.py`) both
 default to `/drive` now.
 

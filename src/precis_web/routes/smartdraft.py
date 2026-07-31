@@ -33,6 +33,7 @@ from precis_web.routes.drafts import (
     _draft_author_lines,
     _draft_ref,
     _owner_workspace,
+    _review_status_by_chunk,
 )
 
 router = APIRouter(tags=["smartdraft"])
@@ -174,6 +175,21 @@ async def reader(
 
     _, owner_ws = _owner_workspace(store, ref)
 
+    # Human review-ledger status for the FOCUS block (migration 0086), for the
+    # ✓ sign-off control ported from the classic reader. Focus-scoped like a
+    # per-request overlay (mirrors pins/marks) rather than baked into the cached
+    # ChunkNodes — a /human-review click changes the ledger without minting a
+    # new chunk_id, so caching it would go stale; recomputed each render (incl.
+    # the __sdRefresh after a click). ``None`` = not a reviewable block (hide
+    # the ✓); ``{}`` = reviewable, never reviewed; ``{'human': {...}}`` =
+    # reviewed (``.dirty`` if the text changed since). Same shape + helper the
+    # classic reader's row builder uses, so the two can't drift.
+    focus_review = (
+        _review_status_by_chunk(store, ref.id).get(view.focus.chunk_id)
+        if view.focus is not None
+        else None
+    )
+
     return templates.TemplateResponse(
         request,
         "smartdraft/view.html.j2",
@@ -207,6 +223,42 @@ async def reader(
             "cur_doctype": str(owner_ws.get("doc_type") or ""),
             "cur_brief": str(owner_ws.get("brief") or ""),
             "authoring_enabled": store.draft_authoring_enabled(ref.id),
+            "focus_review": focus_review,
+        },
+    )
+
+
+@router.get("/smartdraft/{ident}/blocks", response_class=HTMLResponse)
+async def blocks(
+    request: Request, ident: str, dcs: str = "", debug: str = ""
+) -> Response:
+    """Lazy-hydrate fragment for full-document (📄) mode: the real reading
+    blocks for a window of ``dcs`` (``dc<id>`` handles) scrolling into view.
+    The client's IntersectionObserver batches nearby placeholders into one
+    request and swaps the returned blocks in place, so a huge draft's full-doc
+    view loads a screenful of nodes, not all N. Renders the SAME
+    ``sd_doc_block`` macro the initial page uses (``smartdraft/_block.html.j2``)
+    so a hydrated block is byte-identical to a server-rendered one."""
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    if ref is None:
+        return HTMLResponse("", status_code=404)
+    marks = draft_eyes.load_marks(store, ref.id)
+    nodes = smartdraft.build_nodes(store, ref.id, marks=marks)
+    by_dc = {n.dc: n for n in nodes}
+    wanted = [d.strip() for d in dcs.split(",") if d.strip()]
+    sel = [by_dc[d] for d in wanted if d in by_dc]
+    # Violet claim-hub cites, resolved once for just this window (the reader
+    # does the same for its middle pane) so a hydrated block's [fi…]/pub_id
+    # cites render as claim anchors identically to the initial render.
+    claims = hub_cite_heads(store, [n.text or "" for n in sel])
+    return templates.TemplateResponse(
+        request,
+        "smartdraft/_blocks.html.j2",
+        {
+            "nodes": sel,
+            "claims": claims,
+            "debug": debug.strip().lower() in ("1", "true", "on", "yes"),
         },
     )
 

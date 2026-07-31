@@ -1,0 +1,6 @@
+{# Lazy-hydrate fragment for GET /smartdraft/{ident}/blocks?dcs=… — the real
+   doc blocks for a window of full-document placeholders scrolling into view.
+   Same macro the initial render uses, so a hydrated block matches exactly. #}
+{% import "smartdraft/_block.html.j2" as sd_block %}
+{% for n in nodes %}{{ sd_block.sd_doc_block(n, n.text, debug, claims) }}
+{% endfor %}

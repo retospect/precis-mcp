@@ -1,7 +1,8 @@
 {# Shared draft-chunk figure rendering (gripe 56668) — extracted from the
-   classic /drafts reader (drafts/_row.html.j2) so /drafts AND /smartdraft run
-   the SAME figure implementation, not a drifting copy (mirrors how gripe
-   56746 extracted drafts/_editors.html.j2 for the text/table editors):
+   classic /drafts reader (since retired) so /smartdraft runs the SAME
+   figure implementation the reader used to, not a drifting copy (mirrors
+   how gripe 56746 extracted drafts/_editors.html.j2 for the text/table
+   editors):
 
      - ``figure_media(ident, handle, rn, alt)`` — the medium-aware render
        (ADR 0034/0057/0058): a ``blob``/``graph`` figure → an ``<img>``; a

@@ -1,0 +1,14 @@
+{# One full-document reading block (a non-focus chunk in 📄 mode). Shared by the
+   initial page render (smartdraft/view.html.j2) AND the lazy-hydrate endpoint
+   (/smartdraft/{ident}/blocks → smartdraft/_blocks.html.j2), so a placeholder
+   swapped in on scroll is byte-identical to one rendered server-side.
+
+   A <div> (NOT an <a>): the linkified body carries its own citation <a>
+   anchors, and an <a> may not nest another — the HTML parser auto-closes the
+   outer block <a> at the first citation, splitting the paragraph onto a new
+   line. data-dc + cursor-pointer make the whole block a focus-nav click target
+   via the delegated handler in view.html.j2. #}
+{% macro sd_doc_block(n, display, debug, claims) -%}
+{%- set hd = 'font-semibold text-slate-900 text-base' if n.is_heading else '' -%}
+<div data-dc="{{ n.dc }}" class="block cursor-pointer whitespace-pre-wrap rounded px-2 py-1 text-slate-700 hover:bg-slate-50 {{ hd }}">{% if debug %}<span class="font-mono text-[9px] text-sky-500">{{ n.dc }} </span>{% endif %}{{ display | linkify_refs(markdown=True, compact=True, claims=claims) }}</div>
+{%- endmacro %}

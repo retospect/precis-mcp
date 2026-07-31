@@ -213,5 +213,7 @@ def test_web_list_and_detail_render(draft: DraftHandler, hub: Hub) -> None:
         assert r2.status_code == 200
         assert "Assembled prompt" in r2.text
         assert "do the thing" in r2.text  # prompt captured
-        # the touched chunk links back into the draft reader
-        assert f"/drafts/smoke#c-{chunk.handle}" in r2.text
+        # the touched chunk links back into the (smartdraft) draft reader,
+        # focused at the chunk by its base58 handle (the classic /drafts reader
+        # was retired; focus_index resolves the base58 form)
+        assert f"/smartdraft/smoke?focus={chunk.handle}" in r2.text

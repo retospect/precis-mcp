@@ -48,6 +48,12 @@ _KEEP_THRESHOLD = 0.18
 #: typical viewport). A true measure-and-fill is a client-side follow-up.
 _MID_BACK = 4
 _MID_FWD = 6
+#: Full-document (📄, relevance-off) mode renders ±this-many chunks around the
+#: focus verbatim server-side; everything else is a lazily-hydrated `skel`
+#: placeholder. Keeps the initial full-doc page O(window), not O(N), on a huge
+#: draft — the client fills the rest on scroll (`/blocks`). Fisheye mode is
+#: already bounded by `_TOC_BUDGET`; this bounds the one unbounded reading path.
+_FULLDOC_WINDOW = 40
 #: Verbatim cap for the ±1 neighbours (truncated toward the focus edge so the
 #: text reads continuously into/out of the focus).
 _NEIGHBOR_CAP = 400
@@ -346,10 +352,18 @@ def _load_chunk_tags(store: Any, ref_id: int) -> dict[int, list[str]]:
 
 def focus_index(nodes: list[ChunkNode], focus_dc: str | None) -> int:
     """The reading-order index of the focus chunk, defaulting to the first body
-    chunk (else 0). A missing/stale handle degrades to the default."""
+    chunk (else 0). A missing/stale handle degrades to the default.
+
+    ``focus_dc`` may be the universal ``dc<id>`` handle OR the legacy base58
+    anchor (``chunks.handle``, optionally ``¶``/``c-`` prefixed): the app-wide
+    ``/c/<handle>`` and agentlog deep links carry base58, so accepting both
+    lets every ``¶``/``§`` citation click land on the right chunk here."""
     if focus_dc:
+        base = focus_dc.lstrip("¶")
+        if base.startswith("c-"):
+            base = base[2:]
         for n in nodes:
-            if n.dc == focus_dc:
+            if n.dc == focus_dc or n.base58 == base:
                 return n.idx
     for n in nodes:
         if not n.is_heading:
@@ -500,16 +514,36 @@ def build_outline(
     return roots
 
 
+def _est_px(n: ChunkNode) -> int:
+    """A rough rendered-height estimate (px) for a full-doc ``skel`` spacer, so
+    the un-hydrated document has a sane scroll height/scrollbar before its
+    distant chunks are lazily filled. Deliberately approximate — the placeholder
+    is replaced by the real block (its true height) the moment it nears the
+    viewport; the estimate only has to keep the scrollbar from lurching wildly."""
+    if n.is_heading:
+        return 34
+    if n.is_figure:
+        return 240
+    if n.is_table:
+        return 180
+    text = n.text or ""
+    lines = (len(text) // 90) + text.count("\n") + 1
+    return min(40 + lines * 22, 1200)
+
+
 @dataclass(slots=True)
 class MidRow:
     """A middle-pane row. ``mode`` grades the fidelity by distance to focus:
     ``full`` (focus) · ``tail``/``head`` (±1 verbatim, truncated toward the
-    focus) · ``summary`` (±2). ``display`` is the text to render at that mode."""
+    focus) · ``summary`` (±2). In full-document mode a distant chunk is a
+    ``skel`` placeholder (``est`` px tall) the client hydrates lazily on scroll
+    via ``/smartdraft/{ident}/blocks``. ``display`` is the text to render."""
 
     node: ChunkNode
     is_focus: bool
     mode: str = "summary"
     display: str = ""
+    est: int = 0  # skel-mode height estimate (px) for the un-hydrated spacer
 
 
 @dataclass(slots=True)
@@ -647,17 +681,28 @@ def assemble_view(
 
     middle: list[MidRow] = []
     if not relevance:
-        # Full / uncompressed document: every chunk verbatim (the focus is still
-        # framed). The Fisheye⇄Full toggle drives both panes from one flag.
+        # Full / uncompressed document. Only a window around the focus renders
+        # verbatim server-side; distant chunks are `skel` placeholders (sized by
+        # `_est_px`) the client hydrates lazily on scroll (via `/blocks`), so a
+        # 10k-chunk draft costs a screenful of real nodes at load, not 10k. The
+        # focus stays framed. The Fisheye⇄Full toggle drives both panes.
+        lo = max(0, fi - _FULLDOC_WINDOW)
+        hi = min(len(nodes), fi + _FULLDOC_WINDOW + 1)
         for i, n in enumerate(nodes):
-            middle.append(
-                MidRow(
-                    node=n,
-                    is_focus=(i == fi),
-                    mode=("full" if i == fi else "doc"),
-                    display=n.text,
+            if i == fi:
+                middle.append(
+                    MidRow(node=n, is_focus=True, mode="full", display=n.text)
                 )
-            )
+            elif lo <= i < hi:
+                middle.append(
+                    MidRow(node=n, is_focus=False, mode="doc", display=n.text)
+                )
+            else:
+                middle.append(
+                    MidRow(
+                        node=n, is_focus=False, mode="skel", display="", est=_est_px(n)
+                    )
+                )
     else:
         lo = max(0, fi - _MID_BACK)
         hi = min(len(nodes), fi + _MID_FWD + 1)

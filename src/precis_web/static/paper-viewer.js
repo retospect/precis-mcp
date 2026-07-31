@@ -26,8 +26,8 @@
  *     source text. Click = jump + highlight, same as the other modes.
  *
  * Defined as a plain global so Alpine's `x-data="paperDoc(...)"` can
- * call it (mirrors drafts/detail.html.j2's draftDoc). Loaded before
- * Alpine starts on DOMContentLoaded.
+ * call it (mirrors the classic /drafts reader's draftDoc, since retired).
+ * Loaded before Alpine starts on DOMContentLoaded.
  */
 function paperDoc(paperId, citedOrd, hasPdf, initialTab) {
   return {

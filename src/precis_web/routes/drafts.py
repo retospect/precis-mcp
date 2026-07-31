@@ -1,47 +1,29 @@
-"""Drafts tab — a read-first viewer/editor for the ``draft`` kind (ADR 0033).
+"""Drafts — shared library + backend endpoint host for the ``draft`` kind
+(ADR 0033). The classic per-block virtual-scroll reader page this module
+used to serve is retired: ``/smartdraft/{ident}`` (``routes/smartdraft.py``)
+is the sole draft reader now, and imports several of this module's helpers
+(``_doc_state``, ``_review_status_by_chunk``, ``_ref_chips``,
+``_paper_pdf_missing``, ``_work_items``, …) plus reuses the hand-driven
+working-set + human-review endpoints below unchanged. ``GET /drafts/{ident}``
+and ``GET /draft/{ident}`` are kept as 307 redirects into smartdraft so
+every bookmark, quest link, and ``/c/<handle>`` deep-link still lands on the
+draft.
 
-Tier-A surface (the document is *steered*, not hand-typed). The reader is
-a **per-block row grid**: one row per chunk in DFS reading order, each row
-three columns —
-
-  ┌ content (raw source via linkify_refs + KaTeX, hierarchy-indented,
-  │          headings collapse their subtree)
-  ├ meta    (terse: the refs this block makes + in-flight change-requests)
-  └ change  (a per-block "around here…" box → an anchored todo)
-
-**On-demand loading (true virtual scrolling).** A massive draft (10k+
-blocks) keeps only the on-screen *window* of rows in the DOM — not a node
-per block. The reader embeds a compact **skeleton** (one tiny record per
-block: handle, kind, depth, ancestors, heading title, height estimate) and
-renders the first ``INITIAL_WINDOW`` rows server-side; everything else is a
-pair of sized spacer ``<div>``s (``#dr-top`` / ``#dr-bot``) so the scrollbar
-is right. Client JS (``draftDoc`` in ``detail.html.j2``) reconciles
-``#dr-win`` to the blocks intersecting the viewport (± a margin) on scroll,
-fetching them in one ``/rows?handles=…`` batch and dropping rows that scroll
-away. So a 9,700-block draft costs ~a screenful of nodes, not 9,700 — which
-is what fixed the "works but with a minute lag" (the browser was
-styling/laying-out/Alpine-walking every block). Collapse recomputes the
-visible set + spacers (no per-node binding). The whole-draft inputs (reading
-order, version, abbrevs) are memoised per ``(ref, version)``. A draft with ≤
-``INITIAL_WINDOW`` blocks renders entirely server-side. Find, collapse, and
-deep-links scroll the target block into the window before acting.
-
-Routes:
+Tier-A surface (the document is *steered*, not hand-typed). Routes still
+served from here:
 
 * ``GET /drafts`` — retired into Drive (nav restructure): redirects to the
   ``kind=draft`` facet preset (``/drive?k=draft&submitted=1``), mirroring
-  ``routes/papers.py``'s WS1b retirement. The reader below is unaffected.
-* ``GET /drafts/{ident}`` — the reader (slug or numeric id); embeds the
-  skeleton + the server-rendered first window.
-* ``GET /draft/{ident}`` — singular convenience alias → 303 to the reader.
-* ``POST /drafts/{ident}/request`` — file a change request (anchored todo
-  parented on the draft's project; flows into the todo tree → dispatch).
-* ``POST /drafts/{ident}/marks`` / ``/around`` / ``/request-ws`` — the
-  hand-driven working set (ADR 0051 §6, see ``precis_web.draft_eyes``): toggle
-  pen/eye markers on paragraphs, expand a selection into eyes over its
-  reference ring, and file a change request carrying the whole set
+  ``routes/papers.py``'s WS1b retirement.
+* ``GET /drafts/{ident}`` / ``GET /draft/{ident}`` — 307 redirects into
+  ``/smartdraft/{ident}``.
+* ``POST /drafts/{ident}/marks`` / ``/request-ws`` — the hand-driven working
+  set (ADR 0051 §6, see ``precis_web.draft_eyes``): toggle pen/eye markers on
+  paragraphs and file a change request carrying the whole set
   (``meta.working_set``) so the planner tick edits the pens grounded in the
-  eyes instead of a single anchor.
+  eyes instead of a single anchor. (The classic reader's ``/around``
+  bulk-"expand around here into eyes" affordance retired with the page and is
+  not yet ported to smartdraft — see ``OPEN-ITEMS.md``.)
 * ``POST /drafts/{ident}/human-review`` — the ✓ gutter checkbox: records the
   human reviewer's sign-off on one block (``edit(kind='draft',
   review='human')``, migration 0086's ``chunk_review`` ledger). One-way
@@ -51,18 +33,15 @@ Routes:
 * ``POST /drafts/{ident}/delete`` — soft-delete the whole draft, gated on
   typing its name (atomic: ref ``deleted_at`` + chunks retired; recoverable).
 * ``GET /c/{handle}`` — resolve a chunk handle → redirect to where it
-  lives: a draft chunk (``dc``/``¶``) into the reader at ``#c-<handle>``, a
-  paper/other chunk (``pc``/``mc``/…) through the ``/r`` resolver at that
-  chunk. The click target of every ``¶``/``§`` anchor.
+  lives: a draft chunk (``dc``/``¶``) into the smartdraft reader focused at
+  the chunk, a paper/other chunk (``pc``/``mc``/…) through the ``/r``
+  resolver at that chunk. The click target of every ``¶``/``§`` anchor.
 * ``GET /preview/chunk/{handle}`` — hover-popover quote for any chunk
   handle (draft or paper/other), so a ``§`` paper-chunk citation hovers.
-* ``GET /drafts/{ident}/row/{handle}`` — one hydrated row.
-* ``GET /drafts/{ident}/rows`` — ``?handles=a,b,…`` batch-renders those
-  blocks (the scroller's window fetch); no param → the whole document.
-* ``GET /drafts/{ident}/skeleton`` — the skeleton + version token as JSON;
-  the live poll refetches it to re-window after an edit.
-* ``GET /drafts/{ident}/version`` — a monotone version token (max
-  ``chunk_events.event_id``) the poll compares against.
+* Direct-edit / structural routes (``/text``, ``/table``, ``/block…``,
+  ``/validate-refs``, ``/ref-search``, ``/figure…``, ``/authors``,
+  ``/workspace``, ``/authoring``, ``/fork``, exports) — shared by
+  smartdraft's ported editor UI.
 
 Rendering is **raw source** (Tier A); the resolution pass that computes
 §-numbers / resolves cross-refs is the export engine (Tier B), shared
@@ -94,7 +73,10 @@ from fastapi.responses import (
 from markupsafe import Markup
 
 from precis.draft.scaffolds import DOC_TYPE_BRIEF as _DOC_TYPE_BRIEF
-from precis.draft.scaffolds import DOC_TYPES as _DOC_TYPES
+
+# Unused in this module itself, but re-exported: routes/drive.py and
+# routes/smartdraft.py both import _DOC_TYPES from here.
+from precis.draft.scaffolds import DOC_TYPES as _DOC_TYPES  # noqa: F401
 from precis.draft.scaffolds import SCAFFOLDS as _SCAFFOLDS
 from precis.draft.scaffolds import SECTION_STYLES as _SECTION_STYLES
 from precis.errors import BadInput
@@ -103,25 +85,16 @@ from precis.utils import draft_markup, handle_registry, mentions
 from precis.utils.authors import (
     author_display,
     author_names,
-    build_byline,
     to_author_dicts,
 )
-from precis.utils.embed_query import embed_query
-from precis.utils.figure_clearance import draft_figure_clearance
-from precis.utils.figure_source import resolve_figure_source
 
 # Planner tiers a change-request / review can run on, via the ``LLM:<model>``
 # tag. Single-sourced from the router's planner alias map (ADR 0046) so the
 # accepted set — the cloud triad plus the cluster's ``local`` qwen tier — never
 # drifts from ``Tag.parse_strict`` or the ``planner_models()`` dropdown.
 from precis.utils.llm.router import PLANNER_MODEL_ALIASES as _PLANNER_MODELS
-from precis.utils.table_data import Scalar, table_payload
+from precis.utils.table_data import Scalar
 from precis_web import draft_eyes
-from precis_web.claim_render import (
-    cite_heads_in,
-    hub_cite_heads,
-    render_claim_evidence,
-)
 from precis_web.deps import (
     await_dispatch,
     get_runtime,
@@ -129,21 +102,11 @@ from precis_web.deps import (
     redirect_or_error,
     templates,
 )
-from precis_web.draft_links import chunk_links
 from precis_web.linkify import popover_chip
 
 router = APIRouter(tags=["drafts"])
 
 log = logging.getLogger(__name__)
-
-#: How many blocks the reader renders fully on first paint. The rest land
-#: as lightweight placeholders and hydrate on demand (loaded as they
-#: scroll near the viewport, unloaded when they drift far away) — so a
-#: massive draft no longer renders thousands of enriched rows up front nor
-#: holds them all in the DOM. A draft with ≤ this many blocks renders
-#: entirely server-side and behaves exactly as before; windowing only
-#: kicks in past it.
-INITIAL_WINDOW = 30
 
 #: Bounded ``(ref_id, version) → terms`` cache. ``defined_terms`` is a
 #: whole-draft ``string_agg`` + Schwartz-Hearst scan plus the registry
@@ -174,41 +137,6 @@ def _abbrevs_cached(store: Any, ref_id: int, version: int) -> dict[str, Any]:
     while len(_ABBREV_CACHE) > _ABBREV_CACHE_MAX:
         _ABBREV_CACHE.popitem(last=False)
     return val
-
-
-def _callouts_from_order(chunk_objs: list[Any]) -> dict[str, str]:
-    """``{normalised dc-handle: numeral-str}`` for every ``assign="render"``
-    registry present in the reading order (ADR 0052 §3) — the numerals a bare
-    ``[[dc…]]`` part reference renders as. Derived from the already-loaded
-    reading order, so it costs no extra query; recomputed each render so an
-    insert/reorder renumbers the series."""
-    from precis.draft import registry as _reg
-    from precis.utils import handle_registry
-
-    out: dict[str, str] = {}
-    for role, policy in _reg.REGISTRY_POLICY.items():
-        if policy.assign != "render":
-            continue
-        ordered = [
-            c.dc
-            for c in chunk_objs
-            if c.chunk_kind == "term" and (c.meta or {}).get("registry") == role
-        ]
-        for handle, numeral in _reg.render_callouts(ordered, policy).items():
-            out[handle_registry.normalize(handle)] = str(numeral)
-    return out
-
-
-def _row_callout(c: Any, callouts: dict[str, str]) -> str | None:
-    """The callout to badge on a term row: the frozen ``meta.callout`` for an
-    insert registry, or the positional numeral from ``callouts`` for a
-    render-policy part. ``None`` for a plain glossary term / non-term."""
-    if c.chunk_kind != "term":
-        return None
-    stored = (getattr(c, "meta", None) or {}).get("callout")
-    if stored is not None:
-        return str(stored)
-    return callouts.get(handle_registry.normalize(c.dc))
 
 
 #: Bounded ``(ref_id, version) → reading_order`` cache. ``reading_order``
@@ -245,30 +173,6 @@ def _doc_state(store: Any, ref: Any) -> tuple[list[Any], int, dict[str, str]]:
     return chunk_objs, version, abbrevs
 
 
-def _wordcount_summary(chunk_objs: list[Any]) -> dict[str, Any]:
-    """Per-section word counts vs targets for the reader (proposal writing).
-
-    Reuses the same pure aggregator the MCP ``view='wordcount'`` uses
-    (:func:`precis.utils.wordcount.aggregate_word_counts`) over the
-    already-loaded reading order, so the web badge and the agent's check
-    always agree. Returns ``{total, flagged, sections:[…]}``."""
-    from precis.utils.wordcount import aggregate_word_counts
-
-    report = aggregate_word_counts(chunk_objs)
-    sections = [
-        {
-            "handle": handle_registry.format_handle("draft", s.chunk_id, chunk=True),
-            "title": s.title,
-            "words": s.words,
-            "target": list(s.target) if s.target else None,
-            "verdict": s.verdict,
-        }
-        for s in report.sections
-    ]
-    flagged = sum(1 for s in report.sections if s.verdict in ("under", "over"))
-    return {"total": report.total, "flagged": flagged, "sections": sections}
-
-
 def _draft_ref(store: Any, ident: str) -> Any:
     """Resolve a draft by slug or numeric ref_id (``get_ref`` handles
     both). Returns the live ``Ref`` or ``None``."""
@@ -303,25 +207,6 @@ def _job_parent(store: Any, ref: Any) -> int:
     ``pid if pid is not None else ref.id`` fallback."""
     pid = _project_id(store, ref.id)
     return pid if pid is not None else int(ref.id)
-
-
-def _ancestor_headings(chunk_objs: list[Any]) -> dict[str, list[str]]:
-    """Each chunk's ancestor *heading* handles (root→nearest), walking
-    ``parent_chunk_id``. Drives client-side collapse: a row hides when any
-    of its ancestor headings is collapsed; a heading owns exactly the
-    chunks that carry it in this list."""
-    by_id = {c.chunk_id: c for c in chunk_objs}
-    out: dict[str, list[str]] = {}
-    for c in chunk_objs:
-        anc: list[str] = []
-        pid = c.parent_chunk_id
-        while pid is not None and pid in by_id:
-            p = by_id[pid]
-            if p.chunk_kind == "heading":
-                anc.append(p.handle)
-            pid = p.parent_chunk_id
-        out[c.handle] = list(reversed(anc))
-    return out
 
 
 #: Tooltip on the red ▲ a cited paper carries when its PDF is held but
@@ -497,22 +382,10 @@ def _cite_candidates(text: str) -> tuple[set[str], set[str]]:
     return handles, slugs
 
 
-def _local_cites(store: Any, chunk_objs: list[Any], want: list[int]) -> frozenset[str]:
-    """The local-vs-external citation set for the window's rendered blocks:
-    the paper-cite tokens (``pc``/``pa`` handles, ``§`` slugs) whose paper we
-    actually hold. One batched existence check over every cite in the window,
-    shared by all its rows — a token is looked up only in the block whose
-    text contains it, so one set serves them all (:func:`linkify.linkify_refs`
-    ``local=``)."""
-    handles: set[str] = set()
-    slugs: set[str] = set()
-    for i in want:
-        h, s = _cite_candidates(chunk_objs[i].text or "")
-        handles |= h
-        slugs |= s
-    if not (handles or slugs):
-        return frozenset()
-    return frozenset(store.live_paper_cites(handles, slugs))
+#: Request lifecycle ordering for the per-block list: active first, then
+#: done/abandoned (which now *persist* so you can click in and debug the
+#: LLM run, rather than vanishing on completion).
+_REQUEST_ORDER = {"open": 0, "scheduled": 1, "doing": 2, "paused": 3}
 
 
 def _requests_by_handle(
@@ -524,43 +397,6 @@ def _requests_by_handle(
     :func:`precis_web.draft_links.chunk_links`'s ``flags`` reads the SAME
     query, not a second copy — gripe 178766)."""
     return store.anchored_todos(handles)
-
-
-def _block_views(
-    store: Any, ref_id: int, handles: list[str] | None = None
-) -> dict[str, dict[str, str]]:
-    """Per-block keyword + llm-summary text for the view slider (body /
-    summary / keywords). Thin wrapper over ``store.block_views`` (shared
-    with the handler's outline render); empty for a chunk the
-    chunk_keywords / llm_summarize workers haven't reached yet (→
-    first-line fallback in the row). ``handles`` scopes it to a subset for
-    the on-demand single-row path."""
-    return store.block_views(ref_id, handles)
-
-
-def _connection_chips(conns: list[dict[str, Any]]) -> list[Any]:
-    """Render chunk-connection rows (linked refs + dreams) as terse
-    hover-preview chips: ``kind:ident — title``, click → the ref."""
-    chips: list[Any] = []
-    for c in conns:
-        kind, ident = c["kind"], c["ident"]
-        label = f"{kind}:{ident}"
-        if c.get("title"):
-            label += f" — {c['title']}"
-        chips.append(
-            popover_chip(label, f"/r/{kind}/{ident}", f"/preview/{kind}/{ident}")
-        )
-    return chips
-
-
-#: The ul/ol/normal choices offered on a list-container row's "list ▾"
-#: toggle (migration 0037). ``normal`` dissolves the list (its items become
-#: paragraphs and the container is removed).
-_LIST_KIND_CHOICES: list[tuple[str, str]] = [
-    ("ulist", "Bullet list"),
-    ("olist", "Numbered list"),
-    ("normal", "Normal text"),
-]
 
 
 def _list_markers(
@@ -635,7 +471,8 @@ def _paper_pdf_missing(store: Any, ident: str) -> bool:
 #: is a `paragraph` carrying `$$…$$`, edited like any other paragraph. Excludes
 #: figure (bytes), table (derived from meta.table, in DERIVED_KINDS), and the
 #: ulist/olist containers, which keep their own affordances.
-#: NB: keep the client `_neighbour` set (detail.html.j2) in sync with this.
+#: NB: keep the client editable-kinds set (smartdraft/view.html.j2) in sync
+#: with this.
 _EDITABLE_KINDS = frozenset(
     {
         "paragraph",
@@ -660,9 +497,9 @@ def _review_status_by_chunk(
     """Whole-draft human/checker review-ledger status (migration 0086),
     indexed by ``chunk_id``: ``{chunk_id: {checker: {approved_sha, verdict,
     at, dirty}}}``. One call to ``Store.review_status_for_draft`` per
-    request, shared by every row/skeleton entry that request builds — the
-    read-side counterpart to the ``/human-review`` route's
-    write-through-the-``edit``-verb.
+    request — the read-side counterpart to the ``/human-review`` route's
+    write-through-the-``edit``-verb. Imported by ``routes/smartdraft.py``
+    to look up the focus block's review status.
 
     A chunk **absent** from the map is one ``review_status_for_draft``
     doesn't surface (retired / no ``content_sha`` / unordered) — not
@@ -670,12 +507,12 @@ def _review_status_by_chunk(
     with an empty per-checker dict is reviewable but never reviewed.
     Threads every checker the ledger carries (not just ``'human'``) so a
     future column (the other paper-writing-pipeline rung-3 checkers) can
-    render off the same payload; the row/skeleton template only reads
-    ``'human'`` for now.
+    render off the same payload; the reader template only reads ``'human'``
+    for now.
 
     Records are JSON-safe (``at`` ISO-stringified via :func:`_review_entry`)
-    because this map is embedded in the reader **skeleton** and serialized
-    (``tojson`` / ``JSONResponse``) — a raw ``datetime`` would 500 the page."""
+    because this map can be serialized (``tojson`` / ``JSONResponse``) — a
+    raw ``datetime`` would 500 the page."""
     out: dict[int, dict[str, dict[str, Any]]] = {}
     for row in store.review_status_for_draft(ref_id):
         entry = out.setdefault(row["chunk_id"], {})
@@ -713,355 +550,21 @@ def _review_json(status: list[dict[str, Any]]) -> dict[str, Any]:
     return out
 
 
-def _build_rows(
-    store: Any,
-    ref: Any,
-    chunk_objs: list[Any],
-    want_idx: Any,
-    *,
-    abbrevs: dict[str, str],
-) -> list[dict[str, Any]]:
-    """Full per-block row context for the chunks at ``want_idx`` (an
-    iterable of indices into ``chunk_objs``). The expensive per-handle
-    lookups (requests / views / connections / edit churn) are scoped to the
-    wanted blocks plus their immediate neighbours — the neighbour-fold needs
-    prev/next connections — so a single-row hydrate doesn't re-scan the
-    whole draft. ``_rows_for`` builds the whole document; the on-demand row
-    route builds one index. ``abbrevs`` (whole-draft) is passed in so it is
-    computed/cached once, not per call."""
-    want = sorted(set(want_idx))
-    if not want:
-        return []
-    n = len(chunk_objs)
-    anc = _ancestor_headings(chunk_objs)
-    want_handles = [chunk_objs[i].handle for i in want]
-    # Connections need the wanted blocks AND their prev/next neighbours
-    # (the "nearby" fold); the rest only need their own handle.
-    scope: set[str] = set(want_handles)
-    for i in want:
-        for j in (i - 1, i + 1):
-            if 0 <= j < n:
-                scope.add(chunk_objs[j].handle)
-    requests = _requests_by_handle(store, want_handles)
-    views = _block_views(store, ref.id, want_handles)
-    conns = store.chunk_connections(ref.id, list(scope))
-    edits = store.chunk_edit_stats(ref.id, want_handles)
-    # The per-heading "style ▾" picker — same list for every heading in this
-    # draft, so compute once (ADR 0037; scoped to the genre).
-    section_styles = _section_styles_for(store, ref)
-    # List markers (migration 0037): a ``ulist``/``olist`` container owns
-    # ``item`` children. The flat virtual-scroll rows have no wrapping
-    # ``<ul>``/``<ol>``, so precompute each item's bullet (•) or 1-based
-    # number from its position among siblings under the same container —
-    # one pass over the whole reading order (numbering needs every sibling,
-    # not just the visible window). Counters key on ``parent_chunk_id`` so
-    # nested lists each restart cleanly.
-    item_marker, item_ordered = _list_markers(chunk_objs)
-    # Cited-paper PDF presence: resolve each distinct cited paper once, then
-    # flag its chip if the file is held-but-missing. Memoised so a paper cited
-    # in many blocks costs one lookup for the whole window.
-    _pdf_missing: dict[str, bool] = {}
-
-    def _cite_missing(kind: str, ident: str) -> bool:
-        if kind != "paper":
-            return False
-        if ident not in _pdf_missing:
-            _pdf_missing[ident] = _paper_pdf_missing(store, ident)
-        return _pdf_missing[ident]
-
-    # Local-vs-external citation colouring (sky §, in-corpus | amber ↗,
-    # external): one batched existence check over every paper cite in the
-    # window, shared by all its rows.
-    local_cites = _local_cites(store, chunk_objs, want)
-    # Taproot claim-hub cites (violet anchors): the hub heads cited anywhere
-    # in this window, resolved once and shared by every row's linkify call.
-    # Derive each unique hub's evidence ONCE for the whole window (the sidebar
-    # can cite the same popular hub from many paragraphs — `_build_rows` runs
-    # over the entire doc from `/rows`, so per-row re-derivation is an N+1 on
-    # the render hot path); rows look their own heads up in this cache.
-    claims = hub_cite_heads(store, [chunk_objs[i].text or "" for i in want])
-    claim_evidence = {h: render_claim_evidence(store, h) for h in claims}
-    # Render-policy part numerals (ADR 0052): a bare ``[[dc…]]`` reference to a
-    # patent part renders as its numeral. One map for the whole draft, shared
-    # by every row's linkify.
-    callouts = _callouts_from_order(chunk_objs)
-    # Human sign-off ledger (migration 0086): one whole-draft query, indexed
-    # by chunk_id so each row's lookup below is O(1) (see
-    # _review_status_by_chunk).
-    review_idx = _review_status_by_chunk(store, ref.id)
-    # Machine-authored provenance marker (paper-writing pipeline rung 3d):
-    # one whole-draft query, indexed by chunk_id, mirroring review_idx above.
-    authored_idx = store.authored_provenance(ref.id)
-    rows: list[dict[str, Any]] = []
-    for i in want:
-        c = chunk_objs[i]
-        # Neighbour folding: prev/next paragraph connections, deduped
-        # against this block's own (so "nearby" only shows what's *extra*).
-        own = {(x["kind"], x["ident"]) for x in conns.get(c.handle, [])}
-        nearby: list[dict[str, Any]] = []
-        nseen = set(own)
-        for j in (i - 1, i + 1):
-            if 0 <= j < n:
-                for x in conns.get(chunk_objs[j].handle, []):
-                    k = (x["kind"], x["ident"])
-                    if k not in nseen:
-                        nseen.add(k)
-                        nearby.append(x)
-        est = edits.get(c.handle, {})
-        v = views.get(c.handle, {})
-        first_line = ((c.text or "").splitlines() or [""])[0][:140]
-        is_figure = c.chunk_kind == "figure"
-        fig = (getattr(c, "meta", None) or {}).get("figure", {}) if is_figure else {}
-        # ADR 0058 — resolve the figure's medium (blob / canvas / graph / none)
-        # to a render spec, so the template stops assuming a blob <img>.
-        fsrc = resolve_figure_source(store, c) if is_figure else None
-        # Data table (ADR 0035 §1): render the canonical meta.table as a real
-        # <table>, not the derived pipe markdown. ``table_payload`` falls back
-        # to parsing the GFM text for any table chunk lacking meta.table.
-        is_table = c.chunk_kind == "table"
-        table = table_payload(getattr(c, "meta", None), c.text) if is_table else None
-        # In/out link-edges (gripe 178766) — the SAME data path the
-        # smartdraft reader assembles from (precis_web.draft_links.
-        # chunk_links); passing the already-batched conns/requests maps so
-        # this is a pure split, no extra query per row.
-        links = chunk_links(store, ref.id, c.handle, conns=conns, flags=requests)
-        rows.append(
-            {
-                "handle": c.handle,
-                # ADR 0036 universal handle (``dc<chunk_id>``) — the agent- and
-                # human-facing address. ``handle`` (base-58) stays the internal
-                # DOM/nav key the JS collapse/find machinery already threads.
-                "dc": handle_registry.try_format("draft", c.chunk_id, chunk=True)
-                or c.handle,
-                "chunk_kind": c.chunk_kind,
-                "text": c.text,
-                # Optimistic-concurrency token for the inline editor: the sha
-                # of the current text (matches store.content_sha), computed
-                # here so the DraftChunk dataclass / reading_order need no new
-                # column. The client echoes it back as base_sha on save.
-                "content_sha": content_sha(c.text or ""),
-                "editable": c.chunk_kind in _EDITABLE_KINDS,
-                # Human/checker review-ledger status (migration 0086):
-                # ``None`` when this chunk isn't reviewable (hides the ✓
-                # gutter); a dict (possibly empty) keyed by checker
-                # otherwise. Only ``human`` is rendered for now.
-                "review": review_idx.get(c.chunk_id),
-                # 'review:<lens>' or None — machine-authored provenance
-                # marker (3d).
-                "authored": authored_idx.get(c.chunk_id),
-                "depth": c.depth,
-                "is_heading": c.chunk_kind == "heading",
-                # List rendering (migration 0037): items carry a bullet/number
-                # marker; the container row is structural (hosts the ul/ol
-                # toggle).
-                "is_item": c.chunk_kind == "item",
-                "is_list_container": c.chunk_kind in ("ulist", "olist"),
-                "marker": item_marker.get(c.handle, "•"),
-                "list_ordered": item_ordered.get(c.handle, False),
-                "list_kinds": _LIST_KIND_CHOICES
-                if c.chunk_kind in ("ulist", "olist")
-                else None,
-                # section style (ADR 0037): the current meta.style + the
-                # genre's pickable styles, for the per-heading "style ▾" menu.
-                "style": (getattr(c, "meta", None) or {}).get("style")
-                if c.chunk_kind == "heading"
-                else None,
-                "section_styles": section_styles if c.chunk_kind == "heading" else None,
-                # ADR 0052 registry term leaf: its assigned callout (frozen
-                # in meta for insert; from the render map for parts), plus the
-                # short name + MPN so the row reads as a numbered BOM/parts
-                # entry (the derived projection §6, no authored table chunk).
-                "is_term": c.chunk_kind == "term",
-                "callout": _row_callout(c, callouts),
-                "term_short": (getattr(c, "meta", None) or {}).get("short")
-                if c.chunk_kind == "term"
-                else None,
-                # dedicated acronym surface (gripe 56690), shown next to
-                # term_short — e.g. "stereolithography (STL) — …".
-                "term_abbrev": (getattr(c, "meta", None) or {}).get("abbrev")
-                if c.chunk_kind == "term"
-                else None,
-                "term_mpn": (getattr(c, "meta", None) or {}).get("mpn")
-                if c.chunk_kind == "term"
-                else None,
-                "is_table": is_table,
-                "table": table,
-                "is_figure": is_figure,
-                # figure provenance for the origin chip + clearance badge
-                "figure_origin": fig.get("origin") if is_figure else None,
-                # clearance is now medium-aware (ADR 0058): an asset-less
-                # figure reads uncleared, a drawn canvas cleared.
-                "figure_cleared": fsrc.cleared if fsrc else None,
-                "figure_permission": fig.get("permission") if is_figure else None,
-                # medium + render spec drive the figure branch of _row.html.j2.
-                "figure_medium": fsrc.medium if fsrc else None,
-                "figure_render": fsrc.render if fsrc else None,
-                "ancestors": anc.get(c.handle, []),
-                "abbrevs": abbrevs,
-                # render-policy part numerals for the compact linkifier
-                # (a bare [[dc…]] to a patent part shows its numeral).
-                "callouts": callouts,
-                # local-vs-external citation set for the compact linkifier
-                # (§ sky = paper we hold, ↗ amber = external reference).
-                "local": local_cites,
-                # Taproot claim-hub heads live in this window (violet anchor
-                # opt-in) plus this row's own claim-evidence sidebar entries —
-                # the row's cited heads that are hubs, looked up in the
-                # window-level cache (no per-row re-resolution / re-derivation).
-                "claims": claims,
-                "claims_evidence": [
-                    claim_evidence[h]
-                    for h in cite_heads_in(c.text or "")
-                    if h in claim_evidence
-                ],
-                "refs": _ref_chips(c.text, _cite_missing),
-                "requests": requests.get(c.handle, []),
-                # view slider: summary falls back to keywords → first line;
-                # keywords falls back to first line.
-                "summary": v.get("summary") or v.get("keywords") or first_line,
-                "keywords": v.get("keywords") or first_line,
-                # Connections surface: graph links + folded neighbours + churn.
-                "connections": _connection_chips(conns.get(c.handle, [])),
-                "nearby": _connection_chips(nearby),
-                # In/out link-edges, split by direction (gripe 178766) — the
-                # dedicated block below the connections disclosure.
-                "links_out": _connection_chips(links["links_out"]),
-                "links_in": _connection_chips(links["links_in"]),
-                "edits": est.get("edits", 0),
-                "edited_at": est.get("last_at"),
-            }
+def _connection_chips(conns: list[dict[str, Any]]) -> list[Any]:
+    """Render chunk-connection rows (linked refs + dreams) as terse
+    hover-preview chips: ``kind:ident — title``, click → the ref. Shared with
+    the smartdraft reader's focus "Connections" rail (gripe 178766,
+    ``precis_web.draft_links.chunk_links``)."""
+    chips: list[Any] = []
+    for c in conns:
+        kind, ident = c["kind"], c["ident"]
+        label = f"{kind}:{ident}"
+        if c.get("title"):
+            label += f" — {c['title']}"
+        chips.append(
+            popover_chip(label, f"/r/{kind}/{ident}", f"/preview/{kind}/{ident}")
         )
-    return rows
-
-
-def _rows_for(store: Any, ref: Any) -> list[dict[str, Any]]:
-    """Per-block row context for the **whole** draft (the no-arg ``/rows``
-    fragment). The reader itself renders only an initial window fully (see
-    ``reader``) and fetches the rest in windowed batches as you scroll."""
-    chunk_objs, _version, abbrevs = _doc_state(store, ref)
-    return _build_rows(
-        store,
-        ref,
-        chunk_objs,
-        range(len(chunk_objs)),
-        abbrevs=abbrevs,
-    )
-
-
-def _rows_for_handles(store: Any, ref: Any, handles: list[str]) -> list[dict[str, Any]]:
-    """Hydrate a *batch* of blocks by handle, in document order — the
-    on-demand fragment the reader swaps in for a window of placeholders.
-    One request hydrates many blocks (vs one HTTP per block), and the
-    shared cached reading-order means no per-block whole-draft re-scan."""
-    chunk_objs, _version, abbrevs = _doc_state(store, ref)
-    want = {h for h in handles}
-    idx = [i for i, c in enumerate(chunk_objs) if c.handle in want]
-    return _build_rows(store, ref, chunk_objs, idx, abbrevs=abbrevs)
-
-
-def _one_row(store: Any, ref: Any, handle: str) -> dict[str, Any] | None:
-    """Hydrate a single block by handle — O(neighbours) enrichment over the
-    cached reading order, not a whole-draft re-scan per block."""
-    rows = _rows_for_handles(store, ref, [handle])
-    return rows[0] if rows else None
-
-
-def _est_height_rem(c: Any) -> float:
-    """A rough placeholder height (rem) so an un-rendered block reserves
-    about the space its real row will take — keeps the scrollbar honest and
-    avoids large jumps when a block renders just below the fold."""
-    kind = c.chunk_kind
-    if kind == "heading":
-        return 2.5
-    if kind == "figure":
-        return 14.0
-    if kind == "table":
-        # Header + body rows at ~1.9rem each (cells wrap, so this is a floor),
-        # plus the caption + padding. Reserve generously so a tall table below
-        # the fold doesn't snap the scrollbar when it hydrates.
-        nrows = len((getattr(c, "meta", None) or {}).get("table", {}).get("rows", []))
-        return round(min(80.0, 3.5 + (nrows + 1) * 1.9), 1)
-    chars = len(c.text or "")
-    lines = max(1, (chars // 90) + 1)
-    return round(min(40.0, 1.6 + lines * 1.5), 1)
-
-
-def _est_height_px(c: Any) -> int:
-    """Placeholder height in px (rem × 16) for the virtual-scroll spacers."""
-    return round(_est_height_rem(c) * 16)
-
-
-#: One-line height (px) for the summary / keywords views — the llm-summary
-#: line (``text-sm`` italic) or keyword list (``text-xs`` mono) plus the
-#: row's ``py-1.5`` padding + border. Headings / figures render identically
-#: in every view, so they keep their body estimate.
-_SHORT_ROW_PX = 34
-
-
-def _est_short_px(c: Any) -> int:
-    """Placeholder height for the summary / keywords views.
-
-    Unlike :func:`_est_height_px` (body length), a non-heading/figure block
-    collapses to a single line in those views regardless of its body, so a
-    body-length estimate over-reserves space — the virtual scroller's
-    spacers then dwarf the real (short) rows, leaving the bottom of the doc
-    an un-hydratable white gap. Reserve one line instead."""
-    if c.chunk_kind in ("heading", "figure"):
-        return _est_height_px(c)
-    return _SHORT_ROW_PX
-
-
-def _skeleton(store: Any, ref: Any) -> list[dict[str, Any]]:
-    """The whole-draft **skeleton** the reader's virtual scroller runs on:
-    one tiny record per block (handle, address, kind, depth, ancestors,
-    heading flag/title, height estimate, review status) — NOT a DOM node.
-    The client keeps only the on-screen window of real rows in the DOM
-    (fetched via ``/rows?handles=``) and a sized spacer for everything
-    else, so a 10k-block draft costs ~a screenful of nodes, not 10k.
-    Cheap: derived from the cached reading order plus one whole-draft
-    review-ledger query (:func:`_review_status_by_chunk`), no per-block
-    enrichment."""
-    chunk_objs, _version, _abbrevs = _doc_state(store, ref)
-    anc = _ancestor_headings(chunk_objs)
-    review_idx = _review_status_by_chunk(store, ref.id)
-    out: list[dict[str, Any]] = []
-    for c in chunk_objs:
-        is_h = c.chunk_kind == "heading"
-        first = ((c.text or "").splitlines() or [""])[0]
-        out.append(
-            {
-                "h": c.handle,
-                "dc": handle_registry.try_format("draft", c.chunk_id, chunk=True)
-                or c.handle,
-                "kind": c.chunk_kind,
-                "depth": c.depth,
-                "anc": anc.get(c.handle, []),
-                "heading": is_h,
-                "title": first[:200] if is_h else "",
-                "est": _est_height_px(c),
-                # View-aware estimate: summary / keywords collapse each
-                # non-heading/figure block to one line. The client picks
-                # this for those views so the spacers stay honest.
-                "estS": _est_short_px(c),
-                # Review-ledger status (migration 0086), same shape as a
-                # row's ``review`` field — not yet consumed client-side;
-                # carried here so a future skeleton-level indicator (e.g. an
-                # unreviewed-block dot on an un-hydrated spacer) doesn't need
-                # a schema change.
-                "rv": review_idx.get(c.chunk_id),
-            }
-        )
-    return out
-
-
-def _ref_view(ref: Any) -> dict[str, Any]:
-    return {
-        "ident": ref.slug or ref.id,
-        "slug": ref.slug,
-        "title": ref.title,
-        "id": ref.id,
-        "byline": build_byline(getattr(ref, "authors", None)),
-    }
+    return chips
 
 
 def _parse_author_lines(text: str) -> list[dict[str, str]]:
@@ -1654,140 +1157,18 @@ async def delete_draft(
 
 @router.get("/draft/{ident}")
 async def reader_alias(ident: str) -> RedirectResponse:
-    """Singular ``/draft/<id>`` → the canonical plural reader."""
-    return RedirectResponse(url=f"/drafts/{ident}", status_code=303)
+    """Singular ``/draft/<id>`` → the smartdraft reader (the sole draft reader
+    since the classic reader was retired)."""
+    return RedirectResponse(url=f"/smartdraft/{ident}", status_code=307)
 
 
-@router.get("/drafts/{ident}", response_class=HTMLResponse)
-async def reader(request: Request, ident: str) -> Response:
-    store = get_store(request)
-    ref = _draft_ref(store, ident)
-    if ref is None:
-        return templates.TemplateResponse(
-            request,
-            "error.html.j2",
-            {
-                "active_tab": "drafts",
-                "title": "Draft not found",
-                "status": 404,
-                "detail": f"no draft {ident!r}",
-            },
-            status_code=404,
-        )
-    # Stamp the access (drives the drafts list's most-recently-opened order).
-    # Only here — the full page open — not the poll/rows/doc/version endpoints,
-    # so a tab left polling doesn't keep pinning this draft to the top. Never
-    # fail the page on a stamp error.
-    try:
-        store.touch_viewed(ref.id)
-    except Exception:  # pragma: no cover - defensive
-        log.warning("drafts: touch_viewed failed for %s", ref.id, exc_info=True)
-    chunk_objs, _version, abbrevs = _doc_state(store, ref)
-    n = len(chunk_objs)
-    first = min(INITIAL_WINDOW, n)
-    # The first screen is rendered server-side (correct + visible even if the
-    # virtual-scroll JS never runs); the rest live only in the skeleton.
-    window_rows = _build_rows(store, ref, chunk_objs, range(first), abbrevs=abbrevs)
-    skeleton = _skeleton(store, ref)
-    botpad = sum(s["est"] for s in skeleton[first:])
-    _, owner_ws = _owner_workspace(store, ref)
-    from precis.export.remarkable import remarkable_configured
-
-    # /env link (Part 3B): "what would the planner actually see next tick on
-    # this draft's project?" — scoped to the owning project todo when linked
-    # (job_claude_inproc's plan_tick dry-run); with no project, fall back to
-    # the agent's generic (unscoped) dry-run rather than pointing at the
-    # draft ref itself (the planner assembler expects a todo, not a draft).
-    project_id = _project_id(store, ref.id)
-    assembled_context_href = "/env?agent=job_claude_inproc" + (
-        f"&target_ref_id={project_id}" if project_id is not None else ""
-    )
-
-    return templates.TemplateResponse(
-        request,
-        "drafts/detail.html.j2",
-        {
-            "active_tab": "drafts",
-            "ref": _ref_view(ref),
-            # Gate the "Send to reMarkable" button on a configured credential
-            # (no device token → no affordance).
-            "remarkable_ready": remarkable_configured(store),
-            "author_lines": _draft_author_lines(ref),
-            "window_rows": window_rows,
-            "skeleton": skeleton,
-            "botpad": botpad,
-            "work": _work_items(store, ref.id),
-            "clearance": draft_figure_clearance(store, ref.id),
-            "wordcount": _wordcount_summary(chunk_objs),
-            # The sticky hand-driven working set (ADR 0051 §6) — pens/eyes the
-            # client seeds its glyph state from (empty when unset/expired).
-            "marks": _marks_view(store, draft_eyes.load_marks(store, ref.id)),
-            # Genre + project-context editor (post-creation; ADR 0037).
-            "doctypes": _DOC_TYPES,
-            "cur_doctype": str(owner_ws.get("doc_type") or ""),
-            "cur_brief": str(owner_ws.get("brief") or ""),
-            "assembled_context_href": assembled_context_href,
-            "authoring_enabled": store.draft_authoring_enabled(ref.id),
-        },
-    )
-
-
-@router.get("/drafts/{ident}/row/{handle}", response_class=HTMLResponse)
-async def reader_row(request: Request, ident: str, handle: str) -> HTMLResponse:
-    """One rendered row — the fragment a future live-refresh poll swaps in
-    place (the page is composed from this same macro, so no rewrite)."""
-    store = get_store(request)
-    ref = _draft_ref(store, ident)
-    if ref is None:
-        return HTMLResponse("", status_code=404)
-    row = _one_row(store, ref, handle)
-    if row is None:
-        return HTMLResponse("", status_code=404)
-    return templates.TemplateResponse(
-        request,
-        "drafts/_row_fragment.html.j2",
-        {"r": row, "ref": _ref_view(ref)},
-    )
-
-
-@router.get("/drafts/{ident}/rows", response_class=HTMLResponse)
-async def reader_rows(request: Request, ident: str, handles: str = "") -> HTMLResponse:
-    """Rendered rows, no page chrome.
-
-    * ``?handles=h1,h2,…`` — **batch hydrate** just those blocks, in
-      document order. This is what the reader fetches as a window of
-      placeholders scrolls into view: one request for the whole window
-      instead of one HTTP per block (the prior O(N) hydrate storm).
-    * no ``handles`` — every block hydrated (the whole-draft render);
-      kept for callers that want the full document in one shot."""
-    store = get_store(request)
-    ref = _draft_ref(store, ident)
-    if ref is None:
-        return HTMLResponse("", status_code=404)
-    if handles.strip():
-        wanted = [h for h in handles.split(",") if h.strip()]
-        rows = _rows_for_handles(store, ref, wanted)
-    else:
-        rows = _rows_for(store, ref)
-    return templates.TemplateResponse(
-        request,
-        "drafts/_rows.html.j2",
-        {"rows": rows, "ref": _ref_view(ref)},
-    )
-
-
-@router.get("/drafts/{ident}/skeleton")
-async def reader_skeleton(request: Request, ident: str) -> JSONResponse:
-    """The virtual-scroll skeleton as JSON (+ version token) — the reader
-    fetches this when the version bumps to rebuild its block list without a
-    full page reload."""
-    store = get_store(request)
-    ref = _draft_ref(store, ident)
-    if ref is None:
-        return JSONResponse({"skeleton": [], "version": 0})
-    return JSONResponse(
-        {"skeleton": _skeleton(store, ref), "version": _draft_version(store, ref.id)}
-    )
+@router.get("/drafts/{ident}")
+async def reader(ident: str) -> RedirectResponse:
+    """The classic virtual-scroll reader is retired — ``/smartdraft/{ident}`` is
+    the sole draft reader now. Kept as a 307 redirect so every bookmark, quest
+    link, and ``/c/<handle>`` deep-link still lands on the draft (307 preserves
+    any ``?focus=`` query the anchor path appends)."""
+    return RedirectResponse(url=f"/smartdraft/{ident}", status_code=307)
 
 
 def _draft_version(store: Any, ref_id: int) -> int:
@@ -1801,30 +1182,6 @@ def _draft_version(store: Any, ref_id: int) -> int:
             (ref_id,),
         ).fetchone()
     return int(row[0]) if row else 0
-
-
-@router.get("/drafts/{ident}/version")
-async def version(request: Request, ident: str) -> JSONResponse:
-    """Monotone version token = max ``chunk_events.event_id`` over the
-    draft's chunks. The poll refetches changed rows when it bumps."""
-    store = get_store(request)
-    ref = _draft_ref(store, ident)
-    if ref is None:
-        return JSONResponse({"version": 0})
-    return JSONResponse({"version": _draft_version(store, ref.id)})
-
-
-@router.get("/drafts/{ident}/wordcount")
-async def wordcount(request: Request, ident: str) -> JSONResponse:
-    """Per-section word counts vs targets + whole-draft total (proposal
-    writing). Same aggregator as the MCP ``view='wordcount'``; the reader
-    badge polls this so the count refreshes as the draft is written."""
-    store = get_store(request)
-    ref = _draft_ref(store, ident)
-    if ref is None:
-        return JSONResponse({"total": 0, "flagged": 0, "sections": []})
-    chunk_objs, _version, _abbrevs = _doc_state(store, ref)
-    return JSONResponse(_wordcount_summary(chunk_objs))
 
 
 def _pdf_cache_token(store: Any, ref: Any) -> str:
@@ -1938,55 +1295,6 @@ async def pdf(request: Request, ident: str) -> Response:
     return FileResponse(pdf_path, media_type="application/pdf", filename=filename)
 
 
-@router.get("/drafts/{ident}/find")
-async def find(
-    request: Request, ident: str, q: str = "", mode: str = "verbatim"
-) -> JSONResponse:
-    """In-draft find — the user's reader-side search bar.
-
-    Returns the matching chunk handles, in the order the find bar
-    cycles them with ‹ ›:
-
-    * ``mode='verbatim'`` — case-insensitive substring over each live
-      block's source text, in **document order** (a plain Ctrl-F over
-      the prose, the deterministic path that needs no embedder).
-    * ``mode='semantic'`` — cosine ranked (best-first) over the draft's
-      chunk embeddings, scoped to this draft. Degrades to verbatim when
-      the embedder is unavailable or the query won't embed.
-
-    The client highlights/scrolls to each handle and cycles next/prev
-    starting from whichever chunk is currently in view.
-    """
-    store = get_store(request)
-    ref = _draft_ref(store, ident)
-    q = q.strip()
-    if ref is None or not q:
-        return JSONResponse({"handles": [], "mode": mode})
-
-    chunks = store.reading_order(ref.id)
-    m = (mode or "verbatim").strip().lower()
-
-    if m == "semantic":
-        hub = getattr(get_runtime(request), "hub", None)
-        embedder = getattr(hub, "embedder", None)
-        vec = embed_query(embedder, q)
-        if vec is not None:
-            by_id = {c.chunk_id: c.handle for c in chunks}
-            hits = store.search_blocks_semantic(
-                query_vec=vec,
-                scope_ref_id=ref.id,
-                limit=200,
-                max_distance=None,
-            )
-            handles = [by_id[b.id] for b, _ref, _d in hits if b.id in by_id]
-            return JSONResponse({"handles": handles, "mode": "semantic"})
-        m = "verbatim"  # no vector → degrade to a literal find
-
-    needle = q.lower()
-    handles = [c.handle for c in chunks if needle in (c.text or "").lower()]
-    return JSONResponse({"handles": handles, "mode": "verbatim"})
-
-
 @router.get("/drafts/blob/{handle}")
 async def chunk_blob(request: Request, handle: str) -> Response:
     """Raw bytes for a figure chunk's image (ADR 0034) — the ``<img>``
@@ -2001,41 +1309,6 @@ async def chunk_blob(request: Request, handle: str) -> Response:
         content=data,
         media_type=mime,
         headers={"Cache-Control": "public, max-age=300"},
-    )
-
-
-@router.post("/drafts/{ident}/request")
-async def request_change(
-    request: Request,
-    ident: str,
-    handle: str = Form(...),
-    text: str = Form(...),
-    model: str = Form("opus"),
-) -> Response:
-    """File a change request anchored at a chunk: a ``todo`` parented on
-    the draft's project, carrying ``meta.anchor='¶<handle>'``. Flows
-    through the normal todo tree → dispatch → jobs.
-
-    ``model`` (opus / sonnet / haiku) sets the planner tier via the
-    ``LLM:<model>`` tag instead of the default opus auto-tag. Anything
-    outside the closed set falls back to opus."""
-    store = get_store(request)
-    ref = _draft_ref(store, ident)
-    back = f"/drafts/{ident}#c-{handle}"
-    if ref is None or not text.strip():
-        return RedirectResponse(url=back, status_code=303)
-    project = _project_id(store, ref.id)
-    tier = model if model in _PLANNER_MODELS else "opus"
-    args: dict[str, Any] = {
-        "kind": "todo",
-        "text": text.strip(),
-        "meta": {"anchor": handle},
-        "tags": [f"LLM:{tier}"],
-    }
-    if project is not None:
-        args["parent_id"] = project
-    return await redirect_or_error(
-        request, "put", args, redirect=back, error_title="Change request error"
     )
 
 
@@ -2151,26 +1424,6 @@ async def edit_human_review(request: Request, ident: str) -> JSONResponse:
     chunk = store.get_draft_chunk(handle)
     status = store.review_status_for_chunk(chunk.chunk_id) if chunk is not None else []
     return JSONResponse({"ok": True, "review": _review_json(status)})
-
-
-@router.post("/drafts/{ident}/around")
-async def edit_around(request: Request, ident: str) -> JSONResponse:
-    """*Around here*: expand the given draft chunks into eyes — the chunks plus
-    their reference rings promoted to real eyes (cited papers, cross-refs, linked
-    notes). Body ``{handles:[dc…]}``. Returns the stored marks."""
-    try:
-        payload = await request.json()
-    except Exception:
-        return JSONResponse({"ok": False, "error": "bad request body"}, status_code=400)
-    store = get_store(request)
-    ref = _draft_ref(store, ident)
-    if ref is None:
-        return JSONResponse({"ok": False, "error": "draft not found"}, status_code=404)
-    handles = [str(h) for h in (payload.get("handles") or []) if _is_dc(str(h))]
-    marks = draft_eyes.load_marks(store, ref.id)
-    draft_eyes.expand_around(store, ref.id, handles, marks)
-    stored = draft_eyes.save_marks(store, ref.id, marks)
-    return JSONResponse({"ok": True, "marks": _marks_view(store, stored)})
 
 
 @router.post("/drafts/{ident}/request-ws")
@@ -2788,139 +2041,6 @@ async def set_authors(
     return RedirectResponse(url=back, status_code=303)
 
 
-@router.post("/drafts/{ident}/listkind")
-async def set_list_kind_route(
-    request: Request,
-    ident: str,
-    handle: str = Form(...),
-    kind: str = Form(...),
-) -> Response:
-    """Switch a list container between bullet / numbered / normal text from
-    the per-list ``list ▾`` toggle (migration 0037). Routes through
-    ``edit(kind='draft', list_kind=…)``. A ``normal`` dissolve retires the
-    container, so anchor back to the draft top rather than the dead handle."""
-    store = get_store(request)
-    ref = _draft_ref(store, ident)
-    back = f"/drafts/{ident}" if kind == "normal" else f"/drafts/{ident}#c-{handle}"
-    if ref is None:
-        return RedirectResponse(url=back, status_code=303)
-    addr = _chunk_addr(store, handle)
-    if addr is None:
-        return RedirectResponse(url=back, status_code=303)
-    return await redirect_or_error(
-        request,
-        "edit",
-        {"kind": "draft", "id": addr, "list_kind": kind},
-        redirect=back,
-        error_title="List kind error",
-    )
-
-
-@router.post("/drafts/{ident}/style")
-async def set_section_style(
-    request: Request,
-    ident: str,
-    handle: str = Form(...),
-    style: str = Form(""),
-) -> Response:
-    """Set (or clear) a heading's section style from the editor (ADR 0037).
-    ``style=""`` clears it. Routes through ``edit(kind='draft', style=…)``
-    so the handler's heading-only guard + error surface apply."""
-    store = get_store(request)
-    ref = _draft_ref(store, ident)
-    back = f"/drafts/{ident}#c-{handle}"
-    if ref is None:
-        return RedirectResponse(url=back, status_code=303)
-    addr = _chunk_addr(store, handle)
-    if addr is None:
-        return RedirectResponse(url=back, status_code=303)
-    return await redirect_or_error(
-        request,
-        "edit",
-        {"kind": "draft", "id": addr, "style": style},
-        redirect=back,
-        error_title="Section style error",
-    )
-
-
-@router.get("/drafts/{ident}/prompt", response_class=HTMLResponse)
-async def section_prompt_preview(
-    request: Request, ident: str, handle: str
-) -> HTMLResponse:
-    """Debug view of the building blocks the writer assembles for one
-    section: the project context (workspace brief + seed material), the
-    section's content (heading + word target), the section-style skill
-    (the concrete "how to write this" guidance), and the available review
-    lenses. Opened from the per-heading "prompt ↗" button so the operator
-    can see *why* a section reads the way it does and tune it."""
-    from precis.utils.workspace import Workspace
-
-    store = get_store(request)
-    ref = _draft_ref(store, ident)
-    if ref is None:
-        return templates.TemplateResponse(
-            request,
-            "error.html.j2",
-            {"title": "Prompt preview", "status": 404, "detail": f"no draft {ident}"},
-            status_code=404,
-        )
-    chunk = store.get_draft_chunk(handle)
-    if chunk is None:
-        return templates.TemplateResponse(
-            request,
-            "error.html.j2",
-            {"title": "Prompt preview", "status": 404, "detail": f"no chunk {handle}"},
-            status_code=404,
-        )
-    cmeta = chunk.meta or {}
-    style_slug = str(cmeta.get("style") or "")
-    style_skill = ""
-    if style_slug:
-        body, err = await await_dispatch(
-            request, "get", {"kind": "skill", "id": style_slug}
-        )
-        style_skill = "" if err else body
-    # Read the genre/brief/seeds from the *owner* workspace (the project
-    # todo if this draft is linked to one, else the draft itself) — the
-    # same place ``_doc_type`` reads and the planner's ``## Project
-    # context`` cascades from, so the preview matches what the writer
-    # actually sees rather than a possibly-stale copy on the draft's meta.
-    _owner_id, owner_ws = _owner_workspace(store, ref)
-    ws = Workspace.from_meta({"workspace": owner_ws}) if owner_ws else None
-    brief = (ws.brief if ws else "") or ""
-    seeds = (ws.extra.get("seeds") if ws else None) or {}
-    doc_type = str(owner_ws.get("doc_type") or "")
-    return templates.TemplateResponse(
-        request,
-        "drafts/prompt_preview.html.j2",
-        {
-            "active_tab": "drafts",
-            "ident": ident,
-            "handle": handle,
-            "heading": chunk.text or "",
-            "doc_type": doc_type,
-            "style_slug": style_slug,
-            "style_skill": style_skill,
-            "brief": brief,
-            "seeds": seeds,
-            "word_target": cmeta.get("word_target"),
-            # The review lenses the per-heading "review ▾" button can run.
-            "review_lenses": [
-                (
-                    "structural",
-                    "Drift, sibling contradictions, depth/fanout — opus, "
-                    "checks the section against its outcome.",
-                ),
-                (
-                    "deep_review",
-                    "Allen-style archive/prune/rebalance + long-wait review "
-                    "— opus, weekly cadence.",
-                ),
-            ],
-        },
-    )
-
-
 @router.post("/drafts/{ident}/figure")
 async def add_figure(
     request: Request,
@@ -3075,48 +2195,6 @@ async def create_figure_drawing(request: Request, ident: str, handle: str) -> Re
     return RedirectResponse(url=f"/figure/{slug}", status_code=303)
 
 
-@router.post("/drafts/{ident}/todo/{todo_id}/delete")
-async def delete_change_request(request: Request, ident: str, todo_id: int) -> Response:
-    """Close a change-request todo anchored in this draft (the X on a
-    chip). Cancels a not-yet-started request or clears a finished one
-    (done / won't-do / failed); a running request has no X. Soft-deletes
-    via the todo handler."""
-    back = f"/drafts/{ident}"
-    return await redirect_or_error(
-        request,
-        "delete",
-        {"kind": "todo", "id": todo_id},
-        redirect=back,
-        error_title="Delete change request error",
-    )
-
-
-@router.post("/drafts/{ident}/todo/{job_id}/retry")
-async def retry_change_request(
-    request: Request,
-    ident: str,
-    job_id: int,
-    model: str = Form(default=""),
-) -> Response:
-    """▶ restart a failed change-request from the draft reader. ``job_id``
-    is the failed child job; this clears the parent request's
-    ``child-failed:<job>`` bubble (optionally swapping its ``LLM:<model>``
-    tier) so the dispatch worker re-mints a fresh attempt. Mirrors
-    ``/tasks/{job}/retry`` but redirects back to the draft. The job handler
-    validates terminal-state + closed-vocab model and surfaces its own
-    error message on rejection."""
-    args: dict[str, Any] = {"kind": "job", "id": job_id, "mode": "retry"}
-    if model.strip():
-        args["model"] = model.strip()
-    return await redirect_or_error(
-        request,
-        "put",
-        args,
-        redirect=f"/drafts/{ident}",
-        error_title="Retry change request error",
-    )
-
-
 @router.get("/c/{handle}")
 async def goto_chunk(request: Request, handle: str) -> Response:
     """Resolve a chunk handle → redirect to where it lives. A draft chunk
@@ -3129,7 +2207,11 @@ async def goto_chunk(request: Request, handle: str) -> Response:
     if chunk is not None:
         ref = store.get_ref(kind="draft", id=int(chunk.ref_id))
         ident = ref.slug if ref and ref.slug else chunk.ref_id
-        return RedirectResponse(url=f"/drafts/{ident}#c-{handle}", status_code=303)
+        # The sole draft reader is /smartdraft; focus by the chunk's dc<id>
+        # handle (its query-param anchor scheme, not a #c-<base58> hash).
+        return RedirectResponse(
+            url=f"/smartdraft/{ident}?focus={chunk.dc}", status_code=303
+        )
     uc = store.universal_chunk(handle)
     if uc is not None:
         # paper chunks carry an ord the /r resolver maps to a PDF page;

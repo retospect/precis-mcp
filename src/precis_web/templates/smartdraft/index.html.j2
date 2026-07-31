@@ -12,7 +12,6 @@
   {% for d in drafts %}
   <li class="flex items-center justify-between px-3 py-2 hover:bg-slate-50">
     <a href="/smartdraft/{{ d.slug or d.id }}" class="text-sm font-medium text-sky-700 hover:underline">{{ d.title or ('draft ' ~ d.id) }}</a>
-    <a href="/drafts/{{ d.slug or d.id }}" class="text-[10px] text-slate-400 hover:text-slate-700">open in classic ↗</a>
   </li>
   {% else %}
   <li class="px-3 py-4 text-sm text-slate-400">No drafts yet.</li>
