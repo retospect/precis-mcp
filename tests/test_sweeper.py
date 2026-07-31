@@ -59,6 +59,33 @@ def _insert_worker_log(store: Store, host: str, *, age_days: int) -> None:
         conn.commit()
 
 
+def _insert_worker_process_log(
+    store: Store, host: str, process: str, *, age_minutes: float
+) -> None:
+    """Seed a ``worker_logs`` row for a continuous daemon process — the
+    dead-node reap's "is the target_node worker alive" signal."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO worker_logs (ts, host, process, level, message) "
+            "VALUES (now() - (%s || ' minutes')::interval, %s, %s, 'INFO', 'alive-test')",
+            (age_minutes, host, process),
+        )
+        conn.commit()
+
+
+def _upsert_host_heartbeat(store: Store, host: str, *, age_minutes: float) -> None:
+    """Seed/refresh a ``host_heartbeat`` row — the dead-node reap's "is the
+    host itself up" signal (PK on ``host``, so this is an upsert)."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO host_heartbeat (host, ts) "
+            "VALUES (%s, now() - (%s || ' minutes')::interval) "
+            "ON CONFLICT (host) DO UPDATE SET ts = excluded.ts",
+            (host, age_minutes),
+        )
+        conn.commit()
+
+
 def test_gc_worker_logs_prunes_aged_and_is_single_flight(store: Store) -> None:
     # worker_logs is insert-only; the sweeper prunes rows past the 30d window,
     # single-flighted (the sweeper runs fleet-wide). Tag by a uuid host so the
@@ -636,3 +663,173 @@ def test_sweeper_reopens_transient_failed_llm_summaries(store: Store) -> None:
     assert over_cap in surviving  # attempts at cap → not re-opened (no loop)
     assert ok_row in surviving  # ok row is never touched
     assert other in surviving  # a different summarizer is out of scope
+
+
+# ── dead-node compute-lane reap (gr172886 part-b) ──────────────────────
+#
+# Distinct from the ssh_node exclusion above: these jobs DO get reaped, but
+# only when the target_node's own worker is provably dead (no live executor
+# left to race via ``reclaim_stale_running``). Each test uses a uuid-tagged
+# host so the shared ``precis_test`` DB's ``worker_logs`` / ``host_heartbeat``
+# rows from other tests/passes can't perturb the liveness predicate.
+
+
+def test_dead_node_orphan_is_reaped_when_target_node_is_dead(
+    handler: TodoHandler, store: Store
+) -> None:
+    """Expired lease + no worker_logs/host_heartbeat evidence the target_node
+    is alive → reaped as an infra death (failed, failure_class=infra, tagged
+    reaped:dead-node-orphan, bubble fires). A co-existing, unrelated stale
+    non-ssh_node job in the same pass is still swept by the generic path —
+    the two reaps don't interfere."""
+    from uuid import uuid4
+
+    node = f"dead-{uuid4().hex[:8]}"
+    r = handler.put(text="parent")
+    rid = _id_of(r.body)
+    job_id = _mint_running_job(
+        store,
+        rid,
+        backdate_hours=0.1,
+        lease_offset_hours=-1.0,  # well past the 300s default grace
+        executor="ssh_node",
+        job_type="struct_relax",
+        params={"target_node": node},
+    )
+    # An unrelated, ordinary stale job that the generic timeout sweep should
+    # still catch in the same pass (no double-handling / no interference).
+    other_rid = _id_of(handler.put(text="other parent").body)
+    other_job_id = _mint_running_job(store, other_rid, backdate_hours=2.0)
+
+    result = run_sweeper_pass(store, limit=10)
+
+    job_tags = {str(t) for t in store.tags_for(job_id)}
+    assert "STATUS:failed" in job_tags
+    assert "STATUS:running" not in job_tags
+    assert "reaped:dead-node-orphan" in job_tags
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta->>'failure_class' FROM refs WHERE ref_id = %s", (job_id,)
+        ).fetchone()
+    assert row is not None
+    assert row[0] == "infra"
+    events = store.events_for(job_id)
+    assert any(e.event == "compute-reaped" for e in events)
+
+    # The generic sweep still ran and caught the unrelated job.
+    other_tags = {str(t) for t in store.tags_for(other_job_id)}
+    assert "STATUS:failed" in other_tags
+    assert "swept:claim-orphaned" in other_tags
+    assert result.ok == 1  # only the generic-path job counts toward BatchResult
+    assert result.claimed == 1
+
+
+def test_dead_node_orphan_not_reaped_when_worker_logged_recently(
+    handler: TodoHandler, store: Store
+) -> None:
+    """The target_node's own worker logged inside DEAD_WORKER_SILENCE_MIN —
+    it's alive and owns its own crash recovery, so the reap must abstain."""
+    from uuid import uuid4
+
+    node = f"alive-{uuid4().hex[:8]}"
+    _insert_worker_process_log(store, node, "precis-worker", age_minutes=1.0)
+    r = handler.put(text="parent")
+    rid = _id_of(r.body)
+    job_id = _mint_running_job(
+        store,
+        rid,
+        backdate_hours=0.1,
+        lease_offset_hours=-1.0,
+        executor="ssh_node",
+        job_type="struct_relax",
+        params={"target_node": node},
+    )
+
+    run_sweeper_pass(store, limit=10)
+
+    job_tags = {str(t) for t in store.tags_for(job_id)}
+    assert "STATUS:running" in job_tags
+    assert "STATUS:failed" not in job_tags
+    assert "reaped:dead-node-orphan" not in job_tags
+
+
+def test_dead_node_orphan_not_reaped_when_lease_still_live(
+    handler: TodoHandler, store: Store
+) -> None:
+    """The lease hasn't expired yet — a live worker could still hold the job
+    even if the node currently looks quiet — so the reap must abstain."""
+    from uuid import uuid4
+
+    node = f"quiet-{uuid4().hex[:8]}"
+    r = handler.put(text="parent")
+    rid = _id_of(r.body)
+    job_id = _mint_running_job(
+        store,
+        rid,
+        backdate_hours=0.1,
+        lease_offset_hours=0.2,  # ~12 min still to run
+        executor="ssh_node",
+        job_type="struct_relax",
+        params={"target_node": node},
+    )
+
+    run_sweeper_pass(store, limit=10)
+
+    job_tags = {str(t) for t in store.tags_for(job_id)}
+    assert "STATUS:running" in job_tags
+    assert "STATUS:failed" not in job_tags
+    assert "reaped:dead-node-orphan" not in job_tags
+
+
+def test_dead_node_orphan_not_reaped_when_target_node_is_null(
+    handler: TodoHandler, store: Store
+) -> None:
+    """No ``target_node`` pin means no host to prove dead — leave it for the
+    executor / the operator, never guess."""
+    r = handler.put(text="parent")
+    rid = _id_of(r.body)
+    job_id = _mint_running_job(
+        store,
+        rid,
+        backdate_hours=0.1,
+        lease_offset_hours=-1.0,
+        executor="ssh_node",
+        job_type="struct_relax",
+        params={},  # no target_node
+    )
+
+    run_sweeper_pass(store, limit=10)
+
+    job_tags = {str(t) for t in store.tags_for(job_id)}
+    assert "STATUS:running" in job_tags
+    assert "STATUS:failed" not in job_tags
+    assert "reaped:dead-node-orphan" not in job_tags
+
+
+def test_dead_node_orphan_not_reaped_when_host_heartbeat_fresh(
+    handler: TodoHandler, store: Store
+) -> None:
+    """No worker_logs evidence, but a fresh host_heartbeat means the host
+    itself is up (some other process is alive) — a wedged single daemon is
+    not the same as a dead node, so the reap must abstain."""
+    from uuid import uuid4
+
+    node = f"hb-{uuid4().hex[:8]}"
+    _upsert_host_heartbeat(store, node, age_minutes=0.5)
+    r = handler.put(text="parent")
+    rid = _id_of(r.body)
+    job_id = _mint_running_job(
+        store,
+        rid,
+        backdate_hours=0.1,
+        lease_offset_hours=-1.0,
+        executor="ssh_node",
+        job_type="struct_relax",
+        params={"target_node": node},
+    )
+
+    run_sweeper_pass(store, limit=10)
+
+    job_tags = {str(t) for t in store.tags_for(job_id)}
+    assert "STATUS:running" in job_tags
+    assert "STATUS:failed" not in job_tags

@@ -17,6 +17,22 @@ same predicate the reclaim path uses (:func:`claim_executor_jobs` in
 ``executors/_common.py``). The hours threshold then backstops lease-less
 legacy jobs and adds margin past a just-expired lease.
 
+**Dead-node compute-lane reap (gr172886 part-b).** ``ssh_node`` jobs are
+excluded from the generic timeout sweep above (see the module note on
+:func:`_enumerate_orphans`) because that executor owns its own crash
+recovery — an external terminalize here would race, and could win, the
+executor's own lease-steal. :func:`_reap_dead_node_orphans` is a narrower,
+DISTINCT reap that only fires in the one case where there is no live
+executor left to race: the job's ``meta.params.target_node`` host is
+*provably dead* (see :func:`_enumerate_dead_node_orphans`), not merely
+lease-expired. It terminalizes exactly like the ssh_node poison-guard
+(``executors/ssh_node.py``'s ``_MAX_ATTEMPTS`` path): ``STATUS:failed`` +
+``meta.failure_class='infra'`` + ``bubble_job_failure`` — an infra death,
+never a physical rule-out — tagged ``reaped:dead-node-orphan`` (distinct
+from both ``swept:claim-orphaned`` above and ``reaped:reboot-orphan`` in
+``quest/loop.py``, so all three recovery paths stay legible in the tag
+history).
+
 The sweeper:
 
 1. Selects rows where the *current* ``STATUS:`` value is ``running``, the
@@ -83,7 +99,9 @@ from precis.store.types import Tag
 from precis.workers.executors._common import (
     effective_requires,
     release_job_reservation,
+    set_meta,
 )
+from precis.workers.nursery import DEAD_WORKER_SILENCE_MIN, WORKER_CONTINUOUS_PROCESSES
 from precis.workers.runner import BatchResult
 
 #: Cap the unschedulable scan so a huge queue can't make the per-minute
@@ -569,6 +587,11 @@ def run_sweeper_pass(store: Store, *, limit: int = 50) -> BatchResult:
             "safety threshold (gripe 50905)",
             reaped_dft,
         )
+    # Dead-node compute-lane reap (gr172886 part-b) — a DISTINCT pass from the
+    # generic timeout sweep below, which excludes ``ssh_node`` entirely (see
+    # ``_enumerate_orphans``). Runs every pass, fleet-wide, not gated behind
+    # any dark-launch flag.
+    _reap_dead_node_orphans(store, limit=limit)
     threshold_hours = _stuck_job_hours()
     candidates = _enumerate_orphans(store, threshold_hours, limit=limit)
     if not candidates:
@@ -609,7 +632,10 @@ def _enumerate_orphans(
     ``executors/ssh_node.py``), so a swept→failed here would race — and win —
     the steal, stranding the barrier instead of retrying it. The executor
     owns the crash-recovery story for its jobs; the sweeper must not fail
-    them out from under it.
+    them out from under it — *unless* there is no live executor left to
+    race, which is the one case :func:`_enumerate_dead_node_orphans` /
+    :func:`_reap_dead_node_orphans` reap instead (gr172886 part-b, a
+    distinct pass — this exclusion itself is unchanged).
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
@@ -642,6 +668,221 @@ def _enumerate_orphans(
         )
         for r in rows
     ]
+
+
+#: Grace past ``lease_until`` before a dead-node orphan is reap-eligible
+#: (seconds). Small and dedicated (unlike :data:`STUCK_JOB_HOURS`) because
+#: the predicate that actually gates the reap is target-node deadness, not
+#: this margin — it only absorbs clock skew / a lease stamped moments ago.
+#: ``PRECIS_DEAD_NODE_REAP_GRACE_S``, default 300 (5 min).
+def _dead_node_reap_grace_s() -> int:
+    raw = os.environ.get("PRECIS_DEAD_NODE_REAP_GRACE_S")
+    if raw is None:
+        return 300
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 300
+
+
+@dataclass(frozen=True, slots=True)
+class _DeadNodeOrphan:
+    """One dead-node ``ssh_node`` orphan candidate, identified before the
+    locked transition."""
+
+    ref_id: int
+    target_node: str
+    meta: dict
+
+
+def _enumerate_dead_node_orphans(
+    store: Store, grace_s: int, *, limit: int
+) -> list[_DeadNodeOrphan]:
+    """Find ``STATUS:running`` ``ssh_node`` jobs whose target node is dead.
+
+    Distinct from :func:`_enumerate_orphans` (which excludes ``ssh_node``
+    entirely). A candidate here must satisfy ALL of:
+
+    1. ``meta.executor = 'ssh_node'`` and currently ``STATUS:running``;
+    2. ``meta.lease_until`` non-null and expired by more than ``grace_s``
+       — the same lease-expired predicate :func:`_enumerate_orphans` /
+       :func:`claim_executor_jobs` use, plus a small margin;
+    3. ``meta.params.target_node`` is set (a null target can never be
+       proven dead, so such a job is left alone — see the NULL join below),
+       AND that host is *provably dead*: no ``worker_logs`` row for either
+       continuous daemon (:data:`WORKER_CONTINUOUS_PROCESSES`) within
+       :data:`DEAD_WORKER_SILENCE_MIN`, AND no fresh ``host_heartbeat`` row
+       (mirrors ``nursery.py``'s ``_detect_dead_workers`` host-alive check,
+       3-minute freshness) — i.e. the *host itself* looks down, not just one
+       wedged process, which is what makes an external terminalize safe:
+       there is no live executor left on that node to race via
+       ``reclaim_stale_running``.
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id, r.meta->'params'->>'target_node' AS target_node, r.meta
+              FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE r.kind = 'job'
+               AND r.deleted_at IS NULL
+               AND t.namespace = 'STATUS'
+               AND t.value = 'running'
+               AND r.meta->>'executor' = 'ssh_node'
+               AND (r.meta->>'lease_until') IS NOT NULL
+               AND (r.meta->>'lease_until')::timestamptz < now() - %(grace)s::interval
+               AND (r.meta->'params'->>'target_node') IS NOT NULL
+               AND NOT EXISTS (
+                     SELECT 1 FROM worker_logs wl
+                      WHERE wl.host = r.meta->'params'->>'target_node'
+                        AND wl.process = ANY(%(procs)s)
+                        AND wl.ts > now() - %(silence)s::interval
+                   )
+               AND NOT EXISTS (
+                     SELECT 1 FROM host_heartbeat hh
+                      WHERE hh.host = r.meta->'params'->>'target_node'
+                        AND hh.ts > now() - interval '3 minutes'
+                   )
+             ORDER BY r.ref_id
+             LIMIT %(limit)s
+            """,
+            {
+                "grace": f"{grace_s} seconds",
+                "procs": list(WORKER_CONTINUOUS_PROCESSES),
+                "silence": f"{DEAD_WORKER_SILENCE_MIN} minutes",
+                "limit": limit,
+            },
+        ).fetchall()
+    return [
+        _DeadNodeOrphan(ref_id=int(r[0]), target_node=str(r[1]), meta=dict(r[2] or {}))
+        for r in rows
+    ]
+
+
+def _transition_dead_node_orphan_to_failed(
+    store: Store, orphan: _DeadNodeOrphan, grace_s: int
+) -> bool:
+    """Lock the job, re-verify the dead-node predicate, terminalize to failed.
+
+    Mirrors the ``ssh_node`` executor's own poison-guard terminal transition
+    (``executors/ssh_node.py``'s ``_MAX_ATTEMPTS`` crash-loop guard)
+    **exactly**: ``STATUS`` → ``failed``, ``meta.failure_class = 'infra'``,
+    then :func:`bubble_job_failure` — so this reads as an infra death to
+    every downstream consumer (the quest harvest's ``failure_class``-gated
+    retry-vs-rule-out branch, ADR 0064 §C), never a physical rule-out.
+    Tagged ``reaped:dead-node-orphan`` — distinct from
+    :func:`_transition_to_failed`'s ``swept:claim-orphaned`` and
+    ``quest/loop.py``'s ``reaped:reboot-orphan`` — so the three recovery
+    paths stay legible in the tag history.
+
+    Returns ``True`` on successful transition, ``False`` on a lost race
+    (someone else already transitioned the row, or the dead-node predicate
+    no longer holds by the time this locks it — e.g. the node came back).
+    """
+    with store.tx() as conn:
+        row = conn.execute(
+            """
+            SELECT r.ref_id
+              FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE r.ref_id = %(ref_id)s
+               AND r.kind = 'job'
+               AND r.deleted_at IS NULL
+               AND t.namespace = 'STATUS'
+               AND t.value = 'running'
+               AND r.meta->>'executor' = 'ssh_node'
+               AND (r.meta->>'lease_until') IS NOT NULL
+               AND (r.meta->>'lease_until')::timestamptz < now() - %(grace)s::interval
+               AND (r.meta->'params'->>'target_node') = %(node)s
+               AND NOT EXISTS (
+                     SELECT 1 FROM worker_logs wl
+                      WHERE wl.host = %(node)s
+                        AND wl.process = ANY(%(procs)s)
+                        AND wl.ts > now() - %(silence)s::interval
+                   )
+               AND NOT EXISTS (
+                     SELECT 1 FROM host_heartbeat hh
+                      WHERE hh.host = %(node)s
+                        AND hh.ts > now() - interval '3 minutes'
+                   )
+             FOR UPDATE OF r SKIP LOCKED
+            """,
+            {
+                "ref_id": orphan.ref_id,
+                "grace": f"{grace_s} seconds",
+                "node": orphan.target_node,
+                "procs": list(WORKER_CONTINUOUS_PROCESSES),
+                "silence": f"{DEAD_WORKER_SILENCE_MIN} minutes",
+            },
+        ).fetchone()
+        if row is None:
+            return False
+        store.add_tag(
+            orphan.ref_id,
+            Tag.closed("STATUS", "failed"),
+            set_by="system",
+            replace_prefix=True,
+            conn=conn,
+        )
+        # INFRA, not a physical verdict — the worker/node died, the compute
+        # never rendered a real answer (mirrors ssh_node.py's own poison-guard
+        # ``_set_meta(conn, ref_id, failure_class="infra")``).
+        set_meta(conn, orphan.ref_id, failure_class="infra")
+        store.add_tag(
+            orphan.ref_id,
+            Tag.open("reaped:dead-node-orphan"),
+            set_by="system",
+            conn=conn,
+        )
+        store.append_event(
+            orphan.ref_id,
+            source="sweeper",
+            event="compute-reaped",
+            payload={"target_node": orphan.target_node, "cause": "dead-node-orphan"},
+            conn=conn,
+        )
+        # Refund the crashed job's resource reservation (mirrors
+        # ``_transition_to_failed`` — idempotent no-op if nothing reserved).
+        release_job_reservation(conn, orphan.ref_id)
+    # Bubble + container-kill run outside the tx, same as
+    # ``_transition_to_failed`` — see its comment for why.
+    bubble_job_failure(store, orphan.ref_id)
+    _kill_job_container(orphan.ref_id, orphan.meta)
+    return True
+
+
+def _reap_dead_node_orphans(store: Store, *, limit: int) -> int:
+    """Run the dead-node compute-lane reap pass (gr172886 part-b).
+
+    Per-job wrapped so one job's failure (a raised exception mid-transition)
+    can never abort the rest of the sweep — the same defensive shape as
+    :func:`_kill_job_container` / :func:`_reap_stale_dft_containers`, just
+    applied per-candidate here since this reap does real DB writes (those
+    two are already fully self-contained try/except). Returns the count
+    actually reaped.
+    """
+    grace_s = _dead_node_reap_grace_s()
+    candidates = _enumerate_dead_node_orphans(store, grace_s, limit=limit)
+    n = 0
+    for orphan in candidates:
+        try:
+            if _transition_dead_node_orphan_to_failed(store, orphan, grace_s):
+                n += 1
+                log.warning(
+                    "sweeper: job #%d reaped (dead-node orphan, target_node=%s "
+                    "provably dead — lease expired, no live executor to race)",
+                    orphan.ref_id,
+                    orphan.target_node,
+                )
+        except Exception:  # pragma: no cover - defensive
+            log.warning(
+                "sweeper: dead-node reap for job #%d raised",
+                orphan.ref_id,
+                exc_info=True,
+            )
+    return n
 
 
 def _kill_job_container(ref_id: int, meta: dict) -> None:

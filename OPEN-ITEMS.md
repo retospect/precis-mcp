@@ -273,6 +273,18 @@ grounded (291 at conf≥0.7 + 115 medium 0.5–0.7), each tagged
   `tools_needed`-aware (or pin a provider). · Test: a fake transport raising
   `HTTPError(fp=<body>)` → `LlmResult.error` contains the body text, not just
   "HTTP Error 400".
+- **gr172886 part-(b) Option A — worker-generation lease epoch (quick-restart
+  latency)** · Status: open (filed, not built) · Severity: hardening · Spec:
+  `docs/proposals/compute-lane-lease-epoch.md`. Part-(b) Option B (the sweeper
+  dead-node reap) covers the *dead-worker* half; this closes the
+  *quick-restart-mid-lease* half — a worker that bounces and comes back still
+  waits out the full 2h lease before its own steal reclaims. Fix = stamp a
+  per-process `boot_id` on the running-job lease so a restarted worker reclaims
+  its dead predecessor's jobs on the first claim pass (protocol surgery on
+  `claim_executor_jobs`/`reclaim_stale_running` — gated on tests that a *live*
+  holder is never stolen). Non-urgent; revisit priority once B has run in prod
+  and real quick-restart wedges can be counted. Related: `worker-agent-silent-
+  outage` above (the dead-worker root cause B/nursery already alert on).
 ---
 ## 🚨 Deploy fresh-resolves deps instead of installing from `uv.lock` — gate-green can deploy-break
 

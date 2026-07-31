@@ -380,7 +380,16 @@ queries): the sweeper fails an expired-lease `STATUS:running` job outright,
 which would *race and win* the claim-side steal at lease expiry — stranding
 the compute result as `failed` instead of retrying it. So the executor owns
 crash-recovery for its own jobs; the sweeper still reaps every other
-executor's (`claude_inproc` plan_tick, etc.).
+executor's (`claude_inproc` plan_tick, etc.). **Exception (gr172886 part-b):
+a distinct `_reap_dead_node_orphans` pass** *does* terminalize an
+expired-lease `ssh_node` job — but only when its `meta.params.target_node`
+host is *provably dead* (no `precis-worker[-agent]` `worker_logs` within
+`DEAD_WORKER_SILENCE_MIN` **and** no fresh `host_heartbeat`), the one case
+where there is no live executor left to race. Same infra terminal as the
+executor's own poison-guard (`STATUS:failed` + `failure_class='infra'` +
+bubble → §C harvest re-dispatches), tagged `reaped:dead-node-orphan`. The
+quick-restart-mid-lease latency it leaves is deferred to
+`docs/proposals/compute-lane-lease-epoch.md` (Option A).
 
 **Two `precis worker` profiles, four LaunchDaemons total.**
 
