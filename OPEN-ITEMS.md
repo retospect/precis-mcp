@@ -86,32 +86,31 @@ items are removed (history is `git log`).
   fixes a convergence bug the chunk-scoped edge model introduced.) Thread the
   caller's `conn` through for the mint path.
 
-## Residuals (2026-07-31 — citation-edge chunk-grounding ship)
+## Residuals (2026-07-31 — citation-edge chunk-grounding: grounded)
 
-Code shipped (draft autolinker `src_pos`, evidence `src_chunk_id`, pc/dc
-render, `precis taproot backfill-grounding` CLI). The prod data backfills
-were **deferred** at user request ("ship only") — run them in a later session:
+Code shipped + **deployed**; deterministic + semantic backfills **applied to
+prod**. Taproot evidence-edge grounding 22%→**63%** (618/986). Deterministic:
+16 drafts (`dc`) + 212 `source_handle` paper edges (`pc`). Semantic fan-out
+(36 sonnet verifiers over pgvector top-3 candidates): **406** paper edges
+grounded (291 at conf≥0.7 + 115 medium 0.5–0.7), each tagged
+`meta.src_grounding.method='semantic_backfill'` — reversible as a set. finding
+177720 fully chunk-grounded (`dc1507057` + `pc510143`). Remaining ref-level:
 
-- **Run the deterministic backfill against prod** · Status: deferred ·
-  Severity: feature · Owner: `src/precis/cli/taproot.py::_backfill_grounding`.
-  `precis taproot backfill-grounding --dry-run` first (via prod `--database-url`,
-  see memory `prod-one-off-cli-write`), then without `--dry-run`. Verified
-  read-only vs prod 2026-07-31: **16 drafts / 951 draft `cites` edges** →
-  `dc`-grounded, **212 paper evidence edges** (all `pc<id>` handles resolve to a
-  live same-paper chunk) → `pc`-grounded, 0 unresolved / 0 collisions. This is
-  what makes finding 177720's "cited by dr42995" render as `dc<id>`.
-- **Semantic grounding of the 766 null-`source_handle` paper→hub edges** ·
-  Status: deferred · Severity: feature · Owner: new apply path + agent fan-out.
-  These evidence edges have no stored grounding chunk (incl. 177720's
-  `corroborates pa4137`). Plan (user-approved shape): fan out ~40 **read-only**
-  agents over batches; each reads the claim (hub title) + semantic-searches the
-  paper's chunks (`search(kind='paper', scope=<slug>, q=<claim>)`) and proposes
-  `{link_id, pc<id>, confidence, quote}`; main loop reviews proposals (dry run)
-  then applies `src_chunk_id` for confident ones after sign-off. Agents propose
-  only (dogfood read-only); main loop writes. BILLABLE + prod writes.
-- **Deploy** · Status: deferred · the render fix (`pc`/`dc` in the link table)
-  only reaches the melchior web reader after `scripts/deploy` (`/go`); this ship
-  was `/land` only.
+- **Triage the 292 "none-fit" evidence edges** · Status: open · Severity:
+  feature · Owner: taproot grounding. The fan-out found no top-3 paper chunk
+  that grounds these claims. "none-fit" ≠ unsupported — it mixes (a) genuinely
+  spurious edges (should be *removed*, not grounded), (b) real-but-diffuse
+  whole-paper support, (c) retrieval misses (grounding chunk ranked >3, or claim
+  paraphrased far from paper wording). Needs a deeper pass — top-10 retrieval +
+  full-claim embedding (not just the claim's lead chunk) + an explicit "is this
+  edge spurious at all?" judgment — *before* any edge removal. Candidate set is
+  regenerable via the session's pgvector LATERAL query.
+- **Embed the 67 papers with no body-chunk embeddings** · Status: open ·
+  Severity: feature · Owner: `embed:bge-m3` worker. 67 of the 774 null-
+  `source_handle` edges sit on papers with no embedded chunks, so nothing to
+  retrieve against; reground after their chunks embed.
+- **9 low-confidence (<0.5) groundings held** — left ref-level deliberately;
+  revisit only if the none-fit triage changes the retrieval approach.
 
 ## Residuals (2026-07-30 — taproot authoring on-ramp ship 02af6721)
 
