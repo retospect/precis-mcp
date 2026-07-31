@@ -129,6 +129,18 @@ were **deferred** at user request ("ship only") — run them in a later session:
   `source_handles` list and teach `EvidenceEdge`/the ring's Claims render to
   show a list. · Test: seed one paper as two-passage supporter of one claim →
   both grounding handles survive on the single edge.
+  **Partial progress (`f899551d`):** `seed_claim_hub`'s dedup key now includes
+  the grounding chunk ord (`(paper, hub, role, chunk)`, not just
+  `(paper, hub, role)`), so two distinct-passage supporters write two distinct
+  `links` rows instead of collapsing at write-time (see
+  `test_two_passages_of_one_paper_are_two_edges`) — the write-side data loss
+  this item opened with is gone. Still open: `seniority.py::derive_evidence`
+  groups evidence rows into a `dict` keyed by `src_ref_id`
+  (`support_edges.setdefault(...)`), so it still folds those two now-distinct
+  edges back down to one `EvidenceEdge` at read time — the Claims render still
+  shows only one grounding handle per paper. The remaining fix is exactly the
+  read-side half this item names (`EvidenceEdge`/`refeye.py` render a list, or
+  `derive_evidence` stops deduping by ref_id alone).
 
 ## Residuals (2026-07-30 session — gr172886 ship)
 
