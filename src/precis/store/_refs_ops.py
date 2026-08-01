@@ -1672,6 +1672,7 @@ class RefsMixin:
         has_pdf: bool | None = None,
         has_chunks: bool | None = None,
         parent_id: int | None = None,
+        ref_ids: list[int] | None = None,
         deleted: bool = False,
         limit: int = 30,
         offset: int = 0,
@@ -1686,13 +1687,18 @@ class RefsMixin:
         only ingested refs, ``False`` only chunk-less ones (the
         "chunked"/"unchunked" state facet). ``parent_id`` narrows to one
         folder's *direct* children (the ``/drive`` folder facet — same
-        non-recursive semantics as the folder-tree sidebar). ``deleted=True``
-        flips the polarity to soft-deleted refs only (the "show deleted"
-        toggle — a lightweight trash view; no undelete surface yet, just
-        visibility). Kinds with no rows simply don't appear; an empty
-        ``kinds`` returns nothing. ``offset`` pages past the first window.
+        non-recursive semantics as the folder-tree sidebar). ``ref_ids``
+        restricts to an explicit id allow-list (the ``/drive?cited_by=<draft>``
+        scope — a draft's papers-to-fetch set): ``None`` means no restriction,
+        an **empty list** means restrict to nothing (returns ``[]``, so a draft
+        with an empty worklist shows an empty queue rather than the whole
+        corpus). ``deleted=True`` flips the polarity to soft-deleted refs only
+        (the "show deleted" toggle — a lightweight trash view; no undelete
+        surface yet, just visibility). Kinds with no rows simply don't appear;
+        an empty ``kinds`` returns nothing. ``offset`` pages past the first
+        window.
         """
-        if not kinds:
+        if not kinds or (ref_ids is not None and not ref_ids):
             return []
         clauses = [
             "r.kind = ANY(%s)",
@@ -1712,6 +1718,9 @@ class RefsMixin:
         if parent_id is not None:
             clauses.append("r.parent_id = %s")
             params.append(parent_id)
+        if ref_ids is not None:
+            clauses.append("r.ref_id = ANY(%s)")
+            params.append(list(ref_ids))
         tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
         if tag_frag:
             clauses.append(tag_frag)

@@ -270,3 +270,47 @@ class TestEdgeShapes:
         done = _section(body, "DONE (2)")
         assert f"fi{f1}" in done
         assert f"fi{f2}" in done
+
+
+# ---------------------------------------------------------------------------
+# 5. draft_fetch_ref_ids — the /drive?cited_by=<draft> worklist derivation
+# ---------------------------------------------------------------------------
+
+
+class TestDraftFetchRefIds:
+    def test_returns_exactly_the_cited_zero_block_papers(
+        self, store, draft: DraftHandler
+    ) -> None:
+        from precis.handlers._citations_view import draft_fetch_ref_ids
+
+        stub_a = seed_ref(store, title="Stub A", kind="paper")
+        stub_b = seed_ref(store, title="Stub B", kind="paper")
+        fetched = seed_ref(store, title="Fetched", kind="paper")
+        chunk_id = seed_chunk(store, ref_id=fetched, text="grounding passage")
+        finding = seed_ref(store, title="Settled", kind="finding")
+        _uncited_stub = seed_ref(store, title="Not Cited", kind="paper")
+
+        ref = _new_draft(store, draft, "fetch-ids")
+        _add_para(
+            store,
+            draft,
+            "fetch-ids",
+            ref,
+            f"[pa{stub_a}] and again [pa{stub_a}], plus [pa{stub_b}], a fetched "
+            f"[pc{chunk_id}], and a settled [fi{finding}].",
+        )
+
+        got = draft_fetch_ref_ids(store, ref)
+        # exactly the two cited 0-block papers, deduped + sorted; the fetched
+        # paper (has blocks), the finding, and the uncited stub are all absent.
+        assert got == sorted([stub_a, stub_b])
+
+    def test_empty_when_nothing_to_fetch(self, store, draft: DraftHandler) -> None:
+        from precis.handlers._citations_view import draft_fetch_ref_ids
+
+        fetched = seed_ref(store, title="Fetched", kind="paper")
+        chunk_id = seed_chunk(store, ref_id=fetched, text="body")
+        ref = _new_draft(store, draft, "fetch-ids-empty")
+        _add_para(store, draft, "fetch-ids-empty", ref, f"All grounded [pc{chunk_id}].")
+
+        assert draft_fetch_ref_ids(store, ref) == []

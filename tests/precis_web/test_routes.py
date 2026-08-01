@@ -185,6 +185,35 @@ def test_papers_needed_awaiting_query_also_redirects_to_drive_stub(client) -> No
     assert resp.headers["location"] == "/drive?state=stub"
 
 
+def test_drive_cited_by_unknown_draft_scopes_to_empty_queue(client, runtime) -> None:
+    """``/drive?cited_by=<draft>`` scopes the fetch queue to one draft's
+    papers-to-fetch set (the smartdraft "papers to fetch" link target). An
+    unknown draft resolves to an empty allow-list (``ref_ids=[]``) — an empty
+    queue under the scope header, never the whole corpus."""
+    r = client.get("/drive?cited_by=dr999999")
+    assert r.status_code == 200
+    assert "Papers to fetch" in r.text
+    # the derivation passed an *empty* allow-list down to recent_refs (unknown
+    # draft → nothing to fetch), not None (which would list the whole corpus).
+    assert runtime.store.recent_ref_ids == []
+    # the scope rides the filter form (hidden field) so a search/sort/state
+    # change doesn't silently drop it.
+    assert 'name="cited_by"' in r.text
+
+
+def test_drive_cited_by_does_not_pollute_kind_cookie(client, runtime) -> None:
+    """A ``cited_by`` scope forces ``kinds=['paper']`` for the worklist — but
+    must NOT persist that into the ``items_kinds`` preference cookie (a single
+    scoped visit would otherwise silently reset every later unscoped /drive to
+    paper-only)."""
+    r = client.get("/drive?cited_by=dr999999&submitted=1", follow_redirects=False)
+    assert r.status_code == 200
+    assert "items_kinds" not in r.cookies
+    # a normal submit (no scope) still remembers the selection.
+    r2 = client.get("/drive?submitted=1&k=paper", follow_redirects=False)
+    assert r2.cookies.get("items_kinds") == "paper"
+
+
 # ── reading-intent flags (read-later / must-read / skim) ───────────
 
 

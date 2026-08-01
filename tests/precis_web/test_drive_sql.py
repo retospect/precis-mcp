@@ -98,6 +98,25 @@ def test_recent_refs_has_chunks_filter(store):
     assert with_chunk.id not in unchunked
 
 
+def test_recent_refs_ref_ids_allow_list(store):
+    """``ref_ids`` restricts the browse to an explicit id set (the
+    ``/drive?cited_by=<draft>`` fetch-worklist scope): ``None`` = no
+    restriction, a list = only those ids, an empty list = nothing."""
+    a = store.insert_ref(kind="paper", slug="ref-a", title="Paper A")
+    b = store.insert_ref(kind="paper", slug="ref-b", title="Paper B")
+    c = store.insert_ref(kind="paper", slug="ref-c", title="Paper C")
+
+    unrestricted = {r.id for r in store.recent_refs(["paper"], ref_ids=None)}
+    assert {a.id, b.id, c.id} <= unrestricted
+
+    scoped = {r.id for r in store.recent_refs(["paper"], ref_ids=[a.id, c.id])}
+    assert scoped == {a.id, c.id}  # exactly the allow-list, b excluded
+
+    # An empty allow-list restricts to nothing (a draft with an empty
+    # worklist shows an empty queue, not the whole corpus).
+    assert store.recent_refs(["paper"], ref_ids=[]) == []
+
+
 def test_conv_chat_turn_surfaces_as_drive_search_hit(store):
     """A captured conversation's turn (the Discord / Slack bridge threads
     are stored as ``conv`` with each turn an embedded body chunk) surfaces

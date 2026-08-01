@@ -4,14 +4,20 @@ title: Taproot draft-citation view — per-draft lifecycle surfacing (to-fetch /
 model: opus
 ---
 
-> **Partially built.** The core `view='citations'` data view + tests landed
+> **Built.** The core `view='citations'` data view + tests landed
 > (`src/precis/handlers/_citations_view.py`, wired into `handlers/draft.py`;
-> `tests/test_draft_citations_view.py`). **Remaining:** the web-panel surface
-> (AC5) in the smartdraft reader, and the `precis-draft-help` skill entry. Kept
-> `status: draft` (not a clean fixer pickup) until the panel lands. The view
-> implementation parses chunk text for both the handle and `[pub_id]` grammars
-> directly (the autolinker doesn't mine `[pub_id]`), a correctness refinement
-> over this spec's "via the cites edge" wording.
+> `tests/test_draft_citations_view.py`). The web surface (AC5) landed as a
+> **Drive scope facet**, not a bespoke smartdraft panel: `/drive?cited_by=<draft>`
+> narrows Drive's existing stub-acquisition queue (`state=stub` — flags +
+> watch-dir drop-zone) to the draft's to-fetch set, and the smartdraft reader's
+> Export tools carry a "papers to fetch ▸" link to it. The scope reuses the same
+> `draft_fetch_ref_ids` derivation as this view (`_citations_view.py`), so the
+> two never diverge (`routes/drive.py`, `store.recent_refs(ref_ids=…)`;
+> `tests/precis_web/test_drive_sql.py`, `test_routes.py`). **Remaining:** the
+> `precis-draft-help` skill entry. The view implementation parses chunk text for
+> both the handle and `[pub_id]` grammars directly (the autolinker doesn't mine
+> `[pub_id]`), a correctness refinement over this spec's "via the cites edge"
+> wording.
 
 # Taproot draft-citation view — per-draft lifecycle surfacing
 
@@ -88,9 +94,14 @@ autolinker's `cites`/`cited-by` edge. That is the whole classifier.
   (`store/_draft_ops.py`). No new columns, no migration, no LLM call.
 - The **to-fetch partition = `cited-by draft ∧ block-count 0`** — this *is* the
   gripe-180155 fetch worklist; it self-clears on ingest with no link edit.
-- A thin **web surface**: a right-side panel in the smartdraft draft reader
-  (`precis_web`, sibling to the per-chunk links pane) rendering the same four
-  partitions, each row linking to its next action. (CLI reads the same view.)
+- A thin **web surface** — delivered as a **Drive scope facet**, not a bespoke
+  panel (Drive already *is* the papers-to-fetch surface: `state=stub` is the
+  folded `/papers-needed` queue with acquisition flags + watch-dir drop-zone;
+  it was only missing per-draft scope). A `cited_by=<draft>` param on
+  `/drive` narrows that queue to the draft's **to-fetch** set (reusing
+  `draft_fetch_ref_ids`), and the smartdraft reader links to it. The richer
+  re-ground/promote/done partitions stay in `view='citations'` (CLI + `get`),
+  which is the fetch view's superset. (CLI reads the same view.)
 
 ## Explicitly NOT in scope
 
@@ -126,16 +137,23 @@ autolinker's `cites`/`cited-by` edge. That is the whole classifier.
 4. A draft with no citations returns an empty-but-well-formed view (all four
    partitions present, empty); a `[fi]`-only draft returns everything under
    **done**.
-5. The web panel renders the four partitions for a draft and each to-fetch row
-   exposes the paper's DOI (so the author can go fetch it).
+5. **[built as a Drive scope facet, not a bespoke panel]** `/drive?cited_by=<draft>`
+   scopes Drive's `state=stub` acquisition queue to exactly the draft's to-fetch
+   set (`recent_refs(ref_ids=draft_fetch_ref_ids(draft))`): each row is a stub
+   the draft cites, carrying the existing acquisition flags + find: (DOI) links +
+   watch-dir drop-zone. An unknown draft → empty queue (never the whole corpus).
+   The smartdraft reader's Export tools link to it ("papers to fetch ▸"). Reuses
+   the acquisition surface wholesale rather than duplicating it.
 
 ## Target + blast radius
 
 - **`handlers/draft.py`** — new `view='citations'` branch; a pure read over
   `links` + `store.count_blocks` + the `utils/mentions.py` token parse. No
   storage, no migration.
-- **`precis_web`** (smartdraft draft-reader template) — a right-side panel
-  rendering the view, sibling to the existing per-chunk links pane.
+- **`precis_web`** — a `cited_by=<draft>` scope facet on `routes/drive.py`
+  (`store.recent_refs(ref_ids=…)`, reusing `draft_fetch_ref_ids`), a scope
+  banner in `drive/index.html.j2`, and a "papers to fetch ▸" link in
+  `smartdraft/view.html.j2`'s Export tools. No bespoke panel.
 - **Reused unchanged**: `utils/mentions.py`, `store.count_blocks`,
   `store/_draft_ops.py` autolinker, `taproot/*` (only *referenced* by
   next-action labels, not called).

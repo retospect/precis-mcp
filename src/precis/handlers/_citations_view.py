@@ -260,4 +260,20 @@ def render_citations_view(store: Store, ref: Ref) -> Response:
     return _render(ref, buckets)
 
 
-__all__ = ["render_citations_view"]
+def draft_fetch_ref_ids(store: Store, ref: Ref) -> list[int]:
+    """Distinct paper ref_ids in this draft's **to-fetch** partition — cited
+    but with zero body blocks (a stub). The papers-to-fetch worklist behind
+    ``/drive?cited_by=<draft>`` (proposal AC5's draft-scoped acquisition
+    queue). Reuses the citations view's own token scan + block-count
+    derivation, so the drive scope and the ``view='citations'`` to-fetch
+    partition can never diverge. Read-only, no LLM."""
+    chunks = store.reading_order(ref.id)
+    raw = _collect_raw_cites(store, chunks)
+    paper_ids = {c.ref_id for c in raw if c.kind == "paper"}
+    # Bulk "which of these have body chunks" (one query) minus set — the
+    # to-fetch papers are those with none. Avoids an N+1 count per cited paper
+    # (a lit-review draft cites 50–100+).
+    return sorted(paper_ids - store.ref_ids_with_chunks(list(paper_ids)))
+
+
+__all__ = ["draft_fetch_ref_ids", "render_citations_view"]

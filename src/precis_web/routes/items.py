@@ -163,6 +163,7 @@ def _recent_rows(
     offset: int,
     *,
     has_chunks: bool | None = None,
+    ref_ids: list[int] | None = None,
     deleted: bool = False,
 ) -> tuple[list[dict[str, Any]], bool]:
     """The no-query landing: most-recently-added source items, newest
@@ -171,9 +172,11 @@ def _recent_rows(
     ingested/chunk-less filter (``has_chunks`` — the "chunked"/"unchunked"
     state facet), the folder facet (``folder_id`` — one folder's direct
     children; only artifact kinds carry a ``parent_id``, so this is a no-op
-    for pure source rows), and ``deleted`` (the "show deleted" toggle —
-    soft-deleted refs instead of live ones). Rows carry no preview (no
-    query) — name, kind, when-added, badges, tags, links, flags. Returns
+    for pure source rows), the ``ref_ids`` allow-list (the
+    ``/drive?cited_by=<draft>`` scope — a draft's papers-to-fetch set; an
+    empty list restricts to nothing), and ``deleted`` (the "show deleted"
+    toggle — soft-deleted refs instead of live ones). Rows carry no preview
+    (no query) — name, kind, when-added, badges, tags, links, flags. Returns
     ``(rows, has_next)`` via the same over-fetch-one-extra probe as
     :func:`_run_search`.
     """
@@ -183,6 +186,7 @@ def _recent_rows(
         has_pdf=has_pdf,
         has_chunks=has_chunks,
         parent_id=folder_id,
+        ref_ids=ref_ids,
         deleted=deleted,
         limit=_PAGE_SIZE + 1,
         offset=offset,

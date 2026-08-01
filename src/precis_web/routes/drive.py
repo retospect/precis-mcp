@@ -40,9 +40,10 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Form, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
+from precis.handlers._citations_view import draft_fetch_ref_ids
 from precis_web.deps import get_runtime, get_store, redirect_or_error, templates
 from precis_web.item_view import artifact_kinds, display_title
-from precis_web.routes.drafts import _DOC_TYPES
+from precis_web.routes.drafts import _DOC_TYPES, _draft_ref
 from precis_web.routes.flags import (
     ACQUIRE_FLAG_DEFS,
     FLAG_DEFS,
@@ -288,6 +289,7 @@ async def index(
     state: str = "all",
     paper_chunks: str = "both",
     folder: str = "",
+    cited_by: str = "",
     page: int = 1,
     submitted: str = "",
 ) -> HTMLResponse:
@@ -349,6 +351,29 @@ async def index(
     page = max(1, page)
     offset = (page - 1) * _PAGE_SIZE
 
+    # ``cited_by=<draft>`` scopes the browse to one draft's papers-to-fetch
+    # worklist — the papers it cites but the corpus still lacks (0 body
+    # blocks). Reuses the citations view's own to-fetch derivation
+    # (``handlers/_citations_view.draft_fetch_ref_ids``) so this drive scope
+    # and ``get(kind='draft', view='citations')``'s to-fetch partition can
+    # never diverge; the right-rail "papers to fetch" link in the smartdraft
+    # reader points here (proposal AC5). Only meaningful on the no-query
+    # browse path (a text query already scopes to matched live chunks), so a
+    # ``q`` present ignores it.
+    cited_by = (cited_by or "").strip()
+    fetch_ref_ids: list[int] | None = None
+    cited_by_title: str | None = None
+    if cited_by and not q:
+        draft_ref = await asyncio.to_thread(_draft_ref, store, cited_by)
+        if draft_ref is None:
+            fetch_ref_ids = []  # unknown draft → an empty queue, not the corpus
+        else:
+            cited_by_title = draft_ref.title or cited_by
+            fetch_ref_ids = await asyncio.to_thread(
+                draft_fetch_ref_ids, store, draft_ref
+            )
+            selected_kinds = ["paper"]  # the worklist is papers, whatever the chips say
+
     runtime = get_runtime(request)
     hub = getattr(runtime, "hub", None)
     artifact_kind_defs = artifact_kinds(hub)
@@ -407,6 +432,7 @@ async def index(
             folder_id,
             offset,
             has_chunks=has_chunks,
+            ref_ids=fetch_ref_ids,
             deleted=show_deleted,
         )
 
@@ -430,6 +456,8 @@ async def index(
         _pager_params.append(("paper_chunks", pc))
     if folder_raw:
         _pager_params.append(("folder", folder_raw))
+    if cited_by:
+        _pager_params.append(("cited_by", cited_by))
     for kk in selected_kinds:
         _pager_params.append(("k", kk))
     for t in tags:
@@ -486,6 +514,8 @@ async def index(
             "state": state,
             "paper_chunks": pc,
             "folder": folder_raw,
+            "cited_by": cited_by,
+            "cited_by_title": cited_by_title,
             "folder_options": await asyncio.to_thread(_folder_options, store),
             "folders": flat,
             "current": current,
@@ -506,8 +536,11 @@ async def index(
             "dropzones": dropzones,
         },
     )
-    if submitted:
-        # Remember the kind selection for the next visit (90 days).
+    if submitted and not cited_by:
+        # Remember the kind selection for the next visit (90 days). Skipped
+        # while a cited_by scope is active — ``selected_kinds`` was forced to
+        # ['paper'] for the fetch worklist, which isn't the operator's real
+        # kind preference and must not pollute the cookie.
         resp.set_cookie("items_kinds", ",".join(selected_kinds), max_age=90 * 24 * 3600)
     return resp
 

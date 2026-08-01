@@ -74,6 +74,10 @@
   {# submitted=1 tells the server the checkboxes are authoritative (so
      "none checked" means none, and the choice is remembered in a cookie). #}
   <input type="hidden" name="submitted" value="1" />
+  {# Carry the per-draft fetch scope through a search/sort/state change so it
+     isn't silently dropped on the first form interaction (the "clear scope ×"
+     link is the only way out). #}
+  {% if cited_by %}<input type="hidden" name="cited_by" value="{{ cited_by }}" />{% endif %}
   <div class="flex flex-wrap items-end gap-2">
     <div class="flex-1 min-w-[16rem]">
       <label class="block text-xs text-slate-500 mb-0.5">Search</label>
@@ -559,17 +563,26 @@
       {{ pager() }}
       {% endif %}
     {% else %}
-      {# Default landing: the recent list (or stub/deleted queue) under the search. #}
+      {# Default landing: the recent list (or stub/deleted/cited_by queue) under the search. #}
       <h2 class="text-sm font-semibold text-slate-600 mb-2">
-        {% if state == 'stub' %}Stubs — papers to get
+        {% if cited_by %}Papers to fetch{% if cited_by_title %} — {{ cited_by_title }}{% endif %}
+        {% elif state == 'stub' %}Stubs — papers to get
         {% elif state == 'deleted' %}Deleted — soft-deleted refs
         {% elif current %}{{ current.title }}
         {% else %}Recently added{% endif %}
       </h2>
+      {% if cited_by %}
+      <p class="mb-2 text-xs text-slate-500">
+        Papers this draft cites but the corpus is still missing (0 body blocks) — grab a copy via the find: links, or drop a PDF in the watch-dir below.
+        <a href="/drive" class="ml-1 text-sky-600 hover:underline">clear scope ×</a>
+      </p>
+      {% endif %}
       {% if recent %}
         {{ item_list(recent) }}
         <p class="mt-2 text-xs text-slate-400">
-          {% if state == 'stub' %}
+          {% if cited_by %}
+            {{ recent | length }} paper{{ '' if recent | length == 1 else 's' }} still to fetch for this draft.
+          {% elif state == 'stub' %}
             The {{ recent | length }} newest stub{{ '' if recent | length == 1 else 's' }} — use the find: links to track a copy down.
           {% elif state == 'deleted' %}
             The {{ recent | length }} most-recently deleted ref{{ '' if recent | length == 1 else 's' }}.
@@ -580,7 +593,8 @@
         {{ pager() }}
       {% else %}
         <p class="text-sm text-slate-400">
-          {% if state == 'stub' %}No stubs in the selected kinds — nothing waiting to be fetched.
+          {% if cited_by %}Nothing to fetch — every paper this draft cites is already in the corpus. 🎉
+          {% elif state == 'stub' %}No stubs in the selected kinds — nothing waiting to be fetched.
           {% elif state == 'deleted' %}Nothing deleted in the selected kinds.
           {% else %}Nothing here yet — ingest a paper, place something in a folder, or run a search above.{% endif %}
         </p>

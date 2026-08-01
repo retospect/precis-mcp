@@ -553,6 +553,13 @@
           <a href="/drafts/{{ ident }}/papers.zip"
              class="text-slate-500 underline hover:text-slate-800"
              title="zip the cited paper/datasheet PDFs + a manifest">download papers</a>
+          {# Papers this draft cites but the corpus still lacks — the fetch
+             worklist, opened in Drive's stub-acquisition surface pre-scoped to
+             this draft (routes/drive.py cited_by facet). New tab so the writing
+             surface stays put. #}
+          <a href="/drive?cited_by={{ ident | urlencode }}" target="_blank" rel="noopener"
+             class="text-slate-500 underline hover:text-slate-800"
+             title="papers this draft cites but the corpus is missing — the fetch worklist">papers to fetch ▸</a>
           {% if remarkable_ready %}
           <form method="post" action="/drafts/{{ ident }}/remarkable" class="inline">
             <button type="submit" class="text-slate-500 underline hover:text-slate-800"

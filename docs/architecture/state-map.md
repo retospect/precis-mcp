@@ -2062,6 +2062,12 @@ A quest row opens its hub (`/refs/quest/{id}`), a todo its own subtree
 (`/tasks?focus={id}`) — both via `_OPEN_URL_OVERRIDES`. "🔁 Schedules"
 is a preset link (`k=todo` + `tag=level:recurring`), not a kind; Quests +
 Schedules also sit in the nav Browse ▾ menu.
+`cited_by=<draft>` scopes the `state=stub` acquisition queue to one draft's
+**papers-to-fetch** set — the papers it cites but the corpus lacks (0 body
+blocks), derived by `handlers/_citations_view.draft_fetch_ref_ids` and passed
+as `store.recent_refs(ref_ids=…)`; the same to-fetch derivation as
+`get(kind='draft', view='citations')`, so drive-scope and the view never
+diverge. The `/smartdraft/{id}` Export tools link to it ("papers to fetch ▸").
 Every bespoke list this replaced — `/items`, `/papers` (+`/papers/triage`),
 `/drafts`, `/papers-needed`, `/refs/{oracle,patent}`, `/cfp` — is now a
 307-redirect to a Drive kind/tag/state preset (e.g.

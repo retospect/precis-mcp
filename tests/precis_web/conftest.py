@@ -788,6 +788,7 @@ class FakeStore:
         has_pdf=None,
         has_chunks=None,
         parent_id=None,
+        ref_ids=None,
         deleted=False,
         limit=30,
         offset=0,
@@ -795,16 +796,21 @@ class FakeStore:
         """Canned recent source refs for the /drive default landing —
         one paper (stub, no pdf) + one web, filtered to requested kinds.
         ``self.recent_tags`` / ``self.recent_has_pdf`` / ``self.recent_has_chunks``
-        / ``self.recent_parent_id`` / ``self.recent_deleted`` /
-        ``self.recent_offset`` record the filters. ``deleted=True`` serves
+        / ``self.recent_parent_id`` / ``self.recent_ref_ids`` /
+        ``self.recent_deleted`` / ``self.recent_offset`` record the filters.
+        ``ref_ids`` is the ``/drive?cited_by=<draft>`` allow-list (``None`` =
+        no restriction, ``[]`` = nothing). ``deleted=True`` serves
         ``self.deleted_recent_refs`` instead (empty by default — tests
         populate it to exercise the "show deleted" toggle)."""
         self.recent_tags = tags
         self.recent_has_pdf = has_pdf
         self.recent_has_chunks = has_chunks
         self.recent_parent_id = parent_id
+        self.recent_ref_ids = ref_ids
         self.recent_deleted = deleted
         self.recent_offset = offset
+        if ref_ids is not None and not ref_ids:
+            return []
         if deleted:
             src = list(getattr(self, "deleted_recent_refs", []))
         else:
@@ -815,7 +821,11 @@ class FakeStore:
                 ),
             ]
         want = set(kinds)
-        return [r for r in src if r.kind in want][offset:][:limit]
+        rows = [r for r in src if r.kind in want]
+        if ref_ids is not None:
+            allow = set(ref_ids)
+            rows = [r for r in rows if r.id in allow]
+        return rows[offset:][:limit]
 
     def list_folders(self):
         """Canned folder edges for the /items folder-facet dropdown: a
