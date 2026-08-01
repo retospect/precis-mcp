@@ -57,6 +57,10 @@ def test_drive_new_dropdown_offers_draft_doctype(client) -> None:
     assert "x-show=\"kind === 'draft'\"" in r.text
     assert "Patent application" in r.text
     assert "System / manufacturing spec" in r.text
+    # the required "what to write" prompt box — a title alone can't drive
+    # the writer, so the draft branch carries a required description field.
+    assert 'name="summary"' in r.text
+    assert ":required=\"kind === 'draft'\"" in r.text
 
 
 def test_pres_editor_routes_registered(client) -> None:

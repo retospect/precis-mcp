@@ -67,6 +67,18 @@
                placeholder="hex pocket block"
                class="w-full rounded border border-slate-300 px-2 py-1.5 text-sm">
       </div>
+      {# Draft description: the writer's initial prompt. Required for drafts
+         (a title alone can't drive the planner) — bound via :required so the
+         hidden field never blocks a cad/structure/figure/mermaid submit. #}
+      <div x-show="kind === 'draft'">
+        <label class="block text-xs font-medium text-slate-600 mb-1">What to write <span class="text-rose-500">*</span></label>
+        <textarea name="summary" rows="3" :required="kind === 'draft'"
+                  placeholder="Describe the document to write — this is the writer's prompt. A title alone isn't enough."
+                  class="w-full rounded border border-slate-300 px-2 py-1.5 text-sm"></textarea>
+        <p class="text-[10px] text-slate-400 mt-1">
+          Becomes the writer's initial prompt and starts it writing. Required — you can't write a document from just a title.
+        </p>
+      </div>
       <p class="text-[10px] text-slate-400" x-show="kind !== 'draft'">
         Lands you in the editor with a starter you can edit by prompt.
       </p>

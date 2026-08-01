@@ -339,19 +339,34 @@ def test_new_draft_seeds_planner_prompt_and_doctype_brief(
     assert "level:strategic" in args["tags"]
 
 
-def test_new_draft_blank_description_falls_back(
+def test_new_draft_blank_description_rejected(
     draft_client: TestClient, draft_runtime: FakeRuntime
 ) -> None:
-    """With no description, the todo body falls back to a bare instruction
-    so the planner still has something to act on."""
-    draft_client.post(
+    """A title alone can't drive the writer: with no description the create
+    is rejected (400) and nothing is dispatched — no project todo, no
+    ``LLM:opus`` auto-writer armed from just the title."""
+    r = draft_client.post(
         "/drafts/new",
         data={"title": "Widget Patent", "doctype": "patent", "summary": ""},
         follow_redirects=False,
     )
-    _, args = draft_runtime.calls[0]
-    assert args["text"] == 'Write a patent titled "Widget Patent".'
-    assert "LLM:opus" in args["tags"]
+    assert r.status_code == 400
+    assert "description is required" in r.text.lower()
+    # nothing was created — the guard fires before any dispatch.
+    assert draft_runtime.calls == []
+
+
+def test_new_draft_whitespace_description_rejected(
+    draft_client: TestClient, draft_runtime: FakeRuntime
+) -> None:
+    """A whitespace-only description is treated as blank (stripped)."""
+    r = draft_client.post(
+        "/drafts/new",
+        data={"title": "Widget Patent", "doctype": "patent", "summary": "   \n "},
+        follow_redirects=False,
+    )
+    assert r.status_code == 400
+    assert draft_runtime.calls == []
 
 
 def test_papers_zip_route_streams_zip(

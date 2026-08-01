@@ -836,6 +836,28 @@ async def new_draft(
     title = title.strip()
     if not title:
         return RedirectResponse(url="/drafts", status_code=303)
+    # A title alone is not enough to write a document from: the description
+    # IS the planner's initial prompt, and ``LLM:opus`` arms the auto-writer
+    # the moment the draft is created. Require it (the client also marks the
+    # field ``required``, but that is bypassable) rather than silently
+    # falling back to a "Write a <doctype> titled …" instruction that sets
+    # the planner writing from just the title.
+    summary = summary.strip()
+    if not summary:
+        return templates.TemplateResponse(
+            request,
+            "error.html.j2",
+            {
+                "title": "New draft error",
+                "detail": (
+                    "A description is required — a title alone isn't enough to "
+                    "write a document from. Describe what to write; it becomes "
+                    "the writer's initial prompt."
+                ),
+                "status": 400,
+            },
+            status_code=400,
+        )
     slug = _slugify(slug.strip() or title)
     workspace: dict[str, Any] = {"path": f"projects/{slug}", "format": "tex"}
     doctype = doctype.strip() or "paper"
@@ -861,10 +883,11 @@ async def new_draft(
 
     # The description IS the planner's initial prompt: it becomes the
     # project todo's body (``refs.title`` → the ``## Body`` block read by
-    # ``plan_tick``). Fall back to a bare instruction when the user left it
-    # blank. ``LLM:opus`` is the closed-vocab auto-run tag the dispatcher
-    # keys on to mint the first ``plan_tick`` job (no ``meta.executor``).
-    task_text = summary.strip() or f'Write a {doctype} titled "{title}".'
+    # ``plan_tick``). It is required (guarded above), so there is no
+    # title-only fallback. ``LLM:opus`` is the closed-vocab auto-run tag the
+    # dispatcher keys on to mint the first ``plan_tick`` job (no
+    # ``meta.executor``).
+    task_text = summary
 
     # 1) project root that owns the workspace + drives the planner.
     project_tags = ["level:strategic", "LLM:opus", *_topic_tags(tag_labels)]
