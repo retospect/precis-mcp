@@ -7,6 +7,25 @@ blocked-by: taproot-draft-citation-view
 
 # Taproot `[pa]`-arm — whole-paper cites → claim cites
 
+## Status — slice 1 built (stub-skip + ref-level promote)
+
+**Built** (this arm's slice 1, in `taproot/backfill.py` + `cli/taproot.py`):
+the segmenter now anchors on bare `[pa<id>]` groups (kept separate from
+`[pc]` groups — a kind switch breaks contiguity), and each `[pa]` group is
+routed by the cited paper's block-count:
+
+- **stub `[pa]`** (0 blocks) → `stub-fetch-first`, **skipped**, no write (AC2);
+- **fetched `[pa]`** → `reground-needed` by default (no write); with the new
+  `precis taproot backfill --ref-level` override it promotes **ref-level**
+  (ungrounded) and rewrites `[pa]`→`[fi<hub>]` (AC3), inheriting `apply_chunk`'s
+  idempotent re-convergence retirement invariant (AC4). `plan_chunk` dry-run
+  reports the per-group action and writes nothing (AC5).
+
+**Deferred to slice 2** — the `[pa]`→`[pc]` **re-ground** action (AC1) and its
+open question #3 (how the grounding chunk is suggested — the one place this arm
+adds an LLM call). Until then a fetched `[pa]`'s honest default is "re-ground
+by hand, or `--ref-level` to promote whole-paper (ungrounded)".
+
 ## Motivation / why
 
 `taproot/backfill.py` migrates a draft's `[pc<id>]` (paper-**chunk**) cites onto
@@ -118,6 +137,16 @@ original combined proposal's "atomic" wording, which misdescribed the primitive.
 1. **[RESOLVED — re-ground default, ref-level on override]** See the arm section.
 2. **[RESOLVED — idempotent re-convergence, not atomicity]** Retirement
    invariant restated to match `apply_chunk` (readiness blocker #6).
+4. **[known limitation — slice 1] Stub detection uses `store.count_blocks`,
+   which is not `retired_at`-aware.** A fetched-vs-stub `[pa]` is classified by
+   `count_blocks(ref_id) > 0` (matching `_citations_view._partition_of`, so the
+   drive/view/arm agree). `count_blocks` counts `ord >= 0` rows without a
+   `retired_at IS NULL` filter, so a paper whose only body chunks were
+   soft-retired (re-ingest/dedup) classifies as "fetched" though it has no live
+   passage — it would route to `reground-needed`/ref-level rather than
+   `stub-fetch-first`. Low-likelihood, pre-existing across all taproot stub
+   detection; making `count_blocks` retirement-aware is a shared-primitive
+   design call for the main loop, deferred rather than forked here.
 3. **[open] Re-ground chunk suggestion source.** Does the `[pa]`→`[pc]` pin
    reuse `chase`'s locate stage to *suggest* the grounding chunk, or leave the
    author to pick from the paper's TOC? v1 recommendation: suggest via the

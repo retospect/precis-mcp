@@ -1,10 +1,27 @@
-"""Whole-draft taproot backfill — a draft chunk's legacy paper-chunk
-citations → claim-hub cites, through the **same** canonicalizer cascade the
-forward chase bridge uses.
+"""Whole-draft taproot backfill — a draft chunk's legacy paper citations →
+claim-hub cites, through the **same** canonicalizer cascade the forward chase
+bridge uses.
+
+Two citation forms are backfilled, from the two grammars in the draft prose:
+
+* **``[pc<id>]``** (paper-**chunk**) — the legacy grounded cite. Runs the full
+  cascade and rewrites ``[pc]`` → ``[fi<hub>]`` (the original arm).
+* **``[pa<id>]``** (whole-**paper**) — the ``[pa]`` arm
+  (``docs/proposals/taproot-draft-pa-arm.md``). A ``[pa]`` cite is one of two
+  states, classified by the cited paper's body-block count:
+  - **stub** (0 blocks, un-fetched) — **skipped** ("fetch first"): an evidence
+    edge would be ungroundable, and citing an unread paper as evidence is
+    never minted. Routes via fetch, then re-ground.
+  - **fetched** (>0 blocks) — the honest grounding is a specific passage, so
+    the *default* is to leave it for a ``[pa]``→``[pc]`` re-ground (deferred to
+    the arm's slice 2). Only under an explicit ``ref_level=True`` override does
+    a fetched ``[pa]`` promote **ref-level** (whole-paper, ``ungrounded`` per
+    ``seed_claim_hub``'s counter) and rewrite ``[pa]`` → ``[fi<hub>]`` — for
+    whole-paper claims with no single grounding passage.
 
 Motivation. Most claims in the corpus were first written with raw
-``[pc<id>]`` paper-chunk citations, before taproot claim hubs existed. This
-module walks a draft chunk's existing ``[pc<id>]`` cites and, for each, runs
+``[pc<id>]`` / ``[pa<id>]`` paper citations, before taproot claim hubs existed.
+This module walks a draft chunk's existing paper cites and, for each, runs
 ``extract_claim → block → dedup_judge → place → apply_placement`` (mirroring
 :func:`precis.workers.chase._taproot_bridge`) so a claim **converges onto an
 existing hub** rather than minting a near-duplicate — the whole point of
@@ -72,6 +89,12 @@ __all__ = [
 #: ``[fi…>pc…]`` / ``[pc…+pa…]`` are already-authored and skipped.
 _PC_HANDLE_RE = re.compile(r"^pc\d+$")
 
+#: A bare pa-cite is exactly ``pa<digits>`` — a whole-**paper** cite (the
+#: ``[pa]`` arm). Anchored alongside ``pc`` but kept in its own group (a pa
+#: and a pc cite never fold together), so the per-group action (stub-skip /
+#: re-ground / ref-level promote) is unambiguous.
+_PA_HANDLE_RE = re.compile(r"^pa\d+$")
+
 #: Leading whitespace + a prior sentence's trailing terminator, trimmed off a
 #: grounded span so extract_claim reads the claim, not ". "/", " residue.
 _LEADING_PUNCT_RE = re.compile(r"^[\s.,;:!?)—–-]+")
@@ -79,12 +102,14 @@ _LEADING_PUNCT_RE = re.compile(r"^[\s.,;:!?)—–-]+")
 
 @dataclass(frozen=True)
 class PcCite:
-    """One bare ``[pc<id>]`` citation and its exact position in the text."""
+    """One bare paper citation (``[pc<id>]`` or ``[pa<id>]``) and its exact
+    position in the text."""
 
-    handle: str  # "pc293"
+    handle: str  # "pc293" / "pa42"
     start: int  # offset of the "[" in the source text
     end: int  # offset just past the "]"
     raw: str  # the exact matched marker, e.g. "[pc293]"
+    kind: str = "pc"  # "pc" (paper-chunk) | "pa" (whole-paper)
 
 
 @dataclass(frozen=True)
@@ -104,6 +129,13 @@ class CiteGroup:
     def handles(self) -> list[str]:
         return [c.handle for c in self.pc_cites]
 
+    @property
+    def kind(self) -> str:
+        """``"pc"`` or ``"pa"`` — the group's citation form. Homogeneous by
+        construction: :func:`segment_cite_groups` only folds contiguous cites
+        of the *same* kind, so a group is all-pc or all-pa, never mixed."""
+        return self.pc_cites[0].kind
+
 
 @dataclass
 class GroupPlan:
@@ -112,20 +144,28 @@ class GroupPlan:
 
     group: CiteGroup
     #: ``"no-claim"`` — the span asserts nothing groundable (extract → None);
-    #: ``"unresolved"`` — a pc handle didn't resolve to a paper (skipped);
+    #: ``"unresolved"`` — a handle didn't resolve to a paper (skipped);
+    #: ``"stub-fetch-first"`` — a ``[pa]`` cite to an un-fetched stub (0 blocks),
+    #: skipped pending fetch (no write, prose left as ``[pa]``);
+    #: ``"reground-needed"`` — a fetched ``[pa]`` in the default mode, left for a
+    #: ``[pa]``→``[pc]`` re-ground (no write) unless ``ref_level`` is set;
     #: ``"error"`` — a write failed for this group (isolated; batch continues);
     #: else the cascade action: ``"attach"`` / ``"new"`` /
     #: ``"new_contradicts"`` / ``"needs_review"``.
     action: str
     claim: CanonicalClaim | None = None
     placement: Placement | None = None
-    #: (pc_handle, paper_ref_id) for each resolved supporter.
+    #: (handle, paper_ref_id) for each resolved supporter — for a fetched-``[pa]``
+    #: ref-level promote, only the fetched supporters (stubs never mint evidence).
     supporters: list[tuple[str, int]] = field(default_factory=list)
     #: The hub this group cites once acted on — the matched hub for
     #: ``attach``, or (after :func:`apply_chunk`) the minted hub for
     #: ``new``/``new_contradicts``. ``None`` for no-claim / needs_review /
-    #: unresolved (prose is left untouched).
+    #: unresolved / stub-fetch-first / reground-needed (prose left untouched).
     hub_ref_id: int | None = None
+    #: True for a fetched-``[pa]`` ref-level promote — the evidence edge cites
+    #: the whole paper (no grounding passage), so it lands ``ungrounded``.
+    ungrounded: bool = False
     note: str = ""
 
 
@@ -144,6 +184,13 @@ class ChunkBackfill:
     def n_claims(self) -> int:
         return sum(1 for p in self.plans if p.claim is not None)
 
+    @property
+    def n_ungrounded(self) -> int:
+        """Ref-level (whole-paper, no grounding passage) evidence edges this
+        chunk's backfill landed — the ``[pa]`` arm's ``ref_level`` promotes.
+        Counts only groups whose hub actually committed (``hub_ref_id`` set)."""
+        return sum(1 for p in self.plans if p.ungrounded and p.hub_ref_id is not None)
+
 
 # Injected cascade functions (default to the real canon ones) — keeps the
 # segmenter + orchestration testable without an LLM/embedder. ``merge_confirm``
@@ -160,73 +207,85 @@ _MERGE_CONFIRM_DEFAULT = merge_confirm
 # ── segmentation ─────────────────────────────────────────────────────────
 
 
-def _iter_bare_pc(text: str) -> list[PcCite]:
-    """Every bare ``[pc<id>]`` cite (no pin) in ``text``, in order.
+def _iter_bare_cites(text: str) -> list[PcCite]:
+    """Every bare ``[pc<id>]`` / ``[pa<id>]`` cite (no pin) in ``text``, in
+    order, each tagged with its ``kind`` (``"pc"``/``"pa"``).
 
     Uses the single-sourced :data:`DRAFT_MARKUP_PATTERN` so this never drifts
     from the draft grammar: a match is a candidate iff its ``bare`` group is
-    ``pc<digits>`` **and** it carries no ``pin`` group (a ``[pc…+pa…]`` or a
-    hub-pinned ``[fi…>pc…]`` is already-authored, skipped).
+    ``pc<digits>`` or ``pa<digits>`` **and** it carries no ``pin`` group (a
+    ``[pc…+pa…]`` or a hub-pinned ``[fi…>pc…]`` is already-authored, skipped).
     """
     out: list[PcCite] = []
     for m in DRAFT_MARKUP_PATTERN.finditer(text):
         bare = m.groupdict().get("bare")
-        if not bare or not _PC_HANDLE_RE.match(bare):
+        if not bare:
+            continue
+        if _PC_HANDLE_RE.match(bare):
+            kind = "pc"
+        elif _PA_HANDLE_RE.match(bare):
+            kind = "pa"
+        else:
             continue
         if m.groupdict().get("pin"):
             continue  # pinned — already authored
-        out.append(PcCite(handle=bare, start=m.start(), end=m.end(), raw=m.group(0)))
+        out.append(
+            PcCite(handle=bare, start=m.start(), end=m.end(), raw=m.group(0), kind=kind)
+        )
     return out
 
 
 def segment_cite_groups(text: str) -> list[CiteGroup]:
     """Partition ``text`` into grounded cite-groups.
 
-    Each bare pc-cite grounds the prose since the previous cite (of any kind)
-    or the chunk start — "what this citation newly asserts", so this assumes
-    the citation-follows-claim style (a prefix cite ``[pc1] claim`` grounds
-    the empty span before it → no-claim → left as-is, never misattributed).
-    Contiguous bare pc-cites — nothing but whitespace between them
-    (``[pc1][pc2]`` / ``[pc1] [pc2]``) — share one span (multiple papers, one
-    claim) and collapse to one group.
+    Each bare paper cite (``[pc<id>]`` or ``[pa<id>]``) grounds the prose since
+    the previous cite (of any kind) or the chunk start — "what this citation
+    newly asserts", so this assumes the citation-follows-claim style (a prefix
+    cite ``[pc1] claim`` grounds the empty span before it → no-claim → left
+    as-is, never misattributed). Contiguous bare cites of the **same kind** —
+    nothing but whitespace between them (``[pc1][pc2]`` / ``[pc1] [pc2]``) —
+    share one span (multiple papers, one claim) and collapse to one group.
 
-    A non-pc cite (``[fi…]``, ``[¶…]``, ``[§…]``) is a hard boundary: it is
-    not an anchor, but it **breaks contiguity**, so a pc-cite right after one
-    (``…fact[fi9][pc2]``) starts its OWN group rather than folding back across
-    the fi-cite into an earlier pc-run — its span is the (here empty) text
-    after the fi-cite, never a re-read across it.
+    A cite that is neither a bare pc nor a bare pa (``[fi…]``, ``[¶…]``,
+    ``[§…]``, a pinned cite) is a hard boundary: it is not an anchor, but it
+    **breaks contiguity**, so an anchor right after one (``…fact[fi9][pc2]``)
+    starts its OWN group rather than folding back across it. A **kind switch**
+    breaks contiguity the same way: a ``[pa]`` immediately after a ``[pc]``
+    (``[pc1][pa2]``) never folds into the pc-run — a whole-paper cite and a
+    passage cite are routed differently, so they are always separate groups.
     """
-    # All markers (any kind) give the span boundaries; only bare pc-cites are
-    # anchors. Walk markers in order; a pc-cite folds into the current group
-    # ONLY when the immediately-preceding marker was also a pc-cite (an
-    # unbroken pc-run) — an intervening non-pc marker resets contiguity.
-    pc_by_start: dict[int, PcCite] = {c.start: c for c in _iter_bare_pc(text)}
+    # All markers (any kind) give the span boundaries; only bare pc/pa cites
+    # are anchors. Walk markers in order; an anchor folds into the current
+    # group ONLY when the immediately-preceding marker was an anchor of the
+    # SAME kind (an unbroken same-kind run) — an intervening non-anchor marker
+    # or a kind switch resets contiguity.
+    cite_by_start: dict[int, PcCite] = {c.start: c for c in _iter_bare_cites(text)}
     markers: list[tuple[int, int, bool]] = [
-        (m.start(), m.end(), m.start() in pc_by_start)
+        (m.start(), m.end(), m.start() in cite_by_start)
         for m in DRAFT_MARKUP_PATTERN.finditer(text)
     ]
 
     groups: list[CiteGroup] = []
     prev_end = 0
-    prev_was_pc = False
-    for start, end, is_pc in markers:
-        if not is_pc:
+    prev_kind: str | None = None  # kind of the immediately-preceding anchor
+    for start, end, is_anchor in markers:
+        if not is_anchor:
             prev_end = end
-            prev_was_pc = False
+            prev_kind = None
             continue
-        cite = pc_by_start[start]
+        cite = cite_by_start[start]
         # The prose since the previous marker, minus the previous sentence's
         # trailing terminator (a leading ". " / ", " belongs to that sentence,
         # not this claim) — cleaner input for extract_claim.
         span = _LEADING_PUNCT_RE.sub("", strip_markers(text[prev_end:start]).strip())
-        if not span and prev_was_pc and groups:
-            # Unbroken pc-run (only whitespace since the last pc-cite): same
-            # grounded span, another supporting paper.
+        if not span and prev_kind == cite.kind and groups:
+            # Unbroken same-kind run (only whitespace since the last same-kind
+            # cite): same grounded span, another supporting paper.
             groups[-1].pc_cites.append(cite)
         else:
             groups.append(CiteGroup(span_text=span, pc_cites=[cite]))
         prev_end = end
-        prev_was_pc = True
+        prev_kind = cite.kind
     return groups
 
 
@@ -263,42 +322,21 @@ def _read_draft_chunk(store: Any, chunk_id: int) -> tuple[str, int]:
 # ── planning (read-only, the dry-run core) ─────────────────────────────────
 
 
-def _plan_group(
+def _run_cascade(
     store: Any,
     embedder: Any,
     group: CiteGroup,
+    supporters: list[tuple[str, int]],
     *,
     extract_fn: ExtractFn,
     block_fn: BlockFn,
     judge_fn: JudgeFn,
     merge_confirm_fn: MergeConfirmFn,
+    ungrounded: bool = False,
 ) -> GroupPlan:
-    """Resolve → extract → cascade for ONE cite-group (read-only).
-
-    Shared by :func:`plan_chunk` (dry-run) and :func:`apply_chunk`; the
-    latter calls it per-group *after* minting the previous group's hub, so a
-    later group's ``block`` ANN sees hubs earlier groups in the same chunk
-    just minted (intra-chunk convergence).
-    """
-    from precis.taproot.authoring import resolve_paper_ref_id
-
-    # Resolve supporters first — an unresolvable pc handle means we can't
-    # ground the claim, so skip the group rather than mint an evidence-less
-    # hub (mirrors seed_claim_hub's paper-sourced invariant, ADR 0073).
-    supporters: list[tuple[str, int]] = []
-    unresolved: list[str] = []
-    for handle in group.handles:
-        try:
-            supporters.append((handle, resolve_paper_ref_id(store, handle)))
-        except BadInput:
-            unresolved.append(handle)
-    if not supporters:
-        return GroupPlan(
-            group=group,
-            action="unresolved",
-            note=f"no pc handle resolved to a paper: {unresolved}",
-        )
-
+    """The shared extract → block → judge → place tail, once supporters are
+    resolved. ``ungrounded`` marks a ref-level ``[pa]`` promote (whole-paper
+    edge, no grounding passage)."""
     claim = extract_fn(group.span_text)
     if claim is None:
         return GroupPlan(
@@ -318,7 +356,148 @@ def _plan_group(
         placement=placement,
         supporters=supporters,
         hub_ref_id=placement.hub_ref_id,
+        ungrounded=ungrounded,
         note=placement.reason,
+    )
+
+
+def _plan_pa_group(
+    store: Any,
+    embedder: Any,
+    group: CiteGroup,
+    supporters: list[tuple[str, int]],
+    *,
+    ref_level: bool,
+    extract_fn: ExtractFn,
+    block_fn: BlockFn,
+    judge_fn: JudgeFn,
+    merge_confirm_fn: MergeConfirmFn,
+) -> GroupPlan:
+    """Route a whole-paper ``[pa]`` cite-group by its cited paper(s)' state.
+
+    * **All stubs** (0 body blocks) — ``stub-fetch-first``: an evidence edge
+      would be ungroundable and we never cite an un-fetched paper as evidence.
+      No write; the ``[pa]`` prose is left for a later fetch → re-ground.
+    * **Mixed** (a contiguous same-kind run with some stub, some fetched, e.g.
+      ``[pa_stub][pa_fetched]``) — also ``stub-fetch-first``, **no write.** The
+      prose collapse rewrites the *whole* contiguous run to one ``[fi<hub>]``,
+      so promoting only the fetched supporters would silently **erase** the
+      stub's token (draft chunks are append-only — irreversible). Fetch the
+      stub(s) first; then the whole run is cleanly promotable/re-groundable.
+    * **All fetched, default mode** — ``reground-needed``: the honest grounding
+      is a specific passage, so a fetched ``[pa]`` is left for a ``[pa]``→
+      ``[pc]`` re-ground (the arm's slice 2). No write.
+    * **All fetched, ``ref_level=True``** — the explicit whole-paper override:
+      run the cascade over all (fetched) supporters and mint a ref-level
+      (``ungrounded``) evidence edge, rewriting ``[pa]`` → ``[fi<hub>]``. For
+      whole-paper claims with no single grounding passage.
+    """
+    fetched = [(h, rid) for (h, rid) in supporters if store.count_blocks(rid) > 0]
+    if len(fetched) < len(supporters):
+        # All stubs, or a mixed run — either way skip with no write (a mixed
+        # run's prose collapse would erase the un-fetched token; see docstring).
+        n_stub = len(supporters) - len(fetched)
+        note = (
+            "whole-paper cite to an un-fetched stub (0 blocks) — fetch first"
+            if not fetched
+            else (
+                f"mixed [pa] run: {n_stub} of {len(supporters)} cited papers "
+                "un-fetched — fetch all first, then promote/re-ground"
+            )
+        )
+        return GroupPlan(
+            group=group,
+            action="stub-fetch-first",
+            supporters=supporters,
+            note=note,
+        )
+    if not ref_level:
+        return GroupPlan(
+            group=group,
+            action="reground-needed",
+            supporters=fetched,
+            note=(
+                "fetched [pa] — re-ground to a passage [pc] first, or re-run "
+                "with --ref-level to promote whole-paper (ungrounded)"
+            ),
+        )
+    # Explicit ref-level override: every supporter is fetched here (a mixed run
+    # was routed to stub-fetch-first above), so collapsing the whole contiguous
+    # run to one [fi<hub>] never erases an un-minted token.
+    return _run_cascade(
+        store,
+        embedder,
+        group,
+        fetched,
+        extract_fn=extract_fn,
+        block_fn=block_fn,
+        judge_fn=judge_fn,
+        merge_confirm_fn=merge_confirm_fn,
+        ungrounded=True,
+    )
+
+
+def _plan_group(
+    store: Any,
+    embedder: Any,
+    group: CiteGroup,
+    *,
+    extract_fn: ExtractFn,
+    block_fn: BlockFn,
+    judge_fn: JudgeFn,
+    merge_confirm_fn: MergeConfirmFn,
+    ref_level: bool = False,
+) -> GroupPlan:
+    """Resolve → route for ONE cite-group (read-only).
+
+    Shared by :func:`plan_chunk` (dry-run) and :func:`apply_chunk`; the
+    latter calls it per-group *after* minting the previous group's hub, so a
+    later group's ``block`` ANN sees hubs earlier groups in the same chunk
+    just minted (intra-chunk convergence). A ``pc`` group runs the cascade
+    directly; a ``pa`` group routes through :func:`_plan_pa_group`
+    (stub-skip / re-ground / ref-level promote).
+    """
+    from precis.taproot.authoring import resolve_paper_ref_id
+
+    # Resolve supporters first — an unresolvable handle means we can't
+    # ground the claim, so skip the group rather than mint an evidence-less
+    # hub (mirrors seed_claim_hub's paper-sourced invariant, ADR 0073).
+    supporters: list[tuple[str, int]] = []
+    unresolved: list[str] = []
+    for handle in group.handles:
+        try:
+            supporters.append((handle, resolve_paper_ref_id(store, handle)))
+        except BadInput:
+            unresolved.append(handle)
+    if not supporters:
+        return GroupPlan(
+            group=group,
+            action="unresolved",
+            note=f"no handle resolved to a paper: {unresolved}",
+        )
+
+    if group.kind == "pa":
+        return _plan_pa_group(
+            store,
+            embedder,
+            group,
+            supporters,
+            ref_level=ref_level,
+            extract_fn=extract_fn,
+            block_fn=block_fn,
+            judge_fn=judge_fn,
+            merge_confirm_fn=merge_confirm_fn,
+        )
+
+    return _run_cascade(
+        store,
+        embedder,
+        group,
+        supporters,
+        extract_fn=extract_fn,
+        block_fn=block_fn,
+        judge_fn=judge_fn,
+        merge_confirm_fn=merge_confirm_fn,
     )
 
 
@@ -327,6 +506,7 @@ def plan_chunk(
     embedder: Any,
     chunk_id: int,
     *,
+    ref_level: bool = False,
     extract_fn: ExtractFn = extract_claim,
     block_fn: BlockFn = block,
     judge_fn: JudgeFn = dedup_judge,
@@ -334,13 +514,15 @@ def plan_chunk(
 ) -> ChunkBackfill:
     """Plan the backfill of one draft chunk — writes **nothing**.
 
-    For each pc-cite group: resolve its supporter papers, extract the claim
-    (``None`` → ``no-claim``, prose left as-is), then run the canonicalizer
-    cascade (``block`` ANN over existing hubs → ``dedup_judge`` → ``place``)
-    to decide whether the claim **converges onto an existing hub**
-    (``attach``) or would mint a ``new`` one. This is what the CLI
-    ``--dry-run`` reports; it is LLM- and embedder-bearing (that is inherent
-    — convergence can't be known without the ANN + judge).
+    For each paper cite-group: resolve its supporter papers, then route by
+    kind. A ``[pc]`` group extracts the claim (``None`` → ``no-claim``, prose
+    left as-is) and runs the canonicalizer cascade (``block`` ANN over
+    existing hubs → ``dedup_judge`` → ``place``) to decide whether the claim
+    **converges onto an existing hub** (``attach``) or would mint a ``new``
+    one. A ``[pa]`` group classifies by block-count: stub → ``stub-fetch-first``,
+    fetched → ``reground-needed`` unless ``ref_level`` promotes it whole-paper.
+    This is what the CLI ``--dry-run`` reports; it is LLM- and embedder-bearing
+    (that is inherent — convergence can't be known without the ANN + judge).
     """
     text, draft_ref_id = _read_draft_chunk(store, chunk_id)
     plans = [
@@ -348,6 +530,7 @@ def plan_chunk(
             store,
             embedder,
             group,
+            ref_level=ref_level,
             extract_fn=extract_fn,
             block_fn=block_fn,
             judge_fn=judge_fn,
@@ -407,6 +590,7 @@ def apply_chunk(
     chunk_id: int,
     *,
     set_by: str = "agent",
+    ref_level: bool = False,
     extract_fn: ExtractFn = extract_claim,
     block_fn: BlockFn = block,
     judge_fn: JudgeFn = dedup_judge,
@@ -414,7 +598,13 @@ def apply_chunk(
 ) -> ChunkBackfill:
     """Apply the backfill: mint/converge each claim hub through the cascade,
     attach its supporter papers as evidence, then rewrite the chunk prose
-    ``[pc…]`` → ``[fi<hub>]`` via the draft edit door.
+    ``[pc…]``/``[pa…]`` → ``[fi<hub>]`` via the draft edit door.
+
+    ``ref_level`` (the ``[pa]`` arm's whole-paper override) is threaded to
+    :func:`_plan_group`: without it a fetched ``[pa]`` group is left
+    ``reground-needed`` (prose untouched); with it the fetched ``[pa]`` is
+    promoted to a ref-level (``ungrounded``) hub edge and its token rewritten
+    to ``[fi<hub>]``. A stub ``[pa]`` is always skipped regardless.
 
     The prose rewrite goes through ``draft_handler.edit`` (a whole-chunk
     rewrite) — **never** a raw ``UPDATE`` — so the chunk's DELETE+INSERT
@@ -443,11 +633,15 @@ def apply_chunk(
         _file_review_todo(store, claim, placement, chunk_id=chunk_id, set_by=set_by)
 
     def _edge_meta(handle: str) -> dict[str, Any]:
+        # A pa handle names no chunk, so _grounding_chunk_ord returns None and
+        # the edge lands ref-level (ungrounded) — the [pa]-arm override; a pc
+        # handle grounds at its passage. `arm` fingerprints which for queries.
         return {
             "support": "yes",
             "caveats": [],
             "source_handle": handle,
             "origin": "draft-backfill",
+            "arm": "pa" if handle.startswith("pa") else "pc",
             "draft_chunk": f"dc{chunk_id}",
         }
 
@@ -462,6 +656,7 @@ def apply_chunk(
             store,
             embedder,
             group,
+            ref_level=ref_level,
             extract_fn=extract_fn,
             block_fn=block_fn,
             judge_fn=judge_fn,
@@ -469,7 +664,9 @@ def apply_chunk(
         )
         plans.append(plan)
         if plan.claim is None or plan.placement is None:
-            continue  # no-claim / unresolved — prose left as [pc…]
+            # no-claim / unresolved / stub-fetch-first / reground-needed —
+            # prose left untouched ([pc…] or [pa…]).
+            continue
 
         # Isolate each group's writes: a mid-loop failure (transient DB /
         # LLM error) on one group must not abort the batch or strand the
@@ -508,9 +705,10 @@ def apply_chunk(
             if plan.hub_ref_id is None:
                 continue  # no hub landed — nothing to point prose at
 
-        # Collapse the whole contiguous pc-run (cites + inter-cite whitespace)
-        # to a SINGLE [fi<hub>] with one span-replace — no leftover "" edits,
-        # no chunk-wide cleanup regex (which corrupted unrelated markdown).
+        # Collapse the whole contiguous same-kind run (cites + inter-cite
+        # whitespace) to a SINGLE [fi<hub>] with one span-replace — no leftover
+        # "" edits, no chunk-wide cleanup regex (which corrupted unrelated
+        # markdown). Works identically for a [pc…] run and a ref-level [pa…] run.
         cites = plan.group.pc_cites
         edits.append((cites[0].start, cites[-1].end, f"[fi{plan.hub_ref_id}]"))
 

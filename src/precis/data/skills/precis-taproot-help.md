@@ -113,6 +113,27 @@ the draft level — a re-run finds no `[pc…]` left to convert.
 It is **on-demand, one chunk/draft at a time** — not a corpus sweep. Run the
 dry-run, eyeball the plan, then `--apply`.
 
+**Whole-paper `[pa<id>]` cites (the `[pa]` arm).** The same command also
+recognizes bare whole-paper `[pa<id>]` cites (kept in their own groups — a
+`[pa]` and a `[pc]` never fold together). Each is classified by whether its
+paper is fetched:
+
+- a **stub** `[pa]` (an un-fetched paper, 0 body chunks) is **skipped**
+  (`stub-fetch-first`) — there's no passage to ground an edge, and an unread
+  paper is never minted as evidence. Fetch the paper first, then re-ground.
+- a **fetched** `[pa]` is left `reground-needed` by default (its honest
+  grounding is a specific passage — a future `[pa]`→`[pc]` re-ground). Pass
+  `--ref-level` to instead promote it whole-paper: it mints a **ref-level
+  (ungrounded)** evidence edge and rewrites `[pa]`→`[fi<hub>]`. Use it only for
+  claims with no single grounding passage (e.g. "X is a landmark result"); the
+  dry-run reports the `ref-level/ungrounded` count so you see what you're
+  accepting.
+
+```bash
+precis taproot backfill --chunk dc1652005 --ref-level          # dry-run incl. [pa]
+precis taproot backfill --chunk dc1652005 --apply --ref-level  # promote fetched [pa]
+```
+
 ## Mint a claim hub from a claim I've already sourced
 
 Hubs are paper-sourced and system/tooling-minted, **never**
@@ -174,6 +195,7 @@ sharper one shows `↳ refines fi<original>`.
 | Fisheye reference-ring Claims explosion | live |
 | Claim→claim `refines` links (`precis taproot refine`) | live (advisory-only, no evidence flow) |
 | Whole-draft `[pc<id>]`→`[fi<id>]` backfill (`precis taproot backfill`) | live (on-demand, dry-run default; not a corpus sweep) |
+| Whole-paper `[pa<id>]` arm (stub-skip; `--ref-level` promote) | live, slice 1 (fetched `[pa]`→`[pc]` re-ground deferred) |
 | Corpus-wide forward chase bridge (`PRECIS_TAPROOT_CHASE_ENABLED`) | dark, default-OFF |
 | Hub-refine pass (`workers/hub_refine.py`, `PRECIS_TAPROOT_REFINE_ENABLED`) | dark, default-OFF |
 | Chase-trigger pass (`workers/chase_trigger.py`, `PRECIS_TAPROOT_CHASE_TRIGGER_ENABLED`) — marks a hub `TAPROOT_DUE` when a near paper/patent chunk lands, so hub-refine claims it promptly instead of waiting out its backstop | dark, default-OFF |

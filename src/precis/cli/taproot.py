@@ -88,8 +88,9 @@ def add_parser(subparsers: Any) -> None:
 
     b = tsub.add_parser(
         "backfill",
-        help="Convert a draft chunk's legacy [pc<id>] cites into claim-hub "
-        "[fi<id>] cites, converging onto existing hubs (dry-run by default).",
+        help="Convert a draft chunk's legacy [pc<id>]/[pa<id>] cites into "
+        "claim-hub [fi<id>] cites, converging onto existing hubs (dry-run by "
+        "default). Stub [pa] cites are skipped (fetch first).",
     )
     b_target = b.add_mutually_exclusive_group(required=True)
     b_target.add_argument("--chunk", help="One draft chunk handle, e.g. dc1652005.")
@@ -101,6 +102,14 @@ def add_parser(subparsers: Any) -> None:
         action="store_true",
         help="Mint/converge hubs + rewrite prose. Default (omitted) is a "
         "read-only dry-run that writes nothing.",
+    )
+    b.add_argument(
+        "--ref-level",
+        action="store_true",
+        help="[pa] arm: promote a FETCHED whole-paper [pa<id>] cite ref-level "
+        "(ungrounded, no passage) and rewrite it to [fi<hub>]. Default (omitted) "
+        "leaves a fetched [pa] for a [pa]->[pc] re-ground; stub [pa] cites are "
+        "always skipped either way.",
     )
     b.add_argument(
         "--format",
@@ -389,11 +398,14 @@ def _print_backfill(results: list[Any], fmt: str, *, applied: bool) -> None:
                 "draft_ref_id": r.draft_ref_id,
                 "applied": applied,
                 "rewritten": r.rewritten_text is not None,
+                "n_ungrounded": r.n_ungrounded,
                 "groups": [
                     {
                         "action": p.action,
+                        "kind": p.group.kind,
                         "handles": p.group.handles,
                         "hub_ref_id": p.hub_ref_id,
+                        "ungrounded": p.ungrounded,
                         "claim": p.claim.sentence if p.claim else None,
                         "note": p.note,
                     }
@@ -408,13 +420,19 @@ def _print_backfill(results: list[Any], fmt: str, *, applied: bool) -> None:
     tag = "" if applied else "  [DRY-RUN]"
     for r in results:
         if not r.plans:
-            print(f"dc{r.chunk_id}: no [pc<id>] cites (already converted){tag}")
+            print(
+                f"dc{r.chunk_id}: no [pc<id>]/[pa<id>] cites (already converted){tag}"
+            )
             continue
         counts: dict[str, int] = {}
         for p in r.plans:
             counts[p.action] = counts.get(p.action, 0) + 1
         summary = ", ".join(f"{n} {a}" for a, n in sorted(counts.items()))
-        print(f"dc{r.chunk_id}: {len(r.plans)} cite-group(s) — {summary}{tag}")
+        ung = r.n_ungrounded
+        ung_note = f"  ({ung} ref-level/ungrounded)" if ung else ""
+        print(
+            f"dc{r.chunk_id}: {len(r.plans)} cite-group(s) — {summary}{ung_note}{tag}"
+        )
         for p in r.plans:
             handles = "+".join(p.group.handles)
             if p.action == "attach":
@@ -423,6 +441,8 @@ def _print_backfill(results: list[Any], fmt: str, *, applied: bool) -> None:
                 arrow = f"→ fi{p.hub_ref_id}" if p.hub_ref_id else "→ new hub"
             else:
                 arrow = f"({p.action})"
+            if p.ungrounded and p.hub_ref_id is not None:
+                arrow += " [ref-level]"  # whole-paper [pa] promote, any action
             claim = (p.claim.sentence[:70] + "…") if p.claim else p.note
             print(f"    [{handles}] {arrow}  {claim}")
 
@@ -455,13 +475,21 @@ def _run_backfill(args: argparse.Namespace) -> None:
     try:
         chunk_ids = _resolve_backfill_chunks(store, args)
         draft_handler = runtime.hub.handler_for("draft") if args.apply else None
+        ref_level = getattr(args, "ref_level", False)
         for cid in chunk_ids:
             if args.apply:
                 results.append(
-                    apply_chunk(store, embedder, draft_handler, cid, set_by=args.set_by)
+                    apply_chunk(
+                        store,
+                        embedder,
+                        draft_handler,
+                        cid,
+                        set_by=args.set_by,
+                        ref_level=ref_level,
+                    )
                 )
             else:
-                results.append(plan_chunk(store, embedder, cid))
+                results.append(plan_chunk(store, embedder, cid, ref_level=ref_level))
     except BadInput as exc:
         print(f"taproot backfill: error: {exc.cause}", file=sys.stderr)
         if results:
