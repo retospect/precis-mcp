@@ -46,3 +46,5 @@ into a durable doc and delete the memory).
 (this session) across all memory files ahead of the first automated run.
 
 **2026-08-01** — 1 stale path(s): catpath-dev-deploy.md cited `~/work/…/catpath` (gone). False alarm on content: the memory already pointed at the live `/Users/reto/catpath` and only *mentioned* the dead path in its "is GONE" note — which the `~/work/` scanner (this file, step 6) matched as a live ref. Fixed by dropping the literal dead-path string from the memory body; scanner only greps `~/work/…`, so the correct out-of-tree path is invisible to it and no longer trips. 
+
+**2026-08-01** — ✓ clean (re-verified after the catpath fix above).

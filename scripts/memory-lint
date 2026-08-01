@@ -214,8 +214,12 @@ fi
 SIB_LOG="docs/runbooks/memory-sibling-repos.md"
 SIB_WINDOW_DAYS=7
 epoch_of() { date -j -f "%Y-%m-%d" "$1" +%s 2>/dev/null || date -d "$1" +%s 2>/dev/null; }
+# Log is appended oldest-first, so pick the chronologically LATEST stamp
+# (`sort | tail -1`, ISO dates sort lexically). A bare `head -1` read the OLDEST
+# entry, so the weekly gate stayed permanently DUE and re-stamped on every run
+# — the same trap fixed for the reconsolidation clock above.
 sib_last=$(awk '/^## Log/{f=1;next} f' "$SIB_LOG" 2>/dev/null \
-    | grep -oE '\*\*[0-9]{4}-[0-9]{2}-[0-9]{2}\*\*' | head -1 | tr -d '*' || true)
+    | grep -oE '\*\*[0-9]{4}-[0-9]{2}-[0-9]{2}\*\*' | tr -d '*' | sort | tail -1 || true)
 sib_last_e=$( [[ -n "$sib_last" ]] && epoch_of "$sib_last" || true )
 sib_days=999999
 [[ -n "${sib_last_e:-}" ]] && sib_days=$(( ($(date +%s) - sib_last_e) / 86400 ))
