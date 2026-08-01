@@ -9,13 +9,16 @@ a side effect of chasing a *finding* (the forward bridge,
 so a hub minted off a single draft cite sits at one corroborator forever,
 even when the primary source already sits un-attached in the same corpus.
 
-This pass does exactly that, low-cadence, per hub:
+This pass does exactly that, per hub, claimed off a **due-set** rather than
+a blind periodic rescan (the incremental-trigger design,
+``workers/chase_trigger.py``):
 
-1. **Claim** — ``TAPROOT:claim`` / ``STATUS:canonical`` findings whose
-   ``meta.last_refined_at`` is absent or older than
-   ``PRECIS_TAPROOT_REFINE_INTERVAL_H`` (default weekly), oldest-first,
-   ``SKIP LOCKED``, ``LIMIT`` :func:`_hubs_per_pass` — mirrors
-   ``workers/inbound_chase.py``'s claim-query shape.
+1. **Claim** — ``TAPROOT:claim`` / ``STATUS:canonical`` findings due for
+   refine (see :func:`_claim_hubs_due_for_refine` for the full predicate: a
+   ``TAPROOT_DUE`` tag from the trigger pass, never-refined, an edited
+   claim reopening it, or the long backstop), never-refined first, oldest
+   ``last_refined_at`` next, ``SKIP LOCKED``, ``LIMIT`` :func:`_hubs_per_pass`
+   — mirrors ``workers/inbound_chase.py``'s claim-query shape.
 2. **Discover** — a semantic (embedding-ANN) search over paper body chunks
    for the claim sentence, top-``PRECIS_TAPROOT_REFINE_TOPK``. Note:
    *not* ``taproot.canon.block`` — that ANN is over hub *cards* (dedup
@@ -35,13 +38,18 @@ This pass does exactly that, low-cadence, per hub:
    ``taproot.hub.attach_evidence`` (role ``corroborates``, meta carrying
    ``support``/``caveats``/``source_handle``); ``supports == "no"`` →
    append to the rejection memo. Either way the candidate is judged once.
-6. **Stamp** — ``meta.last_refined_at`` is set unconditionally (even an
-   empty pass with zero new candidates), so the cadence gate holds and the
-   hub naturally saturates out of the claim query until the interval
-   elapses.
+6. **Stamp** — ``meta.last_refined_at`` and ``meta.last_refined_sha`` (the
+   claim sentence's :func:`taproot.canon.claim_sha` at refine time) are set
+   unconditionally (even an empty pass with zero new candidates), so the
+   claim query's ``never-refined`` / ``never-reopened`` conditions hold and
+   the hub naturally drains out of the due-set until something re-marks it
+   (a new near paper, a title edit, or the backstop). A **sha-reopen** — the
+   stored ``last_refined_sha`` no longer matches the live title — clears the
+   rejection memo *before* discovery: the claim itself changed, so an old
+   ``supports=no`` verdict on the previous wording may no longer hold.
 
 Never a periodic full re-scan: idempotent attach + pre-verify existence
-check + rejection memo + cadence stamp together bound the per-run LLM
+check + rejection memo + due-set claim query together bound the per-run LLM
 spend to (at most) ``HUBS_PER_PASS x TOPK`` calls, in practice far less
 once memos fill in. See the build ticket's "Non-negotiable: it must
 converge" for the full rationale.
@@ -60,12 +68,13 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from psycopg import Connection
 
-from precis.taproot.canon import TAPROOT_CLAIM, TAPROOT_NAMESPACE
+from precis.store.types import Tag
+from precis.taproot.canon import TAPROOT_CLAIM, TAPROOT_NAMESPACE, claim_sha
 from precis.taproot.hub import HUB_ROLES, attach_evidence
 from precis.utils.embed_query import embed_query
 from precis.workers._chase_llm import _verify_support_with_caveats
@@ -88,7 +97,14 @@ _ROLE = "corroborates"
 
 #: ``finding.meta`` keys this pass reads/writes.
 _META_LAST_REFINED_AT = "last_refined_at"
+_META_LAST_REFINED_SHA = "last_refined_sha"
 _META_REJECTED = "taproot_rejected"
+
+#: The trigger pass's due-marker (``workers/chase_trigger.py``) — a closed
+#: ref tag on a claim hub meaning "a new near paper landed, refresh me".
+#: Popped here at claim time (see :func:`_claim_hubs_due_for_refine`).
+_DUE_NS = "TAPROOT_DUE"
+_DUE_VALUE = "1"
 
 
 def hub_refine_enabled() -> bool:
@@ -97,11 +113,19 @@ def hub_refine_enabled() -> bool:
     return bool(int(os.environ.get("PRECIS_TAPROOT_REFINE_ENABLED", "0") or "0"))
 
 
-def _interval_hours() -> float:
+def _backstop_hours() -> float:
+    """``PRECIS_TAPROOT_REFINE_BACKSTOP_H`` — default **2160** (90d).
+
+    Replaces the old ``PRECIS_TAPROOT_REFINE_INTERVAL_H`` weekly cadence
+    now that the incremental trigger (``workers/chase_trigger.py``) marks a
+    hub due promptly off a real corpus change: this is a LONG backstop so
+    nothing is ever permanently stuck if a ``TAPROOT_DUE`` tag is lost to a
+    failed pass, not a scheduling cadence.
+    """
     try:
-        return float(os.environ.get("PRECIS_TAPROOT_REFINE_INTERVAL_H", "168"))
+        return float(os.environ.get("PRECIS_TAPROOT_REFINE_BACKSTOP_H", "2160"))
     except ValueError:
-        return 168.0
+        return 2160.0
 
 
 def _hubs_per_pass() -> int:
@@ -132,20 +156,68 @@ def _min_sim_default() -> float | None:
 # ── claim query ────────────────────────────────────────────────────
 
 
+def _is_hub_due(
+    *,
+    is_due_tagged: bool,
+    last_refined_at: str | None,
+    last_refined_sha: str | None,
+    title: str,
+    backstop_h: float,
+) -> bool:
+    """The due predicate — any of:
+
+    1. carries a ``TAPROOT_DUE`` tag (the trigger pass marked a new near
+       paper), or
+    2. never refined (``last_refined_at`` absent), or
+    3. edited since last refine (stored ``last_refined_sha`` absent or no
+       longer matches the live title's :func:`taproot.canon.claim_sha` —
+       a reopen), or
+    4. the long backstop has elapsed (nothing is ever permanently stuck if
+       a due-tag is lost to a failed pass).
+    """
+    if is_due_tagged:
+        return True
+    if last_refined_at is None:
+        return True
+    if last_refined_sha is None or last_refined_sha != claim_sha(title):
+        return True
+    try:
+        refined_at = datetime.fromisoformat(last_refined_at)
+    except (TypeError, ValueError):
+        # Malformed timestamp -- fail open (due) rather than get stuck.
+        return True
+    if refined_at.tzinfo is None:
+        refined_at = refined_at.replace(tzinfo=UTC)
+    return refined_at < datetime.now(UTC) - timedelta(hours=backstop_h)
+
+
 def _claim_hubs_due_for_refine(
-    conn: Connection, *, limit: int, interval_h: float
+    conn: Connection, store: Any, *, limit: int, backstop_h: float
 ) -> list[int]:
     """Lock and return up to ``limit`` claim-hub ``ref_id``s due for refine.
 
-    ``TAPROOT:claim`` / ``STATUS:canonical`` findings whose
-    ``meta.last_refined_at`` is absent (never refined — sorts first via
-    ``NULLS FIRST``) or older than ``interval_h`` hours, oldest-first,
-    ``SKIP LOCKED`` — this is *scheduling* state (spread + "not too
-    often"), not a corpus-change watermark; see the module docstring.
+    Due-set claim query (see :func:`_is_hub_due`), never-refined first,
+    oldest ``last_refined_at`` next, ``SKIP LOCKED``. The sha-reopen check
+    isn't SQL-computable (:func:`taproot.canon.claim_sha` is Python-side
+    blake2b), so this scans the whole (small, ~1.2k) canonical claim-hub
+    set, computes due-ness in Python, then re-locks just the winning
+    ``limit`` ids with a second ``FOR UPDATE SKIP LOCKED`` — a concurrent
+    pass already holding one of those rows drops it from the returned set,
+    same concurrency-safety as the old single-query form.
+
+    Pops each claimed hub's ``TAPROOT_DUE`` tag in this same call (the
+    work-queue pop) — if a new chunk re-marks the hub mid-processing, it
+    simply re-triggers next pass.
     """
     rows = conn.execute(
         """
-        SELECT r.ref_id
+        SELECT r.ref_id, r.title, r.meta,
+               EXISTS (
+                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                  WHERE rt.ref_id = r.ref_id
+                    AND t.namespace = %(due_ns)s
+                    AND t.value = %(due_value)s
+               ) AS is_due_tagged
           FROM refs r
          WHERE r.kind = 'finding'
            AND r.deleted_at IS NULL
@@ -161,26 +233,49 @@ def _claim_hubs_due_for_refine(
                     AND t.namespace = %(status_ns)s
                     AND t.value = %(status_canonical)s
                )
-           AND (
-                 r.meta ->> %(last_refined_key)s IS NULL
-                 OR (r.meta ->> %(last_refined_key)s)::timestamptz
-                      < now() - (%(interval_h)s || ' hours')::interval
-               )
-         ORDER BY (r.meta ->> %(last_refined_key)s) ASC NULLS FIRST, r.ref_id
-         LIMIT %(limit)s
-           FOR UPDATE OF r SKIP LOCKED
         """,
         {
+            "due_ns": _DUE_NS,
+            "due_value": _DUE_VALUE,
             "taproot_ns": TAPROOT_NAMESPACE,
             "taproot_claim": TAPROOT_CLAIM,
             "status_ns": _STATUS_NAMESPACE,
             "status_canonical": _STATUS_CANONICAL,
-            "last_refined_key": _META_LAST_REFINED_AT,
-            "interval_h": interval_h,
-            "limit": limit,
         },
     ).fetchall()
-    return [int(r[0]) for r in rows]
+
+    candidates: list[tuple[int, str | None]] = []
+    for ref_id, title, meta, is_due_tagged in rows:
+        meta = dict(meta or {})
+        last_refined_at = meta.get(_META_LAST_REFINED_AT)
+        last_refined_sha = meta.get(_META_LAST_REFINED_SHA)
+        if _is_hub_due(
+            is_due_tagged=bool(is_due_tagged),
+            last_refined_at=last_refined_at,
+            last_refined_sha=last_refined_sha,
+            title=str(title or ""),
+            backstop_h=backstop_h,
+        ):
+            candidates.append((int(ref_id), last_refined_at))
+
+    # never-refined first, then oldest last_refined_at, then ref_id for a
+    # deterministic tie-break -- mirrors the old ORDER BY ... NULLS FIRST.
+    candidates.sort(key=lambda item: (item[1] is not None, item[1] or "", item[0]))
+    candidate_ids = [ref_id for ref_id, _ in candidates[:limit]]
+    if not candidate_ids:
+        return []
+
+    locked_rows = conn.execute(
+        "SELECT ref_id FROM refs WHERE ref_id = ANY(%s) FOR UPDATE SKIP LOCKED",
+        (candidate_ids,),
+    ).fetchall()
+    priority = {ref_id: i for i, ref_id in enumerate(candidate_ids)}
+    locked_ids = sorted((int(r[0]) for r in locked_rows), key=lambda rid: priority[rid])
+
+    for ref_id in locked_ids:
+        store.remove_tag(ref_id, Tag.closed(_DUE_NS, _DUE_VALUE), conn=conn)
+
+    return locked_ids
 
 
 def _fetch_hub_info(conn: Connection, ref_id: int) -> tuple[str, dict[str, Any]] | None:
@@ -229,10 +324,16 @@ def _refine_one_hub(
 ) -> None:
     """Discover + verify + attach corroborators for one hub, then stamp it.
 
-    Always writes ``meta.last_refined_at`` on the way out (even when the
-    hub's title is blank, or discovery/verify finds nothing new) — that
-    unconditional stamp is what makes the claim query's cadence gate
-    hold (see :func:`_claim_hubs_due_for_refine`).
+    Always writes ``meta.last_refined_at`` + ``meta.last_refined_sha`` on
+    the way out (even when the hub's title is blank, or discovery/verify
+    finds nothing new) — that unconditional stamp is what makes the claim
+    query's due-set conditions (never-refined, sha-match) hold (see
+    :func:`_claim_hubs_due_for_refine`).
+
+    A **sha-reopen** — the stored ``last_refined_sha`` no longer matches
+    the live title's :func:`taproot.canon.claim_sha` — clears the
+    rejection memo *before* discovery/verify run: the claim wording
+    changed, so an old ``supports=no`` verdict may no longer hold.
     """
     info = _fetch_hub_info(conn, hub_ref_id)
     if info is None:
@@ -241,7 +342,10 @@ def _refine_one_hub(
     title, meta = info
     claim_sentence = title.strip()
     scope = dict(meta.get("scope") or {})
-    rejected: dict[str, Any] = dict(meta.get(_META_REJECTED) or {})
+    new_sha = claim_sha(title)
+    stored_sha = meta.get(_META_LAST_REFINED_SHA)
+    reopened = stored_sha is not None and stored_sha != new_sha
+    rejected: dict[str, Any] = {} if reopened else dict(meta.get(_META_REJECTED) or {})
     attached = _attached_paper_ids(conn, hub_ref_id)
 
     query_vec = embed_query(embedder, claim_sentence) if claim_sentence else None
@@ -317,8 +421,13 @@ def _refine_one_hub(
                     supports,
                 )
 
-    meta_patch: dict[str, Any] = {_META_LAST_REFINED_AT: datetime.now(UTC).isoformat()}
-    if rejected:
+    meta_patch: dict[str, Any] = {
+        _META_LAST_REFINED_AT: datetime.now(UTC).isoformat(),
+        _META_LAST_REFINED_SHA: new_sha,
+    }
+    if rejected or reopened:
+        # Always persist on a reopen, even an emptied memo -- that's the
+        # clear taking effect, not just skipped because nothing's pending.
         meta_patch[_META_REJECTED] = rejected
     store.update_ref(hub_ref_id, meta_patch=meta_patch, conn=conn)
 
@@ -332,7 +441,6 @@ def run_hub_refine_pass(
     limit: int | None = None,
     embedder: Any | None = None,
     topk: int | None = None,
-    interval_h: float | None = None,
     min_sim: float | None = None,
 ) -> dict[str, int]:
     """One pass: claim due hubs, discover + verify + attach corroborators.
@@ -340,7 +448,10 @@ def run_hub_refine_pass(
     Every keyword defaults to its ``PRECIS_TAPROOT_REFINE_*`` env knob
     when omitted (see the module-level ``_*_default``/``_*_hours``
     readers) — tests pass them explicitly to stay independent of the
-    process environment.
+    process environment. The due-set backstop (``PRECIS_TAPROOT_REFINE_
+    BACKSTOP_H``, see :func:`_backstop_hours`) has no override kwarg here
+    — it's a rarely-hit safety net, not a per-run tuning knob; tests that
+    need to force it monkeypatch the env var.
 
     ``embedder=None`` degrades the whole pass to a logged no-op: no hubs
     are even claimed, since discovery has nothing to search with. This
@@ -358,12 +469,12 @@ def run_hub_refine_pass(
 
     resolved_limit = limit if limit is not None else _hubs_per_pass()
     resolved_topk = topk if topk is not None else _topk_default()
-    resolved_interval_h = interval_h if interval_h is not None else _interval_hours()
+    resolved_backstop_h = _backstop_hours()
     resolved_min_sim = min_sim if min_sim is not None else _min_sim_default()
 
     with store.pool.connection() as conn:
         hub_ids = _claim_hubs_due_for_refine(
-            conn, limit=resolved_limit, interval_h=resolved_interval_h
+            conn, store, limit=resolved_limit, backstop_h=resolved_backstop_h
         )
         conn.commit()
 

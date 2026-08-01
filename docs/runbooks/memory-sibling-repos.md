@@ -44,3 +44,7 @@ into a durable doc and delete the memory).
 
 **2026-07-24** — check added; `~/work/cluster` references already swept
 (this session) across all memory files ahead of the first automated run.
+
+**2026-08-01** — 1 stale path(s): catpath-dev-deploy.md: ~/work/projects/code/catpath — no longer on disk (repo retired/renamed? fix or drop the ref); 
+
+**2026-08-01** — 1 stale path(s): catpath-dev-deploy.md: ~/work/projects/code/catpath — no longer on disk (repo retired/renamed? fix or drop the ref); 

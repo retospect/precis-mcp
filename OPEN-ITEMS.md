@@ -120,16 +120,18 @@ items are removed (history is `git log`).
 
 ## Residuals (2026-07-31 — taproot hub-refine ship)
 
-- **Enable hub-refine in prod** · Status: deferred · Severity: feature ·
-  Owner: precis-worker role env. `src/precis/workers/hub_refine.py` ships
-  dark (`PRECIS_TAPROOT_REFINE_ENABLED=0`); flipping it on is a separate,
-  deliberate deploy — set `PRECIS_TAPROOT_REFINE_ENABLED=1` in the
+- **Enable hub-refine + chase-trigger in prod** · Status: deferred ·
+  Severity: feature · Owner: precis-worker role env.
+  `src/precis/workers/hub_refine.py` and its incremental counterpart
+  `src/precis/workers/chase_trigger.py` (the ingest-triggered watermark, no
+  longer out-of-scope — built as Phase 1) both ship dark
+  (`PRECIS_TAPROOT_REFINE_ENABLED=0`, `PRECIS_TAPROOT_CHASE_TRIGGER_ENABLED=0`);
+  flipping them on is a separate, deliberate deploy — set both in the
   precis-worker role env and redeploy, once the corpus has enough minted
-  hubs to be worth the per-run LLM spend. v2 follow-ups (ingest-triggered
-  watermark, `TAPROOT:saturated` long-backoff after K empty passes,
-  paper-version memo invalidation) live in
-  `docs/proposals/taproot-hub-refine.md`'s "Out of scope" section, not
-  here.
+  hubs to be worth the per-run LLM spend. Remaining v2 follow-ups
+  (`TAPROOT:saturated` long-backoff after K empty passes, paper-version
+  memo invalidation) live in `docs/proposals/taproot-hub-refine.md`'s "Out
+  of scope" section, not here.
 
 - **Confirm ref-pass single-instance before enabling hub-refine** · Status:
   open · Severity: latent-correctness (inherited). The claim query commits and

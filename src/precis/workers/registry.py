@@ -523,6 +523,21 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-taproot-help",
     ),
     ServiceSpec(
+        name="chase_trigger",
+        label="Taproot chase trigger",
+        category="discovery",
+        kind=ServiceKind.PASS,
+        ref_pass=True,
+        enable_env="PRECIS_TAPROOT_CHASE_TRIGGER_ENABLED",
+        cost_sources=("chase_trigger",),
+        one_line=(
+            "Marks a claim hub TAPROOT_DUE when a freshly-embedded near "
+            "paper chunk lands, so hub_refine refreshes it promptly "
+            "instead of waiting out the backstop."
+        ),
+        doc_skill="precis-taproot-help",
+    ),
+    ServiceSpec(
         name="llm_reconcile",
         label="LLM catalog reconcile",
         category="review",

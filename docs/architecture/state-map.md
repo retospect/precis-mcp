@@ -1246,22 +1246,29 @@ overlay on `finding`/`ref_tags`/`links` — no schema of its own).
     fallback promotion, integrity axis (Phase 4), corpus-wide backfill
     *sweep* (a worker pass — the per-chunk CLI above is its manual
     predecessor)); `refines` evidence-flow (v1 is advisory-only).
-- **Hub-refine (periodic corroborator enrichment)** — built, dark
-  (`PRECIS_TAPROOT_REFINE_ENABLED`, default-OFF like every taproot flag).
-  Build ticket: `docs/proposals/taproot-hub-refine.md`. Closes a gap W1/W2/A3
-  leave open: evidence attaches to a hub only as a *side effect* of chasing a
-  finding or a human's `precis taproot mint` — nothing ever revisits an
-  **existing** hub and asks what else in the corpus supports it. New pass
+- **Hub-refine (converging corroborator enrichment, claimed off a due-set)** —
+  built, dark (`PRECIS_TAPROOT_REFINE_ENABLED`, default-OFF like every
+  taproot flag). Build ticket: `docs/proposals/taproot-hub-refine.md` (+ its
+  2026-08-01 addendum). Closes a gap W1/W2/A3 leave open: evidence attaches
+  to a hub only as a *side effect* of chasing a finding or a human's `precis
+  taproot mint` — nothing ever revisits an **existing** hub and asks what
+  else in the corpus supports it. New pass
   `src/precis/workers/hub_refine.py::run_hub_refine_pass`, wired into
   `cli/worker.py` beside `inbound_chase`
   (`workers/registry.py::ServiceSpec` `name="hub_refine"`,
   `doc_skill="precis-taproot-help"`). Per pass:
   `_claim_hubs_due_for_refine` claims up to `PRECIS_TAPROOT_REFINE_HUBS_PER_PASS`
-  (default 8) `TAPROOT:claim`/`STATUS:canonical` findings whose
-  `meta.last_refined_at` is absent or older than
-  `PRECIS_TAPROOT_REFINE_INTERVAL_H` (default weekly), oldest-first,
-  `SKIP LOCKED`; `_refine_one_hub` embeds the hub's claim sentence
-  (`utils/embed_query.py::embed_query`) and runs
+  (default 8) `TAPROOT:claim`/`STATUS:canonical` findings that are **due**
+  (`hub_refine.py::_is_hub_due`) — carry a `TAPROOT_DUE` ref tag (set by the
+  `chase_trigger` pass below), are never-refined, are a sha-reopen
+  (`meta.last_refined_sha != taproot/canon.py::claim_sha(title)`, an edited
+  claim), or have crossed the `PRECIS_TAPROOT_REFINE_BACKSTOP_H` failsafe
+  (default 2160h/90d — a stuck-row backstop, not a schedule; **replaces** the
+  old `PRECIS_TAPROOT_REFINE_INTERVAL_H` weekly cadence) — never-refined
+  first, oldest `last_refined_at` next, `SKIP LOCKED`, popping each claimed
+  hub's `TAPROOT_DUE` tag as it claims; a sha-reopen also clears
+  `meta.taproot_rejected` before discovery. `_refine_one_hub` embeds the
+  hub's claim sentence (`utils/embed_query.py::embed_query`) and runs
   `store.search_blocks(mode="semantic", kind="paper")` for the top-K
   (`PRECIS_TAPROOT_REFINE_TOPK`, default 8) candidate paper chunks, skips a
   candidate already carrying a `corroborates` edge on the hub
@@ -1270,15 +1277,38 @@ overlay on `finding`/`ref_tags`/`links` — no schema of its own).
   (`finding.meta["taproot_rejected"]`), then verifies survivors with
   `workers/_chase_llm.py::_verify_support_with_caveats` — `yes`/`partial` →
   `taproot/hub.py::attach_evidence` (role `corroborates`); `no` → append to
-  the rejection memo. `meta.last_refined_at` is stamped unconditionally, even
-  on an empty pass, so the claim query's cadence gate holds. Convergence is
-  the whole point, never a periodic re-scan: idempotent attach + the
-  pre-verify edge-exists check + the rejection memo + the per-hub cadence
-  stamp together bound per-run LLM spend and let a saturated hub drop out of
-  the claim query on its own. Grows only the *supporter* set — originator
-  (★) derivation stays `seniority.py::derive_evidence`'s job, unchanged. No
-  embedder wired → the whole pass logs a warning and no-ops (mirrors the
-  forward bridge's own degrade). Tests: `tests/workers/test_hub_refine.py`.
+  the rejection memo. `meta.last_refined_at`/`meta.last_refined_sha` are
+  stamped unconditionally, even on an empty pass, so the due predicate's
+  never-refined/never-reopened legs hold. Convergence is the whole point,
+  never a periodic re-scan: idempotent attach + the pre-verify edge-exists
+  check + the rejection memo + the due-set claim query together bound
+  per-run LLM spend and let a saturated hub drop out of the claim query on
+  its own. Grows only the *supporter* set — originator (★) derivation stays
+  `seniority.py::derive_evidence`'s job, unchanged. No embedder wired → the
+  whole pass logs a warning and no-ops (mirrors the forward bridge's own
+  degrade). Tests: `tests/workers/test_hub_refine.py`.
+- **Chase trigger (Phase 1 — incremental due-set watermark)** — built, dark
+  (`PRECIS_TAPROOT_CHASE_TRIGGER_ENABLED`, default-OFF). New pass
+  `src/precis/workers/chase_trigger.py::run_chase_trigger_pass`
+  (`workers/registry.py::ServiceSpec` `name="chase_trigger"`), the
+  ingest-triggered watermark hub-refine's build ticket originally deferred
+  as out-of-scope. Indexes claim hubs into a new `claim_embeddings` table
+  (migration `0101_taproot_claim_embeddings.sql`: one vector per
+  `(claim_ref_id, embedder)`, `claim_sha`-gated re-embed off
+  `taproot/canon.py::claim_sha` — the same helper hub-refine's sha-reopen
+  check uses, so "changed" means the same thing to both passes), then
+  sweeps embedded `paper`/`patent` body chunks not yet carrying a
+  `CHASETRIG:<version>` chunk tag (the classify/classify_topics
+  done-marker idiom — no lease table). Per swept chunk, a reverse ANN
+  (chunk vector vs. the small ~1.2k-row `claim_embeddings` table, no ANN
+  index — a flat `<=>` scan) against a cosine-distance floor
+  (`PRECIS_TAPROOT_TRIGGER_MIN_SIM`, default 0.45, loose-biased —
+  over-triggering is cheap since hub-refine still prechecks before any LLM
+  spend) marks each near claim hub `TAPROOT_DUE`, then marks the chunk
+  swept regardless of match (drains the queue, guarantees convergence;
+  bump `CHASETRIG_VERSION` to force a corpus-wide re-sweep). No embedder →
+  logs and no-ops (mirrors hub-refine's own degrade). Tests:
+  `tests/workers/test_chase_trigger.py`.
 
 ## Other live affordances
 

@@ -140,3 +140,22 @@ Ingest-triggered watermark; `TAPROOT:saturated` long-backoff; paper-version memo
 invalidation; queryable judgment table; a `precis taproot refine --once` CLI (the
 worker `--only hub_refine` covers ad-hoc runs). Deploy-flip of the flag is a
 separate, deliberate ship (env in the precis-worker role), not part of this build.
+
+## Addendum (2026-08-01) — the ingest-triggered watermark got built
+
+The "out of scope" watermark above shipped as a separate pass,
+`src/precis/workers/chase_trigger.py` (`PRECIS_TAPROOT_CHASE_TRIGGER_ENABLED`,
+dark like every taproot flag; new `claim_embeddings` table, migration 0101).
+It reverse-ANNs each freshly-embedded paper/patent chunk against a claim-hub
+embedding index and marks a near hub `TAPROOT_DUE`.
+
+`_claim_hubs_due_for_refine` (§ Shape, step 1) is no longer the interval-only
+claim query described above: it's now a **due-set** — a hub claims iff
+`TAPROOT_DUE`-tagged, never refined, edited since (`meta.last_refined_sha` vs
+`taproot.canon.claim_sha(title)`, a reopen), or a long backstop has elapsed.
+`PRECIS_TAPROOT_REFINE_INTERVAL_H` is gone; `PRECIS_TAPROOT_REFINE_BACKSTOP_H`
+(default 2160h / 90d) replaces it as a stuck-row failsafe, not a schedule. A
+sha-reopen also clears `meta.taproot_rejected` before discovery, since the
+claim wording itself changed. Everything else in this proposal (discover /
+filter / verify / write / stamp) is unchanged. See
+`docs/architecture/state-map.md`'s hub-refine entry for present state.

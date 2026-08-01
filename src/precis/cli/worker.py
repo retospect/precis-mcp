@@ -189,6 +189,7 @@ _REF_PASS_PRIORITY: dict[str, PassBand] = {
     "_chase_pass": PassBand.BACKGROUND,
     "_inbound_chase_pass": PassBand.BACKGROUND,
     "_hub_refine_pass": PassBand.BACKGROUND,
+    "_chase_trigger_pass": PassBand.BACKGROUND,
     "_fetch_pass": PassBand.BACKGROUND,
     "_gp_fetch_pass": PassBand.BACKGROUND,
     "_llm_summarize_pass": PassBand.BACKGROUND,
@@ -721,6 +722,58 @@ def run(args: argparse.Namespace) -> None:
                 )
 
             ref_passes.append(_hub_refine_pass)
+
+        # chase_trigger — incremental counterpart to hub_refine above
+        # (transient-napping-parrot Phase 1): sweeps freshly-embedded
+        # paper/patent chunks against the (tiny) claim-embedding index and
+        # marks a near claim hub TAPROOT_DUE, so hub_refine's due-set claim
+        # query picks it up promptly instead of waiting out its 90d
+        # backstop. Default-OFF (PRECIS_TAPROOT_CHASE_TRIGGER_ENABLED=1) —
+        # dark like every other taproot flag. Needs an embedder (both to
+        # embed claim sentences and to compare chunk vectors against
+        # them); same reuse-the-booted-EmbedHandler-or-construct-fresh
+        # pattern as hub_refine, same embedder-unavailable no-op degrade.
+        if _pass_enabled("chase_trigger"):
+            from precis.workers.chase_trigger import run_chase_trigger_pass
+            from precis.workers.embed import EmbedHandler as _ChaseTriggerEmbedHandler
+            from precis.workers.runner import BatchResult as _ChaseTriggerBatchResult
+
+            _chase_trigger_embed_handler = next(
+                (h for h in handlers if isinstance(h, _ChaseTriggerEmbedHandler)), None
+            )
+            if _chase_trigger_embed_handler is not None:
+                chase_trigger_embedder = _chase_trigger_embed_handler.embedder
+            else:
+                try:
+                    chase_trigger_embedder = _resolve_embedder(args, store)
+                except Exception:
+                    log.warning(
+                        "chase_trigger: embedder unavailable -- pass will "
+                        "degrade to no-op",
+                        exc_info=True,
+                    )
+                    chase_trigger_embedder = None
+
+            def _chase_trigger_pass(batch_size: int) -> _ChaseTriggerBatchResult:
+                r = run_chase_trigger_pass(
+                    store, embedder=chase_trigger_embedder, batch_size=batch_size
+                )
+                # chase_trigger's own return shape ({claim_embeds,
+                # chunks_swept, due_marked, failed}) doesn't carry a
+                # {claimed, ok, failed} triple. Count BOTH chunks swept and
+                # claim-embeddings refreshed as work units, so a cycle that
+                # only refreshed stale claim vectors (chunks_swept=0) still
+                # reports claimed>0 and isn't misread as idle by the runner
+                # (runner.py: claimed>0 => any_work => no idle backoff).
+                _worked = r["chunks_swept"] + r["claim_embeds"]
+                return _ChaseTriggerBatchResult(
+                    handler="chase_trigger",
+                    claimed=_worked + r["failed"],
+                    ok=_worked,
+                    failed=r["failed"],
+                )
+
+            ref_passes.append(_chase_trigger_pass)
 
         # Hierarchical SOM cluster maps (precis-web /clusters grid).
         # Time-gated full rebuild per scope; see workers/clusterize.py.

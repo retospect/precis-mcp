@@ -29,6 +29,7 @@ migration, no hub/edge writes — see ``taproot.md`` §"Target + blast radius".
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from dataclasses import dataclass
@@ -49,6 +50,21 @@ log = logging.getLogger(__name__)
 TAPROOT_NAMESPACE = "TAPROOT"
 TAPROOT_CLAIM = "claim"
 TAPROOT_REVIEW = "review"
+
+
+def claim_sha(title: str) -> str:
+    """Stable content hash of a claim sentence (a hub's ``title``).
+
+    Shared between ``workers/chase_trigger.py`` (which stores it per
+    ``claim_embeddings`` row so a claim edit invalidates the stale vector)
+    and ``workers/hub_refine.py`` (which stamps it onto
+    ``finding.meta['last_refined_sha']`` at refine time and reopens a hub
+    whose title has since changed) — both must agree on the hash or the
+    two passes silently disagree about what "changed" means. Mirrors
+    ``classify_topics.topic_marker_value``'s blake2b idiom.
+    """
+    return hashlib.blake2b(title.strip().encode("utf-8"), digest_size=8).hexdigest()
+
 
 Verdict3 = Literal["same", "different", "contradicts"]
 
@@ -522,6 +538,7 @@ __all__ = [
     "Placement",
     "Verdict",
     "block",
+    "claim_sha",
     "dedup_judge",
     "extract_claim",
     "merge_confirm",
