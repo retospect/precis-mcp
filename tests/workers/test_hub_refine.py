@@ -18,8 +18,23 @@ from unittest.mock import MagicMock, patch
 from precis.store.types import BlockInsert, Tag
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import mint_hub
+from precis.workers._chase_llm import is_corroborating
 from precis.workers.hub_refine import hub_refine_enabled, run_hub_refine_pass
 from tests.workers._helpers import make_mock_bge_m3
+
+
+def test_is_corroborating_gate() -> None:
+    """The shared attach gate: yes attaches; partial attaches only without
+    contradicts; a contradicting partial and any 'no' do not."""
+    assert is_corroborating({"supports": "yes"}) is True
+    assert is_corroborating({"supports": "yes", "contradicts": True}) is True
+    assert is_corroborating({"supports": "partial"}) is True
+    assert is_corroborating({"supports": "partial", "contradicts": False}) is True
+    assert is_corroborating({"supports": "partial", "contradicts": True}) is False
+    assert is_corroborating({"supports": "no"}) is False
+    assert is_corroborating({"supports": None}) is False
+    assert is_corroborating({}) is False
+
 
 _VERIFY_PATH = "precis.workers.hub_refine._verify_support_with_caveats"
 

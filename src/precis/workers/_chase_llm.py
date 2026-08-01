@@ -35,9 +35,8 @@ log = logging.getLogger(__name__)
 
 _PROMPT_VERIFY = """\
 You are verifying whether a source paper chunk supports a specific
-empirical claim made under a specific experimental setup. Be
-CONSERVATIVE: hedged or conditionally-supportive language → record
-a caveat, do not claim full support.
+empirical claim made under a specific experimental setup. Judge support
+for the claim EXACTLY AS STATED — not a looser or more general version.
 
 CLAIM:
 {claim}
@@ -50,24 +49,35 @@ SOURCE: paper {target_cite_key}, chunk ord {target_chunk_ord}
 CHUNK TEXT:
 {target_chunk_text}
 
+First decide the chunk's STANCE toward the claim as stated: does it give
+evidence FOR the claim, evidence AGAINST it (an opposite result or
+tendency), or neither (on-topic but doesn't test the claim)?
+
 Definitions:
-  supports = "yes"      : chunk states the claim under the setup
-                          (verbatim or close paraphrase)
-  supports = "partial"  : chunk supports the claim with conditions
-                          listed in caveats
-  supports = "no"       : chunk does not support the claim
-  caveats               : conditions, regimes, applicability limits
-                          that qualify the support
-  contradicts           : true iff the chunk reports a result that
-                          runs COUNTER to the claim, OR does not
-                          substantiate any part of it (merely shares
-                          the topic) — i.e. citing it as support for
-                          THIS claim would mislead. false when the
-                          chunk genuinely supports the claim or a
-                          substantive part of it, even if only under
-                          the listed caveats. A "partial" whose caveats
-                          negate the claim rather than merely scope it
-                          is contradicts=true.
+  supports = "yes"      : the chunk affirmatively states or demonstrates
+                          the claim as stated (verbatim or close paraphrase).
+  supports = "partial"  : the chunk affirmatively supports the claim but
+                          only under conditions/regimes listed in caveats —
+                          REAL support that is merely scoped. A chunk that
+                          reports a result RUNNING COUNTER to the claim, or
+                          that only shares the topic without testing the
+                          claim, is NOT "partial".
+  supports = "no"       : the chunk does not support the claim — it only
+                          shares the topic, tests something else, or reports
+                          a result that runs COUNTER to the claim.
+  caveats               : conditions, regimes, applicability limits that
+                          qualify genuine support.
+  contradicts           : true iff the chunk reports a result or tendency
+                          OPPOSITE to what the claim asserts. Decide this
+                          INDEPENDENTLY of the supports label and be decisive
+                          even when the chunk is on the same topic.
+                          EXAMPLE: the claim asserts the method yields SMALL
+                          (~7 nm) crystals; a chunk stating the method yields
+                          BIGGER / LARGER crystallites reports the opposite
+                          outcome -> contradicts=true, supports="no".
+                          A chunk that supports PART of the claim and is
+                          merely SILENT on the rest (no opposite result)
+                          stays "partial" with contradicts=false.
   cited_others          : inline citation tokens that the chase
                           should follow (e.g. "[12]", "(Lin 1998)").
                           Empty if the chunk is the original source.
@@ -108,6 +118,24 @@ def _verify_support_with_caveats(
         log.warning("chase: verify hook failed: %s", res.error)
         return None
     return res.data
+
+
+def is_corroborating(verification: dict[str, Any]) -> bool:
+    """True iff a verify verdict should attach as corroborating evidence.
+
+    A ``yes``, or a ``partial`` whose caveats *scope* the support rather than
+    negate it (``contradicts`` false). A ``no``, or a ``partial`` flagged
+    ``contradicts`` (the chunk reports a result counter to the claim), is NOT
+    corroboration. The single source of truth for the attach decision, shared
+    by ``hub_refine``'s write door and ``taproot.slice_refine_eval``'s
+    would-attach replay so the pass and its eval harness never diverge.
+    """
+    supports = verification.get("supports")
+    if supports == "yes":
+        return True
+    if supports == "partial":
+        return not bool(verification.get("contradicts"))
+    return False
 
 
 _PROMPT_DISAMBIGUATE = """\
@@ -215,4 +243,5 @@ __all__ = [
     "_disambiguate_candidates",
     "_locate_chunk_in_target",
     "_verify_support_with_caveats",
+    "is_corroborating",
 ]

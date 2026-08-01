@@ -27,7 +27,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from precis.utils.embed_query import embed_query
-from precis.workers._chase_llm import _verify_support_with_caveats
+from precis.workers._chase_llm import _verify_support_with_caveats, is_corroborating
 from precis.workers.hub_refine import (
     _META_REJECTED,
     _attached_paper_ids,
@@ -46,6 +46,7 @@ class Candidate:
     paper_ref_id: int
     ref_slug: str | None
     support: str | None = None
+    contradicts: bool | None = None
     caveats: list[str] | None = None
     source_handle: str | None = None
     chunk_pos: int | None = None
@@ -81,14 +82,15 @@ class HubEval:
         for c in self.would_attach:
             lines.append(
                 f"    paper #{c.paper_ref_id} ({c.ref_slug or '-'}) "
-                f"support={c.support} caveats={c.caveats or []} "
+                f"support={c.support} contradicts={c.contradicts} "
+                f"caveats={c.caveats or []} "
                 f"handle={c.source_handle} pos={c.chunk_pos}"
             )
         lines.append(f"  would_reject ({len(self.would_reject)}):")
         for c in self.would_reject:
             lines.append(
                 f"    paper #{c.paper_ref_id} ({c.ref_slug or '-'}) "
-                f"support={c.support} pos={c.chunk_pos}"
+                f"support={c.support} contradicts={c.contradicts} pos={c.chunk_pos}"
             )
         lines.append(
             f"  skipped_attached ({len(self.skipped_attached)}): "
@@ -231,32 +233,25 @@ def _eval_one_hub(
             hub_eval.verify_failed += 1
             continue
         supports = verification.get("supports")
-        if supports in ("yes", "partial"):
-            hub_eval.would_attach.append(
-                Candidate(
-                    paper_ref_id=paper_ref_id,
-                    ref_slug=ref.slug,
-                    support=supports,
-                    caveats=list(verification.get("caveats") or []),
-                    source_handle=f"pc{block.id}",
-                    chunk_pos=block.pos,
-                    chunk_excerpt=block.text[:240],
-                    score=score,
-                )
-            )
-        elif supports == "no":
-            hub_eval.would_reject.append(
-                Candidate(
-                    paper_ref_id=paper_ref_id,
-                    ref_slug=ref.slug,
-                    support=supports,
-                    caveats=list(verification.get("caveats") or []),
-                    source_handle=f"pc{block.id}",
-                    chunk_pos=block.pos,
-                    chunk_excerpt=block.text[:240],
-                    score=score,
-                )
-            )
+        contradicts = bool(verification.get("contradicts"))
+        cand = Candidate(
+            paper_ref_id=paper_ref_id,
+            ref_slug=ref.slug,
+            support=supports,
+            contradicts=contradicts,
+            caveats=list(verification.get("caveats") or []),
+            source_handle=f"pc{block.id}",
+            chunk_pos=block.pos,
+            chunk_excerpt=block.text[:240],
+            score=score,
+        )
+        # Same gate as hub_refine's write door (shared helper), so this
+        # read-only replay reflects what the pass WOULD attach — a "partial"
+        # flagged contradicts lands in would_reject, not would_attach.
+        if is_corroborating(verification):
+            hub_eval.would_attach.append(cand)
+        elif supports in ("partial", "no"):
+            hub_eval.would_reject.append(cand)
         else:
             hub_eval.unexpected += 1
 

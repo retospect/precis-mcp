@@ -45,13 +45,20 @@ Status: open · Severity: polish · Owner: `src/precis/taproot/backfill.py` · T
   living cite's contradictor list and directly feed the Phase-4
   novelty-claim "your claim broke" alert. Follow-up, not a correctness gap.
 
-- **Pre-enablement: validate the `contradicts` gate against the model** ·
-  Status: open · Severity: validation. The attach-policy tightening is a
-  *prompt* change; offline tests prove the gate, not that the LLM sets
-  `contradicts` correctly. Re-run `slice_refine_eval` on the deployed new
-  code over the Phase-0 slice (esp. hub 176363 MOF-contradicting → should
-  drop; 176360 cerf74 → should stay `yes`) before flipping the enable flags.
-  Runbook: `docs/runbooks/taproot-chase-enablement.md`.
+- **Re-validate the `contradicts` gate at slice scale post-deploy** ·
+  Status: open · Severity: validation (gates enablement). The verify rubric
+  was reworked (v2: STANCE-first, counter-result → `no`/`contradicts=true`
+  with a worked example) after the first version proved a no-op — the
+  MEDIUM-tier model returned `contradicts=False` even on chunks whose caveats
+  stated the opposite result. v2 was **probe-validated on the decisive cases**
+  (borah26/bara19 → `contradicts=true` → drop; hashmi24/cerf74 → kept): see
+  `scratchpad/probe_v2.py` (no-embedder, dispatches a candidate prompt over a
+  chosen test set). The attach gate + eval harness now share
+  `_chase_llm.is_corroborating`, so a full `slice_refine_eval` run on the
+  next-deployed code should now match the pass. **Before enabling:** run the
+  full slice-eval on deployed v2 over the Phase-0 slice and confirm hub 176363
+  drops its contradicting partials while 176272/176360 keep theirs. Runbook:
+  `docs/runbooks/taproot-chase-enablement.md`.
 
 - **Enable hub-refine + chase-trigger in prod (Phase 2)** · Status: deferred ·
   Severity: feature. `src/precis/workers/hub_refine.py` + `chase_trigger.py`

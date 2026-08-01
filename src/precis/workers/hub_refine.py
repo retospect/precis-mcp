@@ -82,7 +82,7 @@ from precis.store.types import Tag
 from precis.taproot.canon import TAPROOT_CLAIM, TAPROOT_NAMESPACE, claim_sha
 from precis.taproot.hub import HUB_ROLES, attach_evidence
 from precis.utils.embed_query import embed_query
-from precis.workers._chase_llm import _verify_support_with_caveats
+from precis.workers._chase_llm import _verify_support_with_caveats, is_corroborating
 
 log = logging.getLogger(__name__)
 
@@ -396,15 +396,15 @@ def _refine_one_hub(
                 continue
             supports = verification.get("supports")
             contradicts = bool(verification.get("contradicts"))
-            # Attach only genuine corroboration: a "yes", or a "partial"
-            # whose caveats scope the support rather than negate it. A
-            # "partial" flagged ``contradicts`` (the chunk runs counter to
-            # the claim, or is merely on-topic without substantiating it)
-            # is treated like a "no" — memoed as judged, NOT attached, so
-            # it never dilutes the living cite and never costs a re-verify
+            # Attach only genuine corroboration (shared gate
+            # ``_chase_llm.is_corroborating``: a "yes", or a "partial" whose
+            # caveats scope the support rather than negate it). A "partial"
+            # flagged ``contradicts`` (the chunk runs counter to the claim)
+            # is treated like a "no" — memoed as judged, NOT attached, so it
+            # never dilutes the living cite and never costs a re-verify
             # (convergence: a non-attached verdict must land in the memo,
             # else it retries every pass forever).
-            if supports == "yes" or (supports == "partial" and not contradicts):
+            if is_corroborating(verification):
                 attach_evidence(
                     store,
                     hub_ref_id=hub_ref_id,
