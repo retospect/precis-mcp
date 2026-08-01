@@ -1330,7 +1330,14 @@ def dispatch(req: LlmRequest) -> LlmResult:
     # Folds into the normalized error result so callers degrade gracefully.
     from precis.budget import breaker as _breaker
 
-    trip = _breaker.gate_tier(req.tier, transport=transport.value)
+    # Gate on the *resolved* rung, not the tier band: a paid-band tier (BIG /
+    # MEDIUM) that failed over to a free local rung (served_by slot / litellm /
+    # a placement:"local" chain rung) spends nothing, so a tripped $ cap must
+    # not starve it. ``_rung_is_cloud`` is the authoritative local/cloud
+    # classifier (same one the cloud-throttle uses).
+    trip = _breaker.gate_tier(
+        req.tier, transport=transport.value, local=not _rung_is_cloud(ladder[0])
+    )
     if trip is not None:
         # A breaker trip is a window-scoped *pause*, not a failure — flag it so a
         # pinned pass skips (and re-runs when the window clears) rather than
@@ -1547,7 +1554,12 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
     # dispatch() runs, ahead of the (here: async) provider call.
     from precis.budget import breaker as _breaker
 
-    trip = _breaker.gate_tier(req.tier, transport=transport.value)
+    # Reached only for CLAUDE_AGENT (always cloud/OAuth — the non-agent path
+    # delegated to sync dispatch above), so ``local`` is False here; passed for
+    # symmetry with the sync gate and to stay correct if the guard ever widens.
+    trip = _breaker.gate_tier(
+        req.tier, transport=transport.value, local=not _rung_is_cloud(ladder[0])
+    )
     if trip is not None:
         return LlmResult(
             text="",

@@ -729,6 +729,45 @@ def test_gate_tier_resume_override_bypasses_quota() -> None:
     )
 
 
+# ── gate_tier exempts a free-local rung (local-first invariant) ──────────
+# A paid-band tier (BIG/MEDIUM/FRONTIER) that *resolved* to a free local slot
+# spends neither dollars nor quota, so a tripped cap must not starve it. The
+# caller (router / policy) classifies the resolved rung and passes local=.
+
+
+def test_gate_tier_free_local_bypasses_dollar_cap() -> None:
+    # Dollars wildly over cap, but the call resolved to a free local rung.
+    store = cast("Store", FakeStore(llm=999.0, fetch=0.0))
+    assert (
+        breaker_mod.gate_tier(
+            Tier.BIG, transport="openai_tools", local=True, store=store
+        )
+        is None
+    )
+    # Guard: the *same* paid-band tier on a cloud rung is still refused.
+    assert (
+        breaker_mod.gate_tier(
+            Tier.BIG, transport="openai_tools", local=False, store=store
+        )
+        is not None
+    )
+
+
+def test_gate_tier_free_local_bypasses_quota_too() -> None:
+    # Belt-and-suspenders: local exemption precedes the OAuth/quota branch, so a
+    # (hypothetical) local rung is never quota-gated either.
+    store = SqlStore(windows={"five_hour": {"status": "rejected"}})
+    assert (
+        breaker_mod.gate_tier(
+            Tier.FRONTIER,
+            transport="claude_agent",
+            local=True,
+            store=cast("Store", store),
+        )
+        is None
+    )
+
+
 def test_resume_active_expired_is_inactive() -> None:
     store = SqlStore(
         settings={budget_settings.RESUME_UNTIL_KEY: "2000-01-01T00:00:00+00:00"}

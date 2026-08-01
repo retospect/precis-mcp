@@ -196,7 +196,9 @@ class TestHardFilters:
         monkeypatch.setattr(
             breaker,
             "gate_tier",
-            lambda tier, store=None: "tripped" if tier is Tier.FRONTIER else None,
+            lambda tier, local=False, store=None: (
+                "tripped" if tier is Tier.FRONTIER and not local else None
+            ),
         )
         sel = select_offering(
             clean_catalog, _req(tier_floor=Tier.BIG, axis="code", min_ordinal=4)
@@ -295,3 +297,90 @@ class TestEndpointBooking:
         ep = {"capability": {"code": {"score": 5}}}
         assert _axis_ordinal(meta, "code") == 3
         assert _axis_ordinal(meta, "code", ep) == 5  # variant-scoped wins
+
+
+class TestFreeLocal:
+    """A served-local card is free: it prices at 0 (so it wins the cost sort and
+    is a valid ``next_better`` rung) and survives a tripped $ cap (local-first
+    invariant). The dead ``tier_floor.startswith('local')`` fast path — broken
+    since migration 0090 relabelled tiers — used to price it ``inf``."""
+
+    def test_model_price_zero_for_served_local(self) -> None:
+        from precis.utils.llm.policy import _model_price
+
+        # card-level served_by → free even with no price on the card
+        assert _model_price({"served_by": [{"host": "spark"}]}) == 0.0
+        # offering-nested served_by → also free (§6 nests it under the offering)
+        assert (
+            _model_price(
+                {
+                    "offerings": [
+                        {"transport": "openai_tools", "served_by": [{"host": "spark"}]}
+                    ]
+                }
+            )
+            == 0.0
+        )
+        # an unpriced *cloud* card is still unknown → sorts last, never free
+        assert _model_price({"offerings": [{"transport": "openai_compat"}]}) == float(
+            "inf"
+        )
+
+    def test_served_local_beats_paid_cloud_on_cost(self, clean_catalog: Any) -> None:
+        from precis.utils.llm.policy import select_offering
+        from precis.utils.llm.router import Tier
+
+        _card(
+            clean_catalog,
+            "cloud-cheap",
+            tier_floor="big",
+            offerings=[{"transport": "openai_compat", "price_in": 0.5}],
+            capability={"code": 4},
+        )
+        _card(
+            clean_catalog,
+            "local-served",
+            tier_floor="big",
+            offerings=[{"transport": "openai_tools"}],
+            served_by=[{"host": "spark", "max_parallel": 2}],
+            capability={"code": 4},
+        )
+        sel = select_offering(
+            clean_catalog, _req(tier_floor=Tier.BIG, axis="code", min_ordinal=4)
+        )
+        assert sel.model == "local-served"  # free (0) < paid cloud (0.5)
+
+    def test_served_local_survives_tripped_cap(
+        self, clean_catalog: Any, monkeypatch: Any
+    ) -> None:
+        from precis.budget import breaker
+        from precis.utils.llm.policy import select_offering
+        from precis.utils.llm.router import Tier
+
+        # Everything paid is tripped; only a local-exempted call passes.
+        monkeypatch.setattr(
+            breaker,
+            "gate_tier",
+            lambda tier, local=False, store=None: None if local else "tripped",
+        )
+        _card(
+            clean_catalog,
+            "cloud-big",
+            tier_floor="big",
+            offerings=[{"transport": "openai_compat", "price_in": 0.5}],
+            capability={"code": 4},
+        )
+        _card(
+            clean_catalog,
+            "local-big",
+            tier_floor="big",
+            offerings=[{"transport": "openai_tools"}],
+            served_by=[{"host": "spark"}],
+            capability={"code": 4},
+        )
+        sel = select_offering(
+            clean_catalog, _req(tier_floor=Tier.BIG, axis="code", min_ordinal=4)
+        )
+        # The cloud card is filtered by the tripped cap; the served-local one
+        # survives (would have degraded to the tier floor if it were gated too).
+        assert sel.from_catalog is True and sel.model == "local-big"

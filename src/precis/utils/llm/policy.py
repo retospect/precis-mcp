@@ -110,13 +110,30 @@ def _axis_ordinal(
     return int(score) if score is not None else 0
 
 
+def _served_local(meta: dict[str, Any]) -> bool:
+    """True when this card is served on a local llama-swap slot — a
+    ``served_by`` entry at card level or nested under any offering (§6). That is
+    the free-local signal: a served slot costs no dollars, so it prices at 0 and
+    is never budget-gated. Mirrors ``llm_reconcile._iter_served_by`` /
+    ``local_serving._iter_served_by`` (kept inline so policy stays free of the
+    reconcile/serving import chain). Empty for every card until ``served_by`` is
+    populated at the Phase-2 cutover — so pricing/gating is byte-identical to
+    today until a real local slot exists."""
+    if meta.get("served_by"):
+        return True
+    for o in meta.get("offerings") or []:
+        if isinstance(o, dict) and o.get("served_by"):
+            return True
+    return False
+
+
 def _model_price(meta: dict[str, Any]) -> float:
-    """A comparable per-1M input price — the **cheapest bookable** rate. Local
-    tiers are free (0); a cloud model with no known price sorts last (``inf``) so
-    an unknown never wins on cost. Considers both the curated offerings and the
-    reconciled per-variant endpoints (gripe 162624), since the cheapest fp4
-    endpoint is the price a booking can actually get."""
-    if (meta.get("tier_floor") or "").startswith("local"):
+    """A comparable per-1M input price — the **cheapest bookable** rate. A
+    locally-served card is free (0); a cloud model with no known price sorts
+    last (``inf``) so an unknown never wins on cost. Considers both the curated
+    offerings and the reconciled per-variant endpoints (gripe 162624), since the
+    cheapest fp4 endpoint is the price a booking can actually get."""
+    if _served_local(meta):
         return 0.0
     prices = [
         src["price_in"]
@@ -201,11 +218,16 @@ def _passes(store: Store, meta: dict[str, Any], req: Requirement) -> bool:
             return False
         if req.needs_structured and not (_STRUCTURED_PARAMS & params):
             return False
-    # Budget band: exclude a candidate whose tier is currently gated.
+    # Budget band: exclude a candidate whose tier is currently gated — but a
+    # locally-served card spends nothing, so it must survive a tripped $ cap
+    # (the local-first invariant; ``local=`` exempts it in the breaker).
     from precis.budget import breaker
 
     tier = _tier_of(meta)
-    if tier is not None and breaker.gate_tier(tier, store=store) is not None:
+    if (
+        tier is not None
+        and breaker.gate_tier(tier, local=_served_local(meta), store=store) is not None
+    ):
         return False
     return True
 

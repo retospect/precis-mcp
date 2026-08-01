@@ -51,11 +51,12 @@ def gate_tier(
     tier: Tier,
     *,
     transport: str | None = None,
+    local: bool = False,
     store: Store | None = None,
 ) -> str | None:
     """Gate an LLM dispatch. ``None`` to allow; a reason string to refuse.
 
-    Free local tiers always pass. A *paid* tier is gated on the resource it
+    Free local work always passes. A *paid* tier is gated on the resource it
     actually spends, keyed by ``transport``:
 
     * the ``claude -p`` OAuth transports (:data:`meter.OAUTH_TRANSPORTS`) spend
@@ -64,9 +65,21 @@ def gate_tier(
     * every other paid transport (OpenRouter / OpenAI-compatible, paid fetches)
       spends real dollars — gated on the rolling dollar meter.
 
+    ``local=True`` means this call *resolved* to a free local slot (a
+    ``served_by`` llama-swap slot / the litellm loopback / a ``placement:
+    "local"`` chain rung — the caller classifies it: the router via
+    :func:`~precis.utils.llm.router._rung_is_cloud`, the policy ranker via the
+    card's ``served_by``). Free local work spends neither dollars nor quota, so
+    it is **never** gated — even when a paid cap is tripped. This is the
+    local-first invariant: a tripped $ cap must not starve the free local rung
+    a paid tier failed over to. Gating on the *resolved transport*, not the
+    tier band, is what keeps a paid-band tier (BIG/MEDIUM) flowing on local.
+
     ``transport=None`` (legacy callers, tests) falls back to the dollar gate,
     preserving the pre-split behaviour.
     """
+    if local:
+        return None
     if not is_paid(tier):
         return None
     st = store if store is not None else meter.active_store()
