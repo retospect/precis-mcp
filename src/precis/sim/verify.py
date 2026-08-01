@@ -454,8 +454,10 @@ def verify_sim(
     Reads only (search + judge) when ``dry_run`` — the records and the exact
     YAML diff are produced but no file, git, or precis write happens. Otherwise
     the flips are written to disk, git-committed on a ``precis-verify/<date>``
-    branch, and each flipped entry mints a ``material`` + ``citation`` and
-    appends a quest deed (``store`` + ``hub`` are then required).
+    branch (the checkout is then restored to the branch the run started on, so
+    the flips live on the review branch and the working tree is left clean),
+    and each flipped entry mints a ``material`` + ``citation`` and appends a
+    quest deed (``store`` + ``hub`` are then required).
     """
     flagged = scan_entries(entry, manifest, floor=floor)
     records = plan_verify(flagged, search_fn=search_fn, judge_fn=judge_fn)
@@ -530,7 +532,11 @@ def _git_commit(repo: Path, rel_files: list[str], *, branch: str, message: str) 
     ``True`` if a commit was made, ``False`` if there was nothing staged.
 
     Never the sim's default branch — the flips land on ``precis-verify/<date>``
-    for a human to review and merge (the "Verify judge trust" decision).
+    for a human to review and merge (the "Verify judge trust" decision). The
+    checkout is **restored** to the branch the run started on afterward, so a
+    verify run (an automated/recurring watch especially) never strands the sim
+    repo on the review branch; the flips stay on ``precis-verify/<date>`` for a
+    PR.
     """
 
     def _git(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -542,6 +548,14 @@ def _git_commit(repo: Path, rel_files: list[str], *, branch: str, message: str) 
             timeout=30,
         )
 
+    orig = _git("rev-parse", "--abbrev-ref", "HEAD", check=False).stdout.strip()
+
+    def _restore() -> None:
+        # Return to where the run started. Skip if we can't name the original
+        # branch (detached HEAD -> "HEAD") or we're already on the review branch.
+        if orig and orig != "HEAD" and orig != branch:
+            _git("checkout", orig, check=False)
+
     exists = (
         _git("rev-parse", "--verify", "--quiet", branch, check=False).returncode == 0
     )
@@ -549,8 +563,10 @@ def _git_commit(repo: Path, rel_files: list[str], *, branch: str, message: str) 
     _git("add", *rel_files)
     # Nothing staged (e.g. the flip re-ran and matched) -> no empty commit.
     if _git("diff", "--cached", "--quiet", check=False).returncode == 0:
+        _restore()
         return False
     _git("commit", "-m", message)
+    _restore()
     return True
 
 

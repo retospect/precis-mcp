@@ -453,6 +453,7 @@ def test_verify_sim_live_flips_commits_and_mints(
     qid = int(m.group(1))
 
     entry = _entry(sim_repo, quest=str(qid))
+    orig_branch = _git(sim_repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
 
     outcome = verify_sim(
         slug="fixture-sim",
@@ -470,18 +471,23 @@ def test_verify_sim_live_flips_commits_and_mints(
     assert outcome.verified == 1
     assert outcome.branch == "precis-verify/2026-01-02"
 
-    # YAML flipped on disk.
-    text = (sim_repo / "materials.yaml").read_text(encoding="utf-8")
-    assert "verified: true" in text
-    assert "matweb06~3" in text
-
-    # Committed on the verify branch (not the default branch).
+    # F4: the run restores the original branch — it never strands the repo on
+    # the review branch. The working tree is left clean (flips live on the
+    # review branch, not on disk here).
     head_branch = _git(sim_repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
-    assert head_branch == "precis-verify/2026-01-02"
-    log = _git(sim_repo, "log", "-1", "--pretty=%s").stdout
-    assert "fixture-sim" in log
-    # The flip is committed, so the tree is clean again.
+    assert head_branch == orig_branch
     assert _git(sim_repo, "status", "--porcelain").stdout == ""
+
+    # The flip is committed on the review branch (not the default branch).
+    review_yaml = _git(
+        sim_repo, "show", "precis-verify/2026-01-02:materials.yaml"
+    ).stdout
+    assert "verified: true" in review_yaml
+    assert "matweb06~3" in review_yaml
+    review_log = _git(
+        sim_repo, "log", "-1", "--pretty=%s", "precis-verify/2026-01-02"
+    ).stdout
+    assert "fixture-sim" in review_log
 
     # material entity minted.
     mat = store.get_ref(kind="material", id=_material_slug("al_6061_t6"))
@@ -516,3 +522,33 @@ def test_verify_sim_live_no_quest_skips_deed_gracefully(
     )
     assert outcome.applied is True
     assert any("no quest linked" in msg for msg in outcome.messages)
+
+
+def test_verify_sim_live_restores_a_non_default_starting_branch(
+    store: Store, hub: Hub, sim_repo: Path, manifest: SimManifest
+) -> None:
+    """The restore returns to whatever branch the run started on, not a
+    hardcoded default (F4)."""
+    _git(sim_repo, "checkout", "-q", "-b", "feature/xyz")
+
+    outcome = verify_sim(
+        slug="fixture-sim",
+        entry=_entry(sim_repo, quest=None),
+        manifest=manifest,
+        search_fn=_search_fn([_hit("matweb06~3")]),
+        judge_fn=_judge_fn({"al_6061_t6"}),
+        dry_run=False,
+        store=store,
+        hub=hub,
+        today=_dt.date(2026, 1, 2),
+    )
+
+    assert outcome.applied is True
+    head = _git(sim_repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    assert head == "feature/xyz"  # restored, not left on precis-verify/*
+    assert _git(sim_repo, "status", "--porcelain").stdout == ""
+    # The flip still landed on the review branch.
+    assert (
+        "verified: true"
+        in _git(sim_repo, "show", "precis-verify/2026-01-02:materials.yaml").stdout
+    )

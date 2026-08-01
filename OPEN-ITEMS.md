@@ -108,27 +108,6 @@ items are removed (history is `git log`).
 - Related: prod `gripe:gr178497` (fetch-side staging-sweep EPERM, same root
   cause).
 
-## Residuals (2026-08-01 — sim-harness verify hardening)
-
-F1 (re-verify/re-mint loop), F2 (source-list data loss) and F3 (ingest
-basename collision) were fixed + regression-tested in the verify-hardening
-slice (`tests/test_sim_verify.py`, `tests/test_sim_ingest.py`). One residual
-remains — re-scoped from "restore the branch" to the product decision it
-actually is:
-
-- **F4 — should `precis sim verify` leave the sim repo on the review branch?** ·
-  Status: open (needs product decision) · Severity: polish / UX · Owner:
-  `sim/verify.py::_git_commit`. A live run checks out `precis-verify/<date>`,
-  commits the flips there, and **leaves** the repo on that branch with the flips
-  on disk — an AC-shaped, tested contract (`test_verify_sim_live_flips_commits_
-  and_mints`). The alternative — restore the original branch after commit —
-  returns the working tree to clean with the flips living only on the review
-  branch: correct for an automated/recurring-watch runner (which must not strand
-  the repo on a side branch), but surprising for an interactive run that expects
-  to *see* the flips. Decide before wiring verify into a worker; whichever wins,
-  update that test. (A pre-existing dirty tree is carried onto the new branch
-  either way — fold its handling into the same decision.)
-
 ## Residuals (2026-07-31 — draft table-editing ship b9bc1d4c)
 
 - **Structured enrichment for rich tables** · Status: deferred · Severity:
