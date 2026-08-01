@@ -7,6 +7,10 @@ blocked-by: gpu-priority
 
 # GPU cluster topology modes
 
+> **Part of the unified scheduling frame** — this is §C (GPU topology) of
+> `cluster-scheduling.md`; it is gated on the one-Spark-quantized test and
+> `blocked-by: gpu-priority`. See the master frame for cross-axis ordering.
+
 ## Motivation / why
 
 Soon there are N DGX Spark units (1 today + 3 incoming). The same hardware

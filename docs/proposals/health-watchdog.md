@@ -6,6 +6,11 @@ model: opus
 
 # Health watchdog — periodic liveness/freshness digest with routed remediation
 
+> **Part of the unified scheduling frame** — this is §D (the liveness net) of
+> `cluster-scheduling.md`: the cross-cutting guarantee that no scheduled
+> producer silently stops. See the master frame for how it relates to the
+> recurring-clock (§A) and priority-claim (§B) axes.
+
 ## Motivation / why
 
 precis does many independent things — ingest, chase, categorize, canonicalize

@@ -27,6 +27,11 @@ already supports.
 
 Supersedes `gpu-broker.md` (retired). Full trail: gr180096.
 
+> **Part of the unified scheduling frame** — this is §B (priority-claim + the
+> wedge fix) of `cluster-scheduling.md`, which indexes all scheduling axes on
+> the one decentralized claim substrate. Read that for cross-axis ordering; this
+> spec carries the mechanics.
+
 ## The shape (single-user, no cooperative-yield dance)
 
 - **Serialize background GPU work** — one heavy background GPU job at a time
@@ -108,7 +113,9 @@ chunking-for-responsiveness — only chunking-for-the-wedge, which per-seed give
    an aggregate wired via `auto_check` `child_job_succeeded`, invoking
    autocatpath's existing `seed` / `aggregate`. **Fixes the spark wedge.** Also
    the root-cause confirmation: if per-seed jobs complete reliably, the cause was
-   the over-scoped monolith, not ambient GPU contention.
+   the over-scoped monolith, not ambient GPU contention. **Build of record:**
+   `docs/design/autocatpath-integration.md` §3.8 (the code-grounded per-seed
+   fan-out `run_one_seed` → `aggregate_partials`) — keep the two in sync.
 2. **Human-first `PRIO:` on GPU jobs** — human-triggered work sorts ahead of
    background in the claim.
 3. **Reserve mode + night `meta.schedule`** — the coarse "the box is mine for a

@@ -1446,6 +1446,12 @@ ever — deferred, not now.
 
 ### 15i. One scheduler — the single recurring-work trigger
 
+> The **flip-and-retire completion** of this section (fold the remaining launchd
+> cadences, turn `PRECIS_SCHEDULER_ENABLED` on fleet-wide, drop the timers) is
+> §A of the unified `docs/proposals/cluster-scheduling.md`, where it sits
+> alongside the priority-claim / topology / liveness axes on the one claim
+> substrate.
+
 Today recurring work has **two** triggers, and they overlap:
 * **`schedule`** — a `_SYS` worker pass, *"mint subtasks for due `level:recurring`
   Watches"* (the todo-tree's recurrence).
