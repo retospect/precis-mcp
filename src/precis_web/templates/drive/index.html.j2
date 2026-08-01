@@ -11,8 +11,25 @@
       flag what you want to read, move / tag / delete inline.
     </p>
   </div>
+  {# Batch tab-opener + its one-time-setup reminder — the whole group stays
+     hidden until the JS finds direct-download links (LibKey/arXiv) on the
+     page. The standing "allow pop-ups" note matters because staggered opens
+     only fire when the site is allow-listed (see the script comment); the
+     confirm dialog says it too but is transient. #}
+  <div id="open-all-wrap"
+       class="ml-auto hidden self-center shrink-0 flex flex-col items-end gap-0.5">
+    <button type="button" id="open-all-downloads"
+            class="rounded-md bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-700"
+            title="Open every direct-download link on this page in its own tab, staggered 10-30s apart to go easy on the library servers. Allow pop-ups for this site (one-time) or only the first opens; click again to cancel.">
+      Open all downloads ↓
+    </button>
+    <span class="text-[10px] leading-tight text-slate-400">
+      one-time: allow pop-ups for this site so all open
+    </span>
+  </div>
   {# + New — cad/structure/figure/mermaid ride /drive/new; draft reuses
-     /drafts/new so its genre picker + richer flow stay single-sourced there. #}
+     /drafts/new so its genre picker + richer flow stay single-sourced there.
+     Keeps ml-auto so it stays right-aligned when the download button is hidden. #}
   <div class="ml-auto relative shrink-0">
     <button type="button" @click="open = !open"
             class="rounded bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-700">
@@ -373,11 +390,17 @@
         {% elif row.created_at %}
           <p class="text-xs text-slate-400 mt-0.5">added <span title="{{ row.created_at | abs_ts }}">{{ row.created_at | ago }}</span></p>
         {% endif %}
+        {# Off-site links (paper rows): "find:" search links (DOI/UoL/Scholar)
+           plus direct-download PDFs (LibKey/arXiv). Download links carry
+           data-download so the header "Open all downloads" button walks
+           exactly them, and render emerald to read as the "get it" tier. #}
         {% if row.links %}
           <p class="text-xs text-slate-400 mt-0.5">
             find:
             {% for l in row.links %}
-              <a href="{{ l.href }}" target="_blank" rel="noopener" class="text-sky-700 hover:underline">{{ l.label }}</a>{% if not loop.last %} · {% endif %}
+              <a href="{{ l.href }}" target="_blank" rel="noopener"
+                 {% if l.download %}data-download{% endif %}
+                 class="{% if l.download %}font-medium text-emerald-700{% else %}text-sky-700{% endif %} hover:underline">{{ l.label }}</a>{% if not loop.last %} · {% endif %}
             {% endfor %}
           </p>
         {% endif %}
@@ -602,4 +625,96 @@
     {% endif %}
   </section>
 </div>
+
+{# "Open all downloads" — walks every direct-download link on the page
+   (DOI→LibKey, arXiv→PDF, marked data-download by the row template) and
+   opens each in its own tab, staggered 10-30s apart to go easy on the
+   library/publisher servers instead of firing 40 tabs in one burst.
+
+   Pop-up trust: a click grants "transient activation" for only ~5s and it
+   is NOT inherited by deferred setTimeout callbacks — so staggered opens
+   land after it expires and would be silently blocked (why the original
+   timed opener was dropped in favour of a synchronous burst). The staggered
+   design only works when the site is allow-listed in the browser's pop-up
+   settings, at which point window.open fires freely from any timer. This is
+   a self-hosted daily-use tool, so allow-listing melchior once is the
+   intended setup. To stay robust either way: the FIRST tab opens
+   synchronously inside the click (always allowed by the gesture, and a live
+   probe), and every deferred open checks window.open's return — a null
+   (blocked) flips the label to "pop-ups blocked" at ~15s rather than
+   failing silently over the full run. Clicking again while a run is pending
+   cancels the remaining timers. Button stays hidden until there's a
+   downloadable row. #}
+<script>
+(function () {
+  const btn = document.getElementById("open-all-downloads");
+  const wrap = document.getElementById("open-all-wrap");
+  if (!btn || !wrap) return;
+  const links = Array.from(document.querySelectorAll("a[data-download]"));
+  if (!links.length) return;  // no downloadable rows → leave the button hidden
+
+  const urls = links.map((a) => a.href);
+  const N = urls.length;
+  const MIN_GAP = 10, MAX_GAP = 30;  // seconds between staggered opens
+  // Whole-second gap in [MIN_GAP, MAX_GAP]. Math.random is fine here — this
+  // is a UI convenience, not reproducible state.
+  const gap = () => MIN_GAP + Math.floor(Math.random() * (MAX_GAP - MIN_GAP + 1));
+  const idle = () => "Open all " + N + " downloads ↓";
+
+  let timers = [];
+  let running = false, opened = 0, blocked = false;
+
+  btn.textContent = idle();
+  wrap.classList.remove("hidden");
+
+  function cancel() {
+    timers.forEach(clearTimeout);
+    timers = [];
+    running = false;
+    btn.textContent = "Cancelled — " + opened + "/" + N + " opened · click to restart";
+  }
+
+  function openOne(i) {
+    const w = window.open(urls[i], "_blank", "noopener");
+    if (!w) blocked = true;
+    opened += 1;
+    if (opened >= N) {
+      running = false;
+      timers = [];
+      btn.textContent = blocked
+        ? "Opened " + opened + "/" + N + " — some pop-ups blocked; allow them, click to retry"
+        : "Opened " + N + " ✓ — click to repeat";
+    } else {
+      btn.textContent = (blocked ? "⚠ pop-ups blocked — allow them · " : "")
+        + "Opened " + opened + "/" + N + " · click to cancel";
+    }
+  }
+
+  btn.addEventListener("click", function () {
+    if (running) { cancel(); return; }  // second click cancels the pending run
+
+    const avgGap = (MIN_GAP + MAX_GAP) / 2;
+    const mins = Math.max(1, Math.round((N - 1) * avgGap / 60));
+    if (!window.confirm(
+        "Open " + N + " downloads, spread over ~" + mins + " min?\n\n" +
+        "The first opens now; the rest are staggered " + MIN_GAP + "-" + MAX_GAP +
+        "s apart to go easy on the library servers.\n" +
+        "Allow pop-ups for this site (one-time browser setting) or only the " +
+        "first will open.\nClick the button again to cancel the pending ones.")) {
+      return;
+    }
+
+    running = true;
+    opened = 0;
+    blocked = false;
+    timers = [];
+    openOne(0);  // synchronous → rides the click's activation
+    let t = 0;
+    for (let i = 1; i < N; i++) {
+      t += gap() * 1000;
+      timers.push(setTimeout(() => openOne(i), t));
+    }
+  });
+})();
+</script>
 {% endblock %}

@@ -26,7 +26,13 @@ import re
 from typing import Any
 
 from precis.utils.authors import author_names
-from precis_web.paper_links import doi_url, scholar_url, uol_url
+from precis_web.paper_links import (
+    arxiv_pdf_url,
+    doi_url,
+    libkey_url,
+    scholar_url,
+    uol_url,
+)
 
 #: Max characters of the matching chunk shown as the row preview.
 _PREVIEW_CHARS = 140
@@ -239,13 +245,25 @@ class ItemPresenter:
             )
         return badges
 
-    def links(self, identifier: str | None) -> list[dict[str, str]]:
-        """Off-site "go find it" links from a paper's external identifier —
-        the publisher/arXiv page, University of Limerick Primo, and Google
-        Scholar. Empty when there's no identifier (non-paper rows)."""
+    def links(self, identifier: str | None) -> list[dict[str, Any]]:
+        """Off-site "go find/get it" links from a paper's external
+        identifier. Two tiers, in walk order:
+
+        * **download** (``download=True``) — a one-click full-text PDF: the
+          LibKey library link for a DOI (skips the Primo keyword-search
+          hop, resolving straight to the full-text-file), and the arXiv PDF
+          for a preprint. The Drive row marks these ``data-download`` so the
+          "Open all downloads" button walks exactly this set.
+        * **search** — the publisher/arXiv abstract page, the Primo
+          discovery search, and Google Scholar: where to *find* a copy when
+          there's no direct PDF.
+
+        Empty when there's no identifier (non-paper rows). Only DOIs get a
+        LibKey link and only ``arxiv:`` ids get an arXiv PDF, so a given row
+        carries at most one download tier."""
         if not identifier:
             return []
-        out: list[dict[str, str]] = []
+        out: list[dict[str, Any]] = []
         pub = doi_url(identifier)
         if pub:
             out.append(
@@ -254,6 +272,12 @@ class ItemPresenter:
                     "href": pub,
                 }
             )
+        lk = libkey_url(identifier)
+        if lk:
+            out.append({"label": "LibKey ↓", "href": lk, "download": True})
+        ax = arxiv_pdf_url(identifier)
+        if ax:
+            out.append({"label": "arXiv ↓", "href": ax, "download": True})
         u = uol_url(identifier)
         if u:
             out.append({"label": "UoL", "href": u})

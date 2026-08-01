@@ -148,6 +148,38 @@ def test_default_thumbnail_is_empty_actions_are_universal() -> None:
     assert all(a["kind"] == "paper" and a["id"] == "1" for a in actions)
 
 
+def test_links_doi_row_carries_libkey_download_plus_search_tier() -> None:
+    """A DOI row's off-site links: DOI abstract, the direct LibKey
+    full-text PDF (marked ``download`` so the "Open all downloads" button
+    walks it), then the UoL/Scholar search tier. Regression for the
+    LibKey "to-pdf" link dropped when papers_needed folded into Drive."""
+    links = ItemPresenter("paper").links("10.1016/j.enbuild.2024.114668")
+    labels = [link["label"] for link in links]
+    assert labels == ["DOI", "LibKey ↓", "UoL", "Scholar"]
+    libkey = next(link for link in links if link["label"] == "LibKey ↓")
+    assert libkey["download"] is True
+    assert libkey["href"] == (
+        "https://libkey.io/libraries/2545/10.1016/j.enbuild.2024.114668"
+    )
+    # Only the LibKey entry is a download; the search links are not walked.
+    assert [link for link in links if link.get("download")] == [libkey]
+
+
+def test_links_arxiv_row_gets_pdf_download_not_libkey() -> None:
+    """An arXiv preprint has its own free PDF (``download``) but no LibKey
+    key, so the download tier is the arXiv PDF alone."""
+    links = ItemPresenter("paper").links("arxiv:2401.01234")
+    downloads = [link for link in links if link.get("download")]
+    assert [link["label"] for link in downloads] == ["arXiv ↓"]
+    assert downloads[0]["href"] == "https://arxiv.org/pdf/2401.01234"
+    assert not any(link["label"] == "LibKey ↓" for link in links)
+
+
+def test_links_empty_without_identifier() -> None:
+    assert ItemPresenter("paper").links(None) == []
+    assert ItemPresenter("paper").links("") == []
+
+
 def test_youtube_presenter_thumbnail_from_slug() -> None:
     ref = _ref(kind="youtube", slug="dQw4w9WgXcQ")
     p = presenter_for("youtube")
