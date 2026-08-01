@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
-#: Our LibKey (Third Iron) library id — University of Liverpool, the
+#: Our LibKey (Third Iron) library id — University of Limerick, the
 #: institution behind the ``uol.primo`` proxy. Found at
 #: ``libkey.io/choose-library``; it is the ``libraries/<id>`` segment in
 #: the captured full-text-file link. Injecting it overrides any
