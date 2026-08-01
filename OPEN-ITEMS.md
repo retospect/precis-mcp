@@ -9,13 +9,23 @@ items are removed (history is `git log`).
 
 ---
 
-## melchior daemon NAS lockout — FDA grant broke on brew python bump (cdhash change); re-grant needed (infra, not code)
-- Status: **open** · Severity: **critical** (melchior's Marker-ingest + fetch
-  NAS access offline) · Owner: **infra / macOS Full Disk Access** on melchior —
-  NOT a code fix; needs a one-click GUI re-grant · Test: `com.precis.watch`
-  reaches a stable running state and `/var/log/precis-watch.log` shows a clean
-  backfill with zero `PermissionError`; the worker's `fetch_oa` pass stops
-  logging EPERM on the NAS.
+## melchior daemon NAS lockout — FDA grant broke on brew python bump (cdhash change) — RESOLVED 2026-08-01; only `brew pin` follow-up remains
+- Status: **resolved** (acute outage fixed) · residual: **pin the Macs** (below).
+  Fix applied 2026-08-01: FDA re-granted on melchior for the current interpreters
+  (`python@3.12/3.12.13_4` + `python@3.14/3.14.6`, both `auth 2`), then
+  `launchctl kickstart -k` on watch/worker/heartbeat so they re-exec'd under the
+  new grant (TCC is evaluated at launch — a grant added while a daemon runs isn't
+  adopted until restart). Verified: melchior heartbeat `nas_ok=true`, watch stable
+  (pid steady, `backfilling`, zero `PermissionError`), nursery alert `180213`
+  auto-resolved, 0 open `nas-denied` cluster-wide. balthazar + caspar were never
+  broken (still on older, granted builds) and report `nas_ok=true`.
+- **Residual (open, low-severity — recurrence prevention):** none of the three
+  Macs are `brew pin`ned (`brew list --pinned` → no python), so each will break
+  identically on its next `brew upgrade python@3.12|@3.14`. The `nas-denied`
+  detector now catches that in minutes, but `brew pin python@3.12 python@3.14`
+  on melchior/balthazar/caspar *prevents* it. Also: melchior's
+  `/Users/Shared/cluster-fda-checklist.txt` is stale (omits
+  `/opt/precis/venv/bin/python3`) — re-run the `tcc_profile` role.
 - **Symptom:** `com.precis.watch` (runs as `deploy`, uid 806) crash-loops with
   `PermissionError: [Errno 1] Operation not permitted:
   '/opt/nas/botshome/papers/inbox'` from **watchdog**'s `DirectorySnapshot.walk`
@@ -75,8 +85,10 @@ items are removed (history is `git log`).
   still-granted builds → **no action now, but they break the same way on their
   next python bump.** spark (Linux) is immune. All three Macs mount the papers
   NAS at `/opt/nas/botshome`.
-- **Detection — SHIPPED (turns the next silent lockout into a minutes-to-detect
-  alert):** the `precis heartbeat` reporter now probes `/opt/nas` from its own
+- **Detection — SHIPPED + deployed `f0d16c22`, validated live (alert `180213`
+  open for melchior; balthazar/caspar `nas_ok=true`, spark ∅=no-signal):** turns
+  the next silent lockout into a minutes-to-detect alert. The `precis heartbeat`
+  reporter now probes `/opt/nas` from its own
   launchd context each tick (`_probe_nas`, `src/precis/cli/heartbeat.py`) and
   records `meta.nas_ok`; a new nursery `nas-denied` detector
   (`_detect_nas_denied`, `src/precis/workers/nursery.py`, **critical**) raises a

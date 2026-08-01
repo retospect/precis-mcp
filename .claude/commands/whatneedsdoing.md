@@ -1,7 +1,7 @@
 ---
 description: One honest "what needs doing" across the two work substrates — repo dev work (OPEN-ITEMS backlog + open gripes + open GitHub PRs + Dependabot alerts) and the prod factory queue (open/doable todos) — plus a repo-hygiene scan (migration-number collisions · orphan design docs · memory-index lint), a prod system-health read (per-host worker-log err/warn), and the latent LLM-confusion signal mined from prod agent transcripts.
 argument-hint: "[optional focus, e.g. 'dark-factory' or 'drafts']"
-allowed-tools: Read, Bash(grep:*), Bash(ssh:*), Bash(gh:*), Bash(scripts/migration-check:*), Bash(scripts/docs-orphans:*), Bash(scripts/memory-lint:*), Bash(scripts/backlog-lint:*), Bash(scripts/token-review:*), Bash(scripts/db-thrash-review:*), Bash(scripts/skill-search-review:*), Bash(scripts/gripe-gc-review:*), Bash(scripts/nightly:*), Bash(scripts/coderef:*), mcp__precis__get, mcp__precis__search
+allowed-tools: Read, Bash(grep:*), Bash(ssh:*), Bash(gh:*), Bash(scripts/migration-check:*), Bash(scripts/docs-orphans:*), Bash(scripts/memory-lint:*), Bash(scripts/backlog-lint:*), Bash(scripts/token-review:*), Bash(scripts/db-thrash-review:*), Bash(scripts/skill-search-review:*), Bash(scripts/gripe-gc-review:*), Bash(scripts/fda-grant-review:*), Bash(scripts/nightly:*), Bash(scripts/coderef:*), mcp__precis__get, mcp__precis__search
 ---
 
 Work lives in **two different substrates** — do not merge them into one flat
@@ -35,8 +35,8 @@ Live GitHub — open PRs:
 Live GitHub — open Dependabot alerts (severity ⋅ package ⋅ #num ⋅ summary):
 !`gh api "repos/{owner}/{repo}/dependabot/alerts?state=open&per_page=50" --jq '.[] | "\(.security_advisory.severity)\t\(.dependency.package.name)\t#\(.number)\t\(.security_advisory.summary)"' 2>/dev/null || echo '(dependabot API unavailable — needs a token with repo security-read)'`
 
-Live repo hygiene — migration collisions ⋅ orphan design docs ⋅ code anchors ⋅ memory index ⋅ done-gunk ⋅ token-review cadence ⋅ db-thrash cadence ⋅ skill-search cadence ⋅ gripe-gc cadence ⋅ nightly build:
-!`scripts/migration-check --quiet 2>&1 || true; echo '— docs —'; scripts/docs-orphans 2>&1 | sed -n '1,2p;/^ORPHAN/,/^ADR-linked/p' || true; echo '— code anchors —'; scripts/coderef check docs 2>&1 | tail -6 || true; echo '— memory —'; scripts/memory-lint 2>&1 || true; echo '— backlog —'; scripts/backlog-lint 2>&1 | head -1 || true; echo '— tokens —'; scripts/token-review 2>&1 || true; echo '— db-thrash —'; scripts/db-thrash-review 2>&1 || true; echo '— skill-search —'; scripts/skill-search-review 2>&1 || true; echo '— gripe-gc —'; scripts/gripe-gc-review 2>&1 || true; echo '— nightly —'; scripts/nightly --check 2>&1 || true`
+Live repo hygiene — migration collisions ⋅ orphan design docs ⋅ code anchors ⋅ memory index ⋅ done-gunk ⋅ token-review cadence ⋅ db-thrash cadence ⋅ skill-search cadence ⋅ gripe-gc cadence ⋅ fda-grant cadence ⋅ nightly build:
+!`scripts/migration-check --quiet 2>&1 || true; echo '— docs —'; scripts/docs-orphans 2>&1 | sed -n '1,2p;/^ORPHAN/,/^ADR-linked/p' || true; echo '— code anchors —'; scripts/coderef check docs 2>&1 | tail -6 || true; echo '— memory —'; scripts/memory-lint 2>&1 || true; echo '— backlog —'; scripts/backlog-lint 2>&1 | head -1 || true; echo '— tokens —'; scripts/token-review 2>&1 || true; echo '— db-thrash —'; scripts/db-thrash-review 2>&1 || true; echo '— skill-search —'; scripts/skill-search-review 2>&1 || true; echo '— gripe-gc —'; scripts/gripe-gc-review 2>&1 || true; echo '— fda-grant —'; scripts/fda-grant-review 2>&1 || true; echo '— nightly —'; scripts/nightly --check 2>&1 || true`
 
 ## Procedure
 
@@ -154,6 +154,21 @@ Live repo hygiene — migration collisions ⋅ orphan design docs ⋅ code ancho
      single just-shipped commit, so multi-commit fixes, pre-issue-closer
      gripes, and shipped commits that don't name the gripe all slip past it —
      see the runbook.)
+   - **FDA-grant cadence** (`scripts/fda-grant-review`) — on **DUE** (last pass
+     >30 days ago) audit the macOS Full-Disk-Access grants + brew pins that let
+     each Mac's launchd/cron daemons reach the NAS: per host (melchior/balthazar/
+     caspar; spark is Linux → immune), resolve every venv interpreter and confirm
+     its cdhash-bearing real path is granted (`auth_value=2`) and its
+     `python@3.1x` is pinned at that build. Re-grant (System Settings → Full Disk
+     Access — TCC can't be set from CLI) + `launchctl kickstart -k` any drift,
+     `brew pin` any unpinned, then append a dated line to
+     `docs/runbooks/fda-grant-review.md`. Inside the 30-day window it's quiet —
+     skip it. The nursery `nas-denied` detector is the real-time backstop (alerts
+     in minutes when a host is *actually* locked out — the script also prints any
+     open count); this cadence is the proactive drift catch. (This exists because
+     a `brew upgrade python` cdhash bump silently broke melchior's grant and
+     dark-ingested for days; see the runbook + OPEN-ITEMS "melchior daemon NAS
+     lockout".)
    - **Nightly build** (`scripts/nightly --check`) — the LOCAL full-suite health
      read (not GitHub). **`✗ RED`** means green main was broken by upstream
      dependency drift (the ship gate can't catch it — no code changed);
