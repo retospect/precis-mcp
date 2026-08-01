@@ -78,8 +78,12 @@ content-addressed jobs → `aggregate_partials`. Detail + build steps:
 `gpu-priority.md` Phase 1 and the code-grounded design of record
 `docs/design/autocatpath-integration.md` §3.8. This is a `coder-chain`-sized
 build touching `quest/compute.py::dispatch_autocatpath` + the
-`autocatpath_explore` plugin. **Operational stop-gap until it lands:** pause the
-NO→NH₃ quest compute lane so spark stops re-wedging.
+`autocatpath_explore` plugin. **Operational stop-gap — ACTIVE as of 2026-08-01:**
+the NO→NH₃ quest (`quest:164903`) was set `STATUS:dormant` so the allocator stops
+minting autocatpath compute and spark stops re-wedging. **Revert** (flip 164903
+back to `STATUS:active`) is a required step of shipping §B-1 — a dormant quest
+left dormant is silently-stopped research (the §D failure mode). Full trail:
+`gr180096`.
 
 ### §A — Finish the decentralized recurring-clock (flip §15i on, retire timers)
 The `scheduler` pass (`workers/scheduler.py`) already folds `cron_tick` +
