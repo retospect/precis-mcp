@@ -481,6 +481,14 @@ class DraftHandler(Handler):
             from precis.handlers._review_view import render_review_view
 
             return render_review_view(self.store, ref)
+        if view == "citations":
+            # docs/proposals/taproot-draft-citation-view.md — the draft's
+            # paper/claim citations partitioned into to-fetch /
+            # to-re-ground / to-promote / done. Purely derived (token kind
+            # + paper block-count), read-only.
+            from precis.handlers._citations_view import render_citations_view
+
+            return render_citations_view(self.store, ref)
         if view == "review-diff":
             raise BadInput(
                 "review-diff targets a chunk (dc<id>), not a whole draft",
@@ -499,7 +507,9 @@ class DraftHandler(Handler):
                     "per-section word counts vs targets, view='links' for the "
                     "link graph, view='integration' for the integration ledger "
                     "(a topic dossier only), view='review' for the approval "
-                    "ledger, or omit (or view='outline') for the outline"
+                    "ledger, view='citations' for the citation lifecycle "
+                    "(to-fetch/to-re-ground/to-promote/done), or omit (or "
+                    "view='outline') for the outline"
                 ),
             )
         return self._render_outline(s, ref)
