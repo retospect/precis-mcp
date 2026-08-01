@@ -108,46 +108,26 @@ items are removed (history is `git log`).
 - Related: prod `gripe:gr178497` (fetch-side staging-sweep EPERM, same root
   cause).
 
-## Residuals (2026-07-31 — sim-harness Slice 1 ship d7942c90)
+## Residuals (2026-08-01 — sim-harness verify hardening)
 
-Reviewer-flagged, Opus-verified against the code. All fire **only** on a live
-`precis sim verify` writeback — the CLI is net-new and nothing in prod drives
-it yet, so shipped-but-inert. F1+F2 are the correctness blockers; fix them
-together (both live on the re-flip path) as the next sim-harness slice.
+F1 (re-verify/re-mint loop), F2 (source-list data loss) and F3 (ingest
+basename collision) were fixed + regression-tested in the verify-hardening
+slice (`tests/test_sim_verify.py`, `tests/test_sim_ingest.py`). One residual
+remains — re-scoped from "restore the branch" to the product decision it
+actually is:
 
-- **F1 — confidence-flagged entries re-verify + re-mint forever** · Status:
-  open · Severity: **critical** (silent duplicate `material`/`citation` + quest
-  deed every run) · Owner: `sim/verify.py::_flag_reason` +
-  `_flip_entry_text` · Test: a `verify:` entry `{id, confidence: 0.5}` (no
-  `verified` key) under a 0.7 floor. Two coupled defects: (a) `_flip_entry_text`
-  only rewrites a `verified:` line when one already exists (`verified_idx is not
-  None`), so a confidence-only entry never gains `verified: true`; (b) deeper —
-  `_flag_reason` checks `confidence < floor` *independently* of `verified`, so
-  even a correct `verified: true` writeback wouldn't stop the re-flag (nothing
-  bumps `confidence`). **Design call needed** (proposal author): should a truthy
-  `verified` short-circuit the confidence check, should writeback bump
-  confidence above floor, or both? — that's why this is filed, not blind-fixed.
-
-- **F2 — `_source_value` drops existing citations on re-flip** · Status: open ·
-  Severity: latent-correctness (data loss) · Owner:
-  `sim/verify.py::_source_value` · Test: entry whose `source:` is already a flow
-  list (`["asm~4"]`). The `if raw and not raw.startswith("[")` guard skips
-  parsing an existing list, so the rewrite returns `["new-handle"]` — prior
-  handles are lost. Only bites on a second flip (source is a list from the first
-  flip on) — compounds F1's re-flip loop.
-
-- **F3 — ingest basename collision across subdirs** · Status: open · Severity:
-  polish (data loss, low-probability) · Owner: `sim/ingest.py::_resolve_outputs`
-  / `_ensure_ingested`. Recursive `outputs` globs project to `sim_dir /
-  src.name` (basename only); two same-named files in different subdirs
-  (`case1/findings.md`, `case2/findings.md`) clobber each other silently. Fix:
-  preserve relative subpath in the destination slug.
-
-- **F4 — live verify leaves the sim repo on the verify branch** · Status: open ·
-  Severity: polish / UX · Owner: `sim/verify.py::_git_commit`. A live run
-  switches the checkout to `precis-verify/<date>` and never restores the
-  original branch; a pre-existing dirty tree is carried onto the new branch and
-  left dirty. Confirm intended for slice 1, else restore branch after commit.
+- **F4 — should `precis sim verify` leave the sim repo on the review branch?** ·
+  Status: open (needs product decision) · Severity: polish / UX · Owner:
+  `sim/verify.py::_git_commit`. A live run checks out `precis-verify/<date>`,
+  commits the flips there, and **leaves** the repo on that branch with the flips
+  on disk — an AC-shaped, tested contract (`test_verify_sim_live_flips_commits_
+  and_mints`). The alternative — restore the original branch after commit —
+  returns the working tree to clean with the flips living only on the review
+  branch: correct for an automated/recurring-watch runner (which must not strand
+  the repo on a side branch), but surprising for an interactive run that expects
+  to *see* the flips. Decide before wiring verify into a worker; whichever wins,
+  update that test. (A pre-existing dirty tree is carried onto the new branch
+  either way — fold its handling into the same decision.)
 
 ## Residuals (2026-07-31 — draft table-editing ship b9bc1d4c)
 

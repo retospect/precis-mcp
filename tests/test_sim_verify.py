@@ -19,6 +19,7 @@ Coverage:
 from __future__ import annotations
 
 import datetime as _dt
+import json
 import re
 import subprocess
 from pathlib import Path
@@ -34,7 +35,9 @@ from precis.sim.verify import (
     JudgeVerdict,
     SearchHit,
     _coerce_verdict,
+    _flag_reason,
     _material_slug,
+    _source_value,
     build_query,
     plan_verify,
     render_writebacks,
@@ -179,6 +182,112 @@ def test_scan_missing_verify_file_is_skipped(sim_repo: Path) -> None:
     )
     flagged = scan_entries(_entry(sim_repo), manifest)
     assert {f.entry_id for f in flagged} == {"al_6061_t6", "unobtainium"}
+
+
+# ── F1: verified is the latch; the writeback must make it stick ────────────
+
+
+def test_flag_reason_truthy_verified_short_circuits_confidence() -> None:
+    # A truthy `verified` wins over a below-floor `confidence` — otherwise a
+    # flipped-but-low-confidence entry re-flags (and re-mints) every run.
+    assert (
+        _flag_reason({"id": "x", "verified": True, "confidence": 0.1}, floor=0.8)
+        is None
+    )
+    # Falsy verified is still flagged even with no confidence.
+    assert _flag_reason({"id": "x", "verified": False}, floor=0.8) == "verified:false"
+    # verified:false wins over confidence for the reason label.
+    assert (
+        _flag_reason({"id": "x", "verified": False, "confidence": 0.5}, floor=0.8)
+        == "verified:false"
+    )
+    # Confidence-only entry flags on the floor.
+    assert _flag_reason({"id": "x", "confidence": 0.5}, floor=0.8) == "confidence<0.8"
+    # No scheme at all -> never flagged.
+    assert _flag_reason({"id": "x", "name": "plain"}, floor=0.8) is None
+
+
+def test_writeback_latches_confidence_only_entry_and_is_idempotent(
+    tmp_path: Path,
+) -> None:
+    """A confidence-only entry (no ``verified:`` line) must *gain* a
+    ``verified: true`` latch on flip, so a re-scan of the written-back file
+    flags nothing — no re-verify/re-mint loop (F1)."""
+    repo = tmp_path / "sim"
+    repo.mkdir()
+    (repo / "db.yaml").write_text(
+        "rows:\n  - id: x\n    name: Widget\n    confidence: 0.5\n",
+        encoding="utf-8",
+    )
+    _init_git_repo(repo)
+    manifest = SimManifest(run="x", outputs=(), verify=("db.yaml",), writeup="w")
+    entry = _entry(repo)
+
+    flagged = scan_entries(entry, manifest, floor=0.8)
+    assert {f.entry_id for f in flagged} == {"x"}
+
+    records = plan_verify(
+        flagged,
+        search_fn=_search_fn([_hit("matweb06~3")]),
+        judge_fn=_judge_fn({"x"}),
+    )
+    diffs = render_writebacks(records)
+    assert len(diffs) == 1
+    new_text = diffs[0].new_text
+    assert "verified: true" in new_text  # the latch was inserted, not skipped
+    assert "matweb06~3" in new_text
+
+    # Re-scan the flipped file: the latch short-circuits, zero re-flags.
+    (repo / "db.yaml").write_text(new_text, encoding="utf-8")
+    assert scan_entries(entry, manifest, floor=0.8) == []
+
+
+# ── F2: re-flip preserves an existing source flow-list ─────────────────────
+
+
+def test_source_value_preserves_existing_flow_list() -> None:
+    # A scalar hint is preserved.
+    assert json.loads(_source_value('    source: "MatWeb hint"', "pa5~2")) == [
+        "MatWeb hint",
+        "pa5~2",
+    ]
+    # An existing flow list is preserved, not clobbered (F2).
+    assert json.loads(_source_value('    source: ["asm~4"]', "pa5~2")) == [
+        "asm~4",
+        "pa5~2",
+    ]
+    # Idempotent: a handle already present isn't duplicated.
+    assert json.loads(_source_value('    source: ["asm~4"]', "asm~4")) == ["asm~4"]
+    # No existing line -> just the new handle.
+    assert json.loads(_source_value(None, "pa5~2")) == ["pa5~2"]
+
+
+def test_reflip_preserves_prior_citation_handles(tmp_path: Path) -> None:
+    """An entry whose ``source:`` is already a flow list keeps every prior
+    handle when a later flip folds in a new one (F2)."""
+    repo = tmp_path / "sim"
+    repo.mkdir()
+    (repo / "m.yaml").write_text(
+        "materials:\n"
+        "  - id: steel\n"
+        "    name: Steel A36\n"
+        "    E_GPa: 200\n"
+        '    source: ["asm~4"]\n'
+        "    verified: false\n",
+        encoding="utf-8",
+    )
+    _init_git_repo(repo)
+    manifest = SimManifest(run="x", outputs=(), verify=("m.yaml",), writeup="w")
+
+    flagged = scan_entries(_entry(repo), manifest)
+    records = plan_verify(
+        flagged,
+        search_fn=_search_fn([_hit("matweb06~3")]),
+        judge_fn=_judge_fn({"steel"}),
+    )
+    new_text = render_writebacks(records)[0].new_text
+    assert "verified: true" in new_text
+    assert '["asm~4", "matweb06~3"]' in new_text  # prior handle kept
 
 
 # ── query + coerce ────────────────────────────────────────────────────────

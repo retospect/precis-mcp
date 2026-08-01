@@ -103,13 +103,13 @@ def test_ingest_sim_creates_markdown_and_plaintext_refs(
     assert outcome.skipped == 0
     assert outcome.ingested == 2
 
-    md_ref = store.get_ref(kind="markdown", id="sim--fixture-sim--findings")
+    md_ref = store.get_ref(kind="markdown", id="sim--fixture-sim--docs--findings")
     assert md_ref is not None
     assert md_ref.meta["sim_slug"] == "fixture-sim"
     assert md_ref.meta["sim_git_sha"] == sha
     assert store.count_blocks(md_ref.id) > 0
 
-    txt_ref = store.get_ref(kind="plaintext", id="sim--fixture-sim--pareto")
+    txt_ref = store.get_ref(kind="plaintext", id="sim--fixture-sim--out--pareto")
     assert txt_ref is not None
     assert txt_ref.meta["sim_slug"] == "fixture-sim"
     assert txt_ref.meta["sim_git_sha"] == sha
@@ -118,9 +118,11 @@ def test_ingest_sim_creates_markdown_and_plaintext_refs(
     # Projected onto disk under PRECIS_ROOT/sim/<slug>/ — CSV normalized
     # to .txt (PlaintextHandler's extension set omits .csv), markdown
     # keeps its extension.
-    assert (root / "sim" / "fixture-sim" / "findings.md").exists()
-    assert (root / "sim" / "fixture-sim" / "pareto.txt").exists()
-    assert not (root / "sim" / "fixture-sim" / "pareto.csv").exists()
+    # Subpath preserved under sim/<slug>/ (not flattened to basename), so
+    # same-named outputs in different subdirs can't collide.
+    assert (root / "sim" / "fixture-sim" / "docs" / "findings.md").exists()
+    assert (root / "sim" / "fixture-sim" / "out" / "pareto.txt").exists()
+    assert not (root / "sim" / "fixture-sim" / "out" / "pareto.csv").exists()
 
 
 def test_ingest_sim_tolerates_non_git_dir(
@@ -141,7 +143,7 @@ def test_ingest_sim_tolerates_non_git_dir(
 
     assert outcome.failed == 0
     assert outcome.ingested == 2
-    md_ref = store.get_ref(kind="markdown", id="sim--fixture-sim--findings")
+    md_ref = store.get_ref(kind="markdown", id="sim--fixture-sim--docs--findings")
     assert md_ref is not None
     assert md_ref.meta["sim_slug"] == "fixture-sim"
     assert "sim_git_sha" not in md_ref.meta
@@ -202,8 +204,8 @@ def test_ingest_sim_second_run_over_unchanged_files_is_a_no_op(
     assert first.ingested == 2
     assert first.failed == 0
 
-    md_ref = store.get_ref(kind="markdown", id="sim--fixture-sim--findings")
-    txt_ref = store.get_ref(kind="plaintext", id="sim--fixture-sim--pareto")
+    md_ref = store.get_ref(kind="markdown", id="sim--fixture-sim--docs--findings")
+    txt_ref = store.get_ref(kind="plaintext", id="sim--fixture-sim--out--pareto")
     assert md_ref is not None
     assert txt_ref is not None
     md_id_before, txt_id_before = md_ref.id, txt_ref.id
@@ -224,8 +226,8 @@ def test_ingest_sim_second_run_over_unchanged_files_is_a_no_op(
     assert second.failed == 0
     assert second.skipped == 2
 
-    md_ref_after = store.get_ref(kind="markdown", id="sim--fixture-sim--findings")
-    txt_ref_after = store.get_ref(kind="plaintext", id="sim--fixture-sim--pareto")
+    md_ref_after = store.get_ref(kind="markdown", id="sim--fixture-sim--docs--findings")
+    txt_ref_after = store.get_ref(kind="plaintext", id="sim--fixture-sim--out--pareto")
     assert md_ref_after is not None
     assert txt_ref_after is not None
     # Same underlying ref rows (not soft-deleted + re-created).
@@ -269,3 +271,46 @@ def test_ingest_sim_force_reingests_unchanged_files(
     )
     assert forced.ingested == 2
     assert forced.skipped == 0
+
+
+def test_ingest_sim_same_basename_in_different_subdirs_no_collision(
+    store: Store, hub: Hub, tmp_path: Path
+) -> None:
+    """Two outputs sharing a basename across subdirs must ingest as two
+    distinct refs — the destination preserves the subpath, it doesn't flatten
+    to the basename and clobber (F3)."""
+    repo = tmp_path / "fixture-sim"
+    (repo / "case1").mkdir(parents=True)
+    (repo / "case2").mkdir(parents=True)
+    (repo / "case1" / "findings.md").write_text(
+        "# Case 1\n\nCase one improved 12%.\n", encoding="utf-8"
+    )
+    (repo / "case2" / "findings.md").write_text(
+        "# Case 2\n\nCase two improved 8%.\n", encoding="utf-8"
+    )
+    manifest = SimManifest(
+        run="python run.py",
+        outputs=("case1/findings.md", "case2/findings.md"),
+        verify=(),
+        writeup="fixture-writeup",
+    )
+    root = tmp_path / "precis_root"
+    root.mkdir()
+
+    outcome = ingest_sim(
+        slug="fixture-sim",
+        entry=_entry(repo),
+        manifest=manifest,
+        root=root,
+        hub=hub,
+        store=store,
+    )
+
+    assert outcome.failed == 0
+    assert outcome.ingested == 2  # both, not one clobbering the other
+    c1 = store.get_ref(kind="markdown", id="sim--fixture-sim--case1--findings")
+    c2 = store.get_ref(kind="markdown", id="sim--fixture-sim--case2--findings")
+    assert c1 is not None and c2 is not None
+    assert c1.id != c2.id
+    assert (root / "sim" / "fixture-sim" / "case1" / "findings.md").exists()
+    assert (root / "sim" / "fixture-sim" / "case2" / "findings.md").exists()

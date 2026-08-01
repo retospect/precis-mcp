@@ -168,12 +168,22 @@ def _iter_entry_dicts(node: Any) -> Iterator[dict[str, Any]]:
 def _flag_reason(entry: dict[str, Any], *, floor: float) -> str | None:
     """Why *entry* needs verifying, or ``None`` if it doesn't.
 
-    An entry is flagged when it declares ``verified`` and the value is falsy,
-    or when it carries a numeric ``confidence`` below *floor*. An entry with
-    **no** ``verified``/``confidence`` scheme (e.g. a plain catalog) is left
-    alone — it opts in by adding one, per the proposal's motivation.
+    A **truthy** ``verified`` short-circuits everything — the writeback latch.
+    Nothing in the pipeline bumps ``confidence``, so if the floor check ran
+    independently of ``verified``, a low-confidence entry the writeback flipped
+    to ``verified: true`` would re-flag (and re-mint a duplicate
+    ``material``/``citation`` + quest deed) on *every* subsequent run. The
+    proposal's writeback sets ``verified: true`` precisely to stop that, so a
+    truthy ``verified`` must win over the floor.
+
+    Otherwise an entry is flagged when it declares ``verified`` falsy, or when
+    it carries a numeric ``confidence`` below *floor*. An entry with **no**
+    ``verified``/``confidence`` scheme (e.g. a plain catalog) is left alone —
+    it opts in by adding one, per the proposal's motivation.
     """
-    if "verified" in entry and not entry["verified"]:
+    if entry.get("verified"):
+        return None
+    if "verified" in entry:
         return "verified:false"
     conf = entry.get("confidence")
     if isinstance(conf, (int, float)) and not isinstance(conf, bool) and conf < floor:
@@ -322,7 +332,16 @@ def _source_value(existing_line: str | None, citation_ref: str) -> str:
     if existing_line is not None:
         raw = existing_line.split(":", 1)[1].strip()
         raw = re.sub(r"\s+#.*$", "", raw).strip()
-        if raw and not raw.startswith("["):
+        if raw.startswith("["):
+            # Already a flow list (e.g. from a prior flip) — preserve every
+            # existing handle, don't clobber it with just the new one.
+            try:
+                parsed = yaml.safe_load(raw)
+            except yaml.YAMLError:  # pragma: no cover - defensive
+                parsed = None
+            if isinstance(parsed, list):
+                items.extend(str(x) for x in parsed)
+        elif raw:
             items.append(raw.strip("'\""))
     if citation_ref not in items:
         items.append(citation_ref)
@@ -350,6 +369,8 @@ def _flip_entry_text(text: str, entry_id: str, citation_ref: str) -> str:
             verified_idx = i
         if source_idx is None and source_re.match(lines[i]):
             source_idx = i
+    indent = " " * (field_indent if field_indent is not None else 4)
+    # In-place rewrites first — these don't shift line indices.
     if verified_idx is not None:
         m = verified_re.match(lines[verified_idx])
         assert m is not None
@@ -357,15 +378,31 @@ def _flip_entry_text(text: str, entry_id: str, citation_ref: str) -> str:
         lines[verified_idx] = f"{m.group('indent')}verified: true{eol}"
     src_line = lines[source_idx] if source_idx is not None else None
     new_source_value = _source_value(src_line, citation_ref)
-    indent = " " * (field_indent if field_indent is not None else 4)
     if source_idx is not None:
         m2 = source_re.match(lines[source_idx])
         assert m2 is not None
         eol = "\n" if lines[source_idx].endswith("\n") else ""
         lines[source_idx] = f"{m2.group('indent')}source: {new_source_value}{eol}"
-    else:
-        insert_at = verified_idx if verified_idx is not None else end - 1
-        lines.insert(insert_at, f"{indent}source: {new_source_value}\n")
+
+    # Insert any missing field at the end of the entry's block. Without this a
+    # confidence-only entry (no ``verified:`` line) would never gain the
+    # ``verified: true`` latch, so it re-flags + re-mints on every run (F1).
+    to_insert: list[str] = []
+    if verified_idx is None:
+        to_insert.append(f"{indent}verified: true\n")
+    if source_idx is None:
+        to_insert.append(f"{indent}source: {new_source_value}\n")
+    if to_insert:
+        # Insert after the block's last non-blank line (skip trailing blanks
+        # that separate this entry from the next), and make sure it ends with a
+        # newline so the inserted field isn't glued onto it.
+        insert_at = end
+        while insert_at - 1 > start and not lines[insert_at - 1].strip():
+            insert_at -= 1
+        if not lines[insert_at - 1].endswith("\n"):
+            lines[insert_at - 1] += "\n"
+        for offset, new_line in enumerate(to_insert):
+            lines.insert(insert_at + offset, new_line)
     return "".join(lines)
 
 

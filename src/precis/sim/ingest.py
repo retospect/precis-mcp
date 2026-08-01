@@ -172,7 +172,12 @@ def ingest_sim(
             messages.append(f"skip  {src.name}  - unrecognized extension {ext!r}")
             continue
 
-        dest = sim_dir / dest_name
+        # Preserve the source's subpath under the sim repo, so two same-named
+        # outputs in different subdirs (case1/findings.md, case2/findings.md)
+        # get distinct destination slugs instead of clobbering each other.
+        rel_sub = src.relative_to(entry.path)
+        dest = sim_dir / rel_sub.parent / dest_name
+        dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(src, dest)
         rel = str(dest.relative_to(root))
 
