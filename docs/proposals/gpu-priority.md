@@ -1,158 +1,178 @@
 ---
 status: draft
-title: Prioritized GPU slots — short background units + interactive priority + kill backstop
+title: Prioritized GPU work — chunk catpath into per-seed todos, human-first claim, reserve mode
 model: opus
 ---
 
-# Prioritized GPU slots
+# Prioritized GPU work
 
 ## Motivation / why
 
-The real want is simple: **when the human asks for something, it gets the next
-GPU slot for a bit; when they stop asking, background work churns again.**
-Everything else discussed (an accounted queue for all GPU work, memory
-bin-packing, multi-node topology fusion, converting every worker pass to a
-cron schedule) was scope creep around that want — and it rested on an
-*unconfirmed* premise (that spark's wedge is GPU contention rather than an
-over-scoped, un-checkpointed job that overruns its lease; two faithful repros
-ran co-tenant with the live embedder and did **not** wedge).
+Two separate problems, one small solution — and **no scheduler**, because there
+is effectively one human user:
 
-This proposal scopes to the want and nothing more. It also **doubles as the
-experiment that confirms the root cause**: Phase 1 decomposes catpath into
-short units; if those complete reliably, the wedge was over-scoping and the
-grand broker is unnecessary. The broker vision is preserved as an appendix,
-gated on that experiment.
+1. **The wedge (spark).** `autocatpath_explore` runs the whole NO→NH₃ ammonia
+   network × 3 seeds × full NEB as one ~90-min **in-process** MACE blob that
+   overruns its lease, never completes (81 starts / 0 completions, gr180096),
+   and — being an un-interruptible native CUDA call — takes the worker down
+   (SIGTERM-deaf → SIGKILL). This is *background-vs-background* GPU
+   over-subscription plus an indivisible monolith. Nothing to do with the human.
+2. **Responsiveness.** When the human wants the cluster, their work should run
+   before the deferrable "could-just-as-well-run-at-2am" background work.
 
-Supersedes `gpu-broker.md` (retired) — same lineage as gr180096.
+With a single user, #2 needs **a little priority** (human-first claim) and a
+coarse **reserve mode**, not a multi-class fairness scheduler. #1 needs the
+monolith broken into **short, resumable chunks** — which, happily, autocatpath
+already supports.
 
-## The model — two classes, cooperative yield
+Supersedes `gpu-broker.md` (retired). Full trail: gr180096.
 
-- **Two priority classes:** `interactive` (human-triggered) outranks
-  `background` (embed, catpath, dream, OCR). Interactive claims sort ahead in
-  the pull-claim precis already uses.
-- **Background runs in short, checkpointed units.** At each unit boundary a
-  background holder checks for a waiting interactive claim and **yields** (does
-  not renew its turn).
-- **Co-fit small, evict big.** A small interactive request that fits alongside
-  running background just runs (spatial share, no wait). One that needs most of
-  the card waits *one background unit* and the resident model unloads. The
-  request decides — no general bin-packing solver.
-- **Bounded interactive hold** — "for a bit": interactive gets a max stretch,
-  then decays to normal so a runaway foreground job can't permanently starve
-  background.
+## The shape (single-user, no cooperative-yield dance)
 
-**Variable load handles itself.** With pull-claim + priority, an active human
-dominates; a quiet one lets the interactive queue drain and background resumes.
-No fixed rates, no cron, and **no "session" to track** — "when I'm done" is not
-a signal the system needs; the human simply stops submitting and background
-fills the vacuum. Priority *is* the scheduler.
+- **Serialize background GPU work** — one heavy background GPU job at a time
+  (stops background self-contention, the wedge's substrate).
+- **Keep background chunks short** — so the slot frees on its own frequently and
+  a kill loses little. Priority can't preempt a running CUDA kernel; short
+  chunks are what make "wait for the current one" cheap.
+- **Human-first claim** — reuse the todo tree's existing `PRIO:` axis: a
+  human-triggered GPU job sorts ahead of background in the claim query. One
+  comparison, no classes, no fairness math.
+- **Reserve mode** — a human toggle ("reserve the cluster for me for a few
+  hours") that simply **stops dispatching new heavy background jobs**; the
+  in-flight one finishes and the box is yours. Plus a **night `meta.schedule`**
+  for heavy background. This handles "I want it now" coarsely and trivially, so
+  fine per-chunk responsiveness is *not* needed up front.
+- **Kill backstop** — for the rare "I want the card *now*, don't wait one
+  chunk": force-kill the holder with verified GPU reclamation (reuse
+  `struct_relax`'s `_relax_timeout_s` → `kill_container` + `reset_gpu`,
+  gr171381). A bare lease-refund does **not** reclaim the card from a live
+  wedged process — the kill must actually free and confirm the GPU.
 
-## The one hard truth
+## Chunking catpath — the chunks already exist
 
-**Foreground latency is capped by the coarsest background unit.** Priority
-cannot preempt a running CUDA kernel (the SIGTERM-deaf wedge). So "next slot in
-seconds" *requires* background GPU work chopped into short units. The scheduler
-change is small; **the real work is decomposing the long workloads**, and that
-lives in the workloads (partly the external `autocatpath` package), not here.
+autocatpath is *built* for fan-out (its own docstring: "Snakemake fan-out").
+Its CLI exposes exactly the units:
 
-## The decomposition contract (keeps catpath/scheduler coupling thin)
+- `autocatpath seed --seed N <cfg>` → run one seed → a partial (standalone,
+  JSON-serialisable — `run_one_seed`).
+- `autocatpath aggregate` → combine partials → the barrier (`aggregate_partials`).
 
-Long GPU jobs decompose via a **generic resumable-job contract**, not
-scheduler-specific per-workload logic:
+So chunking is **not a catpath change** — it is a precis *orchestration* change.
+Today `quest/compute.py::dispatch_autocatpath` mints **one** `autocatpath_explore`
+job (all seeds, whole network, ~90 min in-process). Instead mint a small **job
+tree**, each node a todo, using machinery precis already runs:
 
-- `enumerate_units()` → the ordered list of bounded units (catpath: per
-  elementary reaction step, and/or per seed).
-- `run_unit(i, checkpoint_in) -> checkpoint_out` → runs one bounded unit,
-  reads/writes checkpoint state so a kill loses only that unit.
+```
+autocatpath: NO→NH₃ on Pd            (parent)
+├─ seed 0  →  autocatpath seed --seed 0    (content-addressed job)
+├─ seed 1  →  autocatpath seed --seed 1
+├─ seed 2  →  autocatpath seed --seed 2
+└─ aggregate → autocatpath aggregate       (runs after the 3 seeds)
+```
 
-Catpath implements this by adopting the **coordinator/yield pattern quests
-already use** (`workers/executors/_yield.py` — `Yield`/`WakeWhen`/`Done`;
-`quest_tick` is already "run a bounded step, yield, get re-armed"). So catpath
-does not couple to a *new* scheduler — it becomes a citizen of machinery precis
-already runs, and the scheduler treats units **opaquely** (it never learns
-chemistry). CFD and any other long GPU job reuse the same seam. **Guardrail:
-the scheduler must not grow workload-specific knowledge — if it starts to,
-the contract is leaking and the coupling is wrong.**
+- **Dependency** "aggregate after all seeds succeed" uses the **existing**
+  `auto_check` evaluator `child_job_succeeded` (×3) — no new coordinator.
+- **Resumption needs no checkpoint blob** — each seed job is content-addressed
+  (`idem_key` includes the seed), so a retry **skips completed seeds** and runs
+  only the missing one. The persisted partials *are* the checkpoint. (Same
+  content-address idempotency `struct_relax` already uses.)
+- The aggregate produces the same scalar barrier the quest already harvests
+  (`harvest_measures`).
 
-## Correctness backstop — the yield needs teeth
+**Wins immediately, before any priority work:** a kill loses one seed (~a third
+of the run — minutes), not the 90-min monolith; the other partials persist;
+retry resumes; and the 3 independent seeds fan out across nodes on the 4-Spark
+cluster (the parallelism this design was for).
 
-A background unit that **won't** yield at its boundary (genuinely wedged) holds
-the slot and the human's "next slot" never comes. And a logical lease-refund
-does **not** reclaim physical GPU from a live, spinning, SIGTERM-deaf process.
-So yielding must be backed by **force-kill + verified GPU reclamation** — reuse
-`struct_relax`'s proven `_relax_timeout_s` → `kill_container` + `reset_gpu`
-(gr171381), which already frees the card and confirms it, rather than a bare
-lease timeout.
+**Honest caveat:** a single seed still runs MACE in-process, so it *can* still
+wedge — but at a third the exposure, with partial progress saved and retry
+resuming. Fully isolating the in-process run (container/subprocess) is separate,
+deferred work; per-seed chunking is the immediate, sufficient win for the wedge.
+
+If a seed is still too coarse, autocatpath also exposes finer phases
+(`run_states` = relax-only, `run_barriers` = the NEBs) — but per-seed is the
+CLI-blessed place to start.
+
+## The one residual truth
+
+A **big** interactive request (needs most of the card) still can't start until
+the current background chunk ends or is killed — its latency floor is the
+coarsest background chunk. Reserve mode covers the "I planned to use it" case
+without any chunking; the kill backstop covers "now, don't wait." A **small**
+request that co-fits just runs alongside. So we do *not* need fine
+chunking-for-responsiveness — only chunking-for-the-wedge, which per-seed gives.
 
 ## Phasing (small chunks; each ships value)
 
-1. **Decompose `autocatpath_explore` into short checkpointed units** via the
-   coordinator/yield seam (per elementary step / per seed). Fixes spark (no
-   90-min in-process blob; a kill loses one step) **and** confirms the root
-   cause: if decomposed units complete reliably, over-scoping was the cause.
-2. **Add a priority class + priority-ordered claim** to GPU jobs. Interactive
-   claims sort ahead; the human gets the next slot within one short unit.
-3. **Hard-kill backstop** for a unit that won't yield by its boundary
-   (`kill_container` + `reset_gpu`), so the bounded wait is guaranteed.
+1. **Per-seed job tree for catpath.** `dispatch_autocatpath` mints seed jobs +
+   an aggregate wired via `auto_check` `child_job_succeeded`, invoking
+   autocatpath's existing `seed` / `aggregate`. **Fixes the spark wedge.** Also
+   the root-cause confirmation: if per-seed jobs complete reliably, the cause was
+   the over-scoped monolith, not ambient GPU contention.
+2. **Human-first `PRIO:` on GPU jobs** — human-triggered work sorts ahead of
+   background in the claim.
+3. **Reserve mode + night `meta.schedule`** — the coarse "the box is mine for a
+   few hours" lever + heavy background off-hours.
+4. **Kill backstop** — force-kill + GPU-reclaim for the "now" case and for a
+   chunk that won't finish.
 
-Later, only if Phase 1 shows contention *persists* after decomposition:
-per-`(host,gpu)` exclusive leases (reuse `reserve/release_resource_slots`) so
-two heavy background units can't overlap. This is the smallest step toward the
-broker and is *not* assumed necessary.
+## Explicitly NOT in scope
 
-## Explicitly NOT in scope (demoted; see Appendix)
-
-- An accounted single queue for *all* GPU consumers incl. the embedder.
-- Memory-aware bin-packing / co-scheduling as a general solver.
-- Multi-node aggregate/disaggregate topology fusion.
-- Converting non-GPU passes (nursery, sweeper, review) to scheduled todos.
-- Making the embedder evictable / bursting the corpus-embed backlog.
-
-Each waits until interactive priority proves out *and* contention is confirmed.
+- Cooperative-yield handoff, multi-class priority, fairness accounting,
+  bounded-hold decay — all moot with a single user (see above).
+- An accounted queue for *all* GPU consumers incl. the embedder; memory-aware
+  bin-packing; multi-node topology fusion; converting non-GPU passes to
+  schedules; making the embedder evictable. Deferred to the appendix, gated on
+  Phase 1 showing contention persists after chunking.
 
 ## Acceptance criteria
 
-- A decomposed `autocatpath_explore` run completes on spark without wedging the
-  worker; a killed unit loses only that unit (checkpoint proven), and the
-  worker stays SIGTERM-responsive throughout.
-- With background GPU work running, an `interactive` GPU job acquires a slot
-  within **one background unit's duration** (measured; the target sets the
-  required unit granularity).
-- A background unit that ignores its yield boundary is force-killed and the GPU
-  memory is confirmed freed (injected-hang drill), so the interactive job is
-  not starved.
-- The scheduler contains no catpath-specific logic — decomposition rides the
-  generic resumable-job/coordinator contract.
+- `dispatch_autocatpath` mints a seed-per-job + aggregate tree; the aggregate
+  runs only after all seed jobs succeed (via `auto_check`), and yields the same
+  scalar barrier the quest harvests today.
+- A killed seed job loses only that seed; a retry skips completed seeds
+  (content-addressed) and the run converges — the worker stays SIGTERM-responsive
+  and spark stops wedging on the monolith.
+- A human-`PRIO:` GPU job is claimed ahead of queued background GPU work.
+- Reserve mode stops new heavy background dispatch within one claim cycle; the
+  in-flight job finishes and no new background GPU job starts until released.
+- The kill backstop frees and confirms the GPU (injected-hang drill).
 
 ## Target + blast radius
 
-- `workers/job_types/` + `quest/compute.py::dispatch_autocatpath` — mint
-  per-unit work instead of one whole-network job; the `autocatpath` package's
-  unit interface (external dependency — see Open questions).
-- `workers/executors/_yield.py` + the ssh_node/coordinator claim path —
-  priority-ordered claim; the generic resumable-job contract.
+- `src/precis/quest/compute.py::dispatch_autocatpath` — mint the seed/aggregate
+  tree instead of one job; `harvest_measures` reads the aggregate's scalar.
+- The `autocatpath_explore` **plugin dispatch** (location TBD — not in precis
+  `job_types/` nor obviously in catpath; see Open questions) — teach it the
+  `seed=` / `aggregate` mode, or split into `autocatpath_seed` /
+  `autocatpath_aggregate` job_types.
+- `auto_check` wiring (`workers/auto_check_evaluators/child_job_succeeded.py`) —
+  reused as-is.
+- Claim path (`workers/executors/ssh_node.py`) — honour `PRIO:` for GPU jobs;
+  reserve-mode dispatch gate.
 - Reuse `struct_relax`'s `kill_container` + `reset_gpu` for the backstop.
-- `registry.py` — a priority axis on GPU job specs.
 
 ## Open questions / decisions log
 
-- **autocatpath unit interface.** Does the external package already expose
-  per-step / per-seed execution + checkpoint, or does that land there first?
-  Phase 1 depends on it. (This is the coupling seam — keep it generic.)
-- **Foreground latency target.** The acceptable "next slot" wait sets the
-  required background-unit granularity (seconds vs a minute or two). Decide the
-  target; it drives how finely catpath must decompose.
-- **Priority representation.** Reuse the todo tree's `PRIO:` axis for GPU job
-  claims, or a dedicated field? Prefer reuse.
-- **Interactive hold cap.** The max stretch before interactive decays to
-  normal — pick a value that feels responsive without starving background.
+- **Where is the `autocatpath_explore` plugin dispatch?** Not in precis
+  `job_types/` nor obviously in the catpath package; find it and confirm whether
+  it shells to the autocatpath **CLI** (subprocess — trivial to add `--seed`) or
+  imports `run()`. Decides whether Phase 1 is `dispatch_autocatpath`-only or also
+  the plugin. (Pin before building.)
+- **Reserve-mode representation** — a `service_config`/app-state flag the
+  dispatch gate reads, with a TTL so a forgotten reserve auto-expires.
+- **`PRIO:` reuse** — confirm the todo `PRIO:` axis threads to job claim order
+  for GPU jobs (vs a dedicated field).
+- **Seed granularity sufficiency** — if per-seed (~minutes) still wedges under
+  load, drop to `run_states` / `run_barriers` phases.
 
 ## Appendix — the broker vision (deferred, gated on Phase 1)
 
-If Phase 1 shows genuine contention remains after decomposition, escalate
-toward: exclusive per-GPU leases → an accounted queue including resident models
-(embedder/LLMs as evictable, declared leases) → coarse topology modes for
-multi-node model fusion (pull-based, hysteretic switch). The turn-taking law
+If per-seed chunking *doesn't* stop the wedge — i.e. genuine ambient contention
+remains — escalate toward: exclusive per-`(host,gpu)` leases
+(reuse `reserve/release_resource_slots`) → an accounted queue including resident
+models (embedder/LLMs as evictable declared leases) → coarse multi-node topology
+modes for big-model fusion (pull-based, hysteretic switch). The turn-taking law
 ("hold a bounded stretch, yield under pressure, stay warm if idle") and the
 slurm line (no bin-packing / fair-share / gang / mid-kernel preemption) carry
-forward. But none of it is assumed until the small version proves insufficient.
+forward. None of it is assumed until the small version proves insufficient.
