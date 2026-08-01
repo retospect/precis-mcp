@@ -9,6 +9,18 @@ items are removed (history is `git log`).
 
 ---
 
+## 🔧 taproot backfill — silent drop of unresolvable [pc] handle on promote-collapse
+
+Status: open · Severity: polish · Owner: `src/precis/taproot/backfill.py` · Test: n/a (pre-existing gap; design call on skip-vs-warn needed before regression test).
+
+- In `_plan_group`, each handle in a contiguous cite run is resolved independently; those raising `BadInput` (dangling ref_id / deleted paper / non-paper kind) are dropped, skipping the whole group only when ALL handles fail.
+- For a `[pc]` run like `[pc1][pc_bad]` where pc1 resolves and pc_bad does not: `apply_chunk` collapses the run's span to a single `[fi<hub>]` (intended multi-passage→one-hub promote), silently dropping pc_bad's token with no signal.
+- **Why lower severity than [pa] arm:** unlike [pa] re-ground (which shipped with an all-or-nothing resolution guard in slice 2), the [pc] path's collapse-to-one-hub is the *intended* promote semantics, and pc_bad is unresolvable so no citeable evidence is lost — but the user's cite intent to pc_bad vanishes with no warning.
+- **Possible fix:** extend the [pa] arm's `len(supporters) < len(group.handles)` skip-with-note guard to the [pc] path too, or at least emit a note listing dropped handles rather than silently collapsing. Needs a design call (skip-vs-warn) since it changes established [pc] backfill behavior (which has its own test suite).
+- **Reference:** found in reviewer pass on commit `6fd7a004`.
+
+---
+
 ## Residuals (2026-07-31 — draft table-editing ship b9bc1d4c)
 
 - **Structured enrichment for rich tables** · Status: deferred · Severity:
