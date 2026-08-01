@@ -30,7 +30,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from precis.errors import BadInput
-from precis.utils.tex_hardening import hardened_latex_env
+from precis.utils.tex_hardening import (
+    hardened_latex_env,
+    latexmk_argv,
+    trusted_latexmkrc,
+)
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -86,13 +90,6 @@ def check_workspace_compiles(
     # handles. This guard only checks that an on-disk tex workspace
     # compiles.
     timeout_s = int(os.environ.get("PRECIS_LATEXMK_TIMEOUT_S", "120"))
-    cmd = [
-        "latexmk",
-        "-pdf",
-        "-interaction=nonstopmode",
-        "-halt-on-error",
-        workspace.entrypoint,
-    ]
     log.info(
         "compile_guard: running latexmk for ref #%d in %s (timeout=%ds)",
         ref_id,
@@ -100,18 +97,22 @@ def check_workspace_compiles(
         timeout_s,
     )
     try:
-        proc = subprocess.run(
-            cmd,
-            cwd=ws_root,
-            # Disable engine shell-escape: the workspace is agent-authored, so
-            # ``\write18`` in its tex is an out-of-band RCE channel outside the
-            # agent's tool boundary. Zero-regression — see tex_hardening.
-            env=hardened_latex_env(),
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-            check=False,
-        )
+        with trusted_latexmkrc() as trusted_rc:
+            proc = subprocess.run(
+                # ``-norc -r <trusted_rc>``: never read the agent's workspace
+                # ``.latexmkrc`` (arbitrary Perl = RCE) — only the packaged rc
+                # (gr178973). ``-pdf`` still wins the engine choice.
+                latexmk_argv("latexmk", "-pdf", workspace.entrypoint, trusted_rc),
+                cwd=ws_root,
+                # Disable engine shell-escape: the workspace is agent-authored,
+                # so ``\write18`` in its tex is an out-of-band RCE channel
+                # outside the agent's tool boundary. See tex_hardening.
+                env=hardened_latex_env(),
+                capture_output=True,
+                text=True,
+                timeout=timeout_s,
+                check=False,
+            )
     except subprocess.TimeoutExpired:
         raise BadInput(
             f"STATUS:done blocked on todo id={ref_id}: latexmk timeout "

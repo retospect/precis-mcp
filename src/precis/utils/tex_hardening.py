@@ -23,24 +23,42 @@ kpathsea reads ``shell_escape`` from the environment, overriding whatever the
 host ``texmf.cnf`` defaults to (a dev box may ship it enabled) — so this pins
 the safe value regardless of host config.
 
-Residual NOT closed here (tracked as a separate design item): a workspace
-``.latexmkrc`` is itself arbitrary Perl and reading it is a *relied-upon*
-feature (the shipped draft rc sets ``$pdf_mode=4`` + the makeglossaries
-cus-dep), so a malicious workspace ``.latexmkrc`` — or the paranoid
-``openin_any``/``openout_any`` file-scoping knobs, which risk breaking
-lualatex's font-cache writes to an absolute ``TEXMFVAR`` — need a deliberate
-decision (allowlist rc directives, or compile inside the §13 container),
-not a drive-by env tweak.
+The second RCE channel — a workspace ``.latexmkrc`` is itself arbitrary Perl,
+and latexmk auto-reads ``./.latexmkrc`` from its ``cwd`` (the agent-assembled
+workspace) — is closed by :func:`latexmk_argv` + :func:`trusted_latexmkrc`
+(gr178973): every compile runs ``latexmk -norc -r <packaged-rc>`` so the
+engine reads *only* the packaged, trusted rc (which supplies the same
+``$pdf_mode=4`` + makeglossaries cus-dep the workspace copy did) and never the
+agent's ``.latexmkrc``. ``-norc`` also drops the host's user/system rc — no
+loss, the workspace copy was the only relied-upon one.
+
+Still deferred (needs a real-compile check, not shipped here): the paranoid
+``openin_any``/``openout_any=p`` file-scoping knobs would block
+``\input{/etc/passwd}``-style exfil-to-PDF and dotfile writes, but risk
+breaking lualatex's font-cache writes to an absolute ``TEXMFVAR`` — so they
+need a live lualatex+glossary compile check before enabling.
 """
 
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
+from importlib import resources
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 #: kpathsea shell-escape knob. ``f`` = fully disabled (not even the restricted
 #: whitelist). See the module docstring for why fully-off is regression-free
 #: for the draft pipeline.
 _HARDENING: dict[str, str] = {"shell_escape": "f"}
+
+#: The packaged, trusted latexmkrc — the SSOT the workspace copy is written
+#: from (``precis.export.latex``). Read via ``-r`` so a compile never depends
+#: on (or trusts) the agent's workspace ``.latexmkrc``.
+_TRUSTED_RC_PKG = "precis.data.templates.draft"
+_TRUSTED_RC_NAME = "latexmkrc"
 
 
 def hardened_latex_env(base: dict[str, str] | None = None) -> dict[str, str]:
@@ -53,4 +71,44 @@ def hardened_latex_env(base: dict[str, str] | None = None) -> dict[str, str]:
     return env
 
 
-__all__ = ["hardened_latex_env"]
+@contextmanager
+def trusted_latexmkrc() -> Iterator[str]:
+    """Yield a filesystem path to the packaged, trusted ``latexmkrc``.
+
+    For ``latexmk -norc -r <path>`` so the agent-authored workspace
+    ``.latexmkrc`` (arbitrary Perl = RCE) is never read — only this
+    packaged rc, which supplies the ``$pdf_mode=4`` + makeglossaries cus-dep
+    the pipeline relies on (gr178973). Uses :func:`importlib.resources.as_file`
+    so the path is valid even when precis is installed from a wheel/zip; keep
+    the ``latexmk`` subprocess inside the ``with`` block.
+    """
+    src = resources.files(_TRUSTED_RC_PKG).joinpath(_TRUSTED_RC_NAME)
+    with resources.as_file(src) as path:
+        yield str(path)
+
+
+def latexmk_argv(
+    binary: str, engine_flag: str, entrypoint: str, trusted_rc: str
+) -> list[str]:
+    """Build the ``latexmk`` argv with the trusted-rc injection (gr178973).
+
+    ``-norc`` disables latexmk's automatic reading of the system / user /
+    ``cwd`` rc files (the ``cwd`` one being the agent's workspace
+    ``.latexmkrc``); ``-r <trusted_rc>`` then reads only the packaged rc.
+    Both come *before* ``engine_flag`` so a command-line engine choice
+    (``-pdf`` for the guard, ``-lualatex`` for export) still wins over the
+    rc's ``$pdf_mode``. ``entrypoint`` is last (the IMAGE-of-tex positional).
+    """
+    return [
+        binary,
+        "-norc",
+        "-r",
+        trusted_rc,
+        engine_flag,
+        "-interaction=nonstopmode",
+        "-halt-on-error",
+        entrypoint,
+    ]
+
+
+__all__ = ["hardened_latex_env", "latexmk_argv", "trusted_latexmkrc"]

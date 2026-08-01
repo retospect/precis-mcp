@@ -435,6 +435,8 @@ class TestBackendFlipGate:
         from precis.utils.llm.router import Backend
 
         monkeypatch.setattr(fix_gripe, "resolve_backend", lambda: Backend.ANTHROPIC)
+        # Ack the unsandboxed-agent gate (gr179498) so we reach store.get_ref.
+        monkeypatch.setenv("PRECIS_FIX_GRIPE_UNSANDBOXED_ACK", "1")
 
         class _FakeStore:
             def get_ref(self, **_kw: object) -> None:
@@ -447,6 +449,54 @@ class TestBackendFlipGate:
 
         with pytest.raises(RuntimeError, match="gripe id=42 not found"):
             fix_gripe.run(store=_FakeStore(), job_id=1, gripe_id=42, config=self._cfg())
+
+
+class TestUnsandboxedAckGate:
+    """gr179498: fix_gripe is fail-closed — it won't run its full-privilege
+    unsandboxed agent on verbatim gripe text unless an operator explicitly
+    acks the risk, so enabling backlog_groom alone can't unleash it."""
+
+    @staticmethod
+    def _cfg() -> FixGripeConfig:
+        return FixGripeConfig(
+            default_repo_dir=Path("/tmp/precis-mcp"),
+            work_dir=Path("/tmp/precis-fix-work"),
+            claude_bin="claude",
+            claude_model="claude-opus-4-8",
+            timeout_seconds=1800,
+        )
+
+    def test_skips_when_ack_absent_without_touching_store_or_subprocess(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from precis.utils.llm.router import Backend
+
+        monkeypatch.setattr(fix_gripe, "resolve_backend", lambda: Backend.ANTHROPIC)
+        monkeypatch.delenv("PRECIS_FIX_GRIPE_UNSANDBOXED_ACK", raising=False)
+
+        class _BoomStore:
+            def get_ref(self, **_kw: object) -> object:
+                raise AssertionError("fail-closed gate did not skip before store")
+
+        spawn_calls: list[object] = []
+        monkeypatch.setattr(
+            fix_gripe, "_spawn_claude", lambda *a, **kw: spawn_calls.append((a, kw))
+        )
+
+        outcome = fix_gripe.run(
+            store=_BoomStore(), job_id=1, gripe_id=42, config=self._cfg()
+        )
+        assert outcome.status == "skipped"
+        assert "gr179498" in outcome.summary_text
+        assert spawn_calls == []
+
+    def test_spawn_claude_raises_without_ack(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Defense in depth: even a direct _spawn_claude call is refused.
+        monkeypatch.delenv("PRECIS_FIX_GRIPE_UNSANDBOXED_ACK", raising=False)
+        with pytest.raises(RuntimeError, match="refusing to spawn"):
+            fix_gripe._spawn_claude(self._cfg(), Path("/tmp/x"), "prompt")
 
 
 # ── job_types registry: lookup paths ───────────────────────────────

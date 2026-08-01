@@ -245,6 +245,32 @@ class RunOutcome:
     wall_seconds: float
 
 
+#: Operator ack for running fix_gripe's full-privilege agent WITHOUT the
+#: §13 container isolation (gr179498). Fail-closed by default.
+_UNSANDBOXED_ACK_ENV = "PRECIS_FIX_GRIPE_UNSANDBOXED_ACK"
+
+
+def _unsandboxed_ack() -> bool:
+    """Whether an operator has explicitly accepted running fix_gripe's
+    full-privilege agent unsandboxed (gr179498).
+
+    fix_gripe spawns ``claude -p --dangerously-skip-permissions`` (full
+    Bash/Edit/Write, open egress) on VERBATIM gripe text — filable by any
+    MCP client with ``put``. Until that agent runs inside the §13 container
+    (gr179498, tracked), the path is **fail-closed**: it runs only when
+    ``PRECIS_FIX_GRIPE_UNSANDBOXED_ACK`` is truthy, so enabling
+    ``backlog_groom`` alone (which auto-promotes every open gripe into a
+    fix_gripe job) can't unleash a full-privilege run on attacker-shaped
+    text without a second, conscious operator opt-in.
+    """
+    return os.environ.get(_UNSANDBOXED_ACK_ENV, "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
 def run(
     *,
     store: Any,
@@ -294,6 +320,43 @@ def run(
                 "llm.backend=openai is not supported by fix_gripe (raw "
                 "`claude -p` subprocess). Will need a re-attempt once the "
                 "backend is anthropic again."
+            ),
+            branch=None,
+            sha=None,
+            wall_seconds=wall,
+        )
+
+    # Fail-closed safety catch (gr179498): this spawns a full-privilege
+    # ``claude -p --dangerously-skip-permissions`` agent on VERBATIM
+    # (agent-filable) gripe text with no container isolation. Until that runs
+    # in the §13 container, refuse unless an operator has explicitly acked the
+    # risk — so turning on ``backlog_groom`` alone can't feed attacker-shaped
+    # gripe text into a full-privilege run. Skip clean (gripe stays open).
+    if not _unsandboxed_ack():
+        wall = time.perf_counter() - t0
+        log.warning(
+            "fix_gripe: refusing gripe:%d — full-privilege unsandboxed agent "
+            "(gr179498); fail-closed. Set %s=1 to run anyway, or wait for the "
+            "§13 containerization.",
+            gripe_id,
+            _UNSANDBOXED_ACK_ENV,
+        )
+        return RunOutcome(
+            status="skipped",
+            summary_text=(
+                f"fix_gripe job:{job_id} for gripe:{gripe_id} skipped: the fix "
+                "spawns a full-privilege `claude -p --dangerously-skip-"
+                "permissions` agent on verbatim (agent-filable) gripe text "
+                "without container isolation (gr179498). Fail-closed pending "
+                f"the §13 containerization — set {_UNSANDBOXED_ACK_ENV}=1 to "
+                "run it anyway (accepting the risk on a trusted-operator "
+                "deployment)."
+            ),
+            gripe_comment_text=(
+                f"[worker:job:{job_id}] fix attempt skipped: fix_gripe is "
+                f"fail-closed ({_UNSANDBOXED_ACK_ENV} unset) — it would run a "
+                "full-privilege unsandboxed agent on this gripe's verbatim "
+                "text (gr179498). No action taken."
             ),
             branch=None,
             sha=None,
@@ -456,6 +519,14 @@ def _spawn_claude(
     only auto-discovery is stripped, which is exactly what we want
     for a deterministic worker.
     """
+    # Defense in depth (gr179498): run() is fail-closed on the same ack, but
+    # guard the actual spawn too so a future direct caller can't bypass it.
+    if not _unsandboxed_ack():
+        raise RuntimeError(
+            "fix_gripe._spawn_claude: refusing to spawn a full-privilege "
+            f"unsandboxed `claude -p` — {_UNSANDBOXED_ACK_ENV} is not set "
+            "(gr179498). run() should have skipped this fail-closed."
+        )
     env = _restricted_env(cwd)
     if "ANTHROPIC_API_KEY" not in env:
         raise RuntimeError(

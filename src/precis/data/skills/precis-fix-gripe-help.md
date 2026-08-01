@@ -214,6 +214,14 @@ Deployment requirements:
 - `~/.claude` bind-mounted (rw) so claude's session tokens can
   refresh.
 - Precis image includes the `claude` binary.
+- **`PRECIS_FIX_GRIPE_UNSANDBOXED_ACK=1`** — REQUIRED. fix_gripe is
+  **fail-closed** (gr179498): it runs a full-privilege
+  `--dangerously-skip-permissions` agent on verbatim (agent-filable)
+  gripe text with no container isolation, so it refuses to spawn
+  unless an operator explicitly acks the risk here. Without it a
+  submitted job (or a `backlog_groom` auto-promotion) skips clean and
+  the gripe stays open. Set it only on a trusted-operator deployment;
+  the proper fix is the §13 containerization (tracked under gr179498).
 
 With those set, `precis worker` picks `job_claude_inproc` up
 automatically. To run only this one runner:
@@ -232,9 +240,14 @@ rejects pushes to any branch not matching `gripe_*`, so claude
 can't push over `main`.
 
 This is **not** a hard sandbox — it's a trust boundary that
-matches the rest of the precis trust model. If the threat
-profile changes, swap in a per-job docker container (planned
-under the future `claude_docker` executor).
+matches the rest of the precis trust model. Because the prompt
+embeds verbatim, agent-filable gripe text, the path is
+**fail-closed** behind `PRECIS_FIX_GRIPE_UNSANDBOXED_ACK`
+(gr179498): the full-privilege agent won't spawn without an
+explicit operator ack, so enabling `backlog_groom` alone can't
+feed attacker-shaped text into a `--dangerously-skip-permissions`
+run. The proper fix — running the agent inside the §13 container
+(network/DB-isolated) — is tracked under gr179498.
 
 ## What if I submit two fix_gripe jobs at once?
 

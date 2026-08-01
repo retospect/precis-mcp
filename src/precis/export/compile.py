@@ -38,7 +38,11 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from precis.utils.tex_hardening import hardened_latex_env
+from precis.utils.tex_hardening import (
+    hardened_latex_env,
+    latexmk_argv,
+    trusted_latexmkrc,
+)
 
 log = logging.getLogger(__name__)
 
@@ -99,34 +103,34 @@ def compile_pdf(
         )
     if timeout_s is None:
         timeout_s = int(os.environ.get("PRECIS_LATEXMK_TIMEOUT_S", "120"))
-    cmd = [
-        _latexmk_bin(),
-        # lualatex (not pdflatex): UTF-8 native, so arbitrary scientific
-        # Unicode the encoder couldn't map degrades to a recoverable
-        # missing-glyph warning instead of a fatal inputenc error. The
-        # draft latexmkrc also sets $pdf_mode=4; this flag makes the
-        # engine explicit regardless of the rc.
-        "-lualatex",
-        "-interaction=nonstopmode",
-        "-halt-on-error",
-        entrypoint,
-    ]
-    log.info(
-        "compile_pdf: %s in %s (timeout=%ds)", " ".join(cmd), project_dir, timeout_s
-    )
     try:
-        proc = subprocess.run(
-            cmd,
-            cwd=project_dir,
-            # Disable engine shell-escape on this agent-authored project — same
-            # out-of-band ``\write18`` RCE channel as compile_guard. See
-            # tex_hardening; zero-regression for the draft pipeline.
-            env=hardened_latex_env(),
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-            check=False,
-        )
+        with trusted_latexmkrc() as trusted_rc:
+            # lualatex (not pdflatex): UTF-8 native, so arbitrary scientific
+            # Unicode the encoder couldn't map degrades to a recoverable
+            # missing-glyph warning instead of a fatal inputenc error (``-pdf``
+            # would be pdflatex). ``-norc -r <trusted_rc>`` reads only the
+            # packaged rc — never the agent's workspace ``.latexmkrc`` (arbitrary
+            # Perl = RCE) — while still supplying $pdf_mode=4 + makeglossaries
+            # (gr178973); the explicit ``-lualatex`` still wins the engine.
+            cmd = latexmk_argv(_latexmk_bin(), "-lualatex", entrypoint, trusted_rc)
+            log.info(
+                "compile_pdf: %s in %s (timeout=%ds)",
+                " ".join(cmd),
+                project_dir,
+                timeout_s,
+            )
+            proc = subprocess.run(
+                cmd,
+                cwd=project_dir,
+                # Disable engine shell-escape on this agent-authored project —
+                # same out-of-band ``\write18`` RCE channel as compile_guard.
+                # See tex_hardening; zero-regression for the draft pipeline.
+                env=hardened_latex_env(),
+                capture_output=True,
+                text=True,
+                timeout=timeout_s,
+                check=False,
+            )
     except subprocess.TimeoutExpired:
         return CompileResult(
             ok=False,

@@ -1726,7 +1726,13 @@ The master kinds table lives in the `precis-overview` skill.
   cgroup-capped, poll-reaped container on an `agent_sandbox_host` — slice 1
   is the stub-podman substrate (mint→claim→launch→poll→terminal, `mode:build`
   only; harvest is slice 2). See `docs/design/sandbox-run.md`. Skill:
-  `precis-job-help`.
+  `precis-job-help`. **fix_gripe is fail-closed (gr179498):** it spawns a
+  full-privilege `--dangerously-skip-permissions` agent on verbatim
+  (agent-filable) gripe text with no container isolation, so it refuses to
+  spawn unless `PRECIS_FIX_GRIPE_UNSANDBOXED_ACK=1` — enabling `backlog_groom`
+  alone can't unleash it. Proper fix (§13 containerization) tracked under
+  gr179498; needs mount support in `agent_container.build_agent_run_argv`
+  (also the gr178973 dependency).
 - **`structure`** — atomistic cell+bond IR (ADR 0043); typed ops + in-memory
   probes, relax on the GPU node (derived-lane job, ADR 0044), cursors/measures
   on `struct_measures`, web `/structure` (3Dmol viewer: zoom + look-inside
@@ -1908,6 +1914,14 @@ The master kinds table lives in the `precis-overview` skill.
   each hop rewrites the outbound request to the checked IP literal (`Host` +
   `sni_hostname` preserved), so httpcore does no second connect-time lookup —
   closing the DNS-rebinding TOCTOU. Direct tests in `tests/test_safe_fetch.py`.
+- **LaTeX compile hardening** — `src/precis/utils/tex_hardening.py`; both compile
+  paths (`compile_guard`, `export/compile`) run over agent-authored workspaces.
+  `hardened_latex_env` pins `shell_escape=f` (closes `\write18` RCE). `latexmk_argv`
+  + `trusted_latexmkrc` run `latexmk -norc -r <packaged-rc>` (gr178973) so the
+  agent's workspace `.latexmkrc` (arbitrary Perl = RCE) is never read — only the
+  trusted packaged rc (which still supplies `$pdf_mode=4` + the makeglossaries
+  cus-dep). Deferred: `openin_any`/`openout_any=p` (needs a live lualatex+glossary
+  compile check — may break the font cache).
 - **Ingest hygiene** — pysbd sentence splitter in the chunker fallback chain;
   dehyphenation in `marker._clean_text`; HNSW index on `chunk_embeddings.vector`.
 - **`asa-slack`** — Slack bridge sibling to `asa_bot` (`src/asa_slack/`), Socket
