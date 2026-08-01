@@ -13,11 +13,14 @@ Two citation forms are backfilled, from the two grammars in the draft prose:
     edge would be ungroundable, and citing an unread paper as evidence is
     never minted. Routes via fetch, then re-ground.
   - **fetched** (>0 blocks) — the honest grounding is a specific passage, so
-    the *default* is to leave it for a ``[pa]``→``[pc]`` re-ground (deferred to
-    the arm's slice 2). Only under an explicit ``ref_level=True`` override does
-    a fetched ``[pa]`` promote **ref-level** (whole-paper, ``ungrounded`` per
-    ``seed_claim_hub``'s counter) and rewrite ``[pa]`` → ``[fi<hub>]`` — for
-    whole-paper claims with no single grounding passage.
+    the *default* is a ``[pa]``→``[pc]`` **re-ground**: a ``LocateFn`` (lexical
+    pick + Tier.MEDIUM confirm, the arm's one LLM call) picks the supporting
+    passage and the ``[pa<id>]`` run rewrites to ``[pc<chunk>]``, which the
+    existing ``[pc]`` path then promotes (two-step). Only under an explicit
+    ``ref_level=True`` override does a fetched ``[pa]`` instead promote
+    **ref-level** (whole-paper, ``ungrounded`` per ``seed_claim_hub``'s counter)
+    and rewrite ``[pa]`` → ``[fi<hub>]`` — for whole-paper claims with no single
+    grounding passage.
 
 Motivation. Most claims in the corpus were first written with raw
 ``[pc<id>]`` / ``[pa<id>]`` paper citations, before taproot claim hubs existed.
@@ -147,8 +150,13 @@ class GroupPlan:
     #: ``"unresolved"`` — a handle didn't resolve to a paper (skipped);
     #: ``"stub-fetch-first"`` — a ``[pa]`` cite to an un-fetched stub (0 blocks),
     #: skipped pending fetch (no write, prose left as ``[pa]``);
-    #: ``"reground-needed"`` — a fetched ``[pa]`` in the default mode, left for a
-    #: ``[pa]``→``[pc]`` re-ground (no write) unless ``ref_level`` is set;
+    #: ``"reground"`` — a fetched ``[pa]`` (default mode) whose passage was
+    #: located: on apply, rewrites ``[pa]``→``[pc<chunk>]`` (see
+    #: :attr:`reground_targets`), no hub minted — a cite refinement the existing
+    #: ``[pc]`` path then promotes;
+    #: ``"reground-nomatch"`` — a fetched ``[pa]`` for which the locate found no
+    #: supporting passage (no write, prose left ``[pa]``; re-ground by hand or
+    #: ``--ref-level`` to promote whole-paper);
     #: ``"error"`` — a write failed for this group (isolated; batch continues);
     #: else the cascade action: ``"attach"`` / ``"new"`` /
     #: ``"new_contradicts"`` / ``"needs_review"``.
@@ -166,6 +174,10 @@ class GroupPlan:
     #: True for a fetched-``[pa]`` ref-level promote — the evidence edge cites
     #: the whole paper (no grounding passage), so it lands ``ungrounded``.
     ungrounded: bool = False
+    #: For a ``"reground"`` action: the located chunk_id per supporter (run
+    #: order), so :func:`apply_chunk` rewrites the ``[pa…]`` run to the matching
+    #: ``[pc<chunk>]`` sequence. Empty for every other action.
+    reground_targets: list[int] = field(default_factory=list)
     note: str = ""
 
 
@@ -201,7 +213,57 @@ BlockFn = Callable[[CanonicalClaim, Any, Any], list[Candidate]]
 JudgeFn = Callable[[str, str], Verdict]
 MergeConfirmFn = Callable[[str, str], Verdict]
 
+#: Suggest the grounding passage for a ``[pa]``→``[pc]`` re-ground: given the
+#: claim span and the cited paper's body chunks ``(chunk_id, ord, text)``,
+#: return the chosen chunk (same tuple) or ``None`` when no passage supports the
+#: span. Injected so tests run with a deterministic fake and no LLM/embedder
+#: (the default reuses chase's lexical pick + Tier.MEDIUM ``_locate_chunk_in_target``
+#: confirm — the arm's one LLM call, on the write/dry-run path only).
+LocateFn = Callable[[str, list[tuple[int, int, str]]], tuple[int, int, str] | None]
+
 _MERGE_CONFIRM_DEFAULT = merge_confirm
+
+_TOKEN_RE = re.compile(r"\w+")
+
+
+def _default_locate(
+    span: str, chunks: list[tuple[int, int, str]]
+) -> tuple[int, int, str] | None:
+    """Default grounding-chunk locate: deterministic unigram-overlap pick over
+    the paper's chunks, confirmed/corrected by the Tier.MEDIUM
+    :func:`precis.workers._chase_llm._locate_chunk_in_target` — mirroring
+    :func:`precis.workers.chase._select_target_chunk`'s selection. Returns the
+    chosen ``(chunk_id, ord, text)``, or ``None`` when the span has no signal or
+    the LLM finds no supporting passage (→ ``reground-nomatch``, no rewrite)."""
+    if not chunks:
+        return None
+    tokens = {w.lower() for w in _TOKEN_RE.findall(span) if len(w) > 2}
+    if not tokens:
+        return None  # empty/too-short span: nothing to ground against, don't guess
+
+    def _overlap(text: str) -> int:
+        return len(tokens & {w.lower() for w in _TOKEN_RE.findall(text) if len(w) > 2})
+
+    from precis.workers._chase_llm import _locate_chunk_in_target
+
+    best = max(chunks, key=lambda c: _overlap(c[2]))
+    return _locate_chunk_in_target(
+        claim=span,
+        proposed=best,
+        alternates=[c for c in chunks if c[0] != best[0]][:3],
+    )
+
+
+def _read_paper_chunks(store: Any, ref_id: int) -> list[tuple[int, int, str]]:
+    """Live body chunks ``(chunk_id, ord, text)`` of a paper ref, ord order.
+    Read-only; the candidate pool a re-ground's :data:`LocateFn` picks from."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT chunk_id, ord, text FROM chunks "
+            "WHERE ref_id = %s AND ord >= 0 AND retired_at IS NULL ORDER BY ord",
+            (ref_id,),
+        ).fetchall()
+    return [(int(cid), int(ordv), str(txt)) for cid, ordv, txt in rows]
 
 
 # ── segmentation ─────────────────────────────────────────────────────────
@@ -361,6 +423,48 @@ def _run_cascade(
     )
 
 
+def _plan_reground(
+    store: Any,
+    group: CiteGroup,
+    fetched: list[tuple[str, int]],
+    *,
+    locate_fn: LocateFn,
+) -> GroupPlan:
+    """The default fetched-``[pa]`` action: re-ground each cited paper to its
+    best supporting passage, so the ``[pa<id>]`` run rewrites to a
+    ``[pc<chunk>]`` run (which the existing ``[pc]`` path then promotes).
+
+    **All-or-nothing per contiguous run.** Each supporter locates its own chunk;
+    if :data:`locate_fn` returns ``None`` for *any* supporter, the whole run is
+    left as ``reground-nomatch`` with **no write** — a partial rewrite would
+    collapse the run's span and erase the un-located supporter's token (draft
+    chunks are append-only), the same guard as the slice-1 mixed-run rule.
+    """
+    targets: list[int] = []
+    for _handle, paper_ref_id in fetched:
+        chunks = _read_paper_chunks(store, paper_ref_id)
+        chosen = locate_fn(group.span_text, chunks) if chunks else None
+        if chosen is None:
+            return GroupPlan(
+                group=group,
+                action="reground-nomatch",
+                supporters=fetched,
+                note=(
+                    "no passage located to ground this [pa] — re-ground by hand "
+                    "or re-run with --ref-level to promote whole-paper (ungrounded)"
+                ),
+            )
+        targets.append(chosen[0])  # chunk_id
+    return GroupPlan(
+        group=group,
+        action="reground",
+        supporters=fetched,
+        reground_targets=targets,
+        note="re-ground [pa]→[pc] at located passage(s): "
+        + "".join(f"[pc{cid}]" for cid in targets),
+    )
+
+
 def _plan_pa_group(
     store: Any,
     embedder: Any,
@@ -372,6 +476,7 @@ def _plan_pa_group(
     block_fn: BlockFn,
     judge_fn: JudgeFn,
     merge_confirm_fn: MergeConfirmFn,
+    locate_fn: LocateFn,
 ) -> GroupPlan:
     """Route a whole-paper ``[pa]`` cite-group by its cited paper(s)' state.
 
@@ -384,9 +489,9 @@ def _plan_pa_group(
       so promoting only the fetched supporters would silently **erase** the
       stub's token (draft chunks are append-only — irreversible). Fetch the
       stub(s) first; then the whole run is cleanly promotable/re-groundable.
-    * **All fetched, default mode** — ``reground-needed``: the honest grounding
-      is a specific passage, so a fetched ``[pa]`` is left for a ``[pa]``→
-      ``[pc]`` re-ground (the arm's slice 2). No write.
+    * **All fetched, default mode** — ``reground`` / ``reground-nomatch``: the
+      honest grounding is a specific passage, so :func:`_plan_reground` locates
+      it and rewrites ``[pa]``→``[pc]`` (no hub). This is the arm's default.
     * **All fetched, ``ref_level=True``** — the explicit whole-paper override:
       run the cascade over all (fetched) supporters and mint a ref-level
       (``ungrounded``) evidence edge, rewriting ``[pa]`` → ``[fi<hub>]``. For
@@ -412,15 +517,7 @@ def _plan_pa_group(
             note=note,
         )
     if not ref_level:
-        return GroupPlan(
-            group=group,
-            action="reground-needed",
-            supporters=fetched,
-            note=(
-                "fetched [pa] — re-ground to a passage [pc] first, or re-run "
-                "with --ref-level to promote whole-paper (ungrounded)"
-            ),
-        )
+        return _plan_reground(store, group, fetched, locate_fn=locate_fn)
     # Explicit ref-level override: every supporter is fetched here (a mixed run
     # was routed to stub-fetch-first above), so collapsing the whole contiguous
     # run to one [fi<hub>] never erases an un-minted token.
@@ -446,6 +543,7 @@ def _plan_group(
     block_fn: BlockFn,
     judge_fn: JudgeFn,
     merge_confirm_fn: MergeConfirmFn,
+    locate_fn: LocateFn = _default_locate,
     ref_level: bool = False,
 ) -> GroupPlan:
     """Resolve → route for ONE cite-group (read-only).
@@ -477,6 +575,25 @@ def _plan_group(
         )
 
     if group.kind == "pa":
+        # An unresolved handle inside a contiguous [pa] run poisons the WHOLE
+        # run: a pa rewrite replaces the run's span as a unit (re-ground →
+        # [pc…] per supporter, or ref-level → one [fi]), so a shrunk supporter
+        # list would silently erase the unresolved token from the append-only
+        # chunk — the slice-1 mixed-run erasure class, via an unresolved handle.
+        # Skip the run (never a partial rewrite). (The [pc] path below keeps its
+        # existing promote-collapse: a broken pc drops with no citeable loss.)
+        if len(supporters) < len(group.handles):
+            n_unres = len(group.handles) - len(supporters)
+            return GroupPlan(
+                group=group,
+                action="unresolved",
+                supporters=supporters,
+                note=(
+                    f"{n_unres} of {len(group.handles)} [pa] handle(s) in this run "
+                    f"didn't resolve to a paper: {unresolved} — run skipped (no "
+                    "partial rewrite). Fix the handle(s), then re-run."
+                ),
+            )
         return _plan_pa_group(
             store,
             embedder,
@@ -487,6 +604,7 @@ def _plan_group(
             block_fn=block_fn,
             judge_fn=judge_fn,
             merge_confirm_fn=merge_confirm_fn,
+            locate_fn=locate_fn,
         )
 
     return _run_cascade(
@@ -511,6 +629,7 @@ def plan_chunk(
     block_fn: BlockFn = block,
     judge_fn: JudgeFn = dedup_judge,
     merge_confirm_fn: MergeConfirmFn = _MERGE_CONFIRM_DEFAULT,
+    locate_fn: LocateFn = _default_locate,
 ) -> ChunkBackfill:
     """Plan the backfill of one draft chunk — writes **nothing**.
 
@@ -520,9 +639,11 @@ def plan_chunk(
     existing hubs → ``dedup_judge`` → ``place``) to decide whether the claim
     **converges onto an existing hub** (``attach``) or would mint a ``new``
     one. A ``[pa]`` group classifies by block-count: stub → ``stub-fetch-first``,
-    fetched → ``reground-needed`` unless ``ref_level`` promotes it whole-paper.
-    This is what the CLI ``--dry-run`` reports; it is LLM- and embedder-bearing
-    (that is inherent — convergence can't be known without the ANN + judge).
+    fetched → ``reground`` (locate the passage, rewrite ``[pa]``→``[pc]``;
+    ``reground-nomatch`` if none found) unless ``ref_level`` promotes it
+    whole-paper. This is what the CLI ``--dry-run`` reports; it is LLM- and
+    embedder-bearing (inherent — neither convergence nor the grounding passage
+    can be known without the ANN + judge/locate).
     """
     text, draft_ref_id = _read_draft_chunk(store, chunk_id)
     plans = [
@@ -535,6 +656,7 @@ def plan_chunk(
             block_fn=block_fn,
             judge_fn=judge_fn,
             merge_confirm_fn=merge_confirm_fn,
+            locate_fn=locate_fn,
         )
         for group in segment_cite_groups(text)
     ]
@@ -595,16 +717,19 @@ def apply_chunk(
     block_fn: BlockFn = block,
     judge_fn: JudgeFn = dedup_judge,
     merge_confirm_fn: MergeConfirmFn = _MERGE_CONFIRM_DEFAULT,
+    locate_fn: LocateFn = _default_locate,
 ) -> ChunkBackfill:
     """Apply the backfill: mint/converge each claim hub through the cascade,
     attach its supporter papers as evidence, then rewrite the chunk prose
     ``[pc…]``/``[pa…]`` → ``[fi<hub>]`` via the draft edit door.
 
     ``ref_level`` (the ``[pa]`` arm's whole-paper override) is threaded to
-    :func:`_plan_group`: without it a fetched ``[pa]`` group is left
-    ``reground-needed`` (prose untouched); with it the fetched ``[pa]`` is
-    promoted to a ref-level (``ungrounded``) hub edge and its token rewritten
-    to ``[fi<hub>]``. A stub ``[pa]`` is always skipped regardless.
+    :func:`_plan_group`: without it a fetched ``[pa]`` group is **re-grounded**
+    — :data:`locate_fn` picks the supporting passage and the ``[pa<id>]`` run is
+    rewritten ``[pa]``→``[pc<chunk>]`` (no hub; the existing ``[pc]`` path
+    promotes it on a later run). With ``ref_level`` the fetched ``[pa]`` is
+    instead promoted to a ref-level (``ungrounded``) hub edge and its token
+    rewritten to ``[fi<hub>]``. A stub ``[pa]`` is always skipped regardless.
 
     The prose rewrite goes through ``draft_handler.edit`` (a whole-chunk
     rewrite) — **never** a raw ``UPDATE`` — so the chunk's DELETE+INSERT
@@ -661,10 +786,31 @@ def apply_chunk(
             block_fn=block_fn,
             judge_fn=judge_fn,
             merge_confirm_fn=merge_confirm_fn,
+            locate_fn=locate_fn,
         )
         plans.append(plan)
+        if plan.action == "reground":
+            # A cite refinement, not a promote: rewrite the whole [pa…] run to
+            # the located [pc<chunk>] sequence (one pc per pa, same count — the
+            # [pc] path folds them to a hub on a later run). No hub minted here.
+            cites = plan.group.pc_cites
+            if len(plan.reground_targets) != len(cites):
+                # Invariant backstop (should be unreachable — the planner routes
+                # a run with any unresolved/unlocated cite to a no-write skip): a
+                # count mismatch would collapse N tokens into <N and erase one.
+                plan.action = "error"
+                plan.note = (
+                    f"reground count mismatch: {len(plan.reground_targets)} "
+                    f"target(s) for {len(cites)} cite(s) — run skipped, prose "
+                    "left as [pa…]"
+                )
+                continue
+            replacement = "".join(f"[pc{cid}]" for cid in plan.reground_targets)
+            edits.append((cites[0].start, cites[-1].end, replacement))
+            plan.note = f"re-grounded [pa]→{replacement}"
+            continue
         if plan.claim is None or plan.placement is None:
-            # no-claim / unresolved / stub-fetch-first / reground-needed —
+            # no-claim / unresolved / stub-fetch-first / reground-nomatch —
             # prose left untouched ([pc…] or [pa…]).
             continue
 

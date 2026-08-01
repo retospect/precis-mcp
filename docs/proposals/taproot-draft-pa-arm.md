@@ -7,24 +7,46 @@ blocked-by: taproot-draft-citation-view
 
 # Taproot `[pa]`-arm — whole-paper cites → claim cites
 
-## Status — slice 1 built (stub-skip + ref-level promote)
+## Status — slices 1 + 2 built
 
-**Built** (this arm's slice 1, in `taproot/backfill.py` + `cli/taproot.py`):
-the segmenter now anchors on bare `[pa<id>]` groups (kept separate from
-`[pc]` groups — a kind switch breaks contiguity), and each `[pa]` group is
-routed by the cited paper's block-count:
+**Slice 1** (stub-skip + ref-level promote, `taproot/backfill.py` +
+`cli/taproot.py`): the segmenter anchors on bare `[pa<id>]` groups (kept
+separate from `[pc]` groups — a kind switch breaks contiguity), and each
+`[pa]` group is routed by the cited paper's block-count:
 
 - **stub `[pa]`** (0 blocks) → `stub-fetch-first`, **skipped**, no write (AC2);
-- **fetched `[pa]`** → `reground-needed` by default (no write); with the new
-  `precis taproot backfill --ref-level` override it promotes **ref-level**
+- **fetched `[pa]`**, `--ref-level` override → promotes **ref-level**
   (ungrounded) and rewrites `[pa]`→`[fi<hub>]` (AC3), inheriting `apply_chunk`'s
   idempotent re-convergence retirement invariant (AC4). `plan_chunk` dry-run
   reports the per-group action and writes nothing (AC5).
 
-**Deferred to slice 2** — the `[pa]`→`[pc]` **re-ground** action (AC1) and its
-open question #3 (how the grounding chunk is suggested — the one place this arm
-adds an LLM call). Until then a fetched `[pa]`'s honest default is "re-ground
-by hand, or `--ref-level` to promote whole-paper (ungrounded)".
+**Slice 2** (the `[pa]`→`[pc]` **re-ground** action — AC1, resolves open #3):
+a fetched `[pa]`'s **default** action (no `--ref-level`) is now a re-ground,
+not the slice-1 `reground-needed` no-op. Contract:
+
+- **Grounding-chunk suggestion (open #3, RESOLVED — reuse chase's locate).**
+  Read the cited paper's body chunks `(chunk_id, ord, text)`; a deterministic
+  lexical pick (unigram overlap with the span, mirroring
+  `chase._select_target_chunk`) proposes the best passage, then
+  `_chase_llm._locate_chunk_in_target` (Tier.MEDIUM) confirms-or-corrects it.
+  The locate is injected (`locate_fn`), so tests run with a deterministic fake
+  and no LLM/embedder — matching the cascade fns. It fires only on the write /
+  dry-run path, never a view read.
+- **Re-ground is a cite *refinement*, not a promote — NO hub minted.** It
+  rewrites the prose token `[pa<id>]`→`[pc<chunk_id>]`. The result then rides
+  the **existing** `[pc]` promote path unchanged (two-step: re-ground, then a
+  subsequent backfill run mints the chunk-grounded hub — AC1). Refining
+  paper→passage never loses information (the passage is *in* the paper), so it
+  needs no hub-then-prose retirement window.
+- **All-or-nothing per contiguous run.** A multi-supporter run (`[pa1][pa2]`,
+  one span, both fetched) re-grounds each supporter to its own best chunk →
+  `[pc<c1>][pc<c2>]` (which the `[pc]` path then folds to one hub). If locate
+  returns **None** for *any* supporter in the run, the whole run's rewrite is
+  skipped (`reground-nomatch`, no write, prose left `[pa]`) — the same
+  token-erasure guard as the slice-1 mixed-run rule (append-only chunks).
+- **Actions:** `reground` (chosen targets, rewrites on apply) /
+  `reground-nomatch` (locate found no passage — no write; author re-grounds by
+  hand or re-runs with `--ref-level`).
 
 ## Motivation / why
 
@@ -147,12 +169,12 @@ original combined proposal's "atomic" wording, which misdescribed the primitive.
    `stub-fetch-first`. Low-likelihood, pre-existing across all taproot stub
    detection; making `count_blocks` retirement-aware is a shared-primitive
    design call for the main loop, deferred rather than forked here.
-3. **[open] Re-ground chunk suggestion source.** Does the `[pa]`→`[pc]` pin
-   reuse `chase`'s locate stage to *suggest* the grounding chunk, or leave the
-   author to pick from the paper's TOC? v1 recommendation: suggest via the
-   existing locate (Tier.MEDIUM), author confirms — but this is the one place
-   the arm adds an LLM call, so it must be promote-time/on-demand, never in a
-   view read.
+3. **[RESOLVED — reuse chase's locate, injected].** The `[pa]`→`[pc]`
+   re-ground suggests the grounding chunk by reusing the
+   `chase._select_target_chunk` pattern: a deterministic lexical pick over the
+   cited paper's chunks, confirmed/corrected by `_locate_chunk_in_target`
+   (Tier.MEDIUM). Injected as `locate_fn` (deterministic fake in tests). Fires
+   only on the write / dry-run path, never a view read. See slice-2 status.
 
 ## Cross-references
 

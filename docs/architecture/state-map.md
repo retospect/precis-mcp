@@ -1242,20 +1242,24 @@ overlay on `finding`/`ref_tags`/`links` — no schema of its own).
     (fingerprint) under the seeded `set_by='agent'` actor — distinct from the
     chase pilot's `set_by='chase'`, all filling the same graph. Tests:
     `tests/test_taproot_backfill.py`.
-  - **`[pa<id>]` arm (whole-paper cites) — slice 1 built**
-    (`taproot/backfill.py` + `precis taproot backfill --ref-level`,
-    `docs/proposals/taproot-draft-pa-arm.md`). The segmenter now also anchors
+  - **`[pa<id>]` arm (whole-paper cites) — slices 1+2 built**
+    (`taproot/backfill.py` + `precis taproot backfill [--ref-level]`,
+    `docs/proposals/taproot-draft-pa-arm.md`). The segmenter also anchors
     on bare `[pa<id>]` groups (kept **separate** from `[pc]` groups — a
     kind-switch breaks contiguity, so a whole-paper and a passage cite never
     fold together), classified by the cited paper's `count_blocks`: a **stub**
     `[pa]` (0 blocks, un-fetched) → `stub-fetch-first`, skipped, no write
     (never cite an unread paper as evidence); a **fetched** `[pa]` →
-    `reground-needed` by default (left for a `[pa]`→`[pc]` re-ground), or under
-    the explicit `--ref-level` override promoted **ref-level** (ungrounded, no
-    grounding passage — `edge.meta.arm='pa'`, `n_ungrounded` surfaced) and its
-    token rewritten `[pa]`→`[fi<hub>]`, inheriting `apply_chunk`'s idempotent
-    re-convergence. **Deferred to slice 2:** the `[pa]`→`[pc]` re-ground action
-    (its one LLM `locate` call, proposal open #3).
+    **`reground`** by default (slice 2): an injectable `LocateFn` (default =
+    lexical unigram pick + Tier.MEDIUM `_chase_llm._locate_chunk_in_target`
+    confirm — the arm's one LLM call, write/dry-run path only) picks the
+    grounding passage and the `[pa<id>]` run rewrites to `[pc<chunk>]` (no hub —
+    a cite refinement the existing `[pc]` path promotes on a later run,
+    chunk-grounded; `reground-nomatch` when no passage is found, **all-or-nothing**
+    per contiguous run so a partial rewrite never erases a token). The explicit
+    `--ref-level` override instead promotes **ref-level** (ungrounded, no
+    grounding passage — `edge.meta.arm='pa'`, `n_ungrounded` surfaced), rewriting
+    `[pa]`→`[fi<hub>]` and inheriting `apply_chunk`'s idempotent re-convergence.
   - Not yet built: further chase slices (S2-global-citation-count
     fallback promotion, integrity axis (Phase 4), corpus-wide backfill
     *sweep* (a worker pass — the per-chunk CLI above is its manual

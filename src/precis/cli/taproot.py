@@ -90,7 +90,8 @@ def add_parser(subparsers: Any) -> None:
         "backfill",
         help="Convert a draft chunk's legacy [pc<id>]/[pa<id>] cites into "
         "claim-hub [fi<id>] cites, converging onto existing hubs (dry-run by "
-        "default). Stub [pa] cites are skipped (fetch first).",
+        "default). A fetched whole-paper [pa] is re-grounded to a passage "
+        "[pc] (then promotable); stub [pa] cites are skipped (fetch first).",
     )
     b_target = b.add_mutually_exclusive_group(required=True)
     b_target.add_argument("--chunk", help="One draft chunk handle, e.g. dc1652005.")
@@ -108,8 +109,8 @@ def add_parser(subparsers: Any) -> None:
         action="store_true",
         help="[pa] arm: promote a FETCHED whole-paper [pa<id>] cite ref-level "
         "(ungrounded, no passage) and rewrite it to [fi<hub>]. Default (omitted) "
-        "leaves a fetched [pa] for a [pa]->[pc] re-ground; stub [pa] cites are "
-        "always skipped either way.",
+        "re-grounds a fetched [pa]->[pc] at the located passage (no hub yet); "
+        "stub [pa] cites are always skipped either way.",
     )
     b.add_argument(
         "--format",
@@ -406,6 +407,7 @@ def _print_backfill(results: list[Any], fmt: str, *, applied: bool) -> None:
                         "handles": p.group.handles,
                         "hub_ref_id": p.hub_ref_id,
                         "ungrounded": p.ungrounded,
+                        "reground_targets": p.reground_targets,
                         "claim": p.claim.sentence if p.claim else None,
                         "note": p.note,
                     }
@@ -439,6 +441,9 @@ def _print_backfill(results: list[Any], fmt: str, *, applied: bool) -> None:
                 arrow = f"→ fi{p.hub_ref_id} (converge)"
             elif p.action in ("new", "new_contradicts"):
                 arrow = f"→ fi{p.hub_ref_id}" if p.hub_ref_id else "→ new hub"
+            elif p.action == "reground":
+                pcs = "".join(f"[pc{c}]" for c in p.reground_targets)
+                arrow = f"→ {pcs} (re-ground)"
             else:
                 arrow = f"({p.action})"
             if p.ungrounded and p.hub_ref_id is not None:

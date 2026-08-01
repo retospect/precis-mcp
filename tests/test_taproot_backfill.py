@@ -217,6 +217,42 @@ def _stub_pa(store: Store, *, paper_title: str = "stub paper") -> tuple[int, str
     return paper, f"pa{paper}"
 
 
+def _fetched_pa_c(
+    store: Store, *, paper_title: str = "fetched paper", text: str = "some body passage"
+) -> tuple[int, str, int]:
+    """A FETCHED paper cited whole, exposing its chunk_id — return
+    (paper_ref_id, 'pa<ref_id>', chunk_id). For re-ground tests that assert the
+    rewrite targets a specific [pc<chunk>]."""
+    paper = seed_ref(store, title=paper_title, kind="paper")
+    chunk_id = seed_chunk(store, ref_id=paper, text=text)
+    return paper, f"pa{paper}", chunk_id
+
+
+def _locate_first(
+    span: str, chunks: list[tuple[int, int, str]]
+) -> tuple[int, int, str] | None:
+    """Deterministic fake LocateFn: pick the paper's first chunk (no LLM)."""
+    return chunks[0] if chunks else None
+
+
+def _locate_none(
+    span: str, chunks: list[tuple[int, int, str]]
+) -> tuple[int, int, str] | None:
+    """Fake LocateFn that locates no passage → reground-nomatch."""
+    return None
+
+
+def _locate_by_sentinel(
+    span: str, chunks: list[tuple[int, int, str]]
+) -> tuple[int, int, str] | None:
+    """Fake LocateFn: None when the paper's first chunk text contains
+    ``NOMATCH``, else that chunk — lets a multi-supporter run make one paper
+    locate and another fail (the all-or-nothing guard)."""
+    if not chunks:
+        return None
+    return None if "NOMATCH" in chunks[0][2] else chunks[0]
+
+
 def _links_count(store: Store) -> int:
     with store.pool.connection() as conn:
         row = conn.execute("SELECT count(*) FROM links").fetchone()
@@ -600,26 +636,31 @@ def test_apply_stub_pa_skipped_no_write_prose_untouched(
     assert _links_count(hub.store) == links_before  # no edge
 
 
-def test_plan_fetched_pa_default_is_reground_needed(
-    draft: DraftHandler, hub: Hub
-) -> None:
-    # AC5 (dry-run): a fetched [pa] WITHOUT the override is left for a re-ground.
-    _, pa = _fetched_pa(hub.store)
+def test_plan_fetched_pa_default_is_reground(draft: DraftHandler, hub: Hub) -> None:
+    # AC1/AC5 (dry-run): a fetched [pa] WITHOUT --ref-level re-grounds to the
+    # located passage — action 'reground' carrying the target chunk_id, and the
+    # dry-run writes nothing.
+    _, pa, chunk_id = _fetched_pa_c(hub.store)
     dc = _seed_draft_para(draft, hub, f"Ribbons are semiconducting [{pa}].")
+    before = _finding_count(hub.store)
 
     result = plan_chunk(
         hub.store,
         embedder=None,
         chunk_id=dc,
         ref_level=False,
-        extract_fn=_never_called,  # not reached in default mode
+        extract_fn=_never_called,  # not reached in default [pa] mode
         block_fn=_never_called,
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
+        locate_fn=_locate_first,
     )
 
-    assert result.plans[0].action == "reground-needed"
-    assert result.plans[0].group.kind == "pa"
+    p = result.plans[0]
+    assert p.action == "reground"
+    assert p.group.kind == "pa"
+    assert p.reground_targets == [chunk_id]
+    assert _finding_count(hub.store) == before  # dry-run wrote nothing
 
 
 def test_apply_ref_level_pa_mints_ungrounded_and_rewrites(
@@ -699,12 +740,15 @@ def test_apply_ref_level_mixed_pa_run_skips_and_preserves_both_tokens(
     assert f"[{stub}]" in text and f"[{fetched}]" in text
 
 
-def test_apply_fetched_pa_default_leaves_prose_and_writes_nothing(
+def test_apply_fetched_pa_default_regrounds_pa_to_pc(
     draft: DraftHandler, hub: Hub
 ) -> None:
-    _, pa = _fetched_pa(hub.store)
+    # AC1: fetched [pa] default → rewrite [pa]→[pc<chunk>] at the located
+    # passage. A cite refinement, NOT a promote: no hub, no evidence edge.
+    _, pa, chunk_id = _fetched_pa_c(hub.store)
     dc = _seed_draft_para(draft, hub, f"Ribbons are semiconducting [{pa}].")
     findings_before = _finding_count(hub.store)
+    links_before = _links_count(hub.store)
 
     result = apply_chunk(
         hub.store,
@@ -716,11 +760,18 @@ def test_apply_fetched_pa_default_leaves_prose_and_writes_nothing(
         block_fn=_never_called,
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
+        locate_fn=_locate_first,
     )
 
-    assert result.plans[0].action == "reground-needed"
-    assert result.rewritten_text is None
-    assert _finding_count(hub.store) == findings_before
+    plan = result.plans[0]
+    assert plan.action == "reground"
+    assert plan.reground_targets == [chunk_id]
+    assert plan.hub_ref_id is None  # refinement, not a promote
+    assert result.rewritten_text is not None
+    assert f"[pc{chunk_id}]" in result.rewritten_text
+    assert "[pa" not in result.rewritten_text
+    assert _finding_count(hub.store) == findings_before  # no hub
+    assert _links_count(hub.store) == links_before  # no edge
 
 
 def test_plan_mixed_stub_fetched_pc_reports_per_group_action(
@@ -748,11 +799,12 @@ def test_plan_mixed_stub_fetched_pc_reports_per_group_action(
         block_fn=_block_none,
         judge_fn=_never_called,
         merge_confirm_fn=_never_called,
+        locate_fn=_locate_first,  # the fetched [pa] group locates its passage
     )
 
     by_kind = {(p.group.kind, tuple(p.group.handles)): p.action for p in result.plans}
     assert by_kind[("pa", (stub,))] == "stub-fetch-first"
-    assert by_kind[("pa", (fetched,))] == "reground-needed"
+    assert by_kind[("pa", (fetched,))] == "reground"
     assert by_kind[("pc", (pc,))] == "new"
     assert _finding_count(hub.store) == findings_before  # dry-run wrote nothing
 
@@ -819,3 +871,196 @@ def test_apply_ref_level_pa_converges_after_rewrite_failure(
     assert result.rewritten_text is not None
     assert f"[fi{plan.hub_ref_id}]" in result.rewritten_text
     assert "[pa" not in result.rewritten_text
+
+
+# ── slice 2: [pa]→[pc] re-ground ─────────────────────────────────────────────
+
+
+def test_apply_reground_multi_supporter_rewrites_all_to_pc(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    # A contiguous [pa1][pa2] run (one span, both fetched) re-grounds each
+    # supporter to its own passage → [pc<c1>][pc<c2>] (one pc per pa, same
+    # count), which the existing [pc] path folds to one hub on a later run.
+    _, p1, c1 = _fetched_pa_c(hub.store, paper_title="one")
+    _, p2, c2 = _fetched_pa_c(hub.store, paper_title="two")
+    dc = _seed_draft_para(draft, hub, f"A jointly-supported claim [{p1}][{p2}].")
+
+    result = apply_chunk(
+        hub.store,
+        embedder=None,
+        draft_handler=draft,
+        chunk_id=dc,
+        ref_level=False,
+        extract_fn=_never_called,
+        block_fn=_never_called,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        locate_fn=_locate_first,
+    )
+
+    plan = result.plans[0]
+    assert plan.group.handles == [p1, p2]  # one folded run
+    assert plan.action == "reground"
+    assert plan.reground_targets == [c1, c2]
+    assert result.rewritten_text is not None
+    assert f"[pc{c1}][pc{c2}]" in result.rewritten_text
+    assert "[pa" not in result.rewritten_text
+
+
+def test_apply_reground_multi_supporter_partial_nomatch_skips_whole_run(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    # All-or-nothing: a [pa1][pa2] run where locate finds a passage for pa1 but
+    # NOT pa2 skips the WHOLE run (reground-nomatch, no write) — a partial
+    # rewrite would collapse the run's span and erase pa2's token (append-only).
+    _, good, _gc = _fetched_pa_c(hub.store, paper_title="good", text="clean passage")
+    _, bad, _bc = _fetched_pa_c(hub.store, paper_title="bad", text="NOMATCH here")
+    dc = _seed_draft_para(draft, hub, f"A jointly-supported claim [{good}][{bad}].")
+    links_before = _links_count(hub.store)
+
+    result = apply_chunk(
+        hub.store,
+        embedder=None,
+        draft_handler=draft,
+        chunk_id=dc,
+        ref_level=False,
+        extract_fn=_never_called,
+        block_fn=_never_called,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        locate_fn=_locate_by_sentinel,
+    )
+
+    assert len(result.plans) == 1  # one folded run
+    assert result.plans[0].group.handles == [good, bad]
+    assert result.plans[0].action == "reground-nomatch"
+    assert result.rewritten_text is None  # nothing rewrote
+    assert _links_count(hub.store) == links_before
+    # Both [pa] tokens survive in the live draft chunk — nothing erased.
+    order = hub.store.reading_order(hub.store.get_ref(kind="draft", id="nt").id)
+    live_dc = int(order[-1].chunk_id)
+    with hub.store.pool.connection() as conn:
+        text = conn.execute(
+            "SELECT text FROM chunks WHERE chunk_id = %s", (live_dc,)
+        ).fetchone()[0]
+    assert f"[{good}]" in text and f"[{bad}]" in text
+
+
+def test_apply_reground_partial_unresolved_handle_skips_whole_run(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    # Regression (reviewer, slice 2): a contiguous [pa_ok][pa_bad] run where one
+    # handle doesn't resolve to a paper must skip the WHOLE run (no partial
+    # rewrite) — else the run's span-replace would collapse two [pa] tokens into
+    # one [pc] and erase the unresolved token (append-only draft chunk). The
+    # slice-1 erasure class, reached via an unresolved handle rather than a stub.
+    _, good, _gc = _fetched_pa_c(hub.store, paper_title="good")
+    bad = "pa999999999"  # no such ref → resolve_paper_ref_id raises BadInput
+    dc = _seed_draft_para(draft, hub, f"A jointly-cited claim [{good}][{bad}].")
+    links_before = _links_count(hub.store)
+
+    result = apply_chunk(
+        hub.store,
+        embedder=None,
+        draft_handler=draft,
+        chunk_id=dc,
+        ref_level=False,
+        extract_fn=_never_called,
+        block_fn=_never_called,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        locate_fn=_locate_first,  # never reached — the run is skipped pre-route
+    )
+
+    assert len(result.plans) == 1  # one folded run
+    assert result.plans[0].group.handles == [good, bad]
+    assert result.plans[0].action == "unresolved"
+    assert result.rewritten_text is None  # nothing rewrote
+    assert _links_count(hub.store) == links_before
+    # Both tokens survive — the unresolved one was NOT erased.
+    order = hub.store.reading_order(hub.store.get_ref(kind="draft", id="nt").id)
+    live_dc = int(order[-1].chunk_id)
+    with hub.store.pool.connection() as conn:
+        text = conn.execute(
+            "SELECT text FROM chunks WHERE chunk_id = %s", (live_dc,)
+        ).fetchone()[0]
+    assert f"[{good}]" in text and f"[{bad}]" in text
+
+
+def test_apply_reground_nomatch_single_leaves_pa(draft: DraftHandler, hub: Hub) -> None:
+    # A fetched [pa] whose locate finds no passage → reground-nomatch, no write,
+    # token left [pa] (author re-grounds by hand or uses --ref-level).
+    _, pa, _c = _fetched_pa_c(hub.store)
+    dc = _seed_draft_para(draft, hub, f"Ribbons are semiconducting [{pa}].")
+    links_before = _links_count(hub.store)
+
+    result = apply_chunk(
+        hub.store,
+        embedder=None,
+        draft_handler=draft,
+        chunk_id=dc,
+        ref_level=False,
+        extract_fn=_never_called,
+        block_fn=_never_called,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        locate_fn=_locate_none,
+    )
+
+    assert result.plans[0].action == "reground-nomatch"
+    assert result.rewritten_text is None
+    assert _links_count(hub.store) == links_before
+
+
+def test_reground_then_promote_yields_chunk_grounded_hub(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    # AC1 end-to-end (two-step): re-ground [pa]→[pc], then the EXISTING [pc]
+    # promote path (unchanged) mints a hub whose evidence edge is
+    # CHUNK-GROUNDED (src_chunk_id NOT NULL), not ref-level/ungrounded.
+    paper, pa, chunk_id = _fetched_pa_c(hub.store)
+    dc = _seed_draft_para(draft, hub, f"Ribbons are semiconducting [{pa}].")
+
+    # Step 1 — re-ground the [pa] to its passage [pc].
+    r1 = apply_chunk(
+        hub.store,
+        embedder=None,
+        draft_handler=draft,
+        chunk_id=dc,
+        ref_level=False,
+        extract_fn=_never_called,
+        block_fn=_never_called,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+        locate_fn=_locate_first,
+    )
+    assert r1.plans[0].action == "reground"
+    assert f"[pc{chunk_id}]" in (r1.rewritten_text or "")
+
+    order = hub.store.reading_order(hub.store.get_ref(kind="draft", id="nt").id)
+    live_dc = int(order[-1].chunk_id)
+
+    # Step 2 — promote the freshly-grounded [pc] via the existing path.
+    r2 = apply_chunk(
+        hub.store,
+        embedder=None,
+        draft_handler=draft,
+        chunk_id=live_dc,
+        ref_level=False,
+        extract_fn=_extract_const("Ribbons are semiconducting."),
+        block_fn=_block_none,
+        judge_fn=_never_called,
+        merge_confirm_fn=_never_called,
+    )
+
+    plan = r2.plans[0]
+    assert plan.group.kind == "pc"
+    assert plan.action == "new"
+    assert plan.hub_ref_id is not None
+    assert plan.ungrounded is False  # chunk-grounded, not ref-level
+    assert f"[fi{plan.hub_ref_id}]" in (r2.rewritten_text or "")
+    # The evidence edge grounds at the passage chunk (src_chunk_id NOT NULL).
+    assert not _edge_is_ref_level(
+        hub.store, paper_ref_id=paper, hub_ref_id=plan.hub_ref_id
+    )

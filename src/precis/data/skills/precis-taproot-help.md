@@ -121,17 +121,23 @@ paper is fetched:
 - a **stub** `[pa]` (an un-fetched paper, 0 body chunks) is **skipped**
   (`stub-fetch-first`) — there's no passage to ground an edge, and an unread
   paper is never minted as evidence. Fetch the paper first, then re-ground.
-- a **fetched** `[pa]` is left `reground-needed` by default (its honest
-  grounding is a specific passage — a future `[pa]`→`[pc]` re-ground). Pass
-  `--ref-level` to instead promote it whole-paper: it mints a **ref-level
-  (ungrounded)** evidence edge and rewrites `[pa]`→`[fi<hub>]`. Use it only for
-  claims with no single grounding passage (e.g. "X is a landmark result"); the
-  dry-run reports the `ref-level/ungrounded` count so you see what you're
-  accepting.
+- a **fetched** `[pa]` is **re-grounded** by default: a locate (lexical pick +
+  a Tier.MEDIUM confirm) finds the supporting passage and the token is
+  rewritten `[pa<id>]`→`[pc<chunk>]` (action `reground`), which the existing
+  `[pc]` path then promotes to a **chunk-grounded** hub on a later run
+  (two-step; no hub is minted by the re-ground itself). If no passage is found
+  it's `reground-nomatch` — left `[pa]`, no write. Pass `--ref-level` to
+  instead promote it whole-paper: it mints a **ref-level (ungrounded)** evidence
+  edge and rewrites `[pa]`→`[fi<hub>]` directly — for claims with no single
+  grounding passage (e.g. "X is a landmark result"); the dry-run reports the
+  `ref-level/ungrounded` count. A contiguous multi-paper `[pa1][pa2]` run
+  re-grounds all-or-nothing: if any supporter fails to locate, the whole run is
+  left untouched (never erase a token).
 
 ```bash
-precis taproot backfill --chunk dc1652005 --ref-level          # dry-run incl. [pa]
-precis taproot backfill --chunk dc1652005 --apply --ref-level  # promote fetched [pa]
+precis taproot backfill --chunk dc1652005                      # dry-run: fetched [pa] → reground
+precis taproot backfill --chunk dc1652005 --apply             # re-ground fetched [pa]→[pc]
+precis taproot backfill --chunk dc1652005 --apply --ref-level # promote fetched [pa] whole-paper instead
 ```
 
 ## Mint a claim hub from a claim I've already sourced
@@ -195,7 +201,7 @@ sharper one shows `↳ refines fi<original>`.
 | Fisheye reference-ring Claims explosion | live |
 | Claim→claim `refines` links (`precis taproot refine`) | live (advisory-only, no evidence flow) |
 | Whole-draft `[pc<id>]`→`[fi<id>]` backfill (`precis taproot backfill`) | live (on-demand, dry-run default; not a corpus sweep) |
-| Whole-paper `[pa<id>]` arm (stub-skip; `--ref-level` promote) | live, slice 1 (fetched `[pa]`→`[pc]` re-ground deferred) |
+| Whole-paper `[pa<id>]` arm (stub-skip; default `[pa]`→`[pc]` re-ground; `--ref-level` whole-paper promote) | live (slices 1+2) |
 | Corpus-wide forward chase bridge (`PRECIS_TAPROOT_CHASE_ENABLED`) | dark, default-OFF |
 | Hub-refine pass (`workers/hub_refine.py`, `PRECIS_TAPROOT_REFINE_ENABLED`) | dark, default-OFF |
 | Chase-trigger pass (`workers/chase_trigger.py`, `PRECIS_TAPROOT_CHASE_TRIGGER_ENABLED`) — marks a hub `TAPROOT_DUE` when a near paper/patent chunk lands, so hub-refine claims it promptly instead of waiting out its backstop | dark, default-OFF |
