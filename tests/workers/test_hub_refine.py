@@ -44,6 +44,14 @@ _VERIFY_NO = {
     "cited_others": [],
     "terminal": True,
 }
+_VERIFY_PARTIAL_CONTRADICTS = {
+    "supports": "partial",
+    "support_reason": "on-topic but the result runs counter to the claim",
+    "caveats": ["reports larger crystallites, contradicting the small-domain claim"],
+    "contradicts": True,
+    "cited_others": [],
+    "terminal": True,
+}
 
 
 # ── seeding helpers ──────────────────────────────────────────────────
@@ -162,6 +170,51 @@ def test_partial_support_carries_caveats_onto_the_edge(store: Any) -> None:
     _dst, _relation, meta = edges[0]
     assert meta["support"] == "partial"
     assert meta["caveats"] == ["only tested at room temperature"]
+
+
+def test_contradicting_partial_is_memoed_not_attached(store: Any) -> None:
+    """A ``partial`` flagged ``contradicts`` (on-topic but runs counter to /
+    does not substantiate the claim) is NOT attached as corroboration -- it
+    lands in the rejection memo like a ``no``, so it never dilutes the living
+    cite and is judged once."""
+    embedder = make_mock_bge_m3()
+    hub = _seed_hub(store, sentence="MOF crystallites are ~7 nm single-crystal cubes.")
+    paper, _chunk_id = _seed_paper_chunk(
+        store, embedder, cite_key="contra", text="A conflicting measurement statement."
+    )
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_PARTIAL_CONTRADICTS):
+        run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+
+    assert _edges_from(store, paper) == []
+    rejected = _hub_meta(store, hub).get("taproot_rejected") or {}
+    assert str(paper) in rejected
+    assert rejected[str(paper)]["supports"] == "partial"
+    assert rejected[str(paper)]["contradicts"] is True
+
+
+def test_contradicting_partial_is_not_reverified_next_pass(store: Any) -> None:
+    """Convergence: a memoed contradicting ``partial`` is precheck-skipped on
+    the next (DUE-retriggered) pass -- never a repeat LLM verify, never a
+    late attach."""
+    embedder = make_mock_bge_m3()
+    hub = _seed_hub(store, sentence="A contradicting-partial convergence probe.")
+    paper, _chunk_id = _seed_paper_chunk(
+        store, embedder, cite_key="contra-conv", text="A conflicting statement."
+    )
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_PARTIAL_CONTRADICTS) as mv:
+        run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    assert mv.call_count == 1
+    assert _edges_from(store, paper) == []
+
+    # Re-trigger via a fresh DUE tag; the memoed paper must not re-verify.
+    store.add_tag(hub, Tag.closed("TAPROOT_DUE", "1"), set_by="system")
+    with patch(_VERIFY_PATH, return_value=_VERIFY_PARTIAL_CONTRADICTS) as mv2:
+        second = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    assert second["claimed"] == 1
+    assert mv2.call_count == 0  # precheck-skipped via the memo
+    assert _edges_from(store, paper) == []
 
 
 def test_empty_pass_still_stamps_last_refined_at(store: Any) -> None:

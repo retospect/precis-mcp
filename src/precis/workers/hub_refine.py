@@ -34,10 +34,15 @@ a blind periodic rescan (the incremental-trigger design,
    earlier pass, judged once, never re-verified).
 4. **Verify** — ``workers._chase_llm._verify_support_with_caveats`` per
    surviving candidate.
-5. **Write** — ``supports`` in ``{yes, partial}`` → an evidence edge via
-   ``taproot.hub.attach_evidence`` (role ``corroborates``, meta carrying
-   ``support``/``caveats``/``source_handle``); ``supports == "no"`` →
-   append to the rejection memo. Either way the candidate is judged once.
+5. **Write** — a ``yes``, or a ``partial`` whose caveats *scope* the
+   support rather than negate it (``contradicts=false``) → an evidence
+   edge via ``taproot.hub.attach_evidence`` (role ``corroborates``, meta
+   carrying ``support``/``caveats``/``source_handle``). A ``no`` — or a
+   ``partial`` flagged ``contradicts`` (the chunk runs counter to the
+   claim, or is merely on-topic without substantiating it) → append to
+   the rejection memo. Either way the candidate is judged once; the
+   ``contradicts`` gate keeps on-topic-but-non-supporting papers out of
+   the living cite without paying to re-verify them each pass.
 6. **Stamp** — ``meta.last_refined_at`` and ``meta.last_refined_sha`` (the
    claim sentence's :func:`taproot.canon.claim_sha` at refine time) are set
    unconditionally (even an empty pass with zero new candidates), so the
@@ -390,7 +395,16 @@ def _refine_one_hub(
                 # attached nor memoed as rejected).
                 continue
             supports = verification.get("supports")
-            if supports in ("yes", "partial"):
+            contradicts = bool(verification.get("contradicts"))
+            # Attach only genuine corroboration: a "yes", or a "partial"
+            # whose caveats scope the support rather than negate it. A
+            # "partial" flagged ``contradicts`` (the chunk runs counter to
+            # the claim, or is merely on-topic without substantiating it)
+            # is treated like a "no" — memoed as judged, NOT attached, so
+            # it never dilutes the living cite and never costs a re-verify
+            # (convergence: a non-attached verdict must land in the memo,
+            # else it retries every pass forever).
+            if supports == "yes" or (supports == "partial" and not contradicts):
                 attach_evidence(
                     store,
                     hub_ref_id=hub_ref_id,
@@ -404,10 +418,12 @@ def _refine_one_hub(
                     set_by="system",
                     conn=conn,
                 )
-            elif supports == "no":
+            elif supports in ("partial", "no"):
+                # "no", or a contradicting "partial" — judged once, memoed.
                 rejected[str(paper_ref_id)] = {
                     "at": datetime.now(UTC).isoformat(),
-                    "supports": "no",
+                    "supports": supports,
+                    "contradicts": contradicts,
                 }
             else:
                 # Verdict outside the {yes,partial,no} enum (missing key or

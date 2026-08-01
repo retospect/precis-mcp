@@ -369,6 +369,14 @@ def main(argv: list[str] | None = None) -> int:
         embedder = make_embedder(
             args.embedder, dim=store.embedding_dim(), url=embedder_url
         )
+        # An in-process bge-m3 embedder (url=None) never loads on its own:
+        # embed() fast-fails via _raise_if_warming until warmup() (or the
+        # server's background thread) loads the weights. Without this, every
+        # discovery here silently degrades to "no query vector" and the whole
+        # slice reports 0 candidates — a meaningless empty gate. warmup() is a
+        # no-op / absent on the remote HTTP embedder, so guard on hasattr.
+        if hasattr(embedder, "warmup"):
+            embedder.warmup()
         report = eval_hub_slice(
             store,
             args.ref_ids,

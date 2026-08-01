@@ -21,6 +21,26 @@ items are removed (history is `git log`).
 
 ## Residuals (2026-07-31 — taproot hub-refine ship)
 
+- **hub-refine could attach true contradictors as `contradicts` edges** ·
+  Status: deferred · Severity: feature. The Phase-0 slice-eval showed the
+  verifier flags on-topic-but-counter chunks; `hub_refine` now gates those
+  OUT of `corroborates` (verifier `contradicts` field → rejection memo,
+  shipped). But the hub model already has a `contradicts` *edge* type
+  (ADR 0073) and hub-refine only ever emits `corroborates` — so a genuinely
+  refuting paper is dropped rather than surfaced. Distinguishing "actively
+  contradicts → attach as `contradicts` edge" from "merely doesn't
+  substantiate → drop" (a finer verifier classification) would light up the
+  living cite's contradictor list and directly feed the Phase-4
+  novelty-claim "your claim broke" alert. Follow-up, not a correctness gap.
+
+- **Pre-enablement: validate the `contradicts` gate against the model** ·
+  Status: open · Severity: validation. The attach-policy tightening is a
+  *prompt* change; offline tests prove the gate, not that the LLM sets
+  `contradicts` correctly. Re-run `slice_refine_eval` on the deployed new
+  code over the Phase-0 slice (esp. hub 176363 MOF-contradicting → should
+  drop; 176360 cerf74 → should stay `yes`) before flipping the enable flags.
+  Runbook: `docs/runbooks/taproot-chase-enablement.md`.
+
 - **Enable hub-refine + chase-trigger in prod (Phase 2)** · Status: deferred ·
   Severity: feature. `src/precis/workers/hub_refine.py` + `chase_trigger.py`
   ship dark (`PRECIS_TAPROOT_REFINE_ENABLED=0`,

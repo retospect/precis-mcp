@@ -58,6 +58,16 @@ Definitions:
   supports = "no"       : chunk does not support the claim
   caveats               : conditions, regimes, applicability limits
                           that qualify the support
+  contradicts           : true iff the chunk reports a result that
+                          runs COUNTER to the claim, OR does not
+                          substantiate any part of it (merely shares
+                          the topic) — i.e. citing it as support for
+                          THIS claim would mislead. false when the
+                          chunk genuinely supports the claim or a
+                          substantive part of it, even if only under
+                          the listed caveats. A "partial" whose caveats
+                          negate the claim rather than merely scope it
+                          is contradicts=true.
   cited_others          : inline citation tokens that the chase
                           should follow (e.g. "[12]", "(Lin 1998)").
                           Empty if the chunk is the original source.
@@ -70,6 +80,7 @@ Respond with EXACTLY ONE JSON object, nothing else:
   "supports": "yes" | "partial" | "no",
   "support_reason": "<one sentence>",
   "caveats": ["<caveat 1>", ...],
+  "contradicts": true | false,
   "cited_others": ["<token 1>", ...],
   "terminal": true | false
 }}
