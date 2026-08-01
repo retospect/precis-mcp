@@ -415,15 +415,19 @@ def _scrape_watch_page_meta(video_id: str) -> dict[str, Any]:
     try:
         import httpx
 
-        from precis.utils.safe_fetch import safe_get
+        from precis.utils.safe_fetch import pinning_transport, safe_get
     except ImportError:
         return {}
     url = f"https://www.youtube.com/watch?v={video_id}"
+    # Built inline (not via http_client) to keep the httpx-missing path a
+    # silent ``return {}`` above — http_client raises Upstream, not
+    # ImportError. Same SSRF guard: pinning_transport() carries the backend.
     try:
         with httpx.Client(
             follow_redirects=False,
             timeout=8.0,
             headers={"User-Agent": "precis-mcp/1.0 (+youtube watch-page scraper)"},
+            transport=pinning_transport(),
         ) as client:
             resp = safe_get(client, url)
     except Exception:

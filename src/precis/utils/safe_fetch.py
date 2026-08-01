@@ -14,35 +14,49 @@ This module centralises the guard:
   A/AAAA record, and return the single validated IP the request will be
   dialed against (or ``None`` for a host that is already an IP literal).
   Raises :class:`SsrfBlocked` on private/loopback/link-local/multicast/
-  reserved/unspecified addresses.
+  reserved/unspecified addresses. A standalone pre-check for callers that
+  want to validate a URL without issuing a request; the send path does
+  **not** use it (see below).
 * :func:`assert_public_http_url` — validate-only wrapper (resolve +
   classify, discard the pinned IP) kept for callers that just want the
   check.
+* :func:`pinning_transport` — an ``httpx.HTTPTransport`` whose httpcore
+  network backend classifies-and-pins the DNS at ``connect_tcp``. This is
+  where the actual send-path guard lives; :func:`http_client` installs it
+  on every client by default.
 * :func:`safe_get` — wraps ``client.send`` with manual redirect
-  following; each hop is resolved-and-pinned before the request goes out.
+  following; the client must carry :func:`pinning_transport` (built via
+  :func:`http_client`) so each connection is classified-and-pinned.
 * :func:`safe_stream` — context manager that walks the redirect chain in
-  stream mode (no body read on intermediate hops), resolving-and-pinning
-  each new URL.
+  stream mode (no body read on intermediate hops).
 
-**Resolve-once, dial-the-validated-IP (no DNS-rebinding TOCTOU).** An
-earlier design validated the *hostname* and then let httpx re-resolve it
-at connect time — a time-of-check/time-of-use window where an attacker
-controlling DNS for their own domain could answer the validation lookup
-with a public IP and the connect-time lookup (moments later, 0-TTL) with
-``127.0.0.1`` / ``169.254.169.254`` / an internal service IP. We now
-resolve the host ourselves, classify the addresses, and rewrite the
-outbound request to dial the **validated IP literal** directly — httpx /
-httpcore does no second DNS lookup on an IP literal, so the IP that was
-checked is exactly the IP that is dialed. The original hostname is
-preserved as the ``Host`` header and the TLS ``sni_hostname`` extension,
-so virtual hosting, SNI, and certificate verification all still work.
+**Resolve-once-at-connect, dial-the-validated-IP (no DNS-rebinding
+TOCTOU).** An early design validated the *hostname* and then let httpx
+re-resolve it at connect time — a time-of-check/time-of-use window where
+an attacker controlling DNS for their own domain could answer the
+validation lookup with a public IP and the connect-time lookup (moments
+later, 0-TTL) with ``127.0.0.1`` / ``169.254.169.254`` / an internal
+service IP. A second design closed that window by rewriting the outbound
+request URL to the validated IP literal — but that collapsed httpcore's
+connection-pool key from ``(scheme, host, port)`` to ``(scheme, IP,
+port)``, letting two distinct hostnames that share one public IP reuse a
+TLS connection cert-verified for the wrong name (gr180122).
+
+We now pin at the **connection layer** instead: a custom httpcore
+:class:`SyncBackend` (:func:`pinning_transport`) resolves-and-classifies
+the host inside ``connect_tcp`` and dials the single validated IP, while
+the request URL keeps its **hostname**. So there is still exactly one DNS
+resolution and it is the one that dials (no rebinding window), *and* the
+pool key + TLS ``server_hostname`` stay per-hostname (correct cert
+verification, no cross-host connection reuse).
 
 A literal-IP host (e.g. ``http://93.184.216.34/``) can't be re-pointed
 mid-connect, so it is classified in place and dialed as-is.
 
-Callers MUST construct their ``httpx.Client`` with
-``follow_redirects=False`` — the helpers do the redirect dance
-themselves.
+Callers MUST route through :func:`http_client` (which installs
+:func:`pinning_transport` and defaults ``follow_redirects=False``) — the
+helpers do the redirect dance themselves and assert the pinning backend
+is present.
 """
 
 from __future__ import annotations
@@ -50,12 +64,16 @@ from __future__ import annotations
 import ipaddress
 import socket
 from contextlib import contextmanager
+from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urljoin, urlsplit
+
+from precis.utils.optional_deps import require_optional
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    import httpcore
     import httpx
 
 
@@ -110,30 +128,24 @@ def _ip_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     return mapped is not None and any(mapped in net for net in _BLOCKED_V4)
 
 
-def resolve_pinned_ip(url: str) -> str | None:
-    """Validate ``url``'s host and return the IP the request must dial.
+def _classify_and_pin_host(host: str) -> str | None:
+    """Classify a bare host and return the IP to dial (or ``None``).
 
-    Resolves the host **exactly once** and classifies every A/AAAA
-    record. If any resolves to a blocked range the whole URL is refused
+    Resolves ``host`` **exactly once** and classifies every A/AAAA
+    record. If any resolves to a blocked range the host is refused
     (strict — matches a host that mixes a public and a private record).
-    Otherwise returns the first validated IP, which the caller pins the
-    outbound connection to so the checked address is the dialed address
-    (closing the DNS-rebinding TOCTOU). Returns ``None`` when the host is
-    already an IP literal — there is nothing to re-resolve, so the caller
-    dials it as-is.
+    Otherwise returns the first validated IP for the caller to dial.
+    Returns ``None`` when ``host`` is already an IP literal — there is
+    nothing to re-resolve, so the caller dials it as-is.
+
+    ``host`` is a hostname or IP literal only (no scheme/port) — the
+    single resolution point shared by the standalone :func:`resolve_pinned_ip`
+    pre-check and the connect-time backend (:func:`pinning_transport`).
 
     Raises:
-        SsrfBlocked: scheme is not http(s), the URL has no host, the
-            host fails to resolve to any address, or any A/AAAA record
-            falls in a blocked range.
+        SsrfBlocked: the host fails to resolve to any address, or any
+            A/AAAA record falls in a blocked range.
     """
-    parts = urlsplit(url.strip())
-    if parts.scheme not in ("http", "https"):
-        raise SsrfBlocked(f"refusing non-http(s) URL {url!r} (scheme={parts.scheme!r})")
-    host = (parts.hostname or "").strip()
-    if not host:
-        raise SsrfBlocked(f"refusing URL with no host: {url!r}")
-
     # If the host parses directly as an IP literal, classify it without
     # consulting DNS — a literal IP can't be re-pointed mid-connect, so
     # there is no IP to pin: dial it as-is.
@@ -177,6 +189,114 @@ def resolve_pinned_ip(url: str) -> str | None:
     return pinned
 
 
+def _url_host(url: str) -> str:
+    """Parse ``url``, enforce http(s) + a present host, return the host.
+
+    DNS-free syntactic gate. Raises :class:`SsrfBlocked` for a non-http(s)
+    scheme or a missing host — the cheap pre-flight the send path runs
+    before handing the URL to httpx (the DNS classify+pin happens once, at
+    connect, in :func:`pinning_transport`'s backend).
+    """
+    parts = urlsplit(url.strip())
+    if parts.scheme not in ("http", "https"):
+        raise SsrfBlocked(f"refusing non-http(s) URL {url!r} (scheme={parts.scheme!r})")
+    host = (parts.hostname or "").strip()
+    if not host:
+        raise SsrfBlocked(f"refusing URL with no host: {url!r}")
+    return host
+
+
+def resolve_pinned_ip(url: str) -> str | None:
+    """Validate ``url``'s host and return the IP that would be dialed.
+
+    Standalone pre-check: enforces the http(s) scheme + present host, then
+    resolves-and-classifies the host once via :func:`_classify_and_pin_host`.
+    Returns the validated IP (or ``None`` for an IP-literal host). Kept for
+    callers that want to validate a URL *without* issuing a request — the
+    send path (:func:`safe_get`/:func:`safe_stream`) does not call this;
+    it pins at connect via the backend so there is no second resolution.
+
+    Raises:
+        SsrfBlocked: scheme is not http(s), the URL has no host, the
+            host fails to resolve to any address, or any A/AAAA record
+            falls in a blocked range.
+    """
+    return _classify_and_pin_host(_url_host(url))
+
+
+@lru_cache(maxsize=1)
+def _pinning_backend_class() -> type[httpcore.SyncBackend]:
+    """Return (cached) the httpcore backend that pins DNS at connect.
+
+    Defined lazily so ``httpcore`` (an ``[external]``-extra dep, pulled in
+    with ``httpx``) is imported only when a pinning client is actually
+    built. ``connect_tcp`` receives the **hostname** from the request URL
+    (the pool key is kept per-hostname), classifies-and-pins it once, and
+    dials the validated IP — the single resolution that also validates, so
+    there is no DNS-rebinding window.
+    """
+    httpcore = require_optional("httpcore", extra="external")
+
+    class _PinningBackend(httpcore.SyncBackend):  # type: ignore[name-defined,misc]
+        def connect_tcp(
+            self,
+            host: str,
+            port: int,
+            timeout: float | None = None,
+            local_address: str | None = None,
+            socket_options: Any = None,
+        ) -> Any:
+            pinned = _classify_and_pin_host(host)
+            dial = pinned if pinned is not None else host
+            return super().connect_tcp(
+                dial,
+                port,
+                timeout=timeout,
+                local_address=local_address,
+                socket_options=socket_options,
+            )
+
+    return _PinningBackend
+
+
+def pinning_transport(**httptransport_kwargs: Any) -> httpx.HTTPTransport:
+    """Build an ``httpx.HTTPTransport`` that pins DNS at ``connect_tcp``.
+
+    The transport is a stock :class:`httpx.HTTPTransport` with its
+    httpcore pool's network backend swapped for :func:`_pinning_backend_class`
+    — so every connection it opens is SSRF-classified and pinned at connect
+    while the request URL keeps its hostname (per-hostname pool key + TLS
+    ``server_hostname``). :func:`http_client` installs this by default; call
+    it directly only to build a bespoke client that must still be guarded.
+    """
+    httpx = require_optional("httpx", extra="external")
+    transport = httpx.HTTPTransport(**httptransport_kwargs)
+    # httpx.HTTPTransport builds an internal httpcore.ConnectionPool and
+    # stores the backend as ``_pool._network_backend``; swap it before any
+    # request so all connections route through the pinning backend. Private
+    # attrs, guarded by test_pinning_backend_is_installed.
+    transport._pool._network_backend = _pinning_backend_class()()  # type: ignore[attr-defined]
+    return transport
+
+
+def _assert_pinned_client(client: httpx.Client) -> None:
+    """Refuse a client that isn't carrying the pinning backend.
+
+    ``safe_get``/``safe_stream`` move the SSRF guard into the client's
+    transport, so a client built *without* :func:`pinning_transport` (e.g. a
+    plain ``httpx.Client()``) would fetch agent-supplied URLs unguarded.
+    Assert the backend is present so that misuse fails loud and closed
+    rather than silently unguarded. Build clients via :func:`http_client`.
+    """
+    pool = getattr(getattr(client, "_transport", None), "_pool", None)
+    backend = getattr(pool, "_network_backend", None)
+    if not isinstance(backend, _pinning_backend_class()):
+        raise SsrfBlocked(
+            "safe_get/safe_stream require a client built via http_client() "
+            "(pinning_transport); got an unguarded client"
+        )
+
+
 def assert_public_http_url(url: str) -> None:
     """Reject non-public targets before any byte hits the network.
 
@@ -202,31 +322,17 @@ def _is_redirect(status_code: int) -> bool:
 def _pinned_request(
     client: httpx.Client, method: str, url: str, kwargs: dict[str, Any]
 ) -> httpx.Request:
-    """Build a request that dials the SSRF-validated IP for ``url``.
+    """Build the request for ``url`` after the DNS-free shape gate.
 
-    Resolves + classifies ``url``'s host once via
-    :func:`resolve_pinned_ip`. For a hostname, rewrites the request URL to
-    the validated IP literal (so httpcore does no second DNS lookup at
-    connect — the checked address is the dialed address) while preserving
-    the original hostname as the ``Host`` header and the TLS
-    ``sni_hostname`` extension, so virtual hosting / SNI / cert
-    verification are unaffected. A literal-IP host is left untouched.
-
-    Raises :class:`SsrfBlocked` (via ``resolve_pinned_ip``) before any
-    byte hits the wire.
+    Enforces the http(s) scheme + present host via :func:`_url_host`
+    (raising :class:`SsrfBlocked` before any byte hits the wire), then
+    builds the request with the URL **unchanged** — the hostname is kept
+    so the connection pool keys per-hostname and TLS verifies the right
+    name. The DNS classify-and-pin happens once, at connect, in the
+    client's pinning backend (:func:`pinning_transport`).
     """
-    pinned_ip = resolve_pinned_ip(url)
-    request = client.build_request(method, url, **kwargs)
-    if pinned_ip is not None:
-        host_header = request.headers.get("Host")
-        original_host = request.url.host
-        request.url = request.url.copy_with(host=pinned_ip)
-        # httpx auto-derives Host from the URL only when absent; the URL
-        # now carries the IP, so restore the original hostname explicitly.
-        if host_header is not None:
-            request.headers["Host"] = host_header
-        request.extensions = {**request.extensions, "sni_hostname": original_host}
-    return request
+    _url_host(url)
+    return client.build_request(method, url, **kwargs)
 
 
 def _split_send_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -247,13 +353,14 @@ def _split_send_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
 def safe_get(client: httpx.Client, url: str, /, **kwargs: Any) -> httpx.Response:
     """``client.get(url, ...)`` with SSRF-validated, IP-pinned redirects.
 
-    The caller's ``client`` must be configured with
+    The caller's ``client`` must be built via :func:`http_client` (so it
+    carries the pinning backend) and configured with
     ``follow_redirects=False``; we follow up to :data:`MAX_REDIRECTS`
-    hops manually. Each hop is resolved-and-pinned via
-    :func:`_pinned_request` — the host is classified once and the request
-    dials that exact validated IP, so there is no DNS-rebinding window
-    between check and connect.
+    hops manually. Each connection is classified-and-pinned at connect by
+    the client's backend — the host is resolved once and that exact
+    validated IP is dialed, so there is no DNS-rebinding window.
     """
+    _assert_pinned_client(client)
     send_kw = _split_send_kwargs(kwargs)
     current = url
     for _hop in range(_MAX_REDIRECTS + 1):
@@ -296,9 +403,11 @@ def safe_stream(
             for chunk in resp.iter_bytes(chunk_size=64 * 1024):
                 ...
 
-    Each hop is resolved-and-pinned via :func:`_pinned_request`, so the
-    connection dials the validated IP with no DNS-rebinding window.
+    The client must be built via :func:`http_client` so its backend
+    classifies-and-pins each connection at connect (one resolution, no
+    DNS-rebinding window).
     """
+    _assert_pinned_client(client)
     send_kw = _split_send_kwargs(kwargs)
     current = url
     for _hop in range(_MAX_REDIRECTS + 1):
@@ -329,6 +438,7 @@ __all__ = [
     "MAX_REDIRECTS",
     "SsrfBlocked",
     "assert_public_http_url",
+    "pinning_transport",
     "resolve_pinned_ip",
     "safe_get",
     "safe_stream",

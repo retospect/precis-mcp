@@ -405,14 +405,13 @@ def _fetch_one(slug: str) -> tuple[str, str | None, int]:
     """
     import httpx
 
+    from precis.utils.http import http_client
     from precis.utils.safe_fetch import safe_get
 
     url = _build_url(slug)
     headers = {"User-Agent": _USER_AGENT, "Accept": "text/html"}
     try:
-        with httpx.Client(
-            timeout=30.0, headers=headers, follow_redirects=False
-        ) as client:
+        with http_client(timeout=30.0, headers=headers, user_agent=None) as client:
             resp = safe_get(client, url)
     except httpx.HTTPError as exc:
         return "http-error", f"transport: {exc}", 0

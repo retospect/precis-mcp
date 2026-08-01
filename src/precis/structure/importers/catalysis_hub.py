@@ -293,12 +293,13 @@ def fetch_config(
             installed.
     """
     try:
-        import httpx
+        import httpx  # noqa: F401  availability probe (raise the domain error); used in the annotation below
     except ImportError as exc:
         raise CatalysisHubUnsupported(
             "Catalysis-Hub fetch needs httpx — pip install 'precis-mcp[import]'"
         ) from exc
 
+    from ...utils.http import http_client
     from ...utils.safe_fetch import safe_get
 
     clauses = []
@@ -309,7 +310,7 @@ def fetch_config(
     filter_expr = ", ".join(clauses)
     query = _REACTIONS_QUERY.format(first=int(first), filter_expr=filter_expr)
 
-    with httpx.Client(follow_redirects=False, timeout=30.0) as client:
+    with http_client(timeout=30.0, user_agent=None) as client:
         resp: httpx.Response = safe_get(client, url, params={"query": query})
         resp.raise_for_status()
         payload = resp.json()

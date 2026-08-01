@@ -139,12 +139,11 @@ def fetch_openrouter_models(
     Best-effort: returns ``None`` on any failure (network, non-200, bad JSON) so
     the caller degrades to "unknown" rather than clobbering good facts.
     """
-    import httpx
-
+    from precis.utils.http import http_client
     from precis.utils.safe_fetch import safe_get
 
     try:
-        with httpx.Client(follow_redirects=False, timeout=timeout) as client:
+        with http_client(timeout=timeout, user_agent=None) as client:
             resp = safe_get(client, OPENROUTER_MODELS_URL)
             resp.raise_for_status()
             data = resp.json().get("data", [])
@@ -191,13 +190,12 @@ def fetch_openrouter_endpoints(
     endpoints rather than blanking them. An empty list (a real "no endpoints")
     is distinct from ``None`` (a fetch failure).
     """
-    import httpx
-
+    from precis.utils.http import http_client
     from precis.utils.safe_fetch import safe_get
 
     url = OPENROUTER_ENDPOINTS_URL_TMPL.format(slug=slug)
     try:
-        with httpx.Client(follow_redirects=False, timeout=timeout) as client:
+        with http_client(timeout=timeout, user_agent=None) as client:
             resp = safe_get(client, url)
             resp.raise_for_status()
             data = resp.json().get("data") or {}

@@ -387,8 +387,7 @@ def _default_parse_feed(
     subset of its result the caller reads: ``.status`` (304 short-circuit),
     ``.entries``, and the ``.etag`` / ``.modified`` validators to persist.
     """
-    import httpx
-
+    from precis.utils.http import http_client
     from precis.utils.optional_deps import require_optional
     from precis.utils.safe_fetch import safe_get
 
@@ -410,8 +409,8 @@ def _default_parse_feed(
 
     # follow_redirects=False — safe_get walks the chain itself, revalidating
     # every hop against the SSRF blocklist (feeds 301/302 routinely).
-    with httpx.Client(
-        timeout=_FEED_TIMEOUT_S, follow_redirects=False, headers=headers
+    with http_client(
+        timeout=_FEED_TIMEOUT_S, headers=headers, user_agent=None
     ) as client:
         resp = safe_get(client, url)
 

@@ -1937,13 +1937,20 @@ The master kinds table lives in the `precis-overview` skill.
   reader's read-only per-block F/C/S/A checker-flag strip + machine-authored
   marker were retired with it (not yet ported to smartdraft); the underlying
   `view='review'` ledger is unchanged.
-- **SSRF guard** — `src/precis/utils/safe_fetch.py` (used by `handlers/web.py`
-  + `workers/fetch_oa.py`); DNS-resolves + revalidates every redirect against the
-  private/loopback/link-local/cloud-metadata blocklist. **Resolve-once /
-  dial-the-validated-IP** (`resolve_pinned_ip` + `_pinned_request`, gr179502):
-  each hop rewrites the outbound request to the checked IP literal (`Host` +
-  `sni_hostname` preserved), so httpcore does no second connect-time lookup —
-  closing the DNS-rebinding TOCTOU. Direct tests in `tests/test_safe_fetch.py`.
+- **SSRF guard** — `src/precis/utils/safe_fetch.py`; classifies every host
+  against the private/loopback/link-local/cloud-metadata blocklist.
+  **Connect-layer pinning** (`pinning_transport` → a custom httpcore
+  `SyncBackend`, gr179502 + gr180122): `_classify_and_pin_host` runs inside
+  `connect_tcp`, so the host is resolved **once** and that exact validated IP
+  is dialed (no DNS-rebinding TOCTOU) while the request URL keeps its
+  **hostname** — so httpcore's pool key + TLS `server_hostname` stay
+  per-hostname (no cross-host connection reuse; gr180122 closed the pool-key
+  collapse the earlier URL-rewrite design caused). `http_client()` installs the
+  transport by default; every `safe_get`/`safe_stream` caller routes through it
+  and the helpers **fail closed** (`_assert_pinned_client`) on an unguarded
+  client. `resolve_pinned_ip`/`assert_public_http_url` remain standalone
+  pre-check helpers (not on the send path). Direct tests in
+  `tests/test_safe_fetch.py`.
 - **LaTeX compile hardening** — `src/precis/utils/tex_hardening.py`; both compile
   paths (`compile_guard`, `export/compile`) run over agent-authored workspaces.
   `hardened_latex_env` pins `shell_escape=f` (closes `\write18` RCE). `latexmk_argv`

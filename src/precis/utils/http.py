@@ -74,8 +74,14 @@ def http_client(
             to set it yourself via ``headers``).
 
     Returns:
-        An ``httpx.Client`` — use it as a context manager.
+        An ``httpx.Client`` — use it as a context manager. Its transport
+        is :func:`precis.utils.safe_fetch.pinning_transport`, so every
+        connection it opens is SSRF-classified and pinned at connect (the
+        DNS-rebinding guard applies to *all* fetches through this client,
+        not only those wrapped in ``safe_get``/``safe_stream``).
     """
+    from precis.utils.safe_fetch import pinning_transport
+
     httpx = require_httpx()
     merged: dict[str, str] = {}
     if user_agent is not None:
@@ -86,6 +92,7 @@ def http_client(
         timeout=timeout,
         follow_redirects=follow_redirects,
         headers=merged,
+        transport=pinning_transport(),
     )
 
 

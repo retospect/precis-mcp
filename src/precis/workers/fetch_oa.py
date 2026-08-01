@@ -1548,6 +1548,7 @@ def _download_markup(
     rather than poisoning the corpus. Writes to ``<target>.part`` and
     renames on success. Returns the byte count; raises on an empty body.
     """
+    from precis.utils.http import http_client
     from precis.utils.safe_fetch import safe_stream
 
     tmp = target.with_suffix(target.suffix + ".part")
@@ -1555,10 +1556,10 @@ def _download_markup(
     headers = {"User-Agent": _user_agent_header(), "Accept": _MARKUP_ACCEPT}
     if extra_headers:
         headers.update(extra_headers)
-    with httpx.Client(
+    with http_client(
         timeout=_DOWNLOAD_TIMEOUT_S,
-        follow_redirects=False,
         headers=headers,
+        user_agent=None,
     ) as client:
         with safe_stream(client, "GET", url) as resp:
             resp.raise_for_status()
@@ -2288,6 +2289,7 @@ def _download_pdf(
     third party). Elsevier's article API serves the PDF inline (no
     cross-host redirect in practice), so the key stays first-party.
     """
+    from precis.utils.http import http_client
     from precis.utils.safe_fetch import safe_stream
 
     tmp = target.with_suffix(target.suffix + ".part")
@@ -2296,16 +2298,16 @@ def _download_pdf(
     headers = dict(_DOWNLOAD_HEADERS)
     if extra_headers:
         headers.update(extra_headers)
-    # follow_redirects=False — safe_stream walks the chain itself,
-    # revalidating each Location. Original code set this True with
-    # only is_http_url() shape validation on ``url``, so a publisher
-    # redirect to 169.254.169.254 / 127.0.0.1 would be followed and
-    # the magic-byte check at the end could be defeated by a server
-    # that echoes %PDF- bytes.
-    with httpx.Client(
+    # http_client defaults follow_redirects=False and installs the SSRF
+    # pinning backend — safe_stream walks the chain itself, revalidating
+    # each Location. Original code set follow_redirects=True with only an
+    # is_http_url() shape check on ``url``, so a publisher redirect to
+    # 169.254.169.254 / 127.0.0.1 would be followed and the magic-byte
+    # check at the end could be defeated by a server that echoes %PDF-.
+    with http_client(
         timeout=_DOWNLOAD_TIMEOUT_S,
-        follow_redirects=False,
         headers=headers,
+        user_agent=None,
     ) as client:
         with safe_stream(client, "GET", url) as resp:
             resp.raise_for_status()

@@ -34,10 +34,12 @@ class _StubResp:
 class _StubClient:
     """Drop-in for `httpx.Client(...)` context manager.
 
-    `safe_get` drives the client via `build_request` + `send` (so it can
-    IP-pin the request); we mirror that surface. `build_request` returns a
-    real `httpx.Request` (only `httpx.Client` is stubbed), so the SSRF
-    guard's resolve-and-pin runs for real against the (public) test host.
+    `safe_get` drives the client via `build_request` + `send` (so pinning
+    happens at the connection layer); we mirror that surface. `build_request`
+    returns a real `httpx.Request`, and we expose a real pinning backend on
+    `_transport._pool._network_backend` so `safe_get`'s guarded-client
+    assertion passes — the stubbed `send` short-circuits the actual GET, so
+    the backend never dials.
     """
 
     last_url: str | None = None
@@ -45,7 +47,14 @@ class _StubClient:
     raise_on_get: Exception | None = None
 
     def __init__(self, **_kw: Any) -> None:
-        pass
+        from types import SimpleNamespace
+
+        from precis.utils import safe_fetch as sf
+
+        backend = sf._pinning_backend_class()()
+        self._transport = SimpleNamespace(
+            _pool=SimpleNamespace(_network_backend=backend)
+        )
 
     def __enter__(self) -> _StubClient:
         return self
@@ -216,8 +225,7 @@ def test_5xx_status_raises_upstream(handler: WebHandler) -> None:
 def test_network_error_raises_upstream(handler: WebHandler) -> None:
     import httpx
 
-    # ``example.com`` resolves to a public IP, so the SSRF pre-flight
-    # in ``safe_fetch.assert_public_http_url`` passes; the
+    # ``https://example.com`` passes safe_get's DNS-free shape gate; the
     # ``_StubClient.raise_on_get`` then short-circuits the actual GET
     # with the ConnectError we want to drive into the handler.
     _StubClient.raise_on_get = httpx.ConnectError("DNS fail")

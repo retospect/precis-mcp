@@ -5,17 +5,20 @@ Two layers:
 * **Classification** — :func:`resolve_pinned_ip` / :func:`assert_public_http_url`
   against literal IPs and (mocked-DNS) hostnames: private / loopback /
   link-local / metadata / reserved ranges are refused; a public host
-  returns the IP the request will be pinned to.
-* **Pinned connect (the DNS-rebinding TOCTOU closure)** — against a real
-  loopback HTTP server: the request dials the *validated IP literal*
-  (one DNS resolution, reused as the connect target) while the original
-  hostname rides the ``Host`` header + TLS ``sni_hostname`` extension.
+  returns the IP the request would be pinned to.
+* **Connect-layer pinning (the DNS-rebinding TOCTOU closure)** — against a
+  real loopback HTTP server: the request's URL keeps its *hostname* while
+  the client's :func:`pinning_transport` backend classifies-and-pins the
+  DNS at ``connect_tcp`` (one resolution, dialed directly). Because the URL
+  host stays the hostname, httpcore's connection-pool key + TLS
+  ``server_hostname`` stay per-hostname (gr180122 — no cross-host reuse).
 """
 
 from __future__ import annotations
 
 import http.server
 import socket
+import socketserver
 import threading
 from typing import Any
 
@@ -23,9 +26,11 @@ import httpx
 import pytest
 
 from precis.utils import safe_fetch as sf
+from precis.utils.http import http_client
 from precis.utils.safe_fetch import (
     SsrfBlocked,
     assert_public_http_url,
+    pinning_transport,
     resolve_pinned_ip,
     safe_get,
     safe_stream,
@@ -227,13 +232,13 @@ def test_safe_get_pins_to_validated_ip(
     server: Any, allow_loopback: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls = _count_getaddrinfo(monkeypatch, "pinned.test", "127.0.0.1")
-    with httpx.Client(follow_redirects=False, timeout=5) as client:
+    with http_client(timeout=5.0, user_agent=None) as client:
         resp = safe_get(client, f"http://pinned.test:{server.port}/final")
     assert resp.status_code == 200 and resp.text == "BODY"
     path, host_hdr, peer = server.log[-1]
-    assert peer == "127.0.0.1"  # dialed the validated IP literal
+    assert peer == "127.0.0.1"  # backend dialed the validated IP literal
     assert host_hdr == f"pinned.test:{server.port}"  # hostname preserved
-    assert calls["n"] == 1  # resolved once — no connect-time re-resolution
+    assert calls["n"] == 1  # resolved once, at connect — no re-resolution
 
 
 def test_safe_get_preserves_host_across_pinned_redirect(
@@ -250,12 +255,12 @@ def test_safe_get_preserves_host_across_pinned_redirect(
         return real(h, *a, **k)
 
     monkeypatch.setattr(socket, "getaddrinfo", _gai)
-    with httpx.Client(follow_redirects=False, timeout=5) as client:
+    with http_client(timeout=5.0, user_agent=None) as client:
         resp = safe_get(client, f"http://pinned.test:{server.port}/redir")
     assert resp.text == "BODY"
     # Both the redirect hop and the followed /final hop kept the hostname
-    # (a relative Location must resolve against the hostname URL, not the
-    # rewritten IP URL) and dialed loopback.
+    # (a relative Location resolves against the hostname URL) and the
+    # backend dialed loopback on each.
     assert [p for p, _, _ in server.log] == ["/redir", "/final"]
     assert all(h == f"pinned.test:{server.port}" for _, h, _ in server.log)
     assert all(peer == "127.0.0.1" for *_, peer in server.log)
@@ -265,7 +270,7 @@ def test_safe_stream_pins_to_validated_ip(
     server: Any, allow_loopback: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls = _count_getaddrinfo(monkeypatch, "pinned.test", "127.0.0.1")
-    with httpx.Client(follow_redirects=False, timeout=5) as client:
+    with http_client(timeout=5.0, user_agent=None) as client:
         with safe_stream(client, "GET", f"http://pinned.test:{server.port}/final") as r:
             body = r.read()
     assert body == b"BODY"
@@ -275,24 +280,143 @@ def test_safe_stream_pins_to_validated_ip(
     assert calls["n"] == 1
 
 
-def test_pinned_request_sets_host_and_sni(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Unit check of the rewrite: URL host → validated IP; original host
-    preserved as Host header + ``sni_hostname`` extension (so TLS SNI and
-    cert verification still target the real hostname)."""
-    monkeypatch.setattr(
-        socket, "getaddrinfo", _fake_getaddrinfo({"api.test": ["93.184.216.34"]})
-    )
+class _ThreadedKeepAliveServer:
+    """HTTP/1.1 keep-alive loopback server (one thread per connection) that
+    302-redirects ``/redir`` on one host to ``/final`` on a *different*
+    host. Needed for the gr180122 pool-key regression: keep-alive lets a
+    connection be reused, and threading avoids the single-thread deadlock a
+    kept-alive connection would otherwise cause."""
+
+    def __init__(self, redirect_host: str) -> None:
+        self.log: list[tuple[str, str | None]] = []
+        log = self.log
+
+        class _H(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_GET(self) -> None:
+                log.append((self.path, self.headers.get("Host")))
+                if self.path == "/redir":
+                    port = self.server.server_address[1]
+                    self.send_response(302)
+                    self.send_header("Location", f"http://{redirect_host}:{port}/final")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                body = b"BODY"
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_a: Any) -> None:
+                pass
+
+        class _Srv(socketserver.ThreadingMixIn, http.server.HTTPServer):
+            daemon_threads = True
+
+        self._srv = _Srv(("127.0.0.1", 0), _H)
+        self.port = self._srv.server_address[1]
+        self._t = threading.Thread(target=self._srv.serve_forever, daemon=True)
+        self._t.start()
+
+    def stop(self) -> None:
+        self._srv.shutdown()
+
+
+def test_no_cross_hostname_connection_reuse(
+    allow_loopback: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr180122 end-to-end. A redirect chain across two *different*
+    hostnames that both resolve to one IP must open **two** connections,
+    keyed per-hostname — proving the pool key was NOT collapsed to the
+    shared IP (which would let hop-2 reuse hop-1's mis-verified TLS conn).
+    The earlier URL-rewrite design would key both hops to ``127.0.0.1`` and
+    reuse a single connection."""
+    srv = _ThreadedKeepAliveServer(redirect_host="hostb.test")
+    real = socket.getaddrinfo
+
+    def _gai(h: str, *a: Any, **k: Any) -> list[tuple[Any, ...]]:
+        if h in ("hosta.test", "hostb.test"):
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))]
+        return real(h, *a, **k)
+
+    monkeypatch.setattr(socket, "getaddrinfo", _gai)
+    try:
+        with http_client(timeout=5.0, user_agent=None) as client:
+            resp = safe_get(client, f"http://hosta.test:{srv.port}/redir")
+            assert resp.text == "BODY"
+            # httpcore keys the pool (and TLS server_hostname) off the URL
+            # host — which stays the hostname, so the two hops land on two
+            # distinct connections, one per hostname.
+            pool = client._transport._pool  # type: ignore[attr-defined]
+            origins = sorted(conn._origin.host.decode() for conn in pool.connections)
+        assert origins == ["hosta.test", "hostb.test"]
+    finally:
+        srv.stop()
+    # Each hop carried its own Host, never the other's.
+    assert [p for p, _ in srv.log] == ["/redir", "/final"]
+    assert srv.log[0][1] == f"hosta.test:{srv.port}"
+    assert srv.log[1][1] == f"hostb.test:{srv.port}"
+
+
+# ── connect-layer design: URL keeps its hostname (gr180122) ──────────
+
+
+def test_pinned_request_keeps_hostname_no_dns() -> None:
+    """gr180122 regression. ``_pinned_request`` must NOT rewrite the URL to
+    the IP (which would collapse httpcore's pool key to ``(scheme, IP,
+    port)`` and let two hostnames sharing one IP reuse a mis-verified TLS
+    connection). The URL host stays the hostname; no ``sni_hostname``
+    rewrite; and it does no DNS itself (classify+pin happens at connect)."""
     with httpx.Client(follow_redirects=False) as client:
         req = sf._pinned_request(client, "GET", "https://api.test/v1", {})
-    assert req.url.host == "93.184.216.34"
+    # Hostname preserved in the URL → per-hostname pool key + TLS server name.
+    assert req.url.host == "api.test"
     assert req.headers["Host"] == "api.test"
-    assert req.extensions.get("sni_hostname") == "api.test"
+    assert "sni_hostname" not in req.extensions
 
 
-def test_pinned_request_leaves_literal_ip_untouched(
+def test_pinned_request_shape_gate_still_fires() -> None:
+    """The DNS-free syntactic gate (scheme + host) still rejects up front."""
+    with httpx.Client(follow_redirects=False) as client:
+        for bad in ("ftp://api.test/x", "file:///etc/passwd", "https:///nohost"):
+            with pytest.raises(SsrfBlocked):
+                sf._pinned_request(client, "GET", bad, {})
+
+
+def test_pinning_backend_installed_on_factory_clients() -> None:
+    """http_client() and pinning_transport() must carry the pinning backend
+    — the injection reaches into httpcore private attrs, so guard it: if
+    httpcore renames ``_pool``/``_network_backend`` this fails loudly."""
+    backend_cls = sf._pinning_backend_class()
+    with http_client(timeout=1.0) as client:
+        backend = client._transport._pool._network_backend  # type: ignore[attr-defined]
+        assert isinstance(backend, backend_cls)
+    transport = pinning_transport()
+    assert isinstance(transport._pool._network_backend, backend_cls)  # type: ignore[attr-defined]
+
+
+def test_safe_get_refuses_unguarded_client() -> None:
+    """A plain client (no pinning backend) would fetch agent URLs
+    unguarded — safe_get/safe_stream must fail closed, not silently."""
+    with httpx.Client(follow_redirects=False) as plain:
+        with pytest.raises(SsrfBlocked, match="unguarded client"):
+            safe_get(plain, "http://example.com/")
+        with pytest.raises(SsrfBlocked, match="unguarded client"):
+            with safe_stream(plain, "GET", "http://example.com/"):
+                pass
+
+
+def test_pinning_backend_blocks_private_at_connect(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    with httpx.Client(follow_redirects=False) as client:
-        req = sf._pinned_request(client, "GET", "http://93.184.216.34/x", {})
-    assert req.url.host == "93.184.216.34"
-    assert "sni_hostname" not in req.extensions
+    """End-to-end: the backend classifies at connect, so a host that
+    resolves to a private address is refused when the connection opens
+    (no pre-flight resolve needed) — SsrfBlocked propagates unwrapped."""
+    monkeypatch.setattr(
+        socket, "getaddrinfo", _fake_getaddrinfo({"rebind.evil": ["127.0.0.1"]})
+    )
+    with http_client(timeout=5.0) as client:
+        with pytest.raises(SsrfBlocked, match="127.0.0.1"):
+            safe_get(client, "http://rebind.evil/")
