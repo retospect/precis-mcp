@@ -446,7 +446,12 @@ quick-restart-mid-lease latency it leaves is deferred to
   `quota_check:auth` alert (+ one-shot `notify_critical_alert`) so a
   stale/revoked OAuth token pages instead of silently 401-ing every
   agentic call for a day; auth recovering auto-resolves it.
-* `dream_agent` keeps its own 15-min cadence via `dream-pass.sh`
+* `dream_agent` keeps its own 15-min cadence via `dream-pass.sh`,
+  self-throttled by the live `dream.min_interval_minutes` knob
+  (`workers/dream_throttle.py`: `app_settings` DB > env > compiled 15;
+  web-set on the Budget sub-tab, `POST /budget/dream-interval/set`; a
+  tick no-ops when the interval since `dream.last_real_run_at` hasn't
+  elapsed — Wave-0 §G of `docs/proposals/cluster-scheduling.md`)
   (each tick now injects a per-cycle **quest-anchor** nudge — a random
   active quest seeds one of the two anchors, `angle≈0.5`, other leg stays
   free; `PRECIS_DREAM_QUEST_ANCHOR`/`_ANGLE` — and opens a `kind='agentlog'`

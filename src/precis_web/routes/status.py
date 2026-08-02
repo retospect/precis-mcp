@@ -1593,14 +1593,19 @@ def _models_ctx(store: Any) -> dict[str, Any]:
 
 def _budget_ctx(store: Any) -> dict[str, Any]:
     """Budget sub-tab: the retired ``/budget`` page folded in verbatim —
-    the tote, the quota live-pause banner, and the cap-editor state."""
+    the tote, the quota live-pause banner, the cap-editor state, and the
+    dream pass's cadence knob (Wave-0 §G)."""
     from precis.budget import meter
     from precis.budget import settings as budget_settings
+    from precis.workers import dream_throttle
 
     tote = _safe(lambda: _budget_tote(store)) or {}
     hourly_override = budget_settings.get_float(store, budget_settings.HOURLY_KEY)
     daily_override = budget_settings.get_float(store, budget_settings.DAILY_KEY)
     bstatus = meter.current_status(store, use_cache=False)
+    dream_interval_override = budget_settings.get_float(
+        store, dream_throttle.MIN_INTERVAL_KEY
+    )
     return {
         "budget": tote,
         "quota": _quota_view(store),
@@ -1610,6 +1615,11 @@ def _budget_ctx(store: Any) -> dict[str, Any]:
         "daily_custom": daily_override is not None,
         "resume_until": budget_settings.get_resume_until(store),
         "resume_active": budget_settings.resume_active(store),
+        "dream_min_interval_minutes": dream_throttle.resolve_min_interval_minutes(
+            store
+        ),
+        "dream_interval_custom": dream_interval_override is not None,
+        "dream_last_real_run_at": dream_throttle.last_real_run_at(store),
     }
 
 

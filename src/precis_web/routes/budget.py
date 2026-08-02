@@ -14,6 +14,12 @@ Budget sub-tab. A set cap persists to
 ``app_settings`` (migration 0067) and overrides the ``PRECIS_BUDGET_*`` env
 default without a redeploy; "reset" reverts to the env default. Mirrors the
 /secrets editor precedent (ADR 0055) in shape.
+
+``POST /budget/dream-interval/{set,reset}`` is a near-copy of the same
+pattern for the dream pass's cadence knob (Wave-0 §G,
+:mod:`precis.workers.dream_throttle`): a web-set ``app_settings`` row
+overrides ``PRECIS_DREAM_MIN_INTERVAL_MINUTES``, which overrides the
+compiled 15-min default (the launchd plist's own cadence — unchanged).
 """
 
 from __future__ import annotations
@@ -26,6 +32,7 @@ from starlette.responses import Response
 
 from precis.budget import meter
 from precis.budget import settings as budget_settings
+from precis.workers import dream_throttle
 from precis_web.deps import get_store
 
 router = APIRouter(prefix="/budget", tags=["budget"])
@@ -100,4 +107,34 @@ async def reset_cap(request: Request, key: str = Form(...)) -> Response:
     if key in (budget_settings.HOURLY_KEY, budget_settings.DAILY_KEY):
         budget_settings.clear_setting(store, key)
     meter.bind_store(store)
+    return RedirectResponse("/status?tab=budget", status_code=303)
+
+
+@router.post("/dream-interval/set")
+async def set_dream_interval(
+    request: Request, min_interval_minutes: str = Form("")
+) -> Response:
+    """Set the dream pass's cadence knob (``dream.min_interval_minutes``) —
+    a blank or non-positive value is a no-op. Launchd keeps firing every 15
+    min unchanged; this only changes whether a given fire does real work
+    (:mod:`precis.workers.dream_throttle`). Live — takes effect on the next
+    pass fire, no redeploy."""
+    store = get_store(request)
+    raw = min_interval_minutes.strip()
+    if raw:
+        try:
+            budget_settings.set_float(
+                store, dream_throttle.MIN_INTERVAL_KEY, float(raw)
+            )
+        except ValueError:
+            pass
+    return RedirectResponse("/status?tab=budget", status_code=303)
+
+
+@router.post("/dream-interval/reset")
+async def reset_dream_interval(request: Request) -> Response:
+    """Clear the dream cadence override, reverting to the env
+    (``PRECIS_DREAM_MIN_INTERVAL_MINUTES``) / compiled (15-min) default."""
+    store = get_store(request)
+    budget_settings.clear_setting(store, dream_throttle.MIN_INTERVAL_KEY)
     return RedirectResponse("/status?tab=budget", status_code=303)

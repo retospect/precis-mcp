@@ -43,6 +43,12 @@ Gating: ``PRECIS_DREAM_AGENT=1`` (env). The pass is explicit-only
 on the CLI (``--only dream_agent``) AND env-gated, mirroring the
 existing dream worker's discipline.
 
+Cadence: the launchd timer still fires every 15 min unchanged, but
+:mod:`precis.workers.dream_throttle` lets a tick no-op if the
+``dream.min_interval_minutes`` knob (web-set, live, no redeploy) hasn't
+elapsed since the last real dispatch — see that module for the resolution
+order and jitter guard.
+
 Output disposition: **the dream agent writes its own memories**
 via the precis MCP `put` tool during the session. The worker
 itself does not write a digest — that would duplicate the agentic
@@ -66,6 +72,7 @@ from precis.utils.llm.router import LlmRequest, LlmResult, Tier, dispatch, resol
 from precis.utils.load_gate import skip_if_high_load
 from precis.utils.oracle_lens import draw_lens_entry, render_lens_block_from_draw
 from precis.utils.working_set_render import render_working_set
+from precis.workers import dream_throttle
 from precis.workers.runner import BatchResult
 from precis.workers.working_set import Provenance, WorkingSet
 
@@ -133,6 +140,8 @@ def run_dream_pass(store: Store) -> BatchResult:
     if not _gate_enabled():
         log.info("dream_agent: PRECIS_DREAM_AGENT not set; skipping")
         return BatchResult(handler="dream_agent", claimed=0, ok=0, failed=0)
+    if dream_throttle.skip_if_too_soon(store):
+        return BatchResult(handler="dream_agent", claimed=0, ok=0, failed=0)
     if skip_if_high_load("dream_agent"):
         return BatchResult(handler="dream_agent", claimed=0, ok=0, failed=0)
     soul_path = _env_path("PRECIS_DREAM_SOUL_PATH")
@@ -190,6 +199,15 @@ def run_dream_pass(store: Store) -> BatchResult:
             f"the websearches/papers it draws on — links back to the run that "
             f"produced it."
         )
+
+    # Committing to a real dispatch — stamp the throttle's last-real-run
+    # timestamp now (not on any of the no-op returns above), so the next
+    # tick's ``skip_if_too_soon`` measures from an actual reconsolidation
+    # attempt. Best-effort: a settings-write hiccup must never sink the pass.
+    try:
+        dream_throttle.mark_real_run(store)
+    except Exception:
+        log.warning("dream_agent: failed to mark last-real-run", exc_info=True)
 
     # Routed through the LLM seam (ADR 0046 unit 4b): FRONTIER + tools,
     # so ``PRECIS_LLM_BACKEND`` can move the whole dream pass onto an OSS
