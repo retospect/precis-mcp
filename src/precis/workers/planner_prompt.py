@@ -653,6 +653,39 @@ def _render_project_brief(store: Store, ref_id: int) -> str:
     return f"## Project context ({slug})\n\n{brief}"
 
 
+def _render_voice(store: Store, ref_id: int) -> str:
+    """Surface the standing writing register that rides with the workspace.
+
+    ``meta.workspace.voice`` is the always-applied "voice/style" — e.g.
+    "light-hearted, colloquial, occasional puns" — distinct from
+    :func:`_render_project_brief` (project scope/constraints) and from the
+    one-shot task (the todo body). Set once on the project root; cascades
+    to every descendant via the workspace-inheritance at ``put`` time
+    (``Workspace.to_meta`` carries it down), same as the brief.
+
+    Belongs in the *variable* (user) layer, not the cached system prompt:
+    the voice is per-project, so two projects' planners must not share a
+    cache prefix carrying one's voice.
+
+    No-op when there's no workspace, no voice, or the voice is blank.
+    """
+    from precis.utils.workspace import Workspace
+
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s", (ref_id,)
+        ).fetchone()
+    if not row:
+        return ""
+    workspace = Workspace.from_meta(row[0])
+    if workspace is None:
+        return ""
+    voice = workspace.voice.strip()
+    if not voice:
+        return ""
+    return f"## Voice & style\n\n{voice}"
+
+
 def _render_patent_authoring(store: Store, ref_id: int) -> str:
     """The patent-authoring loop block (gated by ``is_patent``).
 
@@ -1493,6 +1526,11 @@ def _m_project(ctx: AssemblyContext) -> str:
     return _render_project_brief(ctx.store, ctx.ref_id)
 
 
+def _m_voice(ctx: AssemblyContext) -> str:
+    assert ctx.store is not None
+    return _render_voice(ctx.store, ctx.ref_id)
+
+
 def _m_patent(ctx: AssemblyContext) -> str:
     assert ctx.store is not None
     return _render_patent_authoring(ctx.store, ctx.ref_id)
@@ -1970,6 +2008,7 @@ _VARIABLE_MODULES: list[Module] = [
     Module(id="identity", layer=Layer.VARIABLE, build=_m_identity),
     Module(id="ancestry", layer=Layer.VARIABLE, build=_m_ancestry),
     Module(id="project", layer=Layer.VARIABLE, build=_m_project),
+    Module(id="voice", layer=Layer.VARIABLE, build=_m_voice),
     Module(
         id="patent",
         layer=Layer.VARIABLE,

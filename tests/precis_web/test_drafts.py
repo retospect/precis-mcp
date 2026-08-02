@@ -8,7 +8,9 @@ the change-request POST.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -45,9 +47,58 @@ def _chunk(
     )
 
 
+class _WSCursor:
+    def __init__(self, rows: list) -> None:
+        self._rows = rows
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+    def fetchall(self):
+        return self._rows
+
+
+class _WSConn:
+    """Serves ``SELECT meta FROM refs WHERE ref_id = %s`` from
+    ``store._live_meta``; everything else degrades to empty (matching the
+    base ``FakeStore``'s ``_FakeConn``). The base fake always returns empty
+    regardless of query, which is fine for every OTHER route here, but the
+    ``/workspace`` route's partial-update semantics (a field param of
+    ``None`` must leave that key untouched) need a real read-your-writes
+    round trip to verify."""
+
+    def __init__(self, store: DraftFakeStore) -> None:
+        self._store = store
+
+    def execute(self, sql, params=None):
+        if "SELECT meta FROM refs" in sql and params:
+            meta = self._store._live_meta.get(params[0])
+            return _WSCursor([(meta,)] if meta is not None else [])
+        return _WSCursor([])
+
+    def commit(self) -> None:
+        return None
+
+    def rollback(self) -> None:
+        return None
+
+
+class _WorkspacePool:
+    def __init__(self, store: DraftFakeStore) -> None:
+        self._store = store
+
+    @contextmanager
+    def connection(self):
+        yield _WSConn(self._store)
+
+
 class DraftFakeStore(FakeStore):
     def __init__(self) -> None:
         super().__init__()
+        # Mirrors refs.meta for the /workspace route's read-modify-write
+        # round trip (see _WSConn above). {} for a ref not yet seeded.
+        self._live_meta: dict[int, dict] = {}
+        self.pool = _WorkspacePool(self)
         # BBBBBB is parented under the AAAAAA heading → ancestors=[AAAAAA],
         # so collapsing AAAAAA hides it (collapse mechanics).
         self._chunks = [
@@ -265,11 +316,14 @@ class DraftFakeStore(FakeStore):
         return base
 
     def stamp_ref_meta(self, ref_id, updates, *, conn=None):
-        # Records the genre/brief workspace writes (the /workspace route).
-        # `meta_writes` is declared on the base FakeStore.
+        # Records the genre/brief/voice workspace writes (the /workspace
+        # route). `meta_writes` is declared on the base FakeStore.
         self.meta_writes.append((ref_id, updates))
         if "authoring_enabled" in updates:
             self._authoring_enabled = bool(updates["authoring_enabled"])
+        # Mirror the real store's shallow top-level merge (`meta || updates`)
+        # into `_live_meta` so a subsequent /workspace POST's read sees it.
+        self._live_meta.setdefault(ref_id, {}).update(updates)
 
 
 @pytest.fixture
@@ -536,6 +590,55 @@ def test_clear_workspace_removes_keys(
     _rid, updates = draft_runtime.store.meta_writes[-1]
     assert "doc_type" not in updates["workspace"]
     assert "brief" not in updates["workspace"]
+
+
+def test_set_workspace_partial_update_voice_only_keeps_brief(
+    draft_client: TestClient, draft_runtime: FakeRuntime
+) -> None:
+    # Posting ONLY `voice` (the style ▾ popover) must not clobber a prior
+    # genre + brief (the genre ▾ popover) — a field param of `None` (not
+    # present in the posted form) means "leave unchanged", not "clear".
+    store = cast(DraftFakeStore, draft_runtime.store)
+    for rid in (500, 1):
+        store._live_meta[rid] = {
+            "workspace": {"doc_type": "report", "brief": "Be concise."}
+        }
+    r = draft_client.post(
+        "/drafts/nt/workspace",
+        data={"voice": "light-hearted, colloquial, occasional puns"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    writes = draft_runtime.store.meta_writes
+    targets = {rid for rid, _ in writes}
+    assert targets == {500, 1}
+    for _rid, updates in writes:
+        ws = updates["workspace"]
+        assert ws["doc_type"] == "report"
+        assert ws["brief"] == "Be concise."
+        assert ws["voice"] == "light-hearted, colloquial, occasional puns"
+
+
+def test_set_workspace_partial_update_brief_only_keeps_voice(
+    draft_client: TestClient, draft_runtime: FakeRuntime
+) -> None:
+    # Posting ONLY `brief` (the genre ▾ popover) must not clobber a prior
+    # voice (the style ▾ popover).
+    store = cast(DraftFakeStore, draft_runtime.store)
+    for rid in (500, 1):
+        store._live_meta[rid] = {"workspace": {"voice": "wry and terse"}}
+    r = draft_client.post(
+        "/drafts/nt/workspace",
+        data={"brief": "Focus on catalysis."},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    writes = draft_runtime.store.meta_writes
+    for _rid, updates in writes:
+        ws = updates["workspace"]
+        assert ws["voice"] == "wry and terse"
+        assert ws["brief"] == "Focus on catalysis."
+        assert "doc_type" not in ws
 
 
 def test_list_markers_numbers_olist_and_bullets_ulist() -> None:
@@ -1208,6 +1311,22 @@ def test_ref_chips_paper_chunk_handle_excluded_from_paper_source_filter() -> Non
     assert chips[0].kind == "paper"
     assert chips[0].is_chunk is True
     assert [c for c in chips if c.kind == "paper" and not c.is_chunk] == []
+
+
+def test_provenance_state_sourced_pending_unsourced() -> None:
+    """The smartdraft reader's per-paragraph grounding marker: a corpus
+    paper/patent citation → "sourced"; a ``[fi<id>]`` finding (source still
+    being chased) → "pending"; no citation at all → "unsourced"."""
+    from precis.utils import handle_registry
+    from precis_web.routes.drafts import provenance_state
+
+    paper_chunk = handle_registry.format_handle("paper", 10, chunk=True)
+    assert provenance_state(f"[{paper_chunk}] foo") == "sourced"
+    finding = handle_registry.format_handle("finding", 42, chunk=False)
+    assert provenance_state(f"[{finding}] foo") == "pending"
+    assert provenance_state("plain text") == "unsourced"
+    patent_chunk = handle_registry.format_handle("patent", 5, chunk=True)
+    assert provenance_state(f"[{patent_chunk}] foo") == "sourced"
 
 
 def test_cited_sources_filters_by_kind_not_href_shape(monkeypatch) -> None:

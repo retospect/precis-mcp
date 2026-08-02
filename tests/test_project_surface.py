@@ -56,6 +56,25 @@ def test_workspace_doc_type_round_trips() -> None:
     assert "doc_type" not in plain.to_meta()
 
 
+def test_workspace_voice_round_trips() -> None:
+    # voice is a first-class field, distinct from brief and from style
+    # (citation style) — the always-applied writing register.
+    ws = Workspace(
+        path="projects/frypat",
+        format="tex",
+        entrypoint="main.tex",
+        voice="light-hearted, colloquial, occasional puns",
+    )
+    assert ws.to_meta()["voice"] == "light-hearted, colloquial, occasional puns"
+    back = Workspace.from_meta({"workspace": ws.to_meta()})
+    assert back is not None
+    assert back.voice == "light-hearted, colloquial, occasional puns"
+    # Absent → empty default, and not emitted.
+    plain = Workspace(path="p", format="tex", entrypoint="main.tex")
+    assert plain.voice == ""
+    assert "voice" not in plain.to_meta()
+
+
 def test_workspace_project_tag_property() -> None:
     ws = Workspace(path="projects/demo", format="tex", entrypoint="main.tex")
     assert ws.project_tag == "project:demo"
@@ -246,3 +265,38 @@ def test_planner_prompt_no_brief_no_block(handler: TodoHandler) -> None:
     rid = _id_of(root.body)
     prompts = build_planner_prompts(handler.store, ref_id=rid, model="opus")
     assert "## Project context" not in prompts.user
+
+
+# ── voice injection into planner prompt (DB) ───────────────────────
+
+_WS_META_VOICE = {
+    "workspace": {
+        "path": "projects/demo-voice",
+        "format": "tex",
+        "entrypoint": "main.tex",
+        "voice": "light-hearted, colloquial, occasional puns",
+    }
+}
+
+
+def test_planner_prompt_injects_voice(handler: TodoHandler) -> None:
+    from precis.workers.planner_prompt import build_planner_prompts
+
+    root = handler.put(
+        text="Demo project.", tags=["level:strategic"], meta=_WS_META_VOICE
+    )
+    rid = _id_of(root.body)
+    prompts = build_planner_prompts(handler.store, ref_id=rid, model="opus")
+    assert "## Voice & style" in prompts.user
+    assert "light-hearted, colloquial, occasional puns" in prompts.user
+    # Voice belongs in the variable (user) layer, never the cached system.
+    assert "light-hearted, colloquial, occasional puns" not in prompts.system
+
+
+def test_planner_prompt_no_voice_no_block(handler: TodoHandler) -> None:
+    from precis.workers.planner_prompt import build_planner_prompts
+
+    root = handler.put(text="No-workspace strategic.", tags=["level:strategic"])
+    rid = _id_of(root.body)
+    prompts = build_planner_prompts(handler.store, ref_id=rid, model="opus")
+    assert "## Voice & style" not in prompts.user

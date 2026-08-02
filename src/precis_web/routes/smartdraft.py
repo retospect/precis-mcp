@@ -222,6 +222,7 @@ async def reader(
             "doctypes": _DOC_TYPES,
             "cur_doctype": str(owner_ws.get("doc_type") or ""),
             "cur_brief": str(owner_ws.get("brief") or ""),
+            "cur_voice": str(owner_ws.get("voice") or ""),
             "authoring_enabled": store.draft_authoring_enabled(ref.id),
             "focus_review": focus_review,
         },

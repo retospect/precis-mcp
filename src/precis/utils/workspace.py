@@ -75,6 +75,14 @@ class Workspace:
     # first-class field rather than an ``extra`` key so it round-trips
     # explicitly and shows up in the projects dashboard.
     brief: str = ""
+    # Standing writing register — the always-applied "voice" (e.g.
+    # "light-hearted, colloquial, occasional puns"). Distinct from ``brief``
+    # (project scope/constraints) and from the one-shot task (the todo
+    # BODY): this is *how* every tick should sound, not *what* it's working
+    # on. Surfaced to the planner as a ``## Voice & style`` block
+    # (``workers/planner_prompt._render_voice``) — do NOT confuse with
+    # :attr:`style`, which is citation style.
+    voice: str = ""
     # Document genre (the shipped "+ New draft" picker value): ``patent`` |
     # ``paper`` | ``proposal`` | ``report`` | ``review`` | ``manufacturing``
     # | ``article`` | "". A first-class field (not an ``extra`` key) because
@@ -110,7 +118,7 @@ class Workspace:
         ws = meta.get("workspace")
         if not ws or not isinstance(ws, dict):
             return None
-        known = {"path", "format", "entrypoint", "style", "brief", "doc_type"}
+        known = {"path", "format", "entrypoint", "style", "brief", "voice", "doc_type"}
         extra = {k: v for k, v in ws.items() if k not in known}
         try:
             return cls(
@@ -119,6 +127,7 @@ class Workspace:
                 entrypoint=str(ws.get("entrypoint", "main.tex")),
                 style=str(ws.get("style", "")),
                 brief=str(ws.get("brief", "")),
+                voice=str(ws.get("voice", "")),
                 doc_type=str(ws.get("doc_type", "")),
                 extra=extra,
             )
@@ -137,6 +146,8 @@ class Workspace:
             out["style"] = self.style
         if self.brief:
             out["brief"] = self.brief
+        if self.voice:
+            out["voice"] = self.voice
         if self.doc_type:
             out["doc_type"] = self.doc_type
         out.update(self.extra)

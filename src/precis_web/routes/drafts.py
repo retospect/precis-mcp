@@ -382,6 +382,24 @@ def _cite_candidates(text: str) -> tuple[set[str], set[str]]:
     return handles, slugs
 
 
+def provenance_state(text: str) -> str:
+    """A paragraph's grounding provenance, for the smartdraft reader's
+    per-paragraph colour marker: ``"sourced"`` (cites a corpus paper/patent),
+    ``"pending"`` (cites a ``[fi<id>]`` finding — a source still being
+    chased), or ``"unsourced"`` (no citation at all). Keys off each chip's
+    ``kind`` from :func:`_ref_chips` rather than re-parsing the citation
+    grammar (DRY — same parser the "Cited sources" rail keys off). Unlike
+    that rail, a chunk-form cite (``[pc10]``, ``is_chunk=True``) still counts
+    as ``"sourced"`` — a chunk citation is real grounding evidence."""
+    chips = _ref_chips(text)
+    kinds = {c.kind for c in chips}
+    if kinds & {"paper", "patent"}:
+        return "sourced"
+    if "finding" in kinds:
+        return "pending"
+    return "unsourced"
+
+
 #: Request lifecycle ordering for the per-block list: active first, then
 #: done/abandoned (which now *persist* so you can click in and debug the
 #: LLM run, rather than vanishing on completion).
@@ -1995,23 +2013,31 @@ async def fork_draft_route(
 async def set_workspace(
     request: Request,
     ident: str,
-    doctype: str = Form(""),
-    brief: str = Form(""),
+    doctype: str | None = Form(None),
+    brief: str | None = Form(None),
+    voice: str | None = Form(None),
 ) -> Response:
-    """Set the draft's genre (``doc_type``) + project context (``brief``)
-    after creation — the gap for *imported* drafts, which never went through
-    the ``/drafts/new`` genre picker (so the per-heading ``style ▾`` picker
-    stays empty and the planner has no ``## Project context``). Writes
-    ``meta.workspace.{doc_type,brief}`` on both the draft and its owning
-    project (see :func:`_workspace_targets`). ``doctype=""`` clears the
-    genre; ``brief=""`` clears the context. Unknown genres are rejected."""
+    """Set the draft's genre (``doc_type``), project context (``brief``), and/or
+    standing voice/style (``voice``) after creation — the gap for *imported*
+    drafts, which never went through the ``/drafts/new`` genre picker (so the
+    per-heading ``style ▾`` picker stays empty and the planner has no
+    ``## Project context`` / ``## Voice & style``). Writes
+    ``meta.workspace.{doc_type,brief,voice}`` on both the draft and its owning
+    project (see :func:`_workspace_targets`).
+
+    **Partial update**: a field whose param is ``None`` (not present in the
+    posted form) is left UNCHANGED — this lets the smartdraft reader's
+    separate "genre ▾" (doctype+brief) and "style ▾" (voice) popovers each
+    post just their own field without clobbering the other. A field posted
+    as the empty string clears that key. Unknown genres are rejected."""
     store = get_store(request)
     ref = _draft_ref(store, ident)
     back = f"/drafts/{ident}"
     if ref is None:
         return RedirectResponse(url=back, status_code=303)
-    doctype = doctype.strip()
-    brief = brief.strip()
+    doctype = doctype.strip() if doctype is not None else None
+    brief = brief.strip() if brief is not None else None
+    voice = voice.strip() if voice is not None else None
     if doctype and doctype not in _DOC_TYPE_BRIEF:
         return templates.TemplateResponse(
             request,
@@ -2030,14 +2056,21 @@ async def set_workspace(
             ).fetchone()
         meta = (row[0] if row else None) or {}
         ws = dict(meta.get("workspace") or {})
-        if doctype:
-            ws["doc_type"] = doctype
-        else:
-            ws.pop("doc_type", None)
-        if brief:
-            ws["brief"] = brief
-        else:
-            ws.pop("brief", None)
+        if doctype is not None:
+            if doctype:
+                ws["doc_type"] = doctype
+            else:
+                ws.pop("doc_type", None)
+        if brief is not None:
+            if brief:
+                ws["brief"] = brief
+            else:
+                ws.pop("brief", None)
+        if voice is not None:
+            if voice:
+                ws["voice"] = voice
+            else:
+                ws.pop("voice", None)
         store.stamp_ref_meta(rid, {"workspace": ws})
     return RedirectResponse(url=back, status_code=303)
 

@@ -73,6 +73,7 @@
   <a id="toc-{{ n.dc }}" href="?focus={{ n.dc }}" data-dc="{{ n.dc }}"
      style="padding-left: {{ 0.4 + n.depth * 0.6 }}rem"
      class="sd-row{% if q and n.dc in hit_dcs %} sd-hit{% elif n.dc == focus_dc %} sd-focus{% elif row.shared %} sd-shared{% elif row.pressure >= 0.4 %} sd-hot{% endif %}">
+    {%- if n.provenance %}<span class="sd-dot sd-dot-{{ n.provenance }}" title="{{ n.provenance }}"></span>{% endif -%}
     <span class="sd-btext">{% if debug %}<span class="sd-dc">{{ n.dc }}</span> {% endif %}· {{ n.summary }}</span>
     <span class="sd-badge">{%- if row.shared %}<span title="shares a keyword with the focus">🔑</span>{% endif -%}{%- if n.pinned %}📌{% endif -%}{%- if n.locked %}🔒{% endif -%}</span>
   </a>
@@ -110,6 +111,18 @@
      the review is stale (text changed since). */
   .sd-review.on { color: #059669; }      /* emerald-600 — reviewed */
   .sd-review.dirty { color: #d97706; }   /* amber-600 — stale review */
+  /* Per-paragraph grounding provenance (a corpus cite / a chased finding /
+     nothing) — a subtle left border in the middle reading pane, a small
+     dot in the left TOC. Colours: emerald/amber/rose, matching the
+     existing sd-focus amber-400 idiom above. */
+  .sd-prov-sourced { border-left: 3px solid #16a34a; }
+  .sd-prov-pending { border-left: 3px solid #d97706; }
+  .sd-prov-unsourced { border-left: 3px solid #dc2626; }
+  .sd-dot { display: inline-block; width: .4rem; height: .4rem; flex-shrink: 0;
+    border-radius: 9999px; margin: .25rem .1rem 0 0; }
+  .sd-dot-sourced { background: #16a34a; }
+  .sd-dot-pending { background: #d97706; }
+  .sd-dot-unsourced { background: #dc2626; }
 </style>
 
 {# KaTeX — same client-side $…$ / $$…$$ math render the classic /drafts reader
@@ -132,6 +145,7 @@
 <div class="mb-2 flex items-center justify-between">
   <h1 class="truncate text-base font-semibold">{{ ref.title }}</h1>
   <div class="flex items-center gap-3 text-[11px] text-slate-500">
+    <span title="paragraph grounding: 🟢 sourced (cites a corpus paper/patent) · 🟡 pending (cites a finding — source still being chased) · 🔴 unsourced (no citation)">🟢 sourced · 🟡 pending · 🔴 unsourced</span>
     <a href="{{ slink(to_debug=(not debug)) }}" class="{% if debug %}text-sky-700{% else %}hover:text-slate-800{% endif %}" title="show chunk ids (debug)">ids</a>
   </div>
 </div>
@@ -272,7 +286,7 @@
             </table>
           </div>
           {% else %}
-          <p class="whitespace-pre-wrap text-slate-800 {{ hd }}">{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims) }}</p>
+          <p class="whitespace-pre-wrap text-slate-800 {{ hd }}{% if n.provenance %} sd-prov-{{ n.provenance }}{% endif %}">{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims) }}</p>
           {% endif %}
           {% endcall %}
         </div>
@@ -314,7 +328,7 @@
             </div>
           </div>
           {# rendered view (with links) #}
-          <div class="whitespace-pre-wrap text-slate-800 {{ hd }}">{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims) }}</div>
+          <div class="whitespace-pre-wrap text-slate-800 {{ hd }}{% if n.provenance %} sd-prov-{{ n.provenance }}{% endif %}">{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims) }}</div>
           {# tag row (the T search signal) — chips + type-ahead add #}
           <div class="mt-2 flex flex-wrap items-center gap-1 border-t border-amber-100 pt-1.5 text-[10px]">
             <span class="text-slate-400">🏷</span>
@@ -345,7 +359,7 @@
         {# ±1 neighbour: verbatim, truncated toward the focus (tail leads in,
            head flows out). <div> not <a> for the same nested-anchor reason as
            the doc-mode block above. #}
-        <div data-dc="{{ n.dc }}" class="block cursor-pointer whitespace-pre-wrap rounded px-2 py-1 text-slate-500 hover:bg-slate-50 {{ hd }}">{% if debug %}<span class="font-mono text-[9px] text-sky-500">{{ n.dc }} </span>{% endif %}{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims) }}</div>
+        <div data-dc="{{ n.dc }}" class="block cursor-pointer whitespace-pre-wrap rounded px-2 py-1 text-slate-500 hover:bg-slate-50 {{ hd }}{% if n.provenance %} sd-prov-{{ n.provenance }}{% endif %}">{% if debug %}<span class="font-mono text-[9px] text-sky-500">{{ n.dc }} </span>{% endif %}{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims) }}</div>
         {% else %}
         {# ±2 neighbour: one-line summary #}
         <a href="{{ qs(n.dc) }}" class="block truncate rounded px-2 py-0.5 text-slate-400 hover:bg-slate-50 {{ hd }}" title="{{ n.text[:400] }}">{% if debug %}<span class="font-mono text-[9px] text-sky-500">{{ n.dc }} </span>{% endif %}· {{ m.display }}</a>
@@ -621,6 +635,32 @@
             <div class="flex items-center gap-2">
               <button class="rounded bg-sky-600 px-2 py-0.5 text-[11px] text-white hover:bg-sky-700">save</button>
               <button type="button" @click="gen = false" class="text-[10px] text-slate-400 hover:text-slate-600">cancel</button>
+            </div>
+          </form>
+        </div>
+        {# Voice/style — the standing writing register (meta.workspace.voice),
+           always applied by the planner (## Voice & style), distinct from
+           genre's project context (brief) and from the one-shot task (the
+           project todo body). A separate popover so it posts alone (partial
+           update — see routes/drafts.py::set_workspace) without touching
+           genre/brief. #}
+        <div class="relative" x-data="{ voi: false }" @click.outside="voi = false">
+          <button @click="voi = !voi"
+                  class="text-slate-500 underline hover:text-slate-800"
+                  title="set the standing voice/style applied to every planner tick">style ▾</button>
+          <form x-show="voi" x-cloak method="post"
+                action="/drafts/{{ ident }}/workspace"
+                class="absolute bottom-full right-0 z-40 mb-1 w-80 space-y-2 rounded border border-slate-200 bg-white p-3 text-left shadow-lg">
+            <div>
+              <label class="block text-[11px] font-semibold text-slate-600">Voice / style</label>
+              <p class="mt-0.5 text-[10px] text-slate-400">The standing writing register applied to every planner tick — separate from genre's project context above.</p>
+              <textarea name="voice" rows="4"
+                        placeholder="Voice / style applied to every planner tick — e.g. light-hearted, colloquial, occasional puns"
+                        class="mt-0.5 w-full resize-y rounded border border-slate-200 px-2 py-1 text-xs leading-snug focus:border-sky-400 focus:outline-none">{{ cur_voice }}</textarea>
+            </div>
+            <div class="flex items-center gap-2">
+              <button class="rounded bg-sky-600 px-2 py-0.5 text-[11px] text-white hover:bg-sky-700">save</button>
+              <button type="button" @click="voi = false" class="text-[10px] text-slate-400 hover:text-slate-600">cancel</button>
             </div>
           </form>
         </div>

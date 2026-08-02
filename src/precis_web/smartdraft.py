@@ -130,6 +130,12 @@ class ChunkNode:
     #: ``meta.surface_forms`` — extra aliases the leaf also hover-resolves
     #: under (ADR 0052 §4). Empty for a non-term chunk.
     term_surface_forms: list[str] = field(default_factory=list)
+    #: Grounding provenance for a ``chunk_kind='paragraph'`` node —
+    #: ``"sourced"`` / ``"pending"`` / ``"unsourced"``
+    #: (:func:`precis_web.routes.drafts.provenance_state`), the reader's
+    #: per-paragraph colour marker. ``""`` for a non-prose node (heading /
+    #: figure / table / term), which has no citation surface.
+    provenance: str = ""
 
     @property
     def is_heading(self) -> bool:
@@ -274,6 +280,12 @@ def _build_nodes_uncached(store: Any, ref_id: int) -> list[ChunkNode]:
     """The actual build — one join over reading-order (structure) +
     `list_blocks_for_ref` (keywords) + `block_views` (llm summary) + chunk tags.
     Pins/locks are left False; :func:`_apply_marks` overlays them per request."""
+    # Lazy import: `routes.drafts` imports FROM this module (top-level
+    # `precis_web.smartdraft`) via `routes.smartdraft` — an eager module-level
+    # import here would risk a load-order cycle. Cheap (no heavy work at
+    # import time) and called once per (cache-missed) build.
+    from precis_web.routes.drafts import provenance_state
+
     chunks = store.reading_order(ref_id)
     # NB: do NOT load embeddings here — for a 10k-chunk draft that fetches ~10M
     # floats and (with a python cosine) blocks the page for seconds. Semantic is
@@ -296,6 +308,7 @@ def _build_nodes_uncached(store: Any, ref_id: int) -> list[ChunkNode]:
         fsrc = resolve_figure_source(store, c) if is_figure else None
         is_term = c.chunk_kind == "term"
         term_meta = (getattr(c, "meta", None) or {}) if is_term else {}
+        is_paragraph = c.chunk_kind == "paragraph"
         nodes.append(
             ChunkNode(
                 idx=i,
@@ -319,6 +332,7 @@ def _build_nodes_uncached(store: Any, ref_id: int) -> list[ChunkNode]:
                 term_surface_forms=list(term_meta.get("surface_forms") or [])
                 if is_term
                 else [],
+                provenance=provenance_state(c.text or "") if is_paragraph else "",
             )
         )
     return nodes

@@ -10,5 +10,6 @@
    via the delegated handler in view.html.j2. #}
 {% macro sd_doc_block(n, display, debug, claims) -%}
 {%- set hd = 'font-semibold text-slate-900 text-base' if n.is_heading else '' -%}
-<div data-dc="{{ n.dc }}" class="block cursor-pointer whitespace-pre-wrap rounded px-2 py-1 text-slate-700 hover:bg-slate-50 {{ hd }}">{% if debug %}<span class="font-mono text-[9px] text-sky-500">{{ n.dc }} </span>{% endif %}{{ display | linkify_refs(markdown=True, compact=True, claims=claims) }}</div>
+{%- set prov = ' sd-prov-' ~ n.provenance if n.provenance else '' -%}
+<div data-dc="{{ n.dc }}" class="block cursor-pointer whitespace-pre-wrap rounded px-2 py-1 text-slate-700 hover:bg-slate-50 {{ hd }}{{ prov }}">{% if debug %}<span class="font-mono text-[9px] text-sky-500">{{ n.dc }} </span>{% endif %}{{ display | linkify_refs(markdown=True, compact=True, claims=claims) }}</div>
 {%- endmacro %}
