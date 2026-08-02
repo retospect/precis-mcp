@@ -125,9 +125,13 @@
     # `--dry-run` (set -e precis_migrate_dry_run=true) reports pending
     # migrations without applying — handy to preview a deploy.
     argv: "{{ ['' ~ precis_web_venv ~ '/bin/precis', 'migrate'] + (['--dry-run'] if precis_migrate_dry_run | bool else []) }}"
+  # §L: the DSN is password-free — libpq needs ~deploy/.pgpass, so this must
+  # run as deploy with HOME set (root has no pgpass; fe_sendauth otherwise).
   environment:
     PRECIS_DATABASE_URL: "{{ precis_web_dsn }}"
+    HOME: "{{ '/Users/deploy' if os_family == 'darwin' else '/home/deploy' }}"
   become: true
+  become_user: deploy
   register: precis_web_migrate
   changed_when: "'migrate: applied' in precis_web_migrate.stdout"
   tags: [precis-migrate]
