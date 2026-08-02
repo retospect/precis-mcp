@@ -9,7 +9,14 @@ model: opus
 > **Part of the unified scheduling frame** — this is §D (the liveness net) of
 > `cluster-scheduling.md`: the cross-cutting guarantee that no scheduled
 > producer silently stops. See the master frame for how it relates to the
-> recurring-clock (§A) and priority-claim (§B) axes.
+> recurring-clock (§A) and priority-claim (§B) axes. **§F (demand-materialized
+> elastic work) makes this load-bearing:** when a producer *evaporates while
+> idle*, liveness can no longer be "is the process running" — it must be
+> *outcome-based*, alarming on a backlog that isn't draining and **never** on
+> mere quiet (the freshness-vs-surface split below), reading the same backlog
+> signal §F computes, from the same registry (`ServiceSpec × service_config ×
+> worker_logs`). §D and §F share **one** liveness truth, not two — confirm this
+> before building Layer 2.
 
 ## Motivation / why
 
