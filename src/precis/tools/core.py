@@ -734,7 +734,7 @@ def put(
     idem_key: str | None = None,
     # job retry (see precis-job-help): re-run a failed job —
     # put(kind='job', id=<failed>, mode='retry'[, model='sonnet']). model=
-    # swaps the parent todo's LLM:<model> tag so the re-minted tick runs on
+    # swaps the parent todo's meta.llm_tier so the re-minted tick runs on
     # a different tier (opus|sonnet|haiku).
     model: str | None = None,
     # presentation (see precis-pres-help):

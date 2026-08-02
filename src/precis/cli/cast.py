@@ -13,8 +13,8 @@ docs/design/reading-prep-loop.md §Audio):
 ``run`` is the writer organ (node-agnostic — store + LLM → a draft); ``--publish``
 additionally narrates it inline via the shipped audio path (needs Kokoro / the
 precis-tts image, i.e. spark). ``schedule`` idempotently installs the two
-``level:recurring`` watches that drive the ``reading_brief`` / ``meditation``
-coordinator job_types on a daily cron; ``--now`` also composes both immediately so
+recurring (``meta.schedule`` set) watches that drive the ``reading_brief`` /
+``meditation`` coordinator job_types on a daily cron; ``--now`` also composes both immediately so
 the first episodes don't wait for the next cron boundary (a never-fired daily cron
 only fires at its next matching minute).
 """
@@ -140,10 +140,11 @@ def install_cast_watches(store: Store) -> list[int]:
     Returns the ref ids (existing or freshly created).
 
     Authors the recurring todos directly (no booted hub needed from a CLI),
-    mirroring ``ensure_watches_root``: an ``insert_ref`` + the ``level:recurring``
-    gradient tag + ``STATUS:open``, carrying the ``meta.schedule`` /
-    ``meta.executor`` / ``meta.job_type`` / ``meta.params`` the recurring spawner
-    reads. Idempotent on a ``meta.cast_watch`` marker.
+    mirroring ``ensure_watches_root``: an ``insert_ref`` + ``STATUS:open``,
+    carrying the ``meta.schedule`` / ``meta.executor`` / ``meta.job_type`` /
+    ``meta.params`` the recurring spawner reads — ``meta.schedule``'s
+    presence IS "recurring" (§M facet normalization), no separate tag
+    needed. Idempotent on a ``meta.cast_watch`` marker.
     """
     from precis.store.types import Tag
     from precis.workers.schedule import validate_schedule
@@ -179,7 +180,6 @@ def install_cast_watches(store: Store) -> list[int]:
             prio=2,  # the cron tier; note: prio doesn't affect job-execution order
             parent_id=watches,
         )
-        store.add_tag(ref.id, Tag.open("level:recurring"), set_by="system")
         store.add_tag(ref.id, Tag.closed("STATUS", "open"), set_by="system")
         out.append(int(ref.id))
         print(
@@ -208,7 +208,6 @@ def install_cast_watches(store: Store) -> list[int]:
         prio=2,
         parent_id=watches,
     )
-    store.add_tag(ref.id, Tag.open("level:recurring"), set_by="system")
     store.add_tag(ref.id, Tag.closed("STATUS", "open"), set_by="system")
     out.append(int(ref.id))
     print(f"card_forge: scheduled @ '{_CARD_FORGE_CRON}' → job_type card_forge")

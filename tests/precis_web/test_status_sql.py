@@ -201,10 +201,10 @@ def test_liveness_runs_every_signal_against_real_pg(store: Any) -> None:
 def test_automations_lists_tagged_recurrings_with_produced_artifact(
     store: Any,
 ) -> None:
-    """The Automations panel surfaces ``level:recurring`` todos tagged
-    ``automation`` (only), with their subtype, schedule, and the most recent
-    ``derived-into`` artifact (ADR 0061 — folded from the retired
-    ``kind='cron'``).
+    """The Automations panel surfaces recurring (``meta.schedule`` set)
+    todos tagged ``automation`` (only), with their subtype, schedule, and
+    the most recent ``derived-into`` artifact (ADR 0061 — folded from the
+    retired ``kind='cron'``).
 
     A plain (untagged) recurring must not appear; the produced-artifact join
     follows the recurring → draft ``derived-into`` edge.
@@ -218,7 +218,6 @@ def test_automations_lists_tagged_recurrings_with_produced_artifact(
             "deliver": {"target": "conv:discord/g/c/t"},
         },
     )
-    store.add_tag(recurring.id, Tag.open("level:recurring"), set_by="agent")
     store.add_tag(recurring.id, Tag.open("automation"), set_by="agent")
     store.add_tag(recurring.id, Tag.open("cast-morning"), set_by="agent")
     with store.pool.connection() as conn:

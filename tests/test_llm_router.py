@@ -3146,14 +3146,14 @@ def test_cloud_aliases_and_local_alias_resolve_to_capability_tiers() -> None:
 
 
 def test_llm_tag_big_passes_todo_guards_vocab() -> None:
-    """`LLM:big` (the new alias) is a valid closed-vocab tag value — the
+    """`llm_tier='big'` (the new alias) is a valid closed-vocab value — the
     guard is single-sourced from PLANNER_MODEL_ALIASES, so this is a
     regression test on that wiring, not a hardcoded vocab copy."""
-    from precis.handlers._todo_guards import _LLM_TAG_VALUES
+    from precis.handlers._todo_guards import _LLM_TIER_VALUES
 
-    assert "big" in _LLM_TAG_VALUES
-    assert "frontier" in _LLM_TAG_VALUES
-    assert "medium" in _LLM_TAG_VALUES
-    assert "small" in _LLM_TAG_VALUES
+    assert "big" in _LLM_TIER_VALUES
+    assert "frontier" in _LLM_TIER_VALUES
+    assert "medium" in _LLM_TIER_VALUES
+    assert "small" in _LLM_TIER_VALUES
     # legacy vocab still present alongside the new names.
-    assert {"opus", "sonnet", "haiku", "local"} <= _LLM_TAG_VALUES
+    assert {"opus", "sonnet", "haiku", "local"} <= _LLM_TIER_VALUES

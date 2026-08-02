@@ -176,7 +176,7 @@ The todo tree is the unified surface for *intent*, *execution*,
 | `precis-tasks-help` | Tree shape (strategic/tactical/subtask), claim/release/done, doable view rules |
 | `precis-decomposition-help` | The GTD interrogation: when to split, when to block, when to wait |
 | `precis-auto-tasks-help` | Wait-for-condition leaves via `meta.auto_check` |
-| `precis-recurring-help` | `level:recurring` schedule format + the **Watches** umbrella |
+| `precis-recurring-help` | `meta.schedule` format + the **Watches** umbrella |
 | `precis-dispatch-help` | When to set `meta.executor` on a todo so a `kind='job'` runs under it |
 | `precis-job-help` | The job substrate. New jobs require `parent_id` pointing at a todo |
 | `precis-fix-gripe-help` | First concrete job_type, end-to-end recipe |

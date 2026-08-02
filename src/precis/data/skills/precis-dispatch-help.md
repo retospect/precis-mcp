@@ -34,7 +34,7 @@ not for recurring intent.
 | …the owner / asa will work by hand | no |
 | …needs an offline `claude -p` run on a repo | yes (`'claude_inproc'`) |
 | …needs to wait for a paper to ingest | no — use `meta.auto_check={'type':'paper_ingested', ...}` |
-| …is the umbrella of recurring scheduled work | no — `level:recurring` + `meta.schedule` (see `precis-recurring-help`) |
+| …is the umbrella of recurring scheduled work | no — `meta.schedule` set (see `precis-recurring-help`) |
 | …is one tick of a recurring (spawned automatically) | usually inherited from the umbrella |
 
 In short: `meta.executor` means **"this todo IS a thing the

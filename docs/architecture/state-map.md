@@ -19,21 +19,37 @@
 ## The todo tree (five slices)
 
 `kind='todo'` is a hierarchical task graph unifying intent,
-scheduling, execution, and review:
+scheduling, execution, and review.
 
-* **Hierarchy.** `parent_id` column on refs; a
-  strategic / tactical / subtask gradient with walk-on-read ancestry
-  and a 1/N rotation across strategics by 7-day picks. Reparenting
-  goes through a reserved `parent` **link** relation (ADR 0027), not
-  a raw column write.
+**The facet model (§M, migration 0102).** A todo is **one faceted
+kind** — `tags` + `meta` — not a family of kinds. The next "type" of
+work is a field or a tag on `kind='todo'`, never a new kind: the level
+gradient, the schedule/recurring shape, and the LLM auto-run tier are
+all `meta` fields (below), not sibling kinds. The **one** boundary that
+stays is todo ↔ job (ADR 0030, defended on physical grounds: a job is
+claimed/leased/executor-run — `FOR UPDATE SKIP LOCKED`, `idem_key`,
+the sweeper, lease-steal, reserve-at-claim slots — a todo is durable
+intent and is never leased; merging would force row-lock contention or
+two state machines onto one ref). See `tests/test_todo_job_boundary.py`
+for the durable pin of that boundary.
+
+* **Hierarchy.** `parent_id` column on refs; a strategic / tactical /
+  subtask gradient — `meta.rotation_root=true` (strategic root) /
+  `meta.worker_mintable=false` (tactical) / neither set (subtask, the
+  worker-mintable default) — with walk-on-read ancestry and a 1/N
+  rotation across strategics by 7-day picks. Reparenting goes through
+  a reserved `parent` **link** relation (ADR 0027), not a raw column
+  write.
 * **`meta.auto_check` leaves.** Wait-for-condition evaluators under
   `auto_check_evaluators/`: `paper_ingested`, `discord_reply_received`,
   `time_past`, `tag_present`, `child_job_succeeded`.
-* **`level:recurring` umbrella ("Watches").** `meta.schedule` (cron /
+* **Recurring ("Watches" umbrella).** `meta.schedule` (cron /
   `every:` shorthand for recurring, or a one-shot `at` timestamp — ADR
-  0061) drives a per-minute spawner. Queue-mode ticks mint a
-  `level:subtask` child (the original Slice-4 behaviour); a recurring
-  carrying `meta.deliver={'target': ...}` instead fires a push
+  0061) presence *is* "recurring" — drives a per-minute spawner. No
+  separate tag: `level:recurring` was redundant with `meta.schedule`
+  and is retired (§M). Queue-mode ticks mint an ordinary
+  worker-mintable subtask child (the original Slice-4 behaviour); a
+  recurring carrying `meta.deliver={'target': ...}` instead fires a push
   notification (`pg_notify('precis.cron', ...)`) asa_bot turns into a
   synthetic prompt — this is the retired `kind='cron'` mechanism,
   folded on by ADR 0061 (superseding ADR 0030's cron ruling). `PRIO`
@@ -69,11 +85,12 @@ scheduling, execution, and review:
   `child-failed:` + `halt:orphan-retry-cap`. A content-class failure (no
   infra tag) latches `child-failed:` immediately, unchanged — so a transient
   orphan self-heals in a cycle instead of parking dark for days.
-* **Planner coroutines.** An `LLM:*`-tagged todo runs the `plan_tick`
-  coroutine — each tick is a `kind='job'` that may mint children
-  (`verdict: continue`) or yield (`ask-user:`) and still exit
+* **Planner coroutines.** A `meta.llm_tier`-set todo (§M — demoted off
+  the old `LLM:*` tag; the value picks the capability tier) runs the
+  `plan_tick` coroutine — each tick is a `kind='job'` that may mint
+  children (`verdict: continue`) or yield (`ask-user:`) and still exit
   `STATUS:succeeded`. `child_job_succeeded` is guarded so it never
-  auto-closes a parent that is `LLM:*`-tagged or still has a live
+  auto-closes a parent with `meta.llm_tier` set or still has a live
   child todo, and `dispatch` strips the spec when minting a
   self-resolving tick. Job lease is 90 min (covers a 60-min tick plus
   post-processing). A tick cut off by an **exhaustion** — the
@@ -458,8 +475,8 @@ quick-restart-mid-lease latency it leaves is deferred to
   provenance node whose id rides `env_overlay` so its spawned websearch /
   memory refs attribute back via `touched`),
   and `cron-tick` is the fourth daemon — post-ADR-0061 it fires due
-  `level:recurring` ticks (queue-mode spawn or `meta.deliver` push)
-  via `run_schedule_pass`, not the retired `kind='cron'` engine. Each
+  recurring (`meta.schedule` set) ticks (queue-mode spawn or `meta.deliver`
+  push) via `run_schedule_pass`, not the retired `kind='cron'` engine. Each
   heavy pass dedups on its tier-tagged memory and load-gates on
   `PRECIS_LOAD_CEILING` (default `os.cpu_count() * 1.5`).
 
@@ -506,7 +523,7 @@ quick-restart-mid-lease latency it leaves is deferred to
   (`utils/llm/operations.py`, runtime-tunable via `llm.op.reading_brief`/`meditation`),
   not a call-site `model=` arg — see the per-operation routing note in the LLM-router
   section)
-  on daily `level:recurring` watches; **TTS is the separate downstream spark pass**, so the
+  on daily recurring (`meta.schedule` set) watches; **TTS is the separate downstream spark pass**, so the
   nice-model compose and the container narration never block each other. CLI:
   `precis cast run <reading|nidra> [--publish]` + `precis cast schedule [--now]`.
   Skill: `precis-audio-help`. A third daily watch rides the same installer:
@@ -754,8 +771,8 @@ when the backend/chain routes there, not a separate `LOCAL_BIG` tier). A
 `cloud-super`→`FRONTIER`. Phase C also folded in the two pieces Phase B
 deferred: `llm_catalog.seed_default_cards` now seeds one `tier_floor` card per
 capability tier (`for tier in (FRONTIER, BIG, MEDIUM, SMALL)`, no more
-first-wins clobber over five tiers), and the four capability `LLM:` aliases
-(`frontier`/`big`/`medium`/`small`) are live in `PLANNER_TIER_BY_ALIAS`
+first-wins clobber over five tiers), and the four capability `meta.llm_tier`
+aliases (`frontier`/`big`/`medium`/`small`) are live in `PLANNER_TIER_BY_ALIAS`
 alongside the legacy `opus`/`sonnet`/`haiku`/`local` names (`local` now pins
 `BIG` directly). The legacy GLM-preset panel (`_llm_override_ctx`) is gone.
 **Failure semantics (§5a):** a transport exception is classified
@@ -1700,7 +1717,7 @@ The master kinds table lives in the `precis-overview` skill.
   servers-lite kind-count footer replacing the old raw-handle-link dump.
 - **`llm`** — the model catalog (design-of-record `docs/proposals/llm-catalog.md`;
   slice 1 **live, read-only, ships dark**). Turns model choice from hardcoded
-  constants (`router._TIER_MODEL` + the `LLM:opus|sonnet|haiku|local` tag) into a
+  constants (`router._TIER_MODEL` + `meta.llm_tier=opus|sonnet|haiku|local`) into a
   first-class kind: a **catalog** of facts + a **ledger** of observations + a
   **policy** that picks (quest/gripe shape — numeric-ref `handlers/llm.py`, handle
   `lm`, migration 0071, `emits_card` so a card *is a vector*, `corpus_role='none'`).
@@ -2124,7 +2141,9 @@ quest, todo` — agenda kinds with no body chunks, so they list in the
 no-query browse view; `todo` is pulled out of Author to sit here once).
 A quest row opens its hub (`/refs/quest/{id}`), a todo its own subtree
 (`/tasks?focus={id}`) — both via `_OPEN_URL_OVERRIDES`. "🔁 Schedules"
-is a preset link (`k=todo` + `tag=level:recurring`), not a kind; Quests +
+is a preset link (`k=todo` + `tag=level:recurring`), not a kind — the
+`level:recurring` value is a URL sentinel the route translates
+server-side to `has_schedule=True` (§M retired the tag itself); Quests +
 Schedules also sit in the nav Browse ▾ menu.
 `cited_by=<draft>` scopes the `state=stub` acquisition queue to one draft's
 **papers-to-fetch** set — the papers it cites but the corpus lacks (0 body

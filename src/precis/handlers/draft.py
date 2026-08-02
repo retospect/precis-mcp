@@ -1088,15 +1088,15 @@ class DraftHandler(Handler):
         to an EXISTING project todo, exactly like :meth:`_resolve_project`
         (and every other draft/plan ``project=`` call site) — never
         fuzzy-matched. A plain non-numeric string is a NEW project's
-        **title**: mints a fresh ``level:strategic`` project todo with that
-        title.
+        **title**: mints a fresh ``meta.rotation_root=true`` project todo
+        with that title.
 
         Reuses ``TodoHandler.put`` — the same "mint a project when the
         caller doesn't hand us one" path
         :func:`precis.draftimport.build.run_import` takes — rather than an
         ``insert_ref`` direct to the store, so the level-gradient authority
-        guard (``_todo_guards.check_level_tags_on_create``: workers can't
-        mint ``level:strategic``) still applies instead of being silently
+        guard (``_todo_guards.check_facets_on_create``: workers can't mint
+        ``rotation_root=true``) still applies instead of being silently
         bypassed for the fork's own project-minting shortcut. The new ref's
         id is read back off the ack's universal handle (``td<id>``, ADR
         0036) rather than by title lookup — a title has no uniqueness
@@ -1109,7 +1109,7 @@ class DraftHandler(Handler):
         from precis.handlers.todo import TodoHandler
 
         resp = TodoHandler(hub=Hub(store=self.store)).put(
-            text=raw, tags=["level:strategic"]
+            text=raw, meta={"rotation_root": True}
         )
         code = handle_registry.code_for_kind("todo")
         m = re.search(rf"\b{code}(\d+)\b", resp.body)

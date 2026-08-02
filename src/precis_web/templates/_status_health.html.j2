@@ -374,11 +374,12 @@
   </ul>
 </section>
 
-{# Standing automations: level:recurring todos tagged ``automation`` — the
-   morning/evening podcast casts, the news briefing. ADR 0061 folded the
-   retired ``kind='cron'`` push mechanism onto ``level:recurring`` +
-   ``meta.deliver``; the recurring's title IS the prompt for a deliver-mode
-   tick — edit it to change behaviour. See precis-automations. #}
+{# Standing automations: recurring todos (meta.schedule set) tagged
+   ``automation`` — the morning/evening podcast casts, the news briefing.
+   ADR 0061 folded the retired ``kind='cron'`` push mechanism onto the
+   recurring facet + ``meta.deliver``; the recurring's title IS the
+   prompt for a deliver-mode tick — edit it to change behaviour. See
+   precis-automations. #}
 <section class="mt-6">
   <h2 class="text-sm font-semibold mb-2">Automations
     <span class="font-normal text-xs text-slate-400">(standing recurrings — the casts, the briefing)</span>

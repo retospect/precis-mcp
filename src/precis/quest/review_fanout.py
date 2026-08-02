@@ -12,18 +12,18 @@ every reviewable chunk of a draft — a manual "review everything" pass
 
 **Shared minting.** Both callers go through
 :func:`precis.quest.weave_review.mint_review_todo` — the single
-``(parent, lens, anchor)`` ref/tag shape (idempotency check + insert +
-``STATUS:open``/``LLM:<tier>`` tags). This module only decides *which*
-chunks, *which* lenses, *which* tier, and *which* parent.
+``(parent, lens, anchor)`` ref/meta shape (idempotency check + insert +
+``STATUS:open`` tag / ``meta.llm_tier``). This module only decides
+*which* chunks, *which* lenses, *which* tier, and *which* parent.
 
 **Lenses → tier.** ``flow``/``cites`` are the per-weave/local lenses
-(``LLM:sonnet``, matching ``weave_review``'s per-weave tier); ``structure``
-(``precis-review-section-structure``) and ``adversarial``
+(``llm_tier='sonnet'``, matching ``weave_review``'s per-weave tier);
+``structure`` (``precis-review-section-structure``) and ``adversarial``
 (``precis-review-paper-help``) are the weekly/deep-tier lenses in the
-design doc's persona table — routed to ``LLM:opus`` (``Tier.FRONTIER``
-in ``utils/llm/router.py``; the same closed tag value ``workers/
-deep_review.py`` and the dispatcher's auto-run-signal predicate resolve
-for the opus rung).
+design doc's persona table — routed to ``llm_tier='opus'``
+(``Tier.FRONTIER`` in ``utils/llm/router.py``; the same value
+``workers/deep_review.py`` and the dispatcher's auto-run-signal
+predicate resolve for the opus rung).
 
 **Which chunks.** ``store.reviewable_chunks(ref_id)`` — the draft's live,
 draft-family chunks with a non-NULL ``content_sha`` (the same population
@@ -43,7 +43,7 @@ tick and already has ``quest_id`` in hand; this one fires from a bare
 draft (there is no guaranteed owning quest — a draft can be authored
 directly, ``docs/conventions/tex-vs-draft-authoring.md``), so the project
 todo is the one parent every draft is guaranteed to have. Trade-off: a
-review-todo minted here has no ``level:strategic`` ancestor beyond the
+review-todo minted here has no ``rotation_root`` ancestor beyond the
 project todo itself (same accepted orphan-sweep caveat
 ``mint_weave_reviews`` already documents for its quest-parented todos).
 
@@ -94,8 +94,8 @@ _FANOUT_ONLY_BRIEFS: dict[str, str] = {
     ),
 }
 
-#: Lens -> LLM tier tag. flow/cites are the per-weave/local lenses
-#: (matching weave_review's tier); structure/adversarial are the
+#: Lens -> LLM tier (meta.llm_tier). flow/cites are the per-weave/local
+#: lenses (matching weave_review's tier); structure/adversarial are the
 #: weekly/deep-tier lenses (design doc persona table) -> the opus rung.
 _LENS_TIER: dict[str, str] = {
     "flow": "sonnet",

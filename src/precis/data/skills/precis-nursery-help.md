@@ -29,7 +29,7 @@ Alerts dedup per *condition* instead.
 
 | Category | Triggers when | Threshold |
 |---|---|---|
-| `orphan` | open todo whose top-level ancestor isn't `level:strategic` | — |
+| `orphan` | open todo whose top-level ancestor doesn't carry `meta.rotation_root=true` | — |
 | `stale-claim` | leaf carries `claimed-by:*` older than threshold | 3 h |
 | `long-wait` | leaf carries `waiting-for:*` older than threshold | 7 d |
 | `stuck-doable` | open leaf, no claim, no wait, no blocker, >threshold old | 24 h |
@@ -72,7 +72,7 @@ being symptom-level it also catches an agent worker that never
 started (which has no log rows for `dead-worker` to age). These raise
 non-ref-scoped alerts (`ref_id=None` + an explicit `fingerprint_key`).
 
-Recurring subtrees (children of `level:recurring` roots) are
+Recurring subtrees (children of a root carrying `meta.schedule`) are
 exempt from the strategic invariant — they're scheduled work, not
 strategic work. The Watches umbrella itself doesn't appear in any
 detector.
@@ -158,5 +158,5 @@ alert rows). An operator preamble can read the open set via
 * `precis-alert-help` — the `alert` kind (lifecycle, dedup, tab)
 * `precis-tasks-help` — the tree shape + level gradient
 * `precis-decomposition-help` — the GTD interrogation (Slice 2)
-* `precis-recurring-help` — `level:recurring` + the Watches umbrella
+* `precis-recurring-help` — `meta.schedule` + the Watches umbrella
 * `precis-auto-tasks-help` — `meta.auto_check` leaves

@@ -246,11 +246,11 @@ def current_model_from_env() -> str | None:
     subprocess so the LLM knows its own tier — and can make
     degradation/escalation decisions:
 
-    * Too hard for haiku? Mint a child with ``LLM:opus``.
-    * Sonnet on a topic needing external state? Mint
-      ``LLM:sonnet`` child with ``executor:fetch`` to pull missing
-      papers, OR call ``get(kind='perplexity-research', q='...')`` inline for
-      a perplexity research dive.
+    * Too hard for haiku? Mint a child with ``meta.llm_tier='opus'``.
+    * Sonnet on a topic needing external state? Mint a
+      ``meta.llm_tier='sonnet'`` child with ``executor:fetch`` to pull
+      missing papers, OR call ``get(kind='perplexity-research', q='...')``
+      inline for a perplexity research dive.
     * Opus on a topic that's clear and obvious? Do it yourself
       without a model upgrade.
 

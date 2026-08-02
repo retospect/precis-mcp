@@ -76,11 +76,11 @@ When you split, each child should be:
 - **One axis.** Each child explores one axis: one sub-topic, one
   section, one dimension of review. If a child is doing two things,
   split it into two children.
-- **Right model.** `LLM:opus` for synthesis, writing, review,
-  judgement-heavy work. `LLM:sonnet` for filtered / pattern-matched
-  / mid-difficulty work (gap analysis, classification, mid-length
-  drafts). `LLM:haiku` rarely — only for trivial reformatting.
-  Default is `LLM:sonnet`; upgrade to opus when the work needs it.
+- **Right model.** `meta.llm_tier='opus'` for synthesis, writing, review,
+  judgement-heavy work. `meta.llm_tier='sonnet'` for filtered /
+  pattern-matched / mid-difficulty work (gap analysis, classification,
+  mid-length drafts). `meta.llm_tier='haiku'` rarely — only for trivial
+  reformatting. Default is `sonnet`; upgrade to opus when the work needs it.
 - **Right blocked-by.** If child B reads child A's output, mint
   `link(rel='blocked-by', src=B, dst=A)`. Unlinked children run in
   parallel — that's the default. Use blocked-by only for genuine

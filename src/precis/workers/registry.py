@@ -221,7 +221,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         kind=ServiceKind.PASS,
         default_profiles=_SYS,
         ref_pass=True,
-        one_line="Mint subtasks for due level:recurring Watches.",
+        one_line="Mint subtasks for due recurring Watches.",
         doc_skill="precis-recurring-help",
     ),
     ServiceSpec(
@@ -408,7 +408,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-fix-gripe-help",
         introspect=AgentIntrospect(
             launchd_label="com.precis.worker-agent",
-            model_default="(per parent LLM:* tag)",
+            model_default="(per parent meta.llm_tier)",
             model_env="PRECIS_JOB_CLAUDE_MODEL",
             disallowed_tools=("WebFetch", "WebSearch"),
             max_turns=20,

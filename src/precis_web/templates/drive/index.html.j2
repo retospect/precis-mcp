@@ -265,8 +265,9 @@
         <span x-text="kk"></span>
       </label>
     </template>
-    {# Schedules = todos tagged level:recurring — a preset link, not a kind
-       (recurring is an OPEN tag). Rides the tag facet, newest-first. #}
+    {# Schedules = recurring todos (meta.schedule set) — a preset link, not
+       a kind. The tag=level:recurring sentinel is translated server-side
+       to has_schedule=True (§M facet normalization retired the tag). #}
     <a href="/drive?submitted=1&amp;k=todo&amp;tag=level:recurring&amp;sort=recency"
        class="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-emerald-200 text-emerald-700 hover:bg-emerald-50">
       🔁 Schedules

@@ -843,23 +843,6 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
     # not a ref property — chunk-level inspection lives behind
     # ``get(kind='<file>', view='log')`` and per-chunk tag queries.
     "DENSITY": frozenset({"dense", "medium", "sparse"}),
-    # Planner-coroutine slice (workers/dispatch.py + workers/planner_prompt.py).
-    # An ``LLM:<model>`` tag flips a todo into the dispatch worker's
-    # candidate set and picks which Claude tier ``claude_inproc``
-    # shells out with. Closed vocab so a typo (``LLM:opos``) rejects
-    # at write time instead of producing a silent dispatch miss.
-    # ``executor:<runner>`` (lowercase, open tag) is the parallel
-    # namespace for code-path runners — see
-    # :data:`precis.handlers._todo_guards._EXECUTOR_TAG_VALUES`.
-    # Mirrors ``router.PLANNER_MODEL_ALIASES`` (kept literal here so this
-    # foundational module stays free of the router import); ``local`` is the
-    # cluster's served OSS tier (qwen-heavy + tools), pinning ``BIG`` since
-    # ADR 0066 Phase C retired the location-coupled ``LOCAL_BIG`` tier. The
-    # four capability-tier aliases (frontier/big/medium/small) sit alongside
-    # the legacy {opus, sonnet, haiku, local} names.
-    "LLM": frozenset(
-        {"opus", "sonnet", "haiku", "local", "frontier", "big", "medium", "small"}
-    ),
     # Provenance axis for on-demand, externally-sourced corpora that
     # should be *namespaced out of default search* rather than mixed
     # into the curated library. ``ORIGIN:wikipedia`` is stamped on
@@ -939,15 +922,15 @@ _RESERVED_FLAGS: dict[str, str] = {
 # from the map (no restriction). See docs/precis-v2-skills/ for the
 # narrative discipline each kind follows.
 _KIND_ALLOWED_AXES: dict[str, frozenset[str]] = {
-    # Workflow kinds — STATUS + priority. Planner-coroutine slice adds
-    # ``LLM`` so an ``LLM:opus`` / ``LLM:sonnet`` / ``LLM:haiku`` tag on
-    # a todo flips it into the dispatch worker's candidate set and
-    # picks the model.
+    # Workflow kinds — STATUS + priority. The planner-coroutine model tier
+    # lives on ``meta.llm_tier`` (facet-normalized off the ``LLM:`` axis,
+    # ADR-parallel to §M / migration 0102) — not a tag — so it's no longer
+    # listed here.
     # ``AUDIT`` lets a content-QA audit categorise a change-request todo
     # anchored at a draft chunk (missing-citation / empty-stub / …) so the
     # defect is filterable and the draft reader can badge it by category.
     # ``finding`` is unlisted (unrestricted), so it accepts AUDIT too.
-    "todo": frozenset({"STATUS", "PRIO", "LLM", "AUDIT"}),
+    "todo": frozenset({"STATUS", "PRIO", "AUDIT"}),
     "gripe": frozenset({"STATUS", "PRIO"}),
     # Quest — the striving above the work (migration 0065). STATUS carries the
     # perpetual lifecycle (active/dormant/abandoned — never `done`); PRIO is the

@@ -150,10 +150,10 @@ class TestRotationReweight:
         q = _mk_quest(store, "Hot quest", prio_tag="PRIO:urgent")
         # Strategic B created FIRST (lower ref_id) and serves nothing — without
         # reweighting its leaf wins the ref_id tiebreak.
-        root_b = id_of(th.put(text="Strategic B.", tags=["level:strategic"]).body)
+        root_b = id_of(th.put(text="Strategic B.", meta={"rotation_root": True}).body)
         leaf_b = id_of(th.put(text="Leaf B work.", parent_id=root_b).body)
         # Strategic A created SECOND but serves the hot quest.
-        root_a = id_of(th.put(text="Strategic A.", tags=["level:strategic"]).body)
+        root_a = id_of(th.put(text="Strategic A.", meta={"rotation_root": True}).body)
         leaf_a = id_of(th.put(text="Leaf A work.", parent_id=root_a).body)
         store.add_link(src_ref_id=root_a, dst_ref_id=q, relation="serves")
 
@@ -165,9 +165,9 @@ class TestRotationReweight:
         from tests.conftest import id_of
 
         th = TodoHandler(hub=Hub(store=store))
-        root_a = id_of(th.put(text="Strategic A.", tags=["level:strategic"]).body)
+        root_a = id_of(th.put(text="Strategic A.", meta={"rotation_root": True}).body)
         leaf_a = id_of(th.put(text="Leaf A.", parent_id=root_a).body)
-        root_b = id_of(th.put(text="Strategic B.", tags=["level:strategic"]).body)
+        root_b = id_of(th.put(text="Strategic B.", meta={"rotation_root": True}).body)
         leaf_b = id_of(th.put(text="Leaf B.", parent_id=root_b).body)
         body = th.search(view="doable").body
         # No quests: plain ref_id order (A before B).

@@ -58,7 +58,7 @@ Rules:
 - **Single parent.** A ref sits in at most one folder; moving is one
   call, no copy semantics.
 - **Todo roots only.** A todo placed in a folder must carry
-  `level:strategic` — folder = *where*, project = *what/why/when*.
+  `meta.rotation_root=true` — folder = *where*, project = *what/why/when*.
   The scheduling machinery (rotation, doable, picks, reviews) treats
   a folder-parented strategic exactly like a bare root, and folder
   levels never consume the tree's depth budget.

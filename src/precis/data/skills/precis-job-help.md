@@ -61,7 +61,7 @@ Don't use a job for work that fits inside the current conversation.
 | `job_type`          | Executor        | What it does                                  |
 |---------------------|-----------------|-----------------------------------------------|
 | `fix_gripe`         | `claude_inproc` | Prepare a candidate fix branch for a gripe    |
-| `plan_tick`         | `claude_inproc` | One planner-coroutine tick of an `LLM:*` todo |
+| `plan_tick`         | `claude_inproc` | One planner-coroutine tick of a `meta.llm_tier`-set todo |
 | `news_poll` / `briefing` | `claude_inproc` | News ingestion / daily briefing          |
 | `draft_export`      | `claude_inproc` | Compile a draft to PDF/DOCX                   |
 | `struct_relax`      | `ssh_node`      | DFT/ML relax of a `structure` on a GPU node   |
@@ -217,9 +217,9 @@ parent's owner:
 put(kind='job', id=<failed_job_id>, mode='retry')
 
 # Change the model at the same time (opus | sonnet | haiku). This
-# swaps the parent todo's LLM:<model> tag before clearing the bubble,
+# swaps the parent todo's meta.llm_tier before clearing the bubble,
 # so the re-minted tick runs on the new tier. Only valid when the
-# parent is an LLM-planner todo (already carrying an LLM:* tag) —
+# parent is an LLM-planner todo (already has meta.llm_tier set) —
 # handy when a tick hit an AUP refusal or needs a stronger/cheaper
 # model. The web Tasks tab exposes the same thing as a "Retry" button
 # (with a model dropdown) on failed job rows — turn on "+ show closed

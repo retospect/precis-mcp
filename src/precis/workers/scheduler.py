@@ -2,7 +2,7 @@
 
 Slice 10 / §15i of ``docs/design/factory-console-and-scheduling.md``. Today
 recurring work has *two* triggers that overlap: the ``schedule`` pass (due
-``level:recurring`` Watches) and a set of standalone launchd timers that each
+recurring Watches — ``meta.schedule`` set) and a set of standalone launchd timers that each
 run ``precis <thing>`` on a cadence (``precis cron tick`` @60s,
 ``precis worker --only watch_poll`` @1h, …). §15i's decision: "there ought to
 be only one scheduler", and its exactly-once guarantee belongs in Postgres,
@@ -56,8 +56,8 @@ def _run_cron_tick(store: Any, batch_size: int) -> None:
 
     Historically fired the retired ``kind='cron'`` engine
     (:func:`precis.cli.cron.fire_due_cron`); ADR 0061 folded that push
-    mechanism onto ``level:recurring`` (``meta.deliver`` + one-shot
-    ``meta.schedule.at``), so this cadence now shares
+    mechanism onto recurring todos (``meta.schedule`` set — ``meta.deliver``
+    + one-shot ``meta.schedule.at``), so this cadence now shares
     :func:`precis.workers.schedule.worker.run_schedule_pass` with the
     launchd ``precis cron tick`` timer and the default worker rotation
     (one implementation, no drift). The cadence name is unchanged —

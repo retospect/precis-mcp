@@ -157,8 +157,9 @@ class TestMintWeaveReviews:
         ids = mint_weave_reviews(store, qid, anchor)
 
         for todo_id in ids:
+            ref = store.get_ref(kind="todo", id=todo_id)
+            assert ref is not None and ref.meta.get("llm_tier") == "sonnet"
             tags = {(t.namespace, t.prefix, t.value) for t in store.tags_for(todo_id)}
-            assert ("closed", "LLM", "sonnet") in tags
             assert ("closed", "STATUS", "open") in tags
 
     def test_custom_lenses(self, store: Any) -> None:

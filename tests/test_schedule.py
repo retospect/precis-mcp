@@ -1,5 +1,5 @@
 """Slice-4 schedule + PRIO tests, extended by ADR 0061 (folding the retired
-``kind='cron'`` onto ``level:recurring``).
+``kind='cron'`` onto the recurring facet — ``meta.schedule`` presence).
 
 Layers:
 
@@ -249,8 +249,8 @@ def test_ensure_watches_root_is_idempotent(store: Store) -> None:
     ref = store.get_ref(kind="todo", id=a)
     assert ref is not None
     assert ref.meta.get("builtin") == WATCHES_BUILTIN
-    tags = {str(t) for t in store.tags_for(a)}
-    assert "level:recurring" in tags
+    # The umbrella is a folder (no meta.schedule) — no facet fields either.
+    assert ref.meta.get("schedule") is None
 
 
 def test_watches_root_delete_is_refused(handler: TodoHandler, store: Store) -> None:
@@ -267,7 +267,6 @@ def test_put_level_recurring_defaults_parent_to_watches(
 ) -> None:
     resp = handler.put(
         text="Check arxiv weekly",
-        tags=["level:recurring"],
         meta={"schedule": {"cron": "0 9 * * 1"}},
     )
     rid = _id_of(resp.body)
@@ -287,7 +286,6 @@ def test_put_recurring_with_every_shorthand_is_canonicalised(
 ) -> None:
     resp = handler.put(
         text="Hourly check",
-        tags=["level:recurring"],
         meta={"schedule": {"every": "1h"}},
     )
     rid = _id_of(resp.body)
@@ -302,7 +300,6 @@ def test_put_with_bad_schedule_rejected_at_write_time(
     with pytest.raises(BadInput, match="cron must have 5 fields"):
         handler.put(
             text="bad",
-            tags=["level:recurring"],
             meta={"schedule": {"cron": "0 9 * *"}},
         )
 
@@ -315,7 +312,6 @@ def test_put_one_shot_at_schedule_is_canonicalised(
 ) -> None:
     resp = handler.put(
         text="remind me",
-        tags=["level:recurring"],
         meta={"schedule": {"at": "2026-06-12T09:00:00Z"}},
     )
     rid = _id_of(resp.body)
@@ -332,7 +328,6 @@ def test_put_with_deliver_target_is_canonicalised(
 ) -> None:
     resp = handler.put(
         text="check the api monitor",
-        tags=["level:recurring"],
         meta={
             "schedule": {"every": "15m"},
             "deliver": {"target": "  conv:discord/g/c/t  "},
@@ -348,7 +343,6 @@ def test_put_with_bad_deliver_rejected_at_write_time(handler: TodoHandler) -> No
     with pytest.raises(BadInput, match="meta.deliver.target is required"):
         handler.put(
             text="bad",
-            tags=["level:recurring"],
             meta={"schedule": {"every": "1h"}, "deliver": {}},
         )
 
@@ -424,7 +418,6 @@ def test_schedule_pass_spawns_one_child(handler: TodoHandler, store: Store) -> N
     # Daily at 00:00, no backfill, last tick 25h ago → mints today's.
     resp = handler.put(
         text="Daily",
-        tags=["level:recurring"],
         meta={"schedule": {"cron": "0 0 * * *"}},
     )
     rid = _id_of(resp.body)
@@ -453,7 +446,6 @@ def test_schedule_pass_is_idempotent_same_minute(
 ) -> None:
     resp = handler.put(
         text="Daily",
-        tags=["level:recurring"],
         meta={"schedule": {"cron": "0 0 * * *"}},
     )
     rid = _id_of(resp.body)
@@ -475,7 +467,6 @@ def test_schedule_pass_skips_when_previous_still_open(
 ) -> None:
     resp = handler.put(
         text="Hourly",
-        tags=["level:recurring"],
         meta={"schedule": {"cron": "0 * * * *", "backfill_missed": True}},
     )
     rid = _id_of(resp.body)
@@ -503,7 +494,6 @@ def test_schedule_pass_failed_previous_tick_does_not_wedge(
     """
     resp = handler.put(
         text="Hourly",
-        tags=["level:recurring"],
         meta={"schedule": {"cron": "0 * * * *"}},
     )
     rid = _id_of(resp.body)
@@ -567,7 +557,6 @@ def test_schedule_pass_row_lock_serialises_concurrent_workers(
     """
     resp = handler.put(
         text="Locked-once",
-        tags=["level:recurring"],
         meta={"schedule": {"cron": "0 * * * *"}},
     )
     rid = _id_of(resp.body)
@@ -614,7 +603,6 @@ def test_schedule_pass_skips_paused_recurring(
 ) -> None:
     resp = handler.put(
         text="Paused",
-        tags=["level:recurring"],
         meta={"schedule": {"cron": "0 * * * *"}},
     )
     rid = _id_of(resp.body)
@@ -656,7 +644,6 @@ def test_candidate_cron_with_stale_done_still_eligible(
 
     resp = handler.put(
         text="Hourly cron, stale done",
-        tags=["level:recurring"],
         meta={"schedule": {"cron": "0 * * * *"}},
     )
     rid = _id_of(resp.body)
@@ -678,7 +665,6 @@ def test_candidate_cron_paused_still_excluded(
 
     resp = handler.put(
         text="Hourly cron, paused",
-        tags=["level:recurring"],
         meta={"schedule": {"cron": "0 * * * *"}},
     )
     rid = _id_of(resp.body)
@@ -701,7 +687,6 @@ def test_candidate_one_shot_with_done_excluded(
 
     resp = handler.put(
         text="One-shot, resolved",
-        tags=["level:recurring"],
         meta={"schedule": {"at": "2026-06-12T09:00:00Z"}},
     )
     rid = _id_of(resp.body)
@@ -725,7 +710,6 @@ def test_schedule_pass_delivers_instead_of_spawning(
     queue (unlike the plain queue-mode path)."""
     resp = handler.put(
         text="check the api monitor",
-        tags=["level:recurring"],
         meta={
             "schedule": {"cron": "0 0 * * *"},
             "deliver": {"target": "conv:discord/g/c/t"},
@@ -757,7 +741,6 @@ def test_schedule_pass_deliver_tick_is_idempotent_same_minute(
 ) -> None:
     resp = handler.put(
         text="check the api monitor",
-        tags=["level:recurring"],
         meta={
             "schedule": {"cron": "0 0 * * *"},
             "deliver": {"target": "conv:discord/g/c/t"},
@@ -785,7 +768,6 @@ def test_schedule_pass_fires_due_one_shot_and_retires(
     past = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
     resp = handler.put(
         text="ask about the PR status",
-        tags=["level:recurring"],
         meta={
             "schedule": {"at": past, "catch_up": True},
             "deliver": {"target": "conv:discord/g/c/t"},
@@ -817,7 +799,6 @@ def test_schedule_pass_one_shot_not_yet_due_is_untouched(
     future = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
     resp = handler.put(
         text="future reminder",
-        tags=["level:recurring"],
         meta={"schedule": {"at": future}},
     )
     rid = _id_of(resp.body)
@@ -832,7 +813,6 @@ def test_schedule_pass_expires_overdue_one_shot_without_catch_up(
     long_overdue = (datetime.now(UTC) - timedelta(hours=3)).isoformat()
     resp = handler.put(
         text="stale reminder",
-        tags=["level:recurring"],
         meta={"schedule": {"at": long_overdue, "catch_up": False}},
     )
     rid = _id_of(resp.body)

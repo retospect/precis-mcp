@@ -1,16 +1,18 @@
 """Idempotent Watches-umbrella seed.
 
-The Watches root is a single ``kind='todo'`` ref tagged
-``level:recurring`` with ``meta.builtin='watches-root'``. Every
-recurring lands under it by default; the umbrella itself is a folder
-(``meta.schedule`` is null) so the spawner skips it on ticks.
+The Watches root is a single ``kind='todo'`` ref carrying
+``meta.builtin='watches-root'``. Every recurring lands under it by
+default; the umbrella itself is a folder (``meta.schedule`` is null) so
+the spawner skips it on ticks — the same schedule-presence check that
+(§M facet normalization) defines "recurring" everywhere now, so the
+umbrella needs no facet marker of its own.
 
 Seeding is idempotent on ``meta->>'builtin' = 'watches-root'`` so this
 function is safe to call from both:
 
 * the schedule worker's first-run path (``run_schedule_pass`` calls
   ``ensure_watches_root`` before walking the recurring list);
-* the todo handler at write time, when a ``level:recurring`` ref is
+* the todo handler at write time, when a ``meta.schedule`` ref is
   created without an explicit ``parent_id`` — we need an id for the
   default-parent, and the worker may not have run yet.
 
@@ -22,8 +24,6 @@ returns the umbrella's ``ref_id`` so callers can stash it in a
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-
-from precis.store.types import Tag
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -40,9 +40,8 @@ def ensure_watches_root(store: Store) -> int:
     """Return the Watches umbrella's ``ref_id``, seeding if necessary.
 
     Looks up the seeded row by ``meta->>'builtin'=<WATCHES_BUILTIN>``.
-    When missing, inserts a fresh ``todo`` ref + the ``level:recurring``
-    tag in a single transaction so the umbrella always carries the
-    gradient tag the doable filter walks.
+    When missing, inserts a fresh ``todo`` ref carrying the builtin
+    marker (no ``meta.schedule`` — it's a folder, not a tick source).
     """
     with store.pool.connection() as conn:
         row = conn.execute(
@@ -74,14 +73,8 @@ def ensure_watches_root(store: Store) -> int:
             meta={"builtin": WATCHES_BUILTIN},
             conn=conn,
         )
-        # The umbrella carries the gradient tag but no schedule —
-        # spawner checks ``meta.schedule is null`` to skip folders.
-        store.add_tag(
-            ref.id,
-            Tag.open("level:recurring"),
-            set_by="system",
-            conn=conn,
-        )
+        # No facet fields, no meta.schedule — the spawner checks
+        # ``meta.schedule is null`` to skip folders; the umbrella is one.
         # Track it as a structural event so the timeline shows the
         # umbrella's birth without the operator having to dig through
         # migrations to find when it appeared.

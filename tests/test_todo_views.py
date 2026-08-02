@@ -35,7 +35,7 @@ def test_roots_empty_state(handler: TodoHandler) -> None:
 
 
 def test_roots_lists_one_strategic(handler: TodoHandler) -> None:
-    r = handler.put(text="Build the platform.", tags=["level:strategic"])
+    r = handler.put(text="Build the platform.", meta={"rotation_root": True})
     rid = _id_of(r.body)
     out = handler.search(view="roots")
     assert f"td{rid}" in out.body
@@ -43,7 +43,7 @@ def test_roots_lists_one_strategic(handler: TodoHandler) -> None:
 
 
 def test_roots_shows_next_pick_marker(handler: TodoHandler) -> None:
-    a = handler.put(text="A strategic.", tags=["level:strategic"])
+    a = handler.put(text="A strategic.", meta={"rotation_root": True})
     a_id = _id_of(a.body)
     # An open leaf under A → A is "active" → marked next pick.
     handler.put(text="A leaf to do.", parent_id=a_id)
@@ -55,9 +55,11 @@ def test_roots_shows_next_pick_marker(handler: TodoHandler) -> None:
 
 
 def test_strategic_lists_tacticals_under_root(handler: TodoHandler) -> None:
-    root = handler.put(text="Strategic.", tags=["level:strategic"])
+    root = handler.put(text="Strategic.", meta={"rotation_root": True})
     root_id = _id_of(root.body)
-    tac = handler.put(text="Tactical work.", parent_id=root_id, tags=["level:tactical"])
+    tac = handler.put(
+        text="Tactical work.", parent_id=root_id, meta={"worker_mintable": False}
+    )
     tac_id = _id_of(tac.body)
     handler.put(text="leaf 1", parent_id=tac_id)
     handler.put(text="leaf 2", parent_id=tac_id)
@@ -72,7 +74,7 @@ def test_strategic_lists_tacticals_under_root(handler: TodoHandler) -> None:
 
 
 def test_tree_renders_descendants(handler: TodoHandler) -> None:
-    root = handler.put(text="Root.", tags=["level:strategic"])
+    root = handler.put(text="Root.", meta={"rotation_root": True})
     root_id = _id_of(root.body)
     child = handler.put(text="Child A.", parent_id=root_id)
     child_id = _id_of(child.body)
@@ -88,7 +90,7 @@ def test_tree_renders_descendants(handler: TodoHandler) -> None:
 
 
 def test_tree_renders_status_icons(handler: TodoHandler) -> None:
-    root = handler.put(text="Root.", tags=["level:strategic"])
+    root = handler.put(text="Root.", meta={"rotation_root": True})
     root_id = _id_of(root.body)
     done = handler.put(text="Done leaf.", parent_id=root_id)
     done_id = _id_of(done.body)
@@ -102,7 +104,7 @@ def test_tree_renders_status_icons(handler: TodoHandler) -> None:
 
 
 def test_doable_lists_open_leaf(handler: TodoHandler) -> None:
-    root = handler.put(text="Strategic.", tags=["level:strategic"])
+    root = handler.put(text="Strategic.", meta={"rotation_root": True})
     root_id = _id_of(root.body)
     leaf = handler.put(text="A doable thing.", parent_id=root_id)
     leaf_id = _id_of(leaf.body)
@@ -113,7 +115,7 @@ def test_doable_lists_open_leaf(handler: TodoHandler) -> None:
 
 def test_doable_header_singular_leaf(handler: TodoHandler) -> None:
     """1 doable leaf → singular 'leaf', not the 'leafves' typo."""
-    root = handler.put(text="Strategic.", tags=["level:strategic"])
+    root = handler.put(text="Strategic.", meta={"rotation_root": True})
     root_id = _id_of(root.body)
     handler.put(text="Only one.", parent_id=root_id)
     out = handler.search(view="doable")
@@ -123,7 +125,7 @@ def test_doable_header_singular_leaf(handler: TodoHandler) -> None:
 
 def test_doable_header_plural_leaves(handler: TodoHandler) -> None:
     """2+ doable leaves → 'leaves', not the 'leafves' typo."""
-    root = handler.put(text="Strategic.", tags=["level:strategic"])
+    root = handler.put(text="Strategic.", meta={"rotation_root": True})
     root_id = _id_of(root.body)
     handler.put(text="First.", parent_id=root_id)
     handler.put(text="Second.", parent_id=root_id)
@@ -133,7 +135,7 @@ def test_doable_header_plural_leaves(handler: TodoHandler) -> None:
 
 
 def test_doable_skips_done_leaves(handler: TodoHandler) -> None:
-    root = handler.put(text="Strategic.", tags=["level:strategic"])
+    root = handler.put(text="Strategic.", meta={"rotation_root": True})
     root_id = _id_of(root.body)
     leaf = handler.put(text="Already done.", parent_id=root_id)
     leaf_id = _id_of(leaf.body)
@@ -143,7 +145,7 @@ def test_doable_skips_done_leaves(handler: TodoHandler) -> None:
 
 
 def test_doable_skips_waiting_leaves(handler: TodoHandler) -> None:
-    root = handler.put(text="Strategic.", tags=["level:strategic"])
+    root = handler.put(text="Strategic.", meta={"rotation_root": True})
     root_id = _id_of(root.body)
     leaf = handler.put(
         text="Waiting on reviewer.",
@@ -156,7 +158,7 @@ def test_doable_skips_waiting_leaves(handler: TodoHandler) -> None:
 
 
 def test_doable_skips_paused_subtree(handler: TodoHandler) -> None:
-    root = handler.put(text="Strategic.", tags=["level:strategic"])
+    root = handler.put(text="Strategic.", meta={"rotation_root": True})
     root_id = _id_of(root.body)
     branch = handler.put(text="A paused branch.", parent_id=root_id)
     branch_id = _id_of(branch.body)
@@ -168,7 +170,7 @@ def test_doable_skips_paused_subtree(handler: TodoHandler) -> None:
 
 
 def test_doable_skips_blocked_by_open_target(handler: TodoHandler) -> None:
-    root = handler.put(text="Strategic.", tags=["level:strategic"])
+    root = handler.put(text="Strategic.", meta={"rotation_root": True})
     root_id = _id_of(root.body)
     blocker = handler.put(text="Blocker leaf.", parent_id=root_id)
     blocker_id = _id_of(blocker.body)
@@ -184,9 +186,9 @@ def test_doable_skips_blocked_by_open_target(handler: TodoHandler) -> None:
 
 
 def test_doable_under_subtree_filter(handler: TodoHandler) -> None:
-    root_a = handler.put(text="Strategic A.", tags=["level:strategic"])
+    root_a = handler.put(text="Strategic A.", meta={"rotation_root": True})
     root_a_id = _id_of(root_a.body)
-    root_b = handler.put(text="Strategic B.", tags=["level:strategic"])
+    root_b = handler.put(text="Strategic B.", meta={"rotation_root": True})
     root_b_id = _id_of(root_b.body)
     leaf_a = handler.put(text="A leaf.", parent_id=root_a_id)
     leaf_b = handler.put(text="B leaf.", parent_id=root_b_id)
@@ -200,7 +202,7 @@ def test_doable_under_subtree_filter(handler: TodoHandler) -> None:
 
 
 def test_waiting_shows_tagged_leaves(handler: TodoHandler) -> None:
-    root = handler.put(text="Strategic.", tags=["level:strategic"])
+    root = handler.put(text="Strategic.", meta={"rotation_root": True})
     root_id = _id_of(root.body)
     handler.put(
         text="Wait on reviewer feedback.",
@@ -216,7 +218,7 @@ def test_waiting_shows_tagged_leaves(handler: TodoHandler) -> None:
 
 
 def test_blocked_lists_only_actively_blocked(handler: TodoHandler) -> None:
-    root = handler.put(text="Strategic.", tags=["level:strategic"])
+    root = handler.put(text="Strategic.", meta={"rotation_root": True})
     root_id = _id_of(root.body)
     blocker = handler.put(text="Blocker.", parent_id=root_id)
     blocker_id = _id_of(blocker.body)
@@ -235,7 +237,7 @@ def test_blocked_lists_only_actively_blocked(handler: TodoHandler) -> None:
 
 
 def test_ask_user_lists_open_asks(handler: TodoHandler) -> None:
-    root = handler.put(text="Strategic.", tags=["level:strategic"])
+    root = handler.put(text="Strategic.", meta={"rotation_root": True})
     root_id = _id_of(root.body)
     handler.put(
         text="Cite Tanaka or skip?",
@@ -247,7 +249,7 @@ def test_ask_user_lists_open_asks(handler: TodoHandler) -> None:
 
 
 def test_ask_user_skips_done(handler: TodoHandler) -> None:
-    root = handler.put(text="Strategic.", tags=["level:strategic"])
+    root = handler.put(text="Strategic.", meta={"rotation_root": True})
     root_id = _id_of(root.body)
     ask = handler.put(text="Resolved ask.", parent_id=root_id, tags=["ask-user"])
     ask_id = _id_of(ask.body)
@@ -295,7 +297,6 @@ def test_get_with_search_view_redirects_to_search(handler: TodoHandler) -> None:
 def test_raw_view_dumps_meta_and_columns(handler: TodoHandler) -> None:
     r = handler.put(
         text="Recurring watch.",
-        tags=["level:recurring"],
         meta={"executor": "claude_inproc", "schedule": {"every": "1h"}},
     )
     rid = _id_of(r.body)

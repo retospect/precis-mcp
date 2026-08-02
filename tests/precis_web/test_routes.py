@@ -1156,7 +1156,7 @@ def test_tasks_dashboard_renders_tree(client) -> None:
 def test_create_root_dispatches_put_with_level(client, runtime) -> None:
     resp = client.post(
         "/tasks/roots",
-        data={"text": "New root", "level": "strategic"},
+        data={"text": "New root"},
         follow_redirects=False,
     )
     assert resp.status_code == 303
@@ -1164,7 +1164,7 @@ def test_create_root_dispatches_put_with_level(client, runtime) -> None:
     assert verb == "put"
     assert args["kind"] == "todo"
     assert args["text"] == "New root"
-    assert args["tags"] == ["level:strategic"]
+    assert args["meta"]["rotation_root"] is True
     assert args.get("parent_id") is None
 
 
@@ -1175,7 +1175,8 @@ def test_create_child_passes_parent_id(client, runtime) -> None:
     verb, args = runtime.calls[-1]
     assert verb == "put"
     assert args["parent_id"] == 1
-    assert args["tags"] == ["level:subtask"]
+    # level defaults to "subtask" — no facet fields set (the default state).
+    assert args.get("meta") is None
 
 
 def test_set_status_dispatches_tag(client, runtime) -> None:
@@ -3369,8 +3370,8 @@ def test_tasks_url_helper_encodes_each_tag_separately() -> None:
     assert _tasks_url([], []) == "/tasks"
     assert _tasks_url(["a"], []) == "/tasks?require=a"
     assert (
-        _tasks_url(["a", "STATUS:doing"], ["level:strategic"])
-        == "/tasks?require=a&require=STATUS%3Adoing&exclude=level%3Astrategic"
+        _tasks_url(["a", "STATUS:doing"], ["topic:foo"])
+        == "/tasks?require=a&require=STATUS%3Adoing&exclude=topic%3Afoo"
     )
 
 

@@ -2,9 +2,9 @@
 
 Launchd timer on melchior runs this every 60s. Historically this drove the
 now-retired ``kind='cron'`` engine directly; ADR 0061 (superseding ADR 0030)
-folded that push-notification mechanism onto ``level:recurring`` todos
-(``meta.deliver`` for the push target, one-shot ``meta.schedule.at`` for
-"remind me in/at"). This subcommand now delegates to
+folded that push-notification mechanism onto recurring todos
+(``meta.schedule`` set — ``meta.deliver`` for the push target, one-shot
+``meta.schedule.at`` for "remind me in/at"). This subcommand now delegates to
 :func:`precis.workers.schedule.worker.run_schedule_pass`, the single
 implementation shared with the decentralized ``scheduler`` worker pass
 (``_run_cron_tick`` in ``precis.workers.scheduler``) and the default worker
@@ -40,7 +40,7 @@ def add_parser(subparsers: Any) -> None:
     cron_sub.add_parser(
         "tick",
         help=(
-            "Fire due level:recurring ticks (spawn + push delivery). "
+            "Fire due recurring ticks (spawn + push delivery). "
             "Launchd timer runs this every 60s on melchior."
         ),
     )

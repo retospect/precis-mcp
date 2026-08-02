@@ -394,7 +394,7 @@ def _run_plan_tick(store: Any, ref_id: int, spec: Any) -> None:
             review_pass = (lens, snap[0], snap[1])
 
     # ``meta.params`` carries the model (synthesized from the parent's
-    # ``LLM:<value>`` tag at dispatch time). Pull it from the job ref.
+    # ``meta.llm_tier`` at dispatch time). Pull it from the job ref.
     params = _job_params(store, ref_id)
 
     t0 = time.perf_counter()
@@ -503,8 +503,8 @@ def _run_plan_tick(store: Any, ref_id: int, spec: Any) -> None:
             # Clean tick, or a resumable exhaustion (max-turns / timeout)
             # under the cap: mark succeeded (terminal + non-blocking) so
             # dispatch re-mints a fresh tick. child_job_succeeded is
-            # guarded for LLM:*-tagged parents, so this never auto-closes
-            # the parent.
+            # guarded for meta.llm_tier-set parents, so this never
+            # auto-closes the parent.
             if resume:
                 _set_meta(
                     conn,

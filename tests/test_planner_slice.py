@@ -1,4 +1,4 @@
-"""Tests for the planner-coroutine slice: LLM:* tag guards, dispatch
+"""Tests for the planner-coroutine slice: meta.llm_tier guards, dispatch
 pickup, prompt builder, and the three guardrails.
 
 The actual ``claude -p`` spawn is mocked via ``PRECIS_CLAUDE_BIN``
@@ -35,38 +35,38 @@ def _id_of(body: str) -> int:
     return int(body.split("id=")[1].split()[0].rstrip(",.()"))
 
 
-# ── LLM:* / executor:* tag guards ──────────────────────────────────
+# ── meta.llm_tier / executor:* tag guards ──────────────────────────
 
 
 def test_put_accepts_known_llm_models(handler: TodoHandler) -> None:
     """The sanctioned planner tiers pass the closed-vocab guard."""
     for model in ["opus", "sonnet", "haiku", "local"]:
-        r = handler.put(text=f"{model} task", tags=[f"LLM:{model}"])
+        r = handler.put(text=f"{model} task", meta={"llm_tier": model})
         assert "id=" in r.body
 
 
 def test_put_rejects_unknown_llm_model(handler: TodoHandler) -> None:
     """Typos and unknown models reject at write time, not silently."""
-    with pytest.raises(BadInput, match="LLM:"):
-        handler.put(text="bad model", tags=["LLM:opos"])
+    with pytest.raises(BadInput, match="llm_tier"):
+        handler.put(text="bad model", meta={"llm_tier": "opos"})
 
 
 def test_tag_rejects_unknown_llm_model(handler: TodoHandler) -> None:
-    """Same closed-vocab discipline applies on add via tag()."""
+    """Same closed-vocab discipline applies on tag(meta=...)."""
     r = handler.put(text="task")
     rid = _id_of(r.body)
-    with pytest.raises(BadInput, match="LLM:"):
-        handler.tag(id=rid, add=["LLM:gpt-5"])
+    with pytest.raises(BadInput, match="llm_tier"):
+        handler.tag(id=rid, meta={"llm_tier": "gpt-5"})
 
 
-# ── dispatch picks up LLM:*-tagged todos ──────────────────────────
+# ── dispatch picks up meta.llm_tier-set todos ──────────────────────
 
 
 def test_dispatch_picks_up_llm_tagged_todo(handler: TodoHandler, store: Store) -> None:
-    """An LLM:*-tagged leaf is dispatchable without meta.executor."""
+    """A meta.llm_tier-set leaf is dispatchable without meta.executor."""
     from precis.workers.dispatch import _candidate_parent_ids
 
-    r = handler.put(text="dispatchable", tags=["LLM:sonnet"])
+    r = handler.put(text="dispatchable", meta={"llm_tier": "sonnet"})
     rid = _id_of(r.body)
     ids = _candidate_parent_ids(store, limit=10)
     assert rid in ids
@@ -78,12 +78,12 @@ def test_dispatch_skips_llm_tagged_with_open_child(
     """Parent with a live (open) child todo yields — coroutine pattern."""
     from precis.workers.dispatch import _candidate_parent_ids
 
-    parent = handler.put(text="parent", tags=["LLM:opus"])
+    parent = handler.put(text="parent", meta={"llm_tier": "opus"})
     parent_id = _id_of(parent.body)
     # First sweep: parent is a candidate.
     assert parent_id in _candidate_parent_ids(store, limit=10)
     # Spawn a child.
-    handler.put(text="child", parent_id=parent_id, tags=["LLM:sonnet"])
+    handler.put(text="child", parent_id=parent_id, meta={"llm_tier": "sonnet"})
     # Now parent yields — child is the candidate, parent is not.
     ids = _candidate_parent_ids(store, limit=10)
     assert parent_id not in ids
@@ -95,9 +95,9 @@ def test_dispatch_re_picks_up_after_children_done(
     """When all open children resolve, parent re-becomes a candidate."""
     from precis.workers.dispatch import _candidate_parent_ids
 
-    parent = handler.put(text="parent", tags=["LLM:opus"])
+    parent = handler.put(text="parent", meta={"llm_tier": "opus"})
     parent_id = _id_of(parent.body)
-    child = handler.put(text="child", parent_id=parent_id, tags=["LLM:sonnet"])
+    child = handler.put(text="child", parent_id=parent_id, meta={"llm_tier": "sonnet"})
     child_id = _id_of(child.body)
     # Parent yields.
     assert parent_id not in _candidate_parent_ids(store, limit=10)
@@ -108,7 +108,7 @@ def test_dispatch_re_picks_up_after_children_done(
 
 
 def test_dispatch_skips_untagged_todos(handler: TodoHandler, store: Store) -> None:
-    """No LLM:*, no executor:*, no meta.executor → not dispatchable."""
+    """No meta.llm_tier, no executor:*, no meta.executor → not dispatchable."""
     from precis.workers.dispatch import _candidate_parent_ids
 
     r = handler.put(text="ordinary doable, not auto-run")
@@ -121,7 +121,7 @@ def test_dispatch_skips_with_halt_reason(handler: TodoHandler, store: Store) -> 
     """``halt:cost-cap`` blocks dispatch the same as bare halt."""
     from precis.workers.dispatch import _candidate_parent_ids
 
-    r = handler.put(text="halted", tags=["LLM:sonnet"])
+    r = handler.put(text="halted", meta={"llm_tier": "sonnet"})
     rid = _id_of(r.body)
     store.add_tag(rid, Tag.open("halt:cost-cap"), set_by="system")
     ids = _candidate_parent_ids(store, limit=10)
@@ -155,9 +155,9 @@ def test_skill_index_lists_active_skills_with_summaries() -> None:
 def test_ancestry_toon_renders_chain() -> None:
     """TOON list with id, title, from for each ancestor level."""
     chain = [
-        {"id": 100, "title": "Strategic root", "level": "level:strategic"},
-        {"id": 420, "title": "Tactical work", "level": "level:tactical"},
-        {"id": 6647, "title": "Leaf", "level": None},
+        {"id": 100, "title": "Strategic root", "level": "strategic"},
+        {"id": 420, "title": "Tactical work", "level": "tactical"},
+        {"id": 6647, "title": "Leaf", "level": "subtask"},
     ]
     out = _render_ancestry_toon(chain, leaf_id=6647)
     assert "ancestry: [3]{id,title,from}" in out
@@ -186,7 +186,7 @@ def test_load_ref_body_reads_todo_title(handler: TodoHandler, store: Store) -> N
         "NOx to Ammonia\n\n"
         + "Build a tightly coupled DFT-operando-MS design loop. " * 40
     )
-    r = handler.put(text=brief, tags=["LLM:opus"])
+    r = handler.put(text=brief, meta={"llm_tier": "opus"})
     rid = _id_of(r.body)
     body = _load_ref_body(store, rid)
     assert "tightly coupled DFT-operando-MS design loop" in body
@@ -198,7 +198,7 @@ def test_user_prompt_body_not_empty_for_todo(
     """The ## Body section of the planner prompt carries the real brief."""
     r = handler.put(
         text="NOx to Ammonia\n\nThe real brief is long and very specific.",
-        tags=["LLM:opus"],
+        meta={"llm_tier": "opus"},
     )
     rid = _id_of(r.body)
     user = _build_user_prompt(store, ref_id=rid, model="opus")
@@ -213,7 +213,7 @@ def test_load_ref_body_excludes_tag_overflow(
 ) -> None:
     """The planner's own overflowed ask-user question (a tag_overflow
     chunk on the ref) must NOT be read back as part of the brief."""
-    r = handler.put(text="Genuine brief text here.", tags=["LLM:opus"])
+    r = handler.put(text="Genuine brief text here.", meta={"llm_tier": "opus"})
     rid = _id_of(r.body)
     with store.pool.connection() as conn:
         with conn.transaction():
@@ -231,8 +231,8 @@ def test_load_ref_body_excludes_tag_overflow(
 
 
 def test_guardrails_allow_fresh_parent(handler: TodoHandler, store: Store) -> None:
-    """A brand-new LLM:*-tagged parent passes all three checks."""
-    r = handler.put(text="fresh", tags=["LLM:sonnet"])
+    """A brand-new meta.llm_tier-set parent passes all three checks."""
+    r = handler.put(text="fresh", meta={"llm_tier": "sonnet"})
     rid = _id_of(r.body)
     verdict = planner_guardrails.check_parent(store, parent_ref_id=rid)
     assert verdict.allow is True
@@ -243,7 +243,7 @@ def test_guardrails_halt_on_tick_cap(
 ) -> None:
     """Once tick_count >= PRECIS_MAX_TICKS, parent gets halt:tick-cap."""
     monkeypatch.setenv("PRECIS_MAX_TICKS", "3")
-    r = handler.put(text="prone-to-loop", tags=["LLM:sonnet"])
+    r = handler.put(text="prone-to-loop", meta={"llm_tier": "sonnet"})
     rid = _id_of(r.body)
     # Push tick count to the cap.
     for _ in range(3):
@@ -262,7 +262,7 @@ def test_guardrails_halt_on_cost_cap(
 ) -> None:
     """When sum(child.meta.cost_usd) >= cap, parent gets halt:cost-cap."""
     monkeypatch.setenv("PRECIS_MAX_TODO_USD", "1.0")
-    r = handler.put(text="expensive parent", tags=["LLM:opus"])
+    r = handler.put(text="expensive parent", meta={"llm_tier": "opus"})
     rid = _id_of(r.body)
     # Mint a fake job with cost_usd = 1.5 to push over the cap.
     job = store.insert_ref(
@@ -290,7 +290,7 @@ def test_guardrails_skip_on_daily_ceiling(
     """
     monkeypatch.setenv("PRECIS_DAILY_COST_CEILING", "5.0")
     monkeypatch.setenv("PRECIS_MAX_TODO_USD", "1000.0")
-    other = handler.put(text="big spender", tags=["LLM:opus"])
+    other = handler.put(text="big spender", meta={"llm_tier": "opus"})
     other_id = _id_of(other.body)
     store.insert_ref(
         kind="job",
@@ -299,7 +299,7 @@ def test_guardrails_skip_on_daily_ceiling(
         meta={"cost_usd": 10.0},
         parent_id=other_id,
     )
-    r = handler.put(text="cheap parent", tags=["LLM:sonnet"])
+    r = handler.put(text="cheap parent", meta={"llm_tier": "sonnet"})
     rid = _id_of(r.body)
     verdict = planner_guardrails.check_parent(store, parent_ref_id=rid)
     assert verdict.allow is False
@@ -310,14 +310,14 @@ def test_guardrails_skip_on_daily_ceiling(
 def test_generated_child_defaults_to_llm_opus_root_does_not(
     handler: TodoHandler, store: Store
 ) -> None:
-    """A parented (generated) todo auto-gets LLM:opus → dispatchable; a
+    """A parented (generated) todo auto-gets meta.llm_tier=.opus. → dispatchable; a
     deliberately-created root does not (keeps the no-auto-run reminder)."""
     from precis.workers.dispatch import _candidate_parent_ids
 
     root = _id_of(handler.put(text="deliberate root").body)
     child = _id_of(handler.put(text="generated child", parent_id=root).body)
     ids = _candidate_parent_ids(store, limit=50)
-    assert child in ids  # parented → auto LLM:opus → runs
+    assert child in ids  # parented → auto llm_tier=opus → runs
     assert root not in ids  # root → no default → not auto-run
 
 
@@ -436,7 +436,7 @@ def test_draft_identity_in_user_prompt(handler: TodoHandler, store: Store) -> No
     resolved by walking parents up to the linked root."""
     from precis.handlers.draft import DraftHandler
 
-    proj = handler.put(text="Write the CO2 paper.", tags=["level:strategic"])
+    proj = handler.put(text="Write the CO2 paper.", meta={"rotation_root": True})
     pid = _id_of(proj.body)
     DraftHandler(hub=Hub(store=store)).put(
         id="co2draft", title="CO2 in MOFs", project=pid
@@ -463,7 +463,7 @@ def test_glossary_block_lists_active_abbrevs(
     (short + long) so the agent writes with the established vocabulary."""
     from precis.handlers.draft import DraftHandler
 
-    proj = handler.put(text="Write the CO2 paper.", tags=["level:strategic"])
+    proj = handler.put(text="Write the CO2 paper.", meta={"rotation_root": True})
     pid = _id_of(proj.body)
     dh = DraftHandler(hub=Hub(store=store))
     dh.put(id="co2draft", title="CO2 in MOFs", project=pid)
@@ -486,7 +486,7 @@ def test_no_glossary_block_when_no_terms(handler: TodoHandler, store: Store) -> 
     """A draft with no glossary terms emits no Glossary block."""
     from precis.handlers.draft import DraftHandler
 
-    proj = handler.put(text="Write the CO2 paper.", tags=["level:strategic"])
+    proj = handler.put(text="Write the CO2 paper.", meta={"rotation_root": True})
     pid = _id_of(proj.body)
     DraftHandler(hub=Hub(store=store)).put(id="co2draft2", title="CO2", project=pid)
     child = handler.put(text="tighten the intro", parent_id=pid)

@@ -96,7 +96,7 @@ def _load_fix_gripe() -> JobTypeSpec:
 
 def _load_plan_tick() -> JobTypeSpec:
     # The planner-coroutine tick. Synthesized at dispatch time from
-    # an ``LLM:*`` tag on the parent todo (see workers/dispatch.py).
+    # ``meta.llm_tier`` on the parent todo (see workers/dispatch.py).
     from precis.workers.job_types import plan_tick
 
     return JobTypeSpec(

@@ -115,14 +115,14 @@ _WS_META = {
 def test_put_with_workspace_stamps_project_tag(handler: TodoHandler) -> None:
     # Owner path — no PRECIS_WORKSPACE env set, project tag derived
     # from meta.workspace.path. Assert via the stored tag directly.
-    r = handler.put(text="Demo project.", tags=["level:strategic"], meta=_WS_META)
+    r = handler.put(text="Demo project.", meta=_WS_META)
     rid = _id_of(r.body)
     tags = [str(t) for t in handler.store.tags_for(rid)]
     assert "project:demo" in tags
 
 
 def test_child_inherits_workspace_and_project_tag(handler: TodoHandler) -> None:
-    root = handler.put(text="Root.", tags=["level:strategic"], meta=_WS_META)
+    root = handler.put(text="Root.", meta=_WS_META)
     root_id = _id_of(root.body)
     # Child carries no meta — workspace cascades, project tag follows.
     child = handler.put(text="A leaf under the project.", parent_id=root_id)
@@ -132,23 +132,23 @@ def test_child_inherits_workspace_and_project_tag(handler: TodoHandler) -> None:
 
 
 def test_put_without_workspace_has_no_project_tag(handler: TodoHandler) -> None:
-    r = handler.put(text="Plain strategic, no workspace.", tags=["level:strategic"])
+    r = handler.put(text="Plain strategic, no workspace.", meta={"rotation_root": True})
     rid = _id_of(r.body)
     tags = [str(t) for t in handler.store.tags_for(rid)]
     assert not any(t.startswith("project:") for t in tags)
 
 
-# ── workspace root auto-stamps level:strategic (orphan-flood fix) ──
+# ── workspace root auto-stamps rotation_root (orphan-flood fix) ────
 
 
 def test_put_workspace_root_auto_stamps_strategic(handler: TodoHandler) -> None:
-    # A project root minted WITHOUT an explicit level tag (e.g. a CLI or
+    # A project root minted WITHOUT an explicit facet field (e.g. a CLI or
     # script write that only sets meta.workspace) must still become
     # strategic — otherwise the nursery flags its whole subtree as orphaned.
     r = handler.put(text="Project root, no level tag.", meta=_WS_META)
     rid = _id_of(r.body)
-    tags = [str(t) for t in handler.store.tags_for(rid)]
-    assert "level:strategic" in tags
+    ref = handler.store.get_ref(kind="todo", id=rid)
+    assert ref is not None and ref.meta.get("rotation_root") is True
 
 
 def test_put_workspace_root_respects_explicit_level(handler: TodoHandler) -> None:
@@ -156,13 +156,13 @@ def test_put_workspace_root_respects_explicit_level(handler: TodoHandler) -> Non
     # strategic just because the root owns a workspace.
     r = handler.put(
         text="Workspace root, explicitly tactical.",
-        tags=["level:tactical"],
-        meta=_WS_META,
+        meta={**_WS_META, "worker_mintable": False},
     )
     rid = _id_of(r.body)
-    tags = [str(t) for t in handler.store.tags_for(rid)]
-    assert "level:tactical" in tags
-    assert "level:strategic" not in tags
+    ref = handler.store.get_ref(kind="todo", id=rid)
+    assert ref is not None
+    assert ref.meta.get("worker_mintable") is False
+    assert ref.meta.get("rotation_root") is not True
 
 
 def test_workspace_child_not_auto_strategic(handler: TodoHandler) -> None:
@@ -172,16 +172,16 @@ def test_workspace_child_not_auto_strategic(handler: TodoHandler) -> None:
     root_id = _id_of(root.body)
     child = handler.put(text="A leaf under the project.", parent_id=root_id)
     child_id = _id_of(child.body)
-    child_tags = [str(t) for t in handler.store.tags_for(child_id)]
-    assert "level:strategic" not in child_tags
+    child_ref = handler.store.get_ref(kind="todo", id=child_id)
+    assert child_ref is not None and child_ref.meta.get("rotation_root") is not True
 
 
 def test_put_root_without_workspace_not_strategic(handler: TodoHandler) -> None:
     # No workspace → no auto-strategic; a plain root stays untiered.
     r = handler.put(text="Plain root, no workspace, no level.")
     rid = _id_of(r.body)
-    tags = [str(t) for t in handler.store.tags_for(rid)]
-    assert "level:strategic" not in tags
+    ref = handler.store.get_ref(kind="todo", id=rid)
+    assert ref is not None and ref.meta.get("rotation_root") is not True
 
 
 # ── view='projects' (DB) ──────────────────────────────────────────
@@ -193,9 +193,7 @@ def test_projects_view_empty_state(handler: TodoHandler) -> None:
 
 
 def test_projects_view_lists_project_root(handler: TodoHandler) -> None:
-    root = handler.put(
-        text="Demo project goal.", tags=["level:strategic"], meta=_WS_META
-    )
+    root = handler.put(text="Demo project goal.", meta=_WS_META)
     rid = _id_of(root.body)
     out = handler.search(view="projects")
     assert f"td{rid}" in out.body
@@ -204,13 +202,13 @@ def test_projects_view_lists_project_root(handler: TodoHandler) -> None:
 
 
 def test_projects_view_shows_brief_first_line(handler: TodoHandler) -> None:
-    handler.put(text="Demo.", tags=["level:strategic"], meta=_WS_META)
+    handler.put(text="Demo.", meta=_WS_META)
     out = handler.search(view="projects")
     assert "Standing guidance" in out.body
 
 
 def test_projects_view_counts_open_subtree(handler: TodoHandler) -> None:
-    root = handler.put(text="Demo.", tags=["level:strategic"], meta=_WS_META)
+    root = handler.put(text="Demo.", meta=_WS_META)
     rid = _id_of(root.body)
     handler.put(text="open leaf one.", parent_id=rid)
     handler.put(text="open leaf two.", parent_id=rid)
@@ -224,7 +222,7 @@ def test_projects_view_does_not_list_inherited_descendants(
 ) -> None:
     # A child inheriting the same workspace path must NOT appear as its
     # own project row — only the originating root.
-    root = handler.put(text="Demo.", tags=["level:strategic"], meta=_WS_META)
+    root = handler.put(text="Demo.", meta=_WS_META)
     rid = _id_of(root.body)
     handler.put(text="leaf.", parent_id=rid)
     out = handler.search(view="projects")
@@ -237,7 +235,7 @@ def test_projects_view_does_not_list_inherited_descendants(
 def test_planner_prompt_injects_project_brief(handler: TodoHandler) -> None:
     from precis.workers.planner_prompt import build_planner_prompts
 
-    root = handler.put(text="Demo project.", tags=["level:strategic"], meta=_WS_META)
+    root = handler.put(text="Demo project.", meta=_WS_META)
     rid = _id_of(root.body)
     prompts = build_planner_prompts(handler.store, ref_id=rid, model="opus")
     assert "## Project context" in prompts.user
@@ -249,7 +247,7 @@ def test_planner_prompt_injects_project_brief(handler: TodoHandler) -> None:
 def test_planner_prompt_brief_cascades_to_leaf(handler: TodoHandler) -> None:
     from precis.workers.planner_prompt import build_planner_prompts
 
-    root = handler.put(text="Demo.", tags=["level:strategic"], meta=_WS_META)
+    root = handler.put(text="Demo.", meta=_WS_META)
     rid = _id_of(root.body)
     child = handler.put(text="A deep leaf.", parent_id=rid)
     child_id = _id_of(child.body)
@@ -261,7 +259,7 @@ def test_planner_prompt_brief_cascades_to_leaf(handler: TodoHandler) -> None:
 def test_planner_prompt_no_brief_no_block(handler: TodoHandler) -> None:
     from precis.workers.planner_prompt import build_planner_prompts
 
-    root = handler.put(text="No-workspace strategic.", tags=["level:strategic"])
+    root = handler.put(text="No-workspace strategic.", meta={"rotation_root": True})
     rid = _id_of(root.body)
     prompts = build_planner_prompts(handler.store, ref_id=rid, model="opus")
     assert "## Project context" not in prompts.user
@@ -282,9 +280,7 @@ _WS_META_VOICE = {
 def test_planner_prompt_injects_voice(handler: TodoHandler) -> None:
     from precis.workers.planner_prompt import build_planner_prompts
 
-    root = handler.put(
-        text="Demo project.", tags=["level:strategic"], meta=_WS_META_VOICE
-    )
+    root = handler.put(text="Demo project.", meta=_WS_META_VOICE)
     rid = _id_of(root.body)
     prompts = build_planner_prompts(handler.store, ref_id=rid, model="opus")
     assert "## Voice & style" in prompts.user
@@ -296,7 +292,7 @@ def test_planner_prompt_injects_voice(handler: TodoHandler) -> None:
 def test_planner_prompt_no_voice_no_block(handler: TodoHandler) -> None:
     from precis.workers.planner_prompt import build_planner_prompts
 
-    root = handler.put(text="No-workspace strategic.", tags=["level:strategic"])
+    root = handler.put(text="No-workspace strategic.", meta={"rotation_root": True})
     rid = _id_of(root.body)
     prompts = build_planner_prompts(handler.store, ref_id=rid, model="opus")
     assert "## Voice & style" not in prompts.user

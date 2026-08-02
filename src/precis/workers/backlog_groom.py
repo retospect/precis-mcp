@@ -11,8 +11,9 @@ For each open gripe with no fix already in flight, it mints one
 ``dispatch`` sweep that todo mints a ``fix_gripe`` job under the
 ``claude_inproc`` executor (which clones the repo, runs ``claude -p`` on a
 ``gripe_<id>`` branch, and pushes a candidate fix). The todo hangs under a
-single ``level:strategic`` groomer root so it satisfies the nursery's
-strategic-ancestor invariant and shows up as one legible project subtree.
+single ``meta.rotation_root=True`` groomer root so it satisfies the
+nursery's strategic-ancestor invariant and shows up as one legible
+project subtree.
 
 **Scope — gripes only (this slice).** The ``OPEN-ITEMS.md`` half of the
 backlog is *not* groomed here, for two concrete reasons: (1) the file lives
@@ -130,9 +131,9 @@ def _ensure_root(store: Store) -> int:
     """Find-or-create the strategic root the groomer hangs todos under.
 
     Identified by ``meta.<_ROOT_MARKER>=True`` so it survives title edits.
-    Tagged ``level:strategic`` so the minted children have a strategic
-    ancestor (else the nursery flags them as orphans). Runs under the pass's
-    advisory lock, so no concurrent double-create.
+    Stamped ``meta.rotation_root=True`` so the minted children have a
+    strategic ancestor (else the nursery flags them as orphans). Runs
+    under the pass's advisory lock, so no concurrent double-create.
     """
     with store.pool.connection() as conn:
         row = conn.execute(
@@ -154,7 +155,7 @@ def _ensure_root(store: Store) -> int:
             kind="todo",
             slug=None,
             title="Backlog groomer — auto-minted gripe fixes",
-            meta={_ROOT_MARKER: True},
+            meta={_ROOT_MARKER: True, "rotation_root": True},
             parent_id=None,
             prio=5,
             conn=conn,
@@ -166,7 +167,6 @@ def _ensure_root(store: Store) -> int:
             replace_prefix=True,
             conn=conn,
         )
-        store.add_tag(root.id, Tag.open("level:strategic"), set_by="system", conn=conn)
     log.info("backlog_groom: created strategic root id=%d", root.id)
     return int(root.id)
 
@@ -201,7 +201,6 @@ def _mint_todo_for_gripe(
             replace_prefix=True,
             conn=conn,
         )
-        store.add_tag(child.id, Tag.open("level:subtask"), set_by="system", conn=conn)
         store.add_tag(
             child.id, Tag.open("origin:backlog-groom"), set_by="system", conn=conn
         )

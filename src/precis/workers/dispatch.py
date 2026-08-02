@@ -231,11 +231,11 @@ def _candidate_parent_ids(store: Store, *, limit: int) -> list[int]:
     Eligibility (planner-coroutine slice):
 
     * ``kind='todo'`` and not deleted.
-    * Auto-run signal: either a closed-vocab ``LLM:<model>`` tag
+    * Auto-run signal: either a closed-vocab ``meta.llm_tier``
       (opus / sonnet / haiku — runs the LLM planner) OR an
       ``executor:<runner>`` tag (code-path runner) OR — legacy —
       ``meta.executor`` set (back-compat with the v1 ``fix_gripe``
-      shape; new code uses the tag forms).
+      shape; new code uses ``meta.llm_tier`` / the ``executor:`` tag).
     * STATUS in ``open|doing`` (paused / done / blocked skip).
     * No **live** child job — a child of ``kind='job'`` whose own
       STATUS is anything other than ``done`` / ``succeeded`` /
@@ -260,9 +260,10 @@ def _candidate_parent_ids(store: Store, *, limit: int) -> list[int]:
       parked-on-human leaf.
     * No exclusion tag (registry: halt / halt:* / ask-user* /
       waiting-for:* / child-failed:*).
-    * Not a ``level:recurring`` watch root — cadence for those is owned
-      by the schedule worker (``precis.workers.schedule.worker``), which
-      spawns a ``level:subtask`` child each tick; that child (not the
+    * Not a recurring watch root (``meta.schedule`` set) — cadence for
+      those is owned by the schedule worker
+      (``precis.workers.schedule.worker``), which spawns an ordinary
+      worker-mintable subtask child each tick; that child (not the
       root) is the legitimate dispatch candidate. Without this
       exclusion, a recurring root whose latest child resolves instantly
       re-satisfies every other eligibility clause immediately, and the
@@ -278,13 +279,11 @@ def _candidate_parent_ids(store: Store, *, limit: int) -> list[int]:
              WHERE r.kind = 'todo' AND r.deleted_at IS NULL
                AND (
                    r.meta ? 'executor'
+                   OR r.meta ? 'llm_tier'
                    OR EXISTS (
                        SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                         WHERE rt.ref_id = r.ref_id
-                          AND (
-                              t.namespace = 'LLM'
-                              OR (t.namespace = 'OPEN' AND t.value LIKE 'executor:%%')
-                          )
+                          AND t.namespace = 'OPEN' AND t.value LIKE 'executor:%%'
                    )
                )
                AND COALESCE(
@@ -325,12 +324,7 @@ def _candidate_parent_ids(store: Store, *, limit: int) -> list[int]:
             + _doable_exclusion_clause()
             + """
                )
-               AND NOT EXISTS (
-                   SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
-                    WHERE rt.ref_id = r.ref_id
-                      AND t.namespace = 'OPEN'
-                      AND t.value = 'level:recurring'
-               )
+               AND NOT (r.meta ? 'schedule')
              ORDER BY r.ref_id
              LIMIT %s
             """,
@@ -360,11 +354,7 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool]:
                    r.meta->>'job_type' AS job_type,
                    r.meta->'params' AS params,
                    r.meta ? 'auto_check' AS has_auto_check,
-                   (SELECT 'LLM:' || t.value FROM ref_tags rt
-                      JOIN tags t ON t.tag_id = rt.tag_id
-                     WHERE rt.ref_id = r.ref_id
-                       AND t.namespace = 'LLM'
-                     LIMIT 1) AS llm_tag,
+                   r.meta->>'llm_tier' AS llm_tier,
                    (SELECT t.value FROM ref_tags rt
                       JOIN tags t ON t.tag_id = rt.tag_id
                      WHERE rt.ref_id = r.ref_id
@@ -378,13 +368,11 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool]:
                AND r.deleted_at IS NULL
                AND (
                    r.meta ? 'executor'
+                   OR r.meta ? 'llm_tier'
                    OR EXISTS (
                        SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                         WHERE rt.ref_id = r.ref_id
-                          AND (
-                              t.namespace = 'LLM'
-                              OR (t.namespace = 'OPEN' AND t.value LIKE 'executor:%%')
-                          )
+                          AND t.namespace = 'OPEN' AND t.value LIKE 'executor:%%'
                    )
                )
                AND COALESCE(
@@ -443,7 +431,7 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool]:
         job_type = row[2]
         params = dict(row[3] or {})
         has_auto_check = bool(row[4])
-        llm_tag = row[5]
+        llm_tier = row[5]
         executor_tag = row[6]
         # The parent todo's prio flows down the DAG onto the minted job so
         # the claim ordering (slice 6a) can favour it — quests/high-prio
@@ -451,15 +439,15 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool]:
         # claim's COALESCE default (byte-identical to FIFO for unset work).
         parent_prio = int(row[7]) if row[7] is not None else None
 
-        # Planner-coroutine path: when a todo is LLM:*-tagged but lacks
-        # ``meta.executor``, synthesize the dispatch parameters from the
-        # tag. The model picker IS the tag value (``LLM:opus`` →
-        # ``model=opus``); the job_type is the generic planner tick
+        # Planner-coroutine path: when a todo carries ``meta.llm_tier``
+        # but lacks ``meta.executor``, synthesize the dispatch parameters
+        # from it. The model picker IS the tier value (``llm_tier='opus'``
+        # → ``model=opus``); the job_type is the generic planner tick
         # (``plan_tick``) which knows how to read the parent's body,
         # ancestry, and prior child summaries into a single prompt.
         # ``executor:<runner>`` tags route to code-path runners with a
         # parallel synthesis (job_type = ``executor:<runner>``).
-        if not isinstance(executor, str) and llm_tag:
+        if not isinstance(executor, str) and llm_tier:
             executor = "claude_inproc"
             job_type = job_type or "plan_tick"
         elif not isinstance(executor, str) and executor_tag:
@@ -473,13 +461,13 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool]:
 
         # A todo can also declare ``meta.executor``/``meta.job_type``
         # explicitly (the documented precis-job-help pattern) while
-        # still carrying an LLM:* tag as the model picker — e.g. a
+        # still carrying ``meta.llm_tier`` as the model picker — e.g. a
         # filer who wants plan_tick but an explicit executor for
         # clarity. Synthesize the model param in that case too, not
         # only on the NULL-executor planner-coroutine path above,
         # else plan_tick crashes on a missing params['model'].
-        if llm_tag and job_type == "plan_tick":
-            params.setdefault("model", str(llm_tag).removeprefix("LLM:"))
+        if llm_tier and job_type == "plan_tick":
+            params.setdefault("model", str(llm_tier))
 
         # Validate executor + job_type at dispatch time. The TodoHandler
         # doesn't validate ``meta.executor`` / ``meta.job_type`` on

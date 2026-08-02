@@ -180,7 +180,7 @@ axes and suggests the lowercase rewrite.
 
 | Kind | Allowed closed axes |
 |---|---|
-| `todo` | `STATUS`, `PRIO`, `LLM` (dispatch tier), `AUDIT` (content-QA category) |
+| `todo` | `STATUS`, `PRIO`, `AUDIT` (content-QA category) — the dispatch tier is `meta.llm_tier`, not a closed axis (§M facet normalization) |
 | `gripe` | `STATUS`, `PRIO` |
 | `finding` | `STATUS` (lifecycle subsets — see table above); also `AUDIT` (content-QA category) |
 | `job` | `STATUS` (lifecycle subsets — see table above) |

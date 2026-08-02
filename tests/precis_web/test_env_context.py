@@ -109,9 +109,13 @@ def test_env_route_dry_run_planner_assembles_against_representative_todo(
     real_client: TestClient, store: Store
 ) -> None:
     """With no ``target_ref_id``, the planner dry-run picks a recent
-    ``LLM:``-tagged todo and assembles a real (zero-LLM-call) prompt."""
-    todo = store.insert_ref(kind="todo", slug=None, title="write the report")
-    store.add_tag(todo.id, Tag.closed("LLM", "opus"), set_by="system")
+    ``meta.llm_tier``-set todo and assembles a real (zero-LLM-call) prompt."""
+    todo = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title="write the report",
+        meta={"llm_tier": "opus"},
+    )
 
     resp = real_client.get("/env?agent=job_claude_inproc")
     assert resp.status_code == 200

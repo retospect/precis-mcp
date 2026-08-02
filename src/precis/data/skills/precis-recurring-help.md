@@ -1,8 +1,8 @@
 ---
 id: precis-recurring-help
-title: precis — scheduled work (recurring + one-shot + push delivery) via level:recurring
+title: precis — scheduled work (recurring + one-shot + push delivery) via meta.schedule
 summary: recurring task patterns — Watches umbrella, cron/every/at schedule shapes, per-tick subtask spawning or push delivery (meta.deliver)
-applies-to: put (kind='todo' with level:recurring + meta.schedule [+ meta.deliver]); precis worker --only schedule
+applies-to: put (kind='todo' with meta.schedule [+ meta.deliver]); precis worker --only schedule
 status: active
 ---
 
@@ -10,8 +10,8 @@ status: active
 
 All scheduled work — recurring (dreams, weather pulls, "look for new
 conferences", birthday reminders) **and** one-shot ("remind me in 10
-minutes") — lives in the same tree as everything else, under
-`level:recurring`. A one-shot schedule is a `level:recurring` node that
+minutes") — lives in the same tree as everything else, marked by
+`meta.schedule` presence. A one-shot schedule is a recurring node that
 fires exactly once and retires itself; a schedule's `meta.deliver`
 decides whether a due tick mints a subtask into the doable queue or
 fires a push notification instead.
@@ -22,16 +22,15 @@ Delivery-mode ticks have no subtask at all (see below).
 
 ## Watches umbrella
 
-A seeded `Watches` ref tagged `level:recurring` with
-`meta.builtin='watches-root'` sits at the top of the tree. Every
-recurring lands under it by default — leave `parent_id` off your
-`put` and the handler wires `parent_id=<watches-root>` for you.
+A seeded `Watches` ref carrying `meta.builtin='watches-root'` sits at
+the top of the tree. Every recurring lands under it by default — leave
+`parent_id` off your `put` and the handler wires
+`parent_id=<watches-root>` for you.
 
 ```python
 put(
     kind="todo",
     text="Check arxiv weekly",
-    tags=["level:recurring"],
     meta={"schedule": {"cron": "0 9 * * 1"}},
 )
 # → parent_id = the Watches root
@@ -48,7 +47,6 @@ put(
     kind="todo",
     text="Birthday reminders",
     parent_id=56,  # under "Personal life"
-    tags=["level:recurring"],
     meta={"schedule": {"every": "mon 09:00", "backfill_missed": True}},
 )
 ```
@@ -109,7 +107,6 @@ action *is* the delivery.
 put(
     kind="todo",
     text="check the api monitor",
-    tags=["level:recurring"],
     meta={
         "schedule": {"every": "15m"},
         "deliver": {"target": "conv:discord/<g>/<c>/<t>"},
@@ -120,7 +117,6 @@ put(
 put(
     kind="todo",
     text="ask about the PR status",
-    tags=["level:recurring"],
     meta={
         "schedule": {"at": "2026-06-12T09:10:00Z"},
         "deliver": {"target": "conv:discord/<g>/<c>/<t>"},
@@ -128,9 +124,9 @@ put(
 )
 ```
 
-Omit `meta.deliver` for the original Slice-4 behaviour (spawn a
-`level:subtask` child into the doable queue — someone/something works
-it). A recurring with neither `meta.deliver` nor an
+Omit `meta.deliver` for the original Slice-4 behaviour (spawn an
+ordinary worker-mintable subtask into the doable queue — someone/
+something works it). A recurring with neither `meta.deliver` nor an
 `executor`/`job_type` pair still spawns a plain, unexecuted subtask.
 
 ## Tick mechanics
@@ -154,12 +150,12 @@ child stamp.
 
 **One-shot** (`meta.schedule.at` set, either mode) resolves to fire /
 skip-not-yet-due / expire exactly once, then tags the recurring root
-`STATUS:done` so it never re-fires — a one-shot is a `level:recurring`
+`STATUS:done` so it never re-fires — a one-shot is a recurring
 node that retires itself after its one tick.
 
 ## Provenance
 
-* `parent_id` chain → `level:recurring` answers "is this
+* `parent_id` chain + `meta.schedule` presence answers "is this
   schedule-spawned?" (queue-mode only — delivery-mode has no child).
 * `ref_events.source='schedule'`, `event='spawn'` (queue-mode) or
   `event='deliver'` (delivery-mode / one-shot resolution) answers
@@ -194,14 +190,14 @@ backfills); the default rotation includes it alongside `auto_check`.
 
 * **Subtasks edited mid-pass.** Children minted by a tick are normal
   subtasks — workers may claim them, split them, mark them done.
-  Don't re-tag a spawned child as `level:recurring` to "make it
+  Don't set `meta.schedule` on a spawned child to "make it
   reschedule" — the spawner walks the recurring *root*, not its
   children. Mint a new recurring instead.
 * **Using `STATUS:paused` on the wrong layer.** Pausing the
   recurring root pauses the schedule. Pausing a spawned subtask
   just pauses that one tick; the next tick still mints.
 * **`* * * * *` schedules.** Owner-only on purpose — the
-  level-gradient guard rejects level:recurring writes from worker
+  level-gradient guard rejects `meta.schedule` writes from worker
   sources. If you really want minute-by-minute cadence, run it
   inline; the queue isn't built for it.
 

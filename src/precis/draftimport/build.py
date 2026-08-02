@@ -325,7 +325,9 @@ def run_import(
 
             resp = TodoHandler(hub=Hub(store=store)).put(
                 text=f"Import & edit: {title}",
-                tags=["level:strategic"],
+                # No explicit rotation_root= — a root todo with
+                # meta.workspace set is auto-stamped as a strategic root
+                # by TodoHandler.put (§M facet normalization).
                 meta={
                     "workspace": {
                         "path": f"imports/{slug}",

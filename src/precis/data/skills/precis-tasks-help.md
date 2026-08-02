@@ -9,12 +9,16 @@ status: active
 # precis-tasks-help — the hierarchical task tree
 
 Built on top of `kind='todo'`. Every todo is a node; an optional
-`parent_id` wires it under another todo to form a tree:
+`parent_id` wires it under another todo to form a tree. The tier is two
+boolean `meta` fields, not a tag (§M facet normalization) —
+`rotation_root` marks a strategic root, `worker_mintable=false` marks
+tactical, and the default (both unset) is an ordinary worker-mintable
+subtask:
 
 ```
-strategic root  (owner-only, level:strategic)
-  └─ tactical    (owner-only, level:tactical)
-      └─ subtask (worker-owned by default)
+strategic root  (owner-only, meta.rotation_root=true)
+  └─ tactical    (owner-only, meta.worker_mintable=false)
+      └─ subtask (worker-owned by default — no facet fields set)
          └─ subtask
             └─ ...   (depth-10 wall)
 ```
@@ -36,23 +40,26 @@ also covers the depth-10 wall and how to recover from it.
 put(
     kind="todo",
     text="Build the nanocube AI compute platform.",
-    tags=["level:strategic"],
+    meta={"rotation_root": True},
 )
 ```
 
 Strategic and tactical tiers are gated: workers (`PRECIS_SOURCE`
 starting with `asa-`) cannot create or mutate them. CLI sessions,
 interactive Python, and the precis-web UI (`web:owner`) pass through.
+Promoting/demoting an *existing* todo's facets after creation goes
+through `tag(meta={...})` (`tag()` already carries non-tag state via
+`prio=`, so this follows the same precedent), same owner-only gate.
 
-Workers may **propose** a tactical via the open
-`level:proposed-tactical` tag for owner triage:
+Workers may **propose** a tactical via the open `proposed-tactical`
+tag for owner triage:
 
 ```python
 put(
     kind="todo",
     text="Write the boxel paper",
     parent_id=42,
-    tags=["level:proposed-tactical"],
+    tags=["proposed-tactical"],
 )
 ```
 
@@ -109,21 +116,22 @@ A *project* is not a separate kind — it's a strategic root carrying
 (under `PRECIS_ROOT`), a file format, and a standing **brief** ("project
 thoughts": voice, scope, constraints). All three cascade to every
 descendant via the put-time inheritance, so you set them once at the
-root.
+root. A root with `meta.workspace` set is auto-stamped
+`rotation_root=true` if you don't set the facet fields yourself.
 
 ```python
 put(
     kind="todo",
     text="Write the nanotrans review.",
-    tags=["level:strategic", "LLM:opus"],
     meta={
+        "llm_tier": "opus",
         "workspace": {
             "path": "projects/nanotrans_auto",  # relative to PRECIS_ROOT
             "format": "tex",  # 'tex' | 'md'
             "entrypoint": "main.tex",
             "brief": "Terse, IEEE voice. Cite primary sources only. "
             "Do NOT speculate beyond the corpus.",
-        }
+        },
     },
 )
 ```
@@ -165,8 +173,8 @@ search(kind="todo", view="doable", args={"under": 67})  # within a subtree
 open blocked-by links, no `waiting-for:*` tag, no `ask-user`
 tag, no `child-failed:*` tag
 (a child job failed and is awaiting
-the owner's decision), no `paused` ancestor, and not a
-`level:recurring` umbrella row. Ordering: `prio` int column ASC,
+the owner's decision), no `paused` ancestor, and not a recurring
+(`meta.schedule` set) umbrella row. Ordering: `prio` int column ASC,
 then least-picked strategic, then ref_id (sibling order). PRIO 1
 preempts the 1/N rotation; cron-spawned subtasks default to PRIO 2.
 
@@ -202,15 +210,22 @@ Every `get(kind='todo', id=N)` reply includes the full chain from
 the strategic root down to the leaf. Cheap (depth ≤ 10) and saves
 the agent a follow-up call to figure out why this leaf exists.
 
-## Tag vocabulary specific to the tree
+## Facet fields + tag vocabulary specific to the tree
+
+The level tier is `meta`, not a tag (§M facet normalization,
+migration 0102 — replaced the old `level:strategic`/`level:tactical`/
+`level:subtask`/`level:recurring` tags):
+
+| `meta` field | Purpose | Who writes |
+|---|---|---|
+| `rotation_root=true` | Strategic root — the picks-7d rotation unit | owner only |
+| `worker_mintable=false` | Tactical (sub-strategic, non-root) tier | owner only |
+| *(both unset)* | Subtask — the worker-mintable default | anyone |
+| `schedule={...}` | Scheduled root (Slice 4) — presence IS "recurring" | owner only |
 
 | Tag | Purpose | Who writes |
 |---|---|---|
-| `level:strategic` | Top-tier outcome | owner only |
-| `level:tactical` | Sub-strategic outcome | owner only |
-| `level:recurring` | Scheduled root carrying `meta.schedule` (Slice 4) | owner only |
-| `level:subtask` (default if omitted) | Worker-level | anyone |
-| `level:proposed-tactical` | Worker's tactical pitch | anyone |
+| `proposed-tactical` | Worker's tactical pitch | anyone |
 | `claimed-by:<handle>` | Atomic claim marker | the claimer |
 | `waiting-for:<target>` | External wait | anyone |
 | `ask-user` / `ask-user:<question>` | Parked on a human's reply; bare = "any human", `ask-user:<text>` carries the question inline. Add `user:<who>` to address a specific person | anyone |
@@ -248,7 +263,7 @@ get(
 get(kind="skill", id="precis-auto-tasks-help")  # meta.auto_check leaves (Slice 1b/5)
 get(
     kind="skill", id="precis-recurring-help"
-)  # level:recurring + Watches umbrella (Slice 4)
+)  # meta.schedule + Watches umbrella (Slice 4)
 get(
     kind="skill", id="precis-dispatch-help"
 )  # meta.executor + dispatch worker (Slice 5)

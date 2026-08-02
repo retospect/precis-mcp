@@ -88,8 +88,8 @@ from precis.utils.authors import (
     to_author_dicts,
 )
 
-# Planner tiers a change-request / review can run on, via the ``LLM:<model>``
-# tag. Single-sourced from the router's planner alias map (ADR 0046) so the
+# Planner tiers a change-request / review can run on, via ``meta.llm_tier``.
+# Single-sourced from the router's planner alias map (ADR 0046) so the
 # accepted set — the cloud triad plus the cluster's ``local`` qwen tier — never
 # drifts from ``Tag.parse_strict`` or the ``planner_models()`` dropdown.
 from precis.utils.llm.router import PLANNER_MODEL_ALIASES as _PLANNER_MODELS
@@ -839,9 +839,10 @@ async def new_draft(
 
     ``summary`` is the user's description of *what to write* — it becomes
     the project todo's body (the ``## Body`` of every planner tick), i.e.
-    the planner's **initial prompt**, not just standing context. The
-    ``LLM:opus`` tag is the dispatcher's auto-run signal, so the planner
-    starts on the description as soon as the next ``dispatch`` pass runs.
+    the planner's **initial prompt**, not just standing context.
+    ``meta.llm_tier='opus'`` is the dispatcher's auto-run signal, so the
+    planner starts on the description as soon as the next ``dispatch``
+    pass runs.
 
     ``cfp`` (proposal doctype only) is the slug/id of a call-for-proposal
     to attach via the ``has-requirement`` link — the planner then mirrors
@@ -855,8 +856,8 @@ async def new_draft(
     if not title:
         return RedirectResponse(url="/drafts", status_code=303)
     # A title alone is not enough to write a document from: the description
-    # IS the planner's initial prompt, and ``LLM:opus`` arms the auto-writer
-    # the moment the draft is created. Require it (the client also marks the
+    # IS the planner's initial prompt, and ``meta.llm_tier='opus'`` arms the
+    # auto-writer the moment the draft is created. Require it (the client also marks the
     # field ``required``, but that is bypassable) rather than silently
     # falling back to a "Write a <doctype> titled …" instruction that sets
     # the planner writing from just the title.
@@ -902,13 +903,18 @@ async def new_draft(
     # The description IS the planner's initial prompt: it becomes the
     # project todo's body (``refs.title`` → the ``## Body`` block read by
     # ``plan_tick``). It is required (guarded above), so there is no
-    # title-only fallback. ``LLM:opus`` is the closed-vocab auto-run tag the
-    # dispatcher keys on to mint the first ``plan_tick`` job (no
-    # ``meta.executor``).
+    # title-only fallback. ``meta.llm_tier='opus'`` is the closed-vocab
+    # auto-run field the dispatcher keys on to mint the first ``plan_tick``
+    # job (no ``meta.executor``).
     task_text = summary
 
-    # 1) project root that owns the workspace + drives the planner.
-    project_tags = ["level:strategic", "LLM:opus", *_topic_tags(tag_labels)]
+    # 1) project root that owns the workspace + drives the planner. No
+    # explicit rotation_root= needed — a root todo with meta.workspace
+    # set is auto-stamped as a strategic root by TodoHandler.put (§M
+    # facet normalization); llm_tier is explicit here because the
+    # put()-time auto-default only fires for a *parented* child, not a
+    # fresh root.
+    project_tags = [*_topic_tags(tag_labels)]
     body, is_error = await await_dispatch(
         request,
         "put",
@@ -916,7 +922,7 @@ async def new_draft(
             "kind": "todo",
             "text": task_text,
             "tags": project_tags,
-            "meta": {"workspace": workspace},
+            "meta": {"workspace": workspace, "llm_tier": "opus"},
         },
     )
     project_id = None if is_error else _parse_id(body)
@@ -1508,7 +1514,7 @@ async def request_change_ws(request: Request, ident: str) -> JSONResponse:
             },
             status_code=422,
         )
-    meta: dict[str, Any] = {}
+    meta: dict[str, Any] = {"llm_tier": tier}
     if has_marks:
         meta["working_set"] = draft_eyes.to_working_set_meta(marks)
     if anchor:
@@ -1517,7 +1523,6 @@ async def request_change_ws(request: Request, ident: str) -> JSONResponse:
         "kind": "todo",
         "text": text,
         "meta": meta,
-        "tags": [f"LLM:{tier}"],
     }
     project = _project_id(store, ref.id)
     if project is not None:

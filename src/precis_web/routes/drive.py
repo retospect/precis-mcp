@@ -98,8 +98,10 @@ _KIND_ICON = {
 #: Author kinds (harmless — a chunkless kind contributes nothing). ``todo``
 #: is declared ``role='artifact'`` (it can live in folders), so it is
 #: pulled out of the Author facet below to sit here instead — one home,
-#: not two. "Schedules" (``level:recurring`` todos) is not a kind but a
-#: tag preset the template links to, riding the existing tag facet.
+#: not two. "Schedules" (recurring todos — ``meta.schedule`` set) is not
+#: a kind but a preset link using the ``tag=level:recurring`` sentinel
+#: (translated server-side to ``has_schedule=True``, §M facet
+#: normalization — the tag itself no longer exists).
 _WORK_KINDS: tuple[str, ...] = ("quest", "todo")
 
 
@@ -330,6 +332,15 @@ async def index(
             _DEFAULT_SOURCE_KINDS
         )
     tags = [t.strip() for t in tag if t.strip()]
+    # ``tag=level:recurring`` is the "Schedules" preset link (base.html.j2 /
+    # drive/index.html.j2's nav chip) — kept as a familiar URL even though
+    # the tag itself is retired (§M facet normalization): recurring is now
+    # ``meta.schedule`` presence, not a tag, so translate the sentinel into
+    # ``has_schedule=True`` and drop it from the generic tag-filter list.
+    has_schedule: bool | None = None
+    if "level:recurring" in tags:
+        has_schedule = True
+        tags = [t for t in tags if t != "level:recurring"]
     _sort_raw = (sort or "").strip().lower()
     sort = _sort_raw if _sort_raw in ("recency", "oldest") else "relevance"
     state = (state or "all").strip().lower()
@@ -438,6 +449,7 @@ async def index(
             folder_id,
             offset,
             has_chunks=has_chunks,
+            has_schedule=has_schedule,
             ref_ids=fetch_ref_ids,
             deleted=show_deleted,
             oldest=(sort == "oldest"),
@@ -458,6 +470,7 @@ async def index(
             tags=tags,
             has_pdf=has_pdf,
             has_chunks=has_chunks,
+            has_schedule=has_schedule,
             parent_id=folder_id,
             ref_ids=fetch_ref_ids,
             deleted=show_deleted,
@@ -486,6 +499,10 @@ async def index(
         _pager_params.append(("folder", folder_raw))
     if cited_by:
         _pager_params.append(("cited_by", cited_by))
+    if has_schedule:
+        # Re-append the "Schedules" sentinel stripped out above (post-query)
+        # so paging preserves it and the active-filter chip still renders.
+        tags = [*tags, "level:recurring"]
     for kk in selected_kinds:
         _pager_params.append(("k", kk))
     for t in tags:

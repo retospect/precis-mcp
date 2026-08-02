@@ -549,7 +549,7 @@ def test_tag_strict_still_accepts_space_free_tags() -> None:
     Tag.parse_strict("STATUS:open")
     Tag.parse_strict("bug")  # bare open flag
     Tag.parse_strict("project:nanotrans_auto_2026_carbon_capture_sweep")
-    Tag.parse_strict("LLM:opus")
+    Tag.parse_strict("PRIO:high")
     Tag.parse_strict("topic:co2-capture")
     Tag.parse_strict("ask-user:see-chunk-7")  # the redirected handle
     Tag.parse_strict("halt:missing-credentials")

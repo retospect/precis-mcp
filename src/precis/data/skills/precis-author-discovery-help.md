@@ -68,7 +68,7 @@ download budget inline.
 
 ## As a planner coroutine
 
-This loop is a natural `LLM:*` planner tick: each tick resolves one
+This loop is a natural `meta.llm_tier`-set planner tick: each tick resolves one
 author, the stubs fetch out-of-band, the next tick reads what landed
 and picks the next frontier node. Run it by hand first to validate the
 scoring heuristic, then promote to a recurring planner.

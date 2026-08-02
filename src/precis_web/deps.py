@@ -88,7 +88,7 @@ def _make_jinja_env() -> jinja2.Environment:
     env.filters["abs_ts"] = abs_ts
 
     # ``planner_models()`` → the ordered ``(alias, resolved-model)`` list the
-    # router understands for an ``LLM:<value>`` planner tag. Registered as a
+    # router understands for ``meta.llm_tier``. Registered as a
     # Jinja global so every model-picker dropdown (task retry, draft
     # change-request, review) renders the SAME options — the capability tiers
     # available on this cluster (opus/sonnet/haiku + the local qwen), labelled

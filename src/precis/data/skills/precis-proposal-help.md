@@ -2,7 +2,7 @@
 id: precis-proposal-help
 title: precis — write a proposal against a call-for-proposal
 summary: ingest a call-for-proposal (kind='cfp'), seed a proposal project with the idea + personnel, link the cfp, and let the planner write the draft section-by-section, checking each section's word count against the cfp's limits
-applies-to: kind='cfp' (get/search), kind='draft' (put/edit get view='wordcount'), kind='todo' (LLM:* project), link rel='has-requirement'
+applies-to: kind='cfp' (get/search), kind='draft' (put/edit get view='wordcount'), kind='todo' (meta.llm_tier project), link rel='has-requirement'
 status: active
 ---
 
@@ -16,7 +16,7 @@ Writing a proposal in precis joins three pieces you already have:
    to quote.
 2. **A proposal project** — a strategic `kind='todo'` whose
    `meta.workspace.brief` holds your **idea + personnel** (free text),
-   tagged `LLM:opus` so the planner drives it.
+   with `meta.llm_tier='opus'` so the planner drives it.
 3. **The proposal draft** — a `kind='draft'` (one per project), the
    editable, chunk-native deliverable. You write **into** it.
 
@@ -33,15 +33,16 @@ $ precis add --as cfp ~/Downloads/nsf-25-501.pdf      # → cfp slug, e.g. nsf-2
 #    read it at  /cfp/<slug>  (the paper-style two-pane reader)
 
 # 2. Create the proposal project (strategic todo) carrying the idea +
-#    personnel as the workspace brief, and tag it LLM:opus so it ticks.
-put(kind='todo', level='strategic',
+#    personnel as the workspace brief, with meta.llm_tier='opus' so it ticks.
+put(kind='todo',
     text='Write the NSF-25-501 proposal',
-    meta={'workspace': {'path': 'projects/nsf_25_501',
+    meta={'rotation_root': True,
+          'llm_tier': 'opus',
+          'workspace': {'path': 'projects/nsf_25_501',
                         'format': 'tex',
                         'brief': '''IDEA: <one-paragraph thesis of the proposal>.
 PERSONNEL: <PI name, role, relevant track record>; <co-PI …>; <key staff …>.
-CONSTRAINTS: <budget cap, duration, any eligibility notes>.'''}},
-    tags=['LLM:opus'])
+CONSTRAINTS: <budget cap, duration, any eligibility notes>.'''}})
 
 # 3. Link the call to the project so the planner consults it.
 link(kind='todo', id=<project ref_id>, target='cfp:nsf-25-501', rel='has-requirement')
@@ -53,7 +54,7 @@ put(kind='draft', project=<project ref_id>,
     text='NSF-25-501 — <working title>')
 ```
 
-That is all. The `dispatch` worker ticks the `LLM:opus` project; each
+That is all. The `dispatch` worker ticks the `llm_tier='opus'` project; each
 tick is a planner coroutine that sees a **`## Proposal requirements`**
 block (the linked call's title + section headings) and the **`##
 Project context`** block (your idea + personnel brief), and proceeds.

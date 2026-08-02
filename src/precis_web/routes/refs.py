@@ -297,9 +297,7 @@ def _job_actions(store: Any, ref: Any, tags: list[Any]) -> dict[str, Any]:
             parent_kind = parent.kind
             if parent_kind == "todo":
                 try:
-                    is_llm_planner = any(
-                        str(t).startswith("LLM:") for t in store.tags_for(parent_id)
-                    )
+                    is_llm_planner = bool((parent.meta or {}).get("llm_tier"))
                 except Exception:
                     is_llm_planner = False
 

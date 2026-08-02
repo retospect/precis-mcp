@@ -20,7 +20,7 @@ parent whose entire work is one offline job (``fix_gripe`` and the
 like): the job succeeds, the parent is done. It is the WRONG signal
 for three cases, which this module refuses to resolve:
 
-1. **Planner coroutines.** An ``LLM:*``-tagged parent runs the
+1. **Planner coroutines.** A ``meta.llm_tier``-set parent runs the
    ``plan_tick`` coroutine — each tick is one ``kind='job'`` that
    ``STATUS:succeeded`` on any clean run, including ticks that merely
    *minted children* (``verdict: continue``) or *yielded*
@@ -38,7 +38,7 @@ for three cases, which this module refuses to resolve:
    guardrail (``handlers/_todo_guards.check_status_done_artifact``),
    which the auto-resolver bypasses by writing the tag directly.
 
-3. **``level:recurring`` watches.** A schedule-driven watch (ADR 0061)
+3. **Recurring watches** (``meta.schedule`` set). A schedule-driven watch (ADR 0061)
    spawns one child job per tick and owns its own terminal state (a
    one-shot self-tags ``STATUS:done`` on resolve; a cron never
    resolves). Left unguarded, the *first* spawned child job to succeed
@@ -72,27 +72,21 @@ if TYPE_CHECKING:
 
 
 def _parent_is_planner_coroutine(conn: Connection, ref_id: int) -> bool:
-    """True when the parent carries an ``LLM:<model>`` tag.
+    """True when the parent carries ``meta.llm_tier``.
 
     Such a todo is dispatched as a ``plan_tick`` coroutine that drives
     its own terminal state; ``child_job_succeeded`` must never close it
     (see guard 1 in the module docstring).
     """
     row = conn.execute(
-        """
-        SELECT 1 FROM ref_tags rt
-          JOIN tags t ON t.tag_id = rt.tag_id
-         WHERE rt.ref_id = %s
-           AND t.namespace = 'LLM'
-         LIMIT 1
-        """,
+        "SELECT 1 FROM refs WHERE ref_id = %s AND meta ? 'llm_tier'",
         (ref_id,),
     ).fetchone()
     return row is not None
 
 
 def _parent_is_recurring_watch(conn: Connection, ref_id: int) -> bool:
-    """True when the parent carries an open ``level:recurring`` tag.
+    """True when the parent carries ``meta.schedule``.
 
     Such a todo is a schedule-driven watch (cron or one-shot, ADR 0061) —
     the schedule worker owns its terminal state (a one-shot self-tags
@@ -103,14 +97,7 @@ def _parent_is_recurring_watch(conn: Connection, ref_id: int) -> bool:
     planner-coroutine reasoning above).
     """
     row = conn.execute(
-        """
-        SELECT 1 FROM ref_tags rt
-          JOIN tags t ON t.tag_id = rt.tag_id
-         WHERE rt.ref_id = %s
-           AND t.namespace = 'OPEN'
-           AND t.value = 'level:recurring'
-         LIMIT 1
-        """,
+        "SELECT 1 FROM refs WHERE ref_id = %s AND meta ? 'schedule'",
         (ref_id,),
     ).fetchone()
     return row is not None
@@ -151,15 +138,15 @@ def evaluate(store: Store, spec: dict[str, Any], *, ref_id: int) -> bool | None:
     ingested?"); this one needs to scope to the calling leaf.
 
     Returns ``None`` (= not yet, leave the leaf open) when guard 1 or 2
-    fires, ``False`` when guard 3 (``level:recurring``) fires — both
-    mean "do not auto-resolve"; ``True`` only when a child job has
-    actually succeeded and no guard applies.
+    fires, ``False`` when guard 3 (recurring, ``meta.schedule`` set)
+    fires — both mean "do not auto-resolve"; ``True`` only when a child
+    job has actually succeeded and no guard applies.
     """
     with store.pool.connection() as conn:
         # Guard 1: planner coroutines self-resolve — never close them.
         if _parent_is_planner_coroutine(conn, ref_id):
             return None
-        # Guard 3: level:recurring watches own their own terminal state —
+        # Guard 3: recurring watches own their own terminal state —
         # never let a spawned tick's succeeded job auto-close the watch.
         if _parent_is_recurring_watch(conn, ref_id):
             return False

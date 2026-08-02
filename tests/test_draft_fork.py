@@ -450,8 +450,8 @@ def test_handler_fork_project_title_mints_new_project(
     draft: DraftHandler, store: Store
 ) -> None:
     """A non-numeric ``project=`` is a NEW project's title: mint a fresh
-    ``level:strategic`` project todo with that title and bind the fork to
-    it — never fuzzy-matched against an existing project."""
+    ``meta.rotation_root=true`` project todo with that title and bind the
+    fork to it — never fuzzy-matched against an existing project."""
     src_ref_id, _proj = _make_source_draft(store)
     src_ref = store.get_ref(kind="draft", id=src_ref_id)
 
@@ -463,13 +463,7 @@ def test_handler_fork_project_title_mints_new_project(
         if row_ref.title == "Nanotrans review pass":
             new_project = row_ref
     assert new_project is not None
-    with store.pool.connection() as conn:
-        levels = conn.execute(
-            "SELECT t.namespace, t.value FROM ref_tags rt "
-            "JOIN tags t ON t.tag_id = rt.tag_id WHERE rt.ref_id = %s",
-            (new_project.id,),
-        ).fetchall()
-    assert ("OPEN", "level:strategic") in levels
+    assert new_project.meta.get("rotation_root") is True
 
     draft_of = store.links_for(new_project.id, direction="in", relation="draft-of")
     assert len(draft_of) == 1

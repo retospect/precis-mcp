@@ -106,7 +106,6 @@ launchd/cron job. The schedule + dispatch passes tick them; the
 put(
     kind="todo",
     text="news poll",
-    tags=["level:recurring"],
     meta={
         "schedule": {"every": "30m"},
         "executor": "claude_inproc",
@@ -119,7 +118,6 @@ put(
 put(
     kind="todo",
     text="morning briefing",
-    tags=["level:recurring"],
     meta={
         "schedule": {"cron": "0 7 * * *"},
         "executor": "claude_inproc",

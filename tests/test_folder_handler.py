@@ -151,7 +151,7 @@ def test_strategic_root_placed_in_folder_stays_a_root(
 ) -> None:
     fid = _mk(folder, "Ventures")
     root = id_of(todo.put(text="Build the platform.").body)
-    todo.tag(id=root, add=["level:strategic"])
+    todo.tag(id=root, meta={"rotation_root": True})
     resp = todo.link(id=root, target=f"folder:{fid}", rel="parent")
     assert "placed" in resp.body
     ref = store.get_ref(kind="todo", id=root)
@@ -180,7 +180,7 @@ def test_child_under_folder_parented_strategic(
     folder-parented strategic behaves exactly as under a bare root."""
     fid = _mk(folder, "Ventures")
     root = id_of(todo.put(text="Strategic thing.").body)
-    todo.tag(id=root, add=["level:strategic"])
+    todo.tag(id=root, meta={"rotation_root": True})
     todo.link(id=root, target=f"folder:{fid}", rel="parent")
     child = id_of(todo.put(text="Tactical child.", parent_id=root).body)
     ref = store.get_ref(kind="todo", id=child)
@@ -192,7 +192,7 @@ def test_todo_links_view_renders_folder_parent(
 ) -> None:
     fid = _mk(folder, "Ventures")
     root = id_of(todo.put(text="Strategic thing.").body)
-    todo.tag(id=root, add=["level:strategic"])
+    todo.tag(id=root, meta={"rotation_root": True})
     todo.link(id=root, target=f"folder:{fid}", rel="parent")
     links = todo.get(id=root, view="links")
     assert f"folder:{fid}" in links.body
@@ -238,7 +238,7 @@ def _scoped_corpus(folder: FolderHandler, todo: TodoHandler) -> int:
     """One strategic todo inside a folder, one identical-topic todo outside."""
     fid = id_of(folder.put(text="Scope").body)
     inside = id_of(todo.put(text="Quantum platform work inside.").body)
-    todo.tag(id=inside, add=["level:strategic"])
+    todo.tag(id=inside, meta={"rotation_root": True})
     todo.link(id=inside, target=f"folder:{fid}", rel="parent")
     todo.put(text="Quantum platform work outside.")
     return fid

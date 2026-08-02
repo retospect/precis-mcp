@@ -191,26 +191,24 @@ def load_last_real(store: Any, spec: ServiceSpec) -> LastReal | None:
 
 
 def _representative_todo_ref_id(store: Any) -> int | None:
-    """A recent ``LLM:*``-tagged todo to assemble the planner dry-run against.
+    """A recent ``meta.llm_tier``-set todo to assemble the planner dry-run against.
 
-    ``LLM:<model>`` is a closed-vocabulary tag (``t.namespace = 'LLM'``,
-    ``t.value`` the model alias) — see ``precis.workers.dispatch``'s
-    ``llm_tag`` projection for the same namespace convention. Deliberately
-    looser than the dispatcher's full doable predicate
-    (``_candidate_parent_ids``) — this only needs *some* plausible
-    planner-owned todo to preview an assembly against, not the exact
-    next-to-fire candidate.
+    ``meta.llm_tier`` is a closed-vocabulary field (the §M facet-
+    normalized replacement for the old ``LLM:<model>`` tag) — see
+    ``precis.workers.dispatch``'s ``llm_tier`` projection for the same
+    convention. Deliberately looser than the dispatcher's full doable
+    predicate (``_candidate_parent_ids``) — this only needs *some*
+    plausible planner-owned todo to preview an assembly against, not the
+    exact next-to-fire candidate.
     """
     with store.pool.connection() as conn:
         row = conn.execute(
             """
             SELECT r.ref_id
               FROM refs r
-              JOIN ref_tags rt ON rt.ref_id = r.ref_id
-              JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.kind = 'todo'
                AND r.deleted_at IS NULL
-               AND t.namespace = 'LLM'
+               AND r.meta ? 'llm_tier'
              ORDER BY r.updated_at DESC NULLS LAST, r.created_at DESC
              LIMIT 1
             """

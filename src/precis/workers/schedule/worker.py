@@ -1,12 +1,14 @@
 """Schedule worker — Slice 4 of ``docs/design/todo-tree-plan.md``, extended
 by ADR 0061 to also fire **push delivery** (the retired ``kind='cron'``
-mechanism, folded onto ``level:recurring``).
+mechanism, folded onto the recurring facet).
 
-Walks every ``level:recurring`` ref whose ``meta.schedule`` is
-non-null, computes ticks since the last spawn event, and mints one
-``level:subtask`` child per due tick. The Watches umbrella is
-seeded on first run via :func:`ensure_watches_root` so the second
-panel of ``view='roots'`` has somewhere to anchor.
+Walks every ``todo`` whose ``meta.schedule`` is non-null (§M facet
+normalization: this presence check IS "recurring" — the old
+``level:recurring`` tag was redundant and is retired), computes ticks
+since the last spawn event, and mints one ordinary worker-mintable
+subtask child per due tick. The Watches umbrella is seeded on first run
+via :func:`ensure_watches_root` so the second panel of ``view='roots'``
+has somewhere to anchor.
 
 Two schedule shapes, two tick actions
 ======================================
@@ -19,8 +21,8 @@ Two schedule shapes, two tick actions
 * ``meta.schedule.at`` (one-shot) — a single absolute fire time (ADR 0061's
   "remind me in/at" case). :func:`_process_one_shot` decides fire / wait /
   expire and, once resolved, tags the recurring root ``STATUS:done`` so it
-  never re-fires — a one-shot is a ``level:recurring`` node that retires
-  itself after its one tick.
+  never re-fires — a one-shot is a recurring (``meta.schedule`` set) node
+  that retires itself after its one tick.
 
 Guards (in order, per the plan):
 
@@ -178,7 +180,10 @@ def _candidate_recurring_ids(store: Store, *, limit: int) -> list[int]:
     Eligibility:
 
     * ``kind='todo'`` and not deleted
-    * carries the ``level:recurring`` open tag
+    * has a ``meta.schedule`` block — the §M facet-normalized
+      replacement for the old ``level:recurring`` open tag; this
+      presence check IS "recurring" now (redundant with the tag, so the
+      tag was retired)
     * not ineligible by ``STATUS`` — the excluded set depends on the
       schedule shape (:data:`_IS_ONE_SHOT_SQL`): a one-shot excludes
       :data:`_ONE_SHOT_INELIGIBLE_STATUSES_SQL` (paused + the done-class
@@ -187,7 +192,6 @@ def _candidate_recurring_ids(store: Store, *, limit: int) -> list[int]:
       self-resolves, so a stray ``STATUS:done`` must not silently retire
       its cadence forever
     * not the umbrella folder (``meta.builtin = 'watches-root'``)
-    * has a ``meta.schedule`` block (not a folder ref by other means)
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
@@ -195,12 +199,7 @@ def _candidate_recurring_ids(store: Store, *, limit: int) -> list[int]:
             SELECT r.ref_id
               FROM refs r
              WHERE r.kind = 'todo' AND r.deleted_at IS NULL
-               AND EXISTS (
-                   SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
-                    WHERE rt.ref_id = r.ref_id
-                      AND t.namespace = 'OPEN'
-                      AND t.value = 'level:recurring'
-               )
+               AND r.meta ? 'schedule'
                AND (
                      CASE WHEN {_IS_ONE_SHOT_SQL} THEN
                        COALESCE(
@@ -217,7 +216,6 @@ def _candidate_recurring_ids(store: Store, *, limit: int) -> list[int]:
                      END
                    )
                AND COALESCE(r.meta->>'builtin', '') <> %s
-               AND r.meta ? 'schedule'
              ORDER BY r.ref_id
              LIMIT %s
             """,
@@ -388,8 +386,8 @@ def _process_one_shot(
 ) -> tuple[int, int]:
     """Resolve a one-shot ``meta.schedule.at`` recurring (ADR 0061).
 
-    A one-shot is a ``level:recurring`` node whose schedule fires exactly
-    once: this decides fire / wait / expire via
+    A one-shot is a recurring (``meta.schedule`` set) node whose schedule
+    fires exactly once: this decides fire / wait / expire via
     :func:`~precis.workers.schedule.parse.one_shot_action`, fires the
     delivery notify on a fire (when ``rec['deliver']`` is set), and — on
     either a fire or an expire — tags the recurring root ``STATUS:done``
@@ -594,7 +592,9 @@ def _mint_child_conn(
       agentic claude task
     * ``prio = 2`` (the cron-spawn default, see plan)
     * ``STATUS:open`` open tag (handled by ``add_tag``)
-    * ``level:subtask`` open tag
+    * no facet fields set — an ordinary worker-mintable subtask is the
+      default (§M facet normalization; the old ``level:subtask`` tag is
+      retired)
 
     The ``ref_events`` row carries ``source='schedule', event='spawn',
     payload={'tick': stamp}`` so the dashboard can surface "last tick"
@@ -630,12 +630,6 @@ def _mint_child_conn(
         Tag.closed("STATUS", "open"),
         set_by="system",
         replace_prefix=True,
-        conn=conn,
-    )
-    store.add_tag(
-        child.id,
-        Tag.open("level:subtask"),
-        set_by="system",
         conn=conn,
     )
     store.append_event(

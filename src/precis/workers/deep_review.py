@@ -56,12 +56,7 @@ def _strategic_dashboard(store: Store) -> str:
                   FROM refs r
                  WHERE r.kind = 'todo' AND r.deleted_at IS NULL
                    AND {todo_root_sql("r")}
-                   AND EXISTS (
-                       SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
-                        WHERE rt.ref_id = r.ref_id
-                          AND t.namespace = 'OPEN'
-                          AND t.value = 'level:strategic'
-                   )
+                   AND COALESCE((r.meta->>'rotation_root')::boolean, false)
               ),
               subtree AS (
                 SELECT s.ref_id AS ref_id, s.ref_id AS strategic_id FROM strat s

@@ -355,7 +355,7 @@
           </span>
           {% endif %}
           {# Retry a failed/cancelled job: clears the parent's child-failed
-             bubble (optionally swapping its LLM:<model> tag) so dispatch
+             bubble (optionally swapping its meta.llm_tier) so dispatch
              re-mints a fresh attempt. Posts to put(kind='job', mode='retry')
              via the /retry route. Visible with "+ show closed jobs". #}
           {% if r.kind == 'job' and r.status in ['failed', "cancelled"] %}

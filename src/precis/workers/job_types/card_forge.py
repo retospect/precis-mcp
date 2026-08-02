@@ -4,7 +4,7 @@ Third daily reading-loop job beside ``reading_brief`` (06:00) and ``meditation``
 (21:00); scheduled at 05:30 so the day's cards exist before the brief composes
 (its recall lane reports them). Deterministic in-process producer under
 ``claude_inproc`` (melchior — the authoring calls use a nice model via the
-litellm proxy). Driven by a ``level:recurring`` todo
+litellm proxy). Driven by a recurring (``meta.schedule`` set) todo
 (``meta.schedule={'cron':'30 5 * * *'}``, ``meta.executor='claude_inproc'``,
 ``meta.job_type='card_forge'``). Calls
 :func:`precis.reading.cards.run_card_forge`: mastery-from-Anki refresh → the

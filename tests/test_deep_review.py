@@ -91,7 +91,7 @@ def test_strategic_dashboard_empty(store: Store) -> None:
 
 
 def test_strategic_dashboard_renders_picks(handler: TodoHandler, store: Store) -> None:
-    root = handler.put(text="Main", tags=["level:strategic"])
+    root = handler.put(text="Main", meta={"rotation_root": True})
     root_id = id_of(root.body)
     a = handler.put(text="leaf", parent_id=root_id)
     aid = id_of(a.body)
@@ -140,7 +140,7 @@ def test_pass_writes_digest_on_happy_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("PRECIS_DEEP_REVIEW", "1")
-    handler.put(text="Strategic A", tags=["level:strategic"])
+    handler.put(text="Strategic A", meta={"rotation_root": True})
 
     captured: dict = {}
 
@@ -193,7 +193,7 @@ def test_pass_records_failure_on_llm_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("PRECIS_DEEP_REVIEW", "1")
-    handler.put(text="Strategic B", tags=["level:strategic"])
+    handler.put(text="Strategic B", meta={"rotation_root": True})
 
     def _err(*a, **kw):
         raise ClaudeAgentError("timeout", stdout="", stderr="took too long")
@@ -224,7 +224,7 @@ def test_pass_skips_on_breaker_pause(
     # skips (claimed/ok/failed all 0, no digest, model never invoked) so a capped
     # budget doesn't spin failures onto the FAILED-PASSES panel.
     monkeypatch.setenv("PRECIS_DEEP_REVIEW", "1")
-    handler.put(text="Strategic C", tags=["level:strategic"])
+    handler.put(text="Strategic C", meta={"rotation_root": True})
 
     monkeypatch.setattr(
         "precis.budget.breaker.gate_tier",

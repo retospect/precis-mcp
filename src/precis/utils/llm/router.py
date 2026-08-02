@@ -87,8 +87,8 @@ class Tier(StrEnum):
 
     * ``FRONTIER`` — the trusted-answer tier: heavy reasoning + tools
       (opus-class). The structural / deep reviewers, fix-gripe,
-      ``LLM:opus`` ticks, the dream pass, and the generic ``claude_agent``
-      default.
+      ``llm_tier='opus'`` ticks, the dream pass, and the generic
+      ``claude_agent`` default.
     * ``BIG`` — the general agentic workhorse (sonnet-class) — planner,
       tex-fix, weave. Also the tools-capable rung a served OSS model runs
       on (a local ``qwen-heavy``-class model when the backend routes it
@@ -201,7 +201,7 @@ class Backend(StrEnum):
 # Each row is ``tier: (env_var, default)``. The cloud triad (FRONTIER/BIG/
 # MEDIUM) is the *pinned* set from ``plan_tick._model_alias`` —
 # ``PRECIS_MODEL_{OPUS,SONNET,HAIKU}`` — which is the most deliberate of the
-# scattered reads (it pins a model *id* so a ``LLM:opus`` tag binds to one
+# scattered reads (it pins a model *id* so ``llm_tier='opus'`` binds to one
 # generation as the CLI default drifts). The FRONTIER default is
 # ``claude-opus-4-8`` — the consolidation point for the whole cloud reasoning
 # tier (dream, tex-fix, reviewers, fix-gripe, the generic ``claude_agent``
@@ -306,9 +306,9 @@ def _tier_gen_defaults(tier: Tier) -> tuple[bool, float | None]:
     return _TIER_GEN_DEFAULTS[tier]
 
 
-# ── planner model aliases (the LLM:<value> dropdown vocab) ─────────────
+# ── planner model aliases (the meta.llm_tier dropdown vocab) ───────────
 #
-# The ``LLM:<value>`` tag a todo carries names a *capability tier*, not a
+# ``meta.llm_tier`` on a todo names a *capability tier*, not a
 # vendor model: the dispatcher synthesizes ``plan_tick``'s ``model`` param
 # from it and the tick resolves the concrete model via :func:`resolve_model`.
 # This is the ONE ordered source the dispatcher (plan_tick), the closed-vocab

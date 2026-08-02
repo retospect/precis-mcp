@@ -15,7 +15,7 @@ from precis.store import Store
 
 
 def _proj(hub: Hub, text: str = "Project root") -> int:
-    t = TodoHandler(hub=hub).put(text=text, tags=["level:strategic"])
+    t = TodoHandler(hub=hub).put(text=text, meta={"rotation_root": True})
     return int(t.body.split("id=")[1].split()[0].rstrip(",.()"))
 
 

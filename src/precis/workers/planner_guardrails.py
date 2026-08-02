@@ -1,6 +1,6 @@
 """Planner-coroutine guardrails — three backstops against runaway.
 
-The default-on planner pattern ("any LLM:*-tagged todo runs") is a
+The default-on planner pattern ("any meta.llm_tier-set todo runs") is a
 credit-card incinerator without sanity bounds. This module is the
 three caps the dispatcher consults before minting a planner job:
 

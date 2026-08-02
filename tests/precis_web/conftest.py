@@ -188,7 +188,13 @@ class FakeStore(_FakeStoreBase):
         # legacy orphan job (no parent) — the two branches of the job
         # detail actions strip.
         self.todos.append(
-            make_ref(id=81, kind="todo", title="Plan the campaign", parent_id=None)
+            make_ref(
+                id=81,
+                kind="todo",
+                title="Plan the campaign",
+                parent_id=None,
+                meta={"llm_tier": "opus"},
+            )
         )
         self.jobs = [
             make_ref(
@@ -707,10 +713,12 @@ class FakeStore(_FakeStoreBase):
         ``no tags yet`` empty state. Routes that exercise add/remove
         path through the fake runtime call recorder, not this method.
 
-        Two exceptions seed the job detail actions strip: the failed
+        One exception seeds the job detail actions strip: the failed
         plan_tick job (id=80) carries ``STATUS:failed`` +
-        ``swept:claim-orphaned``, and its planner parent (id=81) carries
-        an ``LLM:opus`` tag so the retry model dropdown appears."""
+        ``swept:claim-orphaned``. Its planner parent (id=81) carries
+        ``meta.llm_tier='opus'`` instead (§M facet normalization) — see
+        the ``self.todos`` fixture — so the retry model dropdown appears
+        via ``fetch_refs_by_ids(...).meta``, not a tag."""
         from precis.store import Tag
 
         if ref_id == 80:
@@ -718,8 +726,6 @@ class FakeStore(_FakeStoreBase):
                 Tag.parse_strict("STATUS:failed", kind="job"),
                 Tag.open("swept:claim-orphaned"),
             ]
-        if ref_id == 81:
-            return [Tag.parse_strict("LLM:opus", kind="todo")]
         return []
 
     def has_tag(self, ref_id, namespace, value):
@@ -799,6 +805,7 @@ class FakeStore(_FakeStoreBase):
         tags=None,
         has_pdf=None,
         has_chunks=None,
+        has_schedule=None,
         parent_id=None,
         ref_ids=None,
         deleted=False,
@@ -809,15 +816,17 @@ class FakeStore(_FakeStoreBase):
         """Canned recent source refs for the /drive default landing —
         one paper (stub, no pdf) + one web, filtered to requested kinds.
         ``self.recent_tags`` / ``self.recent_has_pdf`` / ``self.recent_has_chunks``
-        / ``self.recent_parent_id`` / ``self.recent_ref_ids`` /
-        ``self.recent_deleted`` / ``self.recent_offset`` record the filters.
-        ``ref_ids`` is the ``/drive?cited_by=<draft>`` allow-list (``None`` =
-        no restriction, ``[]`` = nothing). ``deleted=True`` serves
+        / ``self.recent_has_schedule`` / ``self.recent_parent_id`` /
+        ``self.recent_ref_ids`` / ``self.recent_deleted`` /
+        ``self.recent_offset`` record the filters. ``ref_ids`` is the
+        ``/drive?cited_by=<draft>`` allow-list (``None`` = no restriction,
+        ``[]`` = nothing). ``deleted=True`` serves
         ``self.deleted_recent_refs`` instead (empty by default — tests
         populate it to exercise the "show deleted" toggle)."""
         self.recent_tags = tags
         self.recent_has_pdf = has_pdf
         self.recent_has_chunks = has_chunks
+        self.recent_has_schedule = has_schedule
         self.recent_parent_id = parent_id
         self.recent_ref_ids = ref_ids
         self.recent_deleted = deleted
@@ -856,6 +865,7 @@ class FakeStore(_FakeStoreBase):
         tags=None,
         has_pdf=None,
         has_chunks=None,
+        has_schedule=None,
         parent_id=None,
         ref_ids=None,
         deleted=False,

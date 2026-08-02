@@ -32,7 +32,6 @@ def test_install_is_idempotent_and_well_formed(store: Any) -> None:
         assert ref.meta["cast_watch"] == cast
 
         tags = {str(t) for t in store.tags_for(ref_id)}
-        assert "level:recurring" in tags
         assert "STATUS:open" in tags
 
 

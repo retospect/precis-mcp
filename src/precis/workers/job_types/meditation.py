@@ -3,7 +3,7 @@
 The evening sibling of :mod:`precis.workers.job_types.reading_brief`. Deterministic
 in-process producer under ``claude_inproc`` (melchior), so the ~45-min segmented
 walk is composed by a **nice model** (``claude-opus`` via the melchior-loopback
-litellm proxy). Driven by a ``level:recurring`` todo
+litellm proxy). Driven by a recurring (``meta.schedule`` set) todo
 (``meta.schedule={'cron':'0 21 * * *'}``, ``meta.executor='claude_inproc'``,
 ``meta.job_type='meditation'``). Calls
 :func:`precis.reading.meditation.build_meditation`, which walks the concept graph

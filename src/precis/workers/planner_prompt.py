@@ -1,15 +1,15 @@
 """Planner-prompt builder for the LLM-tick coroutine.
 
-When the dispatch worker mints a ``plan_tick`` job under an
-``LLM:*``-tagged todo, the claude_inproc executor needs a prompt to
+When the dispatch worker mints a ``plan_tick`` job under a todo with
+``meta.llm_tier`` set, the claude_inproc executor needs a prompt to
 hand to ``claude -p``. This module builds that prompt in two
 layers so Anthropic's prompt cache works:
 
 CACHED LAYER — stable across every planner tick, system role:
 
 * The pinned ``precis-tasks-help`` skill verbatim (the planner's
-  operational manual: levels, doable rotation, halt/ask-user, LLM
-  tag convention).
+  operational manual: levels, doable rotation, halt/ask-user,
+  ``llm_tier`` convention).
 * The skill **index** — one line per active skill carrying its
   ``summary`` field. Tells the planner what territories exist;
   detail is fetched on demand via ``get(kind='skill', id=…)`` or
@@ -218,8 +218,8 @@ children (if any) appear below in the user message. Your job is to
 move the work forward by exactly one of these output shapes:
 
 1. **Mint subtasks** via `put(kind='todo', parent_id=<your id>,
-   tags=['LLM:<model>'], text='<specific brief>')`. Each child must
-   carry exactly one `LLM:opus|sonnet|haiku` tag picking the
+   meta={'llm_tier': '<model>'}, text='<specific brief>')`. Each child
+   must carry exactly one `llm_tier` of `opus|sonnet|haiku` picking the
    cheapest model that can produce the depth required. Add
    ordering with `link(rel='blocked-by', src=B, dst=A)` for
    sequential pairs; leave unlinked for parallel siblings. You will
@@ -310,7 +310,7 @@ move the work forward by exactly one of these output shapes:
 
 - **You are running on the model named in `PRECIS_CURRENT_MODEL`**
   (opus / sonnet / haiku). Use this for degradation/escalation:
-  too hard for haiku? mint a child with `LLM:opus`. Sonnet on a
+  too hard for haiku? mint a child with `meta={'llm_tier': 'opus'}`. Sonnet on a
   topic that needs external data? call
   `get(kind='perplexity-research', q='<question>')` for a perplexity research
   dive, or mint a child with `executor:fetch` to ingest missing
@@ -400,8 +400,8 @@ with an auto-close evaluator so it closes itself when the chase
 finishes — no follow-up tick from you needed:
 
   put(kind='todo',
-      tags=['LLM:sonnet'],
-      meta={'auto_check': {'type': 'all_child_findings_resolved'}},
+      meta={'llm_tier': 'sonnet',
+            'auto_check': {'type': 'all_child_findings_resolved'}},
       text='''
   Literature hunt — find and ingest these N papers. For each:
   1. search(kind='paper', q='<title or DOI>') to check the corpus.
@@ -564,9 +564,10 @@ for novel territory.
 - Children inherit a depth budget (`meta.tick_count`,
   `meta.cost_usd`); pathological recursion hits the cap and auto-
   halts. Plan to converge within ~5 ticks per branch.
-- Owner-only tags (`level:strategic`, `level:tactical`,
-  `level:recurring`) reject from worker source; mint children at
-  `level:subtask` (the default) or omit `level:*` entirely.
+- Owner-only facets (`meta.rotation_root=true`, `meta.worker_mintable
+  =false`, `meta.schedule`) reject from worker source; mint children
+  with no facet fields set (the default — an ordinary worker-mintable
+  subtask).
 - Never produce a "high-level summary" at intermediate ticks. Your
   output is the parent's input next tick — preserve detail,
   citations, distinctions. Summaries only at root, and only if
@@ -1355,19 +1356,19 @@ def _render_ancestry_toon(chain: list[dict[str, object]], *, leaf_id: int) -> st
 
     ``chain`` is ``[root, …, leaf]``; the leaf is your own ref. The
     ``from`` column reflects how each ancestor came into the tree —
-    today: ``owner`` for refs explicitly tagged ``level:strategic`` /
-    ``level:tactical`` / ``level:recurring`` (owner-only tiers), and
-    ``planner`` for everything else (subtasks minted by an LLM).
-    The runtime doesn't yet record the actual ``set_by`` per
-    parent_id assignment, so this is a heuristic; tighten when the
-    audit trail exists.
+    today: ``owner`` for a ``strategic`` / ``tactical`` / ``recurring``
+    facet level (§M facet normalization's owner-only tiers — see
+    ``_todo_views._level_label``), and ``planner`` for everything else
+    (subtasks minted by an LLM). The runtime doesn't yet record the
+    actual ``set_by`` per parent_id assignment, so this is a heuristic;
+    tighten when the audit trail exists.
     """
     if not chain:
         return "## Ancestry\n\n(this is a root)"
     lines: list[str] = ["## Ancestry"]
     lines.append("")
     lines.append(f"ancestry: [{len(chain)}]{{id,title,from}}")
-    owner_levels = {"level:strategic", "level:tactical", "level:recurring"}
+    owner_levels = {"strategic", "tactical", "recurring"}
     for entry in chain:
         title = str(entry.get("title", "")).replace("\n", " ").strip()
         if len(title) > 70:

@@ -197,7 +197,7 @@ def _status_of_many(store: Store, ref_ids: list[int]) -> dict[int, str]:
 
 
 def _open_tag_present(store: Store, ref_id: int, value: str) -> bool:
-    """True when ``ref_id`` carries the open tag ``value`` (e.g. ``level:strategic``)."""
+    """True when ``ref_id`` carries the open tag ``value`` (e.g. ``halt``)."""
     with store.pool.connection() as conn:
         row = conn.execute(
             """
@@ -213,13 +213,31 @@ def _open_tag_present(store: Store, ref_id: int, value: str) -> bool:
     return row is not None
 
 
+def _level_label(*, rotation_root: bool, worker_mintable: bool, recurring: bool) -> str:
+    """Synthesize the human-readable level string from the §M facets.
+
+    Replaces the old raw ``level:<tier>`` tag value with a label
+    derived from ``meta.rotation_root`` / ``meta.worker_mintable`` /
+    ``meta.schedule`` presence (migration 0102). Kept as one small
+    function so every caller renders the same four-way vocabulary
+    (``strategic`` / ``tactical`` / ``subtask`` / ``recurring``).
+    """
+    if recurring:
+        return "recurring"
+    if rotation_root:
+        return "strategic"
+    if not worker_mintable:
+        return "tactical"
+    return "subtask"
+
+
 def _ancestor_chain(store: Store, ref_id: int) -> list[dict[str, Any]]:
     """Return ``[root, …, ref]`` as dicts ``{id, title, level}``.
 
     The walk includes the ref itself so the caller can use it for
-    breadcrumbs or full-chain rendering without re-fetching. Level
-    is the first matching ``level:*`` open tag found on each ref, or
-    ``None`` when no level tag is set.
+    breadcrumbs or full-chain rendering without re-fetching. ``level``
+    is synthesized from the §M facet fields on each ref — see
+    :func:`_level_label`.
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
@@ -234,13 +252,11 @@ def _ancestor_chain(store: Store, ref_id: int) -> list[dict[str, Any]]:
                  WHERE r.deleted_at IS NULL
             )
             SELECT c.ref_id, c.title, c.depth,
-                   (SELECT t.value FROM ref_tags rt
-                      JOIN tags t ON t.tag_id = rt.tag_id
-                     WHERE rt.ref_id = c.ref_id
-                       AND t.namespace = 'OPEN'
-                       AND t.value LIKE 'level:%%'
-                     LIMIT 1) AS level
+                   COALESCE((rf.meta->>'rotation_root')::boolean, false),
+                   COALESCE((rf.meta->>'worker_mintable')::boolean, true),
+                   (rf.meta ? 'schedule')
               FROM chain c
+              JOIN refs rf ON rf.ref_id = c.ref_id
              ORDER BY c.depth DESC
             """,
             (ref_id,),
@@ -249,7 +265,11 @@ def _ancestor_chain(store: Store, ref_id: int) -> list[dict[str, Any]]:
         {
             "id": int(r[0]),
             "title": (r[1] or "").split("\n", 1)[0],
-            "level": r[3],
+            "level": _level_label(
+                rotation_root=bool(r[3]),
+                worker_mintable=bool(r[4]),
+                recurring=bool(r[5]),
+            ),
         }
         for r in rows
     ]
@@ -272,13 +292,7 @@ def _picks_7d_by_strategic(store: Store) -> dict[int, int]:
                  WHERE r.kind = 'todo'
                    AND r.deleted_at IS NULL
                    AND {todo_root_sql("r")}
-                   AND EXISTS (
-                       SELECT 1 FROM ref_tags rt
-                         JOIN tags t ON t.tag_id = rt.tag_id
-                        WHERE rt.ref_id = r.ref_id
-                          AND t.namespace = 'OPEN'
-                          AND t.value = 'level:strategic'
-                   )
+                   AND COALESCE((r.meta->>'rotation_root')::boolean, false)
                    AND NOT EXISTS (
                        SELECT 1 FROM ref_tags rt
                          JOIN tags t ON t.tag_id = rt.tag_id
@@ -329,13 +343,7 @@ def render_roots(store: Store) -> Response:
              WHERE r.kind = 'todo'
                AND r.deleted_at IS NULL
                AND {todo_root_sql("r")}
-               AND EXISTS (
-                   SELECT 1 FROM ref_tags rt
-                     JOIN tags t ON t.tag_id = rt.tag_id
-                    WHERE rt.ref_id = r.ref_id
-                      AND t.namespace = 'OPEN'
-                      AND t.value = 'level:strategic'
-               )
+               AND COALESCE((r.meta->>'rotation_root')::boolean, false)
              ORDER BY r.ref_id
             """,
         ).fetchall()
@@ -345,7 +353,7 @@ def render_roots(store: Store) -> Response:
             [
                 (
                     "put(kind='todo', text='Strategic intent', "
-                    "tags=['level:strategic'])",
+                    "meta={'rotation_root': True})",
                     "mint a strategic root (owner-only)",
                 ),
             ]
@@ -508,8 +516,8 @@ def render_projects(store: Store) -> Response:
             [
                 (
                     "put(kind='todo', text='Project goal', "
-                    "tags=['level:strategic'], "
-                    "meta={'workspace': {'path': 'projects/<slug>', "
+                    "meta={'rotation_root': True, "
+                    "'workspace': {'path': 'projects/<slug>', "
                     "'format': 'tex', 'entrypoint': 'main.tex', "
                     "'brief': '<standing guidance>'}})",
                     "mint a project root (owner-only)",
@@ -608,12 +616,7 @@ def _watches_panel_rows(store: Store) -> list[dict[str, Any]]:
                        AND e.event IN ('spawn', 'deliver')) AS last_tick
               FROM refs r
              WHERE r.kind = 'todo' AND r.deleted_at IS NULL
-               AND EXISTS (
-                   SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
-                    WHERE rt.ref_id = r.ref_id
-                      AND t.namespace = 'OPEN'
-                      AND t.value = 'level:recurring'
-               )
+               AND (r.meta ? 'schedule')
                AND (r.meta->>'builtin') IS NULL
              ORDER BY r.ref_id
             """,
@@ -641,13 +644,7 @@ def _active_strategic_ids(store: Store) -> list[int]:
                   FROM refs r
                  WHERE r.kind = 'todo' AND r.deleted_at IS NULL
                    AND {todo_root_sql("r")}
-                   AND EXISTS (
-                       SELECT 1 FROM ref_tags rt
-                         JOIN tags t ON t.tag_id = rt.tag_id
-                        WHERE rt.ref_id = r.ref_id
-                          AND t.namespace = 'OPEN'
-                          AND t.value = 'level:strategic'
-                   )
+                   AND COALESCE((r.meta->>'rotation_root')::boolean, false)
                    AND NOT EXISTS (
                        SELECT 1 FROM ref_tags rt
                          JOIN tags t ON t.tag_id = rt.tag_id
@@ -708,13 +705,7 @@ def render_strategic(store: Store) -> Response:
                         WHERE s.ref_id = t.parent_id
                           AND s.kind = 'todo' AND s.deleted_at IS NULL
                           AND {todo_root_sql("s")}
-                          AND EXISTS (
-                              SELECT 1 FROM ref_tags rt
-                                JOIN tags tg ON tg.tag_id = rt.tag_id
-                               WHERE rt.ref_id = s.ref_id
-                                 AND tg.namespace = 'OPEN'
-                                 AND tg.value = 'level:strategic'
-                          )
+                          AND COALESCE((s.meta->>'rotation_root')::boolean, false)
                    )
               ),
               tac_subtree AS (
@@ -754,11 +745,7 @@ def render_strategic(store: Store) -> Response:
               LEFT JOIN leaves l ON l.tactical_id = tac.tactical_id
              WHERE s.kind = 'todo' AND s.deleted_at IS NULL
                AND {todo_root_sql("s")}
-               AND EXISTS (
-                   SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
-                    WHERE rt.ref_id = s.ref_id AND t.namespace = 'OPEN'
-                      AND t.value = 'level:strategic'
-               )
+               AND COALESCE((s.meta->>'rotation_root')::boolean, false)
              GROUP BY s.ref_id, s.title, tac.tactical_id, tac.tactical_title
              ORDER BY s.ref_id, tac.tactical_id NULLS FIRST
             """,
@@ -1094,12 +1081,7 @@ def _fetch_doable(
               FROM refs r
              WHERE r.kind = 'todo' AND r.deleted_at IS NULL
                AND {todo_root_sql("r")}
-               AND EXISTS (
-                   SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
-                    WHERE rt.ref_id = r.ref_id
-                      AND t.namespace = 'OPEN'
-                      AND t.value = 'level:strategic'
-               )
+               AND COALESCE((r.meta->>'rotation_root')::boolean, false)
           ),
           subtree AS (
             SELECT s.ref_id AS ref_id, s.ref_id AS strategic_id FROM strat s
@@ -1181,17 +1163,11 @@ def _fetch_doable(
            AND NOT EXISTS (
                SELECT 1 FROM ancestry_paused ap WHERE ap.ref_id = r.ref_id
            )
-           -- Slice 4: the recurring umbrella itself (level:recurring root)
-           -- is a folder, not an action; its spawned children are normal
-           -- subtasks. Skip the umbrella by tag — the spawned children
-           -- pass through because they carry ``level:subtask`` (or no
-           -- explicit level), not ``level:recurring``.
-           AND NOT EXISTS (
-               SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
-                WHERE rt.ref_id = r.ref_id
-                  AND t.namespace = 'OPEN'
-                  AND t.value = 'level:recurring'
-           )
+           -- Slice 4: the recurring umbrella itself (``meta.schedule``
+           -- set) is a folder, not an action; its spawned children are
+           -- normal worker-mintable subtasks (no ``meta.schedule`` of
+           -- their own) and pass through untouched.
+           AND NOT (r.meta ? 'schedule')
            {under_clause}
          ORDER BY prio ASC,
                   ((picks_7d + 1) / (1 + COALESCE(sv.w, 0))) ASC,
@@ -1644,10 +1620,7 @@ def render_ancestry_section(store: Store, ref_id: int) -> str:
     for i, node in enumerate(chain):
         depth = i
         indent = "  " * depth
-        level = node["level"]
-        level_tag = (
-            level.removeprefix("level:") if isinstance(level, str) else "subtask"
-        )
+        level_tag = node["level"]
         title = node["title"] or ""
         marker = "→" if node["id"] == ref_id else "└─"
         lines.append(f"{indent}{marker} {_h(node['id'])} [{level_tag}] {title}")

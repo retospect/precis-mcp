@@ -1,6 +1,6 @@
 """``plan_tick`` job_type — one LLM tick of the planner coroutine.
 
-The dispatcher mints a ``plan_tick`` job under every ``LLM:*``-tagged
+The dispatcher mints a ``plan_tick`` job under every ``meta.llm_tier``-set
 todo that has no live job and no live open children. The transport is
 the router's decision (``select_transport`` + ``resolve_backend``):
 
@@ -22,7 +22,7 @@ next sweep notice whatever state the planner set.
 Closed vocab: ``meta.params`` carries ``model`` (one of
 ``opus|sonnet|haiku``) plus an optional ``timeout_s`` and an optional
 ``decompose`` bool. The model is synthesized from the parent's
-``LLM:<value>`` tag at dispatch time; callers normally don't write
+``meta.llm_tier`` at dispatch time; callers normally don't write
 ``params`` directly. ``decompose=True`` is the one exception: it's set
 only by :func:`precis.workers.executors.claude_inproc._mint_auto_decompose`
 when a tick's resume-streak exceeds its cap (gripe 168886 tier 2) — same
@@ -97,7 +97,7 @@ _DEFAULT_MAX_USD: float = 5.00
 
 
 DESCRIPTION: str = (
-    "one LLM planner tick on an LLM:*-tagged todo — reads body + "
+    "one LLM planner tick on a meta.llm_tier-set todo — reads body + "
     "child summaries, mints children / yields / finishes"
 )
 
@@ -110,7 +110,7 @@ PARAMS_SCHEMA: dict[str, Any] = {
             "enum": list(PLANNER_MODEL_ALIASES),
             "description": "Which capability tier to run (the router maps it to "
             "a claude or served OSS model per the active backend). Synthesized "
-            "from the parent's LLM:<value> tag at dispatch time.",
+            "from the parent's meta.llm_tier at dispatch time.",
         },
         "timeout_s": {
             "type": "integer",
@@ -782,7 +782,7 @@ def _load_parent_workspace(store: Any, parent_ref_id: int):
 def _resolve_oss_tier(model: str) -> Tier:
     """Pick the capability tier the in-process tools loop runs on.
 
-    The ``LLM:<tag>`` maps to a capability tier (:data:`_TIER_BY_ALIAS`); that
+    ``meta.llm_tier`` maps to a capability tier (:data:`_TIER_BY_ALIAS`); that
     tier is used only when the router would actually route it to the OSS
     ``tools=`` loop under the active backend (a tools-capable cloud such as
     OpenRouter). Otherwise — the default ``ANTHROPIC`` backend, whose cloud

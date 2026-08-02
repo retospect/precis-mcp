@@ -1,14 +1,14 @@
 ---
 id: precis-automations
 title: precis — find and edit standing automations (recurring agent behaviours)
-summary: recurring agent behaviours (the morning/evening podcast casts, the news briefing) are level:recurring todos tagged `automation`; find them with search(kind='todo', tags=['level:recurring', 'automation']), edit behaviour by editing the recurring's text, link produced artifacts back with derived-into
-applies-to: level:recurring todos tagged 'automation'; search(kind='todo', tags=['level:recurring', 'automation']); the podcast casts + briefing
+summary: recurring agent behaviours (the morning/evening podcast casts, the news briefing) are recurring (meta.schedule set) todos tagged `automation`; find them with search(kind='todo', tags=['automation']), edit behaviour by editing the recurring's text, link produced artifacts back with derived-into
+applies-to: recurring (meta.schedule set) todos tagged 'automation'; search(kind='todo', tags=['automation']); the podcast casts + briefing
 status: active
 ---
 
 # precis-automations — the index of things that run *you*
 
-Some `level:recurring` todos aren't ordinary scheduled work — they are
+Some recurring (`meta.schedule` set) todos aren't ordinary scheduled work — they are
 **standing automations**: recurring prompts that drive Asa to *do* something
 on a schedule. The morning/evening **podcast casts** and the daily **news
 briefing** are the headline examples.
@@ -34,11 +34,14 @@ text/params *are* the prompt that shapes the output.
 ## Find the automations
 
 ```python
-search(kind="todo", tags=["level:recurring", "automation"])
-search(kind="todo", tags=["level:recurring", "automation", "cast-morning"])
+search(kind="todo", tags=["automation"])
+search(kind="todo", tags=["automation", "cast-morning"])
 ```
 
-A recurring is an automation when it carries the **`automation`** tag. A
+A recurring is an automation when it carries the **`automation`** tag
+(recurring-ness itself is `meta.schedule` presence, not a tag — the
+`automation` tag alone is a sufficient practical filter here since only
+recurring roots carry it by convention). A
 second open tag names *which* one (`cast-morning`, `cast-evening`,
 `briefing`). This is a curated convention, not a validated axis — keep the
 subtype short and kebab-cased.

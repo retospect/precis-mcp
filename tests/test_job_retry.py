@@ -2,7 +2,7 @@
 
 A failed job bubbles ``child-failed:<job_id>`` onto its parent todo,
 which excludes the parent from the doable rotation. Retry clears that
-bubble (optionally swapping the parent's ``LLM:<model>`` tag) so the
+bubble (optionally swapping the parent's ``meta.llm_tier``) so the
 dispatch worker re-mints a fresh attempt.
 """
 
@@ -61,7 +61,7 @@ def test_retry_clears_bubble_and_redispatches(
     todos: TodoHandler, jobs: JobHandler, store: Store
 ) -> None:
     """Retry removes child-failed so dispatch mints a fresh tick."""
-    rid = id_of(todos.put(text="planner brief", tags=["LLM:opus"]).body)
+    rid = id_of(todos.put(text="planner brief", meta={"llm_tier": "opus"}).body)
     job_id = _fail_first_job(store, jobs, rid)
 
     # While bubbled, dispatch refuses to re-mint.
@@ -82,14 +82,14 @@ def test_retry_clears_bubble_and_redispatches(
 def test_retry_with_model_swaps_llm_tag(
     todos: TodoHandler, jobs: JobHandler, store: Store
 ) -> None:
-    """model= rewrites the parent's LLM:<model> tag before re-dispatch."""
-    rid = id_of(todos.put(text="planner brief", tags=["LLM:opus"]).body)
+    """model= rewrites the parent's meta.llm_tier before re-dispatch."""
+    rid = id_of(todos.put(text="planner brief", meta={"llm_tier": "opus"}).body)
     job_id = _fail_first_job(store, jobs, rid)
 
     jobs.put(id=job_id, mode="retry", model="sonnet")
+    ref = store.get_ref(kind="todo", id=rid)
+    assert ref is not None and ref.meta.get("llm_tier") == "sonnet"
     tags = _parent_tags(store, rid)
-    assert "LLM:sonnet" in tags
-    assert "LLM:opus" not in tags
     assert f"child-failed:{job_id}" not in tags
 
     run_dispatch_pass(store)
@@ -102,7 +102,7 @@ def test_retry_rejects_non_terminal_job(
     todos: TodoHandler, jobs: JobHandler, store: Store
 ) -> None:
     """A queued/running job can't be retried — it hasn't failed yet."""
-    rid = id_of(todos.put(text="planner brief", tags=["LLM:opus"]).body)
+    rid = id_of(todos.put(text="planner brief", meta={"llm_tier": "opus"}).body)
     run_dispatch_pass(store)
     job_id = _child_jobs(store, rid)[0]["id"]  # STATUS:queued
     with pytest.raises(BadInput, match="only a failed"):
@@ -118,7 +118,7 @@ def test_retry_model_requires_llm_parent(
         kind="job", slug=None, title="manual", meta={}, parent_id=rid
     )
     jobs.tag(id=job.id, add=["STATUS:failed"])
-    with pytest.raises(BadInput, match="no LLM"):
+    with pytest.raises(BadInput, match="no meta.llm_tier"):
         jobs.put(id=job.id, mode="retry", model="opus")
     # Bubble still present — the rejected retry made no partial write.
     assert f"child-failed:{job.id}" in _parent_tags(store, rid)
@@ -140,12 +140,13 @@ def test_retry_rejects_orphan_job(jobs: JobHandler, store: Store) -> None:
 def test_retry_rejects_bad_model(
     todos: TodoHandler, jobs: JobHandler, store: Store
 ) -> None:
-    """An out-of-vocab model is rejected (closed-vocab LLM tag)."""
-    rid = id_of(todos.put(text="planner brief", tags=["LLM:opus"]).body)
+    """An out-of-vocab model is rejected (closed-vocab meta.llm_tier)."""
+    rid = id_of(todos.put(text="planner brief", meta={"llm_tier": "opus"}).body)
     job_id = _fail_first_job(store, jobs, rid)
     with pytest.raises(BadInput):
         jobs.put(id=job_id, mode="retry", model="opos")
     # Failed retry left the bubble + original model intact.
+    ref = store.get_ref(kind="todo", id=rid)
+    assert ref is not None and ref.meta.get("llm_tier") == "opus"
     tags = _parent_tags(store, rid)
-    assert "LLM:opus" in tags
     assert f"child-failed:{job_id}" in tags

@@ -10,7 +10,7 @@ rules are deterministic pattern matches that don't need reasoning.
 Detector catalogue (each is one SQL query, returns a list of
 finding rows):
 
-* **orphans** — open todos that have no ``level:strategic`` ancestor
+* **orphans** — open todos that have no ``meta.rotation_root`` ancestor
   (knob #6: strategic invariant; every open leaf must root under
   *some* strategic).
 * **stale claims** — leaves carrying ``claimed-by:<x>`` for more
@@ -23,8 +23,8 @@ finding rows):
   ``created_at`` older than ``STUCK_DOABLE_HOURS=24``. The
   rotation should have picked these up; if they're still here, the
   doable filter is rejecting them for a reason worth surfacing.
-* **stalled recurrings** — ``level:recurring`` refs whose most
-  recent spawned child has been open more than the schedule's
+* **stalled recurrings** — recurring refs (``meta.schedule`` set) whose
+  most recent spawned child has been open more than the schedule's
   period. The Slice-4 collision-skip leaves the prior tick on the
   queue; without nursery surfacing, the operator can't see why
   ticks have stopped piling up.
@@ -328,13 +328,17 @@ def run_nursery_pass(store: Store, *, limit: int = 50) -> BatchResult:
 
 
 def _detect_orphans(store: Store) -> list[Finding]:
-    """Open todos whose ancestor chain has no ``level:strategic`` root.
+    """Open todos whose ancestor chain has no ``meta.rotation_root`` root.
 
     Walks ``parent_id`` to the topmost ancestor. If that ancestor
-    doesn't carry the ``level:strategic`` open tag, the todo is an
-    orphan. Recurring subtrees (under ``level:recurring`` roots) are
-    excluded — they're scheduled work, not strategic work, and the
-    plan explicitly carves them out of the strategic invariant.
+    doesn't carry ``meta.rotation_root=true``, the todo is an orphan.
+    Recurring subtrees are excluded — they're scheduled work, not
+    strategic work, and the plan explicitly carves them out of the
+    strategic invariant. A subtree is "recurring" when its root either
+    carries ``meta.schedule`` directly, or is a builtin structural
+    anchor (``meta.builtin`` set — e.g. the seeded Watches umbrella,
+    which is itself a schedule-less folder that every individual
+    recurring parents under).
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
@@ -353,7 +357,10 @@ def _detect_orphans(store: Store) -> list[Finding]:
                 -- ADR 0045: the root is the topmost *todo* — a folder
                 -- parent above it is placement, not tree membership.
                 SELECT DISTINCT ON (w.ref_id) w.ref_id AS leaf_id,
-                       w.root_id
+                       w.root_id,
+                       COALESCE((r.meta->>'rotation_root')::boolean, false) AS root_is_strategic,
+                       ((r.meta ? 'schedule') OR (r.meta->>'builtin') IS NOT NULL)
+                         AS root_is_recurring
                   FROM walk w
                   JOIN refs r ON r.ref_id = w.root_id
                  WHERE {todo_root_sql("r")}
@@ -369,19 +376,9 @@ def _detect_orphans(store: Store) -> list[Finding]:
                      'open'
                    ) NOT IN ('done', 'won''t-do', 'auto-timeout')
                -- Root is not strategic
-               AND NOT EXISTS (
-                   SELECT 1 FROM ref_tags rtg JOIN tags t ON t.tag_id = rtg.tag_id
-                    WHERE rtg.ref_id = rt.root_id
-                      AND t.namespace = 'OPEN'
-                      AND t.value = 'level:strategic'
-               )
+               AND NOT rt.root_is_strategic
                -- And not in a recurring subtree (root is not recurring either)
-               AND NOT EXISTS (
-                   SELECT 1 FROM ref_tags rtg JOIN tags t ON t.tag_id = rtg.tag_id
-                    WHERE rtg.ref_id = rt.root_id
-                      AND t.namespace = 'OPEN'
-                      AND t.value = 'level:recurring'
-               )
+               AND NOT rt.root_is_recurring
              ORDER BY r.ref_id
              LIMIT 50
             """,
@@ -393,7 +390,7 @@ def _detect_orphans(store: Store) -> list[Finding]:
             title=_first_line(r[1]),
             detail=(
                 "open todo with no strategic ancestor — root needs "
-                "a ``level:strategic`` tag or this leaf needs to be "
+                "``meta.rotation_root=true`` or this leaf needs to be "
                 "re-parented under one"
             ),
         )
@@ -532,7 +529,8 @@ def _detect_stuck_doable(store: Store) -> list[Finding]:
                     WHERE c.parent_id = r.ref_id
                       AND c.deleted_at IS NULL
                )
-               -- No claim, no wait, no asking
+               -- No claim, no wait, no asking, not a recurring root
+               AND NOT (r.meta ? 'schedule')
                AND NOT EXISTS (
                    SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                     WHERE rt.ref_id = r.ref_id
@@ -540,8 +538,7 @@ def _detect_stuck_doable(store: Store) -> list[Finding]:
                       AND (t.value LIKE 'claimed-by:%%'
                            OR t.value LIKE 'waiting-for:%%'
                            OR t.value = 'ask-user'
-                           OR t.value LIKE 'ask-user:%%'
-                           OR t.value = 'level:recurring')
+                           OR t.value LIKE 'ask-user:%%')
                )
                -- Not blocked
                AND NOT EXISTS (
@@ -636,8 +633,8 @@ def _detect_child_failed_parked(store: Store) -> list[Finding]:
 
 
 def _detect_stalled_recurrings(store: Store) -> list[Finding]:
-    """``level:recurring`` refs whose most recent spawned child has been
-    open more than ~1.5x the recurring's natural cadence.
+    """Recurring refs (``meta.schedule`` set) whose most recent spawned
+    child has been open more than ~1.5x the recurring's natural cadence.
 
     The Slice-4 collision-skip leaves the prior tick on the queue
     when it stalls; without nursery surfacing the operator can't
@@ -661,12 +658,7 @@ def _detect_stalled_recurrings(store: Store) -> list[Finding]:
                               AND child.deleted_at IS NULL
                               AND child.meta ? 'spawned_for_tick'
              WHERE rec.kind = 'todo' AND rec.deleted_at IS NULL
-               AND EXISTS (
-                   SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
-                    WHERE rt.ref_id = rec.ref_id
-                      AND t.namespace = 'OPEN'
-                      AND t.value = 'level:recurring'
-               )
+               AND (rec.meta ? 'schedule')
                AND child.created_at < now() - interval '1 hour'
                AND COALESCE(
                      (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
@@ -883,7 +875,7 @@ def _detect_orphaned_coordinator(store: Store) -> list[Finding]:
 
     * **quest lane** — an active quest (``STATUS:active``) grouped by its
       ``quest_tick`` / ``executor='coordinator'`` loop history.
-    * **planner lane** — an open/doing ``LLM:*``-tagged todo (the
+    * **planner lane** — an open/doing todo with ``meta.llm_tier`` set (the
       planner-coroutine signature ``_candidate_parent_ids`` also keys on)
       grouped by its ``plan_tick`` child-job history. Parents already
       carrying a hard-block tag (``halt`` / ``halt:*`` / ``child-failed:*``)
@@ -963,10 +955,7 @@ def _detect_orphaned_coordinator_unsafe(store: Store) -> list[Finding]:
                        WHERE rt.ref_id = p.ref_id AND t.namespace = 'STATUS' LIMIT 1),
                      'open'
                    ) IN ('open', 'doing')
-               AND EXISTS (
-                   SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
-                    WHERE rt.ref_id = p.ref_id AND t.namespace = 'LLM'
-               )
+               AND (p.meta ? 'llm_tier')
                AND NOT EXISTS (
                    SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                     WHERE rt.ref_id = p.ref_id AND t.namespace = 'OPEN'

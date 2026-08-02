@@ -101,7 +101,7 @@ class TestMintReviewFanout:
             tags = {(t.namespace, t.prefix, t.value) for t in store.tags_for(todo_id)}
             assert ("closed", "STATUS", "open") in tags
             expected_tier = "sonnet" if lens in ("flow", "cites") else "opus"
-            assert ("closed", "LLM", expected_tier) in tags
+            assert ref.meta.get("llm_tier") == expected_tier
 
         assert len(seen_pairs) == len(chunks) * len(ALL_LENSES)
 

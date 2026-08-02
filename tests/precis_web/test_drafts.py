@@ -368,7 +368,7 @@ def test_new_draft_seeds_planner_prompt_and_doctype_brief(
     chosen document type lands as ``meta.workspace.doc_type`` and its
     guidance IS the brief (the planner's standing ``## Project context``).
     The user's description becomes the todo body (the planner's initial
-    prompt), and ``LLM:opus`` is the auto-run signal that starts it."""
+    prompt), and ``meta.llm_tier='opus'`` is the auto-run signal that starts it."""
     draft_client.post(
         "/drafts/new",
         data={
@@ -387,10 +387,9 @@ def test_new_draft_seeds_planner_prompt_and_doctype_brief(
     assert "patent application" in ws["brief"].lower()
     assert "folds itself" not in ws["brief"]
     # the description is the planner's initial prompt (the todo body), and
-    # the LLM tag is what makes the dispatcher auto-run the first tick.
+    # meta.llm_tier is what makes the dispatcher auto-run the first tick.
     assert args["text"] == "A widget that folds itself."
-    assert "LLM:opus" in args["tags"]
-    assert "level:strategic" in args["tags"]
+    assert args["meta"]["llm_tier"] == "opus"
 
 
 def test_new_draft_blank_description_rejected(
@@ -398,7 +397,7 @@ def test_new_draft_blank_description_rejected(
 ) -> None:
     """A title alone can't drive the writer: with no description the create
     is rejected (400) and nothing is dispatched — no project todo, no
-    ``LLM:opus`` auto-writer armed from just the title."""
+    ``meta.llm_tier='opus'`` auto-writer armed from just the title."""
     r = draft_client.post(
         "/drafts/new",
         data={"title": "Widget Patent", "doctype": "patent", "summary": ""},

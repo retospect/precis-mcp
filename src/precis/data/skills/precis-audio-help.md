@@ -129,7 +129,7 @@ the feed (`source="brief"` / `"meditation"`), idempotent on `meta.audio_episode_
 The published mp3 and the on-demand PDF share a human stem — `morning_brief_<date>`
 / `evening_meditation_<date>` — not the internal `cast-*` slug. Compose runs
 as the `reading_brief` / `meditation` **`claude_inproc`** job_types on a daily
-`level:recurring` watch — on melchior, where the litellm proxy serving `claude-opus`
+recurring (`meta.schedule` set) watch — on melchior, where the litellm proxy serving `claude-opus`
 lives (same host as the news briefing); the compose and the narration never block
 each other.
 

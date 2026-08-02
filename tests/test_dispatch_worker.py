@@ -177,13 +177,13 @@ def test_preserves_existing_auto_check(handler: TodoHandler, store: Store) -> No
 def test_plan_tick_parent_gets_no_auto_check(
     handler: TodoHandler, store: Store
 ) -> None:
-    """An LLM:*-tagged (plan_tick) parent must NOT get child_job_succeeded.
+    """A meta.llm_tier-set (plan_tick) parent must NOT get child_job_succeeded.
 
     The planner coroutine drives its own STATUS; a clean tick exits
     STATUS:succeeded even when it yielded or minted children. Injecting
     child_job_succeeded would auto-close the parent on its first tick.
     """
-    r = handler.put(text="planner brief", tags=["LLM:opus"])
+    r = handler.put(text="planner brief", meta={"llm_tier": "opus"})
     rid = id_of(r.body)
     run_dispatch_pass(store)
     children = _child_jobs_under(store, rid)
@@ -206,8 +206,7 @@ def test_plan_tick_parent_strips_stale_child_job_succeeded(
     """
     r = handler.put(
         text="planner brief with stale footgun",
-        tags=["LLM:opus"],
-        meta={"auto_check": {"type": "child_job_succeeded"}},
+        meta={"llm_tier": "opus", "auto_check": {"type": "child_job_succeeded"}},
     )
     rid = id_of(r.body)
     run_dispatch_pass(store)
@@ -224,8 +223,7 @@ def test_plan_tick_parent_keeps_non_footgun_auto_check(
     custom = {"type": "time_past", "at": "2099-01-01T00:00:00+00:00"}
     r = handler.put(
         text="planner with deliberate timer",
-        tags=["LLM:opus"],
-        meta={"auto_check": custom},
+        meta={"llm_tier": "opus", "auto_check": custom},
     )
     rid = id_of(r.body)
     run_dispatch_pass(store)
@@ -237,7 +235,7 @@ def test_plan_tick_parent_keeps_non_footgun_auto_check(
 def test_plan_tick_synthesizes_model_with_explicit_executor(
     handler: TodoHandler, store: Store
 ) -> None:
-    """LLM:* still supplies params['model'] even when the filer set
+    """meta.llm_tier still supplies params['model'] even when the filer set
     meta.executor/job_type explicitly (the precis-job-help canonical
     pattern) instead of relying on the NULL-executor synthesis path.
 
@@ -248,8 +246,12 @@ def test_plan_tick_synthesizes_model_with_explicit_executor(
     """
     r = handler.put(
         text="planner brief with explicit executor",
-        tags=["LLM:sonnet"],
-        meta={"executor": "claude_inproc", "job_type": "plan_tick", "params": {}},
+        meta={
+            "llm_tier": "sonnet",
+            "executor": "claude_inproc",
+            "job_type": "plan_tick",
+            "params": {},
+        },
     )
     rid = id_of(r.body)
     run_dispatch_pass(store)
@@ -267,7 +269,7 @@ def test_succeeded_child_job_does_not_block_redispatch(
     from precis.store.types import Tag
     from precis.workers.dispatch import _candidate_parent_ids
 
-    parent = handler.put(text="planner", tags=["LLM:opus"])
+    parent = handler.put(text="planner", meta={"llm_tier": "opus"})
     pid = id_of(parent.body)
     job = store.insert_ref(
         kind="job", slug=None, title="prior tick", meta={}, parent_id=pid
@@ -286,7 +288,7 @@ def test_running_child_job_blocks_redispatch(
     from precis.store.types import Tag
     from precis.workers.dispatch import _candidate_parent_ids
 
-    parent = handler.put(text="planner", tags=["LLM:opus"])
+    parent = handler.put(text="planner", meta={"llm_tier": "opus"})
     pid = id_of(parent.body)
     job = store.insert_ref(
         kind="job", slug=None, title="in flight", meta={}, parent_id=pid
@@ -300,24 +302,27 @@ def test_running_child_job_blocks_redispatch(
 def test_recurring_watch_root_excluded_from_candidates(
     handler: TodoHandler, store: Store
 ) -> None:
-    """A ``level:recurring`` watch root is NEVER a dispatch candidate,
-    even with an executor, an open STATUS, and no live child job/todo.
+    """A recurring (``meta.schedule`` set) watch root is NEVER a dispatch
+    candidate, even with an executor, an open STATUS, and no live child
+    job/todo.
 
     Regression guard for the prod spin: the schedule worker (not the
-    dispatcher) owns recurring cadence, spawning a ``level:subtask``
-    child each tick. Without this exclusion, a recurring root whose
-    latest child resolves instantly satisfies every other eligibility
-    clause and gets re-minted on every dispatch pass — ~1 job/5s on
-    news_poll."""
-    from precis.store.types import Tag
+    dispatcher) owns recurring cadence, spawning an ordinary
+    worker-mintable subtask child each tick. Without this exclusion, a
+    recurring root whose latest child resolves instantly satisfies every
+    other eligibility clause and gets re-minted on every dispatch pass —
+    ~1 job/5s on news_poll."""
     from precis.workers.dispatch import _candidate_parent_ids
 
     r = handler.put(
         text="news_poll cron root",
-        meta={"executor": "claude_inproc", "job_type": "news_poll"},
+        meta={
+            "executor": "claude_inproc",
+            "job_type": "news_poll",
+            "schedule": {"cron": "*/30 * * * *"},
+        },
     )
     rid = id_of(r.body)
-    store.add_tag(rid, Tag.open("level:recurring"), set_by="system")
     assert rid not in _candidate_parent_ids(store, limit=10)
 
 
@@ -325,9 +330,9 @@ def test_non_recurring_parent_still_a_candidate(
     handler: TodoHandler, store: Store
 ) -> None:
     """Control for the recurring-root exclusion above: the identical
-    parent WITHOUT the ``level:recurring`` tag IS returned — guards
-    against over-exclusion (e.g. matching on executor/job_type instead
-    of the tag)."""
+    parent WITHOUT ``meta.schedule`` set IS returned — guards against
+    over-exclusion (e.g. matching on executor/job_type instead of the
+    schedule presence)."""
     from precis.workers.dispatch import _candidate_parent_ids
 
     r = handler.put(
@@ -379,13 +384,13 @@ def _backdate(store: Store, ref_id: int, hours: float) -> None:
 def _mint_planner_with_parked_child(
     store: Store, handler: TodoHandler, *, child_tags: list[str]
 ) -> tuple[int, int]:
-    """Mint an LLM:opus parent, a not-done child todo carrying every tag
+    """Mint a meta.llm_tier=.opus. parent, a not-done child todo carrying every tag
     in ``child_tags``, and a succeeded ``plan_tick`` job child (freshly
     created — cooldown baseline). Returns ``(parent_id, job_id)``.
     """
     from precis.store.types import Tag
 
-    parent = handler.put(text="planner with parked child", tags=["LLM:opus"])
+    parent = handler.put(text="planner with parked child", meta={"llm_tier": "opus"})
     pid = id_of(parent.body)
     child = store.insert_ref(
         kind="todo", slug=None, title="parked child", meta={}, parent_id=pid
@@ -463,7 +468,7 @@ def test_normal_open_child_still_blocks_redispatch_regardless_of_cooldown(
     guard against loosening the gate too far."""
     from precis.workers.dispatch import _candidate_parent_ids
 
-    parent = handler.put(text="planner with live child", tags=["LLM:opus"])
+    parent = handler.put(text="planner with live child", meta={"llm_tier": "opus"})
     pid = id_of(parent.body)
     store.insert_ref(
         kind="todo", slug=None, title="still working", meta={}, parent_id=pid

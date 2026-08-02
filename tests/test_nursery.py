@@ -2,7 +2,7 @@
 
 Five detector categories, plus the fingerprint-dedup path:
 
-* orphans — open todos with no ``level:strategic`` ancestor
+* orphans — open todos with no ``meta.rotation_root`` ancestor
 * stale-claim — ``claimed-by:*`` older than ``STALE_CLAIM_HOURS``
 * long-wait — ``waiting-for:*`` older than ``LONG_WAIT_DAYS``
 * stuck-doable — open leaf, no claim/wait/block, >24h old
@@ -119,7 +119,7 @@ def _backdate_tag(store: Store, ref_id: int, tag_value: str, hours: float) -> No
 def test_orphans_detector_flags_open_todo_without_strategic_root(
     handler: TodoHandler, store: Store
 ) -> None:
-    # Root todo without level:strategic — its descendants are orphans.
+    # Root todo without meta.rotation_root — its descendants are orphans.
     root = handler.put(text="Bare root")
     root_id = _id_of(root.body)
     child = handler.put(text="Child", parent_id=root_id)
@@ -135,7 +135,7 @@ def test_orphans_detector_flags_open_todo_without_strategic_root(
 def test_orphans_detector_excludes_strategic_subtree(
     handler: TodoHandler, store: Store
 ) -> None:
-    root = handler.put(text="Real strategic", tags=["level:strategic"])
+    root = handler.put(text="Real strategic", meta={"rotation_root": True})
     root_id = _id_of(root.body)
     child = handler.put(text="Real child", parent_id=root_id)
     child_id = _id_of(child.body)
@@ -164,7 +164,6 @@ def test_orphans_detector_excludes_recurring_subtree(
     """Recurring scheduled work is exempt from the strategic invariant."""
     handler.put(
         text="Hourly watcher",
-        tags=["level:recurring"],
         meta={"schedule": {"cron": "0 * * * *"}},
     )
     # The Watches umbrella + its child are both under the umbrella's
@@ -290,7 +289,6 @@ def test_stuck_doable_detector_skips_recurring_umbrella(
     """The Watches root + recurring roots themselves aren't doable leaves."""
     handler.put(
         text="Watcher",
-        tags=["level:recurring"],
         meta={"schedule": {"cron": "0 * * * *"}},
     )
     findings = _detect_stuck_doable(store)
@@ -367,7 +365,6 @@ def test_stalled_recurring_detector_flags_old_open_child(
 ) -> None:
     rec = handler.put(
         text="Hourly",
-        tags=["level:recurring"],
         meta={"schedule": {"cron": "0 * * * *"}},
     )
     rec_id = _id_of(rec.body)
@@ -392,7 +389,6 @@ def test_stalled_recurring_detector_skips_done_child(
 ) -> None:
     rec = handler.put(
         text="Daily",
-        tags=["level:recurring"],
         meta={"schedule": {"cron": "0 0 * * *"}},
     )
     rec_id = _id_of(rec.body)
@@ -558,11 +554,10 @@ def _mint_quest_loop(store: Store, quest_id: int, *, status: str) -> int:
 
 
 def _mk_llm_planner(store: Store, title: str) -> int:
-    """A ``todo`` carrying the planner-coroutine ``LLM:*`` signature
-    (STATUS defaults to open — nothing else needed to make it a
-    candidate-eligible parent for ``_detect_orphaned_coordinator``)."""
-    p = store.insert_ref(kind="todo", slug=None, title=title)
-    store.add_tag(p.id, Tag.closed("LLM", "opus"), set_by="agent")
+    """A ``todo`` carrying the planner-coroutine ``meta.llm_tier``
+    signature (STATUS defaults to open — nothing else needed to make it
+    a candidate-eligible parent for ``_detect_orphaned_coordinator``)."""
+    p = store.insert_ref(kind="todo", slug=None, title=title, meta={"llm_tier": "opus"})
     return int(p.id)
 
 
@@ -638,7 +633,7 @@ def test_orphaned_coordinator_detector_ignores_inactive_quest(store: Store) -> N
 
 
 def test_orphaned_coordinator_detector_flags_dark_planner(store: Store) -> None:
-    """An open, LLM:*-tagged planner parent whose newest ``plan_tick``
+    """An open, meta.llm_tier-set planner parent whose newest ``plan_tick``
     child rested STATUS:failed past the stale window, with no newer child
     minted and no child-failed/halt tag on it, is dark — the planner-lane
     analogue of the quest case (e.g. an infra-class retry per

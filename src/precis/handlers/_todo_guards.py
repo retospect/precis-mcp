@@ -1,7 +1,7 @@
 """Write-time guards for the todo tree (Slice 1 of todo-tree-plan.md).
 
 Three orthogonal checks fire on every ``put`` that wires a child under
-a parent (and on level-tag mutations via ``tag``):
+a parent (and on facet mutations via ``tag(meta=...)``):
 
 * **parent-exists** — ``parent_id`` must point at a live ``todo`` ref.
 * **cycle** — the new edge must not create a loop. Cycles in a tree
@@ -10,10 +10,12 @@ a parent (and on level-tag mutations via ``tag``):
 * **depth** — the ancestor chain may not exceed ``MAX_DEPTH=10``.
   Pathological splitting (Allen's "procrastinating-by-planning"
   failure mode) stops here.
-* **level gradient** — ``level:strategic`` and ``level:tactical`` are
-  owner-only. Workers (``asa-chatter``/``asa-worker``/``asa-dreamer``
-  MCP sources) cannot create, edit, or delete these tiers. The
-  authority gradient is the most load-bearing control in the design.
+* **level gradient** — ``meta.rotation_root`` and ``meta.worker_mintable
+  is False`` (the §M facet-normalized replacement for the old
+  ``level:strategic``/``level:tactical`` tags) are owner-only. Workers
+  (``asa-chatter``/``asa-worker``/``asa-dreamer`` MCP sources) cannot
+  create, edit, or delete these tiers. The authority gradient is the
+  most load-bearing control in the design.
 
 Identity routing
 ================
@@ -38,7 +40,7 @@ shows up as "the strategic guard didn't fire" rather than as
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput, NotFound
 from precis.utils.llm.router import PLANNER_MODEL_ALIASES as _PLANNER_ALIASES
@@ -55,48 +57,55 @@ if TYPE_CHECKING:
 MAX_DEPTH = 10
 
 
-#: Closed-prefix level values. ``level:`` is an *open* tag for now
-#: (no closed-vocab axis registration) — the gradient is enforced
-#: here, not in ``Tag.parse_strict``, so the guard logic stays
-#: self-contained inside the todo handler. Slice 1 ships gradient
-#: enforcement only; if the vocab ever needs centralised validation
-#: we can promote to a closed prefix in a follow-up.
-LEVEL_STRATEGIC = "level:strategic"
-LEVEL_TACTICAL = "level:tactical"
-LEVEL_SUBTASK = "level:subtask"
-LEVEL_PROPOSED_TACTICAL = "level:proposed-tactical"
-#: Slice-4 schedule tier. The recurring root carries the schedule + the
-#: spawn rule; spawned children carry ``level:subtask``. Owner-only —
-#: so a worker can't mint a ``* * * * *`` cron that burns the budget.
-LEVEL_RECURRING = "level:recurring"
+#: §M facet normalization (migration 0102): the old ``level:`` 3-enum
+#: (``strategic`` / ``tactical`` / ``subtask``) is now two explicit
+#: boolean ``meta`` fields on the ref instead of a tag. ``rotation_root``
+#: marks a strategic root (the picks-7d rotation unit, the nursery's
+#: orphan-ancestor anchor); ``worker_mintable`` says whether a
+#: non-owner source may create/hold this tier — defaults to ``True``
+#: when absent (matches the old "omit level:* entirely" = subtask
+#: behaviour). The 2×2 space maps the 3 real tiers plus one unused
+#: combination:
+#:
+#:   rotation_root=True,  worker_mintable=False  → strategic (owner-only root)
+#:   rotation_root=False, worker_mintable=False  → tactical  (owner-only, non-root)
+#:   rotation_root=False, worker_mintable=True   → subtask   (default; worker-mintable)
+#:   rotation_root=True,  worker_mintable=True   → (unused)
+#:
+#: ``level:recurring`` is dropped outright — it was redundant with
+#: ``meta.schedule`` (Slice 4); readers now key on schedule presence
+#: (``meta ? 'schedule'``) instead of a tag. ``level:proposed-tactical``
+#: had no reader behaviour tied to it (a free worker-settable suggestion
+#: label, never gated or queried) — it survives as the plain open tag
+#: ``proposed-tactical`` (prefix dropped so it falls outside the
+#: retired ``level:`` axis).
+META_ROTATION_ROOT = "rotation_root"
+META_WORKER_MINTABLE = "worker_mintable"
+#: The un-gated worker-suggestion tag (replaces ``level:proposed-tactical``
+#: — never owner-only, so it needed no facet, just a prefix drop).
+PROPOSED_TACTICAL = "proposed-tactical"
 
-#: Tier names that are owner-only. Workers may neither create refs
-#: carrying these tags nor add them via ``tag`` later. Slice 4 added
-#: ``level:recurring`` so workers can't mint scheduled work.
-_OWNER_ONLY_LEVELS: frozenset[str] = frozenset(
-    {LEVEL_STRATEGIC, LEVEL_TACTICAL, LEVEL_RECURRING}
-)
+
+# ── auto-run policy fields (closed-vocab values, ``meta``-side) ────
 
 
-# ── auto-run tag namespaces (closed-vocab values) ──────────────────
-
-
-#: Allowed values for the ``LLM:<model>`` open tag. Presence of any
-#: ``LLM:*`` tag flips a todo into the dispatch worker's candidate set
-#: (planner-coroutine slice); the value picks the *capability tier* the tick
-#: runs on (``local`` = the cluster's served OSS model, the cloud triad =
-#: claude). Closed vocab so a typo (``LLM:opos``) is rejected at write time
-#: rather than producing a silent dispatch miss or a budget burn against a
-#: wrong model. Single-sourced from the router's planner alias map so this
-#: guard, ``Tag.parse_strict``, and the web model-picker never drift.
-_LLM_TAG_VALUES: frozenset[str] = frozenset(_PLANNER_ALIASES)
+#: Allowed values for ``meta.llm_tier``. §M facet normalization demotes
+#: the old ``LLM:<model>`` open tag to this single ``meta`` field — its
+#: mere presence flips a todo into the dispatch worker's candidate set
+#: (planner-coroutine slice); the value picks the *capability tier* the
+#: tick runs on (``local`` = the cluster's served OSS model, the cloud
+#: triad = claude). Closed vocab so a typo (``opos``) is rejected at
+#: write time rather than producing a silent dispatch miss or a budget
+#: burn against a wrong model. Single-sourced from the router's planner
+#: alias map so this guard and the web model-picker never drift.
+_LLM_TIER_VALUES: frozenset[str] = frozenset(_PLANNER_ALIASES)
 
 
 #: Allowed values for the ``executor:<runner>`` open tag — runners that
 #: are NOT an LLM (deterministic code paths). v1 has none registered;
 #: future entries: ``fetch`` (web-search + ingest), ``ingest``
 #: (file → corpus), ``calc`` (sympy). Same closed-vocab discipline as
-#: ``LLM:*`` so unknown values reject at write time.
+#: ``meta.llm_tier`` so unknown values reject at write time.
 _EXECUTOR_TAG_VALUES: frozenset[str] = frozenset()
 
 
@@ -108,9 +117,8 @@ def _check_namespaced_tag(
 ) -> None:
     """Reject ``prefix:<value>`` tags whose value isn't in ``allowed``.
 
-    Used by both the ``LLM:`` and ``executor:`` guards. Shared so the
-    error shape stays consistent and adding a new namespace is one
-    call site.
+    Used by the ``executor:`` guard (``meta.llm_tier`` moved to
+    :func:`check_llm_tier_meta` below, off the tag surface entirely).
     """
     if not tags:
         return
@@ -137,9 +145,21 @@ def _check_namespaced_tag(
             )
 
 
-def check_llm_tag(tags: list[str] | None) -> None:
-    """Reject ``LLM:<value>`` where value is not a registered model."""
-    _check_namespaced_tag(tags, prefix="LLM:", allowed=_LLM_TAG_VALUES)
+def check_llm_tier_meta(meta: dict[str, Any] | None) -> None:
+    """Reject ``meta.llm_tier`` when it isn't a registered model tier."""
+    if not meta or "llm_tier" not in meta:
+        return
+    value = meta.get("llm_tier")
+    if value not in _LLM_TIER_VALUES:
+        sorted_allowed = ", ".join(sorted(_LLM_TIER_VALUES))
+        raise BadInput(
+            f"meta.llm_tier={value!r}: unknown tier; allowed values are "
+            f"[{sorted_allowed}]",
+            next=(
+                f"use one of [{sorted_allowed}] or omit meta.llm_tier "
+                "if this work isn't dispatchable"
+            ),
+        )
 
 
 def check_executor_tag(tags: list[str] | None) -> None:
@@ -154,31 +174,33 @@ def has_auto_run_signal(
     """True when a todo carries something the dispatcher can act on.
 
     The dispatch worker (``workers/dispatch.py``) only considers a todo
-    a candidate if it carries one of three auto-run signals: an
-    ``LLM:<model>`` tag, an ``executor:<runner>`` tag, or a legacy
+    a candidate if it carries one of three auto-run signals:
+    ``meta.llm_tier``, an ``executor:<runner>`` tag, or a legacy
     ``meta.executor`` key. Without any of them the todo is inert — it
     never spawns a ``plan_tick`` job and therefore never gets children.
     Mirror the dispatcher's candidate predicate here so the create-time
     reminder agrees exactly with what would (not) be dispatched.
     """
     for t in tags or []:
-        if t.startswith("LLM:") or t.startswith("executor:"):
+        if t.startswith("executor:"):
             return True
-    return bool(meta) and "executor" in meta  # type: ignore[operator]
+    if not meta:
+        return False
+    return "llm_tier" in meta or "executor" in meta
 
 
 def strategic_lacks_auto_run(
-    tags: list[str] | None,
     meta: dict[str, object] | None,
+    tags: list[str] | None = None,
 ) -> bool:
-    """True for a ``level:strategic`` todo with no auto-run signal.
+    """True for a ``meta.rotation_root`` todo with no auto-run signal.
 
     The reminder condition for the soft create-time hint: a strategic
     planner brief is just inert prose unless it carries an auto-run
     signal, so flag the gap. Non-strategic todos and strategics that
     already carry a signal return ``False`` (no nudge).
     """
-    if not tags or LEVEL_STRATEGIC not in tags:
+    if not meta or meta.get(META_ROTATION_ROOT) is not True:
         return False
     return not has_auto_run_signal(tags, meta)
 
@@ -464,53 +486,115 @@ def _depth_of(store: Store, ref_id: int) -> int:
 # ── level / authority ──────────────────────────────────────────────
 
 
-def check_level_tags_on_create(tags: list[str] | None) -> None:
-    """Reject ``level:strategic|tactical`` from worker sources at create.
+def _facet_violation(meta: dict[str, Any]) -> str | None:
+    """Return the owner-only facet key set by ``meta``, or ``None``.
+
+    A worker source may not set ``rotation_root=True`` (mint a strategic
+    root), ``worker_mintable=False`` (mint a tactical — the owner-only,
+    non-root tier), or ``schedule`` (mint scheduled/recurring work —
+    the old ``level:recurring`` gate, now keyed on ``meta.schedule``
+    presence rather than a tag). Absence of a key, or a value that
+    matches the worker-mintable default, is never a violation.
+    """
+    if meta.get(META_ROTATION_ROOT) is True:
+        return META_ROTATION_ROOT
+    if meta.get(META_WORKER_MINTABLE) is False:
+        return META_WORKER_MINTABLE
+    if "schedule" in meta:
+        return "schedule"
+    return None
+
+
+def check_facets_on_create(meta: dict[str, Any] | None) -> None:
+    """Reject an owner-only facet from worker sources at create.
 
     The plan calls this the single most load-bearing control: workers
-    physically cannot mint strategic or tactical refs. ``proposed-
-    tactical`` stays open to everyone so workers / dreamers can
-    suggest promotions for owner triage.
+    physically cannot mint strategic or tactical refs, or scheduled
+    (recurring) work. ``proposed-tactical`` (the plain open tag) stays
+    open to everyone so workers / dreamers can suggest promotions for
+    owner triage.
     """
-    if not tags:
+    if not meta:
         return
     if is_owner():
         return
-    for t in tags:
-        if t in _OWNER_ONLY_LEVELS:
-            raise BadInput(
-                f"{t!r} is owner-only; the current source has worker authority",
-                next=(
-                    "propose via tag='level:proposed-tactical' instead, "
-                    "or run from a non-worker source (web:owner / cli)"
-                ),
-            )
+    violation = _facet_violation(meta)
+    if violation is not None:
+        raise BadInput(
+            f"meta.{violation!r} is owner-only; the current source has "
+            "worker authority",
+            next=(
+                f"propose via tag='{PROPOSED_TACTICAL}' instead, "
+                "or run from a non-worker source (web:owner / cli)"
+            ),
+        )
 
 
-def check_level_tags_on_tag(
-    *,
-    add: list[str] | None,
-    remove: list[str] | None,
-) -> None:
-    """Reject level-gradient mutations from worker sources at ``tag``.
+#: The facet keys the level/schedule authority gradient governs.
+#: ``tag(meta=...)`` touching any of these from a worker source is
+#: rejected outright, in *either* direction — mirrors the old
+#: tag-gradient guard, which rejected both ``add`` AND ``remove`` of an
+#: owner-only level tag from a worker (a worker could neither promote a
+#: subtask to strategic nor demote a strategic by yanking the tag).
+_TAG_TIME_OWNER_ONLY_KEYS: frozenset[str] = frozenset(
+    {META_ROTATION_ROOT, META_WORKER_MINTABLE, "schedule"}
+)
 
-    Both ``add`` and ``remove`` are gated — workers can neither
-    promote a subtask to strategic nor demote a strategic by yanking
-    the tag. The ``proposed-tactical`` tag stays freely mutable for
-    anyone.
+
+def check_facets_on_tag(meta: dict[str, Any] | None) -> None:
+    """Reject any facet-gradient mutation from worker sources at ``tag``.
+
+    ``tag(meta=...)`` is the promotion surface (§M facet normalization
+    — meta fields replaced the old level tag; ``tag()`` already carries
+    non-tag state via ``prio=``, so this follows the same precedent).
+    Unlike :func:`check_facets_on_create` (which only blocks the
+    *owner-tier* value at mint time), this blocks a worker from
+    touching ``rotation_root`` / ``worker_mintable`` / ``schedule`` at
+    all post-creation — promoting AND demoting are both owner-only. The
+    ``proposed-tactical`` open tag stays freely mutable for anyone via
+    ``add=``/``remove=``.
     """
-    if is_owner():
+    if not meta or is_owner():
         return
-    touched = (add or []) + (remove or [])
-    for t in touched:
-        if t in _OWNER_ONLY_LEVELS:
-            raise BadInput(
-                f"{t!r} is owner-only; the current source has worker authority",
-                next=(
-                    "propose via tag='level:proposed-tactical' instead, "
-                    "or run from a non-worker source (web:owner / cli)"
-                ),
-            )
+    touched = set(meta) & _TAG_TIME_OWNER_ONLY_KEYS
+    if touched:
+        key = sorted(touched)[0]
+        raise BadInput(
+            f"meta.{key!r} is owner-only; the current source has worker authority",
+            next=(
+                f"propose via tag='{PROPOSED_TACTICAL}' instead, "
+                "or run from a non-worker source (web:owner / cli)"
+            ),
+        )
+
+
+#: The closed set of keys ``tag(meta=...)`` is allowed to promote.
+#: ``tag()`` is a post-creation *mutation* surface, not a general meta
+#: bag — anything not on this list (notably ``deliver``, the ADR 0061
+#: push-notification target, and ``workspace``, the sandbox root) must
+#: go through ``put()``/``create()``, which run their own validation.
+#: Reject the whole call rather than silently dropping an unpromotable
+#: key, so a caller never believes a write landed that didn't.
+TAG_META_ALLOWED_KEYS: frozenset[str] = frozenset(
+    {META_ROTATION_ROOT, META_WORKER_MINTABLE, "schedule", "llm_tier"}
+)
+
+
+def check_meta_keys_promotable(meta: dict[str, Any] | None) -> None:
+    """Reject any ``tag(meta=...)`` key outside :data:`TAG_META_ALLOWED_KEYS`."""
+    if not meta:
+        return
+    extra = set(meta) - TAG_META_ALLOWED_KEYS
+    if extra:
+        sorted_allowed = ", ".join(sorted(TAG_META_ALLOWED_KEYS))
+        raise BadInput(
+            f"meta key(s) {sorted(extra)} cannot be set via tag(); "
+            f"the promotable allowlist is [{sorted_allowed}]",
+            next=(
+                "use put() to set other meta fields (e.g. deliver, "
+                "workspace) at create time or via a full meta rewrite"
+            ),
+        )
 
 
 def check_status_done_artifact(
@@ -644,7 +728,7 @@ def check_status_done_artifact(
         next=(
             "do the work first: put(kind='tex', name='<slug>', text='...') "
             "OR put(kind='citation', text='<claim>', source_handle='...', ...) "
-            "OR mint subtasks via put(kind='todo', tags=['LLM:<model>'], ...) "
+            "OR mint subtasks via put(kind='todo', meta={'llm_tier': '<model>'}, ...) "
             "and let them resolve. Yield via ask-user:<question> if blocked. "
             "Halt via halt:<reason> if structurally stuck. STATUS:done means "
             "your deliverable EXISTS — not that you thought about it."
@@ -696,23 +780,21 @@ def check_owner_only_ref(store: Store, ref_id: int) -> None:
     if is_owner():
         return
     with store.pool.connection() as conn:
-        rows = conn.execute(
+        row = conn.execute(
             """
-            SELECT t.namespace || ':' || t.value
-              FROM ref_tags rt
-              JOIN tags t ON t.tag_id = rt.tag_id
-             WHERE rt.ref_id = %s
-               AND t.namespace = 'OPEN'
-               AND t.value IN ('level:strategic', 'level:tactical')
+            SELECT COALESCE((meta->>%s)::boolean, false) AS rotation_root,
+                   COALESCE((meta->>%s)::boolean, true) AS worker_mintable
+              FROM refs WHERE ref_id = %s
             """,
-            (ref_id,),
-        ).fetchall()
-    # Tags live in OPEN namespace with the literal ``level:<tier>``
-    # value; the rendered form is just the value.
-    hits = [r[0].removeprefix("OPEN:") for r in rows]
-    if hits:
+            (META_ROTATION_ROOT, META_WORKER_MINTABLE, ref_id),
+        ).fetchone()
+    if row is None:
+        return
+    rotation_root, worker_mintable = bool(row[0]), bool(row[1])
+    if rotation_root or not worker_mintable:
+        tier = "strategic" if rotation_root else "tactical"
         raise BadInput(
-            f"todo id={ref_id} carries {hits[0]!r} and is owner-only",
+            f"todo id={ref_id} is {tier!r} (owner-only)",
             next="run this from a non-worker source (web:owner / cli)",
         )
 
@@ -785,7 +867,8 @@ def check_deliver_in_meta(meta: dict[str, object] | None) -> dict[str, str] | No
     """Validate ``meta.deliver`` if present; return the canonical block.
 
     ``meta.deliver = {'target': 'conv:discord/<g>/<c>/<t>'}`` marks a
-    ``level:recurring`` todo (or one of its ticks) for **push** delivery —
+    recurring todo (``meta.schedule`` set — or one of its ticks) for
+    **push** delivery —
     a synthetic prompt fired at asa_bot via ``pg_notify('precis.cron', ...)``
     — instead of (or as well as, for a folder-level automation) minting a
     subtask into the doable queue. This is the delivery-address field ADR
@@ -820,19 +903,19 @@ def check_deliver_in_meta(meta: dict[str, object] | None) -> dict[str, str] | No
 
 
 __all__ = [
-    "LEVEL_PROPOSED_TACTICAL",
-    "LEVEL_RECURRING",
-    "LEVEL_STRATEGIC",
-    "LEVEL_SUBTASK",
-    "LEVEL_TACTICAL",
     "MAX_DEPTH",
+    "META_ROTATION_ROOT",
+    "META_WORKER_MINTABLE",
+    "PROPOSED_TACTICAL",
+    "TAG_META_ALLOWED_KEYS",
     "check_deliver_in_meta",
     "check_depth_under",
     "check_executor_tag",
+    "check_facets_on_create",
+    "check_facets_on_tag",
     "check_halt_remove",
-    "check_level_tags_on_create",
-    "check_level_tags_on_tag",
-    "check_llm_tag",
+    "check_llm_tier_meta",
+    "check_meta_keys_promotable",
     "check_no_cycle",
     "check_not_builtin",
     "check_owner_only_ref",

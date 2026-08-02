@@ -217,7 +217,7 @@ def test_strategic_layer_snapshot_empty(store: Store) -> None:
 def test_strategic_layer_snapshot_renders_tree(
     handler: TodoHandler, store: Store
 ) -> None:
-    root = handler.put(text="Main goal", tags=["level:strategic"])
+    root = handler.put(text="Main goal", meta={"rotation_root": True})
     root_id = id_of(root.body)
     a = handler.put(text="Tactic A", parent_id=root_id)
     aid = id_of(a.body)
@@ -237,7 +237,7 @@ def test_strategic_layer_snapshot_renders_tree(
 def test_build_prompt_includes_directive_sections(
     handler: TodoHandler, store: Store
 ) -> None:
-    handler.put(text="Strategic 1", tags=["level:strategic"])
+    handler.put(text="Strategic 1", meta={"rotation_root": True})
     prompt = _build_prompt(store)
     assert "STRUCTURAL REVIEW" in prompt
     assert "Strategic + tactical layer" in prompt
@@ -269,7 +269,7 @@ def test_pass_writes_digest_on_happy_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("PRECIS_STRUCTURAL_REVIEW", "1")
-    handler.put(text="Strategic A", tags=["level:strategic"])
+    handler.put(text="Strategic A", meta={"rotation_root": True})
 
     def _ok_call(*a, **kw) -> AgentResult:
         return AgentResult(
@@ -310,7 +310,7 @@ def test_pass_records_failure_on_llm_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("PRECIS_STRUCTURAL_REVIEW", "1")
-    handler.put(text="Strategic B", tags=["level:strategic"])
+    handler.put(text="Strategic B", meta={"rotation_root": True})
 
     def _err(*a, **kw):
         raise ClaudeAgentError(

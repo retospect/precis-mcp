@@ -360,12 +360,13 @@ def test_child_job_succeeded_true_when_child_succeeded(
 def test_child_job_succeeded_skips_planner_coroutine(
     handler: TodoHandler, store: Store
 ) -> None:
-    """An LLM:*-tagged parent (plan_tick coroutine) is never auto-closed
-    by a succeeded child job — it drives its own STATUS. Guard 1."""
+    """A meta.llm_tier-set parent (plan_tick coroutine) is never
+    auto-closed by a succeeded child job — it drives its own STATUS.
+    Guard 1."""
     from precis.store.types import Tag
     from precis.workers.auto_check_evaluators import child_job_succeeded
 
-    r = handler.put(text="planner brief", tags=["LLM:opus"])
+    r = handler.put(text="planner brief", meta={"llm_tier": "opus"})
     rid = _id_of(r.body)
     job = store.insert_ref(kind="job", slug=None, title="tick", meta={}, parent_id=rid)
     store.add_tag(
@@ -434,14 +435,15 @@ def test_child_job_succeeded_resolves_when_child_todos_done(
 def test_child_job_succeeded_skips_recurring_watch(
     handler: TodoHandler, store: Store
 ) -> None:
-    """A ``level:recurring`` watch (ADR 0061) is never auto-closed by its
-    first spawned child job succeeding — it owns its own terminal state
-    (cron never resolves; a one-shot self-tags STATUS:done). Regression
-    for the 2-day news_poll / cast-watch outage: guard 3."""
+    """A recurring watch (``meta.schedule`` set, ADR 0061) is never
+    auto-closed by its first spawned child job succeeding — it owns its
+    own terminal state (cron never resolves; a one-shot self-tags
+    STATUS:done). Regression for the 2-day news_poll / cast-watch
+    outage: guard 3."""
     from precis.store.types import Tag
     from precis.workers.auto_check_evaluators import child_job_succeeded
 
-    r = handler.put(text="news_poll watch", tags=["level:recurring"])
+    r = handler.put(text="news_poll watch", meta={"schedule": {"cron": "*/30 * * * *"}})
     rid = _id_of(r.body)
     job = store.insert_ref(kind="job", slug=None, title="tick", meta={}, parent_id=rid)
     store.add_tag(

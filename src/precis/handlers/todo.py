@@ -11,9 +11,10 @@ shape with four first-class extensions:
    each todo carries an optional ``parent_id`` pointing at another
    todo. Branches are outcomes (the first line reads as "what does
    done look like"); leaves are next physical actions. The owner owns the
-   top tiers via the ``level:strategic|tactical`` tag gradient; the
-   guards in :mod:`precis.handlers._todo_guards` enforce who can
-   write what.
+   top tiers via the ``meta.rotation_root`` / ``meta.worker_mintable``
+   facet gradient (§M facet normalization, migration 0102 — replaces the
+   old ``level:strategic|tactical`` tags); the guards in
+   :mod:`precis.handlers._todo_guards` enforce who can write what.
 
 3. **Tree-aware views** — ``roots``, ``projects``, ``strategic``,
    ``tree``, ``doable``, ``waiting``, ``blocked``, ``ask-user``.
@@ -24,11 +25,11 @@ shape with four first-class extensions:
 
 4. **PRIO column + recurring schedule** (Slice 4): ``prio`` is a
    small int (1..10) on ``refs`` driving the doable ORDER BY;
-   ``level:recurring`` is the schedule tier — owner-only at the
-   root, spawned children carry ``level:subtask``. ``meta.schedule``
-   gets canonicalised (every-shorthand → cron) and validated at
-   write time. The seeded Watches umbrella is the default parent
-   for recurring roots without an explicit ``parent_id``.
+   a recurring root is any todo with ``meta.schedule`` set — owner-only
+   to create, spawned children are ordinary worker-mintable subtasks.
+   ``meta.schedule`` gets canonicalised (every-shorthand → cron) and
+   validated at write time. The seeded Watches umbrella is the default
+   parent for recurring roots without an explicit ``parent_id``.
 
 List views via ``id='/<view>'`` (legacy flat surface):
     /recent /open /doing /blocked /done /queue
@@ -436,8 +437,8 @@ class TodoHandler(NumericRefHandler):
             guards.check_depth_under(self.store, parent_int)
         else:
             parent_int = None
-        guards.check_level_tags_on_create(tags)
-        guards.check_llm_tag(tags)
+        guards.check_facets_on_create(meta)
+        guards.check_llm_tier_meta(meta)
         guards.check_executor_tag(tags)
         # Workspace inheritance: if the parent carries meta.workspace
         # and this child doesn't specify its own, copy the parent's
@@ -475,49 +476,51 @@ class TodoHandler(NumericRefHandler):
             tags = [*(tags or []), project_tag]
         # A *project root* — a workspace-owning todo with no parent — is by
         # definition a strategic root ("a project is a strategic-root todo
-        # that owns ``meta.workspace``"). Auto-stamp ``level:strategic`` so
-        # that invariant holds however the root is minted. ``/drafts/new``
+        # that owns ``meta.workspace``"). Auto-stamp ``meta.rotation_root``
+        # so that invariant holds however the root is minted. ``/drafts/new``
         # already passes it, but a CLI / test / script write that sets
         # ``meta.workspace`` on a fresh root would otherwise leave it
         # non-strategic — and the nursery then flags the entire subtree as
-        # orphaned (no ``level:strategic`` ancestor), flooding alerts (the
+        # orphaned (no ``rotation_root`` ancestor), flooding alerts (the
         # ``draft:test01`` scratch-project flood). Scoped tightly:
-        #   * roots only (``parent_int is None``) — inheriting children keep
-        #     ``level:subtask`` and must not all become strategic;
+        #   * roots only (``parent_int is None``) — inheriting children stay
+        #     worker-mintable subtasks and must not all become strategic;
         #   * owner sources only (``is_owner()``) — workers physically can't
         #     mint strategic refs, so never stamp one onto a worker write;
-        #   * skip when the caller already chose any ``level:*`` tier.
+        #   * skip when the caller already set either facet field.
         if (
             parent_int is None
             and guards.is_owner()
             and isinstance(meta, dict)
             and isinstance(meta.get("workspace"), dict)
-            and not (tags and any(t.startswith("level:") for t in tags))
+            and "rotation_root" not in meta
+            and "worker_mintable" not in meta
         ):
-            tags = [*(tags or []), guards.LEVEL_STRATEGIC]
-        # Default a *generated* (parented) todo to ``LLM:opus`` so it
-        # actually runs: an untagged todo with no executor is inert —
-        # ``dispatch`` only mints a ``plan_tick`` under an ``LLM:*`` todo,
-        # so a planner-minted / change-request child would sit ``open``
-        # forever (#40159 sat ~40h). Scoped to children (``parent_int`` set
-        # — minted under a project, a planner tick, or a change request) so
-        # a deliberately-created **root** still gets the "no auto-run"
-        # reminder instead of silently auto-running. Skip when the caller
-        # already chose a tier / executor, or it's a recurring umbrella.
+            meta = {**meta, "rotation_root": True}
+        # Default a *generated* (parented) todo to ``meta.llm_tier='opus'``
+        # so it actually runs: a todo with no auto-run signal is inert —
+        # ``dispatch`` only mints a ``plan_tick`` under an ``llm_tier``-set
+        # todo, so a planner-minted / change-request child would sit
+        # ``open`` forever (#40159 sat ~40h). Scoped to children
+        # (``parent_int`` set — minted under a project, a planner tick, or a
+        # change request) so a deliberately-created **root** still gets the
+        # "no auto-run" reminder instead of silently auto-running. Skip
+        # when the caller already chose a tier / executor, or it's a
+        # recurring umbrella (``meta.schedule`` set).
         if (
             id is None
             and parent_int is not None
-            and not (tags and any(t.startswith("LLM:") for t in tags))
+            and not (isinstance(meta, dict) and "llm_tier" in meta)
             and not (isinstance(meta, dict) and meta.get("executor"))
-            and not (tags and guards.LEVEL_RECURRING in tags)
+            and not (isinstance(meta, dict) and "schedule" in meta)
         ):
-            tags = [*(tags or []), "LLM:opus"]
-        # Default parent_id for a ``level:recurring`` root to the
-        # seeded Watches umbrella — every recurring lives under it by
+            meta = {**(meta or {}), "llm_tier": "opus"}
+        # Default parent_id for a recurring root (``meta.schedule`` set) to
+        # the seeded Watches umbrella — every recurring lives under it by
         # default, so the operator gets a tidy two-panel ``view='roots'``
         # without per-write boilerplate. Owner can override by passing
         # ``parent_id=<some-strategic>`` to nest under a goal.
-        if parent_int is None and tags and guards.LEVEL_RECURRING in tags:
+        if parent_int is None and isinstance(meta, dict) and "schedule" in meta:
             from precis.workers.schedule.seed import ensure_watches_root
 
             parent_int = ensure_watches_root(self.store)
@@ -652,12 +655,12 @@ class TodoHandler(NumericRefHandler):
                 )
             if self.emits_card:
                 self.store.upsert_card_combined(ref.id, text, conn=conn)
-        # Soft reminder: a level:strategic todo with no auto-run signal
-        # (LLM:* / executor:* tag or meta.executor) will never be picked
-        # up by the dispatch worker, so it spawns no children and the
-        # planner brief in its body is inert. Non-breaking HintBus tip —
-        # the owner may legitimately intend to drive it by hand.
-        if guards.strategic_lacks_auto_run(all_tag_strs, self._pending_meta):
+        # Soft reminder: a rotation_root todo with no auto-run signal
+        # (meta.llm_tier / executor:* tag / meta.executor) will never be
+        # picked up by the dispatch worker, so it spawns no children and
+        # the planner brief in its body is inert. Non-breaking HintBus
+        # tip — the owner may legitimately intend to drive it by hand.
+        if guards.strategic_lacks_auto_run(self._pending_meta, all_tag_strs):
             hub = getattr(self, "hub", None)
             if hub is not None:
                 from precis.hints import Hint
@@ -665,12 +668,12 @@ class TodoHandler(NumericRefHandler):
                 hub.emit_hint(
                     Hint(
                         text=(
-                            f"strategic #{ref.id} has no auto-run tag "
-                            "(LLM:* / executor:*). The dispatcher won't "
-                            "pick it up and it'll spawn no children. Add "
-                            "LLM:opus (or sonnet/haiku) to run it "
-                            "autonomously, or ignore if you'll drive it "
-                            "by hand."
+                            f"strategic #{ref.id} has no auto-run signal "
+                            "(meta.llm_tier / executor:*). The dispatcher "
+                            "won't pick it up and it'll spawn no children. "
+                            "Set meta.llm_tier='opus' (or sonnet/haiku) to "
+                            "run it autonomously, or ignore if you'll drive "
+                            "it by hand."
                         ),
                         topic="todo.strategic.no_auto_run",
                     )
@@ -782,21 +785,33 @@ class TodoHandler(NumericRefHandler):
         add: list[str] | None = None,
         remove: list[str] | None = None,
         prio: int | None = None,
+        meta: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
         prio = _validate_prio(prio)
         # Auto-redirect long ask-user:/halt: values into a chunk so the
         # tag stays a short structured label and the LLM's natural
         # explanation prose lands somewhere queryable. Triggers before
-        # the level/halt/llm guards because those guards inspect the
-        # final tag forms.
+        # the halt/llm guards because those guards inspect the final
+        # tag forms.
         if add:
             add, _redirected_chunks = redirect_long_tag_values(
                 self.store, ref_id=self._coerce_id(id), tags=add
             )
-        guards.check_level_tags_on_tag(add=add, remove=remove)
+        # ``meta=`` is the facet-promotion surface (§M facet
+        # normalization): ``rotation_root`` / ``worker_mintable`` /
+        # ``schedule`` (owner-only gradient) and ``llm_tier`` (the
+        # dispatcher's model picker — e.g. a retry swapping tiers).
+        # ``tag()`` already carries non-tag state via ``prio=``, so this
+        # follows the same precedent rather than adding a new verb. It
+        # is a closed allowlist (``check_meta_keys_promotable``), not a
+        # general meta bag — anything else (``deliver``, ``workspace``,
+        # …) has its own validation on the ``put()``/``create()`` path
+        # and must not skip it by riding through here unvalidated.
+        guards.check_meta_keys_promotable(meta)
+        guards.check_facets_on_tag(meta)
+        guards.check_llm_tier_meta(meta)
         guards.check_halt_remove(remove=remove)
-        guards.check_llm_tag(add)
         # No STATUS:done from a worker without artifact evidence.
         # Prevents the cheating mode where the LLM marks itself done
         # without producing a file / citation / successful child job.
@@ -813,10 +828,27 @@ class TodoHandler(NumericRefHandler):
         ref_id = self._coerce_id(id)
         if prio is not None:
             self.store.set_prio(ref_id, prio)
-        if not add and not remove and prio is not None:
-            # Only a PRIO column write happened; the base handler
-            # would reject an empty ``tag`` call.
-            return Response(body=f"set prio={prio} on {self._sense()} id={ref_id}")
+        if meta:
+            meta_out = dict(meta)
+            if "schedule" in meta_out:
+                parsed = guards.check_schedule_in_meta(meta_out)
+                if parsed is not None:
+                    if parsed.at is not None:
+                        meta_out["schedule"] = {
+                            "at": parsed.at,
+                            "catch_up": parsed.catch_up,
+                        }
+                    else:
+                        meta_out["schedule"] = {
+                            "cron": parsed.cron,
+                            "backfill_missed": parsed.backfill_missed,
+                        }
+            self.store.stamp_ref_meta(ref_id, meta_out)
+        if not add and not remove and (prio is not None or meta):
+            # Only a PRIO / meta write happened; the base handler would
+            # reject an empty ``tag`` call.
+            suffix = f"prio={prio}" if prio is not None else f"meta={meta}"
+            return Response(body=f"set {suffix} on {self._sense()} id={ref_id}")
         resp = super().tag(id=id, add=add, remove=remove, **_kw)
         # Picks-7d accounting (plan's Accounting section): when a
         # leaf flips to STATUS:done, append a ``status:done`` event
@@ -909,14 +941,17 @@ class TodoHandler(NumericRefHandler):
         # depth walk stops at the folder, so nothing else changes.
         parent_ref = self.store.fetch_refs_by_ids({new_parent_id}).get(new_parent_id)
         if parent_ref is not None and parent_ref.kind == "folder":
-            child_tags = self.store.tags_for(child_id)
-            if not any(t.value == "level:strategic" for t in child_tags):
+            child_ref = self.store.fetch_refs_by_ids({child_id}).get(child_id)
+            is_rotation_root = bool(
+                child_ref is not None and (child_ref.meta or {}).get("rotation_root")
+            )
+            if not is_rotation_root:
                 raise BadInput(
                     f"only strategic roots can be placed in folders "
-                    f"(todo id={child_id} lacks level:strategic)",
+                    f"(todo id={child_id} lacks meta.rotation_root)",
                     next=(
-                        "move it under a todo instead, or tag the root "
-                        "level:strategic first"
+                        "move it under a todo instead, or set "
+                        "meta.rotation_root=true on the root first"
                     ),
                 )
             self.store.set_parent(child_id, new_parent_id)

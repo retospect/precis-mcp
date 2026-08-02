@@ -78,19 +78,19 @@ default, so this is always safe.
 You express the requirement; the policy owns the pick. That keeps selection cheap
 and unbiased even with a smart model in the loop.
 
-## `LLM:opus`/`sonnet`/`local` todo tags — tier vs. model
+## `meta.llm_tier` — tier vs. model
 
-An `LLM:<tier>` tag on a `kind='todo'` — `opus`, `sonnet`, `haiku`, or
+`meta.llm_tier` on a `kind='todo'` — `opus`, `sonnet`, `haiku`, or
 `local` — picks a **tier**, not a specific model. The dispatch worker
-reads that tag off the todo and routes the planner tick to whichever
+reads that field off the todo and routes the planner tick to whichever
 model currently backs the tier (`local` runs the cluster's served
 open model, e.g. a Qwen build). This catalog is where you check what
-a tier resolves to today and how it has performed — the tag is the
+a tier resolves to today and how it has performed — the field is the
 router's input, a card here is the router's output.
 
 ## See also
 
 ```python
-get(kind="skill", id="precis-dispatch-help")  # LLM:<tier> tag → dispatch worker → model
-get(kind="skill", id="precis-tasks-help")  # tag vocabulary on the todo tree
+get(kind="skill", id="precis-dispatch-help")  # meta.llm_tier → dispatch worker → model
+get(kind="skill", id="precis-tasks-help")  # facet vocabulary on the todo tree
 ```

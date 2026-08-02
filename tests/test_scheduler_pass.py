@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from precis.store.types import Tag
 from precis.workers.scheduler import Cadence, _run_cron_tick, run_scheduler_pass
 
 
@@ -77,7 +76,6 @@ def test_cron_tick_cadence_fires_a_due_one_shot(store) -> None:
             "deliver": {"target": "conv:discord/g/c/t"},
         },
     )
-    store.add_tag(ref.id, Tag.open("level:recurring"), set_by="agent")
 
     _run_cron_tick(store, 32)
 

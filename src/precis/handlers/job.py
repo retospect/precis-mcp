@@ -150,7 +150,7 @@ class JobHandler(NumericRefHandler):
         # Retry surface: ``put(kind='job', id=N, mode='retry')`` re-runs a
         # failed job by clearing the parent todo's failure-bubble so the
         # dispatch worker re-mints a fresh attempt. ``model='sonnet'``
-        # additionally swaps the parent's ``LLM:<model>`` tag first, which
+        # additionally swaps the parent's ``meta.llm_tier`` first, which
         # is what the next tick dispatches with. Handled before the
         # generic ``id is not None`` / ``mode`` rejections below.
         if mode == "retry":
@@ -428,12 +428,13 @@ class JobHandler(NumericRefHandler):
         sweep. The failed job itself is left in place for forensics — a
         ``STATUS:failed`` child is terminal, so it doesn't block re-mint.
 
-        ``model`` (optional) swaps the parent's ``LLM:<model>`` tag before
+        ``model`` (optional) swaps the parent's ``meta.llm_tier`` before
         clearing the bubble, so the re-minted tick runs on a different
         tier. Closed-vocab (``opus``/``sonnet``/``haiku``) — validated by
-        :meth:`Tag.parse_strict`. Only valid on an LLM-planner todo (one
-        already carrying an ``LLM:*`` tag); a code-path executor job has
-        no model knob.
+        :func:`precis.handlers._todo_guards.check_llm_tier_meta`. Only
+        valid on an LLM-planner todo (one that already has
+        ``meta.llm_tier`` set); a code-path executor job has no model
+        knob.
         """
         if id is None:
             raise BadInput(
@@ -459,34 +460,33 @@ class JobHandler(NumericRefHandler):
                 f"job id={job_id} has no todo parent to re-dispatch from "
                 "(legacy orphan job)",
                 next=(
-                    "re-create the work as a todo (with LLM:* / meta.executor) "
-                    "and let the dispatch worker mint a fresh job under it"
+                    "re-create the work as a todo (meta.llm_tier / "
+                    "meta.executor) and let the dispatch worker mint a "
+                    "fresh job under it"
                 ),
             )
 
-        new_model_tag: Tag | None = None
+        new_llm_tier: str | None = None
         if model is not None:
-            has_llm = any(
-                str(t).startswith("LLM:") for t in self.store.tags_for(parent_id)
+            parent_ref = self.store.fetch_refs_by_ids({parent_id}).get(parent_id)
+            has_llm_tier = bool(
+                parent_ref is not None and (parent_ref.meta or {}).get("llm_tier")
             )
-            if not has_llm:
+            if not has_llm_tier:
                 raise BadInput(
                     f"model= only applies to LLM-planner todos; parent todo "
-                    f"#{parent_id} carries no LLM:* tag",
+                    f"#{parent_id} carries no meta.llm_tier",
                     next="retry without model=, or set the executor's params by hand",
                 )
-            # Closed-vocab validation (opus|sonnet|haiku) lives in parse_strict.
-            new_model_tag = Tag.parse_strict(f"LLM:{str(model).strip()}", kind="todo")
+            new_llm_tier = str(model).strip()
+            # Closed-vocab validation (opus|sonnet|haiku|...).
+            todo_guards.check_llm_tier_meta({"llm_tier": new_llm_tier})
 
         bubble = Tag.open(f"child-failed:{job_id}")
         with self.store.tx() as conn:
-            if new_model_tag is not None:
-                self.store.add_tag(
-                    parent_id,
-                    new_model_tag,
-                    set_by="agent",
-                    replace_prefix=True,
-                    conn=conn,
+            if new_llm_tier is not None:
+                self.store.stamp_ref_meta(
+                    parent_id, {"llm_tier": new_llm_tier}, conn=conn
                 )
             self.store.remove_tag(parent_id, bubble, conn=conn)
 

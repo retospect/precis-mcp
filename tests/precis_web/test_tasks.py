@@ -15,7 +15,7 @@ def store(client: TestClient) -> Any:
 
 
 def test_create_root_parked_no_llm_tag(client: TestClient, store: Any) -> None:
-    """A new root without ``start`` is parked: level:strategic but no LLM/executor."""
+    """A new root without ``start`` is parked: rotation_root but no llm_tier/executor."""
     runtime = client.app.state.runtime  # type: ignore[attr-defined]
     response = client.post(
         "/tasks/roots",
@@ -34,15 +34,13 @@ def test_create_root_parked_no_llm_tag(client: TestClient, store: Any) -> None:
     assert args["text"] == "Write the report"
     assert args["body"] == "A project report"
     assert args["meta"]["doc_type"] == "draft"
+    assert args["meta"]["rotation_root"] is True
     assert "workspace" not in args["meta"]
-    assert "level:strategic" in args["tags"]
-    assert not any(
-        t.startswith("LLM:") or t.startswith("executor:") for t in args["tags"]
-    )
+    assert "llm_tier" not in args["meta"]
 
 
 def test_create_root_start_now_stamps_llm_opus(client: TestClient, store: Any) -> None:
-    """A new root with ``start=on`` immediately stamps LLM:opus and a workspace."""
+    """A new root with ``start=on`` immediately stamps llm_tier='opus' and a workspace."""
     runtime = client.app.state.runtime  # type: ignore[attr-defined]
     response = client.post(
         "/tasks/roots",
@@ -65,8 +63,8 @@ def test_create_root_start_now_stamps_llm_opus(client: TestClient, store: Any) -
     assert "workspace" in args["meta"]
     assert args["meta"]["workspace"]["format"] == "tex"
     assert args["meta"]["workspace"]["entrypoint"] == "main.tex"
-    assert "level:strategic" in args["tags"]
-    assert "LLM:opus" in args["tags"]
+    assert args["meta"]["rotation_root"] is True
+    assert args["meta"]["llm_tier"] == "opus"
 
 
 def test_create_root_start_now_draft_uses_md_workspace(
@@ -93,9 +91,9 @@ def test_create_root_start_now_draft_uses_md_workspace(
 def test_start_task_seeds_workspace_and_llm_for_parked_root(
     client: TestClient, store: Any
 ) -> None:
-    """The ▶ start button on a parked root adds workspace + LLM:opus."""
+    """The ▶ start button on a parked root adds workspace + llm_tier='opus'."""
     runtime = client.app.state.runtime  # type: ignore[attr-defined]
-    # Ref id=1 is a canned root with empty meta and no LLM tag.
+    # Ref id=1 is a canned root with empty meta and no llm_tier.
     response = client.post("/tasks/1/start", follow_redirects=False)
     assert response.status_code == 303
 
@@ -105,23 +103,20 @@ def test_start_task_seeds_workspace_and_llm_for_parked_root(
     assert "workspace" in ws_writes[0][1]
     assert ws_writes[0][1]["workspace"]["format"] == "md"
 
-    # LLM:opus tag added
+    # llm_tier='opus' set via tag(meta=...)
     tag_calls = [c for c in runtime.calls if c[0] == "tag" and c[1].get("id") == 1]
     assert len(tag_calls) == 1
-    assert "LLM:opus" in tag_calls[0][1]["add"]
+    assert tag_calls[0][1]["meta"]["llm_tier"] == "opus"
 
 
 def test_start_task_skips_llm_when_already_present(
     client: TestClient, store: Any
 ) -> None:
-    """Starting a todo that already has LLM:opus does not add it again."""
+    """Starting a todo that already has meta.llm_tier does not add it again."""
     runtime = client.app.state.runtime  # type: ignore[attr-defined]
-    # Ref id=81 is the canned planner parent with LLM:opus.
+    # Ref id=81 is the canned planner parent with meta.llm_tier='opus'.
     response = client.post("/tasks/81/start", follow_redirects=False)
     assert response.status_code == 303
-    # No tag call for id=81 (it already has LLM:opus), only the original halt
-    # route may still call tag for any halts, which are none in the fake store.
+    # No tag(meta=...) call setting llm_tier for id=81 (it's already set).
     tag_calls = [c for c in runtime.calls if c[0] == "tag" and c[1].get("id") == 81]
-    assert "LLM:opus" not in [
-        t for c in tag_calls for t in c[1].get("add", []) if "LLM:" in t
-    ]
+    assert not any("llm_tier" in c[1].get("meta", {}) for c in tag_calls)

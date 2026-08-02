@@ -172,7 +172,7 @@ completely differently. The meta keys that matter:
 | meta key | drives | symptom when wrong |
 |---|---|---|
 | `executor` | `dispatch` minting a `kind='job'` | todo never dispatches |
-| `schedule` | the `level:recurring` umbrella's cadence (cron / `every:`) | watch never fires |
+| `schedule` | a recurring's cadence (cron / `every:`) — its presence IS "recurring" | watch never fires |
 | `auto_check` | the wait-for condition on a leaf | leaf stuck "waiting" |
 | `workspace` | project `path` / `format` / `brief` | wrong output dir / no brief |
 | `anchor` | the draft `¶handle` a change-request targets | edit lands on the wrong chunk |

@@ -80,10 +80,11 @@ def test_root_is_strategic_and_reused(store: Store) -> None:
     todo = _groomer_todos(store)[0]
     root_id = todo["parent_id"]
     assert root_id is not None
-    # The root carries the marker + the strategic level (so children aren't
+    # The root carries the marker + the strategic facet (so children aren't
     # nursery orphans).
-    assert _ROOT_MARKER in store.get_ref(kind="todo", id=root_id).meta
-    assert store.has_tag(root_id, "OPEN", "level:strategic")
+    root_meta = store.get_ref(kind="todo", id=root_id).meta
+    assert _ROOT_MARKER in root_meta
+    assert root_meta.get("rotation_root") is True
 
     # A second groom (after cadence reset) reuses the same root, not a new one.
     _open_gripe(store, "gripe two")

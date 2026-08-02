@@ -143,7 +143,7 @@ def _classify_topics_enabled_slugs(
 # the fetch pass monopolised the single worker thread for tens of
 # minutes each cycle while ``dispatch`` (which mints the planner's
 # ``plan_tick`` jobs) sat near the end of the registration list and
-# never got a turn, so freshly-created ``LLM:*`` todos went
+# never got a turn, so freshly-created ``meta.llm_tier``-set todos went
 # un-dispatched cluster-wide.
 #
 # Fix: sort ``ref_passes`` by this band just before the loop so
@@ -1644,8 +1644,8 @@ def run(args: argparse.Namespace) -> None:
 
             ref_passes.append(_auto_check_pass)
 
-        # Schedule pass — Slice 4 of todo-tree-plan.md. Walks
-        # level:recurring refs, mints subtasks for due ticks under
+        # Schedule pass — Slice 4 of todo-tree-plan.md. Walks recurring
+        # (meta.schedule set) refs, mints subtasks for due ticks under
         # the Watches umbrella. SQL-only and idempotent
         # (meta.spawned_for_tick stamp), so it shares the default
         # cycle with auto_check.

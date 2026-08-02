@@ -624,7 +624,7 @@ def record_benchmark(
 _SEED_PROSE: dict[str, str] = {
     "frontier": (
         "Frontier reasoning tier (opus-class). Heavy reasoning with tools — the "
-        "structural / deep reviewers, fix-gripe, the planner's LLM:opus ticks, "
+        "structural / deep reviewers, fix-gripe, the planner's llm_tier='opus' ticks, "
         "the dream pass, and the generic claude_agent default. Strong at "
         "multi-file refactors and careful SQL; the default when the task is hard."
     ),

@@ -1602,6 +1602,7 @@ class RefsMixin:
         tags: list[str] | None = None,
         has_pdf: bool | None = None,
         has_chunks: bool | None = None,
+        has_schedule: bool | None = None,
         order_by: str = "updated_desc",
         limit: int = 50,
         offset: int = 0,
@@ -1617,7 +1618,9 @@ class RefsMixin:
         (``None`` = don't filter). ``has_pdf`` keys off
         ``refs.pdf_sha256``; ``has_chunks`` off the existence of any
         body chunk (``ord >= 0``). Both back the Papers tab's "only
-        ingested / only with PDF" toggles.
+        ingested / only with PDF" toggles. ``has_schedule`` filters on
+        ``meta ? 'schedule'`` — the §M facet normalization's "recurring"
+        predicate (replaces the old ``level:recurring`` tag).
         """
         # Aliased as ``r`` so the tag-filter helper can reference
         # ``r.ref_id`` uniformly across all store query shapes.
@@ -1644,6 +1647,10 @@ class RefsMixin:
                 "WHERE c.ref_id = r.ref_id AND c.ord >= 0)"
             )
             clauses.append(exists if has_chunks else f"NOT {exists}")
+        if has_schedule is not None:
+            clauses.append(
+                "(r.meta ? 'schedule')" if has_schedule else "NOT (r.meta ? 'schedule')"
+            )
 
         tag_frag, tag_params = build_tag_filter(tags, ref_alias="r")
         if tag_frag:
@@ -1671,6 +1678,7 @@ class RefsMixin:
         tags: list[str] | None,
         has_pdf: bool | None,
         has_chunks: bool | None,
+        has_schedule: bool | None = None,
         parent_id: int | None,
         ref_ids: list[int] | None,
         deleted: bool,
@@ -1678,7 +1686,13 @@ class RefsMixin:
         """The shared WHERE clause + params for the ``/drive`` browse — one
         builder feeding both :meth:`recent_refs` (the page) and
         :meth:`count_recent_refs` (its exact total), so the list and its
-        "of N" denominator can never filter differently."""
+        "of N" denominator can never filter differently.
+
+        ``has_schedule`` filters on ``meta ? 'schedule'`` — the §M facet
+        normalization's "recurring" predicate (replaces the old
+        ``level:recurring`` tag; the ``/drive`` "Schedules" preset uses
+        this instead of a tag filter now that the tag is retired).
+        """
         clauses = [
             "r.kind = ANY(%s)",
             "r.deleted_at IS NOT NULL" if deleted else "r.deleted_at IS NULL",
@@ -1694,6 +1708,10 @@ class RefsMixin:
                 "WHERE c.ref_id = r.ref_id AND c.ord >= 0)"
             )
             clauses.append(exists if has_chunks else f"NOT {exists}")
+        if has_schedule is not None:
+            clauses.append(
+                "(r.meta ? 'schedule')" if has_schedule else "NOT (r.meta ? 'schedule')"
+            )
         if parent_id is not None:
             clauses.append("r.parent_id = %s")
             params.append(parent_id)
@@ -1713,6 +1731,7 @@ class RefsMixin:
         tags: list[str] | None = None,
         has_pdf: bool | None = None,
         has_chunks: bool | None = None,
+        has_schedule: bool | None = None,
         parent_id: int | None = None,
         ref_ids: list[int] | None = None,
         deleted: bool = False,
@@ -1749,6 +1768,7 @@ class RefsMixin:
             tags=tags,
             has_pdf=has_pdf,
             has_chunks=has_chunks,
+            has_schedule=has_schedule,
             parent_id=parent_id,
             ref_ids=ref_ids,
             deleted=deleted,
@@ -1773,6 +1793,7 @@ class RefsMixin:
         tags: list[str] | None = None,
         has_pdf: bool | None = None,
         has_chunks: bool | None = None,
+        has_schedule: bool | None = None,
         parent_id: int | None = None,
         ref_ids: list[int] | None = None,
         deleted: bool = False,
@@ -1789,6 +1810,7 @@ class RefsMixin:
             tags=tags,
             has_pdf=has_pdf,
             has_chunks=has_chunks,
+            has_schedule=has_schedule,
             parent_id=parent_id,
             ref_ids=ref_ids,
             deleted=deleted,

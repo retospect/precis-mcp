@@ -341,7 +341,9 @@ def _row_filterable_tags(row: dict[str, Any]) -> set[str]:
 
     Each pseudo-tag is ``<column>:<value>`` so the input form can offer
     them in the same syntax as a free tag. Empty / missing values are
-    skipped (a level-less todo won't expose ``level:``).
+    skipped; ``level`` always has a value (§M facet normalization
+    defaults an unset todo to ``subtask`` — see ``_load_tags``), so
+    every todo now exposes a ``level:`` pseudo-tag.
     """
     out: set[str] = set(row.get("tags", []))
     for col in _PSEUDO_TAG_COLUMNS:
@@ -445,10 +447,12 @@ def _split_tags(raw: str) -> list[str]:
 def _load_freeform_tags(store: Any, ref_ids: list[int]) -> dict[int, list[str]]:
     """Return removable free tags per ref (canonical strings).
 
-    Excludes ``STATUS:`` (dedicated dropdown) and ``level:`` (dedicated
-    badge) since those have their own controls. ``OPEN`` namespace tags
-    store the full ``key:value`` in ``value``; closed namespaces render
-    as ``NAMESPACE:value``.
+    Excludes ``STATUS:`` (dedicated dropdown) — the §M facet level is no
+    longer a tag at all (``meta.rotation_root`` / ``meta.worker_mintable``
+    / ``meta.schedule``, rendered via its own dedicated badge from
+    :func:`_load_tags`), so there is no ``level:`` tag left to filter out
+    here. ``OPEN`` namespace tags store the full ``key:value`` in
+    ``value``; closed namespaces render as ``NAMESPACE:value``.
     """
     out: dict[int, list[str]] = {rid: [] for rid in ref_ids}
     if not ref_ids:
@@ -462,7 +466,7 @@ def _load_freeform_tags(store: Any, ref_ids: list[int]) -> dict[int, list[str]]:
     for ref_id, namespace, value in rows:
         rid = int(ref_id)
         tag_str = str(value) if namespace == "OPEN" else f"{namespace}:{value}"
-        if tag_str.startswith(("STATUS:", "level:")):
+        if tag_str.startswith("STATUS:"):
             continue
         out[rid].append(tag_str)
     for tags in out.values():
@@ -471,33 +475,46 @@ def _load_freeform_tags(store: Any, ref_ids: list[int]) -> dict[int, list[str]]:
 
 
 def _load_tags(store: Any, ref_ids: list[int]) -> dict[int, dict[str, str]]:
-    """Bulk-fetch STATUS + ``level:`` for each todo in one query.
+    """Bulk-fetch STATUS + the §M facet-derived ``level`` for each todo.
 
     Returns ``{ref_id: {'status': ..., 'level': ...}}`` with sensible
-    defaults (``status='open'``, ``level=''``).
+    defaults (``status='open'``, ``level='subtask'``). ``level`` is
+    synthesized from ``meta.rotation_root`` / ``meta.worker_mintable`` /
+    ``meta.schedule`` — see ``handlers._todo_views._level_label`` (same
+    four-way vocabulary: strategic / tactical / subtask / recurring).
     """
+    from precis.handlers._todo_views import _level_label
+
     out: dict[int, dict[str, str]] = {
-        rid: {"status": "open", "level": ""} for rid in ref_ids
+        rid: {"status": "open", "level": "subtask"} for rid in ref_ids
     }
     if not ref_ids:
         return out
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
-            SELECT rt.ref_id, t.namespace, t.value
-              FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
-             WHERE rt.ref_id = ANY(%s)
-               AND (t.namespace = 'STATUS'
-                    OR (t.namespace = 'OPEN' AND t.value LIKE 'level:%%'))
+            SELECT r.ref_id,
+                   COALESCE(
+                     (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                       WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' LIMIT 1),
+                     'open'
+                   ) AS status,
+                   COALESCE((r.meta->>'rotation_root')::boolean, false) AS rotation_root,
+                   COALESCE((r.meta->>'worker_mintable')::boolean, true) AS worker_mintable,
+                   (r.meta ? 'schedule') AS is_recurring
+              FROM refs r
+             WHERE r.ref_id = ANY(%s)
             """,
             (ref_ids,),
         ).fetchall()
-    for ref_id, namespace, value in rows:
+    for ref_id, status, rotation_root, worker_mintable, is_recurring in rows:
         rid = int(ref_id)
-        if namespace == "STATUS":
-            out[rid]["status"] = str(value)
-        elif str(value).startswith("level:"):
-            out[rid]["level"] = str(value).split(":", 1)[1]
+        out[rid]["status"] = str(status)
+        out[rid]["level"] = _level_label(
+            rotation_root=bool(rotation_root),
+            worker_mintable=bool(worker_mintable),
+            recurring=bool(is_recurring),
+        )
     return out
 
 
@@ -1117,16 +1134,16 @@ async def create_root(
     * ``text`` is the task line (title),
     * ``description`` becomes the todo body,
     * ``doc_type`` is stored in ``meta.doc_type`` and seeds the workspace,
-    * ``start=on`` stamps ``LLM:opus`` and a workspace so dispatch begins
-      immediately; ``start`` unset creates a parked root with no executor.
+    * ``start=on`` stamps ``meta.llm_tier='opus'`` and a workspace so
+      dispatch begins immediately; ``start`` unset creates a parked root
+      with no executor.
     """
-    meta: dict[str, Any] = {"doc_type": doc_type}
-    tags = ["level:strategic"]
+    meta: dict[str, Any] = {"doc_type": doc_type, "rotation_root": True}
     if start == "on":
         ws = _workspace_for(doc_type, text)
         if ws is not None:
             meta["workspace"] = ws.to_meta()
-        tags.append("LLM:opus")
+        meta["llm_tier"] = "opus"
     return await redirect_or_error(
         request,
         "put",
@@ -1134,7 +1151,6 @@ async def create_root(
             "kind": "todo",
             "text": text,
             "body": description or None,
-            "tags": tags,
             "meta": meta,
         },
         redirect=_tasks_url(
@@ -1155,11 +1171,17 @@ async def create_child(
     show_jobs: str = Form(default="active"),
 ) -> Response:
     """Create a child under ``parent_id``."""
-    tags = [f"level:{level}"] if level else None
+    meta: dict[str, Any] | None = None
+    if level == "strategic":
+        meta = {"rotation_root": True}
+    elif level == "tactical":
+        meta = {"worker_mintable": False}
+    # level == "subtask" (the default) sets no facet fields — that's the
+    # worker-mintable, non-root default state (§M facet normalization).
     return await redirect_or_error(
         request,
         "put",
-        {"kind": "todo", "text": text, "parent_id": parent_id, "tags": tags},
+        {"kind": "todo", "text": text, "parent_id": parent_id, "meta": meta},
         redirect=_tasks_url(
             require, exclude, focus, show_jobs if show_jobs != "active" else None
         ),
@@ -1202,7 +1224,7 @@ async def retry_job(
     Thin wrapper over ``put(kind='job', mode='retry')``: clears the
     parent todo's ``child-failed:`` bubble so the dispatch worker
     re-mints a fresh attempt. A non-empty ``model`` (opus/sonnet/haiku)
-    swaps the parent's ``LLM:<model>`` tag first so the retry runs on a
+    swaps the parent's ``meta.llm_tier`` first so the retry runs on a
     different tier. The handler validates terminal-state + closed-vocab
     model and surfaces its own error message on rejection.
     """
@@ -1308,9 +1330,10 @@ async def start_task(
 ) -> Response:
     """Tape-player ▶ START — resume or launch a planner root.
 
-    For a parked root (one with no ``LLM:*`` tag and no workspace), seed
-    ``meta.workspace`` from ``meta.doc_type`` and stamp ``LLM:opus`` so
-    dispatch begins. Then removes every ``halt`` / ``halt:<reason>``
+    For a parked root (one with no ``meta.llm_tier`` and no workspace),
+    seed ``meta.workspace`` from ``meta.doc_type`` and stamp
+    ``meta.llm_tier='opus'`` so dispatch begins. Then removes every
+    ``halt`` / ``halt:<reason>``
     marker from the todo and all descendant todos, so ``dispatch`` starts
     minting ``plan_tick``s again. Owner-sourced, so the halt-remove owner
     guard passes.
@@ -1328,9 +1351,13 @@ async def start_task(
             if ws is not None:
                 store.update_ref(ref_id, meta_patch={"workspace": ws.to_meta()})
         tags = store.tags_for(ref_id)
-        if not any(str(t).startswith(("LLM:", "executor:")) for t in tags):
+        has_llm_tier = bool(meta.get("llm_tier"))
+        has_executor_tag = any(str(t).startswith("executor:") for t in tags)
+        if not has_llm_tier and not has_executor_tag:
             body, is_error = await await_dispatch(
-                request, "tag", {"kind": "todo", "id": ref_id, "add": ["LLM:opus"]}
+                request,
+                "tag",
+                {"kind": "todo", "id": ref_id, "meta": {"llm_tier": "opus"}},
             )
             if is_error:
                 return _stop_error(request, body, "Start failed")

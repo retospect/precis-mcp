@@ -17,7 +17,7 @@ per-heading "review ▾" menu (``precis_web.routes.drafts.review_block``):
 ``meta={"anchor": <dc-handle>, "review": <lens>}`` on a ``kind='todo'``
 ref, ``text=`` a lens-specific brief. That site runs as an interactive web
 request and goes through ``TodoHandler.put`` (workspace inheritance,
-``current_todo_from_env``, owner guards, the auto ``LLM:opus`` default for
+``current_todo_from_env``, owner guards, the auto ``meta.llm_tier='opus'`` default for
 a parented child); this module is background quest-tick code, so it mints
 via ``store.insert_ref`` + ``store.add_tag`` directly instead — the same
 trusted-code-path convention ``workers/dispatch.py`` (job children of a
@@ -41,7 +41,7 @@ parented straight on the quest ref despite the kind mismatch). The
 ``dispatch.py``'s job-minting — bypasses by calling the store layer
 directly. ``has_review``/``has_anchor`` only read the review-todo's own
 ``refs.meta``, so this is sufficient for the reviewer engine to pick it
-up; the known tradeoff is the todo has no ``level:strategic`` ancestor, so
+up; the known tradeoff is the todo has no ``rotation_root`` ancestor, so
 a todo-tree hygiene sweep may flag it as an orphan — an accepted
 side-effect, same as any code-minted ref parented straight on a quest.
 
@@ -135,7 +135,7 @@ def mint_review_todo(
     Each carries ``meta.review=<lens>`` + ``meta.anchor=anchor`` — the
     shape :mod:`precis.utils.prompt.predicates`'s ``has_review``/
     ``has_anchor`` read to flip a ``plan_tick`` into reviewer mode over
-    this section — plus an ``LLM:<llm_tag>`` tag (so the dispatcher
+    this section — plus ``meta.llm_tier=<llm_tag>`` (so the dispatcher
     actually picks it up; see ``workers/dispatch.py``'s auto-run-signal
     predicate) and ``STATUS:open``.
 
@@ -154,7 +154,7 @@ def mint_review_todo(
     """
     if _existing_review_todo(store, parent_id, lens, anchor) is not None:
         return None
-    meta: dict[str, Any] = {"anchor": anchor, "review": lens}
+    meta: dict[str, Any] = {"anchor": anchor, "review": lens, "llm_tier": llm_tag}
     if author:
         meta["author"] = True
     with store.tx() as conn:
@@ -171,12 +171,6 @@ def mint_review_todo(
             Tag.closed("STATUS", "open"),
             set_by="system",
             replace_prefix=True,
-            conn=conn,
-        )
-        store.add_tag(
-            ref.id,
-            Tag.closed("LLM", llm_tag),
-            set_by="system",
             conn=conn,
         )
     return int(ref.id)

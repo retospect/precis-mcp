@@ -29,13 +29,15 @@ _DEFAULT_PAGE_SIZE = 100
 _MAX_PAGE_SIZE = 500
 
 #: Namespaces the delete button never offers. Structural / closed-vocab
-#: tags (``STATUS``, ``LLM``, ``DREAM``, ``PRIO``, ``SRC``, ``CACHE``,
-#: ``EMBED``, …) carry semantic meaning the handlers rely on. Blanket-
-#: deleting them across the cluster would break things in obscure ways
-#: (a job whose ``STATUS:running`` vanished would never appear failed,
-#: a todo with no ``LLM:`` tag would silently fall off the dispatcher).
-#: Per-ref removal via the standard ``tag(remove=[...])`` verb is still
-#: available for those.
+#: tags (``STATUS``, ``DREAM``, ``PRIO``, ``SRC``, ``CACHE``, ``EMBED``,
+#: …) carry semantic meaning the handlers rely on. Blanket-deleting them
+#: across the cluster would break things in obscure ways (a job whose
+#: ``STATUS:running`` vanished would never appear failed). ``LLM`` stays
+#: listed defensively even though the axis is retired (§M facet
+#: normalization moved it to ``meta.llm_tier`` — migration 0102 rewrites
+#: every stored ``LLM:*`` tag row, so none should remain) in case a
+#: legacy row somehow survives. Per-ref removal via the standard
+#: ``tag(remove=[...])`` verb is still available for those.
 _PROTECTED_NAMESPACES: frozenset[str] = frozenset(
     {
         "STATUS",

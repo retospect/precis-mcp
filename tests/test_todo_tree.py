@@ -103,10 +103,10 @@ def test_depth_wall_rejects_eleventh_level(handler: TodoHandler) -> None:
 
 def test_owner_can_create_strategic(handler: TodoHandler) -> None:
     # Default test env has no PRECIS_SOURCE → owner.
-    r = handler.put(text="Strategic intent.", tags=["level:strategic"])
+    r = handler.put(text="Strategic intent.", meta={"rotation_root": True})
     rid = _id_of(r.body)
-    tags = {str(t) for t in handler.store.tags_for(rid)}
-    assert "level:strategic" in tags
+    ref = handler.store.get_ref(kind="todo", id=rid)
+    assert ref is not None and ref.meta.get("rotation_root") is True
 
 
 def test_worker_cannot_create_strategic(
@@ -114,7 +114,7 @@ def test_worker_cannot_create_strategic(
 ) -> None:
     monkeypatch.setenv("PRECIS_SOURCE", "asa-worker")
     with pytest.raises(BadInput, match="owner-only"):
-        handler.put(text="bad strategic", tags=["level:strategic"])
+        handler.put(text="bad strategic", meta={"rotation_root": True})
 
 
 # ── strategic auto-run reminder (soft hint) ───────────────────────
@@ -123,10 +123,10 @@ def test_worker_cannot_create_strategic(
 def test_has_auto_run_signal_detects_each_form() -> None:
     from precis.handlers import _todo_guards as g
 
-    assert g.has_auto_run_signal(["LLM:opus"], None)
+    assert g.has_auto_run_signal(None, {"llm_tier": "opus"})
     assert g.has_auto_run_signal(["executor:fetch"], None)
     assert g.has_auto_run_signal(None, {"executor": "claude_inproc"})
-    assert not g.has_auto_run_signal(["level:strategic"], {})
+    assert not g.has_auto_run_signal(None, {})
     assert not g.has_auto_run_signal(None, None)
 
 
@@ -134,14 +134,16 @@ def test_strategic_lacks_auto_run_predicate() -> None:
     from precis.handlers import _todo_guards as g
 
     # strategic with no signal → flagged
-    assert g.strategic_lacks_auto_run(["level:strategic"], None)
+    assert g.strategic_lacks_auto_run({"rotation_root": True}, None)
     # strategic that already carries a signal → not flagged
-    assert not g.strategic_lacks_auto_run(["level:strategic", "LLM:opus"], None)
     assert not g.strategic_lacks_auto_run(
-        ["level:strategic"], {"executor": "claude_inproc"}
+        {"rotation_root": True, "llm_tier": "opus"}, None
+    )
+    assert not g.strategic_lacks_auto_run(
+        {"rotation_root": True, "executor": "claude_inproc"}, None
     )
     # non-strategic → never flagged, signal or not
-    assert not g.strategic_lacks_auto_run(["level:subtask"], None)
+    assert not g.strategic_lacks_auto_run({}, None)
     assert not g.strategic_lacks_auto_run(None, None)
 
 
@@ -152,7 +154,7 @@ def test_strategic_without_auto_run_emits_reminder(hub: Hub) -> None:
     handler = TodoHandler(hub=hub)
     handler.hub = hub
     with hub.hints.request():
-        handler.put(text="A planner brief.", tags=["level:strategic"])
+        handler.put(text="A planner brief.", meta={"rotation_root": True})
         hints = hub.hints.collect()
     topics = {h.topic for h in hints}
     assert "todo.strategic.no_auto_run" in topics
@@ -162,7 +164,10 @@ def test_strategic_with_llm_tag_emits_no_reminder(hub: Hub) -> None:
     handler = TodoHandler(hub=hub)
     handler.hub = hub
     with hub.hints.request():
-        handler.put(text="A live planner.", tags=["level:strategic", "LLM:opus"])
+        handler.put(
+            text="A live planner.",
+            meta={"rotation_root": True, "llm_tier": "opus"},
+        )
         hints = hub.hints.collect()
     topics = {h.topic for h in hints}
     assert "todo.strategic.no_auto_run" not in topics
@@ -182,10 +187,10 @@ def test_worker_can_propose_tactical(
     handler: TodoHandler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("PRECIS_SOURCE", "asa-dreamer")
-    r = handler.put(text="proposed", tags=["level:proposed-tactical"])
+    r = handler.put(text="proposed", tags=["proposed-tactical"])
     rid = _id_of(r.body)
     tags = {str(t) for t in handler.store.tags_for(rid)}
-    assert "level:proposed-tactical" in tags
+    assert "proposed-tactical" in tags
 
 
 def test_worker_cannot_add_strategic_via_tag(
@@ -195,33 +200,33 @@ def test_worker_cannot_add_strategic_via_tag(
     rid = _id_of(r.body)
     monkeypatch.setenv("PRECIS_SOURCE", "asa-chatter")
     with pytest.raises(BadInput, match="owner-only"):
-        handler.tag(id=rid, add=["level:strategic"])
+        handler.tag(id=rid, meta={"rotation_root": True})
 
 
 def test_worker_cannot_remove_tactical_tag(
     handler: TodoHandler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    r = handler.put(text="tactical", tags=["level:tactical"])
+    r = handler.put(text="tactical", meta={"worker_mintable": False})
     rid = _id_of(r.body)
     monkeypatch.setenv("PRECIS_SOURCE", "asa-worker")
     with pytest.raises(BadInput, match="owner-only"):
-        handler.tag(id=rid, remove=["level:tactical"])
+        handler.tag(id=rid, meta={"worker_mintable": True})
 
 
 def test_web_source_treated_as_owner(
     handler: TodoHandler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("PRECIS_SOURCE", "web:owner")
-    r = handler.put(text="strategic from web", tags=["level:strategic"])
+    r = handler.put(text="strategic from web", meta={"rotation_root": True})
     rid = _id_of(r.body)
-    tags = {str(t) for t in handler.store.tags_for(rid)}
-    assert "level:strategic" in tags
+    ref = handler.store.get_ref(kind="todo", id=rid)
+    assert ref is not None and ref.meta.get("rotation_root") is True
 
 
 def test_worker_cannot_delete_strategic(
     handler: TodoHandler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    r = handler.put(text="strategic root", tags=["level:strategic"])
+    r = handler.put(text="strategic root", meta={"rotation_root": True})
     rid = _id_of(r.body)
     monkeypatch.setenv("PRECIS_SOURCE", "asa-worker")
     with pytest.raises(BadInput, match="owner-only"):
@@ -233,10 +238,62 @@ def test_unknown_source_defaults_to_owner(
 ) -> None:
     """A typo in PRECIS_SOURCE must not silently demote to worker."""
     monkeypatch.setenv("PRECIS_SOURCE", "asasworker")  # missing dash
-    r = handler.put(text="ok", tags=["level:strategic"])
+    r = handler.put(text="ok", meta={"rotation_root": True})
     rid = _id_of(r.body)
-    tags = {str(t) for t in handler.store.tags_for(rid)}
-    assert "level:strategic" in tags
+    ref = handler.store.get_ref(kind="todo", id=rid)
+    assert ref is not None and ref.meta.get("rotation_root") is True
+
+
+# ── tag(meta=...) closed allowlist ─────────────────────────────────
+
+
+def test_tag_meta_rejects_deliver(handler: TodoHandler) -> None:
+    """``deliver`` (ADR 0061 push target) must go through put(), not tag()."""
+    r = handler.put(text="a leaf")
+    rid = _id_of(r.body)
+    with pytest.raises(BadInput, match="cannot be set via tag"):
+        handler.tag(id=rid, meta={"deliver": {"target": "conv:discord/g/c/t"}})
+
+
+def test_tag_meta_rejects_workspace(handler: TodoHandler) -> None:
+    """``workspace`` (the sandbox root) must go through put(), not tag()."""
+    r = handler.put(text="a leaf")
+    rid = _id_of(r.body)
+    with pytest.raises(BadInput, match="cannot be set via tag"):
+        handler.tag(
+            id=rid,
+            meta={
+                "workspace": {
+                    "path": "papers/x",
+                    "format": "tex",
+                    "entrypoint": "main.tex",
+                }
+            },
+        )
+
+
+def test_tag_meta_rejects_arbitrary_junk_key(handler: TodoHandler) -> None:
+    """An unrecognized meta key is rejected outright, not silently dropped."""
+    r = handler.put(text="a leaf")
+    rid = _id_of(r.body)
+    with pytest.raises(BadInput, match="cannot be set via tag"):
+        handler.tag(id=rid, meta={"totally_made_up": "value"})
+
+
+def test_tag_meta_allowlist_keys_still_promote(handler: TodoHandler) -> None:
+    """The four allowlisted keys still write through under existing gates."""
+    r = handler.put(text="a leaf")
+    rid = _id_of(r.body)
+    handler.tag(id=rid, meta={"rotation_root": True})
+    handler.tag(id=rid, meta={"worker_mintable": False})
+    handler.tag(id=rid, meta={"llm_tier": "sonnet"})
+    handler.tag(id=rid, meta={"schedule": {"cron": "0 * * * *"}})
+    ref = handler.store.get_ref(kind="todo", id=rid)
+    assert ref is not None
+    assert ref.meta.get("rotation_root") is True
+    assert ref.meta.get("worker_mintable") is False
+    assert ref.meta.get("llm_tier") == "sonnet"
+    assert ref.meta.get("schedule", {}).get("cron") == "0 * * * *"
 
 
 # ── ancestry walk-on-read ─────────────────────────────────────────
@@ -375,7 +432,7 @@ def test_reparent_rejects_subtree_depth_overflow(handler: TodoHandler) -> None:
 def test_reparent_owner_only_guard(
     handler: TodoHandler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    strat = handler.put(text="strategic", tags=["level:strategic"])
+    strat = handler.put(text="strategic", meta={"rotation_root": True})
     strat_id = _id_of(strat.body)
     dest = handler.put(text="dest")
     dest_id = _id_of(dest.body)

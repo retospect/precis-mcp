@@ -65,12 +65,7 @@ def _strategic_layer_snapshot(store: Store) -> str:
                               AND t.deleted_at IS NULL
              WHERE s.kind = 'todo' AND s.deleted_at IS NULL
                AND {todo_root_sql("s")}
-               AND EXISTS (
-                   SELECT 1 FROM ref_tags rt JOIN tags tg ON tg.tag_id = rt.tag_id
-                    WHERE rt.ref_id = s.ref_id
-                      AND tg.namespace = 'OPEN'
-                      AND tg.value = 'level:strategic'
-               )
+               AND COALESCE((s.meta->>'rotation_root')::boolean, false)
              ORDER BY s.ref_id, t.ref_id NULLS FIRST
             """,
         ).fetchall()

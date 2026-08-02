@@ -983,9 +983,10 @@ def _background_anomalies(store: Any) -> dict[str, list[dict[str, Any]]]:
 
 
 def _automations(store: Any, limit: int = 20) -> list[dict[str, Any]]:
-    """Standing automations — ``level:recurring`` todos carrying the
-    ``automation`` tag (ADR 0061 folded the retired ``kind='cron'``
-    push-notification mechanism onto ``level:recurring`` + ``meta.deliver``).
+    """Standing automations — recurring todos (``meta.schedule`` set)
+    carrying the ``automation`` tag (ADR 0061 folded the retired
+    ``kind='cron'`` push-notification mechanism onto the recurring facet
+    + ``meta.deliver``).
 
     The recurring *agent behaviours* (the morning/evening podcast casts, the
     news briefing) as opposed to plain doable-queue recurrings. For each,
@@ -993,24 +994,24 @@ def _automations(store: Any, limit: int = 20) -> list[dict[str, Any]]:
     it produced (via a ``derived-into`` link), so the operator can see what
     runs and what it made. See docs/design/automations-index.md.
 
-    Uses ``store.list_refs(tags=['level:recurring', 'automation'])``
-    (namespace-agnostic via build_tag_filter) rather than a hand-rolled tag
-    join. Automations are few, so the per-ref tag/link/event reads are cheap.
+    Uses ``store.list_refs(has_schedule=True, tags=['automation'])`` (§M
+    facet normalization — recurring is a ``meta.schedule`` presence filter,
+    not a tag, since ``level:recurring`` was retired). Automations are
+    few, so the per-ref tag/link/event reads are cheap.
     """
     refs = store.list_refs(
-        kind="todo", tags=["level:recurring", "automation"], limit=limit
+        kind="todo", has_schedule=True, tags=["automation"], limit=limit
     )
     out: list[dict[str, Any]] = []
     for r in refs:
         meta = r.meta or {}
         schedule = meta.get("schedule") or {}
         deliver = meta.get("deliver") or {}
-        # Subtype = any open tag other than the two markers.
+        # Subtype = any open tag other than the marker.
         subtype = ", ".join(
             t.value
             for t in store.tags_for(r.id)
-            if t.namespace == "open"
-            and t.value not in ("level:recurring", "automation")
+            if t.namespace == "open" and t.value != "automation"
         )
         status = "open"
         fire_count = 0
