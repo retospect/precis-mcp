@@ -49,24 +49,22 @@
    create-and-return-id path (store-level or `hub.sibling(kind)`) and a
    shared sibling-hub factory so `dispatch.boot()` wiring isn't bypassed.
    *opus API shape, sonnet implement · effort M*
-2. **Render-sandbox Phase 2: network/filesystem jail (`render/sandbox.py`).**
-   LLM-authored figure code still has open network egress from the sandbox
-   child — an SSRF-style pivot that bypasses safe_fetch (can reach tailnet
-   services directly). Phase 1 rlimits are complete (`RLIMIT_NPROC`
-   fork-bomb clamp added 2026-08-02); Phase 2 = network-namespace or
-   container jail, a design task. *opus design · effort L*
-3. **Timeout the live Marker path (`ingest/marker.py::_marker_extract`).**
-   The ML forward pass has no hang guard — exceptions fall back to fitz,
-   but a wedged torch call blocks the live watcher indefinitely (ADR 0015
-   solved the *leak*, not the *hang*). *sonnet coder · effort M*
-4. **Codify + sweep the real-PG-for-route-SQL policy.** The pattern
-   (`test_status_sql.py` et al., now also `test_tags_sql.py` /
-   `test_smartdraft_sql.py`) exists only where an incident or review forced
-   it. Write the rule into `docs/conventions/testing.md` ("raw SQL ⇒ a
-   store-fixture test, FakeStore insufficient" — `tests/_fakes.py`'s
-   docstring now states the limitation; the convention doc should own the
-   policy) and audit `precis_web/routes/*` for raw-SQL helpers with
-   FakeStore-only coverage. *sonnet · effort M*
+2. **Render-sandbox Phase 2: network/filesystem jail.** Design written
+   2026-08-02 → `docs/proposals/render-sandbox-network-jail.md` (jail
+   ladder: podman `--network=none` → macOS seatbelt → Phase-1 floor with
+   warning; 3 open questions, notably the Mac runtime posture). Next step:
+   resolve open Qs + `/ready`, then it's fixer-buildable. *opus review · effort M*
+3. **Real-PG route-SQL tests — close the audited gap.** Policy codified in
+   `docs/conventions/testing.md` + full route audit done 2026-08-02: of 18
+   routes with raw SQL, 5 have real-PG coverage, 12 are FakeStore-only, and
+   `agentlogs.py` has **no tests at all**. Write `tests/precis_web/
+   test_<module>_sql.py` companions (shape: `test_status_sql.py`), ranked
+   by SQL volume: `tasks.py` (9 raw calls), `preview.py`, `clusters.py`,
+   `categorizers.py`, `cad.py` (6 each), `factory.py` (5), `drafts.py` (3),
+   `agentlogs.py` (2, untested — do first despite rank), then the 5
+   single-query modules (refs, papers, gripes, asks, alerts). Each test
+   just executes every raw query once incl. adversarial `%`/`_` input.
+   *test-author batches · effort L, slice it*
 ## P3 — hygiene, scale, coverage
 
 8. **Split `handlers/draft.py` (2 744 lines).** Extract the ~9 hint

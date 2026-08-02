@@ -215,9 +215,12 @@ class TestBackfillSubprocess:
 
         captured: dict[str, Any] = {}
 
-        def fake_run(cmd: list[str], env: dict[str, str]) -> int:
+        def fake_run(
+            cmd: list[str], env: dict[str, str], *, timeout_s: float | None = None
+        ) -> int:
             captured["cmd"] = cmd
             captured["env"] = env
+            captured["timeout_s"] = timeout_s
             return 0
 
         with patch("precis.cli.watch._run_in_process_group", side_effect=fake_run):

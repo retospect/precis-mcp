@@ -315,6 +315,7 @@ def extract_paper(
     *,
     use_pdf2doi: bool = False,
     printable_only: bool = False,
+    marker_timeout_s: float | None = None,
 ) -> PaperToWrite:
     """Build a :class:`PaperToWrite` from a local PDF.
 
@@ -337,6 +338,10 @@ def extract_paper(
     caller (``add.py``'s attach-only / has_body guard) already no-ops on
     an empty ``chunks`` list, so this degrades to a pure identity+bytes
     registration.
+
+    ``marker_timeout_s`` is forwarded to :func:`extract_blocks_marker`
+    (P2-3 hang guard) — see its docstring. ``None`` (the default)
+    preserves the original in-process, unguarded Marker call.
 
     Raises :class:`FileNotFoundError` if ``pdf_path`` doesn't exist.
     """
@@ -368,7 +373,7 @@ def extract_paper(
         pdf_pages_first = pdf_pages_last = None
         page_count = _pdf_page_count(pdf_bytes) or 0
     else:
-        blocks = extract_blocks_marker(pdf_path, paper_id)
+        blocks = extract_blocks_marker(pdf_path, paper_id, timeout_s=marker_timeout_s)
         blocks = _repair_mojibake(blocks)
         body_chunks = _blocks_to_chunks(blocks)
         body_chunks = _retag_references(body_chunks)

@@ -211,6 +211,22 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "Marker to stay CPU-saturated. Default 1 (serial)."
         ),
     )
+    p.add_argument(
+        "--marker-timeout-s",
+        type=float,
+        default=900.0,
+        help=(
+            "Kill and fall back to fitz if a single live Marker extraction "
+            "(new-file / moved-file event) runs longer than this many "
+            "seconds — a wedged torch forward pass never returns control "
+            "to the interpreter, so only killing the OS process can "
+            "interrupt it (P2-3). Runs Marker in a spawned child process "
+            "when positive. 0 disables the guard (in-process, unguarded — "
+            "pre-P2-3 behavior). Default 900. Batch-subprocess backfill "
+            "(--subprocess-batch-size) bounds the whole batch's wall clock "
+            "instead of guarding each PDF individually."
+        ),
+    )
 
 
 def add_batch_parser(sub: argparse._SubParsersAction) -> None:
@@ -291,6 +307,7 @@ def run(args: argparse.Namespace) -> None:
             subprocess_batch_size=args.subprocess_batch_size,
             subprocess_concurrency=args.subprocess_concurrency,
             database_url=args.database_url,
+            marker_timeout_s=args.marker_timeout_s,
         )
     finally:
         store.close()
@@ -316,6 +333,7 @@ def watch(
     subprocess_batch_size: int = 0,
     subprocess_concurrency: int = 1,
     database_url: str | None = None,
+    marker_timeout_s: float = 900.0,
 ) -> None:
     """Run the watcher in the calling process; blocks until SIGINT/SIGTERM.
 
@@ -335,6 +353,17 @@ def watch(
     stay separate so an operator's ``ls corpus_pres/`` listing
     stays useful even when the paper corpus grows into the
     thousands.
+
+    ``marker_timeout_s`` (P2-3) guards every PDF this process runs
+    Marker on *directly* — live watchdog events, and startup backfill
+    when ``subprocess_batch_size`` is 0 — by running Marker in a
+    spawned, killable child (see :func:`precis.ingest.marker.
+    extract_blocks_marker`). ``0`` disables the guard. When
+    ``subprocess_batch_size > 0``, individual PDFs inside a batch
+    child stay unguarded (re-paying Marker's ~15s model load per PDF
+    would defeat ADR 0015's batching); instead the *parent* bounds
+    each batch subprocess's wall clock to
+    ``len(batch) * marker_timeout_s`` and kills+continues on expiry.
     """
     watch_dir = Path(watch_dir).resolve()
     corpus_dir = Path(corpus_dir).resolve()
@@ -373,6 +402,7 @@ def watch(
         subprocess_batch_size=subprocess_batch_size,
         subprocess_concurrency=subprocess_concurrency,
         database_url=database_url,
+        marker_timeout_s=marker_timeout_s,
     )
 
     observer_cls = PollingObserver if use_polling else Observer
@@ -431,6 +461,7 @@ class _PdfHandler(FileSystemEventHandler):
         subprocess_batch_size: int = 0,
         subprocess_concurrency: int = 1,
         database_url: str | None = None,
+        marker_timeout_s: float = 900.0,
     ) -> None:
         super().__init__()
         self.watch_dir = watch_dir
@@ -444,6 +475,7 @@ class _PdfHandler(FileSystemEventHandler):
         self.subprocess_batch_size = subprocess_batch_size
         self.subprocess_concurrency = max(1, subprocess_concurrency)
         self.database_url = database_url
+        self.marker_timeout_s = marker_timeout_s
         self._processing_lock = Lock()
         self._inflight: set[Path] = set()
 
@@ -587,6 +619,7 @@ class _PdfHandler(FileSystemEventHandler):
                     debounce=self.debounce,
                     user=self.user,
                     database_url=self.database_url,
+                    marker_timeout_s=self.marker_timeout_s,
                 )
 
         with ThreadPoolExecutor(max_workers=len(shards)) as pool:
@@ -613,6 +646,7 @@ class _PdfHandler(FileSystemEventHandler):
                 duplicates_dir=self.duplicates_dir,
                 debounce=self.debounce,
                 user=self.user,
+                marker_timeout_s=self.marker_timeout_s,
             )
         finally:
             with self._processing_lock:
@@ -722,10 +756,17 @@ def process_pdf(
     duplicates_dir: Path,
     debounce: float = DEFAULT_DEBOUNCE,
     user: str = "",
+    marker_timeout_s: float | None = None,
 ) -> Path | None:
     """Process one PDF end-to-end. Returns the post-move path on
     success / dedup, ``None`` on error or when another host owns the
     claim for this PDF's content.
+
+    ``marker_timeout_s`` (P2-3) is forwarded to :func:`precis_add` for
+    PDF ingests — ``None`` (the default; used by the batch-subprocess
+    child, ``run_batch``) preserves the original in-process, unguarded
+    Marker call. The live watchdog-event path (``_PdfHandler._enqueue``)
+    passes its configured guard through.
 
     Order of operations:
 
@@ -826,7 +867,7 @@ def process_pdf(
         )
 
     try:
-        result = precis_add(input_, store=store)
+        result = precis_add(input_, store=store, marker_timeout_s=marker_timeout_s)
     except MarkupTriggerSpent as exc:
         # Terminal markup parse failure: the ``.xml`` (or ``.tex``/``.html``)
         # trigger is unparseable and always will be. precis_add already ran
@@ -1107,9 +1148,13 @@ def reap_tracked_process_groups(grace_s: float = 5.0) -> None:
 atexit.register(reap_tracked_process_groups)
 
 
-def _run_in_process_group(cmd: list[str], env: dict[str, str]) -> int:
+def _run_in_process_group(
+    cmd: list[str], env: dict[str, str], *, timeout_s: float | None = None
+) -> int | None:
     """Spawn *cmd* in its own session/process group and reap the whole
-    group on every exit path, returning the child's exit code.
+    group on every exit path, returning the child's exit code — or
+    ``None`` if ``timeout_s`` elapsed and the group was killed instead
+    of exiting naturally (P2-3 batch-level wall-clock guard).
 
     marker-pdf 2.0 runs ``surya`` as a *detached* inference server. If
     this batch subprocess is OOM-killed, that detached surya server is
@@ -1126,12 +1171,21 @@ def _run_in_process_group(cmd: list[str], env: dict[str, str]) -> int:
     blocked in ``proc.wait()`` (on this thread or another shard's) can reap
     it eagerly instead of leaving it for a ``finally`` that may never run
     (see :func:`reap_tracked_process_groups`).
+
+    ``timeout_s=None`` (the default) blocks forever, unchanged from the
+    original behavior. A wedged Marker/torch call inside the batch
+    child can't be interrupted any other way (P2-3) — ADR 0014's lock-
+    file recovery handles the PDF that was in flight when this fires.
     """
     proc = subprocess.Popen(cmd, env=env, start_new_session=True)
     pgid = proc.pid  # stable identifier for the group even after the leader dies
     _track_pgid(pgid)
+    timed_out = False
     try:
-        proc.wait()
+        try:
+            proc.wait(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            timed_out = True
     finally:
         try:
             os.killpg(pgid, signal.SIGKILL)
@@ -1139,8 +1193,17 @@ def _run_in_process_group(cmd: list[str], env: dict[str, str]) -> int:
             pass  # empty group = clean exit, nothing leaked (the happy path)
         except PermissionError:
             log.debug("precis watch: killpg(%d) denied permission", pgid)
+        if timed_out:
+            # killpg killed the OS processes, but the Popen still needs a
+            # wait() to reap the leader's exit status — otherwise every
+            # timed-out batch leaves a defunct PID parked on
+            # subprocess._active until some later Popen() sweeps it.
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:  # pragma: no cover — D-state
+                log.warning("precis watch: killed batch %d not reaped", pgid)
         _untrack_pgid(pgid)
-    return proc.returncode
+    return None if timed_out else proc.returncode
 
 
 def _spawn_batch_subprocess(
@@ -1154,6 +1217,7 @@ def _spawn_batch_subprocess(
     debounce: float,
     user: str,
     database_url: str | None,
+    marker_timeout_s: float | None = None,
 ) -> None:
     """Run ``precis _watch_batch_ingest`` in a child process for one
     batch of PDFs, wait for it to finish, return.
@@ -1165,6 +1229,14 @@ def _spawn_batch_subprocess(
     running. Any per-PDF advisory-lock claims held by the dead child
     auto-release when the Postgres session closes — no filesystem
     recovery sweep needed.
+
+    ``marker_timeout_s`` (P2-3), when positive, bounds this *whole
+    batch's* wall clock to ``len(pdfs) * marker_timeout_s`` rather than
+    guarding each PDF inside the child individually — a per-PDF
+    subprocess inside the batch child would re-pay Marker's ~15s model
+    load per file, exactly what ADR 0015's batching exists to avoid.
+    On expiry the batch's process group is killed and this returns;
+    ADR 0014's lock-file recovery handles the PDF that was in flight.
     """
     if not pdfs:
         return
@@ -1198,9 +1270,26 @@ def _spawn_batch_subprocess(
     if database_url:
         env["PRECIS_DATABASE_URL"] = database_url
 
+    batch_timeout_s: float | None = None
+    if marker_timeout_s and marker_timeout_s > 0:
+        batch_timeout_s = len(pdfs) * marker_timeout_s
+
     log.info("precis watch: spawning batch subprocess for %d PDF(s)", len(pdfs))
-    returncode = _run_in_process_group(cmd, env)
-    if returncode != 0:
+    returncode = _run_in_process_group(cmd, env, timeout_s=batch_timeout_s)
+    if returncode is None:
+        # batch_timeout_s is guaranteed non-None here: _run_in_process_group
+        # only returns None when a timeout fired, which requires timeout_s
+        # (== batch_timeout_s) to have been set in the first place.
+        log.warning(
+            "precis watch: batch subprocess for %d PDF(s) exceeded its "
+            "%.0fs wall-clock budget (marker-timeout-s=%.0f x batch size) "
+            "and was killed; the in-flight PDF's lock file is recovered "
+            "per ADR 0014, remaining PDFs retried on the next backfill",
+            len(pdfs),
+            batch_timeout_s or 0.0,
+            marker_timeout_s or 0.0,
+        )
+    elif returncode != 0:
         log.warning(
             "precis watch: batch subprocess exited with code %d "
             "(advisory-lock claim auto-released; the next watcher run "

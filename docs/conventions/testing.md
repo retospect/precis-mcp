@@ -49,6 +49,26 @@ pre-merge gate (`ruff` + `mypy` + `pytest`, in-container). Everything above
 is the fast loop that gets you to a green gate cheaply — the gate is what
 actually decides mergeability.
 
+## Raw SQL ⇒ a real-PG test — FakeStore is blind to SQL
+
+**Any route or handler that builds/executes raw SQL must have at least one
+test that runs that SQL against real Postgres.** The FakeStore doubles in
+`tests/_fakes.py` return canned rows without parsing SQL, so they pass
+happily over a broken query — wrong paramstyle, a literal `%` in a
+parameterized `LIKE` (500s on real psycopg, invisible to FakeStore — the
+`psycopg_percent_like_fakestore_gap` gotcha), a column renamed out from
+under a string literal.
+
+The shape: a `tests/precis_web/test_<module>_sql.py` companion using the
+real store fixture — `test_status_sql.py`, `test_tags_sql.py`,
+`test_smartdraft_sql.py` are the precedent. It doesn't need to re-test the
+route's logic (FakeStore tests keep doing that cheaply); it needs to
+*execute every raw query at least once*, including with adversarial input
+(`%`, `_`, quotes) anywhere user text reaches a pattern.
+
+When review or a new route adds raw SQL with FakeStore-only coverage,
+that's a gap to fix in the same change, not a follow-up.
+
 See also the `test_leak_hardfail` / `docker_wedge_test_creds` /
 `test_db_shared_singleton` gotchas for specific failure modes this harness
 guards against or can trip on.

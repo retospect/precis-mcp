@@ -386,6 +386,16 @@ cutover:
   `proc.wait()` to return. Without it, a deploy bounce whose kill-grace
   outlasts an in-flight Marker batch SIGKILLs the watcher before its own
   `finally: killpg` runs, orphaning the batch's detached surya server.
+- **Live-path Marker hang guard (improvement-plan P2-3).** The live
+  watchdog-event ingest runs Marker in a killable spawn-child
+  (`ingest/marker.py::_marker_extract_subprocess`) with a wall-clock
+  timeout — `precis watch --marker-timeout-s`, default 900, `0` disables;
+  on expiry the child is killed and the fitz fallback takes over. Batch
+  backfill children stay in-process (ADR 0015 rejected per-PDF model
+  reload there); instead the parent bounds each batch child's wait at
+  `len(batch) × timeout` and continues on expiry (ADR 0014 lock-file
+  recovery owns the in-flight PDF). A wedged torch forward pass never
+  returns to the interpreter, so a killable child is the only real guard.
 
 **Bounded in-pass concurrency — `service_config.concurrency` (migration
 0091).** A second live knob on the same table, resolved the same way as

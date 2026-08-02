@@ -242,8 +242,13 @@ def precis_add(
     use_pdf2doi: bool = False,
     crossref_mailto: str = "",
     s2_api_key: str = "",
+    marker_timeout_s: float | None = None,
 ) -> IngestResult | None:
     """Ingest one paper into the v2 schema.
+
+    ``marker_timeout_s`` (P2-3) only affects :class:`PdfInput` — see
+    :func:`precis.ingest.pipeline.extract_paper`. ``None`` (the
+    default) preserves the original in-process, unguarded Marker call.
 
     Dispatches on the input type:
 
@@ -322,6 +327,7 @@ def precis_add(
                 use_pdf2doi=use_pdf2doi,
                 crossref_mailto=crossref_mailto,
                 s2_api_key=s2_api_key,
+                marker_timeout_s=marker_timeout_s,
             )
 
         with Claim(store.dsn, pdf_sha256) as claim:
@@ -338,6 +344,7 @@ def precis_add(
                 use_pdf2doi=use_pdf2doi,
                 crossref_mailto=crossref_mailto,
                 s2_api_key=s2_api_key,
+                marker_timeout_s=marker_timeout_s,
             )
 
     # Metadata-only paths (DOI / arXiv) — no claim needed.
@@ -358,6 +365,7 @@ def _ingest_pdf(
     use_pdf2doi: bool,
     crossref_mailto: str,
     s2_api_key: str,
+    marker_timeout_s: float | None = None,
 ) -> IngestResult:
     """Run the slow path for a PdfInput, assuming the claim is held."""
     paper = _build_paper(
@@ -365,6 +373,7 @@ def _ingest_pdf(
         use_pdf2doi=use_pdf2doi,
         crossref_mailto=crossref_mailto,
         s2_api_key=s2_api_key,
+        marker_timeout_s=marker_timeout_s,
     )
 
     with store.pool.connection() as conn:
@@ -1091,6 +1100,7 @@ def _build_paper(
     use_pdf2doi: bool,
     crossref_mailto: str,
     s2_api_key: str,
+    marker_timeout_s: float | None = None,
 ) -> PaperToWrite:
     """Dispatch on the input variant and run the matching pipeline producer.
 
@@ -1099,6 +1109,9 @@ def _build_paper(
     semanticscholar, rapidfuzz). Import is deferred to here so the
     rest of the CLI keeps loading on a bare install — see the
     module-level note.
+
+    ``marker_timeout_s`` (P2-3) only matters for the :class:`PdfInput`
+    branch — forwarded to :func:`extract_paper`.
     """
     from precis.ingest.pipeline import (
         extract_paper,
@@ -1111,6 +1124,7 @@ def _build_paper(
             input.pdf_path,
             use_pdf2doi=use_pdf2doi,
             printable_only=input.printable_only,
+            marker_timeout_s=marker_timeout_s,
         )
         # DRY: the identical pipeline lands the doc under whichever kind
         # the caller asked for (``paper`` default, ``cfp`` for the

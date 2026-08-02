@@ -14,10 +14,15 @@ from __future__ import annotations
 import base64
 import io
 import logging
+import multiprocessing
 import re
+import threading
+import time
 import unicodedata
+from collections.abc import Callable
+from multiprocessing.connection import Connection
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import ftfy
 
@@ -233,16 +238,202 @@ def _release_marker_caches() -> None:
     gc.collect()
 
 
-def extract_blocks_marker(pdf_path: Path, paper_id: str) -> list[dict[str, Any]]:
+_R = TypeVar("_R")
+
+
+def _spawn_child_target(
+    conn: Connection,
+    fn: Callable[..., Any],
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> None:
+    """Module-level entry point for a timeout-guarded spawn child.
+
+    Runs ``fn(*args, **kwargs)`` and sends ``("ok", result)`` or
+    ``("err", <traceback string>)`` back over ``conn``. Must stay
+    module-level: the ``spawn`` start method pickles the
+    ``multiprocessing.Process`` target by reference (module +
+    qualname), so a closure or bound method here would fail to cross
+    the process boundary.
+    """
+    import traceback
+
+    try:
+        result = fn(*args, **kwargs)
+    except Exception:
+        conn.send(("err", traceback.format_exc()))
+    else:
+        conn.send(("ok", result))
+    finally:
+        conn.close()
+
+
+#: Floor on the post-``poll()`` receive budget. Once the child has finished
+#: computing, draining even a multi-MB pickle over the pipe takes
+#: milliseconds — this only trips when the child stalls mid-``send()``.
+_RECV_GRACE_S = 30.0
+
+
+def _recv_bounded(conn: Connection, deadline: float) -> Any | None:
+    """``conn.recv()`` bounded by ``deadline`` (monotonic seconds).
+
+    Runs the blocking ``recv()`` in a daemon thread and waits for the
+    remaining budget (with a :data:`_RECV_GRACE_S` floor so a fast child
+    that answered near the deadline still gets its payload drained).
+    Returns the received object, or ``None`` if the receive didn't finish
+    in time — the caller then treats it as a timeout and kills the child,
+    which EOFs the stalled thread. Re-raises whatever ``recv()`` raised
+    (e.g. ``EOFError`` on a crashed child)."""
+    box: list[Any] = []
+    err: list[BaseException] = []
+
+    def _r() -> None:
+        try:
+            box.append(conn.recv())
+        except BaseException as exc:  # relayed to the caller below
+            err.append(exc)
+
+    t = threading.Thread(target=_r, daemon=True, name="marker-recv")
+    t.start()
+    t.join(max(deadline - time.monotonic(), _RECV_GRACE_S))
+    if t.is_alive():
+        return None
+    if err:
+        raise err[0]
+    return box[0]
+
+
+def _run_in_subprocess_with_timeout(
+    fn: Callable[..., _R],
+    args: tuple[Any, ...] = (),
+    kwargs: dict[str, Any] | None = None,
+    *,
+    timeout_s: float,
+    label: str = "subprocess call",
+) -> _R:
+    """Run ``fn(*args, **kwargs)`` in a spawned child process, killing it
+    if it exceeds ``timeout_s``.
+
+    Generic timeout-guard mechanism factored out of
+    :func:`_marker_extract_subprocess` so it is unit-testable without
+    Marker/torch installed — call it directly with a module-level test
+    function (see ``tests/ingest/test_marker_subprocess_timeout.py``).
+
+    ``fn`` must be a module-level, picklable-by-reference callable — a
+    closure, lambda, or bound method will not survive the ``spawn``
+    pickling boundary. ``multiprocessing.get_context("spawn")`` is used
+    deliberately, never the platform default (``fork`` on Linux):
+    forking a torch-loaded process duplicates CUDA/MPS driver and
+    allocator state that can deadlock or corrupt the child — exactly
+    the failure mode this guard exists to defend against. Spawn always
+    starts from a clean interpreter, at the cost of re-paying import
+    time per call.
+
+    Raises ``TimeoutError`` (naming ``label`` and ``timeout_s``) if the
+    child hasn't reported back within the deadline: the child is
+    ``terminate()``-d, given 5s to exit, then ``kill()``-ed if still
+    alive. Raises ``RuntimeError`` wrapping the child's traceback if
+    ``fn`` raised inside the child. The child process is always joined
+    and both pipe ends closed, on every exit path.
+    """
+    ctx = multiprocessing.get_context("spawn")
+    parent_conn, child_conn = ctx.Pipe(duplex=False)
+    proc = ctx.Process(
+        target=_spawn_child_target,
+        args=(child_conn, fn, args, kwargs or {}),
+    )
+    proc.start()
+    child_conn.close()
+
+    deadline = time.monotonic() + timeout_s
+    timed_out = False
+    status: str | None = None
+    payload: Any = None
+    try:
+        if parent_conn.poll(timeout_s):
+            # poll() returning True only means SOME bytes arrived (the
+            # pickle length header) — recv() then blocks until the whole
+            # multi-MB payload lands. Bound it too, or a child stalling
+            # mid-send (memory pressure) hangs the parent past the
+            # deadline with the guard already "passed".
+            try:
+                got = _recv_bounded(parent_conn, deadline)
+            except EOFError:
+                status = "err"
+                payload = "child process exited without a result (crashed?)"
+            else:
+                if got is None:
+                    timed_out = True
+                else:
+                    status, payload = got
+        else:
+            timed_out = True
+    finally:
+        if timed_out:
+            proc.terminate()
+            proc.join(5)
+            if proc.is_alive():
+                proc.kill()
+        proc.join()
+        parent_conn.close()
+
+    if timed_out:
+        raise TimeoutError(f"{label} timed out after {timeout_s}s")
+    if status == "err":
+        raise RuntimeError(f"{label} failed in subprocess: {payload}")
+    return payload  # type: ignore[no-any-return]
+
+
+def _marker_extract_subprocess(
+    pdf_path: Path, paper_id: str, timeout_s: float
+) -> list[dict[str, Any]]:
+    """Run :func:`_marker_extract` in a spawned child, killed if it hangs.
+
+    ADR 0015's subprocess-per-batch isolation fixed the resident-leak
+    case (dense backfill); it left the *live* watchdog-event path
+    exposed to a wedged torch forward pass that never returns control
+    to the interpreter — no in-process signal/thread watchdog can
+    interrupt that, only killing the OS process can (P2-3). Live
+    arrivals are rate-limited (unlike dense backfill), so the per-PDF
+    model-reload cost this adds is affordable.
+    """
+    return _run_in_subprocess_with_timeout(
+        _marker_extract,
+        args=(pdf_path, paper_id),
+        timeout_s=timeout_s,
+        label=f"Marker extraction of {pdf_path.name}",
+    )
+
+
+def extract_blocks_marker(
+    pdf_path: Path, paper_id: str, *, timeout_s: float | None = None
+) -> list[dict[str, Any]]:
     """Extract structured blocks from a PDF using Marker.
 
     Falls back to fitz page-level extraction if Marker fails. Both
     paths feed into :func:`_merge_small_blocks` so the embedding-
     quality fix lands regardless of which extractor produced the
     blocks.
+
+    ``timeout_s``, when truthy and positive, runs Marker in a spawned
+    child process via :func:`_marker_extract_subprocess` instead of
+    in-process, so a wedged torch call can be killed rather than
+    hanging the caller forever (P2-3). ``None``/``0`` (the default)
+    preserves the original in-process behavior exactly.
     """
     try:
-        blocks = _marker_extract(pdf_path, paper_id)
+        if timeout_s and timeout_s > 0:
+            blocks = _marker_extract_subprocess(pdf_path, paper_id, timeout_s)
+        else:
+            blocks = _marker_extract(pdf_path, paper_id)
+    except TimeoutError as exc:
+        log.warning(
+            "Marker timed out after %ss on %s (%s), using fitz fallback",
+            timeout_s,
+            pdf_path.name,
+            exc,
+        )
+        blocks = _fitz_fallback(pdf_path, paper_id)
     except Exception as exc:
         log.warning("Marker failed on %s (%s), using fitz fallback", pdf_path.name, exc)
         blocks = _fitz_fallback(pdf_path, paper_id)
