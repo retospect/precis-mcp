@@ -131,6 +131,7 @@ def create_app(
     app.include_router(drafts.router)
     app.include_router(smartdraft.router)
     app.include_router(drive.router)
+    app.include_router(drive.downloads_router)
     app.include_router(refs.router)
     app.include_router(tags.router)
     app.include_router(clusters.router)

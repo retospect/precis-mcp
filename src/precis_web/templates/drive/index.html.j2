@@ -118,9 +118,12 @@
     <div>
       <label class="block text-xs text-slate-500 mb-0.5">Sort</label>
       <select name="sort" @change="submitForm(150)" class="rounded-md border border-slate-300 px-3 py-1.5 text-sm">
-        <option value="relevance" {% if sort not in ('recency', 'oldest') %}selected{% endif %}>Relevance</option>
+        <option value="relevance" {% if sort not in ('recency', 'oldest', 'untried') %}selected{% endif %}>Relevance</option>
         <option value="recency" {% if sort == 'recency' %}selected{% endif %}>Newest first</option>
         <option value="oldest" {% if sort == 'oldest' %}selected{% endif %}>Oldest first</option>
+        {# The downloads queue's default (state=stub) — never-manually-opened
+           first, then longest-since-last-tried. #}
+        <option value="untried" {% if sort == 'untried' %}selected{% endif %}>Untried first</option>
       </select>
     </div>
     <div>
@@ -407,13 +410,15 @@
         {# Off-site links (paper rows): "find:" search links (DOI/UoL/Scholar)
            plus direct-download PDFs (LibKey/arXiv). Download links carry
            data-download so the header "Open all downloads" button walks
-           exactly them, and render emerald to read as the "get it" tier. #}
+           exactly them, and render emerald to read as the "get it" tier.
+           data-ref-id lets that same button POST a manual-open attempt
+           (/downloads/mark-tried) for every ref it opened a tab for. #}
         {% if row.links %}
           <p class="text-xs text-slate-400 mt-0.5">
             find:
             {% for l in row.links %}
               <a href="{{ l.href }}" target="_blank" rel="noopener"
-                 {% if l.download %}data-download{% endif %}
+                 {% if l.download %}data-download data-ref-id="{{ row.id }}"{% endif %}
                  class="{% if l.download %}font-medium text-emerald-700{% else %}text-sky-700{% endif %} hover:underline">{{ l.label }}</a>{% if not loop.last %} · {% endif %}
             {% endfor %}
           </p>
@@ -675,7 +680,15 @@
    (blocked) flips the label to "pop-ups blocked" at ~15s rather than
    failing silently over the full run. Clicking again while a run is pending
    cancels the remaining timers. Button stays hidden until there's a
-   downloadable row. #}
+   downloadable row.
+
+   Marking tried: the same click also records a manual-open attempt (one
+   ref_events row per shown ref, source='manual:open') via
+   navigator.sendBeacon('/downloads/mark-tried', …) — same-origin, no
+   external traffic, fire-and-forget (a beacon has no response to read).
+   That's what sinks these rows to the back of the sort=untried queue on
+   the next page load, so reloading the top of that sort naturally serves
+   the next batch — no pagination bookkeeping needed here. #}
 <script>
 (function () {
   const btn = document.getElementById("open-all-downloads");
@@ -685,7 +698,21 @@
   if (!links.length) return;  // no downloadable rows → leave the button hidden
 
   const urls = links.map((a) => a.href);
+  const refIds = Array.from(
+    new Set(links.map((a) => a.dataset.refId).filter(Boolean))
+  );
   const N = urls.length;
+
+  function markTried() {
+    if (!refIds.length) return;
+    const body = new URLSearchParams();
+    refIds.forEach((id) => body.append("ref_id", id));
+    if (navigator.sendBeacon) {
+      navigator.sendBeacon("/downloads/mark-tried", body);
+    } else {
+      fetch("/downloads/mark-tried", { method: "POST", body, keepalive: true });
+    }
+  }
   const MIN_GAP = 10, MAX_GAP = 30;  // seconds between staggered opens
   // Whole-second gap in [MIN_GAP, MAX_GAP]. Math.random is fine here — this
   // is a UI convenience, not reproducible state.
@@ -735,6 +762,7 @@
       return;
     }
 
+    markTried();  // one manual:open ref_event per shown ref, fire-and-forget
     running = true;
     opened = 0;
     blocked = false;

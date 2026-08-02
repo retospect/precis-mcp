@@ -431,6 +431,53 @@ def test_drive_stub_filter(runtime, client) -> None:
     assert "Stubs — papers to get" in resp.text
 
 
+def test_drive_stub_defaults_to_untried_sort(runtime, client) -> None:
+    """The downloads queue (state=stub) with no explicit sort defaults to
+    sort=untried — never-manually-opened stubs first, so a fresh page load
+    naturally serves the next un-attempted batch (routes/drive.py's
+    ``state == "stub" and sort == "relevance"`` auto-switch)."""
+    resp = client.get("/drive?state=stub")
+    assert resp.status_code == 200
+    assert runtime.store.recent_untried is True
+    assert 'value="untried" selected' in resp.text
+
+
+def test_drive_stub_explicit_recency_overrides_untried_default(runtime, client) -> None:
+    """An explicit sort=recency on the stub queue still wins over the
+    untried default."""
+    resp = client.get("/drive?state=stub&sort=recency")
+    assert resp.status_code == 200
+    assert runtime.store.recent_untried is False
+    assert runtime.store.recent_oldest is False
+    assert 'value="recency" selected' in resp.text
+
+
+def test_drive_paper_chunks_without_also_defaults_to_untried_sort(
+    runtime, client
+) -> None:
+    """``paper_chunks=without`` (papers with no body chunks yet — the
+    "papers" chip's own popover choice, and the URL the operator actually
+    lands on when browsing the acquisition queue, distinct from
+    ``state=stub``) also auto-switches to sort=untried when unset, and
+    composes with the has_chunks=False filter rather than replacing it."""
+    resp = client.get("/drive?paper_chunks=without")
+    assert resp.status_code == 200
+    assert runtime.store.recent_untried is True
+    assert runtime.store.recent_has_chunks is False
+    assert 'value="untried" selected' in resp.text
+
+
+def test_drive_paper_chunks_without_explicit_oldest_overrides_untried_default(
+    runtime, client
+) -> None:
+    """An explicit sort still wins on the paper_chunks=without path too."""
+    resp = client.get("/drive?paper_chunks=without&sort=oldest")
+    assert resp.status_code == 200
+    assert runtime.store.recent_untried is False
+    assert runtime.store.recent_oldest is True
+    assert runtime.store.recent_has_chunks is False
+
+
 def test_drive_browse_shows_exact_count(client) -> None:
     """The no-query browse renders an exact "Showing N of K <noun>" header —
     the FakeStore's canned landing has 2 source rows (paper + web), so it
@@ -533,6 +580,28 @@ def test_drive_rows_show_paper_lookup_links(client) -> None:
     assert "uol.primo.exlibrisgroup.com" in resp.text
     assert "scholar.google.com" in resp.text
     assert "doi.org/10.1038/nature01797" in resp.text
+
+
+def test_drive_download_links_carry_ref_id_for_mark_tried_beacon(client) -> None:
+    """LibKey/arXiv download links carry data-ref-id alongside data-download
+    so the "Open all downloads" button's sendBeacon can post exactly the
+    shown refs to POST /downloads/mark-tried."""
+    resp = client.get("/drive")
+    assert 'data-download data-ref-id="10"' in resp.text
+
+
+def test_mark_downloads_tried_route_writes_manual_open_event(runtime, client) -> None:
+    """POST /downloads/mark-tried (the "Open all downloads" beacon target)
+    writes one manual:open ref_event per posted ref via the shared
+    append_event helper — the FakeStore smoke-test side of the real-PG
+    assertion in test_drive_sql.py."""
+    resp = client.post("/downloads/mark-tried", data={"ref_id": ["10", "70"]})
+    assert resp.status_code == 204
+    logged = [
+        (e["ref_id"], e["source"], e["event"]) for e in runtime.store.appended_events
+    ]
+    assert (10, "manual:open", "opened") in logged
+    assert (70, "manual:open", "opened") in logged
 
 
 def test_drive_stub_vs_ingested_badges(runtime, client) -> None:

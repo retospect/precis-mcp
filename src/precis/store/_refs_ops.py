@@ -1747,6 +1747,7 @@ class RefsMixin:
         ref_ids: list[int] | None = None,
         deleted: bool = False,
         oldest: bool = False,
+        untried: bool = False,
         limit: int = 30,
         offset: int = 0,
     ) -> list[Ref]:
@@ -1775,9 +1776,14 @@ class RefsMixin:
         polarity to soft-deleted refs only (the "show deleted" toggle — a
         lightweight trash view; no undelete surface yet, just visibility).
         ``oldest=True`` reverses the order to least-recently-edited first (the
-        ``sort=oldest`` facet). Kinds with no rows simply don't appear; an
-        empty ``kinds`` returns nothing. ``offset`` pages past the first
-        window.
+        ``sort=oldest`` facet). ``untried=True`` overrides ``oldest`` with the
+        Drive downloads queue's ``sort=untried`` order: never-manually-opened
+        refs first (freshest-added within that group), then previously-opened
+        refs oldest-attempt-first — a ``LEFT JOIN`` against the last
+        ``ref_events`` row per ref with ``source='manual:open'`` (written by
+        ``POST /downloads/mark-tried``, ``routes/drive.py``'s "Open all
+        downloads" button). Kinds with no rows simply don't appear; an empty
+        ``kinds`` returns nothing. ``offset`` pages past the first window.
         """
         if not kinds or (ref_ids is not None and not ref_ids):
             return []
@@ -1792,6 +1798,23 @@ class RefsMixin:
             ref_ids=ref_ids,
             deleted=deleted,
         )
+        if untried:
+            params.append(limit)
+            params.append(offset)
+            with self.pool.connection() as conn:
+                rows = conn.execute(
+                    f"SELECT {_REFS_COLS_ALIASED} FROM refs r "
+                    "LEFT JOIN ("
+                    "  SELECT ref_id, MAX(ts) AS last_tried FROM ref_events "
+                    "   WHERE source = 'manual:open' GROUP BY ref_id"
+                    ") mt ON mt.ref_id = r.ref_id "
+                    f"WHERE {' AND '.join(clauses)} "
+                    "ORDER BY (mt.last_tried IS NULL) DESC, mt.last_tried ASC, "
+                    "r.created_at DESC, r.ref_id DESC "
+                    "LIMIT %s OFFSET %s",
+                    params,
+                ).fetchall()
+            return [_row_to_ref(r) for r in rows]
         direction = "ASC" if oldest else "DESC"
         params.append(limit)
         params.append(offset)

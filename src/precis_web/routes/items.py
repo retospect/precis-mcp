@@ -168,11 +168,14 @@ def _recent_rows(
     ref_ids: list[int] | None = None,
     deleted: bool = False,
     oldest: bool = False,
+    untried: bool = False,
 ) -> tuple[list[dict[str, Any]], bool]:
     """The no-query landing: most-recently-*edited* source items, newest
     first (``recent_refs`` orders by ``updated_at``, so a re-worked draft
     bubbles up; or least-recently-edited first when ``oldest`` — the
-    ``sort=oldest`` facet), optionally narrowed by the tag chips, the stub
+    ``sort=oldest`` facet; or untried-attempts-first when ``untried`` — the
+    ``sort=untried`` facet / the downloads queue's default), optionally
+    narrowed by the tag chips, the stub
     filter (``has_pdf=False`` → only stubs, the "papers to get" queue), the
     ingested/chunk-less filter (``has_chunks`` — the "chunked"/"unchunked"
     state facet), the folder facet (``folder_id`` — one folder's direct
@@ -198,6 +201,7 @@ def _recent_rows(
         ref_ids=ref_ids,
         deleted=deleted,
         oldest=oldest,
+        untried=untried,
         limit=_PAGE_SIZE + 1,
         offset=offset,
     )

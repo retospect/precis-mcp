@@ -63,6 +63,13 @@ from precis_web.timefmt import ago as _ago
 
 router = APIRouter(prefix="/drive", tags=["drive"])
 
+#: Un-prefixed sibling router for the one Drive route that isn't nested
+#: under ``/drive`` — ``navigator.sendBeacon`` fires it as a bare
+#: same-origin path from any page rendering the "Open all downloads"
+#: button, so it lives outside the ``/drive``-prefixed router rather than
+#: forcing the beacon call to know the prefix.
+downloads_router = APIRouter(tags=["drive"])
+
 log = logging.getLogger(__name__)
 
 #: Same autocomplete backend as the legacy ``/items/tags/suggest`` — one
@@ -312,9 +319,14 @@ async def index(
     is meaningful for any source kind, not just papers); ``folder=`` (a
     folder ``ref_id``) narrows the no-query landing to one folder's
     direct children — the same facet the sidebar tree's links drive;
-    ``sort=recency`` orders newest-first; ``since=``/``until=`` bound
-    the date window; ``page=`` pages past the ``_PAGE_SIZE`` cap. With
-    no ``q`` the landing shows the recent list.
+    ``sort=recency`` orders newest-first; ``sort=untried`` orders by last
+    manual-open attempt (never-tried first, then oldest-tried — the
+    default for the downloads/acquisition queue, i.e. ``state=stub`` or
+    ``paper_chunks=without``, whichever the operator actually lands on, so
+    each reload naturally surfaces the next un-attempted batch once "Open
+    all downloads" marks the current page tried); ``since=``/``until=``
+    bound the date window; ``page=`` pages past the ``_PAGE_SIZE`` cap.
+    With no ``q`` the landing shows the recent list.
 
     Kind selection persists in an ``items_kinds`` cookie (unchanged
     name — pre-dates the merge, no reason to churn a cookie key): an
@@ -342,20 +354,34 @@ async def index(
         has_schedule = True
         tags = [t for t in tags if t != "level:recurring"]
     _sort_raw = (sort or "").strip().lower()
-    sort = _sort_raw if _sort_raw in ("recency", "oldest") else "relevance"
+    sort = _sort_raw if _sort_raw in ("recency", "oldest", "untried") else "relevance"
     state = (state or "all").strip().lower()
+    # ``paper_chunks`` (the grouped "paper" chip's ▾ popover) drives the
+    # ingested-vs-not split. It's a **global** browse chunk-filter by
+    # design — it reuses ``recent_refs(has_chunks=…)`` unscoped to any
+    # one kind, not a paper-only facet, despite riding the "paper" chip.
+    # Computed *before* the untried-sort default below, since that default
+    # also keys off ``pc``.
+    pc = (paper_chunks or "both").strip().lower()
+    has_chunks = True if pc == "with" else False if pc == "without" else None
+    # The downloads/acquisition queue — ``state=stub`` (paper stubs with a
+    # fetch link) **or** ``paper_chunks=without`` (the "papers" chip's own
+    # un-ingested popover choice — the URL the operator actually lands on
+    # when browsing "papers without chunks", not a separate `state`) —
+    # defaults to untried-first when no sort was explicitly chosen: never-
+    # manually-opened refs surface before re-checked ones, so each fresh
+    # page load naturally serves the next batch once "Open all downloads"
+    # marks the current page tried (the ``mark_downloads_tried`` route below
+    # + ``store.recent_refs(untried=True)``). An explicit recency/oldest
+    # pick still wins.
+    if sort == "relevance" and (state == "stub" or pc == "without"):
+        sort = "untried"
     # ``state=stub`` → only PDF-less papers (the "to get" queue);
     # ``state=deleted`` → soft-deleted refs (the "show deleted" toggle).
     # Both shape only the recent/browse view, not search (a search hit
     # matched a live chunk, so neither filter is meaningful there).
     has_pdf = False if state == "stub" else None
     show_deleted = state == "deleted"
-    # ``paper_chunks`` (the grouped "paper" chip's ▾ popover) drives the
-    # ingested-vs-not split. It's a **global** browse chunk-filter by
-    # design — it reuses ``recent_refs(has_chunks=…)`` unscoped to any
-    # one kind, not a paper-only facet, despite riding the "paper" chip.
-    pc = (paper_chunks or "both").strip().lower()
-    has_chunks = True if pc == "with" else False if pc == "without" else None
     since_dt = _parse_date(since)
     until_dt = _parse_date(until)
     folder_raw = (folder or "").strip()
@@ -463,6 +489,7 @@ async def index(
             ref_ids=fetch_ref_ids,
             deleted=show_deleted,
             oldest=(sort == "oldest"),
+            untried=(sort == "untried"),
         )
         # Exact total for the browse "showing N of K" header + last-page
         # jump — the no-query list is a plain filtered ``refs`` query, so
@@ -849,3 +876,43 @@ async def tag_item(
         redirect=redirect,
         error_title="Tag",
     )
+
+
+@downloads_router.post("/downloads/mark-tried")
+async def mark_downloads_tried(
+    request: Request,
+    ref_id: list[int] = Form(default=[]),
+) -> Response:
+    """Record a manual "opened it" attempt for each ref the "Open all
+    downloads" button just opened a tab for.
+
+    Fired by ``navigator.sendBeacon`` alongside the tab-opening burst
+    (``drive/index.html.j2``'s open-all-downloads script) — same-origin,
+    no external traffic. Writes one ``ref_events`` row per ref
+    (``source='manual:open', event='opened'``), the same
+    :meth:`Store.append_event` helper the OA fetch cascade uses for its
+    own attempt log (``workers/fetch_oa.py``, ``source='fetcher:<leg>'``),
+    just a human-lane sibling. ``store.recent_refs(untried=True)`` reads
+    the latest one back to sink these refs to the back of the
+    ``sort=untried`` downloads-queue order on the next load — no
+    pagination bookkeeping needed, the just-tried page simply stops
+    sorting to the top.
+
+    Not routed through a handler ``put``/``tag`` verb — ``ref_events`` is
+    a direct audit-log table, not a handler-owned kind (mirrors every
+    other ``append_event`` call site). Unknown/bad ids are skipped rather
+    than 500ing — this is a best-effort beacon fired on page unload/tab
+    burst, not a user-facing form whose failure needs surfacing. Always
+    204: the beacon has no response handler to read a body anyway.
+    """
+    store = get_store(request)
+    for rid in dict.fromkeys(ref_id):  # de-dupe, keep first-seen order
+        try:
+            store.append_event(rid, source="manual:open", event="opened")
+        except Exception:
+            log.warning(
+                "mark-tried: failed to log manual:open for ref_id=%s",
+                rid,
+                exc_info=True,
+            )
+    return Response(status_code=204)

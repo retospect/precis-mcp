@@ -97,6 +97,9 @@ class FakeStore(_FakeStoreBase):
         #: ref_ids stamped via touch_viewed (the reader page-open access
         #: stamp that drives the drafts most-recently-opened order).
         self.viewed: list[int] = []
+        #: {ref_id, source, event, payload} dicts written via append_event
+        #: (e.g. POST /downloads/mark-tried's manual:open log).
+        self.appended_events: list[dict[str, Any]] = []
         #: (ref_id, meta-updates) tuples written via stamp_ref_meta — the
         #: genre/brief workspace writes from the /drafts/<id>/workspace route.
         self.meta_writes: list[tuple[int, dict[str, Any]]] = []
@@ -545,6 +548,25 @@ class FakeStore(_FakeStoreBase):
         # test can assert the access was registered.
         self.viewed.append(ref_id)
 
+    def append_event(
+        self,
+        ref_id: int,
+        *,
+        source: str,
+        event: str,
+        payload: dict[str, Any] | None = None,
+        duration_ms: int | None = None,
+        cost_usd: float | None = None,
+        conn: Any = None,
+    ) -> int:
+        # POST /downloads/mark-tried's manual:open write (and any other
+        # direct ref_events append) — record the call so a route smoke test
+        # can assert what was logged without a real ref_events table.
+        self.appended_events.append(
+            {"ref_id": ref_id, "source": source, "event": event, "payload": payload}
+        )
+        return len(self.appended_events)
+
     def draft_authoring_enabled(self, ref_id: int) -> bool:
         # Per-document auto-author toggle (drafts/smartdraft Tools pane). The
         # fake reports OFF; a test can subclass to exercise the ON branch.
@@ -836,6 +858,7 @@ class FakeStore(_FakeStoreBase):
         ref_ids=None,
         deleted=False,
         oldest=False,
+        untried=False,
         limit=30,
         offset=0,
     ):
@@ -849,7 +872,11 @@ class FakeStore(_FakeStoreBase):
         ``ref_ids`` is the ``/drive?cited_by=<draft>`` allow-list (``None`` =
         no restriction, ``[]`` = nothing). ``deleted=True`` serves
         ``self.deleted_recent_refs`` instead (empty by default — tests
-        populate it to exercise the "show deleted" toggle)."""
+        populate it to exercise the "show deleted" toggle). ``untried``
+        (the ``sort=untried`` downloads-queue order) is just recorded as
+        ``self.recent_untried`` — the FakeStore carries no ``ref_events``,
+        so the real last-manual-open ordering is exercised against real PG
+        in ``tests/precis_web/test_drive_sql.py`` instead."""
         self.recent_tags = tags
         self.recent_has_pdf = has_pdf
         self.recent_has_chunks = has_chunks
@@ -859,6 +886,7 @@ class FakeStore(_FakeStoreBase):
         self.recent_ref_ids = ref_ids
         self.recent_deleted = deleted
         self.recent_oldest = oldest
+        self.recent_untried = untried
         self.recent_offset = offset
         rows = self._recent_src(kinds, deleted=deleted, ref_ids=ref_ids)
         if oldest:

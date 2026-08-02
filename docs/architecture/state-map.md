@@ -2301,9 +2301,23 @@ Structures, CAD, Figures, Mermaid). Nav template:
 
 **Drive — the unified seek+manage surface (`/drive`).**
 `src/precis_web/routes/drive.py::index` is Items' cross-kind chunk search
-(`q=`, kind/tag facets, `sort=relevance|recency|oldest`, `since/until`,
+(`q=`, kind/tag facets, `sort=relevance|recency|oldest|untried`, `since/until`,
 `state=stub`, pagination) grafted onto Drive's folder tree (`_flatten_tree`)
-+ CRUD. The pager shows First/Prev/Next/Last with a `Page X of Y` and a
++ CRUD. `state=stub`'s downloads queue (a paper stub with a LibKey/arXiv
+fetch link) defaults to `sort=untried`: `store.recent_refs(untried=True)`
+`LEFT JOIN`s the latest `ref_events` row per ref with `source='manual:open'`
+(index `ref_events_ref_id_source_ts_idx`) so never-manually-opened stubs
+surface before re-checked ones (freshest-added first within "never",
+oldest-attempt first within "tried"). The row template's "Open all
+downloads" button (`drive/index.html.j2`) fires
+`navigator.sendBeacon('/downloads/mark-tried', …)` alongside its staggered
+tab-opening burst — one `manual:open`/`opened` `ref_events` row per shown
+ref (`POST /downloads/mark-tried`, `drive.downloads_router`, un-prefixed
+sibling of `drive.router`) — so those refs sink to the back of the untried
+sort and a plain reload naturally serves the next batch; no pagination
+bookkeeping. Same shape as the OA fetch cascade's own attempt log
+(`workers/fetch_oa.py`, `source='fetcher:<leg>'`) — a human lane on the
+same `ref_events` table via the shared `Store.append_event`. The pager shows First/Prev/Next/Last with a `Page X of Y` and a
 `Showing N of K` count: the no-query browse total is **exact**
 (`store.count_recent_refs`, sharing `recent_refs`' WHERE builder) so Last is
 offered there; the fused-search total is a `≈`lexical count

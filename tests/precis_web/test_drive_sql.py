@@ -11,8 +11,12 @@ import pytest
 
 pytest.importorskip("fastapi")
 
+from fastapi.testclient import TestClient
+
 from precis.dispatch import Hub
 from precis.handlers.folder import FolderHandler
+from precis_web.app import create_app
+from precis_web.config import WebConfig
 from precis_web.routes.drive import (
     _breadcrumb,
     _children,
@@ -21,6 +25,15 @@ from precis_web.routes.drive import (
     _unfiled,
 )
 from tests.conftest import id_of
+
+
+@pytest.fixture
+def drive_client(runtime_with_store, tmp_path) -> TestClient:
+    return TestClient(
+        create_app(
+            runtime=runtime_with_store, web_config=WebConfig(corpus_dir=tmp_path)
+        )
+    )
 
 
 @pytest.fixture
@@ -156,6 +169,129 @@ def test_recent_refs_ref_ids_allow_list(store):
     # An empty allow-list restricts to nothing (a draft with an empty
     # worklist shows an empty queue, not the whole corpus).
     assert store.recent_refs(["paper"], ref_ids=[]) == []
+
+
+def test_recent_refs_untried_orders_never_tried_before_tried(store):
+    """``untried=True`` (the ``/drive?sort=untried`` downloads-queue
+    order) puts never-manually-opened refs before previously-opened
+    ones, freshest-added first within the untried group and
+    oldest-attempt-first within the tried group — so a fresh page load
+    surfaces the next un-attempted batch, and "Open all downloads"
+    marking the current page tried sinks it to the back next time."""
+    old_untried = store.insert_ref(kind="paper", slug="ut-old-untried", title="A")
+    new_untried = store.insert_ref(kind="paper", slug="ut-new-untried", title="B")
+    tried_long_ago = store.insert_ref(kind="paper", slug="ut-tried-long-ago", title="C")
+    tried_recently = store.insert_ref(kind="paper", slug="ut-tried-recent", title="D")
+
+    store.append_event(tried_long_ago.id, source="manual:open", event="opened")
+    store.append_event(tried_recently.id, source="manual:open", event="opened")
+    # A second, more recent attempt on tried_long_ago's ref would flip its
+    # position — assert the ordering keys off MAX(ts), not any row.
+    store.append_event(
+        tried_recently.id, source="fetcher:unpaywall", event="fetch_failed"
+    )
+
+    ordered = [
+        r.id
+        for r in store.recent_refs(["paper"], untried=True)
+        if r.id
+        in {old_untried.id, new_untried.id, tried_long_ago.id, tried_recently.id}
+    ]
+    # Both untried refs precede both tried refs.
+    untried_positions = [ordered.index(old_untried.id), ordered.index(new_untried.id)]
+    tried_positions = [
+        ordered.index(tried_long_ago.id),
+        ordered.index(tried_recently.id),
+    ]
+    assert max(untried_positions) < min(tried_positions)
+    # Within "untried", freshest-added (new_untried) sorts first.
+    assert ordered.index(new_untried.id) < ordered.index(old_untried.id)
+    # Within "tried", oldest-attempt-first: tried_long_ago before tried_recently.
+    assert ordered.index(tried_long_ago.id) < ordered.index(tried_recently.id)
+
+
+def test_recent_refs_untried_sinks_after_a_fresh_manual_open(store):
+    """A ref's second ``manual:open`` event (a later "Open all downloads"
+    click) pushes it further back — the untried sort keys off the
+    *latest* attempt, so re-opening resets the re-check clock."""
+    a = store.insert_ref(kind="paper", slug="ut-sink-a", title="A")
+    b = store.insert_ref(kind="paper", slug="ut-sink-b", title="B")
+    store.append_event(b.id, source="manual:open", event="opened")  # b tried first
+    store.append_event(a.id, source="manual:open", event="opened")  # a tried after
+
+    before = [
+        r.id for r in store.recent_refs(["paper"], untried=True) if r.id in {a.id, b.id}
+    ]
+    assert before.index(b.id) < before.index(
+        a.id
+    )  # b's attempt is older → surfaces first
+
+    # b is opened again — now the *more* recently attempted of the two.
+    store.append_event(b.id, source="manual:open", event="opened")
+    after = [
+        r.id for r in store.recent_refs(["paper"], untried=True) if r.id in {a.id, b.id}
+    ]
+    assert after.index(a.id) < after.index(
+        b.id
+    )  # a is now the older (un-refreshed) attempt
+
+
+def test_recent_refs_untried_composes_with_has_chunks_filter(store):
+    """``untried=True`` composes with ``has_chunks=False`` (the
+    ``paper_chunks=without`` facet — the URL the operator actually browses
+    for the downloads/acquisition queue) rather than one silently
+    overriding the other: a chunked ref stays excluded regardless of its
+    manual-open history, and untried-first ordering still applies among
+    the chunk-less survivors."""
+    from precis.embedder import MockEmbedder
+    from precis.store import BlockInsert
+
+    emb = MockEmbedder(dim=store.embedding_dim())
+    chunked = store.insert_ref(kind="paper", slug="ut-hc-chunked", title="Chunked")
+    store.insert_blocks(
+        chunked.id, [BlockInsert(pos=0, text="body", embedding=emb.embed_one("x"))]
+    )
+    untried_stub = store.insert_ref(kind="paper", slug="ut-hc-untried", title="Untried")
+    tried_stub = store.insert_ref(kind="paper", slug="ut-hc-tried", title="Tried")
+    store.append_event(tried_stub.id, source="manual:open", event="opened")
+
+    rows = store.recent_refs(["paper"], has_chunks=False, untried=True)
+    ids = [r.id for r in rows]
+
+    assert chunked.id not in ids  # has_chunks=False still excludes it
+    assert untried_stub.id in ids
+    assert tried_stub.id in ids
+    assert ids.index(untried_stub.id) < ids.index(tried_stub.id)
+
+
+def test_mark_downloads_tried_writes_one_manual_open_event_per_ref(
+    drive_client: TestClient, store
+):
+    """``POST /downloads/mark-tried`` — the "Open all downloads" button's
+    beacon — writes one ``ref_events`` row per posted ref_id
+    (``source='manual:open', event='opened'``), de-duped, and ignores an
+    unknown id rather than failing the whole batch."""
+    a = store.insert_ref(kind="paper", slug="mt-a", title="A")
+    b = store.insert_ref(kind="paper", slug="mt-b", title="B")
+
+    resp = drive_client.post(
+        "/downloads/mark-tried",
+        data={
+            "ref_id": [
+                str(a.id),
+                str(b.id),
+                str(a.id),  # duplicate — one event, not two
+                "999999999",  # unknown ref — skipped, not fatal
+            ]
+        },
+    )
+    assert resp.status_code == 204
+
+    events_a = store.events_for(a.id, source="manual:open")
+    events_b = store.events_for(b.id, source="manual:open")
+    assert len(events_a) == 1
+    assert events_a[0].event == "opened"
+    assert len(events_b) == 1
 
 
 def test_conv_chat_turn_surfaces_as_drive_search_hit(store):
