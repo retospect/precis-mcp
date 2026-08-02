@@ -349,7 +349,15 @@ for attempt in 1 2 3; do
     # a native /app did NOT change this; the FS was never the ceiling). The
     # warm gate's real win is elsewhere: an incremental mypy cache on a
     # persistent volume (cold ~30s → ~1s) + no per-ship container create.
-    PYTEST_N=6
+    #
+    # PRECIS_GATE_N overrides the default for a memory/connection-pressured
+    # host: on a machine already running several sibling worktree gates (or
+    # under desktop RAM pressure), the full-suite -n6 run can saturate the test
+    # DB's 100-connection ceiling — new connections get RST'd from the listen
+    # backlog and surface client-side as "server closed the connection
+    # unexpectedly" across every dir, with nothing logged server-side. Drop to
+    # -n3/-n2 to halve peak connections + backends when that bites.
+    PYTEST_N="${PRECIS_GATE_N:-6}"
     if [[ "$DOCS_ONLY" == 1 ]]; then
         say "docs/config-only change → light gate (ruff · doc-pointer test), skipping mypy+pytest"
         run_gate 'uv run ruff check --fix . && uv run ruff format . && uv run ruff check . && uv run ruff format --check . && uv run pytest -q -n0 tests/test_doc_pointers.py' \

@@ -10,6 +10,17 @@ tracked separately in `docs/improvement-plan.md` (same delete-on-ship rule).
 
 ---
 
+## 🎯 Taproot self-plagiarism detection — cross-draft hub reuse
+
+Status: open · Severity: feature · Owner: `src/precis/taproot/` + export handlers · Test: n/a yet (design phase).
+
+- A Taproot claim hub (`finding` tagged `TAPROOT:claim`) is a reusable canonical claim wording + shared evidence set, designed for productivity across multiple drafts via the cross-paper claim graph. But when a **second** of our own papers reuses the same hubs, the verbatim or near-verbatim canonical claim phrasing can constitute self-plagiarism — a distinction that doesn't emerge until multi-draft authoring surfaces.
+- **Not a first-paper problem.** A single draft citing external hubs is normal and expected; self-plagiarism risk appears only when the *same hub* is cited by multiple *own* manuscripts, and the shared canonical wording is reproduced verbatim in multiple papers.
+- **Directions to explore (not yet decided):** (a) detect cross-draft hub reuse at export time and surface a "this claim already appears in draft X" warning on docx/pdf generation; (b) vary phrasing on reuse — the hub remains the stable citation anchor (ID), but the sentence needn't be verbatim; (c) track which of our drafts cite each hub and surface that relationship explicitly in the claim-hub editor.
+- **Raised by:** Reto while building the MCP taproot-authoring surface (worktree `snappy-shimmying-rossum`). No immediate blocking of any workflow; scoped as a detection + guidance feature, not a correctness bug.
+
+---
+
 ## 🔧 taproot backfill — silent drop of unresolvable [pc] handle on promote-collapse
 
 Status: open · Severity: polish · Owner: `src/precis/taproot/backfill.py` · Test: n/a (pre-existing gap; design call on skip-vs-warn needed before regression test).

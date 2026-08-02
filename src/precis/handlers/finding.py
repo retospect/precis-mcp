@@ -60,7 +60,7 @@ from precis.identity import make_finding_paper_id, make_pub_id
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store.types import BlockInsert, Ref, Tag
-from precis.taproot import seniority
+from precis.taproot import authoring, hub, seniority
 from precis.utils import handle_registry
 
 _STATUS_NAMESPACE = "STATUS"
@@ -117,6 +117,7 @@ class FindingHandler(NumericRefHandler):
         body: str | None = None,
         scope: dict[str, Any] | None = None,
         cited_in: str | None = None,
+        supporters: list[dict[str, Any]] | None = None,
         parent_id: int | None = None,
         tags: list[str] | None = None,
         link: str | None = None,
@@ -157,6 +158,62 @@ class FindingHandler(NumericRefHandler):
         )
 
         body_text = body if body is not None else text
+
+        # --- Taproot hub-mint mode (ADR 0073) ---
+        # A finding born with paper ``supporters=`` (and no ``cited_in``) is a
+        # claim HUB, not a chase target: route through the single write door
+        # (``taproot/hub.py`` via ``seed_claim_hub``), which mints/converges the
+        # hub and attaches each supporter's ``paper --role--> hub`` evidence
+        # edge. The grounding invariant holds by construction — ``seed_claim_hub``
+        # REQUIRES paper supporters, so this door can never mint a thin-air hub.
+        # ``title=``/``body=`` carry the canonical claim sentence.
+        if supporters is not None:
+            if cited_in is not None:
+                raise BadInput(
+                    "hub-mint and chase-finding are different modes — pass "
+                    "supporters= (a Taproot claim hub grounded in papers) OR "
+                    "cited_in= (a chase finding to walk to its primary), "
+                    "not both.",
+                    next="keep one: supporters=[{'paper':'pa5',"
+                    "'source_handle':'pc293'}] for a hub, or cited_in='pc42' "
+                    "for a chase finding",
+                )
+            sentence = (body_text or title or "").strip()
+            if not sentence:
+                raise BadInput(
+                    "a claim hub needs its canonical claim sentence — pass "
+                    "title=<claim> (or body=<claim>).",
+                    next="put(kind='finding', title='amine loading raises CO2 "
+                    "capacity', supporters=[{'paper':'pa5',"
+                    "'source_handle':'pc293'}])",
+                )
+            if scope is not None and not isinstance(scope, dict):
+                raise BadInput(
+                    f"scope must be a dict, got {type(scope).__name__}",
+                    next="scope={'system': 'aqueous', ...}",
+                )
+            result = authoring.seed_claim_hub(
+                self.store,
+                sentence=sentence,
+                scope=scope or {},
+                supporters=supporters,
+                set_by="agent",
+            )
+            ung = result["ungrounded"]
+            return Response(
+                body=(
+                    f"claim hub fi{result['hub_ref_id']}  "
+                    f"pub_id={result['pub_id']}\n"
+                    f"claim: {sentence[:120]}\n"
+                    f"evidence: {result['attached']} attached, "
+                    f"{result['already']} already present"
+                    + (f", {ung} ref-level (ungrounded)" if ung else "")
+                    + "\n"
+                    f"cite it inline as [fi{result['hub_ref_id']}] — resolves to "
+                    "the current derived originator(s) on every render"
+                )
+            )
+
         # Report EVERY missing required field at once, not one per call.
         # The one-at-a-time raise made an under-specified put bounce
         # repeatedly (title, then body, then cited_in) — a turn-eating
@@ -186,9 +243,13 @@ class FindingHandler(NumericRefHandler):
                     "(chunk) or 'miller23a' (ref-level). If it is NOT in the "
                     "corpus yet, search(kind='paper', q='…') to find it or "
                     "stub it (put(kind='paper', doi='…')) and cite the "
-                    "resulting chunk. If this is your own synthesis with no "
-                    "single source, it is NOT a finding — write it into the "
-                    "draft or record a memory instead."
+                    "resulting chunk. If instead this is a canonicalized "
+                    "cross-paper claim grounded in specific papers, mint a "
+                    "Taproot hub: put(kind='finding', title=<claim>, "
+                    "supporters=[{'paper':'pa5','source_handle':'pc293'}]). "
+                    "If this is your own synthesis with no single source, it "
+                    "is NOT a finding — write it into the draft or record a "
+                    "memory instead."
                 )
             else:
                 next_hint = (
@@ -374,6 +435,140 @@ class FindingHandler(NumericRefHandler):
                 f"substitutes the primary cite_key once STATUS:established)"
             )
         )
+
+    # ──────────────────────────────────────────────────────────────────
+    # link — intercept Taproot evidence/refine edges on a claim hub
+    # ──────────────────────────────────────────────────────────────────
+
+    def link(  # type: ignore[override]
+        self,
+        *,
+        id: str | int,
+        target: str | None = None,
+        mode: str = "add",
+        rel: str | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Taproot-aware link door for findings.
+
+        When the source resolves to a ``TAPROOT:claim`` hub and ``rel`` is a
+        Taproot relation, route through the single write door
+        (``taproot/hub.py``) rather than a raw ``add_link`` — ADR 0073: a raw
+        insert for these relations bypasses the role + ``TAPROOT:claim`` guards
+        and is a defect.
+
+        - ``rel`` ∈ {establishes, corroborates, contradicts} → attach one
+          ``paper --role--> hub`` evidence edge. ``target`` is the supporting
+          paper/chunk handle: ``pc<id>`` grounds the edge at that passage,
+          ``pa<id>`` lands ref-level. The role is a conservative write-time
+          label; the originator/corroborator split is derived at read time
+          (``view='evidence'``).
+        - ``rel='refines'`` → link this hub as a sharper/reworded version of
+          another hub (``target`` a ``fi<id>``); advisory, no evidence flows.
+
+        Anything else — a non-hub finding, a non-Taproot relation, or
+        ``mode='remove'`` — falls through to the generic numeric-ref link.
+        """
+        if mode == "add" and rel in (hub.HUB_ROLES | hub.CLAIM_LINK_RELATIONS):
+            try:
+                hub_ref_id: int | None = authoring.resolve_hub_ref_id(self.store, id)
+            except BadInput:
+                # Source isn't a claim hub — a plain finding using a general
+                # relation (e.g. ``contradicts``). Use the generic door.
+                hub_ref_id = None
+            if hub_ref_id is not None:
+                if not target or not str(target).strip():
+                    raise BadInput(
+                        f"link rel={rel!r} on claim hub fi{hub_ref_id} needs a target",
+                        next=(
+                            "target='pc<id>' (a supporting paper chunk)"
+                            if rel in hub.HUB_ROLES
+                            else "target='fi<id>' (the coarser hub this refines)"
+                        ),
+                    )
+                tgt = str(target).strip()
+                if rel in hub.HUB_ROLES:
+                    resolved = self.store.resolve_handle(tgt)
+                    if resolved is None:
+                        raise BadInput(
+                            f"evidence target {tgt!r} is not a resolvable "
+                            "paper or paper-chunk handle",
+                            next="target='pc<id>' (grounds the edge at that "
+                            "passage) or 'pa<id>' (ref-level, whole paper)",
+                        )
+                    hub.attach_evidence(
+                        self.store,
+                        hub_ref_id=hub_ref_id,
+                        paper_ref_id=resolved.ref_id,
+                        role=rel,
+                        meta={"source_handle": tgt},
+                        set_by="agent",
+                    )
+                    return Response(
+                        body=(
+                            f"evidence attached: {tgt} --{rel}--> "
+                            f"fi{hub_ref_id} (originator split derived at read "
+                            f"time — get(id='fi{hub_ref_id}', view='evidence'))"
+                        )
+                    )
+                # rel == 'refines'
+                to_hub = authoring.resolve_hub_ref_id(self.store, tgt)
+                added = hub.link_claims(
+                    self.store,
+                    from_hub_ref_id=hub_ref_id,
+                    to_hub_ref_id=to_hub,
+                    relation=rel,
+                    set_by="agent",
+                )
+                return Response(
+                    body=(
+                        f"{'linked' if added else 'already linked'}: "
+                        f"fi{hub_ref_id} --refines--> fi{to_hub}"
+                    )
+                )
+        # Removing an evidence edge must mirror attach_evidence's direction:
+        # the stored edge is paper --role--> hub, so the generic remove
+        # (which deletes id→target = hub→paper) would silently match nothing.
+        # Intercept HUB_ROLES removals and delete the paper→hub edge directly.
+        # (refines removal IS id→target, so it falls through to super() fine.)
+        if mode == "remove" and rel in hub.HUB_ROLES:
+            try:
+                hub_ref_id = authoring.resolve_hub_ref_id(self.store, id)
+            except BadInput:
+                hub_ref_id = None
+            if hub_ref_id is not None:
+                if not target or not str(target).strip():
+                    raise BadInput(
+                        f"link mode='remove' rel={rel!r} on claim hub "
+                        f"fi{hub_ref_id} needs the evidence target",
+                        next="target='pc<id>' / 'pa<id>' (the supporting paper)",
+                    )
+                tgt = str(target).strip()
+                resolved = self.store.resolve_handle(tgt)
+                if resolved is None:
+                    raise BadInput(
+                        f"evidence target {tgt!r} is not a resolvable paper "
+                        "or paper-chunk handle",
+                        next="target='pc<id>' / 'pa<id>'",
+                    )
+                # Match the grounding: attach_evidence stored the edge with
+                # src_pos = the paper-chunk ord (a pc<id> target) or NULL (a
+                # ref-level pa<id>). resolve_handle carries that same ord as
+                # chunk_ord, so passing it here removes the specific grounded
+                # edge (remove_link filters src_chunk_id IS NOT DISTINCT FROM).
+                n = self.store.remove_link(
+                    src_ref_id=resolved.ref_id,
+                    dst_ref_id=hub_ref_id,
+                    relation=rel,
+                    src_pos=getattr(resolved, "chunk_ord", None),
+                )
+                return Response(
+                    body=(
+                        f"removed {n} {rel} evidence edge"
+                        f"{'' if n == 1 else 's'}: {tgt} ↛ fi{hub_ref_id}"
+                    )
+                )
+        return super().link(id=id, target=target, mode=mode, rel=rel, **_kw)
 
     # ──────────────────────────────────────────────────────────────────
     # get — intercept view='evidence' (Taproot Phase 2c), else base

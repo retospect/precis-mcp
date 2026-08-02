@@ -679,6 +679,324 @@ class TestSearchSurfacesHubs:
         assert str(hub_id) not in out_tags.body
 
 
+# ── put(supporters=...) — Taproot claim-hub authoring (ADR 0073) ────────
+
+
+class TestPutSupportersHubMint:
+    """``put(kind='finding', title=, supporters=[...])`` with no
+    ``cited_in`` mints/converges a Taproot claim hub via
+    ``authoring.seed_claim_hub`` — the single write door
+    (``taproot/hub.py``) — instead of a chase finding."""
+
+    def test_supporters_mints_claim_hub_with_evidence(self, store) -> None:
+        from precis.taproot.seniority import is_claim_hub
+
+        paper = _seed_paper(store, cite_key="miller23a")
+        h = _make_handler(store)
+        resp = h.put(
+            title="amine loading raises CO2 capacity",
+            supporters=[{"paper": "miller23a"}],
+        )
+        m = _search(r"claim hub fi(\d+)", resp.body)
+        hub_id = int(m.group(1))
+        assert "pub_id=" in resp.body
+        assert is_claim_hub(store, hub_id)
+        # evidence edge landed paper --role--> hub (not the reverse).
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT relation FROM links WHERE src_ref_id = %s AND dst_ref_id = %s",
+                (paper, hub_id),
+            ).fetchone()
+        assert row is not None
+        assert row[0] in ("establishes", "corroborates", "contradicts")
+
+    def test_supporters_converges_onto_existing_hub(self, store) -> None:
+        """A second put for the same claim sentence attaches a new
+        supporter to the SAME hub rather than minting a duplicate."""
+        paper_a = _seed_paper(store, cite_key="paper-a")
+        paper_b = _seed_paper(store, cite_key="paper-b")
+        h = _make_handler(store)
+        sentence = "amine loading raises CO2 capacity"
+        r1 = h.put(title=sentence, supporters=[{"paper": "paper-a"}])
+        r2 = h.put(title=sentence, supporters=[{"paper": "paper-b"}])
+        hub1 = int(_search(r"claim hub fi(\d+)", r1.body).group(1))
+        hub2 = int(_search(r"claim hub fi(\d+)", r2.body).group(1))
+        assert hub1 == hub2
+        for paper in (paper_a, paper_b):
+            with store.pool.connection() as conn:
+                row = conn.execute(
+                    "SELECT 1 FROM links WHERE src_ref_id = %s AND dst_ref_id = %s",
+                    (paper, hub1),
+                ).fetchone()
+            assert row is not None
+
+    def test_supporters_and_cited_in_together_rejected(self, store) -> None:
+        _seed_paper(store, cite_key="miller23a")
+        h = _make_handler(store)
+        with pytest.raises(BadInput, match="different modes"):
+            h.put(
+                title="t",
+                supporters=[{"paper": "miller23a"}],
+                cited_in="miller23a",
+            )
+
+    def test_supporters_with_empty_claim_rejected(self, store) -> None:
+        _seed_paper(store, cite_key="miller23a")
+        h = _make_handler(store)
+        with pytest.raises(BadInput):
+            h.put(supporters=[{"paper": "miller23a"}])  # no title, no body
+
+    def test_normal_chase_finding_path_unaffected(self, store) -> None:
+        """cited_in-only (no supporters=) still walks the ordinary
+        chase-finding creation path unchanged."""
+        _seed_paper(store, cite_key="miller23a")
+        h = _make_handler(store)
+        resp = h.put(title="t", body="b", cited_in="miller23a")
+        assert "created finding id=" in resp.body
+        assert "STATUS:tracing" in resp.body
+
+
+# ── link(rel=...) — Taproot evidence/refine routing (ADR 0073) ──────────
+
+
+class TestLinkTaprootRouting:
+    """``link(kind='finding', id='fi<hub>', rel=..., target=...)`` — a
+    claim-hub source + a Taproot relation routes through the single write
+    door (``taproot/hub.py``) rather than a raw ``add_link``; everything
+    else (a non-hub source, a non-Taproot relation) falls through to the
+    generic :class:`~precis.handlers._numeric_ref.NumericRefHandler.link`.
+    """
+
+    def _mint_hub(self, store, *, sentence: str, scope=None) -> int:
+        from precis.taproot.canon import CanonicalClaim
+        from precis.taproot.hub import mint_hub
+
+        return mint_hub(store, CanonicalClaim(sentence=sentence, scope=scope or {}))
+
+    def test_establishes_on_hub_routes_to_attach_evidence(self, store) -> None:
+        hub_id = self._mint_hub(store, sentence="Pd/C catalyzes Suzuki coupling.")
+        paper = _seed_paper(store, cite_key="miller23a")
+        with store.pool.connection() as conn:
+            chunk_id = conn.execute(
+                "SELECT chunk_id FROM chunks WHERE ref_id = %s ORDER BY ord LIMIT 1",
+                (paper,),
+            ).fetchone()[0]
+        h = _make_handler(store)
+        out = h.link(id=f"fi{hub_id}", target=f"pc{chunk_id}", rel="establishes")
+        assert f"fi{hub_id}" in out.body
+
+        # The evidence edge carries the hub-write shape: paper --role--> hub
+        # (attach_evidence's direction), not a raw finding->target add_link.
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT relation, src_chunk_id FROM links "
+                "WHERE src_ref_id = %s AND dst_ref_id = %s",
+                (paper, hub_id),
+            ).fetchone()
+        assert row is not None
+        assert row[0] == "establishes"
+        assert row[1] == chunk_id  # grounded at the pc<id> passage
+        # No edge the OTHER way (a raw add_link from the handler's generic
+        # door would have gone hub -> target instead).
+        with store.pool.connection() as conn:
+            reverse = conn.execute(
+                "SELECT 1 FROM links WHERE src_ref_id = %s AND dst_ref_id = %s",
+                (hub_id, paper),
+            ).fetchone()
+        assert reverse is None
+
+    def test_corroborates_ref_level_target_grounds_whole_paper(self, store) -> None:
+        hub_id = self._mint_hub(store, sentence="Pd/C catalyzes Suzuki coupling.")
+        paper = _seed_paper(store, cite_key="wholepaper")
+        h = _make_handler(store)
+        h.link(id=f"fi{hub_id}", target=f"pa{paper}", rel="corroborates")
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT relation, src_chunk_id FROM links "
+                "WHERE src_ref_id = %s AND dst_ref_id = %s",
+                (paper, hub_id),
+            ).fetchone()
+        assert row is not None
+        assert row[0] == "corroborates"
+        assert row[1] is None  # ref-level: no grounding chunk
+
+    def test_establishes_unresolvable_target_raises(self, store) -> None:
+        hub_id = self._mint_hub(store, sentence="Pd/C catalyzes Suzuki coupling.")
+        h = _make_handler(store)
+        with pytest.raises(BadInput):
+            h.link(id=f"fi{hub_id}", target="pc999999999", rel="establishes")
+
+    def test_refines_routes_to_link_claims(self, store) -> None:
+        original = self._mint_hub(store, sentence="Original claim.")
+        sharper = self._mint_hub(store, sentence="Sharper, reworded claim.")
+        h = _make_handler(store)
+        out = h.link(id=f"fi{sharper}", target=f"fi{original}", rel="refines")
+        assert "refines" in out.body
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT relation FROM links WHERE src_ref_id = %s AND dst_ref_id = %s",
+                (sharper, original),
+            ).fetchone()
+        assert row is not None and row[0] == "refines"
+
+    def test_corroborates_remove_deletes_the_grounded_paper_to_hub_edge(
+        self, store
+    ) -> None:
+        """``mode='remove'`` must mirror ``attach_evidence``'s direction
+        (paper --role--> hub): attach a chunk-grounded ``corroborates`` edge,
+        remove it the same way, and confirm it's actually gone (not a
+        silent no-op from probing hub->paper)."""
+        from precis.taproot.seniority import derive_evidence
+
+        hub_id = self._mint_hub(store, sentence="Pd/C catalyzes Suzuki coupling.")
+        paper = _seed_paper(store, cite_key="removeme")
+        with store.pool.connection() as conn:
+            chunk_id = conn.execute(
+                "SELECT chunk_id FROM chunks WHERE ref_id = %s ORDER BY ord LIMIT 1",
+                (paper,),
+            ).fetchone()[0]
+        h = _make_handler(store)
+        h.link(id=f"fi{hub_id}", target=f"pc{chunk_id}", rel="corroborates")
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT relation, src_chunk_id FROM links "
+                "WHERE src_ref_id = %s AND dst_ref_id = %s",
+                (paper, hub_id),
+            ).fetchone()
+        assert row is not None and row[1] == chunk_id  # attached + grounded
+
+        out = h.link(
+            id=f"fi{hub_id}", target=f"pc{chunk_id}", rel="corroborates", mode="remove"
+        )
+        assert "removed 1" in out.body
+
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM links WHERE src_ref_id = %s AND dst_ref_id = %s "
+                "AND relation = 'corroborates'",
+                (paper, hub_id),
+            ).fetchone()
+        assert row is None  # the grounded edge is actually gone
+
+        evidence = derive_evidence(store, hub_id)
+        all_edges = (
+            evidence.originators + evidence.corroborators + evidence.contradictors
+        )
+        assert all(e.paper_ref_id != paper for e in all_edges)
+
+    def test_establishes_remove_ref_level_deletes_the_whole_paper_edge(
+        self, store
+    ) -> None:
+        """The ref-level (``pa<id>``) shape removes cleanly too — no
+        grounding chunk to match, ``src_pos`` resolves to ``None`` on both
+        attach and remove."""
+        hub_id = self._mint_hub(store, sentence="Pd/C catalyzes Suzuki coupling.")
+        paper = _seed_paper(store, cite_key="removemewhole")
+        h = _make_handler(store)
+        h.link(id=f"fi{hub_id}", target=f"pa{paper}", rel="establishes")
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM links WHERE src_ref_id = %s AND dst_ref_id = %s "
+                "AND relation = 'establishes'",
+                (paper, hub_id),
+            ).fetchone()
+        assert row is not None
+
+        out = h.link(
+            id=f"fi{hub_id}", target=f"pa{paper}", rel="establishes", mode="remove"
+        )
+        assert "removed 1" in out.body
+
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM links WHERE src_ref_id = %s AND dst_ref_id = %s "
+                "AND relation = 'establishes'",
+                (paper, hub_id),
+            ).fetchone()
+        assert row is None
+
+    def test_refines_remove_falls_through_to_generic_link(self, store) -> None:
+        """``rel='refines'`` removal is id->target (the SAME direction the
+        generic door handles) — it must fall through to ``super().link``,
+        not the HUB_ROLES interception, and still remove the edge."""
+        original = self._mint_hub(store, sentence="Original claim.")
+        sharper = self._mint_hub(store, sentence="Sharper, reworded claim.")
+        h = _make_handler(store)
+        h.link(id=f"fi{sharper}", target=f"fi{original}", rel="refines")
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM links WHERE src_ref_id = %s AND dst_ref_id = %s "
+                "AND relation = 'refines'",
+                (sharper, original),
+            ).fetchone()
+        assert row is not None
+
+        # mode='remove' falls through to the generic (numeric-only) door —
+        # unlike the 'add' path above it does not resolve a 'fi<id>' handle.
+        h.link(id=sharper, target=f"fi{original}", rel="refines", mode="remove")
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM links WHERE src_ref_id = %s AND dst_ref_id = %s "
+                "AND relation = 'refines'",
+                (sharper, original),
+            ).fetchone()
+        assert row is None
+
+    def test_contradicts_remove_on_non_hub_finding_falls_through_to_generic_link(
+        self, store
+    ) -> None:
+        """A plain (non-hub) finding's ``contradicts`` removal is NOT a
+        HUB_ROLES interception target (the source never resolves to a claim
+        hub) — falls through to the generic door, removing the ordinary
+        finding->target edge."""
+        _seed_paper(store, cite_key="source2")
+        target_paper = _seed_paper(store, cite_key="rival2")
+        h = _make_handler(store)
+        resp = h.put(title="t", body="b", cited_in="source2")
+        finding_id = int(_search(r"id=(\d+)", resp.body).group(1))
+        h.link(id=finding_id, target=f"pa{target_paper}", rel="contradicts")
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM links WHERE src_ref_id = %s AND dst_ref_id = %s",
+                (finding_id, target_paper),
+            ).fetchone()
+        assert row is not None
+
+        h.link(
+            id=finding_id, target=f"pa{target_paper}", rel="contradicts", mode="remove"
+        )
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM links WHERE src_ref_id = %s AND dst_ref_id = %s",
+                (finding_id, target_paper),
+            ).fetchone()
+        assert row is None
+
+    def test_contradicts_on_non_hub_finding_falls_through_to_generic_link(
+        self, store
+    ) -> None:
+        """A plain chase finding (not a claim hub) using rel='contradicts'
+        must NOT try attach_evidence — it goes through the ordinary
+        NumericRefHandler.link door, an edge FROM the finding itself."""
+        _seed_paper(store, cite_key="source")
+        target_paper = _seed_paper(store, cite_key="rival")
+        h = _make_handler(store)
+        resp = h.put(title="t", body="b", cited_in="source")
+        finding_id = int(_search(r"id=(\d+)", resp.body).group(1))
+
+        out = h.link(id=finding_id, target=f"pa{target_paper}", rel="contradicts")
+        assert "linked finding" in out.body
+
+        # Generic add_link shape: src=finding, dst=target (the REVERSE of
+        # the hub evidence-edge direction paper->hub asserted above).
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT relation FROM links WHERE src_ref_id = %s AND dst_ref_id = %s",
+                (finding_id, target_paper),
+            ).fetchone()
+        assert row is not None and row[0] == "contradicts"
+
+
 # ── edit(pick_candidate=...) — multi-candidate disambiguation ───────
 
 

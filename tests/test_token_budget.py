@@ -128,10 +128,17 @@ def test_tools_list_under_byte_budget() -> None:
     ``allowed_values=``, ``value_low=``, ``value_high=``, each with a short
     param-level comment. Schema-side growth only — same shape as the prior
     bumps.
+
+    2026-08-02: cap raised from 20 KB → 21 KB to absorb the Taproot
+    authoring kwargs that expose claim-hub authoring on the seven-verb
+    surface: ``supporters=`` on ``put`` (bimodal hub-mint) and
+    ``taproot=``/``ref_level=``/``apply=`` on ``edit`` (draft backfill; the
+    ``apply=`` add also finally exposes the pre-existing ``sub=`` commit
+    flag). Schema-side growth only — same shape as the prior bumps.
     """
     serialised = json.dumps(_tools_list_wire_shape(), separators=(",", ":"))
     size = len(serialised.encode("utf-8"))
-    assert size < 20 * 1024, (
+    assert size < 21 * 1024, (
         f"tools/list wire-shape JSON is {size} bytes (cap: 20 KB). "
         "Investigate which verb description or schema grew. The "
         "per-verb description cap (1 KB) is the easier diff to "

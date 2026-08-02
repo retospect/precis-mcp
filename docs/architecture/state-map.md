@@ -936,6 +936,50 @@ ADR 0018 status note):
 
 Policy: `docs/conventions/discovery-layer-policy.md` (F20-rewritten).
 
+## Source-backfill (gap-finder)
+
+Design: `docs/design/source-backfill.md`. Package `src/precis/backfill/`
+— the **recall** mirror of the citation verifier ("did I miss anything?"
+vs "is what I cited true?").
+
+- **Recall lenses + workspace** — built. `text` lens (semantic+lexical
+  sweep over the target chunk(s), `candidates.py::find_candidates`) +
+  `citation` lens (S2 citation-graph one-hop neighbours of what's cited,
+  materialized into `links`); Tier-0 dedup against the draft-wide cited
+  **and** dismissed sets (`draft_cited_ref_ids` / `dismissed_ref_ids`);
+  assembled into the ADR-0051 eyes/working-set composer with `★
+  cited`/`○ candidate` roles + a ✓/⚠ grounding block
+  (`workspace.py::assemble` / `render_backfill`). Section-scoped:
+  `get(kind='draft', id='dc<id>', view='backfill')`.
+- **`[fi]` claim-hub-aware closure (Build 2 §G1)** — built.
+  `draft_cited_ref_ids` folds in every cited `[fi<id>]` hub's
+  evidence-supporter papers (`_hub_supporter_ref_ids`) — otherwise a
+  paper already backing a hub the draft cites would re-surface as a
+  false "gap" once Taproot backfill converts `[pc]`/`[pa]` cites to
+  `[fi]` (see Taproot canonicalization, below).
+- **Whole-draft roll-up (Build 2 §G2)** — built. `get(kind='draft',
+  id='<slug>', view='backfill')` (no longer section-only) runs the
+  section-scoped sweep once per top-level section (`assemble_draft`)
+  and merges by source ref (`merge_recurrence`) — a source recalled
+  across multiple sections ranks first, the closure is draft-wide.
+  Deliberately a slimmer aggregate render than the section view
+  (`render_backfill_draft`) — full eyes/grounding detail stays
+  per-section (`view='backfill'` on a `dc<id>`).
+- **Topic/categorizer precision gate (Build 2 §G3)** — built.
+  `draft_topic_slugs` derives the draft's dominant `topic:<slug>`
+  tag(s) from its cited-paper closure; `_apply_topic_gate` confirms
+  on-domain hits (`LENS_TOPIC` folded into `.lenses`) and demotes
+  (never drops) off-domain/untagged ones below them — keeps a project
+  like "nanobuds" from drifting into adjacent-but-different corpus
+  neighbours (nanoribbons, general graphene). **Degrades to a no-op**
+  (existing semantic+citation ranking) when no cited paper carries a
+  `topic:` tag — `classify_topics` is a dark/default-OFF pass (above),
+  so topic coverage may be sparse-to-absent corpus-wide.
+- **Not yet built:** model-authored recall lenses (HyDE, the Tier-1
+  relevance cull) and the **integrate** coroutine that weaves accepted
+  candidates into the draft — FIND + WORKSPACE only today, no
+  auto-weave.
+
 ## Chunk-tag classifier (ADR 0047 cascade)
 
 Controlled chunk/paper tags written by a measured **cascade**, not a
@@ -1319,7 +1363,15 @@ overlay on `finding`/`ref_tags`/`links` — no schema of its own).
     `--dry-run` with full pre-flight resolution so a bad handle aborts
     before any write, per-supporter attached/already/collapsed reporting).
     Roles are written `corroborates`; seniority still derives
-    `establishes` at read time (W1/W2 unchanged). The write side gains a
+    `establishes` at read time (W1/W2 unchanged). **Also exposed on the
+    MCP surface** (`handlers/finding.py`, not just `cli/taproot.py`):
+    `put(kind='finding', supporters=[…])` (bimodal with the ordinary
+    `cited_in=` chase-finding put) mints/converges the same way, and
+    `link(kind='finding', id='fi<hub>', rel='establishes'|'corroborates'
+    |'contradicts', target=<pc/pa handle>)` attaches evidence to an
+    *existing* hub (no CLI equivalent) — both route through the one
+    write door (`taproot/hub.py`). Skill: `precis-taproot-help`. The
+    write side gains a
     nudge: `handlers/draft.py::_pc_cite_claim_hub_hint` (backed by
     `taproot/lookup.py::hubs_grounded_by_paper` — one bounded
     `links`→`ref_tags`→`ref_identifiers` query) fires on a draft
@@ -1345,14 +1397,18 @@ overlay on `finding`/`ref_tags`/`links` — no schema of its own).
     dodging the `links_for` inverse-rewrite trap. Surfaced read-only in the
     fisheye Claims ring (`refeye.py::_claim_links_lines`): each cited hub gets
     `↰ refined by fi<id> — <sentence>` (a sharper version exists) + `↳ refines
-    fi<id> — …` (what it sharpens), capped. Authored via `precis taproot
-    refine --from <fi/pub_id> --to <fi/pub_id>` (`--dry-run`), resolving both
-    handles through `authoring.py::resolve_hub_ref_id`. Tests:
+    fi<id> — …` (what it sharpens), capped. Authored via
+    `link(kind='finding', id='fi<sharper>', rel='refines', target='fi<coarser>')`
+    or `precis taproot refine --from <fi/pub_id> --to <fi/pub_id>`
+    (`--dry-run`), both resolving through `authoring.py::resolve_hub_ref_id`. Tests:
     `tests/test_taproot_hub.py`, `tests/test_taproot_seniority.py`,
     `tests/test_refeye.py`, `tests/test_taproot_authoring.py`.
   - **Whole-draft `[pc<id>]`→`[fi<id>]` backfill** — built
-    (`taproot/backfill.py`, `precis taproot backfill --chunk dc<id>` /
-    `--draft <slug>`, dry-run default + `--apply`). Walks a draft chunk's
+    (`taproot/backfill.py`, driven by `edit(kind='draft', id=<scope>,
+    taproot=True, apply=, ref_level=)` (`handlers/draft.py::_taproot_backfill`,
+    scope = slug/section/leaf) or the CLI `precis taproot backfill --chunk
+    dc<id>` / `--draft <slug>`, dry-run default + `--apply`/`--ref-level`;
+    both call the same `plan_chunk`/`apply_chunk`). Walks a draft chunk's
     legacy bare `[pc<id>]` cites, **cite-group anchored** (the pc markers
     partition the prose into grounded spans — not a sentence split; adjacent
     `[pc1][pc2]` collapse to one hub with two evidence edges → one
@@ -1372,7 +1428,8 @@ overlay on `finding`/`ref_tags`/`links` — no schema of its own).
     chase pilot's `set_by='chase'`, all filling the same graph. Tests:
     `tests/test_taproot_backfill.py`.
   - **`[pa<id>]` arm (whole-paper cites) — slices 1+2 built**
-    (`taproot/backfill.py` + `precis taproot backfill [--ref-level]`,
+    (`taproot/backfill.py`, same `edit(taproot=True, ref_level=)` /
+    `precis taproot backfill [--ref-level]` door as the `[pc]` arm above,
     `docs/proposals/taproot-draft-pa-arm.md`). The segmenter also anchors
     on bare `[pa<id>]` groups (kept **separate** from `[pc]` groups — a
     kind-switch breaks contiguity, so a whole-paper and a passage cite never
@@ -1391,15 +1448,17 @@ overlay on `finding`/`ref_tags`/`links` — no schema of its own).
     `[pa]`→`[fi<hub>]` and inheriting `apply_chunk`'s idempotent re-convergence.
   - Not yet built: further chase slices (S2-global-citation-count
     fallback promotion, integrity axis (Phase 4), corpus-wide backfill
-    *sweep* (a worker pass — the per-chunk CLI above is its manual
-    predecessor)); `refines` evidence-flow (v1 is advisory-only).
+    *sweep* (a worker pass — the per-chunk/section/draft doors above are
+    its manual predecessor)); `refines` evidence-flow (v1 is
+    advisory-only).
 - **Hub-refine (converging corroborator enrichment, claimed off a due-set)** —
   built, dark (`PRECIS_TAPROOT_REFINE_ENABLED`, default-OFF like every
   taproot flag). Build ticket: `docs/proposals/taproot-hub-refine.md` (+ its
   2026-08-01 addendum). Closes a gap W1/W2/A3 leave open: evidence attaches
-  to a hub only as a *side effect* of chasing a finding or a human's `precis
-  taproot mint` — nothing ever revisits an **existing** hub and asks what
-  else in the corpus supports it. New pass
+  to a hub only as a *side effect* of chasing a finding or a human minting
+  (`put(kind='finding', supporters=…)` / `precis taproot mint`) or manually
+  attaching (`link(kind='finding', rel=…)`) — nothing ever revisits an
+  **existing** hub and asks what else in the corpus supports it. New pass
   `src/precis/workers/hub_refine.py::run_hub_refine_pass`, wired into
   `cli/worker.py` beside `inbound_chase`
   (`workers/registry.py::ServiceSpec` `name="hub_refine"`,

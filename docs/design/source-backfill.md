@@ -1,7 +1,13 @@
 # `source-backfill` — find the sources you missed, and build the workspace to weave them in
 
-> Status: **design / for review** (2026-07-13). No code yet — review
-> this first. This is the *application* that drives the ADR-0051 "eyes /
+> Status: **partially built** (design 2026-07-13; core landed 2026-08-02).
+> The recall lenses, Tier-0 dedup, and eyes/working-set composer are built
+> and reachable via `get(kind='draft', id=<scope>, view='backfill')` — now
+> whole-draft as well as section-scoped, with a `[fi]` claim-hub-aware
+> citation closure and a `topic:` precision gate (see
+> `docs/architecture/state-map.md` §"Source-backfill"). Still unbuilt: the
+> HyDE lens and the integrate coroutine. This is the *application* that
+> drives the ADR-0051 "eyes /
 > working set" machinery (built, shipping dark) toward one concrete job:
 > given a draft section, find sources **already in the corpus** that it
 > *should* cite but doesn't, assemble a rich editing workspace grounded in

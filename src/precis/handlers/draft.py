@@ -450,11 +450,12 @@ class DraftHandler(Handler):
             return self._render_chunk(s)
         ref = resolve_live_slug_ref(self.store, kind="draft", id=s)
         if view == "backfill":
-            raise BadInput(
-                "source-backfill targets a section, not a whole draft",
-                next="point it at a section handle: "
-                "get(kind='draft', id='dc123', view='backfill')",
-            )
+            # Whole-draft roll-up (Build 2 §G2): every top-level section's
+            # sweep, merged by source ref — narrower per-section detail is
+            # still available at get(id='dc<id>', view='backfill').
+            from precis.backfill import render_backfill_draft
+
+            return Response(body=render_backfill_draft(self.store, self.embedder, ref))
         if view == "toc":
             return self._render_toc(ref=ref)
         if view == "wordcount":
@@ -651,6 +652,98 @@ class DraftHandler(Handler):
         ref = resolve_live_slug_ref(self.store, kind="draft", id=raw)
         slug = ref.slug or str(ref.id)
         return [(slug, c) for c in self.store.reading_order(ref.id)], f"draft {raw!r}"
+
+    # ──────────────────────────────────────────────────────────────────
+    # taproot backfill — [pc]/[pa] cites → [fi] claim-hub cites (ADR 0073/74)
+    # ──────────────────────────────────────────────────────────────────
+
+    def _taproot_backfill(
+        self, id: str | int | None, *, apply: bool, ref_level: bool
+    ) -> Response:
+        """Run the Taproot backfill cascade over a scope's body chunks.
+
+        A thin, whole-scope skin over the per-chunk library
+        (``precis.taproot.backfill.plan_chunk`` / ``apply_chunk``) — the same
+        functions ``precis taproot backfill`` drives. Scope resolution reuses
+        ``_scope_chunks`` (slug = whole draft, ``dc<id>`` heading = section,
+        leaf = one chunk). Table/figure chunks are skipped (derived text carries
+        no citations). ``apply_chunk`` rewrites prose by re-entering this same
+        handler's ``edit(text=…)`` door, so the embedding/keyword/link cascade
+        re-runs. Per stage the cascade makes in-process ANN + LLM calls; a
+        whole-draft scope is many chunks and may run for a while."""
+        from precis.taproot.backfill import apply_chunk, plan_chunk
+
+        embedder = getattr(getattr(self, "hub", None), "embedder", None)
+        if embedder is None:
+            raise BadInput(
+                "taproot backfill needs an embedder, but this build has none "
+                "(stateless server). The cascade runs ANN + LLM in-process.",
+                next="run it against a full precis (the deployed worker), not "
+                "a stateless server",
+            )
+        # allow_all=False: a slug still means the whole (single) draft and a
+        # dc<id> a section/leaf, but an OMITTED id raises instead of sweeping
+        # every draft in the corpus — mirrors the sub= substitute guard. A
+        # corpus-wide LLM-driven rewrite must never be a missing-kwarg slip.
+        pairs, where = self._scope_chunks(id, allow_all=False)
+        results: list[Any] = []
+        for _slug, c in pairs:
+            if c.chunk_kind in draft_regex.DERIVED_KINDS:
+                continue  # table/figure: derived text, no citations
+            if apply:
+                results.append(
+                    apply_chunk(
+                        self.store,
+                        embedder,
+                        self,
+                        c.chunk_id,
+                        set_by="agent",
+                        ref_level=ref_level,
+                    )
+                )
+            else:
+                results.append(
+                    plan_chunk(self.store, embedder, c.chunk_id, ref_level=ref_level)
+                )
+        return Response(body=self._render_backfill(results, where, applied=apply))
+
+    def _render_backfill(self, results: list[Any], where: str, *, applied: bool) -> str:
+        """Render backfill ``ChunkBackfill`` results — mirrors the CLI's
+        ``_print_backfill`` text form, collapsed to the chunks that had cites."""
+        tag = "applied" if applied else "DRY-RUN (add apply=True to commit)"
+        with_cites = [r for r in results if r.plans]
+        total_groups = sum(len(r.plans) for r in with_cites)
+        total_ung = sum(r.n_ungrounded for r in with_cites)
+        lines = [
+            f"taproot backfill [{tag}] — {where}",
+            f"{len(results)} chunk(s) scanned, {len(with_cites)} with cites, "
+            f"{total_groups} cite-group(s)"
+            + (f", {total_ung} ref-level/ungrounded" if total_ung else ""),
+        ]
+        for r in with_cites:
+            counts: dict[str, int] = {}
+            for p in r.plans:
+                counts[p.action] = counts.get(p.action, 0) + 1
+            summary = ", ".join(f"{n} {a}" for a, n in sorted(counts.items()))
+            lines.append(f"\ndc{r.chunk_id}: {summary}")
+            for p in r.plans:
+                handles = "+".join(p.group.handles)
+                if p.action == "attach":
+                    arrow = f"→ fi{p.hub_ref_id} (converge)"
+                elif p.action in ("new", "new_contradicts"):
+                    arrow = f"→ fi{p.hub_ref_id}" if p.hub_ref_id else "→ new hub"
+                elif p.action == "reground":
+                    pcs = "".join(f"[pc{c}]" for c in p.reground_targets)
+                    arrow = f"→ {pcs} (re-ground)"
+                else:
+                    arrow = f"({p.action})"
+                if p.ungrounded and p.hub_ref_id is not None:
+                    arrow += " [ref-level]"
+                claim = (p.claim.sentence[:70] + "…") if p.claim else p.note
+                lines.append(f"    [{handles}] {arrow}  {claim}")
+        if not with_cites:
+            lines.append("(no [pc]/[pa] cites in scope — already converted, or none)")
+        return "\n".join(lines)
 
     def _regex_find(
         self,
@@ -1332,6 +1425,8 @@ class DraftHandler(Handler):
         verdict: str = "approved",
         authoring: bool | str | None = None,
         scaffold: str | None = None,
+        taproot: bool = False,
+        ref_level: bool = False,
         dry_run: bool | str = False,
         source: dict[str, Any] | None = None,
         **_kw: Any,
@@ -1460,6 +1555,26 @@ class DraftHandler(Handler):
                 _sub_target = self.store.get_draft_chunk(str(id).strip())
             if _sub_target is None or _sub_target.chunk_kind != "table":
                 return self._substitute(id, sub, apply=bool(apply))
+        # ``taproot`` is a draft-level Taproot backfill (ADR 0073/0074): convert
+        # a scope's legacy [pc<id>]/[pa<id>] cites into living [fi<id>] claim-hub
+        # cites through the SAME canonicalizer cascade + single write door
+        # (taproot/hub.py) the CLI uses — id is the *scope* (a slug for the whole
+        # draft, a dc<id> heading for one section, a dc<id> leaf for one chunk).
+        # Preview by default; apply=True mints/converges hubs + rewrites prose.
+        # ref_level promotes a fetched whole-paper [pa] cite ref-level instead of
+        # re-grounding it to a passage. This is the agent-facing door for what
+        # `precis taproot backfill` does at the CLI (no MCP hub-mint before this).
+        if taproot:
+            if dry_mode is not None:
+                raise BadInput(
+                    "dry_run is not used with taproot= — the backfill previews "
+                    "by default (apply=False) and commits on apply=True.",
+                    next="edit(kind='draft', id=<scope>, taproot=True)  # preview; "
+                    "add apply=True to commit",
+                )
+            return self._taproot_backfill(
+                id, apply=bool(apply), ref_level=bool(ref_level)
+            )
         handle = self._require_chunk_id(id, verb="edit")
         # Normalize a ``dc<id>`` address to the legacy base-58 anchor the
         # store mutators still key on; the agent-facing emit uses ``.dc``.

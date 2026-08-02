@@ -720,6 +720,11 @@ def put(
     body: str | None = None,
     scope: dict[str, Any] | None = None,
     cited_in: str | None = None,
+    # finding Taproot hub-mint (see precis-taproot-help): supporters= (a list
+    # of {paper, role?, source_handle?}) with NO cited_in mints/converges a
+    # claim HUB instead of a chase finding — title=/body= carry the claim
+    # sentence. Supplying both supporters= and cited_in= errors (two modes).
+    supporters: list[dict[str, Any]] | None = None,
     # citation (see precis-citation-help):
     source_handle: str | None = None,
     source_quote: str | None = None,
@@ -863,6 +868,7 @@ def put(
             "body": body,
             "scope": scope,
             "cited_in": cited_in,
+            "supporters": supporters,
             "source_handle": source_handle,
             "source_quote": source_quote,
             "char_offset": char_offset,
@@ -995,6 +1001,18 @@ def edit(
     vocab: str | None = None,
     notes: str | None = None,
     viewbox: Any = None,
+    # draft Taproot backfill (see precis-taproot-help): taproot=True converts a
+    # scope's [pc<id>]/[pa<id>] cites into living [fi<id>] claim-hub cites. id is
+    # the scope (slug = whole draft, dc<id> heading = section, leaf = one chunk).
+    # Previews by default; apply=True mints/converges hubs + rewrites prose.
+    # ref_level=True promotes a fetched whole-paper [pa] cite ref-level instead
+    # of re-grounding it to a passage.
+    taproot: bool | None = None,
+    ref_level: bool | None = None,
+    # ``apply`` commits an otherwise-preview op: the draft regex substitute
+    # (sub=) and the Taproot backfill (taproot=) both preview by default and
+    # write only when apply=True.
+    apply: bool | None = None,
 ) -> str:
     """Edit a region within an existing ref's content (anchored).
 
@@ -1047,6 +1065,9 @@ def edit(
         "vocab": vocab,
         "notes": notes,
         "viewbox": viewbox,
+        "taproot": taproot,
+        "ref_level": ref_level,
+        "apply": apply,
     }
     # See ``get`` for the ``str | CallToolResult`` return contract.
     return _dispatch("edit", payload)

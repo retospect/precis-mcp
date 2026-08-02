@@ -22,6 +22,7 @@ from __future__ import annotations
 from precis.backfill.candidates import (
     Candidate,
     draft_cited_ref_ids,
+    draft_topic_slugs,
     find_candidates,
     merge_recurrence,
 )
@@ -54,7 +55,13 @@ from precis.backfill.link_rollup import (
     rollup_edges,
 )
 from precis.backfill.provenance import SOURCE_KINDS, tier_for, tier_tag
-from precis.backfill.workspace import assemble, recall_embedder, render_backfill
+from precis.backfill.workspace import (
+    assemble,
+    assemble_draft,
+    recall_embedder,
+    render_backfill,
+    render_backfill_draft,
+)
 
 __all__ = [
     "SOURCE_KINDS",
@@ -67,10 +74,12 @@ __all__ = [
     "Rung",
     "TailBucket",
     "assemble",
+    "assemble_draft",
     "coarsest_visible_ancestor",
     "dismiss_source",
     "dismissed_ref_ids",
     "draft_cited_ref_ids",
+    "draft_topic_slugs",
     "find_candidates",
     "find_citation_candidates",
     "intents_for",
@@ -80,6 +89,7 @@ __all__ = [
     "prune_dangling",
     "recall_embedder",
     "render_backfill",
+    "render_backfill_draft",
     "resolve_source_ref_id",
     "retire_intent",
     "rollup_edges",

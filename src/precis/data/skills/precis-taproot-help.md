@@ -2,7 +2,7 @@
 id: precis-taproot-help
 title: precis — the cross-paper claim-evidence graph (Taproot)
 summary: claim hubs (finding tagged TAPROOT:claim) aggregate many papers as typed evidence edges; [fi<id>] is a living citation that resolves to the current best originator(s)
-applies-to: get/search (kind='finding', tags=['TAPROOT:claim'], view='evidence'); citing [fi<id>] in prose; precis taproot mint / refine / backfill
+applies-to: get/search (kind='finding', tags=['TAPROOT:claim'], view='evidence'); citing [fi<id>] in prose; put/edit/link(kind='finding'|'draft') hub-authoring doors; precis taproot mint / refine / backfill (CLI equivalents)
 status: active
 ---
 
@@ -90,8 +90,26 @@ near this chunk."
 ## Turn a draft's [pc<id>] cites into a hub cite
 
 Most legacy prose cites raw paper chunks (`[pc<id>]`), written before claim
-hubs existed. `precis taproot backfill` converts a draft chunk's `[pc<id>]`
-cites into hub `[fi<id>]` cites — **dry-run by default**:
+hubs existed. `edit(kind='draft', taproot=True, ...)` converts a scope's
+`[pc<id>]` (and `[pa<id>]`, below) cites into hub `[fi<id>]` cites —
+**preview by default**:
+
+```python
+edit(kind="draft", id="dc1652005", taproot=True)  # preview: report the plan
+edit(
+    kind="draft", id="dc1652005", taproot=True, apply=True
+)  # mint/converge + rewrite prose
+edit(
+    kind="draft", id="my-draft-slug", taproot=True, apply=True
+)  # every body chunk in the draft
+```
+
+`id=` is the **scope**: a draft slug converts every body chunk, a `dc<id>`
+heading converts its section, a `dc<id>` leaf converts one chunk.
+`dry_run=` isn't accepted here (rejected, same as `sub=`) —
+`taproot=True` previews by default, `apply=True` commits. The CLI form
+(`precis taproot backfill`) is the equivalent for a shell / batch run
+outside an agent session:
 
 ```bash
 precis taproot backfill --chunk dc1652005              # dry-run: report the plan
@@ -134,41 +152,83 @@ paper is fetched:
   re-grounds all-or-nothing: if any supporter fails to locate, the whole run is
   left untouched (never erase a token).
 
-```bash
-precis taproot backfill --chunk dc1652005                      # dry-run: fetched [pa] → reground
-precis taproot backfill --chunk dc1652005 --apply             # re-ground fetched [pa]→[pc]
-precis taproot backfill --chunk dc1652005 --apply --ref-level # promote fetched [pa] whole-paper instead
+```python
+edit(kind="draft", id="dc1652005", taproot=True)  # preview: fetched [pa] → reground
+edit(
+    kind="draft", id="dc1652005", taproot=True, apply=True
+)  # re-ground fetched [pa]→[pc]
+edit(
+    kind="draft", id="dc1652005", taproot=True, apply=True, ref_level=True
+)  # promote fetched [pa] whole-paper instead
 ```
+
+CLI equivalent: `precis taproot backfill --chunk dc1652005 [--apply] [--ref-level]`.
 
 ## Mint a claim hub from a claim I've already sourced
 
-Hubs are paper-sourced and system/tooling-minted, **never**
-agent-`put`-created — `put(kind='finding', ...)` always makes a
-chase-target finding, never a hub (a draft's own novel assertion stays
-draft-local, never enters the shared claim graph). Mint one with the
-`precis taproot mint` CLI:
+`put(kind='finding', ...)` is **bimodal**: `supporters=` (no `cited_in`)
+mints/converges a claim **hub**; `cited_in=` (no `supporters`) files an
+ordinary chase-target finding (see [[precis-finding-help]]) — passing
+both, or neither, errors. Both modes route through the same single write
+door (`taproot/hub.py`, via `seed_claim_hub`), so a hub is still only ever
+paper-sourced — mint **requires paper supporters**, and a draft's own
+novel assertion (no `supporters`, no `cited_in`) errors rather than
+silently becoming a thin-air hub:
+
+```python
+put(
+    kind="finding",
+    title="Pd/C catalyzes Suzuki coupling at room temperature.",
+    scope={"catalyst": "Pd/C"},
+    supporters=[{"paper": "pa5", "source_handle": "pc293"}],
+)  # -> "claim hub fi<id>  pub_id=…" — cite it as [fi<id>]
+```
+
+`supporters` is a list of `{paper, role, source_handle}`: `paper` is the
+supporting paper (its `pa<id>` handle, cite_key, or pub_id — a patent
+handle also resolves); `role` defaults `corroborates`; **`source_handle`
+is the grounding `[pc<id>]` paper chunk and you should always supply
+it** — it lands on the edge as `src_chunk_id`, so the edge cites the
+passage (`pc<id>`), not just the paper (`pa<id>`). List the same paper's
+different supporting passages as separate supporters (same `paper`,
+different `source_handle`) to attach the whole set. Omit it only when
+you genuinely can't name the chunk; the edge then stays coarse
+ref-level. It mints the hub (or converges onto an existing one for
+identical claim content, via the content-hash `pub_id`) and attaches
+each supporter's evidence edge, idempotently — a re-`put` of the same
+spec attaches nothing twice (the dedup key includes the grounding
+chunk, so re-running never duplicates a passage). Cite the resulting
+`[fi<id>]` in your prose afterward.
+
+The `precis taproot mint` CLI is the batch equivalent — many claims
+from one spec file:
 
 ```bash
 precis taproot mint --spec spec.json
 precis taproot mint --dry-run --spec spec.json  # resolve + report, write nothing
 ```
 
-`spec.json` is a JSON array of `{sentence, scope, supporters}` — one
-entry per claim, each supporter a `{paper, role, source_handle}`:
-`paper` is the supporting paper (its `pa<id>` handle, cite_key, or
-pub_id); `role` defaults `corroborates`; **`source_handle` is the
-grounding `[pc<id>]` paper chunk and you should always supply it** — it
-lands on the edge as `src_chunk_id`, so the edge cites the passage
-(`pc<id>`), not just the paper (`pa<id>`). List the same paper's
-different supporting passages as separate supporters (same `paper`,
-different `source_handle`) to attach the whole set. Omit it only when
-you genuinely can't name the chunk; the edge then stays coarse
-ref-level. It mints the hub (or converges onto an existing one for
-identical claim content, via the content-hash `pub_id`) and attaches
-each supporter's evidence edge, idempotently — a re-run of the same
-spec attaches nothing twice (the dedup key includes the grounding
-chunk, so re-running never duplicates a passage). Cite the resulting
-`[fi<id>]` in your prose afterward.
+`spec.json` is a JSON array of `{sentence, scope, supporters}` — same
+shape as the `put()` call above, one entry per claim.
+
+## Attach evidence to an existing hub
+
+To add a supporter to a hub that already exists (not at mint time),
+`link(kind='finding', ...)` is the write door — no CLI equivalent, this
+is MCP-only:
+
+```python
+link(kind="finding", id="fi42", rel="corroborates", target="pc293")
+```
+
+`rel` ∈ `establishes` / `corroborates` / `contradicts`; `target` is the
+supporting paper/chunk handle — `pc<id>` grounds the edge at that
+passage, `pa<id>` lands it ref-level. `rel` is a conservative write-time
+label only — the originator/corroborator split is **derived** at read
+time (`get(id='fi42', view='evidence')`), same as every other door on
+this page. `id` must resolve to a live `TAPROOT:claim` hub (`fi<id>`, a
+pub_id, or a bare ref_id); anything else, or `mode='remove'`, falls
+through to the generic finding-link door.
 
 ## Sharpen a claim — link a reworded version (don't merge)
 
@@ -177,31 +237,34 @@ as its own hub, then link it** — don't try to edit or merge the original.
 Both wordings stay independently citable, and the fisheye Claims ring
 shows the next editor that a sharper version exists.
 
-```bash
+```python
 # 1. mint the sharper claim (its own hub / fi<id>)
-precis taproot mint --json '[{"sentence":"…sharper wording…","scope":{},"supporters":[…]}]'
+out = put(kind="finding", title="…sharper wording…", scope={}, supporters=[…])
 # 2. link sharper --refines--> original
-precis taproot refine --from fi<sharper> --to fi<original>   # --dry-run to preview
+link(kind="finding", id=f"fi{out['hub_ref_id']}", rel="refines", target="fi<original>")
 ```
 
-`--from`/`--to` each accept an `fi<id>` handle, a pub_id, or a bare
+`id`/`target` each accept an `fi<id>` handle, a pub_id, or a bare
 ref_id; both must resolve to live `TAPROOT:claim` hubs. The link is
 **directed** (sharper → coarser), **advisory-only** (no evidence flows —
 each hub keeps its own paper→hub edges), and **idempotent**. In the
 Claims ring the original then shows `↰ refined by fi<sharper>` and the
 sharper one shows `↳ refines fi<original>`.
 
+The CLI equivalent: `precis taproot refine --from fi<sharper> --to
+fi<original>` (`--dry-run` to preview).
+
 ## Maturity — what's live vs dark
 
 | | |
 |---|---|
-| Hub mint / evidence attach (`src/precis/taproot/hub.py`) | live |
+| Hub mint / evidence attach (`src/precis/taproot/hub.py`) — `put(kind='finding', supporters=…)`, `link(kind='finding', rel='establishes'\|'corroborates'\|'contradicts')`, and CLI `precis taproot mint` | live |
 | Seniority derivation (originator/corroborator split) | live |
 | Living-citation resolve + authorial pins (`precis resolve`) | live |
 | Fisheye reference-ring Claims explosion | live |
-| Claim→claim `refines` links (`precis taproot refine`) | live (advisory-only, no evidence flow) |
-| Whole-draft `[pc<id>]`→`[fi<id>]` backfill (`precis taproot backfill`) | live (on-demand, dry-run default; not a corpus sweep) |
-| Whole-paper `[pa<id>]` arm (stub-skip; default `[pa]`→`[pc]` re-ground; `--ref-level` whole-paper promote) | live (slices 1+2) |
+| Claim→claim `refines` links — `link(kind='finding', rel='refines')` and CLI `precis taproot refine` | live (advisory-only, no evidence flow) |
+| Whole-draft/section/chunk `[pc<id>]`→`[fi<id>]` backfill — `edit(kind='draft', taproot=True)` and CLI `precis taproot backfill` | live (on-demand, preview/dry-run default; not a corpus sweep) |
+| Whole-paper `[pa<id>]` arm (stub-skip; default `[pa]`→`[pc]` re-ground; `ref_level=True`/`--ref-level` whole-paper promote) | live (slices 1+2, both doors) |
 | Corpus-wide forward chase bridge (`PRECIS_TAPROOT_CHASE_ENABLED` — a `chase`-pass sub-feature, not its own service) | dark, default-OFF |
 | Hub-refine pass (`workers/hub_refine.py`, `hub_refine` service) | dark, default-OFF — `precis service prio '*' hub_refine <n>` / `/categorizers` |
 | Chase-trigger pass (`workers/chase_trigger.py`, `chase_trigger` service) — marks a hub `TAPROOT_DUE` when a near paper/patent chunk lands, so hub-refine claims it promptly instead of waiting out its backstop | dark, default-OFF — `precis service prio '*' chase_trigger <n>` / `/categorizers` |

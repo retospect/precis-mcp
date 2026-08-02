@@ -379,3 +379,285 @@ def test_backfill_marks_stamp_cited_and_candidate(hub: Hub, plan: PlanHandler) -
     assert f"← {sec}" in marks[cited_handle]
     # a paper candidate carries its provenance tier (peer-reviewed) in the mark
     assert marks["pc999"] == "○ candidate · [peer-reviewed] · text"
+
+
+# ── Build 2 §G1 — closure folds in [fi] hub supporters ────────────────
+
+
+def test_draft_cited_ref_ids_includes_fi_hub_supporters(
+    hub: Hub, plan: PlanHandler
+) -> None:
+    """A draft citing a ``[fi<hub>]`` claim hub folds the hub's evidence
+    supporters (originators + corroborators) into the closure — the
+    load-bearing correctness fix: once ``[pc]``/``[pa]`` cites backfill to
+    ``[fi]``, those papers must not resurface as fresh gaps. A contradicting
+    paper is excluded — it is not "already cited for this point."""
+    from precis.taproot.canon import CanonicalClaim
+    from precis.taproot.hub import attach_evidence, mint_hub
+
+    store = hub.store
+    supporter = store.insert_ref(kind="paper", slug="supporter", title="Supporter")
+    contradictor = store.insert_ref(kind="paper", slug="contra", title="Contradictor")
+    hub_ref_id = mint_hub(
+        store, CanonicalClaim(sentence="Nanobuds form via X", scope={})
+    )
+    attach_evidence(
+        store, hub_ref_id=hub_ref_id, paper_ref_id=supporter.id, role="corroborates"
+    )
+    attach_evidence(
+        store, hub_ref_id=hub_ref_id, paper_ref_id=contradictor.id, role="contradicts"
+    )
+
+    proj = store.insert_ref(kind="todo", slug=None, title="proj").id
+    plan.put(id="g1", title="Doc", project=proj)
+    sec = _pe(plan.put(id="g1", text="Section", at={"last": True}).body)
+    plan.put(id="g1", text=f"a settled claim [fi{hub_ref_id}]", at={"into": sec})
+
+    ref_id = store.get_draft_chunk(sec, kind="plan").ref_id
+    got = draft_cited_ref_ids(store, ref_id, kind="plan")
+    assert supporter.id in got
+    assert contradictor.id not in got
+
+
+def test_draft_cited_ref_ids_ignores_non_hub_finding_cite(
+    hub: Hub, plan: PlanHandler
+) -> None:
+    """A ``[fi<id>]`` cite to a plain chase finding (never tagged
+    ``TAPROOT:claim``) is silently skipped — ``derive_evidence`` only accepts
+    live claim hubs, and this closure scan must not error on the rest."""
+    store = hub.store
+    plain_finding = store.insert_ref(kind="finding", slug=None, title="chase finding")
+
+    proj = store.insert_ref(kind="todo", slug=None, title="proj").id
+    plan.put(id="g1b", title="Doc", project=proj)
+    sec = _pe(plan.put(id="g1b", text="Section", at={"last": True}).body)
+    plan.put(id="g1b", text=f"see [fi{plain_finding.id}] for detail", at={"into": sec})
+
+    ref_id = store.get_draft_chunk(sec, kind="plan").ref_id
+    got = draft_cited_ref_ids(store, ref_id, kind="plan")  # must not raise
+    assert got == set()
+
+
+# ── Build 2 §G3 — topic/categorizer precision gate ────────────────────
+
+
+def test_draft_topic_slugs_picks_the_dominant_tag(hub: Hub) -> None:
+    from precis.backfill.candidates import draft_topic_slugs
+    from precis.store.types import Tag
+
+    store = hub.store
+    a = store.insert_ref(kind="paper", slug="ta", title="A").id
+    b = store.insert_ref(kind="paper", slug="tb", title="B").id
+    c = store.insert_ref(kind="paper", slug="tc", title="C").id
+    store.add_tag(a, Tag.open("topic:nanobuds"), set_by="system")
+    store.add_tag(b, Tag.open("topic:nanobuds"), set_by="system")
+    store.add_tag(c, Tag.open("topic:llm"), set_by="system")
+
+    assert draft_topic_slugs(store, {a, b, c}) == {"nanobuds"}
+    assert draft_topic_slugs(store, set()) == set()  # no closure → no domain
+
+
+def test_find_candidates_topic_gate_demotes_off_domain_hit(
+    hub: Hub, plan: PlanHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """G3: with the draft's cited paper tagged ``topic:nanobuds``, an
+    off-domain (``topic:nanoribbons``) semantic hit is demoted below an
+    on-domain one — even though its raw text-lens score is higher — so a
+    nanobuds draft doesn't drift into adjacent-but-different corpus
+    neighbours. The on-domain hit's ``lenses`` gains the ``topic`` badge."""
+    from precis.backfill.candidates import LENS_TOPIC, find_candidates
+    from precis.store.types import Tag
+
+    store = hub.store
+    sec, cited_id, _cand_id = _doc_with_citation(store, plan)
+    store.add_tag(cited_id, Tag.open("topic:nanobuds"), set_by="system")
+
+    on_domain = store.insert_ref(kind="paper", slug="ondom", title="On-domain paper")
+    off_domain = store.insert_ref(kind="paper", slug="offdom", title="Off-domain paper")
+    store.add_tag(on_domain.id, Tag.open("topic:nanobuds"), set_by="system")
+    store.add_tag(off_domain.id, Tag.open("topic:nanoribbons"), set_by="system")
+
+    def fake_search(**kw: object) -> list[tuple[Any, Any, float]]:
+        return [
+            (NS(id=201), off_domain, 1.0),  # higher raw score, off-domain
+            (NS(id=202), on_domain, 0.5),  # lower raw score, on-domain
+        ]
+
+    monkeypatch.setattr(store, "search_blocks_multi", fake_search)
+    tc = store.get_draft_chunk(sec, kind="plan")
+
+    out = find_candidates(
+        store, None, [tc], kind="plan", limit=5, citation_seed_ref_ids={cited_id}
+    )
+    # gated: on-domain outranks off-domain despite the reversed raw scores
+    assert [c.ref_id for c in out] == [on_domain.id, off_domain.id]
+    assert LENS_TOPIC in out[0].lenses
+    assert LENS_TOPIC not in out[1].lenses
+    assert out[1].score == pytest.approx(0.2)  # 1.0 * the off-domain penalty
+
+
+def test_find_candidates_topic_gate_noop_without_draft_topics(
+    hub: Hub, plan: PlanHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gate degrades to a no-op when the draft's cited papers carry no
+    ``topic:`` tag at all (``classify_topics`` is a dark/default-off pass —
+    sparse-to-absent coverage is expected) — an off-domain-tagged hit is
+    NOT demoted or filtered when the domain can't be derived."""
+    from precis.backfill.candidates import LENS_TOPIC, find_candidates
+    from precis.store.types import Tag
+
+    store = hub.store
+    sec, cited_id, _cand_id = _doc_with_citation(store, plan)
+    # cited_id carries no topic: tag — the domain is undeterminable
+
+    off_domain = store.insert_ref(kind="paper", slug="offdom2", title="Off-domain 2")
+    store.add_tag(off_domain.id, Tag.open("topic:nanoribbons"), set_by="system")
+
+    def fake_search(**kw: object) -> list[tuple[Any, Any, float]]:
+        return [(NS(id=301), off_domain, 1.0)]
+
+    monkeypatch.setattr(store, "search_blocks_multi", fake_search)
+    tc = store.get_draft_chunk(sec, kind="plan")
+
+    out = find_candidates(
+        store, None, [tc], kind="plan", limit=5, citation_seed_ref_ids={cited_id}
+    )
+    assert len(out) == 1
+    assert out[0].score == pytest.approx(1.0)  # not demoted
+    assert LENS_TOPIC not in out[0].lenses
+
+
+def test_find_candidates_topic_gate_covers_citation_lens_only_hit(
+    hub: Hub, plan: PlanHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """G3 fix: the gate must also cover a candidate the CITATION lens alone
+    surfaces — before the fix, ``_merge_citation_lens`` appended
+    citation-only hits to ``out`` *after* ``_apply_topic_gate`` had already
+    run, so an off-domain citation-graph neighbour rode through undemoted
+    (a violation of "nanobuds stays on nanobuds"). Here the text lens finds
+    nothing at all — the off-domain hit is citation-lens-only — and it must
+    still be demoted once the draft's on-domain topic is derivable."""
+    from precis.backfill import citation_lens as cl
+    from precis.backfill.candidates import LENS_CITATION, LENS_TOPIC, find_candidates
+    from precis.store.types import Tag
+
+    store = hub.store
+    sec, cited_id, _cand_id = _doc_with_citation(store, plan)
+    store.add_tag(cited_id, Tag.open("topic:nanobuds"), set_by="system")
+
+    off_domain = store.insert_ref(kind="paper", slug="offdom3", title="Off-domain 3")
+    store.add_tag(off_domain.id, Tag.open("topic:nanoribbons"), set_by="system")
+
+    def fake_search(**kw: object) -> list[tuple[Any, Any, float]]:
+        return []  # the text lens finds nothing — this hit is citation-only
+
+    monkeypatch.setattr(store, "search_blocks_multi", fake_search)
+
+    cite_cand = Candidate(
+        ref_id=off_domain.id,
+        ref=off_domain,
+        chunk_id=911,
+        chunk_handle="pc911",
+        score=1.0,
+        lenses=(LENS_CITATION,),
+    )
+    monkeypatch.setattr(cl, "find_citation_candidates", lambda *a, **k: [cite_cand])
+
+    tc = store.get_draft_chunk(sec, kind="plan")
+    out = find_candidates(
+        store, None, [tc], kind="plan", limit=5, citation_seed_ref_ids={cited_id}
+    )
+
+    assert len(out) == 1
+    assert out[0].ref_id == off_domain.id
+    assert out[0].score == pytest.approx(0.2)  # demoted despite citation-only origin
+    assert LENS_TOPIC not in out[0].lenses
+    assert out[0].lenses == (
+        LENS_CITATION,
+    )  # citation badge preserved through the gate
+
+
+# ── Build 2 §G2 — whole-draft roll-up ──────────────────────────────────
+
+
+def test_whole_draft_backfill_rolls_up_and_merges_recurring_candidate(
+    hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``get(kind='draft', id='<slug>', view='backfill')`` (no section
+    handle) rolls up every top-level section's sweep and merges by source
+    ref — a candidate both sections independently recall shows the
+    recurrence glyph, and the section-scoped path (tested elsewhere in this
+    file) stays untouched."""
+    from precis.handlers.draft import DraftHandler
+
+    store = hub.store
+    draft = DraftHandler(hub=hub)
+    proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
+    draft.put(id="wd", title="Whole Draft Doc", project=proj)
+    ref = store.get_ref(kind="draft", id="wd")
+    title_h = store.reading_order(ref.id)[0].handle
+    draft.put(id="wd", chunk_kind="heading", text="Intro", at={"after": "¶" + title_h})
+    intro_h = next(c.handle for c in store.reading_order(ref.id) if c.text == "Intro")
+    draft.put(
+        id="wd", chunk_kind="paragraph", text="intro body", at={"into": "¶" + intro_h}
+    )
+    draft.put(
+        id="wd", chunk_kind="heading", text="Methods", at={"after": "¶" + intro_h}
+    )
+    methods_h = next(
+        c.handle for c in store.reading_order(ref.id) if c.text == "Methods"
+    )
+    draft.put(
+        id="wd",
+        chunk_kind="paragraph",
+        text="methods body",
+        at={"into": "¶" + methods_h},
+    )
+
+    cand = store.insert_ref(kind="paper", slug="cand", title="Recurring Candidate")
+
+    def fake_search(**kw: object) -> list[tuple[Any, Any, float]]:
+        return [(NS(id=555), cand, 1.0)]
+
+    monkeypatch.setattr(store, "search_blocks_multi", fake_search)
+
+    n_sections = sum(1 for e in store.draft_toc(ref.id) if e.depth == 0)
+    out = draft.get(id="wd", view="backfill").body
+    assert f"{n_sections} section(s) scanned" in out
+    assert "Recurring Candidate" in out
+    assert "○○" in out  # recurs across the sections it was independently recalled in
+
+
+def test_assemble_draft_notes_truncation_not_a_silent_drop(
+    hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``max_candidates`` caps the merged whole-draft list, but the caller
+    always learns it was capped (``truncated=True``) — never a silent drop."""
+    from precis.backfill.workspace import assemble_draft
+    from precis.handlers.draft import DraftHandler
+
+    store = hub.store
+    draft = DraftHandler(hub=hub)
+    proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
+    draft.put(id="wd2", title="Doc", project=proj)
+    ref = store.get_ref(kind="draft", id="wd2")
+    title_h = store.reading_order(ref.id)[0].handle
+    draft.put(id="wd2", chunk_kind="heading", text="A", at={"after": "¶" + title_h})
+    a_h = next(c.handle for c in store.reading_order(ref.id) if c.text == "A")
+    draft.put(id="wd2", chunk_kind="paragraph", text="a body", at={"into": "¶" + a_h})
+
+    papers = [
+        store.insert_ref(kind="paper", slug=f"tp{i}", title=f"Paper {i}")
+        for i in range(3)
+    ]
+
+    def fake_search(**kw: object) -> list[tuple[Any, Any, float]]:
+        return [(NS(id=900 + i), p, 1.0 - i * 0.01) for i, p in enumerate(papers)]
+
+    monkeypatch.setattr(store, "search_blocks_multi", fake_search)
+
+    candidates, _cited, _sections, truncated = assemble_draft(
+        store, hub.embedder, ref.id, max_candidates=2
+    )
+    assert truncated is True
+    assert len(candidates) == 2

@@ -92,7 +92,8 @@ section *points at*, one edge out
   (`derive_refines`): `↰ refined by fi<id> — <sentence>` (a sharper
   version of this claim exists) and `↳ refines fi<id> — …` (the coarser
   claim this one sharpens). Link-only — no evidence flows across it;
-  authored via `precis taproot refine`.
+  authored via `link(kind='finding', rel='refines', target='fi<id>')` or
+  `precis taproot refine`.
   Evidence population depends on the forward chase
   (`PRECIS_TAPROOT_CHASE_ENABLED`, default-off, not yet run at corpus
   scale) — most hubs today show the claim with little or no derived

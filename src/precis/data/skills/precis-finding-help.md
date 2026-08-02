@@ -161,11 +161,17 @@ never `tracing`/`established`), and the default cohort unions hubs in by
 their `TAPROOT:claim` tag alongside `established` findings. Drill one with
 `view='evidence'` (above).
 
-Hubs are **system-minted, not agent-created** — `put(kind='finding', ...)`
-makes a chase-target finding, never a claim hub. A hub + its evidence
-edges are populated by the chase's forward bridge, gated behind
-`PRECIS_TAPROOT_CHASE_ENABLED` (default-OFF — not yet run at corpus
-scale, so evidence is sparse/absent for now). Once minted, a hub is
+`put(kind='finding', ...)` is **bimodal**: `supporters=` (no `cited_in`)
+mints/converges a claim hub; `cited_in=` (no `supporters`) makes an
+ordinary chase-target finding, as above — passing both, or neither,
+errors. Mint still **requires paper supporters** (a draft's own novel
+assertion never becomes a thin-air hub); `link(kind='finding',
+rel='establishes'|'corroborates'|'contradicts', target=<pc/pa handle>)`
+attaches evidence to an existing hub. Full contract:
+`precis-taproot-help`. Evidence also accrues automatically via the
+chase's forward bridge, gated behind `PRECIS_TAPROOT_CHASE_ENABLED`
+(default-OFF — not yet run at corpus scale, so evidence is
+sparse/absent for now beyond what's agent-minted). Once minted, a hub is
 citable by its finding handle, `[fi<id>]` — the same handle you'd
 `get(id='fi42')` with. It also carries an internal content-hash
 `pub_id` (mint-time convergence key: identical claim text always hashes

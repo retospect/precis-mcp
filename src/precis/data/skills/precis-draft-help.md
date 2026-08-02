@@ -712,6 +712,27 @@ view='toc')` re-clusters just that chunk range into finer groups —
 narrow the range and repeat until a row names the chunk that holds the
 claim.
 
+**Already wrote a bunch of raw `[pc<id>]` cites and want a living hub
+cite instead?** `edit(kind='draft', id=<scope>, taproot=True,
+apply=True)` converts a section's or the whole draft's `[pc<id>]`/`[pa<id>]`
+cites to `[fi<id>]` claim-hub cites (preview by default). See
+[[precis-taproot-help]].
+
+## Find sources you missed — the gap-finder
+
+`get(kind='draft', id=<scope>, view='backfill')` sweeps the corpus for
+relevant-but-**uncited** papers and assembles an eyes workspace around
+the candidates — semantic + citation-graph recall, deduped against
+everything the draft already cites. `id=` is a `dc<id>` section (full
+per-candidate detail) or a draft **slug** (a slimmer aggregate roll-up
+merged across every top-level section). The "already cited" exclusion
+also folds in the supporting papers behind every cited `[fi<id>]` claim
+hub, so a hub's own evidence never resurfaces as a false gap. A topic
+precision gate keeps candidates on-domain when the cited papers carry
+`topic:` tags (a nanobuds review won't surface nanoribbon/graphene
+neighbours) — a no-op when they don't. Full contract:
+`docs/design/source-backfill.md`.
+
 ## Cite a paper we don't have yet — request it, don't fake it
 
 The right source for a claim is often **not in the corpus yet**. That is
@@ -1038,5 +1059,5 @@ get(
 )  # wait-on-ingest (paper_ingested) leaf pattern
 get(
     kind="skill", id="precis-taproot-help"
-)  # cite a claim hub, the living [fi<id>] citation
+)  # cite a claim hub (living [fi<id>]); mint one; backfill [pc<id>] cites to it
 ```

@@ -20,6 +20,7 @@ from precis.backfill.candidates import (
     Candidate,
     draft_cited_ref_ids,
     find_candidates,
+    merge_recurrence,
 )
 from precis.backfill.dismissed import dismissed_ref_ids
 from precis.backfill.provenance import tier_tag
@@ -289,3 +290,110 @@ def render_backfill(
         _render_candidate_list(candidates),
     ]
     return "\n\n".join(p for p in parts if p)
+
+
+# ── whole-draft roll-up (Build 2 §G2) ─────────────────────────────────
+
+
+def _top_level_section_handles(store: Any, ref_id: int, *, kind: str) -> list[str]:
+    """The whole-draft roll-up's per-section targets — every depth-0
+    (top-level) heading's ``.dc`` handle. A heading-less/flat draft (no
+    sub-headings at all) falls back to every top-level body chunk, so a
+    short heading-less draft still gets scanned rather than returning
+    nothing."""
+    chunks = store.reading_order(ref_id, kind=kind)
+    headings = [
+        c.dc for c in chunks if c.chunk_kind == "heading" and c.parent_chunk_id is None
+    ]
+    if headings:
+        return headings
+    return [c.dc for c in chunks if c.parent_chunk_id is None]
+
+
+def assemble_draft(
+    store: Any,
+    embedder: Any,
+    ref_id: int,
+    *,
+    kind: str = "draft",
+    per_paper: int = 1,
+    section_pool: int = 8,
+    max_candidates: int = 20,
+) -> tuple[list[Candidate], set[int], list[str], bool]:
+    """The whole-draft gap-finder roll-up (Build 2 §G2): run the
+    section-scoped sweep (:func:`assemble`) once per top-level section, then
+    merge every section's candidates by source ref
+    (:func:`~precis.backfill.candidates.merge_recurrence` — the same
+    recurrence overlay a multi-target ``assemble`` call already folds several
+    *sub*-targets through within one section), so a source several sections
+    independently recall ranks first and a paper cited in one section is
+    excluded draft-wide (the Tier-0 dedup closure is draft-wide already, not
+    per-section). Returns ``(candidates, cited_ref_ids, section_handles,
+    truncated)`` — ``truncated`` is set (never a silent drop) when more
+    distinct candidates were found than ``max_candidates`` keeps."""
+    sections = _top_level_section_handles(store, ref_id, kind=kind)
+    if not sections:
+        return [], set(), [], False
+    per_section: list[list[Candidate]] = []
+    cited: set[int] = set()
+    for handle in sections:
+        try:
+            _ws, cands, sec_cited = assemble(
+                store,
+                embedder,
+                [handle],
+                kind=kind,
+                per_paper=per_paper,
+                max_candidates=section_pool,
+            )
+        except ValueError:
+            continue  # a heading with no live chunk — skip, don't abort the roll-up
+        per_section.append(cands)
+        cited |= sec_cited
+    pool_cap = sum(len(cs) for cs in per_section) or 1
+    merged = merge_recurrence(per_section, limit=pool_cap)  # no internal truncation
+    truncated = len(merged) > max_candidates
+    return merged[:max_candidates], cited, sections, truncated
+
+
+def render_backfill_draft(
+    store: Any,
+    embedder: Any,
+    ref: Any,
+    *,
+    kind: str = "draft",
+    per_paper: int = 1,
+    section_pool: int = 8,
+    max_candidates: int = 20,
+) -> str:
+    """Render the whole-draft source-backfill gap-finder (Build 2 §G2): the
+    aggregate ○ candidate list merged across every section, plus a
+    closure/scan summary. Deliberately **not** the full per-section eyes
+    working set + grounding block :func:`render_backfill` composes — at
+    whole-draft scale (dozens of sections) that would be unreadable; narrow
+    to a section (``view='backfill'`` on a ``dc<id>``) for that detail."""
+    candidates, cited, sections, truncated = assemble_draft(
+        store,
+        embedder,
+        ref.id,
+        kind=kind,
+        per_paper=per_paper,
+        section_pool=section_pool,
+        max_candidates=max_candidates,
+    )
+    title = ref.title or ref.slug or str(ref.id)
+    lines = [
+        f"# {title} — whole-draft source-backfill",
+        "",
+        f"{len(sections)} section(s) scanned · {len(cited)} paper(s) "
+        "already cited (closure)",
+    ]
+    if truncated:
+        lines.append(
+            f"showing the top {max_candidates} candidates — narrow to a "
+            "section (get(kind='draft', id='dc<id>', view='backfill')) for "
+            "that section's full sweep"
+        )
+    lines.append("")
+    lines.append(_render_candidate_list(candidates))
+    return "\n".join(lines)
