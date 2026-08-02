@@ -139,10 +139,11 @@ def test_claim_skips_when_no_free_slot(store: Store) -> None:
     assert rows == []  # unreservable here → not claimed
     # the job stays queued (claim never stamped it)
     with store.pool.connection() as conn:
-        meta = conn.execute(
+        meta_row = conn.execute(
             "SELECT meta FROM refs WHERE ref_id = %s", (jid,)
-        ).fetchone()[0]
-    assert "reserved" not in meta
+        ).fetchone()
+    assert meta_row is not None
+    assert "reserved" not in meta_row[0]
 
 
 def test_claim_without_requires_unaffected(store: Store) -> None:

@@ -2479,6 +2479,7 @@ class DraftMixin:
             "AND pos IS NOT NULL AND retired_at IS NULL",
             (ref_id,),
         ).fetchone()
+        assert row is not None  # count(*) always returns one row
         return int(row[0])
 
     def _descendant_ids(self, conn: psycopg.Connection, chunk_id: int) -> list[int]:

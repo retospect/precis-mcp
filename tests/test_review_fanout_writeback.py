@@ -920,8 +920,9 @@ class TestReviewWriteback:
         job_tags = {str(t) for t in store.tags_for(job_id)}
         assert "STATUS:succeeded" in job_tags
         with store.pool.connection() as conn:
-            n = conn.execute("SELECT count(*) FROM chunk_review").fetchone()[0]
-        assert n == 0
+            n_row = conn.execute("SELECT count(*) FROM chunk_review").fetchone()
+        assert n_row is not None
+        assert n_row[0] == 0
 
     def test_writeback_swallows_exceptions(
         self, store: Store, monkeypatch: pytest.MonkeyPatch
@@ -929,10 +930,12 @@ class TestReviewWriteback:
         ref_id = _draft_with_chunks(store, name="wb-swallow")
         p = store.reviewable_chunks(ref_id)[0]
         with store.pool.connection() as conn:
-            current_sha = conn.execute(
+            current_sha_row = conn.execute(
                 "SELECT content_sha FROM chunks WHERE chunk_id = %s",
                 (p["chunk_id"],),
-            ).fetchone()[0]
+            ).fetchone()
+        assert current_sha_row is not None
+        current_sha = current_sha_row[0]
 
         def _boom(*_a: object, **_k: object) -> str:
             raise RuntimeError("boom")

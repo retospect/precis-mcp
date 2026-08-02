@@ -519,13 +519,13 @@ def test_schedule_pass_failed_previous_tick_does_not_wedge(
     result = run_schedule_pass(store, limit=50)
     assert result.ok == 1, "failed previous tick should not block the next one"
     with store.pool.connection() as conn:
-        n = int(
-            conn.execute(
-                "SELECT count(*) FROM refs WHERE parent_id = %s AND deleted_at IS NULL "
-                "AND meta->>'spawned_for_tick' <> %s",
-                (rid, old_stamp),
-            ).fetchone()[0]
-        )
+        row = conn.execute(
+            "SELECT count(*) FROM refs WHERE parent_id = %s AND deleted_at IS NULL "
+            "AND meta->>'spawned_for_tick' <> %s",
+            (rid, old_stamp),
+        ).fetchone()
+    assert row is not None
+    n = int(row[0])
     assert n == 1, "a fresh tick should have been minted"
 
 
@@ -723,17 +723,19 @@ def test_schedule_pass_delivers_instead_of_spawning(
     assert result.ok >= 1
 
     with store.pool.connection() as conn:
-        n_children = conn.execute(
+        n_children_row = conn.execute(
             "SELECT count(*) FROM refs WHERE parent_id = %s AND deleted_at IS NULL",
             (rid,),
-        ).fetchone()[0]
-        n_deliver_events = conn.execute(
+        ).fetchone()
+        n_deliver_events_row = conn.execute(
             "SELECT count(*) FROM ref_events WHERE ref_id = %s "
             "AND source = 'schedule' AND event = 'deliver'",
             (rid,),
-        ).fetchone()[0]
-    assert int(n_children) == 0, "delivery-mode ticks must not mint a subtask"
-    assert int(n_deliver_events) == 1
+        ).fetchone()
+    assert n_children_row is not None
+    assert n_deliver_events_row is not None
+    assert int(n_children_row[0]) == 0, "delivery-mode ticks must not mint a subtask"
+    assert int(n_deliver_events_row[0]) == 1
 
 
 def test_schedule_pass_deliver_tick_is_idempotent_same_minute(
@@ -751,12 +753,13 @@ def test_schedule_pass_deliver_tick_is_idempotent_same_minute(
     run_schedule_pass(store, limit=50)
     run_schedule_pass(store, limit=50)
     with store.pool.connection() as conn:
-        n = conn.execute(
+        n_row = conn.execute(
             "SELECT count(*) FROM ref_events WHERE ref_id = %s "
             "AND source = 'schedule' AND event = 'deliver'",
             (rid,),
-        ).fetchone()[0]
-    assert int(n) == 1
+        ).fetchone()
+    assert n_row is not None
+    assert int(n_row[0]) == 1
 
 
 # ── one-shot `at` resolve-and-retire (ADR 0061) ──────────────────────
@@ -781,11 +784,12 @@ def test_schedule_pass_fires_due_one_shot_and_retires(
     tags = {str(t) for t in store.tags_for(rid)}
     assert "STATUS:done" in tags
     with store.pool.connection() as conn:
-        n_children = conn.execute(
+        n_children_row = conn.execute(
             "SELECT count(*) FROM refs WHERE parent_id = %s AND deleted_at IS NULL",
             (rid,),
-        ).fetchone()[0]
-    assert int(n_children) == 0
+        ).fetchone()
+    assert n_children_row is not None
+    assert int(n_children_row[0]) == 0
 
     # A second pass is a no-op — the one-shot already retired (STATUS:done
     # excludes it from the next candidate scan).
@@ -820,9 +824,10 @@ def test_schedule_pass_expires_overdue_one_shot_without_catch_up(
     tags = {str(t) for t in store.tags_for(rid)}
     assert "STATUS:done" in tags
     with store.pool.connection() as conn:
-        action = conn.execute(
+        action_row = conn.execute(
             "SELECT payload->>'action' FROM ref_events WHERE ref_id = %s "
             "AND source = 'schedule' AND event = 'deliver'",
             (rid,),
-        ).fetchone()[0]
-    assert action == "expire"
+        ).fetchone()
+    assert action_row is not None
+    assert action_row[0] == "expire"

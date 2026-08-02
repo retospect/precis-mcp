@@ -1003,7 +1003,7 @@ def _write_through(
 
         if existing_id is None:
             seq = _next_notice_seq(store, paper_slug, notice.relation)
-            notice_msg: dict[str, Any] | None = {
+            notice_msg: dict[str, Any] = {
                 "title": [notice.notice_title] if notice.notice_title else [],
                 "author": notice.notice_authors or [],
             }

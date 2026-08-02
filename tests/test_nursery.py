@@ -738,6 +738,7 @@ def test_full_pass_raises_alerts_when_findings_appear(
             "JOIN tags t USING(tag_id) WHERE r.kind='memory' "
             "AND t.namespace='OPEN' AND t.value='tier:nursery'",
         ).fetchone()
+    assert memory_digests is not None
     assert memory_digests[0] == 0
 
 
@@ -778,6 +779,7 @@ def test_full_pass_auto_resolves_cleared_condition(
             "AND r.deleted_at IS NULL AND t.namespace='OPEN' AND t.value=%s",
             (STATE_RESOLVED,),
         ).fetchone()
+    assert resolved is not None
     assert resolved[0] >= 1
 
 

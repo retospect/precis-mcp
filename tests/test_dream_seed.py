@@ -27,7 +27,11 @@ def test_select_lens_rotates_and_wraps():
     # Deterministic: same bucket → same lens; wraps at N.
     assert ds.select_lens(lenses, bucket=0) is ds.select_lens(lenses, bucket=0)
     assert ds.select_lens(lenses, bucket=n) is ds.select_lens(lenses, bucket=0)
-    swept = {ds.select_lens(lenses, bucket=b)["id"] for b in range(n)}
+    swept = set()
+    for b in range(n):
+        lens = ds.select_lens(lenses, bucket=b)
+        assert lens is not None
+        swept.add(lens["id"])
     assert swept == {l["id"] for l in lenses}
 
 

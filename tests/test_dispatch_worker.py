@@ -847,6 +847,7 @@ def _job_prio(store: Store, job_id: int) -> int | None:
         row = conn.execute(
             "SELECT prio FROM refs WHERE ref_id = %s", (job_id,)
         ).fetchone()
+    assert row is not None
     return None if row[0] is None else int(row[0])
 
 

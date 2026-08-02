@@ -524,10 +524,12 @@ def test_native_structure_ingest(pathway_store: Store) -> None:
         kind = c.execute(
             "SELECT kind FROM refs WHERE ref_id=%s AND deleted_at IS NULL", (sid,)
         ).fetchone()
-        natoms = c.execute(
+        natoms_row = c.execute(
             "SELECT count(*) FROM struct_atoms WHERE ref_id=%s AND retired_version IS NULL",
             (sid,),
-        ).fetchone()[0]
+        ).fetchone()
+    assert natoms_row is not None
+    natoms = natoms_row[0]
     assert kind and kind[0] == "structure"
     assert natoms > 0, "structure ref has no atoms"
 

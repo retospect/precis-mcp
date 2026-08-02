@@ -742,7 +742,9 @@ def test_run_oss_tool_loop_hosted_thinking_off_disables_reasoning(
     run_oss_tool_loop(prompt="x", model="m", temperature=0.0, thinking=False)
 
     assert seen["temperature"] == 0.0
-    assert seen["extra_body"]["reasoning"] == {"enabled": False}
+    extra_body = seen["extra_body"]
+    assert isinstance(extra_body, dict)
+    assert extra_body["reasoning"] == {"enabled": False}
 
 
 def test_openai_tools_threads_tool_calls(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1377,7 +1379,9 @@ def test_dispatch_openai_compat_thinking_off_disables_reasoning(
 
     assert out.error is None
     assert seen["temperature"] == 0.0
-    assert seen["extra_body"]["reasoning"] == {"enabled": False}
+    extra_body = seen["extra_body"]
+    assert isinstance(extra_body, dict)
+    assert extra_body["reasoning"] == {"enabled": False}
 
 
 def test_dispatch_openai_compat_thinking_on_omits_reasoning_disable(
@@ -1443,7 +1447,9 @@ def test_dispatch_openai_compat_explicit_thinking_false_overrides_big_tier_defau
     out = dispatch(LlmRequest(tier=Tier.BIG, prompt="x", thinking=False))
 
     assert out.error is None
-    assert seen["extra_body"]["reasoning"] == {"enabled": False}
+    extra_body = seen["extra_body"]
+    assert isinstance(extra_body, dict)
+    assert extra_body["reasoning"] == {"enabled": False}
 
 
 def test_dispatch_openai_backend_without_base_url_falls_back_to_claude(

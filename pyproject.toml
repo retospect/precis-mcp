@@ -496,14 +496,11 @@ python_version = "3.12"
 warn_unused_configs = true
 check_untyped_defs = true
 ignore_missing_imports = true
-# Incrementally re-enabling these (code-review Phase 4.1). Already
-# burned down + removed: no-any-return, valid-type (were already clean),
-# dict-item, method-assign, var-annotated, union-attr, type-var,
-# assignment, operator. Remaining: index (106 at 2026-08-02 measure) —
-# delete this list entirely when it's burned down.
-disable_error_code = [
-    "index",
-]
+# Burn-down complete 2026-08-02: every once-disabled error code
+# (no-any-return, valid-type, dict-item, method-assign, var-annotated,
+# union-attr, type-var, assignment, operator, index) is now enforced.
+# Don't reintroduce a disable_error_code list — fix or narrowly ignore
+# at the site instead.
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

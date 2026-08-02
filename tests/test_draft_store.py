@@ -82,6 +82,8 @@ def test_soft_delete_draft_is_atomic_and_recoverable(store: Store) -> None:
             "SELECT count(*) FROM chunks WHERE ref_id=%s AND retired_at IS NULL",
             (ref.id,),
         ).fetchone()
+    assert dref is not None
+    assert live_chunks is not None
     assert dref[0] is not None
     assert live_chunks[0] == 0
 
@@ -483,12 +485,12 @@ def test_live_paper_cites_splits_local_vs_external(store: Store) -> None:
         paper.id, [BlockInsert(pos=0, text="We measured 12% FE.", meta={})]
     )
     with store.pool.connection() as conn:
-        chunk_id = int(
-            conn.execute(
-                "SELECT chunk_id FROM chunks WHERE ref_id=%s ORDER BY ord LIMIT 1",
-                (paper.id,),
-            ).fetchone()[0]
-        )
+        chunk_row = conn.execute(
+            "SELECT chunk_id FROM chunks WHERE ref_id=%s ORDER BY ord LIMIT 1",
+            (paper.id,),
+        ).fetchone()
+        assert chunk_row is not None
+        chunk_id = int(chunk_row[0])
     pc = handle_registry.format_handle("paper", chunk_id, chunk=True)  # pc<id>
     pa = handle_registry.format_handle("paper", paper.id)  # pa<id> record
     # a non-paper record (memory) whose handle must NOT count as a paper cite

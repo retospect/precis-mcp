@@ -61,6 +61,7 @@ def test_raise_alert_inserts_open_with_tags(store: Store) -> None:
             "FROM refs WHERE ref_id = %s",
             (aid,),
         ).fetchone()
+    assert row is not None
     meta = row[0]
     assert meta["fingerprint"] == "spin-loop:42"
     assert meta["subject_ref_id"] == 42
@@ -84,6 +85,7 @@ def test_raise_alert_dedups_on_fingerprint(store: Store) -> None:
         row = conn.execute(
             "SELECT title, meta->>'seen_count' FROM refs WHERE ref_id = %s", (a1,)
         ).fetchone()
+    assert row is not None
     assert row[0] == "second"  # title refreshed
     assert int(row[1]) == 2  # seen bumped
 
@@ -169,11 +171,11 @@ def _counting_update_ref(store: Store, monkeypatch: pytest.MonkeyPatch) -> list[
 
 def _seen_count(store: Store, ref_id: int) -> int:
     with store.pool.connection() as conn:
-        return int(
-            conn.execute(
-                "SELECT meta->>'seen_count' FROM refs WHERE ref_id = %s", (ref_id,)
-            ).fetchone()[0]
-        )
+        row = conn.execute(
+            "SELECT meta->>'seen_count' FROM refs WHERE ref_id = %s", (ref_id,)
+        ).fetchone()
+    assert row is not None
+    return int(row[0])
 
 
 def test_raise_alert_first_repeat_always_writes(
@@ -300,6 +302,7 @@ def test_resolved_alert_carries_resolved_tag_and_timestamp(store: Store) -> None
         row = conn.execute(
             "SELECT meta, resolved_at FROM refs WHERE ref_id = %s", (aid,)
         ).fetchone()
+    assert row is not None
     assert "resolved_at" in row[0]  # dual-write into meta kept
     assert row[1] is not None  # migration 0099: real column set too
 
@@ -315,6 +318,7 @@ def test_resolve_stale_alerts_column_and_tag_flip_together(store: Store) -> None
         row = conn.execute(
             "SELECT resolved_at FROM refs WHERE ref_id = %s", (aid1,)
         ).fetchone()
+    assert row is not None
     assert row[0] is not None
 
     # Re-raise the same (source, fingerprint) — the index must not block it.
@@ -342,6 +346,7 @@ def test_resolve_alert_dismisses_single_open_alert(store: Store) -> None:
         row = conn.execute(
             "SELECT meta, resolved_at FROM refs WHERE ref_id = %s", (aid,)
         ).fetchone()
+    assert row is not None
     assert row[1] is not None  # column and tag flipped together
     assert row[0].get("resolved_by") == "operator"
     assert "resolved_at" in row[0]  # meta dual-write kept
@@ -419,7 +424,7 @@ def test_raise_alert_dedups_onto_null_column_row_during_rollout(
     # NULL (raise_alert's dedup-write path only patches meta/title, not
     # the columns; the column dual-write only happens on first INSERT).
     with store.pool.connection() as conn:
-        n = conn.execute(
+        row = conn.execute(
             """
             SELECT count(*) FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
@@ -432,8 +437,9 @@ def test_raise_alert_dedups_onto_null_column_row_during_rollout(
                AND t.value = %s
             """,
             (STATE_OPEN,),
-        ).fetchone()[0]
-    assert n == 1
+        ).fetchone()
+    assert row is not None
+    assert row[0] == 1
 
 
 def test_resolve_stale_alerts_resolves_null_column_row_during_rollout(
@@ -453,6 +459,7 @@ def test_resolve_stale_alerts_resolves_null_column_row_during_rollout(
         row = conn.execute(
             "SELECT resolved_at FROM refs WHERE ref_id = %s", (old_id,)
         ).fetchone()
+    assert row is not None
     assert row[0] is not None
 
 

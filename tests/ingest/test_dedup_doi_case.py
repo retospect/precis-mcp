@@ -93,6 +93,7 @@ def _is_deleted(store: Store, ref_id: int) -> bool:
         row = conn.execute(
             "SELECT deleted_at IS NOT NULL FROM refs WHERE ref_id = %s", (ref_id,)
         ).fetchone()
+    assert row is not None
     return bool(row[0])
 
 
@@ -106,12 +107,13 @@ class TestDoiLowercaseTrigger:
                 (ref.id,),
             )
         with store.pool.connection() as conn:
-            val = conn.execute(
+            val_row = conn.execute(
                 "SELECT id_value FROM ref_identifiers "
                 "WHERE ref_id = %s AND id_kind = 'doi'",
                 (ref.id,),
-            ).fetchone()[0]
-        assert val == "10.18653/v1/d19-1371"
+            ).fetchone()
+        assert val_row is not None
+        assert val_row[0] == "10.18653/v1/d19-1371"
 
     def test_non_doi_identifier_is_untouched(self, store: Store):
         with store.tx() as conn:
@@ -122,12 +124,13 @@ class TestDoiLowercaseTrigger:
                 (ref.id,),
             )
         with store.pool.connection() as conn:
-            val = conn.execute(
+            val_row = conn.execute(
                 "SELECT id_value FROM ref_identifiers "
                 "WHERE ref_id = %s AND id_kind = 's2'",
                 (ref.id,),
-            ).fetchone()[0]
-        assert val == "ABC123def"
+            ).fetchone()
+        assert val_row is not None
+        assert val_row[0] == "ABC123def"
 
 
 class TestReconcileByDoiCase:
@@ -192,11 +195,12 @@ class TestReconcileByDoiCase:
         reconcile_by_doi_case(store, dry_run=False)
 
         with store.pool.connection() as conn:
-            validated = conn.execute(
+            validated_row = conn.execute(
                 "SELECT convalidated FROM pg_constraint "
                 "WHERE conname = 'ref_identifiers_doi_lc'"
-            ).fetchone()[0]
-        assert validated is True
+            ).fetchone()
+        assert validated_row is not None
+        assert validated_row[0] is True
 
     def test_dry_run_writes_nothing(self, store: Store):
         paper = _mk_pdf_paper(store, slug="beltagy19", doi="10.18653/v1/D19-1371")

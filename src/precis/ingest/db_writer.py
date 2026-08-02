@@ -584,12 +584,12 @@ def register_aliases_and_maybe_upgrade(
         # Aliases already registered; nothing else to do.
         return 0
     already_has_pdf = existing_pdf_row[0] is not None
-    has_body = bool(
-        conn.execute(
-            "SELECT EXISTS (SELECT 1 FROM chunks WHERE ref_id = %s AND ord >= 0)",
-            (existing_ref_id,),
-        ).fetchone()[0]
-    )
+    has_body_row = conn.execute(
+        "SELECT EXISTS (SELECT 1 FROM chunks WHERE ref_id = %s AND ord >= 0)",
+        (existing_ref_id,),
+    ).fetchone()
+    assert has_body_row is not None  # SELECT EXISTS always returns one row
+    has_body = bool(has_body_row[0])
 
     # Promote the canonical PDF when this ingest brings bytes and the ref
     # has none yet (stub upgrade *or* markup-ref printable attach). If the

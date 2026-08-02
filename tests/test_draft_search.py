@@ -62,9 +62,11 @@ def _embed_draft(store: Store, slug: str) -> None:
     dim = store.embedding_dim()
     e = MockEmbedder(dim=dim)
     with store.pool.connection() as conn:
-        name = conn.execute(
+        name_row = conn.execute(
             "SELECT name FROM embedders WHERE is_default = TRUE LIMIT 1"
-        ).fetchone()[0]
+        ).fetchone()
+        assert name_row is not None
+        name = name_row[0]
         rows = conn.execute(
             """SELECT c.chunk_id, c.text, c.content_sha
                  FROM chunks c

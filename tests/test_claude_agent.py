@@ -514,7 +514,9 @@ def test_container_executor_off_uses_host_binary(monkeypatch, stub_bin: Path) ->
 
     monkeypatch.setattr(ca, "run_claude", _fake)
     call_claude_agent("do", model="opus")
-    assert captured["argv"][0] == str(stub_bin)  # host binary, not a container
+    argv = captured["argv"]
+    assert isinstance(argv, list)
+    assert argv[0] == str(stub_bin)  # host binary, not a container
 
 
 def test_container_executor_on_wraps_in_podman(monkeypatch, stub_bin: Path) -> None:

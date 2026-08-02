@@ -227,6 +227,7 @@ def test_dispatch_marks_invalid_proposal(seeded, monkeypatch):
     # surfaced as invalid for the human, not a job failure.
     assert ctx.status == "succeeded"
     result = ctx.result_chunk()
+    assert result is not None
     assert result["valid"] is False and "op error" in result["error"]
 
 

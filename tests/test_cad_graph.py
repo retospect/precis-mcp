@@ -76,6 +76,7 @@ def test_point_in_bore_is_removed_by_cutter() -> None:
     c = d.classify_point(vec3(0, 0, 5))
     assert c.inside is False
     assert c.additive is True  # plate would be here
+    assert c.blocker is not None
     assert d.instances[c.blocker].label == "bore"
 
 
@@ -86,6 +87,7 @@ def test_point_in_solid_names_owner() -> None:
     d.add_component("part", d.subtract(plate, bore))
     c = d.classify_point(vec3(15, 0, 5))
     assert c.inside is True
+    assert c.owner is not None
     assert d.instances[c.owner].label == "plate"
 
 
@@ -169,4 +171,5 @@ def test_design_from_dsl_configs() -> None:
     d.add_component("flange", d.subtract(plate, bore))
     c = d.classify_point(vec3(0, 0, 4))
     assert not c.inside
+    assert c.blocker is not None
     assert d.instances[c.blocker].label == "bore"

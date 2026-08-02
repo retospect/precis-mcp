@@ -477,7 +477,7 @@ def render_projects(store: Store) -> Response:
         projects: list[dict[str, Any]] = []
         for ref_id, title, path, fmt, brief in rows:
             ref_id = int(ref_id)
-            open_count = conn.execute(
+            open_count_row = conn.execute(
                 """
                 WITH RECURSIVE sub(ref_id) AS (
                     SELECT %s::bigint
@@ -497,7 +497,9 @@ def render_projects(store: Store) -> Response:
                  )
                 """,
                 (ref_id,),
-            ).fetchone()[0]
+            ).fetchone()
+            assert open_count_row is not None  # count(*) always returns one row
+            open_count = open_count_row[0]
             projects.append(
                 {
                     "id": ref_id,

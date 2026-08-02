@@ -45,4 +45,6 @@ def test_cited_chunk_returns_text_and_page() -> None:
         "text": "the cited passage",
         "page": 7,
     }
-    assert _cited_chunk(s, 10, "3..5")["ord"] == 3  # range uses the 'from' ord
+    range_result = _cited_chunk(s, 10, "3..5")
+    assert range_result is not None
+    assert range_result["ord"] == 3  # range uses the 'from' ord

@@ -18,10 +18,12 @@ def _fetch(dsn: str, sql: str, params: tuple = ()) -> list[dict]:
 
 def _insert_ref(dsn: str, title: str) -> int:
     with psycopg.connect(dsn) as conn:
-        return conn.execute(
+        row = conn.execute(
             "INSERT INTO refs (kind, title) VALUES ('structure', %s) RETURNING ref_id",
             (title,),
-        ).fetchone()[0]
+        ).fetchone()
+        assert row is not None
+        return row[0]
 
 
 def test_provenance_defaults_computed_for_existing_rows(fresh_db: str) -> None:

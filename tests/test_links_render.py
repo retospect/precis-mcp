@@ -83,16 +83,16 @@ class TestRenderLinksSection:
         )
 
         with store.pool.connection() as conn:
-            pc_id = int(
-                conn.execute(
-                    "SELECT chunk_id FROM chunks WHERE ref_id = %s", (paper.id,)
-                ).fetchone()[0]
-            )
-            dc_id = int(
-                conn.execute(
-                    "SELECT chunk_id FROM chunks WHERE ref_id = %s", (dref.id,)
-                ).fetchone()[0]
-            )
+            pc_row = conn.execute(
+                "SELECT chunk_id FROM chunks WHERE ref_id = %s", (paper.id,)
+            ).fetchone()
+            assert pc_row is not None
+            pc_id = int(pc_row[0])
+            dc_row = conn.execute(
+                "SELECT chunk_id FROM chunks WHERE ref_id = %s", (dref.id,)
+            ).fetchone()
+            assert dc_row is not None
+            dc_id = int(dc_row[0])
 
         ref = store.get_ref(kind="finding", id=fin.id)
         assert ref is not None

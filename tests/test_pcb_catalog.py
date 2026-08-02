@@ -37,8 +37,12 @@ def test_normalize_maps_jlcparts_row():
 
 
 def test_normalize_lcsc_forms_and_missing():
-    assert catalog.normalize_jlcparts_row({"lcsc": "C7"})["lcsc"] == "C7"
-    assert catalog.normalize_jlcparts_row({"lcsc": 7})["lcsc"] == "C7"
+    n1 = catalog.normalize_jlcparts_row({"lcsc": "C7"})
+    assert n1 is not None
+    assert n1["lcsc"] == "C7"
+    n2 = catalog.normalize_jlcparts_row({"lcsc": 7})
+    assert n2 is not None
+    assert n2["lcsc"] == "C7"
     assert catalog.normalize_jlcparts_row({"description": "x"}) is None  # no C-number
 
 

@@ -37,17 +37,21 @@ def _vec_literal(axis: int, rng: np.random.Generator) -> str:
 
 def _seed_theme(store: Store, axis: int, keywords: list[str], *, n: int, rng) -> None:
     with store.pool.connection() as conn:
-        ref_id = conn.execute(
+        ref_row = conn.execute(
             "INSERT INTO refs (kind, set_by, title) "
             "VALUES ('paper', 'system', %s) RETURNING ref_id",
             (f"theme-{axis} paper",),
-        ).fetchone()[0]
+        ).fetchone()
+        assert ref_row is not None
+        ref_id = ref_row[0]
         for i in range(n):
-            chunk_id = conn.execute(
+            chunk_row = conn.execute(
                 "INSERT INTO chunks (ref_id, set_by, ord, chunk_kind, text, keywords) "
                 "VALUES (%s, 'system', %s, 'paragraph', %s, %s) RETURNING chunk_id",
                 (ref_id, i, f"theme {axis} body {i}", keywords),
-            ).fetchone()[0]
+            ).fetchone()
+            assert chunk_row is not None
+            chunk_id = chunk_row[0]
             conn.execute(
                 "INSERT INTO chunk_embeddings (chunk_id, embedder, vector, status) "
                 "VALUES (%s, 'bge-m3', %s::vector, 'ok')",
@@ -88,21 +92,21 @@ def test_clusterize_builds_map(seeded: Store) -> None:
         assert cells == (9, 9)
 
         # Every chunk assigned exactly once.
-        n_assigned = conn.execute(
+        n_assigned_row = conn.execute(
             "SELECT count(*) FROM cluster_assignments WHERE run_id=%s", (run_id,)
-        ).fetchone()[0]
-        assert n_assigned == 36
+        ).fetchone()
+        assert n_assigned_row is not None
+        assert n_assigned_row[0] == 36
 
         # Word clouds: themed terms surface; the stopword never does.
-        all_words = (
-            conn.execute(
-                "SELECT jsonb_agg(w->>'w') "
-                "FROM cluster_cells, jsonb_array_elements(words) AS w "
-                "WHERE run_id=%s",
-                (run_id,),
-            ).fetchone()[0]
-            or []
-        )
+        all_words_row = conn.execute(
+            "SELECT jsonb_agg(w->>'w') "
+            "FROM cluster_cells, jsonb_array_elements(words) AS w "
+            "WHERE run_id=%s",
+            (run_id,),
+        ).fetchone()
+        assert all_words_row is not None
+        all_words = all_words_row[0] or []
         assert "method" not in all_words  # stoplist dropped it
         assert any(t in all_words for t in ("transformer", "diffusion", "graph"))
 
@@ -127,9 +131,11 @@ def test_warm_start_keeps_addresses_across_runs(seeded: Store, monkeypatch) -> N
 
     assert run_clusterize_pass(store)["claimed"] == 1
     with store.pool.connection() as conn:
-        run1 = conn.execute(
+        run1_row = conn.execute(
             "SELECT run_id FROM cluster_runs WHERE scope='paper' AND status='ok'"
-        ).fetchone()[0]
+        ).fetchone()
+        assert run1_row is not None
+        run1 = run1_row[0]
     addr1 = {axis: _theme_path(store, run1, axis) for axis in (0, 1, 2)}
 
     # Perturb the corpus (more of theme 0), then rebuild — warm-started
@@ -165,10 +171,12 @@ def test_time_gate_blocks_immediate_rebuild(seeded: Store) -> None:
 
 def _insert_run(store: Store, scope: str, status: str) -> int:
     with store.pool.connection() as conn:
-        run_id = conn.execute(
+        run_id_row = conn.execute(
             "INSERT INTO cluster_runs (scope, status) VALUES (%s, %s) RETURNING run_id",
             (scope, status),
-        ).fetchone()[0]
+        ).fetchone()
+        assert run_id_row is not None
+        run_id = run_id_row[0]
         conn.commit()
     return int(run_id)
 

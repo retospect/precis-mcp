@@ -13,10 +13,12 @@ from precis_web.routes.preview import _resolve_ref_id
 
 def _make_paper(store: Store, title: str, cite_key: str | None = None) -> int:
     with store.pool.connection() as conn:
-        ref_id = conn.execute(
+        ref_row = conn.execute(
             "INSERT INTO refs (kind, title) VALUES ('paper', %s) RETURNING ref_id",
             (title,),
-        ).fetchone()[0]
+        ).fetchone()
+        assert ref_row is not None
+        ref_id = ref_row[0]
         if cite_key is not None:
             conn.execute(
                 "INSERT INTO ref_identifiers (ref_id, id_kind, id_value) "
@@ -29,10 +31,12 @@ def _make_paper(store: Store, title: str, cite_key: str | None = None) -> int:
 
 def _make_finding(store: Store, title: str, pub_id: str) -> int:
     with store.pool.connection() as conn:
-        ref_id = conn.execute(
+        ref_row = conn.execute(
             "INSERT INTO refs (kind, title) VALUES ('finding', %s) RETURNING ref_id",
             (title,),
-        ).fetchone()[0]
+        ).fetchone()
+        assert ref_row is not None
+        ref_id = ref_row[0]
         conn.execute(
             "INSERT INTO ref_identifiers (ref_id, id_kind, id_value) "
             "VALUES (%s, 'pub_id', %s)",

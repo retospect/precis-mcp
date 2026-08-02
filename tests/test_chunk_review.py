@@ -69,10 +69,12 @@ def test_record_review_rejects_body_chunk(store: Store) -> None:
     ref = store.insert_ref(kind="paper", slug="rv-body", title="Body")
     store.insert_blocks(ref.id, [BlockInsert(pos=0, text="body text", embedding=None)])
     with store.pool.connection() as conn:
-        chunk_id = conn.execute(
+        chunk_row = conn.execute(
             "SELECT chunk_id FROM chunks WHERE ref_id=%s ORDER BY ord LIMIT 1",
             (ref.id,),
-        ).fetchone()[0]
+        ).fetchone()
+        assert chunk_row is not None
+        chunk_id = chunk_row[0]
 
     with pytest.raises(BadInput, match="content_sha"):
         store.record_review(chunk_id, "human")

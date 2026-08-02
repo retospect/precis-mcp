@@ -297,7 +297,9 @@ class _ThreadedKeepAliveServer:
             def do_GET(self) -> None:
                 log.append((self.path, self.headers.get("Host")))
                 if self.path == "/redir":
-                    port = self.server.server_address[1]
+                    server_address = self.server.server_address
+                    assert isinstance(server_address, tuple)
+                    port = server_address[1]
                     self.send_response(302)
                     self.send_header("Location", f"http://{redirect_host}:{port}/final")
                     self.send_header("Content-Length", "0")

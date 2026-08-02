@@ -96,9 +96,11 @@ def test_gc_worker_logs_prunes_aged_and_is_single_flight(store: Store) -> None:
 
     def _count() -> int:
         with store.pool.connection() as conn:
-            return conn.execute(
+            row = conn.execute(
                 "SELECT count(*) FROM worker_logs WHERE host = %s", (host,)
-            ).fetchone()[0]
+            ).fetchone()
+        assert row is not None
+        return int(row[0])
 
     for _ in range(3):
         _insert_worker_log(store, host, age_days=100)  # past the window

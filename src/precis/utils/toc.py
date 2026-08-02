@@ -333,6 +333,8 @@ def render(
     per_segment_keywords: list[list[str]] = []
 
     if use_keybert and body_segments:
+        # use_keybert already confirmed embeddings is not None.
+        assert embeddings is not None
         # Paper-wide centroid over body chunks only — back-matter
         # and front-matter shouldn't dilute the topical signal.
         import os

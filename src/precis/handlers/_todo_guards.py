@@ -669,6 +669,7 @@ def check_status_done_artifact(
             """,
             (ref_id,),
         ).fetchone()
+        assert cur is not None
         open_kids = int(cur[0] or 0)
         total_kids = int(cur[1] or 0)
         if total_kids > 0 and open_kids == 0:

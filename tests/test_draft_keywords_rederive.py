@@ -44,9 +44,11 @@ def test_keywords_rederive_gated_on_embed_then_reclaims(store: Store) -> None:
     # Stand in for a completed embed at the current content_sha.
     dim = store.embedding_dim()
     with store.pool.connection() as conn:
-        sha = conn.execute(
+        sha_row = conn.execute(
             "SELECT content_sha FROM chunks WHERE chunk_id = %s", (p.chunk_id,)
-        ).fetchone()[0]
+        ).fetchone()
+        assert sha_row is not None
+        sha = sha_row[0]
         conn.execute(
             "INSERT INTO chunk_embeddings (chunk_id, embedder, vector, status, content_sha) "
             "VALUES (%s, 'bge-m3', %s, 'ok', %s)",
@@ -107,9 +109,11 @@ def test_draft_chunks_jump_queue_ahead_of_papers(store: Store) -> None:
         ref_id=ref.id, chunk_kind="paragraph", text=_LONG2, at={"after": title.handle}
     )[0]
     with store.pool.connection() as conn:
-        sha = conn.execute(
+        sha_row = conn.execute(
             "SELECT content_sha FROM chunks WHERE chunk_id = %s", (d.chunk_id,)
-        ).fetchone()[0]
+        ).fetchone()
+        assert sha_row is not None
+        sha = sha_row[0]
     _insert_embedding(store, d.chunk_id, sha)
 
     ids = _claimed(store)

@@ -54,6 +54,7 @@ def _make_source_draft(store: Store) -> tuple[int, int]:
             "ON CONFLICT (namespace, value) DO UPDATE SET namespace = EXCLUDED.namespace "
             "RETURNING tag_id"
         ).fetchone()
+        assert tag_row is not None
         tag_id = int(tag_row[0])
         conn.execute(
             "INSERT INTO chunk_tags (chunk_id, tag_id, set_by) VALUES (%s, %s, 'agent')",
@@ -175,20 +176,25 @@ def test_fork_copies_blob_and_tag_side_tables(store: Store) -> None:
     new_ref = store.fork_draft(src_ref_id, dst_proj, new_slug="dst3")
 
     with store.pool.connection() as conn:
-        src_fig = conn.execute(
+        src_fig_row = conn.execute(
             "SELECT chunk_id FROM chunks WHERE ref_id = %s AND chunk_kind = 'figure'",
             (src_ref_id,),
-        ).fetchone()[0]
-        dst_fig = conn.execute(
+        ).fetchone()
+        assert src_fig_row is not None
+        src_fig = src_fig_row[0]
+        dst_fig_row = conn.execute(
             "SELECT chunk_id FROM chunks WHERE ref_id = %s AND chunk_kind = 'figure'",
             (new_ref.id,),
-        ).fetchone()[0]
+        ).fetchone()
+        assert dst_fig_row is not None
+        dst_fig = dst_fig_row[0]
         src_blob = conn.execute(
             "SELECT bytes, mime FROM chunk_blobs WHERE chunk_id = %s", (src_fig,)
         ).fetchone()
         dst_blob = conn.execute(
             "SELECT bytes, mime FROM chunk_blobs WHERE chunk_id = %s", (dst_fig,)
         ).fetchone()
+        assert src_blob is not None
         assert dst_blob is not None
         assert bytes(dst_blob[0]) == bytes(src_blob[0])
         assert dst_blob[1] == src_blob[1]
@@ -238,6 +244,7 @@ def test_fork_links_remapped_not_shared_with_source(store: Store) -> None:
             "SELECT src_chunk_id, dst_chunk_id FROM links WHERE link_id = %s",
             (plots[0].id,),
         ).fetchone()
+    assert row is not None
     assert row[0] == dst_fig
     assert row[1] == dst_first
     # never src's chunks
@@ -368,18 +375,20 @@ def test_fork_copy_review_ledger_is_empty(store: Store) -> None:
     new_ref = store.fork_draft(src_ref_id, dst_proj, new_slug="dst6")
 
     with store.pool.connection() as conn:
-        src_reviewed = conn.execute(
+        src_reviewed_row = conn.execute(
             "SELECT count(*) FROM chunk_review cr "
             "JOIN chunks c ON c.chunk_id = cr.chunk_id WHERE c.ref_id = %s",
             (src_ref_id,),
-        ).fetchone()[0]
-        dst_reviewed = conn.execute(
+        ).fetchone()
+        dst_reviewed_row = conn.execute(
             "SELECT count(*) FROM chunk_review cr "
             "JOIN chunks c ON c.chunk_id = cr.chunk_id WHERE c.ref_id = %s",
             (new_ref.id,),
-        ).fetchone()[0]
-    assert src_reviewed == 1  # the source's human review survives
-    assert dst_reviewed == 0  # the copy starts fully unreviewed
+        ).fetchone()
+    assert src_reviewed_row is not None
+    assert dst_reviewed_row is not None
+    assert src_reviewed_row[0] == 1  # the source's human review survives
+    assert dst_reviewed_row[0] == 0  # the copy starts fully unreviewed
 
 
 def test_fork_binds_project_and_stamps_copy_of(store: Store) -> None:

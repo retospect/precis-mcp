@@ -39,13 +39,12 @@ def _bindings(store: Store, node: int) -> set[tuple[str, str]]:
 
 def _depicts_rows(store: Store, node: int) -> int:
     with store.pool.connection() as c:
-        return int(
-            c.execute(
-                "SELECT count(*) FROM links "
-                "WHERE src_chunk_id=%s AND relation='depicts'",
-                (node,),
-            ).fetchone()[0]
-        )
+        row = c.execute(
+            "SELECT count(*) FROM links WHERE src_chunk_id=%s AND relation='depicts'",
+            (node,),
+        ).fetchone()
+        assert row is not None
+        return int(row[0])
 
 
 def test_bind_two_elements_same_target_share_one_row(store: Store) -> None:

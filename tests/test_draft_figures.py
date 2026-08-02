@@ -190,7 +190,9 @@ def test_set_figure_provenance_updates_meta_and_logs(store: Store) -> None:
     assert upd.meta["figure"]["origin"] == "third_party"
     assert upd.meta["figure"]["permission"]["permission_id"] == "SNCSC-2026-0451"
     # bytes untouched, history shows the edit
-    assert store.get_chunk_blob(fig.handle)[0] == _PNG
+    blob = store.get_chunk_blob(fig.handle)
+    assert blob is not None
+    assert blob[0] == _PNG
     assert _events(store, fig.chunk_id) == ["created", "edited"]
 
 

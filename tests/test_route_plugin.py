@@ -170,11 +170,12 @@ def test_put_inline_solves_and_get_renders(route_store: Store) -> None:
 
     # The route emitted an embeddable card_combined chunk (ord = -1).
     with route_store.pool.connection() as c:
-        n = c.execute(
+        n_row = c.execute(
             "SELECT count(*) FROM chunks WHERE ref_id = %s AND ord = -1",
             (ref.id,),
-        ).fetchone()[0]
-    assert n == 1
+        ).fetchone()
+    assert n_row is not None
+    assert n_row[0] == 1
 
 
 def test_put_second_call_is_cache_hit(

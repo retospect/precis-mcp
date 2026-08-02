@@ -183,7 +183,7 @@ def compare_toon(candidates: list[dict[str, Any]]) -> str:
     if not candidates:
         return "no computed candidates to compare."
 
-    profiles = []
+    profiles: list[dict[str, Any]] = []
     for c in candidates:
         path, cols = analysis.profile_positions(c["graph"], c["root"], c["target"])
         summ = analysis.summarize(c["graph"], c["root"], c["target"])

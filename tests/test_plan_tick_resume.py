@@ -158,12 +158,13 @@ def test_max_turns_resumes_without_bubbling(store: Store) -> None:
     parent_tags = {str(t) for t in store.tags_for(parent_id)}
     assert not any(t.startswith("child-failed:") for t in parent_tags)
     with store.pool.connection() as conn:
-        streak = conn.execute(
+        streak_row = conn.execute(
             "SELECT (meta->>'plan_tick_resume_streak')::int FROM refs "
             "WHERE ref_id = %s",
             (parent_id,),
-        ).fetchone()[0]
-    assert streak == 1
+        ).fetchone()
+    assert streak_row is not None
+    assert streak_row[0] == 1
     # job_result audit chunk reflects the resume
     with store.pool.connection() as conn:
         results = conn.execute(
@@ -209,12 +210,13 @@ def test_budget_exhaustion_resumes_without_bubbling(store: Store) -> None:
     parent_tags = {str(t) for t in store.tags_for(parent_id)}
     assert not any(t.startswith("child-failed:") for t in parent_tags)
     with store.pool.connection() as conn:
-        streak = conn.execute(
+        streak_row = conn.execute(
             "SELECT (meta->>'plan_tick_resume_streak')::int FROM refs "
             "WHERE ref_id = %s",
             (parent_id,),
-        ).fetchone()[0]
-    assert streak == 1
+        ).fetchone()
+    assert streak_row is not None
+    assert streak_row[0] == 1
     with store.pool.connection() as conn:
         results = conn.execute(
             "SELECT text FROM chunks WHERE ref_id = %s AND chunk_kind = 'job_result'",
@@ -252,6 +254,7 @@ def test_repeated_max_turns_past_cap_auto_decomposes_instead_of_bubbling(
             "SELECT meta->>'plan_tick_decompose_attempted' FROM refs WHERE ref_id = %s",
             (parent_id,),
         ).fetchone()
+    assert row is not None
     assert row[0] == "true"
 
     # A decompose follow-up job was minted under the parent.
@@ -270,11 +273,12 @@ def test_repeated_max_turns_past_cap_auto_decomposes_instead_of_bubbling(
 
     # Streak reset so the decompose tick (and whatever follows) starts clean.
     with store.pool.connection() as conn:
-        present = conn.execute(
+        present_row = conn.execute(
             "SELECT meta ? 'plan_tick_resume_streak' FROM refs WHERE ref_id = %s",
             (parent_id,),
-        ).fetchone()[0]
-    assert present is False
+        ).fetchone()
+    assert present_row is not None
+    assert present_row[0] is False
 
 
 def test_second_streak_exhaustion_after_decompose_bubbles_for_real(
@@ -328,11 +332,12 @@ def test_real_failure_still_bubbles_and_resets_streak(store: Store) -> None:
     parent_tags = {str(t) for t in store.tags_for(parent_id)}
     assert f"child-failed:{job2}" in parent_tags
     with store.pool.connection() as conn:
-        present = conn.execute(
+        present_row = conn.execute(
             "SELECT meta ? 'plan_tick_resume_streak' FROM refs WHERE ref_id = %s",
             (parent_id,),
-        ).fetchone()[0]
-    assert present is False  # reset
+        ).fetchone()
+    assert present_row is not None
+    assert present_row[0] is False  # reset
 
 
 def test_clean_tick_succeeds_and_resets_streak(store: Store) -> None:
@@ -343,8 +348,9 @@ def test_clean_tick_succeeds_and_resets_streak(store: Store) -> None:
     job_tags = {str(t) for t in store.tags_for(job2)}
     assert "STATUS:succeeded" in job_tags
     with store.pool.connection() as conn:
-        present = conn.execute(
+        present_row = conn.execute(
             "SELECT meta ? 'plan_tick_resume_streak' FROM refs WHERE ref_id = %s",
             (parent_id,),
-        ).fetchone()[0]
-    assert present is False
+        ).fetchone()
+    assert present_row is not None
+    assert present_row[0] is False

@@ -146,6 +146,7 @@ def _meta(store: Store, ref_id: int) -> dict[str, Any]:
         row = conn.execute(
             "SELECT meta FROM refs WHERE ref_id = %s", (ref_id,)
         ).fetchone()
+    assert row is not None
     return dict(row[0] or {})
 
 

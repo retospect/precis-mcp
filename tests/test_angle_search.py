@@ -75,6 +75,7 @@ def test_get_chunk_vector_none_when_unembedded(store: Store) -> None:
             "VALUES (%s, 0, 'paragraph', 'x', '{}'::jsonb) RETURNING chunk_id",
             (ref.id,),
         ).fetchone()
+    assert row is not None
     assert store.get_chunk_vector(int(row[0])) is None
 
 

@@ -89,8 +89,12 @@ def _sessions_are_isolated() -> bool:
     except Exception:
         return False
     try:
-        a_pid = a.execute("SELECT pg_backend_pid()").fetchone()[0]
-        b_pid = b.execute("SELECT pg_backend_pid()").fetchone()[0]
+        a_pid_row = a.execute("SELECT pg_backend_pid()").fetchone()
+        b_pid_row = b.execute("SELECT pg_backend_pid()").fetchone()
+        assert a_pid_row is not None
+        assert b_pid_row is not None
+        a_pid = a_pid_row[0]
+        b_pid = b_pid_row[0]
     finally:
         a.close()
         b.close()

@@ -2277,10 +2277,6 @@ by `deploy` with no `agent_rw`/`agent_ro` grants — add an ACL diff/re-grant st
   a UI-only add if the working-set bulk-expand is still wanted.
 
 **P3 — type/platform/debt:**
-- **Burn down the last disabled mypy category** (`pyproject.toml`).
-  `union-attr`/`type-var`/`assignment`/`operator` re-enabled 2026-08-02
-  (~297 errors fixed; 3 real bugs caught). Only `index` remains (106 at
-  2026-08-02); delete `disable_error_code` entirely when it lands.
 - **Fix Windows `O_DIRECTORY` + Python 3.12 urllib circular import** (also above).
 - **Recheck `transformers>=5.3.0` / `marker-pdf` pin** (Dependabot #44, snoozed).
 - **Re-evaluate `ruff` ignores `RUF012` + `B905`** (can hide real bugs).
