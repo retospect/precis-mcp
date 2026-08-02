@@ -164,22 +164,26 @@ def _recent_rows(
     *,
     has_chunks: bool | None = None,
     has_schedule: bool | None = None,
+    unfiled_only: bool = False,
     ref_ids: list[int] | None = None,
     deleted: bool = False,
     oldest: bool = False,
 ) -> tuple[list[dict[str, Any]], bool]:
-    """The no-query landing: most-recently-added source items, newest
-    first (or oldest-first when ``oldest`` — the ``sort=oldest`` facet),
-    optionally narrowed by the tag chips, the stub filter
-    (``has_pdf=False`` → only stubs, the "papers to get" queue), the
+    """The no-query landing: most-recently-*edited* source items, newest
+    first (``recent_refs`` orders by ``updated_at``, so a re-worked draft
+    bubbles up; or least-recently-edited first when ``oldest`` — the
+    ``sort=oldest`` facet), optionally narrowed by the tag chips, the stub
+    filter (``has_pdf=False`` → only stubs, the "papers to get" queue), the
     ingested/chunk-less filter (``has_chunks`` — the "chunked"/"unchunked"
     state facet), the folder facet (``folder_id`` — one folder's direct
     children; only artifact kinds carry a ``parent_id``, so this is a no-op
-    for pure source rows), the ``ref_ids`` allow-list (the
-    ``/drive?cited_by=<draft>`` scope — a draft's papers-to-fetch set; an
-    empty list restricts to nothing), and ``deleted`` (the "show deleted"
-    toggle — soft-deleted refs instead of live ones). Rows carry no preview
-    (no query) — name, kind, when-added, badges, tags, links, flags. Returns
+    for pure source rows), ``unfiled_only`` (the default top-level view — hide
+    anything filed into a folder, so a folder's contents live only inside it),
+    the ``ref_ids`` allow-list (the ``/drive?cited_by=<draft>`` scope — a
+    draft's papers-to-fetch set; an empty list restricts to nothing), and
+    ``deleted`` (the "show deleted" toggle — soft-deleted refs instead of live
+    ones). Rows carry no preview (no query) — name, kind, when-edited, badges,
+    tags, links, flags. Returns
     ``(rows, has_next)`` via the same over-fetch-one-extra probe as
     :func:`_run_search`.
     """
@@ -190,6 +194,7 @@ def _recent_rows(
         has_chunks=has_chunks,
         has_schedule=has_schedule,
         parent_id=folder_id,
+        unfiled_only=unfiled_only,
         ref_ids=ref_ids,
         deleted=deleted,
         oldest=oldest,

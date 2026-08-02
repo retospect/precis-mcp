@@ -440,6 +440,12 @@ async def index(
         # header could read the absurd "showing 30 of ~5".
         result_total = max(result_total, offset + len(rows))
     else:
+        # The default top level hides anything filed into a folder — a
+        # folder's contents live only inside it (still findable via search,
+        # which ignores folders). When a folder *is* selected we show its
+        # children instead; the trash view (``deleted``) shows every deleted
+        # ref regardless of where it was filed.
+        unfiled_only = folder_id is None and not show_deleted
         recent, has_next = await asyncio.to_thread(
             _recent_rows,
             store,
@@ -449,6 +455,7 @@ async def index(
             folder_id,
             offset,
             has_chunks=has_chunks,
+            unfiled_only=unfiled_only,
             has_schedule=has_schedule,
             ref_ids=fetch_ref_ids,
             deleted=show_deleted,
@@ -463,7 +470,9 @@ async def index(
         # bookmarked deep page of a set that has since shrunk — that floor
         # would clobber the true total up to the empty page's offset ("0 of
         # 30" for a set of 10). The honest count stands; the pager below hides
-        # the "of Y" once you're past the real last page.
+        # the "of Y" once you're past the real last page. ``unfiled_only`` is
+        # threaded through so the denominator counts the same filed-hiding set
+        # the page shows.
         result_total = await asyncio.to_thread(
             store.count_recent_refs,
             selected_kinds,
@@ -472,6 +481,7 @@ async def index(
             has_chunks=has_chunks,
             has_schedule=has_schedule,
             parent_id=folder_id,
+            unfiled_only=unfiled_only,
             ref_ids=fetch_ref_ids,
             deleted=show_deleted,
         )

@@ -767,6 +767,17 @@ def test_drive_folder_filter_flows_to_recent(runtime, client) -> None:
     resp = client.get("/drive?folder=200")
     assert resp.status_code == 200
     assert runtime.store.recent_parent_id == 200
+    # A folder is selected, so the top-level "hide filed" filter is off.
+    assert runtime.store.recent_unfiled_only is False
+
+
+def test_drive_default_landing_hides_filed(runtime, client) -> None:
+    """The default (no folder, live) landing asks recent_refs for only
+    unfiled refs — a filed artifact drops out of the main list and lives
+    inside its folder (still reachable via search, which ignores folders)."""
+    resp = client.get("/drive")
+    assert resp.status_code == 200
+    assert runtime.store.recent_unfiled_only is True
 
 
 def test_folder_options_survives_cyclic_parent_chain() -> None:
@@ -876,6 +887,8 @@ def test_drive_deleted_state_toggle(runtime, client) -> None:
     resp = client.get("/drive?state=deleted")
     assert resp.status_code == 200
     assert runtime.store.recent_deleted is True
+    # Trash shows every deleted ref regardless of where it was filed.
+    assert runtime.store.recent_unfiled_only is False
     assert "Deleted — soft-deleted refs" in resp.text
     assert "A deleted paper" in resp.text
 

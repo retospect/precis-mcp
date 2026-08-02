@@ -807,6 +807,7 @@ class FakeStore(_FakeStoreBase):
         has_chunks=None,
         has_schedule=None,
         parent_id=None,
+        unfiled_only=False,
         ref_ids=None,
         deleted=False,
         oldest=False,
@@ -817,10 +818,11 @@ class FakeStore(_FakeStoreBase):
         one paper (stub, no pdf) + one web, filtered to requested kinds.
         ``self.recent_tags`` / ``self.recent_has_pdf`` / ``self.recent_has_chunks``
         / ``self.recent_has_schedule`` / ``self.recent_parent_id`` /
-        ``self.recent_ref_ids`` / ``self.recent_deleted`` /
-        ``self.recent_offset`` record the filters. ``ref_ids`` is the
-        ``/drive?cited_by=<draft>`` allow-list (``None`` = no restriction,
-        ``[]`` = nothing). ``deleted=True`` serves
+        ``self.recent_unfiled_only`` / ``self.recent_ref_ids`` /
+        ``self.recent_deleted`` / ``self.recent_offset`` record the filters.
+        ``unfiled_only`` is the default top-level "hide filed" view;
+        ``ref_ids`` is the ``/drive?cited_by=<draft>`` allow-list (``None`` =
+        no restriction, ``[]`` = nothing). ``deleted=True`` serves
         ``self.deleted_recent_refs`` instead (empty by default — tests
         populate it to exercise the "show deleted" toggle)."""
         self.recent_tags = tags
@@ -828,6 +830,7 @@ class FakeStore(_FakeStoreBase):
         self.recent_has_chunks = has_chunks
         self.recent_has_schedule = has_schedule
         self.recent_parent_id = parent_id
+        self.recent_unfiled_only = unfiled_only
         self.recent_ref_ids = ref_ids
         self.recent_deleted = deleted
         self.recent_oldest = oldest
@@ -867,6 +870,7 @@ class FakeStore(_FakeStoreBase):
         has_chunks=None,
         has_schedule=None,
         parent_id=None,
+        unfiled_only=False,
         ref_ids=None,
         deleted=False,
     ):

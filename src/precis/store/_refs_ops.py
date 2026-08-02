@@ -1680,6 +1680,7 @@ class RefsMixin:
         has_chunks: bool | None,
         has_schedule: bool | None = None,
         parent_id: int | None,
+        unfiled_only: bool = False,
         ref_ids: list[int] | None,
         deleted: bool,
     ) -> tuple[list[str], list[Any]]:
@@ -1692,6 +1693,13 @@ class RefsMixin:
         normalization's "recurring" predicate (replaces the old
         ``level:recurring`` tag; the ``/drive`` "Schedules" preset uses
         this instead of a tag filter now that the tag is retired).
+        ``unfiled_only`` keeps only refs with no folder (``parent_id IS
+        NULL``) — the default top-level view, so a filed artifact drops out
+        of the main list and lives only inside its folder (still findable via
+        search, which ignores folders). It is mutually exclusive with
+        ``parent_id`` (``parent_id`` wins if both are set); a source kind
+        never carries a parent, so ``unfiled_only`` only ever hides filed
+        *artifacts*.
         """
         clauses = [
             "r.kind = ANY(%s)",
@@ -1715,6 +1723,8 @@ class RefsMixin:
         if parent_id is not None:
             clauses.append("r.parent_id = %s")
             params.append(parent_id)
+        elif unfiled_only:
+            clauses.append("r.parent_id IS NULL")
         if ref_ids is not None:
             clauses.append("r.ref_id = ANY(%s)")
             params.append(list(ref_ids))
@@ -1733,33 +1743,41 @@ class RefsMixin:
         has_chunks: bool | None = None,
         has_schedule: bool | None = None,
         parent_id: int | None = None,
+        unfiled_only: bool = False,
         ref_ids: list[int] | None = None,
         deleted: bool = False,
         oldest: bool = False,
         limit: int = 30,
         offset: int = 0,
     ) -> list[Ref]:
-        """Most-recently-created refs across a *set* of kinds, newest
-        first. Backs the ``/drive`` default "recent things" browse (the
-        no-query landing); ``tags`` narrows it to refs carrying all of them
-        (the tag-filter chips with no search query). ``has_pdf=False`` keeps
-        only stubs (``pdf_sha256 IS NULL`` — the "papers to get" filter);
-        ``True`` keeps only those with a PDF. ``has_chunks`` filters on the
-        presence of at least one body chunk (``ord >= 0``) — ``True`` keeps
-        only ingested refs, ``False`` only chunk-less ones (the
-        "chunked"/"unchunked" state facet). ``parent_id`` narrows to one
-        folder's *direct* children (the ``/drive`` folder facet — same
-        non-recursive semantics as the folder-tree sidebar). ``ref_ids``
-        restricts to an explicit id allow-list (the ``/drive?cited_by=<draft>``
-        scope — a draft's papers-to-fetch set): ``None`` means no restriction,
-        an **empty list** means restrict to nothing (returns ``[]``, so a draft
-        with an empty worklist shows an empty queue rather than the whole
-        corpus). ``deleted=True`` flips the polarity to soft-deleted refs only
-        (the "show deleted" toggle — a lightweight trash view; no undelete
-        surface yet, just visibility). ``oldest=True`` reverses the order to
-        oldest-first (the ``sort=oldest`` facet). Kinds with no rows simply
-        don't appear; an empty ``kinds`` returns nothing. ``offset`` pages past
-        the first window.
+        """Most-recently-*edited* refs across a *set* of kinds, newest first.
+        Backs the ``/drive`` default "recent things" browse (the no-query
+        landing); ordered by ``updated_at`` (not ``created_at``) so an edited
+        artifact — a re-worked draft — bubbles back to the top. ``updated_at``
+        bumps on genuine content changes (body/title/move/meta edits), *not*
+        on tag/flag writes or background embedding/summary fills, so the order
+        tracks real edits without churn. ``tags`` narrows it to refs carrying
+        all of them (the tag-filter chips with no search query).
+        ``has_pdf=False`` keeps only stubs (``pdf_sha256 IS NULL`` — the
+        "papers to get" filter); ``True`` keeps only those with a PDF.
+        ``has_chunks`` filters on the presence of at least one body chunk
+        (``ord >= 0``) — ``True`` keeps only ingested refs, ``False`` only
+        chunk-less ones (the "chunked"/"unchunked" state facet). ``parent_id``
+        narrows to one folder's *direct* children (the ``/drive`` folder facet
+        — same non-recursive semantics as the folder-tree sidebar).
+        ``unfiled_only`` keeps only refs with no folder (the default top-level
+        view — a filed artifact drops out of the main list; mutually exclusive
+        with ``parent_id``). ``ref_ids`` restricts to an explicit id allow-list
+        (the ``/drive?cited_by=<draft>`` scope — a draft's papers-to-fetch
+        set): ``None`` means no restriction, an **empty list** means restrict
+        to nothing (returns ``[]``, so a draft with an empty worklist shows an
+        empty queue rather than the whole corpus). ``deleted=True`` flips the
+        polarity to soft-deleted refs only (the "show deleted" toggle — a
+        lightweight trash view; no undelete surface yet, just visibility).
+        ``oldest=True`` reverses the order to least-recently-edited first (the
+        ``sort=oldest`` facet). Kinds with no rows simply don't appear; an
+        empty ``kinds`` returns nothing. ``offset`` pages past the first
+        window.
         """
         if not kinds or (ref_ids is not None and not ref_ids):
             return []
@@ -1770,6 +1788,7 @@ class RefsMixin:
             has_chunks=has_chunks,
             has_schedule=has_schedule,
             parent_id=parent_id,
+            unfiled_only=unfiled_only,
             ref_ids=ref_ids,
             deleted=deleted,
         )
@@ -1780,7 +1799,7 @@ class RefsMixin:
             rows = conn.execute(
                 f"SELECT {_REFS_COLS_ALIASED} FROM refs r "
                 f"WHERE {' AND '.join(clauses)} "
-                f"ORDER BY r.created_at {direction}, r.ref_id {direction} "
+                f"ORDER BY r.updated_at {direction}, r.ref_id {direction} "
                 "LIMIT %s OFFSET %s",
                 params,
             ).fetchall()
@@ -1795,6 +1814,7 @@ class RefsMixin:
         has_chunks: bool | None = None,
         has_schedule: bool | None = None,
         parent_id: int | None = None,
+        unfiled_only: bool = False,
         ref_ids: list[int] | None = None,
         deleted: bool = False,
     ) -> int:
@@ -1812,6 +1832,7 @@ class RefsMixin:
             has_chunks=has_chunks,
             has_schedule=has_schedule,
             parent_id=parent_id,
+            unfiled_only=unfiled_only,
             ref_ids=ref_ids,
             deleted=deleted,
         )

@@ -2150,6 +2150,18 @@ is a preset link (`k=todo` + `tag=level:recurring`), not a kind — the
 `level:recurring` value is a URL sentinel the route translates
 server-side to `has_schedule=True` (§M retired the tag itself); Quests +
 Schedules also sit in the nav Browse ▾ menu.
+The no-query landing (`store.recent_refs`) orders by **`updated_at`** (not
+`created_at`), so an edited artifact — a re-worked draft — bubbles back to
+the top (`updated_at` bumps on real body/title/move/meta edits, not on
+tag/flag or background embedding/summary writes, so the order tracks genuine
+edits; the `sort=oldest` facet reverses it to least-recently-edited first).
+It also shows only **unfiled** refs at the top level (`unfiled_only` →
+`parent_id IS NULL`): a filed artifact drops out of the main list and lives
+inside its folder, still reachable via search (which ignores folders).
+Selecting a folder shows its direct children; the `state=deleted` trash view
+shows every deleted ref regardless of filing. `unfiled_only` rides the shared
+`_recent_refs_where` builder, so `count_recent_refs`'s "of N" denominator
+hides the same filed refs the page does.
 `cited_by=<draft>` scopes the `state=stub` acquisition queue to one draft's
 **papers-to-fetch** set — the papers it cites but the corpus lacks (0 body
 blocks), derived by `handlers/_citations_view.draft_fetch_ref_ids` and passed

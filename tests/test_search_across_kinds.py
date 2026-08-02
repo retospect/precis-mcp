@@ -277,6 +277,24 @@ def test_recent_refs_folder_facet(store: Store) -> None:
     assert inside.id in got
     assert outside.id not in got
 
+    # unfiled_only is the mirror image: the top-level view hides anything
+    # filed into a folder, keeping only the unfiled ref.
+    unfiled = [r.id for r in store.recent_refs(["draft"], unfiled_only=True)]
+    assert outside.id in unfiled
+    assert inside.id not in unfiled
+
+
+def test_recent_refs_edited_bubbles_up(store: Store) -> None:
+    # Ordered by updated_at, not created_at — editing an older ref lifts it
+    # back above a newer, untouched one (a re-worked draft returns to the top).
+    old = store.insert_ref(kind="draft", slug="rb-old", title="Old")
+    new = store.insert_ref(kind="draft", slug="rb-new", title="New")  # newer
+
+    assert [r.id for r in store.recent_refs(["draft"])] == [new.id, old.id]
+
+    store.replace_ref_text(old.id, "Old (edited)")  # bumps updated_at
+    assert [r.id for r in store.recent_refs(["draft"])] == [old.id, new.id]
+
 
 def test_list_folders(store: Store) -> None:
     root = store.insert_ref(kind="folder", slug=None, title="Root")
