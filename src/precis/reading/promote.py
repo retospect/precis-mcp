@@ -24,6 +24,7 @@ from precis.reading.concepts import (
     initial_concept_meta,
     normalize_name,
 )
+from precis.reading.term_quality import non_concept_reason
 
 log = logging.getLogger(__name__)
 
@@ -103,11 +104,12 @@ def promote_paper(
     store: Any, *, paper_id: int, cohort: str | None = None
 ) -> dict[str, int]:
     """Promote one paper's glossary terms to concepts. Returns
-    ``{minted, linked, terms}``. No-op (all zero) if the paper has no glossary."""
+    ``{minted, linked, terms, dropped}`` (``dropped`` = non-concept terms the
+    quality gate refused). No-op (all zero) if the paper has no glossary."""
     gmeta = _read_glossary_meta(store, paper_id)
     clusters = gmeta.get("clusters") or []
     version = gmeta.get("glossary_version")
-    minted = linked = terms = 0
+    minted = linked = terms = dropped = 0
     for cluster in clusters:
         if not isinstance(cluster, dict):
             continue
@@ -116,6 +118,16 @@ def promote_paper(
                 continue
             name = str(term.get("term") or "").strip()
             if not name:
+                continue
+            definition = str(term.get("definition") or "").strip()
+            # Concept chokepoint: never mint a node from a non-concept term (a
+            # topic-label / stock phrase / front-matter). Catches junk that a
+            # pre-filter glossary already in the corpus still carries. See
+            # `term_quality.non_concept_reason` / gripe 186183.
+            why = non_concept_reason(name, definition)
+            if why is not None:
+                dropped += 1
+                log.debug("promote: dropped non-concept term %r (%s)", name, why)
                 continue
             terms += 1
             existing = _find_existing(store, name)
@@ -126,24 +138,25 @@ def promote_paper(
             create_concept(
                 store,
                 name=name,
-                definition=str(term.get("definition") or "").strip(),
+                definition=definition,
                 cohort=cohort,
                 source_paper_id=paper_id,
                 extra={"source_glossary_version": version} if version else None,
             )
             minted += 1
-    return {"minted": minted, "linked": linked, "terms": terms}
+    return {"minted": minted, "linked": linked, "terms": terms, "dropped": dropped}
 
 
 def promote_cohort(store: Any, *, paper_ids: list[int], cohort: str) -> dict[str, int]:
     """Promote a whole reading cohort. Returns aggregate ``{minted, linked,
-    terms, papers}``."""
-    totals = {"minted": 0, "linked": 0, "terms": 0, "papers": 0}
+    terms, dropped, papers}``."""
+    totals = {"minted": 0, "linked": 0, "terms": 0, "dropped": 0, "papers": 0}
     for pid in paper_ids:
         r = promote_paper(store, paper_id=pid, cohort=cohort)
         totals["minted"] += r["minted"]
         totals["linked"] += r["linked"]
         totals["terms"] += r["terms"]
+        totals["dropped"] += r["dropped"]
         totals["papers"] += 1
     return totals
 

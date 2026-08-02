@@ -1521,7 +1521,11 @@ The master kinds table lives in the `precis-overview` skill.
   `card_glossary` (ord=-1000) derived chunk; **(2a/b/c)** concept kind + graph
   relations + promotion (`reading/promote.py`: glossary terms → concept nodes,
   corpus-wide **name-anchored dedup** via `meta.norm_name`, cohort membership in
-  `meta.cohorts`, `derived-from`→paper provenance). Remaining: graph-edge
+  `meta.cohorts`, `derived-from`→paper provenance). A **non-concept filter**
+  (`reading/term_quality.py`, the `precis-cloze` rule-0 taxonomy) gates both the
+  glossary build (`paper_glossary._clean_clusters`) and the promotion chokepoint
+  (`promote_paper`, counted as `dropped`) so topic-labels / stock phrases /
+  front-matter never become concepts (gripe 186183). Remaining: graph-edge
   inference, mastery-from-Anki, embedding routing (reading-readiness /
   shortest-path / **daily review-path walk**), booklet, cards-as-representations,
   briefing+audio. **Anki is a renderer, not the brain** — the concept graph is the

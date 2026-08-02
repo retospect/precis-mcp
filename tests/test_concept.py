@@ -161,7 +161,7 @@ class TestPromotion:
 
         res = promote_paper(store, paper_id=pid, cohort=f"co-{u}")
 
-        assert res == {"minted": 2, "linked": 0, "terms": 2}
+        assert res == {"minted": 2, "linked": 0, "terms": 2, "dropped": 0}
         cid = _concept_id_by_name(store, t1)
         assert cid is not None
         ref = store.get_ref(kind="concept", id=cid)
@@ -213,7 +213,30 @@ class TestPromotion:
             "minted": 0,
             "linked": 0,
             "terms": 0,
+            "dropped": 0,
         }
+
+    def test_promote_drops_non_concept_terms(self, store: Any) -> None:
+        """gripe 186183: a glossary carrying front-matter / topic-labels / stock
+        phrases mints concepts only for the real term — the junk is dropped, not
+        promoted."""
+        import uuid
+
+        from precis.reading.promote import promote_paper
+
+        u = uuid.uuid4().hex[:8]
+        real = f"diarylethene-{u}"
+        # Junk names that survived into a corpus glossary before the gate.
+        junk = ["new trends", "novel compounds", "extensively examined", "Dedication"]
+        terms = [(real, "a photochromic molecule")] + [(j, "boilerplate") for j in junk]
+        pid = _glossary_paper(store, terms)
+
+        res = promote_paper(store, paper_id=pid, cohort=f"co-{u}")
+
+        assert res == {"minted": 1, "linked": 0, "terms": 1, "dropped": len(junk)}
+        assert _concept_id_by_name(store, real) is not None
+        for j in junk:
+            assert _concept_id_by_name(store, j) is None
 
 
 class _FakeClient:

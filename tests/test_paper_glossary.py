@@ -72,6 +72,26 @@ class TestPure:
         assert _clean_clusters(None) == []
         assert _clean_clusters({}) == []
 
+    def test_clean_clusters_drops_non_concept_terms(self) -> None:
+        # gripe 186183: junk terms are filtered at the glossary source, so a
+        # fresh glossary chunk never carries them (and promotion never sees them).
+        raw = {
+            "clusters": [
+                {
+                    "name": "Mixed",
+                    "terms": [
+                        {"term": "diarylethene", "definition": "a photoswitch"},
+                        {"term": "new trends", "definition": "boilerplate"},
+                        {"term": "extensively examined", "definition": "boilerplate"},
+                    ],
+                }
+            ]
+        }
+        out = _clean_clusters(raw)
+        assert len(out) == 1
+        kept = [t["term"] for t in out[0]["terms"]]
+        assert kept == ["diarylethene"]
+
     def test_render_glossary(self) -> None:
         clusters = _clean_clusters(_extract_json(_GLOSSARY_JSON))
         text = _render_glossary(clusters)
@@ -205,3 +225,28 @@ class TestPass:
         assert result == {"claimed": 1, "ok": 0, "failed": 1}
         # No glossary chunk written → the ref stays claimable for a retry.
         assert _glossary_chunk(store, ref_id) is None
+
+    def test_all_terms_filtered_writes_marker_not_retry(self, store: Any) -> None:
+        # gripe 186183 regression: a parseable extraction whose every term is a
+        # non-concept must converge (write an empty marker), NOT be treated as a
+        # model failure — else the paper is re-claimed and re-queried forever.
+        ref_id = _seed_paper(
+            store,
+            "Study of DFT devices",
+            "We used Density Functional Theory (DFT) here.",
+        )
+        all_junk = (
+            '{"clusters":[{"name":"C","terms":['
+            '{"term":"new trends","definition":"x"},'
+            '{"term":"extensively examined","definition":"y"}]}]}'
+        )
+        client = _FakeClient(all_junk)
+
+        result = run_paper_glossary_pass(
+            store, client=client, batch_size=10, ref_ids=[ref_id]
+        )
+
+        assert result == {"claimed": 1, "ok": 1, "failed": 0}
+        got = _glossary_chunk(store, ref_id)
+        assert got is not None  # marker written → not re-claimed next pass
+        assert got[2]["term_count"] == 0

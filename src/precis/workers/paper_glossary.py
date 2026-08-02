@@ -33,6 +33,7 @@ from typing import Any
 
 from psycopg.types.json import Jsonb
 
+from precis.reading.term_quality import non_concept_reason
 from precis.utils.abbreviations import find_acronyms
 
 log = logging.getLogger(__name__)
@@ -81,7 +82,11 @@ def _build_prompt(
         lines.append("\nKEY TERMS / PHRASES: " + ", ".join(keywords))
     lines.append(
         "\nTASK: Build a reading glossary. Select the terms a reader must know "
-        "to follow THIS paper (skip generic words). Group them into a few "
+        "to follow THIS paper (skip generic words, section headers like "
+        "'introduction'/'conclusion', rhetorical phrases like 'extensively "
+        "examined', and topic-labels like 'new trends'/'recent advances' — a "
+        "glossary term must be a specific thing with a definition). Group them "
+        "into a few "
         "meaningful clusters (conceptual / methodological / etymological, as "
         "fits). For each term give a one-sentence definition and a short 'why it "
         "matters for this paper' note. Return JSON exactly:\n"
@@ -123,6 +128,11 @@ def _clean_clusters(data: dict | None) -> list[dict]:
                 continue
             term = str(t.get("term") or "").strip()
             if not term:
+                continue
+            # Keep the glossary clean at the source: a non-concept term (topic
+            # label / stock phrase / front-matter) is neither a useful reading-
+            # glossary entry nor a promotable concept. See gripe 186183.
+            if non_concept_reason(term) is not None:
                 continue
             terms.append(
                 {
@@ -280,10 +290,21 @@ def run_paper_glossary_pass(
                     {"role": "user", "content": prompt},
                 ]
             )
-            clusters = _clean_clusters(_extract_json(getattr(out, "text", "") or ""))
-            if not clusters:
-                # Model produced nothing usable — leave unclaimed for a retry.
+            data = _extract_json(getattr(out, "text", "") or "")
+            if data is None:
+                # Model produced nothing PARSEABLE — a real failure; leave
+                # unclaimed for a retry.
                 failed += 1
+                continue
+            clusters = _clean_clusters(data)
+            if not clusters:
+                # Parsed fine, but no promotable terms survived (empty output, or
+                # every candidate filtered as a non-concept). This is a converged
+                # result, not a failure — write the version marker so the paper
+                # is not re-claimed forever (mirrors the "no candidate terms"
+                # branch above; without this an all-filtered paper loops).
+                _write(store, ref_id, _EMPTY_MARKER, [], 0)
+                ok += 1
                 continue
             term_count = sum(len(c["terms"]) for c in clusters)
             _write(store, ref_id, _render_glossary(clusters), clusters, term_count)
