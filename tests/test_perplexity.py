@@ -134,6 +134,7 @@ def test_websearch_fetches_and_caches(websearch: WebsearchHandler) -> None:
     assert "sonar" in resp.body
     assert "Perplexity" in resp.body
     # First call → cost trailer reflects per-call price.
+    assert resp.cost is not None
     assert "$0.001" in resp.cost
 
 
@@ -538,6 +539,7 @@ def test_cost_per_tier() -> None:
 def test_cost_appears_on_fresh_fetch(websearch: WebsearchHandler) -> None:
     resp = websearch.get(id="something")
     # Cost trailer reflects the per-call cost for the tier.
+    assert resp.cost is not None
     assert "$0.001" in resp.cost
 
 
@@ -602,6 +604,7 @@ def test_import_then_get_returns_imported_body_at_zero_cost(
     assert "Cobalt phthalocyanine" in get_resp.body
     assert "API SHOULD NOT BE CALLED" not in get_resp.body
     # Cost trailer reads as free for imported entries.
+    assert get_resp.cost is not None
     assert "free" in get_resp.cost
 
 
@@ -856,6 +859,7 @@ def test_fetched_cache_hit_keeps_cached_badge(
     websearch.get(id="paid hit")
     # Second call hits cache.
     resp2 = websearch.get(id="paid hit")
+    assert resp2.cost is not None
     assert "imported" not in resp2.cost
     assert "cached" in resp2.cost
 

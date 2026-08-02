@@ -153,7 +153,7 @@ class TestBackfillSubprocess:
         (handler.watch_dir / "b.pdf").write_bytes(b"xx")
 
         seen: list[str] = []
-        handler._enqueue = lambda p: seen.append(p.name)  # type: ignore[method-assign]
+        handler._enqueue = lambda p: seen.append(p.name)  # type: ignore[method-assign, assignment]
         with patch("precis.cli.watch._spawn_batch_subprocess") as spawn:
             handler.backfill()
 
@@ -402,7 +402,7 @@ class TestBackfillOrder:
         (handler.watch_dir / "z_tiny.pdf").write_bytes(b"x" * 10)
 
         seen: list[str] = []
-        handler._enqueue = lambda p: seen.append(p.name)  # type: ignore[method-assign]
+        handler._enqueue = lambda p: seen.append(p.name)  # type: ignore[method-assign, assignment]
         handler.backfill()
 
         assert seen == ["z_tiny.pdf", "m_medium.pdf", "a_huge.pdf"]
@@ -417,7 +417,7 @@ class TestBackfillOrder:
         )
 
         seen: list[str] = []
-        handler._enqueue = lambda p: seen.append(p.name)  # type: ignore[method-assign]
+        handler._enqueue = lambda p: seen.append(p.name)  # type: ignore[method-assign, assignment]
         handler.backfill()
 
         assert seen == ["small.pdf"]
@@ -438,7 +438,7 @@ class TestBackfillOrder:
         (staging / "palladium00.xml.precis-fetch.json").write_bytes(b"{}")
 
         seen: list[str] = []
-        handler._enqueue = lambda p: seen.append(p.name)  # type: ignore[method-assign]
+        handler._enqueue = lambda p: seen.append(p.name)  # type: ignore[method-assign, assignment]
         handler.backfill()  # must not raise
 
         assert seen == ["good.pdf"]
@@ -984,6 +984,7 @@ class TestParserRegistration:
         sub_actions = [action for action in parser._actions if action.dest == "cmd"]
         assert sub_actions, "expected a subparsers action with dest='cmd'"
         choices = sub_actions[0].choices  # type: ignore[attr-defined]
+        assert choices is not None
         assert "watch" in choices
         assert "add" in choices  # sanity — B4 still registered
 

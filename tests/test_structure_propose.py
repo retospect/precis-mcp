@@ -91,8 +91,12 @@ def test_dry_run_valid_invalid_and_relax():
         sp.dry_run(scene, [{"op": "add_atom", "element": "O", "frac": [0.5, 0.5, 0.5]}])
         is None
     )
-    assert "op error" in sp.dry_run(scene, [{"op": "vacancy", "atom": "aXe9"}])
-    assert "relax" in sp.dry_run(scene, [{"op": "relax", "fidelity": "clean"}])
+    vacancy_err = sp.dry_run(scene, [{"op": "vacancy", "atom": "aXe9"}])
+    assert vacancy_err is not None
+    assert "op error" in vacancy_err
+    relax_err = sp.dry_run(scene, [{"op": "relax", "fidelity": "clean"}])
+    assert relax_err is not None
+    assert "relax" in relax_err
 
 
 # ── dispatch (stubbed agent) ─────────────────────────────────────────────

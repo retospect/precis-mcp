@@ -67,8 +67,12 @@ def test_parse_proposal_rejects_empty():
 
 def test_dry_run_valid_and_invalid():
     assert cp.dry_run("plate add cyl:r30h8") is None
-    assert "source error" in cp.dry_run("plate frobnicate cyl:r1h1")
-    assert "no nodes" in cp.dry_run("# just a comment\n")
+    frobnicate_err = cp.dry_run("plate frobnicate cyl:r1h1")
+    assert frobnicate_err is not None
+    assert "source error" in frobnicate_err
+    comment_err = cp.dry_run("# just a comment\n")
+    assert comment_err is not None
+    assert "no nodes" in comment_err
 
 
 # ── dispatch (stubbed agent) ─────────────────────────────────────────────

@@ -188,9 +188,11 @@ def advertise_local_llm(
 
     pruned = 0
     for card in cards:
-        model_id = (card.meta or {}).get("model_id")
+        card_model_id = (card.meta or {}).get("model_id")
         served = (card.meta or {}).get("served_by") or []
-        if model_id not in discovered and any(e.get("host") == host for e in served):
+        if card_model_id not in discovered and any(
+            e.get("host") == host for e in served
+        ):
             pruned_served = [e for e in served if e.get("host") != host]
             # Same dirty-check as the advertise path above.
             if _served_by_signature(pruned_served) != _served_by_signature(served):
@@ -199,7 +201,7 @@ def advertise_local_llm(
                 log.debug(
                     "llm_serving: served_by unchanged pruning %s on %s, "
                     "skipping refs write",
-                    model_id,
+                    card_model_id,
                     host,
                 )
             pruned += 1

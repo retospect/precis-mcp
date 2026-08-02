@@ -218,14 +218,16 @@ def parse_frontmatter(text: str) -> SkillFrontmatter:
     # Map kebab → snake, sort into known vs extra.
     fields_in: dict[str, object] = {}
     extra: dict[str, str] = {}
-    for key, val in raw.items():
-        canon = _KEY_ALIASES.get(key, key.replace("-", "_"))
+    for raw_key, raw_val in raw.items():
+        canon = _KEY_ALIASES.get(raw_key, raw_key.replace("-", "_"))
         if canon in _KNOWN_FIELDS:
-            fields_in[canon] = val
+            fields_in[canon] = raw_val
         else:
             # Only scalars land in extra; lists for unknown keys are
             # too unusual to model generically. Coerce to string.
-            extra[key] = str(val) if not isinstance(val, tuple) else ",".join(val)
+            extra[raw_key] = (
+                str(raw_val) if not isinstance(raw_val, tuple) else ",".join(raw_val)
+            )
 
     # Validate flavor early — hard-fail per decision 7.
     flavor_val = fields_in.get("flavor")

@@ -165,6 +165,9 @@ def extract_cites(text: str) -> list[Cite]:
     cites: list[Cite] = []
     for m in _CITE_HEAD.finditer(text):
         macro = m.group(1)
+        nargs: int
+        qi: int | None
+        pi: int | None
         if macro.startswith("mcitebox"):
             nargs, qi, pi = 3, 2, 1  # {key}{page}{quote}
         else:
@@ -522,6 +525,7 @@ def _split_top_envs(s: str) -> list[tuple]:
         if end_start is None:
             out.append(("env", m.group(1), s[m.end() :]))
             break
+        assert after is not None  # set together with end_start above
         out.append(("env", m.group(1), s[m.end() : end_start]))
         i = after
     return out

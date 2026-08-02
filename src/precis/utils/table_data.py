@@ -491,9 +491,9 @@ def _strip_colspec(text: str) -> str:
     width arg followed by the colspec) — what's left is rows only."""
     s = text.lstrip()
     if s.startswith("["):
-        end = s.find("]")
-        if end != -1:
-            s = s[end + 1 :].lstrip()
+        bracket_end = s.find("]")
+        if bracket_end != -1:
+            s = s[bracket_end + 1 :].lstrip()
     while s.startswith("{"):
         end = _find_balanced(s, 0)
         if end is None:

@@ -59,12 +59,12 @@
    The ML forward pass has no hang guard — exceptions fall back to fitz,
    but a wedged torch call blocks the live watcher indefinitely (ADR 0015
    solved the *leak*, not the *hang*). *sonnet coder · effort M*
-4. **Finish the mypy burn-down.** `union-attr` + `type-var` re-enabled
-   2026-08-02 (228 errors fixed; 2 real reachable-None bugs found in
-   `quest/allocator.py` + `cli/migrate_refs.py`). 3 codes remain disabled
-   (`pyproject.toml [tool.mypy]`), counts at 2026-08-02: assignment (31),
-   operator (35), index (103) — one at a time, smallest first; delete the
-   `disable_error_code` list when the last one lands. *sonnet, mechanical · effort M/code*
+4. **Finish the mypy burn-down.** `union-attr`, `type-var`, `assignment`,
+   `operator` re-enabled 2026-08-02 (~297 errors fixed; real bugs caught:
+   reachable-None in `quest/allocator.py` + `cli/migrate_refs.py`,
+   wrong-Literal annotation in `handlers/_provenance_report.py`). One code
+   remains: index (106 at 2026-08-02) — burn it down, then delete
+   `disable_error_code` entirely. *sonnet, mechanical · effort M*
 5. **Codify + sweep the real-PG-for-route-SQL policy.** The pattern
    (`test_status_sql.py` et al., now also `test_tags_sql.py` /
    `test_smartdraft_sql.py`) exists only where an incident or review forced

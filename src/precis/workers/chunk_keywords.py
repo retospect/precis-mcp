@@ -260,14 +260,15 @@ def extract_chunk_keywords(
         long_form = short_to_long.get(cand_l, cand)
         # If candidate is the long form of a known abbrev, attach the
         # short. If candidate IS a short, long is short_to_long[c].
+        cand_short: str | None
         if cand_l in short_to_long:
-            short = next(s for s in abbrevs if s.lower() == cand_l)
+            cand_short = next(s for s in abbrevs if s.lower() == cand_l)
         elif cand_l in long_to_short:
-            short = long_to_short[cand_l]
+            cand_short = long_to_short[cand_l]
         else:
-            short = None
+            cand_short = None
         embed_texts.append(long_form)
-        candidate_meta.append((long_form, short))
+        candidate_meta.append((long_form, cand_short))
 
     # One batched embed call.
     cand_vecs = embedder.embed(embed_texts)
@@ -275,7 +276,7 @@ def extract_chunk_keywords(
     # Score each candidate by cosine against the chunk embedding.
     chunk_norm = _l2_norm(chunk_embedding)
     scored: list[tuple[float, str, str | None]] = []
-    for (long_form, short), vec in zip(candidate_meta, cand_vecs, strict=True):
+    for (long_form, cand_short), vec in zip(candidate_meta, cand_vecs, strict=True):
         v_norm = _l2_norm(vec)
         if chunk_norm == 0.0 or v_norm == 0.0:
             score = 0.0
@@ -283,7 +284,7 @@ def extract_chunk_keywords(
             score = sum(a * b for a, b in zip(chunk_embedding, vec, strict=True)) / (
                 chunk_norm * v_norm
             )
-        scored.append((float(score), long_form, short))
+        scored.append((float(score), long_form, cand_short))
 
     scored.sort(key=lambda t: t[0], reverse=True)
 
@@ -293,12 +294,12 @@ def extract_chunk_keywords(
     # track seen abbrev-keys.
     seen_keys: set[str] = set()
     kept: list[dict[str, Any]] = []
-    for score, long_form, short in scored:
-        key = (short or long_form).lower()
+    for score, long_form, cand_short in scored:
+        key = (cand_short or long_form).lower()
         if key in seen_keys:
             continue
         seen_keys.add(key)
-        kept.append({"short": short, "long": long_form, "score": score})
+        kept.append({"short": cand_short, "long": long_form, "score": score})
         if len(kept) >= _TOP_K:
             break
     return kept

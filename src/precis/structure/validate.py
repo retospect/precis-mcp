@@ -136,10 +136,10 @@ def validate(scene: Scene) -> list[Finding]:
         # One finding per bond, even when *both* endpoints' elements can't
         # support the declared order — report the first offender and stop.
         for label in (bond.i, bond.j):
-            atom = scene.atoms.get(label)
-            if atom is None:
+            bond_atom = scene.atoms.get(label)
+            if bond_atom is None:
                 continue
-            mv = elements.max_valence(atom.element)
+            mv = elements.max_valence(bond_atom.element)
             if mv is not None and bond.order > mv:
                 findings.append(
                     Finding(
@@ -149,7 +149,7 @@ def validate(scene: Scene) -> list[Finding]:
                         expected=mv,
                         suggested_fix=(
                             f"bond {bond.i}-{bond.j} declares order {bond.order:g}, but "
-                            f"{label} ({atom.element}) has max valence {mv} — "
+                            f"{label} ({bond_atom.element}) has max valence {mv} — "
                             "lower the bond order or check the element."
                         ),
                     )

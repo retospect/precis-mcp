@@ -653,8 +653,8 @@ class SkillHandler(Handler):
                     + len(ident_matched) / len(qtokens)
                     + 0.01 * coverage
                 )
-                row = merged.get(slug)
-                if row is None or row.score < boost:
+                existing_row = merged.get(slug)
+                if existing_row is None or existing_row.score < boost:
                     # New or promoted: the winning signal is now the
                     # title/identity match, so overwrite the display
                     # section/snippet too (not just the score) — else a

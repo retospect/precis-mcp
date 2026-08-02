@@ -22,6 +22,7 @@ from __future__ import annotations
 import struct
 import zipfile
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -166,7 +167,7 @@ def manifold_available() -> bool:
     return True
 
 
-def _to_manifold(verts: np.ndarray, tris: np.ndarray) -> object:
+def _to_manifold(verts: np.ndarray, tris: np.ndarray) -> Any:
     import manifold3d as m3d
 
     mesh = m3d.Mesh(
@@ -176,7 +177,7 @@ def _to_manifold(verts: np.ndarray, tris: np.ndarray) -> object:
     return m3d.Manifold(mesh)
 
 
-def _node_solid(node: NodeSpec) -> object:
+def _node_solid(node: NodeSpec) -> Any:
     """A node's solid — the union of its pattern instances (or the one)."""
     parts = [_to_manifold(v, t) for v, t in node_meshes(node)]
     cur = parts[0]
@@ -185,7 +186,7 @@ def _node_solid(node: NodeSpec) -> object:
     return cur
 
 
-def _component_solids(spec: SceneSpec) -> list[tuple[str, object]]:
+def _component_solids(spec: SceneSpec) -> list[tuple[str, Any]]:
     """Fold each component into its own ``manifold3d`` solid (per-component
     boolean DAG), **without** unioning across components — so an assembly
     keeps its parts distinct for the formats that can carry them (3MF)."""
@@ -195,9 +196,9 @@ def _component_solids(spec: SceneSpec) -> list[tuple[str, object]]:
             "Install the extra:  pip install 'precis-mcp[cad-export]'"
         )
     by_comp = _by_component(spec)
-    out: list[tuple[str, object]] = []
+    out: list[tuple[str, Any]] = []
     for comp in spec.components:
-        cur: object | None = None
+        cur: Any | None = None
         for node in by_comp.get(comp, []):
             man = _node_solid(node)
             if cur is None:
@@ -215,7 +216,7 @@ def _component_solids(spec: SceneSpec) -> list[tuple[str, object]]:
     return out
 
 
-def _design_solid(spec: SceneSpec) -> object:
+def _design_solid(spec: SceneSpec) -> Any:
     """The whole design as one welded ``manifold3d`` solid (union of every
     component) — used for STL, which has no concept of separate parts."""
     solids = _component_solids(spec)

@@ -33,7 +33,7 @@ class _FakeK:
 
 def _synth() -> KokoroSynth:
     s = object.__new__(KokoroSynth)  # skip __init__ (no kokoro-onnx on host)
-    s._k = _FakeK()  # type: ignore[attr-defined]
+    s._k = _FakeK()  # type: ignore[attr-defined, assignment]
     s._speed = 1.0  # type: ignore[attr-defined]
     s._g2p = {}  # type: ignore[attr-defined]
     return s

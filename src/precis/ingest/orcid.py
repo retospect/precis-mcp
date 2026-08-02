@@ -345,7 +345,7 @@ def fetch_record(orcid_id: str) -> dict[str, Any]:
     unknown iD, :class:`Upstream` for transport / auth failures.
     """
     person = _api_get(f"{orcid_id}/person")
-    record = {"orcid_id": orcid_id}
+    record: dict[str, Any] = {"orcid_id": orcid_id}
     record.update(_normalize_person(person))
 
     try:

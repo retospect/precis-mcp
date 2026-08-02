@@ -498,13 +498,11 @@ check_untyped_defs = true
 ignore_missing_imports = true
 # Incrementally re-enabling these (code-review Phase 4.1). Already
 # burned down + removed: no-any-return, valid-type (were already clean),
-# dict-item, method-assign, var-annotated, union-attr, type-var.
-# Remaining (error counts at 2026-08-02 measure): assignment (31),
-# operator (35), index (103) — re-enable one at a time as they're fixed.
+# dict-item, method-assign, var-annotated, union-attr, type-var,
+# assignment, operator. Remaining: index (106 at 2026-08-02 measure) —
+# delete this list entirely when it's burned down.
 disable_error_code = [
-    "assignment",
     "index",
-    "operator",
 ]
 
 [tool.pytest.ini_options]

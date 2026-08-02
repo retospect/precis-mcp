@@ -232,7 +232,7 @@ class AsaBot(discord.Client):
         #   edit; text_partial events are throttled (every ~5s) to stay
         #   within Discord's edit budget. tool_use / subagent events bypass
         #   the throttle since they're rare and informative.
-        state = {"label": None, "last_text_edit_at": 0.0}
+        state: dict[str, Any] = {"label": None, "last_text_edit_at": 0.0}
 
         async def on_progress(evt: tuple) -> None:
             nonlocal progress_msg

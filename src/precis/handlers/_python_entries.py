@@ -276,15 +276,17 @@ def render_entries(alias: str, report: EntriesReport) -> str:
 
     lines.append("Next:")
     if report.console_scripts:
-        first = report.console_scripts[0]
+        first_script = report.console_scripts[0]
         lines.append(
             f"  get(kind='python', id={alias!r}, view='callgraph', "
-            f"entry={first.entry!r})"
+            f"entry={first_script.entry!r})"
         )
     elif report.main_guards:
-        first = report.main_guards[0]
+        first_guard = report.main_guards[0]
         # Trim the file name to a module guess for the hint.
-        lines.append(f"  get(kind='python', id='{alias}/{first.file}~L{first.line}')")
+        lines.append(
+            f"  get(kind='python', id='{alias}/{first_guard.file}~L{first_guard.line}')"
+        )
     return "\n".join(lines)
 
 

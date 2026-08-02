@@ -218,5 +218,5 @@ def test_has_pending_briefing_gates_on_marker_and_presence():
     assert has_pending_briefing(store, now=_NOW) is True
     store.ref.meta["audio_episode_id"] = "news-2026-07-14"  # narrated
     assert has_pending_briefing(store, now=_NOW) is False
-    store.ref = None  # nothing at all
+    store.ref = None  # type: ignore[assignment]  # nothing at all
     assert has_pending_briefing(store, now=_NOW) is False

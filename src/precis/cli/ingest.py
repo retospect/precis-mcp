@@ -169,6 +169,7 @@ def _ingest_one_kind(
         is_valid_file_slug as _valid,
     )
 
+    extensions: tuple[str, ...]
     if kind == "md":
         extensions = (".md", ".markdown")
         handler_kind = "markdown"

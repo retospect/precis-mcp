@@ -405,6 +405,7 @@ class DraftMixin:
         chunk (so a plan chunk renders ``pe<id>``) and, for a universal-handle
         address, the code prefix that must match."""
         parsed = handle_registry.parse(handle.strip())
+        key: str | int
         if parsed is not None and parsed[0] == kind and parsed[1]:
             where, key = "chunk_id = %s", parsed[2]
         else:
@@ -3526,9 +3527,9 @@ class _AbbrevMixin:
                         entry[key] = val
                 # Every string surface of the leaf routes to the same record.
                 surfaces: list[str] = []
-                short = m.get("short")
-                if short:
-                    surfaces.append(str(short))
+                short_form = m.get("short")
+                if short_form:
+                    surfaces.append(str(short_form))
                 for sf in m.get("surface_forms") or []:
                     if sf:
                         surfaces.append(str(sf))

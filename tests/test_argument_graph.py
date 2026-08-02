@@ -290,6 +290,7 @@ class TestArgumentView:
         mid = id_of(handler.put(text="x").body)
         with pytest.raises(Unsupported) as exc:
             handler.get(id=mid, view="bogus")
+        assert exc.value.options is not None
         assert "argument" in exc.value.options
 
 

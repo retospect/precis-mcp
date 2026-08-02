@@ -163,4 +163,6 @@ def test_link_map_gate_appends_block_when_on(hub: Hub, plan: PlanHandler) -> Non
     assert "section link map" in on
     from precis.utils import handle_registry
 
-    assert handle_registry.try_format("paper", paper.id) in on
+    handle = handle_registry.try_format("paper", paper.id)
+    assert handle is not None
+    assert handle in on

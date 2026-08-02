@@ -41,6 +41,7 @@ class TestParse:
         out = parse(stdout)
         assert out is not None
         assert out.verdict == "continue"
+        assert out.summary is not None
         assert "First line" in out.summary
         assert "Second line" in out.summary
         assert "Third line" in out.summary

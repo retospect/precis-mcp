@@ -540,8 +540,10 @@ def test_dispatch_claude_transport_ignores_gen_params(
         LlmRequest(tier=Tier.FRONTIER, prompt="x", thinking=False, temperature=0.9)
     )
     assert out.error is None
-    assert "thinking" not in calls["kwargs"]
-    assert "temperature" not in calls["kwargs"]
+    kwargs = calls["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert "thinking" not in kwargs
+    assert "temperature" not in kwargs
 
 
 def test_dispatch_local_routes_to_served_endpoint(

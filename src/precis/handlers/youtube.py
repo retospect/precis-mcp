@@ -462,9 +462,9 @@ def _scrape_watch_page_meta(video_id: str) -> dict[str, Any]:
         elif key == "duration" and "duration_iso" not in meta:
             meta["duration_iso"] = val
     # Channel URL — first author-itemprop link.
-    m = _AUTHOR_LINK_RE.search(html)
-    if m is not None and "channel_url" not in meta:
-        meta["channel_url"] = m.group(1)
+    author_m = _AUTHOR_LINK_RE.search(html)
+    if author_m is not None and "channel_url" not in meta:
+        meta["channel_url"] = author_m.group(1)
     meta["watch_url"] = url
     return meta
 

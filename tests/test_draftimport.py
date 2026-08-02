@@ -133,7 +133,8 @@ def test_resolve_key_matches_cite_key_alias() -> None:
     import precis.draftimport.resolve as R
 
     orig = R._ref_cite_key
-    R._ref_cite_key = lambda s, rid: "zhao2024pdinco"
+    # test monkeypatch of a module fn (restored in the finally below)
+    R._ref_cite_key = lambda s, rid: "zhao2024pdinco"  # type: ignore[assignment]
     try:
         slug, via, ref_id = resolve_key(store, "zhao2024PdInCo", None)
     finally:

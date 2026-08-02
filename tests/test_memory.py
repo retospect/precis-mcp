@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 
 from precis.dispatch import Hub
@@ -358,7 +360,7 @@ def test_supersede_caps_merge_count(handler: MemoryHandler) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _card_last_seen(store: Store, ref_id: int) -> object:
+def _card_last_seen(store: Store, ref_id: int) -> datetime:
     cids = store.card_chunk_ids([ref_id])
     assert len(cids) == 1
     with store.pool.connection() as conn:

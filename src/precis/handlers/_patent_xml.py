@@ -637,8 +637,8 @@ def parse_search_response(xml_bytes: bytes) -> tuple[list[OpsHit], int]:
     # NOT inside an exchange-document and dedup on slug.
     if not hits:
         for ref_el in _findall(root, "publication-reference"):
-            host = _find_enclosing(root, ref_el, "exchange-document")
-            if host is not None:
+            enclosing = _find_enclosing(root, ref_el, "exchange-document")
+            if enclosing is not None:
                 continue
             slug = _docdb_to_slug(ref_el)
             if slug is None or slug in seen:

@@ -642,7 +642,7 @@ def _build_rows(
     all_segments.sort(key=lambda t: t[0])
 
     rows: list[dict[str, str]] = []
-    for start, end, label, kws in all_segments:
+    for start, end, label, seg_kws in all_segments:
         if positions is not None:
             handle_start = positions[start]
             handle_end = positions[end]
@@ -650,7 +650,7 @@ def _build_rows(
             handle_start = start + base_offset
             handle_end = end + base_offset
         handle = _handle_for(slug, handle_start, handle_end)
-        kw_str = ", ".join(kws) if kws else ""
+        kw_str = ", ".join(seg_kws) if seg_kws else ""
         if use_h2:
             # H2 mode: heading column carries either the H2 text or
             # the boilerplate label.

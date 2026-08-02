@@ -327,7 +327,7 @@ def render_batch(results: list[ProvenanceResult], view: View = "default") -> str
                 lines.extend(_render_verification_block(r))
             lines.append("")
 
-    visible_severities: tuple[Severity, ...]
+    visible_severities: tuple[_BucketKey, ...]
     if view == "blockers":
         visible_severities = ("blocker", "review")
         suppressed = (

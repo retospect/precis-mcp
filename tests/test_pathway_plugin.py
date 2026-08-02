@@ -109,7 +109,7 @@ class _FakeCtx:
 
     def __init__(self, *, store: Store, params: dict[str, Any]) -> None:
         self.store = store
-        self.meta = {"params": params}
+        self.meta: dict[str, Any] = {"params": params}
         self.status: str | None = None
         self.failure: str | None = None
         self.chunks: list[tuple[str, str]] = []

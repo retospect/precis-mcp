@@ -297,7 +297,8 @@ def _cmd_cost(store: Store, args: argparse.Namespace) -> None:
         f"  {'key':<22} {'calls':>7} {'real $':>9} {'chars(in/out)':>15} "
         f"{'wall':>8} {'err':>5}"
     )
-    tot_calls = tot_usd = tot_wall = 0
+    tot_calls = tot_wall = 0
+    tot_usd = 0.0
     for r in rows:
         wall_h = r.wall_ms / 3_600_000
         chars = f"{_fmt_int(r.req_chars)}/{_fmt_int(r.resp_chars)}"

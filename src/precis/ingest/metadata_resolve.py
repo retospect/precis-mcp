@@ -277,6 +277,7 @@ def _resolve_one(
     if not candidates:
         return Resolution(rid, "miss", "title", "no-query-title")
     best: Resolution | None = None
+    best_sim = -1.0
     for qtitle in candidates:
         cand = _bounded(s2_fn, qtitle, s2_api_key, timeout=call_timeout)
         if cand is _TIMED_OUT:
@@ -287,19 +288,21 @@ def _resolve_one(
         res = _from_meta(rid, cand, track="title")
         if not res.title or is_garbage_title(res.title):
             continue
-        res.sim = _similarity(store, qtitle, res.title)
-        if best is None or res.sim > best.sim:
+        sim = _similarity(store, qtitle, res.title)
+        res.sim = sim
+        if best is None or sim > best_sim:
             best = res
-        if best.sim >= _AUTO_SIM:
+            best_sim = sim
+        if best_sim >= _AUTO_SIM:
             break
     if best is None:
         return Resolution(rid, "miss", "title", "s2-miss")
     res = best
     years_ok = _years_compatible(ref.year, res.year)
-    if res.sim < _REVIEW_SIM:
+    if best_sim < _REVIEW_SIM:
         res.verdict, res.reason = "miss", "below-review-threshold"
         return res
-    if res.sim < _AUTO_SIM or not years_ok:
+    if best_sim < _AUTO_SIM or not years_ok:
         res.verdict, res.reason = (
             "review",
             ("year-mismatch" if not years_ok else "low-similarity"),

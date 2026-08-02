@@ -539,6 +539,7 @@ def test_container_executor_on_wraps_in_podman(monkeypatch, stub_bin: Path) -> N
     monkeypatch.setattr(ca, "run_claude", _fake)
     call_claude_agent("the prompt", model="opus")
     argv = captured["argv"]
+    assert isinstance(argv, list)
     assert argv[0] == "podman" and "run" in argv
     assert str(stub_bin) not in argv  # host binary dropped
     assert "claude" in argv and argv[-1] == "the prompt"  # command preserved
@@ -577,6 +578,7 @@ def test_container_reinjects_scrubbed_dsn(monkeypatch, stub_bin: Path) -> None:
     call_claude_agent("the prompt", model="opus")
 
     argv = captured["argv"]
+    assert isinstance(argv, list)
     assert "--env" in argv and "PRECIS_DATABASE_URL" in argv  # by-key passthrough
     assert "postgresql://ro@h:6432/db" not in argv  # value NEVER in argv
     env = captured["env"]
