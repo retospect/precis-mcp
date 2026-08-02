@@ -1097,7 +1097,7 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
       }
     }
     RSVP.stall = 0;
-    if (RSVP.cur) _undecorate(RSVP.cur);
+    if (RSVP.cur) _undecorate(RSVP.cur.span);
     const w = RSVP.words[RSVP.idx];
     RSVP.cur = w; _decorate(w.span); _scrollWord(w.span);
     RSVP.idx++;
@@ -1106,7 +1106,7 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
   const _curIdx = () => (RSVP.cur ? Math.max(0, RSVP.words.indexOf(RSVP.cur)) : 0);
   function _rsvpShow(j) {
     j = Math.max(0, Math.min(j, RSVP.words.length - 1));
-    if (RSVP.cur) _undecorate(RSVP.cur);
+    if (RSVP.cur) _undecorate(RSVP.cur.span);
     const w = RSVP.words[j]; RSVP.cur = w; _decorate(w.span); _scrollWord(w.span);
     RSVP.idx = j + 1; RSVP.stall = 0;
   }
