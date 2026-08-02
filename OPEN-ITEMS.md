@@ -2291,8 +2291,11 @@ by `deploy` with no `agent_rw`/`agent_ro` grants — add an ACL diff/re-grant st
   a UI-only add if the working-set bulk-expand is still wanted.
 
 **P3 — type/platform/debt:**
-- **Burn down the five disabled mypy categories** (`pyproject.toml`; ~184 across
-  `union-attr`/`index`/`assignment`/`type-var`/`operator`).
+- **Burn down the remaining disabled mypy categories** (`pyproject.toml`).
+  `union-attr` re-enabled 2026-08-02 (211 errors fixed; 2 real reachable-None
+  bugs found in `quest/allocator.py` + `cli/migrate_refs.py`). 4 codes remain
+  disabled, counts at 2026-08-02: type-var (17), assignment (31),
+  operator (35), index (103).
 - **Fix Windows `O_DIRECTORY` + Python 3.12 urllib circular import** (also above).
 - **Recheck `transformers>=5.3.0` / `marker-pdf` pin** (Dependabot #44, snoozed).
 - **Re-evaluate `ruff` ignores `RUF012` + `B905`** (can hide real bugs).
