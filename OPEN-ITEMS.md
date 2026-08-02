@@ -993,13 +993,6 @@ state lives in the in-repo `deploy/` tree (`~/work/cluster` was retired
   pool (which the agent DSN uses via `:6432`) — a real fix needs a direct-pg
   route around pgbouncer, a security-posture decision, not a mechanical flip.
   `GRANT agent_ro TO agent_rw` prereq is already applied to prod.
-- **Containerize the `plan_tick` + `fix_gripe` spawn seams** *(feature,
-  open).* These two build their own `claude -p` argv with env back-doors
-  (`PRECIS_CURRENT_TODO`/`WORKSPACE`/`AGENTLOG`, `--append-system-prompt`,
-  `--bare` + `_restricted_env`) — separate from the `call_claude_agent`
-  chokepoint that `PRECIS_AGENT_CONTAINER` already covers (dream/review/
-  structural/deep_review/diagram). Needs its own live-container proof before
-  it can containerize.
 - **asa slice-0 ops** *(ops, open).* `asa_bot`'s own OAuth/run-as cutover
   (vault fallback already shipped, mirrors precis's `utils/claude_oauth`) —
   live cutover is an ordered ops sequence (seed vault → verify → flip run-as

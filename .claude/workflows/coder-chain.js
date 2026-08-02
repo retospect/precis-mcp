@@ -45,8 +45,15 @@ function buildPrompt(task, handoff, round) {
 
 phase('Implement')
 
-const task = args.task
-const maxRounds = args.maxRounds || 8
+// args may arrive as a JSON-encoded string depending on the invoking
+// harness — parse defensively so a by-name invocation never runs a round
+// with an empty task (observed: two wasted "blocked" rounds, 2026-08-02).
+const parsedArgs = typeof args === 'string' ? JSON.parse(args) : args
+const task = parsedArgs.task
+const maxRounds = parsedArgs.maxRounds || 8
+if (!task || typeof task !== 'string') {
+  throw new Error('coder-chain: args.task missing or not a string — got ' + JSON.stringify(parsedArgs).slice(0, 200))
+}
 
 let handoff = null
 let round = 0
