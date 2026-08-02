@@ -1914,3 +1914,103 @@ class TestOpenAlexBalanceAlert:
         )
         assert check_openalex_balance(store, api_key="k") == 500
         assert self._open_balance_alerts(store) == []
+
+
+# ---------------------------------------------------------------------------
+# _download_pdf / _download_markup — byte-cap disk-fill guard
+# ---------------------------------------------------------------------------
+
+
+class _FakeStreamResp:
+    """Stands in for the ``httpx.Response`` yielded by ``safe_stream``."""
+
+    def __init__(
+        self, chunks: list[bytes], headers: dict[str, str] | None = None
+    ) -> None:
+        self._chunks = chunks
+        self.headers = headers or {}
+        self.iter_calls = 0
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def iter_bytes(self, chunk_size: int = 64 * 1024) -> Any:
+        self.iter_calls += 1
+        yield from self._chunks
+
+
+def _patch_download_transport(
+    monkeypatch: pytest.MonkeyPatch, resp: _FakeStreamResp
+) -> None:
+    """Swap the two HTTP primitives ``_download_pdf``/``_download_markup``
+    import locally (``http_client``, ``safe_stream``) for fakes that hand
+    back ``resp`` — no real network, no SSRF-pinning machinery needed."""
+    import contextlib
+
+    @contextlib.contextmanager
+    def _fake_http_client(**kw: Any) -> Any:
+        yield object()
+
+    @contextlib.contextmanager
+    def _fake_safe_stream(client: Any, method: str, url: str, **kw: Any) -> Any:
+        yield resp
+
+    monkeypatch.setattr("precis.utils.http.http_client", _fake_http_client)
+    monkeypatch.setattr("precis.utils.safe_fetch.safe_stream", _fake_safe_stream)
+
+
+class TestDownloadByteCap:
+    """The wall-clock timeout (``_DOWNLOAD_TIMEOUT_S``) bounds a *stalled*
+    download but not total bytes — a slow-but-live upstream streaming
+    forever would otherwise fill the disk. ``_MAX_DOWNLOAD_BYTES`` caps it;
+    the cap is monkeypatched tiny so these tests don't need real payload
+    sizes."""
+
+    def test_download_pdf_aborts_mid_stream_over_cap(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(fetch_oa, "_MAX_DOWNLOAD_BYTES", 10)
+        chunks = [b"%PDF-1.4", b"x" * 8, b"y" * 8]  # well past the 10-byte cap
+        resp = _FakeStreamResp(chunks)
+        _patch_download_transport(monkeypatch, resp)
+
+        target = tmp_path / "out.pdf"
+        with pytest.raises(ValueError, match="byte cap"):
+            fetch_oa._download_pdf("https://example.org/x.pdf", target)
+
+        assert not target.exists()
+        assert not target.with_suffix(target.suffix + ".part").exists()
+
+    def test_download_pdf_content_length_over_cap_skips_stream(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A declared ``Content-Length`` already over the cap is rejected
+        before any bytes are read — no point opening ``.part`` at all."""
+        monkeypatch.setattr(fetch_oa, "_MAX_DOWNLOAD_BYTES", 10)
+        resp = _FakeStreamResp(
+            [b"%PDF-1.4" + b"z" * 100], headers={"Content-Length": "1000"}
+        )
+        _patch_download_transport(monkeypatch, resp)
+
+        target = tmp_path / "out.pdf"
+        with pytest.raises(ValueError, match="too large"):
+            fetch_oa._download_pdf("https://example.org/x.pdf", target)
+
+        assert resp.iter_calls == 0  # never streamed
+        assert not target.exists()
+        assert not target.with_suffix(target.suffix + ".part").exists()
+
+    def test_download_markup_aborts_mid_stream_over_cap(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(fetch_oa, "_MAX_DOWNLOAD_BYTES", 10)
+        chunks = [b"<article>", b"x" * 8, b"y" * 8]
+        resp = _FakeStreamResp(chunks)
+        _patch_download_transport(monkeypatch, resp)
+
+        target = tmp_path / "out.xml"
+        with pytest.raises(ValueError, match="byte cap"):
+            fetch_oa._download_markup("https://example.org/x.xml", target)
+
+        assert not target.exists()
+        assert not target.with_suffix(target.suffix + ".part").exists()

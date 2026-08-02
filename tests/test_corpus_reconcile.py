@@ -152,6 +152,53 @@ def test_scan_throttled_skips_enumeration_when_marker_fresh(
     assert calls == []  # throttled: the enumeration never ran
 
 
+def test_reconcile_pass_isolates_per_item_failure(
+    store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``pdfs_due_for_host`` returns stalest-first, so an unwrapped exception
+    on one item would abort the pass and leave the same poison item
+    first-in-line next cycle (head-of-line blocking). A per-item raise must
+    be caught, counted, and the pass must still record a verdict for later
+    items."""
+    host = f"err-{uuid4().hex[:8]}"
+    poison_sha = "e" * 64
+    good_sha = "c" * 64
+    with store.pool.connection() as conn:
+        for sha in (poison_sha, good_sha):
+            conn.execute(
+                "INSERT INTO pdfs (pdf_sha256, content_hash, page_count, "
+                "size_bytes, storage_path) VALUES (%s, %s, 1, 100, '') "
+                "ON CONFLICT (pdf_sha256) DO NOTHING",
+                (sha, sha),
+            )
+    due = [
+        DuePdf(pdf_sha256=poison_sha, storage_path="", cite_keys=("poison",)),
+        DuePdf(pdf_sha256=good_sha, storage_path="", cite_keys=("good",)),
+    ]
+    monkeypatch.setattr(store, "pdfs_due_for_host", lambda *a, **k: due)
+
+    resolved: list[str] = []
+
+    def _resolve(corpus_dirs: object, d: DuePdf) -> Path | None:
+        if d.pdf_sha256 == poison_sha:
+            raise RuntimeError("boom")
+        resolved.append(d.pdf_sha256)
+        return None
+
+    monkeypatch.setattr("precis.workers.corpus_reconcile._resolve_local", _resolve)
+
+    r = run_corpus_reconcile_pass(store, (tmp_path,), host, limit=50)
+
+    # The poison item raised but the pass kept going to the good one.
+    assert resolved == [good_sha]
+    assert (r.claimed, r.ok, r.failed) == (2, 0, 2)  # 1 absent + 1 error
+    # The good item's verdict was still recorded despite the earlier raise.
+    assert store.pdf_missing(good_sha, ttl_days=7) is True
+    # No verdict at all was recorded for the poison item (it raised before
+    # ``record_pdf_location`` could run).
+    assert store.pdf_missing(poison_sha, ttl_days=7) is False
+
+
 def test_empty_scan_stamps_marker_then_throttles(
     store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -22,6 +22,7 @@ from precis.budget import breaker as breaker_mod
 from precis.budget.bands import Cost, Pace
 from precis.budget.pricing import PRICE_TABLE, cost_from_tokens
 from precis.utils.llm.router import Tier, result_from_openai
+from tests._fakes import FakeStore as _FakeStoreBase
 
 # ── fake store ─────────────────────────────────────────────────────────
 
@@ -59,8 +60,9 @@ class _Pool:
         return self._conn
 
 
-class FakeStore:
+class FakeStore(_FakeStoreBase):
     def __init__(self, *, llm: float = 0.0, fetch: float = 0.0) -> None:
+        super().__init__()
         self.pool = _Pool(llm, fetch)
 
 

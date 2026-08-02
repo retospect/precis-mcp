@@ -27,14 +27,19 @@ from precis.utils.oracle_lens import (
     render_lens_block_from_draw,
     resolve_lens_traditions,
 )
+from tests._fakes import FakeStore as _FakeStoreBase
 
 
-class FakeStore:
-    """Minimal store exposing just the two methods ``draw_lens_entry`` calls."""
+class FakeStore(_FakeStoreBase):
+    """Minimal store exposing just the two methods ``draw_lens_entry`` calls.
+
+    ``list_blocks_for_ref`` is inherited from the shared base — it reads
+    the same ``self._blocks`` map populated below.
+    """
 
     def __init__(self, traditions: dict[str, list[str]]) -> None:
+        super().__init__()
         self._refs: list[SimpleNamespace] = []
-        self._blocks: dict[int, list[SimpleNamespace]] = {}
         for i, (slug, titles) in enumerate(traditions.items(), start=1):
             self._refs.append(
                 SimpleNamespace(id=i, kind="oracle", slug=slug, title=slug.title())
@@ -51,9 +56,6 @@ class FakeStore:
 
     def list_refs(self, *, kind: str, limit: int = 50, **_kw: object) -> list:
         return [r for r in self._refs if r.kind == kind][:limit]
-
-    def list_blocks_for_ref(self, ref_id: int) -> list:
-        return list(self._blocks.get(ref_id, []))
 
 
 def _fake(traditions: dict[str, list[str]]) -> Store:

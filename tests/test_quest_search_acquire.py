@@ -22,6 +22,7 @@ import pytest
 
 from precis.ingest import semantic_scholar as s2mod
 from precis.quest import search as qsearch
+from tests._fakes import FakeStore as _FakeStoreBase
 
 # ── search_s2_papers ─────────────────────────────────────────────────
 
@@ -98,10 +99,11 @@ class _Row:
         self.id = id_
 
 
-class FakeStore:
+class FakeStore(_FakeStoreBase):
     """Minimal store stub: only ``search_refs_lexical`` is exercised."""
 
     def __init__(self, held_ids: list[int]) -> None:
+        super().__init__()
         self._held_ids = held_ids
 
     def search_refs_lexical(

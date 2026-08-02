@@ -1,7 +1,8 @@
 # precis-mcp — Open Items
 
 Durable backlog. Only **open / blocked / deferred** work lives here; done
-items are removed (history is `git log`).
+items are removed (history is `git log`). Cross-cutting code-quality work is
+tracked separately in `docs/improvement-plan.md` (same delete-on-ship rule).
 
 > **Convention** — Status: `open`/`blocked`/`deferred` · Severity:
 > `critical`/`feature`/`polish` · Owner: where the fix lives · Test: the

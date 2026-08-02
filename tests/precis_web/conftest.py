@@ -7,6 +7,12 @@ connection: ``list_refs`` / ``search_refs_lexical`` / ``fetch_refs_by_ids``
 return canned refs, and the fake pool's cursor returns empty result
 sets (so the tag-join / status SQL degrades cleanly — exactly the
 defensive path the ``_safe`` wrapper and tag defaults are built for).
+
+``FakeStore`` below subclasses the shared seed in ``tests._fakes`` —
+see that module's docstring for the "doesn't parse SQL" caveat that
+applies here too (this is why ``test_drive_sql.py`` /
+``test_status_sql.py`` / ``test_structure_sql.py`` exist as real-Postgres
+companions to the route tests in this directory).
 """
 
 from __future__ import annotations
@@ -23,6 +29,7 @@ from fastapi.testclient import TestClient
 
 from precis_web.app import create_app
 from precis_web.config import WebConfig
+from tests._fakes import FakeStore as _FakeStoreBase
 
 
 def make_ref(**kw: Any) -> SimpleNamespace:
@@ -71,8 +78,9 @@ class _FakePool:
         yield _FakeConn()
 
 
-class FakeStore:
+class FakeStore(_FakeStoreBase):
     def __init__(self) -> None:
+        super().__init__()
         self.pool = _FakePool()
         #: ref_ids the fake reports as carrying OPEN:needs-triage (tests
         #: populate this to exercise the triage panel / tag-clear paths).
@@ -366,6 +374,10 @@ class FakeStore:
         return ref, SimpleNamespace(meta=meta)
 
     def list_blocks_for_ref(self, ref_id: int, **kw: Any) -> list[Any]:
+        # Overrides the shared base's ``self._blocks`` lookup — this
+        # fixture's canned-block map is named ``_conv_blocks`` and is
+        # poked directly by several other test files, so it keeps its
+        # own name rather than aliasing onto the base's attribute.
         return list(self._conv_blocks.get(ref_id, []))
 
     def fetch_ref_ids_by_slugs(self, slugs, *, kind: str):

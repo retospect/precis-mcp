@@ -120,6 +120,12 @@ def run_corpus_reconcile_pass(
     disk; ``failed`` = recorded absent (a normal verdict, **not** a pass
     error — surfaced as a counter so the absent count is visible in the
     worker log rollup).
+
+    Per-item wrapped: ``pdfs_due_for_host`` returns stalest-first, so an
+    unwrapped exception on one item would abort the pass *and* leave that
+    same poison item first-in-line next cycle — a head-of-line-blocking spin
+    loop. A raise from ``_resolve_local``/``record_pdf_location`` is logged
+    with the item's sha256 and counted in ``n_error``; the pass moves on.
     """
     idle = BatchResult(handler="corpus_reconcile", claimed=0, ok=0, failed=0)
     if not corpus_dirs:
@@ -135,26 +141,38 @@ def run_corpus_reconcile_pass(
         return idle
     n_found = 0
     n_absent = 0
+    n_error = 0
     for d in due:
-        found = _resolve_local(corpus_dirs, d)
-        store.record_pdf_location(d.pdf_sha256, host, str(found) if found else "")
+        try:
+            found = _resolve_local(corpus_dirs, d)
+            store.record_pdf_location(d.pdf_sha256, host, str(found) if found else "")
+        except Exception:  # pragma: no cover - defensive
+            n_error += 1
+            log.warning(
+                "corpus_reconcile: %s verdict for pdf_sha256=%s raised",
+                host,
+                d.pdf_sha256,
+                exc_info=True,
+            )
+            continue
         if found:
             n_found += 1
         else:
             n_absent += 1
-    if n_absent:
+    if n_absent or n_error:
         log.info(
-            "corpus_reconcile: %s checked %d held PDF(s) — %d present, %d absent",
+            "corpus_reconcile: %s checked %d held PDF(s) — %d present, %d absent, %d error",
             host,
             len(due),
             n_found,
             n_absent,
+            n_error,
         )
     return BatchResult(
         handler="corpus_reconcile",
         claimed=len(due),
         ok=n_found,
-        failed=n_absent,
+        failed=n_absent + n_error,
     )
 
 

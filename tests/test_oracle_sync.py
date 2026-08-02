@@ -19,6 +19,7 @@ from precis.jobs.oracle_sync import (
     maybe_reingest,
     wheel_version_int,
 )
+from tests._fakes import FakeStore as _FakeStoreBase
 
 # ── version packing ──────────────────────────────────────────────────
 
@@ -101,14 +102,14 @@ def test_compute_corpus_state_filename_matters(tmp_path: Path) -> None:
 # ── fake store + maybe_reingest gate ─────────────────────────────────
 
 
-class FakeStore:
+class FakeStore(_FakeStoreBase):
     """Just enough store surface to exercise the gate.
 
     Tracks ``set_setting`` / ``get_setting`` calls and lets the test
     pre-seed stored state. The advisory lock helpers use ``pool``,
-    which we leave ``None`` so the locking degrades gracefully (the
-    docstring says that's the intended behaviour for non-Postgres
-    fixtures).
+    which the shared base leaves ``None`` so the locking degrades
+    gracefully (the docstring says that's the intended behaviour for
+    non-Postgres fixtures).
 
     The method names mirror the real ``Store`` API exactly — if
     they drift, ``test_oracle_sync_uses_real_store_api`` below trips
@@ -116,9 +117,8 @@ class FakeStore:
     boot" again.
     """
 
-    pool = None
-
     def __init__(self) -> None:
+        super().__init__()
         self._kv: dict[str, str] = {}
         self.ingest_calls = 0
 

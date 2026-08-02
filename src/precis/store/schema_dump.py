@@ -355,6 +355,30 @@ def baseline_at_head_errors(migrations_dir: Path | None = None) -> list[str]:
     return errs
 
 
+def baseline_lag(migrations_dir: Path | None = None) -> int:
+    """Return how many migration files sort after the baseline's baked head.
+
+    A bounded-drift counterpart to :func:`baseline_at_head_errors` (which
+    is exact-head, the release gate): this reuses the same ledger
+    parsing to find the newest version baked into the committed
+    snapshot, then counts how many files sort after it. 0 when the
+    baseline is at head or absent (nothing to be behind by).
+    """
+    migrations_dir = migrations_dir or builtin_migrations_dir()
+    path = baseline_path(migrations_dir)
+    if not path.exists():
+        return 0
+    baked = {v for v, _ in parse_baseline_ledger(path.read_text(encoding="utf-8"))}
+    if not baked:
+        return 0
+    head = max(baked)
+    files = {
+        f.version
+        for f in _load_migrations(MigrationSource(PRECIS_PLUGIN_NAME, migrations_dir))
+    }
+    return sum(1 for version in files if version > head)
+
+
 def assert_baseline_at_head(migrations_dir: Path | None = None) -> None:
     """Raise ``SystemExit`` with a clear message if the baseline is stale.
 
@@ -374,6 +398,7 @@ __all__ = [
     "assert_baseline_at_head",
     "baseline_at_head_errors",
     "baseline_integrity_errors",
+    "baseline_lag",
     "baseline_path",
     "builtin_migrations_dir",
     "generate_baseline_sql",

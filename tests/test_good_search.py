@@ -30,6 +30,7 @@ import pytest
 
 from precis.workers.executors._yield import Done, Yield
 from precis.workers.job_types import good_search as gs
+from tests._fakes import FakeStore as _FakeStoreBase
 
 # ── fakes ───────────────────────────────────────────────────────────
 
@@ -51,22 +52,23 @@ def _result_block(verdicts: list[dict[str, Any]]) -> Any:
     )
 
 
-class FakeStore:
+class FakeStore(_FakeStoreBase):
+    """``list_blocks_for_ref`` is inherited from the shared base — it
+    reads the same ``self._blocks`` map populated below."""
+
     def __init__(
         self,
         hits: list[tuple[Any, Any, float]] | None = None,
         blocks: dict[int, list[Any]] | None = None,
     ) -> None:
+        super().__init__()
         self.hits = hits or []
-        self.blocks = blocks or {}
+        self._blocks = blocks or {}
         self.multi_calls: list[dict[str, Any]] = []
 
     def search_blocks_multi(self, **kw: Any) -> list[tuple[Any, Any, float]]:
         self.multi_calls.append(kw)
         return self.hits
-
-    def list_blocks_for_ref(self, ref_id: int) -> list[Any]:
-        return self.blocks.get(ref_id, [])
 
 
 class FakeCtx:

@@ -151,6 +151,12 @@ _UNPAYWALL_BASE = "https://api.unpaywall.org/v2"
 _API_TIMEOUT_S = 30.0
 _DOWNLOAD_TIMEOUT_S = 120.0
 
+# Disk-fill guard, not a size policy: the wall-clock timeout above bounds a
+# stalled download, but a slow-yet-live upstream streaming forever would
+# otherwise fill the disk with no cap on total bytes. 512 MiB is generous
+# even for book-scale PDFs/markup.
+_MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024
+
 # Retry policy on rate-limit + transient API errors. Exponential
 # backoff matches the pattern in ``precis.ingest.citations``.
 _RETRY_MAX_ATTEMPTS = 4
@@ -1563,10 +1569,30 @@ def _download_markup(
     ) as client:
         with safe_stream(client, "GET", url) as resp:
             resp.raise_for_status()
+            declared = resp.headers.get("Content-Length")
+            if (
+                declared is not None
+                and declared.isdigit()
+                and int(declared) > _MAX_DOWNLOAD_BYTES
+            ):
+                raise ValueError(
+                    f"response too large (Content-Length={declared} bytes, "
+                    f"cap={_MAX_DOWNLOAD_BYTES}) — skipped, disk-fill guard"
+                )
+            over_cap = False
             with tmp.open("wb") as fh:
                 for chunk in resp.iter_bytes(chunk_size=64 * 1024):
                     fh.write(chunk)
                     size += len(chunk)
+                    if size > _MAX_DOWNLOAD_BYTES:
+                        over_cap = True
+                        break
+    if over_cap:
+        tmp.unlink(missing_ok=True)
+        raise ValueError(
+            f"response exceeded {_MAX_DOWNLOAD_BYTES} byte cap mid-stream "
+            "(disk-fill guard)"
+        )
     if size == 0:
         tmp.unlink(missing_ok=True)
         raise ValueError("empty markup response")
@@ -2311,12 +2337,32 @@ def _download_pdf(
     ) as client:
         with safe_stream(client, "GET", url) as resp:
             resp.raise_for_status()
+            declared = resp.headers.get("Content-Length")
+            if (
+                declared is not None
+                and declared.isdigit()
+                and int(declared) > _MAX_DOWNLOAD_BYTES
+            ):
+                raise ValueError(
+                    f"response too large (Content-Length={declared} bytes, "
+                    f"cap={_MAX_DOWNLOAD_BYTES}) — skipped, disk-fill guard"
+                )
+            over_cap = False
             with tmp.open("wb") as fh:
                 for chunk in resp.iter_bytes(chunk_size=64 * 1024):
                     if size == 0:
                         head = chunk[:8]
                     fh.write(chunk)
                     size += len(chunk)
+                    if size > _MAX_DOWNLOAD_BYTES:
+                        over_cap = True
+                        break
+    if over_cap:
+        tmp.unlink(missing_ok=True)
+        raise ValueError(
+            f"response exceeded {_MAX_DOWNLOAD_BYTES} byte cap mid-stream "
+            "(disk-fill guard)"
+        )
     if not head.startswith(b"%PDF-"):
         tmp.unlink(missing_ok=True)
         raise ValueError(f"response is not a PDF (got {size} bytes, head={head!r})")
