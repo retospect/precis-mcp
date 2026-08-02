@@ -66,7 +66,7 @@ class TestRejections:
             parse_docdb_id("EP.1234567.B1")
         assert "dotted" in str(exc.value).lower()
         # Recovery hint on .next should suggest the dot-stripped form.
-        assert exc.value.next is not None
+        assert isinstance(exc.value.next, str)
         assert "ep1234567b1" in exc.value.next.lower()
 
     def test_garbage_rejected(self) -> None:

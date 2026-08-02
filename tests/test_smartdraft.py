@@ -193,10 +193,17 @@ def test_build_outline_nests_by_depth_and_opens_focus_path() -> None:
         TocRow(node=_h(4, 0, "dcB")),  # root B
     ]
     roots = build_outline(rows, reveal_dcs={"dcA2"})
-    assert [r.heading.dc for r in roots] == ["dcA", "dcB"]
+    assert all(r.heading is not None for r in roots)  # no spurious headless roots
+    assert [r.heading.dc for r in roots if r.heading is not None] == ["dcA", "dcB"]
     A = roots[0]
-    assert [c.heading.dc for c in A.children] == ["dcA1", "dcA2"]
-    assert A.children[0].body[0].node.dc == "dcp"  # body attached under its heading
+    assert all(c.heading is not None for c in A.children)
+    assert [c.heading.dc for c in A.children if c.heading is not None] == [
+        "dcA1",
+        "dcA2",
+    ]
+    body_node = A.children[0].body[0].node
+    assert body_node is not None
+    assert body_node.dc == "dcp"  # body attached under its heading
     assert A.open and A.children[1].open  # focus path + focus section open
     assert not roots[1].open  # sibling root folded
     assert not A.children[0].open  # off-path section folded
@@ -206,7 +213,9 @@ def test_build_outline_headless_root_for_body_before_first_heading() -> None:
     rows = [TocRow(node=_h(0, 0, "dcx", kind="paragraph"))]
     roots = build_outline(rows, reveal_dcs=set())
     assert roots[0].heading is None
-    assert roots[0].body[0].node.dc == "dcx"
+    headless_node = roots[0].body[0].node
+    assert headless_node is not None
+    assert headless_node.dc == "dcx"
     assert roots[0].open  # nothing to reveal → top level shown
 
 
@@ -335,7 +344,7 @@ def test_keyword_shared_distal_chunk_surfaces_in_the_toc(hub) -> None:
     )
     view = build_view(store, ref_id, relevance=True)
     shared = [r for r in view.toc if r.node and r.shared]
-    assert any("zeta" in (r.node.keywords or []) for r in shared)
+    assert any(r.node is not None and "zeta" in (r.node.keywords or []) for r in shared)
 
 
 def test_focus_carries_a_content_sha_and_is_editable(hub) -> None:

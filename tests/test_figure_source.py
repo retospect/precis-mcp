@@ -121,6 +121,7 @@ def test_canvas_medium_drawn_is_cleared(store: Store, hub: Hub) -> None:
     fig = _placeholder_figure(store, ref.id, title.handle)
     FigureHandler(hub=hub).put(id="c1", title="Fig 1", text=_DRAWN)
     canvas = store.get_ref(kind="figure", id="c1")
+    assert canvas is not None
     store.link_figure_canvas(fig.chunk_id, canvas.id)
 
     src = resolve_figure_source(store, fig)
@@ -136,6 +137,7 @@ def test_canvas_medium_empty_is_uncleared(store: Store, hub: Hub) -> None:
     fig = _placeholder_figure(store, ref.id, title.handle)
     FigureHandler(hub=hub).put(id="c2", title="Empty")  # default empty canvas
     canvas = store.get_ref(kind="figure", id="c2")
+    assert canvas is not None
     store.link_figure_canvas(fig.chunk_id, canvas.id)
 
     src = resolve_figure_source(store, fig)
@@ -160,6 +162,7 @@ def test_clearance_counts_assetless_figures(store: Store, hub: Hub) -> None:
     # draw one → it clears, the other stays flagged.
     FigureHandler(hub=hub).put(id="drawn", title="Drawn", text=_DRAWN)
     canvas = store.get_ref(kind="figure", id="drawn")
+    assert canvas is not None
     store.link_figure_canvas(f1.chunk_id, canvas.id)
 
     summary2 = draft_figure_clearance(store, ref.id)
@@ -197,6 +200,7 @@ def test_export_asset_canvas_rasterises_to_png(store: Store, hub: Hub) -> None:
     fig = _placeholder_figure(store, ref.id, title.handle)
     FigureHandler(hub=hub).put(id="c1", title="F", text=_DRAWN)
     canvas = store.get_ref(kind="figure", id="c1")
+    assert canvas is not None
     store.link_figure_canvas(fig.chunk_id, canvas.id)
 
     asset = figure_export_asset(store, fig)

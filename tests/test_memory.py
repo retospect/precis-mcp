@@ -295,10 +295,9 @@ def test_supersede_merges_and_soft_deletes(
     assert store.get_ref(kind="memory", id=b) is None
     sup = store.links_for(new_id, direction="out", relation="supersedes")
     assert {link.dst_ref_id for link in sup} == {a, b}
-    assert (
-        store.get_ref(kind="memory", id=a, include_deleted=True).meta["superseded_by"]
-        == new_id
-    )
+    superseded_a = store.get_ref(kind="memory", id=a, include_deleted=True)
+    assert superseded_a is not None
+    assert superseded_a.meta["superseded_by"] == new_id
 
 
 def test_supersede_migrates_links(handler: MemoryHandler, store: Store) -> None:
@@ -429,6 +428,7 @@ def test_runtime_unknown_memory_renders_error(
 
 def test_kindspec_supports_get_search_put(runtime_with_store: PrecisRuntime) -> None:
     handler = runtime_with_store.hub.handler_for("memory")
+    assert handler is not None
     assert handler.spec.is_numeric is True
     assert handler.spec.supports_get is True
     assert handler.spec.supports_search is True

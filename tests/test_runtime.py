@@ -69,6 +69,7 @@ def test_hints_appended_to_response(runtime: PrecisRuntime) -> None:
 
     # Wrap calc.get to emit a hint mid-call
     calc = runtime.hub.handler_for("calc")
+    assert calc is not None
     original = calc.get
 
     def wrapped(**kw):  # type: ignore[no-untyped-def]
@@ -143,10 +144,12 @@ def test_build_runtime_honors_embedder_config(fresh_db: str) -> None:
         rt = build_runtime()
         assert "paper" in rt.hub
         paper = rt.hub.handler_for("paper")
+        assert paper is not None
+        assert rt.store is not None
         # Default: mock embedder. Real backend is opt-in via config.
         assert isinstance(paper.embedder, MockEmbedder)  # type: ignore[attr-defined]
-        assert paper.embedder.dim == rt.store.embedding_dim()  # type: ignore[attr-defined,union-attr]
-        rt.store.close()  # type: ignore[union-attr]
+        assert paper.embedder.dim == rt.store.embedding_dim()  # type: ignore[attr-defined]
+        rt.store.close()
     finally:
         if original_db is None:
             os.environ.pop("PRECIS_DATABASE_URL", None)

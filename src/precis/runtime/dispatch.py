@@ -328,11 +328,12 @@ class DispatchMixin(RuntimeShape):
         # closes it by reversing the precedence: cross-kind first,
         # single-kind fallback only when the hub has <2 eligible
         # kinds. (MCP critic MAJOR-C 2026-05-02.)
-        search_kinds = [
-            k
-            for k in sorted(self.hub.kinds)
-            if self.hub.handler_for(k).spec.supports_search
-        ]
+        search_kinds: list[str] = []
+        for k in sorted(self.hub.kinds):
+            handler = self.hub.handler_for(k)
+            assert handler is not None  # every kind in hub.kinds has a handler
+            if handler.spec.supports_search:
+                search_kinds.append(k)
         cross_kind = self._cross_kind_kinds()
         if len(cross_kind) >= 2:
             return (
@@ -829,11 +830,13 @@ class DispatchMixin(RuntimeShape):
         that retry against the suggested options shouldn't cascade
         into a second error. (MCP critic MAJOR #12.)
         """
-        return [
-            k
-            for k in sorted(self.hub.kinds)
-            if self.hub.handler_for(k).spec.supports(verb)  # type: ignore[arg-type]
-        ]
+        out: list[str] = []
+        for k in sorted(self.hub.kinds):
+            handler = self.hub.handler_for(k)
+            assert handler is not None  # every kind in hub.kinds has a handler
+            if handler.spec.supports(verb):  # type: ignore[arg-type]
+                out.append(k)
+        return out
 
     def _infer_sigil_kind(self, args: dict[str, Any], ident: str) -> None:
         """Pin ``kind`` from a leading address sigil (``¶`` → draft,

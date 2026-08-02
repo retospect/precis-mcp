@@ -20,6 +20,14 @@ from precis.runtime import PrecisRuntime
 from precis.store import Store, Tag
 from precis.utils.slug import _first_author, mint_slug
 
+
+def _supports_search_hits(hub: Hub, kind: str) -> bool:
+    """``hub.handler_for`` narrowed for tests — the kind is known-registered."""
+    handler = hub.handler_for(kind)
+    assert handler is not None
+    return bool(handler.spec.supports_search_hits)
+
+
 # ── shape consistency: paper search renders score like every block kind ────
 
 
@@ -148,7 +156,7 @@ def test_cross_kind_search_default_fans_out_when_store_is_empty(
     search_hits_kinds = [
         k
         for k in sorted(runtime_with_store.hub.kinds)
-        if runtime_with_store.hub.handler_for(k).spec.supports_search_hits
+        if _supports_search_hits(runtime_with_store.hub, k)
     ]
     assert search_hits_kinds, (
         "expected at least one cross-kind search-hits kind in the registry"
@@ -180,7 +188,7 @@ def test_search_defaults_to_cross_kind_fanout(
     search_hits_kinds = [
         k
         for k in sorted(runtime_with_store.hub.kinds)
-        if runtime_with_store.hub.handler_for(k).spec.supports_search_hits
+        if _supports_search_hits(runtime_with_store.hub, k)
     ]
     assert len(search_hits_kinds) >= 2, (
         "this test only meaningfully exercises the new default when ≥2 "
@@ -1444,6 +1452,7 @@ def test_search_default_kind_annotates_error_path(
     # monkeypatching the bound method to raise.  We exercise the
     # PrecisError branch first…
     handler = runtime_with_store.hub.handler_for("memory")
+    assert handler is not None
     original = handler.search
 
     def _boom(**_kw):  # type: ignore[no-untyped-def]

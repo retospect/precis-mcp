@@ -28,6 +28,13 @@ _CLAIM = CanonicalClaim(
 )
 
 
+def _search(pattern: str, text: str) -> re.Match[str]:
+    """``re.search`` narrowed for tests — asserts the pattern actually hit."""
+    m = re.search(pattern, text)
+    assert m is not None, f"pattern {pattern!r} not found in {text!r}"
+    return m
+
+
 def _make_handler(store: Any) -> FindingHandler:
     return FindingHandler(hub=Hub(store=store))
 
@@ -72,7 +79,7 @@ def test_finding_cite_keys_non_hub_established(store: Any) -> None:
     _paper(store, cite_key="mlr23a", title="paper mlr23a")
     handler = _make_handler(store)
     resp = handler.put(title="t", body="b", scope={}, cited_in="mlr23a")
-    ref_id = int(re.search(r"id=(\d+)", resp.body).group(1))
+    ref_id = int(_search(r"id=(\d+)", resp.body).group(1))
     store.update_ref(ref_id, meta_patch={"primary_cite_key": "mlr23a"})
 
     result = finding_cite_keys(store, ref_id)
@@ -86,8 +93,8 @@ def test_finding_cite_keys_non_hub_pub_id_only(store: Any) -> None:
     _paper(store, cite_key="pnd01a", title="paper pnd01a")
     handler = _make_handler(store)
     resp = handler.put(title="t", body="b", scope={}, cited_in="pnd01a")
-    ref_id = int(re.search(r"id=(\d+)", resp.body).group(1))
-    pub_id = re.search(r"pub_id=(\w+)", resp.body).group(1)
+    ref_id = int(_search(r"id=(\d+)", resp.body).group(1))
+    pub_id = _search(r"pub_id=(\w+)", resp.body).group(1)
 
     result = finding_cite_keys(store, ref_id)
 

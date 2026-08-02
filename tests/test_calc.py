@@ -256,8 +256,9 @@ class TestErrorEnvelopeShape:
     def _assert_envelope(self, exc: BadInput) -> None:
         # Cause is present and non-empty.
         assert isinstance(exc.cause, str) and exc.cause.strip()
-        # next is present and shaped like a concrete get() call.
-        assert exc.next is not None
+        # next is present and shaped like a concrete get() call — a
+        # single string, not the multi-hint list form.
+        assert isinstance(exc.next, str), f"expected a single next=, got {exc.next!r}"
         assert exc.next.startswith(self._GET_CALC_PREFIX), (
             f"next= is not a copy-pasteable get() call: {exc.next!r}"
         )

@@ -456,8 +456,9 @@ def _classify_chunk(chunk: str) -> tuple[str, str]:
         return "section_header", m.group(2).strip()
 
     # Image-only block
-    if _IMAGE_RE.match(first_line) and len(chunk.split("\n")) <= 2:
-        alt = _IMAGE_RE.match(first_line).group(1)
+    image_m = _IMAGE_RE.match(first_line)
+    if image_m and len(chunk.split("\n")) <= 2:
+        alt = image_m.group(1)
         return "figure", alt or ""
 
     # Table

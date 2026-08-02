@@ -73,6 +73,7 @@ def test_add_figure_keeps_permission_in_meta(store: Store) -> None:
         figure_meta={"permission": _PERM},
     )
     got = store.get_draft_chunk(fig.handle)
+    assert got is not None
     assert got.meta["figure"]["origin"] == "third_party"
     assert got.meta["figure"]["permission"]["permission_id"] == "SNCSC-2026-0451"
 
@@ -185,6 +186,7 @@ def test_set_figure_provenance_updates_meta_and_logs(store: Store) -> None:
     upd = store.set_figure_provenance(
         fig.handle, origin="third_party", permission=_PERM
     )
+    assert upd is not None
     assert upd.meta["figure"]["origin"] == "third_party"
     assert upd.meta["figure"]["permission"]["permission_id"] == "SNCSC-2026-0451"
     # bytes untouched, history shows the edit

@@ -325,6 +325,7 @@ class TestCheckDoisWithBibEntries:
         assert len(results) == 2
         assert results[0].verification is not None
         assert results[0].verification.first_author_match is True
+        assert results[1].verification is not None
         assert results[1].verification.first_author_match is False
 
     def test_mismatched_length_raises(self) -> None:

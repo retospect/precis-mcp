@@ -390,6 +390,7 @@ def test_requested_by_wires_blocking_todo(
     h.put(id="tgt", sequence="ACDE", engine="alphafold3", requested_by=todo.id)
 
     reloaded = protein_store.get_ref(kind="todo", id=todo.id)
+    assert reloaded is not None
     assert (reloaded.meta or {}).get("auto_check", {}).get(
         "type"
     ) == "derived_job_succeeded"
@@ -421,6 +422,7 @@ def test_worker_dispatch_writes_fold_back(protein_store: Store) -> None:
 
     assert ctx.status == "succeeded" and ctx.failure is None
     landed = protein_store.get_ref(kind="protein", id="landing")
+    assert landed is not None
     assert (landed.meta or {}).get("status") == "folded"
     assert (landed.meta or {}).get("fold", {}).get("sequence") == "ACDE"
 
@@ -513,6 +515,7 @@ def test_container_dispatch_round_trip(
     # The staged AF3 input carried the sequence.
     assert seen["input"]["sequences"][0]["protein"]["sequence"] == _INSULIN_A
     landed = protein_store.get_ref(kind="protein", id="myprot")
+    assert landed is not None
     fold = (landed.meta or {}).get("fold") or {}
     assert fold.get("engine") == "alphafold3"
     assert (landed.meta or {}).get("status") == "folded"
@@ -630,6 +633,7 @@ def test_view_structure_converges_and_links(protein_store: Store) -> None:
     # ...linked from the protein via has-fold-structure (asymmetric plugin
     # relation — its inverse mirrors via the gripe-160213 DB-sourced rewrite).
     pref = protein_store.get_ref(kind="protein", id="insulin-a")
+    assert pref is not None
     # (Plugin relations aren't in the `Relation` literal — cast; valid at runtime.)
     out = protein_store.links_for(
         pref.id, relation=cast(Relation, "has-fold-structure")

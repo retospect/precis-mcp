@@ -73,7 +73,9 @@ def _seed_finding(store, *, cite_key: str, status: str) -> int:
         scope={},
         cited_in=cite_key,
     )
-    rid = int(re.search(r"id=(\d+)", resp.body).group(1))
+    id_m = re.search(r"id=(\d+)", resp.body)
+    assert id_m is not None, f"create-ack missing id=; got {resp.body!r}"
+    rid = int(id_m.group(1))
     # put() always lands STATUS:tracing; flip only when caller asked
     # for something else.
     if status != "tracing":

@@ -332,6 +332,7 @@ def test_user_prompt_surfaces_anchor_chunk(hub: Hub, store: Store) -> None:
     proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
     draft.put(id="d1", title="T", project=proj)
     dref = store.get_ref(kind="draft", id="d1")
+    assert dref is not None
     title_h = store.reading_order(dref.id)[0].handle
     draft.put(
         id="d1",
@@ -365,6 +366,7 @@ def test_planner_prompt_carries_fisheye_ring_on_anchor(
     proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
     draft.put(id="d1", title="T", project=proj)
     dref = store.get_ref(kind="draft", id="d1")
+    assert dref is not None
     title_h = store.reading_order(dref.id)[0].handle
     draft.put(
         id="d1",
@@ -404,6 +406,7 @@ def test_anchor_block_lists_linked_connections(hub: Hub, store: Store) -> None:
     proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
     draft.put(id="d2", title="T", project=proj)
     dref = store.get_ref(kind="draft", id="d2")
+    assert dref is not None
     title_h = store.reading_order(dref.id)[0].handle
     draft.put(
         id="d2",

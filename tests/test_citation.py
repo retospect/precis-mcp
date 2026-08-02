@@ -11,6 +11,13 @@ from precis.errors import BadInput
 from precis.handlers.citation import CitationHandler
 
 
+def _search(pattern: str, text: str) -> re.Match[str]:
+    """``re.search`` narrowed for tests — asserts the pattern actually hit."""
+    m = re.search(pattern, text)
+    assert m is not None, f"pattern {pattern!r} not found in {text!r}"
+    return m
+
+
 def _make_handler(store):
     """Build a CitationHandler bound to a real fresh store."""
     return CitationHandler(hub=Hub(store=store))
@@ -115,7 +122,7 @@ class TestPutHappy:
             source_quote=claim[:40],
             verifier_confidence=0.8,
         )
-        ref_id = int(re.search(r"id=(\d+)", resp.body).group(1))
+        ref_id = int(_search(r"id=(\d+)", resp.body).group(1))
         ref = store.get_ref(kind="citation", id=ref_id)
         assert ref is not None
         assert ref.title == claim  # full, not clipped at 200
@@ -150,7 +157,7 @@ class TestRoundTrip:
             verifier_confidence=0.88,
             verifier_caveats="single replicate",
         )
-        ref_id = int(re.search(r"id=(\d+)", resp.body).group(1))
+        ref_id = int(_search(r"id=(\d+)", resp.body).group(1))
 
         out = h.get(id=ref_id)
         body = out.body
@@ -244,7 +251,7 @@ class TestClaimCard:
             source_quote="the cells reached record efficiency",
             verifier_confidence=0.9,
         )
-        ref_id = int(re.search(r"id=(\d+)", resp.body).group(1))
+        ref_id = int(_search(r"id=(\d+)", resp.body).group(1))
 
         with store.pool.connection() as conn:
             card = conn.execute(
@@ -268,7 +275,7 @@ class TestClaimCard:
             source_quote="a verbatim quote that should not become its own chunk",
             verifier_confidence=0.8,
         )
-        ref_id = int(re.search(r"id=(\d+)", resp.body).group(1))
+        ref_id = int(_search(r"id=(\d+)", resp.body).group(1))
 
         with store.pool.connection() as conn:
             rows = conn.execute(

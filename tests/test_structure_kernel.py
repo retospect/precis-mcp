@@ -840,6 +840,7 @@ def test_slab_extxyz_carries_fixatoms_for_autocatpath() -> None:
     pytest.importorskip("ase.build")
     import io as _io
 
+    from ase import Atoms
     from ase.constraints import FixAtoms
     from ase.io import read as ase_read
 
@@ -850,6 +851,7 @@ def test_slab_extxyz_carries_fixatoms_for_autocatpath() -> None:
     )
     xyz = export.to_extxyz(scene, constraints=True)
     atoms = ase_read(_io.StringIO(xyz), format="extxyz", index=0)
+    assert isinstance(atoms, Atoms)  # index=0 → a single frame, not a list
     cons = [c for c in atoms.constraints if isinstance(c, FixAtoms)]
     assert cons and len(cons[0].get_indices()) == 4  # bottom layer stays fixed
     # the default (constraint-free) form keeps our label column and no FixAtoms

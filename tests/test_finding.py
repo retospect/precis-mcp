@@ -19,6 +19,13 @@ from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import mint_hub
 
 
+def _search(pattern: str, text: str) -> re.Match[str]:
+    """``re.search`` narrowed for tests — asserts the pattern actually hit."""
+    m = re.search(pattern, text)
+    assert m is not None, f"pattern {pattern!r} not found in {text!r}"
+    return m
+
+
 def _make_handler(store):
     """Build a FindingHandler bound to a fresh store."""
     return FindingHandler(hub=Hub(store=store))
@@ -197,7 +204,7 @@ class TestPutHappy:
         body = "2.4 kV held for 30 s"
         scope = {"electrode": "Cu"}
         resp = h.put(title="t", body=body, scope=scope, cited_in="fischer13")
-        pub_id = re.search(r"pub_id=(\w+)", resp.body).group(1)
+        pub_id = _search(r"pub_id=(\w+)", resp.body).group(1)
 
         expected_paper_id = make_finding_paper_id(body, scope, "fischer13")
         expected_pub_id = make_pub_id(expected_paper_id)
@@ -230,7 +237,7 @@ class TestParentWiring:
         todo_id = self._seed_todo(store)
         h = _make_handler(store)
         resp = h.put(title="t", body="b", cited_in="miller23a", parent_id=todo_id)
-        fid = int(re.search(r"id=(\d+)", resp.body).group(1))
+        fid = int(_search(r"id=(\d+)", resp.body).group(1))
         assert _finding_parent_id(store, fid) == todo_id
 
     def test_parent_auto_injected_from_current_todo_env(
@@ -241,7 +248,7 @@ class TestParentWiring:
         monkeypatch.setenv("PRECIS_CURRENT_TODO", str(todo_id))
         h = _make_handler(store)
         resp = h.put(title="t", body="b", cited_in="miller23a")
-        fid = int(re.search(r"id=(\d+)", resp.body).group(1))
+        fid = int(_search(r"id=(\d+)", resp.body).group(1))
         assert _finding_parent_id(store, fid) == todo_id
 
     def test_no_env_no_parent_lands_as_root(self, store, monkeypatch) -> None:
@@ -249,7 +256,7 @@ class TestParentWiring:
         _seed_paper(store)
         h = _make_handler(store)
         resp = h.put(title="t", body="b", cited_in="miller23a")
-        fid = int(re.search(r"id=(\d+)", resp.body).group(1))
+        fid = int(_search(r"id=(\d+)", resp.body).group(1))
         assert _finding_parent_id(store, fid) is None
 
     def test_non_integer_parent_id_rejected(self, store) -> None:
@@ -275,8 +282,8 @@ class TestDedupOnPubId:
         first = h.put(**kwargs)
         second = h.put(**kwargs)
 
-        first_id = int(re.search(r"id=(\d+)", first.body).group(1))
-        second_id = int(re.search(r"id=(\d+)", second.body).group(1))
+        first_id = int(_search(r"id=(\d+)", first.body).group(1))
+        second_id = int(_search(r"id=(\d+)", second.body).group(1))
         assert first_id == second_id
         assert "existing finding" in second.body
         assert "deterministic put" in second.body
@@ -297,8 +304,8 @@ class TestDedupOnPubId:
             scope={"electrode": "Ag"},
             cited_in="miller23a",
         )
-        cu_id = int(re.search(r"id=(\d+)", cu.body).group(1))
-        ag_id = int(re.search(r"id=(\d+)", ag.body).group(1))
+        cu_id = int(_search(r"id=(\d+)", cu.body).group(1))
+        ag_id = int(_search(r"id=(\d+)", ag.body).group(1))
         assert cu_id != ag_id
 
 
@@ -331,7 +338,7 @@ class TestRoundTrip:
             scope={"electrode": "Cu"},
             cited_in="miller23a",
         )
-        ref_id = int(re.search(r"id=(\d+)", resp.body).group(1))
+        ref_id = int(_search(r"id=(\d+)", resp.body).group(1))
         out = h.get(id=ref_id)
         body = out.body
         assert f"finding {ref_id}" in body
@@ -353,7 +360,7 @@ class TestRoundTrip:
             scope={"electrode": "Cu"},
             cited_in="miller23a",
         )
-        ref_id = int(re.search(r"id=(\d+)", resp.body).group(1))
+        ref_id = int(_search(r"id=(\d+)", resp.body).group(1))
 
         # Simulate the chain-snapshot pass (chase worker would do this).
         store.update_ref(
@@ -397,7 +404,7 @@ class TestRoundTrip:
             scope={},
             cited_in="miller23a",
         )
-        ref_id = int(re.search(r"id=(\d+)", resp.body).group(1))
+        ref_id = int(_search(r"id=(\d+)", resp.body).group(1))
 
         # Attach a misattribution link directly via the store —
         # mirrors what `link(kind='finding', ..., rel='misattributes')`
@@ -440,7 +447,7 @@ class TestRoundTrip:
             scope={},
             cited_in="miller23a",
         )
-        ref_id = int(re.search(r"id=(\d+)", resp.body).group(1))
+        ref_id = int(_search(r"id=(\d+)", resp.body).group(1))
         body = h.get(id=ref_id).body
         assert "claim:" in body
         assert "setup context" in body
@@ -470,7 +477,7 @@ class TestSearch:
         _seed_paper(store, cite_key=cite_key)
         h = _make_handler(store)
         resp = h.put(title=title, body=body, scope=scope or {}, cited_in=cite_key)
-        ref_id = int(re.search(r"id=(\d+)", resp.body).group(1))
+        ref_id = int(_search(r"id=(\d+)", resp.body).group(1))
         if status != "tracing":
             store.add_tag(
                 ref_id,
@@ -651,7 +658,7 @@ class TestSearchSurfacesHubs:
             body="perovskite degradation claim body text",
             cited_in="perov-src",
         )
-        tracing_id = int(re.search(r"id=(\d+)", resp.body).group(1))
+        tracing_id = int(_search(r"id=(\d+)", resp.body).group(1))
 
         out = h.search(q="Perovskite")
         assert str(hub_id) in out.body
@@ -699,7 +706,7 @@ class TestPickCandidate:
         _seed_paper(store, cite_key="source")
         h = _make_handler(store)
         resp = h.put(title="t", body="b", scope={}, cited_in="source")
-        finding_id = int(re.search(r"id=(\d+)", resp.body).group(1))
+        finding_id = int(_search(r"id=(\d+)", resp.body).group(1))
 
         # Plant candidate papers + their candidate links.
         candidate_ids: list[int] = []
@@ -802,7 +809,7 @@ class TestPickCandidate:
         _seed_paper(store)
         h = _make_handler(store)
         resp = h.put(title="t", body="b", scope={}, cited_in="miller23a")
-        rid = int(re.search(r"id=(\d+)", resp.body).group(1))
+        rid = int(_search(r"id=(\d+)", resp.body).group(1))
         with pytest.raises(BadInput, match="no candidate links"):
             h.edit(id=rid, pick_candidate="anything")
 
@@ -861,7 +868,7 @@ class TestRetractionPropagation:
         primary_id = _seed_paper(store, cite_key=primary_cite)
         h = _make_handler(store)
         resp = h.put(title="t", body="b", scope={}, cited_in=primary_cite)
-        finding_id = int(re.search(r"id=(\d+)", resp.body).group(1))
+        finding_id = int(_search(r"id=(\d+)", resp.body).group(1))
 
         # Simulate post-chase state: meta carries primary_cite_key
         # + chain points at the primary; STATUS flipped to
@@ -948,7 +955,7 @@ class TestRetractionPropagation:
         _seed_paper(store, cite_key="otherprimary")
         h = _make_handler(store)
         resp = h.put(title="other", body="b2", scope={}, cited_in="otherprimary")
-        finding_b = int(re.search(r"id=(\d+)", resp.body).group(1))
+        finding_b = int(_search(r"id=(\d+)", resp.body).group(1))
 
         # Retract finding A's primary. B must stay tracing-default
         # but with no caveats.

@@ -77,7 +77,9 @@ def _seed_finding(
         # module exercises the taproot bridge, not that unrelated hook.
         cited_in=f"{cite_key}~0",
     )
-    fid = int(re.search(r"id=(\d+)", resp.body).group(1))
+    id_m = re.search(r"id=(\d+)", resp.body)
+    assert id_m is not None, f"create-ack missing id=; got {resp.body!r}"
+    fid = int(id_m.group(1))
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT title, meta FROM refs WHERE ref_id = %s", (fid,)

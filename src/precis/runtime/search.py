@@ -131,7 +131,9 @@ class SearchMixin(RuntimeShape):
         """
         out: list[str] = []
         for k in sorted(self.hub.kinds):
-            spec = self.hub.handler_for(k).spec
+            handler = self.hub.handler_for(k)
+            assert handler is not None  # every kind in hub.kinds has a handler
+            spec = handler.spec
             if spec.supports_search and spec.supports_search_hits:
                 out.append(k)
         return out
@@ -150,7 +152,9 @@ class SearchMixin(RuntimeShape):
         """
         out: list[str] = []
         for k in sorted(self.hub.kinds):
-            spec = self.hub.handler_for(k).spec
+            handler = self.hub.handler_for(k)
+            assert handler is not None  # every kind in hub.kinds has a handler
+            spec = handler.spec
             if spec.supports_search and not spec.supports_search_hits:
                 out.append(k)
         return out

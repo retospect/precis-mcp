@@ -135,6 +135,7 @@ class TestPrecisAddFresh:
             result = precis_add(ArxivInput(arxiv_id="2401.99999"), store=store)
 
         assert m.call_count == 1
+        assert isinstance(result, IngestResult)
         assert result.inserted is True
         assert result.identifiers["arxiv"] == "2401.99999"
 
@@ -149,6 +150,7 @@ class TestPrecisAddFresh:
         # extract_paper got the resolved path.
         called_pdf = m.call_args[0][0]
         assert called_pdf == pdf
+        assert isinstance(result, IngestResult)
         assert result.inserted is True
         assert result.identifiers["pdf_sha256"] == "a" * 64
 
@@ -173,6 +175,8 @@ class TestPrecisAddIdempotent:
             r1 = precis_add(DoiInput(doi="10.1038/test"), store=store)
             r2 = precis_add(DoiInput(doi="10.1038/test"), store=store)
 
+        assert isinstance(r1, IngestResult)
+        assert isinstance(r2, IngestResult)
         assert r1.inserted is True
         assert r1.chunks_written == 2
 
@@ -205,6 +209,8 @@ class TestPrecisAddIdempotent:
             r1 = precis_add(PdfInput(pdf_path=pdf), store=store)
             r2 = precis_add(PdfInput(pdf_path=pdf), store=store)
 
+        assert isinstance(r1, IngestResult)
+        assert isinstance(r2, IngestResult)
         assert r1.inserted is True
         assert r2.inserted is False
         assert r2.ref_id == r1.ref_id  # pdf_sha256 hit
@@ -248,6 +254,7 @@ class TestPrecisAddIdempotent:
             result = precis_add(PdfInput(pdf_path=pdf), store=store)
 
         assert m.call_count == 0  # Marker never invoked
+        assert isinstance(result, IngestResult)
         assert result.inserted is False
         assert result.ref_id == seeded_ref_id
         assert result.pdf_sha256 == sha
@@ -284,6 +291,7 @@ class TestDoiCaseCanonicalization:
         ):
             r1 = precis_add(ArxivInput(arxiv_id="2401.12345"), store=store)
 
+        assert isinstance(r1, IngestResult)
         assert r1.inserted is True
         # The stored alias must be the canonical lowercase form.
         assert r1.identifiers["doi"] == "10.1038/upper"
@@ -313,6 +321,7 @@ class TestDoiCaseCanonicalization:
             return_value=arxiv_paper,
         ):
             r1 = precis_add(ArxivInput(arxiv_id="2402.55555"), store=store)
+        assert isinstance(r1, IngestResult)
 
         # 2) Same paper arrives later via its DOI (lowercase). It must
         # collapse onto the existing ref, not spawn a duplicate.
@@ -327,6 +336,7 @@ class TestDoiCaseCanonicalization:
         ):
             r2 = precis_add(DoiInput(doi="10.1038/mixedcase"), store=store)
 
+        assert isinstance(r2, IngestResult)
         assert r1.inserted is True
         assert r2.inserted is False
         assert r2.ref_id == r1.ref_id
@@ -484,6 +494,7 @@ class TestSidecarFold:
                 PdfInput(pdf_path=pdf, fold_ref_id=stub.id), store=store
             )
 
+        assert isinstance(result, IngestResult)
         assert result.inserted is False  # folded, not a fresh insert
         assert result.ref_id == stub.id
         with store.pool.connection() as conn:
@@ -524,6 +535,7 @@ class TestSidecarFold:
             result = precis_add(
                 PdfInput(pdf_path=pdf, fold_ref_id=dead.id), store=store
             )
+        assert isinstance(result, IngestResult)
         assert result.inserted is True
         assert result.ref_id != dead.id
 
@@ -559,6 +571,7 @@ class TestSidecarFold:
         with patch("precis.ingest.pipeline.extract_paper", return_value=paper):
             result = precis_add(PdfInput(pdf_path=pdf), store=store)  # no sidecar
 
+        assert isinstance(result, IngestResult)
         assert result.inserted is True
         assert result.ref_id != stub.id
         with store.pool.connection() as conn:

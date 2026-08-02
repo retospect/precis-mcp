@@ -29,7 +29,9 @@ def plan(hub: Hub) -> PlanHandler:
 
 
 def _pe(body: str) -> str:
-    return re.search(r"pe\d+", body).group(0)
+    m = re.search(r"pe\d+", body)
+    assert m is not None, f"pe-handle not found in {body!r}"
+    return m.group(0)
 
 
 def test_dismiss_and_read_back(hub: Hub) -> None:

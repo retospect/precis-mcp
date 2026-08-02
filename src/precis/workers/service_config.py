@@ -239,6 +239,7 @@ def list_service_config(store: Store) -> list[dict[str, object]]:
             "       concurrency, updated_at, actor "
             "FROM service_config ORDER BY host, service"
         )
+        assert cur.description is not None
         cols = [d.name for d in cur.description]
         return [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
 

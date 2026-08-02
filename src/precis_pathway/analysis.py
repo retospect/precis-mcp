@@ -42,7 +42,7 @@ def _reaction_edges(graph: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _is_supply(e: dict[str, Any] | None) -> bool:
-    return bool(e) and e.get("kind") == "supply"
+    return e is not None and e.get("kind") == "supply"
 
 
 def _node_map(graph: dict[str, Any]) -> dict[str, dict[str, Any]]:

@@ -436,7 +436,7 @@ class PaperHandler(Handler):
         # Best-effort S2 enrichment → a meaningful stub. Failure is fine.
         # ``year`` arrives as a caller hint (e.g. from put(kind='paper',
         # year=…)); S2 overrides it when it has one, else the hint stands.
-        stub_title = title.strip() if has_title else None
+        stub_title = title.strip() if title and title.strip() else None
         identifiers: list[tuple[str, str]] = [id_pair] if id_pair else []
         unverified = False
         if id_pair is not None:

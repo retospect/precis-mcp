@@ -34,6 +34,9 @@
   **Revisit trigger:** the app becomes reachable beyond the tailnet, or gains
   a second user — then wire `auth_token` into Starlette middleware gating
   POSTs + `/console`, and add a same-origin check as interim CSRF.
+- **No asa_bot per-user spend caps** *(declined 2026-08-02: trusted-user
+  Discord, per-thread `$50` ceiling in `claude_invoke.py::_MAX_USD_CEILING`
+  is enough)*. Revisit only if the bot gains untrusted users.
 
 ## P2 — robustness and design debt
 
@@ -62,10 +65,12 @@
    patterns; `store/_tags_ops.py::search_tags_lexical` already escapes
    `\ % _` — route through it, and add real-PG tests (FakeStore can't
    catch this class). *sonnet coder + test-author · effort S*
-5. **Finish the mypy burn-down, `union-attr` first.** 5 codes still
-   disabled (`pyproject.toml [tool.mypy]`); `union-attr` (~98 errors) is
-   the class that otherwise surfaces only as runtime `[error:Internal]`.
-   Existing plan says one-at-a-time — this sets the order. *sonnet, mechanical · effort M/code*
+5. **Finish the mypy burn-down.** `union-attr` re-enabled 2026-08-02 (211
+   errors fixed; 2 real reachable-None bugs found in `quest/allocator.py`
+   + `cli/migrate_refs.py`). 4 codes remain disabled
+   (`pyproject.toml [tool.mypy]`), counts at 2026-08-02: type-var (17),
+   assignment (31), operator (35), index (103) — one at a time, smallest
+   first. *sonnet, mechanical · effort M/code*
 6. **Codify + sweep the real-PG-for-route-SQL policy.** The pattern
    (`test_status_sql.py` et al.) exists only where an incident forced it.
    Write the rule into `docs/conventions/testing.md` ("raw SQL ⇒ a
@@ -73,11 +78,6 @@
    docstring now states the limitation; the convention doc should own the
    policy) and audit `precis_web/routes/*` for raw-SQL helpers with
    FakeStore-only coverage. *sonnet · effort M*
-7. **asa_bot abuse caps.** Per-thread serialization only; a user can open
-   N parallel threads × `$50` ceiling each (`claude_invoke.py::
-   _MAX_USD_CEILING`) with no per-author/aggregate cap. Add per-user
-   concurrency + daily spend cap. *sonnet coder · effort S*
-
 ## P3 — hygiene, scale, coverage
 
 8. **Split `handlers/draft.py` (2 744 lines).** Extract the ~9 hint

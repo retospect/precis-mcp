@@ -93,7 +93,8 @@ def wheel_version_int(version_str: str | None = None) -> int:
     treats this build as the oldest possible, never overwriting
     real production state. Failsafe by design.
     """
-    raw = (version_str or getattr(_precis_pkg, "__version__", "0.0.0")).strip()
+    pkg_version = getattr(_precis_pkg, "__version__", "0.0.0")
+    raw = (version_str or pkg_version).strip()
     parts = raw.split(".", 2)
     if len(parts) < 3:
         parts = parts + ["0"] * (3 - len(parts))

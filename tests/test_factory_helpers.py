@@ -219,7 +219,9 @@ def test_quests_no_budget_shows_spend_only(store, monkeypatch) -> None:
     monkeypatch.delenv("PRECIS_QUEST_WEEKLY_CHARS", raising=False)
     h = QuestHandler(hub=Hub(store=store))
     resp = h.put(text="Lone quest", tags=["PRIO:normal"])
-    qid = int(re.search(r"\bqu(\d+)\b", resp.body).group(1))
+    qid_m = re.search(r"\bqu(\d+)\b", resp.body)
+    assert qid_m is not None, f"create-ack missing qu<id>; got {resp.body!r}"
+    qid = int(qid_m.group(1))
     out = _quests(store)
     assert out["budget"] is None
     row = {r["id"]: r for r in out["rows"]}[qid]

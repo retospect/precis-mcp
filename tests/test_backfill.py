@@ -30,7 +30,9 @@ def plan(hub: Hub) -> PlanHandler:
 
 
 def _pe(body: str) -> str:
-    return re.search(r"pe\d+", body).group(0)
+    m = re.search(r"pe\d+", body)
+    assert m is not None, f"pe-handle not found in {body!r}"
+    return m.group(0)
 
 
 # ── pure logic ───────────────────────────────────────────────────────
@@ -296,16 +298,19 @@ def test_assemble_builds_target_cited_and_candidate_eyes(
     assert cands == [cand]
     # the target section is the cursor, focused at fisheye+1hop
     assert ws.cursor == sec
-    assert ws.get(sec) is not None
-    assert ws.get(sec).extent.label == "fisheye+1hop"
+    sec_eye = ws.get(sec)
+    assert sec_eye is not None
+    assert sec_eye.extent.label == "fisheye+1hop"
     # the cited paper is a summary (cluster-TOC) eye
     pa = handle_registry.format_handle("paper", cited_id)
-    assert ws.get(pa) is not None
-    assert ws.get(pa).extent.label == "summary"
+    pa_eye = ws.get(pa)
+    assert pa_eye is not None
+    assert pa_eye.extent.label == "summary"
     # the candidate chunk is a verbatim, inferred/transient eye
-    assert ws.get("pc999") is not None
-    assert ws.get("pc999").extent.label == "verbatim"
-    assert ws.get("pc999").provenance is Provenance.INFERRED
+    chunk_eye = ws.get("pc999")
+    assert chunk_eye is not None
+    assert chunk_eye.extent.label == "verbatim"
+    assert chunk_eye.provenance is Provenance.INFERRED
 
 
 def test_assemble_raises_on_no_live_target(hub: Hub) -> None:

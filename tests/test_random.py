@@ -139,7 +139,7 @@ def test_empty_corpus_raises_notfound(handler: RandomHandler) -> None:
     anything, raises NotFound with an "ingest first" hint."""
     with pytest.raises(NotFound, match="no embedded blocks") as exc:
         handler.get()
-    assert exc.value.next is not None
+    assert isinstance(exc.value.next, str)
     assert "ingest" in exc.value.next.lower()
 
 

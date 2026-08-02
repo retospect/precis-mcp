@@ -20,7 +20,9 @@ from precis.workers.working_set import Extent, WorkingSet
 
 
 def _pe(body: str) -> str:
-    return re.search(r"pe\d+", body).group(0)
+    m = re.search(r"pe\d+", body)
+    assert m is not None, f"pe-handle not found in {body!r}"
+    return m.group(0)
 
 
 @pytest.fixture

@@ -218,8 +218,12 @@ def test_handles_are_unique_and_addressable(store: Store) -> None:
     )[0]
     assert title.handle != extra.handle
     # round-trip by handle, with and without the ¶ sigil
-    assert store.get_draft_chunk(extra.handle).text == "x"
-    assert store.get_draft_chunk("¶" + extra.handle).chunk_id == extra.chunk_id
+    fetched = store.get_draft_chunk(extra.handle)
+    assert fetched is not None
+    assert fetched.text == "x"
+    fetched_sigil = store.get_draft_chunk("¶" + extra.handle)
+    assert fetched_sigil is not None
+    assert fetched_sigil.chunk_id == extra.chunk_id
 
 
 def _events(store: Store, chunk_id: int) -> list[tuple[str, str | None]]:
@@ -239,6 +243,7 @@ def test_edit_text_in_place(store: Store) -> None:
         ref_id=ref.id, chunk_kind="paragraph", text="old", at={"after": title.handle}
     )[0]
     upd = store.edit_text(p.handle, "new text")
+    assert upd is not None
     assert upd.text == "new text"
     assert upd.handle == p.handle  # handle survives
     # created + edited(prev_text='old')
@@ -262,7 +267,9 @@ def test_edit_text_stale_base_sha_raises(store: Store) -> None:
     with pytest.raises(BadInput, match="changed since you read"):
         store.edit_text(p.handle, "v3", base_sha=stale)
     # the concurrent writer's text survives untouched — no clobber
-    assert store.get_draft_chunk(p.handle).text == "v2"
+    survived = store.get_draft_chunk(p.handle)
+    assert survived is not None
+    assert survived.text == "v2"
 
 
 def test_move_reorder_and_reparent(store: Store) -> None:

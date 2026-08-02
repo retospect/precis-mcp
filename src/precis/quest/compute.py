@@ -688,7 +688,8 @@ def _autocatpath_measures_from_job(meta: dict[str, Any]) -> dict[str, float]:
     top level. The presence of a numeric barrier IS the "done" signal — a
     still-running job carries none, so it is simply skipped.
     """
-    src = meta.get("result") if isinstance(meta.get("result"), dict) else meta
+    result = meta.get("result")
+    src = result if isinstance(result, dict) else meta
     out: dict[str, float] = {}
     for k in _AUTOCATPATH_BARRIER_KEYS:
         v = _num_measure(src.get(k))

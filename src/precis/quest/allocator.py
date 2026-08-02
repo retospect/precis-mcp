@@ -233,7 +233,10 @@ def over_budget(
     from precis.quest import reweight
 
     weights = {
-        q: reweight.base_weight(store.get_ref(kind="quest", id=q).prio) for q in active
+        q: reweight.base_weight(
+            ref.prio if (ref := store.get_ref(kind="quest", id=q)) else None
+        )
+        for q in active
     }
     denom = sum(weights.values()) or 1.0
     share = total_budget * (weights.get(quest_id, 0.0) / denom)

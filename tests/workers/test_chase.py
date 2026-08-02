@@ -97,7 +97,9 @@ def _seed_finding(
         scope={"electrode": "Cu"},
         cited_in=cite_key,
     )
-    return int(re.search(r"id=(\d+)", resp.body).group(1))
+    id_m = re.search(r"id=(\d+)", resp.body)
+    assert id_m is not None, f"create-ack missing id=; got {resp.body!r}"
+    return int(id_m.group(1))
 
 
 def _status_tag(store, ref_id: int) -> str | None:

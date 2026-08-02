@@ -550,7 +550,7 @@ def _review_entry(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "approved_sha": row.get("approved_sha"),
         "verdict": row.get("verdict"),
-        "at": at.isoformat() if hasattr(at, "isoformat") else at,
+        "at": at.isoformat() if at is not None and hasattr(at, "isoformat") else at,
         "dirty": row.get("dirty"),
     }
 

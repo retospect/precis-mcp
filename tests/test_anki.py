@@ -18,6 +18,13 @@ from precis.errors import BadInput
 from precis.handlers.anki import AnkiHandler, _split_extra, _strip_cloze
 
 
+def _search(pattern: str, text: str) -> re.Match[str]:
+    """``re.search`` narrowed for tests — asserts the pattern actually hit."""
+    m = re.search(pattern, text)
+    assert m is not None, f"pattern {pattern!r} not found in {text!r}"
+    return m
+
+
 def _make_handler(store):
     return AnkiHandler(hub=Hub(store=store))
 
@@ -51,7 +58,7 @@ class TestAnkiCard:
     def test_put_emits_stripped_card_combined(self, store) -> None:
         h = _make_handler(store)
         resp = h.put(text="Paris is the {{c1::capital}} of France.")
-        ref_id = int(re.search(r"id=(\d+)", resp.body).group(1))
+        ref_id = int(_search(r"id=(\d+)", resp.body).group(1))
 
         with store.pool.connection() as conn:
             row = conn.execute(
@@ -67,7 +74,7 @@ class TestAnkiCard:
         h = _make_handler(store)
         cloze = "The mitochondrion is the {{c1::powerhouse}} of the cell."
         resp = h.put(text=cloze)
-        ref_id = int(re.search(r"id=(\d+)", resp.body).group(1))
+        ref_id = int(_search(r"id=(\d+)", resp.body).group(1))
 
         ref = store.get_ref(kind="anki", id=ref_id)
         assert ref is not None
@@ -81,7 +88,7 @@ class TestAnkiCard:
         h = _make_handler(store)
         body = "The {{c1::Krebs}} cycle occurs in the matrix.\n---\naka TCA cycle"
         resp = h.put(text=body)
-        ref_id = int(re.search(r"id=(\d+)", resp.body).group(1))
+        ref_id = int(_search(r"id=(\d+)", resp.body).group(1))
 
         ref = store.get_ref(kind="anki", id=ref_id)
         assert ref.meta["fields"]["Text"] == (
@@ -103,14 +110,14 @@ class TestAnkiCard:
         resp = h.put(
             text="Beijing is the {{c1::capital}} of China.", tags=["deck-chinese"]
         )
-        ref_id = int(re.search(r"id=(\d+)", resp.body).group(1))
+        ref_id = int(_search(r"id=(\d+)", resp.body).group(1))
         ref = store.get_ref(kind="anki", id=ref_id)
         assert ref.meta["deck"] == "Precis::chinese"
 
     def test_no_deck_tag_defaults_to_precis(self, store) -> None:
         h = _make_handler(store)
         resp = h.put(text="A {{c1::plain}} card.")
-        ref_id = int(re.search(r"id=(\d+)", resp.body).group(1))
+        ref_id = int(_search(r"id=(\d+)", resp.body).group(1))
         assert store.get_ref(kind="anki", id=ref_id).meta["deck"] == "Precis"
 
     def test_non_cloze_body_rejected(self, store) -> None:

@@ -1328,7 +1328,7 @@ def _llm_ops_ctx(store: Any) -> dict[str, Any]:
             | set(stats)
         )
 
-        rows = []
+        rows: list[dict[str, Any]] = []
         for source in sources:
             default = operations.op_default(source)
             st = stats.get(source, {})

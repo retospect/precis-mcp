@@ -21,8 +21,10 @@ from precis.export.docx import export_docx
 
 def _seed_paper(store: Store, slug: str, title: str, year: int) -> None:
     store.insert_ref(kind="paper", slug=slug, title=title, year=year, provider="manual")
+    paper_ref = store.get_ref(kind="paper", id=slug)
+    assert paper_ref is not None
     store.insert_blocks(
-        store.get_ref(kind="paper", id=slug).id,
+        paper_ref.id,
         [BlockInsert(pos=0, text="body", slug="b0")],
     )
 

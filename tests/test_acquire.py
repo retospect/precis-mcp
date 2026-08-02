@@ -130,9 +130,9 @@ def test_acquire_title_only_mints_backlog_stub(
     rid = _ref_id(r.body)
     assert "DREAM:acquire" in _tags(store, rid)
     # no external id → fetch_oa can't auto-grab; it's a pure backlog stub
-    assert _identifiers(store, rid) == {
-        ("cite_key", store.get_ref(kind="paper", id=rid).slug)
-    }
+    minted_ref = store.get_ref(kind="paper", id=rid)
+    assert minted_ref is not None
+    assert _identifiers(store, rid) == {("cite_key", minted_ref.slug)}
 
 
 def test_acquire_links_from_context(handler: PaperHandler, store: Store) -> None:

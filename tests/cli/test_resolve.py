@@ -269,8 +269,12 @@ def test_non_hub_finding_still_uses_primary_cite_key(store: Any) -> None:
     resp = handler.put(title="t", body="b", scope={}, cited_in="plain23a")
     import re as _re
 
-    ref_id = int(_re.search(r"id=(\d+)", resp.body).group(1))
-    pub_id = _re.search(r"pub_id=(\w+)", resp.body).group(1)
+    id_m = _re.search(r"id=(\d+)", resp.body)
+    assert id_m is not None, f"create-ack missing id=; got {resp.body!r}"
+    ref_id = int(id_m.group(1))
+    pub_id_m = _re.search(r"pub_id=(\w+)", resp.body)
+    assert pub_id_m is not None, f"create-ack missing pub_id=; got {resp.body!r}"
+    pub_id = pub_id_m.group(1)
     store.update_ref(ref_id, meta_patch={"primary_cite_key": "plain23a"})
     store.add_tag(
         ref_id,
@@ -545,8 +549,12 @@ def test_pin_ignored_on_non_hub_finding(store: Any) -> None:
     )
     handler = FindingHandler(hub=DispatchHub(store=store))
     resp = handler.put(title="t", body="b", scope={}, cited_in="plain39a")
-    ref_id = int(_re.search(r"id=(\d+)", resp.body).group(1))
-    pub_id = _re.search(r"pub_id=(\w+)", resp.body).group(1)
+    id_m = _re.search(r"id=(\d+)", resp.body)
+    assert id_m is not None, f"create-ack missing id=; got {resp.body!r}"
+    ref_id = int(id_m.group(1))
+    pub_id_m = _re.search(r"pub_id=(\w+)", resp.body)
+    assert pub_id_m is not None, f"create-ack missing pub_id=; got {resp.body!r}"
+    pub_id = pub_id_m.group(1)
     store.update_ref(ref_id, meta_patch={"primary_cite_key": "plain39a"})
     store.add_tag(
         ref_id,

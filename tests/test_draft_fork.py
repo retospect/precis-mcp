@@ -416,6 +416,7 @@ def test_fork_refuses_when_project_already_has_a_draft(store: Store) -> None:
 def test_handler_fork_creates_bound_copy(draft: DraftHandler, store: Store) -> None:
     src_ref_id, _proj = _make_source_draft(store)
     src_ref = store.get_ref(kind="draft", id=src_ref_id)
+    assert src_ref is not None
     dst_proj = _project(store, "Handler dest")
 
     resp = draft.put(copy_of=src_ref.slug, project=dst_proj)
@@ -436,6 +437,7 @@ def test_handler_fork_project_todo_string_still_works(
     to the EXISTING project, exactly as before — no new-project mint."""
     src_ref_id, _proj = _make_source_draft(store)
     src_ref = store.get_ref(kind="draft", id=src_ref_id)
+    assert src_ref is not None
     dst_proj = _project(store, "Handler dest todo-string")
 
     resp = draft.put(copy_of=src_ref.slug, project=f"todo:{dst_proj}")
@@ -443,7 +445,9 @@ def test_handler_fork_project_todo_string_still_works(
     draft_of = store.links_for(dst_proj, direction="in", relation="draft-of")
     assert len(draft_of) == 1
     # no NEW project todo was minted — dst_proj's own title is unchanged
-    assert store.get_ref(kind="todo", id=dst_proj).title == "Handler dest todo-string"
+    dst_ref = store.get_ref(kind="todo", id=dst_proj)
+    assert dst_ref is not None
+    assert dst_ref.title == "Handler dest todo-string"
 
 
 def test_handler_fork_project_title_mints_new_project(
@@ -454,6 +458,7 @@ def test_handler_fork_project_title_mints_new_project(
     fork to it — never fuzzy-matched against an existing project."""
     src_ref_id, _proj = _make_source_draft(store)
     src_ref = store.get_ref(kind="draft", id=src_ref_id)
+    assert src_ref is not None
 
     resp = draft.put(copy_of=src_ref.slug, project="Nanotrans review pass")
     assert "forked" in resp.body
@@ -475,6 +480,7 @@ def test_handler_fork_project_title_mints_new_project(
 def test_handler_fork_dedupes_slug(draft: DraftHandler, store: Store) -> None:
     src_ref_id, _proj = _make_source_draft(store)
     src_ref = store.get_ref(kind="draft", id=src_ref_id)
+    assert src_ref is not None
     proj1 = _project(store, "Handler dest 2a")
     proj2 = _project(store, "Handler dest 2b")
 
@@ -488,6 +494,7 @@ def test_handler_fork_refuses_project_clobber(
 ) -> None:
     src_ref_id, _proj = _make_source_draft(store)
     src_ref = store.get_ref(kind="draft", id=src_ref_id)
+    assert src_ref is not None
     dst_proj = _project(store, "Handler dest 3")
     draft.put(id="already-there", title="X", project=dst_proj)
 
@@ -498,6 +505,7 @@ def test_handler_fork_refuses_project_clobber(
 def test_handler_fork_requires_project(draft: DraftHandler, store: Store) -> None:
     src_ref_id, _proj = _make_source_draft(store)
     src_ref = store.get_ref(kind="draft", id=src_ref_id)
+    assert src_ref is not None
     with pytest.raises(BadInput, match="requires project"):
         draft.put(copy_of=src_ref.slug)
 
@@ -589,6 +597,7 @@ def test_handler_edit_authoring_toggles_ref_meta(
     op: id is the slug, and it writes ``refs.meta.authoring_enabled``."""
     src_ref_id, _proj = _make_source_draft(store)
     src_ref = store.get_ref(kind="draft", id=src_ref_id)
+    assert src_ref is not None
 
     resp = draft.edit(id=src_ref.slug, authoring="on")
     assert "ON" in resp.body

@@ -51,8 +51,12 @@ def _seed_established_finding(store) -> tuple[int, str]:
     _seed_paper(store)
     h = _make_handler(store)
     resp = h.put(title="t", body="b", scope={}, cited_in="miller23a")
-    ref_id = int(re.search(r"id=(\d+)", resp.body).group(1))
-    pub_id = re.search(r"pub_id=(\w+)", resp.body).group(1)
+    id_m = re.search(r"id=(\d+)", resp.body)
+    assert id_m is not None, f"create-ack missing id=; got {resp.body!r}"
+    ref_id = int(id_m.group(1))
+    pub_id_m = re.search(r"pub_id=(\w+)", resp.body)
+    assert pub_id_m is not None, f"create-ack missing pub_id=; got {resp.body!r}"
+    pub_id = pub_id_m.group(1)
     store.update_ref(ref_id, meta_patch={"primary_cite_key": "miller23a"})
     store.add_tag(
         ref_id,

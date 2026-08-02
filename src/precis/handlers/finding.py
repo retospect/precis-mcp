@@ -212,6 +212,7 @@ class FindingHandler(NumericRefHandler):
                 next="scope={'electrode': 'Cu', 'ambient': 'N2', ...}",
             )
         assert body_text is not None  # narrowed by the `missing` guard above
+        assert title is not None  # narrowed by the `missing` guard above
 
         # Auto-inject parent_id from the runtime context
         # (PRECIS_CURRENT_TODO env), mirroring TodoHandler.put. A

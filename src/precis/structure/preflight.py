@@ -336,7 +336,8 @@ class _DumbField(_Calculator):  # type: ignore[misc]
         from ase.data import covalent_radii
         from ase.neighborlist import neighbor_list
 
-        n = len(self.atoms)  # type: ignore[arg-type]  # ASE stub: Atoms | None
+        assert self.atoms is not None  # ASE sets it in Calculator.calculate
+        n = len(self.atoms)
         numbers = self.atoms.get_atomic_numbers()
         radii = np.nan_to_num(covalent_radii[numbers], nan=1.5) * BOND_FACTOR
         energy = 0.0

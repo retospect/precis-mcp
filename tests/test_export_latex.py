@@ -926,7 +926,9 @@ def test_compile_pdf_success(tmp_path, monkeypatch) -> None:
         "\\documentclass{article}\\begin{document}x\\end{document}"
     )
     res = cmpl.compile_pdf(proj)
-    assert res.ok and res.pdf == proj / "main.pdf" and res.pdf.exists()
+    assert res.ok
+    assert res.pdf is not None
+    assert res.pdf == proj / "main.pdf" and res.pdf.exists()
 
 
 @_needs_posix_stub

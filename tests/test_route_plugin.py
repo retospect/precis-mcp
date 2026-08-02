@@ -57,6 +57,13 @@ _CHEM_MIGRATION = (
 _ROUTE_FIXTURE = Path(__file__).parent / "fixtures" / "chem" / "aspirin_route.json"
 
 
+def _route_meta(store: Store, id: str) -> dict[str, Any]:
+    """Fetch a `route` ref's meta dict — asserts the ref actually landed."""
+    ref = store.get_ref(kind="route", id=id)
+    assert ref is not None
+    return ref.meta or {}
+
+
 @pytest.fixture
 def route_store(store: Store, monkeypatch: pytest.MonkeyPatch) -> Store:
     """The shared test store with the `route` kind + relation seeded.
@@ -250,6 +257,7 @@ def test_requested_by_wires_blocking_todo(
     # The todo now blocks on the job: a `requested` link + a
     # derived_job_succeeded auto_check.
     reloaded = route_store.get_ref(kind="todo", id=todo.id)
+    assert reloaded is not None
     assert (reloaded.meta or {}).get("auto_check", {}).get(
         "type"
     ) == "derived_job_succeeded"
@@ -284,6 +292,7 @@ def test_worker_dispatch_writes_route_back(route_store: Store) -> None:
     assert ctx.status == "succeeded"
     assert ctx.failure is None
     landed = route_store.get_ref(kind="route", id="landing")
+    assert landed is not None
     assert (landed.meta or {}).get("status") == "solved"
     assert (landed.meta or {}).get("route", {}).get("target") == "CCO"
 
@@ -424,6 +433,7 @@ def test_container_dispatch_round_trip(
 
     assert ctx.status == "succeeded" and ctx.failure is None
     landed = route_store.get_ref(kind="route", id="viacontainer")
+    assert landed is not None
     route = (landed.meta or {}).get("route") or {}
     assert (
         route.get("engine") == "aizynth"
@@ -603,7 +613,7 @@ def test_container_prefers_route_json_over_trees(
         "target_node": "spark",
     }
     chem_jobs._dispatch(_FakeCtx(store=route_store, params=params), RETROSYNTH_SPEC)
-    route = (route_store.get_ref(kind="route", id="both").meta or {}).get("route") or {}
+    route = _route_meta(route_store, "both").get("route") or {}
     # route.json's 2-step normalized plan (not trees.json's 1-step) won.
     assert len(route["steps"]) == 2
     assert route["metrics"]["nr_steps"] == 2
@@ -640,9 +650,7 @@ def test_container_falls_back_to_trees_when_no_route_json(
     ctx = _FakeCtx(store=route_store, params=params)
     chem_jobs._dispatch(ctx, RETROSYNTH_SPEC)
     assert ctx.status == "succeeded"
-    route = (route_store.get_ref(kind="route", id="treesonly").meta or {}).get(
-        "route"
-    ) or {}
+    route = _route_meta(route_store, "treesonly").get("route") or {}
     assert route["steps"][0]["product"] == "CCO"  # trees.json parsed
 
 
@@ -678,9 +686,7 @@ def test_container_bad_route_json_falls_back_to_trees(
     ctx = _FakeCtx(store=route_store, params=params)
     chem_jobs._dispatch(ctx, RETROSYNTH_SPEC)
     assert ctx.status == "succeeded" and ctx.failure is None
-    route = (route_store.get_ref(kind="route", id="badjson").meta or {}).get(
-        "route"
-    ) or {}
+    route = _route_meta(route_store, "badjson").get("route") or {}
     assert route["steps"][0]["product"] == "CCO"  # trees.json fallback won
 
 
@@ -771,6 +777,7 @@ def test_service_dispatch_round_trip(
     # Normalizer invoked with the askcosv2 input_format.
     assert seen["normalizer_kw"]["input_format"] == "askcosv2"
     landed = route_store.get_ref(kind="route", id="viaservice")
+    assert landed is not None
     route = (landed.meta or {}).get("route") or {}
     assert route["metrics"]["nr_steps"] == 2  # from the normalized route.json
 
@@ -819,6 +826,7 @@ def test_service_dispatch_no_paths_is_unsolved(
     chem_jobs._dispatch(ctx, RETROSYNTH_SPEC)
     assert ctx.status == "succeeded"  # unsolved, but not an error
     landed = route_store.get_ref(kind="route", id="nopath")
+    assert landed is not None
     meta = landed.meta or {}
     assert (
         meta.get("status") == "unsolved"

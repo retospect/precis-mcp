@@ -335,6 +335,12 @@ def run(args: argparse.Namespace) -> None:
         _print_samples("memory bodies", memories)
         if not dry_run:
             handler = runtime.hub.handler_for("memory")
+            if handler is None:
+                print(
+                    "migrate-refs: 'memory' kind not enabled in this build",
+                    file=sys.stderr,
+                )
+                sys.exit(2)
             for c in memories:
                 handler.edit(id=c.ident, mode="replace", text=c.new)
         counts["memory_bodies"] = len(memories)

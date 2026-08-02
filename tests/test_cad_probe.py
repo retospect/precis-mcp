@@ -96,7 +96,7 @@ def test_arc_finds_six_bolt_voids() -> None:
     res = probe_arc(_flange(), vec3(0, 0, 4), vec3(0, 0, 1), radius=18.0)
     voids = [s for s in res.segments if s.state == "void"]
     assert len(voids) == 6
-    assert all(v.feature.startswith("bolt") for v in voids)
+    assert all(v.feature is not None and v.feature.startswith("bolt") for v in voids)
 
 
 def test_arc_bolt_void_angular_span() -> None:
