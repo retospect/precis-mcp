@@ -2292,10 +2292,10 @@ by `deploy` with no `agent_rw`/`agent_ro` grants — add an ACL diff/re-grant st
 
 **P3 — type/platform/debt:**
 - **Burn down the remaining disabled mypy categories** (`pyproject.toml`).
-  `union-attr` re-enabled 2026-08-02 (211 errors fixed; 2 real reachable-None
-  bugs found in `quest/allocator.py` + `cli/migrate_refs.py`). 4 codes remain
-  disabled, counts at 2026-08-02: type-var (17), assignment (31),
-  operator (35), index (103).
+  `union-attr` + `type-var` re-enabled 2026-08-02 (228 errors fixed; 2 real
+  reachable-None bugs found in `quest/allocator.py` + `cli/migrate_refs.py`).
+  3 codes remain disabled, counts at 2026-08-02: assignment (31),
+  operator (35), index (103); delete `disable_error_code` when the last lands.
 - **Fix Windows `O_DIRECTORY` + Python 3.12 urllib circular import** (also above).
 - **Recheck `transformers>=5.3.0` / `marker-pdf` pin** (Dependabot #44, snoozed).
 - **Re-evaluate `ruff` ignores `RUF012` + `B905`** (can hide real bugs).
