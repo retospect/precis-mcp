@@ -1100,6 +1100,38 @@ def _detect_worker_restart_storms(store: Store) -> list[Finding]:
     ]
 
 
+def _dead_worker_detail(
+    process: str, host: str, silent_h: float, platform: str | None
+) -> str:
+    """Hedged, OS-aware body for a dead-worker finding (gr180078).
+
+    Mirrors :func:`_restart_storm_detail`'s platform hedge — the old text
+    hardcoded ``launchctl kickstart -k``, which is meaningless on the
+    Linux/systemd GPU node. ``platform`` here comes from
+    ``host_heartbeat.meta->>'platform'`` (``platform.system()`` —
+    ``"Darwin"``/``"Linux"``, title-cased, unlike the boot row's
+    ``sys.platform``), normalized to lower-case before comparing so both
+    naming conventions land the same branch.
+    """
+    base = (
+        f"{process} on {host} has written no log for {silent_h:.1f}h "
+        f"(> {DEAD_WORKER_SILENCE_MIN}min) while the host is otherwise alive "
+        "— the daemon is dead or wedged. If it is the agent worker, "
+        "plan_tick / claude_inproc jobs stall cluster-wide. "
+    )
+    norm = (platform or "").lower()
+    if norm == "darwin":
+        how = "Recover (macOS): `launchctl kickstart -k system/<label>`."
+    elif norm.startswith("linux"):
+        how = "Recover (Linux): `systemctl restart <unit>`."
+    else:
+        how = (
+            "Recover: `launchctl kickstart -k system/<label>` on macOS, "
+            "`systemctl restart <unit>` on Linux."
+        )
+    return base + how + " Or: `scripts/restart-worker-and-watch` (OS-agnostic)."
+
+
 def _detect_dead_workers(store: Store) -> list[Finding]:
     """Continuous daemons that have gone silent while their host is up.
 
@@ -1113,6 +1145,11 @@ def _detect_dead_workers(store: Store) -> list[Finding]:
     to daemons seen within log retention so a decommissioned worker
     eventually stops alarming — but is wide enough (30d) that a real
     multi-day outage never ages out and self-resolves (gr176223).
+
+    ``platform`` (gr180078) prefers the freshest ``host_heartbeat.meta`` for
+    the host — heartbeat is its own self-throttled pass, independent of the
+    dead daemon, so it's the most reliable live signal for "what OS is this
+    host" even while the daemon in question is silent.
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
@@ -1131,9 +1168,15 @@ def _detect_dead_workers(store: Store) -> list[Finding]:
                 UNION
                 SELECT host FROM host_heartbeat
                  WHERE ts > now() - interval '3 minutes'
+            ),
+            host_platform AS (
+                SELECT DISTINCT ON (host) host, meta->>'platform' AS platform
+                  FROM host_heartbeat
+                 ORDER BY host, ts DESC
             )
-            SELECT ls.host, ls.process, ls.last_ts
+            SELECT ls.host, ls.process, ls.last_ts, hp.platform
               FROM last_seen ls
+              LEFT JOIN host_platform hp ON hp.host = ls.host
              WHERE ls.last_ts < now() - (%(silence_min)s || ' minutes')::interval
                AND ls.host IN (SELECT host FROM host_alive)
              ORDER BY ls.last_ts ASC
@@ -1146,7 +1189,7 @@ def _detect_dead_workers(store: Store) -> list[Finding]:
             },
         ).fetchall()
     out: list[Finding] = []
-    for host, process, last_ts in rows:
+    for host, process, last_ts, platform in rows:
         silent = _hours_since(last_ts)
         out.append(
             Finding(
@@ -1154,13 +1197,7 @@ def _detect_dead_workers(store: Store) -> list[Finding]:
                 ref_id=None,
                 fingerprint_key=f"dead-worker:{host}:{process}",
                 title=f"{process} on {host} silent {silent:.1f}h",
-                detail=(
-                    f"{process} on {host} has written no log for "
-                    f"{silent:.1f}h (> {DEAD_WORKER_SILENCE_MIN}min) while the "
-                    "host is otherwise alive — the daemon is dead or wedged. "
-                    "If it is the agent worker, plan_tick / claude_inproc jobs "
-                    "stall cluster-wide; `launchctl kickstart -k` to recover."
-                ),
+                detail=_dead_worker_detail(str(process), str(host), silent, platform),
             )
         )
     return out

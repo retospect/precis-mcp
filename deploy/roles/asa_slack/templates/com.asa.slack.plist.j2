@@ -29,9 +29,11 @@
        resolves each from the precis DB vault (ADR 0055) via
        load_slack_tokens' env→vault→file order, revealing over
        PRECIS_DATABASE_URL below. See roles/asa_slack/README.md for the
-       one-time vault seed. #}
+       one-time vault seed. §L (gr171431 §1): password-free — the pgpass role
+       also drops ~hermes/.pgpass on the gateway, matching this host:port:
+       database:agent_rw tuple. #}
     <key>PRECIS_DATABASE_URL</key>
-    <string>postgresql://agent_rw:{{ vault_pg_agent_rw_pass }}@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod</string>
+    <string>postgresql://agent_rw@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod</string>
     {# Route the spawned precis MCP subprocess at the always-hot embedding
        service (precis_embedder role, loopback 8181) — same as asa_bot. #}
     <key>PRECIS_EMBEDDER</key>

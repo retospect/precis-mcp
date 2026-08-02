@@ -70,63 +70,45 @@
        the Macs (PRECIS_JOB_CPUSET is set on the Linux/systemd node only). #}
     <key>PRECIS_JOB_CPU_SHARES</key>
     <string>{{ precis_job_cpu_shares | default('') }}</string>
-    {# llm_summarize backfill — default OFF everywhere; enabled per-host
-       (the gateway, where the litellm `summarizer` alias lives) to drain the
-       chunk_summaries['llm-v1'] backlog. PRECIS_SUMMARIZE_CONCURRENCY fills
-       the 80B's --parallel slots from this one worker. Remove the host_var +
-       re-apply once drained (the pass idles at claimed=0 meanwhile, but keeps
-       the 80B's `n` slot warm). #}
-    {% if precis_worker_summarize_llm | default(false) %}
-    <key>PRECIS_SUMMARIZE_LLM</key>
-    <string>1</string>
+    {# llm_summarize / classify / llm_reconcile / job_claude_docker
+       (sandbox) run-control moved to `service_config` (§L control cutover)
+       — the `precis service seed` task above mirrors this host's PRE-cutover
+       flag state into a row the first time this lands, so behaviour doesn't
+       change on this deploy; flip any of them live via
+       `precis service prio <host> <service> <n>` or the /categorizers
+       console from here on, no redeploy. PRECIS_SUMMARIZE_CONCURRENCY /
+       PRECIS_SUMMARIZE_TIMEOUT are CONFIG, not a gate — kept unconditional
+       so a `service prio` on/off flip doesn't also need a redeploy to pick
+       up the tuning. Fills the 80B's --parallel slots from this one worker. #}
     <key>PRECIS_SUMMARIZE_CONCURRENCY</key>
     <string>{{ precis_worker_summarize_concurrency | default(3) }}</string>
     <key>PRECIS_SUMMARIZE_TIMEOUT</key>
     <string>{{ precis_worker_summarize_timeout | default(120) }}</string>
-    {% endif %}
-    {# chunk-tag classify cascade (ADR 0047) — default OFF everywhere;
-       enabled per-host (the gateway), like llm_summarize, because tier-1
-       calls the cheap `summarizer` litellm alias that only resolves on
-       the gateway loopback proxy. Kept off the agent worker (RAM). #}
-    {% if precis_worker_classify | default(false) %}
-    <key>PRECIS_CLASSIFY_ENABLED</key>
-    <string>1</string>
-    {% endif %}
-    {# taproot chase forward-bridge (ADR 0073 / Phase-3 W1) — default OFF
-       everywhere; enabled per-host (the gateway) because it needs the LLM
-       verifier verdict (PRECIS_CHASE_LLM turns the verifier on for ALL chase
-       passes on this host, capped by PRECIS_DAILY_COST_CEILING) plus the
-       remote embedder — both of which only resolve on the gateway. When a
-       finding establishes via the verifier, chase mints/attaches a
-       TAPROOT:claim hub + evidence edge (set_by='chase'), populating the
-       claim graph as a complement to the manual `precis taproot mint`
-       on-ramp. Watch: links WHERE set_by='chase'. #}
+    {# taproot chase forward-bridge (ADR 0073 / Phase-3 W1) — a sub-feature
+       INSIDE the always-registered `chase` pass, not its own service_config
+       service, so it stays a plain env gate (§L only retires whole-pass
+       PRECIS_*_ENABLED boot gates). Default OFF everywhere; enabled per-host
+       (the gateway) because it needs the LLM verifier verdict
+       (PRECIS_CHASE_LLM turns the verifier on for ALL chase passes on this
+       host, capped by PRECIS_DAILY_COST_CEILING) plus the remote embedder —
+       both of which only resolve on the gateway. When a finding establishes
+       via the verifier, chase mints/attaches a TAPROOT:claim hub + evidence
+       edge (set_by='chase'), populating the claim graph as a complement to
+       the manual `precis taproot mint` on-ramp. Watch: links WHERE
+       set_by='chase'. #}
     {% if precis_worker_taproot_chase | default(false) %}
     <key>PRECIS_TAPROOT_CHASE_ENABLED</key>
     <string>1</string>
     <key>PRECIS_CHASE_LLM</key>
     <string>1</string>
     {% endif %}
-    {# llm-catalog reconcile (llm-catalog slice 1) — default OFF; enabled on
-       the gateway, where the loopback llama.cpp /props (local-model windows) + the
-       outbound OpenRouter feed are both reachable. Single-runner (advisory xact
-       lock) + 24h cadence, so one host reconciles the catalog corpus-wide. #}
-    {% if precis_worker_llm_reconcile | default(false) %}
-    <key>PRECIS_LLM_RECONCILE_ENABLED</key>
-    <string>1</string>
-    {% endif %}
-    {# markup-first ingest leg (devin) — default OFF; enabled on the
-       single OA-fetch host (the gateway) where PRECIS_OA_FETCH=1, so the
-       flag only bites where the fetch pass actually runs. #}
+    {# markup-first ingest leg (devin) — a sub-feature INSIDE the always-on
+       `fetch` pass (workers/fetch_oa.py), not its own service_config
+       service, so (like PRECIS_TAPROOT_CHASE_ENABLED above) it stays a
+       plain env gate. Default OFF; enabled on the single OA-fetch host (the
+       gateway) so the flag only bites where the fetch pass actually runs. #}
     {% if precis_worker_fetch_markup | default(false) %}
     <key>PRECIS_FETCH_MARKUP</key>
-    <string>1</string>
-    {% endif %}
-    {# sandbox_run executor — emitted ONLY on the agent_sandbox_hosts
-       (the agent_sandbox_hosts group; via the systemd unit on Linux). The gate reads this raw,
-       so a "0" would enable it — omit on excluded hosts, don't set false. #}
-    {% if inventory_hostname in groups['agent_sandbox_hosts'] %}
-    <key>PRECIS_SANDBOX_ENABLED</key>
     <string>1</string>
     {% endif %}
     {# Shared API keys — Perplexity, EPO OPS, patent raw cache.

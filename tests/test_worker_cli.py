@@ -19,7 +19,7 @@ from precis.cli.worker import (
     _classify_topics_enabled_slugs,
     _print_status,
     _resolve_embedder,
-    _should_register_categorizer,
+    _should_register,
 )
 from precis.embedder import MockEmbedder, RemoteEmbedder
 from precis.format import toon
@@ -396,26 +396,126 @@ class TestRefPassPriority:
 
 
 # ---------------------------------------------------------------------------
-# Live-toggle registration (bug: a live On-flip couldn't start a default-off
-# categorizer, because the boot gate only ever *disabled* — the pass was never
-# registered, so the per-cycle gate had nothing to enable).
+# §L control cutover — register-all, gate-live. ``_should_register`` decides
+# whether a pass is even IN ``ref_passes`` (now purely structural — profile
+# membership / registry enable_env / axis: prefix / no-spec-at-all — it never
+# reads service_config); the resolver's ``.enabled()`` (already exercised
+# generically in test_service_config.py) is the ONE place service_config is
+# consulted, every cycle. Bug this closes: the old boot gate (``_pass_enabled``)
+# consulted the DB too, so a stale/absent row at boot could keep a pass out of
+# ``ref_passes`` forever — a LATER live prio flip (either direction) had
+# nothing to gate until a worker restart.
 # ---------------------------------------------------------------------------
 
 
-class TestCategorizerRegistration:
+class TestShouldRegister:
     def test_registers_all_categorizers_with_no_only(self):
         # No --only: every categorizer registers regardless of enabled-state,
         # so a live prio-flip is picked up by the per-cycle gate without a
-        # worker restart.
+        # worker restart. None of these carry `default_profiles`, so this is
+        # true with an empty `profile_passes` too.
         for name in ("classify", "classify_topics", "axis:domain", "axis:material"):
-            assert _should_register_categorizer(None, name) is True
+            assert _should_register(None, name) is True
 
     def test_only_restricts_to_the_named_pass(self):
-        assert _should_register_categorizer("classify", "classify") is True
-        assert _should_register_categorizer("classify", "classify_topics") is False
-        assert _should_register_categorizer("classify", "axis:domain") is False
-        assert _should_register_categorizer("axis:domain", "axis:domain") is True
-        assert _should_register_categorizer("axis:domain", "axis:material") is False
+        assert _should_register("classify", "classify") is True
+        assert _should_register("classify", "classify_topics") is False
+        assert _should_register("classify", "axis:domain") is False
+        assert _should_register("axis:domain", "axis:domain") is True
+        assert _should_register("axis:domain", "axis:material") is False
+
+    def test_profile_pass_registers_only_in_its_profile(self):
+        # A pass with NO `enable_env` (dispatch: system-profile only) is not
+        # an "always register" categorizer-style service — it only registers
+        # when the running invocation's profile actually carries it.
+        assert _should_register(
+            None, "dispatch", profile_passes=frozenset({"dispatch"})
+        )
+        assert not _should_register(None, "dispatch", profile_passes=frozenset())
+
+    def test_enable_env_pass_always_registers_regardless_of_profile(self):
+        # hub_refine carries `enable_env` (PRECIS_TAPROOT_REFINE_ENABLED) in
+        # the registry and no `default_profiles` — §L: it always registers
+        # now (the old boot gate needed the env set OR a DB row first).
+        assert _should_register(None, "hub_refine", profile_passes=frozenset())
+        assert _should_register(
+            None, "hub_refine", profile_passes=frozenset({"dispatch"})
+        )
+
+    def test_unknown_name_registers_unconditionally(self):
+        # A name the core registry has never heard of (a `precis.ref_passes`
+        # plugin factory's own pass name) always registers too — the plugin
+        # already gated eligibility itself (opt-in return + its own profiles
+        # check); service_config is the live on/off switch from here.
+        assert _should_register(None, "some_plugin_pass", profile_passes=frozenset())
+
+    def test_only_forces_exactly_one_pass_overriding_profile(self):
+        # --only wins even over profile membership — (e) in the §L
+        # acceptance list.
+        assert _should_register("hub_refine", "hub_refine", profile_passes=frozenset())
+        assert not _should_register(
+            "hub_refine", "dispatch", profile_passes=frozenset({"dispatch"})
+        )
+
+
+class TestControlCutoverGateDefaults:
+    """§L acceptance (a)-(d): the resolver + the new structural default
+    together reproduce "one flag-free worker per host behaves identically
+    to today's matrix; a console prio change takes effect within one claim
+    cycle" — no env read, no boot-time DB read, live gate only.
+    """
+
+    def test_a_no_row_runs_iff_the_structural_default_says_so(self, store):
+        from precis.workers.service_config import ServiceConfigResolver
+
+        resolver = ServiceConfigResolver(store, host="melchior", ttl_s=0.0)
+        # A profile-rotation pass (dispatch) with no row: on.
+        assert resolver.enabled("dispatch", default_on=True) is True
+        # A formerly-env-gated pass (hub_refine) with no row: §L retired the
+        # env fallback, so absent a row it now defaults OFF outright.
+        assert resolver.enabled("hub_refine", default_on=False) is False
+
+    def test_b_prio_zero_disables_a_default_on_pass_one_consult(self, store):
+        from precis.workers.service_config import (
+            ServiceConfigResolver,
+            set_service_prio,
+        )
+
+        set_service_prio(store, "melchior", "dispatch", 0, actor="test")
+        resolver = ServiceConfigResolver(store, host="melchior", ttl_s=0.0)
+        assert resolver.enabled("dispatch", default_on=True) is False
+
+    def test_c_prio_nonzero_enables_a_formerly_env_gated_pass_with_no_env(
+        self, store, monkeypatch
+    ):
+        # The env is explicitly UNSET — proves the row alone does the
+        # enabling, not a residual PRECIS_TAPROOT_REFINE_ENABLED=1 in the
+        # test environment.
+        monkeypatch.delenv("PRECIS_TAPROOT_REFINE_ENABLED", raising=False)
+        from precis.workers.service_config import (
+            ServiceConfigResolver,
+            set_service_prio,
+        )
+
+        assert _should_register(None, "hub_refine", profile_passes=frozenset())
+        set_service_prio(store, "*", "hub_refine", 5, actor="test")
+        resolver = ServiceConfigResolver(store, host="melchior", ttl_s=0.0)
+        # default_on mirrors `_profile_default_on("hub_refine")` == False
+        # (no default_profiles, and the env fallback is retired).
+        assert resolver.enabled("hub_refine", default_on=False) is True
+
+    def test_d_exact_host_row_beats_wildcard(self, store):
+        from precis.workers.service_config import (
+            ServiceConfigResolver,
+            set_service_prio,
+        )
+
+        set_service_prio(store, "*", "hub_refine", 5, actor="test")
+        set_service_prio(store, "melchior", "hub_refine", 0, actor="test")
+        r_mel = ServiceConfigResolver(store, host="melchior", ttl_s=0.0)
+        r_cas = ServiceConfigResolver(store, host="caspar", ttl_s=0.0)
+        assert r_mel.enabled("hub_refine", default_on=False) is False  # exact 0 wins
+        assert r_cas.enabled("hub_refine", default_on=False) is True  # falls to '*'
 
 
 class TestAxisGateDefault:

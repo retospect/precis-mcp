@@ -3,22 +3,26 @@
 #
 # Restarting only `watch` leaves `worker` stopped and the derived queue backlog
 # grows, so this script always restarts both in the right order:
-# worker first, then watch. Uses `launchctl kickstart -k` on the system
-# `com.precis.worker` and `com.precis.watch` services.
+# worker first, then watch. OS-agnostic (gr180078): detects launchd
+# (`launchctl kickstart -k`) vs systemd (`systemctl restart`) so the same
+# invocation works on the macOS cluster nodes AND the Linux/systemd GPU node.
 #
 # Usage:
 #   scripts/restart-worker-and-watch
-#   sudo scripts/restart-worker-and-watch   # if the plists are owned by root
+#   sudo scripts/restart-worker-and-watch   # if the plists/units need root
 #
 # See: OPEN-ITEMS.md / "Worker + watch restarts are a pair"
 set -euo pipefail
 
-WORKER_LABEL="system/com.precis.worker"
-WATCH_LABEL="system/com.precis.watch"
+# launchd label vs systemd unit name for each service.
+WORKER_LAUNCHD_LABEL="system/com.precis.worker"
+WORKER_SYSTEMD_UNIT="precis-worker"
+WATCH_LAUNCHD_LABEL="system/com.precis.watch"
+WATCH_SYSTEMD_UNIT="precis-watch"
 
-restart_service() {
+restart_launchd() {
     local label="$1"
-    echo "Restarting ${label}..."
+    echo "Restarting ${label} (launchd)..."
     if ! launchctl kickstart -k "${label}" 2>/dev/null; then
         echo "WARN: could not restart ${label} (not loaded? try launchctl bootstrap)" >&2
         return 1
@@ -26,5 +30,27 @@ restart_service() {
     echo "Restarted ${label}."
 }
 
-restart_service "${WORKER_LABEL}"
-restart_service "${WATCH_LABEL}"
+restart_systemd() {
+    local unit="$1"
+    echo "Restarting ${unit} (systemd)..."
+    if ! systemctl restart "${unit}" 2>/dev/null; then
+        echo "WARN: could not restart ${unit} (not present/loaded? try systemctl status ${unit})" >&2
+        return 1
+    fi
+    echo "Restarted ${unit}."
+}
+
+restart_service() {
+    local launchd_label="$1" systemd_unit="$2"
+    if command -v launchctl >/dev/null 2>&1; then
+        restart_launchd "${launchd_label}"
+    elif command -v systemctl >/dev/null 2>&1; then
+        restart_systemd "${systemd_unit}"
+    else
+        echo "ERROR: neither launchctl nor systemctl found on this host" >&2
+        return 1
+    fi
+}
+
+restart_service "${WORKER_LAUNCHD_LABEL}" "${WORKER_SYSTEMD_UNIT}"
+restart_service "${WATCH_LAUNCHD_LABEL}" "${WATCH_SYSTEMD_UNIT}"

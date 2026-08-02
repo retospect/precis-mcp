@@ -14,6 +14,9 @@ Examples::
     precis service prio '*' llm_reconcile 3      # on everywhere at weight 3
     precis service model melchior briefing claude-opus-4-8
     precis service clear melchior classify       # revert to env/profile default
+    precis service seed melchior classify 5      # deploy-time only: insert
+                                                  # iff absent, never clobbers
+                                                  # a console override
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ from precis.workers.registry import SERVICES_BY_NAME
 from precis.workers.service_config import (
     clear_service_config,
     list_service_config,
+    seed_service_prio,
     set_service_model,
     set_service_prio,
 )
@@ -71,6 +75,17 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     cl.add_argument("host", help="Host name, or '*' for all hosts.")
     cl.add_argument("service", help="Service/pass name.")
     cl.add_argument("--database-url", default=None, help="Postgres DSN override.")
+
+    sd = ssub.add_parser(
+        "seed",
+        help="Insert a row ONLY if absent (deploy-time use — never clobbers "
+        "a console override).",
+    )
+    sd.add_argument("host", help="Host name, or '*' for all hosts.")
+    sd.add_argument("service", help="Service/pass name (e.g. classify).")
+    sd.add_argument("prio", type=int, help="0 = off; 1..10 = claim weight.")
+    sd.add_argument("--actor", default=None, help="Who made the change (audit).")
+    sd.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
 
 def _warn_unknown_service(name: str) -> None:
@@ -123,6 +138,20 @@ def _cmd_clear(store: Store, args: argparse.Namespace) -> None:
         print(f"service_config: no row for {args.host}/{args.service}")
 
 
+def _cmd_seed(store: Store, args: argparse.Namespace) -> None:
+    _warn_unknown_service(args.service)
+    inserted = seed_service_prio(
+        store, args.host, args.service, args.prio, actor=args.actor
+    )
+    if inserted:
+        print(f"service_config: seeded {args.host}/{args.service} -> prio {args.prio}")
+    else:
+        print(
+            f"service_config: {args.host}/{args.service} already has a row "
+            "— left untouched"
+        )
+
+
 def run(args: argparse.Namespace) -> None:
     """Dispatch ``precis service <cmd>``."""
     store = Store.connect(resolve_dsn(args.database_url))
@@ -135,6 +164,8 @@ def run(args: argparse.Namespace) -> None:
             _cmd_model(store, args)
         elif args.service_cmd == "clear":
             _cmd_clear(store, args)
+        elif args.service_cmd == "seed":
+            _cmd_seed(store, args)
         else:  # pragma: no cover — argparse `required=True` guards this
             raise SystemExit(f"unknown service subcommand: {args.service_cmd!r}")
     finally:

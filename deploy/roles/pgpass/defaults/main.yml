@@ -13,3 +13,9 @@ pgpass_default_user: agent_rw
 
 # deploy user home on each OS. Linux = /home/deploy, macOS = /Users/deploy.
 pgpass_deploy_home: "{{ '/Users/deploy' if os_family == 'darwin' else '/home/deploy' }}"
+
+# §L (gr171431 §1): asa_bot/asa_slack run as `hermes` (not `deploy`) on the
+# gateway — the only other precis-adjacent daemon UserName in the fleet — so
+# their DSN can go password-free too. macOS-only (hermes doesn't exist on
+# Linux nodes); the task below additionally gates on `groups['gateway']`.
+pgpass_hermes_home: /Users/hermes

@@ -233,9 +233,9 @@ membership + the extra `PRECIS_*_ENABLED` gates are declared once in
 `src/precis/workers/registry.py` — a frozen `ServiceSpec` row per
 pass/job-type/compute/daemon/serving (factory-console slice 1,
 `docs/design/factory-console-and-scheduling.md`). `cli/worker.py`
-derives `system_passes`/`agent_passes` via `service_names_for_profile()`
-and folds the old inline `or env_flag(...)` gates into `_pass_enabled`
-(reading `spec.enable_env`); the `/env` inspector derives its agent list
+derives `system_passes`/`agent_passes` via `service_names_for_profile()`;
+`spec.enable_env` now (§L, below) only seeds the deploy-time
+`service_config` row, not a live boot/gate read. The `/env` inspector derives its agent list
 from the rows carrying an `AgentIntrospect` (the old `AgentSpec` tuple is
 gone). **Assembled context (Part 3B, `precis_web/env_context.py`):** `/env`
 now also renders the FULL assembled prompt input (ADR 0038) per agent —
@@ -253,27 +253,93 @@ AST-parses `cli/worker.py` and
 fails CI if a wired pass has no spec (or a `ref_pass=True` spec has no
 wiring site), so the four parallel lists can no longer drift.
 
-**Live run control — `service_config` (slice 2).** `service_config(host,
-service, prio, model_pref, write_level, …)` (migration 0072) is the
-DB-driven switch the worker consults *live* instead of a plist gate flag:
+**Live run control — `service_config` (slice 2, §L cutover).**
+`service_config(host, service, prio, model_pref, write_level, …)`
+(migration 0072) is the ONE control surface for what a worker runs —
 `prio 0` = off, `1..10` = claim weight (fed into the scarcity+prio+age
-claim ordering slice 6 adds). An empty table is byte-identical to the
-env/profile defaults; a row overrides per host (exact host wins over the
-`*` wildcard). `workers/service_config.py::ServiceConfigResolver` (a
-short-TTL cache) is read at boot (`_pass_enabled`) *and* per-cycle
-(`run_loop`'s `pass_gate`), so a flip takes effect on the next cycle — no
-redeploy. **Both directions, for the live-toggleable categorizer passes**
-(`classify`, `classify_topics`, every `axis:<id>`): these are registered
-*unconditionally* at boot (`_register_categorizer`, guarded only by `--only`),
-so a live On-flip actually starts them — the per-cycle gate is the sole
-enable/disable. The gate's no-row baseline is each service's real env/profile
-default (`_gate_default_on`: an `axis:<id>` seeds from `PRECIS_AXES_ENABLED`,
-everything else from its `ServiceSpec`), **not** a blanket "on" — so an
-always-registered default-off pass stays off until a `prio>=1` row lands.
-(Before: only `_pass_enabled` gated registration, so a default-off pass was
-never in `ref_passes` and an On-flip was a silent no-op until a restart — the
-`/categorizers` "activated but nothing happens" bug.) CLI: `precis service
-prio|model|clear|list`.
+claim ordering slice 6 adds). `workers/service_config.py::ServiceConfigResolver`
+(a short-TTL cache) is read *only* per-cycle (`run_loop`'s `pass_gate`) —
+**registration never reads the DB.** §L (`docs/proposals/cluster-scheduling.md`
+Pillar 1 §L) generalized what used to be a categorizer-only exception
+(`classify`/`classify_topics`/every `axis:<id>`, registered unconditionally
+so a live On-flip actually started them) to EVERY named pass:
+`cli/worker.py::_should_register` (bound per-invocation as `_register`) is
+purely structural — a pass registers when it belongs to the running
+`--profile` rotation, when its `ServiceSpec.enable_env` is set (a
+formerly-env-gated pass), when its name starts with `axis:`, or when the
+core registry has never heard of it at all (a `precis.ref_passes` plugin
+factory's own pass name — it already gated its own eligibility). `--only X`
+still forces exactly one pass. The per-cycle gate's no-row baseline
+(`_gate_default_on`/`_profile_default_on`) is `name in profile_passes` —
+**`PRECIS_*_ENABLED` is retired as a live default**: a formerly-env-gated
+pass (classify/hub_refine/llm_summarize/paper_glossary/…) with no row now
+defaults OFF outright, not "whatever the env said." Two narrower exceptions
+keep their own env-seeded per-item default, deliberately out of this
+cutover's scope (granular deploy-time convenience seeds already fully
+live-controllable per-item via their own row, not a whole-pass boot flag):
+`axis:<id>` from `PRECIS_AXES_ENABLED`, `topic:<slug>` from
+`PRECIS_TOPICS_ENABLED`/`PRECIS_CLASSIFY_TOPICS_ENABLED` (ADR 0068).
+Closes the GAP the old design left: since `_pass_enabled` used to consult
+the resolver at boot too, a stale/absent row at boot could keep a pass out
+of `ref_passes` forever — a later live prio flip (either direction) had
+nothing to gate until a restart (the `/categorizers` "activated but nothing
+happens" bug, now generalized-fixed for every pass, not just categorizers).
+CLI: `precis service prio|model|clear|list|seed` — `seed` (§L) is the
+deploy-time, `INSERT … ON CONFLICT DO NOTHING` sibling of `prio`: the
+`precis_worker`/`precis_worker_agent` roles run it before stripping a
+retiring `PRECIS_*_ENABLED` plist flag, mirroring today's live state into a
+row so the cutover is behaviour-preserving and a console override set
+after first-seed survives every later redeploy (`prio` intentionally
+UPSERTs and must never be used for this).
+
+**§L hardening quartet.** Four smaller fixes landed alongside the control
+cutover:
+
+- **Heartbeat timer fully retired.** The standalone `precis_heartbeat`
+  role/playbook are deleted and `redeploy-precis.yml` no longer re-renders
+  `com.precis.heartbeat.plist` (which carried an inline `agent_rw` password —
+  gr171431); `retire-thin-timers.yml` boots the old launchd/systemd timers
+  out. Per-host heartbeat is the §A `heartbeat` worker pass
+  (`workers/heartbeat.py`); the capability-probe host-var overrides the old
+  plist carried (`precis_local_llm_model_override` / `precis_local_serve_config`)
+  already ride the worker plists.
+
+- **OS-agnostic manage (gr180078).** `scripts/restart-worker-and-watch`
+  detects launchd vs systemd (`command -v launchctl`/`systemctl`) and picks
+  the matching verb (`launchctl kickstart -k` / `systemctl restart`) —
+  see `docs/runbooks/restart-worker-and-watch.md`. The nursery's
+  `dead-worker` alert (`workers/nursery.py::_dead_worker_detail`) tailors
+  its suggested recovery command the same way, reading `platform` off the
+  host's freshest `host_heartbeat.meta` (mirrors the pre-existing
+  `worker-restart` detector's `_restart_storm_detail` hedge).
+- **Password out of plists (gr171431 §1).** Every `deploy`-run daemon
+  (worker, worker-agent, web, watch, extract_watch) and both `hermes`-run
+  ones (asa_bot, asa_slack) now render a password-free
+  `postgresql://agent_rw@host:port/db` DSN; libpq resolves the password
+  from `~/.pgpass` (the `pgpass` role, extended to also drop
+  `~hermes/.pgpass` on the gateway). The two Linux/systemd units whose
+  `HOME` diverges from the pgpass role's Linux deploy home set
+  `PGPASSFILE` explicitly. Deferred, documented in-template: asa's
+  `ACATOME_PG_PASSWORD` / `PRECIS_NOTIFY_DATABASE_URL` (a distinct
+  direct-tunnel host:port) and `extract_watch`'s `ACATOME_PG_PASSWORD` — a
+  raw-password contract a third-party tool's own config reads directly,
+  not a libpq DSN pgpass can intercept.
+- **Bounce coverage (gr176337).** The four remaining raw
+  `bootout`→`bootstrap` sites (`precis_heartbeat`, `precis_watch`,
+  `precis_embedder`, `precis_embedder_watchdog` — each ran on EVERY
+  role invocation, not just a plist change) are now the same idempotent
+  `launchctl load -w` no-op `precis_worker` already used (gripe #48481);
+  the real reload-with-new-env fires only via each role's `notify`
+  handler, already routed through the shared poll-until-gone
+  `deploy/tasks/reload_launchd.yml`.
+- **Teardown subprocess reap (gr171254).** `precis watch`'s batch-subprocess
+  pool (`cli/watch.py`) tracks every spawned process-group id in
+  `_inflight_pgids`; `SIGTERM`/`SIGINT` (and `atexit`, belt-and-suspenders)
+  now call `reap_tracked_process_groups()` — TERM, a bounded grace, then
+  KILL — instead of passively waiting for the in-flight batch's own
+  `proc.wait()` to return. Without it, a deploy bounce whose kill-grace
+  outlasts an in-flight Marker batch SIGKILLs the watcher before its own
+  `finally: killpg` runs, orphaning the batch's detached surya server.
 
 **Bounded in-pass concurrency — `service_config.concurrency` (migration
 0091).** A second live knob on the same table, resolved the same way as

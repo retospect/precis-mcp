@@ -936,7 +936,7 @@ passes now. Remaining:
   proposal exists: `docs/proposals/llm-openrouter-bypass.md`.
 - **LLM flip-safety follow-up: `req.model` OSS pins bypass the
   backend-coherence check** *(bug, open — owner
-  `docs/proposals/glm-fleet-flip-safety.md`)*. `dream`'s
+  `docs/decisions/0066-capability-tiers-and-placement-chains.md`)*. `dream`'s
   `PRECIS_DREAM_AGENT_MODEL` env-pin and asa's hard-pinned
   `--model claude-opus-4-8` (`asa_bot/claude_invoke.py`) set `req.model`
   directly, which `dispatch` honors over `resolve_model(tier, backend=)` —

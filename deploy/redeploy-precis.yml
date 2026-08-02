@@ -189,23 +189,16 @@
 - name: "Refresh /opt/precis/embedder-venv (embedder) — FIRST, dependents need it"
   ansible.builtin.import_playbook: playbooks/19a-precis-embedder.yml
 
-- name: "Refresh /opt/precis/venv          (worker, watch, heartbeat, dream)"
+- name: "Refresh /opt/precis/venv          (worker, watch)"
   ansible.builtin.import_playbook: playbooks/20-precis-worker.yml
 
-# `precis_heartbeat` reuses /opt/precis/venv (installed by 20 above, hence the
-# ordering) but is its OWN role/playbook — 20 never runs it. Without this
-# import, a standard `/go`/`scripts/deploy` never re-templates
-# com.precis.heartbeat.plist: step 2 below bounces the daemon (it matches the
-# generic `com.precis.*.plist` bounce), but a bounce of an UN-re-rendered plist
-# has no new env to load. Root cause of a stale plist (mtime months behind HEAD)
-# silently dropping a host-var override
-# (`precis_local_llm_model_override`/`precis_local_serve_config`) meant for
-# the heartbeat daemon — found 2026-07-23, gripe 170073. (The complementary
-# half — the bounce itself now bootout+bootstraps so a freshly-rendered plist's
-# env actually loads, vs. the old `kickstart -k` that ignored it — landed
-# 2026-07-30; see the reload task below.)
-- name: "Re-render the heartbeat plist      (all nodes — picks up host_var overrides)"
-  ansible.builtin.import_playbook: playbooks/40-precis-heartbeat.yml
+# §L: the standalone heartbeat timer (role `precis_heartbeat`, playbook
+# 40-precis-heartbeat.yml) is RETIRED — heartbeat is a per-host `heartbeat`
+# worker pass since §A (workers/heartbeat.py), and retire-thin-timers.yml
+# boots the old launchd/systemd timers out. Do not re-add the import: a
+# re-rendered com.precis.heartbeat.plist would resurrect the timer with an
+# inline agent_rw password (gr171431). The host-var overrides it used to
+# carry ride the worker plists now.
 
 # External embedder health-kicker (gripe 51394 pt2) — probes /readyz and
 # restarts a wedged-but-alive embedder that KeepAlive/Restart=always would

@@ -25,7 +25,12 @@ precis:
   command:
     - /opt/asa/venv/bin/precis
     - serve
-  database_url: "postgresql://agent_rw:{{ vault_pg_agent_rw_pass }}@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
+  # §L (gr171431 §1): password-free — ~hermes/.pgpass (pgpass role)
+  # supplies the password for this exact host:port:database:agent_rw
+  # tuple. ACATOME_PG_PASSWORD below is a SEPARATE, raw-password
+  # contract acatome-meta's own config.py reads directly (not a libpq
+  # DSN it can resolve via pgpass) — left as-is, out of scope here.
+  database_url: "postgresql://agent_rw@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
   env:
     ACATOME_PG_HOST: "{{ hostvars[postgres_host]['ansible_host'] }}"
     ACATOME_PG_PORT: "{{ postgres_port }}"

@@ -52,19 +52,49 @@ if TYPE_CHECKING:
     from precis.workers.runner import RefPass
 
 
-def _should_register_categorizer(only: str | None, name: str) -> bool:
-    """Whether a live-toggleable categorizer pass (``classify`` /
-    ``classify_topics`` / ``axis:<id>``) registers on this invocation.
+def _should_register(
+    only: str | None, name: str, *, profile_passes: frozenset[str] = frozenset()
+) -> bool:
+    """Whether ``name`` registers into ``ref_passes`` on this invocation.
 
-    Registered regardless of its enabled-state — the per-cycle ``pass_gate``
-    decides whether it actually *runs* — unless ``--only`` selected a different
-    pass. This is what makes a live On-flip from the ``/categorizers`` console
-    take effect within one cache TTL WITHOUT a worker restart: the old boot gate
-    (``_pass_enabled``) only ever *disabled* these, because a default-off pass
-    was never appended to ``ref_passes``, so the per-cycle gate had nothing to
-    turn on.
+    §L control cutover: registration is now PURELY structural — it never
+    consults ``service_config`` — so it's a generalization of what used to
+    be a categorizer-only exception (the old ``_should_register_categorizer``,
+    covering only ``classify`` / ``classify_topics`` / ``axis:<id>``). Every
+    other named pass used to gate its *registration* on
+    ``_svc_resolver.enabled(...)`` at boot (the old ``_pass_enabled``): a
+    stale/absent ``service_config`` row at boot time could keep a pass out of
+    ``ref_passes`` forever, so a LATER live prio flip (in either direction)
+    had nothing to gate until the process restarted — see the module's THE
+    GAP note. Closing that gap means registration can never again depend on
+    the DB; the per-cycle ``pass_gate`` (consulted every cycle, TTL-cached)
+    is the ONE decision point for whether a registered pass actually *runs*.
+
+    ``only`` (``--only X``) still forces exactly one pass regardless of
+    profile membership. Otherwise a pass belonging to this worker's profile
+    rotation (``name in profile_passes`` — dispatch/nursery/heartbeat/…,
+    tied to ``--profile``, a restart-time choice, not a live flag) always
+    registers; so does a formerly-``PRECIS_*_ENABLED``-gated pass (the
+    registry's ``enable_env`` — classify/hub_refine/llm_summarize/…) and an
+    ``axis:<id>`` per-axis pseudo-service (no ``ServiceSpec`` of its own —
+    the spec is named ``axis``). A name with NO ``ServiceSpec`` at all — most
+    commonly a ``precis.ref_passes`` plugin factory's own pass name, which the
+    core registry has never heard of — also always registers: the plugin
+    factory already gated eligibility itself (returning ``None`` to opt out,
+    or a ``profiles`` set the caller checks separately), so this is just the
+    same "live service_config is the only on/off switch" contract extended
+    to it. A pass belonging to *this* registry with neither profile
+    membership nor ``enable_env`` (e.g. a system-only pass on an
+    agent-profile invocation) does not register.
     """
-    return only is None or only == name
+    if only is not None:
+        return only == name
+    if name in profile_passes or name.startswith("axis:"):
+        return True
+    spec = SERVICES_BY_NAME.get(name)
+    if spec is None:
+        return True
+    return bool(spec.enable_env)
 
 
 def _axis_id_default_on(service: str, axes_env: frozenset[str]) -> bool | None:
@@ -508,35 +538,24 @@ def run(args: argparse.Namespace) -> None:
 
         _svc_resolver = ServiceConfigResolver(store, host_name())
 
-        def _env_profile_default_on(name: str) -> bool:
-            """The env/profile verdict for ``name``, before any DB override."""
-            spec = SERVICES_BY_NAME.get(name)
-            return name in profile_passes or bool(
-                spec and spec.enable_env and env_flag(spec.enable_env)
-            )
+        def _profile_default_on(name: str) -> bool:
+            """The structural (profile-membership) default for ``name``,
+            before any ``service_config`` override.
 
-        def _pass_enabled(name: str) -> bool:
-            """True when this pass should be *registered* on this invocation.
-
-            ``--only X`` wins over everything when set (single-pass
-            backfills). Otherwise the pass runs when its env/profile default
-            (the running profile's rotation, or its registry ``enable_env``
-            flag) says so — unless a ``service_config`` row overrides that
-            live. This is the boot-time gate; the per-cycle gate (below,
-            passed to ``run_loop``) re-checks the DB so a flip disables an
-            already-registered pass mid-run.
+            §L control cutover: ``PRECIS_*_ENABLED`` is retired as a default
+            source — a formerly-env-gated pass (registry ``enable_env`` set)
+            now defaults OFF absent an explicit row (seeded at deploy time
+            from today's live flag state, see the seed task in
+            ``deploy/roles/precis_worker*``); only profile-rotation
+            membership still contributes a default-ON verdict.
             """
-            if args.only is not None:
-                return args.only == name
-            return _svc_resolver.enabled(name, default_on=_env_profile_default_on(name))
+            return name in profile_passes
 
-        def _register_categorizer(name: str) -> bool:
-            """Boot gate for a live-toggleable categorizer pass — registered
-            regardless of enabled-state (the per-cycle ``pass_gate`` decides each
-            cycle), unless ``--only`` selected a different pass, so a live
-            On-flip works without a restart. See
-            :func:`_should_register_categorizer`."""
-            return _should_register_categorizer(args.only, name)
+        def _register(name: str) -> bool:
+            """Boot gate: whether ``name`` registers into ``ref_passes`` on
+            this invocation. See :func:`_should_register` — this just binds
+            it to the current invocation's ``--only`` / ``--profile``."""
+            return _should_register(args.only, name, profile_passes=profile_passes)
 
         # Chunk-keybert pass (F20). Replaces the v1 segment_toc worker.
         # Runs after embeddings exist (the claim query requires
@@ -549,7 +568,7 @@ def run(args: argparse.Namespace) -> None:
         # the annotation below is stringized (``from __future__ import
         # annotations``) so no runtime import is needed here.
         ref_passes: list[RefPass] = []
-        if _pass_enabled("chunk_keywords"):
+        if _register("chunk_keywords"):
             from precis.workers.chunk_keywords import run_chunk_keywords_pass
 
             # Narrow to EmbedHandler so mypy sees the .embedder
@@ -586,7 +605,7 @@ def run(args: argparse.Namespace) -> None:
         # STATUS:tracing findings. Default-off LLM hooks via
         # --with-llm or PRECIS_CHASE_LLM=1. See ADR 0018 §"Worker"
         # for the sibling-vs-base-class rationale.
-        if _pass_enabled("chase"):
+        if _register("chase"):
             from precis.workers.chase import (
                 _TAPROOT_CHASE_ENV,
                 run_finding_chase_pass,
@@ -661,13 +680,14 @@ def run(args: argparse.Namespace) -> None:
         # above (docs/design/citation-chunk-grounding.md "Inbound sweep
         # policy"): exhaustive one-hop citer sweep + chunk-level verdicts
         # for papers ``PaperHandler.get`` has flagged ``INBOUND:pending``.
-        # Default-OFF (PRECIS_INBOUND_CHASE_ENABLED=1 / --only
-        # inbound_chase) — the exhaustive-no-cap policy leans on the
+        # Default-OFF (`service prio` / --only inbound_chase — §L retired
+        # PRECIS_INBOUND_CHASE_ENABLED as the live gate) — the exhaustive-
+        # no-cap policy leans on the
         # (unshipped) global spend circuit breaker as its cost backstop;
         # see workers/inbound_chase.py's module docstring. Always runs
         # with LLM verification once claiming work — gated by this flag
         # alone, independent of --with-llm/PRECIS_CHASE_LLM.
-        if _pass_enabled("inbound_chase"):
+        if _register("inbound_chase"):
             from precis.workers.inbound_chase import run_inbound_chase_pass
             from precis.workers.runner import BatchResult as _InboundBatchResult
 
@@ -685,17 +705,21 @@ def run(args: argparse.Namespace) -> None:
         # hub_refine — periodic, converging enrichment of EXISTING taproot
         # claim hubs (docs/proposals/taproot-hub-refine.md): per due hub,
         # semantic-search the corpus for corroborating paper chunks,
-        # LLM-verify, attach the survivors. Default-OFF
-        # (PRECIS_TAPROOT_REFINE_ENABLED=1 / --only hub_refine) — dark like
-        # every other taproot flag. Needs an embedder for discovery (no
-        # separate --with-llm gate: reaching this pass at all already
-        # implies paying for the verify calls); reuse the already-booted
-        # EmbedHandler's embedder when one exists, else construct fresh —
-        # any construction failure degrades to a logged no-op rather than
-        # taking the whole worker down (mirrors the chase forward bridge's
-        # own embedder-unavailable degrade, see workers/hub_refine.py's
-        # module docstring).
-        if _pass_enabled("hub_refine"):
+        # LLM-verify, attach the survivors. Default-OFF — dark like every
+        # other taproot service (§L: enable via `service prio '*' hub_refine
+        # <n>`, no PRECIS_TAPROOT_REFINE_ENABLED any more) / --only hub_refine.
+        # Needs an embedder for discovery (no separate --with-llm gate:
+        # reaching this pass at all already implies paying for the verify
+        # calls); reuse the already-booted EmbedHandler's embedder when one
+        # exists (cheap — no model load), else construct fresh, LAZILY on
+        # first actual invocation (not at registration): §L registers this
+        # pass unconditionally on every profile, so eagerly resolving a
+        # fresh embedder here would load bge-m3 on every agent-profile boot
+        # even when the pass never turns on. Any construction failure
+        # degrades to a logged no-op rather than taking the whole worker
+        # down (mirrors the chase forward bridge's own embedder-unavailable
+        # degrade, see workers/hub_refine.py's module docstring).
+        if _register("hub_refine"):
             from precis.workers.embed import EmbedHandler as _HubRefineEmbedHandler
             from precis.workers.hub_refine import run_hub_refine_pass
             from precis.workers.runner import BatchResult as _HubRefineBatchResult
@@ -703,21 +727,28 @@ def run(args: argparse.Namespace) -> None:
             _hub_refine_embed_handler = next(
                 (h for h in handlers if isinstance(h, _HubRefineEmbedHandler)), None
             )
-            if _hub_refine_embed_handler is not None:
-                hub_refine_embedder = _hub_refine_embed_handler.embedder
-            else:
-                try:
-                    hub_refine_embedder = _resolve_embedder(args, store)
-                except Exception:
-                    log.warning(
-                        "hub_refine: embedder unavailable -- pass will "
-                        "degrade to no-op",
-                        exc_info=True,
-                    )
-                    hub_refine_embedder = None
+            _hub_refine_embedder_cache: list[Any] = []
+
+            def _hub_refine_get_embedder() -> Any:
+                if _hub_refine_embedder_cache:
+                    return _hub_refine_embedder_cache[0]
+                if _hub_refine_embed_handler is not None:
+                    embedder = _hub_refine_embed_handler.embedder
+                else:
+                    try:
+                        embedder = _resolve_embedder(args, store)
+                    except Exception:
+                        log.warning(
+                            "hub_refine: embedder unavailable -- pass will "
+                            "degrade to no-op",
+                            exc_info=True,
+                        )
+                        embedder = None
+                _hub_refine_embedder_cache.append(embedder)
+                return embedder
 
             def _hub_refine_pass(batch_size: int) -> _HubRefineBatchResult:
-                r = run_hub_refine_pass(store, embedder=hub_refine_embedder)
+                r = run_hub_refine_pass(store, embedder=_hub_refine_get_embedder())
                 return _HubRefineBatchResult(
                     handler="hub_refine",
                     claimed=r["claimed"],
@@ -732,12 +763,15 @@ def run(args: argparse.Namespace) -> None:
         # paper/patent chunks against the (tiny) claim-embedding index and
         # marks a near claim hub TAPROOT_DUE, so hub_refine's due-set claim
         # query picks it up promptly instead of waiting out its 90d
-        # backstop. Default-OFF (PRECIS_TAPROOT_CHASE_TRIGGER_ENABLED=1) —
-        # dark like every other taproot flag. Needs an embedder (both to
-        # embed claim sentences and to compare chunk vectors against
-        # them); same reuse-the-booted-EmbedHandler-or-construct-fresh
-        # pattern as hub_refine, same embedder-unavailable no-op degrade.
-        if _pass_enabled("chase_trigger"):
+        # backstop. Default-OFF — dark like every other taproot service (§L:
+        # `service prio` controls it now, no PRECIS_TAPROOT_CHASE_TRIGGER_
+        # ENABLED). Needs an embedder (both to embed claim sentences and to
+        # compare chunk vectors against them); same reuse-the-booted-
+        # EmbedHandler-or-construct-fresh-LAZILY pattern as hub_refine above
+        # (register-all means this closure is built on every profile, so the
+        # fresh-embedder fallback must not fire until the pass first actually
+        # runs), same embedder-unavailable no-op degrade.
+        if _register("chase_trigger"):
             from precis.workers.chase_trigger import run_chase_trigger_pass
             from precis.workers.embed import EmbedHandler as _ChaseTriggerEmbedHandler
             from precis.workers.runner import BatchResult as _ChaseTriggerBatchResult
@@ -745,22 +779,31 @@ def run(args: argparse.Namespace) -> None:
             _chase_trigger_embed_handler = next(
                 (h for h in handlers if isinstance(h, _ChaseTriggerEmbedHandler)), None
             )
-            if _chase_trigger_embed_handler is not None:
-                chase_trigger_embedder = _chase_trigger_embed_handler.embedder
-            else:
-                try:
-                    chase_trigger_embedder = _resolve_embedder(args, store)
-                except Exception:
-                    log.warning(
-                        "chase_trigger: embedder unavailable -- pass will "
-                        "degrade to no-op",
-                        exc_info=True,
-                    )
-                    chase_trigger_embedder = None
+            _chase_trigger_embedder_cache: list[Any] = []
+
+            def _chase_trigger_get_embedder() -> Any:
+                if _chase_trigger_embedder_cache:
+                    return _chase_trigger_embedder_cache[0]
+                if _chase_trigger_embed_handler is not None:
+                    embedder = _chase_trigger_embed_handler.embedder
+                else:
+                    try:
+                        embedder = _resolve_embedder(args, store)
+                    except Exception:
+                        log.warning(
+                            "chase_trigger: embedder unavailable -- pass will "
+                            "degrade to no-op",
+                            exc_info=True,
+                        )
+                        embedder = None
+                _chase_trigger_embedder_cache.append(embedder)
+                return embedder
 
             def _chase_trigger_pass(batch_size: int) -> _ChaseTriggerBatchResult:
                 r = run_chase_trigger_pass(
-                    store, embedder=chase_trigger_embedder, batch_size=batch_size
+                    store,
+                    embedder=_chase_trigger_get_embedder(),
+                    batch_size=batch_size,
                 )
                 # chase_trigger's own return shape ({claim_embeds,
                 # chunks_swept, due_marked, failed}) doesn't carry a
@@ -781,7 +824,7 @@ def run(args: argparse.Namespace) -> None:
 
         # Hierarchical SOM cluster maps (precis-web /clusters grid).
         # Time-gated full rebuild per scope; see workers/clusterize.py.
-        if _pass_enabled("clusterize"):
+        if _register("clusterize"):
             from precis.workers.clusterize import run_clusterize_pass
             from precis.workers.runner import BatchResult as _BatchResult
 
@@ -800,7 +843,7 @@ def run(args: argparse.Namespace) -> None:
         # kind='tag' handler can serve semantic discovery
         # ("find tags related to carbon capture"). Idle most of the
         # time; one batched embed call per pass keeps cost flat.
-        if _pass_enabled("tag_embeddings"):
+        if _register("tag_embeddings"):
             # Reuse the embed handler's embedder when available so we
             # don't double-load weights.
             from precis.workers.embed import EmbedHandler as _EmbedHandler
@@ -835,7 +878,7 @@ def run(args: argparse.Namespace) -> None:
         # job_claude_inproc — drains the `kind='job'` queue for jobs
         # whose meta.executor=='claude_inproc'. v1 only job_type is
         # fix_gripe; see precis-fix-gripe-help for the recipe.
-        if _pass_enabled("job_claude_inproc"):
+        if _register("job_claude_inproc"):
             from precis.workers.executors.claude_inproc import (
                 run_claude_inproc_pass,
             )
@@ -856,18 +899,20 @@ def run(args: argparse.Namespace) -> None:
             ref_passes.append(_job_claude_inproc_pass)
 
         # quest_loop_reconcile — the autonomous quest-loop reconciler (rung 4d,
-        # replacing the old inline-tick allocator pass). Ships DARK: only runs
-        # when PRECIS_QUEST_LOOP_ENABLED is set, and only on the agent profile.
-        # It does NOT tick a quest itself — each active quest owns a perpetual
+        # replacing the old inline-tick allocator pass). Ships DARK: registers
+        # (§L register-all) on the agent profile only — structural, not a live
+        # flag — and stays gated off each cycle until a `service prio '*'
+        # quest_loop_reconcile <n>` row lands (its spec.enable_env,
+        # PRECIS_QUEST_LOOP_ENABLED, now only seeds the deploy-time row; see
+        # test_quest_loop_reconcile_gate_env_matches_registration). It does
+        # NOT tick a quest itself — each active quest owns a perpetual
         # `quest_tick` coordinator campaign (workers/job_types/quest_tick.py)
         # that harvests/reviews/proposes/dispatches on its own event-driven
         # cadence; this pass just guarantees that loop exists, self-healing one
         # that rested (a coordinator job idem-keyed `quest_tick:<id>` re-mints
         # once its predecessor reaches a terminal status). See
         # precis.quest.loop.reconcile_quest_loops.
-        from precis.quest.tick import quest_loop_enabled as _quest_loop_enabled
-
-        if args.profile == "agent" and _quest_loop_enabled():
+        if args.profile == "agent" and _register("quest_loop_reconcile"):
             from precis.quest.loop import reconcile_quest_loops
             from precis.workers.runner import BatchResult as _QBatchResult
 
@@ -887,7 +932,7 @@ def run(args: argparse.Namespace) -> None:
         # orchestrators (precis-dft's dft_campaign is the first
         # consumer) that run one short slice per pass and yield
         # between phases. See workers/executors/coordinator.py.
-        if _pass_enabled("job_coordinator"):
+        if _register("job_coordinator"):
             from precis.workers.executors.coordinator import (
                 run_coordinator_pass,
             )
@@ -909,7 +954,7 @@ def run(args: argparse.Namespace) -> None:
         # shells out to a remote node (precis-dft's gpaw_relax → ssh
         # spark docker run) and blocks until it finishes, so the cap is
         # small. See workers/executors/ssh_node.py.
-        if _pass_enabled("job_ssh_node"):
+        if _register("job_ssh_node"):
             from precis.workers.executors.ssh_node import run_ssh_node_pass
             from precis.workers.runner import BatchResult as _BatchResult
 
@@ -928,11 +973,12 @@ def run(args: argparse.Namespace) -> None:
         # 'claude_docker') by launching a detached, cgroup-capped
         # container, polling it by name, and reaping it (ADR 0048 /
         # docs/design/sandbox-run.md). Registered **default-OFF** — only
-        # under PRECIS_SANDBOX_ENABLED=1 (the sandbox hosts) or an
-        # explicit `--only job_claude_docker`, mirroring classify. So a
-        # deploy of this slice changes nothing until a human enables it
-        # on a box with podman + a dedicated CLAUDE_CODE_OAUTH_TOKEN.
-        if _pass_enabled("job_claude_docker"):
+        # via a `service prio` row (seeded once at deploy from the sandbox
+        # hosts' group membership; §L retired PRECIS_SANDBOX_ENABLED as the
+        # live gate) or an explicit `--only job_claude_docker`, mirroring
+        # classify. So a deploy of this slice changes nothing until a human
+        # enables it on a box with podman + a dedicated CLAUDE_CODE_OAUTH_TOKEN.
+        if _register("job_claude_docker"):
             from precis.workers.executors.claude_docker import (
                 run_claude_docker_pass,
             )
@@ -956,7 +1002,7 @@ def run(args: argparse.Namespace) -> None:
         # tag cleared, manual_kick tag added, or cancel_requested
         # overlay). Cheap status-flip + chunk write per re-queue;
         # no compute. See workers/wake_runner.py.
-        if _pass_enabled("wake_runner"):
+        if _register("wake_runner"):
             from precis.workers.wake_runner import wake_pass_for_runner
 
             def _wake_runner_pass(batch_size: int) -> _BatchResult:
@@ -967,8 +1013,9 @@ def run(args: argparse.Namespace) -> None:
         # llm_summarize — model-authored "very brief; some additional
         # detail" chunk summaries into chunk_summaries
         # (summarizer='llm-v1'), via the litellm `summarizer` alias.
-        # Default-OFF: runs only via `--only llm_summarize` or
-        # PRECIS_SUMMARIZE_LLM=1 — a 1M-chunk backfill is a deliberate,
+        # Default-OFF: runs only via `--only llm_summarize` or a
+        # `service prio` row (§L retired PRECIS_SUMMARIZE_LLM as the live
+        # gate) — a 1M-chunk backfill is a deliberate,
         # node-targeted batch, not something every system worker should
         # pick up. See workers/llm_summarize.py.
         from precis.workers.llm_summarize import (
@@ -978,7 +1025,7 @@ def run(args: argparse.Namespace) -> None:
         )
 
         _summarize_cfg = LlmConfig.from_env()
-        if _pass_enabled("llm_summarize"):
+        if _register("llm_summarize"):
             from precis.utils.llm.router import DispatchClient as _DispatchClient
             from precis.utils.llm.router import Tier as _Tier
             from precis.workers.runner import BatchResult as _BatchResult
@@ -1016,12 +1063,13 @@ def run(args: argparse.Namespace) -> None:
 
         # classify — chunk-axis cascade (junk-gate -> role3), writing
         # ROLE3 chunk tags via the litellm `summarizer` alias. Default-OFF
-        # (PRECIS_CLASSIFY_ENABLED=1 or --only classify): a 1.3M-chunk
+        # (`service prio` or --only classify — §L retired
+        # PRECIS_CLASSIFY_ENABLED as the live gate): a 1.3M-chunk
         # backfill is a deliberate, node-targeted batch, like llm_summarize.
         # Forces model=`summarizer` (PRECIS_SUMMARIZE_MODEL=qwen returns
         # empty — it's a thinking model). See workers/classify.py +
         # scripts/classify/EVAL_RESULTS.md.
-        if _register_categorizer("classify"):
+        if _register("classify"):
             from precis.utils.llm.router import DispatchClient as _DispatchClient
             from precis.utils.llm.router import Tier as _Tier
             from precis.workers.runner import BatchResult as _ClsBatchResult
@@ -1101,10 +1149,11 @@ def run(args: argparse.Namespace) -> None:
 
         # llm_reconcile — keep the llm-catalog model-card facts true against the
         # live OpenRouter feed + flag proxy drift (llm-catalog slice 1, step 1 of
-        # the litellm teardown). Default-OFF (PRECIS_LLM_RECONCILE_ENABLED /
-        # --only llm_reconcile); a single cheap app_state read until the catalog
+        # the litellm teardown). Default-OFF (`service prio` / --only
+        # llm_reconcile — §L retired PRECIS_LLM_RECONCILE_ENABLED as the live
+        # gate); a single cheap app_state read until the catalog
         # has cards. Corpus-wide single-runner (app_state cadence + xact lock).
-        if _pass_enabled("llm_reconcile"):
+        if _register("llm_reconcile"):
             from precis.workers.runner import BatchResult as _LlmRecBatchResult
 
             def _llm_reconcile_pass(batch_size: int) -> _LlmRecBatchResult:
@@ -1119,11 +1168,12 @@ def run(args: argparse.Namespace) -> None:
         # acronyms + KeyBERT keywords and makes ONE LLM call to cluster+define
         # them into an embeddable `card_glossary` chunk (ord=-1000). Derived /
         # idempotent / reversible; NO account writes. Default-OFF
-        # (PRECIS_PAPER_GLOSSARY_ENABLED=1 or --only paper_glossary): a
+        # (`service prio` or --only paper_glossary — §L retired
+        # PRECIS_PAPER_GLOSSARY_ENABLED as the live gate): a
         # corpus-wide backfill is a deliberate, node-targeted batch, like
         # classify. Model defaults to the cheap `summarizer` alias. See
         # workers/paper_glossary.py + docs/design/reading-prep-loop.md.
-        if _pass_enabled("paper_glossary"):
+        if _register("paper_glossary"):
             from precis.utils.llm.router import DispatchClient as _DispatchClient
             from precis.utils.llm.router import Tier as _Tier
             from precis.workers.runner import BatchResult as _PgBatchResult
@@ -1180,7 +1230,7 @@ def run(args: argparse.Namespace) -> None:
         # classify/paper_glossary. See workers/classify_topics.py +
         # docs/decisions/0060-topic-dossiers.md.
         _topics_env_set = env_csv_set("PRECIS_TOPICS_ENABLED")
-        if _register_categorizer("classify_topics"):
+        if _register("classify_topics"):
             from precis.utils.llm.router import DispatchClient as _DispatchClient
             from precis.utils.llm.router import Tier as _Tier
             from precis.workers.runner import BatchResult as _CtBatchResult
@@ -1235,7 +1285,7 @@ def run(args: argparse.Namespace) -> None:
         # axis. Default-OFF per id: PRECIS_AXES_ENABLED (comma-separated
         # ids) just seeds that id's env/profile default_on verdict — a
         # deploy-time convenience — but a live `service_config` row always
-        # wins, mirroring `_pass_enabled`'s contract for every other named
+        # wins, mirroring `_gate_default_on`'s contract for every other named
         # pass. See workers/axis_pass.py + data/axes/README.md.
         from precis.workers.axis_pass import discover_axis_ids
 
@@ -1253,7 +1303,7 @@ def run(args: argparse.Namespace) -> None:
                 # without a worker restart. ``--only`` still restricts to the one
                 # selected pass. (``_axes_env_set`` now feeds the gate's default,
                 # not this boot check — see the ``pass_gate`` wiring below.)
-                if not _register_categorizer(_axis_service):
+                if not _register(_axis_service):
                     continue
 
                 _axis_client = _DispatchClient(
@@ -1295,14 +1345,15 @@ def run(args: argparse.Namespace) -> None:
 
         # briefing_audio — narrate the morning news briefing onto the podcast
         # feed (the first automatic audio producer, docs/design/audio-feed.md).
-        # Default-OFF (PRECIS_BRIEFING_AUDIO_ENABLED=1 or --only briefing_audio)
+        # Default-OFF (`service prio` or --only briefing_audio — §L retired
+        # PRECIS_BRIEFING_AUDIO_ENABLED as the live gate)
         # and TTS-host-only: it needs the `[tts]` extra + Kokoro model files +
         # ffmpeg + a PRECIS_PODCAST_DIR, all of which live on spark. Decoupled
         # from the briefing *job* (which runs on the agent worker, no TTS): this
         # pass reads the persisted `briefing-<date>` ref and self-schedules off
         # its existence, idempotent via a `meta.audio_episode_id` marker. See
         # workers/briefing_audio.py.
-        if _pass_enabled("briefing_audio"):
+        if _register("briefing_audio"):
             from precis.workers.runner import BatchResult as _BaBatchResult
 
             _ba_image = os.environ.get("PRECIS_TTS_IMAGE")
@@ -1355,9 +1406,10 @@ def run(args: argparse.Namespace) -> None:
         # nidra) onto the podcast feed (docs/design/reading-prep-loop.md §Audio).
         # Same substrate as briefing_audio: TTS-host-only (spark), container-first,
         # self-scheduling off an un-narrated cast draft, idempotent via
-        # meta.audio_episode_id. Default-OFF (PRECIS_CAST_AUDIO_ENABLED=1 or
-        # --only cast_audio) + needs PRECIS_TTS_IMAGE. See workers/cast_audio.py.
-        if _pass_enabled("cast_audio"):
+        # meta.audio_episode_id. Default-OFF (`service prio` or --only
+        # cast_audio — §L retired PRECIS_CAST_AUDIO_ENABLED as the live gate)
+        # + needs PRECIS_TTS_IMAGE. See workers/cast_audio.py.
+        if _register("cast_audio"):
             from precis.workers.runner import BatchResult as _CaBatchResult
 
             _ca_image = os.environ.get("PRECIS_TTS_IMAGE")
@@ -1401,12 +1453,13 @@ def run(args: argparse.Namespace) -> None:
 
                 ref_passes.append(_cast_audio_pass)
 
-        # Backlog groomer (default-OFF; PRECIS_BACKLOG_GROOM_ENABLED=1 or
-        # --only backlog_groom): promote open gripes into dispatchable
+        # Backlog groomer (default-OFF; `service prio` — §L retired
+        # PRECIS_BACKLOG_GROOM_ENABLED as the live gate — or --only
+        # backlog_groom): promote open gripes into dispatchable
         # ``fix_gripe`` todos so the autonomous fixer substrate acts on the
         # bug backlog. Off by default because enabling it starts handing
         # repo bugs to claude_inproc — a deliberate flip, like classify.
-        if _pass_enabled("backlog_groom"):
+        if _register("backlog_groom"):
             from precis.workers.runner import BatchResult as _GroomBatchResult
 
             def _backlog_groom_pass(batch_size: int) -> _GroomBatchResult:
@@ -1422,7 +1475,7 @@ def run(args: argparse.Namespace) -> None:
         # ``view_worker`` is the first consumer). Failure isolation
         # mirrors handler discovery — a broken plugin factory logs
         # a warning and the worker carries on with whatever did
-        # register. The pass-name gate (``_pass_enabled``) still
+        # register. The pass-name gate (``_register``) still
         # applies so ``--only`` and the profile pass set honour
         # plugin passes the same way they honour built-ins.
         from precis.workers._plugin_passes import (
@@ -1432,7 +1485,7 @@ def run(args: argparse.Namespace) -> None:
         for pass_name, plugin_callable, plugin_profiles in discover_plugin_ref_passes(
             store, profile=args.profile, args=args
         ):
-            if not _pass_enabled(pass_name):
+            if not _register(pass_name):
                 continue
             if args.only is None and args.profile not in plugin_profiles:
                 # Factory declared it doesn't belong on this profile.
@@ -1458,7 +1511,7 @@ def run(args: argparse.Namespace) -> None:
         # for an OA URL and downloading to the watch inbox. The
         # watcher's existing ingest path picks the file up and C7's
         # stub-upgrade promotes the row in place.
-        if _pass_enabled("fetch"):
+        if _register("fetch"):
             from precis.workers.fetch_oa import run_oa_fetch_pass
             from precis.workers.runner import BatchResult as _BatchResult
 
@@ -1488,7 +1541,7 @@ def run(args: argparse.Namespace) -> None:
         # external S2 calls and must run on a cadence, not the hot loop.
         # Run it from a dedicated low-frequency cron via
         # ``precis worker --only watch_poll`` (mirrors the dream cron).
-        if _pass_enabled("watch_poll"):
+        if _register("watch_poll"):
             from precis.workers.runner import BatchResult as _BatchResult
             from precis.workers.watch_poll import run_watch_pass
 
@@ -1508,7 +1561,7 @@ def run(args: argparse.Namespace) -> None:
         # watch_poll it makes external calls on a cadence, so it's
         # cron-driven via ``precis worker --only news_poll``, not in the
         # hot system/agent loop.
-        if _pass_enabled("news_poll"):
+        if _register("news_poll"):
             from precis.workers.news_poll import run_news_pass
             from precis.workers.runner import BatchResult as _BatchResult
 
@@ -1525,11 +1578,12 @@ def run(args: argparse.Namespace) -> None:
 
         # Mailbox poll (email kind, slice 3). Per-account IMAP poll for new
         # mail past the last_uid high-water + inline tier-0 regex injection
-        # scan; verdicts land in email_scan (no body stored). Dark behind
-        # PRECIS_MAIL_POLL_ENABLED (no default profile) so it runs on one host,
+        # scan; verdicts land in email_scan (no body stored). Dark behind a
+        # `service prio` row (§L retired PRECIS_MAIL_POLL_ENABLED as the live
+        # gate; no default profile) so it runs on one host,
         # not every node against the same mailbox. Cadence + backoff are inside
         # the pass, so it's cheap to tick every cycle.
-        if _pass_enabled("mail_poll"):
+        if _register("mail_poll"):
             from precis.workers.mail_poll import run_mail_poll
             from precis.workers.runner import BatchResult as _BatchResult
 
@@ -1548,9 +1602,10 @@ def run(args: argparse.Namespace) -> None:
         # cascade: leases tier-0 verdicts, re-fetches the body from IMAP, and
         # model-scores it (local `summarizer` alias by default) for a prompt-
         # injection attempt, escalating ambiguous ones + raising an alert on
-        # `high`. Dark behind PRECIS_INJECT_SCAN_ENABLED (agent host, where the
+        # `high`. Dark behind a `service prio` row (§L retired
+        # PRECIS_INJECT_SCAN_ENABLED as the live gate; agent host, where the
         # local model proxy resolves); routed through the ADR 0046 DispatchClient.
-        if _pass_enabled("inject_scan"):
+        if _register("inject_scan"):
             from precis.utils.llm.router import DispatchClient as _InjDispatchClient
             from precis.utils.llm.router import Tier as _InjTier
             from precis.workers.inject_scan import run_inject_scan_pass
@@ -1592,7 +1647,7 @@ def run(args: argparse.Namespace) -> None:
         # digest ref. LLM-backed (summarizer alias), so cron-driven via
         # ``precis worker --only briefing`` (e.g. a daily launchd tick),
         # never the hot loop.
-        if _pass_enabled("briefing"):
+        if _register("briefing"):
             from precis.workers.briefing import run_briefing
             from precis.workers.runner import BatchResult as _BatchResult
 
@@ -1613,7 +1668,7 @@ def run(args: argparse.Namespace) -> None:
         # the env isn't set so it's safe to include in the system profile
         # even on hosts that shouldn't run it. See ADR-pending /
         # docs/decisions about external-fetch goodwill.
-        if _pass_enabled("gp_fetch"):
+        if _register("gp_fetch"):
             from precis.workers.fetch_google_patents import run_gp_fetch_pass
             from precis.workers.runner import BatchResult as _BatchResult
 
@@ -1639,7 +1694,7 @@ def run(args: argparse.Namespace) -> None:
         # (Slice 1b of todo-tree-plan.md). Cheap and SQL-only by
         # default — the registered evaluators are SQL queries, not
         # LLM calls — so it stays in the default cycle.
-        if _pass_enabled("auto_check"):
+        if _register("auto_check"):
             from precis.workers.auto_check import run_auto_check_pass
             from precis.workers.runner import BatchResult as _BatchResult
 
@@ -1653,7 +1708,7 @@ def run(args: argparse.Namespace) -> None:
         # the Watches umbrella. SQL-only and idempotent
         # (meta.spawned_for_tick stamp), so it shares the default
         # cycle with auto_check.
-        if _pass_enabled("schedule"):
+        if _register("schedule"):
             from precis.workers.runner import BatchResult as _BatchResult
             from precis.workers.schedule import run_schedule_pass
 
@@ -1670,7 +1725,7 @@ def run(args: argparse.Namespace) -> None:
         # (exactly-once across the fleet, no designated node). It must run on
         # the agent profile too, or a host-pinned melchior cadence never has
         # an eligible claimant.
-        if _pass_enabled("scheduler"):
+        if _register("scheduler"):
             from precis.workers.runner import BatchResult as _BatchResult
             from precis.workers.scheduler import run_scheduler_pass
 
@@ -1689,7 +1744,7 @@ def run(args: argparse.Namespace) -> None:
         # Idempotent per pass — a still-present condition just bumps
         # its alert's seen_count, so the default rotation can include
         # this without spamming the table.
-        if _pass_enabled("nursery"):
+        if _register("nursery"):
             from precis.workers.nursery import run_nursery_pass
             from precis.workers.runner import BatchResult as _BatchResult
 
@@ -1705,7 +1760,7 @@ def run(args: argparse.Namespace) -> None:
         # (NOT scheduler_leases — heartbeat is the liveness signal that lease
         # machinery is judged by, so it must never depend on it); a
         # double-fire against the timer is a harmless idempotent upsert.
-        if _pass_enabled("heartbeat"):
+        if _register("heartbeat"):
             from precis.workers.heartbeat import run_heartbeat_pass
             from precis.workers.runner import BatchResult as _BatchResult
 
@@ -1722,7 +1777,7 @@ def run(args: argparse.Namespace) -> None:
         # opus call. Gated by PRECIS_STRUCTURAL_REVIEW=1; the
         # Ansible role at cluster/roles/precis_structural sets
         # the env + fires the LaunchDaemon at 6h cadence.
-        if _pass_enabled("structural"):
+        if _register("structural"):
             from precis.workers.runner import BatchResult as _BatchResult
             from precis.workers.structural import run_structural_pass
 
@@ -1736,7 +1791,7 @@ def run(args: argparse.Namespace) -> None:
         # PRECIS_DEEP_REVIEW=1. Same shape as structural with a
         # longer prompt, longer timeout, larger turn cap, and a
         # 6-day dedup window.
-        if _pass_enabled("deep_review"):
+        if _register("deep_review"):
             from precis.workers.deep_review import run_deep_review_pass
             from precis.workers.runner import BatchResult as _BatchResult
 
@@ -1750,7 +1805,7 @@ def run(args: argparse.Namespace) -> None:
         # under them so the executor pool can run the work. SQL-only,
         # cheap, multi-host safe via FOR UPDATE SKIP LOCKED. Shares
         # the default rotation with auto_check + schedule + nursery.
-        if _pass_enabled("dispatch"):
+        if _register("dispatch"):
             from precis.workers.dispatch import run_dispatch_pass
             from precis.workers.runner import BatchResult as _BatchResult
 
@@ -1765,7 +1820,7 @@ def run(args: argparse.Namespace) -> None:
         # STATUS:failed with an `swept:claim-orphaned` tag, so the
         # parent todo's child-failed bubble lands and the planner can
         # re-tick. Multi-host safe via FOR UPDATE SKIP LOCKED.
-        if _pass_enabled("sweeper"):
+        if _register("sweeper"):
             from precis.workers.runner import BatchResult as _BatchResult
             from precis.workers.sweeper import run_sweeper_pass
 
@@ -1780,7 +1835,7 @@ def run(args: argparse.Namespace) -> None:
         # PDFs under its own PRECIS_CORPUS_DIR roots. Self-throttling via a
         # refresh window (idle once every verdict is fresh). No-op when this
         # node has no corpus roots configured.
-        if _pass_enabled("corpus_reconcile"):
+        if _register("corpus_reconcile"):
             from precis.corpus_layout import corpus_roots_from_env, host_name
             from precis.workers.corpus_reconcile import run_corpus_reconcile_pass
             from precis.workers.runner import BatchResult as _BatchResult
@@ -1803,7 +1858,7 @@ def run(args: argparse.Namespace) -> None:
         # the whole pass to once per PRECIS_PAPER_RECONCILE_REFRESH_HOURS
         # (default 24), and a single-runner advisory lock keeps just one
         # node sweeping corpus-wide.
-        if _pass_enabled("paper_reconcile"):
+        if _register("paper_reconcile"):
             from precis.workers.paper_reconcile import run_paper_reconcile_pass
             from precis.workers.runner import BatchResult as _BatchResult
 
@@ -1818,7 +1873,7 @@ def run(args: argparse.Namespace) -> None:
         # there. Short-circuits when the persisted snapshot is younger
         # than REFRESH_INTERVAL_S (default 600s), so the cost is one
         # SQL probe per idle cycle + a 2-token completion every 10 min.
-        if _pass_enabled("quota_check"):
+        if _register("quota_check"):
             from precis.workers.quota_check import run_quota_check_pass
             from precis.workers.runner import BatchResult as _BatchResult
 
@@ -1838,7 +1893,7 @@ def run(args: argparse.Namespace) -> None:
         # (dream-pass.sh, precis_dream role) is retired. The worker-agent
         # role now installs PRECIS_DREAM_AGENT / PRECIS_DREAM_SOUL_PATH on
         # melchior's agent-profile plist instead.
-        if _pass_enabled("dream_agent"):
+        if _register("dream_agent"):
             from precis.workers.dream_agent import run_dream_pass
             from precis.workers.runner import BatchResult as _BatchResult
 
@@ -1857,15 +1912,21 @@ def run(args: argparse.Namespace) -> None:
 
         # Per-cycle live gate: consulted each cycle for every registered pass so
         # a service_config flip takes effect within one cache TTL, no restart —
-        # in BOTH directions. A default-off categorizer (now always registered,
-        # see ``_register_categorizer``) turns ON when a prio>=1 row lands; any
-        # pass turns OFF on a prio 0 row. The baseline when NO row exists is the
-        # service's real env/profile default (NOT a blanket ``True``, which would
-        # run an always-registered default-off pass unconditionally): an
-        # ``axis:<id>`` seeds from ``PRECIS_AXES_ENABLED``, every other service
-        # from its ``ServiceSpec``/profile — so a boot-enabled rotation pass keeps
-        # its prior verdict while an always-registered default-off categorizer
-        # stays off until explicitly enabled. Skipped under ``--only`` (an
+        # in BOTH directions. Any always-registered pass (§L: that's all of
+        # them now, see ``_register``) turns ON when a prio>=1 row lands and
+        # OFF on a prio 0 row. The baseline when NO row exists is NOT a blanket
+        # ``True`` (that would run every always-registered pass unconditionally)
+        # nor does it read ``PRECIS_*_ENABLED`` any more (§L retires that as a
+        # run-control default — see ``_profile_default_on``): a formerly-env-
+        # gated pass (classify/hub_refine/llm_summarize/…) with no row now
+        # defaults OFF, same as a system-only pass registered on the agent
+        # profile. Two narrower exceptions keep their OWN env-seeded default,
+        # deliberately out of this cutover's scope (they're granular per-item
+        # deploy-time convenience seeds, already fully live-controllable
+        # per-item via their own ``service_config`` row, not a whole-pass
+        # boot flag): ``axis:<id>`` seeds from ``PRECIS_AXES_ENABLED`` and
+        # ``topic:<slug>`` from ``PRECIS_TOPICS_ENABLED`` /
+        # ``PRECIS_CLASSIFY_TOPICS_ENABLED``. Skipped under ``--only`` (an
         # explicit one-pass invocation shouldn't be silently DB-gated).
         def _gate_default_on(service: str) -> bool:
             axis_default = _axis_id_default_on(service, _axes_env_set)
@@ -1884,7 +1945,7 @@ def run(args: argparse.Namespace) -> None:
                     )
                     for s in all_topic_slugs()
                 )
-            return _env_profile_default_on(service)
+            return _profile_default_on(service)
 
         _pass_gate = (
             None

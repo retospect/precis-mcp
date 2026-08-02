@@ -40,6 +40,7 @@ from precis.workers.nursery import (
     STALE_CLAIM_HOURS,
     STUCK_DOABLE_HOURS,
     WORKER_RESTART_STORM_1H,
+    _dead_worker_detail,
     _detect_child_failed_parked,
     _detect_dead_workers,
     _detect_dispatch_stalls,
@@ -1066,6 +1067,66 @@ def test_dead_worker_ignores_periodic_process(store: Store) -> None:
 
     findings = _detect_dead_workers(store)
     assert not any(f.category == "dead-worker" and host in f.title for f in findings)
+
+
+def test_dead_worker_message_is_hedged_across_platforms() -> None:
+    """gr180078: no hardcoded launchctl-only text."""
+    for plat in ("Darwin", "Linux", "darwin", "linux", None):
+        detail = _dead_worker_detail("precis-worker", "h", 12.0, plat)
+        assert "dead or wedged" in detail
+
+
+def test_dead_worker_message_tailors_command_to_linux(store: Store) -> None:
+    """A dead worker on a Linux/systemd host gets systemctl advice, not
+    launchctl — host_heartbeat.meta.platform (title-cased, unlike the boot
+    row's sys.platform) drives it."""
+    host = _host()
+    _seed_worker_log(
+        store, host, "precis-worker-agent", minutes_ago=DEAD_WORKER_SILENCE_MIN + 5
+    )
+    _seed_heartbeat(store, host, minutes_ago=0, meta={"platform": "Linux"})
+
+    finding = next(
+        f
+        for f in _detect_dead_workers(store)
+        if f.fingerprint_key == f"dead-worker:{host}:precis-worker-agent"
+    )
+    assert "systemctl" in finding.detail
+    assert "launchctl" not in finding.detail
+
+
+def test_dead_worker_message_tailors_command_to_macos(store: Store) -> None:
+    """A dead worker on a macOS/launchd host keeps the launchctl advice."""
+    host = _host()
+    _seed_worker_log(
+        store, host, "precis-worker-agent", minutes_ago=DEAD_WORKER_SILENCE_MIN + 5
+    )
+    _seed_heartbeat(store, host, minutes_ago=0, meta={"platform": "Darwin"})
+
+    finding = next(
+        f
+        for f in _detect_dead_workers(store)
+        if f.fingerprint_key == f"dead-worker:{host}:precis-worker-agent"
+    )
+    assert "launchctl" in finding.detail
+    assert "systemctl" not in finding.detail
+
+
+def test_dead_worker_message_neutral_without_platform(store: Store) -> None:
+    """No platform in the heartbeat meta ⇒ names both OSes' tools rather
+    than guessing."""
+    host = _host()
+    _seed_worker_log(
+        store, host, "precis-worker-agent", minutes_ago=DEAD_WORKER_SILENCE_MIN + 5
+    )
+    _seed_heartbeat(store, host, minutes_ago=0)  # no meta
+
+    finding = next(
+        f
+        for f in _detect_dead_workers(store)
+        if f.fingerprint_key == f"dead-worker:{host}:precis-worker-agent"
+    )
+    assert "systemctl" in finding.detail and "launchctl" in finding.detail
 
 
 def test_dead_worker_still_flags_after_multi_day_silence(store: Store) -> None:

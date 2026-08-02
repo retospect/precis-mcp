@@ -46,6 +46,25 @@
     mode: "0644"
   become: true
 
+# §L (gr171431 §1): hermes runs asa_bot/asa_slack on the gateway — the same
+# treatment as deploy above, so those two daemons' DSNs can drop their
+# inline password too. Existence of the hermes account is NOT asserted here
+# (this role doesn't create it); a host without hermes just gets an inert
+# file no daemon reads.
+- name: Deploy .pgpass for hermes user (gateway only — asa_bot/asa_slack)
+  when:
+    - os_family == "darwin"
+    - inventory_hostname in groups['gateway']
+  ansible.builtin.template:
+    src: pgpass.j2
+    dest: "{{ pgpass_hermes_home }}/.pgpass"
+    owner: hermes
+    group: staff
+    mode: "0600"
+  become: true
+  no_log: true   # contains all the db passwords
+  failed_when: false  # tolerate a host where the hermes account doesn't exist
+
 # ── Default PG* env vars so bare `psql` works ──
 # On Linux: /etc/profile.d (system-wide; affects every login user)
 # On macOS: ~deploy/.zprofile (per-user; macOS doesn't run /etc/profile.d)

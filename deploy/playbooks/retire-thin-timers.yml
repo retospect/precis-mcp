@@ -1,6 +1,7 @@
 ---
 # retire-thin-timers.yml — factory Phase-2 §15i cutover (2026-07-18), extended
-# by §A (2026-08) to the dream / anki-sync / reconcile timers.
+# by §A (2026-08) to the dream / anki-sync / reconcile timers, and by §L
+# (control cutover) to the standalone heartbeat timer.
 #
 # Boots out + removes the standalone thin-timer LaunchDaemons now that their
 # cadences ride the decentralized `scheduler` worker pass (migration 0074
@@ -12,13 +13,19 @@
 #   - com.precis.reconcile   (data node) — was: precis reconcile-duplicates
 #     --apply nightly; folded as a pure *retirement* — it's redundant with the
 #     existing `paper_reconcile` system-worker pass, not a new cadence (§A)
+#   - precis-heartbeat       (gateway/scheduler/data/inference, both launchd
+#     AND systemd) — was: `precis heartbeat` @60s; folded into the per-host
+#     `heartbeat` system-worker pass (workers/heartbeat.py, self-throttled
+#     in-process, §A/§L). Double-fires a harmless idempotent UPSERT until
+#     this lands.
 #
-# RUN ORDER: only AFTER a deploy that lands the §A code (scheduler live on
-# both profiles; dream/anki-sync env on the worker-agent plist) and the
-# scheduler_leases rows are confirmed advancing — otherwise these cadences
-# stop firing. Idempotent (tolerates already-removed). Retiring is harmless
-# even if the scheduler briefly co-fires: the lease/advisory-lock/idempotent-
-# upsert mechanisms in each of the folded passes all dedup safely.
+# RUN ORDER: only AFTER a deploy that lands the §A/§L code (scheduler /
+# heartbeat pass live on the relevant profiles) and the scheduler_leases /
+# host_heartbeat rows are confirmed advancing on their own — otherwise these
+# cadences stop firing. Idempotent (tolerates already-removed). Retiring is
+# harmless even if the standalone timer briefly co-fires: the lease/
+# advisory-lock/idempotent-upsert mechanisms in each of the folded passes
+# all dedup safely.
 #
 # Reversal: re-add the retired plays to site.yml (git history) and re-run them.
 - name: Retire precis thin-timer LaunchDaemons (folded into the scheduler pass)
@@ -91,3 +98,56 @@
       register: _still_loaded
       changed_when: false
       failed_when: _still_loaded.rc == 0
+
+# §L: retire the standalone precis_heartbeat timer — OS-aware (gr180078's
+# manage story extends to retirement too), since heartbeat runs on every
+# system-worker host, including the Linux/systemd GPU node (inference).
+- name: Retire the precis-heartbeat timer (folded into the worker's heartbeat pass)
+  hosts:
+    - gateway
+    - scheduler
+    - data
+    - inference
+  become: true
+  tasks:
+    - name: Bootout com.precis.heartbeat (macOS, tolerate not-loaded)
+      when: os_family == "darwin"
+      ansible.builtin.command: "launchctl bootout system/com.precis.heartbeat"
+      register: _hb_bootout
+      changed_when: _hb_bootout.rc == 0
+      failed_when: false
+
+    - name: Remove the com.precis.heartbeat plist (macOS)
+      when: os_family == "darwin"
+      ansible.builtin.file:
+        path: /Library/LaunchDaemons/com.precis.heartbeat.plist
+        state: absent
+
+    - name: Assert com.precis.heartbeat is gone (macOS)
+      when: os_family == "darwin"
+      ansible.builtin.command: "launchctl print system/com.precis.heartbeat"
+      register: _hb_still_loaded
+      changed_when: false
+      failed_when: _hb_still_loaded.rc == 0
+
+    - name: Stop + disable the precis-heartbeat systemd timer (Linux)
+      when: os_family == "linux"
+      ansible.builtin.systemd:
+        name: precis-heartbeat.timer
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    - name: Remove the precis-heartbeat systemd unit + timer files (Linux)
+      when: os_family == "linux"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/systemd/system/precis-heartbeat.service
+        - /etc/systemd/system/precis-heartbeat.timer
+
+    - name: systemd daemon-reload after unit removal (Linux)
+      when: os_family == "linux"
+      ansible.builtin.systemd:
+        daemon_reload: true

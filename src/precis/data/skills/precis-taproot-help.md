@@ -202,13 +202,16 @@ sharper one shows `↳ refines fi<original>`.
 | Claim→claim `refines` links (`precis taproot refine`) | live (advisory-only, no evidence flow) |
 | Whole-draft `[pc<id>]`→`[fi<id>]` backfill (`precis taproot backfill`) | live (on-demand, dry-run default; not a corpus sweep) |
 | Whole-paper `[pa<id>]` arm (stub-skip; default `[pa]`→`[pc]` re-ground; `--ref-level` whole-paper promote) | live (slices 1+2) |
-| Corpus-wide forward chase bridge (`PRECIS_TAPROOT_CHASE_ENABLED`) | dark, default-OFF |
-| Hub-refine pass (`workers/hub_refine.py`, `PRECIS_TAPROOT_REFINE_ENABLED`) | dark, default-OFF |
-| Chase-trigger pass (`workers/chase_trigger.py`, `PRECIS_TAPROOT_CHASE_TRIGGER_ENABLED`) — marks a hub `TAPROOT_DUE` when a near paper/patent chunk lands, so hub-refine claims it promptly instead of waiting out its backstop | dark, default-OFF |
+| Corpus-wide forward chase bridge (`PRECIS_TAPROOT_CHASE_ENABLED` — a `chase`-pass sub-feature, not its own service) | dark, default-OFF |
+| Hub-refine pass (`workers/hub_refine.py`, `hub_refine` service) | dark, default-OFF — `precis service prio '*' hub_refine <n>` / `/categorizers` |
+| Chase-trigger pass (`workers/chase_trigger.py`, `chase_trigger` service) — marks a hub `TAPROOT_DUE` when a near paper/patent chunk lands, so hub-refine claims it promptly instead of waiting out its backstop | dark, default-OFF — `precis service prio '*' chase_trigger <n>` / `/categorizers` |
 | `axis:taproot` `TAPROOT:claim`/`TAPROOT:review` classifier (`PRECIS_AXES_ENABLED`) | dark, default-OFF |
 
-All dark flags default off — evidence stays sparse until a corpus run
-is turned on to seed it.
+All dark rows default off — evidence stays sparse until turned on to seed
+it. Everything with its own `service_config` service (`hub_refine`,
+`chase_trigger`, and every `axis:<id>`) flips live via `precis service
+prio` / `/categorizers`, no redeploy; the forward chase bridge is a
+`chase`-pass-internal env flag, unaffected.
 
 ## See also
 

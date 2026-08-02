@@ -159,6 +159,39 @@ def set_service_prio(
         conn.commit()
 
 
+def seed_service_prio(
+    store: Store,
+    host: str,
+    service: str,
+    prio: int,
+    *,
+    actor: str | None = None,
+) -> bool:
+    """Insert ``(host, service, prio)`` only if no row exists yet; a no-op
+    otherwise. Returns True when a row was inserted.
+
+    This is the §L deploy-time seed write — distinct from
+    :func:`set_service_prio` (the operator-facing ``precis service prio`` /
+    ``/factory`` console UPSERT, which INTENTIONALLY overwrites). A seed task
+    runs on every deploy to mirror a retiring ``PRECIS_*_ENABLED`` plist flag
+    into a row so the cutover is behaviour-preserving; using the UPSERT here
+    would silently clobber a console operator's live override on the very
+    next redeploy. ``ON CONFLICT DO NOTHING`` makes it safe to re-run forever.
+    """
+    if not 0 <= prio <= 10:
+        raise ValueError(f"prio must be 0..10, got {prio}")
+    with store.pool.connection() as conn:
+        cur = conn.execute(
+            "INSERT INTO service_config "
+            "(host, service, prio, actor, updated_at) "
+            "VALUES (%s, %s, %s, %s, now()) "
+            "ON CONFLICT (host, service) DO NOTHING",
+            (host, service, prio, actor),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
 def set_service_model(
     store: Store,
     host: str,
@@ -250,6 +283,7 @@ __all__ = [
     "ServiceConfigResolver",
     "clear_service_config",
     "list_service_config",
+    "seed_service_prio",
     "set_service_concurrency",
     "set_service_model",
     "set_service_prio",

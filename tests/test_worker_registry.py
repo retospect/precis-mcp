@@ -72,10 +72,11 @@ def _worker_ast() -> ast.Module:
 def _passes_referenced_in_worker() -> set[str]:
     """Pass names wired in ``cli/worker.py``.
 
-    Two wiring signals: a ``_pass_enabled("X")`` call (string literal),
-    and a ``ref_passes.append(_X_pass)`` (closure named ``_X_pass``).
-    The closure name maps to the pass name by stripping the ``_``/``_pass``
-    fixture, matching the ``__name__``-keyed ``_REF_PASS_PRIORITY`` table.
+    Two wiring signals: a ``_register("X")`` call (string literal — §L
+    renamed/generalized the old ``_pass_enabled`` boot gate), and a
+    ``ref_passes.append(_X_pass)`` (closure named ``_X_pass``). The closure
+    name maps to the pass name by stripping the ``_``/``_pass`` fixture,
+    matching the ``__name__``-keyed ``_REF_PASS_PRIORITY`` table.
     """
     tree = _worker_ast()
     names: set[str] = set()
@@ -84,10 +85,10 @@ def _passes_referenced_in_worker() -> set[str]:
         if not isinstance(node, ast.Call):
             continue
         func = node.func
-        # _pass_enabled("X")
+        # _register("X")
         if (
             isinstance(func, ast.Name)
-            and func.id == "_pass_enabled"
+            and func.id == "_register"
             and node.args
             and isinstance(node.args[0], ast.Constant)
             and isinstance(node.args[0].value, str)
@@ -130,14 +131,15 @@ def test_every_ref_pass_spec_is_wired() -> None:
 
 
 def test_quest_loop_reconcile_gate_env_matches_registration() -> None:
-    """quest_loop_reconcile registers via a *direct* ``quest_loop_enabled()``
-    env check in cli/worker.py, but the per-cycle ``pass_gate`` derives its
-    default from this spec's ``enable_env``. If the two name different env vars
-    (or the spec omits ``enable_env``), the pass registers yet is skipped every
-    cycle — the 2026-07-30 dark-lane regression: ``e69c2b06`` switched the gate
-    default from blanket-true to ``_env_profile_default_on`` (spec-derived), so a
-    missing ``enable_env`` silently benched the whole autonomous quest loop for
-    days. Pin the registration gate and the per-cycle gate to the same var.
+    """Post-§L, quest_loop_reconcile *registers* structurally (agent profile,
+    no env read), but its plist still ships ``PRECIS_QUEST_LOOP_ENABLED`` for
+    the pass-external consumers (``precis quest run``, quest/loop.py,
+    quest/allocator.py), and the §L deploy seed mirrors that flag into the
+    ``service_config`` row the per-cycle gate now keys on. Pin the spec's
+    ``enable_env`` to the same var those consumers read so the seed task,
+    the docs, and the runtime never name-drift — the descendant of the
+    2026-07-30 dark-lane regression (``e69c2b06``), where a gate/registration
+    env mismatch silently benched the whole autonomous quest loop for days.
     """
     from precis.quest.tick import QUEST_LOOP_ENABLED_ENV
 

@@ -6,7 +6,11 @@
 precis_watch_venv: /opt/precis/venv
 
 # Same DSN as precis_worker — both pull/push to precis_prod via pgbouncer.
-precis_watch_dsn: "{{ precis_worker_dsn | default('postgresql://agent_rw:' + vault_pg_agent_rw_pass + '@' + hostvars[postgres_host]['ansible_host'] + ':' + (pgbouncer_port | string) + '/precis_prod') }}"
+# §L (gr171431 §1): password-free, same as precis_worker_dsn — this daemon
+# also runs as `deploy` (UserName below), so ~deploy/.pgpass (pgpass role)
+# supplies the password. The fallback only matters if precis_worker's role
+# genuinely never ran on this host (not the assumed case — see the header).
+precis_watch_dsn: "{{ precis_worker_dsn | default('postgresql://agent_rw@' + hostvars[postgres_host]['ansible_host'] + ':' + (pgbouncer_port | string) + '/precis_prod') }}"
 
 # Watch knobs
 precis_watch_dir: "{{ papers_inbox_path }}"     # /opt/nas/botshome/papers/inbox

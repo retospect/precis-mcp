@@ -27,13 +27,19 @@
     <string>/Users/hermes/.asa/config.yaml</string>
     {# ASA_DISCORD_TOKEN removed — asa now resolves it from the precis DB vault
        (secrets vault, ADR 0055) via load_discord_token's env→vault→file order,
-       revealing over PRECIS_DATABASE_URL below. #}
+       revealing over PRECIS_DATABASE_URL below. §L (gr171431 §1): password-free
+       — the pgpass role now also drops ~hermes/.pgpass on the gateway,
+       matching this exact host:port:database:agent_rw tuple. #}
     <key>PRECIS_DATABASE_URL</key>
-    <string>postgresql://agent_rw:{{ vault_pg_agent_rw_pass }}@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod</string>
+    <string>postgresql://agent_rw@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod</string>
     {# LISTEN/NOTIFY needs a *direct* postgres session — it does not survive
        transaction-pooled pgbouncer (notifies are dropped). Point the
        listener at the local 5433 tunnel → the data node:5432 (see
-       host_vars/the gateway.yml ssh_tunnels). Queries still go via pgbouncer. #}
+       host_vars/the gateway.yml ssh_tunnels). Queries still go via pgbouncer.
+       NOT converted to pgpass (§L, gr171431 §1): this is a distinct
+       host:port tuple (127.0.0.1:5433) the shared pgpass file doesn't carry
+       an entry for — left as a documented deferral rather than widen the
+       pgpass matrix for one direct-tunnel consumer. #}
     <key>PRECIS_NOTIFY_DATABASE_URL</key>
     <string>postgresql://agent_rw:{{ vault_pg_agent_rw_pass }}@127.0.0.1:5433/precis_prod</string>
     {# Route the spawned precis MCP subprocess at the always-hot

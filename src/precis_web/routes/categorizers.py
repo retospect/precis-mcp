@@ -72,13 +72,20 @@ _TOPICS_DIR = (
     Path(__file__).resolve().parent.parent.parent / "precis" / "data" / "topics"
 )
 
-#: Env vars seeding the two shared passes' default_on verdict when no
-#: ``service_config`` row overrides them (mirrors
-#: ``precis.workers.registry`` ``ServiceSpec.enable_env`` for
-#: ``classify`` / ``classify_topics`` — read directly rather than
-#: importing the registry so this route stays decoupled from the
-#: worker-CLI wiring).
-_CLASSIFY_ENABLED_ENV = "PRECIS_CLASSIFY_ENABLED"
+#: §L control cutover retired ``PRECIS_CLASSIFY_ENABLED`` as ``classify``'s
+#: live default (``cli/worker.py``'s ``_profile_default_on`` — no
+#: ``default_profiles``, so it's unconditionally OFF absent a row now); this
+#: route must show the SAME verdict, so ``classify``'s default_on below is a
+#: literal ``False``, not an env read.
+#:
+#: ``classify_topics`` is the one exception left in place (mirrors
+#: ``precis.workers.registry`` ``ServiceSpec.enable_env`` — read directly
+#: rather than importing the registry so this route stays decoupled from the
+#: worker-CLI wiring): its OWN top-level kill-switch default still folds in
+#: whether ANY topic would be enabled (worker.py's ``_gate_default_on``
+#: special-cases it), which is the one narrower default this cutover
+#: deliberately left alone (a granular per-topic deploy-time seed, not a
+#: whole-pass boot flag).
 _CLASSIFY_TOPICS_ENABLED_ENV = "PRECIS_CLASSIFY_TOPICS_ENABLED"
 
 #: Comma-separated axis ids ``cli/worker.py``'s per-axis wiring seeds its
@@ -262,9 +269,10 @@ def _effective_state(store: Any) -> dict[str, dict[str, Any]]:
 
     out: dict[str, dict[str, Any]] = {
         "classify": {
-            "enabled": resolver.enabled(
-                "classify", default_on=env_flag(_CLASSIFY_ENABLED_ENV)
-            ),
+            # §L: no env fallback any more — a formerly-env-gated pass with
+            # no service_config row now defaults OFF (mirrors
+            # cli/worker.py's ``_profile_default_on``).
+            "enabled": resolver.enabled("classify", default_on=False),
             "overridden": "classify" in overridden,
             "concurrency": resolver.concurrency("classify", default=1),
         },

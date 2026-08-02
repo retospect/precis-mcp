@@ -17,6 +17,12 @@ WorkingDirectory=/tmp
 
 Environment=PATH={{ precis_worker_venv }}/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/var/lib/precis
+# §L (gr171431 §1): this unit's HOME diverges from the pgpass role's
+# Linux deploy home (/home/deploy), so a password-free PRECIS_DATABASE_URL
+# below would otherwise miss ~deploy/.pgpass (libpq resolves it off $HOME).
+# Point PGPASSFILE at the pgpass role's actual file directly instead of
+# changing HOME (which other code may depend on for caches/config).
+Environment=PGPASSFILE=/home/deploy/.pgpass
 Environment=PRECIS_DATABASE_URL={{ precis_worker_dsn }}
 Environment=HF_HOME={{ precis_worker_hf_home }}
 Environment=PRECIS_PROCESS=precis-worker
@@ -28,11 +34,10 @@ Environment=PRECIS_DAILY_COST_CEILING={{ precis_daily_cost_ceiling | default(50.
 # (docker run inherits cpuset/shares from the environment).
 Environment=PRECIS_JOB_CPUSET={{ precis_job_cpuset | default('') }}
 Environment=PRECIS_JOB_CPU_SHARES={{ precis_job_cpu_shares | default('') }}
-{# sandbox_run executor — emitted ONLY on the agent_sandbox_hosts (the gate
-   reads it raw, so "0" would enable it; omit rather than set false). #}
-{% if inventory_hostname in groups['agent_sandbox_hosts'] %}
-Environment=PRECIS_SANDBOX_ENABLED=1
-{% endif %}
+# job_claude_docker (sandbox_run executor) run-control moved to
+# service_config (§L control cutover) — the `precis service seed` task
+# mirrors this host's agent_sandbox_hosts membership into a row the first
+# time this lands. No more PRECIS_SANDBOX_ENABLED here.
 
 # Shared API keys — see inventory/group_vars/all/precis_env.yml.
 {% for env_key, env_val in precis_shared_env.items() %}

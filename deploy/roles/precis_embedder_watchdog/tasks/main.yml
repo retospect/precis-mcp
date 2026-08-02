@@ -52,25 +52,22 @@
   become: true
   notify: restart precis embedder watchdog (macos)
 
-- name: Unload any prior precis-embedder-watchdog before bootstrap (macOS)
+# §L (gr176337): this used to be an unconditional raw bootout→bootstrap
+# pair (the exact racy pattern gr176223 fixed everywhere else), firing on
+# EVERY run regardless of whether the plist actually changed. The plist
+# template task above already `notify`s "restart precis embedder watchdog
+# (macos)" — which routes through the shared poll-until-gone
+# `tasks/reload_launchd.yml` (see handlers/main.yml) — so the real
+# reload-with-new-env only needs to happen there. This step is now just
+# the idempotent "load if not already loaded" no-op, mirroring the fixed
+# precis_worker pattern (gripe #48481).
+- name: Load precis-embedder-watchdog LaunchDaemon (macOS — idempotent)
   when: os_family == "darwin"
-  ansible.builtin.command: launchctl bootout system/com.precis.embedder-watchdog
+  ansible.builtin.command: >
+    launchctl load -w /Library/LaunchDaemons/com.precis.embedder-watchdog.plist
   become: true
-  register: eaw_bootout
-  changed_when: eaw_bootout.rc == 0
+  changed_when: false
   failed_when: false
-
-- name: Bootstrap precis-embedder-watchdog LaunchDaemon (macOS)
-  when: os_family == "darwin"
-  ansible.builtin.command: launchctl bootstrap system /Library/LaunchDaemons/com.precis.embedder-watchdog.plist
-  become: true
-  register: eaw_bootstrap
-  changed_when: eaw_bootstrap.rc == 0
-  failed_when:
-    - eaw_bootstrap.rc != 0
-    - "'service already loaded' not in eaw_bootstrap.stderr"
-    - "'Bootstrap failed: 17' not in eaw_bootstrap.stderr"
-    - "'Bootstrap failed: 5' not in eaw_bootstrap.stderr"
 
 # ── Linux: systemd timer ───────────────────────────────────────────
 

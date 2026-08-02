@@ -19,7 +19,13 @@ precis_worker_git_ref: main
 # configured today, (b) the postgres host would have to tunnel to itself, and (c)
 # tailscale is already proven solid for inter-node traffic. agent_rw scope
 # matches the existing ingest pipeline (22-papers-sync.yml).
-precis_worker_dsn: "postgresql://agent_rw:{{ vault_pg_agent_rw_pass }}@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
+#
+# §L (gr171431 §1): password-free — no cleartext secret in the rendered
+# plist/systemd unit. This daemon (and this ansible task's own seed calls)
+# run as `deploy` (UserName below), and the pgpass role already lays down
+# ~deploy/.pgpass with a matching host:port:database:agent_rw:<password>
+# line on every node, so libpq resolves the password itself.
+precis_worker_dsn: "postgresql://agent_rw@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
 
 # Worker loop knobs. Defaults match precis worker --help.
 precis_worker_batch_size: 32

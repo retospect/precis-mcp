@@ -15,6 +15,7 @@ from precis.workers.service_config import (
     ServiceConfigResolver,
     clear_service_config,
     list_service_config,
+    seed_service_prio,
     set_service_concurrency,
     set_service_model,
     set_service_prio,
@@ -157,6 +158,34 @@ def test_list_service_config_reports_concurrency(store) -> None:
     set_service_concurrency(store, "melchior", "classify", 5, actor="reto")
     rows = {(r["host"], r["service"]): r for r in list_service_config(store)}
     assert rows[("melchior", "classify")]["concurrency"] == 5
+
+
+# ---------------------------------------------------------------------------
+# seed_service_prio (§L deploy-time seed — INSERT ... ON CONFLICT DO NOTHING)
+# ---------------------------------------------------------------------------
+
+
+def test_seed_inserts_when_absent(store) -> None:
+    inserted = seed_service_prio(store, "melchior", "classify", 5, actor="deploy")
+    assert inserted is True
+    rows = {(r["host"], r["service"]): r for r in list_service_config(store)}
+    assert rows[("melchior", "classify")]["prio"] == 5
+
+
+def test_seed_never_clobbers_an_existing_row(store) -> None:
+    """The whole point of ``seed`` vs ``set_service_prio``: a console
+    operator's override must survive a redeploy re-running the seed task."""
+    set_service_prio(store, "melchior", "classify", 0, actor="console-operator")
+    inserted = seed_service_prio(store, "melchior", "classify", 5, actor="deploy")
+    assert inserted is False
+    rows = {(r["host"], r["service"]): r for r in list_service_config(store)}
+    assert rows[("melchior", "classify")]["prio"] == 0  # untouched
+    assert rows[("melchior", "classify")]["actor"] == "console-operator"
+
+
+def test_seed_rejects_out_of_range_prio(store) -> None:
+    with pytest.raises(ValueError):
+        seed_service_prio(store, "melchior", "classify", 11)
 
 
 # ---------------------------------------------------------------------------

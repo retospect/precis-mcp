@@ -11,7 +11,10 @@
         "ACATOME_PG_DATABASE": "precis_prod",
         "ACATOME_PG_USER": "agent_rw",
         "ACATOME_PG_PASSWORD": "{{ vault_pg_agent_rw_pass }}",
-        "PRECIS_DATABASE_URL": "postgresql://agent_rw:{{ vault_pg_agent_rw_pass }}@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod",
+        {# §L (gr171431 §1): password-free — this file is rendered for both
+           hermes (asa_bot) and deploy (precis_worker_agent's in-proc
+           planner), and the pgpass role now drops a .pgpass for both. #}
+        "PRECIS_DATABASE_URL": "postgresql://agent_rw@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod",
         "UNPAYWALL_EMAIL": "{{ vault_unpaywall_email | default('') }}",
         "CROSSREF_MAILTO": "{{ vault_unpaywall_email | default('') }}",
         "PRECIS_PATENT_RAW_ROOT": "{{ precis_patent_raw_root | default('') }}",

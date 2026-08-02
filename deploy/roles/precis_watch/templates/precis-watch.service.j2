@@ -20,6 +20,12 @@ WorkingDirectory=/tmp
 
 Environment=PATH={{ precis_watch_venv }}/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/var/lib/precis
+# §L (gr171431 §1): this unit's HOME diverges from the pgpass role's
+# Linux deploy home (/home/deploy), so a password-free PRECIS_DATABASE_URL
+# below would otherwise miss ~deploy/.pgpass (libpq resolves it off $HOME).
+# Point PGPASSFILE at the pgpass role's actual file directly instead of
+# changing HOME (which other code may depend on for caches/config).
+Environment=PGPASSFILE=/home/deploy/.pgpass
 Environment=PRECIS_DATABASE_URL={{ precis_watch_dsn }}
 Environment=HF_HOME={{ precis_worker_hf_home | default('/var/lib/precis/hf-cache') }}
 # Shared API keys (Semantic Scholar, Unpaywall, Elsevier, …) — same

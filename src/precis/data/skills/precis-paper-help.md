@@ -254,7 +254,8 @@ Every link touching the paper, both directions — outbound
 ## Chunk-level citation grounding (dark, opt-in)
 ## Does this specific claim actually check out against what it cites?
 
-Cluster-side only (`PRECIS_INBOUND_CHASE_ENABLED`, default off — see
+Cluster-side only (`inbound_chase` service, default off — flip with
+`precis service prio '*' inbound_chase <n>` or `/categorizers`; see
 `docs/design/citation-chunk-grounding.md`): once a paper has been read
 at least once, a background pass exhaustively resolves *who cites it*
 at chunk granularity, using an LLM to verify support

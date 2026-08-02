@@ -305,6 +305,73 @@ class TestRunInProcessGroup:
         )
 
 
+class TestReapTrackedProcessGroups:
+    """gr171254: teardown subprocess reap.
+
+    ``_run_in_process_group`` only ``killpg``s its batch once its own
+    ``proc.wait()`` returns — a ``finally`` that never runs if THIS process
+    is force-killed (SIGKILL, or a launchd/systemd deploy bounce whose
+    kill-grace elapses) while a batch is still in flight. The pool tracks
+    every spawned process-group id so a SIGTERM/atexit teardown can reap
+    it eagerly instead. Exercised against a synthetic (marker-free) tracked
+    child so it stays hermetic on hosts without the ``paper`` extra.
+    """
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="POSIX-only os.killpg process-group reap"
+    )
+    def test_reaps_a_tracked_process_group_within_grace(self) -> None:
+        import subprocess
+        import time
+
+        from precis.cli.watch import (
+            _inflight_pgids,
+            _track_pgid,
+            _untrack_pgid,
+            reap_tracked_process_groups,
+        )
+
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            start_new_session=True,
+        )
+        pgid = proc.pid
+        _track_pgid(pgid)
+        try:
+            assert pgid in _inflight_pgids
+
+            reap_tracked_process_groups(grace_s=2.0)
+
+            # ``proc.poll()`` (unlike a raw ``os.kill(pid, 0)`` probe) actually
+            # reaps the zombie once the child has exited, so — unlike a bare
+            # signal-0 probe, which a not-yet-reaped zombie still answers —
+            # it correctly flips to non-None as soon as the kernel has
+            # processed the exit. In real usage the owning
+            # ``_run_in_process_group`` call's blocked ``proc.wait()`` does
+            # this reaping concurrently; here nothing else waits on ``proc``,
+            # so the test must poll for itself.
+            deadline = time.monotonic() + 3.0
+            dead = False
+            while time.monotonic() < deadline:
+                if proc.poll() is not None:
+                    dead = True
+                    break
+                time.sleep(0.05)
+            assert dead, (
+                f"pid {pgid} still alive after reap_tracked_process_groups — "
+                "tracked-reap teardown failed"
+            )
+        finally:
+            _untrack_pgid(pgid)
+            proc.wait(timeout=5)
+
+    def test_no_tracked_groups_is_a_noop(self) -> None:
+        from precis.cli.watch import _inflight_pgids, reap_tracked_process_groups
+
+        assert not _inflight_pgids
+        reap_tracked_process_groups()  # must return immediately, no error
+
+
 class TestBackfillOrder:
     """Backfill processes smallest-first so a giant OOM PDF only
     blocks itself, not the whole queue behind it.

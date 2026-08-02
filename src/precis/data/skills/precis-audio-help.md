@@ -94,8 +94,9 @@ Drafts aren't the only thing that narrates. The **news briefing** publishes a
 daily audio episode automatically: a worker pass (`briefing_audio`) on the TTS
 host reads the persisted `briefing-<date>` ref, narrates its markdown (via
 `narrate.markdown_segments` — the prose path, links→anchor text, headings pause),
-and publishes to the same feed with `source="news"`. Enabled with
-`PRECIS_BRIEFING_AUDIO_ENABLED=1` on spark; idempotent per briefing. Non-draft
+and publishes to the same feed with `source="news"`. Enabled on spark via
+its `service_config` row (`precis service prio spark briefing_audio <n>` /
+`/categorizers`; needs `PRECIS_TTS_IMAGE` too); idempotent per briefing. Non-draft
 producers reuse `export.audio.synthesize_text` (the shared stitch loop). Design +
 how to add the next producer: `docs/design/audio-feed.md`.
 
@@ -123,8 +124,10 @@ composition, quota-resilient vs the FRONTIER Opus default) and persist a standal
 `draft` marked `meta.cast` (+ `meta.voice`), **filed under a Drive folder** ("Morning
 brief" / "Evening meditation") so the text shows up in `/drive` — the Drive row also
 links the published mp3 + compiled PDF. **TTS is a separate downstream step:**
-the `cast_audio` pass on spark (`PRECIS_CAST_AUDIO_ENABLED=1` + `PRECIS_TTS_IMAGE`)
-narrates any un-narrated cast draft via `render_narration` → `render_episode` →
+the `cast_audio` pass on spark (its `service_config` row —
+`precis service prio spark cast_audio <n>` / `/categorizers` — plus
+`PRECIS_TTS_IMAGE`) narrates any un-narrated cast draft via
+`render_narration` → `render_episode` →
 the feed (`source="brief"` / `"meditation"`), idempotent on `meta.audio_episode_id`.
 The published mp3 and the on-demand PDF share a human stem — `morning_brief_<date>`
 / `evening_meditation_<date>` — not the internal `cast-*` slug. Compose runs

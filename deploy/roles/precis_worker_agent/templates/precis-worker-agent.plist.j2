@@ -123,7 +123,14 @@
        (PRECIS_BUDGET_DAILY_USD) has headroom — otherwise every tick
        claims, hits the tripped breaker, fails, and re-claims in a
        ~0.5s spin. Flip `precis_quest_loop_enabled: true` in
-       the gateway's host_vars once the daily cap is raised. #}
+       the gateway's host_vars once the daily cap is raised.
+       §L control cutover: kept (NOT stripped like the precis_worker role's
+       PRECIS_*_ENABLED flags) — `precis quest run` and quest/loop.py /
+       allocator.py's own default_on fallback read this directly,
+       independent of the worker pass. The worker pass itself now ALSO gets
+       a `service_config` row (the seed task above, tasks/main.yml) so a
+       console operator can flip that one pass without a redeploy even
+       though this env still governs the wider feature. #}
     <key>PRECIS_QUEST_LOOP_ENABLED</key>
     <string>{{ '1' if precis_quest_loop_enabled | default(false) else '0' }}</string>
     {# gr162594: the fair-share meter counts characters, not dollars — the

@@ -87,6 +87,40 @@
     - reload precis worker (macos)
     - reload precis worker (linux)
 
+# ── §L control cutover: seed service_config from TODAY's live plist flag
+# state, BEFORE the plist/unit below is re-rendered without the ENABLE
+# flags — so the very first cutover deploy is behaviour-preserving. Uses
+# `precis service seed` (INSERT ... ON CONFLICT DO NOTHING via the
+# freshly-installed venv above), never `service prio` — a console operator
+# override set after this first ran must survive every later redeploy.
+# Idempotent: harmless to re-run forever. See workers/service_config.py's
+# seed_service_prio + workers/registry.py's ServiceSpec.enable_env (the
+# service names below mirror those specs 1:1).
+- name: "§L seed: mirror the retiring PRECIS_*_ENABLED flags into service_config"
+  ansible.builtin.command: >-
+    {{ precis_worker_venv }}/bin/precis service seed {{ inventory_hostname }}
+    {{ item.service }} 5 --actor deploy-seed --database-url {{ precis_worker_dsn }}
+  loop:
+    - service: llm_summarize
+      enabled: "{{ precis_worker_summarize_llm | default(false) | bool }}"
+    - service: classify
+      enabled: "{{ precis_worker_classify | default(false) | bool }}"
+    - service: llm_reconcile
+      enabled: "{{ precis_worker_llm_reconcile | default(false) | bool }}"
+    - service: job_claude_docker
+      enabled: >-
+        {{ (inventory_hostname in (groups['agent_sandbox_hosts'] | default([]))) }}
+  loop_control:
+    label: "{{ item.service }} (was-enabled={{ item.enabled }})"
+  when: item.enabled | bool
+  become: true
+  become_user: deploy
+  environment:
+    HOME: "{{ '/Users/deploy' if os_family == 'darwin' else '/home/deploy' }}"
+  register: precis_seed_result
+  changed_when: "'seeded' in (precis_seed_result.stdout | default(''))"
+  failed_when: false  # a transient DB hiccup here shouldn't fail the whole deploy
+
 - name: Ensure HF model cache dir
   ansible.builtin.file:
     path: "{{ precis_worker_hf_home }}"

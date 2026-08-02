@@ -232,8 +232,9 @@ run `precis worker --only fetch`.
 ## The inbound counterpart — who cites *this* paper (dark, opt-in)
 
 Everything above is outbound: X cites Y, chase it down to Y's
-supporting chunk. `workers/inbound_chase.py` (dark behind
-`PRECIS_INBOUND_CHASE_ENABLED`, `docs/design/citation-chunk-grounding.md`)
+supporting chunk. `workers/inbound_chase.py` (dark by default — the
+`inbound_chase` service; flip with `precis service prio '*' inbound_chase
+<n>` or `/categorizers`, `docs/design/citation-chunk-grounding.md`)
 runs the other direction — once a paper has been read, it exhaustively
 resolves every corpus-intersecting citer at chunk granularity, no
 todo/finding needed. Nothing to register from the agent side; read

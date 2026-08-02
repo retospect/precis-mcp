@@ -76,11 +76,15 @@ class ServiceSpec:
     """One declarative row per thing the factory runs.
 
     ``name`` is the stable key used everywhere else (the ``--only`` /
-    ``_pass_enabled`` token for passes, the ``meta.job_type`` for jobs).
-    ``default_profiles`` + ``enable_env`` reproduce ``cli/worker.py``'s
-    gating; ``requires`` / ``uses_model`` / ``uses_external`` /
-    ``cost_sources`` feed the capability scheduler + console (later
-    slices). ``introspect`` is set only for the ``claude -p`` agents.
+    ``_register`` / ``service_config.service`` token for passes, the
+    ``meta.job_type`` for jobs). ``default_profiles`` feeds ``_register``'s
+    (``cli/worker.py``) structural registration decision; ``enable_env`` is
+    now (§L control cutover) consulted only by the deploy-time seed task —
+    the live default a missing ``service_config`` row falls back to is
+    ``name in profile_passes`` alone, no env read.  ``requires`` /
+    ``uses_model`` / ``uses_external`` / ``cost_sources`` feed the capability
+    scheduler + console (later slices). ``introspect`` is set only for the
+    ``claude -p`` agents.
     """
 
     name: str
@@ -96,8 +100,14 @@ class ServiceSpec:
     #: (so the totality test knows to demand a wiring site). Daemons,
     #: serving endpoints, compute services, and job-types are False.
     ref_pass: bool = False
-    #: an extra ``PRECIS_*_ENABLED`` flag that turns this pass on even
-    #: outside its profile (the old inline ``or env_flag(...)`` gates).
+    #: presence marks this a formerly-env-gated pass (always registers,
+    #: no ``default_profiles`` needed — see ``_register``/``_should_register``
+    #: in cli/worker.py). §L control cutover: the named ``PRECIS_*_ENABLED``
+    #: var itself is retired as the LIVE gate — a ``service_config`` row is
+    #: the only thing that turns the pass on now — but it's still the name
+    #: the deploy-time seed task (``deploy/roles/precis_worker*``) mirrors
+    #: into a row from today's plist flag state, and quest_loop_reconcile's
+    #: registration-vs-gate-default alignment test still pins it.
     enable_env: str | None = None
     # ── capability + cost (feeds later slices) ──────────────────────
     requires: frozenset[str] = field(default_factory=frozenset)

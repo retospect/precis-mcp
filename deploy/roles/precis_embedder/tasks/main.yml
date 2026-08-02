@@ -154,25 +154,21 @@
   become: true
   notify: reload precis embedder (macos)
 
-- name: Unload existing precis-embedder before re-bootstrap (macOS)
+# §L (gr176337): this used to be an unconditional raw bootout→bootstrap
+# pair (the exact racy pattern gr176223 fixed everywhere else), firing on
+# EVERY run regardless of whether the plist actually changed. The plist
+# template task above already `notify`s "reload precis embedder (macos)" —
+# which routes through the shared poll-until-gone `tasks/reload_launchd.yml`
+# (see handlers/main.yml) — so the real reload-with-new-env only needs to
+# happen there. This step is now just the idempotent "load if not already
+# loaded" no-op, mirroring the fixed precis_worker pattern (gripe #48481).
+- name: Load precis-embedder LaunchDaemon (macOS — idempotent)
   when: os_family == "darwin"
-  ansible.builtin.command: launchctl bootout system/com.precis.embedder
+  ansible.builtin.command: >
+    launchctl load -w /Library/LaunchDaemons/com.precis.embedder.plist
   become: true
-  register: precis_embedder_bootout
-  changed_when: precis_embedder_bootout.rc == 0
+  changed_when: false
   failed_when: false
-
-- name: Bootstrap precis-embedder LaunchDaemon (macOS)
-  when: os_family == "darwin"
-  ansible.builtin.command: launchctl bootstrap system /Library/LaunchDaemons/com.precis.embedder.plist
-  become: true
-  register: precis_embedder_bootstrap
-  changed_when: precis_embedder_bootstrap.rc == 0
-  failed_when:
-    - precis_embedder_bootstrap.rc != 0
-    - "'service already loaded' not in precis_embedder_bootstrap.stderr"
-    - "'Bootstrap failed: 17' not in precis_embedder_bootstrap.stderr"  # 17 = file exists
-    - "'Bootstrap failed: 5' not in precis_embedder_bootstrap.stderr"   # 5 = I/O error (already running)
 
 # ── Linux: systemd ──
 - name: Render precis-embedder systemd unit (Linux)

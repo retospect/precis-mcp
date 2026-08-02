@@ -30,6 +30,7 @@ the acatome dep is dropped.
 from __future__ import annotations
 
 import argparse
+import atexit
 import getpass
 import logging
 import os
@@ -384,6 +385,14 @@ def watch(
     def _on_signal(signum: int, _frame: Any) -> None:
         log.info("precis watch: received signal %d, shutting down", signum)
         stop.set()
+        # gr171254: force-reap any in-flight batch subprocess group NOW,
+        # rather than passively waiting for its natural completion (which
+        # `stop.set()` alone does nothing to speed up — the backfill/shard
+        # loop only checks `stop` BETWEEN batches). Bounds shutdown to the
+        # grace window even under a launchd/systemd deploy bounce whose own
+        # kill-grace would otherwise elapse first and SIGKILL this process
+        # (leaving the batch's detached surya grandchild orphaned).
+        reap_tracked_process_groups()
 
     signal.signal(signal.SIGINT, _on_signal)
     signal.signal(signal.SIGTERM, _on_signal)
@@ -1015,6 +1024,89 @@ def _handle_success(
     return dest
 
 
+#: Process groups currently in flight, keyed by pgid (== the group leader's
+#: pid, since every entry was spawned ``start_new_session=True``). Populated
+#: by :func:`_run_in_process_group` immediately after spawn and drained in
+#: its own ``finally`` — so at any instant this reflects exactly the batch
+#: subprocesses (and their surya grandchildren) a signal/atexit teardown
+#: still needs to reap (gr171254). Guarded by ``_inflight_lock`` — the
+#: signal handler runs on the main thread but a concurrent
+#: ``subprocess_concurrency`` shard's ``finally`` can be draining the same
+#: dict from a worker thread at the same moment.
+_inflight_pgids: set[int] = set()
+_inflight_lock = Lock()
+
+
+def _track_pgid(pgid: int) -> None:
+    with _inflight_lock:
+        _inflight_pgids.add(pgid)
+
+
+def _untrack_pgid(pgid: int) -> None:
+    with _inflight_lock:
+        _inflight_pgids.discard(pgid)
+
+
+def reap_tracked_process_groups(grace_s: float = 5.0) -> None:
+    """Force-reap every currently-tracked batch process group: TERM, wait
+    up to ``grace_s`` for a clean exit, then KILL any survivor.
+
+    ``_run_in_process_group``'s own ``finally`` already ``killpg``s a batch
+    (and its detached surya grandchild) once its ``proc.wait()`` returns —
+    but that only runs if this PARENT process lives long enough to reach it.
+    A deploy bounce (launchd/systemd ``bootout``/``stop``) sends SIGTERM and,
+    after its own grace window, escalates to SIGKILL — which this process
+    cannot catch or clean up after. If a batch (Marker OCR, potentially
+    minutes) is still in flight when that happens, the tracked-but-not-yet-
+    reaped pgid — including any detached surya server — is orphaned,
+    reparented to init, and leaks for good (gr171254). Calling this
+    EAGERLY from the SIGTERM/SIGINT handler (not waiting for the natural
+    ``proc.wait()`` completion) bounds shutdown to ``grace_s`` regardless of
+    how long the in-flight batch would otherwise take, so the process exits
+    (and every tracked child dies with it) well inside a typical deploy's
+    kill-grace window. Also registered via ``atexit`` as a belt-and-suspenders
+    sweep for any exit path that skips the signal handler.
+    """
+    with _inflight_lock:
+        pgids = list(_inflight_pgids)
+    if not pgids:
+        return
+    for pgid in pgids:
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            log.debug("precis watch: teardown SIGTERM killpg(%d) denied", pgid)
+    deadline = time.monotonic() + grace_s
+    remaining = set(pgids)
+    while remaining and time.monotonic() < deadline:
+        for pgid in list(remaining):
+            try:
+                os.killpg(pgid, 0)  # probe: raises if the whole group is gone
+            except ProcessLookupError:
+                remaining.discard(pgid)
+            except PermissionError:
+                remaining.discard(pgid)
+        if remaining:
+            time.sleep(0.1)
+    for pgid in remaining:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+            log.warning(
+                "precis watch: teardown KILLed process group %d after %.1fs grace",
+                pgid,
+                grace_s,
+            )
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            log.debug("precis watch: teardown SIGKILL killpg(%d) denied", pgid)
+
+
+atexit.register(reap_tracked_process_groups)
+
+
 def _run_in_process_group(cmd: list[str], env: dict[str, str]) -> int:
     """Spawn *cmd* in its own session/process group and reap the whole
     group on every exit path, returning the child's exit code.
@@ -1029,10 +1121,15 @@ def _run_in_process_group(cmd: list[str], env: dict[str, str]) -> int:
     detached surya) a new session/group leader, so the group id equals
     its pid — a ``killpg`` on that id always reaps the whole tree,
     orphaned surya included, on every exit path (clean, killed, or
-    crashed).
+    crashed). The pgid is also TRACKED (gr171254) for the duration of the
+    wait, so a SIGTERM/atexit teardown that fires while this call is still
+    blocked in ``proc.wait()`` (on this thread or another shard's) can reap
+    it eagerly instead of leaving it for a ``finally`` that may never run
+    (see :func:`reap_tracked_process_groups`).
     """
     proc = subprocess.Popen(cmd, env=env, start_new_session=True)
     pgid = proc.pid  # stable identifier for the group even after the leader dies
+    _track_pgid(pgid)
     try:
         proc.wait()
     finally:
@@ -1042,6 +1139,7 @@ def _run_in_process_group(cmd: list[str], env: dict[str, str]) -> int:
             pass  # empty group = clean exit, nothing leaked (the happy path)
         except PermissionError:
             log.debug("precis watch: killpg(%d) denied permission", pgid)
+        _untrack_pgid(pgid)
     return proc.returncode
 
 
