@@ -325,6 +325,45 @@ def test_resolve_stale_alerts_column_and_tag_flip_together(store: Store) -> None
     assert [a["ref_id"] for a in open_s] == [aid2]
 
 
+def test_resolve_alert_dismisses_single_open_alert(store: Store) -> None:
+    """Manual dismiss (the /alerts button): one ref flips tag +
+    resolved_at together, records resolved_by, leaves siblings open,
+    and frees the (source, fingerprint) unique-index slot for a
+    re-raise if the condition persists."""
+    aid, _ = raise_alert(store, source="s", fingerprint="fp:dis", title="dis")
+    other, _ = raise_alert(store, source="s", fingerprint="fp:keep", title="keep")
+
+    assert alerts_mod.resolve_alert(store, aid, resolved_by="operator") is True
+
+    tags = _tags(store, aid)
+    assert STATE_RESOLVED in tags
+    assert STATE_OPEN not in tags
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta, resolved_at FROM refs WHERE ref_id = %s", (aid,)
+        ).fetchone()
+    assert row[1] is not None  # column and tag flipped together
+    assert row[0].get("resolved_by") == "operator"
+    assert "resolved_at" in row[0]  # meta dual-write kept
+
+    open_ids = {a["ref_id"] for a in list_open_alerts(store) if a["source"] == "s"}
+    assert open_ids == {other}
+
+    # Still-live condition re-raises cleanly as a fresh row.
+    aid2, is_new = raise_alert(store, source="s", fingerprint="fp:dis", title="dis")
+    assert is_new is True
+    assert aid2 != aid
+
+
+def test_resolve_alert_noop_on_non_open(store: Store) -> None:
+    """False (no write) for an unknown id and for an already-resolved
+    alert — the benign dismiss-vs-auto-resolve race."""
+    assert alerts_mod.resolve_alert(store, 999999999) is False
+    aid, _ = raise_alert(store, source="s", fingerprint="fp:done", title="t")
+    resolve_stale_alerts(store, source="s", live_fingerprints=[])
+    assert alerts_mod.resolve_alert(store, aid) is False
+
+
 # ── producer: rolling-deploy transition shim (NULL columns, meta-only) ──
 
 

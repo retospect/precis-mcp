@@ -2,7 +2,7 @@
 id: precis-alert-help
 title: precis — the alert kind (machine-detected ops/health conditions)
 summary: kind='alert' — background passes raise deduped, auto-resolving alerts for spin loops, orphans, stalled recurrings; surfaced by the /alerts web tab
-applies-to: kind='alert'; precis.alerts.raise_alert / resolve_stale_alerts; /alerts web tab
+applies-to: kind='alert'; precis.alerts.raise_alert / resolve_stale_alerts / resolve_alert; /alerts web tab
 status: active
 ---
 
@@ -72,15 +72,20 @@ recent history.
 
 ## Triage
 
-To acknowledge / resolve an alert by hand, swap the state tag:
+To dismiss an alert by hand ("I've seen it, stop showing it" while the
+underlying fix lands), use the **dismiss** button on the `/alerts` web
+tab — it calls `precis.alerts.resolve_alert`, which flips the state tag
+*and* stamps `resolved_at` together (the dedup unique index keys off
+`resolved_at IS NULL`, so the two must move as one).
 
-```
-tag(kind='alert', id=N, add=['alert-state:resolved'], remove=['alert-state:open'])
-```
+A bare tag swap (`add=['alert-state:resolved']`,
+`remove=['alert-state:open']`) leaves `resolved_at` unset: if the
+condition is still live, the producer's next `raise_alert` then hits a
+unique violation instead of deduping. Avoid it until the tag verb syncs
+the column.
 
 Most alerts auto-resolve when their producer next runs and the
-condition has cleared, so manual resolution is rarely needed — it's
-for "I've seen it, stop showing it" while the underlying fix lands.
+condition has cleared, so manual resolution is rarely needed.
 
 ## Producers
 

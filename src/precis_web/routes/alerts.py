@@ -8,17 +8,24 @@ just lists what's currently open, grouped by source, severity-sorted.
 
 * ``GET /alerts`` — open alerts (default).
 * ``GET /alerts?state=resolved`` — recently-resolved alerts (history).
+* ``POST /alerts/{id}/resolve`` — manual dismiss: the single-ref
+  lifecycle flip via :func:`precis.alerts.resolve_alert` (NOT the
+  ``tag`` verb — the tag and ``resolved_at`` column must flip
+  together, see that function's docstring). Dismissal is not
+  suppression: a still-live condition re-raises on the next pass.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
+from starlette.responses import Response
 
-from precis.alerts import STATE_OPEN, STATE_RESOLVED
+from precis.alerts import STATE_OPEN, STATE_RESOLVED, resolve_alert
 from precis_web.deps import get_store, templates
 from precis_web.timefmt import ago as _ago
 
@@ -123,3 +130,18 @@ async def alerts(request: Request, state: str = "open") -> HTMLResponse:
             "total": len(rows),
         }
     return templates.TemplateResponse(request, "alerts/list.html.j2", ctx)
+
+
+@router.post("/alerts/{ref_id}/resolve", response_model=None)
+async def resolve(request: Request, ref_id: int) -> Response:
+    """Dismiss one open alert (manual resolve; row kept in history).
+
+    Delegates to :func:`precis.alerts.resolve_alert` in a worker thread
+    (a store write, same loop-hygiene as ``await_dispatch``). A ``False``
+    return — the alert was already auto-resolved, deleted, or the id
+    isn't an alert — is a benign race, not an error: either way it's no
+    longer open, so just redirect back to the list.
+    """
+    store = get_store(request)
+    await asyncio.to_thread(resolve_alert, store, ref_id, resolved_by="operator")
+    return RedirectResponse(url="/alerts", status_code=303)

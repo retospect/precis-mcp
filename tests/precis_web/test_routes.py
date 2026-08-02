@@ -2983,6 +2983,19 @@ def test_alerts_resolved_view_renders(client) -> None:
     assert "No resolved alerts" in resp.text
 
 
+def test_alerts_dismiss_redirects_to_list(client) -> None:
+    """POST /alerts/{id}/resolve redirects back to the open list.
+
+    Under the fake store the lifecycle helper takes its not-open no-op
+    branch (empty result set) — the redirect must be the same either
+    way, since dismissing an alert a detector pass just auto-resolved
+    is a benign race, not an error.
+    """
+    resp = client.post("/alerts/7/resolve", follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/alerts"
+
+
 # ── gripes workbench ────────────────────────────────────────────────
 
 

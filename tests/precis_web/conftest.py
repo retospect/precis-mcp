@@ -523,6 +523,13 @@ class FakeStore(_FakeStoreBase):
         slug = getattr(ref, "slug", None)
         return ResolvedHandle(ref_id=pk, kind=kind, public_id=slug or str(pk))
 
+    @contextmanager
+    def tx(self):  # type: ignore[no-untyped-def]
+        # Write-path transaction (alert dismiss route). The empty-result
+        # _FakeConn makes lifecycle SELECT-then-flip helpers take their
+        # not-found no-op branch, which is exactly what route tests need.
+        yield _FakeConn()
+
     def list_refs(
         self,
         *,

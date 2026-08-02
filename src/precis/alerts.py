@@ -226,6 +226,30 @@ def raise_alert(
         return int(ref.id), True
 
 
+def _flip_resolved(
+    store: Store, conn: Any, ref_id: int, *, resolved_by: str = ""
+) -> None:
+    """Flip one open alert to resolved, inside the caller's transaction.
+
+    The single place the safety-critical pairing lives: the
+    ``alert-state`` tag swap and the ``resolved_at`` column (+ meta
+    mirror) write move together, because the partial unique index
+    (0099) keys off ``resolved_at IS NULL``, not the tag. Both
+    :func:`resolve_stale_alerts` and :func:`resolve_alert` call this —
+    keep them on it so the two writes can't drift apart.
+    """
+    store.remove_tag(ref_id, Tag.open(STATE_OPEN), conn=conn)
+    store.add_tag(ref_id, Tag.open(STATE_RESOLVED), set_by="system", conn=conn)
+    conn.execute(
+        "UPDATE refs SET resolved_at = now(), "
+        "meta = meta || jsonb_build_object("
+        "'resolved_at', to_char(now(), 'YYYY-MM-DD\"T\"HH24:MI:SSOF'))"
+        + (" || jsonb_build_object('resolved_by', %s::text)" if resolved_by else "")
+        + ", updated_at = now() WHERE ref_id = %s",
+        ((resolved_by, ref_id) if resolved_by else (ref_id,)),
+    )
+
+
 def resolve_stale_alerts(
     store: Store,
     *,
@@ -271,18 +295,50 @@ def resolve_stale_alerts(
         for ref_id_raw, fp in rows:
             if fp in live:
                 continue
-            ref_id = int(ref_id_raw)
-            store.remove_tag(ref_id, Tag.open(STATE_OPEN), conn=conn)
-            store.add_tag(ref_id, Tag.open(STATE_RESOLVED), set_by="system", conn=conn)
-            conn.execute(
-                "UPDATE refs SET resolved_at = now(), "
-                "meta = meta || jsonb_build_object("
-                "'resolved_at', to_char(now(), 'YYYY-MM-DD\"T\"HH24:MI:SSOF')), "
-                "updated_at = now() WHERE ref_id = %s",
-                (ref_id,),
-            )
+            _flip_resolved(store, conn, int(ref_id_raw))
             resolved += 1
     return resolved
+
+
+def resolve_alert(store: Store, ref_id: int, *, resolved_by: str = "") -> bool:
+    """Manually resolve (dismiss) one open alert. Returns ``True`` if flipped.
+
+    The single-ref sibling of :func:`resolve_stale_alerts` — same flip
+    (``alert-state:open`` → ``alert-state:resolved`` + ``resolved_at``
+    column and meta mirror, one transaction) so the 0099 partial unique
+    index invariant holds. This, not a bare ``tag`` verb call, is the
+    correct dismiss path: flipping the tag alone leaves ``resolved_at``
+    NULL, and the next sighting of the same condition would then INSERT
+    into the still-occupied unique-index slot and violate it.
+
+    ``resolved_by`` (e.g. ``"operator"``) is recorded in meta to keep
+    manual dismissals distinguishable from detector auto-resolves in the
+    history view. Dismissal is not suppression: a condition that still
+    exists is re-raised as a fresh alert on the next detector pass.
+
+    Returns ``False`` (no-op) when ``ref_id`` is not a live, open alert —
+    covers the benign race of dismissing an alert a detector pass just
+    auto-resolved.
+    """
+    with store.tx() as conn:
+        row = conn.execute(
+            """
+            SELECT r.ref_id
+              FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE r.ref_id = %s
+               AND r.kind = 'alert'
+               AND r.deleted_at IS NULL
+               AND t.namespace = 'OPEN'
+               AND t.value = %s
+            """,
+            (ref_id, STATE_OPEN),
+        ).fetchone()
+        if row is None:
+            return False
+        _flip_resolved(store, conn, ref_id, resolved_by=resolved_by)
+    return True
 
 
 def list_open_alerts(store: Store, *, limit: int = 200) -> list[dict[str, Any]]:
@@ -432,5 +488,6 @@ __all__ = [
     "list_open_alerts",
     "notify_critical_alert",
     "raise_alert",
+    "resolve_alert",
     "resolve_stale_alerts",
 ]

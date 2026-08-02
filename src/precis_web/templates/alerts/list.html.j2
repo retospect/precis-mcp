@@ -76,6 +76,17 @@
               <span>last {{ a.last_seen }}</span>
             </div>
           </td>
+          {% if state == 'open' %}
+          <td class="px-3 py-2 w-24 text-right">
+            <form method="post" action="/alerts/{{ a.ref_id }}/resolve">
+              <button type="submit"
+                      title="Dismiss — marks resolved; re-raises if the condition persists"
+                      class="rounded border border-slate-300 bg-white px-2 py-0.5 text-[12px] text-slate-600 hover:bg-slate-50 hover:text-slate-800">
+                dismiss
+              </button>
+            </form>
+          </td>
+          {% endif %}
         </tr>
         {% endfor %}
       </tbody>
