@@ -94,14 +94,20 @@ put(kind="job", job_type="fix_gripe", link="gripe:42", rel="fixes")
 2. Clones the source repo to `$PRECIS_FIX_WORK_DIR/clones/
    gripe_<id>` and checks out a fresh `gripe_<id>` branch.
    Independent `.git`; the source repo's `main` is untouched.
-3. Runs `claude -p --dangerously-skip-permissions` as a
-   subprocess of the precis worker with `cwd` = the clone dir
-   and a restricted env (no DB creds; `~/.claude` mounted for
-   auth).
-4. On success: commits land on the branch, the worker pushes
-   `gripe_<id>` to `origin`, posts a `gripe_comment` with the
-   SHA and fetch instructions, tags gripe `STATUS:in_review`,
-   removes the clone.
+3. Runs the fix agent through the `call_claude_agent` chokepoint
+   (§H cycle a) with `cwd` = the clone dir, an isolated env (no
+   DB creds; `--bare` + `ANTHROPIC_API_KEY`), and — whenever the
+   host can run the §13 container — inside that container,
+   network-isolated (`egress:api-only`: reaches only the
+   Anthropic API) with ONLY the clone bind-mounted in. The agent
+   commits inside the clone; it never has the source repo mounted
+   and has no push credentials or network route to it — it
+   physically cannot push.
+4. On success: commits land on the branch, and the worker itself
+   (trusted, host-side — never the agent, never inside the
+   sandbox) pushes `gripe_<id>` to `origin`, posts a
+   `gripe_comment` with the SHA and fetch instructions, tags
+   gripe `STATUS:in_review`, removes the clone.
 5. On failure: posts a comment with the stderr tail, rolls the
    gripe back to `STATUS:open`, **keeps the clone dir** so a
    human can `cd` into it and inspect what the agent left
@@ -214,14 +220,19 @@ Deployment requirements:
 - `~/.claude` bind-mounted (rw) so claude's session tokens can
   refresh.
 - Precis image includes the `claude` binary.
-- **`PRECIS_FIX_GRIPE_UNSANDBOXED_ACK=1`** — REQUIRED. fix_gripe is
-  **fail-closed** (gr179498): it runs a full-privilege
-  `--dangerously-skip-permissions` agent on verbatim (agent-filable)
-  gripe text with no container isolation, so it refuses to spawn
-  unless an operator explicitly acks the risk here. Without it a
-  submitted job (or a `backlog_groom` auto-promotion) skips clean and
-  the gripe stays open. Set it only on a trusted-operator deployment;
-  the proper fix is the §13 containerization (tracked under gr179498).
+- **§13 container available (recommended)** — `PRECIS_AGENT_CONTAINER=1`
+  on a host that can run the `precis-agent` image (§H cycle a: the image
+  now carries git + uv so a cloned repo's own tests can run inside it).
+  A containerized run is network-isolated and needs no operator ack.
+- **`PRECIS_FIX_GRIPE_UNSANDBOXED_ACK=1`** — required ONLY when the §13
+  container is unavailable on this host (feature off, or the
+  capability probe fails). fix_gripe is **fail-closed** (gr179498) in
+  that case: it refuses to fall back to running full-privilege and
+  unsandboxed on verbatim (agent-filable) gripe text unless an
+  operator explicitly acks the risk here. Without it a submitted job
+  (or a `backlog_groom` auto-promotion) skips clean and the gripe
+  stays open. Set it only on a trusted-operator deployment without the
+  §13 container.
 
 With those set, `precis worker` picks `job_claude_inproc` up
 automatically. To run only this one runner:
@@ -231,23 +242,35 @@ precis worker --only job_claude_inproc
 ```
 
 ## Trust model
-## Is it safe to run claude with --dangerously-skip-permissions?
+## Is it safe to run the fix agent unsandboxed?
 
-The precis runtime trusts the agent within its container. The
-failure boundary is `cwd` (the clone dir) plus a restricted env
-that strips DB credentials. A pre-push hook in every clone
-rejects pushes to any branch not matching `gripe_*`, so claude
-can't push over `main`.
+Whenever the §13 container is available (`PRECIS_AGENT_CONTAINER=1`
+on a capable host), fix_gripe's agent runs *inside* it: network-isolated
+(`egress:api-only` — reaches only the Anthropic API, no DB, no open
+egress), with ONLY the clone dir bind-mounted in — never the source repo.
+The agent can commit inside the clone; it has no filesystem path to
+origin and no network route to it, so it cannot push. That boundary is
+real enough that a containerized run needs **no operator ack**.
 
-This is **not** a hard sandbox — it's a trust boundary that
-matches the rest of the precis trust model. Because the prompt
-embeds verbatim, agent-filable gripe text, the path is
-**fail-closed** behind `PRECIS_FIX_GRIPE_UNSANDBOXED_ACK`
-(gr179498): the full-privilege agent won't spawn without an
-explicit operator ack, so enabling `backlog_groom` alone can't
-feed attacker-shaped text into a `--dangerously-skip-permissions`
-run. The proper fix — running the agent inside the §13 container
-(network/DB-isolated) — is tracked under gr179498.
+When the container isn't available, the failure boundary falls back to
+`cwd` (the clone dir) plus an isolated env that strips DB credentials —
+same trust boundary as before §H, and **not** a hard sandbox. Because
+the prompt embeds verbatim, agent-filable gripe text, that fallback
+path is **fail-closed** behind `PRECIS_FIX_GRIPE_UNSANDBOXED_ACK`
+(gr179498): the agent won't run unsandboxed without an explicit
+operator ack — enforced by `call_claude_agent`'s
+`require_container=not <ack>` — so enabling `backlog_groom` alone can't
+feed attacker-shaped text into an unsandboxed run, even if a
+containerized run was available a moment ago and then failed mid-run.
+
+**Write-back is a commit, pushed on the trusted side.** In EITHER mode
+(containerized or the fail-closed fallback) the agent never pushes —
+it only commits inside the clone. Once the agent's run finishes, the
+worker process itself (trusted, host-side, holding the real repo path
+and no sandbox) performs the `git push`, guarded host-side to reject
+anything not matching `gripe_<id>`. A pre-push hook in every clone
+additionally rejects pushes to any branch not matching `gripe_*` —
+belt and braces, not the only defense.
 
 ## What if I submit two fix_gripe jobs at once?
 

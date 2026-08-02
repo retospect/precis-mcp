@@ -283,25 +283,95 @@ def container_env(
     *,
     model: str,
     mode: str | None = None,
+    dsn: str | None = None,
 ) -> ContainerEnv:
     """Build the container's env for an envelope (tiers 2 + secrets).
 
     Injects the auth secret **by key** (OAuth token or API key per ``mode``),
-    ``PRECIS_DATABASE_URL`` by key (value inherited), the tier-2
-    ``PRECIS_MCP_DB_ROLE`` from :func:`envelope.db_role` (``agent_ro`` for a
-    read-only box → the container's ``precis serve`` ``SET ROLE``s to it), and
-    the non-secret model.
+    the tier-2 ``PRECIS_MCP_DB_ROLE`` from :func:`envelope.db_role`
+    (``agent_ro`` for a read-only box → the container's ``precis serve``
+    ``SET ROLE``s to it), and the non-secret model.
+
+    ``PRECIS_DATABASE_URL`` is requested by key **only when the caller
+    actually has a DSN to forward** (``dsn is not None``) — a fix_gripe-shaped
+    caller never touches the DB at all (no ``--mcp-config``, no DSN anywhere
+    in its env), so requesting the by-key secret unconditionally asked the
+    container-run layer for a DSN that was never going to be there (a latent
+    secret-key request with nothing behind it). ``dsn`` mirrors the same
+    param already threaded through :func:`resolve_network` /
+    :func:`containerize_claude_argv` / :func:`build_agent_run`.
     """
     mode = mode or agent_run_mode()
     auth_key = "ANTHROPIC_API_KEY" if mode == "api" else "CLAUDE_CODE_OAUTH_TOKEN"
+    secret_keys = (auth_key, "PRECIS_DATABASE_URL") if dsn is not None else (auth_key,)
     return ContainerEnv(
-        secret_keys=(auth_key, "PRECIS_DATABASE_URL"),
+        secret_keys=secret_keys,
         values={
             "PRECIS_MCP_DB_ROLE": _envelope.db_role(env),
             "PRECIS_AGENT_MODE": mode,
             "PRECIS_AGENT_MODEL": model,
         },
     )
+
+
+# ── Mounts + workdir (pure — asserted by tests) ─────────────────────
+#
+# gr178973 / gr179498 blocker 1: neither ``build_agent_run_argv`` nor
+# ``containerize_claude_argv`` could bind-mount a host directory into the
+# container, so a caller whose work lives on the filesystem (fix_gripe's git
+# clone; any future job that hands the agent a workspace) had no way to reach
+# it from inside the throwaway container. ``Mount`` + the ``mounts``/
+# ``workdir`` params below are the minimal, pure, unit-testable primitive —
+# no runtime required to assert the argv shape.
+
+
+@dataclass(frozen=True, slots=True)
+class Mount:
+    """One ``-v`` bind mount for a container run.
+
+    ``host_path`` must be an absolute path that exists at call time (this is
+    about to back a real ``docker/podman run``, not a build-time assertion);
+    ``container_path`` must be absolute (it need not exist inside the image
+    — the runtime creates it). ``mode`` is ``"rw"`` (default) or ``"ro"``.
+    """
+
+    host_path: str
+    container_path: str
+    mode: str = "rw"
+
+
+def _validate_mount(m: Mount) -> None:
+    if not os.path.isabs(m.host_path):
+        raise ValueError(
+            f"agent_container: mount host_path must be absolute, got {m.host_path!r}"
+        )
+    if not os.path.exists(m.host_path):
+        raise ValueError(
+            f"agent_container: mount host_path does not exist: {m.host_path!r}"
+        )
+    if not os.path.isabs(m.container_path):
+        raise ValueError(
+            "agent_container: mount container_path must be absolute, got "
+            f"{m.container_path!r}"
+        )
+    if m.mode not in ("rw", "ro"):
+        raise ValueError(
+            f"agent_container: mount mode must be 'rw' or 'ro', got {m.mode!r}"
+        )
+
+
+def _mount_flag(m: Mount) -> str:
+    """``host:container[:ro]`` — the ``-v`` flag value. Validates first."""
+    _validate_mount(m)
+    spec = f"{m.host_path}:{m.container_path}"
+    if m.mode == "ro":
+        spec += ":ro"
+    return spec
+
+
+def _validate_workdir(workdir: str) -> None:
+    if not os.path.isabs(workdir):
+        raise ValueError(f"agent_container: workdir must be absolute, got {workdir!r}")
 
 
 # ── The run argv (pure — asserted by tests) ────────────────────────
@@ -376,6 +446,8 @@ def build_agent_run_argv(
     net: NetworkPlan,
     detached: bool = True,
     command: Sequence[str] = (),
+    mounts: tuple[Mount, ...] = (),
+    workdir: str | None = None,
 ) -> list[str]:
     """Assemble the ``docker/podman run`` argv for one agentic job.
 
@@ -386,12 +458,25 @@ def build_agent_run_argv(
     then the container ``command`` (the ``claude -p …`` tail, empty ⇒ the
     image's default ``CMD``). No ``--device`` (never a GPU — agentic work is
     CPU + network).
+
+    ``mounts`` (gr178973/gr179498 blocker 1) emits one ``-v host:ctr[:ro]``
+    per :class:`Mount`, validated (absolute host path that exists, absolute
+    container path, mode in ``rw``/``ro``) before it ever reaches argv —
+    a bad mount raises ``ValueError`` here rather than failing opaquely at
+    ``docker run``. ``workdir`` emits ``-w <path>`` (must be absolute).
+    Both default to nothing, so an unmounted, workdir-less call (every
+    caller before fix_gripe) is byte-identical.
     """
     argv = [container_bin, "run"]
     if detached:
         argv += ["-d"]
     argv += ["--rm", "--name", name]
     argv += container_limit_flags()
+    for m in mounts:
+        argv += ["-v", _mount_flag(m)]
+    if workdir is not None:
+        _validate_workdir(workdir)
+        argv += ["-w", workdir]
     for key in cenv.secret_keys:
         argv += ["--env", key]
     for k, v in cenv.values.items():
@@ -437,7 +522,7 @@ def build_agent_run(
         container_bin=_container_bin(),
         name=name,
         image=image or default_agent_image(),
-        cenv=container_env(env, model=model, mode=mode),
+        cenv=container_env(env, model=model, mode=mode, dsn=dsn),
         net=resolve_network(env, dsn=dsn),
         detached=detached,
         command=command,
@@ -472,6 +557,8 @@ def containerize_claude_argv(
     dsn: str | None = None,
     image: str | None = None,
     mode: str | None = None,
+    mounts: tuple[Mount, ...] = (),
+    workdir: str | None = None,
 ) -> list[str]:
     """Wrap an already-built host ``claude -p …`` argv into a synchronous
     ``docker/podman run`` that execs the SAME command inside the container.
@@ -500,21 +587,30 @@ def containerize_claude_argv(
     2026-07-24 incident — a daemon restart flipped :func:`container_capability_ok`
     to True for the first time since a redeploy, and host-argv's
     ``--mcp-config`` had never round-tripped through this seam live before).
+
+    ``mounts``/``workdir`` (gr178973/gr179498 blocker 1) pass straight through
+    to :func:`build_agent_run_argv` — a caller whose work is a filesystem
+    workspace (fix_gripe's git clone) binds it in and ``cd``s the container
+    there; both default to nothing, byte-identical for every caller that
+    doesn't need a workspace (the review-pass callers).
     """
     command = ["claude", *_rebase_mcp_config(list(host_argv)[1:])]
     return build_agent_run_argv(
         container_bin=_container_bin(),
         name=name,
         image=image or default_agent_image(),
-        cenv=container_env(env, model=model, mode=mode),
+        cenv=container_env(env, model=model, mode=mode, dsn=dsn),
         net=resolve_network(env, dsn=dsn),
         detached=False,
         command=command,
+        mounts=mounts,
+        workdir=workdir,
     )
 
 
 __all__ = [
     "ContainerEnv",
+    "Mount",
     "NetworkPlan",
     "agent_run_mode",
     "build_agent_run",

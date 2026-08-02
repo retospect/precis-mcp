@@ -91,6 +91,7 @@ def run_claude(
     env: dict[str, str] | None = None,
     stdin_devnull: bool = False,
     cwd: str | None = None,
+    bootstrap_oauth: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     """Run ``claude -p`` and return the completed process on success.
 
@@ -103,6 +104,18 @@ def run_claude(
     planner tick to spawn from a CLAUDE.md-free neutral cwd so ``claude -p``
     discovers no ambient project persona (ADR 0051 §12). ``None`` inherits
     the caller's working directory (today's behaviour).
+
+    ``env`` is always COPIED before use, never mutated in place — a caller
+    that passes an isolated/restricted dict (fix_gripe's ``env_base``, §H
+    cycle a) must not see it silently gain vars this function injects.
+    ``bootstrap_oauth`` (default True) controls whether the OAuth token is
+    injected into that copy at all; a caller with an intentionally isolated
+    env (``env`` given AND that env deliberately excludes the token) passes
+    ``False`` so the real worker/daemon OAuth token — read from
+    ``~/.claude_oauth_token`` or the vault — never leaks into a sandboxed run
+    that's supposed to auth some other way (e.g. ``ANTHROPIC_API_KEY``
+    already baked into ``env``). A caller inheriting ``os.environ`` wants the
+    bootstrap and leaves this at the default.
     """
     # Bootstrap the long-lived OAuth token from ~/.claude_oauth_token so any
     # ``claude -p`` caller — call_claude_p (figure turn, web follow-up, run as
@@ -110,9 +123,9 @@ def run_claude(
     # the token file instead of the daemon user's empty/stale keychain and 401s
     # (2026-07-12 incident). Central chokepoint: every claude -p goes through
     # here. Idempotent + override-safe (an env token already set wins).
-    if env is None:
-        env = dict(os.environ)
-    ensure_oauth_token(env)
+    env = dict(env) if env is not None else dict(os.environ)
+    if bootstrap_oauth:
+        ensure_oauth_token(env)
     try:
         res = subprocess.run(
             argv,

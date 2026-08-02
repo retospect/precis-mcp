@@ -258,6 +258,11 @@ def _run_one(store: Any, ref_id: int, title: str, meta: dict[str, Any]) -> None:
     # dispatch: any ``call_claude_agent`` reached inside picks the box up via
     # the executor-scoped active envelope, so its tier-1 deny list applies
     # "regardless of host". Absent/permissive envelope → today's behavior.
+    # (fix_gripe, §H cycle a, is the one exception: its shape — full FS
+    # access, no DB at all — doesn't fit the write axis's "no-write ⇒ no FS
+    # writes either" coupling, so it builds and passes its OWN explicit
+    # envelope to ``call_claude_agent`` rather than picking up this
+    # job-scoped one; see ``fix_gripe._spawn_claude``.)
     from precis.workers.envelope import envelope_scope, parse_envelope
 
     with envelope_scope(parse_envelope(meta)):

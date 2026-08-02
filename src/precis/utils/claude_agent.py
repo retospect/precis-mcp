@@ -50,7 +50,7 @@ import logging
 import os
 import re
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -69,6 +69,7 @@ from precis.utils.friction_reflect import append_friction_footer
 
 if TYPE_CHECKING:
     from precis.store import Store
+    from precis.workers.executors.agent_container import Mount
 
 log = logging.getLogger(__name__)
 
@@ -108,6 +109,23 @@ class ClaudeAgentError(ClaudeProcessError):
     Carries the stdout / stderr / returncode (from
     :class:`ClaudeProcessError`) so callers can surface diagnostics in
     their digest memory / log without re-running.
+    """
+
+
+class ContainerRequiredError(RuntimeError):
+    """Raised by :func:`call_claude_agent` when ``require_container=True`` but
+    the container path is unavailable — disabled, probe-failed, or an
+    infra failure that would otherwise fall back in-process.
+
+    fix_gripe (§H cycle a) is the first caller: its full-privilege,
+    verbatim-gripe-text agent is fail-closed on unsandboxed execution
+    (gr179498) — a *containerized* run needs no operator ack, but an
+    in-process fallback still does. Passing ``require_container=not
+    _unsandboxed_ack()`` makes the chokepoint itself the single source of
+    truth for that rule: refuse (this error) rather than silently running
+    unsandboxed when the ack is absent, at ANY point the container turns
+    out to be unavailable (pre-flight or mid-run infra failure) — not just
+    the pre-flight check a caller might make and then race past.
     """
 
 
@@ -182,6 +200,10 @@ def call_claude_agent(
     log_event: tuple[Store, int, str] | None = None,
     env_overlay: dict[str, str] | None = None,
     cwd: str | Path | None = None,
+    env_base: Mapping[str, str] | None = None,
+    require_container: bool = False,
+    mounts: tuple[Mount, ...] = (),
+    workdir: str | None = None,
 ) -> AgentResult:
     """Run an agentic ``claude -p`` session and return the audit result.
 
@@ -240,6 +262,35 @@ def call_claude_agent(
             :func:`run_claude`). The planner tick passes a CLAUDE.md-free
             neutral cwd so ``claude -p`` discovers no ambient project persona
             (ADR 0051 §12). ``None`` inherits the caller's cwd.
+        env_base: When given, :func:`_prepare_agent_env` builds the
+            subprocess env from a COPY of ``env_base`` instead of
+            ``os.environ`` — DB-isolated / restricted-env callers (fix_gripe's
+            ``_restricted_env``, §H cycle a) supply their own stripped env
+            rather than inheriting the worker's ambient one. The OAuth
+            bootstrap (reading ``~/.claude_oauth_token`` / the vault) is
+            skipped in this mode — the caller is expected to supply its own
+            auth (fix_gripe passes ``bare=True`` + ``ANTHROPIC_API_KEY``
+            already baked into ``env_base``). ``env_overlay`` still applies
+            last, on top of ``env_base``. ``None`` (default) is today's
+            behavior: build from ``os.environ``.
+        require_container: When True, the container path is REQUIRED — if
+            it's unavailable (``PRECIS_AGENT_CONTAINER`` off, the
+            verified-capability probe fails, or a containerized run dies at
+            the infra level) this raises :class:`ContainerRequiredError`
+            instead of silently falling back in-process. fix_gripe's ack gate
+            (gr179498) becomes ``require_container=not _unsandboxed_ack()``:
+            a containerized run needs no ack, but the moment the container
+            isn't available, the caller must have explicitly accepted running
+            unsandboxed — never a silent downgrade. Default False (today's
+            behavior: container-preferred, in-proc fallback always allowed).
+        mounts: Bind mounts (:class:`~precis.workers.executors.agent_container.Mount`)
+            threaded to the container path only (:func:`~precis.workers.executors.agent_container.containerize_claude_argv`)
+            — ignored on the in-process path (there's no container to mount
+            into). fix_gripe binds its git clone + the local-remote source
+            repo so the containerized agent can commit and push.
+        workdir: Container ``-w`` working directory, threaded the same way as
+            ``mounts`` — ignored in-process (``cwd`` already covers that
+            path). ``None`` leaves the image's default workdir.
 
     Returns:
         :class:`AgentResult` with the raw stdout + telemetry.
@@ -247,6 +298,8 @@ def call_claude_agent(
     Raises:
         ClaudeAgentError: subprocess exited non-zero, timed out, or
             the binary was missing.
+        ContainerRequiredError: ``require_container=True`` and the container
+            path is unavailable (see ``require_container`` above).
     """
     binary, args, model, timeout_s, max_usd, active_env = _resolve_agent_args(
         prompt,
@@ -264,7 +317,7 @@ def call_claude_agent(
         extra_args=extra_args,
     )
     proc_env = _prepare_agent_env(
-        active_env=active_env, bare=bare, env_overlay=env_overlay
+        active_env=active_env, bare=bare, env_overlay=env_overlay, env_base=env_base
     )
     cwd_str = str(cwd) if cwd is not None else None
 
@@ -276,13 +329,15 @@ def call_claude_agent(
     # pipe behaviour can cause claude to read garbage / hang, ultimately
     # producing the "Not logged in" silent-success or zero-MCP-call
     # pattern observed 2026-06-17. Direct ``-p`` callers want no stdin.
-    # §13 container executor (dark, PRECIS_AGENT_CONTAINER off by default): run
+    # §13 container executor (PRECIS_AGENT_CONTAINER off by default on most
+    # hosts, LIVE on the inference node for structural/deep review passes): run
     # the SAME claude -p in a throwaway container instead of in-process, isolated
     # by the envelope's tier-2 DB role + tier-3 network. A foreground run whose
     # stdout we capture exactly as the in-proc subprocess's, so the parsing below
-    # is unchanged. Off ⇒ byte-identical to today. (plan_tick / fix_gripe have
-    # their own spawn seams + env back-doors — containerized in the window, not
-    # here.)
+    # is unchanged. Off ⇒ byte-identical to today. plan_tick and fix_gripe are
+    # BOTH routed through this one chokepoint (plan_tick via router.dispatch →
+    # ClaudeAgentProvider; fix_gripe via env_base/mounts/require_container, §H
+    # cycle a) — neither has its own spawn seam left.
     run_argv = args
     run_binary = binary
     from precis.workers.executors import agent_container as _container
@@ -292,9 +347,13 @@ def call_claude_agent(
     # auth token resolvable ∧ not health-latched, §15d). An opted-in host that
     # can't actually containerize runs in-process — byte-identical to today —
     # instead of failing every agentic pass on a box it can't launch (the spark
-    # DSN retry-storm's failure mode, 2026-07-19).
+    # DSN retry-storm's failure mode, 2026-07-19). ``require_container`` (§H
+    # cycle a) flips that fallback into a hard refusal for a caller that can't
+    # tolerate running unsandboxed (fix_gripe's ack gate).
     containerized = False
-    if _container.container_agent_enabled() and _container.container_capability_ok():
+    container_enabled = _container.container_agent_enabled()
+    container_ok = container_enabled and _container.container_capability_ok()
+    if container_ok:
         import uuid as _uuid
 
         from precis import secrets as _secrets
@@ -308,26 +367,61 @@ def call_claude_agent(
         # re-injection above). Without this the container's entrypoint aborts
         # "PRECIS_DATABASE_URL not set" and every agentic pass fails 1 — the
         # spark review retry-storm (2026-07-19).
-        _dsn = _secrets.get_adopted_dsn() or proc_env.get("PRECIS_DATABASE_URL")
+        #
+        # BUT: when the caller supplied ``env_base`` (a DB-isolated env —
+        # fix_gripe's ``_restricted_env``, §H cycle a) there is, by design, no
+        # DSN in ``proc_env`` to re-inject FROM, and the adopted-DSN fallback
+        # below must not paper over that isolation by pulling the ambient
+        # worker DSN back in. So the adopted-DSN fallback is only consulted
+        # when the caller did NOT ask for env isolation.
+        _dsn = proc_env.get("PRECIS_DATABASE_URL")
+        if _dsn is None and env_base is None:
+            _dsn = _secrets.get_adopted_dsn()
         if _dsn:
             proc_env["PRECIS_DATABASE_URL"] = _dsn
         from precis.workers import envelope as _envelope
 
+        # ``bare`` (API-key auth, no OAuth/keychain) implies the container's
+        # secret-by-key channel must request ANTHROPIC_API_KEY, not
+        # CLAUDE_CODE_OAUTH_TOKEN — else the container asks for a secret
+        # ``env_base``/``proc_env`` never carries and auth fails inside it.
+        container_mode = "api" if bare else _container.agent_run_mode()
         run_argv = _container.containerize_claude_argv(
             args,
             active_env if active_env is not None else _envelope.Envelope(),
             name=f"precis-agent-{_uuid.uuid4().hex[:12]}",
             model=model or "",
             dsn=_dsn,
+            mode=container_mode,
+            mounts=mounts,
+            workdir=workdir,
         )
         run_binary = run_argv[0]
         containerized = True
-    elif _container.container_agent_enabled():
-        # Opted in but this host can't be *verified* to run the container (no
-        # runtime / image / token, or the health latch is tripped after a recent
-        # infra failure). Run in-process rather than failing every pass.
-        _warn_container_incapable_once()
+    else:
+        if container_enabled:
+            # Opted in but this host can't be *verified* to run the container
+            # (no runtime / image / token, or the health latch is tripped
+            # after a recent infra failure).
+            _warn_container_incapable_once()
+        if require_container:
+            raise ContainerRequiredError(
+                "call_claude_agent: require_container=True but the container "
+                "path is unavailable on this host "
+                f"(container_agent_enabled={container_enabled}, "
+                "capability probe failed or health-latched) — refusing the "
+                "in-process fallback rather than running unsandboxed."
+            )
+        # Run in-process rather than failing every pass.
 
+    # ``bootstrap_oauth=(env_base is None)``: an isolated-env caller
+    # (fix_gripe's ``env_base``, §H cycle a) built its own auth already —
+    # re-injecting the worker's real OAuth token from ~/.claude_oauth_token /
+    # the vault into that isolated env would defeat the isolation
+    # ``_prepare_agent_env`` deliberately skipped (a fix_gripe in-proc run,
+    # acked or infra-fallback, must NOT see the worker's live credential).
+    # ``env_base is None`` (today's default: build from os.environ) keeps
+    # bootstrapping as before.
     res: Any
     try:
         res = run_claude(
@@ -339,24 +433,47 @@ def call_claude_agent(
             env=proc_env,
             stdin_devnull=True,
             cwd=cwd_str,
+            bootstrap_oauth=env_base is None,
         )
     except ClaudeAgentError as exc:
         if containerized and _container_infra_failure(exc):
             # The *container* failed to run (image missing, daemon unreachable,
             # socket perm, OOM 137) — NOT a claude/model error inside it. Latch
             # the host unhealthy so subsequent passes skip the container for
-            # ~10 min, and retry the SAME call in-process once: one bad box
-            # degrades to in-proc instead of dropping the pass. (A container OOM
-            # exits 137 ≥128, which the router would otherwise mis-read as a
-            # signal 'interrupt' and *skip* — catching it here routes it to the
-            # fallback, not the skip.)
+            # ~10 min. (A container OOM exits 137 ≥128, which the router would
+            # otherwise mis-read as a signal 'interrupt' and *skip* — catching
+            # it here routes it to the fallback/refusal below, not the skip.)
             _container.trip_container_unhealthy()
+            if require_container:
+                # This caller can't tolerate running unsandboxed (fix_gripe's
+                # ack gate) — refuse rather than silently degrade to in-proc.
+                log.warning(
+                    "claude_agent: containerized run failed at the "
+                    "container-infra level (rc=%s) and require_container=True "
+                    "— refusing the in-process fallback",
+                    getattr(exc, "returncode", None),
+                )
+                raise ContainerRequiredError(
+                    "call_claude_agent: containerized run failed at the "
+                    f"container-infra level (rc={getattr(exc, 'returncode', None)}) "
+                    "and require_container=True — refusing the in-process "
+                    "fallback rather than running unsandboxed."
+                ) from exc
+            # Retry the SAME call in-process once: one bad box degrades to
+            # in-proc instead of dropping the pass.
             log.warning(
                 "claude_agent: containerized run failed at the container-infra "
                 "level (rc=%s); latching host unhealthy and retrying in-process",
                 getattr(exc, "returncode", None),
             )
-            res = _run_inproc_fallback(binary, args, timeout_s, proc_env, cwd_str)
+            res = _run_inproc_fallback(
+                binary,
+                args,
+                timeout_s,
+                proc_env,
+                cwd_str,
+                bootstrap_oauth=env_base is None,
+            )
         else:
             # A non-container failure (or a claude/model error inside the
             # container): recover a resumable exhaustion or re-raise enriched.
@@ -641,12 +758,25 @@ def _prepare_agent_env(
     active_env: Any | None,
     bare: bool,
     env_overlay: dict[str, str] | None,
+    env_base: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
     """Build the ``claude -p`` subprocess env: OAuth bootstrap, the
     envelope's DB-role export, the OAuth-over-API-key preference, and the
     caller's env overlay.
 
-    Shared by :func:`call_claude_agent` and :func:`call_claude_agent_async`.
+    Shared by :func:`call_claude_agent` and :func:`call_claude_agent_async`
+    (the async twin never passes ``env_base`` — §H cycle a is a sync-only
+    caller — so it always takes the ``os.environ`` branch below).
+
+    ``env_base``, when given, replaces ``os.environ`` as the starting env —
+    an isolated-env caller (fix_gripe's ``_restricted_env``, §H cycle a)
+    supplies its own already-stripped env (no PG*/PRECIS_* creds) rather than
+    inheriting the worker's ambient one. The OAuth bootstrap
+    (``~/.claude_oauth_token`` / vault read) is skipped in that mode — the
+    caller is expected to have its own auth already in ``env_base``
+    (fix_gripe: ``bare=True`` + ``ANTHROPIC_API_KEY``), so there's nothing
+    for the bootstrap to usefully add, and reading the vault would be a
+    pointless network call on every isolated-env invocation.
     """
     # CLAUDE_CODE_OAUTH_TOKEN bootstrap. Interactive shells source
     # ~/.zshrc / ~/.bash_profile which loads the long-lived token
@@ -656,7 +786,7 @@ def _prepare_agent_env(
     # and silently exits "Not logged in" — appearing as a clean
     # ``cost=$0 turns=None`` success in our logs (2026-06-17 dream
     # incident). Load the file ourselves when the var is missing.
-    proc_env = dict(os.environ)
+    proc_env = dict(env_base) if env_base is not None else dict(os.environ)
     # Tier-2 (process-level) envelope enforcement: advertise the resolved
     # Postgres role so the per-call ``precis serve`` the container executor
     # spawns (§13) binds ``agent_ro`` for a read-only box. Harmless today —
@@ -665,7 +795,8 @@ def _prepare_agent_env(
         from precis.workers import envelope as _envelope
 
         proc_env["PRECIS_MCP_DB_ROLE"] = _envelope.db_role(active_env)
-    ensure_oauth_token(proc_env)
+    if env_base is None:
+        ensure_oauth_token(proc_env)
     if not bare:
         # Prefer the OAuth token (Max subscription) over ANTHROPIC_API_KEY
         # (per-token API billing): scrub the key when a token is present so the
@@ -858,13 +989,20 @@ def _run_inproc_fallback(
     timeout_s: float,
     proc_env: dict[str, str],
     cwd: str | None = None,
+    *,
+    bootstrap_oauth: bool = True,
 ) -> Any:
     """Retry the SAME agentic call in-process after a container-infra failure.
 
     Runs the ORIGINAL host argv (``args`` / ``binary`` — not the ``docker run``
     wrapper), so a host whose container can't launch still completes the pass.
     A ``ClaudeAgentError`` from the fallback is a real in-proc failure and goes
-    through the shared exhaustion-recovery / enrich path."""
+    through the shared exhaustion-recovery / enrich path.
+
+    ``bootstrap_oauth`` threads the same isolation decision the primary run
+    made (``env_base is None`` at the call_claude_agent call site) — a
+    fix_gripe fallback (env-isolated, ack'd to run unsandboxed) must not have
+    the worker's real OAuth token re-injected here either."""
     try:
         return run_claude(
             args,
@@ -875,6 +1013,7 @@ def _run_inproc_fallback(
             env=proc_env,
             stdin_devnull=True,
             cwd=cwd,
+            bootstrap_oauth=bootstrap_oauth,
         )
     except ClaudeAgentError as exc:
         return _recover_exhaustion_or_raise(exc)
@@ -1194,6 +1333,7 @@ def _turns_from_stdout_result(stdout: str) -> int | None:
 __all__ = [
     "AgentResult",
     "ClaudeAgentError",
+    "ContainerRequiredError",
     "call_claude_agent",
     "call_claude_agent_async",
     "stream_final_text",

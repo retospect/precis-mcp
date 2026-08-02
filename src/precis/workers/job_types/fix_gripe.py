@@ -3,17 +3,36 @@
 The first job_type. Invoked by the `claude_inproc` executor's
 runner. Reads the linked gripe's body + comment timeline as the
 brief, clones ``$PRECIS_FIX_REPO_DIR`` into
-``$PRECIS_FIX_WORK_DIR/clones/gripe_<id>``, runs
-``claude -p --dangerously-skip-permissions`` with cwd = the clone
-and a restricted env (no DB creds), then pushes the resulting
-``gripe_<id>`` branch back to origin (the source repo) for human
-review.
+``$PRECIS_FIX_WORK_DIR/clones/gripe_<id>``, then routes through the
+:func:`~precis.utils.claude_agent.call_claude_agent` chokepoint (§H
+cycle a — the last direct ``subprocess.run`` of claude in the codebase
+is gone) with an isolated env (``env_base=_restricted_env(...)``, no
+DB creds, ``--bare`` API-key auth), an explicit fix_gripe envelope
+(egress ``api-only`` — the LLM call needs the network, everything else
+is local), and a bind mount for the clone ONLY. The agent commits
+inside the clone; it never has the source repo (origin) mounted and
+has no network route to it either, so it CANNOT push. Once
+``call_claude_agent`` returns, ``run()`` — trusted, host-side —
+performs the push itself: write-back is a commit inside the sandbox,
+pushed on the trusted side, never with creds inside the sandbox. On
+success the resulting ``gripe_<id>`` branch lands on origin (the
+source repo) for human review.
 
-Trust model: claude shares the precis container's filesystem +
-network. ``cwd`` + restricted env are the failure boundary; a
-pre-push hook in every clone rejects pushes to anything not
-matching ``gripe_*``. See the safety section in
-``precis-fix-gripe-help`` for the full picture.
+Trust model: a **containerized** run (the default whenever
+``PRECIS_AGENT_CONTAINER`` is on and the host can run it) is isolated
+by network namespace (``egress:api-only`` — reaches only the Anthropic
+API + its own bind-mounted clone, no DB, no source repo) + the
+env-base scrub + the trusted-side-only push, so it needs no operator
+ack. A run that can't containerize (feature off, probe-failed, or an
+infra failure mid-run) is fail-closed: it refuses to fall back to
+running full-privilege and unsandboxed unless an operator has
+explicitly set ``PRECIS_FIX_GRIPE_UNSANDBOXED_ACK``
+(``require_container=not _unsandboxed_ack()`` on the chokepoint call —
+see :class:`~precis.utils.claude_agent.ContainerRequiredError`). Both
+a pre-push hook in every clone AND a host-side branch-name guard on
+the trusted push reject anything not matching ``gripe_*`` (belt and
+braces — the guard doesn't rely on the hook alone). See the safety
+section in ``precis-fix-gripe-help`` for the full picture.
 """
 
 from __future__ import annotations
@@ -21,12 +40,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from precis.utils.claude_agent import ClaudeAgentError, ContainerRequiredError
 from precis.utils.llm.router import Backend, Tier, resolve_backend, resolve_model
 
 log = logging.getLogger(__name__)
@@ -55,9 +76,9 @@ REQUIRES: frozenset[str] = frozenset(
 )
 
 DESCRIPTION: str = (
-    "Clone the repo, run claude -p with --dangerously-skip-permissions "
-    "as a subprocess, push the resulting branch gripe_<id> to origin "
-    "for human review."
+    "Clone the repo, run the fix agent through call_claude_agent "
+    "(containerized when available, isolated env otherwise), push the "
+    "resulting branch gripe_<id> to origin for human review."
 )
 
 
@@ -252,16 +273,23 @@ _UNSANDBOXED_ACK_ENV = "PRECIS_FIX_GRIPE_UNSANDBOXED_ACK"
 
 def _unsandboxed_ack() -> bool:
     """Whether an operator has explicitly accepted running fix_gripe's
-    full-privilege agent unsandboxed (gr179498).
+    full-privilege agent WITHOUT the §13 container isolation (gr179498).
 
-    fix_gripe spawns ``claude -p --dangerously-skip-permissions`` (full
-    Bash/Edit/Write, open egress) on VERBATIM gripe text — filable by any
-    MCP client with ``put``. Until that agent runs inside the §13 container
-    (gr179498, tracked), the path is **fail-closed**: it runs only when
-    ``PRECIS_FIX_GRIPE_UNSANDBOXED_ACK`` is truthy, so enabling
+    fix_gripe's agent gets full Bash/Edit/Write on VERBATIM gripe text —
+    filable by any MCP client with ``put``. §H cycle a routes the spawn
+    through :func:`~precis.utils.claude_agent.call_claude_agent` with
+    ``require_container=not _unsandboxed_ack()``: a **containerized** run
+    (network-isolated, no DB creds, mounts only the clone — never the
+    source repo, and never pushes; the trusted host side does that after
+    the agent returns) is safe enough to need no ack — but the moment the
+    container path is unavailable (feature off, capability probe failed, or
+    an infra failure mid-run), the chokepoint refuses to silently fall back
+    to running full-privilege and unsandboxed
+    (:class:`~precis.utils.claude_agent.ContainerRequiredError`) UNLESS
+    ``PRECIS_FIX_GRIPE_UNSANDBOXED_ACK`` is truthy — so enabling
     ``backlog_groom`` alone (which auto-promotes every open gripe into a
-    fix_gripe job) can't unleash a full-privilege run on attacker-shaped
-    text without a second, conscious operator opt-in.
+    fix_gripe job) can't unleash an unsandboxed run on attacker-shaped text
+    without a second, conscious operator opt-in.
     """
     return os.environ.get(_UNSANDBOXED_ACK_ENV, "").strip().lower() in (
         "1",
@@ -292,33 +320,34 @@ def run(
     cfg = config or load_config_from_env()
 
     # GLM/OpenRouter fleet-flip safety gate (docs/proposals/glm-fleet-flip-
-    # safety.md Part 3): this spawns a raw `claude -p` subprocess, which
-    # assumes Claude model semantics — under backend=openai,
-    # resolve_model(FRONTIER) returns an OSS slug that `claude -p`
-    # can't run (HTTP 400). Skip cleanly rather than spawn a doomed call;
-    # the gripe stays open for a re-attempt once the backend reverts to
-    # anthropic (recommended: skip-clean, per the proposal's Part 3).
+    # safety.md Part 3): fix_gripe's agent runs claude -p (via the
+    # call_claude_agent chokepoint), which assumes Claude model semantics —
+    # under backend=openai, resolve_model(FRONTIER) returns an OSS slug that
+    # `claude -p` can't run (HTTP 400). Skip cleanly rather than spawn a
+    # doomed call; the gripe stays open for a re-attempt once the backend
+    # reverts to anthropic (recommended: skip-clean, per the proposal's
+    # Part 3).
     if resolve_backend() is Backend.OPENAI:
         wall = time.perf_counter() - t0
         log.warning(
             "fix_gripe: llm.backend=openai — skipping gripe:%d fix attempt "
-            "(raw `claude -p` subprocess assumes Claude model semantics, "
-            "unsupported under the OSS/OpenRouter backend)",
+            "(claude -p assumes Claude model semantics, unsupported under "
+            "the OSS/OpenRouter backend)",
             gripe_id,
         )
         return RunOutcome(
             status="skipped",
             summary_text=(
                 f"fix_gripe job:{job_id} for gripe:{gripe_id} skipped: "
-                "llm.backend=openai — fix_gripe spawns a raw `claude -p` "
-                "subprocess that assumes Claude model semantics, so it "
-                "does not run under the OSS/OpenRouter backend. Re-attempt "
-                "once the backend reverts to anthropic."
+                "llm.backend=openai — fix_gripe's agent runs `claude -p`, "
+                "which assumes Claude model semantics, so it does not run "
+                "under the OSS/OpenRouter backend. Re-attempt once the "
+                "backend reverts to anthropic."
             ),
             gripe_comment_text=(
                 f"[worker:job:{job_id}] fix attempt skipped: "
-                "llm.backend=openai is not supported by fix_gripe (raw "
-                "`claude -p` subprocess). Will need a re-attempt once the "
+                "llm.backend=openai is not supported by fix_gripe "
+                "(`claude -p`). Will need a re-attempt once the "
                 "backend is anthropic again."
             ),
             branch=None,
@@ -326,37 +355,51 @@ def run(
             wall_seconds=wall,
         )
 
-    # Fail-closed safety catch (gr179498): this spawns a full-privilege
-    # ``claude -p --dangerously-skip-permissions`` agent on VERBATIM
-    # (agent-filable) gripe text with no container isolation. Until that runs
-    # in the §13 container, refuse unless an operator has explicitly acked the
-    # risk — so turning on ``backlog_groom`` alone can't feed attacker-shaped
-    # gripe text into a full-privilege run. Skip clean (gripe stays open).
-    if not _unsandboxed_ack():
+    # Fail-closed safety catch (gr179498): fix_gripe's agent gets full
+    # Bash/Edit/Write on VERBATIM (agent-filable) gripe text. §H cycle a
+    # routes it through the containerized executor whenever the host can run
+    # one — network-isolated, no DB creds — which needs no ack. But when the
+    # container path is unavailable (feature off, capability probe failed),
+    # refuse to fall back to running full-privilege and unsandboxed unless an
+    # operator has explicitly acked the risk — so turning on `backlog_groom`
+    # alone can't feed attacker-shaped gripe text into an unsandboxed run.
+    # Skip clean here (before spending any clone effort); the actual
+    # enforcement is `require_container=not _unsandboxed_ack()` on the
+    # chokepoint call below, which also catches the race where a container
+    # that looked available here dies at the infra level mid-run.
+    from precis.workers.executors import agent_container as _agent_container
+
+    container_ready = (
+        _agent_container.container_agent_enabled()
+        and _agent_container.container_capability_ok()
+    )
+    if not container_ready and not _unsandboxed_ack():
         wall = time.perf_counter() - t0
         log.warning(
-            "fix_gripe: refusing gripe:%d — full-privilege unsandboxed agent "
-            "(gr179498); fail-closed. Set %s=1 to run anyway, or wait for the "
-            "§13 containerization.",
+            "fix_gripe: refusing gripe:%d — no containerized agent path "
+            "available and unsandboxed run not acked (gr179498); "
+            "fail-closed. Set %s=1 to run unsandboxed anyway, or make the "
+            "§13 container available.",
             gripe_id,
             _UNSANDBOXED_ACK_ENV,
         )
         return RunOutcome(
             status="skipped",
             summary_text=(
-                f"fix_gripe job:{job_id} for gripe:{gripe_id} skipped: the fix "
-                "spawns a full-privilege `claude -p --dangerously-skip-"
-                "permissions` agent on verbatim (agent-filable) gripe text "
-                "without container isolation (gr179498). Fail-closed pending "
-                f"the §13 containerization — set {_UNSANDBOXED_ACK_ENV}=1 to "
-                "run it anyway (accepting the risk on a trusted-operator "
-                "deployment)."
+                f"fix_gripe job:{job_id} for gripe:{gripe_id} skipped: no "
+                "containerized agent path is available on this host, and "
+                "running the agent full-privilege and unsandboxed on "
+                "verbatim (agent-filable) gripe text is fail-closed "
+                f"(gr179498) — set {_UNSANDBOXED_ACK_ENV}=1 to run it "
+                "unsandboxed anyway (accepting the risk on a "
+                "trusted-operator deployment), or make the §13 container "
+                "available on this host."
             ),
             gripe_comment_text=(
                 f"[worker:job:{job_id}] fix attempt skipped: fix_gripe is "
-                f"fail-closed ({_UNSANDBOXED_ACK_ENV} unset) — it would run a "
-                "full-privilege unsandboxed agent on this gripe's verbatim "
-                "text (gr179498). No action taken."
+                f"fail-closed ({_UNSANDBOXED_ACK_ENV} unset, no container "
+                "available) — it would run an unsandboxed agent on this "
+                "gripe's verbatim text (gr179498). No action taken."
             ),
             branch=None,
             sha=None,
@@ -389,31 +432,90 @@ def run(
 
     base_sha = _git_rev_parse(clone_dir, "origin/main")
 
-    result = _spawn_claude(cfg, clone_dir, prompt)
-    wall = time.perf_counter() - t0
-    if result.returncode != 0:
-        tail = (result.stderr or result.stdout or "").splitlines()[-20:]
+    try:
+        _spawn_claude(cfg, clone_dir, prompt)
+    except ValueError as exc:
+        # Mount/workdir validation (containerize_claude_argv, agent_container)
+        # raises ValueError on a bad Mount/workdir shape — a config bug, not a
+        # claude/model failure, but it must not escape run() as a raw
+        # exception (the executor runner expects a RunOutcome, not an
+        # unhandled traceback).
+        wall = time.perf_counter() - t0
         return RunOutcome(
             status="failed",
             summary_text=(
                 f"fix_gripe job:{job_id} for gripe:{gripe_id} failed: "
-                f"claude exited {result.returncode}. Took {wall:.1f}s. "
-                "stderr tail:\n" + "\n".join(tail)
+                f"invalid container mount/workdir configuration: {exc}. "
+                f"Took {wall:.1f}s."
             ),
             gripe_comment_text=(
-                f"[worker:job:{job_id}] fix attempt failed: claude exited "
-                f"{result.returncode}. stderr tail:\n" + "\n".join(tail[-5:])
+                f"[worker:job:{job_id}] fix attempt failed: invalid "
+                f"container mount/workdir configuration ({exc})."
             ),
             branch=branch,
             sha=None,
             wall_seconds=wall,
         )
+    except ContainerRequiredError as exc:
+        # The chokepoint's own fail-closed refusal (require_container=True,
+        # container unavailable) — a race against the container_ready
+        # pre-check above (a probe result that flipped, or an infra failure
+        # mid-run), not a claude/model failure. Same skip disposition as the
+        # pre-check: the gripe stays open for a re-attempt.
+        wall = time.perf_counter() - t0
+        log.warning(
+            "fix_gripe: gripe:%d — container became unavailable mid-run and "
+            "the unsandboxed fallback is not acked: %s",
+            gripe_id,
+            exc,
+        )
+        return RunOutcome(
+            status="skipped",
+            summary_text=(
+                f"fix_gripe job:{job_id} for gripe:{gripe_id} skipped: the "
+                f"containerized agent path became unavailable mid-run and "
+                f"the unsandboxed fallback is fail-closed (gr179498): {exc}"
+            ),
+            gripe_comment_text=(
+                f"[worker:job:{job_id}] fix attempt skipped: the "
+                "containerized agent path became unavailable mid-run "
+                "(gr179498 fail-closed). No action taken."
+            ),
+            branch=branch,
+            sha=None,
+            wall_seconds=wall,
+        )
+    except ClaudeAgentError as exc:
+        wall = time.perf_counter() - t0
+        tail = (exc.stderr or exc.stdout or "").splitlines()[-20:]
+        return RunOutcome(
+            status="failed",
+            summary_text=(
+                f"fix_gripe job:{job_id} for gripe:{gripe_id} failed: "
+                f"claude failed ({exc}). Took {wall:.1f}s. "
+                "stderr tail:\n" + "\n".join(tail)
+            ),
+            gripe_comment_text=(
+                f"[worker:job:{job_id}] fix attempt failed: claude failed "
+                f"({exc}). stderr tail:\n" + "\n".join(tail[-5:])
+            ),
+            branch=branch,
+            sha=None,
+            wall_seconds=wall,
+        )
+    wall = time.perf_counter() - t0
 
-    # Verify the agent actually committed + pushed the branch.
+    # Verify the agent actually committed, then push on its behalf. The agent
+    # never has origin mounted or reachable — write-back is a commit inside
+    # the sandbox, pushed on the TRUSTED (host) side, never with creds inside
+    # the sandbox (§H cycle a design decision). call_claude_agent raises on a
+    # genuine failure (above) and silently recovers a resumable exhaustion
+    # (--max-turns / --max-budget-usd) into a clean return — either way, the
+    # real judge of success is whether the agent produced any commit, so
+    # there's no exit-code branch to check here (unlike the old bare
+    # subprocess.run(check=False) contract).
     branch_sha = _git_rev_parse(clone_dir, branch)
-    pushed_sha = _git_rev_parse(clone_dir, f"origin/{branch}")
-    main_sha_after = _git_rev_parse(clone_dir, "origin/main")
-    if branch_sha is None or pushed_sha is None or branch_sha != pushed_sha:
+    if branch_sha is None or branch_sha == base_sha:
         return RunOutcome(
             status="failed",
             summary_text=(
@@ -422,8 +524,47 @@ def run(
                 f"{branch}. Took {wall:.1f}s."
             ),
             gripe_comment_text=(
-                f"[worker:job:{job_id}] claude exited cleanly but did "
-                f"not push branch {branch} to origin. No fix to review."
+                f"[worker:job:{job_id}] claude exited cleanly but made "
+                f"no commits on branch {branch}. No fix to review."
+            ),
+            branch=branch,
+            sha=None,
+            wall_seconds=wall,
+        )
+
+    try:
+        _push_branch_trusted(clone_dir, branch)
+    except (RuntimeError, subprocess.CalledProcessError) as exc:
+        wall = time.perf_counter() - t0
+        return RunOutcome(
+            status="failed",
+            summary_text=(
+                f"fix_gripe job:{job_id} for gripe:{gripe_id} failed: "
+                f"trusted-side push of branch {branch} failed: {exc}. "
+                f"Took {wall:.1f}s."
+            ),
+            gripe_comment_text=(
+                f"[worker:job:{job_id}] claude committed a fix on branch "
+                f"{branch}, but the trusted-side push failed ({exc})."
+            ),
+            branch=branch,
+            sha=None,
+            wall_seconds=wall,
+        )
+
+    pushed_sha = _git_rev_parse(clone_dir, f"origin/{branch}")
+    main_sha_after = _git_rev_parse(clone_dir, "origin/main")
+    if pushed_sha is None or branch_sha != pushed_sha:
+        return RunOutcome(
+            status="failed",
+            summary_text=(
+                f"fix_gripe job:{job_id} for gripe:{gripe_id} failed: "
+                "no commits pushed to origin under branch "
+                f"{branch}. Took {wall:.1f}s."
+            ),
+            gripe_comment_text=(
+                f"[worker:job:{job_id}] the trusted-side push of branch "
+                f"{branch} did not land as expected. No fix to review."
             ),
             branch=branch,
             sha=None,
@@ -488,73 +629,90 @@ def _compose_prompt(*, ref_title: str, blocks: list[Any]) -> str:
     lines.append("- Make the smallest commits that fix the reported bug.")
     lines.append("- Run any relevant tests before committing.")
     lines.append(
-        "- When you are done, push your branch to origin (`git push origin HEAD`)."
+        "- Commit your fix locally. Do NOT push — you have no network route "
+        "to origin and no push credentials; a trusted process pushes your "
+        "branch (only gripe_* branches are eligible) after you finish."
     )
     lines.append("- Do NOT touch main. Do NOT switch branches.")
-    lines.append(
-        "- The pre-push hook will reject pushes to anything not matching gripe_*."
-    )
     return "\n".join(lines)
 
 
 # ── Subprocess + git plumbing ─────────────────────────────────────
 
 
-def _spawn_claude(
-    cfg: FixGripeConfig, cwd: Path, prompt: str
-) -> subprocess.CompletedProcess[str]:
-    """Spawn ``claude -p`` with a stripped env.
+def _spawn_claude(cfg: FixGripeConfig, clone_dir: Path, prompt: str) -> Any:
+    """Run the fix agent through the :func:`call_claude_agent` chokepoint
+    (§H cycle a — no more bare ``subprocess.run`` of claude).
 
-    Uses ``--bare`` so auth is strictly ``ANTHROPIC_API_KEY`` (no
-    OAuth, no keychain reads, no plugin sync, no CLAUDE.md
-    auto-discovery). The claude_inproc executor runs inside the
-    precis container where Claude Code's OAuth state from the host
-    is unreachable (Keychain doesn't bind-mount), so an API key is
-    the only workable auth path. ``--bare`` makes the failure mode
-    obvious — without a key claude exits immediately with a clear
-    error rather than silently reading a stale OAuth state.
+    Uses ``bare=True`` so auth is strictly ``ANTHROPIC_API_KEY`` (no OAuth,
+    no keychain reads, no plugin sync, no CLAUDE.md auto-discovery) — the
+    claude_inproc executor runs where Claude Code's OAuth state from an
+    interactive host is unreachable, so an API key is the only workable auth
+    path. ``env_base=_restricted_env(...)`` replaces the ambient worker env
+    entirely (no PG*/PRECIS_DATABASE_URL — the DB-isolation boundary), and
+    ``envelope=Envelope(egress="api-only", ...)`` gives the container
+    tier-3 network access to the Anthropic API only (the local git remote
+    needs no network at all — ``git clone --local``). ``mounts`` bind the
+    clone ONLY (rw) — the source repo (origin) is never mounted, so the
+    agent has no filesystem path to it and no network route either
+    (egress is ``api-only``, Anthropic only). It can commit inside the
+    clone; it cannot push. Write-back is a commit, pushed on the TRUSTED
+    side: once this call returns, ``run()`` (host-side, has the real repo
+    path + no sandbox) performs the actual ``git push`` — never inside the
+    sandbox, never with push creds handed to the agent.
 
-    The agent inside ``--bare`` still has full tool access
-    (Bash/Read/Write/Edit) and skill resolution via ``/skill-name``;
-    only auto-discovery is stripped, which is exactly what we want
-    for a deterministic worker.
+    ``require_container=not _unsandboxed_ack()`` is the gr179498 fail-closed
+    gate, now enforced by the chokepoint itself rather than a local check
+    here: a containerized run needs no ack; the moment the container path is
+    unavailable — at call time OR mid-run (an infra failure) —
+    :func:`call_claude_agent` raises
+    :class:`~precis.utils.claude_agent.ContainerRequiredError` instead of
+    silently falling back to running full-privilege and unsandboxed, unless
+    the ack is set.
+
+    The agent still has full tool access (Bash/Read/Write/Edit) and skill
+    resolution via ``/skill-name`` inside its box — ``--bare`` only strips
+    auto-discovery, and the fix_gripe envelope denies neither FS tools nor
+    fetch tools (``write="full"``, ``egress="api-only"``); the *real*
+    boundaries are the container's network namespace, the absent DB creds,
+    and the absent origin mount — not a cooperative tool deny.
     """
-    # Defense in depth (gr179498): run() is fail-closed on the same ack, but
-    # guard the actual spawn too so a future direct caller can't bypass it.
-    if not _unsandboxed_ack():
-        raise RuntimeError(
-            "fix_gripe._spawn_claude: refusing to spawn a full-privilege "
-            f"unsandboxed `claude -p` — {_UNSANDBOXED_ACK_ENV} is not set "
-            "(gr179498). run() should have skipped this fail-closed."
-        )
-    env = _restricted_env(cwd)
-    if "ANTHROPIC_API_KEY" not in env:
+    from precis.utils.claude_agent import call_claude_agent
+    from precis.workers.envelope import Envelope
+    from precis.workers.executors.agent_container import Mount
+
+    env_base = _restricted_env(clone_dir)
+    if "ANTHROPIC_API_KEY" not in env_base:
         raise RuntimeError(
             "fix_gripe: ANTHROPIC_API_KEY is required to run claude -p "
             "in the precis container (OAuth / keychain auth aren't "
             "reachable from inside the container). Set it in the "
             "precis-dev compose service."
         )
-    return subprocess.run(
-        [
-            cfg.claude_bin,
-            "-p",
-            "--bare",
-            "--dangerously-skip-permissions",
-            "--model",
-            cfg.claude_model,
-            # ``--`` end-of-options sentinel: the prompt embeds verbatim gripe
-            # body/comment text (agent-filable) and must never be parsed as a
-            # CLI flag. Same guard as claude_agent/claude_p.
-            "--",
-            prompt,
-        ],
-        cwd=str(cwd),
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=cfg.timeout_seconds,
-        check=False,
+    # Explicit, minimal envelope for this call rather than inheriting the
+    # ambient one — fix_gripe runs under claude_inproc's envelope_scope, but
+    # a job's meta.envelope (if any) is about DB write scope, not about
+    # "FS tools yes, DB no" (fix_gripe's actual shape: it never touches the
+    # DB at all — no --mcp-config, no DSN in env_base — so the write axis is
+    # moot; egress must stay reachable for the LLM call itself, hence
+    # api-only rather than none).
+    envelope = Envelope(egress="api-only", write="full", return_="full")
+    mounts = (
+        Mount(host_path=str(clone_dir), container_path=str(clone_dir), mode="rw"),
+    )
+    return call_claude_agent(
+        prompt,
+        model=cfg.claude_model,
+        bare=True,
+        env_base=env_base,
+        cwd=clone_dir,
+        mounts=mounts,
+        workdir=str(clone_dir),
+        envelope=envelope,
+        require_container=not _unsandboxed_ack(),
+        timeout_s=float(cfg.timeout_seconds),
+        # No MCP server for fix_gripe — it never reaches the precis DB.
+        mcp_config=None,
     )
 
 
@@ -652,6 +810,43 @@ def _install_prepush_hook(clone_dir: Path) -> None:
         encoding="utf-8",
     )
     hook_path.chmod(0o755)
+
+
+#: Branch names the trusted-side push will accept — mirrors the pre-push
+#: hook's ``gripe_*`` glob but as an exact ``gripe_<digits>`` match (the
+#: shape ``run()`` always constructs; anything else is refused).
+_GRIPE_BRANCH_PATTERN = re.compile(r"^gripe_\d+$")
+
+
+def _push_branch_trusted(clone_dir: Path, branch: str) -> None:
+    """Push ``branch`` to origin from the TRUSTED (host) side.
+
+    §H cycle a design decision: write-back is a commit, pushed on the
+    trusted side — never inside the sandbox, never with push creds handed
+    to the agent. The agent has no origin mount and no network route to it
+    (see :func:`_spawn_claude`), so it physically cannot push; this is the
+    only path a fix branch reaches origin.
+
+    Guards the branch name against ``gripe_<id>`` HOST-side, before
+    shelling out — belt and braces alongside the clone's pre-push hook
+    (:func:`_install_prepush_hook`): don't rely on the hook alone, since
+    this function is the one actually authorized to push, and a defense
+    that only lived inside the clone's ``.git`` would be one config bug
+    away from silently trusting whatever ``branch`` this function was
+    called with.
+    """
+    if not _GRIPE_BRANCH_PATTERN.match(branch):
+        raise RuntimeError(
+            f"fix_gripe: refusing to push branch {branch!r} — must match "
+            "gripe_<id> (never main or anything else)"
+        )
+    subprocess.run(
+        ["git", "push", "origin", f"{branch}:refs/heads/{branch}"],
+        cwd=str(clone_dir),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def _git_rev_parse(clone_dir: Path, refname: str) -> str | None:

@@ -12,11 +12,14 @@ missing the required vars.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from precis.utils.claude_agent import ContainerRequiredError
 from precis.workers.job_types import fix_gripe
 from precis.workers.job_types.fix_gripe import (
     FixGripeConfig,
@@ -122,7 +125,10 @@ class TestComposePrompt:
         assert "CONSTRAINTS" in prompt
         assert "gripe_*" in prompt
         assert "Do NOT touch main" in prompt
-        assert "push your branch to origin" in prompt
+        # §H cycle a write-back design: the agent commits only; a trusted
+        # process pushes on its behalf (it has no push creds/network route).
+        assert "Do NOT push" in prompt
+        assert "trusted process pushes" in prompt
 
 
 @dataclass(frozen=True)
@@ -381,11 +387,11 @@ class TestValidateSubmit:
 
 # ── GLM/OpenRouter fleet-flip safety gate (Part 3) ─────────────────
 #
-# fix_gripe.run() spawns a raw `claude -p` subprocess whose --model comes
-# from resolve_model(Tier.FRONTIER) — under backend=openai that's an
-# OSS slug the claude CLI can't run. The gate must skip cleanly *before*
-# any subprocess is spawned (indeed, before the gripe/repo are even
-# resolved) rather than let claude -p 400.
+# fix_gripe.run()'s agent runs `claude -p` (via the call_claude_agent
+# chokepoint) whose --model comes from resolve_model(Tier.FRONTIER) —
+# under backend=openai that's an OSS slug the claude CLI can't run. The
+# gate must skip cleanly *before* any subprocess is spawned (indeed,
+# before the gripe/repo are even resolved) rather than let claude -p 400.
 
 
 class TestBackendFlipGate:
@@ -452,9 +458,10 @@ class TestBackendFlipGate:
 
 
 class TestUnsandboxedAckGate:
-    """gr179498: fix_gripe is fail-closed — it won't run its full-privilege
-    unsandboxed agent on verbatim gripe text unless an operator explicitly
-    acks the risk, so enabling backlog_groom alone can't unleash it."""
+    """gr179498, §H cycle a: fix_gripe is fail-closed — it won't fall back to
+    running its agent full-privilege and unsandboxed unless an operator
+    explicitly acks the risk, so enabling backlog_groom alone can't unleash
+    it. A containerized run needs no ack (new rule, §H cycle a)."""
 
     @staticmethod
     def _cfg() -> FixGripeConfig:
@@ -466,13 +473,14 @@ class TestUnsandboxedAckGate:
             timeout_seconds=1800,
         )
 
-    def test_skips_when_ack_absent_without_touching_store_or_subprocess(
+    def test_skips_when_no_container_and_no_ack_without_touching_store(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from precis.utils.llm.router import Backend
 
         monkeypatch.setattr(fix_gripe, "resolve_backend", lambda: Backend.ANTHROPIC)
         monkeypatch.delenv("PRECIS_FIX_GRIPE_UNSANDBOXED_ACK", raising=False)
+        monkeypatch.delenv("PRECIS_AGENT_CONTAINER", raising=False)
 
         class _BoomStore:
             def get_ref(self, **_kw: object) -> object:
@@ -490,13 +498,167 @@ class TestUnsandboxedAckGate:
         assert "gr179498" in outcome.summary_text
         assert spawn_calls == []
 
-    def test_spawn_claude_raises_without_ack(
+    def test_proceeds_when_container_available_even_without_ack(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Defense in depth: even a direct _spawn_claude call is refused.
+        """New rule (§H cycle a): a containerized run needs no operator ack —
+        the pre-check must NOT skip just because the ack env var is unset, as
+        long as the host can actually run the container."""
+        from precis.utils.llm.router import Backend
+        from precis.workers.executors import agent_container as ac
+
+        monkeypatch.setattr(fix_gripe, "resolve_backend", lambda: Backend.ANTHROPIC)
         monkeypatch.delenv("PRECIS_FIX_GRIPE_UNSANDBOXED_ACK", raising=False)
-        with pytest.raises(RuntimeError, match="refusing to spawn"):
+        monkeypatch.setattr(ac, "container_agent_enabled", lambda: True)
+        monkeypatch.setattr(ac, "container_capability_ok", lambda *a, **k: True)
+
+        class _FakeStore:
+            def get_ref(self, **_kw: object) -> None:
+                return None  # reached ⇒ proves the gate did NOT skip
+
+        with pytest.raises(RuntimeError, match="gripe id=42 not found"):
+            fix_gripe.run(store=_FakeStore(), job_id=1, gripe_id=42, config=self._cfg())
+
+    def test_spawn_claude_raises_without_container_or_ack(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Defense in depth: even a direct _spawn_claude call is refused when
+        # neither a container is available nor the unsandboxed-run ack is
+        # set — enforced now by call_claude_agent's require_container
+        # (ContainerRequiredError), not a local check in _spawn_claude.
+        monkeypatch.delenv("PRECIS_FIX_GRIPE_UNSANDBOXED_ACK", raising=False)
+        monkeypatch.delenv("PRECIS_AGENT_CONTAINER", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        with pytest.raises(ContainerRequiredError, match="refusing"):
             fix_gripe._spawn_claude(self._cfg(), Path("/tmp/x"), "prompt")
+
+    def test_spawn_claude_containerizes_without_ack(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A capable host runs _spawn_claude containerized with no ack set —
+        proves ``require_container=False`` reaches call_claude_agent (which
+        then selects the container path)."""
+        from types import SimpleNamespace
+
+        import precis.utils.claude_agent as ca
+        from precis.workers.executors import agent_container as ac
+
+        monkeypatch.delenv("PRECIS_FIX_GRIPE_UNSANDBOXED_ACK", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setenv("PRECIS_AGENT_CONTAINER", "1")
+        monkeypatch.setenv("PRECIS_CONTAINER_BIN", "podman")
+        monkeypatch.setattr(ac, "container_capability_ok", lambda *a, **k: True)
+
+        clone_dir = tmp_path / "clone"
+        clone_dir.mkdir()
+
+        captured: dict[str, object] = {}
+
+        def _fake(argv, **k):
+            captured["argv"] = argv
+            return SimpleNamespace(stdout="done", stderr="")
+
+        monkeypatch.setattr(ca, "run_claude", _fake)
+        fix_gripe._spawn_claude(self._cfg(), clone_dir, "the prompt")
+        argv = captured["argv"]
+        assert isinstance(argv, list)
+        assert argv[0] == "podman" and "run" in argv
+        assert f"{clone_dir}:{clone_dir}" in argv
+        # repo_dir (origin) is NEVER mounted — the agent commits only; the
+        # trusted (host) side pushes after this call returns (§H cycle a).
+        assert argv.count("-v") == 1
+        assert argv[argv.index("-w") + 1] == str(clone_dir)
+        assert "ANTHROPIC_API_KEY" in argv  # bare ⇒ api-key channel, not oauth
+        # egress api-only ⇒ bridge networking (the LLM call needs the net),
+        # not `--network none` — the local git remote needs no network.
+        assert "--network" in argv and "bridge" in argv
+
+
+class TestSpawnClaudeCallShape:
+    """The exact ``call_claude_agent`` call shape §H cycle a specifies:
+    ``bare=True``, ``env_base``, mounts, workdir, explicit envelope,
+    ``require_container`` — stubbed at the chokepoint so no real subprocess
+    or container runs. Mounts are clone-only — the source repo (origin) is
+    never mounted; the agent commits only, and ``run()`` performs the
+    trusted-side push after ``call_claude_agent`` returns."""
+
+    @staticmethod
+    def _cfg() -> FixGripeConfig:
+        return FixGripeConfig(
+            default_repo_dir=Path("/tmp/precis-mcp"),
+            work_dir=Path("/tmp/precis-fix-work"),
+            claude_bin="claude",
+            claude_model="claude-opus-4-8",
+            timeout_seconds=900,
+        )
+
+    def test_call_shape(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        from precis.utils import claude_agent as ca_mod
+        from precis.workers.envelope import Envelope
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.delenv("PRECIS_FIX_GRIPE_UNSANDBOXED_ACK", raising=False)
+
+        clone_dir = tmp_path / "clone"
+        clone_dir.mkdir()
+
+        captured: dict[str, Any] = {}
+
+        def _fake_call(prompt, **kw):
+            captured["prompt"] = prompt
+            captured.update(kw)
+            return object()
+
+        # _spawn_claude does a LOCAL import of call_claude_agent at call time,
+        # so patching the source module's attribute is what it picks up.
+        monkeypatch.setattr(ca_mod, "call_claude_agent", _fake_call)
+
+        fix_gripe._spawn_claude(self._cfg(), clone_dir, "the prompt")
+
+        assert captured["prompt"] == "the prompt"
+        assert captured["bare"] is True
+        assert captured["cwd"] == clone_dir
+        assert captured["workdir"] == str(clone_dir)
+        assert captured["require_container"] is True  # no ack set
+        assert captured["model"] == "claude-opus-4-8"
+        assert captured["timeout_s"] == 900.0
+
+        env_base = captured["env_base"]
+        assert "ANTHROPIC_API_KEY" in env_base
+        assert "PRECIS_DATABASE_URL" not in env_base
+        assert not any(k.startswith("PG") for k in env_base)
+
+        envelope = captured["envelope"]
+        assert isinstance(envelope, Envelope)
+        assert envelope.egress == "api-only"
+
+        mounts = captured["mounts"]
+        assert len(mounts) == 1  # clone ONLY — no repo_dir mount
+        m = mounts[0]
+        assert m.host_path == str(clone_dir)
+        assert m.container_path == m.host_path  # identical path both sides
+        assert m.mode == "rw"
+
+    def test_require_container_false_when_acked(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from precis.utils import claude_agent as ca_mod
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setenv("PRECIS_FIX_GRIPE_UNSANDBOXED_ACK", "1")
+
+        clone_dir = tmp_path / "clone"
+        clone_dir.mkdir()
+
+        captured: dict[str, object] = {}
+
+        def _fake_call(prompt, **kw):
+            captured.update(kw)
+            return object()
+
+        monkeypatch.setattr(ca_mod, "call_claude_agent", _fake_call)
+        fix_gripe._spawn_claude(self._cfg(), clone_dir, "p")
+        assert captured["require_container"] is False
 
 
 # ── job_types registry: lookup paths ───────────────────────────────
@@ -537,3 +699,246 @@ class TestExecutorRegistry:
         from precis.workers.executors import DEFAULT_EXECUTOR
 
         assert DEFAULT_EXECUTOR == "claude_inproc"
+
+
+# ── run(): the exception-based _spawn_claude contract (§H cycle a) ─
+#
+# call_claude_agent RAISES on a real failure and on a fail-closed
+# ContainerRequiredError refusal, rather than the old bare subprocess.run's
+# always-returns-with-a-returncode contract. run() must map each onto the
+# right RunOutcome. Real git plumbing (a throwaway local repo) — only
+# _spawn_claude is stubbed.
+
+
+class TestRunExceptionMapping:
+    @staticmethod
+    def _make_repo(tmp_path: Path) -> Path:
+        import subprocess
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        def _run(*args: str) -> None:
+            subprocess.run(
+                args, cwd=str(repo), check=True, capture_output=True, text=True
+            )
+
+        subprocess.run(
+            ["git", "init", "-q", "-b", "main", str(repo)],
+            check=True,
+            capture_output=True,
+        )
+        _run("git", "config", "user.email", "t@t")
+        _run("git", "config", "user.name", "t")
+        (repo / "f.txt").write_text("x")
+        _run("git", "add", ".")
+        _run("git", "commit", "-q", "-m", "init")
+        return repo
+
+    @staticmethod
+    def _cfg(repo: Path, tmp_path: Path) -> FixGripeConfig:
+        return FixGripeConfig(
+            default_repo_dir=repo,
+            work_dir=tmp_path / "work",
+            claude_bin="claude",
+            claude_model="claude-opus-4-8",
+            timeout_seconds=60,
+        )
+
+    @staticmethod
+    def _store() -> object:
+        @dataclass(frozen=True)
+        class _Ref:
+            title: str = "bug"
+            id: int = 42
+
+        class _Store:
+            def get_ref(self, **_kw: object) -> _Ref:
+                return _Ref()
+
+            def tags_for(self, _ref_id: int) -> list[str]:
+                return []
+
+            def list_blocks_for_ref(self, _ref_id: int) -> list[object]:
+                return [_FakeBlock("body text")]
+
+        return _Store()
+
+    def _run_with_spawn(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        spawn_effect,
+    ) -> RunOutcome:
+        from precis.utils.llm.router import Backend
+
+        repo = self._make_repo(tmp_path)
+        monkeypatch.setattr(fix_gripe, "resolve_backend", lambda: Backend.ANTHROPIC)
+        monkeypatch.setenv("PRECIS_FIX_GRIPE_UNSANDBOXED_ACK", "1")
+        monkeypatch.setattr(fix_gripe, "_spawn_claude", spawn_effect)
+        return fix_gripe.run(
+            store=self._store(), job_id=1, gripe_id=42, config=self._cfg(repo, tmp_path)
+        )
+
+    def test_claude_agent_error_maps_to_failed(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from precis.utils.claude_agent import ClaudeAgentError
+
+        def _boom(*_a: object, **_k: object) -> object:
+            raise ClaudeAgentError("exited 1", stdout="", stderr="oops", returncode=1)
+
+        outcome = self._run_with_spawn(monkeypatch, tmp_path, _boom)
+        assert outcome.status == "failed"
+        assert "oops" in outcome.summary_text
+
+    def test_container_required_error_maps_to_skipped(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        def _boom(*_a: object, **_k: object) -> object:
+            raise ContainerRequiredError("container unavailable mid-run")
+
+        outcome = self._run_with_spawn(monkeypatch, tmp_path, _boom)
+        assert outcome.status == "skipped"
+        assert "gr179498" in outcome.summary_text
+
+    def test_value_error_maps_to_failed(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A mount/workdir validation ValueError from ``containerize_claude_argv``
+        (via ``call_claude_agent``) must not escape ``run()`` as a raw
+        exception — the executor runner expects a RunOutcome (finding 3)."""
+
+        def _boom(*_a: object, **_k: object) -> object:
+            raise ValueError("agent_container: mount host_path does not exist")
+
+        outcome = self._run_with_spawn(monkeypatch, tmp_path, _boom)
+        assert outcome.status == "failed"
+        assert "mount" in outcome.summary_text.lower()
+
+    def test_clean_agent_result_but_no_push_maps_to_failed(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """call_claude_agent returns cleanly (no exception — e.g. a resumable
+        exhaustion) but the agent never pushed a branch: still a failure,
+        judged by git state, not by an exit code."""
+
+        def _noop(*_a: object, **_k: object) -> object:
+            return object()
+
+        outcome = self._run_with_spawn(monkeypatch, tmp_path, _noop)
+        assert outcome.status == "failed"
+        assert "no commits pushed" in outcome.summary_text
+
+
+# ── trusted-side push: §H cycle a write-back design ────────────────
+#
+# The agent never has origin mounted or reachable (no repo_dir mount, §H
+# cycle a) — it can only commit inside the clone. run() (trusted, host-side)
+# performs the actual `git push` after call_claude_agent returns, guarded to
+# gripe_<id> branch names.
+
+
+class TestPushBranchTrusted:
+    def test_refuses_non_gripe_branch_name(self, tmp_path: Path) -> None:
+        from precis.workers.job_types.fix_gripe import _push_branch_trusted
+
+        with pytest.raises(RuntimeError, match="gripe_"):
+            _push_branch_trusted(tmp_path, "main")
+
+    def test_refuses_gripe_branch_with_unexpected_shape(self, tmp_path: Path) -> None:
+        from precis.workers.job_types.fix_gripe import _push_branch_trusted
+
+        # Only the exact gripe_<digits> shape run() constructs is accepted —
+        # not a lookalike that could smuggle extra refspec/shell content.
+        with pytest.raises(RuntimeError, match="gripe_"):
+            _push_branch_trusted(tmp_path, "gripe_42_evil")
+
+    def test_no_subprocess_when_branch_name_rejected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import subprocess
+
+        from precis.workers.job_types.fix_gripe import _push_branch_trusted
+
+        called: list[object] = []
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: called.append((a, k)))
+        with pytest.raises(RuntimeError):
+            _push_branch_trusted(tmp_path, "not-a-gripe-branch")
+        assert called == []
+
+
+class TestRunPerformsTrustedSidePush:
+    """End-to-end (real git, no claude): run() itself pushes the agent's
+    commit to origin, and refuses to do so for anything but the constructed
+    gripe_<id> branch name."""
+
+    @staticmethod
+    def _make_repo(tmp_path: Path) -> Path:
+        return TestRunExceptionMapping._make_repo(tmp_path)
+
+    @staticmethod
+    def _cfg(repo: Path, tmp_path: Path) -> FixGripeConfig:
+        return TestRunExceptionMapping._cfg(repo, tmp_path)
+
+    @staticmethod
+    def _store() -> object:
+        return TestRunExceptionMapping._store()
+
+    def test_run_pushes_the_agents_commit_via_trusted_side(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        import subprocess
+
+        from precis.utils.llm.router import Backend
+
+        repo = self._make_repo(tmp_path)
+        monkeypatch.setattr(fix_gripe, "resolve_backend", lambda: Backend.ANTHROPIC)
+        monkeypatch.setenv("PRECIS_FIX_GRIPE_UNSANDBOXED_ACK", "1")
+
+        # run() computes this same path internally: work_dir/clones/gripe_<id>.
+        clone_dir = tmp_path / "work" / "clones" / "gripe_42"
+
+        def _commit_in_clone(*_a: object, **_k: object) -> object:
+            # Simulate the agent's ONLY allowed action: committing locally
+            # inside the (already-cloned) sandbox working tree. No push —
+            # the agent has no origin mount and no push creds.
+            (clone_dir / "fix.txt").write_text("fixed")
+            env = {
+                **os.environ,
+                "GIT_AUTHOR_NAME": "agent",
+                "GIT_AUTHOR_EMAIL": "agent@precis",
+                "GIT_COMMITTER_NAME": "agent",
+                "GIT_COMMITTER_EMAIL": "agent@precis",
+            }
+            subprocess.run(
+                ["git", "add", "."], cwd=str(clone_dir), check=True, capture_output=True
+            )
+            subprocess.run(
+                ["git", "commit", "-q", "-m", "fix"],
+                cwd=str(clone_dir),
+                check=True,
+                capture_output=True,
+                env=env,
+            )
+            return object()
+
+        monkeypatch.setattr(fix_gripe, "_spawn_claude", _commit_in_clone)
+        outcome = fix_gripe.run(
+            store=self._store(), job_id=1, gripe_id=42, config=self._cfg(repo, tmp_path)
+        )
+
+        assert outcome.status == "succeeded"
+        assert outcome.branch == "gripe_42"
+        assert outcome.sha is not None
+
+        # origin (the ORIGINAL repo, not the clone) now carries the branch —
+        # proof the TRUSTED side (run(), not the agent) performed the push.
+        check = subprocess.run(
+            ["git", "rev-parse", "--verify", "gripe_42"],
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
+        )
+        assert check.returncode == 0
+        assert check.stdout.strip() == outcome.sha

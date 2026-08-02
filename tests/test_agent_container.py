@@ -88,7 +88,11 @@ def test_api_only_honors_local_llm_host_override(monkeypatch) -> None:
 
 
 def test_write_full_is_agent_rw_oauth() -> None:
-    cenv = ac.container_env(Envelope(write="full"), model="qwen")
+    cenv = ac.container_env(
+        Envelope(write="full"),
+        model="qwen",
+        dsn="postgresql://agent_rw:pw@db.internal:6432/precis_prod",
+    )
     assert cenv.values["PRECIS_MCP_DB_ROLE"] == "agent_rw"
     assert cenv.values["PRECIS_AGENT_MODE"] == "oauth"
     assert "CLAUDE_CODE_OAUTH_TOKEN" in cenv.secret_keys
@@ -107,6 +111,22 @@ def test_api_mode_injects_api_key_not_oauth(monkeypatch) -> None:
     assert "ANTHROPIC_API_KEY" in cenv.secret_keys
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in cenv.secret_keys
     assert cenv.values["PRECIS_AGENT_MODE"] == "api"
+
+
+def test_container_env_without_dsn_omits_database_url_secret() -> None:
+    """A caller with no DSN to forward (fix_gripe: no --mcp-config, no DB
+    access at all) must not request PRECIS_DATABASE_URL by key — there's
+    nothing behind it (a latent secret-key request, gr-finding-5)."""
+    cenv = ac.container_env(Envelope(write="full"), model="qwen")
+    assert "PRECIS_DATABASE_URL" not in cenv.secret_keys
+    assert "CLAUDE_CODE_OAUTH_TOKEN" in cenv.secret_keys
+
+
+def test_container_env_with_dsn_includes_database_url_secret() -> None:
+    cenv = ac.container_env(
+        Envelope(write="full"), model="qwen", dsn="postgresql://x/y"
+    )
+    assert "PRECIS_DATABASE_URL" in cenv.secret_keys
 
 
 # ── argv assembly (secret-by-key, network, image-last) ─────────────
@@ -229,6 +249,180 @@ def test_build_agent_run_without_prompt_is_unchanged() -> None:
     env = Envelope()
     argv = ac.build_agent_run(env, name="a", model="qwen", image="precis-agent:x")
     assert argv[-1] == "precis-agent:x"
+
+
+# ── mounts + workdir (§H cycle a: gr178973/gr179498 blocker 1) ─────
+
+
+def _default_cenv_net():
+    cenv = ac.ContainerEnv(secret_keys=("CLAUDE_CODE_OAUTH_TOKEN",), values={})
+    net = ac.NetworkPlan(mode="open")
+    return cenv, net
+
+
+def test_mount_rw_emits_v_flag(tmp_path) -> None:
+    cenv, net = _default_cenv_net()
+    m = ac.Mount(host_path=str(tmp_path), container_path="/work", mode="rw")
+    argv = ac.build_agent_run_argv(
+        container_bin="podman",
+        name="agent-1",
+        image="precis-agent:x",
+        cenv=cenv,
+        net=net,
+        mounts=(m,),
+    )
+    assert "-v" in argv
+    assert f"{tmp_path}:/work" in argv
+    assert f"{tmp_path}:/work:ro" not in argv
+
+
+def test_mount_ro_appends_ro_suffix(tmp_path) -> None:
+    cenv, net = _default_cenv_net()
+    m = ac.Mount(host_path=str(tmp_path), container_path="/work", mode="ro")
+    argv = ac.build_agent_run_argv(
+        container_bin="podman",
+        name="agent-1",
+        image="precis-agent:x",
+        cenv=cenv,
+        net=net,
+        mounts=(m,),
+    )
+    assert f"{tmp_path}:/work:ro" in argv
+
+
+def test_multiple_mounts_each_get_own_v_flag(tmp_path) -> None:
+    cenv, net = _default_cenv_net()
+    d1 = tmp_path / "a"
+    d2 = tmp_path / "b"
+    d1.mkdir()
+    d2.mkdir()
+    argv = ac.build_agent_run_argv(
+        container_bin="podman",
+        name="agent-1",
+        image="precis-agent:x",
+        cenv=cenv,
+        net=net,
+        mounts=(
+            ac.Mount(host_path=str(d1), container_path=str(d1), mode="rw"),
+            ac.Mount(host_path=str(d2), container_path=str(d2), mode="rw"),
+        ),
+    )
+    assert argv.count("-v") == 2
+    assert f"{d1}:{d1}" in argv
+    assert f"{d2}:{d2}" in argv
+
+
+def test_mount_rejects_relative_host_path() -> None:
+    cenv, net = _default_cenv_net()
+    m = ac.Mount(host_path="relative/path", container_path="/work")
+    with pytest.raises(ValueError, match="absolute"):
+        ac.build_agent_run_argv(
+            container_bin="podman",
+            name="agent-1",
+            image="precis-agent:x",
+            cenv=cenv,
+            net=net,
+            mounts=(m,),
+        )
+
+
+def test_mount_rejects_relative_container_path(tmp_path) -> None:
+    cenv, net = _default_cenv_net()
+    m = ac.Mount(host_path=str(tmp_path), container_path="relative")
+    with pytest.raises(ValueError, match="absolute"):
+        ac.build_agent_run_argv(
+            container_bin="podman",
+            name="agent-1",
+            image="precis-agent:x",
+            cenv=cenv,
+            net=net,
+            mounts=(m,),
+        )
+
+
+def test_mount_rejects_nonexistent_host_path(tmp_path) -> None:
+    cenv, net = _default_cenv_net()
+    m = ac.Mount(host_path=str(tmp_path / "does-not-exist"), container_path="/work")
+    with pytest.raises(ValueError, match="does not exist"):
+        ac.build_agent_run_argv(
+            container_bin="podman",
+            name="agent-1",
+            image="precis-agent:x",
+            cenv=cenv,
+            net=net,
+            mounts=(m,),
+        )
+
+
+def test_mount_rejects_bad_mode(tmp_path) -> None:
+    cenv, net = _default_cenv_net()
+    m = ac.Mount(host_path=str(tmp_path), container_path="/work", mode="rwx")
+    with pytest.raises(ValueError, match="mode"):
+        ac.build_agent_run_argv(
+            container_bin="podman",
+            name="agent-1",
+            image="precis-agent:x",
+            cenv=cenv,
+            net=net,
+            mounts=(m,),
+        )
+
+
+def test_workdir_emits_w_flag(tmp_path) -> None:
+    cenv, net = _default_cenv_net()
+    argv = ac.build_agent_run_argv(
+        container_bin="podman",
+        name="agent-1",
+        image="precis-agent:x",
+        cenv=cenv,
+        net=net,
+        workdir=str(tmp_path),
+    )
+    assert argv[argv.index("-w") + 1] == str(tmp_path)
+
+
+def test_workdir_rejects_relative_path() -> None:
+    cenv, net = _default_cenv_net()
+    with pytest.raises(ValueError, match="absolute"):
+        ac.build_agent_run_argv(
+            container_bin="podman",
+            name="agent-1",
+            image="precis-agent:x",
+            cenv=cenv,
+            net=net,
+            workdir="relative/dir",
+        )
+
+
+def test_no_mounts_no_workdir_is_byte_identical() -> None:
+    """Every caller before fix_gripe passes neither — argv unchanged."""
+    cenv, net = _default_cenv_net()
+    argv = ac.build_agent_run_argv(
+        container_bin="podman",
+        name="agent-1",
+        image="precis-agent:x",
+        cenv=cenv,
+        net=net,
+    )
+    assert "-v" not in argv
+    assert "-w" not in argv
+
+
+def test_containerize_claude_argv_threads_mounts_and_workdir(tmp_path) -> None:
+    env = Envelope(egress="api-only", write="full")
+    host = ["claude", "-p", "the prompt"]
+    m = ac.Mount(host_path=str(tmp_path), container_path=str(tmp_path), mode="rw")
+    argv = ac.containerize_claude_argv(
+        host,
+        env,
+        name="agent-x",
+        model="opus",
+        image="precis-agent:x",
+        mounts=(m,),
+        workdir=str(tmp_path),
+    )
+    assert f"{tmp_path}:{tmp_path}" in argv
+    assert argv[argv.index("-w") + 1] == str(tmp_path)
 
 
 # ── container bin resolution (podman / docker / OrbStack) ──────────────

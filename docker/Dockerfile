@@ -700,6 +700,26 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # stdio per call (no daemon). Path matches agent_container.default_agent_mcp_config().
 COPY docker/agent-mcp.json /etc/precis/agent-mcp.json
 
+# §H cycle a: fix_gripe's agent (workers/job_types/fix_gripe.py) clones a repo,
+# edits, and runs its tests INSIDE this container — so it needs git + a minimal
+# repo dev toolchain on top of the review-pass base above. Deliberately does NOT
+# bake any repo code (matches `code-task`'s "rent the toolchain, own nothing" —
+# the repo arrives as a bind-mounted clone, workers/executors/agent_container.py
+# ``mounts``). ``build-essential``/``libpq-dev`` cover a target repo's own
+# ``uv sync`` compiling a C extension (e.g. psycopg); ``uv`` itself resolves
+# and runs that repo's own lockfile-pinned tools (ruff/mypy/pytest), so none
+# are pinned here — keeps this image lean and in sync with whatever the
+# cloned repo actually declares.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+        git \
+        build-essential \
+        libpq-dev
+ARG UV_VERSION
+RUN --mount=type=cache,id=uv,target=/root/.cache/uv \
+    pip install --no-cache-dir "uv==${UV_VERSION}"
+
 USER precis
 WORKDIR /data
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]

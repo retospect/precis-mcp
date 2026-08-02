@@ -749,6 +749,11 @@ host the heartbeat also advertises a soft **`container_agent`** gauge
 (`capability_probe.probe_soft_signals`, capacity 1) — `1` = verified, `0` =
 degraded (opted in but can't launch) — which `/factory` renders as a green/red
 "agent" chip so a silently-in-proc host reads as degraded, not silent.
+`call_claude_agent` also takes an optional `env_base` (isolated env instead
+of `os.environ`), `mounts`/`workdir` (`agent_container.Mount`, threaded to
+the container path only), and `require_container` (§H cycle a — refuse
+with `ContainerRequiredError` instead of silently falling back in-process,
+for a caller that can't tolerate running unsandboxed; see fix_gripe below).
 
 **LLM independence — the switchable router (`utils/llm/`, ADR 0046).**
 Every routed call goes through `dispatch(LlmRequest)` → a narrow
@@ -807,10 +812,12 @@ backend=)` (`router.py::resolve_model`) is backend-aware: under an effective
 for `FRONTIER`/`BIG`/`MEDIUM` only (`SMALL`'s override is always honored — it
 never routes to a claude transport), so a half-applied flip (backend demoted
 for a missing `PRECIS_LLM_BASE_URL`, model override still OSS) never hands an
-OSS slug to a claude transport. The two raw-`claude`-subprocess sites —
-`fix_gripe` and `sandbox_run`/`claude_docker` — read `resolve_backend()` and
-skip clean (no spawn, job marked skipped/cancelled, not failed) under
-`backend=openai` rather than being folded through `dispatch`. **Built: the
+OSS slug to a claude transport. The two sites whose `--model` assumes claude
+semantics regardless of the chokepoint — `fix_gripe` (routed through
+`call_claude_agent`, §H cycle a, but still pins a Claude-only model) and
+`sandbox_run`/`claude_docker` — read `resolve_backend()` and skip clean (no
+spawn, job marked skipped/cancelled, not failed) under `backend=openai`
+rather than being folded through `dispatch`. **Built: the
 `FailoverProvider`/`Rung` ladder**
 (`PRECIS_LLM_FAILOVER`, off by default) wraps an OSS primary transport with
 an automatic claude-fallback rung on a transport error, pinned to that tier's
@@ -1994,13 +2001,29 @@ The master kinds table lives in the `precis-overview` skill.
   cgroup-capped, poll-reaped container on an `agent_sandbox_host` — slice 1
   is the stub-podman substrate (mint→claim→launch→poll→terminal, `mode:build`
   only; harvest is slice 2). See `docs/design/sandbox-run.md`. Skill:
-  `precis-job-help`. **fix_gripe is fail-closed (gr179498):** it spawns a
-  full-privilege `--dangerously-skip-permissions` agent on verbatim
-  (agent-filable) gripe text with no container isolation, so it refuses to
-  spawn unless `PRECIS_FIX_GRIPE_UNSANDBOXED_ACK=1` — enabling `backlog_groom`
-  alone can't unleash it. Proper fix (§13 containerization) tracked under
-  gr179498; needs mount support in `agent_container.build_agent_run_argv`
-  (also the gr178973 dependency).
+  `precis-job-help`. **fix_gripe routes through the `call_claude_agent`
+  chokepoint (§H cycle a)** — no more bare `subprocess.run` of claude: an
+  isolated env (`env_base=_restricted_env(...)`, no DB creds, `--bare`
+  API-key auth), an explicit fix_gripe envelope (`egress:api-only`), and a
+  bind mount (`agent_container.Mount`, `-v`/`-w` support added this cycle —
+  also unblocks gr178973) for the clone ONLY — never the source repo. The
+  agent commits inside the clone; it has no filesystem path or network
+  route to origin, so it cannot push. **Write-back is a commit, pushed on
+  the trusted side**: once `call_claude_agent` returns, `run()` (host-side,
+  never inside the sandbox) performs the `git push` itself, guarded
+  host-side to `gripe_<id>` branch names (alongside the clone's own
+  pre-push hook — belt and braces, not the only defense). A
+  **containerized** run (whenever `PRECIS_AGENT_CONTAINER` is on and the
+  host can run it) is network-isolated and needs no operator ack; when the
+  container path is unavailable (feature off, probe-failed, or an infra
+  failure mid-run) the chokepoint's `require_container=not
+  _unsandboxed_ack()` refuses to fall back to running unsandboxed
+  (`ContainerRequiredError`) unless `PRECIS_FIX_GRIPE_UNSANDBOXED_ACK=1` —
+  so enabling `backlog_groom` alone still can't unleash an unsandboxed run
+  (gr179498, fail-closed retained for the no-container case). The
+  `precis-agent` image (`docker/Dockerfile`'s `agent` stage) now also
+  carries git + uv + a minimal build toolchain so the containerized agent
+  can clone/edit/test.
 - **`structure`** — atomistic cell+bond IR (ADR 0043); typed ops + in-memory
   probes, relax on the GPU node (derived-lane job, ADR 0044), cursors/measures
   on `struct_measures`, web `/structure` (3Dmol viewer: zoom + look-inside

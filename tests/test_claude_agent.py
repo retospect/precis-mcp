@@ -15,6 +15,7 @@ import stat
 import sys
 import textwrap
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -1140,6 +1141,319 @@ def test_container_model_error_still_raises(monkeypatch, _container_selected):
         ca.call_claude_agent("do it", model="opus")
     assert len(fake.calls) == 1  # no in-proc retry
     assert _container_selected == []  # not an infra failure → no latch trip
+
+
+# ── §H cycle a: env_base isolation ──────────────────────────────────
+
+
+def test_env_base_replaces_os_environ(monkeypatch, stub_bin: Path) -> None:
+    """``env_base`` given → the subprocess env is built from a COPY of it,
+    not ``os.environ`` — a PRECIS_*/PG* var set in the test process must NOT
+    leak into the subprocess."""
+    from types import SimpleNamespace
+
+    import precis.utils.claude_agent as ca
+
+    monkeypatch.setenv("PGPASSWORD", "super-secret")
+    monkeypatch.setenv("PRECIS_DATABASE_URL", "postgresql://leaked/db")
+    monkeypatch.setenv("SOME_AMBIENT_VAR", "ambient")
+
+    captured: dict[str, object] = {}
+
+    def _fake(argv, **k):
+        captured["env"] = k.get("env")
+        return SimpleNamespace(stdout="done", stderr="")
+
+    monkeypatch.setattr(ca, "run_claude", _fake)
+    ca.call_claude_agent(
+        "do it",
+        model="opus",
+        bare=True,
+        env_base={"HOME": "/home/x", "PATH": "/usr/bin", "ANTHROPIC_API_KEY": "sk-x"},
+    )
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert "PGPASSWORD" not in env
+    assert "PRECIS_DATABASE_URL" not in env
+    assert "SOME_AMBIENT_VAR" not in env  # os.environ not consulted at all
+    assert env["HOME"] == "/home/x"
+    assert env["ANTHROPIC_API_KEY"] == "sk-x"
+
+
+def test_env_base_skips_oauth_bootstrap(monkeypatch, stub_bin: Path) -> None:
+    """``env_base`` given → the OAuth-token-file/vault bootstrap is skipped
+    (fix_gripe supplies its own auth via ``ANTHROPIC_API_KEY``)."""
+    from types import SimpleNamespace
+
+    import precis.utils.claude_agent as ca
+
+    called: list[int] = []
+    monkeypatch.setattr(
+        ca, "ensure_oauth_token", lambda env: called.append(1), raising=False
+    )
+
+    def _fake(argv, **k):
+        return SimpleNamespace(stdout="done", stderr="")
+
+    monkeypatch.setattr(ca, "run_claude", _fake)
+    ca.call_claude_agent(
+        "do it",
+        model="opus",
+        bare=True,
+        env_base={"HOME": "/home/x", "ANTHROPIC_API_KEY": "sk-x"},
+    )
+    assert called == []  # bootstrap never invoked
+
+
+def test_env_base_threads_bootstrap_oauth_false_to_run_claude(
+    monkeypatch, stub_bin: Path
+) -> None:
+    """§H cycle a finding 1: ``env_base`` given → ``call_claude_agent`` must
+    pass ``bootstrap_oauth=False`` to :func:`run_claude` itself — not just
+    skip its OWN bootstrap in ``_prepare_agent_env`` (the gap: ``run_claude``
+    used to unconditionally re-inject the real OAuth token regardless of
+    that upstream skip). Real ``run_claude`` is exercised at the process
+    level in ``tests/test_claude_subprocess.py``; this pins the WIRING
+    between the two."""
+    from types import SimpleNamespace
+
+    import precis.utils.claude_agent as ca
+
+    captured: dict[str, object] = {}
+
+    def _fake(argv, **k):
+        captured.update(k)
+        return SimpleNamespace(stdout="done", stderr="")
+
+    monkeypatch.setattr(ca, "run_claude", _fake)
+    ca.call_claude_agent(
+        "do it",
+        model="opus",
+        bare=True,
+        env_base={"HOME": "/home/x", "ANTHROPIC_API_KEY": "sk-x"},
+    )
+    assert captured["bootstrap_oauth"] is False
+
+
+def test_no_env_base_threads_bootstrap_oauth_true_to_run_claude(
+    monkeypatch, stub_bin: Path
+) -> None:
+    """The complement: no ``env_base`` (today's default, inherits
+    ``os.environ``) → ``bootstrap_oauth=True`` reaches ``run_claude``."""
+    from types import SimpleNamespace
+
+    import precis.utils.claude_agent as ca
+
+    captured: dict[str, object] = {}
+
+    def _fake(argv, **k):
+        captured.update(k)
+        return SimpleNamespace(stdout="done", stderr="")
+
+    monkeypatch.setattr(ca, "run_claude", _fake)
+    ca.call_claude_agent("do it", model="opus")
+    assert captured["bootstrap_oauth"] is True
+
+
+def test_env_overlay_still_applies_over_env_base(monkeypatch, stub_bin: Path) -> None:
+    from types import SimpleNamespace
+
+    import precis.utils.claude_agent as ca
+
+    captured: dict[str, Any] = {}
+
+    def _fake(argv, **k):
+        captured["env"] = k.get("env")
+        return SimpleNamespace(stdout="done", stderr="")
+
+    monkeypatch.setattr(ca, "run_claude", _fake)
+    ca.call_claude_agent(
+        "do it",
+        model="opus",
+        bare=True,
+        env_base={"HOME": "/home/x", "ANTHROPIC_API_KEY": "sk-x"},
+        env_overlay={"HOME": "/overlaid"},
+    )
+    env = captured["env"]
+    assert env["HOME"] == "/overlaid"
+
+
+def test_dsn_not_reinjected_when_env_base_given(monkeypatch, _container_selected):
+    """The container branch's adopted-DSN fallback is only consulted when the
+    caller did NOT ask for env isolation — an ``env_base`` caller (fix_gripe)
+    gets no DSN re-injected even though ``get_adopted_dsn`` would return one,
+    and the value never appears in the container's env or argv."""
+    import precis.utils.claude_agent as ca
+    from precis import secrets as _secrets
+
+    monkeypatch.setattr(_secrets, "get_adopted_dsn", lambda: "postgresql://ro@h/db")
+    fake = _RunClaudeSeq(_ok("done"))
+    monkeypatch.setattr(ca, "run_claude", fake)
+    ca.call_claude_agent(
+        "do it",
+        model="opus",
+        bare=True,
+        env_base={"HOME": "/home/x", "ANTHROPIC_API_KEY": "sk-x"},
+    )
+    argv = fake.calls[0]
+    assert "postgresql://ro@h/db" not in " ".join(argv)
+
+
+def test_bare_container_requests_api_key_not_oauth(monkeypatch, _container_selected):
+    """``bare=True`` + containerized → the container's secret-by-key channel
+    asks for ANTHROPIC_API_KEY (matches env_base's actual auth), not
+    CLAUDE_CODE_OAUTH_TOKEN (which an env_base caller never carries)."""
+    import precis.utils.claude_agent as ca
+
+    fake = _RunClaudeSeq(_ok("done"))
+    monkeypatch.setattr(ca, "run_claude", fake)
+    ca.call_claude_agent(
+        "do it",
+        model="opus",
+        bare=True,
+        env_base={"HOME": "/home/x", "ANTHROPIC_API_KEY": "sk-x"},
+    )
+    argv = fake.calls[0]
+    assert "ANTHROPIC_API_KEY" in argv
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in argv
+
+
+# ── §H cycle a: mounts/workdir threaded through the container branch ───
+
+
+def test_mounts_and_workdir_threaded_when_containerized(
+    monkeypatch, tmp_path, _container_selected
+):
+    import precis.utils.claude_agent as ca
+    from precis.workers.executors.agent_container import Mount
+
+    fake = _RunClaudeSeq(_ok("done"))
+    monkeypatch.setattr(ca, "run_claude", fake)
+    ca.call_claude_agent(
+        "do it",
+        model="opus",
+        mounts=(Mount(host_path=str(tmp_path), container_path=str(tmp_path)),),
+        workdir=str(tmp_path),
+    )
+    argv = fake.calls[0]
+    assert f"{tmp_path}:{tmp_path}" in argv
+    assert argv[argv.index("-w") + 1] == str(tmp_path)
+
+
+def test_mounts_ignored_in_proc(monkeypatch, stub_bin: Path, tmp_path) -> None:
+    """Mounts/workdir are container-only params — the in-process path (no
+    container selected) ignores them; there's nothing to validate/mount."""
+    from types import SimpleNamespace
+
+    import precis.utils.claude_agent as ca
+    from precis.workers.executors.agent_container import Mount
+
+    monkeypatch.delenv("PRECIS_AGENT_CONTAINER", raising=False)
+    captured: dict[str, Any] = {}
+
+    def _fake(argv, **k):
+        captured["argv"] = argv
+        return SimpleNamespace(stdout="done", stderr="")
+
+    monkeypatch.setattr(ca, "run_claude", _fake)
+    # A mount pointing at a path that doesn't exist would raise if it were
+    # ever validated — proving it's genuinely unused on this path.
+    bogus = Mount(host_path=str(tmp_path / "nope"), container_path="/work")
+    ca.call_claude_agent("do it", model="opus", mounts=(bogus,), workdir="/work")
+    argv = captured["argv"]
+    assert argv[0] == str(stub_bin)
+
+
+# ── §H cycle a: require_container fail-closed matrix ────────────────
+
+
+def test_require_container_false_default_falls_back_when_incapable(
+    monkeypatch,
+) -> None:
+    """Default (require_container=False) — unchanged behavior: incapable host
+    runs in-process, no raise."""
+    from types import SimpleNamespace
+
+    import precis.utils.claude_agent as ca
+    from precis.workers.executors import agent_container as ac
+
+    monkeypatch.setenv("PRECIS_AGENT_CONTAINER", "1")
+    monkeypatch.setattr(ac, "container_capability_ok", lambda *a, **k: False)
+    ca._warned_container_incapable = False
+
+    def _fake(argv, **k):
+        return SimpleNamespace(stdout="in proc", stderr="")
+
+    monkeypatch.setattr(ca, "run_claude", _fake)
+    res = ca.call_claude_agent("do it", model="opus", require_container=False)
+    assert "in proc" in res.final_text
+
+
+def test_require_container_true_raises_when_disabled(monkeypatch) -> None:
+    """PRECIS_AGENT_CONTAINER off entirely + require_container=True → refuse
+    (never silently run unsandboxed in-proc)."""
+    import precis.utils.claude_agent as ca
+
+    monkeypatch.delenv("PRECIS_AGENT_CONTAINER", raising=False)
+    called: list[int] = []
+    monkeypatch.setattr(
+        ca, "run_claude", lambda *a, **k: called.append(1), raising=True
+    )
+    with pytest.raises(ca.ContainerRequiredError):
+        ca.call_claude_agent("do it", model="opus", require_container=True)
+    assert called == []  # never even attempted a run
+
+
+def test_require_container_true_raises_when_probe_fails(monkeypatch) -> None:
+    """Opted in but the capability probe fails + require_container=True →
+    refuse rather than silently degrading to in-proc."""
+    import precis.utils.claude_agent as ca
+    from precis.workers.executors import agent_container as ac
+
+    monkeypatch.setenv("PRECIS_AGENT_CONTAINER", "1")
+    monkeypatch.setattr(ac, "container_capability_ok", lambda *a, **k: False)
+    ca._warned_container_incapable = False
+    called: list[int] = []
+    monkeypatch.setattr(
+        ca, "run_claude", lambda *a, **k: called.append(1), raising=True
+    )
+    with pytest.raises(ca.ContainerRequiredError):
+        ca.call_claude_agent("do it", model="opus", require_container=True)
+    assert called == []
+
+
+def test_require_container_true_succeeds_when_capable(monkeypatch, _container_selected):
+    """Container available + require_container=True → runs containerized,
+    no raise (a containerized run needs no ack)."""
+    import precis.utils.claude_agent as ca
+
+    fake = _RunClaudeSeq(_ok("containerized"))
+    monkeypatch.setattr(ca, "run_claude", fake)
+    res = ca.call_claude_agent("do it", model="opus", require_container=True)
+    assert "containerized" in res.final_text
+    assert fake.calls[0][0] == "podman"
+
+
+def test_require_container_true_raises_on_infra_failure_no_fallback(
+    monkeypatch, _container_selected
+):
+    """A containerized run selected, then an infra failure mid-run +
+    require_container=True → refuse the in-process fallback entirely (the
+    latch still trips, but no second call is attempted)."""
+    import precis.utils.claude_agent as ca
+
+    infra = ClaudeAgentError(
+        "cannot connect to the Docker daemon",
+        stdout="",
+        stderr="cannot connect to the Docker daemon at unix:///var/run/docker.sock",
+        returncode=125,
+    )
+    fake = _RunClaudeSeq(infra)
+    monkeypatch.setattr(ca, "run_claude", fake)
+    with pytest.raises(ca.ContainerRequiredError):
+        ca.call_claude_agent("do it", model="opus", require_container=True)
+    assert len(fake.calls) == 1  # no in-proc retry attempted
+    assert _container_selected == [1]  # latch still trips (real infra failure)
 
 
 # ── call_claude_agent_async: streaming twin (router-migration Phase 2) ─
