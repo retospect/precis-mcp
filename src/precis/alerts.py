@@ -48,6 +48,7 @@ from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from precis.errors import BadInput
 from precis.store import Store
 from precis.store.types import Tag
 
@@ -240,6 +241,11 @@ def _flip_resolved(
     """
     store.remove_tag(ref_id, Tag.open(STATE_OPEN), conn=conn)
     store.add_tag(ref_id, Tag.open(STATE_RESOLVED), set_by="system", conn=conn)
+    _stamp_resolved(conn, ref_id, resolved_by=resolved_by)
+
+
+def _stamp_resolved(conn: Any, ref_id: int, *, resolved_by: str = "") -> None:
+    """Set ``resolved_at`` (column + meta mirror) on one alert row."""
     conn.execute(
         "UPDATE refs SET resolved_at = now(), "
         "meta = meta || jsonb_build_object("
@@ -248,6 +254,79 @@ def _flip_resolved(
         + ", updated_at = now() WHERE ref_id = %s",
         ((resolved_by, ref_id) if resolved_by else (ref_id,)),
     )
+
+
+def sync_resolved_at_with_tags(
+    conn: Any, ref_id: int, *, resolved_by: str = ""
+) -> None:
+    """Reconcile ``refs.resolved_at`` with the alert-state tags.
+
+    The safety hook behind the agent-facing ``tag`` verb: call it in the
+    same transaction as a direct tag edit on an alert (``AlertHandler``
+    does). The 0099 partial unique index keys off ``resolved_at IS
+    NULL``, not the tag, so any tag flip that changes whether the alert
+    is open must move the column too — a tag-only resolve used to leave
+    the unique-index slot occupied, turning the next ``raise_alert`` of
+    a still-live condition into a violation.
+
+    Reconciles by *final* state, not by which tags the call passed, so
+    ``remove=['alert-state:open']`` alone is as safe as the full swap:
+
+    * open tag gone, ``resolved_at`` NULL → stamp it (manual resolve).
+    * open tag present, ``resolved_at`` set → clear it (manual reopen) —
+      unless another open alert now holds the same ``(alert_source,
+      fingerprint)`` slot (the condition re-raised after the resolve),
+      in which case raise :class:`BadInput`: that fresh row is the live
+      one, and reopening history would violate the unique index.
+
+    No-op for a non-alert / deleted ref or when tag and column already
+    agree.
+    """
+    row = conn.execute(
+        """
+        SELECT r.resolved_at, r.alert_source, r.fingerprint,
+               EXISTS (
+                   SELECT 1 FROM ref_tags rt
+                     JOIN tags t ON t.tag_id = rt.tag_id
+                    WHERE rt.ref_id = r.ref_id
+                      AND t.namespace = 'OPEN' AND t.value = %s
+               ) AS is_open
+          FROM refs r
+         WHERE r.ref_id = %s AND r.kind = 'alert' AND r.deleted_at IS NULL
+        """,
+        (STATE_OPEN, ref_id),
+    ).fetchone()
+    if row is None:
+        return
+    resolved_at, source, fingerprint, is_open = row
+    if not is_open and resolved_at is None:
+        _stamp_resolved(conn, ref_id, resolved_by=resolved_by)
+    elif is_open and resolved_at is not None:
+        conflict = conn.execute(
+            """
+            SELECT ref_id FROM refs
+             WHERE kind = 'alert' AND deleted_at IS NULL
+               AND resolved_at IS NULL
+               AND alert_source = %s AND fingerprint = %s
+               AND ref_id <> %s
+             LIMIT 1
+            """,
+            (source, fingerprint, ref_id),
+        ).fetchone()
+        if conflict is not None:
+            raise BadInput(
+                f"cannot reopen alert id={ref_id}: the condition was "
+                f"re-raised as alert id={int(conflict[0])}, which now "
+                "holds the open slot for this (source, fingerprint)",
+                next=f"triage the live alert instead: get(kind='alert', "
+                f"id={int(conflict[0])})",
+            )
+        conn.execute(
+            "UPDATE refs SET resolved_at = NULL, "
+            "meta = meta - 'resolved_at' - 'resolved_by', "
+            "updated_at = now() WHERE ref_id = %s",
+            (ref_id,),
+        )
 
 
 def resolve_stale_alerts(
@@ -306,10 +385,10 @@ def resolve_alert(store: Store, ref_id: int, *, resolved_by: str = "") -> bool:
     The single-ref sibling of :func:`resolve_stale_alerts` — same flip
     (``alert-state:open`` → ``alert-state:resolved`` + ``resolved_at``
     column and meta mirror, one transaction) so the 0099 partial unique
-    index invariant holds. This, not a bare ``tag`` verb call, is the
-    correct dismiss path: flipping the tag alone leaves ``resolved_at``
-    NULL, and the next sighting of the same condition would then INSERT
-    into the still-occupied unique-index slot and violate it.
+    index invariant holds. The agent-facing ``tag`` verb is equally safe
+    (``AlertHandler`` runs :func:`sync_resolved_at_with_tags` in the
+    same transaction as the tag edit); this is the direct-store path for
+    code that already holds a ``Store``, like the web dismiss route.
 
     ``resolved_by`` (e.g. ``"operator"``) is recorded in meta to keep
     manual dismissals distinguishable from detector auto-resolves in the
@@ -490,4 +569,5 @@ __all__ = [
     "raise_alert",
     "resolve_alert",
     "resolve_stale_alerts",
+    "sync_resolved_at_with_tags",
 ]

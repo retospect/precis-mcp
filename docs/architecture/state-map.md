@@ -1915,10 +1915,12 @@ The master kinds table lives in the `precis-overview` skill.
   built + green** (facts → guardrail → ledger → policy → agent surface); ship dark.
 - **`alert`** — machine-detected ops/health conditions (spin loops, orphans),
   raised via `precis.alerts.raise_alert` (fingerprint upsert + auto-resolve),
-  read via `AlertHandler`/`/alerts`; the tab's per-row dismiss button posts
-  to `precis.alerts.resolve_alert` (single-ref manual resolve — flips the
-  state tag + `resolved_at` column together, NOT the bare `tag` verb, which
-  would leave the 0099 unique-index slot occupied). **Not embedded.**
+  read via `AlertHandler`/`/alerts`; manual resolve flips the state tag +
+  `resolved_at` column together everywhere — the tab's per-row dismiss button
+  posts to `precis.alerts.resolve_alert`, and the agent `tag` verb syncs the
+  column via `AlertHandler._after_tag_mutation` →
+  `sync_resolved_at_with_tags` (reopen-by-tag clears it; rejected if the
+  condition re-raised as a fresh open row). **Not embedded.**
   Skill: `precis-alert-help`.
 - **`agentlog`** — per-run attribution record (prompt + model + `touched` links
   to every chunk a run wrote), **not embedded**; `precis.agentlog` write side,

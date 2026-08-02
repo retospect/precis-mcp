@@ -919,7 +919,24 @@ class NumericRefHandler(Handler):
                 )
             for t in parsed_remove:
                 self.store.remove_tag(ref_id, t, conn=conn)
+            self._after_tag_mutation(ref_id, parsed_add, parsed_remove, conn=conn)
         return Response(body=f"tagged {self._sense()} id={ref_id}")
+
+    def _after_tag_mutation(
+        self,
+        ref_id: int,
+        added: list[Tag],
+        removed: list[Tag],
+        *,
+        conn: Any,
+    ) -> None:
+        """Subclass hook run inside the ``tag`` verb's transaction.
+
+        For a kind whose lifecycle pairs a tag with a column (alert:
+        ``alert-state`` ↔ ``resolved_at``), override this to keep the
+        pair in sync atomically with the tag edit — raising rejects the
+        whole edit. Default: no-op.
+        """
 
     def link(  # type: ignore[override]
         self,

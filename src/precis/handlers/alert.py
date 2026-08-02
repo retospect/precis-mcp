@@ -15,7 +15,10 @@ the agent surface is the read / triage half:
     - search(kind='alert', q=...)    — lexical search over alert titles
     - tag(id=N, add/remove=[...])    — ack / reclassify (resolve via
                                         add=['alert-state:resolved'],
-                                        remove=['alert-state:open'])
+                                        remove=['alert-state:open'];
+                                        the handler syncs the
+                                        ``resolved_at`` column with the
+                                        state tag in the same tx)
     - link(id=N, target='kind:id')   — relate an alert to a ref
     - delete(id=N)                   — soft-delete (history pruning)
 
@@ -26,12 +29,13 @@ by semantic search. See :mod:`precis.alerts` for the lifecycle.
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import Any, ClassVar
 
-from precis.alerts import STATE_OPEN
+from precis.alerts import STATE_OPEN, STATE_RESOLVED, sync_resolved_at_with_tags
 from precis.handlers._numeric_ref import NumericRefHandler
 from precis.protocol import KindSpec
 from precis.response import Response
+from precis.store.types import Tag
 
 
 class AlertHandler(NumericRefHandler):
@@ -82,6 +86,30 @@ class AlertHandler(NumericRefHandler):
             return Response(body="no open alerts — all clear.")
         header = f"# {len(refs)} open alert{'' if len(refs) == 1 else 's'}"
         return Response(body=f"{header}\n{self._render_hits_table(refs)}")
+
+    # ── tag-verb lifecycle sync ─────────────────────────────────────
+
+    _LIFECYCLE_TAGS: ClassVar[frozenset[str]] = frozenset({STATE_OPEN, STATE_RESOLVED})
+
+    def _after_tag_mutation(
+        self,
+        ref_id: int,
+        added: list[Tag],
+        removed: list[Tag],
+        *,
+        conn: Any,
+    ) -> None:
+        """Keep ``resolved_at`` in step with an ``alert-state`` tag edit.
+
+        The 0099 dedup unique index keys off ``resolved_at IS NULL``,
+        not the tag, so a tag-only resolve would leave the open slot
+        occupied and the next ``raise_alert`` of a still-live condition
+        would hit a unique violation. Same transaction as the tag
+        writes, so the pair can't drift apart.
+        """
+        touched = {t.value for t in (*added, *removed) if t.namespace == "open"}
+        if touched & self._LIFECYCLE_TAGS:
+            sync_resolved_at_with_tags(conn, ref_id, resolved_by="agent")
 
     def _create_ack_next_hints(self, ref_id: int) -> list[tuple[str, str]]:
         # Alerts aren't put-created through this handler, but keep the

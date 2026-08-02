@@ -360,20 +360,6 @@ ANALYZE, checkpoint/WAL/bgwriter, per-table autovacuum, `pg_cron` removal —
 `seen_count` throttle (migration `0099`). One pre-existing gap surfaced during
 that work, plus a deploy op:
 
-- **Manual-ack alert path leaves a stuck row that blocks re-raise**
-  *(correctness · owner `alerts.py` / `handlers/alert.py` · pre-existing, not a
-  regression).* Acking an alert by flipping its tag directly
-  (`tag(id=N, add=['alert-state:resolved'], remove=['alert-state:open'])`, a
-  documented handler path) never sets `resolved_at`, so the row stays in the
-  `uq_alert_open_source_fingerprint` open-set. The next `raise_alert` for the
-  same `(alert_source, fingerprint)` then hits an **uncaught `UniqueViolation`**,
-  wedging that nursery detector until the row is fixed by hand. Same gap existed
-  under 0030's meta-expression index (the manual path never set
-  `meta.resolved_at` either) — 0099 just makes the failure louder. **Fix
-  options:** make the manual-ack tag path also stamp `resolved_at` (a tag hook,
-  or route acks through `resolve_stale_alerts`), and/or catch `UniqueViolation`
-  in `raise_alert` and fall back to the dedup-update.
-
 - **Deploy op — `pg_repack refs` after `0099` deploys** *(one-time).* `0099`
   sets `fillfactor=85` on `refs`, but that only reaches existing pages on
   rewrite. Run `pg_repack` (online, lock-light) on `refs` once post-deploy so

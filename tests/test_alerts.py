@@ -494,6 +494,91 @@ def test_handler_get_by_id_reads_one_alert(hub: Hub, store: Store) -> None:
     assert "readable alert" in resp.body
 
 
+# ── handler: tag-verb lifecycle sync (resolved_at ↔ alert-state) ───
+
+
+def _lifecycle_row(store: Store, ref_id: int) -> tuple[Any, dict[str, Any]]:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT resolved_at, meta FROM refs WHERE ref_id = %s", (ref_id,)
+        ).fetchone()
+    assert row is not None
+    return row[0], row[1]
+
+
+def test_tag_verb_resolve_stamps_resolved_at(hub: Hub, store: Store) -> None:
+    """The documented ack path — a bare tag swap — now moves the column
+    too, so the 0099 unique-index slot frees and the condition can
+    re-raise cleanly instead of hitting a violation."""
+    handler = AlertHandler(hub=hub)
+    aid, _ = raise_alert(store, source="s", fingerprint="fp:tag", title="cond")
+    handler.tag(id=aid, add=["alert-state:resolved"], remove=["alert-state:open"])
+    resolved_at, meta = _lifecycle_row(store, aid)
+    assert resolved_at is not None
+    assert meta["resolved_at"]
+    assert meta["resolved_by"] == "agent"
+    tags = _tags(store, aid)
+    assert STATE_RESOLVED in tags and STATE_OPEN not in tags
+    # The slot is free: the still-live condition re-raises as a new row.
+    nid, is_new = raise_alert(store, source="s", fingerprint="fp:tag", title="cond")
+    assert is_new is True and nid != aid
+
+
+def test_tag_verb_remove_open_only_still_stamps(hub: Hub, store: Store) -> None:
+    """Sync reconciles by final state: dropping the open tag without
+    adding the resolved one must still free the unique-index slot."""
+    handler = AlertHandler(hub=hub)
+    aid, _ = raise_alert(store, source="s", fingerprint="fp:half", title="cond")
+    handler.tag(id=aid, remove=["alert-state:open"])
+    resolved_at, _meta = _lifecycle_row(store, aid)
+    assert resolved_at is not None
+    _, is_new = raise_alert(store, source="s", fingerprint="fp:half", title="cond")
+    assert is_new is True
+
+
+def test_tag_verb_reopen_clears_resolved_at(hub: Hub, store: Store) -> None:
+    handler = AlertHandler(hub=hub)
+    aid, _ = raise_alert(store, source="s", fingerprint="fp:re", title="cond")
+    assert alerts_mod.resolve_alert(store, aid, resolved_by="operator") is True
+    handler.tag(id=aid, add=["alert-state:open"], remove=["alert-state:resolved"])
+    resolved_at, meta = _lifecycle_row(store, aid)
+    assert resolved_at is None
+    assert "resolved_at" not in meta and "resolved_by" not in meta
+    # Back in the open set: the next sighting dedups onto it.
+    rid, is_new = raise_alert(store, source="s", fingerprint="fp:re", title="cond")
+    assert is_new is False and rid == aid
+
+
+def test_tag_verb_reopen_rejected_when_condition_re_raised(
+    hub: Hub, store: Store
+) -> None:
+    """Reopening history whose (source, fingerprint) slot a fresh open
+    alert now holds would violate the unique index — rejected atomically
+    (tags roll back with the column)."""
+    from precis.errors import BadInput
+
+    handler = AlertHandler(hub=hub)
+    aid, _ = raise_alert(store, source="s", fingerprint="fp:live", title="cond")
+    assert alerts_mod.resolve_alert(store, aid) is True
+    nid, is_new = raise_alert(store, source="s", fingerprint="fp:live", title="cond")
+    assert is_new is True
+    with pytest.raises(BadInput, match=str(nid)):
+        handler.tag(id=aid, add=["alert-state:open"], remove=["alert-state:resolved"])
+    resolved_at, _meta = _lifecycle_row(store, aid)
+    assert resolved_at is not None
+    tags = _tags(store, aid)
+    assert STATE_RESOLVED in tags and STATE_OPEN not in tags
+
+
+def test_tag_verb_unrelated_edit_leaves_resolved_at(hub: Hub, store: Store) -> None:
+    handler = AlertHandler(hub=hub)
+    aid, _ = raise_alert(store, source="s", fingerprint="fp:ack", title="cond")
+    handler.tag(id=aid, add=["ack-seen"])
+    resolved_at, _meta = _lifecycle_row(store, aid)
+    assert resolved_at is None
+    assert STATE_OPEN in _tags(store, aid)
+
+
 # ── critical push (asa_bot message path) ───────────────────────────
 
 

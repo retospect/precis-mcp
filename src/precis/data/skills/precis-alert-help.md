@@ -73,16 +73,20 @@ recent history.
 ## Triage
 
 To dismiss an alert by hand ("I've seen it, stop showing it" while the
-underlying fix lands), use the **dismiss** button on the `/alerts` web
-tab — it calls `precis.alerts.resolve_alert`, which flips the state tag
-*and* stamps `resolved_at` together (the dedup unique index keys off
-`resolved_at IS NULL`, so the two must move as one).
+underlying fix lands), either use the **dismiss** button on the
+`/alerts` web tab or flip the tags:
 
-A bare tag swap (`add=['alert-state:resolved']`,
-`remove=['alert-state:open']`) leaves `resolved_at` unset: if the
-condition is still live, the producer's next `raise_alert` then hits a
-unique violation instead of deduping. Avoid it until the tag verb syncs
-the column.
+```
+tag(kind='alert', id=N, add=['alert-state:resolved'],
+    remove=['alert-state:open'])
+```
+
+Both paths flip the state tag *and* stamp `resolved_at` in one
+transaction (the dedup unique index keys off `resolved_at IS NULL`, so
+the two must move as one — the handler syncs the column on any
+`alert-state` tag edit). Re-opening a resolved alert by tag clears
+`resolved_at` again, unless the condition has since re-raised as a
+fresh alert — then the edit is rejected and points you at the live row.
 
 Most alerts auto-resolve when their producer next runs and the
 condition has cleared, so manual resolution is rarely needed.

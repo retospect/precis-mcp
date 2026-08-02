@@ -9,10 +9,11 @@ just lists what's currently open, grouped by source, severity-sorted.
 * ``GET /alerts`` — open alerts (default).
 * ``GET /alerts?state=resolved`` — recently-resolved alerts (history).
 * ``POST /alerts/{id}/resolve`` — manual dismiss: the single-ref
-  lifecycle flip via :func:`precis.alerts.resolve_alert` (NOT the
-  ``tag`` verb — the tag and ``resolved_at`` column must flip
-  together, see that function's docstring). Dismissal is not
-  suppression: a still-live condition re-raises on the next pass.
+  lifecycle flip via :func:`precis.alerts.resolve_alert` (the tag and
+  ``resolved_at`` column flip together — the direct-store twin of the
+  agent ``tag`` verb, which syncs the column the same way). Dismissal
+  is not suppression: a still-live condition re-raises on the next
+  pass.
 """
 
 from __future__ import annotations
