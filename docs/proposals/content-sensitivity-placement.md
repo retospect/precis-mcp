@@ -56,6 +56,12 @@ sensitive, and keeping that true as content is derived and re-derived.
    cloud rungs. But context is assembled *before* dispatch — the pruning
    decision needs the max sensitivity of everything in the request. Compute
    where?
+   - **Includes the capacity-valve spill path** (noted 2026-08-02, from
+     `cluster-scheduling.md` Pillar 5): the local-first valve deliberately
+     spills a saturated local call to the *same model* in the cloud — a
+     flagged-context call must be **excluded from spill** and wait local
+     instead. Saturation-overflow and error-failover are both cloud exits;
+     the guard must cover every exit, not just the primary rung choice.
 5. **Interaction with cloud-only FRONTIER.** `FRONTIER` (Opus) has no local
    rung (ADR 0066 §1). So **local-only content cannot run at FRONTIER** — it
    caps at whatever capability runs locally (`BIG`/`MEDIUM`/`SMALL` local

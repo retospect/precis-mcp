@@ -6,6 +6,12 @@ model: opus
 
 # Per-operation model routing — DB-backed, UI-editable, defaults visible
 
+> **Largely shipped (stamped 2026-08-02)** — durable record: git history +
+> [ADR 0066](../decisions/0066-capability-tiers-and-placement-chains.md).
+> Remaining unbuilt: the Phase-3 active-routing/Models-tab view (minor UI).
+> **Candidate for deletion** after that residual is filed or shipped
+> (proposals lifecycle: graduate or die).
+
 > **Phases 1 + 2 landed.** Phase 1: router resolution layer +
 > `utils/llm/operations.py` registry + `live_config.op_override` + `precis llm op`
 > CLI + cast-pin migration (ships dark). Phase 2: the editable

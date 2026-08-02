@@ -7,9 +7,12 @@ blocked-by: gpu-priority
 
 # GPU cluster topology modes
 
-> **Part of the unified scheduling frame** — this is §C (GPU topology) of
-> `cluster-scheduling.md`; it is gated on the one-Spark-quantized test and
-> `blocked-by: gpu-priority`. See the master frame for cross-axis ordering.
+> **PARKED (2026-08-02)** — this is §C (GPU topology) of
+> `cluster-scheduling.md`, and the master **gates fusion on the
+> one-Spark-quantized test**: one Spark's ~119 GB serves ~120 B @ 8-bit /
+> ~200 B @ 4-bit, so if your models fit, none of this is built. The
+> disaggregated half is simply the master's default (no doc needed). Do not
+> build from this spec until that test fails; also `blocked-by: gpu-priority`.
 
 ## Motivation / why
 

@@ -1,7 +1,13 @@
 # Factory console + capability-reserved decentralized scheduling
 
-> **Status: design-of-record, nothing built yet.** This is the agreed
-> shape from a long design conversation (2026-07-17). It supersedes the
+> **Status: design-of-record; substantially built since** (header refreshed
+> 2026-08-02 — the 2026-07-17 "nothing built yet" was stale: the scheduler
+> pass is LIVE in prod, `resource_slots` shipped as migration 0073, the
+> collapsed-worker playbook is scaffolded, litellm is retired). **The
+> scheduling framing in §15 is superseded by
+> `docs/proposals/cluster-scheduling.md`** (the unified master — current
+> state, ordering, laws); this doc remains the design-of-record for the
+> console/registry/capability-model detail. It supersedes the
 > ad-hoc `/env` inspector and folds together the operator console, the
 > declarative pass/service registry, the single-plist collapse, the
 > capability model, the resource-reservation scheduler, the quests

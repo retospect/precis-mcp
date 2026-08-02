@@ -6,6 +6,16 @@ model: opus
 
 # Cloud-bypass for unstable local LLM serving, routed through OpenRouter
 
+> **Largely shipped (stamped 2026-08-02).** The mechanism here (OpenRouter
+> roster, `_hosted_small_remap`, cloud-tier flip, local-tier fallback) landed
+> in July; the durable record is
+> [ADR 0066](../decisions/0066-capability-tiers-and-placement-chains.md) +
+> git history. Unbuilt residuals live elsewhere: OpenRouter cost capture →
+> `cluster-scheduling.md` Pillar 5 / `gr171782`; the must-stay-local guard →
+> `content-sensitivity-placement.md`; local-first activation →
+> `local-first-capacity-valve.md`. **Candidate for deletion** after a
+> confirm-read (proposals lifecycle: graduate or die).
+
 ## Motivation / why
 
 Melchior's local serving stack (litellm proxy → llama-swap) is currently
