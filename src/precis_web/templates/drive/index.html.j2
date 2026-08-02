@@ -118,8 +118,9 @@
     <div>
       <label class="block text-xs text-slate-500 mb-0.5">Sort</label>
       <select name="sort" @change="submitForm(150)" class="rounded-md border border-slate-300 px-3 py-1.5 text-sm">
-        <option value="relevance" {% if sort != 'recency' %}selected{% endif %}>Relevance</option>
+        <option value="relevance" {% if sort not in ('recency', 'oldest') %}selected{% endif %}>Relevance</option>
         <option value="recency" {% if sort == 'recency' %}selected{% endif %}>Newest first</option>
+        <option value="oldest" {% if sort == 'oldest' %}selected{% endif %}>Oldest first</option>
       </select>
     </div>
     <div>
@@ -478,16 +479,26 @@
 {% macro pager() %}
 {% if prev_url or next_url %}
 <div class="mt-3 flex items-center gap-2 text-xs">
+  {% if first_url %}
+  <a href="{{ first_url }}" class="rounded-md border border-slate-300 px-3 py-1 hover:bg-slate-100" title="First page">&laquo; First</a>
+  {% else %}
+  <span class="rounded-md border border-slate-200 px-3 py-1 text-slate-300">&laquo; First</span>
+  {% endif %}
   {% if prev_url %}
   <a href="{{ prev_url }}" class="rounded-md border border-slate-300 px-3 py-1 hover:bg-slate-100">&larr; Prev</a>
   {% else %}
   <span class="rounded-md border border-slate-200 px-3 py-1 text-slate-300">&larr; Prev</span>
   {% endif %}
-  <span class="text-slate-500">Page {{ page }}</span>
+  <span class="text-slate-500">Page {{ page }}{% if last_page and page <= last_page %} of {{ last_page }}{% endif %}</span>
   {% if next_url %}
   <a href="{{ next_url }}" class="rounded-md border border-slate-300 px-3 py-1 hover:bg-slate-100">Next &rarr;</a>
   {% else %}
   <span class="rounded-md border border-slate-200 px-3 py-1 text-slate-300">Next &rarr;</span>
+  {% endif %}
+  {% if last_url %}
+  <a href="{{ last_url }}" class="rounded-md border border-slate-300 px-3 py-1 hover:bg-slate-100" title="Last page">Last &raquo;</a>
+  {% else %}
+  <span class="rounded-md border border-slate-200 px-3 py-1 text-slate-300">Last &raquo;</span>
   {% endif %}
 </div>
 {% endif %}
@@ -613,18 +624,25 @@
       </p>
       {% endif %}
       {% if recent %}
-        {{ item_list(recent) }}
-        <p class="mt-2 text-xs text-slate-400">
-          {% if cited_by %}
-            {{ recent | length }} paper{{ '' if recent | length == 1 else 's' }} still to fetch for this draft.
-          {% elif state == 'stub' %}
-            The {{ recent | length }} newest stub{{ '' if recent | length == 1 else 's' }} — use the find: links to track a copy down.
-          {% elif state == 'deleted' %}
-            The {{ recent | length }} most-recently deleted ref{{ '' if recent | length == 1 else 's' }}.
-          {% else %}
-            The {{ recent | length }} newest source item{{ '' if recent | length == 1 else 's' }}. Search above to go deeper.
-          {% endif %}
+        {# The total, up top — "12 of 12" vs "30 of 4,318" is the whole point
+           of paging a stub queue. This count is exact (a plain filtered refs
+           query, no fused-ranking approximation like the search path).
+           Singular/plural spelled out per-noun — "papers to fetch" pluralises
+           on the head noun, so a bare +s ("paper to fetchs") won't do. #}
+        {% set n = result_total or 0 %}
+        {% if cited_by %}{% set label = 'paper to fetch' if n == 1 else 'papers to fetch' %}
+        {% elif state == 'stub' %}{% set label = 'stub' if n == 1 else 'stubs' %}
+        {% elif state == 'deleted' %}{% set label = 'deleted ref' if n == 1 else 'deleted refs' %}
+        {% else %}{% set label = 'item' if n == 1 else 'items' %}{% endif %}
+        <p class="text-xs text-slate-500 mb-2">
+          Showing {{ recent | length }} of {{ "{:,}".format(n) }} {{ label }}.
         </p>
+        {{ item_list(recent) }}
+        {% if state == 'stub' %}
+        <p class="mt-2 text-xs text-slate-400">Use the find: links to track a copy down.</p>
+        {% elif not cited_by and not current %}
+        <p class="mt-2 text-xs text-slate-400">Search above to go deeper.</p>
+        {% endif %}
         {{ pager() }}
       {% else %}
         <p class="text-sm text-slate-400">

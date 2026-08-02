@@ -2075,9 +2075,15 @@ Structures, CAD, Figures, Mermaid). Nav template:
 
 **Drive — the unified seek+manage surface (`/drive`).**
 `src/precis_web/routes/drive.py::index` is Items' cross-kind chunk search
-(`q=`, kind/tag facets, `sort=relevance|recency`, `since/until`,
+(`q=`, kind/tag facets, `sort=relevance|recency|oldest`, `since/until`,
 `state=stub`, pagination) grafted onto Drive's folder tree (`_flatten_tree`)
-+ CRUD (`POST /drive/new|create|{id}/rename|move|{id}/delete`) + per-row
++ CRUD. The pager shows First/Prev/Next/Last with a `Page X of Y` and a
+`Showing N of K` count: the no-query browse total is **exact**
+(`store.count_recent_refs`, sharing `recent_refs`' WHERE builder) so Last is
+offered there; the fused-search total is a `≈`lexical count
+(`count_blocks_lexical`) that can miss semantic-only hits, so search offers
+First+Prev/Next but no Last. CRUD is
+`POST /drive/new|create|{id}/rename|move|{id}/delete` + per-row
 quick actions (`ItemPresenter.actions()`, `src/precis_web/item_view.py`).
 The kind chips are three facet rows: **Source** (chunk-searchable corpus),
 **Author** (`role='artifact'`, foldered), and **Work** (`_WORK_KINDS =

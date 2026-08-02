@@ -87,6 +87,23 @@ def test_recency_sort_orders_newest_first(store: Store) -> None:
     assert ordered[:2] == [newer, older]
 
 
+def test_oldest_sort_orders_oldest_first(store: Store) -> None:
+    emb = MockEmbedder(dim=store.embedding_dim())
+    text = "graphene field-effect transistor mobility"
+    older = _seed(store, "paper", "o-older", [text], emb)
+    newer = _seed(store, "web", "o-newer", [text], emb)  # inserted later → newer
+
+    hits = store.search_chunks_across_kinds(
+        kinds=["paper", "web"],
+        q="graphene transistor mobility",
+        query_vec=emb.embed_one("graphene transistor mobility"),
+        sort="oldest",
+        max_distance=None,
+    )
+    ordered = [ref.id for _, ref, _ in hits]
+    assert ordered[:2] == [older, newer]  # mirror of the recency test
+
+
 def test_date_window_bounds_results(store: Store) -> None:
     emb = MockEmbedder(dim=store.embedding_dim())
     _seed(store, "paper", "d1", ["perovskite solar cell efficiency"], emb)

@@ -1189,22 +1189,25 @@ class BlocksMixin:
         :meth:`search_blocks_multi`), collapses to one hit per ref — its
         best-scoring chunk, the breadth / triage row — optionally bounds by
         ``refs.created_at`` (``since`` / ``until``), and orders by relevance
-        (default) or recency (``sort='recency'`` → newest matching ref
-        first). ``offset`` pages past the first window (Slice-3 pagination).
+        (default), recency (``sort='recency'`` → newest matching ref first),
+        or age (``sort='oldest'`` → oldest matching ref first).
+        ``offset`` pages past the first window (Slice-3 pagination).
         Returns ``(Block, Ref, score)``, one per ref. Kinds with no
         embedded chunks simply contribute nothing (the join filters them),
         so an over-broad kind set is harmless.
         """
         if not kinds:
             return []
-        recency = (sort or "relevance").strip().lower() == "recency"
-        if recency:
-            # Recency re-ranks a *relevance-qualified* pool by date, so
+        _sort = (sort or "relevance").strip().lower()
+        by_date = _sort in ("recency", "oldest")
+        if by_date:
+            newest_first = _sort != "oldest"
+            # A date sort re-ranks a *relevance-qualified* pool by date, so
             # over-fetch beyond the caller's window (the lexical leg still
             # requires an FTS match and the semantic leg a distance floor —
             # the pool is query-relevant by construction, so date-sorting it
-            # yields "most recent among the relevant"). The pool must cover
-            # every page up to this ``offset``, so widen by it too.
+            # yields "most recent/oldest among the relevant"). The pool must
+            # cover every page up to this ``offset``, so widen by it too.
             pool = max((offset + limit) * 5, 100)
             fused = self.search_blocks_multi(
                 q_texts=[q],
@@ -1221,7 +1224,7 @@ class BlocksMixin:
             )
             fused.sort(
                 key=lambda t: (t[1].created_at or _EPOCH, t[1].id or 0),
-                reverse=True,
+                reverse=newest_first,
             )
             return fused[offset : offset + limit]
         # Relevance: the fused order is final, so delegate offset/limit

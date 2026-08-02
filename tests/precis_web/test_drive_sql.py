@@ -98,6 +98,47 @@ def test_recent_refs_has_chunks_filter(store):
     assert with_chunk.id not in unchunked
 
 
+def test_recent_refs_oldest_reverses_order(store):
+    """``oldest=True`` flips the browse order to oldest-first (the
+    ``/drive?sort=oldest`` facet) — the exact reverse of the default."""
+    a = store.insert_ref(kind="paper", slug="ord-a", title="A")  # oldest
+    b = store.insert_ref(kind="paper", slug="ord-b", title="B")
+    c = store.insert_ref(kind="paper", slug="ord-c", title="C")  # newest
+
+    newest_first = [r.id for r in store.recent_refs(["paper"])]
+    oldest_first = [r.id for r in store.recent_refs(["paper"], oldest=True)]
+    # These three appear in opposite relative order under the two sorts.
+    assert newest_first.index(c.id) < newest_first.index(a.id)
+    assert oldest_first.index(a.id) < oldest_first.index(c.id)
+    assert [x for x in oldest_first if x in {a.id, b.id, c.id}] == [a.id, b.id, c.id]
+
+
+def test_count_recent_refs_matches_list_under_same_filters(store):
+    """``count_recent_refs`` is the exact denominator for the ``/drive``
+    browse — same filter set as ``recent_refs``, so "N of K" never lies."""
+    from precis.embedder import MockEmbedder
+    from precis.store import BlockInsert
+
+    emb = MockEmbedder(dim=store.embedding_dim())
+    # Two chunked, one stub (no PDF, no chunk) — distinct kind to isolate.
+    for slug in ("cnt-chunked-1", "cnt-chunked-2"):
+        r = store.insert_ref(kind="wikipedia", slug=slug, title=slug)
+        store.insert_blocks(
+            r.id, [BlockInsert(pos=0, text="body", embedding=emb.embed_one("x"))]
+        )
+    store.insert_ref(kind="wikipedia", slug="cnt-bare", title="bare")
+
+    assert store.count_recent_refs(["wikipedia"]) == 3
+    assert store.count_recent_refs(["wikipedia"], has_chunks=True) == 2
+    assert store.count_recent_refs(["wikipedia"], has_chunks=False) == 1
+    # An empty kind set / empty allow-list counts nothing.
+    assert store.count_recent_refs([]) == 0
+    assert store.count_recent_refs(["wikipedia"], ref_ids=[]) == 0
+    # Count agrees with the length of the (unpaged) list under the same filter.
+    listed = store.recent_refs(["wikipedia"], has_chunks=True, limit=1000)
+    assert store.count_recent_refs(["wikipedia"], has_chunks=True) == len(listed)
+
+
 def test_recent_refs_ref_ids_allow_list(store):
     """``ref_ids`` restricts the browse to an explicit id set (the
     ``/drive?cited_by=<draft>`` fetch-worklist scope): ``None`` = no

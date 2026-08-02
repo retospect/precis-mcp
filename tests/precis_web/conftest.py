@@ -790,6 +790,7 @@ class FakeStore:
         parent_id=None,
         ref_ids=None,
         deleted=False,
+        oldest=False,
         limit=30,
         offset=0,
     ):
@@ -808,7 +809,16 @@ class FakeStore:
         self.recent_parent_id = parent_id
         self.recent_ref_ids = ref_ids
         self.recent_deleted = deleted
+        self.recent_oldest = oldest
         self.recent_offset = offset
+        rows = self._recent_src(kinds, deleted=deleted, ref_ids=ref_ids)
+        if oldest:
+            rows = list(reversed(rows))
+        return rows[offset:][:limit]
+
+    def _recent_src(self, kinds, *, deleted, ref_ids):
+        """Shared filtered row set for ``recent_refs`` + ``count_recent_refs``
+        (mirrors the store's one WHERE-builder-two-queries shape)."""
         if ref_ids is not None and not ref_ids:
             return []
         if deleted:
@@ -825,7 +835,22 @@ class FakeStore:
         if ref_ids is not None:
             allow = set(ref_ids)
             rows = [r for r in rows if r.id in allow]
-        return rows[offset:][:limit]
+        return rows
+
+    def count_recent_refs(
+        self,
+        kinds,
+        *,
+        tags=None,
+        has_pdf=None,
+        has_chunks=None,
+        parent_id=None,
+        ref_ids=None,
+        deleted=False,
+    ):
+        """Exact count for the /drive browse "of N" header — mirrors
+        ``recent_refs``'s filtered set (see ``_recent_src``)."""
+        return len(self._recent_src(kinds, deleted=deleted, ref_ids=ref_ids))
 
     def list_folders(self):
         """Canned folder edges for the /items folder-facet dropdown: a

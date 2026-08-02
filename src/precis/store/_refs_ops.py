@@ -1664,42 +1664,21 @@ class RefsMixin:
             rows = conn.execute(sql, params).fetchall()
         return [_row_to_ref(r) for r in rows]
 
-    def recent_refs(
+    def _recent_refs_where(
         self,
         kinds: list[str],
         *,
-        tags: list[str] | None = None,
-        has_pdf: bool | None = None,
-        has_chunks: bool | None = None,
-        parent_id: int | None = None,
-        ref_ids: list[int] | None = None,
-        deleted: bool = False,
-        limit: int = 30,
-        offset: int = 0,
-    ) -> list[Ref]:
-        """Most-recently-created refs across a *set* of kinds, newest
-        first. Backs the ``/drive`` default "recent things" browse (the
-        no-query landing); ``tags`` narrows it to refs carrying all of them
-        (the tag-filter chips with no search query). ``has_pdf=False`` keeps
-        only stubs (``pdf_sha256 IS NULL`` — the "papers to get" filter);
-        ``True`` keeps only those with a PDF. ``has_chunks`` filters on the
-        presence of at least one body chunk (``ord >= 0``) — ``True`` keeps
-        only ingested refs, ``False`` only chunk-less ones (the
-        "chunked"/"unchunked" state facet). ``parent_id`` narrows to one
-        folder's *direct* children (the ``/drive`` folder facet — same
-        non-recursive semantics as the folder-tree sidebar). ``ref_ids``
-        restricts to an explicit id allow-list (the ``/drive?cited_by=<draft>``
-        scope — a draft's papers-to-fetch set): ``None`` means no restriction,
-        an **empty list** means restrict to nothing (returns ``[]``, so a draft
-        with an empty worklist shows an empty queue rather than the whole
-        corpus). ``deleted=True`` flips the polarity to soft-deleted refs only
-        (the "show deleted" toggle — a lightweight trash view; no undelete
-        surface yet, just visibility). Kinds with no rows simply don't appear;
-        an empty ``kinds`` returns nothing. ``offset`` pages past the first
-        window.
-        """
-        if not kinds or (ref_ids is not None and not ref_ids):
-            return []
+        tags: list[str] | None,
+        has_pdf: bool | None,
+        has_chunks: bool | None,
+        parent_id: int | None,
+        ref_ids: list[int] | None,
+        deleted: bool,
+    ) -> tuple[list[str], list[Any]]:
+        """The shared WHERE clause + params for the ``/drive`` browse — one
+        builder feeding both :meth:`recent_refs` (the page) and
+        :meth:`count_recent_refs` (its exact total), so the list and its
+        "of N" denominator can never filter differently."""
         clauses = [
             "r.kind = ANY(%s)",
             "r.deleted_at IS NOT NULL" if deleted else "r.deleted_at IS NULL",
@@ -1725,16 +1704,101 @@ class RefsMixin:
         if tag_frag:
             clauses.append(tag_frag)
             params.extend(tag_params)
+        return clauses, params
+
+    def recent_refs(
+        self,
+        kinds: list[str],
+        *,
+        tags: list[str] | None = None,
+        has_pdf: bool | None = None,
+        has_chunks: bool | None = None,
+        parent_id: int | None = None,
+        ref_ids: list[int] | None = None,
+        deleted: bool = False,
+        oldest: bool = False,
+        limit: int = 30,
+        offset: int = 0,
+    ) -> list[Ref]:
+        """Most-recently-created refs across a *set* of kinds, newest
+        first. Backs the ``/drive`` default "recent things" browse (the
+        no-query landing); ``tags`` narrows it to refs carrying all of them
+        (the tag-filter chips with no search query). ``has_pdf=False`` keeps
+        only stubs (``pdf_sha256 IS NULL`` — the "papers to get" filter);
+        ``True`` keeps only those with a PDF. ``has_chunks`` filters on the
+        presence of at least one body chunk (``ord >= 0``) — ``True`` keeps
+        only ingested refs, ``False`` only chunk-less ones (the
+        "chunked"/"unchunked" state facet). ``parent_id`` narrows to one
+        folder's *direct* children (the ``/drive`` folder facet — same
+        non-recursive semantics as the folder-tree sidebar). ``ref_ids``
+        restricts to an explicit id allow-list (the ``/drive?cited_by=<draft>``
+        scope — a draft's papers-to-fetch set): ``None`` means no restriction,
+        an **empty list** means restrict to nothing (returns ``[]``, so a draft
+        with an empty worklist shows an empty queue rather than the whole
+        corpus). ``deleted=True`` flips the polarity to soft-deleted refs only
+        (the "show deleted" toggle — a lightweight trash view; no undelete
+        surface yet, just visibility). ``oldest=True`` reverses the order to
+        oldest-first (the ``sort=oldest`` facet). Kinds with no rows simply
+        don't appear; an empty ``kinds`` returns nothing. ``offset`` pages past
+        the first window.
+        """
+        if not kinds or (ref_ids is not None and not ref_ids):
+            return []
+        clauses, params = self._recent_refs_where(
+            kinds,
+            tags=tags,
+            has_pdf=has_pdf,
+            has_chunks=has_chunks,
+            parent_id=parent_id,
+            ref_ids=ref_ids,
+            deleted=deleted,
+        )
+        direction = "ASC" if oldest else "DESC"
         params.append(limit)
         params.append(offset)
         with self.pool.connection() as conn:
             rows = conn.execute(
                 f"SELECT {_REFS_COLS_ALIASED} FROM refs r "
                 f"WHERE {' AND '.join(clauses)} "
-                "ORDER BY r.created_at DESC, r.ref_id DESC LIMIT %s OFFSET %s",
+                f"ORDER BY r.created_at {direction}, r.ref_id {direction} "
+                "LIMIT %s OFFSET %s",
                 params,
             ).fetchall()
         return [_row_to_ref(r) for r in rows]
+
+    def count_recent_refs(
+        self,
+        kinds: list[str],
+        *,
+        tags: list[str] | None = None,
+        has_pdf: bool | None = None,
+        has_chunks: bool | None = None,
+        parent_id: int | None = None,
+        ref_ids: list[int] | None = None,
+        deleted: bool = False,
+    ) -> int:
+        """Exact total for the ``/drive`` no-query browse — the "of N"
+        denominator + last-page target for the pager. Applies the identical
+        filter set as :meth:`recent_refs` (same ``_recent_refs_where``
+        builder), so the count and the page it denominates never diverge. An
+        empty ``kinds``, or an empty ``ref_ids`` allow-list, counts zero."""
+        if not kinds or (ref_ids is not None and not ref_ids):
+            return 0
+        clauses, params = self._recent_refs_where(
+            kinds,
+            tags=tags,
+            has_pdf=has_pdf,
+            has_chunks=has_chunks,
+            parent_id=parent_id,
+            ref_ids=ref_ids,
+            deleted=deleted,
+        )
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                f"SELECT count(*) FROM refs r WHERE {' AND '.join(clauses)}",
+                params,
+            ).fetchone()
+        return int(row[0]) if row else 0
 
     def list_folders(self) -> list[tuple[int, str, int | None]]:
         """Every live folder as ``(ref_id, title, parent_id)`` — the raw

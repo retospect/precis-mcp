@@ -330,7 +330,8 @@ async def index(
             _DEFAULT_SOURCE_KINDS
         )
     tags = [t.strip() for t in tag if t.strip()]
-    sort = "recency" if (sort or "").strip().lower() == "recency" else "relevance"
+    _sort_raw = (sort or "").strip().lower()
+    sort = _sort_raw if _sort_raw in ("recency", "oldest") else "relevance"
     state = (state or "all").strip().lower()
     # ``state=stub`` → only PDF-less papers (the "to get" queue);
     # ``state=deleted`` → soft-deleted refs (the "show deleted" toggle).
@@ -386,6 +387,11 @@ async def index(
     recent: list[dict[str, Any]] = []
     has_next = False
     result_total: int | None = None
+    # Whether ``result_total`` is exact (the browse path — a plain filtered
+    # count) or a ≈lexical approximation (the fused-search path). Gates the
+    # pager's "Last »" jump: an approximate total could send you to an empty
+    # page, so Last is offered only when the count is trustworthy.
+    total_exact = False
     if q:
         embedder = getattr(hub, "embedder", None)
         rows, has_next = await asyncio.to_thread(
@@ -434,7 +440,29 @@ async def index(
             has_chunks=has_chunks,
             ref_ids=fetch_ref_ids,
             deleted=show_deleted,
+            oldest=(sort == "oldest"),
         )
+        # Exact total for the browse "showing N of K" header + last-page
+        # jump — the no-query list is a plain filtered ``refs`` query, so
+        # unlike the fused-search path this count is exact, not a ≈lexical
+        # approximation. Deliberately *not* floored to ``offset + len(recent)``
+        # (the search path does that to correct lexical *under*counting): here
+        # the count is already exact, and on a stale/overshoot ``page=`` — a
+        # bookmarked deep page of a set that has since shrunk — that floor
+        # would clobber the true total up to the empty page's offset ("0 of
+        # 30" for a set of 10). The honest count stands; the pager below hides
+        # the "of Y" once you're past the real last page.
+        result_total = await asyncio.to_thread(
+            store.count_recent_refs,
+            selected_kinds,
+            tags=tags,
+            has_pdf=has_pdf,
+            has_chunks=has_chunks,
+            parent_id=folder_id,
+            ref_ids=fetch_ref_ids,
+            deleted=show_deleted,
+        )
+        total_exact = True
 
     # Where a flag toggle / row action bounces back to — this exact search.
     return_to = request.url.path + (
@@ -465,6 +493,21 @@ async def index(
 
     def _page_url(n: int) -> str:
         return "/drive?" + urlencode([*_pager_params, ("page", n)])
+
+    # Last-page target for the pager's "Last »" jump — only when the total is
+    # exact (the browse path). The search path's ≈lexical count can over- or
+    # under-count the fused result set, so a jump computed from it could
+    # dead-end on an empty page; there we offer First + Prev/Next but no Last.
+    # Straight from the exact count (not clamped up to ``page``): on a stale
+    # overshoot ``page`` this is honestly < ``page``, and the template shows
+    # "Page N" without a contradictory "of Y" while First/Prev stay live.
+    last_page: int | None = None
+    if total_exact and result_total is not None:
+        last_page = max(1, -(-result_total // _PAGE_SIZE))  # ceil-div, ≥ 1
+    first_url = _page_url(1) if page > 1 else None
+    last_url = (
+        _page_url(last_page) if last_page is not None and page < last_page else None
+    )
 
     # The folder-tree sidebar + (when one is selected) its breadcrumb.
     roots = _folder_tree(store)
@@ -529,8 +572,11 @@ async def index(
             "return_to": return_to,
             "page": page,
             "has_next": has_next,
+            "last_page": last_page,
             "prev_url": _page_url(page - 1) if page > 1 else None,
             "next_url": _page_url(page + 1) if has_next else None,
+            "first_url": first_url,
+            "last_url": last_url,
             "doctypes": _doctypes(),
             "watch_dir": watch_dir,
             "dropzones": dropzones,

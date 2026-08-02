@@ -165,9 +165,11 @@ def _recent_rows(
     has_chunks: bool | None = None,
     ref_ids: list[int] | None = None,
     deleted: bool = False,
+    oldest: bool = False,
 ) -> tuple[list[dict[str, Any]], bool]:
     """The no-query landing: most-recently-added source items, newest
-    first, optionally narrowed by the tag chips, the stub filter
+    first (or oldest-first when ``oldest`` — the ``sort=oldest`` facet),
+    optionally narrowed by the tag chips, the stub filter
     (``has_pdf=False`` → only stubs, the "papers to get" queue), the
     ingested/chunk-less filter (``has_chunks`` — the "chunked"/"unchunked"
     state facet), the folder facet (``folder_id`` — one folder's direct
@@ -188,6 +190,7 @@ def _recent_rows(
         parent_id=folder_id,
         ref_ids=ref_ids,
         deleted=deleted,
+        oldest=oldest,
         limit=_PAGE_SIZE + 1,
         offset=offset,
     )

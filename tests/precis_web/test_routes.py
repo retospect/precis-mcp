@@ -431,6 +431,37 @@ def test_drive_stub_filter(runtime, client) -> None:
     assert "Stubs — papers to get" in resp.text
 
 
+def test_drive_browse_shows_exact_count(client) -> None:
+    """The no-query browse renders an exact "Showing N of K <noun>" header —
+    the FakeStore's canned landing has 2 source rows (paper + web), so it
+    reads "Showing 2 of 2 items" (pluralised on the count)."""
+    resp = client.get("/drive")
+    assert resp.status_code == 200
+    assert "Showing 2 of 2 items." in resp.text
+
+
+def test_drive_oldest_sort_reaches_store(runtime, client) -> None:
+    """sort=oldest threads an ``oldest=True`` down to recent_refs (the
+    browse-order reversal) and offers the option in the Sort select."""
+    resp = client.get("/drive?sort=oldest")
+    assert resp.status_code == 200
+    assert runtime.store.recent_oldest is True
+    assert 'value="oldest"' in resp.text
+
+
+def test_drive_pager_last_only_on_exact_browse_count(client) -> None:
+    """The browse total is exact, so the pager offers a "Last »" jump and a
+    "Page X of Y". A text search's total is a ≈lexical approximation, so its
+    pager shows First/Prev/Next but no "of Y"/Last."""
+    # Browse: 2 canned rows fit one page — no pager at all (prev/next absent),
+    # but a deeper page request still resolves without a phantom "of Y".
+    resp = client.get("/drive?page=2")
+    assert resp.status_code == 200
+    # Overshoot page is empty → the pager's contradictory "Page 2 of 1" must
+    # not appear (the "of Y" is suppressed once past the real last page).
+    assert "Page 2 of" not in resp.text
+
+
 def test_drive_paper_chunks_with_filter(runtime, client) -> None:
     """paper_chunks=with narrows the landing to refs with body chunks —
     the grouped ``paper`` chip's popover (the has_chunks=True facet),
