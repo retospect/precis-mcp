@@ -59,12 +59,37 @@ _MAX_CARDS_PER_CONCEPT = 3
 _AUTHORED_BY = "card_forge"
 
 _MINT_SYS = (
-    "You author Anki cloze cards. Given a concept (name, definition, related "
-    "concepts), write 1-3 excellent cloze cards that teach it: one idea per "
-    "card, the concept before the label, {{c1::…}} deletions on the load-"
-    "bearing words (::hint allowed). Optionally add a terse Back Extra (a "
-    "source, mnemonic, or gotcha) — or omit it. Reply with ONLY JSON: "
-    '{"cards":[{"text":"<cloze sentence>","back_extra":"<terse or empty>"}]}'
+    "You author Anki cloze cards from a concept (name, definition, related "
+    "concepts).\n"
+    "FIRST decide whether the concept deserves a card at all. A card is worth "
+    "making only if the concept carries a SPECIFIC, durable fact a curious "
+    "learner would want to know cold. REFUSE — reply with an empty cards list "
+    "and a short skip_reason — when it is instead:\n"
+    "- a vague topic label or research-direction ('new trends', 'new "
+    "compounds', 'recent advances', 'critical evaluation') — the card could "
+    "only restate the label;\n"
+    "- a stock academic phrase ('extensively examined', 'widely studied') — "
+    "what a rhetorical phrase signals is not domain knowledge;\n"
+    "- document front-matter or scaffolding (a dedication, acknowledgements, an "
+    "author, a header) — almost never a real concept;\n"
+    "- an incidental proper noun or one-of-many example the source merely names "
+    "in passing (a place/org/acronym mentioned once) — not the subject being "
+    "learned;\n"
+    "- so generic that every cloze would just echo the words already on the "
+    "card.\n"
+    "When in doubt, refuse: a missing card costs nothing; a bad one wastes "
+    "reviews forever and buries the good cards.\n"
+    "If it IS worth teaching, write 1-3 cloze cards: one idea per card, the "
+    "concept before the label, easiest cN first / hardest exact term last, a "
+    "::hint naming the category. Every {{cN::…}} answer must be SPECIFIC and "
+    "UNIQUELY recoverable from the rest of the sentence — never cloze a vague "
+    "phrase ('improved properties', 'various applications'), and never cloze "
+    "one arbitrary member of a large open set (do not hide 'Machu Picchu' as "
+    "'an example of a World Heritage Site' — a thousand others fit). "
+    "Optionally add a terse Back Extra (source, mnemonic, gotcha) or omit it. "
+    "Reply with ONLY JSON: "
+    '{"cards":[{"text":"<cloze>","back_extra":"<terse or empty>"}],'
+    '"skip_reason":"<empty, or why you refused>"}'
 )
 
 _REWORK_SYS = (
@@ -72,8 +97,13 @@ _REWORK_SYS = (
     "the didactic — not the learner — is at fault. Write ONE replacement card "
     "with a genuinely different breakdown: a new angle, a smaller step, or an "
     "anchor on the neighboring concepts the learner already knows. Keep it a "
-    "single cloze sentence with {{c1::…}} deletions. Reply with ONLY JSON: "
-    '{"text":"<cloze sentence>","back_extra":"<terse or empty>"}'
+    "single cloze sentence with {{c1::…}} deletions, and make each answer "
+    "SPECIFIC and uniquely recoverable from its context — never cloze a vague "
+    "phrase or one arbitrary member of a large open set. If the underlying "
+    "concept is not actually a learnable fact (a topic label, stock phrase, or "
+    "front-matter), do not manufacture another card — reply with an empty "
+    "text. Reply with ONLY JSON: "
+    '{"text":"<cloze sentence or empty>","back_extra":"<terse or empty>"}'
 )
 
 
@@ -97,6 +127,7 @@ class ForgeReport:
         default_factory=list
     )  # (concept, cards)
     decisions: list[CardDecision] = field(default_factory=list)
+    refused: list[tuple[int, str]] = field(default_factory=list)  # (concept, why)
     skipped: int = 0
 
     def lines(self) -> list[str]:
@@ -113,6 +144,8 @@ class ForgeReport:
                 f"{verb} {d.action} ak{d.card_id} (concept cn{d.concept_id}): "
                 f"{d.reason}{extra}"
             )
+        for concept_id, why in self.refused:
+            out.append(f"refused concept cn{concept_id} (not a card): {why}")
         if self.skipped:
             out.append(f"skipped {self.skipped} concept(s) (model gave no valid card)")
         return out
@@ -219,13 +252,16 @@ def _minted_today(store: Any, now: datetime, *, cohort: str | None = None) -> in
 def _cardless_concepts(
     store: Any, *, cohort: str | None, limit: int
 ) -> list[tuple[int, str, str]]:
-    """Unmastered concepts with no live card yet, newest first."""
+    """Unmastered concepts with no live card yet, newest first. A concept the
+    mint pass has judged un-cardable (``meta.card_forge_skip``) is excluded so
+    the daily pass doesn't re-spend a model call refusing it forever."""
     cohort_clause = "AND jsonb_exists(c.meta->'cohorts', %s)" if cohort else ""
     sql = f"""
         SELECT c.ref_id, c.meta->>'name', c.meta->>'definition'
         FROM refs c
         WHERE c.kind='concept' AND c.deleted_at IS NULL
           AND COALESCE(c.meta->>'state','candidate') != 'mastered'
+          AND NOT (c.meta ? 'card_forge_skip')
           {cohort_clause}
           AND NOT EXISTS (
             SELECT 1 FROM links l
@@ -298,6 +334,7 @@ def mint_daily_cards(
         )
         data = _extract_json(getattr(out, "text", "") or "")
         cards = (data or {}).get("cards") or []
+        skip_reason = str((data or {}).get("skip_reason") or "").strip()
         minted: list[int] = []
         for card in cards[:_MAX_CARDS_PER_CONCEPT]:
             if not isinstance(card, dict):
@@ -316,6 +353,12 @@ def mint_daily_cards(
             report.minted.append((concept_id, minted))
             # A carded concept is being learned — it leaves the candidate pool.
             store.update_ref(concept_id, meta_patch={"state": STATE_ACTIVE})
+        elif skip_reason:
+            # The model judged this concept un-cardable (a topic label, stock
+            # phrase, or front-matter). Stamp it so the daily pass stops
+            # re-spending a call to refuse it again — see `_cardless_concepts`.
+            store.update_ref(concept_id, meta_patch={"card_forge_skip": skip_reason})
+            report.refused.append((concept_id, skip_reason))
         else:
             report.skipped += 1
     return report

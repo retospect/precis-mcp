@@ -265,6 +265,24 @@ class TestMint:
         report = mint_daily_cards(store, client=client, per_day=1, cohort=co)
         assert report.minted == [] and report.skipped == 1
 
+    def test_refused_concept_is_stamped_and_not_retried(self, store: Any) -> None:
+        # The gate: a model that judges a concept un-cardable returns empty
+        # cards + a skip_reason. We record the refusal, stamp the concept, and
+        # never offer it to the mint pass again (no daily re-spend).
+        co = f"mint-{uuid.uuid4().hex[:8]}"
+        cid = _concept(store, cohort=co)
+        client = _FakeClient({"cards": [], "skip_reason": "topic label, not a fact"})
+        report = mint_daily_cards(store, client=client, per_day=1, cohort=co)
+        assert report.minted == [] and report.skipped == 0
+        assert report.refused == [(cid, "topic label, not a fact")]
+        meta = store.get_ref(kind="concept", id=cid).meta
+        assert meta["card_forge_skip"] == "topic label, not a fact"
+        # A re-run finds no cardless concept in the cohort — the stamped one is
+        # excluded, so the model is never called again for it.
+        again = _FakeClient({"cards": [{"text": "X is {{c1::Y}}."}]})
+        report2 = mint_daily_cards(store, client=again, per_day=1, cohort=co)
+        assert report2.minted == [] and again.calls == []
+
 
 class TestRework:
     def _stale_leech(self, store: Any, cid: int) -> int:

@@ -536,7 +536,12 @@ quick-restart-mid-lease latency it leaves is deferred to
   (**observe-first** — `PRECIS_CARD_FORGE_AUTONOMY=report` default, `act` to
   apply; a retired ref's Anki note is removed own-guid-only by the sync tick),
   then minting `PRECIS_READING_CARDS_PER_DAY` (5) concepts' worth of new cloze
-  cards (`represents`-linked, riding `precis anki-sync`). The brief's recall
+  cards (`represents`-linked, riding `precis anki-sync`). The mint applies a
+  **cardability gate** (the `precis-cloze` rule-0 taxonomy): a concept that is a
+  topic-label / stock phrase / front-matter / one-of-many example is refused —
+  the model returns empty cards + a `skip_reason`, which stamps
+  `concept.meta.card_forge_skip` so `_cardless_concepts` never re-offers it (no
+  daily call re-spent refusing the same junk). The brief's recall
   lane reports forged cards + escalated concepts; the nidra walk orders by
   mastery (`prefer_mastered=True`) — the evening drift through what you know.
 * `llm_summarize` — model-authored two-part summary (gist + a

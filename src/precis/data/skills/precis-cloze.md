@@ -1,7 +1,7 @@
 ---
 id: precis-cloze
 title: precis — authoring excellent Anki cloze cards
-summary: how to write good spaced-repetition cloze cards — dedup first, one cluster per card, easiest-to-hardest cN ordering, hint types, ruthlessly terse, contextual Back Extra; with language/math worked examples
+summary: how to write good spaced-repetition cloze cards — refuse non-facts (the gate), dedup, one cluster per card, easiest-to-hardest cN ordering, specific uniquely-recoverable answers, hint types, ruthlessly terse, contextual Back Extra; with language/math worked examples
 applies-to: put/search (kind='anki')
 status: active
 ---
@@ -16,7 +16,42 @@ markup (`{{cN::answer::hint}}`).
 ## Make a set of cloze cards on a topic
 ## Author flashcards for a subject
 
-Follow the rules below, in order. The first is non-negotiable.
+Follow the rules below, in order. Rule 0 is the gate — most bad cards are bad
+because they should never have been made at all; rule 1 is non-negotiable.
+
+### 0. Is this even worth a card? — refuse if not
+
+Before anything else, decide whether the source carries a **specific, durable
+fact a curious learner would want to know cold**. If it doesn't, make **no
+card**. A missing card costs nothing; a bad one wastes reviews forever *and*
+buries the good cards under noise, which is the fastest way to make someone
+abandon the deck. When in doubt, refuse.
+
+In the automated `card_forge` mint path, refusing means returning an empty
+cards list with a `skip_reason`; authoring by hand, it just means not writing
+it. Refuse when the "concept" is:
+
+- **A topic label or research-direction, not a fact** — *"new trends"*, *"new
+  compounds"*, *"recent advances"*, *"critical evaluation"*. The card can only
+  restate the label (*"a major new trend is novel compounds"*) — there is no
+  hidden answer to recall, and nothing is learned.
+- **A stock academic phrase** — *"extensively examined"*, *"widely studied"*,
+  *"plays a key role"*. Teaching what a rhetorical phrase *signals* is not
+  domain knowledge; it's trivia about prose.
+- **Document front-matter or scaffolding** — a dedication, acknowledgements, an
+  author/affiliation, a running header, figure-caption boilerplate. If it came
+  from the front or back matter of a source, it is almost never a concept.
+- **An incidental proper noun or one-of-many example** — a place, org, or name
+  the source merely mentions in passing (a *"World Heritage Site"* named inside
+  a dedication; an invented acronym like *"ESB"*). Not the subject you're
+  learning.
+- **So generic the definition is its own answer** — if every cloze you can
+  imagine just echoes words already printed on the card, there's no fact under
+  it.
+
+The test: *cover the answer — could a motivated learner reconstruct it, and
+would knowing it make them meaningfully smarter about the subject?* If either
+answer is "no", refuse.
 
 ### 1. Search first — never duplicate
 
@@ -65,6 +100,21 @@ but not a guess: `::meaning`, `::pronunciation`, `::domain`, `::number`,
 `::date`, `::mechanism`, `::example`, `::term`, `::image`, `::latex`. Terse,
 one word.
 
+**But a hint can't rescue an answer that isn't specific.** Only cloze a span
+that is load-bearing and has *one* right value the rest of the sentence points
+to — a term, number, name, mechanism. Never cloze:
+
+- **Vague filler** — *"improved properties"*, *"various applications"*, *"many
+  advantages"*. You can't *recall* a vague phrase; hiding it tests nothing.
+  Leave it as plain text — and if the vague phrase was the only candidate, the
+  card shouldn't exist (rule 0).
+- **One arbitrary member of a large open set** — hiding *"Machu Picchu"* in
+  *"an example of a World Heritage Site is `{{c1::Machu Picchu}}`"* is
+  unanswerable: a thousand sites fit equally, so there's no cued recall, only a
+  blind guess. A cloze answer must be the thing the context *determines*, not
+  one interchangeable instance of it. If the *category* is the point, cloze the
+  category, not a sample member.
+
 ### 5. No cloze gives away another on the same card
 
 If hiding `{{c1::X}}` makes `{{c2::Y}}` obvious (or vice-versa), split them across
@@ -81,8 +131,11 @@ ambiguous.
 ### Before you save: check each cN in turn
 
 Walk the clozes one at a time. For each `cN`, ask: does hiding this test a
-fact worth recalling, or is it filler/inferable-from-grammar? Drop the cloze
-(leave it as plain text) — or the whole card — if the answer is no.
+fact worth recalling, or is it filler/inferable-from-grammar? Is the answer
+**specific** enough that its context determines it — not a vague phrase, not
+one of many equally-valid fillers? Drop the cloze (leave it as plain text) — or
+the whole card — if any answer is no. If dropping the clozes leaves nothing
+worth testing, the concept failed rule 0: refuse the card entirely.
 
 ### Aim for ~3–4 cards per concept
 
