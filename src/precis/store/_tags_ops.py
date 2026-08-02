@@ -79,6 +79,17 @@ def _row_to_tag(namespace: str, value: str) -> Tag:
     return Tag.closed(namespace, value)
 
 
+def _escape_like(text: str) -> str:
+    """Escape ``\\ % _`` in ``text`` so it's safe to embed in an ILIKE
+    pattern (wrapped in caller-supplied ``%`` wildcards) without a
+    user-supplied ``%``/``_`` acting like a pattern metacharacter.
+    Shared by :meth:`TagsMixin.search_tags_lexical` and the ``tags`` /
+    ``smartdraft`` web routes' own ILIKE filters — the store owns the
+    escaping so callers never hand-roll it.
+    """
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _resolve_chunk_id(conn: Connection, ref_id: int, ord_: int) -> int:
     """Look up ``chunks.chunk_id`` for the ``(ref_id, ord)`` pair.
 
@@ -686,7 +697,7 @@ class TagsMixin:
         offset = (page - 1) * page_size
         # ``%`` is the wildcard; escape any literal % / _ in q so a
         # user-supplied string doesn't behave like a pattern.
-        needle = q.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        needle = _escape_like(q.strip())
         with self.pool.connection() as conn:
             rows = conn.execute(
                 "SELECT t.namespace, t.value, "

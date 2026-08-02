@@ -49,31 +49,26 @@
    create-and-return-id path (store-level or `hub.sibling(kind)`) and a
    shared sibling-hub factory so `dispatch.boot()` wiring isn't bypassed.
    *opus API shape, sonnet implement · effort M*
-2. **Render-sandbox hardening (`render/sandbox.py`).** The one Medium
-   security finding: LLM-authored figure code runs `exec` in a child with
-   rlimits but **no network egress block and no `RLIMIT_NPROC`** — an
-   SSRF-style pivot that bypasses safe_fetch. Already self-documented as
-   Phase 1; add `RLIMIT_NPROC` now (cheap), schedule the Phase-2
-   network-namespace/container jail. *sonnet now, opus for Phase 2 · S then L*
+2. **Render-sandbox Phase 2: network/filesystem jail (`render/sandbox.py`).**
+   LLM-authored figure code still has open network egress from the sandbox
+   child — an SSRF-style pivot that bypasses safe_fetch (can reach tailnet
+   services directly). Phase 1 rlimits are complete (`RLIMIT_NPROC`
+   fork-bomb clamp added 2026-08-02); Phase 2 = network-namespace or
+   container jail, a design task. *opus design · effort L*
 3. **Timeout the live Marker path (`ingest/marker.py::_marker_extract`).**
    The ML forward pass has no hang guard — exceptions fall back to fitz,
    but a wedged torch call blocks the live watcher indefinitely (ADR 0015
    solved the *leak*, not the *hang*). *sonnet coder · effort M*
-4. **Reuse LIKE-escaping in web routes + regression tests.**
-   `precis_web/routes/tags.py::_list_tags` and
-   `routes/smartdraft.py::tag_suggest` bind unescaped user text as ILIKE
-   patterns; `store/_tags_ops.py::search_tags_lexical` already escapes
-   `\ % _` — route through it, and add real-PG tests (FakeStore can't
-   catch this class). *sonnet coder + test-author · effort S*
-5. **Finish the mypy burn-down.** `union-attr` + `type-var` re-enabled
+4. **Finish the mypy burn-down.** `union-attr` + `type-var` re-enabled
    2026-08-02 (228 errors fixed; 2 real reachable-None bugs found in
    `quest/allocator.py` + `cli/migrate_refs.py`). 3 codes remain disabled
    (`pyproject.toml [tool.mypy]`), counts at 2026-08-02: assignment (31),
    operator (35), index (103) — one at a time, smallest first; delete the
    `disable_error_code` list when the last one lands. *sonnet, mechanical · effort M/code*
-6. **Codify + sweep the real-PG-for-route-SQL policy.** The pattern
-   (`test_status_sql.py` et al.) exists only where an incident forced it.
-   Write the rule into `docs/conventions/testing.md` ("raw SQL ⇒ a
+5. **Codify + sweep the real-PG-for-route-SQL policy.** The pattern
+   (`test_status_sql.py` et al., now also `test_tags_sql.py` /
+   `test_smartdraft_sql.py`) exists only where an incident or review forced
+   it. Write the rule into `docs/conventions/testing.md` ("raw SQL ⇒ a
    store-fixture test, FakeStore insufficient" — `tests/_fakes.py`'s
    docstring now states the limitation; the convention doc should own the
    policy) and audit `precis_web/routes/*` for raw-SQL helpers with

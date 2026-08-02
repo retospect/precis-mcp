@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from precis.render.sandbox import render_python
+from precis.render.sandbox import DEFAULT_MAX_NPROC, render_python
 
 # Minimal PNG signature — the sandbox only checks bytes are produced / bounded,
 # not that they decode, so tests may emit just the magic.
@@ -52,6 +52,20 @@ def test_home_is_redirected(monkeypatch: pytest.MonkeyPatch) -> None:
         "import os\n"
         f"assert os.environ['HOME'] != {real_home!r}, os.environ['HOME']\n"
         "assert 'precis-render-' in os.environ['HOME'], os.environ['HOME']\n" + _PNG
+    )
+    r = render_python(code)
+    assert r.ok, r.stderr
+
+
+def test_nproc_limit_is_applied() -> None:
+    # Fork-bomb containment: the child's own process-count ceiling
+    # (RLIMIT_NPROC) must be bounded, not left at whatever ambient limit the
+    # parent inherited.
+    code = (
+        "import resource\n"
+        "if hasattr(resource, 'RLIMIT_NPROC'):\n"
+        "    soft, hard = resource.getrlimit(resource.RLIMIT_NPROC)\n"
+        f"    assert hard <= {DEFAULT_MAX_NPROC}, (soft, hard)\n" + _PNG
     )
     r = render_python(code)
     assert r.ok, r.stderr

@@ -9,17 +9,19 @@ cluster compromise. So we run it in a **child process** we can only crash:
 * a **fresh, minimal environment** — built from an allowlist, never inherited;
   no DB creds, no ``SSH_AUTH_SOCK``, no ``PRECIS_*``, ``HOME`` redirected to a
   throwaway dir so nothing leaks to the real home;
-* **rlimits** (CPU seconds, output file size, open files, address space where
-  the OS honours it) applied in a ``preexec_fn``;
+* **rlimits** (CPU seconds, output file size, open files, process count,
+  address space where the OS honours it) applied in a ``preexec_fn``;
 * a **wall-clock timeout** (the child is killed on expiry);
 * a **throwaway CWD** and ``python -I`` (isolated: ignores ``PYTHON*`` env and
   the user site, keeps the corpus' import path off the child);
 * **stdin closed**.
 
-This is the cheap floor, not the ceiling. Phase 1 does **not** block network at
-the OS level (no creds to abuse, but a determined exploit could still reach out)
-nor fully jail the filesystem — those are the phase-2 Docker refinements on this
-same subprocess seam. The contract and call sites do not change between phases.
+This is the cheap floor, not the ceiling. Phase 1 now bounds the child's
+process count (``RLIMIT_NPROC``, fork-bomb containment) alongside CPU/memory/
+output-size/open-files, but it does **not** block network at the OS level (no
+creds to abuse, but a determined exploit could still reach out) nor fully jail
+the filesystem — those remain the phase-2 Docker refinements on this same
+subprocess seam. The contract and call sites do not change between phases.
 
 Contract for the render code: it is handed two globals — ``data`` (the input
 payload, e.g. ``{'table': {...}}``) and ``out`` (the absolute path to write the
@@ -46,6 +48,16 @@ DEFAULT_TIMEOUT_S = 30.0
 DEFAULT_MEM_MB = 1024
 #: Largest PNG we will accept back (MB) — also the child's RLIMIT_FSIZE.
 DEFAULT_MAX_OUTPUT_MB = 64
+#: Ceiling on the child's process count (RLIMIT_NPROC) — fork-bomb
+#: containment. NB this limit is per-*UID*, not per-process: the kernel counts
+#: every process the invoking user owns, not just this sandbox's descendants.
+#: So we never raise the inherited limit toward this value, only clamp it
+#: downward when it's looser (or unlimited) — an absolute floor here would
+#: break dev machines that already run many unrelated processes as the same
+#: user. 2048 is comfortably above any legitimate render's needs (matplotlib
+#: with the Agg backend forks nothing) while still capping a fork bomb well
+#: short of exhausting the box.
+DEFAULT_MAX_NPROC = 2048
 
 #: Environment variables copied (by name) into the child's otherwise-empty env.
 #: PATH is needed to locate shared libraries; the rest keep locale/encoding
@@ -103,7 +115,7 @@ class RenderResult:
     duration_s: float
 
 
-def _preexec(mem_mb: int, cpu_s: int, fsize_mb: int):  # type: ignore[no-untyped-def]
+def _preexec(mem_mb: int, cpu_s: int, fsize_mb: int, max_nproc: int):  # type: ignore[no-untyped-def]
     """Build the child ``preexec_fn`` that applies rlimits after fork.
 
     Each limit is best-effort: a platform that rejects one (macOS ignores
@@ -124,6 +136,16 @@ def _preexec(mem_mb: int, cpu_s: int, fsize_mb: int):  # type: ignore[no-untyped
         ]
         if hasattr(resource, "RLIMIT_AS"):
             limits.append((resource.RLIMIT_AS, (mem_mb << 20, mem_mb << 20)))
+        if hasattr(resource, "RLIMIT_NPROC"):
+            # Per-UID, not per-process — clamp the inherited limit downward,
+            # never raise it (see DEFAULT_MAX_NPROC).
+            def _clamp(v: int) -> int:
+                return max_nproc if v == resource.RLIM_INFINITY or v > max_nproc else v
+
+            soft, hard = resource.getrlimit(resource.RLIMIT_NPROC)
+            hard = _clamp(hard)
+            soft = min(_clamp(soft), hard)
+            limits.append((resource.RLIMIT_NPROC, (soft, hard)))
         for what, lim in limits:
             try:
                 resource.setrlimit(what, lim)
@@ -154,6 +176,7 @@ def render_python(
     timeout_s: float = DEFAULT_TIMEOUT_S,
     mem_mb: int = DEFAULT_MEM_MB,
     max_output_mb: int = DEFAULT_MAX_OUTPUT_MB,
+    max_nproc: int = DEFAULT_MAX_NPROC,
 ) -> RenderResult:
     """Run ``code`` in a stripped subprocess and return the rendered PNG.
 
@@ -184,7 +207,9 @@ def render_python(
                 text=True,
                 timeout=timeout_s,
                 start_new_session=True,
-                preexec_fn=_preexec(mem_mb, int(timeout_s) + 1, max_output_mb),
+                preexec_fn=_preexec(
+                    mem_mb, int(timeout_s) + 1, max_output_mb, max_nproc
+                ),
             )
         except subprocess.TimeoutExpired as exc:
             return RenderResult(
