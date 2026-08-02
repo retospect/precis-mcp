@@ -1268,6 +1268,23 @@ class TestDispatchAutocatpath:
 
         Migrator(_active_dsn(), Migrator.discover_sources(MIGRATIONS_DIR)).apply_all()
 
+    @pytest.fixture(autouse=True)
+    def _autocatpath_seed_job_types(self, monkeypatch: Any) -> None:
+        """Inject the §B-1 ``autocatpath_seed`` / ``autocatpath_aggregate``
+        job_types into the registry for the test — same reason
+        ``test_pathway_plugin.py``'s ``register_autocatpath_explore`` fixture
+        does this for ``autocatpath_explore``: the dev container's installed
+        entry_points.txt is a snapshot from image build time, so a pyproject
+        entry-point added mid-worktree isn't live without a reinstall.
+        ``monkeypatch.setitem`` auto-reverts, so this doesn't leak into other
+        test modules."""
+        pytest.importorskip("autocatpath")
+        from precis.workers import job_types as jt
+        from precis_pathway import aggregate_job, seed_job
+
+        monkeypatch.setitem(jt._REGISTRY, "autocatpath_seed", seed_job.SPEC)
+        monkeypatch.setitem(jt._REGISTRY, "autocatpath_aggregate", aggregate_job.SPEC)
+
     def _candidate(self, store: Any, qid: int) -> int:
         sid = compute_mod.ensure_candidate(
             store, qid, {"name": "Pd", "structure": _SPEC}
@@ -1275,25 +1292,96 @@ class TestDispatchAutocatpath:
         assert sid is not None
         return sid
 
+    def _seed_jobs(self, store: Any, sid: int) -> list[tuple[int, dict]]:
+        """``(job_id, meta)`` for every ``autocatpath_seed`` job under EVERY
+        aggregate tree :func:`dispatch_autocatpath` minted under candidate
+        ``sid`` (oldest first) — the seed level of the §B-1 fan-out tree
+        (candidate -> T_agg -> per-seed todo -> seed job)."""
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT j.ref_id, j.meta FROM refs seed_todo
+                  JOIN refs j ON j.parent_id = seed_todo.ref_id
+                              AND j.kind = 'job' AND j.deleted_at IS NULL
+                 WHERE seed_todo.kind = 'todo' AND seed_todo.deleted_at IS NULL
+                   AND seed_todo.parent_id IN (
+                         SELECT ref_id FROM refs
+                          WHERE parent_id = %s AND kind = 'todo'
+                            AND deleted_at IS NULL
+                       )
+                   AND j.meta->>'job_type' = 'autocatpath_seed'
+                 ORDER BY j.ref_id
+                """,
+                (sid,),
+            ).fetchall()
+        return [(int(r[0]), dict(r[1] or {})) for r in rows]
+
+    def _agg_todo_ids(self, store: Any, sid: int) -> list[int]:
+        """Every T_agg (aggregate todo) minted directly under candidate
+        ``sid`` — one per distinct :func:`dispatch_autocatpath` tree
+        (a repeat dispatch with a bumped engine token mints a second)."""
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT ref_id FROM refs WHERE parent_id = %s AND kind = 'todo' "
+                "AND deleted_at IS NULL ORDER BY ref_id",
+                (sid,),
+            ).fetchall()
+        return [int(r[0]) for r in rows]
+
+    def _promote_aggregate(self, store: Any, sid: int) -> int:
+        """Drive the async half of ONE tree to completion: stamp every seed
+        job succeeded, run the auto_check pass (closes each per-seed todo),
+        then the dispatch pass (mints T_agg's own ``autocatpath_aggregate``
+        job now that no seed todo is live under it). Returns that job's ref
+        id — callers stamp a scalar barrier onto it to simulate its own
+        (ssh_node) dispatch, same as the harvest tests always have."""
+        from precis.store import Tag
+        from precis.workers.auto_check import run_auto_check_pass
+        from precis.workers.dispatch import run_dispatch_pass
+
+        for job_id, _m in self._seed_jobs(store, sid):
+            store.stamp_ref_meta(
+                job_id,
+                {"partial": {"seed": 0, "states": {}, "steps": {}, "warnings": []}},
+            )
+            store.add_tag(
+                job_id,
+                Tag.closed("STATUS", "succeeded"),
+                set_by="system",
+                replace_prefix=True,
+            )
+        run_auto_check_pass(store)  # per-seed todos -> STATUS:done
+        run_dispatch_pass(store)  # T_agg now eligible -> mints its own job
+        jobs = compute_mod._fresh_autocatpath_jobs(store, sid, 0)
+        assert jobs, "autocatpath_aggregate job did not mint"
+        return jobs[0][0]
+
     def test_mints_job_on_candidate_with_slab_and_pathway(self, store: Any) -> None:
         qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
         sid = self._candidate(store, qid)
         note = compute_mod.dispatch_autocatpath(store, sid, self._RX)
         assert note.startswith("autocatpath[")
-        jobs = compute_mod._fresh_autocatpath_jobs(store, sid, 0)
-        assert len(jobs) == 1
-        _job_id, jmeta = jobs[0]
-        params = jmeta.get("params") or {}
-        # the exported slab rides along, provenance points back at the candidate,
-        # and the reaction config is carried verbatim
-        assert params["structure_ref"] == sid
-        assert params["config"] == self._RX
-        assert (
-            isinstance(params["slab_extxyz"], str)
-            and "Lattice=" in (params["slab_extxyz"])
-        )
-        # a pathway write-back ref was minted (status=computing)
-        pw = store.get_ref(kind="pathway", id=params["pathway_slug"])
+        # default search.seeds=[0,1,2], one mlip spec -> 3 seed jobs
+        seed_jobs = self._seed_jobs(store, sid)
+        assert len(seed_jobs) == 3
+        for _job_id, jmeta in seed_jobs:
+            params = jmeta.get("params") or {}
+            # the exported slab rides along and the reaction config is
+            # carried verbatim on every seed unit
+            assert params["config"] == self._RX
+            assert (
+                isinstance(params["slab_extxyz"], str)
+                and "Lattice=" in (params["slab_extxyz"])
+            )
+            assert params["model_index"] == 0
+        assert {jmeta["params"]["seed"] for _jid, jmeta in seed_jobs} == {0, 1, 2}
+        # a pathway write-back ref was minted (status=computing), addressed
+        # off the aggregate todo's own params (not any individual seed's).
+        (agg_id,) = self._agg_todo_ids(store, sid)
+        agg_params = (store.fetch_refs_by_ids({agg_id})[agg_id].meta or {}).get(
+            "params"
+        ) or {}
+        pw = store.get_ref(kind="pathway", id=agg_params["pathway_slug"])
         assert pw is not None and pw.meta.get("candidate_ref") == sid
 
     def test_dispatch_is_idempotent(self, store: Any) -> None:
@@ -1301,7 +1389,9 @@ class TestDispatchAutocatpath:
         sid = self._candidate(store, qid)
         compute_mod.dispatch_autocatpath(store, sid, self._RX)
         compute_mod.dispatch_autocatpath(store, sid, self._RX)  # same geometry+config
-        assert len(compute_mod._fresh_autocatpath_jobs(store, sid, 0)) == 1
+        # retry skips seeds whose todo already exists — still 3, not 6
+        assert len(self._seed_jobs(store, sid)) == 3
+        assert len(self._agg_todo_ids(store, sid)) == 1  # one tree, not two
 
     def test_engine_bump_forces_fresh_dispatch(
         self, store: Any, monkeypatch: Any
@@ -1316,8 +1406,10 @@ class TestDispatchAutocatpath:
         # Same geometry + config, but the engine was redeployed → new token.
         monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "0.4.0")
         compute_mod.dispatch_autocatpath(store, sid, self._RX)
-        # Two distinct jobs — the second did NOT collapse onto the stale one.
-        assert len(compute_mod._fresh_autocatpath_jobs(store, sid, 0)) == 2
+        # Two distinct trees (2 aggregate todos, 3 seeds each) — the second
+        # tree did NOT collapse onto the stale one.
+        assert len(self._agg_todo_ids(store, sid)) == 2
+        assert len(self._seed_jobs(store, sid)) == 6
 
     def test_redispatch_candidates_reevaluates_all_non_ruled_out(
         self, store: Any, monkeypatch: Any
@@ -1349,8 +1441,9 @@ class TestDispatchAutocatpath:
         monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "0.4.0")
         note = compute_mod.redispatch_candidates(store, qid)
         assert "re-dispatched 1 candidate" in note
-        assert len(compute_mod._fresh_autocatpath_jobs(store, good, 0)) == 2
-        assert len(compute_mod._fresh_autocatpath_jobs(store, bad, 0)) == 0
+        assert len(self._agg_todo_ids(store, good)) == 2
+        assert len(self._seed_jobs(store, good)) == 6
+        assert self._agg_todo_ids(store, bad) == []
 
     def test_candidate_ids_ignore_non_structure_serves_links(self, store: Any) -> None:
         """A quest's `serves` in-links mix structures with papers/dossier/todos;
@@ -1401,9 +1494,12 @@ class TestDispatchAutocatpath:
         assert "needs-experiment" not in tags  # false graduation dropped
 
     def test_roundtrip_dispatch_then_harvest(self, store: Any) -> None:
-        """Dispatch mints a job the harvest can read back — the two halves wire
-        together (the parent_id contract). Simulate the worker emitting a barrier
-        onto the job meta, then harvest lifts it onto the candidate."""
+        """Dispatch mints a tree the harvest can read back once the seed fan-
+        out resolves — the two halves wire together (the parent_id contract,
+        now via the aggregate todo). Simulate every seed succeeding (auto_check
+        + dispatch pass promote the aggregate job) and the ssh_node worker's
+        aggregate dispatch emitting a barrier onto ITS meta, then harvest lifts
+        it onto the candidate."""
         qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
         store.stamp_ref_meta(
             qid, {"rubric_objectives": [{"key": "barrier", "sense": "min"}]}
@@ -1419,8 +1515,9 @@ class TestDispatchAutocatpath:
             energy=-10.0,
         )
         compute_mod.dispatch_autocatpath(store, sid, self._RX)
-        job_id, _jmeta = compute_mod._fresh_autocatpath_jobs(store, sid, 0)[0]
-        # the ssh_node worker's dispatch emits the scalar summary onto the job meta
+        job_id = self._promote_aggregate(store, sid)
+        # the ssh_node worker's aggregate dispatch emits the scalar summary
+        # onto the job meta
         store.stamp_ref_meta(job_id, {"barrier": 0.33, "span": 0.9})
         compute_mod.harvest_measures(store, qid)
         assert store.fetch_refs_by_ids({sid})[sid].meta["barrier"] == 0.33
@@ -1446,7 +1543,7 @@ class TestDispatchAutocatpath:
         qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
         sid = self._candidate(store, qid)
         compute_mod.dispatch_autocatpath(store, sid, self._RX)
-        _job_id, jmeta = compute_mod._fresh_autocatpath_jobs(store, sid, 0)[0]
+        _job_id, jmeta = self._seed_jobs(store, sid)[0]
         cfg = (jmeta.get("params") or {})["config"]
         assert cfg["mlip"]["device"] == "cuda"
         assert cfg["substrate"] == "NO"  # original keys ride along
@@ -1465,7 +1562,7 @@ class TestDispatchAutocatpath:
         qid = _mk_quest(store, "A striving")
         sid = self._candidate(store, qid)
         compute_mod.dispatch_autocatpath(store, sid, self._RX)
-        _job_id, jmeta = compute_mod._fresh_autocatpath_jobs(store, sid, 0)[0]
+        _job_id, jmeta = self._seed_jobs(store, sid)[0]
         params = jmeta.get("params") or {}
         assert params["resources"]["wall_seconds"] == 9000
         # the full job meta (as stored) is what ssh_node's claim loop reads
@@ -1481,7 +1578,7 @@ class TestDispatchAutocatpath:
         qid = _mk_quest(store, "A striving")
         sid = self._candidate(store, qid)
         compute_mod.dispatch_autocatpath(store, sid, self._RX)
-        _job_id, jmeta = compute_mod._fresh_autocatpath_jobs(store, sid, 0)[0]
+        _job_id, jmeta = self._seed_jobs(store, sid)[0]
         assert (jmeta.get("params") or {})["config"] == self._RX  # unchanged
 
     # ── gr172886: capability-map route resolution + null-route guard ───────
@@ -1499,7 +1596,7 @@ class TestDispatchAutocatpath:
         sid = self._candidate(store, qid)
         note = compute_mod.dispatch_autocatpath(store, sid, self._RX)
         assert note.startswith("autocatpath[")
-        _job_id, jmeta = compute_mod._fresh_autocatpath_jobs(store, sid, 0)[0]
+        _job_id, jmeta = self._seed_jobs(store, sid)[0]
         params = jmeta.get("params") or {}
         assert params["target_node"] == "spark"
         assert params["force_backend"] != "emt"  # routed → the config's own backend
@@ -1531,7 +1628,7 @@ class TestDispatchAutocatpath:
         qid = _mk_quest(store, "A striving")
         sid = self._candidate(store, qid)
         compute_mod.dispatch_autocatpath(store, sid, self._RX)
-        _job_id, jmeta = compute_mod._fresh_autocatpath_jobs(store, sid, 0)[0]
+        _job_id, jmeta = self._seed_jobs(store, sid)[0]
         params = jmeta.get("params") or {}
         assert params["target_node"] is None
         assert params["force_backend"] == "emt"
@@ -1586,7 +1683,7 @@ class TestDispatchAutocatpath:
         sid = self._candidate(store, qid)  # _SPEC — a single, in-box Fe atom
         note = compute_mod.dispatch_autocatpath(store, sid, self._RX)
         assert note.startswith("autocatpath[")
-        assert len(compute_mod._fresh_autocatpath_jobs(store, sid, 0)) == 1
+        assert len(self._seed_jobs(store, sid)) == 3
 
 
 class TestReactionCoDispatch:

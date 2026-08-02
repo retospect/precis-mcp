@@ -361,7 +361,13 @@ pathway = "precis_pathway.handler:PathwayHandler"
 [project.entry-points."precis.job_types"]
 retrosynth = "precis_chem.jobs:RETROSYNTH_SPEC"
 fold = "precis_bio.jobs:FOLD_SPEC"
+# autocatpath_explore: kept registered so pre-existing queued/legacy rows
+# don't error-loop; dispatch_autocatpath no longer mints it (§B-1,
+# gr180096 — see precis_pathway/job.py's docstring). autocatpath_seed /
+# autocatpath_aggregate are the fan-out replacement.
 autocatpath_explore = "precis_pathway.job:SPEC"
+autocatpath_seed = "precis_pathway.seed_job:SPEC"
+autocatpath_aggregate = "precis_pathway.aggregate_job:SPEC"
 
 [project.entry-points."precis.migrations"]
 precis_chem = "precis_chem.migrations"

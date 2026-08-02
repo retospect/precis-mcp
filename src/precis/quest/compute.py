@@ -229,6 +229,132 @@ def _autocatpath_content_key(config: dict[str, Any], slab_extxyz: str) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
+def _autocatpath_seed_content_key(
+    config: dict[str, Any], slab_extxyz: str, seed: int, model_index: int
+) -> str:
+    """Idem key for ONE ``(model, seed)`` fan-out unit (§B-1, gr180096): the
+    same (engine, reaction, exported slab) triple :func:`_autocatpath_content_key`
+    hashes, plus which seed / ``mlip.specs()`` entry. The engine-version fold
+    is the same standing fix as the base key — MUST stay in the payload so a
+    redeployed autocatpath re-keys every seed instead of dedup-pinning a
+    stale partial (the qu164903 trap this whole module's docstring warns
+    about, now scoped per-seed).
+    """
+    payload = (
+        _autocatpath_engine_token()
+        + "\n"
+        + _canonical_spec(config)
+        + "\n"
+        + slab_extxyz
+        + f"\nseed={seed}\nmodel_index={model_index}"
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+#: Precis-native mirror of autocatpath's ``SearchConfig.seeds`` default
+#: (``[0, 1, 2]``) — used only when a config omits ``search.seeds``. Compute
+#: dispatch stays "no autocatpath import" (see :func:`dispatch_autocatpath`'s
+#: docstring): this module never imports the ``autocatpath`` package, so the
+#: fan-out shape is read straight off the plain config dict. Keep in sync
+#: with ``autocatpath.config.SearchConfig``.
+_AUTOCATPATH_DEFAULT_SEEDS: tuple[int, ...] = (0, 1, 2)
+
+
+def _autocatpath_mlip_specs(config: dict[str, Any]) -> list[tuple[str, str | None]]:
+    """Precis-native mirror of ``autocatpath.config.MLIPConfig.specs()`` —
+    the ``(backend, model)`` pairs a run covers. Multi-model
+    (``mlip.models``) splits into one spec per entry (``"backend:model"`` or
+    a bare model name against the top-level backend); otherwise it's the
+    single ``(backend, model)`` pair. Read straight off the plain config
+    dict rather than importing ``autocatpath.config.Config`` — see
+    :func:`dispatch_autocatpath`'s docstring for why. Keep in sync with
+    ``MLIPConfig.specs()``.
+    """
+    mlip = config.get("mlip") or {}
+    backend = str(mlip.get("backend") or "emt")
+    models = mlip.get("models") or []
+    if models:
+        out: list[tuple[str, str | None]] = []
+        for m in models:
+            m = str(m)
+            if ":" in m:
+                b, mm = m.split(":", 1)
+                out.append((b, mm or None))
+            else:
+                out.append((backend, m))
+        return out
+    return [(backend, mlip.get("model"))]
+
+
+def _autocatpath_search_seeds(config: dict[str, Any]) -> list[int]:
+    """Precis-native mirror of ``autocatpath.config.SearchConfig.seeds``
+    default. See :func:`_autocatpath_mlip_specs` for why this reads the
+    plain dict rather than importing autocatpath."""
+    seeds = (config.get("search") or {}).get("seeds")
+    if not seeds:
+        return list(_AUTOCATPATH_DEFAULT_SEEDS)
+    return [int(s) for s in seeds]
+
+
+def _find_child_todo_by_content_key(
+    store: Store, parent_id: int, content_key: str
+) -> int | None:
+    """A live ``kind='todo'`` child of ``parent_id`` whose
+    ``meta.content_key`` matches — the content-addressing seam
+    :func:`dispatch_autocatpath`'s tree mint uses so a re-dispatch reuses the
+    existing aggregate / per-seed todo instead of minting a duplicate
+    (regardless of that todo's current status — open, doing, or done)."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT ref_id FROM refs WHERE kind = 'todo' AND parent_id = %s "
+            "AND deleted_at IS NULL AND meta->>'content_key' = %s "
+            "ORDER BY ref_id LIMIT 1",
+            (parent_id, content_key),
+        ).fetchone()
+    return int(row[0]) if row else None
+
+
+def _ensure_autocatpath_todo(
+    store: Store,
+    *,
+    parent_id: int,
+    content_key: str,
+    title: str,
+    meta: dict[str, Any],
+) -> int:
+    """Content-addressed ``get-or-create`` for one node of the autocatpath
+    fan-out tree (the aggregate todo, or one per-seed todo under it).
+
+    Reused (not re-minted) on a repeat :func:`dispatch_autocatpath` call for
+    the same ``(parent, content_key)`` — this is the "retry skips completed
+    seeds" contract: a seed whose todo already exists, in ANY state
+    (queued/running/done), is left alone rather than duplicated.
+
+    Uses ``store.insert_ref`` directly rather than ``TodoHandler.put`` —
+    same reason the pathway ref just above is a raw ``insert_ref``: this
+    tree's parent is the candidate `structure` ref (compute-lane, ADR 0044),
+    and ``TodoHandler.put``'s ``check_parent_exists`` guard only accepts
+    another ``todo`` as a NEW todo's parent (the human-facing intent tree's
+    invariant) — these nodes are internal compute-lane machinery, not part
+    of that tree, so they bypass the handler layer the same way the
+    `pathway` ref does.
+    """
+    existing = _find_child_todo_by_content_key(store, parent_id, content_key)
+    if existing is not None:
+        return existing
+    with store.tx() as conn:
+        ref = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title=title,
+            meta={**meta, "content_key": content_key},
+            parent_id=parent_id,
+            conn=conn,
+        )
+        store.add_tag(ref.id, Tag.open("ephemeral"), set_by="system", conn=conn)
+    return int(ref.id)
+
+
 def dispatch_autocatpath(
     store: Store,
     structure_ref_id: int,
@@ -239,18 +365,57 @@ def dispatch_autocatpath(
 ) -> str:
     """Dispatch a autocatpath barrier evaluation on a candidate structure.
 
-    Exports the candidate's (relaxed) geometry as extxyz, ensures a `pathway` ref
-    for the write-back, and mints a ``autocatpath_explore`` job **pinned on the
-    candidate** — so :func:`harvest_measures` finds it under the structure's
-    compute lane (it queries ``parent_id = candidate``, unlike the standalone
-    `pathway` handler which parents on the pathway ref). The job hydrates the
-    extxyz into a prepared slab (autocatpath's injected-slab seam) and runs the
-    reaction network on the routed node; on completion it emits a scalar
-    ``barrier`` onto its own meta, which the harvest lifts onto the candidate.
+    §B-1 (gr180096, the spark wedge fix): exports the candidate's (relaxed)
+    geometry as extxyz, ensures a `pathway` ref for the write-back, then
+    mints a **job tree** pinned on the candidate instead of one monolith
+    job — the whole network x N seeds x full NEB used to run as ONE
+    ~90-min in-process ``autocatpath_explore`` job that overran its lease
+    and was SIGTERM-deaf. Now:
+
+    ```
+    structure (candidate)
+      └─ T_agg  (todo, meta.executor=ssh_node, job_type=autocatpath_aggregate)
+           ├─ T_seed_0  (todo, meta.auto_check=child_job_succeeded)
+           │    └─ job  (autocatpath_seed, seed=0, model_index=0)
+           ├─ T_seed_1  (todo, ...)
+           │    └─ job  (autocatpath_seed, seed=1, model_index=0)
+           ├─ ...  one per (model_index, seed) in cfg.mlip.specs() x cfg.search.seeds
+           └─ (once every T_seed_* is STATUS:done) → the dispatch worker
+              mints T_agg's own job (autocatpath_aggregate) under T_agg.
+    ```
+
+    Each ``T_seed_*``'s own job is minted HERE, synchronously, content-
+    addressed on ``sha(run_config, slab_extxyz, seed, model_index,
+    autocatpath_version)`` (:func:`_autocatpath_seed_content_key` — the
+    version MUST be in the key, same standing fix as
+    :func:`_autocatpath_content_key`) — so a re-dispatch (retry) reuses any
+    seed todo that already exists (in ANY status) rather than duplicating
+    it, and a killed seed only loses that seed's own compute.
+
+    ``T_agg`` deliberately carries NO job of its own yet — its
+    ``meta.executor``/``job_type``/``params`` are set, but minting is left
+    to the **existing** dispatch worker, whose ordinary candidate query
+    already excludes a parent todo with a live (non-done) child todo. So
+    ``T_agg`` only becomes dispatchable once every seed todo under it
+    resolves via the **existing** ``child_job_succeeded`` auto_check
+    evaluator — no new coordinator, no bespoke wait/yield state machine.
+    The two-level nesting (seed job -> seed todo -> T_agg, not seed job ->
+    T_agg directly) is load-bearing: a bare seed job as T_agg's direct
+    child would satisfy ``child_job_succeeded`` on the FIRST seed's
+    success, not the aggregate's own. See ``docs/proposals/gpu-priority.md``
+    Phase 1 and ``docs/design/autocatpath-integration.md`` §3.8.
+
+    The aggregate job (``precis_pathway.aggregate_job``) combines the seed
+    partials in-process (pure numpy, ``aggregate_partials`` — no ML deps)
+    and emits the SAME scalar ``barrier`` contract onto its own meta that
+    the legacy monolith did, so :func:`harvest_measures` needs only a
+    ``_fresh_autocatpath_jobs`` query update, not a harvest-logic change.
 
     Precis-native (no autocatpath import — the `pathway` kind, if the plugin is
-    installed, is reached only through the store) and **defensive**: degrades to a
-    note on any error (missing plugin, unloadable scene) and never raises, so a
+    installed, is reached only through the store; the fan-out shape itself is
+    read off the plain config dict, see :func:`_autocatpath_mlip_specs` /
+    :func:`_autocatpath_search_seeds`) and **defensive**: degrades to a note
+    on any error (missing plugin, unloadable scene) and never raises, so a
     compute hiccup can't fail the tick. The one exception is the gr172886
     null-route guard below: on a real multi-node cluster with no GPU host
     advertised in ``resource_slots``, this raises loudly rather than silently
@@ -365,36 +530,87 @@ def dispatch_autocatpath(
     except Exception as e:
         return f"autocatpath dispatch failed for {ref.slug}: pathway ref ({e})"
 
-    # Mint the compute-lane job PINNED ON THE CANDIDATE (harvest queries parent_id).
+    # Fan-out shape: (model_index, seed) pairs — read off the plain config
+    # dict, no autocatpath import (see the docstring above).
+    specs = _autocatpath_mlip_specs(run_config)
+    seeds = _autocatpath_search_seeds(run_config)
+
     try:
         from precis.handlers.job import JobHandler
 
-        JobHandler(hub=hub).put(
-            job_type="autocatpath_explore",
-            executor="ssh_node",
+        jobs = JobHandler(hub=hub)
+
+        # T_agg: content-addressed on the SAME key as the pathway ref, so a
+        # re-dispatch reuses the existing tree instead of minting a
+        # duplicate. No job minted here — see the docstring: the dispatch
+        # worker mints T_agg's own job once every seed todo below it is done.
+        agg_todo_id = _ensure_autocatpath_todo(
+            store,
             parent_id=structure_ref_id,
-            idem_key=f"autocatpath_explore:{key}",
-            params={
-                "pathway_ref_id": pathway_ref_id,
-                "pathway_slug": pslug,
-                "config": run_config,
-                "slab_extxyz": slab_extxyz,
-                "structure_ref": structure_ref_id,
-                "force_backend": force,
-                "content_key": key,
-                "target_node": node,
-                # Lease margin for a full reaction-network NEB: the ssh_node
-                # lease is max(2h floor, wall_seconds + 1h margin), so this lifts
-                # a slow (contended) full-network run's lease clear of its
-                # runtime — otherwise it can lease-expire mid-run and get
-                # stolen/restarted (the churn the autonomous loop must avoid).
-                "resources": {"wall_seconds": _autocatpath_wall_seconds()},
+            content_key=key,
+            title=f"autocatpath aggregate: {ref.slug} → {pslug}",
+            meta={
+                "executor": "ssh_node",
+                "job_type": "autocatpath_aggregate",
+                "params": {
+                    "pathway_ref_id": pathway_ref_id,
+                    "pathway_slug": pslug,
+                    "config": run_config,
+                    "force_backend": force,
+                    "content_key": key,
+                    "target_node": node,
+                    "resources": {"wall_seconds": _autocatpath_wall_seconds()},
+                },
             },
         )
+
+        minted = 0
+        for model_index in range(len(specs)):
+            for seed in seeds:
+                skey = _autocatpath_seed_content_key(
+                    run_config, slab_extxyz, seed, model_index
+                )
+                seed_todo_id = _find_child_todo_by_content_key(store, agg_todo_id, skey)
+                if seed_todo_id is not None:
+                    continue  # already dispatched (any status) — retry skips it
+                minted += 1
+                seed_todo_id = _ensure_autocatpath_todo(
+                    store,
+                    parent_id=agg_todo_id,
+                    content_key=skey,
+                    title=(
+                        f"autocatpath seed {seed} model#{model_index}: "
+                        f"{ref.slug} → {pslug}"
+                    ),
+                    meta={"auto_check": {"type": "child_job_succeeded"}},
+                )
+                jobs.put(
+                    job_type="autocatpath_seed",
+                    executor="ssh_node",
+                    parent_id=seed_todo_id,
+                    idem_key=f"autocatpath_seed:{skey}",
+                    params={
+                        "config": run_config,
+                        "slab_extxyz": slab_extxyz,
+                        "seed": seed,
+                        "model_index": model_index,
+                        "force_backend": force,
+                        "content_key": skey,
+                        "target_node": node,
+                        # Per-seed lease margin — minutes-scale in practice
+                        # (one model, one seed), but sized the same as
+                        # before: cheap insurance, and the wedge fix is the
+                        # job's SHORT compute duration, not a tighter lease.
+                        "resources": {"wall_seconds": _autocatpath_wall_seconds()},
+                    },
+                )
     except Exception as e:
-        return f"autocatpath dispatch failed for {ref.slug}: job mint ({e})"
+        return f"autocatpath dispatch failed for {ref.slug}: tree mint ({e})"
+
+    total = len(specs) * len(seeds)
     return (
-        f"autocatpath[{force or 'config'}] dispatched for {ref.slug} → pathway {pslug}"
+        f"autocatpath[{force or 'config'}] dispatched {total} seed(s) "
+        f"({minted} new) + aggregate for {ref.slug} → pathway {pslug}"
     )
 
 
@@ -534,18 +750,41 @@ def _pathway_quality(meta: dict[str, Any]) -> dict[str, Any]:
 def _fresh_autocatpath_jobs(
     store: Store, structure_ref_id: int, upto: int
 ) -> list[tuple[int, dict[str, Any]]]:
-    """Completed `autocatpath_explore` jobs under a candidate, newer than ``upto``.
+    """Completed autocatpath result jobs under a candidate, newer than ``upto``.
+
+    Two shapes, both parented under the candidate (§B-1, gr180096):
+
+    * legacy flat — a ``autocatpath_explore`` job directly on the candidate
+      (pre-fan-out rows; the job_type stays registered so these don't
+      error-loop, see ``precis_pathway/job.py``);
+    * the fan-out's aggregate — a ``autocatpath_aggregate`` job one level
+      down, under the aggregate todo (``T_agg``, itself a direct child of
+      the candidate — see :func:`dispatch_autocatpath`'s docstring for the
+      full tree). Both emit the SAME scalar-barrier contract onto their own
+      job meta, so :func:`_autocatpath_measures_from_job` reads either
+      shape unchanged.
 
     Returns ``(job_ref_id, meta)`` oldest-first so harvest is deterministic and
     the idempotency bookmark advances monotonically.
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
-            "SELECT j.ref_id, j.meta FROM refs j "
-            "WHERE j.parent_id = %s AND j.kind = 'job' AND j.deleted_at IS NULL "
-            "AND j.meta->>'job_type' = 'autocatpath_explore' AND j.ref_id > %s "
-            "ORDER BY j.ref_id ASC",
-            (structure_ref_id, upto),
+            """
+            SELECT j.ref_id, j.meta FROM refs j
+             WHERE j.kind = 'job' AND j.deleted_at IS NULL AND j.ref_id > %(upto)s
+               AND (
+                     (j.parent_id = %(sid)s
+                      AND j.meta->>'job_type' = 'autocatpath_explore')
+                  OR (j.meta->>'job_type' = 'autocatpath_aggregate'
+                      AND j.parent_id IN (
+                            SELECT ref_id FROM refs
+                             WHERE parent_id = %(sid)s AND kind = 'todo'
+                               AND deleted_at IS NULL
+                          ))
+               )
+             ORDER BY j.ref_id ASC
+            """,
+            {"sid": structure_ref_id, "upto": upto},
         ).fetchall()
     return [(int(r[0]), dict(r[1] or {})) for r in rows]
 

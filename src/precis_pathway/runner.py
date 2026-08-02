@@ -10,13 +10,23 @@ It mirrors :func:`autocatpath.pipeline.write_outputs` — same graph, same
 *in memory* and skips the matplotlib PNG rendering (deferred to a later
 slice), so it stays cheap and has no render-backend dependency.
 
-Slice 0 runs the whole pipeline inline on the EMT backend. Fan-out across
-``(model, seed)`` and heavy backends move to the precis compute lane in
-slice 1 (see ``docs/design/autocatpath-integration.md`` in precis-mcp).
+Slice 0 runs the whole pipeline inline on the EMT backend. §B-1 (gr180096,
+the spark wedge fix) fans ``run()``'s ``(model, seed)`` loop body out across
+the precis compute lane: :func:`run_seed_partial` runs ONE unit
+(``autocatpath.pipeline.run_one_seed``, built for exactly this — see its
+module docstring), :func:`aggregate_seed_partials` combines N of them
+(``autocatpath.pipeline.aggregate_partials``, pure numpy) back into the same
+artifact shape :func:`run_pathway` returns. ``quest.compute.
+dispatch_autocatpath`` mints the per-seed jobs; the ``autocatpath_seed`` /
+``autocatpath_aggregate`` job_types (``precis_pathway.seed_job`` /
+``.aggregate_job``) call these two functions. Heavy backends still move to
+the precis compute lane the same way (see
+``docs/design/autocatpath-integration.md`` in precis-mcp).
 """
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import io
 import json
@@ -258,6 +268,159 @@ def run_pathway_from_yaml(
     from autocatpath.config import _load_yaml
 
     return run_pathway(_load_yaml(text), force_backend=force_backend, log=log)
+
+
+# ── §B-1 seed fan-out: run ONE (model, seed) unit, aggregate N of them ─────
+
+
+def model_specs(
+    config: dict[str, Any], *, force_backend: str | None = None
+) -> list[tuple[str, str | None]]:
+    """The ``(backend, model)`` pairs this config runs — ``cfg.mlip.specs()``,
+    exposed so a caller (``quest.compute.dispatch_autocatpath``) can size its
+    fan-out without duplicating ``MLIPConfig.specs()``'s own logic."""
+    return _prep(config, force_backend).mlip.specs()
+
+
+def seed_content_key(
+    config: dict[str, Any],
+    seed: int,
+    model_index: int,
+    *,
+    force_backend: str | None = None,
+) -> str:
+    """Content address for ONE ``(model, seed)`` unit: the effective config +
+    the seed + which spec in ``mlip.specs()`` + the autocatpath version.
+
+    Mirrors :func:`content_key` (same effective-config + version fold) with
+    ``seed``/``model_index`` appended — the version fold is load-bearing the
+    same way it is there (a redeployed autocatpath re-keys every seed rather
+    than dedup-pinning stale partials, the qu164903 fix)."""
+    effective = effective_config(config, force_backend=force_backend)
+    canonical = json.dumps(effective, sort_keys=True, separators=(",", ":"))
+    payload = (
+        f"{canonical}\x00autocatpath=={__version__}"
+        f"\x00seed={seed}\x00model_index={model_index}"
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def run_seed_partial(
+    config: dict[str, Any],
+    seed: int,
+    model_index: int,
+    *,
+    force_backend: str | None = None,
+    slab_extxyz: str | None = None,
+    log: Any = lambda *a, **k: None,
+) -> dict[str, Any]:
+    """Run ONE ``(model, seed)`` unit of a pathway exploration.
+
+    The precis-side wrapper around ``autocatpath.pipeline.run_one_seed`` —
+    the function autocatpath built for exactly this ("deliberately
+    standalone and JSON-serialisable so an orchestrator can fan out seeds
+    across jobs", per its docstring). Mirrors the per-model prep
+    ``pipeline.run()`` does inline for the spec at ``model_index`` (backend
+    resolve + bulk-lattice relax to that potential) so a fanned-out seed job
+    reproduces exactly what the monolith would have done for that unit —
+    then calls ``run_one_seed``.
+
+    Returns a JSON-serialisable dict (no ASE ``Atoms`` leak): ``partial``
+    (the raw ``run_one_seed`` result, ``model`` tag folded in — same shape
+    ``pipeline.run()`` accumulates), ``model`` (the resolved tag string),
+    and ``lattice`` (``{tag: relaxed_a}`` if this unit relaxed the lattice,
+    else ``{}`` — ``aggregate_seed_partials`` merges these back in).
+
+    State geometries are NOT collected in this slice (native structure
+    ingest per state is later work, §3.8/slice-1b of
+    ``docs/design/autocatpath-integration.md``) — ``run_one_seed`` is called
+    without ``collect=``.
+    """
+    from autocatpath.calculators import make_calculator, resolve_backend
+    from autocatpath.pipeline import run_one_seed
+    from autocatpath.structures import default_lattice, equilibrium_lattice
+
+    cfg = _prep(config, force_backend)
+    specs = cfg.mlip.specs()
+    if not (0 <= model_index < len(specs)):
+        raise ValueError(
+            f"model_index={model_index} out of range for {len(specs)} spec(s)"
+        )
+    backend, model = specs[model_index]
+    resolved = resolve_backend(backend)  # `auto` -> best installed ML backend
+    if resolved != backend:
+        log(f"backend: auto -> {resolved} (best installed ML potential)")
+    backend = resolved
+    tag = f"{backend}:{model}" if model else backend
+
+    c = copy.deepcopy(cfg)
+    c.mlip.backend, c.mlip.model, c.mlip.models = backend, model, []
+    if slab_extxyz is not None:
+        c._prebuilt_slab = _hydrate_slab(slab_extxyz)  # type: ignore[attr-defined]
+    injected = getattr(c, "_prebuilt_slab", None) is not None
+
+    lattice: dict[str, float] = {}
+    if c.slab.relax_lattice and c.slab.a is None and not injected:
+        a0 = equilibrium_lattice(c.slab.element, lambda: make_calculator(c.mlip))
+        a_ref = default_lattice(c.slab.element)
+        log(
+            f"[{tag}] relaxed lattice a={a0:.4f} A "
+            f"(default {a_ref:.4f} A, strain {(a_ref / a0 - 1) * 100:+.2f}%)"
+        )
+        c.slab.a = a0
+        lattice[tag] = a0
+
+    partial = run_one_seed(c, seed, log=log)
+    partial["model"] = tag
+    return {
+        "seed": seed,
+        "model": tag,
+        "model_index": model_index,
+        "partial": partial,
+        "lattice": lattice,
+    }
+
+
+def aggregate_seed_partials(
+    config: dict[str, Any],
+    seed_results: list[dict[str, Any]],
+    *,
+    force_backend: str | None = None,
+    slab_extxyz: str | None = None,
+) -> dict[str, Any]:
+    """Combine N :func:`run_seed_partial` outputs into the same
+    self-contained artifact shape :func:`run_pathway` returns (minus
+    per-state structures — not collected by the fan-out, §3.8/slice-1b).
+
+    Pure numpy (``autocatpath.pipeline.aggregate_partials`` — no ML deps),
+    so this runs in-process on any node, not just wherever the seeds ran.
+    """
+    from autocatpath.pipeline import aggregate_partials
+
+    cfg = _prep(config, force_backend)
+    effective = cfg.to_dict()
+    if slab_extxyz is not None:
+        cfg._prebuilt_slab = _hydrate_slab(slab_extxyz)  # type: ignore[attr-defined]
+
+    partials = [r["partial"] for r in seed_results]
+    results = aggregate_partials(cfg, partials)
+    lattice: dict[str, float] = {}
+    for r in seed_results:
+        lattice.update(r.get("lattice") or {})
+    results.lattice = lattice
+    results.structures = {}
+
+    return {
+        "content_key": content_key(effective),
+        "autocatpath_version": __version__,
+        "config": effective,
+        "config_snapshot_yaml": _snapshot_yaml(cfg),
+        "results_json": _summary(cfg, results),
+        "graph_json": _graph_json(results),
+        "methods_md": provenance.methods_text(cfg, results),
+        "structures_extxyz": {},
+        "warnings": list(results.warnings),
+    }
 
 
 def _snapshot_yaml(cfg: Config) -> str:

@@ -1606,6 +1606,28 @@ The master kinds table lives in the `precis-overview` skill.
   the dossier (the tick regenerates it from clean data so the discovery agent
   stops reasoning from confabulated conclusions) — keeping the candidate designs +
   papers; then `redispatch` re-scores.
+  **Per-seed fan-out (§B-1, gr180096 — the spark wedge fix):**
+  `dispatch_autocatpath` no longer mints one ~90-min in-process
+  `autocatpath_explore` monolith (whole network x N seeds x full NEB,
+  SIGTERM-deaf, the 81-starts/0-completions wedge). It mints a small job
+  tree instead: one content-addressed `autocatpath_seed` job per
+  `(mlip.specs() entry, search.seeds entry)` — idem-keyed on
+  `sha(config, slab, seed, model_index, autocatpath_version)`, so a killed
+  seed loses only that seed and a re-dispatch skips any seed whose todo
+  already exists — plus one `autocatpath_aggregate` node that combines the
+  seed partials in-process (`aggregate_seed_partials`, pure numpy). The
+  aggregate is gated with **no new coordinator**: each seed job is wrapped
+  in its own per-seed todo (`auto_check=child_job_succeeded`, minted
+  synchronously by `dispatch_autocatpath`); the aggregate todo (`T_agg`,
+  minted with `meta.executor`/`job_type` but no job of its own) only
+  becomes a dispatch-worker candidate once every per-seed todo under it
+  resolves — the existing "no live child todo" candidacy gate — at which
+  point the dispatch worker mints `T_agg`'s own `autocatpath_aggregate`
+  job the ordinary way. `autocatpath_explore` stays registered (legacy
+  queued rows don't error-loop) but is never minted again;
+  `_fresh_autocatpath_jobs` reads either shape. See
+  `docs/proposals/gpu-priority.md` Phase 1 and
+  `docs/design/autocatpath-integration.md` §3.8.
   Reaction (slab) candidates relax the box **in-plane** (`cell="inplane"`
   — a/b + γ free, c-axis/vacuum pinned) so stability is judged on a relaxed slab
   (`quest/compute.py`; the `relax` op's variable-cell mode in `structure/relax.py`).

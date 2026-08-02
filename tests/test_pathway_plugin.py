@@ -45,6 +45,18 @@ mlip: {backend: emt}
 search: {seeds: [0], neb_images: 3, neb_max_steps: 15, neb_retries: 0, max_steps: 40, pose_count: 2}
 """
 
+# Two seeds — §B-1 seed fan-out (run_seed_partial x N + aggregate_seed_partials)
+# needs >1 seed to exercise pooling; SMOKE's single seed can't.
+FANOUT = """
+name: fanout_smoke
+substrate: "NO"
+target: "NO3"
+network: oxidation
+slab: {element: Pd, size: [2, 2, 3], vacuum: 8.0, fix_layers: 1, relax_lattice: false}
+mlip: {backend: emt}
+search: {seeds: [0, 1], neb_images: 3, neb_max_steps: 15, neb_retries: 0, max_steps: 40, pose_count: 2}
+"""
+
 # Branching network — connected (supply bridges), so it has a real root→target
 # path and exercises the interleaved profile / compare. The linear `oxidation`
 # SMOKE is disconnected (rate-limiting still works via max-over-edges fallback).
@@ -131,6 +143,85 @@ def test_runner_emt_smoke_and_determinism() -> None:
     assert set(art["structures_extxyz"]) == set(r["nodes"])
     # deterministic content address for an unchanged config
     assert runner.run_pathway_from_yaml(SMOKE)["content_key"] == art["content_key"]
+
+
+# ─────────────────────── §B-1 seed fan-out: pure runner ────────────────────
+
+
+def test_model_specs_and_seed_content_key() -> None:
+    cfg = _yaml_dict(FANOUT)
+    assert runner.model_specs(cfg) == [("emt", None)]
+    k0 = runner.seed_content_key(cfg, seed=0, model_index=0)
+    k1 = runner.seed_content_key(cfg, seed=1, model_index=0)
+    assert k0 != k1  # seed differentiates
+    assert runner.seed_content_key(cfg, seed=0, model_index=0) == k0  # deterministic
+    assert k0 != runner.content_key(runner.effective_config(cfg))  # not the base key
+
+
+def _json_eq(a: Any, b: Any) -> bool:
+    """Structural equality that treats NaN as equal to NaN (unlike ``==``) —
+    barrier/delta_e ``Estimate``s legitimately carry ``nan`` for an
+    unsampled edge, and Python's ``float('nan') != float('nan')`` would
+    otherwise fail a byte-identical comparison on values that print
+    identically."""
+    import json
+
+    return json.dumps(a, sort_keys=True, default=str) == json.dumps(
+        b, sort_keys=True, default=str
+    )
+
+
+def test_run_seed_partial_shape() -> None:
+    cfg = _yaml_dict(FANOUT)
+    result = runner.run_seed_partial(cfg, 0, 0, force_backend="emt")
+    assert result["seed"] == 0
+    assert result["model_index"] == 0
+    assert result["model"] == "emt"
+    partial = result["partial"]
+    assert partial["seed"] == 0
+    assert partial["states"], "no states in the per-seed partial"
+    assert partial["model"] == "emt"
+    # relax_lattice: false in FANOUT -> this unit never touched the lattice
+    assert result["lattice"] == {}
+
+
+def test_seed_fanout_matches_monolith_run() -> None:
+    """The whole point of §B-1: fanning ``run()``'s (model, seed) loop out
+    across ``run_seed_partial`` x N + ``aggregate_seed_partials`` must
+    reproduce EXACTLY what the monolith ``run_pathway`` computes in one
+    shot — this is a dispatch/orchestration change, not a numerics change.
+    Both paths are deterministic (seeded rattle, EMT), so results must be
+    byte-identical, not just close."""
+    cfg = _yaml_dict(FANOUT)
+    monolith = runner.run_pathway(cfg)
+
+    seed_results = [runner.run_seed_partial(cfg, seed, 0) for seed in (0, 1)]
+    fanout = runner.aggregate_seed_partials(cfg, seed_results)
+
+    assert fanout["content_key"] == monolith["content_key"]
+    assert _json_eq(fanout["results_json"]["nodes"], monolith["results_json"]["nodes"])
+    assert _json_eq(fanout["results_json"]["edges"], monolith["results_json"]["edges"])
+    assert fanout["results_json"]["n_samples"] == monolith["results_json"]["n_samples"]
+    assert _json_eq(fanout["graph_json"], monolith["graph_json"])
+
+    # and the scalar summary quest.compute.harvest_measures reads matches too
+    from precis_pathway._dispatch_common import summarize
+
+    assert summarize(fanout) == summarize(monolith)
+
+
+def test_aggregate_seed_partials_retry_skips_nothing_extra() -> None:
+    """A retry that re-supplies the SAME partials (e.g. a re-run aggregate
+    after a transient failure) is a pure function of its inputs — same
+    partials in, same artifact out. (The "skip completed seeds" dedup
+    itself lives one layer up, in quest.compute.dispatch_autocatpath's
+    content-addressed todo tree — this just confirms the aggregate step
+    has no hidden state to make that safe.)"""
+    cfg = _yaml_dict(FANOUT)
+    seed_results = [runner.run_seed_partial(cfg, seed, 0) for seed in (0, 1)]
+    a1 = runner.aggregate_seed_partials(cfg, seed_results)
+    a2 = runner.aggregate_seed_partials(cfg, seed_results)
+    assert _json_eq(a1["results_json"], a2["results_json"])
 
 
 def test_content_key_discriminates_config() -> None:
@@ -522,3 +613,213 @@ def test_autocatpath_explore_dispatch_writes_back(pathway_store: Store) -> None:
     assert got.meta["ran_on"] == "spark"
     blocks = pathway_store.list_blocks_for_ref(got.id)
     assert blocks[0].text.startswith("# Methods")
+
+
+# ─────────────────── §B-1 seed fan-out: seed / aggregate job dispatch ──────
+
+
+def test_seed_job_dispatch_writes_partial_onto_its_own_meta(
+    pathway_store: Store,
+) -> None:
+    """The `autocatpath_seed` job dispatch (what ssh_node runs, minutes-
+    scale — the gr180096 wedge fix) runs ONE (model, seed) unit and stashes
+    the partial for the sibling aggregate job to read."""
+    from precis_pathway import seed_job
+
+    ctx = _FakeCtx(
+        store=pathway_store,
+        params={
+            "config": _yaml_dict(FANOUT),
+            "force_backend": "emt",
+            "seed": 1,
+            "model_index": 0,
+            "content_key": "deadbeef",
+            "target_node": "spark",
+        },
+    )
+    seed_job._dispatch(ctx, seed_job.SPEC)
+
+    assert ctx.failure is None, ctx.failure
+    assert ctx.status == "succeeded"
+    assert ctx.meta_updates["content_key"] == "deadbeef"
+    assert ctx.meta_updates["seed"] == 1
+    assert ctx.meta_updates["model_index"] == 0
+    assert ctx.meta_updates["model"] == "emt"
+    partial = ctx.meta_updates["partial"]
+    assert isinstance(partial, dict) and partial["states"]
+    assert any(kind == "job_summary" for kind, _text in ctx.chunks)
+
+
+def test_seed_job_dispatch_malformed_params_fails_cleanly(
+    pathway_store: Store,
+) -> None:
+    from precis_pathway import seed_job
+
+    ctx = _FakeCtx(store=pathway_store, params={"config": {}})  # missing seed
+    seed_job._dispatch(ctx, seed_job.SPEC)
+    assert ctx.status == "failed"
+    assert ctx.failure and "malformed params" in ctx.failure
+
+
+def _seed_a_todo_tree(
+    store: Store, cfg: dict, seeds: tuple[int, ...] = (0, 1)
+) -> tuple[Any, int]:
+    """Build a minimal (pathway ref + aggregate todo + N succeeded seed-todo
+    -> seed-job children) tree, mirroring the shape
+    ``quest.compute.dispatch_autocatpath`` mints — enough for
+    ``aggregate_job._dispatch`` to walk. Returns ``(pathway_ref, agg_todo_id)``."""
+    from precis.store import Tag
+    from precis.store.types import BlockInsert
+
+    eff = runner.effective_config(cfg, force_backend="emt")
+    with store.tx() as c:
+        ref = store.insert_ref(
+            kind="pathway",
+            slug="aggregate-dispatch-test",
+            title="t",
+            meta={"content_key": runner.content_key(eff), "status": "computing"},
+            conn=c,
+        )
+        store.insert_blocks(
+            ref.id,
+            [
+                BlockInsert(
+                    pos=0, text="placeholder", meta={"chunk_kind": "pathway_body"}
+                )
+            ],
+            conn=c,
+        )
+        agg_todo = store.insert_ref(
+            kind="todo", slug=None, title="agg", meta={}, conn=c
+        )
+        for seed in seeds:
+            result = runner.run_seed_partial(cfg, seed, 0, force_backend="emt")
+            seed_todo = store.insert_ref(
+                kind="todo",
+                slug=None,
+                title=f"seed {seed}",
+                meta={},
+                parent_id=agg_todo.id,
+                conn=c,
+            )
+            job = store.insert_ref(
+                kind="job",
+                slug=None,
+                title="seed job",
+                meta={
+                    "job_type": "autocatpath_seed",
+                    "seed": seed,
+                    "model_index": 0,
+                    "model": result["model"],
+                    "partial": result["partial"],
+                    "lattice": result.get("lattice") or {},
+                },
+                parent_id=seed_todo.id,
+                conn=c,
+            )
+            store.add_tag(
+                job.id, Tag.closed("STATUS", "succeeded"), set_by="system", conn=c
+            )
+    return ref, int(agg_todo.id)
+
+
+def test_aggregate_job_dispatch_combines_seed_partials_and_writes_pathway(
+    pathway_store: Store,
+) -> None:
+    """The `autocatpath_aggregate` job dispatch (what the dispatch worker
+    mints under T_agg once every seed todo is done — see
+    ``quest.compute.dispatch_autocatpath``'s docstring) walks the seed-todo
+    tree, combines the partials (pure numpy), and writes the SAME pathway
+    contract `autocatpath_explore` used to write in one shot."""
+    from precis_pathway import aggregate_job
+
+    cfg = _yaml_dict(FANOUT)
+    ref, agg_todo_id = _seed_a_todo_tree(pathway_store, cfg)
+
+    ctx = _FakeCtx(
+        store=pathway_store,
+        params={
+            "pathway_ref_id": ref.id,
+            "pathway_slug": ref.slug,
+            "config": cfg,
+            "force_backend": "emt",
+            "target_node": "spark",
+        },
+    )
+    ctx.meta["dispatched_from_todo"] = agg_todo_id
+    aggregate_job._dispatch(ctx, aggregate_job.SPEC)
+
+    assert ctx.failure is None, ctx.failure
+    assert ctx.status == "succeeded"
+    assert ctx.meta_updates["n_states"] > 0
+    got = pathway_store.get_ref(kind="pathway", id=ref.slug)
+    assert got is not None
+    assert got.meta["results"]["nodes"], "results not written back"
+    assert got.meta["produced_by"] == "autocatpath_aggregate"
+    assert got.meta["ran_on"] == "spark"
+    assert got.meta["n_seed_partials"] == 2
+    blocks = pathway_store.list_blocks_for_ref(got.id)
+    assert blocks[0].text.startswith("# Methods")
+
+    # matches what the monolith would have produced on the same seeds
+    monolith = runner.run_pathway(cfg, force_backend="emt")
+    assert _json_eq(got.meta["results"]["nodes"], monolith["results_json"]["nodes"])
+
+
+def test_aggregate_job_dispatch_no_seed_partials_fails_cleanly(
+    pathway_store: Store,
+) -> None:
+    """An aggregate job minted with no succeeded seed underneath it (a bad
+    tree, or all seeds still failing) fails loud rather than writing a
+    hollow pathway result."""
+    from precis.store.types import BlockInsert
+    from precis_pathway import aggregate_job
+
+    cfg = _yaml_dict(FANOUT)
+    eff = runner.effective_config(cfg, force_backend="emt")
+    with pathway_store.tx() as c:
+        ref = pathway_store.insert_ref(
+            kind="pathway",
+            slug="empty-aggregate-test",
+            title="t",
+            meta={"content_key": runner.content_key(eff), "status": "computing"},
+            conn=c,
+        )
+        pathway_store.insert_blocks(
+            ref.id,
+            [
+                BlockInsert(
+                    pos=0, text="placeholder", meta={"chunk_kind": "pathway_body"}
+                )
+            ],
+            conn=c,
+        )
+        agg_todo = pathway_store.insert_ref(
+            kind="todo", slug=None, title="agg", meta={}, conn=c
+        )
+
+    ctx = _FakeCtx(
+        store=pathway_store,
+        params={"pathway_ref_id": ref.id, "config": cfg, "force_backend": "emt"},
+    )
+    ctx.meta["dispatched_from_todo"] = int(agg_todo.id)
+    aggregate_job._dispatch(ctx, aggregate_job.SPEC)
+
+    assert ctx.status == "failed"
+    assert ctx.failure and "no succeeded seed partials" in ctx.failure
+
+
+def test_aggregate_job_dispatch_requires_dispatched_from_todo(
+    pathway_store: Store,
+) -> None:
+    """A misconfigured aggregate job (not minted under T_agg by the dispatch
+    worker) fails loud instead of silently aggregating nothing."""
+    from precis_pathway import aggregate_job
+
+    ctx = _FakeCtx(
+        store=pathway_store,
+        params={"pathway_ref_id": 1, "config": _yaml_dict(FANOUT)},
+    )
+    aggregate_job._dispatch(ctx, aggregate_job.SPEC)
+    assert ctx.status == "failed"
+    assert ctx.failure and "dispatched_from_todo" in ctx.failure
