@@ -134,12 +134,47 @@ not blocking. The one genuinely backend-specific axis is **staging** (NFS local
    detached launch + deadline kill + orphan reconcile, minimal forensics,
    fail-closed `validate_submit`, `PRECIS_SANDBOX_ENABLED`-gated registration.
    Ships **dark** (gated off), so it merges safely without the cluster ops.
-2. **Harvest + addressing** (fast-follow proposal) — folder+plaintext
-   projection, content-addressed tarball, `RUN.json` parse, folder→sha→root
-   round-trip, the failure taxonomy in `job_summary`.
-3. **`mode:run` + recurring** (fast-follow proposal) — stored-tarball staging,
-   `uv sync`, `RUN.json.cmd`, recurring umbrella.
-4. **Cluster ops** (human, in-repo `deploy/` tree, unbuilt) — prerequisites for
+2. **Harvest + addressing** (**built**, `workers/executors/_sandbox_harvest.py`)
+   — folder+plaintext projection, content-addressed tarball (gzip via
+   stdlib `tarfile` for now — swappable for zstd later without a contract
+   change), `RUN.json` parse, folder→sha→root round-trip (verified on
+   fetch), the failure taxonomy in `job_summary`. Ships dark alongside
+   slice 1 — only reachable once a build actually exits 0 on a live host.
+3. **`mode:run` + recurring** (**built**, `job_types/sandbox_run.py` +
+   `executors/claude_docker.py::_launch_run` / `build_rerun_argv`) —
+   `params.artifact` (a prior build's harvested `folder` ref id) staged
+   into `/work` via `_sandbox_harvest.stage_run_artifact` (tarball,
+   sha-verified; falls back to reconstructing from the folder's
+   `plaintext` refs on a miss), launched as `sh -c 'cd /work && uv sync
+   && <RUN.json.cmd>'` with **no** claude/OAuth/API-key env at all;
+   harvests the result the same way slice 2 harvests a build, plus a
+   `derived-from` link back to the build folder it re-ran. Recurring
+   reuses the existing generic `meta.schedule` spawner unchanged (a
+   `mode:run` recurring is just a todo whose `meta.executor`/`job_type`/
+   `params` the spawner already carries onto each spawned tick — no new
+   scheduler logic). Ships dark alongside slices 1-2.
+4. **`precis_access:read`** (**built**, `server.py` network transport +
+   `workers/executors/_sandbox_read_mcp.py`) — `precis serve` grows an
+   optional `--transport sse|streamable-http --host --port --token`
+   (`stdio` stays the byte-identical default); a `mode:build` job with
+   `params.precis_access == "read"` gets a per-run `python -m precis
+   serve --transport streamable-http` child (`agent_ro`-DSN'd — same
+   host/port/db as the daemon's own DSN, `user` swapped, password
+   stripped for `~/.pgpass` on the host to resolve — never the token or
+   port persisted to the DB, only the PID for teardown), bound to
+   `127.0.0.1:<ephemeral port>`, a fresh per-run token. `/work/mcp.json`
+   points the container at it; the container's `--network` swaps to
+   `slirp4netns:allow_host_loopback=true` (container-side host
+   `10.0.2.2`) ONLY for this launch. Teardown (SIGTERM→grace→SIGKILL by
+   PID, mirroring `cli/watch.py::reap_tracked_process_groups`) is wired
+   into every terminal path: a normal exit or a deadline kill (both
+   route through `claude_docker._terminate`) and `reconcile_orphans`
+   (a worker-crash recovery window). Gated by `PRECIS_SANDBOX_READ_MCP`
+   (`sandbox_run.semantic_rejection` fails closed without it) — `mode:run`
+   never gets `mcp.json` at all, regardless of `precis_access`. Ships dark
+   alongside slices 1-3 — the network transport itself is inert until a
+   job actually requests `precis_access:read`.
+5. **Cluster ops** (human, in-repo `deploy/` tree, unbuilt) — prerequisites for
    a *live* run; see `roles/code_task_image/README.md` once it exists. Note
    **podman is not currently installed on balthazar/spark** (the
    `services:[…podman]` + `agent_sandbox`
@@ -148,8 +183,10 @@ not blocking. The one genuinely backend-specific axis is **staging** (NFS local
    Then: `code_task_image` build-in-place play; **enable the pass in
    `precis_worker`** on the sandbox hosts (`PRECIS_SANDBOX_ENABLED=1` + token +
    `PRECIS_SANDBOX_*` env) — **no new daemon**; the `deploy`→`agent_sandbox`
-   podman rule; the read-only DB role (for `precis_access:read`); the artifact
-   root dir; the network mode.
+   podman rule; the artifact root dir; the network mode. (The `agent_ro`
+   read-only DB role + its `~/.pgpass` entry — `precis_access:read`'s only
+   remaining external prereq — are ALREADY provisioned cluster-wide by
+   `deploy/roles/postgres` + `deploy/roles/pgpass`, not a gap here.)
 
 ## Decisions log (2026-07-04)
 
@@ -169,12 +206,24 @@ not blocking. The one genuinely backend-specific axis is **staging** (NFS local
   dedicated-token + no-DB-creds + network mode.
 - **Model:** `Tier.CLOUD_SUPER` (opus-4.8 once `PRECIS_MODEL_OPUS` is bumped —
   see `docs/proposals/opus-4.8-consolidation.md`).
-- **Precis access:** `none`|`read` dial; `read` blocked on a read-only DB role +
-  an MCP endpoint (external prereq).
+- **Precis access:** `none`|`read` dial; `read` (**built**) is a per-run,
+  token'd `precis serve --transport streamable-http` child, `agent_ro`-DSN'd
+  (the role + its `~/.pgpass` entry were already cluster-provisioned, not a
+  build-time gap) — gated by `PRECIS_SANDBOX_READ_MCP`.
 - **Task secrets:** `params.secrets` = vault names → env; never in params/DB.
 - **Image distribution:** none — built in place by an ansible play per sandbox
-  host, tagged by git sha, idempotent. No laptop build, no registry, no
-  multi-arch juggling.
+  host, tagged `code-task:<git-sha>` (idempotent; `code-task:latest` is the
+  movable default tag the same play stamps). No laptop build, no registry, no
+  multi-arch juggling. **Provenance (built):** every launch's `image`
+  (default or the `params.image` override) is pinned in the launch argv
+  (already true), then recorded in three places so "which image built/ran
+  this" is always answerable without cross-referencing logs: the job's own
+  `meta.image`, the terminal `job_summary` chunk text
+  (`image=code-task:<sha>.`), and the harvest folder's `meta.image`
+  (`_sandbox_harvest.harvest_out`'s `image=` param) — the same recorded
+  value for both a `mode:build`'s code and a `mode:run`'s result, so a
+  re-run's provenance names the image that actually executed the RE-run,
+  not just the one that produced the original build.
 - **Written code vs result:** separate lanes; success collapses to one pass/fail
   bit at the todo, taxonomy is forensic.
 - **Reaping:** detached + poll, reaped by container name (survives restart);

@@ -21,11 +21,17 @@ def test_no_args_exits(
 
 
 def test_serve_invokes_server_main(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`precis serve` must dispatch to precis.server.main()."""
+    """`precis serve` must dispatch to precis.server.main(), defaulting to
+    stdio with no host/port/token — byte-identical to before ``--transport``
+    existed for every caller that doesn't pass it."""
     called: dict[str, Any] = {"hit": False}
 
-    def fake_main() -> None:
+    def fake_main(*, transport: str, host: str, port: int, token: str | None) -> None:
         called["hit"] = True
+        called["transport"] = transport
+        called["host"] = host
+        called["port"] = port
+        called["token"] = token
 
     import precis.server
 
@@ -34,6 +40,45 @@ def test_serve_invokes_server_main(monkeypatch: pytest.MonkeyPatch) -> None:
 
     cli.main()
     assert called["hit"] is True
+    assert called["transport"] == "stdio"
+    assert called["token"] is None
+
+
+def test_serve_passes_through_network_transport_flags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_main(*, transport: str, host: str, port: int, token: str | None) -> None:
+        captured.update(transport=transport, host=host, port=port, token=token)
+
+    import precis.server
+
+    monkeypatch.setattr(precis.server, "main", fake_main)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "precis",
+            "serve",
+            "--transport",
+            "streamable-http",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "9999",
+            "--token",
+            "s3cr3t",
+        ],
+    )
+
+    cli.main()
+    assert captured == {
+        "transport": "streamable-http",
+        "host": "0.0.0.0",
+        "port": 9999,
+        "token": "s3cr3t",
+    }
 
 
 # ---------------------------------------------------------------------------

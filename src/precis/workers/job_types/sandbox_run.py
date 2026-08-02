@@ -1,35 +1,52 @@
 """sandbox_run — an open-ended coding task in a throwaway container.
 
-Slice 1 of the ``sandbox_run`` design (``docs/design/sandbox-run.md``):
-the mint → claim → launch → poll → terminal spine, run by the
-:mod:`precis.workers.executors.claude_docker` executor. This slice is
-**``mode:build`` + ``precis_access:none`` only** and ships **dark** —
-the executor pass is registered only under ``PRECIS_SANDBOX_ENABLED``,
-so a merge/deploy touches nothing in prod until a human enables it on a
+Slices 1+2+3+4 of the ``sandbox_run`` design
+(``docs/design/sandbox-run.md``): the mint → claim → launch → poll →
+terminal spine, run by the :mod:`precis.workers.executors.claude_docker`
+executor; ``mode:run`` (design §"Re-run + operationalize" — stage the
+harvested tarball, ``uv sync`` + ``RUN.json.cmd``, no claude/OAuth); and
+``precis_access:read`` (design §"Precis access" — a per-run, token'd,
+read-only MCP callback, gated by ``PRECIS_SANDBOX_READ_MCP`` and built by
+:mod:`precis.workers.executors._sandbox_read_mcp`). Ships **dark** — the
+executor pass is registered only under ``PRECIS_SANDBOX_ENABLED``, so a
+merge/deploy touches nothing in prod until a human enables it on a
 sandbox host.
 
 The job_type module is a pure declaration + helpers:
 
 * ``PARAMS_SCHEMA`` / ``COMPATIBLE_EXECUTORS`` / ``REQUIRES`` — the
   registry metadata (validated at ``put`` time by the JobHandler).
-* ``validate_submit`` — the **fail-closed** submit gate: rejects
-  ``mode:run``, ``precis_access:read``, a ``secrets`` list, a
-  non-sandbox / melchior ``target_node``, or a missing
-  ``CLAUDE_CODE_OAUTH_TOKEN`` in the daemon env. The claude_docker
-  executor re-checks the same conditions at launch (defence in depth
-  for jobs minted by ``dispatch`` from a todo, which don't pass through
-  the JobHandler put path).
+* ``validate_submit`` — the **fail-closed** submit gate: rejects an
+  unsupported ``mode``, ``precis_access:read`` without
+  ``PRECIS_SANDBOX_READ_MCP``, a ``secrets`` list, a non-sandbox /
+  melchior ``target_node``, ``mode:build`` with no ``prompt``,
+  ``mode:run`` with no ``artifact`` (a prior build's ``folder`` ref
+  id), or (``mode:build`` only) a missing ``CLAUDE_CODE_OAUTH_TOKEN`` in
+  the daemon env. The claude_docker executor re-checks the same
+  conditions at launch (defence in depth for jobs minted by
+  ``dispatch`` from a todo, which don't pass through the JobHandler put
+  path).
 * ``resolve_sandbox_model`` — model via the ADR 0046 router
   (``Tier.FRONTIER``) with a ``PRECIS_SANDBOX_MODEL`` override; never
   a private constant.
 * ``compose_prompt`` — the ``/work/PROMPT.md`` body (task + harvest
-  contract) the executor stages into the run dir.
+  contract) the executor stages into the run dir (``mode:build`` only —
+  ``mode:run`` never gets a prompt).
 
 Trust model (design decisions log): the container runs Claude with a
 **dedicated** long-lived ``CLAUDE_CODE_OAUTH_TOKEN`` (Max, *not*
 ``--bare`` / ``ANTHROPIC_API_KEY``), no DB creds, cgroup-capped, never a
 GPU. melchior is excluded (it holds OAuth / gateway / creds — an escape
-target); only ``agent_sandbox_host`` nodes may run it.
+target); only ``agent_sandbox_host`` nodes may run it. ``mode:run``
+drops the OAuth token entirely — no claude is spawned, so there is
+nothing to authenticate.
+
+**``params.artifact``** (``mode:run`` only) is the harvested ``folder``
+ref id from a prior ``mode:build`` run — deliberately an *id*, not a raw
+sha256 string, so a submitter can only point at something harvest
+already produced (and recorded provenance for), never an arbitrary
+content hash that happens to collide with something on the artifact
+root.
 """
 
 from __future__ import annotations
@@ -48,9 +65,16 @@ from precis.utils.llm.router import Tier, resolve_model
 #: operator mistakenly lists it in ``PRECIS_SANDBOX_HOSTS``.
 _EXCLUDED_NODES: frozenset[str] = frozenset({"melchior", "melchior.local"})
 
-#: This slice supports only the build lane and no precis DB access.
-_SUPPORTED_MODE = "build"
-_SUPPORTED_PRECIS_ACCESS = "none"
+#: ``build`` (a fresh claude coding task) and ``run`` (re-run a prior
+#: build's harvested tarball, no claude).
+_SUPPORTED_MODES = frozenset({"build", "run"})
+_DEFAULT_MODE = "build"
+
+#: ``none`` (default, no precis DB access at all) and ``read`` (a
+#: per-run, token'd, read-only MCP callback — gated further by
+#: :func:`read_mcp_enabled` on the ops capability flag).
+_SUPPORTED_PRECIS_ACCESS_VALUES = frozenset({"none", "read"})
+_DEFAULT_PRECIS_ACCESS = "none"
 
 #: Accepted shape for an agent-supplied ``image`` param. The container
 #: runtime is exec'd (no shell), so the only real risk is *argument*
@@ -69,6 +93,9 @@ PARAMS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         # The open-ended coding task handed to Claude in the container.
+        # Required for mode:build, ignored for mode:run — enforced by
+        # semantic_rejection, not the schema (a schema-level "required"
+        # can't be conditional on a sibling field's value).
         "prompt": {"type": "string"},
         # Which sandbox host runs it — pins the claim to that node's
         # worker (params.target_node is the shared node-gate key).
@@ -77,16 +104,22 @@ PARAMS_SCHEMA: dict[str, Any] = {
         "wall_seconds": {"type": "integer"},
         # Container image tag (built in place per host by the ops play).
         "image": {"type": "string"},
-        # Model override; unset → resolve_model(Tier.FRONTIER).
+        # Model override; unset → resolve_model(Tier.FRONTIER). Ignored
+        # for mode:run (no claude is spawned).
         "model": {"type": "string"},
-        # Slice gates — declared so additionalProperties=False lets a
-        # caller *pass* them, then validate_submit rejects the
-        # not-yet-supported values fail-closed.
+        # ``build`` (default) | ``run``.
         "mode": {"type": "string"},
+        # mode:run only — the harvested ``folder`` ref id from a prior
+        # mode:build run (see the module docstring for why this is an
+        # id, not a raw sha256).
+        "artifact": {"type": "integer"},
+        # ``none`` (default) | ``read`` — ``read`` additionally requires
+        # PRECIS_SANDBOX_READ_MCP=1 in the daemon env (an ops capability
+        # flag; see read_mcp_enabled()).
         "precis_access": {"type": "string"},
         "secrets": {"type": "array"},
     },
-    "required": ["prompt", "target_node", "wall_seconds"],
+    "required": ["target_node", "wall_seconds"],
     "additionalProperties": False,
 }
 
@@ -95,10 +128,12 @@ COMPATIBLE_EXECUTORS: frozenset[str] = frozenset({"claude_docker"})
 REQUIRES: frozenset[str] = frozenset({"podman", "claude_oauth"})
 
 DESCRIPTION: str = (
-    "Run an open-ended coding task inside a throwaway, cgroup-capped "
-    "container (mode:build, precis_access:none) on an agent_sandbox_host "
-    "and keep minimal forensics. Registered only under "
-    "PRECIS_SANDBOX_ENABLED. See docs/design/sandbox-run.md."
+    "Run an open-ended coding task (mode:build) or re-run a prior build's "
+    "harvested tarball (mode:run) inside a throwaway, cgroup-capped "
+    "container on an agent_sandbox_host and keep minimal forensics. "
+    "precis_access:read (mode:build only) gives it a per-run, token'd, "
+    "read-only MCP callback when PRECIS_SANDBOX_READ_MCP=1. Registered "
+    "only under PRECIS_SANDBOX_ENABLED. See docs/design/sandbox-run.md."
 )
 
 
@@ -114,6 +149,19 @@ def _sandbox_hosts() -> frozenset[str]:
     """
     raw = os.environ.get("PRECIS_SANDBOX_HOSTS", "")
     return frozenset(h.strip() for h in raw.replace(",", " ").split() if h.strip())
+
+
+def read_mcp_enabled() -> bool:
+    """Ops capability flag for ``precis_access:read`` (design §"precis
+    serve gains an optional network transport" + the read-only MCP
+    callback). Default OFF (fail-closed) — reads
+    ``PRECIS_SANDBOX_READ_MCP`` (``1``/``true``/``yes``).
+    """
+    return os.environ.get("PRECIS_SANDBOX_READ_MCP", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
 
 
 def resolve_sandbox_model() -> str:
@@ -143,30 +191,39 @@ def default_image() -> str:
 def semantic_rejection(params: dict[str, Any]) -> str | None:
     """Return a fail-closed rejection reason for ``params``, or ``None``.
 
-    The single source of truth for the slice-1 gates, shared by
+    The single source of truth for the submit-time gates, shared by
     ``validate_submit`` (put time) and the claude_docker executor
-    (launch time). Rejects, in order: an unsupported ``mode``, any
-    ``precis_access`` other than ``none``, a non-empty ``secrets`` list,
-    a missing / melchior / non-allowlisted ``target_node``, and a
-    non-positive ``wall_seconds``.
+    (launch time). Rejects, in order: an unsupported ``mode``, an
+    unsupported ``precis_access`` value, ``precis_access:read`` without
+    ``PRECIS_SANDBOX_READ_MCP``, a non-empty ``secrets`` list, an
+    invalid ``image``, a missing / melchior / non-allowlisted
+    ``target_node``, a non-positive ``wall_seconds``, a ``mode:build``
+    with no ``prompt``, and a ``mode:run`` with no (positive integer)
+    ``artifact``.
     """
-    mode = params.get("mode", _SUPPORTED_MODE)
-    if mode != _SUPPORTED_MODE:
+    mode = str(params.get("mode") or _DEFAULT_MODE)
+    if mode not in _SUPPORTED_MODES:
         return (
-            f"sandbox_run: mode:{mode!r} is not supported in slice 1 "
-            f"(mode:{_SUPPORTED_MODE} only — mode:run is a later slice)"
+            f"sandbox_run: mode:{mode!r} is not supported "
+            f"(mode:{{{'|'.join(sorted(_SUPPORTED_MODES))}}} only)"
         )
-    precis_access = params.get("precis_access", _SUPPORTED_PRECIS_ACCESS)
-    if precis_access != _SUPPORTED_PRECIS_ACCESS:
+    precis_access = str(params.get("precis_access") or _DEFAULT_PRECIS_ACCESS)
+    if precis_access not in _SUPPORTED_PRECIS_ACCESS_VALUES:
         return (
-            f"sandbox_run: precis_access:{precis_access!r} is not supported "
-            f"in slice 1 (precis_access:{_SUPPORTED_PRECIS_ACCESS} only — "
-            "read access needs a read-only DB role + MCP endpoint)"
+            f"sandbox_run: precis_access:{precis_access!r} is not a "
+            f"supported value (precis_access:"
+            f"{{{'|'.join(sorted(_SUPPORTED_PRECIS_ACCESS_VALUES))}}})"
+        )
+    if precis_access == "read" and not read_mcp_enabled():
+        return (
+            "sandbox_run: precis_access:read requires PRECIS_SANDBOX_READ_MCP=1 "
+            "in the daemon env (the read-only MCP callback ops capability "
+            "flag) — fail-closed until it's set"
         )
     secrets = params.get("secrets") or []
     if secrets:
         return (
-            "sandbox_run: params.secrets is not supported in slice 1 "
+            "sandbox_run: params.secrets is not supported yet "
             "(task secrets are a later slice)"
         )
     image = params.get("image")
@@ -202,6 +259,17 @@ def semantic_rejection(params: dict[str, Any]) -> str | None:
     wall = params.get("wall_seconds")
     if not isinstance(wall, int) or isinstance(wall, bool) or wall <= 0:
         return "sandbox_run: params.wall_seconds must be a positive integer"
+    if mode == "build":
+        prompt = params.get("prompt")
+        if not isinstance(prompt, str) or not prompt.strip():
+            return "sandbox_run: params.prompt is required for mode:build"
+    else:  # mode == "run"
+        artifact = params.get("artifact")
+        if not isinstance(artifact, int) or isinstance(artifact, bool) or artifact <= 0:
+            return (
+                "sandbox_run: params.artifact (a prior mode:build run's "
+                "harvested folder ref id) is required for mode:run"
+            )
     return None
 
 
@@ -219,6 +287,10 @@ def validate_submit(
     reason = semantic_rejection(params)
     if reason is not None:
         return reason
+    mode = str(params.get("mode") or _DEFAULT_MODE)
+    if mode != "build":
+        # mode:run spawns no claude — nothing to authenticate.
+        return None
     from precis import secrets as _secrets
 
     if not _secrets.get_secret("CLAUDE_CODE_OAUTH_TOKEN"):
@@ -238,9 +310,8 @@ def validate_submit(
 def compose_prompt(task: str) -> str:
     """Build the ``/work/PROMPT.md`` body: task + the harvest contract.
 
-    The harvest contract describes the ``/work/out`` output lanes even
-    though slice 1 discards ``out/`` (harvest is slice 2) — writing it
-    now keeps the container-side convention stable across slices.
+    ``mode:build`` only — ``mode:run`` re-runs a harvested tarball's
+    ``RUN.json.cmd`` directly and never gets a prompt.
     """
     lines = [
         "# Coding task",
@@ -288,6 +359,7 @@ __all__ = [
     "REQUIRES",
     "compose_prompt",
     "default_image",
+    "read_mcp_enabled",
     "resolve_sandbox_model",
     "run",
     "semantic_rejection",

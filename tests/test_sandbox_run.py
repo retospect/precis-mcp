@@ -112,6 +112,19 @@ def _valid_params(**over: Any) -> dict[str, Any]:
     return p
 
 
+def _valid_run_params(*, artifact: int, **over: Any) -> dict[str, Any]:
+    """mode:run params — no ``prompt`` (mode:build's field), ``artifact``
+    is the prior build's harvested ``folder`` ref id."""
+    p: dict[str, Any] = {
+        "mode": "run",
+        "artifact": artifact,
+        "target_node": "balthazar",
+        "wall_seconds": 1800,
+    }
+    p.update(over)
+    return p
+
+
 def _mk_queued_job(
     store: Store, *, params: dict[str, Any], parent_id: int | None = None
 ) -> int:
@@ -152,6 +165,16 @@ def _meta(store: Store, ref_id: int) -> dict[str, Any]:
 
 def _tags(store: Store, ref_id: int) -> set[str]:
     return {str(t) for t in store.tags_for(ref_id)}
+
+
+def _job_summary_texts(store: Store, ref_id: int) -> list[str]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT text FROM chunks WHERE ref_id = %s AND chunk_kind = 'job_summary' "
+            "ORDER BY ord",
+            (ref_id,),
+        ).fetchall()
+    return [r[0] for r in rows]
 
 
 # ── registry / metadata (no DB) ────────────────────────────────────
@@ -201,15 +224,63 @@ class TestValidateSubmit:
         self._env(monkeypatch)
         assert sandbox_run.validate_submit(None, params=_valid_params()) is None
 
-    def test_rejects_mode_run(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_rejects_mode_run_without_artifact(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # mode:run is supported, but needs params.artifact (a prior
+        # build's harvested folder ref id) — reject without one.
         self._env(monkeypatch)
         err = sandbox_run.validate_submit(None, params=_valid_params(mode="run"))
+        assert err is not None and "artifact" in err and "mode:run" in err
+
+    def test_mode_run_with_artifact_passes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._env(monkeypatch)
+        params = _valid_run_params(artifact=42)
+        err = sandbox_run.validate_submit(None, params=params)
+        assert err is None
+
+    def test_rejects_mode_build_without_prompt(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._env(monkeypatch)
+        params = _valid_params()
+        del params["prompt"]
+        err = sandbox_run.validate_submit(None, params=params)
+        assert err is not None and "prompt" in err
+
+    def test_rejects_unsupported_mode(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._env(monkeypatch)
+        err = sandbox_run.validate_submit(None, params=_valid_params(mode="parallel"))
         assert err is not None and "mode" in err
 
-    def test_rejects_precis_access_read(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_rejects_precis_access_read_without_read_mcp_flag(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         self._env(monkeypatch)
+        monkeypatch.delenv("PRECIS_SANDBOX_READ_MCP", raising=False)
         err = sandbox_run.validate_submit(
             None, params=_valid_params(precis_access="read")
+        )
+        assert err is not None and "PRECIS_SANDBOX_READ_MCP" in err
+
+    def test_accepts_precis_access_read_with_read_mcp_flag(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._env(monkeypatch)
+        monkeypatch.setenv("PRECIS_SANDBOX_READ_MCP", "1")
+        err = sandbox_run.validate_submit(
+            None, params=_valid_params(precis_access="read")
+        )
+        assert err is None
+
+    def test_rejects_unsupported_precis_access_value(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._env(monkeypatch)
+        err = sandbox_run.validate_submit(
+            None, params=_valid_params(precis_access="write")
         )
         assert err is not None and "precis_access" in err
 
@@ -300,6 +371,33 @@ def test_build_run_argv_invariants() -> None:
     assert argv[-2] == "--"
 
 
+def test_build_rerun_argv_invariants() -> None:
+    argv = claude_docker.build_rerun_argv(
+        podman_bin="podman",
+        job_id=42,
+        image="code-task:abc",
+        work_dir="/tmp/precis-sandbox/sandbox-42",
+        cmd="python main.py",
+        memory="8g",
+        cpus="2",
+        pids_limit=512,
+        network="bridge",
+    )
+    joined = " ".join(argv)
+    assert "-d" in argv
+    assert argv[argv.index("--name") + 1] == "sandbox-42"
+    # No claude / OAuth / API-key env at all — mode:run spawns no claude.
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in joined
+    assert "ANTHROPIC_API_KEY" not in joined
+    assert "--env" not in argv
+    # cgroup caps present, no GPU.
+    assert "--memory" in argv and "--cpus" in argv and "--pids-limit" in argv
+    assert "--device" not in argv
+    # explicit CMD override: uv sync then the RUN.json.cmd, from /work.
+    assert argv[-3:] == ["sh", "-c", "cd /work && uv sync && python main.py"]
+    assert argv[argv.index("--") + 1] == "code-task:abc"
+
+
 # ── dispatch mint (acceptance #1) ──────────────────────────────────
 
 
@@ -339,7 +437,7 @@ def test_dispatch_mints_node_pinned_queued_job(
     assert _meta(store, rid).get("auto_check", {}).get("type") == "child_job_succeeded"
 
 
-def test_put_time_validate_rejects_mode_run(
+def test_put_time_validate_rejects_mode_run_without_artifact(
     hub: Hub, store: Store, sandbox_env: Path
 ) -> None:
     """A direct job put with a fail-closed param is rejected at put time."""
@@ -347,12 +445,26 @@ def test_put_time_validate_rejects_mode_run(
     from precis.handlers.job import JobHandler
 
     parent = store.insert_ref(kind="todo", slug=None, title="owner", meta={})
-    with pytest.raises(BadInput, match="mode"):
+    with pytest.raises(BadInput, match="artifact"):
         JobHandler(hub=hub).put(
             job_type="sandbox_run",
             parent_id=parent.id,
             params=_valid_params(mode="run"),
         )
+
+
+def test_put_time_validate_accepts_mode_run_with_artifact(
+    hub: Hub, store: Store, sandbox_env: Path
+) -> None:
+    from precis.handlers.job import JobHandler
+
+    parent = store.insert_ref(kind="todo", slug=None, title="owner", meta={})
+    r = JobHandler(hub=hub).put(
+        job_type="sandbox_run",
+        parent_id=parent.id,
+        params=_valid_run_params(artifact=42),
+    )
+    assert r is not None
 
 
 # ── claim + node gate + lease (acceptance #3) ──────────────────────
@@ -458,6 +570,46 @@ def test_poll_exit_zero_succeeds(store: Store, sandbox_env: Path) -> None:
     assert not any(t.startswith("child-failed:") for t in _tags(store, parent.id))
 
 
+# ── per-unit pinned image provenance ────────────────────────────────
+
+
+def test_custom_image_lands_in_argv_meta_summary_and_harvest_folder(
+    store: Store, sandbox_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PRECIS_ROOT", str(sandbox_env.parent / "PRECIS_ROOT"))
+    monkeypatch.setenv(
+        "PRECIS_SANDBOX_ARTIFACT_ROOT", str(sandbox_env.parent / "artifacts")
+    )
+    custom_image = "code-task:deadbeef01"
+    captured: dict[str, Any] = {}
+    real_build_run_argv = claude_docker.build_run_argv
+
+    def _spy(**kw: Any) -> list[str]:
+        captured["image"] = kw["image"]
+        return real_build_run_argv(**kw)
+
+    monkeypatch.setattr(claude_docker, "build_run_argv", _spy)
+
+    jid = _mk_queued_job(store, params=_valid_params(image=custom_image))
+    claude_docker.run_claude_docker_pass(store, limit=4)  # launch
+    assert captured["image"] == custom_image
+    assert _meta(store, jid)["image"] == custom_image
+
+    # Leave a file in out/ so harvest actually mints a folder.
+    work = Path(os.environ["PRECIS_SANDBOX_WORK_DIR"]) / f"sandbox-{jid}"
+    (work / "out" / "main.py").write_text("print('hi')\n")
+
+    (sandbox_env / f"sandbox-{jid}.state").write_text("exited 0")
+    claude_docker.run_claude_docker_pass(store, limit=4)  # poll → harvest → reap
+
+    assert _status(store, jid) == "succeeded"
+    summaries = _job_summary_texts(store, jid)
+    assert any(f"image={custom_image}" in s for s in summaries)
+
+    folder_id = _meta(store, jid)["harvest_folder_id"]
+    assert _meta(store, folder_id)["image"] == custom_image
+
+
 def test_poll_exit_one_fails_and_bubbles(store: Store, sandbox_env: Path) -> None:
     parent = store.insert_ref(kind="todo", slug=None, title="owner", meta={})
     jid = _mk_queued_job(store, params=_valid_params(), parent_id=parent.id)
@@ -553,9 +705,379 @@ def test_reconcile_keeps_live_job(store: Store, sandbox_env: Path) -> None:
 def test_launch_rejects_bad_params_without_container(
     store: Store, sandbox_env: Path
 ) -> None:
-    # A job minted with mode:run (bypassing put-time validate) must be
-    # failed at launch, never started.
+    # A job minted with mode:run but no params.artifact (bypassing
+    # put-time validate) must be failed at launch, never started.
     jid = _mk_queued_job(store, params=_valid_params(mode="run"))
     claude_docker.run_claude_docker_pass(store, limit=4)
     assert _status(store, jid) == "failed"
     assert "container" not in _meta(store, jid)
+
+
+# ── mode:run — stage a prior build's tarball, launch, harvest result ──
+#
+# Design §"Re-run + operationalize": same substrate, claude swapped out.
+# These tests harvest a fake build directly (no container needed — the
+# harvest module never shells out) to get a real ``folder`` ref with a
+# ``RUN.json`` recipe + tarball to stage from, then drive the executor
+# exactly like the mode:build tests above.
+
+
+@pytest.fixture
+def sandbox_run_env(
+    sandbox_env: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    """Extends ``sandbox_env`` with ``PRECIS_ROOT`` +
+    ``PRECIS_SANDBOX_ARTIFACT_ROOT`` so a build harvest and a run's
+    staging round-trip through the same stores."""
+    precis_root = tmp_path / "PRECIS_ROOT"
+    precis_root.mkdir()
+    art_root = tmp_path / "artifacts"
+    monkeypatch.setenv("PRECIS_ROOT", str(precis_root))
+    monkeypatch.setenv("PRECIS_SANDBOX_ARTIFACT_ROOT", str(art_root))
+    return sandbox_env
+
+
+def _mk_build_folder(store: Store, *, with_run_json: bool = True) -> int:
+    """Harvest a fake ``mode:build`` output directly (no container
+    needed) — the harvested ``folder`` ref ``mode:run`` stages from."""
+    from precis.workers.executors import _sandbox_harvest as harvest
+
+    job = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="build job",
+        meta={"executor": "claude_docker", "job_type": "sandbox_run"},
+    )
+    work_dir = Path(os.environ["PRECIS_SANDBOX_WORK_DIR"]) / "sandbox-build-1"
+    out_dir = work_dir / "out"
+    out_dir.mkdir(parents=True)
+    (out_dir / "main.py").write_text("print('hello from the build')\n")
+    if with_run_json:
+        (out_dir / "RUN.json").write_text(
+            '{"cmd": "python main.py", "inputs": [], "outputs": [], '
+            '"image": "code-task:abc"}'
+        )
+    result = harvest.harvest_out(
+        store,
+        job_ref_id=job.id,
+        container_name="sandbox-build-1",
+        work_dir=work_dir,
+        image="code-task:abc",
+        model="claude-opus-4-7",
+    )
+    assert result.folder_ref_id is not None
+    return result.folder_ref_id
+
+
+def test_launch_run_stages_artifact_no_prompt_no_oauth_env(
+    store: Store, sandbox_run_env: Path
+) -> None:
+    build_folder_id = _mk_build_folder(store)
+    jid = _mk_queued_job(store, params=_valid_run_params(artifact=build_folder_id))
+    claude_docker.run_claude_docker_pass(store, limit=4)  # launch
+
+    meta = _meta(store, jid)
+    assert meta["container"] == f"sandbox-{jid}"
+    assert meta["run_of_folder_id"] == build_folder_id
+    assert _status(store, jid) == "running"
+
+    work = Path(os.environ["PRECIS_SANDBOX_WORK_DIR"]) / f"sandbox-{jid}"
+    # mode:run never gets a prompt.
+    assert not (work / "PROMPT.md").exists()
+    # The staged tree is the FAITHFUL tarball copy (original names) at
+    # the /work root, not the renamed plaintext projection.
+    assert (work / "main.py").read_text() == "print('hello from the build')\n"
+    assert (work / "RUN.json").is_file()
+
+
+def test_launch_run_missing_folder_fails(store: Store, sandbox_run_env: Path) -> None:
+    jid = _mk_queued_job(store, params=_valid_run_params(artifact=999999))
+    claude_docker.run_claude_docker_pass(store, limit=4)
+    assert _status(store, jid) == "failed"
+    assert "container" not in _meta(store, jid)
+
+
+def test_launch_run_folder_without_run_json_fails(
+    store: Store, sandbox_run_env: Path
+) -> None:
+    build_folder_id = _mk_build_folder(store, with_run_json=False)
+    jid = _mk_queued_job(store, params=_valid_run_params(artifact=build_folder_id))
+    claude_docker.run_claude_docker_pass(store, limit=4)
+    assert _status(store, jid) == "failed"
+    assert "container" not in _meta(store, jid)
+
+
+def test_poll_run_exit_zero_harvests_result_and_links_run_of(
+    store: Store, sandbox_run_env: Path
+) -> None:
+    build_folder_id = _mk_build_folder(store)
+    jid = _mk_queued_job(store, params=_valid_run_params(artifact=build_folder_id))
+    claude_docker.run_claude_docker_pass(store, limit=4)  # launch
+
+    work = Path(os.environ["PRECIS_SANDBOX_WORK_DIR"]) / f"sandbox-{jid}"
+    (work / "out" / "RESULT.md").write_text("42\n")
+    (sandbox_run_env / f"sandbox-{jid}.state").write_text("exited 0")
+    claude_docker.run_claude_docker_pass(store, limit=4)  # poll -> harvest -> reap
+
+    assert _status(store, jid) == "succeeded"
+    jmeta = _meta(store, jid)
+    run_folder_id = jmeta["harvest_folder_id"]
+    assert run_folder_id != build_folder_id
+
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT dst_ref_id FROM links "
+            "WHERE relation = 'derived-from' AND src_ref_id = %s",
+            (run_folder_id,),
+        ).fetchall()
+    dsts = {r[0] for r in rows}
+    assert jid in dsts  # derived-from the run job itself
+    assert build_folder_id in dsts  # AND derived-from the build it re-ran
+
+
+# ── recurring mode:run via meta.schedule (mint path only) ─────────────
+
+
+def test_recurring_mints_mode_run_child_with_same_params(
+    handler: TodoHandler, store: Store, sandbox_run_env: Path
+) -> None:
+    """A ``mode:run`` recurring under ``meta.schedule`` mints successive
+    run jobs — this only exercises the existing generic schedule
+    spawner's mint path (``worker._mint_child_conn`` already carries
+    ``executor``/``job_type``/``params`` onto the spawned child; no new
+    scheduler logic is added for sandbox_run)."""
+    from datetime import UTC, datetime, timedelta
+
+    from precis.workers.schedule import run_schedule_pass
+
+    build_folder_id = _mk_build_folder(store)
+    resp = handler.put(
+        text="nightly re-run",
+        meta={
+            "schedule": {"cron": "0 0 * * *"},
+            "executor": "claude_docker",
+            "job_type": "sandbox_run",
+            "params": _valid_run_params(
+                artifact=build_folder_id, target_node="balthazar"
+            ),
+        },
+    )
+    rec_id = id_of(resp.body)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO ref_events (ref_id, source, event, ts, payload) "
+            "VALUES (%s, 'schedule', 'spawn', %s, '{}'::jsonb)",
+            (rec_id, datetime.now(UTC) - timedelta(hours=25)),
+        )
+        conn.commit()
+
+    result = run_schedule_pass(store, limit=50)
+    assert result.claimed >= 1
+    assert result.ok >= 1
+
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id, meta FROM refs WHERE parent_id = %s AND deleted_at IS NULL",
+            (rec_id,),
+        ).fetchall()
+    assert len(rows) == 1
+    child_meta = dict(rows[0][1])
+    assert child_meta["executor"] == "claude_docker"
+    assert child_meta["job_type"] == "sandbox_run"
+    assert child_meta["params"]["mode"] == "run"
+    assert child_meta["params"]["artifact"] == build_folder_id
+
+    # dispatch then mints a real queued job from the spawned child todo.
+    dispatch_result = run_dispatch_pass(store)
+    assert dispatch_result.claimed == 1
+    with store.pool.connection() as conn:
+        job_row = conn.execute(
+            "SELECT meta FROM refs WHERE parent_id = %s AND kind = 'job'",
+            (int(rows[0][0]),),
+        ).fetchone()
+    assert job_row is not None
+    assert dict(job_row[0])["params"]["mode"] == "run"
+
+
+# ── precis_access:read — per-run MCP callback wiring ───────────────
+#
+# Design §"Precis access": a per-run, token'd, read-only MCP callback.
+# ``_sandbox_read_mcp.spawn_read_mcp`` itself (subprocess.Popen of a real
+# `python -m precis serve`, real DSN derivation) is unit-tested in
+# tests/test_sandbox_read_mcp.py; here we only cover claude_docker's
+# WIRING — spawn called (or not) at the right time, the network mode
+# swap, and teardown on every terminal path — by faking the spawn with a
+# REAL stand-in child process (a plain `sleep`), so "test with fake
+# PIDs" (spec) means a real process whose liveness we can actually
+# assert, not an arbitrary integer `os.kill` on would be meaningless.
+
+
+def _fake_spawn_read_mcp(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Patch ``claude_docker._sandbox_read_mcp.spawn_read_mcp`` with a fake
+    that spawns a real ``sleep`` (the teardown stand-in), writes a real
+    ``mcp.json`` (so "mcp.json written only for precis_access:read" is
+    genuinely assertable), and records every call. Returns the shared
+    ``calls`` dict; ``calls["proc"]`` is the spawned ``Popen`` handle."""
+    import subprocess as _subprocess
+
+    from precis.workers.executors import _sandbox_read_mcp as read_mcp
+
+    calls: dict[str, Any] = {"n": 0}
+
+    def _fake(store: Any, *, work_dir: Path, **_kw: Any) -> Any:
+        calls["n"] += 1
+        proc = _subprocess.Popen(["sleep", "300"])
+        calls["proc"] = proc
+        read_mcp.write_mcp_json(work_dir, port=6543, token="fake-token")
+        return read_mcp.ReadMcpHandle(pid=proc.pid, port=6543, token="fake-token")
+
+    monkeypatch.setattr(claude_docker._sandbox_read_mcp, "spawn_read_mcp", _fake)
+    # The stand-in is a bare `sleep`, not a real `precis serve` — bypass
+    # the Finding-3 pid-recycle identity check (asserted directly in
+    # tests/test_sandbox_read_mcp.py) so these WIRING tests can focus on
+    # "teardown called on every terminal path", not identity matching.
+    monkeypatch.setattr(
+        claude_docker._sandbox_read_mcp, "_read_mcp_identity_ok", lambda pid: True
+    )
+    return calls
+
+
+def _is_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _cleanup_proc(calls: dict[str, Any]) -> None:
+    proc = calls.get("proc")
+    if proc is not None and _is_alive(proc.pid):  # pragma: no cover - safety net
+        proc.kill()
+        proc.wait(timeout=2)
+
+
+def test_launch_build_read_access_spawns_mcp_writes_json_and_swaps_network(
+    store: Store, sandbox_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PRECIS_SANDBOX_READ_MCP", "1")
+    calls = _fake_spawn_read_mcp(monkeypatch)
+
+    captured: dict[str, Any] = {}
+    real_build_run_argv = claude_docker.build_run_argv
+
+    def _spy(**kw: Any) -> list[str]:
+        captured["network"] = kw["network"]
+        return real_build_run_argv(**kw)
+
+    monkeypatch.setattr(claude_docker, "build_run_argv", _spy)
+
+    try:
+        jid = _mk_queued_job(store, params=_valid_params(precis_access="read"))
+        claude_docker.run_claude_docker_pass(store, limit=4)
+
+        assert calls["n"] == 1
+        assert captured["network"] == claude_docker._sandbox_read_mcp.READ_MCP_NETWORK
+        meta = _meta(store, jid)
+        assert meta["read_mcp_pid"] == calls["proc"].pid
+        work = Path(os.environ["PRECIS_SANDBOX_WORK_DIR"]) / f"sandbox-{jid}"
+        assert (work / "mcp.json").is_file()
+    finally:
+        _cleanup_proc(calls)
+
+
+def test_launch_build_no_read_access_no_mcp_json_default_network(
+    store: Store, sandbox_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _fake_spawn_read_mcp(monkeypatch)
+
+    jid = _mk_queued_job(store, params=_valid_params())
+    claude_docker.run_claude_docker_pass(store, limit=4)
+
+    assert calls["n"] == 0  # never called for precis_access:none
+    meta = _meta(store, jid)
+    assert "read_mcp_pid" not in meta
+    work = Path(os.environ["PRECIS_SANDBOX_WORK_DIR"]) / f"sandbox-{jid}"
+    assert not (work / "mcp.json").exists()
+
+
+def test_poll_exit_zero_read_access_reaps_mcp_child(
+    store: Store, sandbox_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PRECIS_SANDBOX_READ_MCP", "1")
+    calls = _fake_spawn_read_mcp(monkeypatch)
+
+    try:
+        jid = _mk_queued_job(store, params=_valid_params(precis_access="read"))
+        claude_docker.run_claude_docker_pass(store, limit=4)  # launch
+        assert _is_alive(calls["proc"].pid)
+
+        (sandbox_env / f"sandbox-{jid}.state").write_text("exited 0")
+        claude_docker.run_claude_docker_pass(store, limit=4)  # poll -> terminate
+
+        assert _status(store, jid) == "succeeded"
+        calls["proc"].wait(timeout=2)
+        assert not _is_alive(calls["proc"].pid)
+    finally:
+        _cleanup_proc(calls)
+
+
+def test_poll_deadline_kill_read_access_reaps_mcp_child(
+    store: Store, sandbox_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Deadline-kill routes through the same ``_terminate`` as a normal
+    exit, so the teardown wiring is shared — this is the second of the
+    spec's three required paths (normal, deadline, reconcile)."""
+    monkeypatch.setenv("PRECIS_SANDBOX_READ_MCP", "1")
+    calls = _fake_spawn_read_mcp(monkeypatch)
+
+    try:
+        jid = _mk_queued_job(store, params=_valid_params(precis_access="read"))
+        claude_docker.run_claude_docker_pass(store, limit=4)  # launch
+        assert _is_alive(calls["proc"].pid)
+
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET meta = meta || jsonb_build_object("
+                "'deadline', 1::float) WHERE ref_id = %s",
+                (jid,),
+            )
+            conn.commit()
+        claude_docker.run_claude_docker_pass(store, limit=4)  # poll -> wall-timeout
+
+        assert _status(store, jid) == "failed"
+        assert "swept:wall-timeout" in _tags(store, jid)
+        calls["proc"].wait(timeout=2)
+        assert not _is_alive(calls["proc"].pid)
+    finally:
+        _cleanup_proc(calls)
+
+
+def test_reconcile_reaps_orphan_read_mcp_child(
+    store: Store, sandbox_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Boot reconcile — the third required path: a worker crash between
+    the container exiting and ``_terminate`` running would otherwise
+    orphan the read-mcp child forever."""
+    monkeypatch.setenv("PRECIS_SANDBOX_READ_MCP", "1")
+    calls = _fake_spawn_read_mcp(monkeypatch)
+
+    try:
+        jid = _mk_queued_job(store, params=_valid_params(precis_access="read"))
+        claude_docker.run_claude_docker_pass(store, limit=4)  # launch
+        assert _is_alive(calls["proc"].pid)
+
+        # Simulate a worker crash: the job never reaches _terminate, but
+        # something (a human, a sweeper) marks it terminal directly while
+        # the container (per the stub's state file) is still "running".
+        from precis.workers.executors._common import set_status as _set_status_helper
+
+        _set_status_helper(store, jid, "failed")
+
+        reaped = claude_docker.reconcile_orphans(store)
+
+        assert reaped == 1
+        calls["proc"].wait(timeout=2)
+        assert not _is_alive(calls["proc"].pid)
+    finally:
+        _cleanup_proc(calls)

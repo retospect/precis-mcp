@@ -6,9 +6,11 @@ title: sandbox_run slice 1 — the container-execution substrate (stub-gated, da
 > **Built** (branch `fix/sandbox-run-substrate`): `sandbox_run` job_type
 > (`workers/job_types/sandbox_run.py`) + `claude_docker` poll executor
 > (`workers/executors/claude_docker.py`), registered default-OFF under
-> `PRECIS_SANDBOX_ENABLED`. Merges dark. Harvest (folder+tarball) is slice 2;
-> `mode:run` is slice 3; the cluster ops half (in-repo `deploy/` tree,
-> unbuilt) remains a human prerequisite for a live run.
+> `PRECIS_SANDBOX_ENABLED`. Merges dark. **Harvest (folder+tarball, slice
+> 2) is now also built** — `workers/executors/_sandbox_harvest.py`, see
+> `docs/design/sandbox-run.md`'s build plan. `mode:run` is slice 3; the
+> cluster ops half (in-repo `deploy/` tree, unbuilt) remains a human
+> prerequisite for a live run.
 
 # sandbox_run slice 1 — the container-execution substrate
 

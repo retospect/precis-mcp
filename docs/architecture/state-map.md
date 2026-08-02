@@ -2058,8 +2058,69 @@ The master kinds table lives in the `precis-overview` skill.
   `PRECIS_SANDBOX_ENABLED`) runs the `sandbox_run` job_type as a detached,
   cgroup-capped, poll-reaped container on an `agent_sandbox_host` — slice 1
   is the stub-podman substrate (mint→claim→launch→poll→terminal, `mode:build`
-  only; harvest is slice 2). See `docs/design/sandbox-run.md`. Skill:
-  `precis-job-help`. **fix_gripe routes through the `call_claude_agent`
+  only). **Slice 2 (harvest, built)**:
+  `workers/executors/_sandbox_harvest.py` — on a clean `mode:build` exit,
+  `claude_docker._terminate` mints a `kind='folder'` (`derived-from` the
+  job, `supersedes`-chained to the owning todo's prior build) with each
+  `/work/out` file projected as a disk-backed `plaintext` ref under
+  `PRECIS_ROOT/sandbox/<container>/…` (drives
+  `PlaintextHandler._ensure_ingested`, mirroring `precis.sim.ingest`; skips
+  gracefully — tarball-only — when `PRECIS_ROOT` is unset), tars `out/`
+  content-addressed (`PRECIS_SANDBOX_ARTIFACT_ROOT`, sha256-keyed;
+  gzip via stdlib `tarfile` for now — the design's `.tar.zst` naming is a
+  later, non-breaking codec swap) and parses `RUN.json` onto the
+  folder's/job's `meta` as the `mode:run` recipe. `job_summary` taxonomy
+  (success w/ files, empty `out/`, non-zero exit, timeout) unchanged on the
+  todo's pass/fail bit — the taxonomy is forensic text. **Slice 3
+  (`mode:run`, built)**: `params.artifact` (a prior build's harvested
+  `folder` ref id — `semantic_rejection` requires it, no `prompt`) is
+  staged into `/work` by `_sandbox_harvest.stage_run_artifact` (tarball,
+  sha-verified; on a miss, reconstructs from the folder's `plaintext`
+  refs via each ref's stamped `meta.harvest_orig_path`, undoing the
+  legible-projection filename rewrite); `claude_docker._launch_run` +
+  `build_rerun_argv` launch `sh -c 'cd /work && uv sync &&
+  <RUN.json.cmd>'` with **no** claude/OAuth/API-key env at all (no
+  backend-flip gate either — no claude CLI is spawned); the result is
+  harvested through the same `harvest_out` as a build, plus a
+  `derived-from` link from the run's folder back to the build folder
+  (the design's "`run-of` link" reuses `derived-from` rather than a new
+  relation/migration; `meta.run_of_folder_id` disambiguates the two
+  `derived-from` edges). A `mode:run` recurring needs no new scheduler
+  code — `meta.schedule`'s existing spawner already carries
+  `executor`/`job_type`/`params` onto each spawned tick.
+  **Slice 4 (`precis_access:read`, built)**: `precis serve` gains an
+  optional `--transport sse|streamable-http --host --port --token`
+  (`stdio` stays the byte-identical default — `main()` still calls
+  `mcp.run(transport="stdio")` unchanged; a network transport builds its
+  own `uvicorn.Server` around `mcp.streamable_http_app()`/`sse_app()`
+  wrapped with a bearer-token `BaseHTTPMiddleware`, since `FastMCP.run()`
+  gives no middleware hook). `claude_docker._launch_build` (never
+  `_launch_run` — `mode:run` gets no `mcp.json` ever) spawns a per-run
+  `python -m precis serve --transport streamable-http` child via
+  `_sandbox_read_mcp.spawn_read_mcp` when `params.precis_access ==
+  "read"`: `agent_ro`-DSN'd (`read_only_database_url` swaps `user` on the
+  daemon's own base DSN and strips the password — the host's
+  `~/.pgpass`, already cluster-provisioned by `deploy/roles/pgpass`,
+  resolves it), bound to `127.0.0.1:<ephemeral port>`, a fresh per-run
+  token. `/work/mcp.json` points the container at it; the container's
+  `--network` swaps to `slirp4netns:allow_host_loopback=true`
+  (`_sandbox_read_mcp.READ_MCP_NETWORK`, container-side host `10.0.2.2`)
+  ONLY for that launch. Only the PID persists to `job.meta.read_mcp_pid`
+  — never the token/port, which would otherwise leak a live endpoint's
+  credential into a broadly-DB-readable job ref. Teardown
+  (`reap_read_mcp`: SIGTERM→grace→SIGKILL by PID, mirroring
+  `cli/watch.py::reap_tracked_process_groups`) is wired into every
+  terminal path: `_terminate` (covers both a normal exit and a deadline
+  kill — both route through it) and `reconcile_orphans` (a worker-crash
+  recovery window). Gated fail-closed by `PRECIS_SANDBOX_READ_MCP` in
+  `sandbox_run.semantic_rejection`. **Per-unit pinned image provenance
+  (built, small)**: the launched `image` (`params.image` override or
+  `code-task:<git-sha>`/`latest` default) is recorded in three places —
+  `job.meta.image`, the terminal `job_summary` chunk text
+  (`image=<image>.`), and the harvest folder's `meta.image` — for both
+  `mode:build` and `mode:run` alike. See `docs/design/sandbox-run.md`.
+  Skill: `precis-job-help`. **fix_gripe
+  routes through the `call_claude_agent`
   chokepoint (§H cycle a)** — no more bare `subprocess.run` of claude: an
   isolated env (`env_base=_restricted_env(...)`, no DB creds, `--bare`
   API-key auth), an explicit fix_gripe envelope (`egress:api-only`), and a

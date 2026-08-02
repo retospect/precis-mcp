@@ -1,4 +1,13 @@
-"""MCP stdio server. Thin FastMCP wrapper around `PrecisRuntime`.
+"""MCP server. Thin FastMCP wrapper around `PrecisRuntime`.
+
+stdio is the default and every existing caller's transport
+(`precis serve`, Claude Code's MCP config, `precis repl` — see
+`main()`). An optional network transport (`sse` / `streamable-http`,
+bearer-token gated) exists for the `sandbox_run` `precis_access:read`
+callback (`docs/design/sandbox-run.md` §"precis_access:read") — a
+per-run child process bound to `127.0.0.1` that only a sandboxed
+container reaches over its bounded network mode. Nothing else uses it;
+stdio stays the default and is byte-identical to before it existed.
 
 Seven tools — `get`, `search`, `put`, `edit`, `delete`, `tag`, `link`
 — are registered as plain sync functions. FastMCP runs sync tool
@@ -19,6 +28,7 @@ from __future__ import annotations
 import atexit
 import logging
 import os
+import secrets
 import sys
 from pathlib import Path
 from typing import Any
@@ -499,12 +509,101 @@ def _log_version_banner() -> None:
         log.debug("version banner failed", exc_info=True)
 
 
-def main() -> None:
-    """Run the MCP stdio server.
+#: Network transports FastMCP supports besides the stdio default. Named
+#: here (not inline) so ``_run_network_transport`` and the CLI's
+#: ``--transport`` choices share one list.
+_NETWORK_TRANSPORTS = ("sse", "streamable-http")
 
-    Build the runtime (including postgres pool) before mcp.run takes
-    over, register atexit shutdown, kick off the background embedder
-    warmup, then hand control to FastMCP.
+
+def _check_bearer_token(header_value: str | None, expected: str) -> bool:
+    """Pure token check: ``Authorization: Bearer <expected>`` compared in
+    constant time (``secrets.compare_digest`` — a plain ``==`` short-
+    circuits on the first mismatched byte, letting a timing attack narrow
+    the token one character at a time).
+
+    Split out from the ASGI middleware below so it's unit-testable without
+    a Starlette request object (spec: "unit-test the token middleware
+    ... else the check function").
+    """
+    if not header_value:
+        return False
+    return secrets.compare_digest(header_value, f"Bearer {expected}")
+
+
+def _install_token_auth(app: Any, *, token: str) -> None:
+    """Wrap a FastMCP-built Starlette ``app`` (``sse_app()`` /
+    ``streamable_http_app()``) with a bearer-token gate.
+
+    The simplest header check the framework allows (spec §"precis
+    serve gains an optional network transport"): every request on a
+    network transport must carry ``Authorization: Bearer <token>`` or
+    gets a bare 401 — no session, no OAuth dance, this endpoint's only
+    caller is a single per-run sandbox container reading a token minted
+    for it and written to ``/work/mcp.json``. Never applied to stdio
+    (that transport has no HTTP request to check).
+    """
+    from starlette.middleware.base import BaseHTTPMiddleware
+    from starlette.requests import Request
+    from starlette.responses import JSONResponse
+
+    class _TokenAuthMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request: Request, call_next: Any) -> Any:
+            if not _check_bearer_token(request.headers.get("authorization"), token):
+                return JSONResponse({"error": "unauthorized"}, status_code=401)
+            return await call_next(request)
+
+    app.add_middleware(_TokenAuthMiddleware)
+
+
+def _run_network_transport(*, transport: str, host: str, port: int, token: str) -> None:
+    """Serve ``mcp`` over ``sse``/``streamable-http`` with the token gate.
+
+    Mirrors ``FastMCP.run_sse_async`` / ``run_streamable_http_async``
+    (same ``uvicorn.Config``/``uvicorn.Server`` shape those use
+    internally) but builds the Starlette app ourselves so
+    :func:`_install_token_auth` can wrap it BEFORE ``uvicorn`` starts
+    serving — ``FastMCP.run()`` gives no hook to inject middleware, so
+    this is the "simplest header check the framework allows" without
+    forking the library.
+    """
+    import anyio
+    import uvicorn
+
+    mcp.settings.host = host
+    mcp.settings.port = port
+    app = mcp.streamable_http_app() if transport == "streamable-http" else mcp.sse_app()
+    _install_token_auth(app, token=token)
+
+    async def _serve() -> None:
+        config = uvicorn.Config(
+            app, host=host, port=port, log_level=mcp.settings.log_level.lower()
+        )
+        server = uvicorn.Server(config)
+        await server.serve()
+
+    anyio.run(_serve)
+
+
+def main(
+    *,
+    transport: str = "stdio",
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    token: str | None = None,
+) -> None:
+    """Run the MCP server.
+
+    Build the runtime (including postgres pool) before the transport
+    loop takes over, register atexit shutdown, kick off the background
+    embedder warmup, then hand control to FastMCP.
+
+    ``transport="stdio"`` (the default — every existing caller) is
+    **byte-identical** to before this function grew keyword args: same
+    ``mcp.run(transport="stdio")`` call, no token/host/port ever
+    consulted. ``sse``/``streamable-http`` require ``token`` (arg or
+    ``PRECIS_MCP_TOKEN`` env) — raises ``ValueError`` before touching
+    the network otherwise, since an unauthenticated network MCP would be
+    a live corpus-read hole.
     """
     from precis.config import load_config
 
@@ -517,7 +616,25 @@ def main() -> None:
     _log_version_banner()
     runtime = _init_runtime()
     _warm_embedder_background(runtime)
-    mcp.run(transport="stdio")
+
+    if transport == "stdio":
+        mcp.run(transport="stdio")
+        return
+    if transport not in _NETWORK_TRANSPORTS:
+        raise ValueError(
+            f"precis serve: unknown --transport {transport!r} "
+            f"(stdio|{'|'.join(_NETWORK_TRANSPORTS)})"
+        )
+    resolved_token = token or os.environ.get("PRECIS_MCP_TOKEN")
+    if not resolved_token:
+        raise ValueError(
+            f"precis serve: --transport {transport} requires --token or "
+            "PRECIS_MCP_TOKEN — a network transport with no token check "
+            "would expose the corpus to anything that can reach the port"
+        )
+    _run_network_transport(
+        transport=transport, host=host, port=port, token=resolved_token
+    )
 
 
 if __name__ == "__main__":

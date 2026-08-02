@@ -89,7 +89,12 @@ def main() -> None:
     if args.cmd == "serve":
         from precis.server import main as serve
 
-        serve()
+        serve(
+            transport=args.transport,
+            host=args.host,
+            port=args.port,
+            token=args.token,
+        )
         return
 
     if args.cmd == "serve-embeddings":
@@ -271,7 +276,29 @@ def _build_parser() -> argparse.ArgumentParser:
         description="precis-mcp v2 - paper, document, state, and tool access.",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("serve", help="Run the MCP server (stdio).")
+    serve_parser = sub.add_parser(
+        "serve", help="Run the MCP server (stdio by default)."
+    )
+    serve_parser.add_argument(
+        "--transport",
+        choices=["stdio", "sse", "streamable-http"],
+        default="stdio",
+        help="stdio (default, every existing caller) | sse | streamable-http "
+        "(network transports need --token or PRECIS_MCP_TOKEN — used by "
+        "the sandbox_run precis_access:read per-run callback).",
+    )
+    serve_parser.add_argument(
+        "--host", default="127.0.0.1", help="Bind host for a network transport."
+    )
+    serve_parser.add_argument(
+        "--port", type=int, default=8765, help="Bind port for a network transport."
+    )
+    serve_parser.add_argument(
+        "--token",
+        default=None,
+        help="Bearer token required on a network transport (or set "
+        "PRECIS_MCP_TOKEN). Ignored on stdio.",
+    )
     serve_embeddings.add_parser(sub)
     anki_sync.add_parser(sub)
 

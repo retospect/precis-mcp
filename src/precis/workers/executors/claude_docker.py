@@ -38,9 +38,19 @@ and reap are runtime-agnostic** (``_reap_bin()``, shared
 back to docker instead of throwing ``FileNotFoundError`` on every boot
 reconcile.
 
-Slice 1 (``docs/proposals/sandbox-run-substrate.md``): the ``/work/out``
-→ folder + tarball artifact projection is **slice 2**. This slice stages
-``/work/PROMPT.md``, discards ``out/``, and keeps only forensics.
+Slice 1 (``docs/proposals/sandbox-run-substrate.md``) stages
+``/work/PROMPT.md`` and drove the launch/poll/reap spine. Slice 2 (this
+module's ``_terminate``, design §"Harvest -> DB + NAS") harvests a clean
+exit's ``/work/out`` — folder + plaintext projection + content-addressed
+tarball + (``mode:build``) ``RUN.json`` recipe — via
+:mod:`precis.workers.executors._sandbox_harvest` before the scratch
+workdir is deleted; every other terminal path (non-zero exit, timeout,
+vanished container) still discards ``out/`` unchanged. Slice 3
+(``_launch_run`` / ``build_rerun_argv``, design §"Re-run +
+operationalize") re-runs a prior build: stages the harvested tarball
+into ``/work``, launches ``sh -c 'cd /work && uv sync && <RUN.json.cmd>'``
+with **no** claude / OAuth / API-key env at all, and harvest links the
+result folder back to the build folder it re-ran.
 """
 
 from __future__ import annotations
@@ -54,6 +64,7 @@ from pathlib import Path
 from typing import Any
 
 from precis.utils.llm.router import Backend, resolve_backend
+from precis.workers.executors import _sandbox_harvest, _sandbox_read_mcp
 from precis.workers.executors._common import (
     CANCELLED as _CANCELLED,
 )
@@ -256,6 +267,62 @@ def build_run_argv(
     ]
 
 
+def build_rerun_argv(
+    *,
+    podman_bin: str,
+    job_id: int,
+    image: str,
+    work_dir: str,
+    cmd: str,
+    memory: str,
+    cpus: str,
+    pids_limit: int,
+    network: str,
+) -> list[str]:
+    """Build the detached ``podman run`` argv for a ``mode:run`` re-run.
+
+    Same detached-name / cgroup-cap / bounded-network / ``/work`` bus
+    invariants as :func:`build_run_argv`, but two structural differences
+    the design requires: **no** ``CLAUDE_CODE_OAUTH_TOKEN`` /
+    ``ANTHROPIC_API_KEY`` / any auth env at all (no claude is spawned —
+    tested by asserting neither name appears anywhere in argv), and an
+    explicit in-container CMD override (``sh -c 'cd /work && uv sync &&
+    <cmd>'``) since the code-task image's default entrypoint (unbuilt —
+    see the design doc's ops-half note) assumes the build lane's claude
+    invocation, not a bare re-run. ``cmd`` is the harvested
+    ``RUN.json.cmd`` recipe string — it runs inside the same cgroup-capped,
+    network-bounded container the build itself ran in, so it carries no
+    more trust than the build container already had.
+    """
+    shell_cmd = f"cd /work && uv sync && {cmd}"
+    return [
+        podman_bin,
+        "run",
+        "-d",
+        "--name",
+        container_name(job_id),
+        # cgroup caps — bound the blast radius on a load-dominant host.
+        "--memory",
+        memory,
+        "--cpus",
+        cpus,
+        "--pids-limit",
+        str(pids_limit),
+        # Bounded reachability; never --network=host by default.
+        "--network",
+        network,
+        # The IN/OUT bus — the staged build tree lives at /work root
+        # (not /work/out — that's this run's OWN out lane).
+        "-v",
+        f"{work_dir}:/work",
+        "--",
+        image,
+        "sh",
+        "-c",
+        shell_cmd,
+    ]
+
+
 # ── podman plumbing ────────────────────────────────────────────────
 
 
@@ -336,6 +403,11 @@ def reconcile_orphans(store: Any) -> int:
     A container is an orphan when its job ref is gone / soft-deleted /
     already terminal (``STATUS`` ∈ succeeded|failed|cancelled). Returns
     the count reaped. Idempotent; safe to call repeatedly.
+
+    Also reaps that job's ``precis_access:read`` MCP callback child, if
+    any (``meta.read_mcp_pid``) — a worker restart between the container
+    exiting and ``_terminate`` running (which would have reaped it
+    normally) is exactly the crash window this boot-reconcile exists for.
     """
     reaped = 0
     for name in _list_sandbox_containers():
@@ -343,10 +415,29 @@ def reconcile_orphans(store: Any) -> int:
         if job_id is None:
             continue
         if not _job_is_live(store, job_id):
+            _reap_orphan_read_mcp(store, job_id)
             _reap(name)
             reaped += 1
             log.info("claude_docker: reaped orphan container %s", name)
     return reaped
+
+
+def _reap_orphan_read_mcp(store: Any, job_id: int) -> None:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta->>'read_mcp_pid' FROM refs WHERE ref_id = %s", (job_id,)
+        ).fetchone()
+    if not row or not row[0]:
+        return
+    try:
+        _sandbox_read_mcp.reap_read_mcp(int(row[0]))
+    except Exception:  # pragma: no cover - defensive
+        log.warning(
+            "claude_docker: orphan reap of read-mcp pid %s (job %d) raised",
+            row[0],
+            job_id,
+            exc_info=True,
+        )
 
 
 def _job_is_live(store: Any, job_id: int) -> bool:
@@ -474,7 +565,29 @@ def _launch_safe(
 
 
 def _launch(store: Any, ref_id: int, meta: dict[str, Any], node: str | None) -> None:
-    """Stage ``/work``, launch a detached container, record its handle."""
+    """Validate + branch to the mode-specific launcher.
+
+    Defence in depth: a job minted by dispatch from a todo never went
+    through the JobHandler put path, so re-run the fail-closed gate here
+    at launch time. A rejection fails the job (no container).
+    """
+    params = dict(meta.get("params") or {})
+    reason = _sandbox_run.semantic_rejection(params)
+    if reason is not None:
+        _fail(store, ref_id, reason)
+        return
+    mode = str(params.get("mode") or "build")
+    if mode == "run":
+        _launch_run(store, ref_id, params, node)
+    else:
+        _launch_build(store, ref_id, params, node)
+
+
+def _launch_build(
+    store: Any, ref_id: int, params: dict[str, Any], node: str | None
+) -> None:
+    """Stage ``/work`` with ``PROMPT.md``, launch a detached claude
+    container, record its handle (``mode:build``)."""
     # GLM/OpenRouter fleet-flip safety gate (docs/proposals/glm-fleet-flip-
     # safety.md Part 3): the container spawns a raw `claude` CLI, which
     # assumes Claude model semantics — under backend=openai,
@@ -482,7 +595,8 @@ def _launch(store: Any, ref_id: int, meta: dict[str, Any], node: str | None) -> 
     # slug that `claude` can't run (HTTP 400). Skip cleanly rather than
     # launch a doomed container: STATUS:cancelled, no failure bubble (this
     # is a config mismatch, not a job failure), so a re-claim after the
-    # backend reverts to anthropic just launches normally.
+    # backend reverts to anthropic just launches normally. Build-mode only
+    # — mode:run spawns no claude CLI, so the backend flip doesn't apply.
     if resolve_backend() is Backend.OPENAI:
         log.info(
             "claude_docker: llm.backend=openai — skipping sandbox_run job "
@@ -501,15 +615,6 @@ def _launch(store: Any, ref_id: int, meta: dict[str, Any], node: str | None) -> 
         )
         return
 
-    params = dict(meta.get("params") or {})
-
-    # Defence in depth: a job minted by dispatch from a todo never went
-    # through the JobHandler put path, so re-run the fail-closed gate at
-    # launch. A rejection fails the job (no container).
-    reason = _sandbox_run.semantic_rejection(params)
-    if reason is not None:
-        _fail(store, ref_id, reason)
-        return
     from precis import secrets as _secrets
 
     _oauth = _secrets.get_secret("CLAUDE_CODE_OAUTH_TOKEN")
@@ -544,6 +649,30 @@ def _launch(store: Any, ref_id: int, meta: dict[str, Any], node: str | None) -> 
         encoding="utf-8",
     )
 
+    # precis_access:read (design §"Precis access") — spawn a per-run,
+    # token'd, read-only MCP callback BEFORE the container starts, so
+    # /work/mcp.json exists the moment the container can read /work.
+    # Never for mode:run (this function is build-mode only) and gated
+    # fail-closed by semantic_rejection on PRECIS_SANDBOX_READ_MCP
+    # already (defence in depth: re-check the value here too, since a
+    # dispatch-minted job's params never passed through validate_submit).
+    read_mcp_pid: int | None = None
+    network = _network_mode()
+    if params.get("precis_access") == "read":
+        try:
+            handle = _sandbox_read_mcp.spawn_read_mcp(store, work_dir=work_dir)
+        except Exception as exc:
+            _fail(
+                store,
+                ref_id,
+                f"sandbox_run: precis_access:read MCP spawn failed: {exc}",
+            )
+            return
+        read_mcp_pid = handle.pid
+        # Only THIS network mode gives the container a route back to the
+        # spawned callback's loopback bind (design §"Container networking").
+        network = _sandbox_read_mcp.READ_MCP_NETWORK
+
     # A leftover container of the same name (crashed prior attempt) would
     # make ``run --name`` fail; clear it first.
     _reap(name)
@@ -555,6 +684,101 @@ def _launch(store: Any, ref_id: int, meta: dict[str, Any], node: str | None) -> 
         image=image,
         work_dir=str(work_dir),
         model=model,
+        memory=memory,
+        cpus=cpus,
+        pids_limit=pids_limit,
+        network=network,
+    )
+    res = subprocess.run(argv, capture_output=True, text=True, timeout=120, check=False)
+    if res.returncode != 0:
+        if read_mcp_pid is not None:
+            _sandbox_read_mcp.reap_read_mcp(read_mcp_pid)
+        tail = (res.stderr or res.stdout or "").strip()[-2000:]
+        _fail(store, ref_id, f"sandbox_run: podman run failed: {tail}")
+        return
+
+    container_id = (res.stdout or "").strip()
+    deadline = time.time() + wall_seconds
+    with store.pool.connection() as conn:
+        _set_meta(
+            conn,
+            ref_id,
+            container=name,
+            container_id=container_id,
+            run_host=node or "",
+            deadline=deadline,
+            image=image,
+            model=model,
+            **({"read_mcp_pid": read_mcp_pid} if read_mcp_pid is not None else {}),
+        )
+        _append_chunk(
+            store,
+            ref_id,
+            _JOB_EVENT_KIND,
+            f"launched container {name} (image={image}, model={model}, "
+            f"wall={wall_seconds}s) on {node or '<unpinned>'}",
+            conn=conn,
+        )
+        conn.commit()
+    log.info("claude_docker: launched job %d as %s", ref_id, name)
+
+
+def _launch_run(
+    store: Any, ref_id: int, params: dict[str, Any], node: str | None
+) -> None:
+    """Stage a prior build's harvested tarball into ``/work``, launch a
+    detached re-run container (``mode:run`` — no claude, no OAuth).
+
+    ``params.artifact`` is validated by ``semantic_rejection`` (positive
+    int) before this runs. ``precis_access`` is accepted by the schema
+    but ignored here regardless of value — design: "mode:run containers
+    get no mcp.json ever".
+    """
+    folder_id = int(params["artifact"])
+    name = container_name(ref_id)
+    work_dir = _work_root() / name
+    if work_dir.exists():
+        shutil.rmtree(work_dir, ignore_errors=True)
+    # /work/out is this run's OWN output lane (RESULT.md, artifacts/) —
+    # the staged build tree lands at the /work root, not here.
+    (work_dir / "out").mkdir(parents=True, exist_ok=True)
+    (work_dir / "in").mkdir(parents=True, exist_ok=True)
+    (work_dir / "_run").mkdir(parents=True, exist_ok=True)
+
+    try:
+        folder_meta = _sandbox_harvest.stage_run_artifact(
+            store, folder_id=folder_id, dest_dir=work_dir
+        )
+    except ValueError as exc:
+        _fail(store, ref_id, f"sandbox_run: mode:run staging failed: {exc}")
+        return
+
+    run_recipe = folder_meta.get("run_recipe") or {}
+    cmd = run_recipe.get("cmd") if isinstance(run_recipe, dict) else None
+    if not isinstance(cmd, str) or not cmd.strip():
+        _fail(
+            store,
+            ref_id,
+            f"sandbox_run: folder:{folder_id} has no RUN.json.cmd to re-run",
+        )
+        return
+
+    wall_seconds = int(params["wall_seconds"])
+    image = (
+        params.get("image") or folder_meta.get("image") or _sandbox_run.default_image()
+    )
+
+    # A leftover container of the same name (crashed prior attempt) would
+    # make ``run --name`` fail; clear it first.
+    _reap(name)
+
+    memory, cpus, pids_limit = _cgroup_caps()
+    argv = build_rerun_argv(
+        podman_bin=_podman_bin(),
+        job_id=ref_id,
+        image=image,
+        work_dir=str(work_dir),
+        cmd=cmd,
         memory=memory,
         cpus=cpus,
         pids_limit=pids_limit,
@@ -577,18 +801,19 @@ def _launch(store: Any, ref_id: int, meta: dict[str, Any], node: str | None) -> 
             run_host=node or "",
             deadline=deadline,
             image=image,
-            model=model,
+            run_of_folder_id=folder_id,
         )
         _append_chunk(
             store,
             ref_id,
             _JOB_EVENT_KIND,
-            f"launched container {name} (image={image}, model={model}, "
-            f"wall={wall_seconds}s) on {node or '<unpinned>'}",
+            f"launched re-run container {name} (image={image}, "
+            f"build folder:{folder_id}, wall={wall_seconds}s) on "
+            f"{node or '<unpinned>'}",
             conn=conn,
         )
         conn.commit()
-    log.info("claude_docker: launched job %d as %s", ref_id, name)
+    log.info("claude_docker: launched re-run job %d as %s", ref_id, name)
 
 
 # ── Poll + reap ────────────────────────────────────────────────────
@@ -643,6 +868,7 @@ def _poll_job(store: Any, ref_id: int, meta: dict[str, Any]) -> str | None:
             summary=f"sandbox_run job:{ref_id}: container {name} not found "
             "(empty run / vanished).",
             exit_code=None,
+            meta=meta,
         )
         return _FAILED
 
@@ -656,6 +882,7 @@ def _poll_job(store: Any, ref_id: int, meta: dict[str, Any]) -> str | None:
             status=_SUCCEEDED if ok else _FAILED,
             summary=f"sandbox_run job:{ref_id}: container {name} exited {exit_code}.",
             exit_code=exit_code,
+            meta=meta,
         )
         return _SUCCEEDED if ok else _FAILED
 
@@ -670,6 +897,7 @@ def _poll_job(store: Any, ref_id: int, meta: dict[str, Any]) -> str | None:
             f"(container {name}).",
             exit_code=None,
             swept="wall-timeout",
+            meta=meta,
         )
         return _FAILED
 
@@ -694,9 +922,23 @@ def _terminate(
     summary: str,
     exit_code: int | None,
     swept: str | None = None,
+    meta: dict[str, Any] | None = None,
 ) -> None:
     """Write minimal forensics, reap the container + workdir, set the
-    terminal STATUS, and bubble a failure to the parent todo."""
+    terminal STATUS, and bubble a failure to the parent todo.
+
+    On a clean exit (``status == succeeded`` and ``exit_code == 0``),
+    harvests ``/work/out`` (design §"Harvest -> DB + NAS") **before** the
+    workdir is deleted — folder + plaintext projection + content-
+    addressed tarball, plus (``mode:build`` only) the ``RUN.json``
+    recipe and (``mode:run`` only) a ``derived-from`` link back to the
+    build folder it re-ran. A harvest failure is caught and logged,
+    never crashes the poll tick (the container is already reaped by this
+    point; failing the whole terminal transition would strand the job
+    ``running`` with no container). Every other terminal path (non-zero
+    exit, timeout, vanished container) discards ``out/`` unchanged, as
+    slice 1 did.
+    """
     stderr_tail = _logs_tail(name)
     # Kill (best-effort) then force-remove — covers a still-running
     # deadline reap and a clean exited container alike.
@@ -706,7 +948,58 @@ def _terminate(
         pass
     _reap(name)
 
+    # precis_access:read teardown — reap the per-run MCP callback child on
+    # EVERY terminal path (success, failure, timeout, vanished container):
+    # the container can no longer reach it regardless of why this run
+    # ended. This is one of the two paths the design requires (the other
+    # is reconcile_orphans, for a container that's already gone at boot);
+    # both call the same idempotent reap_read_mcp.
+    read_mcp_pid = (meta or {}).get("read_mcp_pid")
+    if isinstance(read_mcp_pid, int):
+        try:
+            _sandbox_read_mcp.reap_read_mcp(read_mcp_pid)
+        except Exception:  # pragma: no cover - defensive
+            log.warning(
+                "claude_docker: reap of read-mcp pid %d (job %d) raised",
+                read_mcp_pid,
+                ref_id,
+                exc_info=True,
+            )
+
     work_dir = _work_root() / name
+
+    # Per-unit pinned image provenance (design §"Image distribution" /
+    # `code-task:<sha>` tagging convention): the image that actually ran
+    # this job is forensic text on every terminal job_summary, not just
+    # meta/folder — the whole point is "which image built/ran this" being
+    # trivially answerable from the one place a human reads first.
+    img = (meta or {}).get("image")
+    image_note = f" image={img}." if img else ""
+
+    harvest_note = ""
+    if status == _SUCCEEDED and exit_code == 0:
+        params = dict((meta or {}).get("params") or {})
+        run_mode = str(params.get("mode") or "build")
+        build_folder_id = params.get("artifact") if run_mode == "run" else None
+        try:
+            result = _sandbox_harvest.harvest_out(
+                store,
+                job_ref_id=ref_id,
+                container_name=name,
+                work_dir=work_dir,
+                image=str((meta or {}).get("image") or ""),
+                model=str((meta or {}).get("model") or ""),
+                extra_derived_from=(
+                    int(build_folder_id) if isinstance(build_folder_id, int) else None
+                ),
+            )
+            harvest_note = " " + _sandbox_harvest.summarize(result)
+        except Exception:  # pragma: no cover - defensive
+            log.warning(
+                "claude_docker: harvest of job %d raised", ref_id, exc_info=True
+            )
+            harvest_note = " harvest failed (see worker log)."
+
     with store.pool.connection() as conn:
         duration = _duration_seconds(store, ref_id)
         _append_chunk(
@@ -715,6 +1008,8 @@ def _terminate(
             _JOB_SUMMARY_KIND,
             summary
             + (f" exit={exit_code}." if exit_code is not None else "")
+            + image_note
+            + harvest_note
             + (f" ({duration:.0f}s)" if duration is not None else ""),
             conn=conn,
         )
@@ -739,7 +1034,8 @@ def _terminate(
         _set_status(store, ref_id, status, conn=conn)
         conn.commit()
 
-    # Slice-1 discards /work/out — keep only forensics (harvest is slice 2).
+    # Harvest (above) copies anything worth keeping out of /work/out
+    # before this — the scratch workdir is deleted either way.
     shutil.rmtree(work_dir, ignore_errors=True)
 
     if status == _FAILED:
@@ -796,6 +1092,7 @@ def _skip(store: Any, ref_id: int, reason: str) -> None:
 
 
 __all__ = [
+    "build_rerun_argv",
     "build_run_argv",
     "container_name",
     "reconcile_orphans",

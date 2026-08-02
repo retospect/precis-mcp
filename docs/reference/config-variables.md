@@ -184,6 +184,9 @@ these.
 | `PRECIS_FOLD_NODE` / `PRECIS_FOLD_IMAGE` / `PRECIS_FOLD_MODELS_DIR` / `PRECIS_FOLD_CONTAINER_CMD` / `PRECIS_FOLD_NFS_ROOT` / `PRECIS_FOLD_XLA_CACHE` / `PRECIS_FOLD_MEM_LIMIT` | AlphaFold3 lane | spark / … | ✅ Correct — AF3 dispatch proven on spark (bio memory). |
 | `PRECIS_TTS_IMAGE` / `PRECIS_TTS_CONTAINER_CMD` / `PRECIS_TTS_SCRATCH` / `PRECIS_PODCAST_DIR` / `PRECIS_BRIEFING_AUDIO_VOICE` / `PRECIS_BRIEFING_AUDIO_LANG` | TTS render lane | `precis-tts:latest` / docker / … | ✅ Correct — Kokoro baked into the image; separate deploy from `scripts/deploy`. |
 | `PRECIS_SANDBOX_HOSTS` / `PRECIS_SANDBOX_IMAGE` / `PRECIS_SANDBOX_*` limits | Sandbox-run resource caps | not set | 🔶 Unset — consistent with `PRECIS_SANDBOX_ENABLED` being off. Set together when activating the sandbox lane. |
+| `PRECIS_SANDBOX_ARTIFACT_ROOT` | Sandbox-run harvest's content-addressed tarball store root (`docs/design/sandbox-run.md` §"Harvest → DB + NAS"; default `~/work`, tarball lands under `<root>/sandbox-artifacts/<sha256>.tar.gz`) | **not set** anywhere (default `~/work`) | 🔶 Unset — consistent with `PRECIS_SANDBOX_ENABLED` being off. Point it at the shared NAS mount (mirrors `PRECIS_CORPUS_DIR`, ADR 0029) when activating the sandbox lane. |
+| `PRECIS_SANDBOX_READ_MCP` | Ops capability flag for `precis_access:read` (`docs/design/sandbox-run.md` §"Precis access") — a `mode:build` job's per-run, token'd, read-only MCP callback. `sandbox_run.semantic_rejection` fails closed without it. | not set | 🔶 Unset — consistent with `PRECIS_SANDBOX_ENABLED` being off. |
+| `PRECIS_MCP_TOKEN` | Bearer token `precis serve --transport sse\|streamable-http` requires (or `--token`) — the network-transport gate `_install_token_auth` checks. Only consumed by the per-run `precis_access:read` callback child today; `--transport stdio` (every other caller) never reads it. | not set | 🔶 Unset — consistent with the sandbox lane being off; the per-run callback child generates its own token per launch, never this env var, once `PRECIS_SANDBOX_READ_MCP` is on. |
 
 ---
 
@@ -304,7 +307,7 @@ deploy-sha memory).
 | **Chem deeper engines** — AiZynth (`9bc2f3c3`), LinChemIn (`fc41d983`), ASKCOS (`866d60b0`) | `route` kind surface is live (`PRECIS_CHEM_ENABLED=1`); the compute engines need their container/service env + deploy on spark | Slices 1b/2/3 shipped dark. |
 | **Markup-first ingest** (devin, `e29b18a9`) | `PRECIS_FETCH_MARKUP=1` | Ships dark; off by default. |
 | **Classify cascade** (older, still off) | `PRECIS_CLASSIFY_ENABLED=1` (+ optional `PRECIS_CLASSIFY_ESCALATE_MODEL`) | Enable as a trickle on one node like `PRECIS_SUMMARIZE_LLM`. |
-| **Sandbox-run (slice 1)** (`sandbox_run` job_type) | `PRECIS_SANDBOX_ENABLED=1` on balthazar/spark | Build-only, no DB access, **no result harvest** (slice 2). Limited value until then. |
+| **Sandbox-run (slices 1+2+3+4)** (`sandbox_run` job_type) | `PRECIS_SANDBOX_ENABLED=1` on balthazar/spark; `precis_access:read` additionally needs `PRECIS_SANDBOX_READ_MCP=1` | Build + harvest (folder/plaintext projection + content-addressed tarball + `RUN.json` recipe on a clean exit) + `mode:run` (stage a prior build's tarball, `uv sync` + `RUN.json.cmd`, no claude/OAuth, recurring via `meta.schedule`) + `precis_access:read` (per-run token'd read-only MCP callback via `precis serve --transport streamable-http`). Limited value until enabled + podman installed (still unrealized, see the design doc's cluster-reality note). |
 
 Already **un-darked / live** in the same window (for contrast): mermaid
 kind (`c7ac23db`), protein/AlphaFold3 (`PRECIS_BIO_ENABLED=1`),
