@@ -1,7 +1,11 @@
 """``precis anki-sync`` — the headless AnkiWeb sync tick (slice 2).
 
-The "occasional tick" the design calls for: a cron on the single designated
-runner (the Mac `precis-infra` stack) invokes this. It reads precis `anki` refs,
+The "occasional tick" the design calls for: this used to be invoked ONLY by a
+dedicated cron on the single designated runner; §A folds that cadence onto
+the decentralized ``scheduler`` worker pass too (``anki_sync`` in
+:mod:`precis.workers.scheduler`) — this subcommand stays for a manual /
+ad-hoc run, delegating its guts to :func:`precis.workers.anki_sync.run_anki_sync`
+so the two triggers share one implementation. It reads precis `anki` refs,
 upserts them into the local `.anki2` mirror by deterministic guid, drives a
 *guarded* AnkiWeb sync (bootstrap-download / incremental / abort-on-lossy-upload),
 and writes the decay stats back into each ref's ``meta.anki_stats``.
@@ -15,14 +19,16 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 from precis.cli._common import resolve_dsn
 
-#: A fixed advisory-lock key so concurrent runners serialise on the account.
-_ANKI_SYNC_LOCK = 0x616E6B69  # "anki"
+# Re-exported for backward compat — a couple of tests exercise this directly
+# (the same helper now backs both the CLI and the ``anki_sync`` scheduler
+# cadence, workers/scheduler.py).
+from precis.workers.anki_sync import (
+    retired_ref_ids as _retired_ref_ids,  # noqa: F401  re-exported for tests
+)
 
 
 def add_parser(sub: argparse._SubParsersAction) -> None:
@@ -90,97 +96,33 @@ def run(args: argparse.Namespace) -> None:
         store.pool.close()
 
 
-def _retired_ref_ids(store: Any, *, window_days: int = 90) -> list[int]:
-    """Recently soft-deleted *authored* cards (the card_forge retire/rewrite
-    path, or a manual delete) whose Anki notes should be removed. Foreign
-    projections are excluded — they were never pushed under a precis guid, and
-    the 2026-07 incident soft-deleted ~93k of them (no point shipping that list
-    to the mirror every tick)."""
-    with store.pool.connection() as conn:
-        rows = conn.execute(
-            "SELECT ref_id FROM refs WHERE kind='anki' AND deleted_at IS NOT NULL "
-            "AND deleted_at >= now() - make_interval(days => %s) "
-            "AND COALESCE(meta->>'source','') != 'anki-foreign'",
-            (window_days,),
-        ).fetchall()
-    return [int(r[0]) for r in rows]
-
-
 def _run_sync(args: argparse.Namespace, cfg: Any, store: Any) -> None:
-    from precis.anki.notes import spec_from_ref
-    from precis.anki.sync import AnkiNotInstalled, AnkiSyncError, sync_tick
+    from precis.anki.sync import AnkiNotInstalled, AnkiSyncError
+    from precis.workers.anki_sync import AnkiSyncMisconfigured, run_anki_sync
 
-    refs = store.list_refs(kind="anki", limit=args.limit)
-    specs = [s for s in (spec_from_ref(r) for r in refs) if s is not None]
-    retire_ids = [] if args.no_retire else _retired_ref_ids(store)
-
-    if args.dry_run:
-        print(
-            f"anki-sync [DRY-RUN]: {len(specs)} cloze card(s) would sync, "
-            f"{len(retire_ids)} retired ref(s) would be removed from the mirror."
+    try:
+        summary = run_anki_sync(
+            store,
+            cfg,
+            limit=args.limit,
+            dry_run=args.dry_run,
+            fix=args.fix,
+            project=args.project,
+            no_retire=args.no_retire,
         )
-        return
-
-    if not cfg.anki_user or not cfg.anki_password:
-        print(
-            "anki-sync: set PRECIS_ANKI_USER and PRECIS_ANKI_PASSWORD.",
-            file=sys.stderr,
-        )
+    except AnkiSyncMisconfigured as e:
+        # Same exit code as before the refactor (2 = misconfigured, distinct
+        # from a real sync failure below) — check this BEFORE the broader
+        # AnkiSyncError it subclasses.
+        print(f"anki-sync: {e}", file=sys.stderr)
         sys.exit(2)
-    if not cfg.anki_mirror_dir:
-        print("anki-sync: set PRECIS_ANKI_MIRROR_DIR.", file=sys.stderr)
-        sys.exit(2)
-    mirror_dir = Path(cfg.anki_mirror_dir).expanduser()
-    mirror_dir.mkdir(parents=True, exist_ok=True)
-    mirror_path = str(mirror_dir / "mirror.anki2")
-
-    # Single-runner guard: only one sync per account at a time.
-    with store.pool.connection() as conn:
-        got = conn.execute(
-            "select pg_try_advisory_lock(%s)", (_ANKI_SYNC_LOCK,)
-        ).fetchone()[0]
-        if not got:
-            print("anki-sync: another sync holds the lock; skipping.", file=sys.stderr)
-            return
-        try:
-            try:
-                result, stats = sync_tick(
-                    mirror_path=mirror_path,
-                    user=cfg.anki_user,
-                    password=cfg.anki_password,
-                    specs=specs,
-                    deck=cfg.anki_deck,
-                    fix=args.fix or cfg.anki_fix_enabled,
-                    project=args.project or cfg.anki_project_enabled,
-                    retire_ref_ids=retire_ids,
-                )
-            except AnkiNotInstalled as e:
-                print(f"anki-sync: {e}", file=sys.stderr)
-                sys.exit(3)
-            except AnkiSyncError as e:
-                print(f"anki-sync: sync failed: {e}", file=sys.stderr)
-                sys.exit(1)
-
-            now = datetime.now(UTC).isoformat()
-            for ref_id, st in stats.items():
-                # FLAT keys — `meta_patch` is a shallow jsonb `||` merge, so a
-                # nested `{"anki": {...}}` would REPLACE the whole meta.anki
-                # object (wiping guid/content_sha the projection dedups on — the
-                # 2026-07 incident). Patch top-level keys only.
-                store.update_ref(
-                    ref_id,
-                    meta_patch={"anki_stats": st, "anki_synced_at": now},
-                )
-            print(f"anki-sync: {result.summary()}")
-            if result.all_cards is not None:
-                from precis.anki.project import project_cards
-
-                proj = project_cards(store, result.all_cards)
-                print(f"anki-sync: {proj.summary()}")
-            if result.aborted:
-                sys.exit(1)
-        finally:
-            conn.execute("select pg_advisory_unlock(%s)", (_ANKI_SYNC_LOCK,))
+    except AnkiNotInstalled as e:
+        print(f"anki-sync: {e}", file=sys.stderr)
+        sys.exit(3)
+    except AnkiSyncError as e:
+        print(f"anki-sync: sync failed: {e}", file=sys.stderr)
+        sys.exit(1)
+    print(summary)
 
 
 __all__ = ["add_parser", "run"]

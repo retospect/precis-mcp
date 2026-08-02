@@ -1,12 +1,14 @@
 ---
 # precis_worker_agent role defaults.
 
-# The agent profile runs on the gateway alongside precis_dream +
-# precis_cron_tick, all of which share the /opt/mcps/venv install
-# (managed by the mcps role). /opt/precis/venv is the worker-host
-# venv on the data node — not present on gateway hosts. Stick with the
-# shared venv so a single `ansible-playbook --tags mcps` refresh
-# updates every consumer at once.
+# The agent profile runs on the gateway; /opt/mcps/venv is the shared venv
+# the (now-retired) precis_dream / precis_cron_tick / precis_anki_sync
+# LaunchDaemons used too — §A folds their cadences INTO this daemon (the
+# `dream_agent` / `anki_sync` scheduler cadences, host-pinned to the
+# gateway), so staying on the same shared venv is what lets `anki`
+# (installed below) and the dream env resolve here. /opt/precis/venv is the
+# worker-host venv on the data node — not present on gateway hosts. A single
+# `ansible-playbook --tags mcps` refresh updates every consumer at once.
 precis_worker_agent_venv: /opt/mcps/venv
 precis_worker_agent_dsn: "postgresql://agent_rw:{{ vault_pg_agent_rw_pass }}@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
 precis_worker_agent_batch_size: 2
@@ -32,3 +34,9 @@ precis_worker_agent_mcp_config: /Users/deploy/.claude/mcp.json
 # in slice 2C once plan_tick is verified green under the new run-as user.
 precis_worker_agent_container_bin: /opt/homebrew/bin/docker
 precis_agent_image: "precis-agent:latest"
+
+# §A: the deploy-readable copy of the operator SOUL (hermes's own
+# ~/.asa/SOUL.md isn't readable by `deploy`) — this role copies it here on
+# hosts in the `gateway` group; PRECIS_DREAM_SOUL_PATH points at it so the
+# `dream_agent` scheduler cadence's eligible() gate finds a readable file.
+precis_dream_soul_path: /opt/asa/etc/SOUL.md

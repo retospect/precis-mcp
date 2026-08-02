@@ -46,7 +46,9 @@ _EXPECTED_SYSTEM = frozenset(
         "tag_embeddings",
         "auto_check",
         "schedule",
+        "scheduler",
         "nursery",
+        "heartbeat",
         "dispatch",
         "sweeper",
         "job_coordinator",
@@ -58,7 +60,7 @@ _EXPECTED_SYSTEM = frozenset(
     }
 )
 _EXPECTED_AGENT = frozenset(
-    {"structural", "deep_review", "job_claude_inproc", "quota_check"}
+    {"structural", "deep_review", "job_claude_inproc", "quota_check", "scheduler"}
 )
 
 

@@ -2,7 +2,7 @@
 advertise them as ``served_by`` cards + ``resource_slots``, so the router can
 route to them **directly** (bypassing the litellm proxy).
 
-Runs in the per-host heartbeat (:func:`precis.cli.heartbeat._report_resource_slots`),
+Runs in the per-host heartbeat (:func:`precis.workers.heartbeat._report_resource_slots`),
 alongside the capability probe: each worker polls its OWN loopback llama-swap
 ``/v1/models``, reads ``--parallel`` from the local llama-swap config for each
 model's slot capacity, and reconciles its ``served_by`` entries + slots. There is

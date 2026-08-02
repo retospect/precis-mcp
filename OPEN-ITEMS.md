@@ -1081,13 +1081,6 @@ consumes the policy yet:
   outside the new grammar's range are left as `cron` refs for manual
   handling). Run `uv run python scripts/migrate_cron_to_recurring.py`
   (dry-run) against prod, review, then re-run with `--commit`.
-- **Retire the standalone `precis cron tick` launchd timer** *(ops, open,
-  medium — owner cluster ansible, outside this repo).* The timer still
-  works post-ADR-0061 (the CLI subcommand now delegates to
-  `run_schedule_pass`), so this is cleanup, not urgent: flip
-  `PRECIS_SCHEDULER_ENABLED` (the decentralized `scheduler` worker pass,
-  §15i) on across the fleet and remove the `precis-cron-tick` plist once
-  confirmed.
 
 ## 📜 Patent freedom-to-operate authoring loop
 

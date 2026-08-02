@@ -74,15 +74,19 @@
 
 # Playbook 30 (precis-cron-tick launchd timer) retired 2026-07-18 by the
 # factory Phase-2 §15i cutover: the 60s cron tick now rides the decentralized
-# `scheduler` worker pass (PRECIS_SCHEDULER_ENABLED, migration 0074 leases) —
-# see 20-precis-worker.yml + roles/precis_worker. Its LaunchDaemon
+# `scheduler` worker pass (default-on both profiles since §A, migration 0074
+# leases) — see 20-precis-worker.yml + roles/precis_worker. Its LaunchDaemon
 # (com.precis.cron-tick) is booted out of the gateway in the same window.
 
 - name: "31 — asa_bot Discord bridge"
   ansible.builtin.import_playbook: playbooks/31-asa-bot.yml
 
-- name: "32 — precis dream worker (15-minute LaunchDaemon)"
-  ansible.builtin.import_playbook: playbooks/32-precis-dream.yml
+# Playbook 32 (precis-dream 15-minute LaunchDaemon) retired 2026-08 by the
+# factory §A cutover: the dream tick now rides the decentralized `scheduler`
+# worker pass (`dream_agent` cadence, host-pinned to the gateway, migration
+# 0074 leases) inside com.precis.worker-agent — see workers/scheduler.py
+# CADENCES + roles/precis_worker_agent. Its LaunchDaemon (com.precis.dream,
+# dream-pass.sh) is booted out by retire-thin-timers.yml.
 
 # Playbooks 33-36 (precis_schedule / precis_nursery / precis_structural /
 # precis_deep_review) were retired by the Slice-5 consolidation. Their
@@ -98,12 +102,16 @@
 
 # Playbook 39 (precis-watch-poll timer) retired 2026-07-18 by the factory
 # Phase-2 §15i cutover: the hourly citation-forward watch poll now rides the
-# decentralized `scheduler` worker pass (PRECIS_SCHEDULER_ENABLED, migration
-# 0074 leases) — see workers/scheduler.py CADENCES. Its LaunchDaemon
+# decentralized `scheduler` worker pass (default-on both profiles since §A,
+# migration 0074 leases) — see workers/scheduler.py CADENCES. Its LaunchDaemon
 # (com.precis.watch-poll) is booted out of the gateway in the same window.
 
-- name: "40 — precis reconcile-duplicates nightly timer (data node)"
-  ansible.builtin.import_playbook: playbooks/40-precis-reconcile.yml
+# Playbook 40 (precis-reconcile-duplicates nightly timer, the data node)
+# retired 2026-08 by the factory §A cutover: the nightly duplicate sweep is fully
+# redundant with the existing `paper_reconcile` system-worker pass (its own
+# 24h app_state throttle + pg advisory lock, already fleet-safe) — see
+# docs/design/duplicate-paper-handling.md (Phase 3). Its LaunchDaemon
+# (com.precis.reconcile) is booted out by retire-thin-timers.yml.
 
 - name: "41 — precis EDA toolchain (Freerouting, gateway — ADR 0042)"
   ansible.builtin.import_playbook: playbooks/41-precis-eda.yml

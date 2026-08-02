@@ -25,8 +25,9 @@
   # The ``external`` extra (trafilatura + feedparser + wolframalpha +
   # youtube-transcript-api + httpx — all lightweight, no marker/torch) backs
   # get(kind='web') / news fetch. This shared venv also runs `precis worker
-  # --profile=agent` AND dream-pass.sh (`/opt/mcps/venv/bin/precis worker
-  # --only dream_agent`); without `external`, trafilatura is absent and the
+  # --profile=agent`, which (since §A) fires the `dream_agent` scheduler
+  # cadence in-process — no longer a separate `dream-pass.sh` invocation,
+  # same venv either way; without `external`, trafilatura is absent and the
   # dream cycle's web fetch fails with "[error:Unsupported] trafilatura is
   # not installed" (gr48611). The worker venv already carries it.
   #

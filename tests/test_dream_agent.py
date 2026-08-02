@@ -13,6 +13,7 @@ from precis.workers.dream_agent import (
     _apply_quest_anchor,
     _gate_enabled,
     _load_prompt,
+    eligible,
     run_dream_pass,
 )
 
@@ -20,6 +21,34 @@ from precis.workers.dream_agent import (
 def test_gate_off_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PRECIS_DREAM_AGENT", raising=False)
     assert _gate_enabled() is False
+
+
+def test_eligible_false_without_gate_or_soul(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PRECIS_DREAM_AGENT", raising=False)
+    monkeypatch.delenv("PRECIS_DREAM_SOUL_PATH", raising=False)
+    assert eligible() is False
+
+
+def test_eligible_false_when_gate_on_but_soul_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Mirrors dream-pass.sh's missing-SOUL skip: the env flag alone is not
+    enough — the §A scheduler cadence must not claim without a readable soul
+    file, or a worker that merely has the env flag set (but not the actual
+    persona file) would win the lease and burn the fire for nothing."""
+    monkeypatch.setenv("PRECIS_DREAM_AGENT", "1")
+    monkeypatch.setenv("PRECIS_DREAM_SOUL_PATH", str(tmp_path / "missing-SOUL.md"))
+    assert eligible() is False
+
+
+def test_eligible_true_when_gate_on_and_soul_readable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    soul = tmp_path / "SOUL.md"
+    soul.write_text("# persona")
+    monkeypatch.setenv("PRECIS_DREAM_AGENT", "1")
+    monkeypatch.setenv("PRECIS_DREAM_SOUL_PATH", str(soul))
+    assert eligible() is True
 
 
 def test_apply_fisheye_appends_kind_diverse_draw(

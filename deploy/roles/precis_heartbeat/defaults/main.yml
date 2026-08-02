@@ -1,6 +1,6 @@
 ---
 # How often each host reports its load + temperature into the
-# host_heartbeat table. 60s matches precis_cron_tick's cadence —
+# host_heartbeat table. 60s matches the scheduler's cron_tick cadence —
 # cheap (~1s of Python boot + one UPSERT) and gives the web Status
 # tab fresh-enough liveness signal.
 precis_heartbeat_interval_seconds: 60

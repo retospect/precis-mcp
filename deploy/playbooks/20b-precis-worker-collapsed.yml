@@ -4,21 +4,27 @@
 # through the `service_unit` abstraction instead of a hand-written plist. The
 # runnable form of roles/service_unit/examples/collapsed-worker.yml.
 #
-# What it replaces at cutover: the four parallel worker daemons (the two
-# profile plists + the agent/dream variants) → one per host; the per-flag
-# "if …_ENABLED … endif" env blocks → service_config.prio (live from the
-# /factory console, §15e); the standalone thin-timer daemons (cron-tick,
-# watch-poll) → the worker's own decentralized §15i `scheduler` pass. The
-# daemon carries NONE of the retired PRECIS_*_ENABLED flags — capability
-# (probe) × prio (console) is the whole control surface.
+# What it replaces at cutover: the two profile plists (system + agent,
+# already merged into one `com.precis.worker-agent` per §A's dream_agent/
+# anki_sync fold) → one per host; the per-flag "if …_ENABLED … endif" env
+# blocks → service_config.prio (live from the /factory console, §15e). The
+# standalone thin-timer daemons (cron-tick, watch-poll, and — since §A —
+# dream, anki-sync) already fold onto the worker's own decentralized §15i
+# `scheduler` pass (live by default on both profiles, no flag) whether this
+# collapsed unit ships or not; this playbook's remaining value is the
+# service_unit-rendered single-daemon-per-host shape, not the cadence fold
+# (already done). The daemon carries NONE of the retired PRECIS_*_ENABLED
+# flags — capability (probe) × prio (console) is the whole control surface.
 #
 # DARK: NOT imported by site.yml or redeploy-precis.yml. The Phase-2 window
-# runs this in place of 20-precis-worker.yml (+ 30/37/39 variants), AFTER the
-# run-as→deploy cutover (it renders run_as: deploy) and an `ansible --check`
-# rehearsal against the wired overlay. Preconditions to validate in-window:
-#   * the §15i scheduler owns cron_tick + watch_poll  → retire 30/39 timers
-#   * PRECIS_SCHEDULER_ENABLED flipped on in service_unit_env (below, commented)
-#   * every folded pass has a ServiceSpec (dream/reconcile stay node-pinned)
+# runs this in place of 20-precis-worker.yml + 37-precis-worker-agent.yml,
+# AFTER the run-as→deploy cutover (it renders run_as: deploy) and an
+# `ansible --check` rehearsal against the wired overlay. Preconditions to
+# validate in-window:
+#   * the §15i/§A scheduler already owns cron_tick/watch_poll/dream_agent/
+#     anki_sync fleet-wide (live, no flag) — nothing to flip here anymore
+#   * every folded pass has a ServiceSpec (reconcile stays retired, not
+#     re-added — paper_reconcile already covers it)
 
 - name: Deploy the collapsed precis worker (one service_unit per host)
   hosts:
@@ -45,9 +51,9 @@
           --embedder {{ precis_worker_embedder }}
           --embedder-url {{ precis_worker_embedder_url }}
           --summarizer-model {{ precis_worker_summarizer }}
-        # Core daemon vars + shared API keys only — NO ENABLE toggles. Flip
-        # PRECIS_SCHEDULER_ENABLED here in-window (with the timers retired) so
-        # the worker owns the recurring-work cadences (§15i).
+        # Core daemon vars + shared API keys only — NO ENABLE toggles. The
+        # `scheduler` pass is live by default (no flag, §A) so this daemon
+        # already owns the recurring-work cadences (§15i) with no env here.
         service_unit_env: >-
           {{ precis_shared_env | combine({
             'HOME': '/Users/deploy',

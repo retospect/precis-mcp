@@ -1,18 +1,26 @@
 ---
-# retire-thin-timers.yml — factory Phase-2 §15i cutover (2026-07-18).
+# retire-thin-timers.yml — factory Phase-2 §15i cutover (2026-07-18), extended
+# by §A (2026-08) to the dream / anki-sync / reconcile timers.
 #
-# Boots out + removes the two standalone thin-timer LaunchDaemons on the gateway
-# now that their cadences ride the decentralized `scheduler` worker pass
-# (PRECIS_SCHEDULER_ENABLED, migration 0074 leases; see workers/scheduler.py):
-#   - com.precis.cron-tick   (was: precis cron tick @60s)
-#   - com.precis.watch-poll  (was: precis worker --only watch_poll @1h)
+# Boots out + removes the standalone thin-timer LaunchDaemons now that their
+# cadences ride the decentralized `scheduler` worker pass (migration 0074
+# leases; see workers/scheduler.py CADENCES):
+#   - com.precis.cron-tick   (gateway) — was: precis cron tick @60s
+#   - com.precis.watch-poll  (gateway) — was: precis worker --only watch_poll @1h
+#   - com.precis.dream       (gateway) — was: dream-pass.sh @15min (§A)
+#   - com.precis.anki-sync   (precis_anki_sync group) — was: precis anki-sync @30min (§A)
+#   - com.precis.reconcile   (data node) — was: precis reconcile-duplicates
+#     --apply nightly; folded as a pure *retirement* — it's redundant with the
+#     existing `paper_reconcile` system-worker pass, not a new cadence (§A)
 #
-# RUN ORDER: only AFTER a deploy that flips PRECIS_SCHEDULER_ENABLED on and the
-# scheduler_leases rows are confirmed advancing — otherwise these cadences stop
-# firing. Idempotent (tolerates already-removed). Retiring both is harmless even
-# if the scheduler briefly co-fires: fire_due_cron uses FOR UPDATE SKIP LOCKED.
+# RUN ORDER: only AFTER a deploy that lands the §A code (scheduler live on
+# both profiles; dream/anki-sync env on the worker-agent plist) and the
+# scheduler_leases rows are confirmed advancing — otherwise these cadences
+# stop firing. Idempotent (tolerates already-removed). Retiring is harmless
+# even if the scheduler briefly co-fires: the lease/advisory-lock/idempotent-
+# upsert mechanisms in each of the folded passes all dedup safely.
 #
-# Reversal: re-add plays 30/39 to site.yml and re-run them.
+# Reversal: re-add the retired plays to site.yml (git history) and re-run them.
 - name: Retire precis thin-timer LaunchDaemons (folded into the scheduler pass)
   hosts: gateway
   become: true
@@ -20,6 +28,7 @@
     _thin_timers:
       - com.precis.cron-tick
       - com.precis.watch-poll
+      - com.precis.dream
   tasks:
     - name: Bootout the timer daemon (tolerate not-loaded)
       ansible.builtin.command: "launchctl bootout system/{{ item }}"
@@ -40,3 +49,45 @@
       register: _still_loaded
       changed_when: false
       failed_when: _still_loaded.rc == 0    # rc==0 means it is STILL loaded → fail loudly
+
+- name: Retire the precis anki-sync LaunchDaemon (folded into the scheduler pass)
+  hosts: precis_anki_sync
+  become: true
+  tasks:
+    - name: Bootout com.precis.anki-sync (tolerate not-loaded)
+      ansible.builtin.command: "launchctl bootout system/com.precis.anki-sync"
+      register: _bootout
+      changed_when: _bootout.rc == 0
+      failed_when: false
+
+    - name: Remove the com.precis.anki-sync plist
+      ansible.builtin.file:
+        path: /Library/LaunchDaemons/com.precis.anki-sync.plist
+        state: absent
+
+    - name: Assert com.precis.anki-sync is gone
+      ansible.builtin.command: "launchctl print system/com.precis.anki-sync"
+      register: _still_loaded
+      changed_when: false
+      failed_when: _still_loaded.rc == 0
+
+- name: Retire the precis reconcile LaunchDaemon (redundant with paper_reconcile)
+  hosts: data
+  become: true
+  tasks:
+    - name: Bootout com.precis.reconcile (tolerate not-loaded)
+      ansible.builtin.command: "launchctl bootout system/com.precis.reconcile"
+      register: _bootout
+      changed_when: _bootout.rc == 0
+      failed_when: false
+
+    - name: Remove the com.precis.reconcile plist
+      ansible.builtin.file:
+        path: /Library/LaunchDaemons/com.precis.reconcile.plist
+        state: absent
+
+    - name: Assert com.precis.reconcile is gone
+      ansible.builtin.command: "launchctl print system/com.precis.reconcile"
+      register: _still_loaded
+      changed_when: false
+      failed_when: _still_loaded.rc == 0

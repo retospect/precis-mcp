@@ -186,6 +186,7 @@ _REF_PASS_PRIORITY: dict[str, PassBand] = {
     "_dispatch_pass": PassBand.PLANNER,
     "_sweeper_pass": PassBand.PLANNER,
     "_nursery_pass": PassBand.HEALTH,
+    "_heartbeat_pass": PassBand.HEALTH,
     "_chase_pass": PassBand.BACKGROUND,
     "_inbound_chase_pass": PassBand.BACKGROUND,
     "_hub_refine_pass": PassBand.BACKGROUND,
@@ -304,6 +305,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "auto_check",
             "schedule",
             "nursery",
+            "heartbeat",
             "structural",
             "deep_review",
             "dispatch",
@@ -488,10 +490,12 @@ def run(args: argparse.Namespace) -> None:
         # coordinator/ssh_node/clusterize/reconcile passes that ship on
         # every node); ``agent`` = melchior's OAuth worker (the opus
         # reviewers + job_claude_inproc + quota_check). dream_agent stays
-        # out of both — it has its own 15-min cadence and self-gates via
-        # PRECIS_DREAM_AGENT=1. A totality test
-        # (``tests/test_worker_registry.py``) fails CI if a pass wired
-        # below has no spec, so the table can't drift from the code.
+        # out of both profiles' rotation on THIS gate — its trigger is the
+        # ``dream_agent`` scheduler cadence (§A, host-pinned melchior, see
+        # workers/scheduler.py), not a profile default; ``--only dream_agent``
+        # still self-gates via PRECIS_DREAM_AGENT=1 for a manual run. A
+        # totality test (``tests/test_worker_registry.py``) fails CI if a
+        # pass wired below has no spec, so the table can't drift from the code.
         profile_passes = service_names_for_profile(args.profile)
 
         # Live run control (factory slice 2): the service_config table can
@@ -1658,12 +1662,14 @@ def run(args: argparse.Namespace) -> None:
 
             ref_passes.append(_schedule_pass)
 
-        # Scheduler pass — §15i, slice 10 (DARK). The decentralized
-        # recurring-work trigger: folds the standalone thin-timer daemons
-        # (cron tick, watch poll) into the worker via a DB-lease conditional
-        # advance (exactly-once across the fleet, no designated node). Off by
-        # default (no profile, PRECIS_SCHEDULER_ENABLED unset) so the launchd
-        # timers still own the ticks — no double-fire until the Phase-2 flip.
+        # Scheduler pass — §15i, slice 10. LIVE (§A): the decentralized
+        # recurring-work trigger, default-on for BOTH profiles (registry.py
+        # ServiceSpec) — folds the standalone thin-timer daemons (cron tick,
+        # watch poll, and now the host-pinned dream_agent / anki_sync
+        # cadences too) into the worker via a DB-lease conditional advance
+        # (exactly-once across the fleet, no designated node). It must run on
+        # the agent profile too, or a host-pinned melchior cadence never has
+        # an eligible claimant.
         if _pass_enabled("scheduler"):
             from precis.workers.runner import BatchResult as _BatchResult
             from precis.workers.scheduler import run_scheduler_pass
@@ -1691,6 +1697,22 @@ def run(args: argparse.Namespace) -> None:
                 return run_nursery_pass(store, limit=batch_size)
 
             ref_passes.append(_nursery_pass)
+
+        # Heartbeat pass — §A. Refactored core of `precis heartbeat`
+        # (workers/heartbeat.py), now also running as a per-host system-
+        # worker pass so a host's liveness signal doesn't depend solely on
+        # its still-live launchd/systemd timer. Self-throttled in-process
+        # (NOT scheduler_leases — heartbeat is the liveness signal that lease
+        # machinery is judged by, so it must never depend on it); a
+        # double-fire against the timer is a harmless idempotent upsert.
+        if _pass_enabled("heartbeat"):
+            from precis.workers.heartbeat import run_heartbeat_pass
+            from precis.workers.runner import BatchResult as _BatchResult
+
+            def _heartbeat_pass(batch_size: int) -> _BatchResult:
+                return run_heartbeat_pass(store)
+
+            ref_passes.append(_heartbeat_pass)
 
         # Structural review pass — Slice 3 of todo-tree-plan.md.
         # Opus-class semantic review of the tree's shape (drift
@@ -1805,13 +1827,17 @@ def run(args: argparse.Namespace) -> None:
 
             ref_passes.append(_quota_check_pass)
 
-        # dream_agent — replaces the legacy bash dream-pass.sh with
-        # a Python-side dispatch through call_claude_agent. Loads the
-        # directive prompt + soul + MCP config from env-pointed file
-        # paths; same flag set as the bash script (no Web tools,
-        # bypass permissions, 20 turns). Explicit-only; gated by
-        # PRECIS_DREAM_AGENT=1. The cluster's precis_dream role
-        # owns the file installation.
+        # dream_agent — a Python-side dispatch through call_claude_agent
+        # (loads the directive prompt + soul + MCP config from env-pointed
+        # file paths; no Web tools, bypass permissions, 20 turns). This
+        # registration is for a manual/ad-hoc `--only dream_agent` run only —
+        # gated by PRECIS_DREAM_AGENT=1, same as always. The STANDING trigger
+        # is now the `dream_agent` scheduler cadence (§A, host-pinned
+        # melchior — workers/scheduler.py), which calls run_dream_pass
+        # directly; the old standalone hermes-pinned 15-min LaunchDaemon
+        # (dream-pass.sh, precis_dream role) is retired. The worker-agent
+        # role now installs PRECIS_DREAM_AGENT / PRECIS_DREAM_SOUL_PATH on
+        # melchior's agent-profile plist instead.
         if _pass_enabled("dream_agent"):
             from precis.workers.dream_agent import run_dream_pass
             from precis.workers.runner import BatchResult as _BatchResult

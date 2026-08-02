@@ -90,13 +90,206 @@ def test_cron_tick_cadence_fires_a_due_one_shot(store) -> None:
     assert row is not None and int(row[0]) == 1
 
 
-def test_scheduler_service_is_dark_by_default() -> None:
-    """The service registers off — no default profile, gated only by the env
-    flag / a service_config prio row — so the launchd timers still own the ticks
-    until the Phase-2 cutover flips it on."""
+def test_scheduler_service_is_live_on_both_profiles() -> None:
+    """§A: the service is default-on for BOTH profiles — the agent profile
+    must run it too, or a host-pinned cadence (dream_agent, anki_sync) never
+    has an eligible claimant."""
     from precis.workers.registry import SERVICES_BY_NAME
 
     spec = SERVICES_BY_NAME["scheduler"]
-    assert spec.default_profiles == frozenset()
-    assert spec.enable_env == "PRECIS_SCHEDULER_ENABLED"
+    assert spec.default_profiles == frozenset({"system", "agent"})
+    assert spec.enable_env is None
     assert spec.ref_pass is True
+
+
+# ── §A: host affinity + local eligibility ───────────────────────────────
+
+
+def _pinned_cad(
+    run, *, host_affinity: str | None, eligible=None, interval: int = 60
+) -> Cadence:
+    return Cadence(
+        name=f"c-{uuid4().hex}",
+        interval_s=interval,
+        run=run,
+        host_affinity=host_affinity,
+        eligible=eligible,
+    )
+
+
+def test_host_affinity_non_pinned_host_never_claims(store) -> None:
+    """A pinned cadence is never even attempted on a non-affinity host — the
+    lease stays unadvanced (still due) so the pinned host can claim it later,
+    catch-up-late-not-lost rather than lost to a wrong-host steal."""
+    ran: list[str] = []
+    cad = _pinned_cad(lambda s, b: ran.append("fired"), host_affinity="melchior")
+
+    r_wrong_host = run_scheduler_pass(store, host="caspar", cadences=(cad,))
+    assert (r_wrong_host.claimed, r_wrong_host.ok, r_wrong_host.failed) == (0, 0, 0)
+    assert ran == []
+    # the lease was never even seeded — a fresh/absent row isn't in
+    # scheduler_leases at all yet, proving the claim call was skipped, not
+    # attempted-and-lost.
+    names = {lease.name for lease in store.scheduler_leases()}
+    assert cad.name not in names
+
+    r_right_host = run_scheduler_pass(store, host="melchior", cadences=(cad,))
+    assert (r_right_host.claimed, r_right_host.ok, r_right_host.failed) == (1, 1, 0)
+    assert ran == ["fired"]
+
+
+def test_ineligible_worker_skips_without_advancing_lease(store) -> None:
+    """An ineligible worker never claims (the lease is untouched); a LATER
+    eligible claimer still gets the fire immediately — drop-no-fire, not a
+    delayed/stolen one."""
+    is_eligible = False
+    ran: list[str] = []
+    cad = _pinned_cad(
+        lambda s, b: ran.append("fired"),
+        host_affinity=None,
+        eligible=lambda: is_eligible,
+    )
+
+    r1 = run_scheduler_pass(store, host="h", cadences=(cad,))
+    assert (r1.claimed, r1.ok, r1.failed) == (0, 0, 0)
+    assert ran == []
+    names = {lease.name for lease in store.scheduler_leases()}
+    assert cad.name not in names  # eligibility gate is checked before any claim
+
+    is_eligible = True
+    r2 = run_scheduler_pass(store, host="h", cadences=(cad,))
+    assert (r2.claimed, r2.ok, r2.failed) == (1, 1, 0)
+    assert ran == ["fired"]
+
+
+def test_exactly_once_under_two_concurrent_claimants(store) -> None:
+    """Extends the single-threaded exactly-once cover in
+    ``test_scheduler_leases.py`` with a REAL concurrent race at the pass
+    level — two threads racing ``run_scheduler_pass`` for the same due
+    cadence must sum to exactly one claim."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    hits: list[str] = []
+    cad = _cad(lambda s, b: hits.append("fired"))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [
+            pool.submit(run_scheduler_pass, store, host=h, cadences=(cad,))
+            for h in ("h1", "h2")
+        ]
+        results = [f.result() for f in futures]
+
+    assert sum(r.claimed for r in results) == 1
+    assert hits == ["fired"]
+
+
+def test_catch_up_long_overdue_lease_fires_once_no_backlog_burst(store) -> None:
+    """A long-overdue lease (fleet-wide outage) collapses to exactly ONE
+    catch-up fire, and re-arms to ``now() + interval`` — NOT
+    ``old_next_fire_at + interval`` — so recovery never bursts a backlog."""
+    from datetime import UTC, datetime
+
+    hits: list[int] = []
+    cad = _cad(lambda s, b: hits.append(1), interval=60)
+
+    # Seed + immediately re-arm it once, then force it WAY overdue.
+    assert run_scheduler_pass(store, host="h", cadences=(cad,)).claimed == 1
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE scheduler_leases SET next_fire_at = now() - interval '1 day' "
+            "WHERE name = %s",
+            (cad.name,),
+        )
+    before = datetime.now(UTC)
+
+    r = run_scheduler_pass(store, host="h", cadences=(cad,))
+    assert (r.claimed, r.ok, r.failed) == (1, 1, 0)
+    assert hits == [1, 1]  # one catch-up fire (plus the seed fire above)
+
+    lease = {ln.name: ln for ln in store.scheduler_leases()}[cad.name]
+    # next_fire_at ~= now() + 60s, nowhere near old_next_fire_at (1 day ago) + 60s.
+    delta_s = (lease.next_fire_at - before).total_seconds()
+    assert 55 <= delta_s <= 90, f"expected ~60s from now, got {delta_s}s"
+
+    # not due again immediately — no backlog burst.
+    r2 = run_scheduler_pass(store, host="h", cadences=(cad,))
+    assert r2.claimed == 0
+
+
+def test_raising_resolve_interval_falls_back_and_spares_later_cadences(
+    store,
+) -> None:
+    """A ``resolve_interval`` blip must not starve cadences ordered after it:
+    the claim falls back to the static ``interval_s`` and the loop continues
+    — same hardening contract as the ``eligible``/claim guards."""
+    hits: list[str] = []
+
+    def boom_resolver(s) -> int:
+        raise RuntimeError("interval resolver blew up")
+
+    a = Cadence(
+        name=f"c-{uuid4().hex}",
+        interval_s=60,
+        run=lambda s, b: hits.append("a"),
+        resolve_interval=boom_resolver,
+    )
+    b = _cad(lambda s, b: hits.append("b"))
+    r = run_scheduler_pass(store, host="h", cadences=(a, b))
+    # both fired: a via the static-interval fallback, b untouched by a's blip.
+    assert (r.claimed, r.ok, r.failed) == (2, 2, 0)
+    assert hits == ["a", "b"]
+
+
+def test_dream_agent_cadence_interval_resolves_the_g_knob(store) -> None:
+    """The ``dream_agent`` cadence's ``resolve_interval`` IS §G's
+    ``resolve_min_interval_minutes`` (DB > env > compiled default), in
+    seconds — not a separately-maintained constant."""
+    from precis.workers import dream_throttle
+    from precis.workers.scheduler import CADENCES
+
+    dream_cad = next(c for c in CADENCES if c.name == "dream_agent")
+    assert dream_cad.resolve_interval is not None
+    assert dream_cad.host_affinity == "melchior"
+
+    # compiled default (no DB row, no env).
+    assert dream_cad.resolve_interval(store) == int(
+        dream_throttle.DEFAULT_MIN_INTERVAL_MINUTES * 60
+    )
+
+
+def test_dream_agent_cadence_interval_env_override(store, monkeypatch) -> None:
+    from precis.workers.scheduler import CADENCES
+
+    monkeypatch.setenv("PRECIS_DREAM_MIN_INTERVAL_MINUTES", "5")
+    dream_cad = next(c for c in CADENCES if c.name == "dream_agent")
+    assert dream_cad.resolve_interval is not None
+    assert dream_cad.resolve_interval(store) == 300
+
+
+def test_dream_agent_cadence_interval_db_override_wins(store, monkeypatch) -> None:
+    from precis.budget import settings as app_settings
+    from precis.workers.dream_throttle import MIN_INTERVAL_KEY
+    from precis.workers.scheduler import CADENCES
+
+    monkeypatch.setenv("PRECIS_DREAM_MIN_INTERVAL_MINUTES", "5")
+    app_settings.set_float(store, MIN_INTERVAL_KEY, 3.0)
+    dream_cad = next(c for c in CADENCES if c.name == "dream_agent")
+    assert dream_cad.resolve_interval is not None
+    assert dream_cad.resolve_interval(store) == 180  # DB (3min) beats env (5min)
+
+
+def test_anki_sync_cadence_ineligible_by_default(store, monkeypatch) -> None:
+    """``PRECIS_ANKI_ENABLED`` unset (the test default) ⇒ the ``anki_sync``
+    cadence's ``eligible`` gate is False, so it never claims."""
+    monkeypatch.delenv("PRECIS_ANKI_ENABLED", raising=False)
+    from precis.workers.scheduler import CADENCES
+
+    anki_cad = next(c for c in CADENCES if c.name == "anki_sync")
+    assert anki_cad.host_affinity == "melchior"
+    assert anki_cad.eligible is not None
+    assert anki_cad.eligible() is False
+
+    r = run_scheduler_pass(store, host="melchior", cadences=(anki_cad,))
+    assert (r.claimed, r.ok, r.failed) == (0, 0, 0)
+    names = {lease.name for lease in store.scheduler_leases()}
+    assert anki_cad.name not in names

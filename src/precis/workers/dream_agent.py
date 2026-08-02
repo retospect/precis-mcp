@@ -43,11 +43,17 @@ Gating: ``PRECIS_DREAM_AGENT=1`` (env). The pass is explicit-only
 on the CLI (``--only dream_agent``) AND env-gated, mirroring the
 existing dream worker's discipline.
 
-Cadence: the launchd timer still fires every 15 min unchanged, but
-:mod:`precis.workers.dream_throttle` lets a tick no-op if the
-``dream.min_interval_minutes`` knob (web-set, live, no redeploy) hasn't
-elapsed since the last real dispatch — see that module for the resolution
-order and jitter guard.
+Cadence (§A): folded onto the decentralized ``scheduler`` worker pass
+(:mod:`precis.workers.scheduler`) as the ``dream_agent`` cadence —
+host-pinned to melchior, its ``resolve_interval`` reading
+:func:`precis.workers.dream_throttle.resolve_min_interval_minutes` (DB >
+env > compiled 15) directly, so the cadence knob IS the live interval
+rather than a fixed launchd timer plus a throttle underneath it. The old
+standalone hermes-pinned 15-min LaunchDaemon (``dream-pass.sh``) is
+retired; :func:`eligible` is the cadence's local gate. §G's in-pass
+:func:`precis.workers.dream_throttle.skip_if_too_soon` guard stays as a
+belt-and-suspenders check (and still guards a manual ``--only
+dream_agent`` run).
 
 Output disposition: **the dream agent writes its own memories**
 via the precis MCP `put` tool during the session. The worker
@@ -283,6 +289,18 @@ def _result_meta(res: LlmResult) -> dict[str, Any]:
 
 def _gate_enabled() -> bool:
     return env_flag("PRECIS_DREAM_AGENT")
+
+
+def eligible() -> bool:
+    """§A cheap local-process gate for the ``dream_agent`` scheduler cadence
+    (``workers/scheduler.py``) — checked BEFORE a claim attempt, same test
+    ``run_dream_pass`` itself re-checks (belt-and-suspenders). Mirrors
+    ``dream-pass.sh``'s missing-SOUL skip: ``PRECIS_DREAM_AGENT`` truthy AND
+    the soul file it points at is actually readable. Without this, a worker
+    on the *pinned* host that lacks the dream env (e.g. its system-profile
+    process, as opposed to the agent-profile one that carries OAuth + the
+    soul path) would win the lease and burn the fire for nothing."""
+    return _gate_enabled() and _env_path("PRECIS_DREAM_SOUL_PATH") is not None
 
 
 #: Packaged dreaming workflow — the SSOT prompt, persona-neutral. The
@@ -584,4 +602,4 @@ def _env_path(var: str) -> Path | None:
     return p if p.exists() else None
 
 
-__all__ = ["run_dream_pass"]
+__all__ = ["eligible", "run_dream_pass"]

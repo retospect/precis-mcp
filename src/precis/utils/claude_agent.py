@@ -10,9 +10,12 @@ text is logged for audit but isn't the "result").
 
 Three currently-deployed call sites that this surface unifies:
 
-* ``cluster/roles/precis_dream/files/dream-pass.sh`` (active) — has
+* :func:`precis.workers.dream_agent.run_dream_pass` (active) — has
   ``--append-system-prompt $(cat SOUL.md)`` + ``--mcp-config`` +
-  ``--max-turns 20`` + ``--permission-mode bypassPermissions``.
+  ``--max-turns 20`` + ``--permission-mode bypassPermissions``. Fires from
+  the ``dream_agent`` scheduler-lease cadence (§A, host-pinned melchior);
+  the standalone bash wrapper it used to ride
+  (``cluster/roles/precis_dream/files/dream-pass.sh``) is retired.
   Output disposition: agentic memory writes via the MCP precis
   tools.
 * Slice-3 structural reviewer (Slice 3 of the todo-tree plan) — same

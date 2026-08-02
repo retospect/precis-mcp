@@ -15,7 +15,7 @@ already pins `IdentityAgent none` for the cluster hosts (on-disk
 
 | host       | OS / init      | role       | runs |
 |------------|----------------|------------|------|
-| melchior   | macOS / launchd| gateway    | system worker + **agent worker** (plan_tick/reviewers) + web + dream + cron-tick + litellm + asa-bot + anki-sync |
+| melchior   | macOS / launchd| gateway    | system worker + **agent worker** (plan_tick/reviewers + the `dream_agent`/`anki_sync` scheduler-lease cadences, §A) + web + litellm + asa-bot |
 | caspar     | macOS / launchd| data (NFS) | system worker + embedder + Postgres (prod DB) + backups |
 | balthazar  | macOS / launchd| scheduler  | system worker + embedder |
 | spark      | Linux / systemd| inference  | system worker + embedder + GPU (relax/AlphaFold) |
@@ -24,16 +24,17 @@ already pins `IdentityAgent none` for the cluster hosts (on-disk
 
 | log | hosts | what |
 |-----|-------|------|
-| `precis-worker.log`        | all         | system-profile worker (embed, summarize, chunk_keywords, dispatch, nursery, reconcile, …). The big one (100s of MB–1 GB). |
-| `precis-worker-agent.log`  | melchior    | agent-profile worker (structural/deep_review, `job_claude_inproc` plan_tick, quota_check). Owner `hermes`. |
+| `precis-worker.log`        | all         | system-profile worker (embed, summarize, chunk_keywords, dispatch, nursery, `scheduler` [cron_tick/watch_poll], `heartbeat`, `paper_reconcile`, …). The big one (100s of MB–1 GB). |
+| `precis-worker-agent.log`  | melchior    | agent-profile worker (structural/deep_review, `job_claude_inproc` plan_tick, quota_check, and — since §A — the `scheduler` pass's `dream_agent`/`anki_sync` cadence fires, folded from the retired `precis-dream.log`/`precis-anki-sync.log` daemons below). Owner `deploy`. |
 | `precis-web.log`           | melchior    | FastAPI/uvicorn web UI. uvicorn lines have no leading timestamp. |
 | `precis-embedder.log`      | all         | `serve-embeddings` (bge-m3), loopback `127.0.0.1:8181`. Health: `curl 127.0.0.1:8181/readyz` → `ready`. |
 | `precis-watch.log`         | all         | ingest inbox watcher. |
-| `precis-dream.log`         | melchior    | dream_agent (15-min cadence). |
-| `precis-cron-tick.log`     | melchior    | cron-tick daemon. |
-| `precis-anki-sync.log`     | melchior    | headless AnkiWeb sync. |
-| `precis-reconcile.log`     | caspar      | duplicate/hygiene reconcile CLI runs. |
-| `precis-heartbeat.log`     | all         | per-node liveness heartbeat. |
+| `precis-heartbeat.log`     | all         | per-node liveness heartbeat (still-live launchd/systemd timer; §A also runs it as a `--profile=system` worker pass — same log, `precis-worker.log`, for that half). |
+
+**Retired by §15i/§A** (their LaunchDaemons are booted out;
+`retire-thin-timers.yml` — look in `precis-worker.log`/`precis-worker-agent.log`
+instead): `precis-cron-tick.log`, `precis-watch-poll.log`, `precis-dream.log`,
+`precis-anki-sync.log`, `precis-reconcile.log`.
 | litellm: `/opt/homebrew/var/log/litellm.log` + `litellm-error.log` + `litellm-watchdog.log` | melchior | LLM proxy (port 4000). 401s here = Anthropic auth. |
 | asa-bot: `/Users/hermes/.asa/asa-bot.log` (needs `sudo`) | melchior | Discord bridge. Also relays nursery Discord alerts. |
 | Shared crons: `/opt/shared/logs/` (macOS) / `/shared/logs/` (linux) | caspar hosts them | `backup-pg.log`, `backup-b2.log`, `backup-usb.log`, `backup-tests.log`, `daily_briefing/*.log`, `api-credits.log`, `pip-audit/audit.log`, `nginx-*.log`. |

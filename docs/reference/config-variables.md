@@ -32,26 +32,28 @@ default**, its **deployed value per cluster service**, and an
 
 | Host | OS / runtime | Role | Notable capability |
 |------|--------------|------|--------------------|
-| **melchior** | macOS (Metal), launchd | `gateway` | The only agent/LLM host: agent-worker, dream, web, asa-bot, cron-tick, anki-sync, OA/GP fetch. Runs `hermes` OAuth. |
-| **caspar** | macOS, launchd | `data` | Postgres / pgbouncer / redis / NFS server. Runs the reconcile daemon. |
+| **melchior** | macOS (Metal), launchd | `gateway` | The only agent/LLM host: agent-worker (also owns the `dream_agent` / `anki_sync` scheduler-lease cadences, §A), web, asa-bot, OA/GP fetch. Runs `hermes` OAuth. |
+| **caspar** | macOS, launchd | `data` | Postgres / pgbouncer / redis / NFS server. The duplicate-reconcile sweep is now the `paper_reconcile` system-worker pass here, not a separate daemon (§A retired the standalone nightly plist as redundant). |
 | **balthazar** | macOS (Metal), launchd | `scheduler` | System worker + inbox watcher; an `agent_sandbox_host`. |
 | **spark** | Linux (CUDA GB10), systemd | `inference` | System worker **plus** the GPU/container compute lanes: DFT, chem route, AlphaFold, TTS. |
 
 **Long-lived daemons and where they run** (each Mac daemon is a
-LaunchDaemon; spark uses systemd units):
+LaunchDaemon; spark uses systemd units). §15i/§A folded the standalone
+thin-timer daemons — `cron-tick`, `watch-poll`, `dream`, `anki-sync` — into
+the decentralized `scheduler` worker pass (live by default on both
+profiles, `workers/scheduler.py` CADENCES); `dream_agent`/`anki_sync` are
+host-pinned to melchior via `host_affinity` + an `eligible()` gate, so they
+still only ever fire there, just from inside the worker-agent daemon
+instead of their own plist. `reconcile`'s fold is a pure retirement (no new
+cadence — `paper_reconcile` already covered it):
 
 | Service | Hosts | Includes shared-env? |
 |---------|-------|----------------------|
-| `precis worker --profile=system` | all 4 | yes |
-| `precis worker --profile=agent` | melchior | yes |
-| `dream_agent` (15-min) | melchior | yes |
-| `cron-tick` (60-s) | melchior | yes |
+| `precis worker --profile=system` (embed/summarize/…/`scheduler`/`heartbeat`/`paper_reconcile`/…) | all 4 | yes |
+| `precis worker --profile=agent` (structural/deep_review/quota_check/`scheduler`) | melchior | yes |
 | `precis web` / MCP serve | melchior | yes |
-| `precis-anki-sync` (30-min) | melchior | yes |
 | `precis-watch` (inbox ingest) | all 4 | yes |
-| `precis-watch-poll` (citation-forward) | melchior | yes |
-| `precis-reconcile` | caspar | no |
-| `precis-heartbeat` | all 4 | no |
+| `precis-heartbeat` (also a `--profile=system` pass now, §A) | all 4 | no |
 | `serve-embeddings` | all 4 | no (only `HF_HOME`) |
 | `asa-bot` (Discord) | melchior | no |
 | `code-sandbox` (podman) | balthazar, spark | no (no PRECIS_* at all) |
@@ -95,7 +97,7 @@ values are from the cluster scan.
 | `PRECIS_QUEST_LOOP_ENABLED` | Autonomous quest research loop | off | **not set** | 🔶 Intentionally dark — awaiting Reto's go (autonomous GPU/token spend). To go live also set `PRECIS_QUEST_WEEKLY_CHARS` and enable the struct-relax GPU lane. See the quest memory. |
 | `PRECIS_BACKLOG_GROOM_ENABLED` | Backlog groomer (auto repo-bug fixing) | off | **not set** in the `deploy/` tree | ℹ️ Expected. The fixer/backlog loop runs **locally on `hephaestus` (Reto's laptop)**, outside the cluster ansible — so its env lives in the laptop's local launch/env config, not the `deploy/` overlay. Manage it there. |
 | `PRECIS_CHASE_LLM` | LLM finding-chase pass | `0` | not set | ✅ Off — the SQL chase covers prod; LLM chase is opt-in. |
-| `PRECIS_DREAM_AGENT` | Dream agent enable | off | set `1` by `dream-pass.sh` wrapper (melchior) | ✅ Correct — the daemon wrapper sets it at runtime. |
+| `PRECIS_DREAM_AGENT` | Dream agent enable | off | set `1` directly in `com.precis.worker-agent`'s plist (melchior) | ✅ Correct — §A retired the separate `dream-pass.sh` wrapper; the worker-agent plist now sets it (and `PRECIS_DREAM_SOUL_PATH`) so this agent-profile process is the `dream_agent` scheduler cadence's eligible claimant. |
 | `PRECIS_FRICTION_REFLECT` | Friction-reflection pass | off | not set | ⚠️ Dark. Fine if unused; revisit if you want the tool-confusion auto-file loop. |
 | `PRECIS_ORACLE_AUTO_REINGEST` | Reingest on oracle sync | `1` (on) | not set ⇒ on | ✅ On by default, matches intent. |
 | `PRECIS_BACKFILL_CITATION_LENS` | Citation-lens backfill | `1` (on) | not set ⇒ on | ✅ On by default. |

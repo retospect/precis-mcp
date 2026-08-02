@@ -420,13 +420,17 @@ bubble → §C harvest re-dispatches), tagged `reaped:dead-node-orphan`. The
 quick-restart-mid-lease latency it leaves is deferred to
 `docs/proposals/compute-lane-lease-epoch.md` (Option A).
 
-**Two `precis worker` profiles, four LaunchDaemons total.**
+**Two `precis worker` profiles.** (The "four LaunchDaemons" framing this
+section used to carry — worker/watch/heartbeat/dream as four separate
+daemons — is stale post-§A: `dream`'s standalone LaunchDaemon is retired,
+folded onto the `scheduler` pass below; `heartbeat` is now BOTH a per-host
+worker pass and its own still-live timer, pending §L.)
 
 * `precis worker --profile=system` runs on every cluster node and
   drives every chunk-level + SQL ref-level pass: `embed`, `summarize`,
   `chunk_keywords`, `chase`, `fetch`, `gp_fetch`, `tag_embeddings`,
-  `auto_check`, `schedule`, `nursery`, `dispatch`, `sweeper`,
-  `job_coordinator`, `job_ssh_node`, `wake_runner`, `clusterize`,
+  `auto_check`, `schedule`, `scheduler`, `nursery`, `heartbeat`, `dispatch`,
+  `sweeper`, `job_coordinator`, `job_ssh_node`, `wake_runner`, `clusterize`,
   `corpus_reconcile`, `paper_reconcile`.
   (`llm_summarize` is opt-in on top — env `PRECIS_SUMMARIZE_LLM=1` or
   `--only llm_summarize`; enabled on melchior as a deliberate trickle.
@@ -463,22 +467,49 @@ quick-restart-mid-lease latency it leaves is deferred to
   `quota_check:auth` alert (+ one-shot `notify_critical_alert`) so a
   stale/revoked OAuth token pages instead of silently 401-ing every
   agentic call for a day; auth recovering auto-resolves it.
-* `dream_agent` keeps its own 15-min cadence via `dream-pass.sh`,
-  self-throttled by the live `dream.min_interval_minutes` knob
-  (`workers/dream_throttle.py`: `app_settings` DB > env > compiled 15;
-  web-set on the Budget sub-tab, `POST /budget/dream-interval/set`; a
-  tick no-ops when the interval since `dream.last_real_run_at` hasn't
-  elapsed — Wave-0 §G of `docs/proposals/cluster-scheduling.md`)
-  (each tick now injects a per-cycle **quest-anchor** nudge — a random
+* `dream_agent` (§A) no longer has its own standalone 15-min LaunchDaemon
+  (`dream-pass.sh`, retired) — it's now the `dream_agent` **scheduler-lease
+  cadence** (`workers/scheduler.py` CADENCES), host-pinned to melchior, whose
+  interval IS the live `dream.min_interval_minutes` knob (`resolve_interval`
+  reads `workers/dream_throttle.resolve_min_interval_minutes` directly:
+  `app_settings` DB > env > compiled 15; web-set on the Budget sub-tab,
+  `POST /budget/dream-interval/set` — Wave-0 §G of
+  `docs/proposals/cluster-scheduling.md`). A cheap `eligible()` gate
+  (`PRECIS_DREAM_AGENT` truthy AND the soul file readable) keeps melchior's
+  *system*-profile worker from ever winning the lease — only the
+  *agent*-profile process (which carries the env + OAuth) can claim it; the
+  worker-agent role now installs `PRECIS_DREAM_AGENT` / `PRECIS_DREAM_SOUL_PATH`
+  on that plist. §G's in-pass `skip_if_too_soon` throttle stays as
+  belt-and-suspenders (and still guards a manual `--only dream_agent` run).
+  Each tick still injects a per-cycle **quest-anchor** nudge — a random
   active quest seeds one of the two anchors, `angle≈0.5`, other leg stays
   free; `PRECIS_DREAM_QUEST_ANCHOR`/`_ANGLE` — and opens a `kind='agentlog'`
   provenance node whose id rides `env_overlay` so its spawned websearch /
-  memory refs attribute back via `touched`),
-  and `cron-tick` is the fourth daemon — post-ADR-0061 it fires due
-  recurring (`meta.schedule` set) ticks (queue-mode spawn or `meta.deliver`
-  push) via `run_schedule_pass`, not the retired `kind='cron'` engine. Each
-  heavy pass dedups on its tier-tagged memory and load-gates on
+  memory refs attribute back via `touched`.
+* `anki_sync` (§A) folds the same way — a `scheduler` cadence host-pinned to
+  melchior, `eligible()` gated on `PRECIS_ANKI_ENABLED` + the `anki` wheel
+  being importable, `run` delegating to `workers/anki_sync.py::run_anki_sync`
+  (the same guts `precis anki-sync` uses for a manual run — the CLI now
+  delegates to it too, no `sys.exit` in the shared core). The standalone
+  30-min `com.precis.anki-sync` LaunchDaemon is retired; the pg advisory lock
+  still serializes a cadence-fired tick against a concurrent manual run.
+* `cron_tick`/`watch_poll` are the other two `scheduler` cadences (§15i,
+  unpinned — any live worker can win them): `cron_tick` fires due recurring
+  (`meta.schedule` set) ticks (queue-mode spawn or `meta.deliver` push) via
+  `run_schedule_pass`, not the retired `kind='cron'` engine; `watch_poll`
+  polls S2 for citing papers. The `scheduler` pass itself is now default-on
+  for BOTH profiles (`registry.py`) — the agent profile must run it too, or
+  the melchior-pinned cadences above never have an eligible claimant.
+  Each heavy pass dedups on its tier-tagged memory and load-gates on
   `PRECIS_LOAD_CEILING` (default `os.cpu_count() * 1.5`).
+* `heartbeat` (§A) is now ALSO a per-host `system`-profile worker pass
+  (`workers/heartbeat.py::run_heartbeat_pass`), not just the standalone
+  launchd (Macs) / systemd-timer (spark) reporter — deliberately NOT on
+  `scheduler_leases` (it's the liveness signal that lease/claim machinery is
+  judged by), self-throttled via an in-process timestamp
+  (`PRECIS_HEARTBEAT_INTERVAL_SECONDS`, default 60s). The still-live timers
+  keep firing too (retiring them is §L) — a double-fire is a harmless
+  idempotent UPSERT.
 
 **Notable passes:**
 
@@ -589,7 +620,12 @@ quick-restart-mid-lease latency it leaves is deferred to
   pre-2026-06-19 inbox-misconfig signature. Deletes the stub's `fetcher:%`
   events to reset the exponential backoff so the fixed pipeline re-fetches,
   stamping a one-shot `meta.oa_requeued` guard so a re-failure can't spin).
-  See `docs/design/duplicate-paper-handling.md` (Phase 3).
+  See `docs/design/duplicate-paper-handling.md` (Phase 3). §A retired the
+  redundant nightly `com.precis.reconcile` LaunchDaemon on caspar
+  (`precis reconcile-duplicates --apply`) as a pure retirement — no new
+  cadence — since this pass already covers the identical dedup sweep with
+  its own throttle + advisory lock; migrating ITS `app_state` throttle onto
+  the scheduler lease is §E, not done here.
 * `fetch` / `chase` backoff — **both exponential**. The OA fetcher's
   retry window arms on any `fetcher:%` event (not just `unpaywall`,
   which is disabled in prod) and doubles per prior attempt

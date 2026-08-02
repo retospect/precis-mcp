@@ -93,6 +93,83 @@
   changed_when: false
   failed_when: false
 
+# §A: dream_agent's `dream_agent` scheduler cadence is host-pinned to the
+# gateway (this daemon's host) and reads its soul from a deploy-readable
+# path — hermes's own ~/.asa/SOUL.md isn't readable by `deploy`. Copy it
+# in place of the retired precis_dream role's file-install task.
+# fail-soft: an absent operator SOUL is a normal state on a fresh cluster
+# (dream_agent's own eligible() gate degrades to a silent skip, same as
+# dream-pass.sh's old missing-SOUL check), not a deploy failure.
+- name: Ensure /opt/asa/etc exists (dream_agent's deploy-readable SOUL path)
+  when:
+    - os_family == "darwin"
+    - inventory_hostname in groups['gateway']
+  ansible.builtin.file:
+    path: /opt/asa/etc
+    state: directory
+    owner: deploy
+    group: staff
+    mode: "0755"
+  become: true
+
+- name: Copy the operator SOUL to a deploy-readable path (dream_agent, §A)
+  when:
+    - os_family == "darwin"
+    - inventory_hostname in groups['gateway']
+  ansible.builtin.copy:
+    src: /Users/hermes/.asa/SOUL.md
+    dest: "{{ precis_dream_soul_path | default('/opt/asa/etc/SOUL.md') }}"
+    mode: "0644"
+    owner: deploy
+    group: staff
+    remote_src: true
+  become: true
+  register: _dream_soul_copy
+  failed_when: false
+  notify: restart precis-worker-agent
+
+- name: Warn if the operator SOUL is missing (dream_agent degrades to a no-op)
+  when:
+    - os_family == "darwin"
+    - inventory_hostname in groups['gateway']
+    - _dream_soul_copy is failed
+  ansible.builtin.debug:
+    msg: >-
+      /Users/hermes/.asa/SOUL.md not found on {{ inventory_hostname }} —
+      dream_agent's eligible() gate will skip the `dream_agent` cadence
+      (PRECIS_DREAM_SOUL_PATH points at a missing file) until it exists.
+
+# §A: anki_sync's cadence runs from this daemon's process now (the retired
+# precis_anki_sync role used to provision these on its own). Same venv
+# (precis_worker_agent_venv == the old role's /opt/mcps/venv), same mirror
+# dir shape — including the recursive ownership self-heal (a stray
+# root-owned mirror.anki2 from a manual run crash-looped the old daemon for
+# 8 days, gripe-documented in the retired role).
+- name: Install the anki pylib into the agent-worker venv (anki_sync, §A)
+  when:
+    - os_family == "darwin"
+    - inventory_hostname in groups['precis_anki_sync']
+  vars:
+    uv_bin: "{{ '/opt/homebrew/bin/uv' if os_family == 'darwin' else '/root/.local/bin/uv' }}"
+  ansible.builtin.command: >
+    {{ uv_bin }} pip install --python {{ precis_worker_agent_venv }}/bin/python --upgrade anki
+  become: true
+  register: anki_pip
+  changed_when: "'Installed' in anki_pip.stdout or 'Downloaded' in anki_pip.stdout"
+
+- name: Ensure the .anki2 mirror directory (deploy-owned, stable; anki_sync, §A)
+  when:
+    - os_family == "darwin"
+    - inventory_hostname in groups['precis_anki_sync']
+  ansible.builtin.file:
+    path: "{{ anki_mirror_dir | default('/opt/mcps/anki-mirror') }}"
+    state: directory
+    owner: deploy
+    group: staff
+    mode: "0700"
+    recurse: true
+  become: true
+
 - name: Ensure precis-worker-agent LaunchDaemon plist
   when: os_family == "darwin"
   ansible.builtin.template:

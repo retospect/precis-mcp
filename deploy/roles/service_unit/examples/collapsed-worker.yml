@@ -12,9 +12,9 @@
 #     live-toggled from the /factory console (§15e). The daemon carries NONE of
 #     the retired ENABLE flags; capability (probe) × prio (console) is the whole
 #     control surface.
-#   * the standalone thin-timer daemons (cron-tick, watch-poll) → the worker's
-#     own decentralized §15i `scheduler` pass (PRECIS_SCHEDULER_ENABLED, flipped
-#     on in the same window).
+#   * the standalone thin-timer daemons (cron-tick, watch-poll, and — since
+#     §A — dream, anki-sync) → the worker's own decentralized §15i
+#     `scheduler` pass, already live by default on both profiles (no flag).
 #
 # The `--profile system` argument stays for now (behaviour-preserving); the
 # capability probe already gates what the host can actually run, and prio gates

@@ -6,7 +6,7 @@ assert the ``read_temp_c`` priority order and the guards around it.
 
 from __future__ import annotations
 
-from precis.cli import heartbeat
+from precis.workers import heartbeat
 
 
 def test_read_temp_prefers_env_cmd(monkeypatch) -> None:

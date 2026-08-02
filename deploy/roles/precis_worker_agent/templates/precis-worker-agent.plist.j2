@@ -21,7 +21,11 @@
      CLAUDE_CODE_OAUTH_TOKEN by ensure_oauth_token) and its own
      ~/.claude/mcp.json (this role renders it from the shared asa_bot
      template). plan_tick uses --permission-mode bypassPermissions so no
-     ~/.claude/settings.json dependency. dream stays its own hermes plist. #}
+     ~/.claude/settings.json dependency. §A: dream is no longer its own
+     hermes plist — it rides the `dream_agent` scheduler cadence INSIDE
+     this daemon (host-pinned to the gateway); the PRECIS_DREAM_* env
+     below is what makes this agent-profile process (not the
+     system-profile one) the eligible claimant. #}
   <key>UserName</key>
   <string>deploy</string>
 
@@ -51,6 +55,44 @@
     <string>1</string>
     <key>PRECIS_DEEP_REVIEW</key>
     <string>1</string>
+    {% if inventory_hostname in groups['gateway'] %}
+    {# §A: the `dream_agent` scheduler cadence is host-pinned to the gateway
+       (workers/scheduler.py); this is what makes THIS agent-profile process
+       the eligible claimant (a system-profile worker on the same host has
+       neither var set, so it can never win the lease — see the cadence's
+       `eligible` gate, workers/dream_agent.py::eligible). Same env shape
+       dream-pass.sh used to export before its LaunchDaemon was retired. The
+       SOUL file is copied to a deploy-readable path by this role's tasks
+       (operator persona lives at /Users/hermes/.asa/SOUL.md; deploy can't
+       read hermes's home dir). #}
+    <key>PRECIS_DREAM_AGENT</key>
+    <string>1</string>
+    <key>PRECIS_DREAM_SOUL_PATH</key>
+    <string>{{ precis_dream_soul_path | default('/opt/asa/etc/SOUL.md') }}</string>
+    {% endif %}
+    {% if inventory_hostname in groups['precis_anki_sync'] %}
+    {# §A: the `anki_sync` scheduler cadence is host-pinned to the gateway too
+       (same reasoning as dream above) — same PRECIS_ANKI_* block the retired
+       com.precis.anki-sync plist used to carry. #}
+    <key>PRECIS_ANKI_ENABLED</key>
+    <string>1</string>
+    <key>PRECIS_ANKI_USER</key>
+    <string>{{ anki_user | default(vault_anki_user | default('')) }}</string>
+    <key>PRECIS_ANKI_PASSWORD</key>
+    <string>{{ vault_anki_password | default('') }}</string>
+    <key>PRECIS_ANKI_MIRROR_DIR</key>
+    <string>{{ anki_mirror_dir | default('/opt/mcps/anki-mirror') }}</string>
+    <key>PRECIS_ANKI_DECK</key>
+    <string>{{ anki_deck | default('Precis') }}</string>
+    {% if anki_sync_fix | default(false) %}
+    <key>PRECIS_ANKI_FIX_ENABLED</key>
+    <string>1</string>
+    {% endif %}
+    {% if anki_sync_project | default(true) %}
+    <key>PRECIS_ANKI_PROJECT_ENABLED</key>
+    <string>1</string>
+    {% endif %}
+    {% endif %}
     {% if precis_worker_agent_load_ceiling %}
     <key>PRECIS_LOAD_CEILING</key>
     <string>{{ precis_worker_agent_load_ceiling }}</string>

@@ -1,7 +1,9 @@
 """Bootstrap the long-lived Claude Code OAuth token into a subprocess env.
 
-launchd-spawned daemons (``com.precis.worker-agent``, ``com.precis.dream``)
-don't run any shell hook, so a ``claude -p`` subprocess they spawn never sees
+launchd-spawned daemons (e.g. ``com.precis.worker-agent`` — which, since §A,
+also fires the ``dream_agent`` scheduler cadence in-process; the standalone
+``com.precis.dream`` daemon it used to run under is retired) don't run any
+shell hook, so a ``claude -p`` subprocess they spawn never sees
 the ``CLAUDE_CODE_OAUTH_TOKEN`` that an interactive shell would export from
 ``~/.claude_oauth_token`` (see the note in ``utils/claude_agent``). Without it,
 ``claude -p`` falls back to the (possibly stale / revoked) keychain

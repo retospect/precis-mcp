@@ -225,19 +225,21 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-recurring-help",
     ),
     ServiceSpec(
-        # §15i: the decentralized recurring-work trigger. Folds the standalone
-        # launchd thin-timers (cron tick, watch poll) into the worker via a
-        # DB-lease conditional advance (exactly-once, no designated node).
-        # DARK — no default profile + PRECIS_SCHEDULER_ENABLED unset, so the
-        # timers still own the ticks until the Phase-2 cutover flips it on.
+        # §15i/§A: the decentralized recurring-work trigger. Folds the
+        # standalone launchd thin-timers (cron tick, watch poll, dream,
+        # anki-sync) into the worker via a DB-lease conditional advance
+        # (exactly-once, no designated node). LIVE on both profiles — the
+        # agent profile must run it too, or a host-pinned cadence
+        # (dream_agent, anki_sync — both melchior) never has an eligible
+        # claimant.
         name="scheduler",
         label="Recurring trigger (decentralized)",
         category="jobs",
         kind=ServiceKind.PASS,
+        default_profiles=_SYS | _AGT,
         ref_pass=True,
-        enable_env="PRECIS_SCHEDULER_ENABLED",
-        one_line="Decentralized thin-timer cadences (cron tick, watch poll); "
-        "dark until the §15i cutover.",
+        one_line="Decentralized cadences: cron tick, watch poll, dream_agent, "
+        "anki_sync (host-pinned melchior).",
         doc_skill="precis-recurring-help",
     ),
     ServiceSpec(
@@ -249,6 +251,24 @@ SERVICES: tuple[ServiceSpec, ...] = (
         ref_pass=True,
         one_line="Surface incoherence + worker-health as kind='alert'.",
         doc_skill="precis-nursery-help",
+    ),
+    ServiceSpec(
+        # §A: the collection+upsert core moved to workers/heartbeat.py so it
+        # can run as a per-host pass too, not just the manual/timer-fired
+        # `precis heartbeat` CLI. Deliberately NOT on scheduler_leases —
+        # heartbeat is the liveness signal that lease/claim machinery is
+        # judged by. In-process self-throttled (PRECIS_HEARTBEAT_INTERVAL_
+        # SECONDS, default 60s); a double-fire against the still-live
+        # launchd/systemd timer (retired only in §L) is a harmless upsert.
+        name="heartbeat",
+        label="Heartbeat (load + temp)",
+        category="health",
+        kind=ServiceKind.PASS,
+        default_profiles=_SYS,
+        ref_pass=True,
+        one_line="Per-host liveness UPSERT (host_heartbeat); self-throttled, "
+        "timers pending §L.",
+        doc_skill="precis-overview",
     ),
     ServiceSpec(
         name="dispatch",
@@ -693,10 +713,14 @@ SERVICES: tuple[ServiceSpec, ...] = (
         uses_model=True,
         uses_external=("anthropic",),
         prompt_env="PRECIS_DREAM_PROMPT_PATH",
-        one_line="15-min reflective memory pass (own cadence, PRECIS_DREAM_AGENT).",
+        one_line="Reflective memory pass — §A scheduler-lease cadence "
+        "(host-pinned melchior, PRECIS_DREAM_AGENT), default 15-min knob.",
         doc_skill="precis-overview",
         introspect=AgentIntrospect(
-            launchd_label="com.precis.dream",
+            # §A: the standalone com.precis.dream LaunchDaemon (dream-pass.sh)
+            # is retired — dream_agent's trigger is now the `dream_agent`
+            # scheduler cadence, running inside com.precis.worker-agent.
+            launchd_label="com.precis.worker-agent",
             model_default="claude-opus-4-8",
             model_env="PRECIS_DREAM_AGENT_MODEL",
             system_prompt_env="PRECIS_DREAM_SOUL_PATH",
@@ -717,7 +741,8 @@ SERVICES: tuple[ServiceSpec, ...] = (
                 ("PRECIS_DREAM_AGENT", "must be '1' / 'true' to run"),
                 ("PRECIS_DATABASE_URL", "runtime can't load without it"),
             ),
-            wrapper="/opt/asa/bin/dream-pass.sh",
+            # No wrapper script (§A) — dream-pass.sh is retired; the
+            # com.precis.worker-agent plist sets the env directly.
         ),
     ),
     # ── Standalone daemons (separate processes, not gate flags) ─────

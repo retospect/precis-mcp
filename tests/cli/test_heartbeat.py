@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from precis.cli import heartbeat
+from precis.workers import heartbeat
 
 # ``os.getloadavg`` is Unix-only; the monkeypatch tests assume the
 # attribute exists on the real module so it can be replaced. Windows

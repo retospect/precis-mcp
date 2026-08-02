@@ -238,3 +238,48 @@ class TestRetire:
         ids = _retired_ref_ids(store)
         assert int(authored.id) in ids
         assert int(foreign.id) not in ids
+
+
+# ── §A: workers/anki_sync.py — the store-taking core shared with the
+# scheduler cadence. No sys.exit: raises so the CLI and the cadence wrapper
+# each react in their own idiom. ──────────────────────────────────────────
+
+
+class TestRunAnkiSync:
+    def test_dry_run_reports_counts_without_touching_ankiweb(self, store) -> None:
+        from types import SimpleNamespace
+
+        from precis.workers.anki_sync import run_anki_sync
+
+        store.insert_ref(
+            kind="anki",
+            slug=None,
+            title="{{c1::x}}",
+            meta={"notetype": "Cloze", "fields": {"Text": "{{c1::x}}"}},
+        )
+        cfg = SimpleNamespace(
+            anki_user=None,
+            anki_password=None,
+            anki_mirror_dir=None,
+            anki_deck="Precis",
+            anki_fix_enabled=False,
+            anki_project_enabled=False,
+        )
+        summary = run_anki_sync(store, cfg, dry_run=True)
+        assert "1 cloze card(s) would sync" in summary
+
+    def test_misconfigured_raises_instead_of_exiting(self, store) -> None:
+        from types import SimpleNamespace
+
+        from precis.workers.anki_sync import AnkiSyncMisconfigured, run_anki_sync
+
+        cfg = SimpleNamespace(
+            anki_user=None,
+            anki_password=None,
+            anki_mirror_dir=None,
+            anki_deck="Precis",
+            anki_fix_enabled=False,
+            anki_project_enabled=False,
+        )
+        with pytest.raises(AnkiSyncMisconfigured):
+            run_anki_sync(store, cfg)

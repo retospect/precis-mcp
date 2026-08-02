@@ -12,7 +12,10 @@
 #     here, so that pass self-skips (natural gate, no service_config needed).
 #   - briefing / casts — use the litellm loopback (the gateway's llama), absent here.
 #   - quest loop / card_forge — the gateway-pinned budget / local-model use.
-# dream stays its own hermes-pinned LaunchDaemon on the gateway.
+# dream never runs here either (§A: the `dream_agent` scheduler cadence is
+# host-pinned to the gateway — workers/scheduler.py CADENCES — not to this
+# node); the old standalone hermes-pinned LaunchDaemon it's replacing was
+# gateway-only too, so this was already true, just for a different reason.
 #
 # Review load is arbitrated by postgres row-locking, so this can run alongside
 # the gateway's reviews with zero double-work; the gateway's structural/deep_review are
