@@ -83,10 +83,20 @@ _LENS_BRIEFS: dict[str, str] = {
     "cites": (
         "Citation-faithfulness review of the draft section anchored at {h} "
         "(just woven). Load `get(kind='skill', "
-        "id='precis-review-citation-faithfulness')` and apply it: does each "
-        "cited passage actually and strongly support the claim it's cited "
-        "for? File concrete anchored change requests for any hallucinated "
-        "or unsupported citation."
+        "id='precis-review-citation-faithfulness')` and apply it, checking "
+        "THREE things: (1) sufficiency — every non-obvious claim carries a "
+        "cite, not just the ones that already have one; (2) correctness — "
+        "each cite actually and strongly supports the claim it's attached "
+        "to; (3) living-cite preference — where the taproot hub hint shows "
+        "a cited paper already grounds a claim hub, file a change-request "
+        "to switch the bare `[pa…]`/`[pc…]` cite to the hub's `[fi<hub>]` "
+        "form (or `[fi<hub>>pc…]` to pin this passage while still riding "
+        "the living resolution). Cite-token resolution/existence is "
+        "already pre-checked deterministically before you ever see this "
+        "text — judge only whether a cite *supports* its claim, never "
+        "whether the token resolves. File concrete anchored change "
+        "requests for any hallucinated, unsupported, missing, or "
+        "hub-eligible citation."
     ),
 }
 

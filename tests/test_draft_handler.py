@@ -94,6 +94,38 @@ def test_dry_run_previews_text_edit_without_writing(
     assert hub.store.get_draft_chunk(para_h).text == "Committed text."
 
 
+def test_edit_review_verdict_retract_deletes_ledger_row(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """smartdraft-review-status-ui item 7: `edit(review=<checker>,
+    verdict='retract')` un-reviews instead of recording — the edit-door twin
+    of `Store.retract_review` (tested at the store level in
+    test_chunk_review.py), wired through the shared `edit` verb so the web
+    reader's un-review endpoint can write through it too."""
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+    draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text="A paragraph.",
+        at={"after": "¶" + _order(hub, "nt")[0].handle},
+    )
+    para = _order(hub, "nt")[1]
+
+    draft.edit(id=f"¶{para.handle}", review="human", verdict="approved")
+    assert [r["checker"] for r in hub.store.review_status_for_chunk(para.chunk_id)] == [
+        "human"
+    ]
+
+    r = draft.edit(id=f"¶{para.handle}", review="human", verdict="retract")
+    assert "retracted human review" in r.body
+    assert hub.store.review_status_for_chunk(para.chunk_id) == []
+
+    # Retracting again (nothing left to retract) is a clean no-op, not an error.
+    r2 = draft.edit(id=f"¶{para.handle}", review="human", verdict="retract")
+    assert "no human review to retract" in r2.body
+
+
 def test_put_claim_chunk_kind_inserts_without_fk_violation(
     draft: DraftHandler, hub: Hub
 ) -> None:

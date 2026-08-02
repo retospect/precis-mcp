@@ -556,6 +556,24 @@ class FakeStore(_FakeStoreBase):
         # rendered ✓ state (see SmartDraftFakeStore).
         return []
 
+    def review_rollup_for_draft(self, ref_id: int) -> dict[str, int]:
+        # The toolbar N/M rollup badge (smartdraft-review-status-ui item 8).
+        # Generic default derived from `review_status_for_draft`'s rows —
+        # mirrors `Store.review_rollup_for_draft`'s own logic (prose-only
+        # denominator; done = 'human' approved at the current sha) — so a
+        # subclass only needs to override `review_status_for_draft` (many
+        # already do) to get a correct rollup for free.
+        from precis.utils.wordcount import PROSE_CHUNK_KINDS
+
+        prose: dict[object, bool] = {}
+        for row in self.review_status_for_draft(ref_id):
+            if row.get("chunk_kind") not in PROSE_CHUNK_KINDS:
+                continue
+            prose.setdefault(row["chunk_id"], False)
+            if row.get("checker") == "human" and not row.get("dirty"):
+                prose[row["chunk_id"]] = True
+        return {"done": sum(1 for v in prose.values() if v), "total": len(prose)}
+
     def live_paper_cites(self, handles: set[str], slugs: set[str]) -> set[str]:
         # Draft-reader local-vs-external citation colouring. The fake pool
         # parses no SQL, so default to "every cite is local" (unchanged sky

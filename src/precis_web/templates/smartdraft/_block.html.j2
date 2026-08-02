@@ -7,9 +7,65 @@
    anchors, and an <a> may not nest another — the HTML parser auto-closes the
    outer block <a> at the first citation, splitting the paragraph onto a new
    line. data-dc + cursor-pointer make the whole block a focus-nav click target
-   via the delegated handler in view.html.j2. #}
-{% macro sd_doc_block(n, display, debug, claims) -%}
+   via the delegated handler in view.html.j2 (which explicitly skips a click
+   landing inside .sd-review/.sd-review-menu, below, so the indicator/dropdown
+   don't also trigger a focus-nav). #}
+{% macro sd_doc_block(n, display, debug, claims, review, ident) -%}
 {%- set hd = 'font-semibold text-slate-900 text-base' if n.is_heading else '' -%}
 {%- set prov = ' sd-prov-' ~ n.provenance if n.provenance else '' -%}
-<div data-dc="{{ n.dc }}" class="block cursor-pointer whitespace-pre-wrap rounded px-2 py-1 text-slate-700 hover:bg-slate-50 {{ hd }}{{ prov }}">{% if debug %}<span class="font-mono text-[9px] text-sky-500">{{ n.dc }} </span>{% endif %}{{ display | linkify_refs(markdown=True, compact=True, claims=claims) }}</div>
+<div data-dc="{{ n.dc }}" class="block cursor-pointer whitespace-pre-wrap rounded px-2 py-1 text-slate-700 hover:bg-slate-50 {{ hd }}{{ prov }}">{% if debug %}<span class="font-mono text-[9px] text-sky-500">{{ n.dc }} </span>{% endif %}{% if review %}{{ sd_review_widget(n, review, ident) }} {% endif %}{{ display | linkify_refs(markdown=True, compact=True, claims=claims) }}</div>
 {%- endmacro %}
+
+{# The per-block review indicator + dropdown (smartdraft-review-status-ui
+   items 6/7) — a 4-state dot (grey/empty · hollow-blue/machine-green ·
+   green/human · amber/dirty, ``review.state``) whose title is the
+   per-checker tooltip matrix (``review.tooltip``, precomputed server-side —
+   ``precis_web.smartdraft.review_indicator``) plus a red integrity marker
+   (``review.integrity_ok is false``, item 5c). ``review`` is one entry of
+   ``review_by_dc`` (``None`` → the block isn't reviewable, render nothing).
+   Click opens a small action menu: mark/un-review, run one lens or all
+   (a heading's "all" implicitly covers its subtree — the fanout's own
+   scope rule), convert to living cites (dry-run preview → confirm apply),
+   and — once a human row exists — a diff-since-approval deep link into the
+   read-only console (``get(view='review-diff')``, not rebuilt here). #}
+{% macro sd_review_widget(n, review, ident) %}
+{%- if review is not none -%}
+{% set hr = review.human %}
+{#- NB: every element inside this widget is a <span>/<button>/<a> — deliberately
+   NO <div> anywhere, even for the dropdown panel — because sd_doc_block (and the
+   focus/tail/head blocks in view.html.j2) inline this widget inside their own
+   single <div data-dc>, and a test (and the delegated click handler) assumes
+   exactly one <div> per rendered block; a nested <div> here would break that
+   "find the block's closing </div>" assumption. -#}
+<span class="relative inline-block" x-data="{ open: false }" @click.outside="open = false">
+  <button type="button" @click="open = !open"
+          title="{{ review.tooltip }}{% if not review.integrity_ok %}
+⚠ integrity: an unresolved or unheld citation{% endif %}"
+          class="sd-review sd-review-dot {{ review.state }}{% if not review.integrity_ok %} sd-integrity{% endif %}">●</button>
+  <span x-show="open" x-cloak @click.stop class="sd-review-menu absolute left-0 z-30 mt-1 block w-48 rounded border border-slate-200 bg-white text-left text-xs shadow-lg">
+    <button type="button" @click="open = false" onclick="sdReviewHuman('{{ n.dc }}')" class="block w-full px-2 py-1 text-left hover:bg-slate-100">✓ mark reviewed</button>
+    {% if hr %}
+    <button type="button" @click="open = false" onclick="sdReviewRetract('{{ n.dc }}')" class="block w-full px-2 py-1 text-left hover:bg-slate-100">↩ un-review</button>
+    {% endif %}
+    {#- Run-lens buttons (item 2/3): flow/cites only mint on prose chunks,
+       structure/adversarial only on headings (``review_fanout._lenses_for_kind``)
+       — a table/figure/term/equation block gets NO run-lens buttons at all
+       (offering one would silently no-op the click), though the human
+       ✓/un-review entries above/below stay available on ANY reviewable
+       block by design. -#}
+    {% set _lens_pair = ['structure', 'adversarial'] if n.is_heading else (['flow', 'cites'] if n.is_prose else []) %}
+    {% for lens in _lens_pair %}
+    <button type="button" @click="open = false" onclick="sdReviewRun('{{ n.dc }}', '{{ lens }}')" class="block w-full px-2 py-1 text-left hover:bg-slate-100">▶ {{ lens }}</button>
+    {% endfor %}
+    {% if _lens_pair %}
+    <button type="button" @click="open = false" onclick="sdReviewRun('{{ n.dc }}', 'all')" class="block w-full px-2 py-1 text-left hover:bg-slate-100">▶ all{% if n.is_heading %} (subtree){% endif %}</button>
+    {% endif %}
+    <button type="button" @click="open = false" onclick="sdConvertCites('{{ n.dc }}')" class="block w-full px-2 py-1 text-left hover:bg-slate-100">⇄ convert to living cites</button>
+    {% if hr %}
+    <a href="/console?verb=get&args_text={{ ('kind=draft id=' ~ n.dc ~ ' view=review-diff') | urlencode }}"
+       target="_blank" rel="noopener" class="block px-2 py-1 hover:bg-slate-100">↔ diff since approval</a>
+    {% endif %}
+  </span>
+</span>
+{%- endif -%}
+{% endmacro %}

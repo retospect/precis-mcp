@@ -163,6 +163,232 @@ def test_review_diff_since_empty_when_unchanged(store: Store) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Store: retract_review
+# ---------------------------------------------------------------------------
+
+
+def test_retract_review_deletes_and_reports_existence(store: Store) -> None:
+    _ref_id, p = _draft_with_paragraph(store)
+    # nothing to retract yet
+    assert store.retract_review(p.chunk_id, "human") is False
+
+    store.record_review(p.chunk_id, "human")
+    statuses = store.review_status_for_chunk(p.chunk_id)
+    assert statuses and statuses[0]["checker"] == "human"
+
+    assert store.retract_review(p.chunk_id, "human") is True
+    assert store.review_status_for_chunk(p.chunk_id) == []
+    # a second retract is a no-op — nothing left to delete
+    assert store.retract_review(p.chunk_id, "human") is False
+
+
+# ---------------------------------------------------------------------------
+# Store: approved_pairs_at_current_sha
+# ---------------------------------------------------------------------------
+
+
+def test_approved_pairs_at_current_sha_tracks_edits(store: Store) -> None:
+    ref_id, p = _draft_with_paragraph(store)
+    store.record_review(p.chunk_id, "flow")
+    assert (p.chunk_id, "flow") in store.approved_pairs_at_current_sha(ref_id)
+
+    store.edit_text(p.handle, "edited — stale now")
+    assert (p.chunk_id, "flow") not in store.approved_pairs_at_current_sha(ref_id)
+
+    store.record_review(p.chunk_id, "flow")
+    assert (p.chunk_id, "flow") in store.approved_pairs_at_current_sha(ref_id)
+
+
+# ---------------------------------------------------------------------------
+# Store: review_subtree_chunk_ids
+# ---------------------------------------------------------------------------
+
+
+def test_review_subtree_chunk_ids_includes_heading_and_descendants_in_order(
+    store: Store,
+) -> None:
+    proj = _project(store)
+    ref, title = store.create_draft(name="subtree", title="T", project_ref_id=proj)
+    section = store.add_chunks(
+        ref_id=ref.id,
+        chunk_kind="heading",
+        text="Section",
+        at={"after": title.handle},
+    )[0]
+    p1 = store.add_chunks(
+        ref_id=ref.id, chunk_kind="paragraph", text="p1", at={"into": section.handle}
+    )[0]
+    p2 = store.add_chunks(
+        ref_id=ref.id, chunk_kind="paragraph", text="p2", at={"after": p1.handle}
+    )[0]
+    # a sibling section outside the subtree must not appear
+    other = store.add_chunks(
+        ref_id=ref.id, chunk_kind="heading", text="Other", at={"after": section.handle}
+    )[0]
+
+    ids = store.review_subtree_chunk_ids(ref.id, section.chunk_id)
+
+    assert ids == [section.chunk_id, p1.chunk_id, p2.chunk_id]
+    assert other.chunk_id not in ids
+
+
+def test_review_subtree_chunk_ids_unknown_chunk_is_empty(store: Store) -> None:
+    proj = _project(store)
+    ref, _title = store.create_draft(
+        name="subtree-empty", title="T", project_ref_id=proj
+    )
+    assert store.review_subtree_chunk_ids(ref.id, 999999) == []
+
+
+# ---------------------------------------------------------------------------
+# Store: toc_digest
+# ---------------------------------------------------------------------------
+
+
+def test_toc_digest_unaffected_by_paragraph_edit_but_changed_by_heading_edit(
+    store: Store,
+) -> None:
+    proj = _project(store)
+    ref, title = store.create_draft(name="tocdig", title="T", project_ref_id=proj)
+    section_a = store.add_chunks(
+        ref_id=ref.id, chunk_kind="heading", text="A", at={"after": title.handle}
+    )[0]
+    para = store.add_chunks(
+        ref_id=ref.id,
+        chunk_kind="paragraph",
+        text="body",
+        at={"into": section_a.handle},
+    )[0]
+
+    digest0 = store.toc_digest(ref.id)
+
+    # a paragraph body edit never touches the digest
+    store.edit_text(para.handle, "revised body")
+    assert store.toc_digest(ref.id) == digest0
+
+    # renaming a heading does
+    store.edit_text(section_a.handle, "A (renamed)")
+    digest1 = store.toc_digest(ref.id)
+    assert digest1 != digest0
+
+
+def test_toc_digest_changes_on_heading_reorder(store: Store) -> None:
+    proj = _project(store)
+    ref, title = store.create_draft(
+        name="tocdig-reorder", title="T", project_ref_id=proj
+    )
+    section_a = store.add_chunks(
+        ref_id=ref.id, chunk_kind="heading", text="A", at={"after": title.handle}
+    )[0]
+    section_b = store.add_chunks(
+        ref_id=ref.id, chunk_kind="heading", text="B", at={"after": section_a.handle}
+    )[0]
+
+    digest0 = store.toc_digest(ref.id)
+
+    store.move_chunk(section_b.handle, {"before": title.handle})
+    digest1 = store.toc_digest(ref.id)
+    assert digest1 != digest0
+    # the heading set is unchanged, only the order — a same-membership,
+    # different-order digest must still differ (the hash is order-sensitive)
+    assert {
+        c.chunk_id for c in store.reading_order(ref.id) if c.chunk_kind == "heading"
+    } == {
+        title.chunk_id,
+        section_a.chunk_id,
+        section_b.chunk_id,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Store: review_status_for_draft — section_chunk_id + toc entry
+# ---------------------------------------------------------------------------
+
+
+def test_review_status_for_draft_carries_section_chunk_id(store: Store) -> None:
+    proj = _project(store)
+    ref, title = store.create_draft(name="section-id", title="T", project_ref_id=proj)
+    section = store.add_chunks(
+        ref_id=ref.id, chunk_kind="heading", text="Section", at={"after": title.handle}
+    )[0]
+    para = store.add_chunks(
+        ref_id=ref.id, chunk_kind="paragraph", text="p", at={"into": section.handle}
+    )[0]
+
+    rows = {r["chunk_id"]: r for r in store.review_status_for_draft(ref.id)}
+    assert rows[para.chunk_id]["section_chunk_id"] == section.chunk_id
+    # a top-level heading has no enclosing heading of its own
+    assert rows[section.chunk_id]["section_chunk_id"] is None
+    assert rows[title.chunk_id]["section_chunk_id"] is None
+
+
+def test_review_status_for_draft_toc_entry_pins_to_digest_not_content_sha(
+    store: Store,
+) -> None:
+    proj = _project(store)
+    ref, title = store.create_draft(name="toc-entry", title="T", project_ref_id=proj)
+    store.add_chunks(
+        ref_id=ref.id, chunk_kind="heading", text="A", at={"after": title.handle}
+    )
+
+    # never reviewed yet — a synthetic dirty 'toc' row on the first chunk
+    rows = [r for r in store.review_status_for_draft(ref.id) if r["checker"] == "toc"]
+    assert len(rows) == 1
+    assert rows[0]["chunk_id"] == title.chunk_id
+    assert rows[0]["dirty"] is True
+
+    # approve at the current digest — pinned to the digest, not this
+    # chunk's own content_sha (which never changed)
+    digest = store.toc_digest(ref.id)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO chunk_review (chunk_id, checker, approved_sha, verdict) "
+            "VALUES (%s, 'toc', %s, 'approved')",
+            (title.chunk_id, digest),
+        )
+        conn.commit()
+
+    rows = [r for r in store.review_status_for_draft(ref.id) if r["checker"] == "toc"]
+    assert rows[0]["dirty"] is False
+    assert rows[0]["approved_sha"] == digest
+
+    # editing the title's OWN text (not a section rename) still changes the
+    # digest, since the title itself is a heading counted in it
+    store.edit_text(title.handle, "T (renamed)")
+    rows = [r for r in store.review_status_for_draft(ref.id) if r["checker"] == "toc"]
+    assert rows[0]["dirty"] is True
+
+
+# ---------------------------------------------------------------------------
+# Store: review_rollup_for_draft
+# ---------------------------------------------------------------------------
+
+
+def test_review_rollup_for_draft_counts_prose_chunks_only(store: Store) -> None:
+    proj = _project(store)
+    ref, title = store.create_draft(name="rollup", title="T", project_ref_id=proj)
+    section = store.add_chunks(
+        ref_id=ref.id, chunk_kind="heading", text="Section", at={"after": title.handle}
+    )[0]
+    paras = store.add_chunks(
+        ref_id=ref.id,
+        chunk_kind="paragraph",
+        text="p1\n\np2\n\np3",
+        at={"into": section.handle},
+    )
+    assert len(paras) == 3
+
+    rollup = store.review_rollup_for_draft(ref.id)
+    assert rollup == {"done": 0, "total": 3}  # 2 headings excluded from denominator
+
+    for p in paras:
+        store.record_review(p.chunk_id, "human")
+
+    rollup = store.review_rollup_for_draft(ref.id)
+    assert rollup == {"done": 3, "total": 3}
+
+
+# ---------------------------------------------------------------------------
 # Handler: edit(kind='draft', review=…)
 # ---------------------------------------------------------------------------
 

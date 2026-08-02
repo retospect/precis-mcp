@@ -1175,10 +1175,17 @@ that finishes with 0 findings AND an unmoved anchor `content_sha` now calls
 (`edit(kind='draft', authoring='on')`) lets the `cites`/`structure` lenses edit the
 draft inline instead of only filing findings (`precis-review-authoring` persona);
 `put(kind='draft', copy_of=..., project=...)` deep-copies a draft (rung-3
-prerequisite for a review pass that shouldn't touch the source, mig 0088). Web
-reader gained the matching surface: a ✓ gutter checkoff, a read-only F/C/S/A
-checker-flag strip, a machine-authored marker, and the auto-author toolbar
-toggle. Remaining:
+prerequisite for a review pass that shouldn't touch the source, mig 0088).
+**Smartdraft review-status UI (`docs/proposals/smartdraft-review-status-ui.md`)
+now built**, superseding the classic reader's retired F/C/S/A strip: a
+per-block 4-state indicator + tooltip matrix, an indicator dropdown
+(mark/un-review, run one/all lenses, convert to living cites, diff-since-
+approval), a toolbar `N/M` rollup badge with per-checker/hub/wordcount-
+balance breakdowns, an incremental `only_dirty`/`scope`-aware fanout, a
+fifth document-altitude `toc` lens pinned to a TOC digest, and the
+`review ▾` menu's `structural`/`deep_review` names kept only as aliases
+onto `structure`/`adversarial`. Detail: `docs/architecture/state-map.md`
+§ "Review-status surface". Remaining:
 
 - **Topic-dossier weave-quest creation flow** *(feature, open)*. `mark_weave_quest`
   flags an existing quest, but nothing creates one end-to-end (mint quest +

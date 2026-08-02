@@ -178,20 +178,40 @@ async def reader(
 
     _, owner_ws = _owner_workspace(store, ref)
 
-    # Human review-ledger status for the FOCUS block (migration 0086), for the
-    # ✓ sign-off control ported from the classic reader. Focus-scoped like a
-    # per-request overlay (mirrors pins/marks) rather than baked into the cached
-    # ChunkNodes — a /human-review click changes the ledger without minting a
-    # new chunk_id, so caching it would go stale; recomputed each render (incl.
-    # the __sdRefresh after a click). ``None`` = not a reviewable block (hide
-    # the ✓); ``{}`` = reviewable, never reviewed; ``{'human': {...}}`` =
-    # reviewed (``.dirty`` if the text changed since). Same shape + helper the
-    # classic reader's row builder uses, so the two can't drift.
-    focus_review = (
-        _review_status_by_chunk(store, ref.id).get(view.focus.chunk_id)
-        if view.focus is not None
-        else None
+    # Whole-draft review-ledger status (migration 0086) — ONE query
+    # (smartdraft-review-status-ui item 6) shared by the per-block indicator,
+    # its dropdown, and the toolbar rollup below. Recomputed each render
+    # (incl. the __sdRefresh after any review/human-review/retract click) —
+    # never baked into the cached ChunkNodes, since a review action changes
+    # the ledger without minting a new chunk_id (would go stale).
+    review_status = _review_status_by_chunk(store, ref.id)
+    rollup = store.review_rollup_for_draft(ref.id)
+
+    # Per-block indicator payloads (item 6) — scoped to what's actually
+    # RENDERED (the middle pane), not the whole draft, so the citation-
+    # integrity flag's store lookups (item 5c) stay O(rendered blocks), not
+    # O(draft). In full-document mode most of ``view.middle`` is ``skel``
+    # placeholder rows (inert scroll spacers, see ``assemble_view`` — they
+    # never reach ``sd_review_widget``), so those are excluded here too —
+    # otherwise a huge draft's per-cited-paper integrity check
+    # (``cite_integrity_ok``'s ``resolve_handle``/``count_blocks`` calls)
+    # would run over EVERY node, not just the ones a template actually
+    # renders. ``/blocks`` hydration threads the same helper over its own
+    # hydrated window (see ``blocks`` below), which never carries ``skel``
+    # rows to begin with.
+    review_by_dc = smartdraft.review_payloads_for(
+        [m.node for m in view.middle if m.mode != "skel"], review_status, store
     )
+    # ``focus_review`` — kept for back-compat with any other call site that
+    # still expects the OLD raw-ledger shape (``{checker: {...}}``, not the
+    # derived indicator); the widget itself reads ``review_by_dc``.
+    focus_review = (
+        review_status.get(view.focus.chunk_id) if view.focus is not None else None
+    )
+
+    checker_counts = smartdraft.checker_rollup(review_status)
+    hub_stats = _hub_and_citation_stats(request, store, nodes)
+    shape_stats = _document_shape_stats(store, ref.id)
 
     return templates.TemplateResponse(
         request,
@@ -228,6 +248,12 @@ async def reader(
             "cur_voice": str(owner_ws.get("voice") or ""),
             "authoring_enabled": store.draft_authoring_enabled(ref.id),
             "focus_review": focus_review,
+            # ── Review status (smartdraft-review-status-ui) ──
+            "review_by_dc": review_by_dc,
+            "rollup": rollup,
+            "checker_counts": checker_counts,
+            "hub_stats": hub_stats,
+            "shape_stats": shape_stats,
         },
     )
 
@@ -256,15 +282,97 @@ async def blocks(
     # does the same for its middle pane) so a hydrated block's [fi…]/pub_id
     # cites render as claim anchors identically to the initial render.
     claims = hub_cite_heads(store, [n.text or "" for n in sel])
+    # Review-status payload for just this hydrated window (item 4 — the
+    # /blocks payload must carry the same per-chunk review dict as the
+    # initial render, or a scrolled-to indicator would silently stay blank).
+    review_by_dc = smartdraft.review_payloads_for(
+        sel, _review_status_by_chunk(store, ref.id), store
+    )
     return templates.TemplateResponse(
         request,
         "smartdraft/_blocks.html.j2",
         {
             "nodes": sel,
             "claims": claims,
+            "review_by_dc": review_by_dc,
+            "ident": ident,
             "debug": debug.strip().lower() in ("1", "true", "on", "yes"),
         },
     )
+
+
+def _hub_and_citation_stats(
+    request: Request, store: Any, nodes: list[Any]
+) -> dict[str, Any]:
+    """Item 5(a)'s rollup-dropdown numbers — the taproot hub-coverage
+    scoreboard (``DraftHandler._taproot_hub_scoreboard``, the SAME
+    computation the outline's ``## Hygiene`` "N of M cited passages have a
+    hub" line uses — see ``_hygiene_lines``) plus the citation lifecycle
+    counts (``_citations_view``'s to-fetch/to-re-ground/to-promote/done
+    partition). Both reused, not reimplemented; both derived from the
+    already-loaded node list (no extra query — ``nodes`` carry the
+    ``.dc``/``.text`` either helper needs). Degrades to all-zero when no
+    handler is wired (a bare test ``FakeRuntime`` has no ``.hub`` — this
+    dropdown entry is advisory, not load-bearing, so it fails soft rather
+    than 500ing the whole reader)."""
+    from precis.handlers._citations_view import _build_rows, _collect_raw_cites
+
+    grounded, total = 0, 0
+    try:
+        handler = get_runtime(request).hub.handler_for("draft")
+        grounded, total = handler._taproot_hub_scoreboard(nodes)
+    except Exception:
+        pass
+    try:
+        raw = _collect_raw_cites(store, nodes)
+        buckets = _build_rows(store, raw)
+        lifecycle = {p: len(rows) for p, rows in buckets.items()}
+    except Exception:
+        lifecycle = {}
+    return {"hub_grounded": grounded, "hub_total": total, "lifecycle": lifecycle}
+
+
+def _document_shape_stats(store: Any, ref_id: int) -> dict[str, Any]:
+    """Item 10's deterministic half, for the toolbar rollup dropdown:
+    per-section word-count balance, reusing ``aggregate_word_counts`` — the
+    SAME computation ``view='wordcount'`` renders, not reimplemented.
+
+    Scaffold-completeness (current headings vs the draft's expected
+    sections) is deliberately NOT computed: there is no STORED "expected
+    section list" to diff against — ``Store.scaffold_sections`` lays down
+    headings once, at draft-creation time, and persists nothing else about
+    what it laid down. Rather than invent a scaffold store (out of remit —
+    a store/schema decision), this surfaces the absence plainly via
+    ``scaffold_note`` and shows only the word-count balance."""
+    from precis.utils.wordcount import aggregate_word_counts
+
+    try:
+        chunks = store.reading_order(ref_id)
+        report = aggregate_word_counts(chunks)
+    except Exception:
+        return {
+            "total_words": 0,
+            "n_sections": 0,
+            "flagged": [],
+            "scaffold_note": (
+                "scaffold-completeness unavailable — no stored expected-"
+                "section list for this draft"
+            ),
+        }
+    flagged = [s for s in report.sections if s.verdict in ("under", "over")]
+    return {
+        "total_words": report.total,
+        "n_sections": len(report.sections),
+        "flagged": [
+            {"title": s.title or "(untitled)", "verdict": s.verdict, "words": s.words}
+            for s in flagged
+        ],
+        "scaffold_note": (
+            "scaffold-completeness unavailable — no stored expected-section "
+            "list for this draft (scaffold_sections lays down headings at "
+            "creation time but doesn't persist what it laid down)"
+        ),
+    }
 
 
 def _cited_sources(store: Any, text: str) -> list[RefChip]:

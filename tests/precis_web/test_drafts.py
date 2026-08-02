@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -1060,6 +1060,11 @@ class ReviewFakeStore(WsFakeStore):
         }
         return "shaX"
 
+    def retract_review(self, chunk_id, checker):
+        existed = checker in self._reviews.get(chunk_id, {})
+        self._reviews.get(chunk_id, {}).pop(checker, None)
+        return existed
+
     def review_status_for_chunk(self, chunk_id):
         return [
             {"checker": checker, **status}
@@ -1150,6 +1155,110 @@ def test_human_review_route_404s_for_missing_draft(tmp_path) -> None:
     _rt, client = _review_client(tmp_path)
     r = client.post("/drafts/no-such-draft/human-review", json={"dc": "dc2"})
     assert r.status_code == 404
+
+
+# ── un-review (smartdraft-review-status-ui item 7) ──────────────────────
+
+
+def test_retract_review_route_deletes_row_and_reverts_indicator(tmp_path) -> None:
+    _rt, client = _review_client(tmp_path)
+    _rt.store.record_review(2, "human", verdict="approved")  # dc2 == BBBBBB
+    assert [r["checker"] for r in _rt.store.review_status_for_chunk(2)] == ["human"]
+
+    r = client.post("/drafts/nt/review/retract", json={"dc": "dc2"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["review"] == {}
+    assert body["rollup"] == {"done": 0, "total": 1}  # only BBBBBB is prose
+
+    # A re-GET of the chunk's status shows the indicator reverted (empty).
+    assert _rt.store.review_status_for_chunk(2) == []
+
+
+def test_retract_review_route_defaults_checker_to_human(tmp_path) -> None:
+    _rt, client = _review_client(tmp_path)
+    _rt.store.record_review(2, "human")
+    _rt.store.record_review(2, "flow")
+
+    r = client.post("/drafts/nt/review/retract", json={"dc": "dc2"})
+    assert r.status_code == 200
+    remaining = {row["checker"] for row in _rt.store.review_status_for_chunk(2)}
+    assert remaining == {"flow"}  # only 'human' (the default) was retracted
+
+
+def test_retract_review_route_retracts_named_checker(tmp_path) -> None:
+    _rt, client = _review_client(tmp_path)
+    _rt.store.record_review(2, "human")
+    _rt.store.record_review(2, "flow")
+
+    r = client.post("/drafts/nt/review/retract", json={"dc": "dc2", "checker": "flow"})
+    assert r.status_code == 200
+    remaining = {row["checker"] for row in _rt.store.review_status_for_chunk(2)}
+    assert remaining == {"human"}
+
+
+def test_retract_review_route_404s_when_no_row_to_retract(tmp_path) -> None:
+    _rt, client = _review_client(tmp_path)
+    r = client.post("/drafts/nt/review/retract", json={"dc": "dc2"})
+    assert r.status_code == 404
+
+
+def test_retract_review_route_404s_for_unknown_handle(tmp_path) -> None:
+    _rt, client = _review_client(tmp_path)
+    r = client.post("/drafts/nt/review/retract", json={"dc": "dc999"})
+    assert r.status_code == 404
+
+
+def test_retract_review_route_404s_for_missing_draft(tmp_path) -> None:
+    _rt, client = _review_client(tmp_path)
+    r = client.post("/drafts/no-such-draft/review/retract", json={"dc": "dc2"})
+    assert r.status_code == 404
+
+
+# ── document rollup badge (item 8) — prose-only denominator ─────────────
+
+
+class RollupFakeStore(ReviewFakeStore):
+    """3 prose (paragraph) + 2 heading chunks — the rollup badge's
+    acceptance-criterion fixture: ``N/M`` counts PROSE chunks only, so the
+    2 headings never enter the denominator."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._chunks = [
+            _chunk("HEAD01", "heading", "Intro", 0, chunk_id=101),
+            _chunk("PARA01", "paragraph", "one", 1, chunk_id=102, parent_chunk_id=101),
+            _chunk("PARA02", "paragraph", "two", 1, chunk_id=103, parent_chunk_id=101),
+            _chunk("HEAD02", "heading", "Body", 0, chunk_id=104),
+            _chunk(
+                "PARA03", "paragraph", "three", 1, chunk_id=105, parent_chunk_id=104
+            ),
+        ]
+
+
+def _rollup_client(tmp_path):
+    rt = FakeRuntime(RollupFakeStore())
+    app = create_app(runtime=rt, web_config=WebConfig(corpus_dir=tmp_path))
+    return rt, TestClient(app)
+
+
+def test_rollup_badge_zero_of_three_then_review_complete(tmp_path) -> None:
+    rt, client = _rollup_client(tmp_path)
+
+    r = client.post("/drafts/nt/human-review", json={"dc": "dc102"})
+    assert r.status_code == 200
+    assert r.json()["rollup"] == {"done": 0, "total": 3}
+
+    # The fake `edit` dispatch never mutates the store (route-contract tests
+    # only — see ReviewFakeStore's docstring); approve all three prose
+    # chunks directly, the way a real edit(review='human') write would land.
+    for cid in (102, 103, 105):
+        rt.store.record_review(cid, "human")
+
+    r2 = client.post("/drafts/nt/human-review", json={"dc": "dc102"})
+    assert r2.status_code == 200
+    assert r2.json()["rollup"] == {"done": 3, "total": 3}  # review-complete
 
 
 class _DatetimeReviewStore(ReviewFakeStore):
@@ -1521,3 +1630,281 @@ def test_draft_author_lines_empty() -> None:
     from precis_web.routes.drafts import _draft_author_lines
 
     assert _draft_author_lines(make_ref(kind="draft", authors=None)) == ""
+
+
+# ── lens-run endpoint (smartdraft-review-status-ui items 1-3) ──────────
+#
+# The fanout's own minting behaviour (only_dirty, subtree scope,
+# unsettled-skip, lens x chunk-kind mapping) is unit-tested against a real
+# store in tests/test_review_fanout_writeback.py; these assert the ROUTE's
+# contract — it resolves dc/lens/only_dirty and calls
+# quest.review_fanout.mint_review_fanout with the right arguments (incl.
+# the structural/deep_review alias mapping and the scoped-toc 400) — via a
+# monkeypatched fanout that just records its call.
+
+
+def _fake_fanout_recorder(calls: list[dict[str, Any]]):
+    def _fanout(
+        store,
+        ref_id,
+        *,
+        lenses,
+        doc_lenses,
+        author=False,
+        only_dirty=False,
+        scope=None,
+    ):
+        calls.append(
+            {
+                "ref_id": ref_id,
+                "lenses": lenses,
+                "doc_lenses": doc_lenses,
+                "only_dirty": only_dirty,
+                "scope": scope,
+            }
+        )
+        return {
+            "parent_id": 1,
+            "minted": [42],
+            "skipped": 0,
+            "unsettled_skipped": 0,
+            "author_minted": 0,
+            "chunks_seen": 1,
+        }
+
+    return _fanout
+
+
+def test_review_route_alias_maps_and_scopes_to_dc_chunk(tmp_path, monkeypatch) -> None:
+    import precis_web.routes.drafts as drafts_mod
+
+    _rt, client = _review_client(tmp_path)
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(drafts_mod, "mint_review_fanout", _fake_fanout_recorder(calls))
+
+    r = client.post("/drafts/nt/review", json={"lens": "structural", "dc": "dc2"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["minted"] == [42]
+    assert len(calls) == 1
+    call = calls[0]
+    assert call["ref_id"] == 500
+    assert call["lenses"] == ("structure",)  # 'structural' alias -> 'structure'
+    assert call["doc_lenses"] == ()
+    assert call["scope"] == 2  # dc2 -> chunk_id 2
+    assert call["only_dirty"] is False  # a dc-scoped call defaults to re-run
+
+
+def test_review_route_deep_review_alias_maps_to_adversarial(
+    tmp_path, monkeypatch
+) -> None:
+    import precis_web.routes.drafts as drafts_mod
+
+    _rt, client = _review_client(tmp_path)
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(drafts_mod, "mint_review_fanout", _fake_fanout_recorder(calls))
+
+    r = client.post("/drafts/nt/review", json={"lens": "deep_review"})
+    assert r.status_code == 200
+    assert calls[0]["lenses"] == ("adversarial",)
+    assert calls[0]["scope"] is None  # no dc -> whole draft
+    assert calls[0]["only_dirty"] is True  # whole-draft call defaults to incremental
+
+
+def test_review_route_all_lens_whole_draft_includes_doc_lenses(
+    tmp_path, monkeypatch
+) -> None:
+    import precis_web.routes.drafts as drafts_mod
+    from precis.quest.review_fanout import ALL_LENSES, DOC_LENSES
+
+    _rt, client = _review_client(tmp_path)
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(drafts_mod, "mint_review_fanout", _fake_fanout_recorder(calls))
+
+    r = client.post("/drafts/nt/review", json={"lens": "all"})
+    assert r.status_code == 200
+    assert calls[0]["lenses"] == ALL_LENSES
+    assert calls[0]["doc_lenses"] == DOC_LENSES
+    assert calls[0]["scope"] is None
+
+
+def test_review_route_all_lens_scoped_still_passes_doc_lenses_through(
+    tmp_path, monkeypatch
+) -> None:
+    # mint_review_fanout itself gates doc_lenses to scope=None (a no-op for a
+    # scoped call) — the route doesn't need to special-case this, just pass
+    # both through.
+    import precis_web.routes.drafts as drafts_mod
+    from precis.quest.review_fanout import ALL_LENSES, DOC_LENSES
+
+    _rt, client = _review_client(tmp_path)
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(drafts_mod, "mint_review_fanout", _fake_fanout_recorder(calls))
+
+    r = client.post("/drafts/nt/review", json={"lens": "all", "dc": "dc2"})
+    assert r.status_code == 200
+    assert calls[0]["lenses"] == ALL_LENSES
+    assert calls[0]["doc_lenses"] == DOC_LENSES
+    assert calls[0]["scope"] == 2
+
+
+def test_review_route_toc_lens_scoped_to_dc_is_rejected_400(tmp_path) -> None:
+    _rt, client = _review_client(tmp_path)
+    r = client.post("/drafts/nt/review", json={"lens": "toc", "dc": "dc2"})
+    assert r.status_code == 400
+
+
+def test_review_route_toc_lens_whole_draft_mints_doc_lens_only(
+    tmp_path, monkeypatch
+) -> None:
+    import precis_web.routes.drafts as drafts_mod
+
+    _rt, client = _review_client(tmp_path)
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(drafts_mod, "mint_review_fanout", _fake_fanout_recorder(calls))
+
+    r = client.post("/drafts/nt/review", json={"lens": "toc"})
+    assert r.status_code == 200
+    assert calls[0]["lenses"] == ()
+    assert calls[0]["doc_lenses"] == ("toc",)
+
+
+def test_review_route_unknown_lens_400(tmp_path) -> None:
+    _rt, client = _review_client(tmp_path)
+    r = client.post("/drafts/nt/review", json={"lens": "bogus"})
+    assert r.status_code == 400
+
+
+def test_review_route_unknown_dc_404(tmp_path) -> None:
+    _rt, client = _review_client(tmp_path)
+    r = client.post("/drafts/nt/review", json={"lens": "flow", "dc": "dc999"})
+    assert r.status_code == 404
+
+
+def test_review_route_missing_draft_404(tmp_path) -> None:
+    _rt, client = _review_client(tmp_path)
+    r = client.post("/drafts/no-such-draft/review", json={"lens": "flow"})
+    assert r.status_code == 404
+
+
+# ── convert to living cites (item 5b) — real-store integration, injected
+# cascade fns mirroring tests/test_taproot_backfill.py's pattern ────────
+
+
+@pytest.fixture
+def convert_client(runtime_with_store, tmp_path) -> TestClient:
+    return TestClient(
+        create_app(
+            runtime=runtime_with_store, web_config=WebConfig(corpus_dir=tmp_path)
+        )
+    )
+
+
+def _extract_const(sentence: str):
+    from precis.taproot.canon import CanonicalClaim
+
+    return lambda span: CanonicalClaim(sentence=sentence, scope={})
+
+
+def _block_none(claim, store, embedder):
+    return []
+
+
+def _seed_convert_draft(runtime_with_store) -> tuple[str, str]:
+    """A draft ``cvdraft`` with one paragraph citing ``[pc<chunk>]`` on a
+    seeded paper chunk; returns ``(draft slug, paragraph dc<id> handle)``."""
+    from precis.handlers.draft import DraftHandler
+    from tests.workers._helpers import seed_chunk, seed_ref
+
+    store = runtime_with_store.hub.store
+    paper = seed_ref(store, title="src paper", kind="paper")
+    pc = seed_chunk(store, ref_id=paper, text="grounding passage")
+
+    proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
+    draft = DraftHandler(hub=runtime_with_store.hub)
+    draft.put(id="cvdraft", title="T", project=proj)
+    draft_ref = store.get_ref(kind="draft", id="cvdraft")
+    title_h = store.reading_order(draft_ref.id)[0].handle
+    draft.put(
+        id="cvdraft",
+        chunk_kind="paragraph",
+        text=f"Ribbons are semiconducting [pc{pc}].",
+        at={"after": "¶" + title_h},
+    )
+    para = store.reading_order(draft_ref.id)[-1]
+    return "cvdraft", para.dc
+
+
+def test_convert_cites_dry_run_then_apply_stales_approval(
+    convert_client: TestClient, runtime_with_store, monkeypatch
+) -> None:
+    import precis_web.routes.drafts as drafts_mod
+
+    monkeypatch.setattr(
+        drafts_mod,
+        "_backfill_extract_claim",
+        _extract_const("Ribbons are semiconducting."),
+    )
+    monkeypatch.setattr(drafts_mod, "_backfill_block", _block_none)
+
+    slug, dc = _seed_convert_draft(runtime_with_store)
+    store = runtime_with_store.hub.store
+    chunk_id = int(dc[2:])
+
+    # Human-approve the chunk at its pre-convert sha.
+    store.record_review(chunk_id, "human")
+    assert store.review_status_for_chunk(chunk_id)[0]["dirty"] is False
+
+    # dry_run=True (also the default): a preview, nothing written.
+    r = convert_client.post(
+        f"/drafts/{slug}/cites/convert", json={"dc": dc, "dry_run": True}
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["dry_run"] is True
+    assert body["chunks"][0]["groups"][0]["action"] == "new"
+    assert store.get_draft_chunk(dc).text.startswith("Ribbons are semiconducting [pc")
+    assert store.review_status_for_chunk(chunk_id)[0]["dirty"] is False  # unchanged
+
+    # apply: rewrites [pc<id>] -> [fi<hub>] through the normal edit door.
+    r2 = convert_client.post(
+        f"/drafts/{slug}/cites/convert", json={"dc": dc, "dry_run": False}
+    )
+    assert r2.status_code == 200
+    body2 = r2.json()
+    assert body2["dry_run"] is False
+    rewritten = body2["chunks"][0]["rewritten_text"]
+    assert rewritten is not None and "[fi" in rewritten
+    assert store.get_draft_chunk(dc).text == rewritten
+
+    # Acceptance criterion: the chunk's approval is now stale (content_sha
+    # bumped through the edit door).
+    assert store.review_status_for_chunk(chunk_id)[0]["dirty"] is True
+
+
+def test_convert_cites_dry_run_default_true(
+    convert_client: TestClient, runtime_with_store, monkeypatch
+) -> None:
+    import precis_web.routes.drafts as drafts_mod
+
+    monkeypatch.setattr(
+        drafts_mod, "_backfill_extract_claim", _extract_const("A claim.")
+    )
+    monkeypatch.setattr(drafts_mod, "_backfill_block", _block_none)
+
+    slug, dc = _seed_convert_draft(runtime_with_store)
+    store = runtime_with_store.hub.store
+    before = store.get_draft_chunk(dc).text
+
+    r = convert_client.post(f"/drafts/{slug}/cites/convert", json={"dc": dc})
+    assert r.status_code == 200
+    assert r.json()["dry_run"] is True
+    assert store.get_draft_chunk(dc).text == before  # nothing written
+
+
+def test_convert_cites_unknown_dc_404(convert_client: TestClient) -> None:
+    r = convert_client.post(
+        "/drafts/no-such-draft/cites/convert", json={"dc": "dc999999"}
+    )
+    assert r.status_code == 404

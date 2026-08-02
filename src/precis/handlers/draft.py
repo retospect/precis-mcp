@@ -1492,6 +1492,17 @@ class DraftHandler(Handler):
             # 'cites', 'flow') evaluated this chunk at its *current*
             # content_sha, with `verdict=` (free text, default 'approved').
             # Metadata-only — no re-embed, no text touched.
+            #
+            # `verdict='retract'` is the un-review op instead (smartdraft-
+            # review-status-ui item 7): deletes the ledger row for
+            # `(chunk, review)` via `Store.retract_review` rather than
+            # upserting a fresh approval — the edit-door twin of the web
+            # reader's `POST /drafts/{ident}/review/retract`.
+            if verdict == "retract":
+                existed = self.store.retract_review(_base.chunk_id, review)
+                if not existed:
+                    return Response(body=f"no {review} review to retract on {_base.dc}")
+                return Response(body=f"retracted {review} review on {_base.dc}")
             sha = self.store.record_review(_base.chunk_id, review, verdict=verdict)
             return Response(
                 body=f"recorded {review} review on {_base.dc} @ {sha[:12]}… → {verdict}"

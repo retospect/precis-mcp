@@ -27,6 +27,13 @@ from precis.utils import handle_registry
 from precis.utils.fractional import key_between, n_keys_between
 from precis.utils.handles import new_handle
 
+#: Re-exported so review-fanout/rollup code (item 2, docs/proposals/
+#: smartdraft-review-status-ui.md) imports it off the store module rather
+#: than reaching into ``utils.wordcount`` — but ``wordcount.py`` stays the
+#: one place the set is *defined* (it must stay store-independent), so this
+#: is the single source of truth, not a second drifting copy.
+from precis.utils.wordcount import PROSE_CHUNK_KINDS
+
 _HANDLE_RETRIES = 6
 
 #: An ``ask-user`` / ``halt`` tag value of the form ``see-chunk-N`` is a
@@ -2627,6 +2634,83 @@ class DraftMixin:
             )
         return str(sha)
 
+    def retract_review(self, chunk_id: int, checker: str) -> bool:
+        """Delete the ``chunk_review`` row for ``(chunk_id, checker)`` — the
+        un-review op (spec item 7): retracting a human ✓ (or, generically,
+        any checker's approval) reverts the chunk to "requires review".
+        Returns whether a row existed to delete."""
+        with self.tx() as conn:
+            rc = conn.execute(
+                "DELETE FROM chunk_review WHERE chunk_id = %s AND checker = %s",
+                (chunk_id, checker),
+            ).rowcount
+        return rc > 0
+
+    def approved_pairs_at_current_sha(self, ref_id: int) -> set[tuple[int, str]]:
+        """``{(chunk_id, checker)}`` for every ledger row of ``ref_id``'s
+        live chunks that is approved at the chunk's *current* content_sha —
+        the incremental fanout's (item 1) ``only_dirty`` skip set: a pair
+        already here passed at this exact text, so re-minting it would just
+        re-run the same check against the same words."""
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT cr.chunk_id, cr.checker
+                  FROM chunk_review cr
+                  JOIN chunks c ON c.chunk_id = cr.chunk_id
+                 WHERE c.ref_id = %s
+                   AND c.retired_at IS NULL
+                   AND cr.approved_sha = c.content_sha
+                   AND cr.verdict = 'approved'
+                """,
+                (ref_id,),
+            ).fetchall()
+        return {(int(r[0]), str(r[1])) for r in rows}
+
+    def review_subtree_chunk_ids(self, ref_id: int, heading_chunk_id: int) -> list[int]:
+        """The heading chunk itself + all live descendant chunks, in
+        document order — the incremental fanout's (item 1) subtree scope.
+
+        Reuses :meth:`_descendant_ids` (the recursive family walk backing
+        :meth:`draft_subtree_chunk_ids`) for the descendant set and
+        :meth:`reading_order` (the DFS backing the fisheye/section render,
+        ``utils/fisheye.py``) for the document ordering, rather than a new
+        tree walk. Empty when ``heading_chunk_id`` doesn't resolve to a
+        live chunk of ``ref_id`` (matching :meth:`draft_subtree_chunk_ids`'s
+        "empty when the handle is unknown")."""
+        with self.pool.connection() as conn:
+            descendant_ids = set(self._descendant_ids(conn, heading_chunk_id))
+        descendant_ids.add(heading_chunk_id)
+        return [
+            c.chunk_id
+            for c in self.reading_order(ref_id)
+            if c.chunk_id in descendant_ids
+        ]
+
+    def toc_digest(self, ref_id: int) -> str:
+        """Hex sha256 over the ordered ``(chunk_id, content_sha)`` list of
+        ``ref_id``'s live HEADING chunks, in document order (item 10 — the
+        ``toc`` lens's approval pins to this instead of any single chunk's
+        sha). Adding/removing/renaming/reordering a section changes the
+        digest; editing a paragraph's body does not — deliberately excludes
+        body text and word counts (balance drift is the deterministic
+        wordcount stats' job, not this digest's)."""
+        headings = [
+            c.chunk_id for c in self.reading_order(ref_id) if c.chunk_kind == "heading"
+        ]
+        sha_by_id: dict[int, str | None] = {}
+        if headings:
+            with self.pool.connection() as conn:
+                rows = conn.execute(
+                    "SELECT chunk_id, content_sha FROM chunks WHERE chunk_id = ANY(%s)",
+                    (headings,),
+                ).fetchall()
+            sha_by_id = {int(r[0]): r[1] for r in rows}
+        h = hashlib.sha256()
+        for chunk_id in headings:
+            h.update(f"{chunk_id}:{sha_by_id.get(chunk_id) or ''}\n".encode())
+        return h.hexdigest()
+
     def chunks_requiring_review(
         self, ref_id: int, checker: str
     ) -> list[dict[str, Any]]:
@@ -2765,6 +2849,37 @@ class DraftMixin:
             for r in rows
         ]
 
+    def review_root_chunk_id(self, ref_id: int) -> int | None:
+        """The chunk the document-level ``toc`` lens rides on (item 10) —
+        the first ROOT-level chunk (``parent_chunk_id IS NULL``) in
+        document order (lowest ``pos``) that satisfies the SAME
+        reviewability filters :meth:`review_status_for_draft` scopes its
+        ledger to: ``content_sha IS NOT NULL``, ``retired_at IS NULL``,
+        ``pos IS NOT NULL``. Deliberately NOT :meth:`reading_order`'s
+        first chunk — that has no ``content_sha`` filter, so if the
+        draft's very first root chunk has a NULL ``content_sha`` (not yet
+        reviewable), anchoring there would mint the ``toc`` review-todo on
+        a chunk :meth:`review_status_for_draft`'s ledger never returns a
+        row for — the toc indicator would then read permanently
+        unapproved no matter how many times it's actually reviewed.
+        SINGLE selection rule, shared by :func:`precis.quest.review_fanout.
+        _mint_doc_lenses` (the toc anchor mint) and this method's own
+        toc-row patch below, so the two can't drift apart. ``None`` for a
+        draft with no reviewable root chunk."""
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                """
+                SELECT chunk_id FROM chunks
+                 WHERE ref_id = %s AND parent_chunk_id IS NULL
+                   AND retired_at IS NULL AND pos IS NOT NULL
+                   AND content_sha IS NOT NULL
+                 ORDER BY pos COLLATE "C" ASC
+                 LIMIT 1
+                """,
+                (ref_id,),
+            ).fetchone()
+        return int(row[0]) if row else None
+
     def review_status_for_draft(self, ref_id: int) -> list[dict[str, Any]]:
         """Every checker's ledger row for every live, reviewable chunk of
         ``ref_id`` — the whole-draft counterpart to
@@ -2782,7 +2897,22 @@ class DraftMixin:
         ``checker``. A chunk with no review rows still appears once, with
         ``checker=None`` (LEFT JOIN) — ``dirty`` is then ``True`` (never
         reviewed). Chunks reachable only through a retired/absent parent are
-        excluded, matching ``reading_order``."""
+        excluded, matching ``reading_order``.
+
+        Each row also carries ``section_chunk_id`` — the nearest enclosing
+        HEADING chunk id (ancestor walk, self excluded; ``None`` for a
+        chunk with no heading ancestor), the id a paragraph's rollup uses to
+        pull in its section's ``structure``/``adversarial`` state (item 2 —
+        "via section"). The draft's first chunk in document order (there is
+        no single dedicated root — a fresh draft's title heading and any
+        scaffolded top-level sections are all ``parent_chunk_id IS NULL``
+        siblings, see :meth:`create_draft`/:meth:`scaffold_sections`) also
+        carries the document-level ``toc`` lens entry (item 10): its
+        ``dirty`` is patched to compare the stored digest
+        (``approved_sha``) against :meth:`toc_digest` — NOT the chunk's own
+        ``content_sha`` — and a synthetic never-reviewed ``toc`` row is
+        added when no ``chunk_review`` row exists yet, so a caller can
+        always render a ``toc`` column."""
         with self.pool.connection() as conn:
             rows = conn.execute(
                 """
@@ -2830,23 +2960,93 @@ class DraftMixin:
             children.setdefault(entry["parent_chunk_id"], []).append(chunk_id)
         for lst in children.values():
             lst.sort(key=lambda cid: by_chunk[cid]["pos"])
+
+        # Nearest enclosing HEADING ancestor per chunk (self excluded),
+        # memoized — same ancestor walk as ``utils/fisheye.py``'s
+        # ``_ancestors``, just stopping at the first heading instead of
+        # collecting the whole branch.
+        section_of: dict[int, int | None] = {}
+
+        def _section_chunk_id(cid: int) -> int | None:
+            if cid in section_of:
+                return section_of[cid]
+            section_of[cid] = None  # cycle guard
+            pid = by_chunk[cid]["parent_chunk_id"]
+            seen: set[int] = set()
+            result: int | None = None
+            while pid is not None and pid in by_chunk and pid not in seen:
+                seen.add(pid)
+                if by_chunk[pid]["chunk_kind"] == "heading":
+                    result = pid
+                    break
+                pid = by_chunk[pid]["parent_chunk_id"]
+            section_of[cid] = result
+            return result
+
+        # Document-level ``toc`` entry (item 10): the first chunk in
+        # document order stands in for the draft's (nonexistent) single
+        # root. Patch/synthesize its ``toc`` row against the recomputed
+        # digest rather than the generic content_sha comparison. Routed
+        # through ``review_root_chunk_id`` (not just ``roots[0]``) so this
+        # picks the SAME chunk the fanout's toc-lens mint anchors on —
+        # both already apply the identical content_sha filter here (the
+        # rows feeding ``roots`` were fetched with it above), but sharing
+        # the helper keeps the two selections from ever drifting apart.
+        roots = children.get(None, [])
+        root_id = self.review_root_chunk_id(ref_id)
+        if root_id is not None:
+            digest = self.toc_digest(ref_id)
+            root_reviews = by_chunk[root_id]["reviews"]
+            toc_row = next((rv for rv in root_reviews if rv["checker"] == "toc"), None)
+            if toc_row is not None:
+                toc_row["dirty"] = toc_row["approved_sha"] != digest
+            else:
+                root_reviews.append(
+                    {
+                        "checker": "toc",
+                        "approved_sha": None,
+                        "verdict": None,
+                        "at": None,
+                        "dirty": True,
+                    }
+                )
+
         out: list[dict[str, Any]] = []
-        stack = list(reversed(children.get(None, [])))
+        stack = list(reversed(roots))
         while stack:
             chunk_id = stack.pop()
             entry = by_chunk[chunk_id]
+            section_chunk_id = _section_chunk_id(chunk_id)
             for review in sorted(entry["reviews"], key=lambda rv: rv["checker"] or ""):
                 out.append(
                     {
                         "chunk_id": chunk_id,
                         "handle": entry["handle"],
                         "chunk_kind": entry["chunk_kind"],
+                        "section_chunk_id": section_chunk_id,
                         **review,
                     }
                 )
             kids = children.get(chunk_id, [])
             stack.extend(reversed(kids))
         return out
+
+    def review_rollup_for_draft(self, ref_id: int) -> dict[str, int]:
+        """``{"done": N, "total": M}`` — the toolbar's ``N/M`` rollup badge
+        (item 8). ``total`` counts PROSE chunks only (denominator excludes
+        headings/equations/tables/terms — human sign-off isn't collected on
+        them); ``done`` counts those PROSE chunks approved by
+        ``checker='human'`` at their current content_sha. Built from
+        :meth:`review_status_for_draft`'s rows so the two counts can't
+        drift from what the per-chunk indicator renders."""
+        prose: dict[int, bool] = {}
+        for row in self.review_status_for_draft(ref_id):
+            if row["chunk_kind"] not in PROSE_CHUNK_KINDS:
+                continue
+            prose.setdefault(row["chunk_id"], False)
+            if row["checker"] == "human" and not row["dirty"]:
+                prose[row["chunk_id"]] = True
+        return {"done": sum(1 for v in prose.values() if v), "total": len(prose)}
 
     def review_diff_since(self, chunk_id: int, since_sha: str) -> str:
         """Unified diff of ``chunk_id``'s text from ``since_sha`` to its

@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 
 from psycopg import Connection
 
+from precis.quest import review_guard
 from precis.workers.executors import EXECUTOR_PROVIDES
 from precis.workers.executors._common import (
     CANCELLED as _CANCELLED,
@@ -389,7 +390,7 @@ def _run_plan_tick(store: Any, ref_id: int, spec: Any) -> None:
     review_meta = _review_meta(store, parent_id)
     if review_meta is not None:
         lens, anchor = review_meta
-        snap = _anchor_chunk_snapshot(store, anchor)
+        snap = _anchor_chunk_snapshot(store, anchor, lens)
         if snap is not None:
             review_pass = (lens, snap[0], snap[1])
 
@@ -757,6 +758,13 @@ def _parent_todo_id(store: Any, job_ref_id: int) -> int | None:
 # or a sha that moved (the reviewer edited the chunk itself — future
 # authoring reviewers must not self-approve prose they just wrote),
 # records nothing: the chunk correctly stays "requires review".
+#
+# The `toc` lens (item 10, document-altitude review) pins its approval to
+# the draft's TOC digest instead of the anchor chunk's content_sha — a
+# heading add/remove/rename/reorder moves the digest (no self-approval,
+# same mechanism as any other lens's sha check), but a paragraph body edit
+# leaves the digest untouched (approval still records — deliberate: the
+# toc lens judges outline shape, not prose).
 
 
 def _review_meta(store: Any, parent_id: int) -> tuple[str, str] | None:
@@ -775,34 +783,31 @@ def _review_meta(store: Any, parent_id: int) -> tuple[str, str] | None:
     return (row[0], row[1])
 
 
-def _anchor_chunk_snapshot(store: Any, anchor: str) -> tuple[int, str | None] | None:
-    """Resolve a ``dc<id>`` anchor to ``(chunk_id, content_sha)`` via the
+def _anchor_chunk_snapshot(
+    store: Any, anchor: str, lens: str
+) -> tuple[int, str | None] | None:
+    """Resolve a ``dc<id>`` anchor to ``(chunk_id, sha_before)`` via the
     shared handle resolver (``store.get_draft_chunk`` — same lookup
     ``predicates.py``'s anchor handling relies on), or ``None`` when the
-    anchor doesn't resolve to a live chunk."""
+    anchor doesn't resolve to a live chunk.
+
+    For every lens but ``toc``, ``sha_before`` is the anchor chunk's own
+    ``content_sha``. For ``toc`` (item 10 — document-altitude review) the
+    approval isn't pinned to any one chunk's text: it's pinned to the
+    draft's :meth:`~precis.store._draft_ops.DraftOps.toc_digest`, captured
+    here at tick start so the writeback can tell a heading
+    add/remove/rename/reorder (digest moved — no self-approval) from a
+    paragraph body edit (digest unchanged — approval still stands)."""
     chunk = store.get_draft_chunk(anchor)
     if chunk is None:
         return None
+    if lens == "toc":
+        return (chunk.chunk_id, store.toc_digest(chunk.ref_id))
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT content_sha FROM chunks WHERE chunk_id = %s", (chunk.chunk_id,)
         ).fetchone()
     return (chunk.chunk_id, row[0] if row is not None else None)
-
-
-def _chunk_anchor_forms(conn: Connection, chunk_id: int) -> list[str]:
-    """The anchor strings a change-request todo might carry for this chunk:
-    the ADR-0036 ``dc<id>`` form (what the fanout + personas mint today) plus
-    the base58 ``handle`` and its legacy ``¶handle`` variant (older/other
-    write paths). Matching all three keeps the "any open request?" guard from
-    missing a finding stored under a different anchor convention."""
-    row = conn.execute(
-        "SELECT handle FROM chunks WHERE chunk_id = %s", (chunk_id,)
-    ).fetchone()
-    forms = [f"dc{chunk_id}"]
-    if row is not None and row[0]:
-        forms += [row[0], f"¶{row[0]}"]
-    return forms
 
 
 def _maybe_record_review_pass(
@@ -815,9 +820,10 @@ def _maybe_record_review_pass(
     sha_before: str | None,
 ) -> None:
     """Record a ``chunk_review`` "approved" verdict for a clean review
-    tick — the reviewer filed nothing AND the anchor chunk's
-    ``content_sha`` is unchanged since the tick started. Called from
-    ``_run_plan_tick``'s success path (gated on a non-resumed
+    tick — the reviewer filed nothing AND the anchor's watermark
+    (the chunk's ``content_sha`` for every lens but ``toc``; the draft's
+    TOC digest for ``toc``, item 10) is unchanged since the tick started.
+    Called from ``_run_plan_tick``'s success path (gated on a non-resumed
     ``verdict: done`` tick), after ``_set_status(..., _SUCCEEDED, ...)``
     and before ``conn.commit()``.
 
@@ -846,24 +852,37 @@ def _maybe_record_review_pass(
         # any OPEN (not done / won't-do) anchored change-request, matched
         # across the dc<id> / base58-handle / legacy ¶handle anchor forms.
         # Conservative by design: an open request from any lens or a human
-        # blocks the auto-approval, erring toward "requires review".
-        anchors = _chunk_anchor_forms(conn, chunk_id)
-        # ``meta->>'review' IS NULL`` excludes review-MODE todos (this tick's
-        # own review parent + any sibling-lens review-todos on the same chunk
-        # — all keyed by the same ``meta.anchor``); only a genuine
-        # change-request (an anchored todo with no ``review`` key, the shape
-        # the reviewer files a finding as) blocks the approval.
-        open_req = conn.execute(
-            "SELECT 1 FROM refs r WHERE r.kind = 'todo' AND r.deleted_at IS NULL "
-            "AND r.meta->>'anchor' = ANY(%s) AND r.meta->>'review' IS NULL "
-            "AND NOT EXISTS ("
-            "  SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
-            "  WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS' "
-            "  AND t.value IN ('done', 'won''t-do')) LIMIT 1",
-            (anchors,),
-        ).fetchone()
-        if open_req is not None:
+        # blocks the auto-approval, erring toward "requires review". Shared
+        # with the incremental fanout's skip-unsettled check —
+        # ``quest.review_guard``.
+        if review_guard.has_open_change_request(conn, chunk_id):
             return  # an open anchored change-request — requires review
+        if lens == "toc":
+            # The toc lens's watermark is the draft's TOC digest, not this
+            # (or any single) chunk's content_sha — resolve the owning ref
+            # via the anchored chunk, recompute the digest now, and compare
+            # against the one captured at tick start. A heading rename/
+            # reorder/add/remove moves the digest (no self-approval); a
+            # paragraph body edit does not (approval still records — the
+            # deliberate item-10 semantic difference from chunk lenses).
+            ref_row = conn.execute(
+                "SELECT ref_id FROM chunks WHERE chunk_id = %s", (chunk_id,)
+            ).fetchone()
+            if ref_row is None:
+                return
+            digest_now = store.toc_digest(int(ref_row[0]))
+            if digest_now != sha_before:
+                return  # a heading moved — no self-approval
+            conn.execute(
+                """INSERT INTO chunk_review (chunk_id, checker, approved_sha, verdict)
+                        VALUES (%s, %s, %s, %s)
+                   ON CONFLICT (chunk_id, checker) DO UPDATE
+                          SET approved_sha = EXCLUDED.approved_sha,
+                              verdict = EXCLUDED.verdict,
+                              at = now()""",
+                (chunk_id, lens, digest_now, "approved"),
+            )
+            return
         sha_row = conn.execute(
             "SELECT content_sha FROM chunks WHERE chunk_id = %s", (chunk_id,)
         ).fetchone()

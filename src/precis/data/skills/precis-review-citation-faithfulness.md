@@ -1,20 +1,32 @@
 ---
 id: precis-review-citation-faithfulness
 title: precis — one-pass citation-faithfulness review
-summary: For each [pc<id>] citation in a draft, resolve the cited paper chunk and confirm it actually supports the claim
-applies-to: get (kind='draft'|'paper'), put (kind='finding')
+summary: For each claim in a draft, check it is cited (sufficiency), the cite supports it (correctness), and prefer the living [fi<hub>] form over a frozen paper cite (living-cite preference) — existence is pre-checked, not this pass's job
+applies-to: get (kind='draft'|'paper'), put (kind='finding'|'todo')
 status: active
 ---
 
 # precis-review-citation-faithfulness — does the cited chunk actually say this?
 
-One review pass. One concern: every inline citation `[pc<id>]` in the
-manuscript must point at a paper chunk that **actually supports the
-claim it backs**. The handle resolves to one exact passage — pull it
-and read it. Citations to a chunk that doesn't support the claim,
-citations to the wrong chunk, and handles the writer guessed instead
-of copying are all caught here — and they are the single
-highest-value finding category in any review.
+One review pass, three concerns, all keyed off the citation tokens
+(`[pc<id>]` paper chunk, `[pa<id>]` whole paper, `[pk<id>]` patent,
+`[fi<id>]` finding/hub) in body text:
+
+1. **Sufficiency** — every non-obvious claim carries a cite; a claim
+   with none is a gap, filed as a todo (see Output below), not a
+   finding.
+2. **Correctness** — the cited chunk **actually supports the claim it
+   backs**. This is the pass's core and the single highest-value
+   finding category in any review.
+3. **Living-cite preference** — a bare `[pc<id>]`/`[pa<id>]` cite
+   whose paper already grounds a taproot claim hub should switch to
+   the living `[fi<hub>]` form (procedure step 7).
+
+**Existence is not this pass's job.** Cite-token resolution and
+paper-held status are checked deterministically before you see this
+review — every handle in front of you is guaranteed to resolve to a
+held paper. Pull the passage to judge *support*; don't spend a turn
+confirming a handle resolves.
 
 This is the **citation half** of "does the source support the
 claim?" The complementary half — "does the claim actually follow
@@ -25,13 +37,11 @@ strongly correlates with sloppy writing.
 
 ## The procedure
 
-For each inline citation handle (`[pc<id>]` paper chunk, `[pk<id>]`
-patent, `[fi<id>]` finding) in body text:
+First, scan the passage for non-obvious claims with **no** citation
+at all (sufficiency) — file each as the missing-citation todo below,
+not a finding. Then, for each citation handle already present:
 
-1. Resolve the handle to the exact chunk: `get(id='pc<id>')`. It
-   either returns the chunk or raises NotFound — a NotFound is itself
-   a finding (the handle was guessed, not copied from search/get
-   output; see precis-doi-extract-help for the acquisition fix).
+1. Resolve the handle to the exact chunk: `get(id='pc<id>')`.
 2. Read the chunk's text and compare it against the claim the
    citation backs in the draft.
 3. If the chunk directly and substantively supports the claim —
@@ -43,6 +53,12 @@ patent, `[fi<id>]` finding) in body text:
    wrong paper for this one — finding: wrong cite.
 6. If the chunk says nothing that bears on the claim — finding:
    unsupported claim. This is the highest-severity finding type.
+7. If the rendered passage carries a `◆ taproot:` hint next to this
+   cite (the cited paper already grounds claim hub `[fi<hub>]`) — file
+   a change-request: switch to `[fi<hub>]` for the living resolution,
+   or `[fi<hub>>pc<id>]` to pin this exact passage while still riding
+   it. Hub coverage itself is deterministic (no LLM spent counting
+   it) — your job is only to act on the hint when it's there.
 
 A citation is the **bare paper-chunk handle written inline** —
 `[pc234]`, or several supporting chunks `[pc232][pc234][pc593]`. The
@@ -130,9 +146,11 @@ unsupported citation that survives review is expensive.
 - Treating a `[me<id>]`/`[dc<id>]` link as a citation. Those point at
   our own notes (a `related-to` link), never the literature — they
   are not in scope here and never reach the bibliography.
-- Skipping a `[pc<id>]` whose handle resolves to nothing. That IS a
-  finding — the handle was guessed instead of copied, so the cite
-  cannot be verified, which is itself a substantive flaw.
+- Re-checking whether a handle resolves. That's a deterministic
+  pre-check run before this pass ever starts — spend the turn on
+  *support*, never existence.
+- Ignoring a `◆ taproot:` hub hint. A bare cite next to one is a
+  change-request, not a nice-to-have — file it (step 7).
 
 ## See also
 

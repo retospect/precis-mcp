@@ -39,6 +39,7 @@ def _sd_chunk(
     depth: int,
     *,
     meta: dict[str, object] | None = None,
+    parent_chunk_id: int | None = None,
 ) -> SimpleNamespace:
     handle = f"H{chunk_id:06d}"
     return SimpleNamespace(
@@ -50,6 +51,11 @@ def _sd_chunk(
         chunk_id=chunk_id,
         ref_id=700,
         meta=meta or {},
+        # smartdraft-review-status-ui item 10's document-shape stats reuse
+        # `precis.utils.wordcount.aggregate_word_counts`, which reads this
+        # off every chunk (``_ChunkLike`` protocol) — default None (a flat,
+        # unnested fixture) is enough for every existing test.
+        parent_chunk_id=parent_chunk_id,
     )
 
 
@@ -187,6 +193,84 @@ def smartdraft_client(smartdraft_runtime: FakeRuntime, tmp_path) -> TestClient:
     return TestClient(app)
 
 
+class ReviewMatrixFakeStore(SmartDraftFakeStore):
+    """A richer ledger than ``SmartDraftFakeStore``'s 2-row fixture — one
+    chunk per smartdraft-review-status-ui item-6 state, PLUS the heading
+    (chunk 1) carrying its own ``structure``/``adversarial``/``toc`` rows
+    (so a heading focus is reviewable at all — the base fixture's ledger
+    never covers chunk 1). ``chunk_kind``/``section_chunk_id`` are set on
+    every row (the base fixture's leaves them unset) so the via-section
+    machine-green derivation and the toolbar's per-checker/prose-only
+    rollup are both exercised:
+
+    * chunk 1 (heading) — ``structure``+``adversarial``+``toc`` all
+      current, no ``human`` → **machine**.
+    * chunk 2 (paragraph, section=1) — own ``flow``+``cites`` current, AND
+      chunk 1's section lenses current → **machine** (via-section).
+    * chunk 3 (paragraph, section=1) — ``human`` approved, clean →
+      **human**.
+    * chunk 7 (paragraph, section=1) — ``human`` approved but ``dirty``
+      (edited since) → **dirty**.
+    * chunk 8, chunk 9 (paragraph, section=1) — reviewable, nothing ever
+      run → **empty**. Rollup denominator (prose-only): chunks
+      2/3/7/8/9 = 5; ``done`` (human approved clean) = chunk 3 only → 1/5.
+    * chunk 4 (table, section=1) — reviewable, nothing ever run → **empty**,
+      but NOT prose or heading, so item 3's dropdown gate offers it NO
+      run-lens buttons (excluded from the prose-only rollup denominator
+      too — the ``1/5`` above stays exactly 5, not 6).
+    """
+
+    def review_status_for_draft(self, ref_id):
+        def row(
+            chunk_id, checker, *, dirty, kind="paragraph", section=1, verdict="approved"
+        ):
+            return {
+                "chunk_id": chunk_id,
+                "checker": checker,
+                "approved_sha": "old" if dirty else "cur",
+                "verdict": verdict,
+                "at": None,
+                "dirty": dirty,
+                "chunk_kind": kind,
+                "section_chunk_id": section,
+            }
+
+        return [
+            row(
+                1, "structure", dirty=False, kind="heading", section=None, verdict="ok"
+            ),
+            row(
+                1,
+                "adversarial",
+                dirty=False,
+                kind="heading",
+                section=None,
+                verdict="ok",
+            ),
+            row(1, "toc", dirty=False, kind="heading", section=None, verdict="ok"),
+            row(2, "flow", dirty=False, verdict="ok"),
+            row(2, "cites", dirty=False, verdict="ok"),
+            row(3, "human", dirty=False),
+            row(4, None, dirty=True, kind="table"),
+            row(7, "human", dirty=True),
+            row(8, None, dirty=True),
+            row(9, None, dirty=True),
+        ]
+
+
+@pytest.fixture
+def review_matrix_runtime() -> FakeRuntime:
+    return FakeRuntime(ReviewMatrixFakeStore())
+
+
+@pytest.fixture
+def review_matrix_client(review_matrix_runtime: FakeRuntime, tmp_path) -> TestClient:
+    app = create_app(
+        runtime=review_matrix_runtime, web_config=WebConfig(corpus_dir=tmp_path)
+    )
+    return TestClient(app)
+
+
 class BigDraftFakeStore(SmartDraftFakeStore):
     """A heading + 100 body paragraphs — enough to exceed the full-document
     render window (``smartdraft._FULLDOC_WINDOW`` = 40) so distant chunks become
@@ -215,6 +299,81 @@ def big_draft_client(tmp_path) -> TestClient:
         web_config=WebConfig(corpus_dir=tmp_path),
     )
     return TestClient(app)
+
+
+class CitedBigDraftFakeStore(BigDraftFakeStore):
+    """Like ``BigDraftFakeStore``, but every paragraph carries a bracket-
+    handle paper citation (``[pc9999]``) AND every one of the 101 chunks
+    (including the ~60 that fall outside the ±40 full-doc render window
+    and become ``skel`` placeholders) is reviewable — item 1's regression
+    fixture: before the fix, ``review_payloads_for`` ran the citation-
+    integrity check (``resolve_handle``) over every node in ``view.middle``,
+    including the inert skel spacers that never reach the template."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        filler = "lorem ipsum dolor sit amet " * 8
+        self._chunks = [_sd_chunk(1, "heading", "Big draft", 0)] + [
+            _sd_chunk(
+                i, "paragraph", f"Para {i} cites [pc9999]. {filler} tail{i}end.", 1
+            )
+            for i in range(2, 102)
+        ]
+
+    def review_status_for_draft(self, ref_id):
+        return [
+            {
+                "chunk_id": c.chunk_id,
+                "checker": None,
+                "approved_sha": None,
+                "verdict": None,
+                "at": None,
+                "dirty": True,
+                "chunk_kind": c.chunk_kind,
+                "section_chunk_id": None if c.chunk_kind == "heading" else 1,
+            }
+            for c in self._chunks
+        ]
+
+
+def test_smartdraft_full_doc_review_payload_skips_skel_placeholders(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """item 1: full-document (📄) mode's review-payload build must scope the
+    citation-integrity check (``cite_integrity_ok``, which calls
+    ``store.resolve_handle``/``store.count_blocks`` per cited paper) to what
+    actually RENDERS (the ``full``/``doc``/``tail``/``head`` middle rows),
+    not the whole ``view.middle`` list — the ``skel`` placeholder rows
+    (inert scroll spacers, ~60 of the 101 chunks here) never reach
+    ``sd_review_widget`` and must not cost ``cite_integrity_ok`` a call each.
+    Counts calls to ``smartdraft.cite_integrity_ok`` itself (not the raw
+    store hit) — the page ALSO runs an unrelated whole-draft citation scan
+    (``_hub_and_citation_stats`` → ``_collect_raw_cites``, item 5(a)'s
+    rollup numbers) that legitimately walks every node and would otherwise
+    swamp a bare ``resolve_handle`` call count."""
+    store = CitedBigDraftFakeStore()
+    calls: list[str] = []
+    from precis_web import smartdraft as smartdraft_mod
+
+    orig = smartdraft_mod.cite_integrity_ok
+
+    def counting(store_arg, text, cache):
+        calls.append(text)
+        return orig(store_arg, text, cache)
+
+    monkeypatch.setattr(smartdraft_mod, "cite_integrity_ok", counting)
+    app = create_app(
+        runtime=FakeRuntime(store), web_config=WebConfig(corpus_dir=tmp_path)
+    )
+    client = TestClient(app)
+    r = client.get("/smartdraft/sdt?relevance=0&focus=dc1")
+    assert r.status_code == 200
+    # The ±40 full-doc window around the focus (chunk 1, idx 0) renders 41
+    # nodes (idx 0..40) — every one of those is reviewable, so the integrity
+    # check runs once per rendered node. The other ~60 chunks (idx 41..100,
+    # reviewable but never rendered — ``skel`` placeholders) must trigger
+    # NONE at all.
+    assert len(calls) == 41
 
 
 def test_smartdraft_full_doc_virtualizes_long_draft(
@@ -302,40 +461,189 @@ def test_smartdraft_full_doc_cited_block_is_div_not_nested_anchor(
     assert 'class="block whitespace-pre-wrap' not in body
 
 
-def test_smartdraft_focus_human_review_check_reflects_ledger(
+def test_smartdraft_block_review_indicator_reflects_ledger_state(
     smartdraft_client: TestClient,
 ) -> None:
-    """Ported human sign-off ✓ (migration 0086): the focus header shows a
-    ``sd-review`` button whose class reflects the ledger — plain for a
-    reviewable-but-unreviewed block (chunk 2), ``on`` for a clean reviewed
-    block (chunk 3). It POSTs the shared /human-review JSON endpoint."""
+    """Per-block review indicator (item 6): grey/"empty" for a reviewable-
+    but-never-reviewed block (chunk 2), green/"human" for a clean human-
+    approved block (chunk 3) — same widget on the focus regardless of which
+    block it is (item 6 is "every rendered block", not just focus). The
+    un-review + diff-since-approval actions appear only once a human row
+    exists (chunk 3), never for a never-reviewed block (chunk 2)."""
     dc2 = handle_registry.format_handle("draft", 2, chunk=True)
     dc3 = handle_registry.format_handle("draft", 3, chunk=True)
-    # Focus chunk 2 (reviewable, never reviewed): ✓ present, not "on".
     r2 = smartdraft_client.get(f"/smartdraft/sdt?focus={dc2}")
     assert r2.status_code == 200
-    assert 'class="sd-review leading-none' in r2.text  # button rendered
-    assert "smartReview(" in r2.text  # POSTs the shared /human-review endpoint
-    # Focus chunk 3 (reviewed, clean): the ✓ carries the emerald "on" state.
+    assert 'class="sd-review sd-review-dot empty"' in r2.text
+    assert f"sdReviewHuman('{dc2}')" in r2.text  # dropdown's mark-reviewed action
+    # dc2 (never reviewed) has no un-review/diff-since-approval action; dc3
+    # (elsewhere on the same full-document page) does — scope each
+    # assertion to its OWN dc so dc3's controls elsewhere don't false-positive.
+    assert f"sdReviewRetract('{dc2}')" not in r2.text
+    assert f"id%3D{dc2}%20view%3Dreview-diff" not in r2.text
+    assert f"sdReviewRetract('{dc3}')" in r2.text
+    assert f"id%3D{dc3}%20view%3Dreview-diff" in r2.text
     r3 = smartdraft_client.get(f"/smartdraft/sdt?focus={dc3}")
-    assert 'sd-review leading-none text-slate-300 hover:text-emerald-600 on"' in r3.text
+    assert 'class="sd-review sd-review-dot human"' in r3.text
+    assert f"sdReviewRetract('{dc3}')" in r3.text
+    assert f"id%3D{dc3}%20view%3Dreview-diff" in r3.text
 
 
-def test_smartdraft_focus_heading_shows_review_menu(
-    smartdraft_client: TestClient,
+def test_smartdraft_review_dropdown_uses_ledger_lens_vocabulary(
+    review_matrix_client: TestClient,
 ) -> None:
-    """Ported per-heading ``review ▾`` (structural/deep_review/all): rendered
-    only when the focus is a heading, POSTing the shared /drafts/{ident}/review
-    endpoint (intercepted + refreshed in place, not a bounce to classic)."""
+    """The per-block dropdown (item 7) runs the FOUR ledger lens names —
+    never the retired heading-only review▾ menu's structural/deep_review
+    vocabulary — and a heading's "all" implicitly covers its subtree (the
+    fanout's own scope rule), not a separate subtree control."""
     dc1 = handle_registry.format_handle("draft", 1, chunk=True)  # heading
     dc2 = handle_registry.format_handle("draft", 2, chunk=True)  # body para
-    rh = smartdraft_client.get(f"/smartdraft/sdt?focus={dc1}")
-    assert 'action="/smartdraft/sdt/review"' not in rh.text  # posts to /drafts/…
-    assert 'action="/drafts/sdt/review"' in rh.text
-    assert 'name="reviewer" value="structural"' in rh.text
-    # a non-heading focus has no review▾ menu
-    rp = smartdraft_client.get(f"/smartdraft/sdt?focus={dc2}")
-    assert 'action="/drafts/sdt/review"' not in rp.text
+    rh = review_matrix_client.get(f"/smartdraft/sdt?focus={dc1}")
+    assert rh.status_code == 200
+    assert "structural" not in rh.text
+    assert "deep_review" not in rh.text
+    assert f"sdReviewRun('{dc1}', 'structure')" in rh.text
+    assert f"sdReviewRun('{dc1}', 'adversarial')" in rh.text
+    assert "all (subtree)" in rh.text  # a heading's "all" covers its subtree
+    rp = review_matrix_client.get(f"/smartdraft/sdt?focus={dc2}")
+    assert f"sdReviewRun('{dc2}', 'flow')" in rp.text
+    assert f"sdReviewRun('{dc2}', 'cites')" in rp.text
+    assert "structural" not in rp.text
+    assert "deep_review" not in rp.text
+
+
+def test_smartdraft_review_dropdown_ineligible_kind_has_no_run_buttons(
+    review_matrix_client: TestClient,
+) -> None:
+    """item 3: a chunk kind that is neither prose nor a heading (here,
+    ``chunk_kind='table'``, dc4) gets NO run-lens buttons at all — offering
+    ``flow``/``cites`` (or ``structure``/``adversarial``) on it would
+    silently no-op the click, since ``review_fanout._lenses_for_kind``
+    mints nothing for that kind. The human ✓ mark-reviewed entry is still
+    offered (human sign-off is available on any reviewable block, by
+    design) — only the machine-lens triggers are gated."""
+    dc4 = handle_registry.format_handle("draft", 4, chunk=True)  # table chunk
+    r = review_matrix_client.get(f"/smartdraft/sdt?focus={dc4}")
+    assert r.status_code == 200
+    assert f"sdReviewHuman('{dc4}')" in r.text  # human mark-reviewed still offered
+    assert f"sdReviewRun('{dc4}', 'flow')" not in r.text
+    assert f"sdReviewRun('{dc4}', 'cites')" not in r.text
+    assert f"sdReviewRun('{dc4}', 'structure')" not in r.text
+    assert f"sdReviewRun('{dc4}', 'adversarial')" not in r.text
+    assert f"sdReviewRun('{dc4}', 'all')" not in r.text
+
+
+def test_smartdraft_indicator_machine_green_derives_via_section(
+    review_matrix_client: TestClient,
+) -> None:
+    """A prose block's machine state is its own ``flow``/``cites`` PLUS its
+    enclosing heading's ``structure``/``adversarial`` (item 2/6's "via
+    section" derivation) — chunk 2's own lenses AND chunk 1's (its section)
+    are all current, with no ``human`` row, so it reads "machine" (hollow/
+    blue), not "empty". The tooltip lists all four machine checkers plus
+    ``human``, and section lenses are labelled "via section" so the
+    tooltip never implies the paragraph itself carries them."""
+    dc2 = handle_registry.format_handle("draft", 2, chunk=True)
+    r = review_matrix_client.get(f"/smartdraft/sdt?focus={dc2}")
+    assert r.status_code == 200
+    assert 'class="sd-review sd-review-dot machine"' in r.text
+    seg = r.text[r.text.index('sd-review-dot machine"') :]
+    tooltip = seg[seg.index('title="') : seg.index('"', seg.index('title="') + 7)]
+    assert "✓ flow" in tooltip and "✓ cites" in tooltip
+    assert "✓ structure (via section)" in tooltip
+    assert "✓ adversarial (via section)" in tooltip
+    assert "– human" in tooltip  # never reviewed by a human yet
+
+
+def test_smartdraft_indicator_dirty_amber_when_edited_since_human_approval(
+    review_matrix_client: TestClient,
+) -> None:
+    """chunk 7 was human-approved once but has since been edited (``dirty``
+    on the ``human`` row) — the indicator reads "dirty" (amber), the
+    un-review action still offers (a human row exists to retract), and the
+    tooltip marks the stale human row with ``⚠``."""
+    dc7 = handle_registry.format_handle("draft", 7, chunk=True)
+    r = review_matrix_client.get(f"/smartdraft/sdt?focus={dc7}")
+    assert r.status_code == 200
+    assert 'class="sd-review sd-review-dot dirty"' in r.text
+    assert "sdReviewRetract(" in r.text
+    assert "⚠ human" in r.text
+
+
+def test_smartdraft_blocks_hydration_carries_review_payload(
+    review_matrix_client: TestClient,
+) -> None:
+    """/blocks hydration must carry the SAME per-chunk review payload as the
+    initial render (item 4) — a scrolled-to block's indicator shouldn't stay
+    blank just because it hydrated after the fact."""
+    dc3 = handle_registry.format_handle("draft", 3, chunk=True)  # human, clean
+    r = review_matrix_client.get(f"/smartdraft/sdt/blocks?dcs={dc3}")
+    assert r.status_code == 200
+    assert 'class="sd-review sd-review-dot human"' in r.text
+
+
+def test_smartdraft_toolbar_rollup_badge_shows_counts_and_review_complete(
+    review_matrix_client: TestClient,
+) -> None:
+    """Toolbar badge (item 8): ``N/M`` over PROSE chunks only (2/3/7/8/9 = 5;
+    only chunk 3 is human-approved-clean → ``1/5``), not yet review-complete."""
+    r = review_matrix_client.get("/smartdraft/sdt")
+    assert r.status_code == 200
+    assert ">1/5<" in r.text
+    assert (
+        "complete"
+        not in r.text[
+            r.text.index("sd-badge-rollup") : r.text.index("sd-badge-rollup") + 60
+        ]
+    )
+
+
+class AllHumanReviewedFakeStore(SmartDraftFakeStore):
+    """Every prose chunk human-approved at its current sha — the toolbar
+    badge's "review-complete" state (N == M > 0)."""
+
+    def review_status_for_draft(self, ref_id):
+        return [
+            {
+                "chunk_id": cid,
+                "checker": "human",
+                "approved_sha": "cur",
+                "verdict": "approved",
+                "at": None,
+                "dirty": False,
+                "chunk_kind": "paragraph",
+                "section_chunk_id": 1,
+            }
+            for cid in (2, 3, 7, 8, 9)
+        ]
+
+
+def test_smartdraft_toolbar_badge_reads_review_complete(tmp_path) -> None:
+    app = create_app(
+        runtime=FakeRuntime(AllHumanReviewedFakeStore()),
+        web_config=WebConfig(corpus_dir=tmp_path),
+    )
+    client = TestClient(app)
+    r = client.get("/smartdraft/sdt")
+    assert r.status_code == 200
+    assert ">5/5 ✓<" in r.text
+    assert (
+        'class="sd-badge-rollup rounded border px-1.5 py-0.5 font-semibold complete"'
+        in r.text
+    )
+
+
+def test_smartdraft_review_widget_never_speaks_old_reviewer_vocabulary(
+    review_matrix_client: TestClient,
+) -> None:
+    """Acceptance criterion: the smartdraft page never emits the retired
+    ``structural``/``deep_review`` reviewer names anywhere — the whole
+    per-block dropdown + toolbar rollup speak only the four ledger lenses
+    (+ ``human``/``toc``)."""
+    r = review_matrix_client.get("/smartdraft/sdt")
+    assert r.status_code == 200
+    assert "structural" not in r.text
+    assert "deep_review" not in r.text
 
 
 def test_smartdraft_focus_shows_connections_links_and_flags(
@@ -417,6 +725,30 @@ def test_smartdraft_reader_loads_katex_for_inline_math(
     assert "renderMathInElement" in body  # render helper defined
     # the initial pass + every no-reload nav swap re-render the panel
     assert "window.__sdRenderMath" in body
+
+
+def test_smartdraft_review_toc_button_forces_rerun_outstanding_stays_incremental(
+    smartdraft_client: TestClient,
+) -> None:
+    """item 4: an explicit "run toc review" click (``sdReviewToc``) must
+    force a re-run even on an already-approved toc — it posts
+    ``only_dirty: false`` (whole-draft scope otherwise defaults
+    ``only_dirty=True``, which would silently no-op the click). "run
+    outstanding checks" (``sdReviewAllOutstanding``) stays the cheap
+    incremental pass, ``only_dirty: true``."""
+    r = smartdraft_client.get("/smartdraft/sdt")
+    assert r.status_code == 200
+    body = r.text
+    outstanding_fn = body[
+        body.index("function sdReviewAllOutstanding") : body.index(
+            "function sdReviewToc"
+        )
+    ]
+    toc_fn = body[
+        body.index("function sdReviewToc") : body.index("function sdConvertCites")
+    ]
+    assert "only_dirty: true" in outstanding_fn
+    assert "only_dirty: false" in toc_fn
 
 
 def test_smartdraft_reader_uses_shared_draft_edit(

@@ -2044,16 +2044,75 @@ The master kinds table lives in the `precis-overview` skill.
   PDFs + a `manifest.txt`. PDFs resolve via the same corpus resolver as
   `corpus_reconcile` (`corpus_layout.rebase_onto_local`); the corpus being
   per-host, unlocatable sources are listed in the manifest rather than failing.
-  **Review surface** (paper-writing-pipeline `chunk_review` ledger,
-  `OPEN-ITEMS.md` § "Topic dossiers"): a ✓ sign-off on the smartdraft **focus**
-  block (`POST /drafts/{id}/human-review` → `edit(review='human')`, one-way;
-  emerald=reviewed / amber=stale) and a per-heading **review ▾** menu
-  (structural / deep_review / all → `POST /drafts/{id}/review`, files an
-  anchored review-todo), plus a toolbar toggle for the per-draft
-  `authoring_enabled` flag (`edit(kind='draft', authoring=)`). The classic
-  reader's read-only per-block F/C/S/A checker-flag strip + machine-authored
-  marker were retired with it (not yet ported to smartdraft); the underlying
-  `view='review'` ledger is unchanged.
+  **Review-status surface** (`docs/proposals/smartdraft-review-status-ui.md`,
+  full — supersedes the classic reader's retired F/C/S/A strip). Ledger:
+  `chunk_review(chunk_id, checker, approved_sha, verdict, at)` (mig 0086),
+  a per-(chunk, checker) watermark — "dirty" is derived
+  (`approved_sha IS DISTINCT FROM chunks.content_sha`), never a loop
+  (`src/precis/store/_draft_ops.py::DraftMixin.review_status_for_draft` /
+  `DraftMixin.chunks_requiring_review`). One special case: the
+  document-altitude `toc` checker rides the draft's first-in-order chunk
+  and pins to `DraftMixin.toc_digest` (a sha256 over ordered `(heading
+  chunk_id, content_sha)`) instead of that chunk's own sha — a heading
+  add/remove/rename/reorder dirties it, a paragraph body edit doesn't.
+  **Checker namespace** — `flow`/`cites` (sonnet, per-weave/local),
+  `structure`/`adversarial` (opus, mint on HEADING chunks only — the
+  anchored reviewer already renders the whole section via fisheye) and
+  `toc` (opus, one review-todo per document); `human` is the fixed point
+  that supersedes every machine lens (`src/precis/quest/review_fanout.py`
+  `ALL_LENSES`/`DOC_LENSES`/`_LENS_TIER`). **Incremental fanout** —
+  `src/precis/quest/review_fanout.py::mint_review_fanout(only_dirty=,
+  scope=)` mints only `(chunk × lens)` pairs not yet approved at the
+  chunk's current sha/digest; `scope=` narrows to a heading's subtree or
+  one chunk (`DraftMixin.review_subtree_chunk_ids`); a chunk carrying an
+  open anchored change-request is skipped (`unsettled_skipped`) via the
+  shared guard `src/precis/quest/review_guard.py::
+  has_open_change_request`/`has_open_change_request_via_store` (also
+  used by the writeback, so mint-time and record-time agree). Lens ×
+  chunk-kind mapping keys off `PROSE_CHUNK_KINDS`
+  (`src/precis/utils/wordcount.py`) — `flow`/`cites` mint on prose
+  chunks only, never headings/equations/tables/terms. **Writeback** —
+  `src/precis/workers/executors/claude_inproc.py::
+  _maybe_record_review_pass`, gated on a clean non-resumed `verdict:
+  done` tick with zero filed findings and no open change-request; for
+  `toc` it recomputes `toc_digest` and compares against the digest
+  captured at tick start (`_anchor_chunk_snapshot`) rather than a chunk
+  sha. **Web** — `src/precis_web/routes/drafts.py`'s `POST
+  /drafts/{id}/review` (`review_block`) now drives `mint_review_fanout`
+  under the unified lens vocabulary (`flow` | `cites` | `structure` |
+  `adversarial` | `toc` | `all`), keeping the old `structural`/
+  `deep_review` names only as aliases onto `structure`/`adversarial`
+  (`_LENS_ALIASES`); `POST /drafts/{id}/review/retract`
+  (`retract_review_route`) un-reviews any checker
+  (`DraftMixin.retract_review`); `POST /drafts/{id}/cites/convert`
+  (`convert_cites_route`) wraps `src/precis/taproot/backfill.py`'s
+  `plan_chunk`/`apply_chunk` (dry-run preview, then apply through the
+  normal edit door so approvals go stale by construction). **Smartdraft
+  UI** — every rendered block (not just focus) gets a 4-state indicator
+  (`src/precis_web/smartdraft.py::review_indicator`: empty/grey →
+  machine/hollow-blue (own lenses + enclosing-heading's `structure`/
+  `adversarial` "via section") → human/green → dirty/amber) with a
+  per-checker tooltip matrix (`_matrix_row`) and a deterministic (never
+  sha-pinned) citation-integrity flag (`cite_integrity_ok`, computed at
+  read time — a cited paper can vanish from the corpus without the
+  paragraph's text changing). Indicator dropdown
+  (`src/precis_web/templates/smartdraft/_block.html.j2`'s
+  `sd_review_widget` macro): mark/un-review, run one lens or all (a
+  heading's "all" covers its subtree), convert to living cites,
+  diff-since-approval. Toolbar badge (`sd_review_badge` macro, same
+  template) shows prose-only `N/M done`
+  (`DraftMixin.review_rollup_for_draft`) with a dropdown: per-checker
+  counts (`src/precis_web/smartdraft.py::checker_rollup`), the taproot
+  hub-coverage scoreboard + citation-lifecycle counts (reused from
+  `_hygiene_lines`/`_citations_view.py`), and the deterministic
+  document-shape half — per-section word-count balance
+  (`aggregate_word_counts`); scaffold-completeness is NOT computed
+  (`DraftMixin.scaffold_sections` persists no expected-section list to
+  diff against — the dropdown surfaces that absence via `scaffold_note`
+  rather than inventing a scaffold store). `GET /smartdraft/{id}/blocks`
+  hydration carries the same per-chunk `review_by_dc` payload
+  (`src/precis_web/smartdraft.py::review_payloads_for`) as the initial
+  render.
 - **SSRF guard** — `src/precis/utils/safe_fetch.py`; classifies every host
   against the private/loopback/link-local/cloud-metadata blocklist.
   **Connect-layer pinning** (`pinning_transport` → a custom httpcore

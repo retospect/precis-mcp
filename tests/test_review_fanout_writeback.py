@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 
-from precis.quest.review_fanout import ALL_LENSES, mint_review_fanout
+from precis.quest.review_fanout import ALL_LENSES, DOC_LENSES, mint_review_fanout
 from precis.quest.weave_review import mint_review_todo
 from precis.store.store import Store
 from precis.store.types import Tag
@@ -70,6 +70,23 @@ def _draft_with_chunks(store: Store, *, name: str, n_paragraphs: int = 1) -> int
     return ref.id
 
 
+# Lens x chunk-kind mapping mirrored from review_fanout.py (smartdraft-
+# review-status-ui item 2): flow/cites mint on prose chunks only,
+# structure/adversarial on heading chunks only. Used to compute the
+# expected minted count for a fixture's exact chunk-kind mix, since a
+# blunt "chunks x len(lenses)" no longer holds once kind narrows the set.
+_HEADING_LENSES = {"structure", "adversarial"}
+_PROSE_LENSES = {"flow", "cites"}
+
+
+def _expected_pairs(chunks: list[dict[str, Any]], lenses: tuple[str, ...]) -> int:
+    total = 0
+    for c in chunks:
+        allowed = _HEADING_LENSES if c["chunk_kind"] == "heading" else _PROSE_LENSES
+        total += len(allowed & set(lenses))
+    return total
+
+
 # ---------------------------------------------------------------------------
 # 3a — mint_review_fanout
 # ---------------------------------------------------------------------------
@@ -83,7 +100,8 @@ class TestMintReviewFanout:
 
         result = mint_review_fanout(store, ref_id)
 
-        assert len(result["minted"]) == len(chunks) * len(ALL_LENSES)
+        expected = _expected_pairs(chunks, ALL_LENSES)
+        assert len(result["minted"]) == expected
         assert result["skipped"] == 0
         assert result["chunks_seen"] == len(chunks)
 
@@ -103,7 +121,7 @@ class TestMintReviewFanout:
             expected_tier = "sonnet" if lens in ("flow", "cites") else "opus"
             assert ref.meta.get("llm_tier") == expected_tier
 
-        assert len(seen_pairs) == len(chunks) * len(ALL_LENSES)
+        assert len(seen_pairs) == expected
 
     def test_parent_is_draft_owning_project_todo(self, store: Store) -> None:
         ref_id = _draft_with_chunks(store, name="fan-parent")
@@ -134,7 +152,7 @@ class TestMintReviewFanout:
 
         result = mint_review_fanout(store, ref_id, lenses=("flow",))
 
-        assert len(result["minted"]) == len(chunks)
+        assert len(result["minted"]) == _expected_pairs(chunks, ("flow",))
         for todo_id in result["minted"]:
             ref = store.get_ref(kind="todo", id=todo_id)
             assert ref is not None
@@ -166,7 +184,7 @@ class TestMintReviewFanout:
             assert ref is not None
             anchors.add(ref.meta.get("anchor"))
         assert retired_dc not in anchors
-        assert len(result["minted"]) == len(chunks_after) * len(ALL_LENSES)
+        assert len(result["minted"]) == _expected_pairs(chunks_after, ALL_LENSES)
 
     def test_author_flag_stamps_meta_only_on_eligible_lenses(
         self, store: Store
@@ -252,6 +270,315 @@ class TestMintReviewFanout:
         orphan = store.insert_ref(kind="draft", slug="orphan-draft", title="O")
         with pytest.raises(BadInput, match="draft-of"):
             mint_review_fanout(store, orphan.id)
+
+
+# ---------------------------------------------------------------------------
+# smartdraft-review-status-ui item 1 — only_dirty (incremental re-check)
+# ---------------------------------------------------------------------------
+
+
+class TestOnlyDirty:
+    def test_fully_approved_draft_mints_zero(self, store: Store) -> None:
+        ref_id = _draft_with_chunks(store, name="dirty-full", n_paragraphs=1)
+        chunks = store.reviewable_chunks(ref_id)
+        for c in chunks:
+            allowed = _HEADING_LENSES if c["chunk_kind"] == "heading" else _PROSE_LENSES
+            for lens in allowed:
+                store.record_review(c["chunk_id"], lens, verdict="approved")
+
+        result = mint_review_fanout(store, ref_id, only_dirty=True)
+        assert result["minted"] == []
+
+    def test_editing_one_paragraph_remints_exactly_its_lenses(
+        self, store: Store
+    ) -> None:
+        ref_id = _draft_with_chunks(store, name="dirty-edit", n_paragraphs=2)
+        chunks = store.reviewable_chunks(ref_id)
+        for c in chunks:
+            allowed = _HEADING_LENSES if c["chunk_kind"] == "heading" else _PROSE_LENSES
+            for lens in allowed:
+                store.record_review(c["chunk_id"], lens, verdict="approved")
+        assert mint_review_fanout(store, ref_id, only_dirty=True)["minted"] == []
+
+        target = next(c for c in chunks if c["chunk_kind"] == "paragraph")
+        store.edit_text(target["handle"], "edited text bumps the sha")
+
+        result = mint_review_fanout(store, ref_id, only_dirty=True)
+        anchor = handle_registry.format_handle("draft", target["chunk_id"], chunk=True)
+        minted_pairs = set()
+        for todo_id in result["minted"]:
+            ref = store.get_ref(kind="todo", id=todo_id)
+            assert ref is not None
+            minted_pairs.add((ref.meta.get("review"), ref.meta.get("anchor")))
+        assert minted_pairs == {(lens, anchor) for lens in _PROSE_LENSES}
+        assert len(result["minted"]) == len(_PROSE_LENSES)
+
+
+# ---------------------------------------------------------------------------
+# smartdraft-review-status-ui item 1 — scope (subtree / single chunk)
+# ---------------------------------------------------------------------------
+
+
+class TestScope:
+    def test_subtree_scope_mints_only_under_heading(self, store: Store) -> None:
+        proj = _project(store)
+        ref, title = store.create_draft(name="scope1", title="T", project_ref_id=proj)
+        section_a = store.add_chunks(
+            ref_id=ref.id,
+            chunk_kind="heading",
+            text="Section A",
+            at={"after": title.handle},
+        )[0]
+        store.add_chunks(
+            ref_id=ref.id,
+            chunk_kind="paragraph",
+            text="para A",
+            at={"into": section_a.handle},
+        )
+        section_b = store.add_chunks(
+            ref_id=ref.id,
+            chunk_kind="heading",
+            text="Section B",
+            at={"after": section_a.handle},
+        )[0]
+        store.add_chunks(
+            ref_id=ref.id,
+            chunk_kind="paragraph",
+            text="para B",
+            at={"into": section_b.handle},
+        )
+
+        result = mint_review_fanout(store, ref.id, scope=section_a.chunk_id)
+
+        assert result["chunks_seen"] == 2  # section_a heading + its paragraph
+        assert len(result["minted"]) == 4  # 2 lenses x 2 chunks
+        anchors = set()
+        for todo_id in result["minted"]:
+            r = store.get_ref(kind="todo", id=todo_id)
+            assert r is not None
+            anchors.add(r.meta.get("anchor"))
+        title_anchor = handle_registry.format_handle(
+            "draft", title.chunk_id, chunk=True
+        )
+        section_b_anchor = handle_registry.format_handle(
+            "draft", section_b.chunk_id, chunk=True
+        )
+        assert title_anchor not in anchors
+        assert section_b_anchor not in anchors
+
+    def test_single_prose_chunk_scope_mints_only_that_chunk(self, store: Store) -> None:
+        ref_id = _draft_with_chunks(store, name="scope2", n_paragraphs=2)
+        chunks = store.reviewable_chunks(ref_id)
+        paras = [c for c in chunks if c["chunk_kind"] == "paragraph"]
+
+        result = mint_review_fanout(store, ref_id, scope=paras[0]["chunk_id"])
+
+        assert result["chunks_seen"] == 1
+        assert len(result["minted"]) == len(_PROSE_LENSES)
+        anchor = handle_registry.format_handle(
+            "draft", paras[0]["chunk_id"], chunk=True
+        )
+        for todo_id in result["minted"]:
+            r = store.get_ref(kind="todo", id=todo_id)
+            assert r is not None
+            assert r.meta.get("anchor") == anchor
+
+
+# ---------------------------------------------------------------------------
+# smartdraft-review-status-ui item 1 — skip-unsettled (open change request)
+# ---------------------------------------------------------------------------
+
+
+class TestSkipUnsettled:
+    def test_open_change_request_skipped_then_remints_once_resolved(
+        self, store: Store
+    ) -> None:
+        ref_id = _draft_with_chunks(store, name="unsettled", n_paragraphs=1)
+        p = next(
+            c for c in store.reviewable_chunks(ref_id) if c["chunk_kind"] == "paragraph"
+        )
+        anchor = handle_registry.format_handle("draft", p["chunk_id"], chunk=True)
+        req = store.insert_ref(
+            kind="todo", slug=None, title="fix this", meta={"anchor": anchor}
+        )
+        store.add_tag(
+            req.id, Tag.closed("STATUS", "open"), set_by="agent", replace_prefix=True
+        )
+
+        # scope=p keeps the assertion pinned to the unsettled chunk itself —
+        # the title heading (unaffected by this change-request) still mints
+        # its own structure/adversarial pair independently.
+        result = mint_review_fanout(store, ref_id, scope=p["chunk_id"])
+        assert result["minted"] == []
+        assert result["unsettled_skipped"] == len(_PROSE_LENSES)
+
+        # resolve the change request and touch the chunk — mints again
+        store.add_tag(
+            req.id, Tag.closed("STATUS", "done"), set_by="agent", replace_prefix=True
+        )
+        store.edit_text(p["handle"], "revised after fix")
+
+        result2 = mint_review_fanout(store, ref_id, scope=p["chunk_id"])
+        assert len(result2["minted"]) == len(_PROSE_LENSES)
+        assert result2["unsettled_skipped"] == 0
+
+
+# ---------------------------------------------------------------------------
+# smartdraft-review-status-ui item 2 — lens x chunk-kind mapping
+# ---------------------------------------------------------------------------
+
+
+class TestLensKindMapping:
+    def test_flow_cites_prose_only_structure_adversarial_heading_only(
+        self, store: Store
+    ) -> None:
+        proj = _project(store)
+        ref, title = store.create_draft(name="kindmix", title="T", project_ref_id=proj)
+        para = store.add_chunks(
+            ref_id=ref.id, chunk_kind="paragraph", text="p", at={"after": title.handle}
+        )[0]
+        eq = store.add_chunks(
+            ref_id=ref.id,
+            chunk_kind="equation",
+            text="E=mc^2",
+            at={"after": para.handle},
+        )[0]
+
+        result = mint_review_fanout(store, ref.id)
+
+        by_anchor: dict[str, set[str]] = {}
+        for todo_id in result["minted"]:
+            r = store.get_ref(kind="todo", id=todo_id)
+            assert r is not None
+            anchor, lens = r.meta.get("anchor"), r.meta.get("review")
+            assert anchor is not None and lens is not None
+            by_anchor.setdefault(anchor, set()).add(lens)
+
+        title_anchor = handle_registry.format_handle(
+            "draft", title.chunk_id, chunk=True
+        )
+        para_anchor = handle_registry.format_handle("draft", para.chunk_id, chunk=True)
+        eq_anchor = handle_registry.format_handle("draft", eq.chunk_id, chunk=True)
+
+        assert by_anchor.get(title_anchor) == set(_HEADING_LENSES)
+        assert by_anchor.get(para_anchor) == set(_PROSE_LENSES)
+        assert eq_anchor not in by_anchor
+
+
+# ---------------------------------------------------------------------------
+# smartdraft-review-status-ui item 10 — the toc document-altitude lens
+# ---------------------------------------------------------------------------
+
+
+def _seed_toc_approval(store: Store, chunk_id: int, digest: str) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO chunk_review (chunk_id, checker, approved_sha, verdict) "
+            "VALUES (%s, 'toc', %s, 'approved') "
+            "ON CONFLICT (chunk_id, checker) DO UPDATE "
+            "SET approved_sha = EXCLUDED.approved_sha, verdict = EXCLUDED.verdict",
+            (chunk_id, digest),
+        )
+        conn.commit()
+
+
+class TestDocLenses:
+    def test_toc_minted_only_for_whole_draft_scope(self, store: Store) -> None:
+        ref_id = _draft_with_chunks(store, name="doclens")
+
+        result = mint_review_fanout(store, ref_id, lenses=(), doc_lenses=DOC_LENSES)
+
+        assert len(result["minted"]) == 1
+        ref = store.get_ref(kind="todo", id=result["minted"][0])
+        assert ref is not None
+        assert ref.meta.get("review") == "toc"
+        assert ref.meta.get("llm_tier") == "opus"
+        assert "author" not in ref.meta
+
+    def test_toc_not_minted_when_scope_given(self, store: Store) -> None:
+        ref_id = _draft_with_chunks(store, name="doclens-scope")
+        p = next(
+            c for c in store.reviewable_chunks(ref_id) if c["chunk_kind"] == "paragraph"
+        )
+
+        result = mint_review_fanout(
+            store, ref_id, lenses=(), doc_lenses=DOC_LENSES, scope=p["chunk_id"]
+        )
+
+        assert result["minted"] == []
+
+    def test_toc_never_author_eligible(self, store: Store) -> None:
+        ref_id = _draft_with_chunks(store, name="doclens-author")
+
+        result = mint_review_fanout(
+            store, ref_id, lenses=(), doc_lenses=DOC_LENSES, author=True
+        )
+
+        assert len(result["minted"]) == 1
+        ref = store.get_ref(kind="todo", id=result["minted"][0])
+        assert ref is not None
+        assert "author" not in ref.meta
+
+    def test_toc_only_dirty_skips_when_digest_unchanged_remints_on_rename(
+        self, store: Store
+    ) -> None:
+        ref_id = _draft_with_chunks(store, name="doclens-dirty")
+        order = store.reading_order(ref_id)
+        root = order[0]
+        digest = store.toc_digest(ref_id)
+        _seed_toc_approval(store, root.chunk_id, digest)
+
+        result = mint_review_fanout(
+            store, ref_id, lenses=(), doc_lenses=DOC_LENSES, only_dirty=True
+        )
+        assert result["minted"] == []
+
+        store.edit_text(root.handle, "T (renamed)")
+
+        result2 = mint_review_fanout(
+            store, ref_id, lenses=(), doc_lenses=DOC_LENSES, only_dirty=True
+        )
+        assert len(result2["minted"]) == 1
+
+    def test_toc_anchor_agrees_with_status_root_when_first_chunk_has_no_sha(
+        self, store: Store
+    ) -> None:
+        """``review_root_chunk_id`` is the SINGLE selection rule shared by
+        the fanout's toc-lens mint (``_mint_doc_lenses``) and
+        ``review_status_for_draft``'s own toc-row patch — both must land
+        on the same chunk even when the draft's first reading-order chunk
+        (the title heading) carries a NULL ``content_sha`` (not yet
+        reviewable). Before the fix, ``_mint_doc_lenses`` anchored on
+        ``reading_order()[0]`` (no content_sha filter) while the status
+        query skipped that same chunk — the toc indicator would then read
+        permanently unapproved no matter how many times the anchored
+        chunk was actually reviewed."""
+        ref_id = _draft_with_chunks(store, name="doclens-nullsha", n_paragraphs=1)
+        order = store.reading_order(ref_id)
+        title, para = order[0], order[1]
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE chunks SET content_sha = NULL WHERE chunk_id = %s",
+                (title.chunk_id,),
+            )
+            conn.commit()
+
+        assert store.review_root_chunk_id(ref_id) == para.chunk_id
+
+        result = mint_review_fanout(store, ref_id, lenses=(), doc_lenses=DOC_LENSES)
+        assert len(result["minted"]) == 1
+        ref = store.get_ref(kind="todo", id=result["minted"][0])
+        assert ref is not None
+        expected_anchor = handle_registry.format_handle(
+            "draft", para.chunk_id, chunk=True
+        )
+        assert ref.meta.get("anchor") == expected_anchor
+
+        toc_rows = [
+            s for s in store.review_status_for_draft(ref_id) if s["checker"] == "toc"
+        ]
+        assert len(toc_rows) == 1
+        assert toc_rows[0]["chunk_id"] == para.chunk_id
 
 
 # ---------------------------------------------------------------------------
@@ -502,6 +829,85 @@ class TestReviewWriteback:
         job_tags = {str(t) for t in store.tags_for(job_id)}
         assert "STATUS:succeeded" in job_tags
         assert store.review_status_for_chunk(p["chunk_id"]) == []
+
+    def test_toc_clean_pass_records_digest_approval(self, store: Store) -> None:
+        """item 10 — a clean ``toc`` tick pins ``approved_sha`` to the
+        draft's TOC digest (:meth:`Store.toc_digest`), not the anchor
+        chunk's ``content_sha``."""
+        ref_id = _draft_with_chunks(store, name="wb-toc-clean", n_paragraphs=1)
+        root = store.reading_order(ref_id)[0]
+        anchor = handle_registry.format_handle("draft", root.chunk_id, chunk=True)
+        parent_id = _mk_review_parent(store, lens="toc", anchor=anchor)
+        job_id = _mk_job(store, parent_id)
+
+        _run(store, job_id)
+
+        job_tags = {str(t) for t in store.tags_for(job_id)}
+        assert "STATUS:succeeded" in job_tags
+        statuses = [
+            s
+            for s in store.review_status_for_chunk(root.chunk_id)
+            if s["checker"] == "toc"
+        ]
+        assert len(statuses) == 1
+        assert statuses[0]["verdict"] == "approved"
+        assert statuses[0]["approved_sha"] == store.toc_digest(ref_id)
+
+    def test_toc_heading_renamed_mid_tick_records_nothing(self, store: Store) -> None:
+        """A heading rename during the tick moves the TOC digest — the
+        toc lens must refuse to self-approve, same mechanism as a chunk
+        lens's sha check."""
+        ref_id = _draft_with_chunks(store, name="wb-toc-renamed", n_paragraphs=1)
+        root = store.reading_order(ref_id)[0]
+        anchor = handle_registry.format_handle("draft", root.chunk_id, chunk=True)
+        parent_id = _mk_review_parent(store, lens="toc", anchor=anchor)
+        job_id = _mk_job(store, parent_id)
+
+        def _rename_during_tick() -> None:
+            store.edit_text(root.handle, "T (renamed)")
+
+        _run(store, job_id, side_effect=_rename_during_tick)
+
+        job_tags = {str(t) for t in store.tags_for(job_id)}
+        assert "STATUS:succeeded" in job_tags
+        statuses = [
+            s
+            for s in store.review_status_for_chunk(root.chunk_id)
+            if s["checker"] == "toc"
+        ]
+        assert statuses == []
+
+    def test_toc_paragraph_body_edit_mid_tick_still_approves(
+        self, store: Store
+    ) -> None:
+        """Deliberate item-10 semantic difference: an edit to a paragraph's
+        body doesn't move the TOC digest (it hashes only HEADING chunks),
+        so the toc approval records even though the draft changed under
+        the reviewer — unlike a chunk lens, which would refuse."""
+        ref_id = _draft_with_chunks(store, name="wb-toc-para-edit", n_paragraphs=1)
+        root = store.reading_order(ref_id)[0]
+        para = next(
+            c for c in store.reviewable_chunks(ref_id) if c["chunk_kind"] == "paragraph"
+        )
+        anchor = handle_registry.format_handle("draft", root.chunk_id, chunk=True)
+        parent_id = _mk_review_parent(store, lens="toc", anchor=anchor)
+        job_id = _mk_job(store, parent_id)
+
+        def _edit_paragraph_during_tick() -> None:
+            store.edit_text(para["handle"], "the reviewer tightened this prose")
+
+        _run(store, job_id, side_effect=_edit_paragraph_during_tick)
+
+        job_tags = {str(t) for t in store.tags_for(job_id)}
+        assert "STATUS:succeeded" in job_tags
+        statuses = [
+            s
+            for s in store.review_status_for_chunk(root.chunk_id)
+            if s["checker"] == "toc"
+        ]
+        assert len(statuses) == 1
+        assert statuses[0]["verdict"] == "approved"
+        assert statuses[0]["approved_sha"] == store.toc_digest(ref_id)
 
     def test_non_review_tick_records_nothing_and_never_raises(
         self, store: Store

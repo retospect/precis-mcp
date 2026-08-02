@@ -97,6 +97,22 @@ def add_parser(subparsers: Any) -> None:
         "(plumbing only — no authoring behavior yet; flow/adversarial "
         "never author).",
     )
+    ra.add_argument(
+        "--only-dirty",
+        action="store_true",
+        help="Incremental re-check (smartdraft-review-status-ui item 1): "
+        "skip a (chunk, lens) pair already approved at the chunk's "
+        "current sha, and skip any chunk carrying an open anchored "
+        "change-request. Cheap re-run after edits instead of a full "
+        "re-review.",
+    )
+    ra.add_argument(
+        "--scope",
+        default=None,
+        help="Narrow the fanout to one draft chunk (dc<id> or ¶<handle>): "
+        "a heading's whole subtree, or a single prose chunk. Default: the "
+        "whole draft.",
+    )
     ra.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
     d = qsub.add_parser("dossier", help="Print a quest's dossier.")
@@ -274,7 +290,7 @@ def _cmd_review_all(store: Store, args: argparse.Namespace) -> None:
     import sys
 
     from precis.errors import BadInput, NotFound
-    from precis.quest.review_fanout import ALL_LENSES, mint_review_fanout
+    from precis.quest.review_fanout import ALL_LENSES, DOC_LENSES, mint_review_fanout
 
     key: int | str = int(args.draft) if str(args.draft).isdigit() else args.draft
     ref = store.get_ref(kind="draft", id=key)
@@ -288,9 +304,23 @@ def _cmd_review_all(store: Store, args: argparse.Namespace) -> None:
         else ALL_LENSES
     )
 
+    scope_chunk_id: int | None = None
+    if args.scope:
+        scope_chunk = store.get_draft_chunk(args.scope)
+        if scope_chunk is None:
+            print(f"quest review-all: no draft chunk {args.scope!r}", file=sys.stderr)
+            sys.exit(2)
+        scope_chunk_id = scope_chunk.chunk_id
+
     try:
         result = mint_review_fanout(
-            store, ref.id, lenses=lenses, author=bool(args.author)
+            store,
+            ref.id,
+            lenses=lenses,
+            doc_lenses=DOC_LENSES if scope_chunk_id is None else (),
+            author=bool(args.author),
+            only_dirty=bool(args.only_dirty),
+            scope=scope_chunk_id,
         )
     except (BadInput, NotFound) as exc:
         print(f"quest review-all: {exc}", file=sys.stderr)
@@ -299,8 +329,8 @@ def _cmd_review_all(store: Store, args: argparse.Namespace) -> None:
     msg = (
         f"draft {args.draft!r}: review-all fanout — {result['chunks_seen']} "
         f"chunk(s) x {len(lenses)} lens(es), {len(result['minted'])} minted, "
-        f"{result['skipped']} already live, parented on todo "
-        f"{result['parent_id']}"
+        f"{result['skipped']} already live, {result['unsettled_skipped']} "
+        f"unsettled-skipped, parented on todo {result['parent_id']}"
     )
     if args.author:
         msg += f", {result['author_minted']} author-enabled"

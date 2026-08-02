@@ -26,10 +26,13 @@ served from here:
   not yet ported to smartdraft — see ``OPEN-ITEMS.md``.)
 * ``POST /drafts/{ident}/human-review`` — the ✓ gutter checkbox: records the
   human reviewer's sign-off on one block (``edit(kind='draft',
-  review='human')``, migration 0086's ``chunk_review`` ledger). One-way
-  (mark reviewed; no un-review verb yet). Distinct from the per-heading
-  ``POST /drafts/{ident}/review`` "review ▾" menu, which files an
-  *automated-reviewer* todo, not a ledger row.
+  review='human')``, migration 0086's ``chunk_review`` ledger).
+  ``POST /drafts/{ident}/review/retract`` un-reviews (deletes the ledger
+  row for a checker, default ``human``). Distinct from the per-heading
+  ``POST /drafts/{ident}/review`` "review ▾" menu (now driving
+  ``mint_review_fanout``, smartdraft-review-status-ui items 1-3), which
+  files review-todos, not ledger rows. ``POST /drafts/{ident}/cites/convert``
+  dry-runs/applies the taproot living-cite backfill (item 5b).
 * ``POST /drafts/{ident}/delete`` — soft-delete the whole draft, gated on
   typing its name (atomic: ref ``deleted_at`` + chunks retired; recoverable).
 * ``GET /c/{handle}`` — resolve a chunk handle → redirect to where it
@@ -80,7 +83,23 @@ from precis.draft.scaffolds import DOC_TYPES as _DOC_TYPES  # noqa: F401
 from precis.draft.scaffolds import SCAFFOLDS as _SCAFFOLDS
 from precis.draft.scaffolds import SECTION_STYLES as _SECTION_STYLES
 from precis.errors import BadInput
+from precis.quest.review_fanout import ALL_LENSES, DOC_LENSES, mint_review_fanout
 from precis.store._draft_ops import content_sha
+
+# The taproot backfill cascade fns (item 5b, "convert to living cites"),
+# referenced through THIS module's own names (not ``backfill.``/``canon.``
+# attribute lookups) so a test can inject deterministic fakes by
+# monkeypatching them here — mirroring ``tests/test_taproot_backfill.py``'s
+# injected-cascade-fns pattern, just at the web-route call site instead of a
+# direct ``plan_chunk``/``apply_chunk`` call. Each is looked up fresh off
+# this module's globals at call time (a bare name reference in a function
+# body), so ``monkeypatch.setattr(drafts, "_backfill_extract_claim", fake)``
+# takes effect on the next request with no re-import needed.
+from precis.taproot.backfill import ChunkBackfill, apply_chunk, plan_chunk
+from precis.taproot.canon import block as _backfill_block
+from precis.taproot.canon import dedup_judge as _backfill_dedup_judge
+from precis.taproot.canon import extract_claim as _backfill_extract_claim
+from precis.taproot.canon import merge_confirm as _backfill_merge_confirm
 from precis.utils import draft_markup, handle_registry, mentions
 from precis.utils.authors import (
     author_display,
@@ -509,12 +528,10 @@ _EDITABLE_KINDS = frozenset(
 _MERGE_KINDS = frozenset({"paragraph", "item", "aside", "box", "callout"})
 
 
-def _review_status_by_chunk(
-    store: Any, ref_id: int
-) -> dict[int, dict[str, dict[str, Any]]]:
+def _review_status_by_chunk(store: Any, ref_id: int) -> dict[int, dict[str, Any]]:
     """Whole-draft human/checker review-ledger status (migration 0086),
     indexed by ``chunk_id``: ``{chunk_id: {checker: {approved_sha, verdict,
-    at, dirty}}}``. One call to ``Store.review_status_for_draft`` per
+    at, dirty}, ...}}``. One call to ``Store.review_status_for_draft`` per
     request — the read-side counterpart to the ``/human-review`` route's
     write-through-the-``edit``-verb. Imported by ``routes/smartdraft.py``
     to look up the focus block's review status.
@@ -528,12 +545,28 @@ def _review_status_by_chunk(
     render off the same payload; the reader template only reads ``'human'``
     for now.
 
+    Each per-chunk dict also carries two RESERVED, non-checker keys
+    (smartdraft-review-status-ui item 4) — ``_section_chunk_id`` (the
+    nearest enclosing HEADING chunk id, ``None`` if none — the id a
+    paragraph's rollup uses to pull in its section's ``structure``/
+    ``adversarial`` state "via section") and ``_chunk_kind``. Leading
+    underscore so neither can ever collide with a real checker name
+    (``flow``/``cites``/``structure``/``adversarial``/``human``/``toc``)
+    and existing ``review.human``-style dotted template access is
+    unaffected.
+
     Records are JSON-safe (``at`` ISO-stringified via :func:`_review_entry`)
     because this map can be serialized (``tojson`` / ``JSONResponse``) — a
     raw ``datetime`` would 500 the page."""
-    out: dict[int, dict[str, dict[str, Any]]] = {}
+    out: dict[int, dict[str, Any]] = {}
     for row in store.review_status_for_draft(ref_id):
-        entry = out.setdefault(row["chunk_id"], {})
+        entry = out.setdefault(
+            row["chunk_id"],
+            {
+                "_section_chunk_id": row.get("section_chunk_id"),
+                "_chunk_kind": row.get("chunk_kind"),
+            },
+        )
         checker = row.get("checker")
         if checker:
             entry[checker] = _review_entry(row)
@@ -566,6 +599,16 @@ def _review_json(status: list[dict[str, Any]]) -> dict[str, Any]:
             continue
         out[checker] = _review_entry(r)
     return out
+
+
+def _rollup_json(store: Any, ref_id: int) -> dict[str, int]:
+    """``{"done": N, "total": M}`` — the toolbar rollup badge data (item 8),
+    a thin JSON wrapper over ``Store.review_rollup_for_draft`` (prose-only
+    denominator; ``done`` = approved by ``human`` at the current sha).
+    Attached to every ledger-mutating JSON response (``/human-review``,
+    ``/review/retract``) so the client can refresh the toolbar badge without
+    a full page reload."""
+    return store.review_rollup_for_draft(ref_id)
 
 
 def _connection_chips(conns: list[dict[str, Any]]) -> list[Any]:
@@ -1438,13 +1481,13 @@ async def edit_human_review(request: Request, ident: str) -> JSONResponse:
     review ledger stays single-sourced with the MCP/CLI verb — this route
     never calls ``Store.record_review`` directly — then returns the
     chunk's fresh per-checker status (``Store.review_status_for_chunk``)
-    so the client re-syncs the button.
+    so the client re-syncs the button. Also carries a fresh ``rollup``
+    (``Store.review_rollup_for_draft``) so the toolbar badge can refresh
+    without a page reload.
 
-    One-way for now: this only *sets* the human checkmark.
-    ``record_review`` upserts a fresh approval at the chunk's current
-    ``content_sha``; there is no store-level "un-review" (delete the
-    ledger row) to route to yet, so the button can't be toggled back off
-    here."""
+    This route only *sets* the human checkmark — un-review (retract) is
+    ``POST /drafts/{ident}/review/retract`` (smartdraft-review-status-ui
+    item 7), a separate endpoint over ``Store.retract_review``."""
     try:
         payload = await request.json()
     except Exception:
@@ -1470,7 +1513,13 @@ async def edit_human_review(request: Request, ident: str) -> JSONResponse:
         return JSONResponse({"ok": False, "error": body}, status_code=400)
     chunk = store.get_draft_chunk(handle)
     status = store.review_status_for_chunk(chunk.chunk_id) if chunk is not None else []
-    return JSONResponse({"ok": True, "review": _review_json(status)})
+    return JSONResponse(
+        {
+            "ok": True,
+            "review": _review_json(status),
+            "rollup": _rollup_json(store, ref.id),
+        }
+    )
 
 
 @router.post("/drafts/{ident}/request-ws")
@@ -1894,59 +1943,248 @@ async def delete_block(
     return JSONResponse({"ok": True})
 
 
-#: Reviewer briefs for the per-heading "review ▾" dropdown. Each files an
-#: anchored review-todo (→ plan_tick), scoped to the heading's subtree.
-#: ``all`` files one todo that tells the planner to fan out sequentially.
-_REVIEW_BRIEFS: dict[str, str] = {
-    "structural": (
-        "Structural review of the draft section under {h}. Check it against "
-        "the project brief: drift, contradictions with sibling sections, gaps, "
-        "depth/fanout problems, weak or missing topic sentences. File concrete "
-        "change requests (anchored at the offending chunks) for what to fix."
-    ),
-    "deep_review": (
-        "Deep review of the draft section under {h}. Scrutinise the rigor of "
-        "every claim and citation — does each cited passage actually and "
-        "strongly support its claim? Prune redundancy, rebalance, and flag "
-        "anything overstated. File concrete change requests."
-    ),
-    "all": (
-        "Review the draft section under {h} thoroughly. Do this as SEQUENTIAL "
-        "subtasks: (1) a structural review (drift, contradictions, gaps, topic-"
-        "sentence structure), then (2) a deep review (claim/citation rigor, "
-        "redundancy, overstatement). File concrete change requests from each."
-    ),
+#: Old reviewer-menu vocabulary → the unified ledger's lens names (decided
+#: fallback, smartdraft-review-status-ui item 3): one checker namespace —
+#: ``structural``/``deep_review`` are kept as accepted ``lens=`` ALIASES so
+#: an old caller (bookmark, script) still works, but every mint now lands
+#: under ``structure``/``adversarial`` in ``chunk_review``, never the old
+#: names.
+_LENS_ALIASES: dict[str, str] = {
+    "structural": "structure",
+    "deep_review": "adversarial",
 }
 
 
 @router.post("/drafts/{ident}/review")
-async def review_block(
-    request: Request,
-    ident: str,
-    handle: str = Form(...),
-    reviewer: str = Form(...),
-) -> Response:
-    """Run a standard reviewer on a heading's subtree — files an anchored
-    review-todo (parented on the draft's project) that runs as a plan_tick,
-    showing up as an in-flight request on the block. ``reviewer`` is
-    ``structural`` | ``deep_review`` | ``all``."""
+async def review_block(request: Request, ident: str) -> JSONResponse:
+    """Run the incremental review fanout (``quest.review_fanout.
+    mint_review_fanout``) over a draft — smartdraft-review-status-ui items
+    1-3, replacing this route's old ``structural``/``deep_review`` reviewer
+    vocabulary and its own per-heading todo-minting.
+
+    Body ``{lens, dc?, only_dirty?}``:
+
+    - ``lens`` — one of ``flow`` | ``cites`` | ``structure`` | ``adversarial``
+      | ``toc`` | ``all`` (plus the accepted aliases ``structural`` →
+      ``structure``, ``deep_review`` → ``adversarial``). ``all`` mints
+      :data:`ALL_LENSES`, plus :data:`DOC_LENSES` when the scope is the
+      whole draft (``mint_review_fanout`` itself gates ``doc_lenses`` to
+      ``scope is None``, so passing them for a ``dc``-scoped call is a
+      harmless no-op). ``toc`` is document-altitude-only: mints ``doc_lenses
+      = ('toc',)`` and is rejected (400) when ``dc`` scopes it to a
+      chunk/subtree.
+    - ``dc`` — a block handle (chunk or heading) narrowing the scope to that
+      chunk or its subtree (``mint_review_fanout``'s own ``scope=``);
+      omitted → whole draft.
+    - ``only_dirty`` — pass-through to ``mint_review_fanout``. Defaults to
+      ``True`` for a whole-draft call (the cheap "run outstanding checks"
+      re-check loop) and ``False`` for a ``dc``-scoped call (an explicit
+      "run this paragraph/section" click always re-runs, rather than
+      silently no-op'ing on an already-approved pair); either default can be
+      overridden explicitly.
+
+    Returns the fanout's summary dict as JSON (``parent_id``, ``minted``,
+    ``skipped``, ``unsettled_skipped``, ``author_minted``, ``chunks_seen``)
+    plus ``ok``."""
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "bad request body"}, status_code=400)
+    if not isinstance(payload, dict):
+        return JSONResponse({"ok": False, "error": "bad request body"}, status_code=400)
     store = get_store(request)
     ref = _draft_ref(store, ident)
-    back = f"/drafts/{ident}#c-{handle}"
-    brief = _REVIEW_BRIEFS.get(reviewer)
-    if ref is None or brief is None:
-        return RedirectResponse(url=back, status_code=303)
-    args: dict[str, Any] = {
-        "kind": "todo",
-        "text": brief.format(h=handle),
-        "meta": {"anchor": handle, "review": reviewer},
-    }
-    project = _project_id(store, ref.id)
-    if project is not None:
-        args["parent_id"] = project
-    return await redirect_or_error(
-        request, "put", args, redirect=back, error_title="Review error"
+    if ref is None:
+        return JSONResponse({"ok": False, "error": "draft not found"}, status_code=404)
+    lens_raw = str(payload.get("lens") or "").strip()
+    lens = _LENS_ALIASES.get(lens_raw, lens_raw)
+    dc = str(payload.get("dc") or "").strip()
+    scope_chunk_id: int | None = None
+    if dc:
+        chunk = store.get_draft_chunk(dc)
+        if chunk is None or chunk.ref_id != ref.id:
+            return JSONResponse(
+                {"ok": False, "error": "block not found"}, status_code=404
+            )
+        scope_chunk_id = chunk.chunk_id
+    lenses: tuple[str, ...]
+    doc_lenses: tuple[str, ...]
+    if lens == "toc":
+        if scope_chunk_id is not None:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": "the toc lens is whole-draft only — omit dc",
+                },
+                status_code=400,
+            )
+        lenses, doc_lenses = (), ("toc",)
+    elif lens == "all":
+        lenses, doc_lenses = ALL_LENSES, DOC_LENSES
+    elif lens in ALL_LENSES:
+        lenses, doc_lenses = (lens,), ()
+    else:
+        return JSONResponse(
+            {"ok": False, "error": f"unknown lens {lens_raw!r}"}, status_code=400
+        )
+    only_dirty_raw = payload.get("only_dirty")
+    only_dirty = (
+        (scope_chunk_id is None) if only_dirty_raw is None else bool(only_dirty_raw)
     )
+    try:
+        summary = mint_review_fanout(
+            store,
+            ref.id,
+            lenses=lenses,
+            doc_lenses=doc_lenses,
+            only_dirty=only_dirty,
+            scope=scope_chunk_id,
+        )
+    except BadInput as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    return JSONResponse({"ok": True, **summary})
+
+
+@router.post("/drafts/{ident}/review/retract")
+async def retract_review_route(request: Request, ident: str) -> JSONResponse:
+    """Un-review one block (smartdraft-review-status-ui item 7) — deletes
+    the ``chunk_review`` row for ``(chunk, checker)`` via
+    ``Store.retract_review``, reverting the chunk to "requires review".
+
+    Body ``{dc, checker?}`` — ``checker`` defaults to ``'human'`` (the ✓
+    gutter's un-check), but any ledger checker name works (a machine lens's
+    row can be retracted the same way). Returns the chunk's fresh
+    per-checker status (mirrors ``/human-review``'s response shape) plus
+    the whole-draft rollup; a 404 when no such row existed to retract
+    (matches this file's not-found convention elsewhere)."""
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "bad request body"}, status_code=400)
+    if not isinstance(payload, dict):
+        return JSONResponse({"ok": False, "error": "bad request body"}, status_code=400)
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    if ref is None:
+        return JSONResponse({"ok": False, "error": "draft not found"}, status_code=404)
+    handle = str(payload.get("dc") or payload.get("handle") or "")
+    chunk = store.get_draft_chunk(handle) if handle else None
+    if chunk is None or chunk.ref_id != ref.id:
+        return JSONResponse({"ok": False, "error": "block not found"}, status_code=404)
+    checker = str(payload.get("checker") or "human")
+    existed = store.retract_review(chunk.chunk_id, checker)
+    if not existed:
+        return JSONResponse(
+            {"ok": False, "error": f"no {checker!r} review to retract on {handle}"},
+            status_code=404,
+        )
+    status = store.review_status_for_chunk(chunk.chunk_id)
+    return JSONResponse(
+        {
+            "ok": True,
+            "review": _review_json(status),
+            "rollup": _rollup_json(store, ref.id),
+        }
+    )
+
+
+def _backfill_chunk_json(result: ChunkBackfill) -> dict[str, Any]:
+    """JSON-safe per-chunk preview/result for the "convert to living cites"
+    route (dry-run ``plan_chunk`` or applied ``apply_chunk``) — one entry
+    per cite-group plan plus the chunk-level rollup counts."""
+    return {
+        "chunk_id": result.chunk_id,
+        "n_claims": result.n_claims,
+        "n_ungrounded": result.n_ungrounded,
+        "rewritten_text": result.rewritten_text,
+        "groups": [
+            {
+                "handles": p.group.handles,
+                "action": p.action,
+                "hub_ref_id": p.hub_ref_id,
+                "note": p.note,
+            }
+            for p in result.plans
+        ],
+    }
+
+
+@router.post("/drafts/{ident}/cites/convert")
+async def convert_cites_route(request: Request, ident: str) -> JSONResponse:
+    """Convert to living cites (smartdraft-review-status-ui item 5b) — a
+    web wrapper over ``taproot/backfill.py``'s ``plan_chunk``/``apply_chunk``:
+    rewrites legacy ``[pc<id>]``/``[pa<id>]`` paper cites onto claim-hub
+    cites (``[fi<hub>]``).
+
+    Body ``{dc, dry_run?}``: ``dc`` names either a single body chunk, or a
+    heading whose whole subtree converts (``Store.review_subtree_chunk_ids``
+    — item 1's subtree walk, reused here). ``dry_run`` defaults ``True``
+    (preview only, nothing written); ``dry_run=False`` applies. A chunk with
+    no pc/pa cite groups (headings, most chunks in a subtree walk) reports
+    an empty ``groups`` list, not an error.
+
+    Apply rewrites through ``apply_chunk``'s own ``draft_handler.edit`` (the
+    normal edit door — never a raw ``UPDATE``), so each rewritten chunk's
+    ``content_sha`` bumps and every checker's approval on it goes stale by
+    construction (the acceptance criterion) — the same guarantee any other
+    draft edit gives the review ledger."""
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "bad request body"}, status_code=400)
+    if not isinstance(payload, dict):
+        return JSONResponse({"ok": False, "error": "bad request body"}, status_code=400)
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    if ref is None:
+        return JSONResponse({"ok": False, "error": "draft not found"}, status_code=404)
+    dc = str(payload.get("dc") or "").strip()
+    chunk = store.get_draft_chunk(dc) if dc else None
+    if chunk is None or chunk.ref_id != ref.id:
+        return JSONResponse({"ok": False, "error": "block not found"}, status_code=404)
+    dry_run_raw = payload.get("dry_run")
+    dry_run = True if dry_run_raw is None else bool(dry_run_raw)
+    targets = (
+        store.review_subtree_chunk_ids(ref.id, chunk.chunk_id)
+        if chunk.chunk_kind == "heading"
+        else [chunk.chunk_id]
+    )
+    runtime = get_runtime(request)
+    embedder = getattr(getattr(runtime, "hub", None), "embedder", None)
+    results: list[dict[str, Any]] = []
+    if dry_run:
+        for cid in targets:
+            try:
+                plan = plan_chunk(
+                    store,
+                    embedder,
+                    cid,
+                    extract_fn=_backfill_extract_claim,
+                    block_fn=_backfill_block,
+                    judge_fn=_backfill_dedup_judge,
+                    merge_confirm_fn=_backfill_merge_confirm,
+                )
+                results.append(_backfill_chunk_json(plan))
+            except BadInput:
+                continue  # not a live draft body chunk (e.g. a table/figure)
+    else:
+        handler = runtime.hub.handler_for("draft")
+        for cid in targets:
+            try:
+                applied = apply_chunk(
+                    store,
+                    embedder,
+                    handler,
+                    cid,
+                    extract_fn=_backfill_extract_claim,
+                    block_fn=_backfill_block,
+                    judge_fn=_backfill_dedup_judge,
+                    merge_confirm_fn=_backfill_merge_confirm,
+                )
+                results.append(_backfill_chunk_json(applied))
+            except BadInput:
+                continue
+    return JSONResponse({"ok": True, "dry_run": dry_run, "chunks": results})
 
 
 @router.post("/drafts/{ident}/authoring")

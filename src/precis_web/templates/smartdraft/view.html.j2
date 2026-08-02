@@ -21,38 +21,58 @@
 {%- endmacro %}
 {% macro qs(dc) %}{{ slink(to_focus=dc) }}{% endmacro %}
 
-{# Human sign-off ✓ (migration-0086 ledger) — ported from the classic
-   reader's per-row control (since retired). ``review`` is the focus block's
-   ledger status: None = not reviewable (no ✓); a dict otherwise. ``.on`` =
-   reviewed at the current text; ``.dirty`` = reviewed but the text changed
-   since (re-check). One-way (click only ever marks reviewed). smartReview()
-   POSTs the shared /human-review JSON endpoint then refreshes the panel. #}
-{% macro sd_review_check(dc, review) %}
-{%- if review is not none -%}
-{% set hr = review.human %}
-<button type="button" onclick="smartReview('{{ dc }}')" data-dc="{{ dc }}"
-        title="{% if hr and not hr.dirty %}reviewed by you{% elif hr %}reviewed, but changed since — mark reviewed again{% else %}mark reviewed{% endif %}"
-        class="sd-review leading-none text-slate-300 hover:text-emerald-600{% if hr and not hr.dirty %} on{% elif hr %} dirty{% endif %}">✓</button>
-{%- endif -%}
-{% endmacro %}
+{# The per-block review indicator + dropdown (smartdraft-review-status-ui
+   items 6/7) is now the shared ``sd_block.sd_review_widget`` macro
+   (``smartdraft/_block.html.j2``, imported above as ``sd_block``) — it
+   replaces both the old focus-only ✓ button and the heading-only
+   ``review ▾`` menu (whose ``structural``/``deep_review`` vocabulary no
+   longer matches the ledger's checker names), so the same widget renders
+   identically on the focus, every full-document block, and a ``/blocks``
+   hydration. The toolbar rollup badge below is this page's own macro (it
+   isn't shared with the block partial). #}
 
-{# Run a standard reviewer on this heading's subtree — ported from the
-   classic reader's per-row control (since retired). Files an anchored
-   review-todo → plan_tick (surfaces in
-   the "Needs · in-flight" rail). Posts to the shared /drafts/{ident}/review
-   endpoint (303-redirects to the reader); the submit interceptor below catches
-   it and refreshes in place instead of following the redirect. #}
-{% macro sd_review_menu(ident, handle) %}
-<div class="relative" x-data="{ rev: false }" @click.outside="rev = false">
-  <button @click="rev = !rev" class="text-slate-400 hover:text-sky-600" title="run a reviewer on this section">review ▾</button>
-  <div x-show="rev" x-cloak class="absolute right-0 z-30 mt-1 w-40 rounded border border-slate-200 bg-white text-left text-xs shadow-lg">
-    {% for rv, label in [('structural', 'Structural'), ('deep_review', 'Deep review'), ('all', 'All (sequential)')] %}
-    <form method="post" action="/drafts/{{ ident }}/review">
-      <input type="hidden" name="handle" value="{{ handle }}" />
-      <input type="hidden" name="reviewer" value="{{ rv }}" />
-      <button class="block w-full px-2 py-1 text-left hover:bg-slate-100">{{ label }}</button>
-    </form>
-    {% endfor %}
+{# Toolbar rollup badge (item 8) — ``N/M`` prose-chunks-reviewed, green
+   "review-complete" once N == M > 0. Its dropdown: per-checker counts
+   (``checker_counts``, derived from the SAME single status fetch the
+   per-block indicators use — no extra query), the taproot hub-coverage +
+   citation-lifecycle scoreboard (item 5a, ``hub_stats`` — reused, not
+   reimplemented, from ``_hygiene_lines``'s / ``_citations_view``'s own
+   computations), the deterministic document-shape stats (item 10,
+   ``shape_stats``), and two actions: "run outstanding checks" (the
+   incremental whole-draft fanout) and "run toc review" (the document-
+   altitude lens). Per-heading rollup counts in the TOC pane are skipped —
+   ``_section_chunk_id`` only gives the NEAREST heading, so a recursive
+   nested-subtree total isn't derivable from the one status fetch without
+   re-walking the tree per heading; not worth the extra pass for a
+   secondary display. #}
+{% macro sd_review_badge(ident, rollup, checker_counts, hub_stats, shape_stats) %}
+{% set complete = rollup.total > 0 and rollup.done >= rollup.total %}
+<div class="relative" x-data="{ open: false }" @click.outside="open = false">
+  <button type="button" @click="open = !open"
+          title="{{ rollup.done }}/{{ rollup.total }} prose blocks human-reviewed{% if complete %} — review-complete{% endif %}"
+          class="sd-badge-rollup rounded border px-1.5 py-0.5 font-semibold{% if complete %} complete{% endif %}">{{ rollup.done }}/{{ rollup.total }}{% if complete %} ✓{% endif %}</button>
+  <div x-show="open" x-cloak class="sd-review-menu absolute right-0 z-30 mt-1 w-80 rounded border border-slate-200 bg-white p-2 text-left shadow-lg">
+    <div class="mb-1 font-semibold text-slate-600">Review — {{ rollup.done }}/{{ rollup.total }}{% if complete %} · review-complete{% endif %}</div>
+    <table class="mb-2 w-full">
+      {% for checker, c in checker_counts.items() %}
+      <tr><td class="pr-2 text-slate-500">{{ checker }}</td><td class="pr-1">{{ c.current }} ✓</td><td class="pr-1">{{ c.stale }} ⚠</td><td>{{ c.never }} –</td></tr>
+      {% endfor %}
+    </table>
+    <div class="mb-1 border-t border-slate-100 pt-1">
+      <a href="/console?verb=get&args_text={{ ('kind=draft id=' ~ ident ~ ' view=citations') | urlencode }}"
+         target="_blank" rel="noopener" class="text-sky-700 hover:underline">
+        hub: {{ hub_stats.hub_grounded }}/{{ hub_stats.hub_total }} grounded · to-fetch {{ hub_stats.lifecycle.get('to-fetch', 0) }} ·
+        to-re-ground {{ hub_stats.lifecycle.get('to-re-ground', 0) }} · to-promote {{ hub_stats.lifecycle.get('to-promote', 0) }} · done {{ hub_stats.lifecycle.get('done', 0) }}
+      </a>
+    </div>
+    <div class="mb-1 border-t border-slate-100 pt-1 text-slate-500">
+      {{ shape_stats.total_words }} words over {{ shape_stats.n_sections }} section(s){% if shape_stats.flagged %} — {{ shape_stats.flagged | length }} off target{% endif %}.
+      <div class="italic text-slate-400">{{ shape_stats.scaffold_note }}</div>
+    </div>
+    <div class="flex items-center gap-3 border-t border-slate-100 pt-1">
+      <button type="button" @click="open = false" onclick="sdReviewAllOutstanding()" class="text-sky-700 hover:underline">run outstanding checks</button>
+      <button type="button" @click="open = false" onclick="sdReviewToc()" class="text-sky-700 hover:underline">run toc review</button>
+    </div>
   </div>
 </div>
 {% endmacro %}
@@ -106,11 +126,23 @@
   .sd-collapse:hover { background: #f8fafc; color: #64748b; }
   .sd-badge { flex-shrink: 0; font-size: 10px; }
   .sd-dc { font-family: ui-monospace, monospace; font-size: 9px; color: #0ea5e9; }
-  /* Human sign-off ✓ (migration-0086 ledger) — parity with the classic
-     reader's .dr-review (since retired): emerald when reviewed, amber when
-     the review is stale (text changed since). */
-  .sd-review.on { color: #059669; }      /* emerald-600 — reviewed */
-  .sd-review.dirty { color: #d97706; }   /* amber-600 — stale review */
+  /* Per-block review indicator (smartdraft-review-status-ui item 6) — a
+     4-state dot: grey = checks outstanding, hollow-blue = machine-green
+     (awaiting human), emerald = human-approved, amber = human-approved but
+     edited since. A trailing red "!" (::after) marks the deterministic
+     citation-integrity flag (item 5c) — orthogonal to the ledger state, so
+     it never overrides the dot's own colour. */
+  .sd-review { cursor: pointer; }
+  .sd-review-dot { line-height: 1; font-size: 13px; vertical-align: middle; }
+  .sd-review-dot.empty { color: #cbd5e1; }    /* slate-300 */
+  .sd-review-dot.machine { color: #38bdf8; }  /* sky-400 — hollow/machine-green */
+  .sd-review-dot.human { color: #059669; }    /* emerald-600 */
+  .sd-review-dot.dirty { color: #d97706; }    /* amber-600 */
+  .sd-review-dot.sd-integrity::after { content: "!"; color: #dc2626; font-weight: 700; }
+  .sd-review-menu { white-space: normal; }
+  /* Toolbar rollup badge (item 8) — N/M, emerald "review-complete" at N=M>0. */
+  .sd-badge-rollup { border: 1px solid #e2e8f0; color: #64748b; }         /* slate-200/500 */
+  .sd-badge-rollup.complete { border-color: #6ee7b7; background: #ecfdf5; color: #047857; } /* emerald-300/50/700 */
   /* Spritz reader (RSVP, key: R): the current word gets a green box + a red
      ORP pivot letter, decorated in place over the real text; auto-scroll keeps
      it centred. #rsvp-hud is the fixed control-hint pill. */
@@ -156,6 +188,7 @@
   <h1 class="truncate text-base font-semibold">{{ ref.title }}</h1>
   <div class="flex items-center gap-3 text-[11px] text-slate-500">
     <span title="paragraph grounding: 🟢 sourced (cites a corpus paper/patent) · 🟡 pending (cites a finding — source still being chased) · 🔴 unsourced (no citation)">🟢 sourced · 🟡 pending · 🔴 unsourced</span>
+    {{ sd_review_badge(ident, rollup, checker_counts, hub_stats, shape_stats) }}
     <a href="{{ slink(to_debug=(not debug)) }}" class="{% if debug %}text-sky-700{% else %}hover:text-slate-800{% endif %}" title="show chunk ids (debug)">ids</a>
   </div>
 </div>
@@ -266,7 +299,7 @@
           <div class="mb-1 flex items-center gap-2 text-[10px] text-amber-700">
             <span>{% if debug %}<span class="font-mono text-sky-500">{{ n.dc }}</span> {% endif %}{% if n.locked %}🔒{% endif %}</span>
             <div class="ml-auto flex items-center gap-2">
-              {{ sd_review_check(n.dc, focus_review) }}
+              {{ sd_block.sd_review_widget(n, review_by_dc.get(n.dc), ident) }}
               <button onclick="smartPin('{{ n.dc }}')"
                       class="{% if focus_pinned %}font-semibold text-amber-800{% else %}text-slate-400 hover:text-amber-700{% endif %}"
                       title="pin/unpin this para (key: p)">📌 {{ 'unpin' if focus_pinned else 'pin' }}</button>
@@ -309,7 +342,7 @@
           <div class="mb-1 flex items-center gap-2 text-[10px] text-amber-700">
             <span>{% if debug %}<span class="font-mono text-sky-500">{{ n.dc }}</span> {% endif %}{% if n.locked %}🔒{% endif %}</span>
             <div class="ml-auto flex items-center gap-2">
-              {{ sd_review_check(n.dc, focus_review) }}
+              {{ sd_block.sd_review_widget(n, review_by_dc.get(n.dc), ident) }}
               <button onclick="smartPin('{{ n.dc }}')"
                       class="{% if focus_pinned %}font-semibold text-amber-800{% else %}text-slate-400 hover:text-amber-700{% endif %}"
                       title="pin/unpin this para (key: p)">📌 {{ 'unpin' if focus_pinned else 'pin' }}</button>
@@ -327,8 +360,7 @@
           <div class="mb-1 flex items-center gap-2 text-[10px] text-amber-700">
             <span>{% if debug %}<span class="font-mono text-sky-500">{{ n.dc }}</span> {% endif %}{% if n.locked %}🔒{% endif %}</span>
             <div class="ml-auto flex items-center gap-2">
-              {% if n.is_heading %}{{ sd_review_menu(ident, n.base58) }}{% endif %}
-              {{ sd_review_check(n.dc, focus_review) }}
+              {{ sd_block.sd_review_widget(n, review_by_dc.get(n.dc), ident) }}
               <button onclick="smartPin('{{ n.dc }}')"
                       class="{% if focus_pinned %}font-semibold text-amber-800{% else %}text-slate-400 hover:text-amber-700{% endif %}"
                       title="pin/unpin this para (key: p)">📌 {{ 'unpin' if focus_pinned else 'pin' }}</button>
@@ -358,18 +390,19 @@
         {% elif m.mode == 'doc' %}
         {# full-doc mode: a chunk in the server-rendered window around the focus,
            verbatim (see smartdraft/_block.html.j2 for why it's a <div>). #}
-        {{ sd_block.sd_doc_block(n, m.display, debug, claims) }}
+        {{ sd_block.sd_doc_block(n, m.display, debug, claims, review_by_dc.get(n.dc), ident) }}
         {% elif m.mode == 'skel' %}
         {# full-doc lazy spacer: a distant chunk, sized by its height estimate
            and hydrated to a real doc block on scroll (IntersectionObserver →
            /smartdraft/{ident}/blocks). Keeps the initial full-doc page O(window)
-           instead of O(N) on a 10k-chunk draft. #}
+           instead of O(N) on a 10k-chunk draft; its review indicator lands
+           with the real content on hydration (item 4). #}
         <div data-dc="{{ n.dc }}" data-ph class="block rounded px-2 py-1" style="min-height: {{ m.est }}px"></div>
         {% elif m.mode in ('tail', 'head') %}
         {# ±1 neighbour: verbatim, truncated toward the focus (tail leads in,
            head flows out). <div> not <a> for the same nested-anchor reason as
            the doc-mode block above. #}
-        <div data-dc="{{ n.dc }}" class="block cursor-pointer whitespace-pre-wrap rounded px-2 py-1 text-slate-500 hover:bg-slate-50 {{ hd }}{% if n.provenance %} sd-prov-{{ n.provenance }}{% endif %}">{% if debug %}<span class="font-mono text-[9px] text-sky-500">{{ n.dc }} </span>{% endif %}{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims) }}</div>
+        <div data-dc="{{ n.dc }}" class="block cursor-pointer whitespace-pre-wrap rounded px-2 py-1 text-slate-500 hover:bg-slate-50 {{ hd }}{% if n.provenance %} sd-prov-{{ n.provenance }}{% endif %}">{% if debug %}<span class="font-mono text-[9px] text-sky-500">{{ n.dc }} </span>{% endif %}{% if review_by_dc.get(n.dc) %}{{ sd_block.sd_review_widget(n, review_by_dc.get(n.dc), ident) }} {% endif %}{{ m.display | linkify_refs(markdown=True, compact=True, claims=claims) }}</div>
         {% else %}
         {# ±2 neighbour: one-line summary #}
         <a href="{{ qs(n.dc) }}" class="block truncate rounded px-2 py-0.5 text-slate-400 hover:bg-slate-50 {{ hd }}" title="{{ n.text[:400] }}">{% if debug %}<span class="font-mono text-[9px] text-sky-500">{{ n.dc }} </span>{% endif %}· {{ m.display }}</a>
@@ -923,6 +956,11 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
   const INT = 'a[href^="/smartdraft/' + IDENT + '?"]';
   document.addEventListener('click', (e) => {
     if (e.metaKey || e.ctrlKey) return;
+    // The review indicator + its dropdown live INSIDE a data-dc block (doc/
+    // tail/head mode) — without this guard a click on the button/menu items
+    // would also bubble into the block-click branch below and navTo() away
+    // from the very menu the click just opened.
+    if (e.target.closest && e.target.closest('.sd-review, .sd-review-menu')) return;
     const a = e.target.closest ? e.target.closest('a') : null;
     if (a && a.closest('#sd-content')) {
       // Focus-nav rows carry a short data-dc (not a full URL — that bloated the
@@ -986,9 +1024,12 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
     // submit here would bounce the writer OUT of smartdraft into classic, so
     // (like the figure forms above) POST via fetch and refresh in place. NOT
     // listed: fork + delete, which correctly navigate away (new copy / drafts
-    // list). Respect a cancelled confirm — the auto-author toggle's @submit
-    // may already have preventDefault()'d when the user declined.
-    const inPlace = ['authors', 'workspace', 'authoring', 'export.pdf', 'remarkable', 'review'];
+    // list); also NOT listed any more: "review" — the review▾ menu (item 3)
+    // now speaks JSON (`sdReviewRun`/`sdReviewAllOutstanding`/`sdReviewToc`
+    // below), not a form post, since `/drafts/{ident}/review` now reads a
+    // JSON body. Respect a cancelled confirm — the auto-author toggle's
+    // @submit may already have preventDefault()'d when the user declined.
+    const inPlace = ['authors', 'workspace', 'authoring', 'export.pdf', 'remarkable'];
     if (f.closest('#sd-content') && inPlace.some((ep) => act === `/drafts/${IDENT}/${ep}`)) {
       if (e.defaultPrevented) return;
       e.preventDefault();
@@ -1248,14 +1289,72 @@ function smartClearPins() {
     body: JSON.stringify({ op: 'clear' }),
   }).then(() => window.__sdRefresh()).catch(() => {});
 }
-// Human sign-off ✓ (migration-0086 ledger) — POSTs the shared /human-review
-// JSON endpoint (reused as-is from the classic reader) then refreshes the
-// panel so the ✓ re-renders its on/dirty state from the ledger.
-function smartReview(dc) {
+// ── Review status (smartdraft-review-status-ui items 6-8) ──────────────
+// Every action below just POSTs the shared JSON endpoint then refreshes the
+// WHOLE panel (__sdRefresh, the same reload-free swap every other write path
+// here uses) — the fresh server render recomputes every block's indicator +
+// the toolbar badge straight from the ledger, so there's no separate
+// client-side patch step to keep in sync with the route's own derivation.
+function sdReviewHuman(dc) {
   fetch(`/drafts/{{ ident }}/human-review`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ dc }),
-  }).then(() => window.__sdRefresh()).catch(() => {});
+  }).then(() => window.__sdRefresh()).catch(() => window.alert('network error — not saved'));
+}
+function sdReviewRetract(dc) {
+  fetch(`/drafts/{{ ident }}/review/retract`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dc, checker: 'human' }),
+  }).then(() => window.__sdRefresh()).catch(() => window.alert('network error — not saved'));
+}
+function sdReviewRun(dc, lens) {
+  fetch(`/drafts/{{ ident }}/review`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dc, lens }),
+  }).then((r) => { if (!r.ok) window.alert('review run failed'); else window.__sdRefresh(); })
+    .catch(() => window.alert('network error — review not started'));
+}
+function sdReviewAllOutstanding() {
+  fetch(`/drafts/{{ ident }}/review`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ lens: 'all', only_dirty: true }),
+  }).then(() => window.__sdRefresh()).catch(() => window.alert('network error — review not started'));
+}
+function sdReviewToc() {
+  fetch(`/drafts/{{ ident }}/review`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    // Explicit click — force a re-run even if the toc row already looks
+    // approved (only_dirty defaults true for whole-draft scope, which would
+    // silently no-op an already-approved toc).
+    body: JSON.stringify({ lens: 'toc', only_dirty: false }),
+  }).then(() => window.__sdRefresh()).catch(() => window.alert('network error — review not started'));
+}
+// Convert to living cites (item 5b) — dry-run preview first, confirm, then
+// apply. The apply POST bumps the rewritten chunk(s)' content_sha, so every
+// checker's approval on them goes stale by construction; __sdRefresh picks
+// that up the same as any other edit.
+async function sdConvertCites(dc) {
+  try {
+    const r = await fetch(`/drafts/{{ ident }}/cites/convert`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dc, dry_run: true }),
+    });
+    const d = await r.json();
+    if (!d.ok) { window.alert(d.error || 'preview failed'); return; }
+    const groups = (d.chunks || []).reduce((n, c) => n + (c.groups ? c.groups.length : 0), 0);
+    if (!groups) { window.alert('no living-cite conversions found here.'); return; }
+    const preview = (d.chunks || [])
+      .map((c) => `chunk ${c.chunk_id}: ${c.n_claims} claim(s), ${c.n_ungrounded} ungrounded`)
+      .join('\n');
+    if (!window.confirm(`Convert to living cites?\n\n${preview}\n\nApply now?`)) return;
+    const r2 = await fetch(`/drafts/{{ ident }}/cites/convert`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dc, dry_run: false }),
+    });
+    const d2 = await r2.json();
+    if (!d2.ok) { window.alert(d2.error || 'apply failed'); return; }
+    window.__sdRefresh();
+  } catch (e) { window.alert('network error'); }
 }
 // Chunk tags (the T search signal). Add/remove refresh so the chip + search reflect it.
 function _chunkTag(dc, body) {

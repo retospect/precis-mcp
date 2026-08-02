@@ -32,11 +32,14 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass, field
+from datetime import UTC
 from typing import Any
 
+from precis.quest.review_fanout import ALL_LENSES, DOC_LENSES
 from precis.store._draft_ops import content_sha
 from precis.utils.figure_source import RenderSpec, resolve_figure_source
 from precis.utils.table_data import table_payload
+from precis.utils.wordcount import PROSE_CHUNK_KINDS
 
 # ── pressure weights (tune later; env-overridable is a follow-up) ────────
 _W_KEYWORD = 1.0
@@ -154,6 +157,16 @@ class ChunkNode:
     @property
     def is_term(self) -> bool:
         return self.chunk_kind == "term"
+
+    @property
+    def is_prose(self) -> bool:
+        """Whether this chunk is one of ``PROSE_CHUNK_KINDS`` (paragraph/
+        aside/callout/claim) — the review widget's gate for the
+        ``flow``/``cites`` run-lens buttons (item 3): those two lenses only
+        ever mint on prose chunks (:func:`precis.quest.review_fanout.
+        _lenses_for_kind`), so offering them on a table/figure/term/equation
+        block would silently no-op the click."""
+        return self.chunk_kind in PROSE_CHUNK_KINDS
 
     @property
     def editable(self) -> bool:
@@ -847,3 +860,254 @@ def semantic_ranks(
     except Exception:
         return {}
     return {int(cid): rank for rank, (cid,) in enumerate(rows, start=1)}
+
+
+# ── review status (docs/proposals/smartdraft-review-status-ui.md) ──────────
+# The per-block indicator (item 6), its dropdown (item 7), and the toolbar
+# rollup (item 8) all derive from ONE whole-draft ledger fetch
+# (``routes/drafts.py::_review_status_by_chunk``, itself one
+# ``Store.review_status_for_draft`` query) — everything below turns that
+# chunk_id-keyed map into the per-node render payload the template needs,
+# plus the read-time (never sha-pinned) citation-integrity flag (item 5c).
+# Human sign-off supersedes machine state by design (proposal's "churn/
+# termination model" decision): a chunk approved by ``human`` at its
+# current sha is DONE regardless of what the machine lenses say.
+
+#: The per-chunk machine lenses that gate a PROSE block's own state.
+_MACHINE_LENSES: tuple[str, ...] = ("flow", "cites")
+#: The per-chunk machine lenses that gate a HEADING's own state, and a
+#: prose block's *section* state (via its nearest heading ancestor).
+_SECTION_LENSES: tuple[str, ...] = ("structure", "adversarial")
+_STATUS_SYMBOL: dict[str, str] = {"current": "✓", "stale": "⚠", "never": "–"}
+
+
+def _age_str(at: Any) -> str:
+    """A terse ``"2h ago"``/``"3d ago"`` for the tooltip — ``""`` when
+    ``at`` is absent or unparseable (a synthetic never-reviewed row, or a
+    test fixture that doesn't bother with a real timestamp)."""
+    if not at:
+        return ""
+    try:
+        from datetime import datetime
+
+        ts = datetime.fromisoformat(at) if isinstance(at, str) else at
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=UTC)
+        secs = (datetime.now(UTC) - ts).total_seconds()
+    except Exception:
+        return ""
+    if secs < 3600:
+        return f"{max(1, int(secs // 60))}m ago"
+    if secs < 86400:
+        return f"{int(secs // 3600)}h ago"
+    return f"{int(secs // 86400)}d ago"
+
+
+def _matrix_row(
+    checker: str, entry: dict[str, Any] | None, *, via_section: bool
+) -> dict[str, Any]:
+    """One tooltip-matrix line — ``✓ current`` / ``⚠ stale`` / ``– never``,
+    with the checker's verdict + age once it has ever run; section lenses
+    (item 2's "via section" imprecision) get an explicit suffix so the
+    tooltip never reads as if the paragraph itself carries that lens."""
+    if entry is None:
+        status = "never"
+    elif entry.get("dirty"):
+        status = "stale"
+    else:
+        status = "current"
+    label = checker + (" (via section)" if via_section else "")
+    bits = [f"{_STATUS_SYMBOL[status]} {label}"]
+    if entry is not None:
+        if entry.get("verdict"):
+            bits.append(str(entry["verdict"]))
+        age = _age_str(entry.get("at"))
+        if age:
+            bits.append(age)
+    return {
+        "checker": checker,
+        "via_section": via_section,
+        "status": status,
+        "line": " · ".join(bits),
+    }
+
+
+def review_indicator(
+    chunk_id: int, chunk_kind: str, status_by_chunk: dict[int, dict[str, Any]]
+) -> dict[str, Any] | None:
+    """Derive one block's 4-state review indicator from the whole-draft
+    ledger map (item 6). ``None`` when the chunk is absent from the map
+    (not reviewable — no ``content_sha`` / retired / unordered, see
+    ``_review_status_by_chunk``'s docstring).
+
+    ``state`` is one of:
+
+    * ``"empty"`` — checks outstanding (grey).
+    * ``"machine"`` — every relevant machine lens approved at the current
+      sha, human still pending (hollow/blue). A PROSE block's relevant
+      lenses are its own ``flow``/``cites`` PLUS its enclosing heading's
+      ``structure``/``adversarial`` ("via section" — the nearest heading
+      ancestor, ``_section_chunk_id``); a HEADING's are its own
+      ``structure``/``adversarial`` (plus ``toc`` when the ledger map
+      carries a ``toc`` row here — only the document's first chunk ever
+      does).
+    * ``"human"`` — ``human`` approved at the current sha (green).
+    * ``"dirty"`` — was human-approved, edited since (amber).
+
+    ``matrix`` is the tooltip's per-checker list (:func:`_matrix_row`), in
+    lens → human display order."""
+    own = status_by_chunk.get(chunk_id)
+    if own is None:
+        return None
+    is_heading = chunk_kind == "heading"
+    matrix: list[dict[str, Any]] = []
+    machine_seen = False
+    machine_ok = True
+
+    def _gate(entry: dict[str, Any] | None) -> None:
+        nonlocal machine_seen, machine_ok
+        if entry is None or entry.get("dirty"):
+            machine_ok = False
+        else:
+            machine_seen = True
+
+    if is_heading:
+        for lens in _SECTION_LENSES:
+            entry = own.get(lens)
+            matrix.append(_matrix_row(lens, entry, via_section=False))
+            _gate(entry)
+    else:
+        for lens in _MACHINE_LENSES:
+            entry = own.get(lens)
+            matrix.append(_matrix_row(lens, entry, via_section=False))
+            _gate(entry)
+        section_id = own.get("_section_chunk_id")
+        section = status_by_chunk.get(section_id) if section_id is not None else None
+        for lens in _SECTION_LENSES:
+            entry = section.get(lens) if section is not None else None
+            matrix.append(_matrix_row(lens, entry, via_section=True))
+            _gate(entry)
+    if "toc" in own:  # rides on whichever chunk is document-first (item 10)
+        entry = own.get("toc")
+        matrix.append(_matrix_row("toc", entry, via_section=False))
+        _gate(entry)
+
+    human = own.get("human")
+    matrix.append(_matrix_row("human", human, via_section=False))
+
+    if human is not None and not human.get("dirty"):
+        state = "human"
+    elif human is not None and human.get("dirty"):
+        state = "dirty"
+    elif machine_seen and machine_ok:
+        state = "machine"
+    else:
+        state = "empty"
+
+    return {
+        "state": state,
+        "human": human,
+        "matrix": matrix,
+        "tooltip": "\n".join(r["line"] for r in matrix),
+    }
+
+
+def cite_integrity_ok(store: Any, text: str, cache: dict[int, bool]) -> bool:
+    """``True`` unless ``text`` carries a cite token that fails to resolve
+    (a dead/merged-away ``[pc<id>]``) or whose cited paper isn't held (a
+    stub with zero body blocks — the same "to-fetch" signal
+    ``handlers/_citations_view.py`` partitions on) — item 5c. Deliberately
+    read-time, NOT sha-pinned: a paper can vanish from the corpus without
+    the paragraph's own text changing, so a ledger checker would rot
+    silently — this is recomputed on every render instead, never stored.
+    Reuses ``_citations_view``'s token scanner rather than re-parsing the
+    cite grammar; ``cache`` (shared across one render's blocks) avoids a
+    repeat store hit for a paper cited from several paragraphs."""
+    from precis.handlers._citations_view import _iter_chunk_tokens
+    from precis.utils import handle_registry
+
+    for _raw, tag, payload in _iter_chunk_tokens(text or ""):
+        if tag != "handle":
+            continue  # a pub_id placeholder either resolves or is
+            # accidental base32-looking prose (_citations_view's own
+            # phrase) — neither is an integrity problem this flag raises.
+        parsed = handle_registry.parse(payload)
+        if parsed is None:
+            continue  # a well-formed handle of some other kind — not a cite
+        kind, is_chunk, pk = parsed
+        if kind != "paper":
+            continue
+        if is_chunk:
+            resolved = store.resolve_handle(payload)
+            if resolved is None or resolved.kind != "paper":
+                return False  # dead/merged-away chunk cite
+            ref_id = resolved.ref_id
+        else:
+            ref_id = pk
+        held = cache.get(ref_id)
+        if held is None:
+            held = store.count_blocks(ref_id) > 0
+            cache[ref_id] = held
+        if not held:
+            return False  # cited paper isn't held (a stub)
+    return True
+
+
+def review_payloads_for(
+    nodes: list[ChunkNode],
+    status_by_chunk: dict[int, dict[str, Any]],
+    store: Any,
+) -> dict[str, dict[str, Any]]:
+    """``{dc: payload}`` for every reviewable node in ``nodes`` — scoped to
+    the per-request RENDERED set (the middle pane, or one ``/blocks``
+    hydration window), never the whole draft, because the integrity flag
+    can hit the store (``no per-block DB hits`` means no per-RENDER-set
+    blowup either — this shares one ``integrity_cache`` across the whole
+    call, so a paper cited from several of these blocks costs one store
+    hit, not N). Each payload is :func:`review_indicator`'s dict plus
+    ``integrity_ok``."""
+    cache: dict[int, bool] = {}
+    out: dict[str, dict[str, Any]] = {}
+    for n in nodes:
+        ind = review_indicator(n.chunk_id, n.chunk_kind, status_by_chunk)
+        if ind is None:
+            continue
+        ind["integrity_ok"] = cite_integrity_ok(store, n.text, cache)
+        out[n.dc] = ind
+    return out
+
+
+def checker_rollup(
+    status_by_chunk: dict[int, dict[str, Any]],
+) -> dict[str, dict[str, int]]:
+    """``{checker: {"current", "stale", "never"}}`` over every chunk each
+    checker could ever apply to — the toolbar dropdown's per-checker
+    breakdown (item 8), derived purely from the one whole-draft status
+    fetch (no extra query). ``flow``/``cites``/``human`` scope to PROSE
+    chunks (``human`` mirrors the ``N/M`` rollup's own prose-only
+    denominator — decision 2026-08-02); ``structure``/``adversarial``
+    scope to heading chunks; ``toc`` scopes to wherever the map's
+    synthetic/real toc row rides (the document's first chunk — always
+    exactly one, see ``Store.review_status_for_draft``)."""
+    order = (*ALL_LENSES, "human", *DOC_LENSES)
+    counts: dict[str, dict[str, int]] = {
+        c: {"current": 0, "stale": 0, "never": 0} for c in order
+    }
+    for entry in status_by_chunk.values():
+        kind = entry.get("_chunk_kind")
+        applicable: list[str] = []
+        if kind in PROSE_CHUNK_KINDS:
+            applicable = ["flow", "cites", "human"]
+        elif kind == "heading":
+            applicable = ["structure", "adversarial"]
+        if "toc" in entry:
+            applicable.append("toc")
+        for checker in applicable:
+            row = entry.get(checker)
+            if row is None:
+                counts[checker]["never"] += 1
+            elif row.get("dirty"):
+                counts[checker]["stale"] += 1
+            else:
+                counts[checker]["current"] += 1
+    return counts
