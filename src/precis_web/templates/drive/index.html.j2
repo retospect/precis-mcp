@@ -667,20 +667,22 @@
    opens each in its own tab, staggered 10-30s apart to go easy on the
    library/publisher servers instead of firing 40 tabs in one burst.
 
-   Pop-up trust: a click grants "transient activation" for only ~5s and it
-   is NOT inherited by deferred setTimeout callbacks — so staggered opens
-   land after it expires and would be silently blocked (why the original
-   timed opener was dropped in favour of a synchronous burst). The staggered
-   design only works when the site is allow-listed in the browser's pop-up
-   settings, at which point window.open fires freely from any timer. This is
-   a self-hosted daily-use tool, so allow-listing melchior once is the
-   intended setup. To stay robust either way: the FIRST tab opens
-   synchronously inside the click (always allowed by the gesture, and a live
-   probe), and every deferred open checks window.open's return — a null
-   (blocked) flips the label to "pop-ups blocked" at ~15s rather than
-   failing silently over the full run. Clicking again while a run is pending
-   cancels the remaining timers. Button stays hidden until there's a
-   downloadable row.
+   Background tabs: each open is a synthesized Cmd(mac)/Ctrl-modified click on
+   a real <a target="_blank"> — Chrome/Chromium opens it BEHIND the current
+   tab without stealing focus, exactly as if the user modifier-clicked the
+   link (Safari/Firefox may still foreground; harmless). window.open can't
+   background a tab, and its null-return pop-up-block signal goes with it — so
+   there's no "blocked" label anymore; the confirm dialog tells the user to
+   allow pop-ups instead.
+
+   Pop-up trust: a click grants "transient activation" for only ~5s and it is
+   NOT inherited by deferred setTimeout callbacks — so staggered opens land
+   after it expires and can be silently blocked unless the site is allow-listed
+   in the browser's pop-up settings. This is a self-hosted daily-use tool, so
+   allow-listing melchior once is the intended setup. The FIRST tab opens
+   synchronously inside the click (always allowed by the gesture); clicking
+   again while a run is pending cancels the remaining timers. Button stays
+   hidden until there's a downloadable row.
 
    Marking tried: the same click also records a manual-open attempt (one
    ref_events row per shown ref, source='manual:open') via
@@ -720,7 +722,7 @@
   const idle = () => "Open all " + N + " downloads ↓";
 
   let timers = [];
-  let running = false, opened = 0, blocked = false;
+  let running = false, opened = 0;
 
   btn.textContent = idle();
   wrap.classList.remove("hidden");
@@ -733,18 +735,30 @@
   }
 
   function openOne(i) {
-    const w = window.open(urls[i], "_blank", "noopener");
-    if (!w) blocked = true;
+    // Background tab, no focus steal: synthesize a Cmd(mac)/Ctrl-modified
+    // click on a real <a>, exactly as if the user modifier-clicked the link
+    // — Chrome/Chromium opens it behind the current tab (Safari/Firefox may
+    // still foreground; harmless). window.open can't background a tab, so we
+    // forgo its null-return pop-up-block signal — the confirm dialog already
+    // tells the user to allow pop-ups.
+    const a = document.createElement("a");
+    a.href = urls[i];
+    a.target = "_blank";
+    a.rel = "noopener";
+    a.style.display = "none";
+    document.body.appendChild(a);
+    a.dispatchEvent(new MouseEvent("click", {
+      bubbles: true, cancelable: true, view: window,
+      ctrlKey: true, metaKey: true,   // background-tab modifier
+    }));
+    a.remove();
     opened += 1;
     if (opened >= N) {
       running = false;
       timers = [];
-      btn.textContent = blocked
-        ? "Opened " + opened + "/" + N + " — some pop-ups blocked; allow them, click to retry"
-        : "Opened " + N + " ✓ — click to repeat";
+      btn.textContent = "Opened " + N + " ✓ — click to repeat";
     } else {
-      btn.textContent = (blocked ? "⚠ pop-ups blocked — allow them · " : "")
-        + "Opened " + opened + "/" + N + " · click to cancel";
+      btn.textContent = "Opened " + opened + "/" + N + " · click to cancel";
     }
   }
 
@@ -765,7 +779,6 @@
     markTried();  // one manual:open ref_event per shown ref, fire-and-forget
     running = true;
     opened = 0;
-    blocked = false;
     timers = [];
     openOne(0);  // synchronous → rides the click's activation
     let t = 0;
