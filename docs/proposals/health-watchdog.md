@@ -1,8 +1,16 @@
 ---
-status: draft
+status: phase-1-built
 title: Health watchdog — periodic liveness/freshness digest with routed remediation
 model: opus
 ---
+
+> **Phase 1 shipped** (§D of the cluster-scheduling master, "the liveness
+> net") — `src/precis/workers/health_digest.py` + the `health_digest`
+> scheduler cadence, the shared `src/precis/health_checks.py` module, the
+> nursery `host-dark` critical (gr186752), and the external dead-man's-switch
+> (`docs/runbooks/dead-mans-switch.md`). Phases 2-5 (the remediation router,
+> LLM phrasing, the autonomy ladder) remain roadmap — see "Suggested
+> phasing" below, unchanged.
 
 # Health watchdog — periodic liveness/freshness digest with routed remediation
 

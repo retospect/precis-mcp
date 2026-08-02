@@ -19,6 +19,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
+from precis import health_checks
 from precis.workers.registry import SERVICES, ServiceKind
 from precis.workers.service_config import DEFAULT_PRIO
 from precis_web.deps import get_store, get_web_config, templates
@@ -52,34 +53,6 @@ log = logging.getLogger(__name__)
 #: within this many seconds is flagged stale in the UI. Generous
 #: enough to ride out a missed reporter tick on a few-minute cadence.
 _STALE_AFTER_S = 600
-
-#: Backlog eligibility mirrors the worker *claim* predicates so the
-#: panel counts only chunks a pass will actually process. A naive
-#: ``NOT EXISTS(ok embedding)`` count includes chunk kinds the worker
-#: skips, ``no_index`` chunks, and terminally-``failed`` rows the
-#: worker treats as done — so it can never reach 0 even when the pass
-#: is fully caught up. Keep these in sync with the workers (they are
-#: small + stable; a mismatch only skews the panel, never the pipeline):
-#:   embed          — precis.workers.embed.EmbedHandler.skip_chunk_kinds
-#:   summarize      — precis.workers.summarize.RakeLemmaHandler.skip_chunk_kinds
-#:   chunk_keywords — precis.workers.chunk_keywords {_SKIP_KINDS,
-#:                    _MIN_CHUNK_CHARS, KEYWORDS_VERSION}
-_EMBED_ARTIFACT = "bge-m3"
-_SUMMARIZE_ARTIFACT = "rake-lemma"
-_EMBED_SKIP_KINDS = ("references",)
-_SUMMARIZE_SKIP_KINDS = ("references", "table")
-_KEYWORDS_SKIP_KINDS = (
-    "card_authors",
-    "card_combined",
-    "card_title",
-    "table",
-    "equation",
-    "figure",
-    "references",
-)
-_KEYWORDS_MIN_CHARS = 150
-_KEYWORDS_VERSION = "1.0"
-
 
 #: One DB connection shared across every section of a single request.
 #: The page runs ~15 independent SQL sections; opening a pooled
@@ -277,201 +250,13 @@ def _recent_todo_done(store: Any, limit: int = 5) -> list[dict[str, Any]]:
 def _backlog_counts(store: Any) -> dict[str, dict[str, Any]]:
     """Per-pass backlog counts: how many *claimable* chunks are waiting?
 
-    Each row maps to a worker pass and reports three disjoint tallies
-    over the pass's **eligible** universe (the chunks its claim query
-    would actually consider — see ``_*_SKIP_KINDS`` and the ``no_index``
-    / length / embedding gates above):
-
-    * ``done`` — has a terminal successful artifact for the current
-      ``content_sha`` (embeddings / summaries live in their own tables
-      per ADR 0007; keywords live in-place on ``chunks``).
-    * ``failed`` — has a terminal ``status='failed'`` row. The worker
-      treats these as *done* (a poison chunk must not loop, ADR 0007)
-      and never retries them, so they are neither progress nor
-      claimable work — they get their own bar. Keywords has no failure
-      state (it writes in place), so its ``failed`` is always 0.
-    * ``pending`` — eligible, not yet done, not failed, and *claimable
-      now*. **This is the real backlog**: ``pending = 0`` means the pass
-      is caught up. (The old panel counted skipped kinds, ``no_index``
-      chunks, and terminally-failed rows as pending, so it could never
-      reach 0.)
-    * ``blocked`` — eligible and not done, but waiting on an upstream
-      artifact so the pass can't claim it yet (``chunk_keywords`` only:
-      KeyBERT needs the chunk's embedding, so a chunk whose embed is
-      pending/failed is real keyword backlog, not "done"). Folding this
-      into eligibility (the old code) hid it, letting keywords read
-      "100% done" while a large backlog sat behind a stalled embed pass.
-      0 for embed/summarize (no upstream dependency).
-
-    ``total`` for the fraction is ``pending + done + failed`` (the
-    eligible universe), which differs per pass — keywords excludes
-    short + un-embedded chunks, so its universe is smaller than embed's.
-
-    The predicates mirror the worker claim SQL; on any query error we
-    surface the pass with ``pending = -1`` so the operator sees the
-    panel didn't lie and can dig in.
+    Thin wrapper over :func:`precis.health_checks.compute_backlog_counts`
+    (the shared "one liveness truth" — §D, ``health_digest`` reads the same
+    function) over the request-shared connection. See that function's
+    docstring for the pending/done/failed/blocked shape.
     """
-    rows: dict[str, dict[str, Any]] = {}
-
-    def _terminal_pass(
-        label: str,
-        output_table: str,
-        artifact_col: str,
-        artifact: str,
-        skip_kinds: tuple[str, ...],
-    ) -> None:
-        # embed / summarize: artifact lives in its own table keyed
-        # (chunk_id, artifact). A chunk is *done* only with a non-failed
-        # row whose content_sha matches (stale rows re-derive); a
-        # ``failed`` row is terminal. Eligible = not a skipped kind and
-        # not ``no_index`` — exactly the worker's claim filter.
-        sql = f"""
-            SELECT count(*) FILTER (WHERE elig)                   AS total,
-                   count(*) FILTER (WHERE elig AND st = 'ok')     AS done,
-                   count(*) FILTER (WHERE elig AND st = 'failed') AS failed
-              FROM (
-                SELECT
-                    (c.chunk_kind <> ALL(%(skip)s)
-                     AND (c.meta->>'no_index') IS DISTINCT FROM 'true') AS elig,
-                    (SELECT o.status
-                       FROM {output_table} o
-                      WHERE o.chunk_id = c.chunk_id
-                        AND o.{artifact_col} = %(artifact)s
-                        AND (o.status = 'failed'
-                             OR o.content_sha IS NOT DISTINCT FROM c.content_sha)
-                      LIMIT 1) AS st
-                  FROM chunks c
-              ) t
-        """
-        try:
-            with _connect(store) as conn:
-                r = conn.execute(
-                    sql, {"skip": list(skip_kinds), "artifact": artifact}
-                ).fetchone()
-            total, done, failed = int(r[0]), int(r[1]), int(r[2])
-            rows[label] = {
-                "pending": total - done - failed,
-                "done": done,
-                "failed": failed,
-            }
-        except Exception:
-            log.exception("status: backlog query for %s failed", label)
-            rows[label] = {"pending": -1, "done": 0, "failed": 0}
-
-    _terminal_pass(
-        "embed",
-        "chunk_embeddings",
-        "embedder",
-        _EMBED_ARTIFACT,
-        _EMBED_SKIP_KINDS,
-    )
-    _terminal_pass(
-        "summarize",
-        "chunk_summaries",
-        "summarizer",
-        _SUMMARIZE_ARTIFACT,
-        _SUMMARIZE_SKIP_KINDS,
-    )
-
-    # ``chunk_keywords`` writes in place on ``chunks`` and has a stricter
-    # claim filter: skip the non-prose kinds, require ``length(text) >=
-    # _MIN_CHUNK_CHARS``, skip ``no_index``, and — a hard gate — require a
-    # *current* ``bge-m3`` embedding (KeyBERT scores against it). A chunk
-    # eligible by its own properties but lacking that embedding is **blocked**,
-    # not done: it still needs keywords, it just has to wait for ``embed``
-    # first. Folding the embedding into *eligibility* (the old code) hid those
-    # chunks entirely, so the pass read "100% done" while a large keyword
-    # backlog sat behind a stalled embed pass. Instead: eligible = the chunk's
-    # own properties; split the not-done rows into ``pending`` (embedding ready
-    # → claimable now, preserves "pending 0 = caught up") and ``blocked``
-    # (waiting on embed). ``blocked`` gets its own bar segment.
-    try:
-        with _connect(store) as conn:
-            r = conn.execute(
-                """
-                SELECT
-                    count(*) FILTER (WHERE elig)                            AS total,
-                    count(*) FILTER (WHERE elig AND NOT pend)               AS done,
-                    count(*) FILTER (WHERE elig AND pend AND emb_ready)     AS pending,
-                    count(*) FILTER (WHERE elig AND pend AND NOT emb_ready) AS blocked
-                  FROM (
-                    SELECT
-                        (c.chunk_kind <> ALL(%(skip)s)
-                         AND length(c.text) >= %(minlen)s
-                         AND (c.meta->>'no_index') IS DISTINCT FROM 'true') AS elig,
-                        EXISTS (
-                               SELECT 1 FROM chunk_embeddings ce
-                                WHERE ce.chunk_id = c.chunk_id
-                                  AND ce.embedder = %(emb)s
-                                  AND ce.status = 'ok'
-                                  AND ce.content_sha
-                                      IS NOT DISTINCT FROM c.content_sha) AS emb_ready,
-                        (c.keywords IS NULL
-                         OR (c.keywords_meta->>'version') IS DISTINCT FROM %(kv)s
-                         OR (c.keywords_meta->>'content_sha')
-                             IS DISTINCT FROM c.content_sha) AS pend
-                      FROM chunks c
-                  ) t
-                """,
-                {
-                    "skip": list(_KEYWORDS_SKIP_KINDS),
-                    "minlen": _KEYWORDS_MIN_CHARS,
-                    "emb": _EMBED_ARTIFACT,
-                    "kv": _KEYWORDS_VERSION,
-                },
-            ).fetchone()
-        done, pending, blocked = int(r[1]), int(r[2]), int(r[3])
-        rows["chunk_keywords"] = {
-            "pending": pending,
-            "blocked": blocked,
-            "done": done,
-            "failed": 0,
-        }
-    except Exception:
-        log.exception("status: backlog query for chunk_keywords failed")
-        rows["chunk_keywords"] = {"pending": -1, "done": 0, "failed": 0}
-
-    # Stamp each pass with the timestamp of its last *productive* batch
-    # (``ok > 0``) from ``worker_logs`` so the panel can show "last
-    # done N ago" — useful for spotting a pass that's stalled even
-    # while pending sits flat. The chunks table carries no per-row
-    # "processed_at" (keywords write in place; embeddings/summaries
-    # live in their own tables) so the worker-pass log is the cheap,
-    # indexed source of "when did this pass last move".
-    #
-    # NB the chunk-level handlers (embed / summarize / chunk_keywords)
-    # all log under ``pass='runner'`` — the runner's own logger
-    # (``precis.workers.runner``), since ``pass`` is derived from the
-    # logger name, not the handler. The real pass name lives in
-    # ``payload->>'handler'`` (e.g. ``embed:bge-m3``,
-    # ``summarize:rake-lemma``, ``chunk_keywords``); match on the prefix
-    # before the first ``:`` so it lines up with the backlog keys. One
-    # indexed ``ORDER BY ts DESC LIMIT 1`` per pass — the
-    # ``(pass, ts DESC)`` index terminates early since these passes fire
-    # constantly — bounded to 6h so a *stalled* pass simply shows no
-    # timestamp rather than scanning all of history. Failure here is
-    # non-fatal — counts already rendered; we just skip the timestamp.
-    for pass_name in rows:
-        try:
-            with _connect(store) as conn:
-                row = conn.execute(
-                    """
-                    SELECT ts FROM worker_logs
-                     WHERE pass = 'runner'
-                       AND ts > now() - interval '6 hours'
-                       AND COALESCE((payload->>'ok')::int, 0) > 0
-                       AND split_part(payload->>'handler', ':', 1) = %s
-                     ORDER BY ts DESC
-                     LIMIT 1
-                    """,
-                    (pass_name,),
-                ).fetchone()
-            if row and row[0] is not None:
-                rows[pass_name]["last_ts"] = row[0]
-        except Exception:
-            log.exception("status: backlog last-done query for %s failed", pass_name)
-
-    return rows
+    with _connect(store) as conn:
+        return health_checks.compute_backlog_counts(conn)
 
 
 def _recent_agent_activity(store: Any, limit: int = 10) -> list[dict[str, Any]]:
@@ -839,49 +624,45 @@ def _liveness(store: Any) -> list[dict[str, Any]]:
 
     Answers "is it alive?" at a glance — when did the corpus last take
     in a paper, extract / index / summarise a chunk, ingest news, dream,
-    or deliver the briefing. Each signal is read independently so one
-    schema surprise degrades *that row* to "unknown" rather than
+    or deliver the briefing. Each signal is read independently (via the
+    shared :func:`precis.health_checks.fetch_freshness_timestamps` — the
+    same probe-runner ``health_digest``'s curated Layer-1 checks use) so
+    one schema surprise degrades *that row* to "unknown" rather than
     dropping the whole panel (mirrors :func:`_backlog_counts`). Only the
     scheduled-cadence signals (news / briefing) flag stale; the pipeline
     stages are informational since idle is normal on a quiet corpus.
     """
     out: list[dict[str, Any]] = []
     # One connection for all seven signals (was one *per* signal — seven
-    # round-trips). A signal that errors rolls back so the shared
-    # transaction is clean for the next; the failed signal still degrades
-    # to its own "unknown" row rather than dropping the panel.
+    # round-trips).
     with _connect(store) as conn:
-        for label, sql, stale_after_s in _LIVENESS_SIGNALS:
-            try:
-                row = conn.execute(sql).fetchone()
-                ts = row[0] if row else None
-            except Exception:
-                log.exception("status: liveness query for %s failed", label)
-                try:
-                    conn.rollback()
-                except Exception:
-                    log.exception("status: liveness rollback failed")
-                out.append(
-                    {
-                        "label": label,
-                        "ago": "—",
-                        "stale": False,
-                        "scheduled": stale_after_s is not None,
-                        "unknown": True,
-                    }
-                )
-                continue
-            age = _age_seconds(ts)
-            stale = stale_after_s is not None and (age is None or age > stale_after_s)
+        probes = health_checks.fetch_freshness_timestamps(
+            conn, [(label, sql) for label, sql, _budget in _LIVENESS_SIGNALS]
+        )
+    for label, _sql, stale_after_s in _LIVENESS_SIGNALS:
+        probe = probes[label]
+        if not probe.ok:
             out.append(
                 {
                     "label": label,
-                    "ago": _ago(ts) if ts is not None else "never",
-                    "stale": stale,
+                    "ago": "—",
+                    "stale": False,
                     "scheduled": stale_after_s is not None,
-                    "unknown": False,
+                    "unknown": True,
                 }
             )
+            continue
+        age = _age_seconds(probe.ts)
+        stale = stale_after_s is not None and (age is None or age > stale_after_s)
+        out.append(
+            {
+                "label": label,
+                "ago": _ago(probe.ts) if probe.ts is not None else "never",
+                "stale": stale,
+                "scheduled": stale_after_s is not None,
+                "unknown": False,
+            }
+        )
     return out
 
 

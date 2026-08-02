@@ -78,6 +78,20 @@ graph) — all ``critical``, so a *new* one pages once via
   daemon on that host is locked out of ``/opt/nas``. Almost always a Full
   Disk Access grant broken by a ``brew upgrade python`` cdhash change (see
   OPEN-ITEMS "melchior daemon NAS lockout").
+* **host-dark** (gr186752, §D) — a host's freshest ``host_heartbeat`` row is
+  stale past ``HOST_DARK_SILENCE_MIN``, bounded to hosts with any
+  ``worker_logs`` activity in the last ``HOST_DARK_LOOKBACK_DAYS`` (so a
+  decommissioned host — ``host_heartbeat`` is a latest-snapshot-per-host
+  UPSERT whose row lingers forever — ages out instead of alarming forever).
+  The complement of ``dead-worker``'s ``host_alive`` gate: since §A/§L the
+  heartbeat pass runs *inside* the same per-host worker it reports on
+  (``workers/heartbeat.py``, self-throttled, system profile), so on a
+  single-worker host a dead worker takes the heartbeat down with it — the
+  host drops out of ``host_alive`` and ``dead-worker`` self-suppresses
+  (by design, to avoid N-fold noise per dead daemon) exactly when the whole
+  host is down. ``host-dark`` is the one alert that case still needs: any
+  *surviving* worker elsewhere in the fleet runs nursery too, so it reports
+  the dark host.
 
 Each finding becomes an ``alert`` under ``alert_source =
 nursery:<category>``, deduped on ``fingerprint = "<category>:<ref_id>"``
@@ -198,6 +212,20 @@ WORKER_CONTINUOUS_PROCESSES = ("precis-worker", "precis-worker-agent")
 #: a genuinely-gone one. A real outage never self-silences inside this window.
 DEAD_WORKER_LOOKBACK_DAYS = 30
 
+#: A host's freshest ``host_heartbeat`` row older than this is dark — gr186752
+#: (§D, ``docs/proposals/health-watchdog.md``). Slightly wider than
+#: ``DEAD_WORKER_SILENCE_MIN`` (10 vs the daemon-level 10) since a host-level
+#: verdict should not trip on the same jitter a single-daemon check would;
+#: kept equal for now (no observed need to separate them) but named
+#: independently so they can diverge later without coupling the two detectors.
+HOST_DARK_SILENCE_MIN = 10
+
+#: How far back ``host-dark`` will still consider a host it once saw —
+#: mirrors :data:`DEAD_WORKER_LOOKBACK_DAYS` (the same ``worker_logs``
+#: retention floor): ``host_heartbeat`` is a latest-snapshot-per-host UPSERT,
+#: so a decommissioned host's row lingers forever without this bound.
+HOST_DARK_LOOKBACK_DAYS = 30
+
 #: A ``claude_inproc`` job (plan_tick / fix_gripe / news / briefing) sitting
 #: ``STATUS:queued`` longer than this while **nothing** is running is a stalled
 #: planner: minting is cluster-wide but *execution* is agent-profile-only
@@ -233,6 +261,7 @@ _SEVERITY: dict[str, str] = {
     "dispatch-stall": "critical",
     "orphaned-coordinator": "critical",
     "nas-denied": "critical",
+    "host-dark": "critical",
 }
 
 
@@ -271,6 +300,7 @@ _DETECTORS: tuple[tuple[str, Callable[[Store], list[Finding]]], ...] = (
     ("worker-restart", lambda s: _detect_worker_restart_storms(s)),
     ("dead-worker", lambda s: _detect_dead_workers(s)),
     ("nas-denied", lambda s: _detect_nas_denied(s)),
+    ("host-dark", lambda s: _detect_host_dark(s)),
     ("dispatch-stall", lambda s: _detect_dispatch_stalls(s)),
 )
 
@@ -1100,6 +1130,27 @@ def _detect_worker_restart_storms(store: Store) -> list[Finding]:
     ]
 
 
+def _platform_recovery_hint(platform: str | None) -> str:
+    """OS-aware daemon-restart command, shared by dead-worker + host-dark.
+
+    ``platform`` comes from ``host_heartbeat.meta->>'platform'``
+    (``platform.system()`` — ``"Darwin"``/``"Linux"``, title-cased),
+    normalized to lower-case before comparing so both naming conventions
+    land the same branch. Factored out of :func:`_dead_worker_detail`
+    (gr180078) so :func:`_host_dark_detail` (gr186752) doesn't duplicate
+    the OS hedge.
+    """
+    norm = (platform or "").lower()
+    if norm == "darwin":
+        return "Recover (macOS): `launchctl kickstart -k system/<label>`."
+    if norm.startswith("linux"):
+        return "Recover (Linux): `systemctl restart <unit>`."
+    return (
+        "Recover: `launchctl kickstart -k system/<label>` on macOS, "
+        "`systemctl restart <unit>` on Linux."
+    )
+
+
 def _dead_worker_detail(
     process: str, host: str, silent_h: float, platform: str | None
 ) -> str:
@@ -1119,17 +1170,38 @@ def _dead_worker_detail(
         "— the daemon is dead or wedged. If it is the agent worker, "
         "plan_tick / claude_inproc jobs stall cluster-wide. "
     )
-    norm = (platform or "").lower()
-    if norm == "darwin":
-        how = "Recover (macOS): `launchctl kickstart -k system/<label>`."
-    elif norm.startswith("linux"):
-        how = "Recover (Linux): `systemctl restart <unit>`."
-    else:
-        how = (
-            "Recover: `launchctl kickstart -k system/<label>` on macOS, "
-            "`systemctl restart <unit>` on Linux."
-        )
-    return base + how + " Or: `scripts/restart-worker-and-watch` (OS-agnostic)."
+    return (
+        base
+        + _platform_recovery_hint(platform)
+        + " Or: `scripts/restart-worker-and-watch` (OS-agnostic)."
+    )
+
+
+def _host_dark_detail(host: str, silent_h: float, platform: str | None) -> str:
+    """Hedged, OS-aware body for a host-dark finding (gr186752).
+
+    The complement of :func:`_dead_worker_detail`: since the heartbeat pass
+    runs *inside* the same per-host worker it reports on, a dead
+    single-writer host takes its own liveness signal down with it and drops
+    out of ``dead-worker``'s ``host_alive`` gate (by design, so one dead
+    host doesn't fan out into one alert per daemon it ran) — this is the one
+    alert that case still needs. ``platform`` comes from the stale
+    heartbeat row's own ``meta->>'platform'``, which persists even though
+    the row itself has gone stale.
+    """
+    base = (
+        f"{host}'s host_heartbeat has been silent {silent_h:.1f}h "
+        f"(> {HOST_DARK_SILENCE_MIN}min) — the host itself looks dark, not "
+        "just one daemon: the heartbeat pass runs inside the same worker "
+        "process it reports on, so a dead single-writer host takes its own "
+        "liveness signal down with it (gr186752). Every daemon on this host "
+        "is presumed dead until the heartbeat resumes. "
+    )
+    return (
+        base
+        + _platform_recovery_hint(platform)
+        + " Or: `scripts/restart-worker-and-watch` (OS-agnostic)."
+    )
 
 
 def _detect_dead_workers(store: Store) -> list[Finding]:
@@ -1150,6 +1222,17 @@ def _detect_dead_workers(store: Store) -> list[Finding]:
     the host — heartbeat is its own self-throttled pass, independent of the
     dead daemon, so it's the most reliable live signal for "what OS is this
     host" even while the daemon in question is silent.
+
+    ``host_alive`` (gr186752): since §A/§L, heartbeat is written by the
+    heartbeat worker *pass* (``workers/heartbeat.py``, system profile, 60s
+    in-proc throttle) running inside the very worker process it reports
+    on — it is NOT an independent watchdog on a separate lease. So on a
+    single-worker host, a dead worker takes ``host_heartbeat`` down with it
+    too: the host drops out of this CTE and every ``dead-worker`` finding
+    for it self-suppresses — by design, one host-level fact shouldn't fan
+    out into N per-daemon alerts. :func:`_detect_host_dark` is the deliberate
+    complement that still raises exactly one critical for that case (a stale
+    ``host_heartbeat`` row itself, not gated on any *other* liveness signal).
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
@@ -1240,6 +1323,54 @@ def _detect_nas_denied(store: Store) -> list[Finding]:
                     "`launchctl kickstart -k` the precis daemons. "
                     "See OPEN-ITEMS 'melchior daemon NAS lockout'."
                 ),
+            )
+        )
+    return out
+
+
+def _detect_host_dark(store: Store) -> list[Finding]:
+    """Hosts whose ``host_heartbeat`` itself has gone stale (gr186752).
+
+    The complement of ``dead-worker``'s ``host_alive`` gate (see that
+    function's docstring): a stale heartbeat row IS the host-dark signal —
+    no additional "is anything else alive" gate, since heartbeat going
+    silent while its own host is up would mean the heartbeat pass alone
+    died, which ``dead-worker`` already can't see either (heartbeat isn't in
+    ``WORKER_CONTINUOUS_PROCESSES``) and is the exact scenario this
+    detector exists to surface. Bounded to hosts with any ``worker_logs``
+    row in the last :data:`HOST_DARK_LOOKBACK_DAYS` so a decommissioned
+    host — whose ``host_heartbeat`` UPSERT row lingers forever — ages out
+    instead of alarming critical forever.
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT hh.host, hh.ts, hh.meta->>'platform' AS platform
+              FROM host_heartbeat hh
+             WHERE hh.ts < now() - (%(silence)s || ' minutes')::interval
+               AND EXISTS (
+                   SELECT 1 FROM worker_logs wl
+                    WHERE wl.host = hh.host
+                      AND wl.ts > now() - (%(lookback)s || ' days')::interval
+               )
+             ORDER BY hh.ts ASC
+             LIMIT 50
+            """,
+            {
+                "silence": HOST_DARK_SILENCE_MIN,
+                "lookback": HOST_DARK_LOOKBACK_DAYS,
+            },
+        ).fetchall()
+    out: list[Finding] = []
+    for host, ts, platform in rows:
+        silent = _hours_since(ts)
+        out.append(
+            Finding(
+                category="host-dark",
+                ref_id=None,
+                fingerprint_key=f"host-dark:{host}",
+                title=f"{host} host_heartbeat silent {silent:.1f}h",
+                detail=_host_dark_detail(str(host), silent, platform),
             )
         )
     return out
@@ -1354,6 +1485,8 @@ def _days_since(ts: datetime | None) -> float:
 
 __all__ = [
     "DISPATCH_STALL_MINUTES",
+    "HOST_DARK_LOOKBACK_DAYS",
+    "HOST_DARK_SILENCE_MIN",
     "LONG_WAIT_DAYS",
     "QUEST_LOOP_FAIL_24H",
     "SPIN_LOOP_EVENTS_24H",

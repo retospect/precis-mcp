@@ -263,6 +263,25 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-nursery-help",
     ),
     ServiceSpec(
+        # §D (docs/proposals/health-watchdog.md). Fleet-singleton via the
+        # `health_digest` scheduler cadence (workers/scheduler.py, hourly,
+        # host-agnostic) — NOT `default_profiles`, mirroring `dream_agent`
+        # below: a cadence-fired pass registers here only for a manual
+        # `--only health_digest` run; the standing trigger is the cadence's
+        # lease claim, so it does not also run every idle cycle on every
+        # system-profile host (that would need its own duplicate throttle,
+        # which §A's lease machinery already is).
+        name="health_digest",
+        label="Health digest (§D liveness net)",
+        category="health",
+        kind=ServiceKind.PASS,
+        ref_pass=True,
+        one_line="Periodic outcome-based liveness digest — Layer-1 curated "
+        "checks + cadence staleness + Layer-2 registry coherence, pushed "
+        "daily/on-degradation; pure template, no LLM.",
+        doc_skill="precis-health-digest-help",
+    ),
+    ServiceSpec(
         # §A: the collection+upsert core moved to workers/heartbeat.py so it
         # can run as a per-host pass too, not just the manual/timer-fired
         # `precis heartbeat` CLI. Deliberately NOT on scheduler_leases —

@@ -184,11 +184,20 @@ cheap-but-real pass is never flagged.
   SPOF, gripe 55748. The "nothing running" gate distinguishes a dead
   executor from a healthy-but-backlogged one; symptom-level, so it also
   catches an agent worker that never started — which has no log rows for
-  dead-worker to age). These three, plus `orphaned-coordinator` and the
+  dead-worker to age). These three, plus `orphaned-coordinator`, the
   host-level **nas-denied** (`_detect_nas_denied` — a host's fresh
   `host_heartbeat` reports `/opt/nas` unreadable from the reporter's own
-  launchd context; the FDA-grant-broke-on-brew-python-bump lockout), are the
-  `critical` categories — a thrashing/dead/stalled worker stalls the planner
+  launchd context; the FDA-grant-broke-on-brew-python-bump lockout), and
+  **host-dark** (`_detect_host_dark`, gr186752, §D — a host's OWN
+  `host_heartbeat` row itself gone stale, bounded to hosts with recent
+  `worker_logs` activity so a decommissioned host ages out: since §A/§L the
+  heartbeat pass runs *inside* the per-host worker it reports on, so a dead
+  single-writer host takes its own heartbeat down with it and drops out of
+  `dead-worker`'s `host_alive` gate — `dead-worker` self-suppresses there by
+  design, one dead host must not fan out into N per-daemon alerts, and
+  `host-dark` is the deliberate complement that still raises exactly one
+  critical for it), are the `critical` categories — a thrashing/dead/stalled
+  worker stalls the planner
   cluster-wide, so on the *first* sighting `raise_alert` (now returning
   `(ref_id, is_new)`) fires a one-shot `notify_critical_alert` — a
   `kind='message'` to `PRECIS_OPS_ALERT_TARGET`
@@ -205,6 +214,43 @@ cheap-but-real pass is never flagged.
   spin-loop finding set churns every second, so the old
   `(category, ref_id)` digest fingerprint changed every pass and the
   per-node per-minute writer emitted >2000 near-dup memories/day.)
+* `health_digest` (§D, `docs/proposals/health-watchdog.md`, Phase 1) — the
+  slow-rot sibling of nursery: SQL-only, no LLM, fired hourly via the
+  `health_digest` **scheduler-lease cadence** (`workers/scheduler.py`
+  CADENCES, host-agnostic — any live worker can win it; §A's lease
+  machinery IS the fleet-singleton throttle, no separate `app_state`
+  throttle invented). Three check sources: **curated Layer-1** outcome
+  checks (~13, budgets from the design doc's pulse-probe — papers/chunks/
+  news/casts/taproot/agent-jobs/hosts/alert-backlog; the two with a
+  natural backlog — `embed`/`chunk_keywords` — are **idle-aware** via
+  `precis.health_checks.compute_backlog_counts`, the same computation
+  `/status` renders, so an empty backlog reads `ok` and only a
+  non-draining one past budget reads `stale`; `chunks_extracted` is
+  body-row-only (`ord >= 0`) and input-aware, stale only when a paper
+  landed past budget newer than the newest body chunk, so a card_forge
+  rewrite can't mask a stalled extraction pipeline. No curated row for
+  `dream_agent`/`anki_sync` — a fixed budget would contradict the derived
+  cadence-staleness lane against a live-resolved interval); **cadence
+  staleness** (derived, every `scheduler_leases` row overdue past
+  `interval_s + margin`, zero per-cadence config — this is `dream_agent` /
+  `anki_sync`'s only check); **Layer-2 coherence** (derived, every
+  registered `PASS`+`ref_pass` `ServiceSpec` that resolves enabled —
+  structural default or a live `service_config` override — with zero
+  `worker_logs` in 24h reads "intended-on but silent", straight off the
+  registry so a new pass needs zero digest edits). Findings raise
+  `kind='alert'` under `alert_source="watchdog:<group>"` (severity capped
+  to info/warn — nursery keeps `critical`), auto-resolving via the same
+  `resolve_stale_alerts` sweep nursery uses. Push policy: a templated
+  (zero-LLM) `kind='message'` digest to `PRECIS_OPS_ALERT_TARGET` on the
+  daily heartbeat (`app_settings['health_digest:last_push']` > 24h — an
+  all-green push IS the dead-man's proof the watchdog is alive) or a
+  fresh degradation. After every eval, an external dead-man's-switch ping
+  (`PRECIS_DEADMAN_PING_URL`, via `safe_fetch.safe_get`) covers the one
+  case nothing DB-mediated can — a total fleet/DB outage; see
+  `docs/runbooks/dead-mans-switch.md`. `ServiceSpec` carries `ref_pass=True`
+  with no `default_profiles` (mirrors `dream_agent` — the manual `--only
+  health_digest` registration is separate from the cadence's standing
+  trigger). See `precis-health-digest-help`.
 * `structural` — opus, 6h dedup, agent profile. Drift, sibling
   contradictions, depth/fanout warnings. Dedup is symmetric: a **failed**
   dispatch (non-paused error — e.g. the agent container missing
@@ -559,11 +605,13 @@ worker pass and its own still-live timer, pending §L.)
   delegates to it too, no `sys.exit` in the shared core). The standalone
   30-min `com.precis.anki-sync` LaunchDaemon is retired; the pg advisory lock
   still serializes a cadence-fired tick against a concurrent manual run.
-* `cron_tick`/`watch_poll` are the other two `scheduler` cadences (§15i,
-  unpinned — any live worker can win them): `cron_tick` fires due recurring
-  (`meta.schedule` set) ticks (queue-mode spawn or `meta.deliver` push) via
-  `run_schedule_pass`, not the retired `kind='cron'` engine; `watch_poll`
-  polls S2 for citing papers. The `scheduler` pass itself is now default-on
+* `cron_tick`/`watch_poll`/`health_digest` are the other unpinned `scheduler`
+  cadences (§15i — any live worker can win them): `cron_tick` fires due
+  recurring (`meta.schedule` set) ticks (queue-mode spawn or `meta.deliver`
+  push) via `run_schedule_pass`, not the retired `kind='cron'` engine;
+  `watch_poll` polls S2 for citing papers; `health_digest` (§D, hourly)
+  fires one `health_digest` liveness-net eval — see the `Review tiers`
+  section above. The `scheduler` pass itself is now default-on
   for BOTH profiles (`registry.py`) — the agent profile must run it too, or
   the melchior-pinned cadences above never have an eligible claimant.
   Each heavy pass dedups on its tier-tagged memory and load-gates on

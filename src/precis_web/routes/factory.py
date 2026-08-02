@@ -34,6 +34,7 @@ from typing import Any
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import RedirectResponse
 
+from precis import health_checks
 from precis.budget import settings as budget_settings
 from precis.utils.llm import live_config
 from precis.utils.llm.router import Tier
@@ -327,30 +328,13 @@ def _config_rows(store: Any) -> list[tuple[str, str, int, str | None]]:
 def _activity(store: Any) -> dict[str, dict[str, Any]]:
     """handler -> {last_ok, last_fail} from ``worker_logs`` BatchResult rows.
 
-    Keyed by the ``payload.handler`` string (a pass's ``BatchResult.handler``,
-    which is what actually lands — not the logger-derived ``pass`` column),
-    so callers look it up via ``ServiceSpec.log_handler``. The numeric-guard
-    regex keeps the cast safe on non-BatchResult payloads.
+    Thin wrapper over :func:`precis.health_checks.activity_by_handler` (the
+    shared registry × worker_logs join truth — §D, ``health_digest``'s
+    Layer-2 "intended-on but silent" coherence check reads the same
+    function over a shorter window). See that function's docstring for the
+    exact shape.
     """
-    try:
-        with store.pool.connection() as conn:
-            cur = conn.execute(
-                "SELECT payload->>'handler' AS h, "
-                "  MAX(ts) FILTER ("
-                "    WHERE payload->>'ok' ~ '^[0-9]+$' "
-                "      AND (payload->>'ok')::int > 0) AS last_ok, "
-                "  MAX(ts) FILTER ("
-                "    WHERE payload->>'failed' ~ '^[0-9]+$' "
-                "      AND (payload->>'failed')::int > 0) AS last_fail "
-                "FROM worker_logs "
-                "WHERE payload ? 'handler' AND ts > now() - interval '7 days' "
-                "GROUP BY payload->>'handler'"
-            )
-            rows = cur.fetchall()
-    except Exception:
-        log.warning("factory: worker_logs activity read failed", exc_info=True)
-        return {}
-    return {h: {"last_ok": ok, "last_fail": fail} for h, ok, fail in rows}
+    return health_checks.activity_by_handler(store)
 
 
 def _llm_models(store: Any) -> list[str]:

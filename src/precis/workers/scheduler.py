@@ -150,6 +150,23 @@ def _run_anki_sync(store: Any, batch_size: int) -> None:
     log.info("scheduler: anki_sync — %s", summary)
 
 
+def _run_health_digest(store: Any, batch_size: int) -> None:
+    """One §D liveness-net eval, fired from the host-agnostic
+    ``health_digest`` cadence (any live worker can win it — unpinned, like
+    ``cron_tick``/``watch_poll``). ``batch_size`` is unused; the pass
+    evaluates every check each fire, same shape as ``dream_agent``'s
+    single-tick-per-fire cadence work."""
+    from precis.workers.health_digest import run_health_digest_pass
+
+    result = run_health_digest_pass(store)
+    log.info(
+        "scheduler: health_digest inner result claimed=%d ok=%d failed=%d",
+        result.claimed,
+        result.ok,
+        result.failed,
+    )
+
+
 def _dream_agent_eligible() -> bool:
     from precis.workers.dream_agent import eligible
 
@@ -195,6 +212,11 @@ def _dream_resolve_interval(store: Any) -> int:
 CADENCES: tuple[Cadence, ...] = (
     Cadence(name="cron_tick", interval_s=60, run=_run_cron_tick),
     Cadence(name="watch_poll", interval_s=3600, run=_run_watch_poll),
+    # §D (docs/proposals/health-watchdog.md): the liveness-net digest.
+    # Host-agnostic like cron_tick/watch_poll — any live worker can win it;
+    # §A's lease machinery IS the fleet-singleton throttle, so
+    # workers/health_digest.py doesn't invent its own.
+    Cadence(name="health_digest", interval_s=3600, run=_run_health_digest),
     Cadence(
         name="dream_agent",
         interval_s=15 * 60,

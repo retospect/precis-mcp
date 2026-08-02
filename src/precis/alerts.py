@@ -504,43 +504,39 @@ def _ops_alert_target() -> str:
     return os.environ.get(OPS_ALERT_TARGET_ENV, "")
 
 
-def notify_critical_alert(
-    store: Store, title: str, detail: str = "", *, fingerprint: str = ""
-) -> bool:
-    """Best-effort proactive push for a newly-raised critical alert.
+def queue_ops_message(store: Store, title: str, body: str, *, reason: str = "") -> bool:
+    """Best-effort push of ``body`` to the ops Discord channel.
 
-    Queues a ``kind='message'`` to the Discord channel configured by
+    Queues a ``kind='message'`` to the channel configured by
     ``PRECIS_OPS_ALERT_TARGET`` and fires ``pg_notify('precis.messages', …)``
-    in the same tx, as
-    ``MessageHandler.put`` / ``briefing._deliver`` do — asa_bot (the one
-    process holding a Discord socket) then posts it. Returns ``True`` if a
-    push was queued, ``False`` if no target is configured (the default —
-    dark until an operator wires the channel). Never raises: a failed push
-    must not break the detector pass. Call only on the *first* sighting of
-    a ``critical`` alert (``raise_alert`` → ``is_new``), so a standing
-    condition pages once, not every minute.
+    in the same tx, as ``MessageHandler.put`` / ``briefing._deliver`` do —
+    asa_bot (the one process holding a Discord socket) then posts it.
+    Returns ``True`` if a push was queued, ``False`` if no target is
+    configured (the default — dark until an operator wires the channel).
+    Never raises: a failed push must not break the caller's pass.
+
+    The shared push primitive behind :func:`notify_critical_alert` (a new
+    critical nursery finding) and ``health_digest``'s daily/on-degradation
+    digest (§D) — one delivery path, two callers.
     """
     from precis.store.types import BlockInsert
 
     target = _ops_alert_target().strip()
     if not target:
         return False
-    body = f"🚨 {title}"
-    if detail:
-        body += f"\n{detail}"
     try:
         with store.tx() as conn:
             meta = {
                 "target": target,
                 "status": "queued",
-                "reason": f"ops-alert {fingerprint or title}",
+                "reason": reason or title,
                 "author": "asa",
                 "proactive": True,
             }
             ref = store.insert_ref(
                 kind="message",
                 slug=None,
-                title=f"🚨 {title}"[:200],
+                title=title[:200],
                 meta=meta,
                 conn=conn,
             )
@@ -554,8 +550,32 @@ def notify_critical_alert(
                 (json.dumps({"ref_id": ref.id, "target": target, "author": "asa"}),),
             )
     except Exception:
-        log.warning("notify_critical_alert: push failed", exc_info=True)
+        log.warning("queue_ops_message: push failed", exc_info=True)
     return True
+
+
+def notify_critical_alert(
+    store: Store, title: str, detail: str = "", *, fingerprint: str = ""
+) -> bool:
+    """Best-effort proactive push for a newly-raised critical alert.
+
+    Thin wrapper over :func:`queue_ops_message` — see that function for the
+    delivery mechanics. Returns ``True`` if a push was queued, ``False`` if
+    no target is configured (the default — dark until an operator wires the
+    channel). Call only on the *first* sighting of a ``critical`` alert
+    (``raise_alert`` → ``is_new``), so a standing condition pages once, not
+    every minute.
+    """
+    title_with_siren = f"🚨 {title}"
+    body = title_with_siren
+    if detail:
+        body += f"\n{detail}"
+    return queue_ops_message(
+        store,
+        title_with_siren,
+        body,
+        reason=f"ops-alert {fingerprint or title}",
+    )
 
 
 __all__ = [
@@ -566,6 +586,7 @@ __all__ = [
     "STATE_RESOLVED",
     "list_open_alerts",
     "notify_critical_alert",
+    "queue_ops_message",
     "raise_alert",
     "resolve_alert",
     "resolve_stale_alerts",

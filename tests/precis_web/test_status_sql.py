@@ -16,9 +16,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from precis.health_checks import _KEYWORDS_VERSION
 from precis.store import Tag
 from precis_web.routes.status import (
-    _KEYWORDS_VERSION,
     _LIVENESS_SIGNALS,
     _automations,
     _background_anomalies,

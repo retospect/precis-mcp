@@ -181,7 +181,8 @@ The todo tree is the unified surface for *intent*, *execution*,
 | `precis-job-help` | The job substrate. New jobs require `parent_id` pointing at a todo |
 | `precis-fix-gripe-help` | First concrete job_type, end-to-end recipe |
 | `precis-proposal-help` | Write a proposal against a `kind='cfp'` call — intake, requirement link, section-by-section drafting, word-count checks |
-| `precis-nursery-help` | Hourly SQL-only review tier (`tier:nursery` memories) |
+| `precis-nursery-help` | Per-minute SQL-only review tier — incoherence + worker-health, `critical` pages |
+| `precis-health-digest-help` | Hourly slow-rot liveness digest — curated/derived checks, daily/on-degradation push |
 | `precis-wikipedia-help` | On-demand Wikipedia lookup + the `ORIGIN:wikipedia` search fence |
 
 PRIO sort key + 1/N rotation across active strategics + dedup-aware

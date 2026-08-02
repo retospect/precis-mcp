@@ -1902,6 +1902,22 @@ def run(args: argparse.Namespace) -> None:
 
             ref_passes.append(_dream_agent_pass)
 
+        # health_digest — §D (docs/proposals/health-watchdog.md). Same shape
+        # as dream_agent just above: this registration is for a manual/ad-hoc
+        # `--only health_digest` run only (no `default_profiles`, no
+        # `enable_env`). The STANDING trigger is the `health_digest`
+        # scheduler-lease cadence (workers/scheduler.py CADENCES, hourly,
+        # host-agnostic — any live worker can win it), which calls
+        # `run_health_digest_pass` directly.
+        if _register("health_digest"):
+            from precis.workers.health_digest import run_health_digest_pass
+            from precis.workers.runner import BatchResult as _BatchResult
+
+            def _health_digest_pass(batch_size: int) -> _BatchResult:
+                return run_health_digest_pass(store)
+
+            ref_passes.append(_health_digest_pass)
+
         # Real work before background I/O. The run loop is sequential
         # per cycle, so ordering is priority: job execution + planner
         # lifecycle must run ahead of slow fetch/enrichment/reviewer

@@ -278,6 +278,45 @@ def test_dream_agent_cadence_interval_db_override_wins(store, monkeypatch) -> No
     assert dream_cad.resolve_interval(store) == 180  # DB (3min) beats env (5min)
 
 
+def test_health_digest_cadence_is_host_agnostic_hourly(store) -> None:
+    """§D: the health_digest cadence has no host_affinity/eligible gate —
+    any live worker can win it, mirroring cron_tick/watch_poll — and fires
+    at the documented hourly interval."""
+    from precis.workers.scheduler import CADENCES
+
+    cad = next(c for c in CADENCES if c.name == "health_digest")
+    assert cad.interval_s == 3600
+    assert cad.host_affinity is None
+    assert cad.eligible is None
+    assert cad.resolve_interval is None
+
+
+def test_health_digest_cadence_fires_the_pass(store, monkeypatch) -> None:
+    """The cadence's ``run`` calls into ``run_health_digest_pass`` — cover
+    the wiring, not the pass's own behaviour (tested in
+    ``tests/workers/test_health_digest.py``)."""
+    from precis.workers.health_digest import DEADMAN_PING_URL_ENV
+    from precis.workers.scheduler import CADENCES
+
+    monkeypatch.delenv(DEADMAN_PING_URL_ENV, raising=False)
+    cad = next(c for c in CADENCES if c.name == "health_digest")
+    r = run_scheduler_pass(store, host="h", cadences=(cad,))
+    assert (r.claimed, r.ok, r.failed) == (1, 1, 0)
+
+
+def test_health_digest_service_spec_is_manual_only(store) -> None:
+    """§D: ``ref_pass=True`` for the totality-test wiring site, but NO
+    ``default_profiles`` — mirrors ``dream_agent``: the standing trigger is
+    the cadence's lease claim, not the default per-cycle rotation (which
+    would need its own duplicate throttle)."""
+    from precis.workers.registry import SERVICES_BY_NAME
+
+    spec = SERVICES_BY_NAME["health_digest"]
+    assert spec.ref_pass is True
+    assert spec.default_profiles == frozenset()
+    assert spec.enable_env is None
+
+
 def test_anki_sync_cadence_ineligible_by_default(store, monkeypatch) -> None:
     """``PRECIS_ANKI_ENABLED`` unset (the test default) ⇒ the ``anki_sync``
     cadence's ``eligible`` gate is False, so it never claims."""

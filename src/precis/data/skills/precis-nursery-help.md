@@ -41,6 +41,7 @@ Alerts dedup per *condition* instead.
 | `dead-worker` | a continuous daemon (`precis-worker` / `precis-worker-agent`) silent >threshold while its host is alive | 10 min · **critical** |
 | `dispatch-stall` | `claude_inproc` jobs `STATUS:queued` >threshold with **zero** live-lease jobs running (executor stopped claiming) | 15 min · **critical** |
 | `nas-denied` | a fresh `host_heartbeat` reports the NAS unreadable (EPERM) from the heartbeat's own launchd context — every launchd/cron daemon on that host is locked out of `/opt/nas` (usually a Full Disk Access grant broken by a `brew upgrade python` cdhash change) | <5 min · **critical** |
+| `host-dark` | a host's own `host_heartbeat` row is stale, bounded to hosts with recent `worker_logs` activity (gr186752 — the complement of `dead-worker`'s `host_alive` gate: a dead single-writer host takes its own heartbeat down with it, so `dead-worker` self-suppresses for it; `host-dark` is the one alert that case still needs) | 10 min · **critical** |
 
 `orphan` enforces the strategic invariant (knob #6 in the plan).
 `stale-claim` catches workers that died mid-task — the claim's age
@@ -57,12 +58,19 @@ panel for pull-style monitoring.
 
 The three **worker-health** detectors watch daemon liveness / work
 flow, not the todo graph; together with `orphaned-coordinator` and the
-host-level `nas-denied` (NAS unreadable from a host's launchd context)
-they make up the `critical` categories (a new one fires the one-shot
-Discord ping). `nas-denied` reads `host_heartbeat` (the reporter probes
-`/opt/nas` from its own launchd context each tick). `worker-restart` and
-`dead-worker` read `worker_logs`; `dispatch-stall` reads the job
-queue. `dispatch-stall` is the planner-SPOF guard: minting runs on
+host-level `nas-denied` / `host-dark` (NAS unreadable / heartbeat itself
+dark, from a host's launchd context) they make up the `critical`
+categories (a new one fires the one-shot Discord ping). `nas-denied` reads
+`host_heartbeat` (the reporter probes `/opt/nas` from its own launchd
+context each tick). `worker-restart` and `dead-worker` read `worker_logs`;
+`dispatch-stall` reads the job queue. `host-dark` also reads
+`host_heartbeat`, but the opposite way `dead-worker` gates on it: since
+§A/§L the heartbeat pass runs *inside* the very worker process it reports
+on, so a dead single-writer host's `host_heartbeat` goes stale right along
+with it — `dead-worker`'s `host_alive` gate then self-suppresses (one dead
+host must not fan out into an alert per daemon it ran), and `host-dark` is
+the deliberate complement that still raises exactly one critical for that
+case. `dispatch-stall` is the planner-SPOF guard: minting runs on
 every node, but a `plan_tick` can only *execute* on melchior's
 agent-profile worker, so if that executor dies / 401s / never starts,
 jobs pile up `STATUS:queued` with no failure bubble and the planner
@@ -155,6 +163,8 @@ alert rows). An operator preamble can read the open set via
 
 ## Related skills
 
+* `precis-health-digest-help` — the slow-rot, non-paging digest sibling
+  tier (§D) — outcome checks, cadence staleness, registry coherence
 * `precis-alert-help` — the `alert` kind (lifecycle, dedup, tab)
 * `precis-tasks-help` — the tree shape + level gradient
 * `precis-decomposition-help` — the GTD interrogation (Slice 2)

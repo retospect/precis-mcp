@@ -32,6 +32,8 @@ from precis.workers.nursery import (
     DEAD_WORKER_LOOKBACK_DAYS,
     DEAD_WORKER_SILENCE_MIN,
     DISPATCH_STALL_MINUTES,
+    HOST_DARK_LOOKBACK_DAYS,
+    HOST_DARK_SILENCE_MIN,
     LONG_WAIT_DAYS,
     ORPHANED_COORDINATOR_STALE_HOURS,
     PLAN_TICK_REMINT_24H,
@@ -44,6 +46,7 @@ from precis.workers.nursery import (
     _detect_child_failed_parked,
     _detect_dead_workers,
     _detect_dispatch_stalls,
+    _detect_host_dark,
     _detect_long_waits,
     _detect_nas_denied,
     _detect_orphaned_coordinator,
@@ -1069,6 +1072,58 @@ def test_dead_worker_ignores_periodic_process(store: Store) -> None:
 
     findings = _detect_dead_workers(store)
     assert not any(f.category == "dead-worker" and host in f.title for f in findings)
+
+
+def test_host_dark_fires_while_dead_worker_self_suppresses(store: Store) -> None:
+    """gr186752: a dead single-writer host raises host-dark critical — and
+    dead-worker, gated on host_alive, stays quiet for the same host (no
+    N-fold noise per daemon the dead host ran)."""
+    host = _host()
+    _seed_worker_log(
+        store, host, "precis-worker-agent", minutes_ago=DEAD_WORKER_SILENCE_MIN + 5
+    )
+    _seed_heartbeat(store, host, minutes_ago=HOST_DARK_SILENCE_MIN + 5)  # stale too
+
+    host_dark = _detect_host_dark(store)
+    key = f"host-dark:{host}"
+    hits = [f for f in host_dark if f.fingerprint_key == key]
+    assert len(hits) == 1
+    assert hits[0].category == "host-dark"
+    assert hits[0].ref_id is None
+    assert host in hits[0].title
+
+    dead_worker = _detect_dead_workers(store)
+    assert not any(
+        f.fingerprint_key == f"dead-worker:{host}:precis-worker-agent"
+        for f in dead_worker
+    )
+
+
+def test_host_dark_ignores_live_host(store: Store) -> None:
+    """A fresh heartbeat means the host itself is not dark."""
+    host = _host()
+    _seed_worker_log(store, host, "precis-worker", minutes_ago=1)
+    _seed_heartbeat(store, host, minutes_ago=0)
+
+    findings = _detect_host_dark(store)
+    assert not any(f.fingerprint_key == f"host-dark:{host}" for f in findings)
+
+
+def test_host_dark_ages_out_past_lookback(store: Store) -> None:
+    """A host with no worker_logs activity in HOST_DARK_LOOKBACK_DAYS is
+    decommissioned, not dark — its lingering host_heartbeat row must not
+    alarm forever."""
+    host = _host()
+    _seed_worker_log(
+        store,
+        host,
+        "precis-worker",
+        minutes_ago=(HOST_DARK_LOOKBACK_DAYS + 1) * 24 * 60,
+    )
+    _seed_heartbeat(store, host, minutes_ago=HOST_DARK_SILENCE_MIN + 5)
+
+    findings = _detect_host_dark(store)
+    assert not any(f.fingerprint_key == f"host-dark:{host}" for f in findings)
 
 
 def test_dead_worker_message_is_hedged_across_platforms() -> None:
