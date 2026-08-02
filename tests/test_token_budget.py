@@ -147,7 +147,11 @@ def test_tools_list_carries_every_seven_verb() -> None:
     ``tools/list`` enough to satisfy the byte budget while removing
     a verb the agent depends on.
     """
-    names = {tool["name"] for tool in _tools_list_wire_shape()}
+    names = {
+        name
+        for tool in _tools_list_wire_shape()
+        if isinstance((name := tool["name"]), str)
+    }
     for verb in ("get", "search", "put", "edit", "delete", "tag", "link"):
         assert verb in names, (
             f"verb {verb!r} missing from tools/list — registration "

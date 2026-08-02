@@ -170,9 +170,9 @@ class TexHandler(PlaintextHandler):
         # Compute the depth of the outermost section in this file so we
         # can render its hierarchy starting at the current indent.
         outer_levels = [
-            (b.meta or {}).get("section_level")
+            level
             for b in blocks
-            if (b.meta or {}).get("section_level") is not None
+            if (level := (b.meta or {}).get("section_level")) is not None
         ]
         outer_min = min(outer_levels) if outer_levels else 0
 

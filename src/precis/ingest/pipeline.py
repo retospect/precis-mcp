@@ -378,7 +378,7 @@ def extract_paper(
             abstract=metadata.abstract,
             keywords=metadata.keywords,
         )
-        pages = [b.get("page") for b in blocks if b.get("page") is not None]
+        pages = [p for b in blocks if (p := b.get("page")) is not None]
         pdf_pages_first = min(pages) if pages else None
         pdf_pages_last = max(pages) if pages else None
         page_count = len({p for p in pages if p is not None}) if pages else 0

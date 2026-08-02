@@ -65,12 +65,12 @@
    patterns; `store/_tags_ops.py::search_tags_lexical` already escapes
    `\ % _` — route through it, and add real-PG tests (FakeStore can't
    catch this class). *sonnet coder + test-author · effort S*
-5. **Finish the mypy burn-down.** `union-attr` re-enabled 2026-08-02 (211
-   errors fixed; 2 real reachable-None bugs found in `quest/allocator.py`
-   + `cli/migrate_refs.py`). 4 codes remain disabled
-   (`pyproject.toml [tool.mypy]`), counts at 2026-08-02: type-var (17),
-   assignment (31), operator (35), index (103) — one at a time, smallest
-   first. *sonnet, mechanical · effort M/code*
+5. **Finish the mypy burn-down.** `union-attr` + `type-var` re-enabled
+   2026-08-02 (228 errors fixed; 2 real reachable-None bugs found in
+   `quest/allocator.py` + `cli/migrate_refs.py`). 3 codes remain disabled
+   (`pyproject.toml [tool.mypy]`), counts at 2026-08-02: assignment (31),
+   operator (35), index (103) — one at a time, smallest first; delete the
+   `disable_error_code` list when the last one lands. *sonnet, mechanical · effort M/code*
 6. **Codify + sweep the real-PG-for-route-SQL policy.** The pattern
    (`test_status_sql.py` et al.) exists only where an incident forced it.
    Write the rule into `docs/conventions/testing.md` ("raw SQL ⇒ a

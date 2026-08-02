@@ -360,11 +360,7 @@ def _llm_models(store: Any) -> list[str]:
     except Exception:
         return []
     ids = sorted(
-        {
-            (c.meta or {}).get("model_id")
-            for c in cards
-            if (c.meta or {}).get("model_id")
-        }
+        {model_id for c in cards if (model_id := (c.meta or {}).get("model_id"))}
     )
     return [str(i) for i in ids]
 

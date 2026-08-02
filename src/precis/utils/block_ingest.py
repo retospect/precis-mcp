@@ -55,12 +55,20 @@ class ParsedTextBlock(Protocol):
 
     Both :class:`precis.utils.md_parse.MdBlock` and
     :class:`precis.utils.plaintext_parse.PlaintextBlock` satisfy this
-    protocol structurally — no explicit inheritance needed.
+    protocol structurally — no explicit inheritance needed. Declared as
+    read-only properties (not plain attributes) because both concrete
+    block types are frozen dataclasses; a plain-attribute protocol
+    demands settability and mypy rejects frozen fields against it.
     """
 
-    pos: int
-    slug: str
-    text: str
+    @property
+    def pos(self) -> int: ...
+
+    @property
+    def slug(self) -> str: ...
+
+    @property
+    def text(self) -> str: ...
 
 
 # Bound TypeVar so ``meta_for`` stays in agreement with the concrete

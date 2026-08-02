@@ -438,6 +438,9 @@ async def index(
         # Floor to what's actually on the page: the fused ranking can surface
         # semantic-only hits the lexical count misses, so without this the
         # header could read the absurd "showing 30 of ~5".
+        # (store is untyped Any, so mypy can't see count_blocks_lexical's
+        # `-> int`; both branches above always set an int, never None.)
+        assert isinstance(result_total, int)
         result_total = max(result_total, offset + len(rows))
     else:
         # The default top level hides anything filed into a folder — a
