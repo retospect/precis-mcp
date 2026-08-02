@@ -1931,11 +1931,17 @@ The master kinds table lives in the `precis-overview` skill.
   (`/skeleton`,`/rows`,`/row`,`/version`,`/wordcount`,`/find`,`/around`,
   `/listkind`,`/style`,`/prompt`,`/todo/*`) and templates (`detail`/`_row*`/
   `prompt_preview`) were removed. Smartdraft's **fisheye** mode is budget-bounded
-  (`_TOC_BUDGET`); its **full-document** mode (📄, `relevance=0`) renders a
-  window around the focus and lazily hydrates distant chunks on scroll
-  (IntersectionObserver → `GET /smartdraft/{ident}/blocks`, `_FULLDOC_WINDOW`),
-  so a 10k-chunk draft loads O(window), not O(N). `precis_web` is a sibling
-  package over the handlers (ADR 0026).
+  (`_TOC_BUDGET`); its **full-document** mode (📄, `relevance=0`, **now the
+  default**) renders a window around the focus and lazily hydrates distant
+  chunks on scroll (IntersectionObserver → `GET /smartdraft/{ident}/blocks`,
+  `_FULLDOC_WINDOW`), so a 10k-chunk draft loads O(window), not O(N).
+  **Keyboard** (`view.html.j2`, all client-side): `/` search · `p` pin ·
+  arrows/Tab outline-walk · `i`/`Enter` edit the focus block (Esc leaves, via
+  ProseMirror) · **`R`** starts an in-place Spritz/RSVP reader — walks words
+  from the focus onward at a WPM rate, decorating each word in place (green box +
+  red ORP pivot) and auto-scrolling, growing its stream as full-doc placeholders
+  hydrate ahead (R pause/resume · Esc exit · +/- speed · ↑↓ ¶ · ←→ sentence ·
+  Space next ¶). `precis_web` is a sibling package over the handlers (ADR 0026).
   **Export can bundle the cited sources** (`export/sources.py`,
   `collect_cited_sources`/`build_sources_zip`): the reader's `+ sources`
   checkbox appends every cited paper/datasheet PDF the host holds to the PDF as

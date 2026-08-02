@@ -1,15 +1,17 @@
-"""Smartdraft tab — the fisheye-rail reader.
+"""Smartdraft — the (sole, live) fisheye-rail draft reader.
 
-A **parallel** surface to `/drafts`: same draft data, a different lens. Three
-panes — left (fisheye TOC nav), middle (the focus + its neighbourhood), right
-(collaboration: the working set + a request box). It reuses the shipped
-`/drafts/{ident}/marks` + `/request-ws` endpoints, and touches nothing in the
-working reader, so it ships dark by construction.
+Three panes — left (fisheye TOC nav), middle (the focus + its neighbourhood),
+right (collaboration: the working set + a request box). The classic
+virtual-scroll `/drafts` reader was **retired**; this is now the only draft
+reader and every draft deep link redirects in here. It reuses ~20
+`/drafts/{ident}/…` backend endpoints (editing / export / figure / lifecycle,
+plus `/marks`, `/request-ws`, `/human-review`, `/review`).
 
-Slice 1 is **server-rendered**: the focus is a query param (`?focus=dc<id>`), a
-TOC click reloads at that focus. The relevance overlay (fisheye-collapse of quiet
-runs) toggles via `?relevance=0`. Smoothing this to a client-side no-reload fisheye
-+ hover-expand is a later slice.
+The focus is a query param (`?focus=dc<id>`). Navigation is client-side and
+no-reload: a TOC/result click swaps only `#sd-content` (see `view.html.j2`).
+Two view modes — **fisheye** (relevance-collapse of quiet runs, budget-bounded)
+and **full document** (📄, `?relevance=0`, the default) which renders a window
+around the focus and lazily hydrates distant chunks on scroll.
 """
 
 from __future__ import annotations
@@ -68,7 +70,7 @@ async def reader(
     request: Request,
     ident: str,
     focus: str = "",
-    relevance: str = "1",
+    relevance: str = "0",
     q: str = "",
     sig: str = _SIGNALS,
     sview: str = "list",

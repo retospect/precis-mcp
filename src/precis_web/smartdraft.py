@@ -21,8 +21,10 @@ densities — the left TOC (whole map, thin, quiet runs collapsed), the middle
 + view-model; the route (`routes/smartdraft.py`) serializes it to HTML and the
 same ranking is what an MCP `focus` verb would serialize to text.
 
-Ships parallel to `/drafts` (a new route, same data) so it never touches the
-working reader — dark by construction.
+This is now the **sole** draft reader: the classic virtual-scroll `/drafts`
+reader was retired and every draft deep link redirects into `/smartdraft`
+(see `docs/architecture/state-map.md`). `routes/drafts.py` remains only as the
+shared editing/export/figure/lifecycle backend this reader reuses.
 """
 
 from __future__ import annotations

@@ -111,6 +111,16 @@
      the review is stale (text changed since). */
   .sd-review.on { color: #059669; }      /* emerald-600 — reviewed */
   .sd-review.dirty { color: #d97706; }   /* amber-600 — stale review */
+  /* Spritz reader (RSVP, key: R): the current word gets a green box + a red
+     ORP pivot letter, decorated in place over the real text; auto-scroll keeps
+     it centred. #rsvp-hud is the fixed control-hint pill. */
+  .rsvp-cur { background: #dcfce7; border-radius: 2px;
+    box-shadow: inset 0 -0.18em 0 #22c55e; padding: 0 1px; }   /* emerald-100 + green-500 bar */
+  .rsvp-orp { color: #dc2626; font-weight: 700; }              /* red-600 pivot */
+  #rsvp-hud { position: fixed; left: 50%; bottom: 1rem; transform: translateX(-50%);
+    z-index: 60; padding: .35rem .8rem; border-radius: 9999px; font-size: 11px;
+    background: rgba(15, 23, 42, .92); color: #e2e8f0; white-space: nowrap;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, .25); pointer-events: none; }
   /* Per-paragraph grounding provenance (a corpus cite / a chased finding /
      nothing) — a subtle left border in the middle reading pane, a small
      dot in the left TOC. Colours: emerald/amber/rose, matching the
@@ -727,8 +737,10 @@
     </div>
   </div>
 
-  {# nav state travels INSIDE #sd-content so a swap carries the fresh values #}
-  <script type="application/json" id="sd-state">{{ {"order": view.order, "hits": (hits | map(attribute='node') | map(attribute='dc') | list), "focus": focus_dc, "q": q} | tojson }}</script>
+  {# nav state travels INSIDE #sd-content so a swap carries the fresh values.
+     focusHandle (base58) lets the keyboard reach the focus block's inline
+     editor via window.__dEditors (i / Enter → startEdit). #}
+  <script type="application/json" id="sd-state">{{ {"order": view.order, "hits": (hits | map(attribute='node') | map(attribute='dc') | list), "focus": focus_dc, "focusHandle": (view.focus.base58 if view.focus else ""), "q": q} | tojson }}</script>
 </div>
 
 <script>
@@ -989,9 +1001,180 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
   // now handled shared-side (gripe 56806, ``linkify._anchor_html`` teleports
   // ``.ref-popover`` to <body> and computes its own fixed coords) — no
   // per-page mitigation needed here any more.
+  // ── Spritz-style in-place reader (RSVP) ─────────────────────────────────
+  // `R` walks the document word-by-word from the focus onward at a WPM rate,
+  // highlighting each word IN PLACE (green box) with its optimal-recognition
+  // point (the "pivot" letter) marked red, auto-scrolling to follow. No overlay
+  // — it decorates the real rendered text (same TreeWalker idea as highlightTerm)
+  // and grows the word stream as full-doc placeholders hydrate ahead of the
+  // cursor. Controls while on: R pause/resume · Esc exit · +/- speed · ↑↓
+  // paragraph · ←→ sentence · Space next paragraph. Exit re-fetches the panel,
+  // which wipes the injected spans.
+  const RSVP = { on: false, playing: false, wpm: 300, words: [], idx: 0,
+                 cur: null, timer: null, stall: 0 };
+  const _esc = (s) => s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  const _pivot = (n) => (n <= 1 ? 0 : n <= 5 ? 1 : n <= 9 ? 2 : n <= 13 ? 3 : 4);  // Spritz table
+  function _orpHtml(w) {
+    const p = _pivot(w.length);
+    return _esc(w.slice(0, p)) + '<b class="rsvp-orp">' + _esc(w[p] || '') + '</b>' + _esc(w.slice(p + 1));
+  }
+  // Where a block's readable prose lives: the focus's display div, or the block itself.
+  const _readEl = (el) => (el.id === 'mid-focus' ? (el.querySelector('.whitespace-pre-wrap') || el) : el);
+  const _blockDc = (el) => (el.id === 'mid-focus' ? ST.focus : el.getAttribute('data-dc'));
+  // The focus block + every full-text neighbour after it, in reading order.
+  function _rsvpBlocks() {
+    const mid = document.getElementById('mid-focus');
+    if (!mid || !mid.parentElement) return [];
+    const els = Array.from(mid.parentElement.querySelectorAll(':scope > #mid-focus, :scope > [data-dc]'));
+    const s = els.indexOf(mid);
+    return s < 0 ? els : els.slice(s);
+  }
+  // Wrap each word of a block in a <span> (skipping citation <a>s, math, controls),
+  // pushing them onto RSVP.words. Idempotent per block (__rsvpTok guard).
+  function _tokenize(el) {
+    const target = _readEl(el);
+    if (!target || target.__rsvpTok) return false;
+    target.__rsvpTok = true;
+    const dc = _blockDc(el);
+    const walker = document.createTreeWalker(target, NodeFilter.SHOW_TEXT, {
+      acceptNode(n) {
+        const p = n.parentNode;
+        if (!p || !n.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
+        if (['A', 'BUTTON', 'INPUT', 'TEXTAREA', 'SCRIPT', 'STYLE', 'MARK'].includes(p.tagName)) return NodeFilter.FILTER_REJECT;
+        if (p.closest && p.closest('.katex')) return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      },
+    });
+    const nodes = []; while (walker.nextNode()) nodes.push(walker.currentNode);
+    let any = false;
+    nodes.forEach((n) => {
+      const frag = document.createDocumentFragment();
+      n.nodeValue.split(/(\s+)/).forEach((part) => {
+        if (!part) return;
+        if (/^\s+$/.test(part)) { frag.appendChild(document.createTextNode(part)); return; }
+        const sp = document.createElement('span');
+        sp.className = 'rsvp-w'; sp.textContent = part;
+        frag.appendChild(sp);
+        RSVP.words.push({ span: sp, dc, sent: 0 });
+        any = true;
+      });
+      n.parentNode.replaceChild(frag, n);
+    });
+    return any;
+  }
+  // Re-sort by DOM order (blocks can hydrate out of order) and re-number
+  // sentences; keep RSVP.idx pointing just past the current word.
+  function _resort() {
+    RSVP.words.sort((a, b) =>
+      (a.span.compareDocumentPosition(b.span) & Node.DOCUMENT_POSITION_FOLLOWING) ? -1 : 1);
+    let s = 0;
+    RSVP.words.forEach((w) => { w.sent = s; if (/[.!?]["')\]]*$/.test(w.span.textContent)) s++; });
+    if (RSVP.cur) { const i = RSVP.words.indexOf(RSVP.cur); if (i >= 0) RSVP.idx = i + 1; }
+  }
+  // Tokenize freshly-rendered forward blocks; if the next is still a lazy
+  // placeholder, scroll it into view to trip the doc-hydrator and report back
+  // so tick() waits for it.
+  function _grow() {
+    let added = false, sawPh = false;
+    for (const el of _rsvpBlocks()) {
+      if (el.hasAttribute && el.hasAttribute('data-ph')) { sawPh = true; el.scrollIntoView({ block: 'center' }); break; }
+      if (_tokenize(el)) added = true;
+    }
+    if (added) _resort();
+    return { added, sawPh };
+  }
+  function _decorate(sp) { sp.classList.add('rsvp-cur'); sp.dataset.w = sp.textContent; sp.innerHTML = _orpHtml(sp.textContent); }
+  function _undecorate(sp) { sp.classList.remove('rsvp-cur'); if (sp.dataset.w != null) sp.textContent = sp.dataset.w; }
+  function _scrollWord(sp) { const r = sp.getBoundingClientRect(); if (r.top < 100 || r.bottom > window.innerHeight - 100) sp.scrollIntoView({ block: 'center' }); }
+  function rsvpTick() {
+    RSVP.timer = null;
+    if (!RSVP.on || !RSVP.playing) return;
+    if (RSVP.idx >= RSVP.words.length) {
+      const g = _grow();
+      if (RSVP.idx >= RSVP.words.length) {
+        if (g.sawPh && RSVP.stall++ < 25) { RSVP.timer = setTimeout(rsvpTick, 150); return; }
+        RSVP.playing = false; _rsvpHud(); return;   // end of document — park on the last word
+      }
+    }
+    RSVP.stall = 0;
+    if (RSVP.cur) _undecorate(RSVP.cur);
+    const w = RSVP.words[RSVP.idx];
+    RSVP.cur = w; _decorate(w.span); _scrollWord(w.span);
+    RSVP.idx++;
+    RSVP.timer = setTimeout(rsvpTick, Math.round(60000 / RSVP.wpm));
+  }
+  const _curIdx = () => (RSVP.cur ? Math.max(0, RSVP.words.indexOf(RSVP.cur)) : 0);
+  function _rsvpShow(j) {
+    j = Math.max(0, Math.min(j, RSVP.words.length - 1));
+    if (RSVP.cur) _undecorate(RSVP.cur);
+    const w = RSVP.words[j]; RSVP.cur = w; _decorate(w.span); _scrollWord(w.span);
+    RSVP.idx = j + 1; RSVP.stall = 0;
+  }
+  function rsvpJumpPara(dir) {
+    if (!RSVP.words.length) return;
+    const i = _curIdx(), dc = RSVP.words[i].dc;
+    if (dir > 0) {
+      let j = i; while (j < RSVP.words.length && RSVP.words[j].dc === dc) j++;
+      if (j >= RSVP.words.length) { _grow(); while (j < RSVP.words.length && RSVP.words[j].dc === dc) j++; }
+      _rsvpShow(Math.min(j, RSVP.words.length - 1));
+    } else {
+      let j = i; while (j > 0 && RSVP.words[j].dc === dc) j--;                       // last word of prev para
+      const pdc = RSVP.words[j].dc; while (j > 0 && RSVP.words[j - 1].dc === pdc) j--;  // its first word
+      _rsvpShow(j);
+    }
+  }
+  function rsvpJumpSent(dir) {
+    if (!RSVP.words.length) return;
+    const i = _curIdx(), s = RSVP.words[i].sent;
+    if (dir > 0) { let j = i; while (j < RSVP.words.length && RSVP.words[j].sent === s) j++; _rsvpShow(Math.min(j, RSVP.words.length - 1)); }
+    else { let j = i; while (j > 0 && RSVP.words[j].sent === s) j--; const ps = RSVP.words[j].sent; while (j > 0 && RSVP.words[j - 1].sent === ps) j--; _rsvpShow(j); }
+  }
+  function rsvpWpm(d) { RSVP.wpm = Math.max(100, Math.min(1000, RSVP.wpm + d)); _rsvpHud(); }
+  function rsvpToggle() {
+    if (RSVP.playing) { RSVP.playing = false; clearTimeout(RSVP.timer); RSVP.timer = null; _rsvpHud(); }
+    else { RSVP.playing = true; _rsvpHud(); rsvpTick(); }
+  }
+  function rsvpStart() {
+    if (RSVP.on) return;
+    RSVP.on = true; RSVP.playing = true; RSVP.idx = 0; RSVP.cur = null; RSVP.stall = 0; RSVP.words = [];
+    _grow(); _resort();
+    if (!RSVP.words.length) { RSVP.on = false; return; }
+    _rsvpHud(); rsvpTick();
+  }
+  function rsvpExit() {
+    clearTimeout(RSVP.timer); RSVP.timer = null;
+    const dc = RSVP.cur ? RSVP.cur.dc : null;
+    RSVP.on = false; RSVP.playing = false; RSVP.words = []; RSVP.cur = null; RSVP.idx = 0;
+    const hud = document.getElementById('rsvp-hud'); if (hud) hud.remove();
+    // Re-fetch the panel to wipe the injected word-spans and re-focus the para
+    // we stopped on (navTo swaps #sd-content, so the spans vanish with it).
+    if (dc) navTo(dc); else __sdRefresh();
+  }
+  function _rsvpHud() {
+    let hud = document.getElementById('rsvp-hud');
+    if (!hud) { hud = document.createElement('div'); hud.id = 'rsvp-hud'; document.body.appendChild(hud); }
+    hud.textContent = (RSVP.playing ? '▶' : '⏸') + ' ' + RSVP.wpm + ' wpm  ·  R ' +
+      (RSVP.playing ? 'pause' : 'play') + '  ·  Esc exit  ·  +/− speed  ·  ↑↓ ¶  ·  ←→ sentence';
+  }
+  function rsvpKey(e) {
+    switch (e.key) {
+      case 'r': case 'R': e.preventDefault(); rsvpToggle(); return true;
+      case 'Escape': e.preventDefault(); rsvpExit(); return true;
+      case '+': case '=': e.preventDefault(); rsvpWpm(25); return true;
+      case '-': case '_': e.preventDefault(); rsvpWpm(-25); return true;
+      case 'ArrowDown': e.preventDefault(); rsvpJumpPara(1); return true;
+      case 'ArrowUp': e.preventDefault(); rsvpJumpPara(-1); return true;
+      case 'ArrowRight': e.preventDefault(); rsvpJumpSent(1); return true;
+      case 'ArrowLeft': e.preventDefault(); rsvpJumpSent(-1); return true;
+      case ' ': e.preventDefault(); rsvpJumpPara(1); return true;   // Space → next ¶ (the "spacing out" catch-up)
+      default: return false;
+    }
+  }
   document.addEventListener('keydown', (e) => {
     const t = document.activeElement;
     const inField = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
+    // The reader owns the keyboard while it's on (unless you're typing in a field).
+    if (RSVP.on && !inField) { rsvpKey(e); return; }
     if (e.key === 'Escape' && ST.q) { e.preventDefault(); clearSearch(); return; }
     if (e.key === '/' && !inField) {   // focus the search box
       e.preventDefault();
@@ -1000,6 +1183,15 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
       return;
     }
     if (inField) return;
+    if (e.key === 'r' || e.key === 'R') { e.preventDefault(); rsvpStart(); return; }   // start the reader
+    // i / Enter → open the focus block's inline editor (Esc leaves it, via ProseMirror).
+    if (e.key === 'i' || e.key === 'Enter') {
+      // Enter must not double-fire on a deliberately focused link/button.
+      if (e.key === 'Enter' && t && t !== document.body) return;
+      const ed = window.__dEditors && window.__dEditors[ST.focusHandle];
+      if (ed && !ed.editing) { e.preventDefault(); ed.startEdit(); return; }
+      if (e.key === 'i') { e.preventDefault(); return; }   // no editable focus → swallow
+    }
     if (e.key === 'p' || e.key === 'P') {   // toggle pin/unpin the focus
       e.preventDefault();
       fetch(`/drafts/${IDENT}/marks`, {
