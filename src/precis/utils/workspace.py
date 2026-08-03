@@ -113,7 +113,10 @@ class Workspace:
     @classmethod
     def from_meta(cls, meta: dict[str, Any] | None) -> Workspace | None:
         """Parse a ``meta.workspace`` block into a Workspace, or None."""
-        if not meta:
+        # ``meta`` is contracted as ``dict | None`` but a malformed ref can
+        # carry a JSON scalar (e.g. a bare string) — guard on the type, not
+        # just truthiness, so one bad ref can't 500 the whole /tasks page.
+        if not isinstance(meta, dict):
             return None
         ws = meta.get("workspace")
         if not ws or not isinstance(ws, dict):

@@ -75,6 +75,18 @@ def test_workspace_voice_round_trips() -> None:
     assert "voice" not in plain.to_meta()
 
 
+def test_workspace_from_meta_tolerates_non_dict_meta() -> None:
+    # A malformed ref can carry a JSON scalar as ``meta`` (a bare string,
+    # not an object). ``from_meta`` must degrade to None rather than crash
+    # on ``str.get`` — one bad ref was 500-ing the whole /tasks dashboard.
+    assert Workspace.from_meta(None) is None
+    assert Workspace.from_meta({}) is None
+    assert Workspace.from_meta("just a string") is None  # type: ignore[arg-type]
+    assert Workspace.from_meta(["a", "list"]) is None  # type: ignore[arg-type]
+    # A non-dict ``workspace`` value inside a valid dict is still None.
+    assert Workspace.from_meta({"workspace": "not-a-block"}) is None
+
+
 def test_workspace_project_tag_property() -> None:
     ws = Workspace(path="projects/demo", format="tex", entrypoint="main.tex")
     assert ws.project_tag == "project:demo"
