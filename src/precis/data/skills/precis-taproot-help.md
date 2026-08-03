@@ -2,7 +2,7 @@
 id: precis-taproot-help
 title: precis — the cross-paper claim-evidence graph (Taproot)
 summary: claim hubs (finding tagged TAPROOT:claim) aggregate many papers as typed evidence edges; [fi<id>] is a living citation that resolves to the current best originator(s)
-applies-to: get/search (kind='finding', tags=['TAPROOT:claim'], view='evidence'); citing [fi<id>] in prose; put/edit/link(kind='finding'|'draft') hub-authoring doors; precis taproot mint / refine / backfill (CLI equivalents)
+applies-to: get/search (kind='finding', tags=['TAPROOT:claim'], view='evidence'); citing [fi<id>] in prose; put/link(kind='finding') hub-authoring doors; put(kind='job', job_type='taproot_backfill') for draft backfill; precis taproot mint / refine / backfill (CLI equivalents)
 status: active
 ---
 
@@ -90,31 +90,30 @@ near this chunk."
 ## Turn a draft's [pc<id>] cites into a hub cite
 
 Most legacy prose cites raw paper chunks (`[pc<id>]`), written before claim
-hubs existed. `edit(kind='draft', taproot=True, ...)` converts a scope's
-`[pc<id>]` (and `[pa<id>]`, below) cites into hub `[fi<id>]` cites —
-**preview by default**:
+hubs existed. Convert a draft scope's `[pc<id>]` (and `[pa<id>]`, below) cites
+into hub `[fi<id>]` cites by **enqueuing a `taproot_backfill` job**. The cascade
+is LLM-heavy (`extract → block → dedup_judge → place`) and by design runs on the
+cluster worker — **never in the MCP process**; the verb only mints the job:
 
 ```python
-edit(kind="draft", id="dc1652005", taproot=True)  # preview: report the plan
-edit(
-    kind="draft", id="dc1652005", taproot=True, apply=True
-)  # mint/converge + rewrite prose
-edit(
-    kind="draft", id="my-draft-slug", taproot=True, apply=True
-)  # every body chunk in the draft
+put(kind="job", job_type="taproot_backfill", params={"scope": "my-draft-slug"})
+# → mints job jo<id>; poll it:
+get(kind="job", id="jo<id>")  # job_event stream + [pc]→[fi] landing as it runs
 ```
 
-`id=` is the **scope**: a draft slug converts every body chunk, a `dc<id>`
-heading converts its section, a `dc<id>` leaf converts one chunk.
-`dry_run=` isn't accepted here (rejected, same as `sub=`) —
-`taproot=True` previews by default, `apply=True` commits. The CLI form
-(`precis taproot backfill`) is the equivalent for a shell / batch run
-outside an agent session:
+`params.scope` is a draft slug (every body chunk), a `dc<id>` heading (its
+section), or a `dc<id>` leaf (one chunk); `params.ref_level` (default false)
+controls the `[pa]` arm (below). The job runs **serially and checkpointed** on
+the melchior agent worker: one chunk at a time (so hub convergence sees a stable
+committed set — no parallel near-duplicate race), progress recorded in
+`meta.done_chunk_ids`, and a re-claim resumes where it left off. **There is no
+preview** — the prose rewrite is a DELETE+INSERT through the draft edit door, so
+the chunk history is the undo if a conversion is wrong. The CLI form runs the
+same cascade in a shell / batch context:
 
 ```bash
-precis taproot backfill --chunk dc1652005              # dry-run: report the plan
-precis taproot backfill --chunk dc1652005 --apply      # mint/converge + rewrite prose
-precis taproot backfill --draft my-draft-slug          # every body chunk in a draft
+precis taproot backfill --chunk dc1652005 --apply   # one chunk / section
+precis taproot backfill --draft my-draft-slug       # every body chunk in a draft
 ```
 
 It anchors on the `[pc<id>]` markers (a claim is what a citation grounds —
@@ -128,8 +127,8 @@ pointer-only span (no groundable claim) is left as-is. The prose rewrite goes
 through the draft edit door (DELETE+INSERT, embeddings re-run). Idempotent at
 the draft level — a re-run finds no `[pc…]` left to convert.
 
-It is **on-demand, one chunk/draft at a time** — not a corpus sweep. Run the
-dry-run, eyeball the plan, then `--apply`.
+It is **on-demand, per draft or section** — not a corpus sweep. Idempotent at
+the draft level: a re-run finds no `[pc…]` left to convert.
 
 **Whole-paper `[pa<id>]` cites (the `[pa]` arm).** The same command also
 recognizes bare whole-paper `[pa<id>]` cites (kept in their own groups — a
@@ -147,22 +146,22 @@ paper is fetched:
   it's `reground-nomatch` — left `[pa]`, no write. Pass `--ref-level` to
   instead promote it whole-paper: it mints a **ref-level (ungrounded)** evidence
   edge and rewrites `[pa]`→`[fi<hub>]` directly — for claims with no single
-  grounding passage (e.g. "X is a landmark result"); the dry-run reports the
+  grounding passage (e.g. "X is a landmark result"); the job_summary reports the
   `ref-level/ungrounded` count. A contiguous multi-paper `[pa1][pa2]` run
   re-grounds all-or-nothing: if any supporter fails to locate, the whole run is
   left untouched (never erase a token).
 
 ```python
-edit(kind="draft", id="dc1652005", taproot=True)  # preview: fetched [pa] → reground
-edit(
-    kind="draft", id="dc1652005", taproot=True, apply=True
-)  # re-ground fetched [pa]→[pc]
-edit(
-    kind="draft", id="dc1652005", taproot=True, apply=True, ref_level=True
-)  # promote fetched [pa] whole-paper instead
+# the [pa] arm rides the same job; ref_level=True promotes a fetched [pa]
+# whole-paper instead of re-grounding it to a [pc] passage
+put(
+    kind="job",
+    job_type="taproot_backfill",
+    params={"scope": "dc1652005", "ref_level": True},
+)
 ```
 
-CLI equivalent: `precis taproot backfill --chunk dc1652005 [--apply] [--ref-level]`.
+CLI equivalent: `precis taproot backfill --chunk dc1652005 --apply [--ref-level]`.
 
 ## Mint a claim hub from a claim I've already sourced
 
@@ -263,8 +262,8 @@ fi<original>` (`--dry-run` to preview).
 | Living-citation resolve + authorial pins (`precis resolve`) | live |
 | Fisheye reference-ring Claims explosion | live |
 | Claim→claim `refines` links — `link(kind='finding', rel='refines')` and CLI `precis taproot refine` | live (advisory-only, no evidence flow) |
-| Whole-draft/section/chunk `[pc<id>]`→`[fi<id>]` backfill — `edit(kind='draft', taproot=True)` and CLI `precis taproot backfill` | live (on-demand, preview/dry-run default; not a corpus sweep) |
-| Whole-paper `[pa<id>]` arm (stub-skip; default `[pa]`→`[pc]` re-ground; `ref_level=True`/`--ref-level` whole-paper promote) | live (slices 1+2, both doors) |
+| Whole-draft/section/chunk `[pc<id>]`→`[fi<id>]` backfill — `put(kind='job', job_type='taproot_backfill')` (serial, checkpointed, melchior `claude_inproc` lane) and CLI `precis taproot backfill` | live (on-demand; LLM runs on the cluster worker, never the MCP) |
+| Whole-paper `[pa<id>]` arm (stub-skip; default `[pa]`→`[pc]` re-ground; `params.ref_level`/`--ref-level` whole-paper promote) | live (slices 1+2; job + CLI) |
 | Corpus-wide forward chase bridge (`PRECIS_TAPROOT_CHASE_ENABLED` — a `chase`-pass sub-feature, not its own service) | dark, default-OFF |
 | Hub-refine pass (`workers/hub_refine.py`, `hub_refine` service) | dark, default-OFF — `precis service prio '*' hub_refine <n>` / `/categorizers` |
 | Chase-trigger pass (`workers/chase_trigger.py`, `chase_trigger` service) — marks a hub `TAPROOT_DUE` when a near paper/patent chunk lands, so hub-refine claims it promptly instead of waiting out its backstop | dark, default-OFF — `precis service prio '*' chase_trigger <n>` / `/categorizers` |

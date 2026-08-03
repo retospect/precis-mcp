@@ -163,6 +163,15 @@ def _load_draft_export() -> JobTypeSpec:
     return draft_export.SPEC
 
 
+def _load_taproot_backfill() -> JobTypeSpec:
+    # Cluster replacement for the (removed) synchronous edit(taproot=True)
+    # MCP door — the LLM-bearing canonicalizer cascade runs on the worker,
+    # never in-process on the MCP server. Runs via plugin dispatch.
+    from precis.workers.job_types import taproot_backfill
+
+    return taproot_backfill.SPEC
+
+
 def _load_remarkable_send() -> JobTypeSpec:
     # Deterministic reMarkable-mode export + upload (runs via plugin dispatch).
     from precis.workers.job_types import remarkable_send
@@ -419,6 +428,9 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "draft_export":
         _REGISTRY["draft_export"] = _load_draft_export()
         return _REGISTRY["draft_export"]
+    if name == "taproot_backfill":
+        _REGISTRY["taproot_backfill"] = _load_taproot_backfill()
+        return _REGISTRY["taproot_backfill"]
     if name == "remarkable_send":
         _REGISTRY["remarkable_send"] = _load_remarkable_send()
         return _REGISTRY["remarkable_send"]
@@ -480,6 +492,7 @@ def known_job_types() -> list[str]:
         "fix_gripe",
         "plan_tick",
         "draft_export",
+        "taproot_backfill",
         "remarkable_send",
         "news_poll",
         "briefing",

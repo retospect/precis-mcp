@@ -1534,11 +1534,15 @@ overlay on `finding`/`ref_tags`/`links` — no schema of its own).
     `tests/test_taproot_hub.py`, `tests/test_taproot_seniority.py`,
     `tests/test_refeye.py`, `tests/test_taproot_authoring.py`.
   - **Whole-draft `[pc<id>]`→`[fi<id>]` backfill** — built
-    (`taproot/backfill.py`, driven by `edit(kind='draft', id=<scope>,
-    taproot=True, apply=, ref_level=)` (`handlers/draft.py::_taproot_backfill`,
-    scope = slug/section/leaf) or the CLI `precis taproot backfill --chunk
-    dc<id>` / `--draft <slug>`, dry-run default + `--apply`/`--ref-level`;
-    both call the same `plan_chunk`/`apply_chunk`). Walks a draft chunk's
+    (`taproot/backfill.py`, driven by the **`taproot_backfill` job type**
+    (`workers/job_types/taproot_backfill.py`, `claude_inproc` lane on melchior)
+    — enqueued `put(kind='job', job_type='taproot_backfill', params={scope,
+    ref_level})`, scope = slug/section/leaf, run **serial + checkpointed**
+    (`meta.done_chunk_ids` resumes a re-claim) — or the CLI `precis taproot
+    backfill --chunk dc<id>` / `--draft <slug>` (`--apply`/`--ref-level`); both
+    call the same `plan_chunk`/`apply_chunk`. **The LLM cascade runs on the
+    cluster worker, never in the MCP** — the MCP only mints the job (no
+    `dispatch()` in a handler). Walks a draft chunk's
     legacy bare `[pc<id>]` cites, **cite-group anchored** (the pc markers
     partition the prose into grounded spans — not a sentence split; adjacent
     `[pc1][pc2]` collapse to one hub with two evidence edges → one
@@ -1558,7 +1562,7 @@ overlay on `finding`/`ref_tags`/`links` — no schema of its own).
     chase pilot's `set_by='chase'`, all filling the same graph. Tests:
     `tests/test_taproot_backfill.py`.
   - **`[pa<id>]` arm (whole-paper cites) — slices 1+2 built**
-    (`taproot/backfill.py`, same `edit(taproot=True, ref_level=)` /
+    (`taproot/backfill.py`, same `taproot_backfill` job (`params.ref_level`) /
     `precis taproot backfill [--ref-level]` door as the `[pc]` arm above,
     `docs/proposals/taproot-draft-pa-arm.md`). The segmenter also anchors
     on bare `[pa<id>]` groups (kept **separate** from `[pc]` groups — a

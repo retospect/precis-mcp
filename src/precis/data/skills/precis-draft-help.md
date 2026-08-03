@@ -713,10 +713,11 @@ narrow the range and repeat until a row names the chunk that holds the
 claim.
 
 **Already wrote a bunch of raw `[pc<id>]` cites and want a living hub
-cite instead?** `edit(kind='draft', id=<scope>, taproot=True,
-apply=True)` converts a section's or the whole draft's `[pc<id>]`/`[pa<id>]`
-cites to `[fi<id>]` claim-hub cites (preview by default). See
-[[precis-taproot-help]].
+cite instead?** Enqueue a backfill job — `put(kind='job',
+job_type='taproot_backfill', params={'scope': <slug-or-dc>})` converts a
+section's or the whole draft's `[pc<id>]`/`[pa<id>]` cites to `[fi<id>]`
+claim-hub cites on the cluster worker (the LLM cascade never runs in the
+MCP); poll `get(kind='job', id='jo<id>')`. See [[precis-taproot-help]].
 
 ## Find sources you missed — the gap-finder
 

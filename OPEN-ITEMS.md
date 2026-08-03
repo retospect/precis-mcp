@@ -21,6 +21,17 @@ Status: open · Severity: feature · Owner: `src/precis/taproot/` + export handl
 
 ---
 
+## 🔧 ship gate — test-db 100-connection ceiling saturates the full-suite `-n6` run on a loaded host
+
+Status: open · Severity: polish · Owner: `docker/dev/compose.yaml` (precis-test-db) + `scripts/ship` · Test: n/a (infra flake, not code).
+
+- The gate's `precis-test-db` runs default `max_connections=100`. Under the **full** suite at `-n6` on a host that's *also* running sibling worktree gates or under desktop RAM pressure, peak concurrent connections (6 xdist workers, each holding a per-session keepalive to its clone DB + churn) saturate the ceiling. New connections get RST'd from the listen backlog **before** Postgres accepts them → surface client-side as `psycopg.OperationalError: server closed the connection unexpectedly` across *every* test dir (not workers-specific), with **nothing logged server-side** (the connection never reached pg, so no "too many clients" FATAL). Subset runs (`tests/workers` alone at `-n6` = 344 pass) never hit the peak, which masks it.
+- **Worked around, not fixed (ship `184432bd`):** `scripts/ship` now honours `PRECIS_GATE_N` (`PYTEST_N="${PRECIS_GATE_N:-6}"`); `PRECIS_GATE_N=3 scripts/ship …` halves peak connections + backends and passes green. The default stays `-n6`, so the next shipper on a loaded host rediscovers this unless they know the knob.
+- **Durable fix (design call):** raise the test-db `max_connections` (e.g. `-c max_connections=300` in the compose `command`) so `-n6` has headroom — **but** on a memory-pressured host 300 backends × ~10 MB risks trading the RST for a real pg OOM, so this needs the host-RAM tradeoff weighed (or a smarter cap like 150 + a gate-side connection-pressure check). Alternatively auto-detect host pressure in `scripts/ship` and step `-n` down.
+- **Raised by:** Opus session while shipping the taproot MCP surface — 4 full-suite red gates on a host at 118–124 GB/128 GB before the `-n3` workaround landed it. Not this ship's diff (pure Python handler logic; all its tests pass isolated).
+
+---
+
 ## 🔧 taproot backfill — silent drop of unresolvable [pc] handle on promote-collapse
 
 Status: open · Severity: polish · Owner: `src/precis/taproot/backfill.py` · Test: n/a (pre-existing gap; design call on skip-vs-warn needed before regression test).
