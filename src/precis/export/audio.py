@@ -58,8 +58,9 @@ def _stitch(
     heading_pause_s: float,
 ) -> tuple[Any, int]:
     """Synthesize each segment and concatenate into one track with silence gaps
-    (a longer breath after a heading). Returns ``(float32 samples, sample_rate)``.
-    Shared by :func:`export_audio` (drafts) and :func:`synthesize_text` (prose).
+    (a longer breath after a heading, or a segment's own ``gap_after``
+    override). Returns ``(float32 samples, sample_rate)``. Shared by
+    :func:`export_audio` (drafts) and :func:`synthesize_text` (prose).
 
     Segments may come from different engines (a ``lang → engine`` router for
     native zh/ja) at different sample rates, so everything is resampled up to the
@@ -67,18 +68,29 @@ def _stitch(
     nothing and is byte-identical to a naive concat."""
     import numpy as np
 
-    rendered: list[tuple[Any, int, str]] = []
+    rendered: list[tuple[Any, int, str, float | None]] = []
     for seg in segments:
         samples, seg_sr = synth.synthesize(seg.text, voice=seg.voice, lang=seg.lang)
-        rendered.append((np.asarray(samples, dtype=np.float32), int(seg_sr), seg.kind))
+        rendered.append(
+            (
+                np.asarray(samples, dtype=np.float32),
+                int(seg_sr),
+                seg.kind,
+                seg.gap_after,
+            )
+        )
     if not rendered:
         return np.zeros(0, dtype=np.float32), 1
 
-    target_sr = max(sr for _s, sr, _k in rendered)
+    target_sr = max(sr for _s, sr, _k, _g in rendered)
     parts: list[Any] = []
-    for samples, sr, kind in rendered:
+    for samples, sr, kind, seg_gap_after in rendered:
         parts.append(_resample(samples, sr, target_sr))
-        gap = heading_pause_s if kind == "heading" else pause_s
+        gap = (
+            seg_gap_after
+            if seg_gap_after is not None
+            else (heading_pause_s if kind == "heading" else pause_s)
+        )
         parts.append(np.zeros(int(target_sr * gap), dtype=np.float32))
     return np.concatenate(parts), target_sr
 

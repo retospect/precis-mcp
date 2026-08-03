@@ -65,13 +65,19 @@ _BULLET = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+", re.MULTILINE)
 
 @dataclass(frozen=True, slots=True)
 class NarrationSegment:
-    """One speakable span: the text, who narrates it, and its source kind
-    (which drives the leading pause — headings breathe longer)."""
+    """One speakable span: the text, who narrates it, its source kind (which
+    drives the leading pause — headings breathe longer), and an optional
+    per-segment trailing-silence override."""
 
     text: str
     voice: str
     lang: str
     kind: str
+    #: Seconds of silence after this segment, overriding the stitcher's
+    #: kind-based default (``None`` = use that default). A content/markup
+    #: property of the segment, not a synth knob — e.g. the news lead-in
+    #: stamps a wider beat between wire stories.
+    gap_after: float | None = None
 
 
 def speakable(text: str) -> str:

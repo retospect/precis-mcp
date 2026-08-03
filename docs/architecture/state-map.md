@@ -793,8 +793,10 @@ worker pass and its own still-live timer, pending §L.)
 * `cast_audio` — the daily audio **casts** (docs/design/reading-prep-loop.md
   §Audio). Two standing casts ride one produce→narrate→publish spine, two voice
   profiles: **`reading`** (morning situational-awareness brief, `bm_george`,
-  ~20 min — `reading/briefing_cast.py` unions news/activity/reading/recall/quest
-  lanes, each degrade-to-empty; depth-first prompt, papers carry abstracts + a
+  ~20 min — `reading/briefing_cast.py` unions activity/reading/recall/quest
+  lanes (no news lane — the world-news wire is prepended at narration time
+  instead, below), each degrade-to-empty; depth-first prompt, papers carry
+  abstracts + a
   `[[pa<id>]]` cite marker (dropped inline per claim → a `§` link in `/drafts`,
   stripped from audio by `narrate.speakable`) + true overnight paper count (not
   the naming cap), the reading lane names papers opened in the web reader
@@ -802,7 +804,7 @@ worker pass and its own still-live timer, pending §L.)
   left off" nudge, distinct from the overnight-acquired papers above), leech
   cards carry bodies, active-only quest report with a decaying dormant nudge
   that links its strivings; papers/findings
-  `cites`, news wire `derived-from`, drafts/quests `related-to`) and **`nidra`**
+  `cites`, drafts/quests `related-to`) and **`nidra`**
   (evening concept-graph meditation, `af_nicole`, ~45 min segmented walk —
   `reading/meditation.py`; walked concepts `related-to`). Producers
   persist a standalone dated `draft` marked `meta.cast` and **link it back to the
@@ -813,8 +815,13 @@ worker pass and its own still-live timer, pending §L.)
   (spark, default-OFF `PRECIS_CAST_AUDIO_ENABLED` + `PRECIS_TTS_IMAGE`) narrates
   any un-narrated cast draft via `render_narration` → `render_episode` →
   `publish_episode(source=profile.source)` — a **distinct** producer tag per cast
-  (`brief` / `meditation`, so a shared feed can subfilter), idempotent on `meta.audio_episode_id`
-  (sibling to `briefing_audio`). The episode id + on-demand PDF filename are the
+  (`brief` / `meditation`, so a shared feed can subfilter), idempotent on `meta.audio_episode_id`.
+  For `reading`, narration first prepends the day's full `briefing-<date>` news
+  wire (`_news_lead_in`, read in the brief's own voice `bm_george`) ahead of the
+  personal brief, so the two ship as **one combined** `morning_brief_<date>`
+  episode; the standalone news episode (`workers/briefing_audio.py`,
+  `PRECIS_BRIEFING_AUDIO_ENABLED`) is retired (default `0`) to avoid
+  double-publishing. The episode id + on-demand PDF filename are the
   human `export_stem` (`morning_brief_<date>` / `evening_meditation_<date>`), not the
   internal `cast-*` slug (`cast_common.export_stem`). On creation `create_cast_draft`
   files the draft under a per-cast Drive **folder** ("Morning brief" / "Evening

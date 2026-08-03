@@ -59,10 +59,20 @@ def render_via_container(
     container (a hung render — e.g. a stalled model/dict fetch — must not block
     the worker tick forever; on expiry ``subprocess.TimeoutExpired`` propagates
     and the caller backs the job off). Raises on a non-zero run or missing
-    output."""
+    output. Each segment's own ``gap_after`` (a content/markup property, not a
+    synth knob) rides along in the payload so the stitch — which runs *inside*
+    the container — can honour a per-segment silence override; there is no
+    top-level scalar pause any more (an older, un-rebuilt image just sees
+    ``gap_after: null`` and keeps its own kind-based default)."""
     payload = {
         "segments": [
-            {"text": s.text, "voice": s.voice, "lang": s.lang, "kind": s.kind}
+            {
+                "text": s.text,
+                "voice": s.voice,
+                "lang": s.lang,
+                "kind": s.kind,
+                "gap_after": s.gap_after,
+            }
             for s in segments
         ],
         "speed": speed,
@@ -135,7 +145,11 @@ def render_episode(
     given → in-process ``synthesize_text`` + ``encode`` (WAV→mp3). Neither → a
     ``RuntimeError`` (no backend). ``encode`` is injectable so a test can skip
     ffmpeg. The returned ``audio_path`` is the file actually written — publish
-    that, not the requested path (the container path may have produced m4a)."""
+    that, not the requested path (the container path may have produced m4a).
+    Inter-segment silence is a per-segment ``NarrationSegment.gap_after``
+    (a content property, not a synth knob) — this driver carries no scalar
+    pause of its own; it just forwards ``segments`` unchanged to whichever
+    backend stitches."""
     out = Path(out_audio)
     out.parent.mkdir(parents=True, exist_ok=True)
     if image:

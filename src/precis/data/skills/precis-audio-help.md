@@ -90,15 +90,13 @@ for homographs; LaTeX→speech. See `docs/design/audio-feed.md` + OPEN-ITEMS.
 
 ## Automatic producers
 
-Drafts aren't the only thing that narrates. The **news briefing** publishes a
-daily audio episode automatically: a worker pass (`briefing_audio`) on the TTS
-host reads the persisted `briefing-<date>` ref, narrates its markdown (via
-`narrate.markdown_segments` — the prose path, links→anchor text, headings pause),
-and publishes to the same feed with `source="news"`. Enabled on spark via
-its `service_config` row (`precis service prio spark briefing_audio <n>` /
-`/categorizers`; needs `PRECIS_TTS_IMAGE` too); idempotent per briefing. Non-draft
-producers reuse `export.audio.synthesize_text` (the shared stitch loop). Design +
-how to add the next producer: `docs/design/audio-feed.md`.
+Drafts aren't the only thing that narrates. The **news briefing** used to
+publish its own daily episode via a `briefing_audio` worker pass — now
+**retired** (`PRECIS_BRIEFING_AUDIO_ENABLED=0`, avoids double-publishing): the
+news wire is instead folded into the morning `reading` cast at narration time
+(see below), so one combined episode ships. Non-draft producers reuse
+`export.audio.synthesize_text` (the shared stitch loop). Design + how to add
+the next producer: `docs/design/audio-feed.md`.
 
 ### Daily casts — morning brief + evening nidra
 
@@ -106,18 +104,20 @@ Two standing **casts** publish daily, each a `draft` composed then narrated
 through the same path — two voice profiles over one spine:
 
 - **`reading`** — the morning situational-awareness brief (voice `bm_george`,
-  ~15 min). Producer `reading.briefing_cast.build_reading_briefing` unions lanes:
-  the news wire (today's `briefing-<date>`, consumed not re-derived), overnight
-  system activity, recall (Anki leeches + new concepts), and — as they land —
-  reading (booklet) + quest activity.
+  ~15 min). Producer `reading.briefing_cast.build_reading_briefing` unions
+  lanes: overnight system activity, recall (Anki leeches + new concepts), and
+  — as they land — reading (booklet) + quest activity. The news wire is no
+  longer a compose lane — `cast_audio` prepends the full `briefing-<date>`
+  wire (read in the brief's own voice) ahead of the personal brief at
+  narration time (below).
 - **`nidra`** — the evening concept-graph meditation (voice `af_nicole`, ~45 min).
   Producer `reading.meditation.build_meditation`, a segmented long-form walk.
 
 Both casts **link their draft back to the sources they drew on** (a cast names
 its sources but reads no URL aloud, so the link is the durable pointer): the
-`reading` brief links papers/findings `cites`, the news wire `derived-from`, and
-drafts/quests `related-to`; the `nidra` walk links each walked concept
-`related-to`. So `links_for` on the cast draft reopens what it mentioned.
+`reading` brief links papers/findings `cites` and drafts/quests `related-to`;
+the `nidra` walk links each walked concept `related-to`. So `links_for` on the
+cast draft reopens what it mentioned.
 
 Both compose with a **capable model** (`claude-sonnet-5`, pinned — prose
 composition, quota-resilient vs the FRONTIER Opus default) and persist a standalone dated
@@ -129,6 +129,10 @@ the `cast_audio` pass on spark (its `service_config` row —
 `PRECIS_TTS_IMAGE`) narrates any un-narrated cast draft via
 `render_narration` → `render_episode` →
 the feed (`source="brief"` / `"meditation"`), idempotent on `meta.audio_episode_id`.
+For `reading`, narration first **prepends today's full `briefing-<date>` news
+wire** (`cast_audio._news_lead_in`, read in the brief's own voice `bm_george`)
+ahead of the personal brief, so the two publish as **one combined**
+`morning_brief_<date>` episode.
 The published mp3 and the on-demand PDF share a human stem — `morning_brief_<date>`
 / `evening_meditation_<date>` — not the internal `cast-*` slug. Compose runs
 as the `reading_brief` / `meditation` **`claude_inproc`** job_types on a daily

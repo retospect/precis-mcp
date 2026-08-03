@@ -86,6 +86,7 @@ from precis.workers.schedule.seed import (
     WATCHES_BUILTIN,
     ensure_watches_root,
 )
+from precis.workers.sweeper import STUCK_JOB_HOURS
 
 log = logging.getLogger(__name__)
 
@@ -363,7 +364,7 @@ def _spawn_due_ticks(
         if _child_with_stamp_exists_conn(conn, rec["id"], stamp):
             skipped += 1
             continue
-        if _has_open_previous_tick_conn(conn, rec["id"]):
+        if _has_open_previous_tick_conn(conn, rec["id"], stuck_hours=STUCK_JOB_HOURS):
             log.info(
                 "schedule: rec id=%d skipping tick %s (previous still open)",
                 rec["id"],
@@ -522,7 +523,9 @@ def _child_with_stamp_exists_conn(conn: Any, parent_id: int, stamp: str) -> bool
     return row is not None
 
 
-def _has_open_previous_tick_conn(conn: Any, parent_id: int) -> bool:
+def _has_open_previous_tick_conn(
+    conn: Any, parent_id: int, *, stuck_hours: float
+) -> bool:
     """True when a prior spawned tick is still genuinely *in flight*.
 
     Plan's collision policy: skip the new tick if the previous one
@@ -544,6 +547,20 @@ def _has_open_previous_tick_conn(conn: Any, parent_id: int) -> bool:
     failed one, fire the next. The failure still surfaces (the
     ``child-failed`` bubble + the nursery ``stalled-recurring`` alert),
     so it isn't lost — it just no longer halts the schedule.
+
+    ``stuck_hours`` additionally time-bounds a still-``running``/open
+    child: it only counts as "in flight" (blocking) when it was spawned
+    *within* ``stuck_hours``. Composes cap at 600s, so any tick-child
+    still open longer than that is a zombie, not genuine progress — and
+    the sweeper's lease-past test doesn't catch it if lease-churn keeps
+    renewing the lease out from under a killed subprocess. Without this
+    bound, a single orphaned zombie tick-child blocks *every* subsequent
+    tick indefinitely (one killed ``claude_inproc`` compose silently lost
+    every following daily recurring). For a daily cron the previous
+    tick is always older than ``stuck_hours`` so it never blocks (daily
+    ticks can't pile up regardless); for a frequent cron (e.g. an
+    every-30-min ``news_poll``) a genuinely in-flight *recent* child
+    (younger than ``stuck_hours``) still blocks, to prevent pile-up.
     """
     row = conn.execute(
         """
@@ -565,9 +582,13 @@ def _has_open_previous_tick_conn(conn: Any, parent_id: int) -> bool:
                     AND t.namespace = 'OPEN'
                     AND t.value LIKE 'child-failed:%%'
                )
+           -- A still-open child older than ``stuck_hours`` is a zombie
+           -- (see docstring), not in-flight progress — exclude it so it
+           -- can't wedge the cadence forever.
+           AND c.created_at >= now() - %s::interval
          LIMIT 1
         """,
-        (parent_id,),
+        (parent_id, f"{stuck_hours} hours"),
     ).fetchone()
     return row is not None
 

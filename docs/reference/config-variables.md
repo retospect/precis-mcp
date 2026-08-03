@@ -86,7 +86,7 @@ values are from the cluster scan.
 | `PRECIS_CHEM_ENABLED` | `route`/chem kind **surface** | off | `1` on melchior (web) | ✅ Correct — kind surface on gateway, compute routes to spark via `PRECIS_CHEM_ROUTE_NODE=spark`. |
 | `PRECIS_BIO_ENABLED` | `protein`/fold kind surface | off | `1` on melchior (web) | ✅ Correct — surface on gateway, `PRECIS_FOLD_NODE=spark`. |
 | `PRECIS_AUTOCATPATH_ENABLED` | `pathway`/autocatpath kind | off | `1` on melchior (web) **and** spark (worker) | ✅ Correct — surface on gateway, compute env on spark. |
-| `PRECIS_BRIEFING_AUDIO_ENABLED` | Daily briefing TTS pass | off | `1` on **spark** (TTS drop-in) | ✅ Correct — spark holds the `tts_render` capability + `precis-tts` image. |
+| `PRECIS_BRIEFING_AUDIO_ENABLED` | Standalone daily briefing TTS pass (`news-<date>` episode) | off | `0` on **spark** | ✅ Correct — retired: the news wire is now folded into the combined `morning_brief_<date>` reading-cast episode at narration time (`cast_audio._news_lead_in`); this flag stays off to avoid double-publishing. |
 | `PRECIS_CAST_AUDIO_ENABLED` | Podcast cast TTS pass | off | `1` on spark | ✅ Correct. |
 | `PRECIS_OA_FETCH` | Unpaywall/OA fetch leg | `0` | `1` on **melchior** only | ✅ Correct — single fetcher avoids the shared-inbox race (CLAUDE.md, gripe history). |
 | `PRECIS_GP_FETCH` | Google-Patents fetch leg | `0` | `1` on melchior only | ✅ Correct — same single-fetcher rationale. |
@@ -317,10 +317,11 @@ deploy-sha memory).
 | **Sandbox-run (slices 1+2+3+4)** (`sandbox_run` job_type) | `PRECIS_SANDBOX_ENABLED=1` on balthazar/spark; `precis_access:read` additionally needs `PRECIS_SANDBOX_READ_MCP=1` | Build + harvest (folder/plaintext projection + content-addressed tarball + `RUN.json` recipe on a clean exit) + `mode:run` (stage a prior build's tarball, `uv sync` + `RUN.json.cmd`, no claude/OAuth, recurring via `meta.schedule`) + `precis_access:read` (per-run token'd read-only MCP callback via `precis serve --transport streamable-http`). Limited value until enabled + podman installed (still unrealized, see the design doc's cluster-reality note). |
 
 Already **un-darked / live** in the same window (for contrast): mermaid
-kind (`c7ac23db`), protein/AlphaFold3 (`PRECIS_BIO_ENABLED=1`),
-news-briefing audio (`PRECIS_BRIEFING_AUDIO_ENABLED=1` on spark), the
+kind (`c7ac23db`), protein/AlphaFold3 (`PRECIS_BIO_ENABLED=1`), the
 global budget breaker (default caps, active whenever a store is bound),
-and mp3 podcast enclosures.
+and mp3 podcast enclosures. (Standalone news-briefing audio un-darked here
+too, but has since been re-darkened — see `PRECIS_BRIEFING_AUDIO_ENABLED`
+above, now folded into the combined reading-brief cast.)
 
 ## Assessment summary — what's worth acting on
 

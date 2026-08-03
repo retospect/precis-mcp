@@ -24,6 +24,7 @@ import logging
 import subprocess
 import tempfile
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -40,21 +41,35 @@ _MAX_AGE_HOURS = 48
 #: After a render fails, back off this long before retrying the same draft so a
 #: bad image / dead synth can't spin a container every worker tick.
 _FAIL_BACKOFF_MINUTES = 60
+#: The trailing silence stamped on each news lead-in segment (Workstream C) — a
+#: wider ~1.5s beat between wire stories/sections, vs. the container's gentler
+#: 0.45s default the personal brief's own segments keep (``gap_after=None``).
+_NEWS_LEAD_IN_PAUSE_S = 1.5
 
 
 def _latest_unnarrated_cast(store: Any, *, max_age_hours: int, now: datetime):
     """The newest cast ``draft`` with no ``audio_episode_id`` yet, within
-    ``max_age_hours`` and not in a render-failure backoff window, or ``None``."""
+    ``max_age_hours`` and not in a render-failure backoff window, or ``None``.
+
+    Aged and ordered by COMPOSE time (``created_at``), not ``updated_at``:
+    every failed render stamps ``meta.audio_failed_at`` via
+    ``store.update_ref``, which bumps ``updated_at`` — so a stale draft that
+    keeps failing would otherwise keep refreshing itself to the top of the
+    ``updated_at`` window and be re-selected forever. ``created_at`` doesn't
+    move, so a repeatedly-failing draft can't refresh itself back into
+    contention this way; the separate ``audio_failed_at`` backoff clause
+    below still applies its own 60-minute cooldown.
+    """
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT ref_id FROM refs "
             "WHERE kind = 'draft' AND deleted_at IS NULL "
             "AND meta ? 'cast' "
             "AND NOT (meta ? 'audio_episode_id') "
-            "AND updated_at >= %s "
+            "AND created_at >= %s "
             "AND (meta->>'audio_failed_at' IS NULL "
             "     OR (meta->>'audio_failed_at')::timestamptz < %s) "
-            "ORDER BY updated_at DESC LIMIT 1",
+            "ORDER BY created_at DESC LIMIT 1",
             (
                 now - timedelta(hours=max_age_hours),
                 now - timedelta(minutes=_FAIL_BACKOFF_MINUTES),
@@ -87,6 +102,45 @@ def _empty(reason: str, ref_id: int | None = None) -> dict[str, Any]:
         "segments": 0,
         "duration_s": 0.0,
     }
+
+
+def _news_lead_in(
+    store: Any,
+    segments: list[Any],
+    *,
+    date_tag: str,
+    voice: str,
+    default_lang: str,
+) -> list[Any]:
+    """Prepend today's news wire — read in the brief's own voice — ahead of the
+    reading cast's segments, so the two compose as one ~30-minute morning
+    episode (full news first, then the personal brief). ``voice``/``default_lang``
+    narrate the wire in the same voice as the rest of the cast. Degrades to
+    ``segments`` unchanged when no ``briefing-<date>`` news ref exists yet (or
+    it carries no body) — the reading cast still narrates and publishes on its
+    own rather than blocking on the news wire.
+
+    Only the news segments are stamped with ``gap_after=_NEWS_LEAD_IN_PAUSE_S``
+    (a ~1.5s beat between wire stories/sections) — this is the one place that
+    policy lives. The personal-brief segments that follow keep their own
+    ``gap_after=None`` (the container's gentler 0.45s default), so the news
+    wire reads with a wider beat while the brief's prose keeps its original
+    pace.
+    """
+    from precis.draft.narrate import markdown_segments
+    from precis.reading.briefing_cast import _news_brief_text
+
+    news_ref = store.get_ref(kind="news", id=f"briefing-{date_tag}")
+    if news_ref is None:
+        return segments
+    news_body = _news_brief_text(store, news_ref.id)
+    if not news_body:
+        return segments
+    news_segments = [
+        replace(seg, gap_after=_NEWS_LEAD_IN_PAUSE_S)
+        for seg in markdown_segments(news_body, voice=voice, lang=default_lang)
+    ]
+    return [*news_segments, *segments]
 
 
 def narrate_cast_ref(
@@ -129,18 +183,24 @@ def narrate_cast_ref(
     cast = str(meta.get("cast") or "cast")
     profile = CAST_PROFILES.get(cast)
     voice = str(meta.get("voice") or (profile.voice if profile else "af_heart"))
+    date_tag = str(meta.get("date") or now.date().isoformat())
 
     lexicon = resolve_lexicon(ref, personal=load_personal_lexicon())
     segments = render_narration(
         store, ref, default_voice=voice, default_lang=default_lang, lexicon=lexicon
     )
+    if cast == "reading" and profile is not None:
+        # Combined morning episode: the full news wire (same voice), then the
+        # personal brief — one episode, no separate news audio (Workstream B).
+        segments = _news_lead_in(
+            store, segments, date_tag=date_tag, voice=voice, default_lang=default_lang
+        )
     if not segments:
         # Nothing speakable — back off so we don't reselect this draft every tick.
         store.update_ref(ref.id, meta_patch={"audio_failed_at": now.isoformat()})
         return _empty("empty-cast", ref.id)
 
     do_publish = publish and podcast_dir is not None
-    date_tag = str(meta.get("date") or now.date().isoformat())
     # Human episode id — ``morning_brief_<date>`` / ``evening_meditation_<date>``
     # so the published mp3 shares the export PDF's recognisable stem, not the
     # internal cast key. Casts with no profile fall back to ``<cast>-<date>``.

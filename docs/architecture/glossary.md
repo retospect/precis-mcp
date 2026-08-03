@@ -68,8 +68,10 @@
 - **cast** — a daily audio episode (morning `reading` brief; evening `nidra`
   meditation) on the produce→narrate→publish spine.
   → `src/precis/reading/cast_common.py` · skill `precis-audio-help`
-- **lane** (brief) — a contributor to a morning-brief cast (news / system /
-  recall / quest), each degrade-to-empty. → `src/precis/reading/briefing_cast.py`
+- **lane** (brief) — a contributor to a morning-brief cast (system / reading /
+  recall / quest), each degrade-to-empty. The world-news wire is not a lane —
+  `cast_audio` prepends it at narration time instead.
+  → `src/precis/reading/briefing_cast.py`
 - **nursery** — the SQL-only, per-minute reviewer that raises health/ops alerts
   (spin loops, worker health). → `src/precis/workers/nursery.py` ·
   skill `precis-nursery-help`

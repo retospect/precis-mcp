@@ -10,8 +10,6 @@ The lanes, each a contributor that **degrades to empty** when its subsystem isn'
 live yet (so the brief ships today and gets richer as the reading-prep + quest
 layers land):
 
-- **News** (LIVE) — consume today's ``briefing-<date>`` news ref (already composed
-  and shipped to Discord); we speak it, we don't re-derive it.
 - **System activity** (LIVE) — what moved overnight: papers acquired (the top few
   carrying their abstracts so the brief can go deep on claim/method/significance),
   drafts advanced, findings + open alerts, and "needs-you" / failed-job items.
@@ -28,9 +26,9 @@ layers land):
   rather than nags); silent when there are no quests at all.
 
 As it renders, each lane also records the source refs it surfaced; the finished
-draft is then linked back to them (papers/findings ``cites``, the news wire
-``derived-from``, drafts/quests ``related-to``) — the durable graph edges that
-reopen a source from the Connections panel.
+draft is then linked back to them (papers/findings ``cites``, drafts/quests
+``related-to``) — the durable graph edges that reopen a source from the
+Connections panel.
 
 The *paper* lane additionally hands the model a bracketed ``[[pa<id>]]``
 citation token per named paper and asks it to drop that marker inline after any
@@ -129,11 +127,6 @@ _MORNING_CONTRACT = (
     "straight into the material.\n\n"
     "GO DEEP, NOT WIDE — this person is a working scientist, so treat them as "
     "one and give real substance rather than a breezy tour:\n"
-    "- NEWS: give a dry, plain recap of the day's world-news wire above — the "
-    "headline facts, a sentence or two per story, nothing trivial. No "
-    "editorializing, no forced connection to the person's own work, no framing "
-    "it as important — this is orientation to the world, not analysis. Save the "
-    "depth for the papers below.\n"
     "- PAPERS: introduce each one before you dig in — give the listener a handle "
     "('Here is a paper on …', or by its title / where it comes from) so they know "
     "which paper you mean. Then say what it actually claims (the core result), "
@@ -169,9 +162,9 @@ _MORNING_CONTRACT = (
     "a DORMANT STRIVINGS nudge (nothing active), deliver it as ONE short, "
     "low-key prompt to revive or rest one — a single sentence or two, not a "
     "full report.\n\n"
-    "Structure the brief roughly as: a brief orientation, then the news, then "
-    "the papers, then what you have been reading, then what moved and what "
-    "needs you, then recall, and finish on the quests.\n\n"
+    "Structure the brief roughly as: a brief orientation, then the papers, "
+    "then what you have been reading, then what moved and what needs you, "
+    "then recall, and finish on the quests.\n\n"
     "TONE: grounded, specific, and technical-but-plain. NOT inspirational, "
     "vague, or 'newagey' — no affirmations, no motivational filler. Trust the "
     "material to carry the brief.\n\n"
@@ -255,21 +248,6 @@ def _news_brief_text(store: Any, ref_id: int) -> str:
             (ref_id,),
         ).fetchall()
     return "\n\n".join((r[0] or "").strip() for r in rows if (r[0] or "").strip())
-
-
-def _lane_news(
-    store: Any, date_tag: str, *, sources: list[Source] | None = None
-) -> str:
-    """Today's ``briefing-<date>`` news ref, consumed verbatim (LIVE)."""
-    ref = store.get_ref(kind="news", id=f"briefing-{date_tag}")
-    if ref is None:
-        return ""
-    body = _news_brief_text(store, ref.id)
-    if not body:
-        return ""
-    # The brief is derived from (re-speaks) the wire → point back to it.
-    _collect(sources, [ref], "derived-from")
-    return f"NEWS WIRE (today's world briefing, already published):\n{body}"
 
 
 def _titles(refs: list[Any], cap: int = _LANE_ITEM_CAP) -> list[str]:
@@ -777,9 +755,6 @@ def _gather_lanes(
     """
     src: list[Source] = []
     lanes = {
-        "news": _safe_lane(
-            "news", lambda: _lane_news(store, date_tag, sources=src), src
-        ),
         "system": _safe_lane(
             "system",
             lambda: _lane_system_activity(store, cutoff=cutoff, now=now, sources=src),

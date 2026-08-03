@@ -37,6 +37,7 @@ from precis.workers.schedule import (
     validate_schedule,
 )
 from precis.workers.schedule.parse import every_to_cron, parse_cron
+from precis.workers.schedule.worker import _has_open_previous_tick_conn
 
 
 @pytest.fixture
@@ -527,6 +528,87 @@ def test_schedule_pass_failed_previous_tick_does_not_wedge(
     assert row is not None
     n = int(row[0])
     assert n == 1, "a fresh tick should have been minted"
+
+
+def _spawn_open_child(
+    store: Store, rid: int, *, status: str, created_at: datetime
+) -> int:
+    """Hand-mint a spawned tick-child under ``rid`` with a given STATUS and
+    ``created_at`` (mint time), for :func:`_has_open_previous_tick_conn`
+    unit tests. Returns the child's ref id."""
+    stamp = created_at.isoformat(timespec="minutes")
+    child = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title="Hourly (tick child)",
+        meta={"spawned_for_tick": stamp},
+        parent_id=rid,
+        prio=2,
+    )
+    store.add_tag(child.id, Tag.closed("STATUS", status), set_by="system")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET created_at = %s WHERE ref_id = %s",
+            (created_at, child.id),
+        )
+        conn.commit()
+    return child.id
+
+
+def test_has_open_previous_tick_conn_ignores_zombie_older_than_stuck_hours(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A still-``running`` tick-child older than ``stuck_hours`` is a
+    zombie (orphaned by a killed compose, lease-churn defeats the
+    sweeper) — it must NOT block the cadence."""
+    resp = handler.put(
+        text="Hourly",
+        meta={"schedule": {"cron": "0 * * * *"}},
+    )
+    rid = _id_of(resp.body)
+    old_created = datetime.now(UTC) - timedelta(hours=3)
+    _spawn_open_child(store, rid, status="running", created_at=old_created)
+
+    with store.pool.connection() as conn:
+        blocked = _has_open_previous_tick_conn(conn, rid, stuck_hours=1.0)
+    assert blocked is False, "a zombie tick-child older than stuck_hours must not block"
+
+
+def test_has_open_previous_tick_conn_blocks_recent_open_child(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A genuinely in-flight child spawned within ``stuck_hours`` still
+    blocks — prevents pile-up on a frequent cadence (e.g. news_poll)."""
+    resp = handler.put(
+        text="Hourly",
+        meta={"schedule": {"cron": "0 * * * *"}},
+    )
+    rid = _id_of(resp.body)
+    recent_created = datetime.now(UTC) - timedelta(minutes=5)
+    _spawn_open_child(store, rid, status="running", created_at=recent_created)
+
+    with store.pool.connection() as conn:
+        blocked = _has_open_previous_tick_conn(conn, rid, stuck_hours=1.0)
+    assert blocked is True, "a recent in-flight child must still block"
+
+
+def test_has_open_previous_tick_conn_failed_child_never_blocks(
+    handler: TodoHandler, store: Store
+) -> None:
+    """Existing behavior preserved: a terminally-``child-failed`` child
+    never blocks, regardless of age or the new ``stuck_hours`` bound."""
+    resp = handler.put(
+        text="Hourly",
+        meta={"schedule": {"cron": "0 * * * *"}},
+    )
+    rid = _id_of(resp.body)
+    recent_created = datetime.now(UTC) - timedelta(minutes=5)
+    child_id = _spawn_open_child(store, rid, status="open", created_at=recent_created)
+    store.add_tag(child_id, Tag.open("child-failed:999"), set_by="system")
+
+    with store.pool.connection() as conn:
+        blocked = _has_open_previous_tick_conn(conn, rid, stuck_hours=1.0)
+    assert blocked is False, "a failed tick must not block regardless of age"
 
 
 def test_schedule_pass_skips_folder_umbrella(store: Store) -> None:

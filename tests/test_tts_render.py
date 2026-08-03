@@ -27,6 +27,11 @@ _SEGS = [
     NarrationSegment("你好", "zf_xiaoxiao", "cmn", "para"),
 ]
 
+_SEGS_WITH_GAP = [
+    NarrationSegment("Hello.", "af_heart", "en-us", "para", gap_after=1.5),
+    NarrationSegment("你好", "zf_xiaoxiao", "cmn", "para"),
+]
+
 
 def _fake_podman(cmd, **kwargs):
     # find the -v <outdir>:/work/out mount, drop a render there
@@ -69,6 +74,47 @@ def test_render_episode_dispatches_to_container(tmp_path):
     result = render_episode(_SEGS, out, image="precis-tts:test", run=_fake_podman)
     assert out.is_file() and result["segments"] == 2
     assert result["audio_path"] == str(out)
+
+
+@_needs_posix_mount_paths
+def test_render_via_container_serializes_gap_after_per_segment(tmp_path):
+    captured_payload = {}
+
+    def _capture_podman(cmd, **kwargs):
+        indir = next(
+            Path(a.split(":", 1)[0]) for a in cmd if a.endswith(":/work/in:ro")
+        )
+        outdir = next(Path(a.split(":", 1)[0]) for a in cmd if a.endswith(":/work/out"))
+        captured_payload.update(json.loads((indir / "segments.json").read_text()))
+        (outdir / "out.mp3").write_bytes(b"mp3-bytes")
+
+    render_via_container(
+        _SEGS_WITH_GAP,
+        tmp_path / "ep.mp3",
+        image="precis-tts:test",
+        run=_capture_podman,
+    )
+    assert "pause_s" not in captured_payload  # no top-level scalar pause any more
+    segs = captured_payload["segments"]
+    assert segs[0]["gap_after"] == 1.5
+    assert segs[1]["gap_after"] is None
+
+
+@_needs_posix_mount_paths
+def test_render_episode_forwards_gap_after_to_container(tmp_path):
+    captured = {}
+
+    def _run(cmd, **kw):
+        indir = next(
+            Path(a.split(":", 1)[0]) for a in cmd if a.endswith(":/work/in:ro")
+        )
+        outdir = next(Path(a.split(":", 1)[0]) for a in cmd if a.endswith(":/work/out"))
+        captured.update(json.loads((indir / "segments.json").read_text()))
+        (outdir / "out.mp3").write_bytes(b"mp3-bytes")
+
+    render_episode(_SEGS_WITH_GAP, tmp_path / "ep.mp3", image="x", run=_run)
+    assert "pause_s" not in captured
+    assert captured["segments"][0]["gap_after"] == 1.5
 
 
 @_needs_posix_mount_paths

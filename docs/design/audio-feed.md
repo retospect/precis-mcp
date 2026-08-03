@@ -29,11 +29,11 @@ the voice-draft producer are LIVE.
    the reference: `precis draft audio <slug> [--voice/--lang/--speed/--publish]`
    → narration layer (`precis.draft.narrate`) → Kokoro → m4a → `publish_episode`.
 
-## The news-briefing producer (BUILT — the first automatic producer)
+## The news-briefing producer (RETIRED — was the first automatic producer)
 
-**Done** — `precis.workers.briefing_audio.run_briefing_audio`. It's the
-reference for a *prose* (non-draft) producer, and shows the decoupling every
-TTS producer needs.
+`precis.workers.briefing_audio.run_briefing_audio` — the reference for a
+*prose* (non-draft) producer, and shows the decoupling every TTS producer
+needs. Retired (see below); kept as the design reference.
 
 - **Decoupled from the briefing *job*.** The news briefing runs in-process on
   the **agent** worker (melchior, `claude_inproc`) and persists a dated
@@ -56,10 +56,13 @@ TTS producer needs.
   5. `audio_feed.publish_episode(PODCAST_DIR, m4a, episode_id=f"news-{date}",
      …, source="news")`, then stamp `meta.audio_episode_id` on the ref
      (idempotency — a re-tick or a second TTS host can't double-publish).
-- **Deploy:** on spark's **system** worker set `PRECIS_BRIEFING_AUDIO_ENABLED=1`
-  + `PRECIS_PODCAST_DIR=/nas/botshome/podcast` (+ the Kokoro model env it already
-  has). Manual smoke: `PRECIS_PODCAST_DIR=… precis worker --only briefing_audio
-  --once`. A dry render (no publish/marker) is `run_briefing_audio(publish=False)`.
+- **Retired.** Superseded by the news→reading-brief merge: the news wire is now
+  folded into the combined `morning_brief_<date>` cast episode at narration time
+  (`workers/cast_audio.py`'s `_news_lead_in`) instead of publishing standalone.
+  `PRECIS_BRIEFING_AUDIO_ENABLED=0` on spark keeps this pass dark so the two
+  don't double-publish; the code stays in place, unregistered. Manual smoke (if
+  re-enabled): `PRECIS_PODCAST_DIR=… precis worker --only briefing_audio --once`.
+  A dry render (no publish/marker) is `run_briefing_audio(publish=False)`.
 
 **Wiring the *next* producer** (a knowledge brief, "read me this paper"): copy
 `briefing_audio` — build segments (`markdown_segments` for prose, or per-chunk

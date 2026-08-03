@@ -129,7 +129,7 @@ def _cmd_run(store: Store, args: argparse.Namespace) -> None:
         _publish(store, draft_id, speed=args.speed)
 
 
-#: The morning card pass fires before the 06:00 reading brief so today's new /
+#: The morning card pass fires before the 07:00 reading brief so today's new /
 #: reworked cards exist when the brief's recall lane composes.
 _CARD_FORGE_CRON = "30 5 * * *"
 

@@ -12,7 +12,6 @@ from precis.reading.briefing_cast import (
     _LOOKBACK_HOURS,
     _cite_token,
     _dormant_nudge,
-    _lane_news,
     _lane_quest,
     _lane_reading,
     _lane_system_activity,
@@ -113,10 +112,6 @@ class TestDormantNudgeDecay:
         # A same-day re-check is inside that quiet window → silent, links nothing.
         assert _dormant_nudge(st, dormant, now=base, sources=src) == ""
         assert src == []
-
-    def test_news_lane_empty_when_no_briefing(self, store: Any) -> None:
-        # A date with no briefing ref → empty (no raise).
-        assert _lane_news(store, f"2999-01-{uuid.uuid4().hex[:2]}") == ""
 
 
 class TestPaperLane:
@@ -230,9 +225,44 @@ class TestBuild:
         if out is None:
             assert client.calls == []  # never consulted the model with no material
 
-    def test_news_lane_flows_into_a_composed_draft(self, store: Any) -> None:
+    def test_paper_lane_flows_into_a_composed_draft(self, store: Any) -> None:
+        # News is Workstream B's split: it no longer feeds the compose lanes
+        # (it's prepended at narration instead) — a paper is now the material
+        # that drives a compose.
         date_tag = f"2026-07-{uuid.uuid4().hex[:2]}"
-        # Seed today's news briefing ref the morning cast should consume.
+        paper = store.insert_ref(
+            kind="paper",
+            slug=f"paper-{uuid.uuid4().hex[:8]}",
+            title="Single-atom Pd catalyses ammonia synthesis at 1 bar",
+            meta={"abstract": "We report a single-atom palladium catalyst."},
+        )
+        client = _FakeClient("Good morning.\n\nHere is your day.\n\nGo gently.")
+
+        draft_id = build_reading_briefing(store, client=client, date_tag=date_tag)
+
+        assert draft_id is not None
+        assert client.calls  # the paper lane gave it material → model consulted
+        # The composed brief is a cast draft with paragraphs + the voice profile.
+        with store.pool.connection() as conn:
+            meta = conn.execute(
+                "SELECT meta FROM refs WHERE ref_id=%s", (draft_id,)
+            ).fetchone()[0]
+            n = conn.execute(
+                "SELECT count(*) FROM chunks WHERE ref_id=%s AND chunk_kind='paragraph'",
+                (draft_id,),
+            ).fetchone()[0]
+        assert meta["cast"] == "reading"
+        assert meta["voice"] == "bm_george"
+        assert n >= 2
+        # The paper was actually handed to the model.
+        user_turn = client.calls[0][1]["content"]
+        assert "single-atom palladium" in user_turn
+        assert paper.id is not None
+
+    def test_news_ref_is_not_consumed_by_the_compose_lanes(self, store: Any) -> None:
+        # A news wire on its own no longer gives the compose anything (folded
+        # into the narrated audio at cast_audio time instead, Workstream B).
+        date_tag = f"2999-03-{uuid.uuid4().hex[:2]}"
         news = store.insert_ref(
             kind="news",
             slug=f"briefing-{date_tag}",
@@ -246,31 +276,15 @@ class TestBuild:
             split=True,
             kind="news",
         )
-        client = _FakeClient("Good morning.\n\nHere is your day.\n\nGo gently.")
-
-        draft_id = build_reading_briefing(store, client=client, date_tag=date_tag)
-
-        assert draft_id is not None
-        assert client.calls  # the news lane gave it material → model consulted
-        # The composed brief is a cast draft with paragraphs + the voice profile.
-        with store.pool.connection() as conn:
-            meta = conn.execute(
-                "SELECT meta FROM refs WHERE ref_id=%s", (draft_id,)
-            ).fetchone()[0]
-            n = conn.execute(
-                "SELECT count(*) FROM chunks WHERE ref_id=%s AND chunk_kind='paragraph'",
-                (draft_id,),
-            ).fetchone()[0]
-        assert meta["cast"] == "reading"
-        assert meta["voice"] == "bm_george"
-        assert n >= 2
-        # The news body was actually handed to the model.
-        user_turn = client.calls[0][1]["content"]
-        assert "catalyst paper" in user_turn
+        client = _FakeClient("unused")
+        out = build_reading_briefing(store, client=client, date_tag=date_tag)
+        assert out is None  # a news-only date has no lane material now
+        assert client.calls == []
 
     def test_sources_are_linked_from_the_draft(self, store: Any) -> None:
         date_tag = f"2026-09-{uuid.uuid4().hex[:2]}"
-        # A news wire (so it composes) + an overnight paper the brief draws on.
+        # A news wire (present, but no longer consumed by the compose lane —
+        # Workstream B) alongside an overnight paper the brief actually draws on.
         news = store.insert_ref(
             kind="news",
             slug=f"briefing-{date_tag}",
@@ -312,23 +326,17 @@ class TestBuild:
             }
         # The paper the brief drew on is reachable from the draft for later use.
         assert rels == {"cites"}
-        # …and the consumed news wire is linked as the thing it derived from.
-        assert news_rels == {"derived-from"}
+        # The news wire is no longer consumed by the compose lane (folded into
+        # the narrated audio instead) — so no link is written for it here.
+        assert news_rels == set()
 
     def test_idempotent_second_call_skips_compose(self, store: Any) -> None:
         date_tag = f"2026-08-{uuid.uuid4().hex[:2]}"
-        news = store.insert_ref(
-            kind="news",
-            slug=f"briefing-{date_tag}",
-            title="b",
-            meta={"briefing": True, "date": date_tag},
-        )
-        store.add_chunks(
-            ref_id=news.id,
-            chunk_kind="paragraph",
-            text="News.",
-            split=True,
-            kind="news",
+        store.insert_ref(
+            kind="paper",
+            slug=f"paper-{uuid.uuid4().hex[:8]}",
+            title="Idempotency-test paper",
+            meta={"abstract": "An abstract."},
         )
         c1 = _FakeClient("First.\n\nSecond.")
         first = build_reading_briefing(store, client=c1, date_tag=date_tag)
@@ -338,6 +346,29 @@ class TestBuild:
         second = build_reading_briefing(store, client=c2, date_tag=date_tag)
         assert second == first
         assert c2.calls == []  # idempotent — no recompose
+
+
+class TestNewsFoldedIntoNarration:
+    """Workstream B: the news wire is prepended at narration time
+    (``cast_audio._news_lead_in``), not re-consumed by the compose lanes or
+    the contract — this is the seam that dropped it."""
+
+    def test_gather_lanes_has_no_news_key(self, store: Any) -> None:
+        from precis.reading.briefing_cast import _gather_lanes
+
+        now = datetime.now(UTC)
+        lanes, _sources = _gather_lanes(
+            store,
+            date_tag="2999-02-01",
+            cutoff=now - timedelta(hours=_LOOKBACK_HOURS),
+            now=now,
+        )
+        assert "news" not in lanes
+
+    def test_contract_has_no_news_bullet(self) -> None:
+        from precis.reading.briefing_cast import _MORNING_CONTRACT
+
+        assert "NEWS:" not in _MORNING_CONTRACT
 
 
 class _AlertLaneStore:

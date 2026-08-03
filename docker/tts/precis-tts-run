@@ -10,7 +10,11 @@ enclosure just works. The precis worker stages the input + reads the output over
 a bind mount, so it never needs the ``[tts]`` extra itself.
 
   in : /work/in/segments.json
-       {"segments": [{"text","voice","lang","kind"}, ...], "speed": 1.0}
+       {"segments": [{"text","voice","lang","kind","gap_after"}, ...],
+        "speed": 1.0}
+       ``gap_after`` (seconds, nullable) is a per-segment trailing-silence
+       override — a content property of the segment, not a top-level pause
+       knob; ``null``/absent falls back to the stitch's kind-based default.
   out: /work/out/out.mp3   (+ /work/out/result.json with {segments, duration_s})
 
 Dependency-light: reuses ``precis.export.audio.synthesize_text`` (the shared
@@ -43,6 +47,7 @@ def main() -> int:
             voice=s["voice"],
             lang=s["lang"],
             kind=s.get("kind", "para"),
+            gap_after=s.get("gap_after"),
         )
         for s in data.get("segments", [])
         if s.get("text")

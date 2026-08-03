@@ -93,6 +93,12 @@ def _briefing_text(store: Any, ref_id: int) -> str:
     return "\n\n".join((r[0] or "").strip() for r in rows if (r[0] or "").strip())
 
 
+# SUPERSEDED (news→reading-brief merge): the news wire is now folded into the
+# combined ``morning_brief_<date>`` episode at narration time
+# (``workers/cast_audio.py``'s ``_news_lead_in``), so this pass would publish a
+# duplicate standalone ``news-<date>`` episode. It stays implemented (nothing
+# here is deleted) but must stay disabled — ``PRECIS_BRIEFING_AUDIO_ENABLED``
+# unset/false (its existing default).
 def run_briefing_audio(
     store: Any,
     *,

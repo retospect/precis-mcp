@@ -110,3 +110,28 @@ def test_stitch_resamples_mixed_sample_rates():
     assert sr == 44100  # resampled up to the higher rate
     # both segments now at 44.1k → ~1s each = ~2s total (± rounding)
     assert abs(len(audio) - 2 * 44100) <= 4
+
+
+def test_stitch_gap_after_overrides_the_kind_default():
+    """A segment's own ``gap_after`` wins over the kind-based pause_s/
+    heading_pause_s default; a segment with no override (``gap_after=None``)
+    still falls back to that default — the content/markup property, not a
+    synth knob."""
+    from precis.draft.narrate import NarrationSegment
+    from precis.export.audio import _stitch
+
+    class _SilentSynth:
+        def synthesize(self, text, *, voice, lang):
+            return np.zeros(1000, dtype=np.float32), 1000  # 1.0s of "speech"
+
+    segs = [
+        # Overrides the "para" default (0.2s) with a longer 1.5s beat.
+        NarrationSegment("first", "af_heart", "en-us", "para", gap_after=1.5),
+        # No override → falls back to the kind default (0.2s for "para").
+        NarrationSegment("second", "af_heart", "en-us", "para"),
+    ]
+    audio, sr = _stitch(segs, _SilentSynth(), pause_s=0.2, heading_pause_s=0.9)
+    assert sr == 1000
+    # 1.0s speech + 1.5s override gap + 1.0s speech + 0.2s default gap.
+    expected = int(1000 * (1.0 + 1.5 + 1.0 + 0.2))
+    assert abs(len(audio) - expected) <= 2
