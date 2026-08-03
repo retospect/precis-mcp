@@ -278,6 +278,10 @@ containerization, the autocatpath harvest concurrency edge, `gr1821xx`, the
 ### Pillar 3 — Elastic resources on demand (law 1 applied to scarcity)
 
 - **§F — Demand-materialized batches + counted slots + elastic serving.**
+  **Cycle a SHIPPED dark** (`bf7e2581`: materializer cadence + `embed_batch`
+  + `job_inproc` + embedder slot probe, gated on `PRECIS_MATERIALIZE_EMBED`);
+  cycle b remains: elastic residency, the embed pass→job cutover, on-demand
+  embedder in ansible.
   - **Count → threshold → batch-mint.** A cheap periodic demand-count mints a
     batch of low-`prio` jobs when a backlog crosses a threshold (>500
     unembedded chunks → mint the next 5000); below threshold, nothing;
@@ -303,22 +307,24 @@ containerization, the autocatpath harvest concurrency edge, `gr1821xx`, the
     small money); local residency pays only when the pile amortizes the
     load.
   - **Ordering: §B-2's prio-direction pin lands before the first
-    materializer.** §F mints "low-`prio`" batches, but the live sort's
-    direction may be inverted vs the `0014` convention — until §B-2
-    reconciles and test-pins it, "low-prio" is ambiguous and a batch could
-    outrank human-urgent work.
-- **§B-2 — Priority-claim + reserve mode (kill demoted).**
-  - **Human-first claim.** The claim orders on `refs.prio` (`ORDER BY
-    COALESCE(r.prio,5) DESC`) and `mint_child_job` copies parent `prio` — but
-    the direction *looks inverted* vs the `0014` convention (lower = more
-    urgent). §B-2 is a **correctness reconciliation** of that live sort, with
-    a test pinning the direction — not greenfield.
-  - **Reserve mode** — a TTL'd `service_config` flag the dispatch gate reads:
-    stop minting/claiming new heavy background; in-flight finishes cleanly;
-    the box is the human's. The primary responsiveness lever.
-  - **Kill backstop — last resort.** Force-kill with verified GPU reclamation
-    (`kill_container` + `reset_gpu`) for a genuinely wedged compute. Rare by
-    law 5 — the wedge is fixed by chunking (§B-1) and container teardown (§H).
+    materializer.** SATISFIED — the pin shipped first (`de934b16`); the
+    materializer mints at `prio=8`, correctly background under `0014` ASC.
+- **§B-2 — Priority-claim + reserve mode (kill demoted). SHIPPED**
+  (`de934b16` direction pin · `4b2824f5` reserve + kill).
+  - **Human-first claim.** The live sort *was* inverted vs `0014` (`DESC` —
+    urgent claimed last); reconciled to `ORDER BY COALESCE(r.prio,5) ASC`
+    and test-pinned (`test_claim_ordering.py`). `mint_child_job` copies
+    parent `prio`.
+  - **Reserve mode** — a TTL'd `service_config` row (`service='reserve'`,
+    `expires_at`) checked at the top of the heavy claim (ssh_node +
+    claude_docker): stop claiming new heavy background; in-flight finishes
+    cleanly; auto-expires by predicate. `precis service reserve/release` +
+    console banner (§K). The primary responsiveness lever.
+  - **Kill backstop — last resort.** `precis jobs kill` stamps
+    `kill_requested`; the owning executor kills at its next poll via the
+    deadline-kill path, with best-effort `reset_gpu` when the job required
+    GPU. Rare by law 5 — the wedge is fixed by chunking (§B-1) and container
+    teardown (§H).
 - **§C — GPU topology fuse/split — gated, likely shelved.** One Spark's
   ~119 GB already serves ~120 B @ 8-bit / ~200 B @ 4-bit; fusion pays only for
   a frontier model (~400 B+) that cannot quantize onto one unit, and the
@@ -344,9 +350,10 @@ Track 2 (`served_by` seeding), `gr175799`, `gr51393`, spark provisioning
   truth** — the same registry (`ServiceSpec × service_config × worker_logs`)
   plus the same backlog signal; alarm on backlog-present-but-not-draining,
   never on quiet. Full spec: `health-watchdog.md`.
-- **§K — Factory console v2.** Where the control surface lives: per-cadence
-  next-run, per-host last-error, `resource_slots` free/capacity, and the live
-  `prio` knobs that replace the env flags (`gr162694`, Track 3).
+- **§K — Factory console v2. SHIPPED** (`474b88d0`): per-cadence next-run,
+  per-host last-error, `resource_slots` free/capacity chips, reserve
+  banner + reserve/release controls, live `prio` knobs (`gr162694`, Track 3
+  — only the last-ok/fail click-through drill-down remains).
 - **External dead-man's-switch.** An out-of-band `SELECT 1` watcher on a
   different host → Discord — the only signal that survives a total fleet/DB
   outage (the ~8 h prod outage went unalerted because every alerting path was
@@ -487,13 +494,16 @@ no `torch-cuda` base-image mirror, and §L's OS-agnostic manage story
 | **failover-at-load** | all-N-slots-busy → spill the same request to the hosted endpoint | **live** | `router.py::dispatch` |
 | **`select_offering`** | Pareto pick over the catalog (local cards price at 0) | **live** | `utils/llm/policy.py::select_offering` |
 | **`service_config.prio`** | live per-host on/off + concurrency, 5 s TTL | **live** | `workers/service_config.py` · `cli/service.py` |
-| **capability probe** | heartbeat probes gpu/podman/tts → UPSERT slot rows | **live** | `workers/capability_probe.py::probe_host_resources` |
+| **capability probe** | heartbeat probes gpu/podman/tts/embedder → UPSERT slot rows | **live** | `workers/capability_probe.py::probe_host_resources` |
 | **scheduler pass** | lease-backed recurring clock | **live in prod** | `workers/scheduler.py` · `Store.claim_scheduler_lease` |
-| **executor claim** | `FOR UPDATE SKIP LOCKED`, `ORDER BY prio`, reserve-at-claim | **live** | `executors/_common.py::claim_executor_jobs` |
+| **executor claim** | `FOR UPDATE SKIP LOCKED`, `ORDER BY COALESCE(prio,5) ASC` (0014 direction, test-pinned §B-2), reserve-at-claim | **live** | `executors/_common.py::claim_executor_jobs` |
+| **reserve mode** | TTL'd `service='reserve'` row gates new heavy claims (ssh_node + claude_docker); auto-expires | **live** (§B-2) | `workers/service_config.py::reserve_active` · `cli/service.py` |
+| **operator kill** | `precis jobs kill` stamps `kill_requested`; owning executor kills at next poll + GPU reset | **live** (§B-2) | `cli/jobs_admin.py` · `executors/_common.py::maybe_reset_gpu_after_kill` |
+| **materializer + `embed_batch`** | backlog-count → mint slot-gated bounded batch jobs; `job_inproc` executor drains | **dark** (`PRECIS_MATERIALIZE_EMBED`) | `workers/materialize.py` · `workers/job_types/embed_batch.py` · `executors/job_inproc.py` |
 | **`mint_child_job`** | mints child jobs, copies parent `prio` | **live** | `workers/dispatch.py::run_dispatch_pass` |
 | **container executors** | dispatch heavy/agentic work into rootless podman; `mode:run` + pinned `image` + `precis_access:read` | **dark**/gated | `executors/{claude_docker,agent_container}.py` · `job_types/sandbox_run.py` |
 | **§C fuse/split** | RDMA topology modes | **spec** (gated) | `gpu-cluster-modes.md` |
-| **§F elastic serving** | spin a model up for a batch, release when drained | **spec** | this doc, §F |
+| **§F elastic serving** | spin a model up for a batch, release when drained | **spec** (batch-mint half shipped dark — row above) | this doc, §F |
 
 ### The serving primitive (shared by all LLM traces)
 
@@ -770,7 +780,8 @@ and the laws.
 **Live sub-specs** (mechanical detail this doc doesn't carry):
 
 - `gpu-priority.md` → §B — Phase 1 is the §B-1 build of record (with
-  `autocatpath-integration.md` §3.8).
+  `autocatpath-integration.md` §3.8). Status: shipped (§B-1 chunking +
+  §B-2 pin/reserve/kill); kept as the design record.
 - `health-watchdog.md` → §D + Pillar 6's ladder (§2b).
 - `compute-lane-lease-epoch.md` → §H-lifecycle (the epoch).
 - `sim-harness.md` → trace 5 / §H's image-pinning + `precis_access:read`

@@ -1,10 +1,15 @@
 ---
-status: draft
+status: shipped
 title: Prioritized GPU work — chunk catpath into per-seed todos, human-first claim, reserve mode
 model: opus
 ---
 
 # Prioritized GPU work
+
+> **Shipped via the master plan** (`cluster-scheduling.md`): seed-chunking =
+> §B-1 (final acceptance pending one aggregate run); human-first claim
+> direction pin `de934b16`; reserve mode + kill backstop `4b2824f5` (§B-2).
+> This file stays as the motivation/design record.
 
 ## Motivation / why
 
