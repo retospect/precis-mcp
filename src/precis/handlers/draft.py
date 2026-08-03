@@ -1191,27 +1191,24 @@ class DraftHandler(Handler):
         guard (``_todo_guards.check_facets_on_create``: workers can't mint
         ``rotation_root=true``) still applies instead of being silently
         bypassed for the fork's own project-minting shortcut. The new ref's
-        id is read back off the ack's universal handle (``td<id>``, ADR
-        0036) rather than by title lookup — a title has no uniqueness
-        guarantee, but the handle in the ack IS this call's own ref."""
+        id is read off ``Response.ref_id`` (structured, not regex-parsed
+        off the ack's ``td<id>`` handle) — a title has no uniqueness
+        guarantee, but the id on this call's own ``put`` response is."""
         raw = str(project).strip()
         bare = raw[len("todo:") :] if raw.startswith("todo:") else raw
         if bare.isdigit():
             return self._resolve_project(project)
-        from precis.dispatch import Hub
-        from precis.handlers.todo import TodoHandler
-
-        resp = TodoHandler(hub=Hub(store=self.store)).put(
-            text=raw, meta={"rotation_root": True}
-        )
-        code = handle_registry.code_for_kind("todo")
-        m = re.search(rf"\b{code}(\d+)\b", resp.body)
-        if m is None:  # pragma: no cover - defensive; the ack format is stable
+        # self.hub is set at registration; a hand-constructed handler
+        # (tests) leaves it None, so fall back to a minimal hub over the
+        # same store — TodoHandler only needs hub.store.
+        hub = self.hub if self.hub is not None else Hub(store=self.store)
+        resp: Response = hub.sibling("todo").put(text=raw, meta={"rotation_root": True})
+        if resp.ref_id is None:  # pragma: no cover - defensive; contract broken
             raise BadInput(
-                f"minted project {raw!r} but couldn't read its id back "
-                f"off the todo ack: {resp.body!r}"
+                f"minted project {raw!r} but its put() returned no ref_id: "
+                f"{resp.body!r}"
             )
-        return int(m.group(1))
+        return resp.ref_id
 
     def _prepare_term_meta(
         self, ref_id: int, meta: dict[str, Any] | None

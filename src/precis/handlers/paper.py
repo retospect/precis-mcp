@@ -763,8 +763,13 @@ class PaperHandler(Handler):
                 )
             from precis.handlers._good_search import submit_good_search
 
+            # self.hub is set at registration; a hand-constructed handler
+            # (tests) leaves it None, so fall back to a minimal hub over
+            # the same store — submit_good_search only needs hub.store
+            # and hub.sibling(...).
+            hub = self.hub if self.hub is not None else Hub(store=self.store)
             return submit_good_search(
-                self.store,
+                hub,
                 q=q.strip(),
                 queries=queries,
                 answers=answers,

@@ -26,6 +26,14 @@ def test_create_assigns_id_and_default_status(handler: TodoHandler) -> None:
     assert "STATUS:open" in r.body
 
 
+def test_create_response_carries_ref_id(handler: TodoHandler) -> None:
+    """A sibling handler (structured-field callers) reads ``ref_id``
+    instead of regex-parsing the ack's ``td<id>`` handle."""
+    r = handler.put(text="finish the report")
+    refs = handler.store.list_refs(kind="todo", limit=10)
+    assert r.ref_id == refs[0].id
+
+
 def test_create_records_status_open_tag(handler: TodoHandler) -> None:
     handler.put(text="task 1")
     refs = handler.store.list_refs(kind="todo", limit=10)

@@ -1070,7 +1070,7 @@ class TodoHandler(NumericRefHandler):
                 (f"get(kind={self.kind!r}, id='/open')", "list open todos"),
             ]
         )
-        return Response(body=body)
+        return Response(body=body, ref_id=ref_id)
 
 
 def _status_of(tags: list) -> str:  # type: ignore[type-arg]

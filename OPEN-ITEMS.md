@@ -33,6 +33,22 @@ Status: open · Severity: polish · Owner: `src/precis/taproot/backfill.py` · T
 
 ---
 
+## Residuals (2026-08-03 — worktree reaper raced a live session)
+
+- **Reaper deleted a live session's worktree** · Status: open · Severity: bug ·
+  Owner: `scripts/reap-worktrees` / `scripts/inflight` liveness check. During
+  the 2026-08-03 session in `bubbly-waddling-heron` (live Claude session, mid
+  P2-1 build), a sibling session's `SessionStart` backstop reaped the worktree:
+  right after a ship it was momentarily merged+clean with no dirty files and no
+  `.claude/purpose` refresh, and the liveness probe missed the live session. A
+  background coder recreated it and no work was lost, but the race is real —
+  reap decisions should re-verify session liveness (not just git state)
+  immediately before `git worktree remove`, and/or treat "session file
+  active in the last N minutes" as a hard veto. Repro window: ship → branch
+  reset to main → sibling session starts before the next local edit.
+
+---
+
 ## Residuals (2026-07-31 — draft table-editing ship b9bc1d4c)
 
 - **Structured enrichment for rich tables** · Status: deferred · Severity:

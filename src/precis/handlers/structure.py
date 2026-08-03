@@ -1521,7 +1521,6 @@ class StructureHandler(Handler):
         success and gets a ``child-failed`` bubble on failure."""
         slug = str(ref.slug)
         from precis.handlers import _todo_guards as todo_guards
-        from precis.handlers.job import JobHandler
 
         # A named requester must be a live todo (fail fast, before the mint).
         if nd.requester_id is not None:
@@ -1549,7 +1548,7 @@ class StructureHandler(Handler):
             # stager + container then share one host's NFS view.
             "target_node": os.environ.get("PRECIS_DFT_NODE", "spark"),
         }
-        job_resp = JobHandler(hub=hub).put(
+        job_resp = hub.sibling("job").put(
             job_type="struct_relax",
             executor="ssh_node",
             # The build subject owns the job (compute lane, ADR 0044).
@@ -1560,7 +1559,14 @@ class StructureHandler(Handler):
         )
         note = ""
         if nd.requester_id is not None:
-            self._wire_requester(nd.requester_id, job_resp.body)
+            if job_resp.ref_id is None:  # defensive — put always reports the id
+                log.warning(
+                    "structure._dispatch_relax: job put() returned no ref_id "
+                    "for requester #%s; skipping requester wiring",
+                    nd.requester_id,
+                )
+            else:
+                self._wire_requester(nd.requester_id, job_resp.ref_id)
             note = f" (todo #{nd.requester_id} will block on it)"
         pre = nd.preflight_result
         preflight_line = (
@@ -1581,7 +1587,7 @@ class StructureHandler(Handler):
             )
         )
 
-    def _wire_requester(self, requester_id: int, job_resp_body: str) -> None:
+    def _wire_requester(self, requester_id: int, job_id: int) -> None:
         """Link the requesting todo to the just-minted job and arm its wait.
 
         Writes ``requester --requested--> job`` (the edge the
@@ -1590,10 +1596,6 @@ class StructureHandler(Handler):
         mirroring how ``dispatch`` arms ``child_job_succeeded`` for the intent
         lane. A todo that already carries a deliberate auto_check is left
         alone. Idempotent on both writes."""
-        m = re.search(r"id=(\d+)", job_resp_body)
-        if m is None:  # defensive — put always reports the id
-            return
-        job_id = int(m.group(1))
         with self.store.tx() as conn:
             self.store.add_link(
                 src_ref_id=requester_id,

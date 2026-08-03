@@ -22,6 +22,7 @@ from precis.dispatch import (
 )
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
+from precis.store import Store
 
 # ---------------------------------------------------------------------------
 # Hub primitives
@@ -117,6 +118,38 @@ def test_kinds_supporting_verb() -> None:
     assert r.kinds_supporting("tag") == {"a", "b"}
     assert r.kinds_supporting("get") == {"c"}
     assert r.kinds_supporting("delete") == set()
+
+
+# ---------------------------------------------------------------------------
+# Hub.sibling — replaces the throwaway ``Hub(store=...)`` idiom
+# ---------------------------------------------------------------------------
+
+
+def test_sibling_returns_registered_instance_on_booted_hub(store: Store) -> None:
+    from precis.handlers.todo import TodoHandler
+
+    r = boot(store=store)
+    inst = r.sibling("todo")
+    assert inst is r.handler_for("todo")
+    assert isinstance(inst, TodoHandler)
+
+
+def test_sibling_lazily_constructs_and_caches_on_bare_hub(store: Store) -> None:
+    from precis.handlers.job import JobHandler
+
+    r = Hub(store=store)
+    assert "job" not in r.handlers
+    inst = r.sibling("job")
+    assert isinstance(inst, JobHandler)
+    # Cached: a second call returns the identical instance, not a fresh one.
+    assert r.sibling("job") is inst
+    assert r.handlers["job"] is inst
+
+
+def test_sibling_unknown_kind_raises_key_error(store: Store) -> None:
+    r = Hub(store=store)
+    with pytest.raises(KeyError, match="no lazy-construction mapping"):
+        r.sibling("nosuchkind")
 
 
 # ---------------------------------------------------------------------------

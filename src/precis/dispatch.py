@@ -42,11 +42,12 @@ alternatives.
 
 from __future__ import annotations
 
+import importlib
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from importlib.metadata import entry_points as _entry_points
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from precis.hints import Hint, HintBus
 
@@ -226,6 +227,52 @@ class Hub:
     def handler_for(self, kind: str) -> Any | None:
         """Return the handler instance for ``kind``, or ``None``."""
         return self.handlers.get(kind)
+
+    #: Kinds a lazily-constructed :meth:`sibling` knows how to build.
+    #: Keyed by kind, mapping to ``(module, class name)`` so the import
+    #: happens function-locally (avoids an import cycle with the
+    #: handler modules, which import ``Hub`` themselves). ``ClassVar``
+    #: — a plain shared constant, not a per-instance dataclass field.
+    _SIBLING_HANDLERS: ClassVar[dict[str, tuple[str, str]]] = {
+        "todo": ("precis.handlers.todo", "TodoHandler"),
+        "job": ("precis.handlers.job", "JobHandler"),
+    }
+
+    def sibling(self, kind: str) -> Any:
+        """Return the live handler instance for ``kind``, wired or lazy.
+
+        Replaces the hand-built throwaway ``Hub(store=...)`` idiom
+        that several call sites used to reach a sibling handler's
+        ``put()`` — that idiom silently bypasses boot wiring (the
+        embedder, hint bus, and any other infra a fully-booted hub
+        carries), and every duplicate construction of the handler
+        pays its ``__init__`` cost again.
+
+        On a booted hub (``kind`` already in :attr:`handlers`) this
+        just returns that instance — the fully wired one. On a bare
+        hub (e.g. a test fixture, or a call site that only ever had
+        ``store=``) it lazily constructs the handler with ``hub=self``,
+        caches it in :attr:`handlers` so a repeat call is free, and
+        returns it. Raises :class:`KeyError` for a kind this method
+        doesn't know how to lazily construct — extend
+        :attr:`_SIBLING_HANDLERS` rather than hand-rolling the
+        construction at the call site.
+        """
+        existing = self.handlers.get(kind)
+        if existing is not None:
+            return existing
+        target = self._SIBLING_HANDLERS.get(kind)
+        if target is None:
+            raise KeyError(
+                f"Hub.sibling: no lazy-construction mapping for kind={kind!r}; "
+                f"known: {sorted(self._SIBLING_HANDLERS)}"
+            )
+        module_name, class_name = target
+        module = importlib.import_module(module_name)
+        cls = getattr(module, class_name)
+        inst = cls(hub=self)
+        self.handlers[kind] = inst
+        return inst
 
     def verbs_for(self, kind: str) -> set[str]:
         """Set of verbs the given kind supports. Empty if kind unknown."""

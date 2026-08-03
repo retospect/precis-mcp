@@ -147,6 +147,48 @@ class TestCoordinatorJobParent:
             )
 
 
+# ── Response.ref_id / .reused — the structured create/idem contract ──
+
+
+class TestPutResponseFields:
+    """A sibling handler (e.g. ``_good_search``) reads ``ref_id`` /
+    ``reused`` off the ``Response`` instead of regex-parsing the ack
+    body — a copy-edit to the ack wording must not break it."""
+
+    def test_fresh_create_sets_ref_id_and_reused_false(
+        self, jobs: JobHandler, todos: TodoHandler
+    ) -> None:
+        todo_id = id_of(todos.put(text="root").body)
+        resp = jobs.put(
+            job_type="plan_tick",
+            parent_id=todo_id,
+            params={"model": "haiku"},
+            idem_key="fresh-mint-key",
+        )
+        assert resp.ref_id is not None
+        assert resp.ref_id == id_of(resp.body)
+        assert resp.reused is False
+
+    def test_idem_hit_sets_ref_id_and_reused_true(
+        self, jobs: JobHandler, todos: TodoHandler
+    ) -> None:
+        todo_id = id_of(todos.put(text="root").body)
+        first = jobs.put(
+            job_type="plan_tick",
+            parent_id=todo_id,
+            params={"model": "haiku"},
+            idem_key="dup-key",
+        )
+        second = jobs.put(
+            job_type="plan_tick",
+            parent_id=todo_id,
+            params={"model": "haiku"},
+            idem_key="dup-key",
+        )
+        assert second.reused is True
+        assert second.ref_id == first.ref_id
+
+
 # ── ctx.spawn_child ────────────────────────────────────────────────
 
 

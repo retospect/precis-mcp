@@ -30,16 +30,15 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput
 from precis.response import Response
 
-_TERMINAL = ("succeeded", "failed", "cancelled")
+if TYPE_CHECKING:
+    from precis.dispatch import Hub
 
-#: Parses ``id=N`` out of the todo / job put acks.
-_ID_IN_ACK = re.compile(r"\bid=(\d+)\b")
+_TERMINAL = ("succeeded", "failed", "cancelled")
 
 #: Title cap for the ephemeral parent todo.
 _TITLE_CAP = 96
@@ -110,7 +109,7 @@ def _ack(job_id: int, *, todo_id: int | None, reused: bool) -> Response:
 
 
 def submit_good_search(
-    store: Any,
+    hub: Hub,
     *,
     q: str,
     queries: list[str] | None = None,
@@ -121,18 +120,18 @@ def submit_good_search(
 
     The thin-slice surface: async handle only (``wait=0`` semantics);
     ``wait=<seconds>`` block-poll is phase 2.
+
+    ``hub`` is the caller's (fully wired) hub — reused via
+    :meth:`Hub.sibling` to reach the ``job`` / ``todo`` handlers rather
+    than hand-building a throwaway ``Hub(store=...)``.
     """
-    # Local imports — the handler layer already imports this module's
-    # siblings; keep the job/todo handlers off the module import path.
-    from precis.dispatch import Hub
-    from precis.handlers.job import JobHandler
-    from precis.handlers.todo import TodoHandler
+    store = hub.store
 
     clean_queries = [str(s).strip() for s in (queries or []) if s and str(s).strip()]
     clean_answers = [str(s).strip() for s in (answers or []) if s and str(s).strip()]
     idem = _idem_key(q, clean_queries, clean_answers, want)
 
-    jobs = JobHandler(hub=Hub(store=store))
+    jobs = hub.sibling("job")
     existing = jobs._lookup_idem(idem)
     if existing is not None:
         return _ack(existing, todo_id=None, reused=True)
@@ -154,18 +153,17 @@ def submit_good_search(
     title = f"deep search: {q}"
     if len(title) > _TITLE_CAP:
         title = title[: _TITLE_CAP - 1] + "…"
-    todos = TodoHandler(hub=Hub(store=store))
+    todos = hub.sibling("todo")
     todo_ack = todos.put(
         text=title,
         tags=["ephemeral"],
         meta={"auto_check": {"type": "child_job_succeeded"}},
     )
-    m = _ID_IN_ACK.search(todo_ack.body)
-    if m is None:  # pragma: no cover — put()'s ack shape changed
+    if todo_ack.ref_id is None:  # pragma: no cover — contract broken
         raise RuntimeError(
-            f"good_search: could not parse todo id from ack: {todo_ack.body!r}"
+            f"good_search: todo put() returned no ref_id: {todo_ack.body!r}"
         )
-    todo_id = int(m.group(1))
+    todo_id = todo_ack.ref_id
 
     resp = jobs.put(
         job_type="good_search",
@@ -179,14 +177,11 @@ def submit_good_search(
             "want": want,
         },
     )
-    m = _ID_IN_ACK.search(resp.body)
-    if m is None:  # pragma: no cover — put()'s ack shape changed
-        raise RuntimeError(
-            f"good_search: could not parse job id from ack: {resp.body!r}"
-        )
-    job_id = int(m.group(1))
+    if resp.ref_id is None:  # pragma: no cover — contract broken
+        raise RuntimeError(f"good_search: job put() returned no ref_id: {resp.body!r}")
+    job_id = resp.ref_id
 
-    reused = resp.body.startswith("existing job")
+    reused = resp.reused is True
     if reused:
         # Lost the idem race between our pre-check and the put — the
         # fresh todo has no child and would linger as an orphan;

@@ -367,7 +367,9 @@ class JobHandler(NumericRefHandler):
                             f"idem_key={resolved_idem!r} is still active "
                             "(returning that id instead of creating a "
                             "duplicate)"
-                        )
+                        ),
+                        ref_id=existing,
+                        reused=True,
                     )
 
             ref = self.store.insert_ref(
@@ -413,7 +415,9 @@ class JobHandler(NumericRefHandler):
                 f"created job id={ref.id} (STATUS:queued, "
                 f"job_type={spec.name!r}, executor={resolved_executor!r}). "
                 f"poll: get(kind='job', id={ref.id})."
-            )
+            ),
+            ref_id=ref.id,
+            reused=False,
         )
 
     # ── retry: re-run a failed job via the parent todo ─────────────

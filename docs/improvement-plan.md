@@ -40,16 +40,7 @@
 
 ## P2 — robustness and design debt
 
-1. **Kill the ack-scraping idiom (3 sites).** `handlers/draft.py::
-   _resolve_or_create_project`, `handlers/_good_search.py::_ID_IN_ACK` (×2
-   uses), and `handlers/structure.py::_dispatch_relax` hand-build a
-   throwaway `Hub`, call a sibling handler's `put()`, then regex-parse the
-   rendered ack markdown to recover the new ref id — a copy-edit to ack
-   wording silently breaks creation. Provide a structured
-   create-and-return-id path (store-level or `hub.sibling(kind)`) and a
-   shared sibling-hub factory so `dispatch.boot()` wiring isn't bypassed.
-   *opus API shape, sonnet implement · effort M*
-2. **Render-sandbox Phase 2: network/filesystem jail.** Design written
+1. **Render-sandbox Phase 2: network/filesystem jail.** Design written
    2026-08-02 → `docs/proposals/render-sandbox-network-jail.md` (jail
    ladder: podman `--network=none` → macOS seatbelt → Phase-1 floor with
    warning; 3 open questions, notably the Mac runtime posture). Next step:
@@ -66,6 +57,14 @@
    just executes every raw query once incl. adversarial `%`/`_` input.
    *test-author batches · effort L, slice it*
 ## P3 — hygiene, scale, coverage
+
+7. **Finish eradicating the ack-scrape idiom.** P2-1 added the structured
+   path (`Response.ref_id`/`reused`, `Hub.sibling`) and converted the three
+   core sites; the same regex-on-ack idiom survives in `quest/loop.py`,
+   `quest/search.py`, `workers/executors/_context.py`, and the plugin
+   packages (`precis_bio/protein.py`, `precis_chem/route.py`,
+   `precis_pathway/handler.py`). Mechanical now that the API exists.
+   *sonnet coder · effort S*
 
 8. **Split `handlers/draft.py` (2 744 lines).** Extract the ~9 hint
    methods → `_draft_hints.py`, table CRUD → `_draft_tables.py`,
