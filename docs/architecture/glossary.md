@@ -38,6 +38,13 @@
 - **derived job** — a compute-lane job (DFT relax / route / compile): idempotent
   + content-addressed, owned by the artifact, no rotation to enter.
   → `docs/decisions/0044-derived-job-lane.md`
+- **boot epoch / worker generation** — a uuid4 minted once per worker process
+  at startup (`mint_boot_id`), advertised in `host_heartbeat.meta.boot_ids`;
+  stamped onto every job claim as `meta.lease_boot_id` so a later successor
+  can prove a `STATUS:running` row's prior holder was provably replaced
+  (epoch reclaim) rather than waiting out the lease's full expiry.
+  → `src/precis/workers/executors/_common.py` (`claim_executor_jobs`) ·
+  `docs/proposals/compute-lane-lease-epoch.md`
 - **planner coroutine / `plan_tick`** — an `LLM:*`-tagged todo run as a resumable
   coroutine; each tick is a job that may mint children or yield, and an
   exhaustion (max-turns / timeout) is resumable, not a failure.

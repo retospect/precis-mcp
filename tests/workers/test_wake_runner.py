@@ -13,12 +13,13 @@ with the coordinator executor's mapping.
 from __future__ import annotations
 
 import inspect
+import time
 
 from precis.store import Store
 from precis.store.types import Tag
 from precis.workers import wake_runner
 from precis.workers.executors import coordinator
-from precis.workers.executors._common import set_meta
+from precis.workers.executors._common import claim_executor_jobs, set_meta
 
 
 def test_wake_runner_status_vocabulary_matches_coordinator() -> None:
@@ -176,3 +177,150 @@ def test_children_done_wake_treats_soft_deleted_child_as_terminal(
     result = wake_runner.run_wake_pass(store)
     assert result["ok"] >= 1
     assert _status_of(store, coord) == "queued"
+
+
+# ── §H piece 5: child-deadlock deadline ────────────────────────────
+
+
+def _tags_of(store: Store, ref_id: int) -> set[str]:
+    return {str(t) for t in store.tags_for(ref_id)}
+
+
+def _job_meta(store: Store, ref_id: int) -> dict:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s", (ref_id,)
+        ).fetchone()
+    assert row is not None
+    return dict(row[0] or {})
+
+
+def test_past_deadline_parent_requeues_degraded_with_bubble(store: Store) -> None:
+    """A waiting_children parent past its wake_deadline, with a child
+    still non-terminal, is re-queued "woken-degraded" — a
+    child-failed:<id> bubble on the coordinator job's OWN PARENT todo
+    (never the coordinator job itself — see Finding 1 / the module
+    docstring) for the straggler, then STATUS:queued (the master's "a
+    parent never blocks forever on a child") — even though the normal
+    children_done wake never fired.
+
+    REQUIRED (review Finding 1): after the degraded re-queue, the
+    coordinator's own claim (the REAL SQL, coordinator's exact flags
+    including exclude_paused=True) must find the job claimable — the
+    pre-fix bug tagged the coordinator job itself, which self-wedged it
+    out of ``exclude_paused``'s NOT EXISTS forever.
+    """
+    todo = store.insert_ref(kind="todo", slug=None, title="root", meta={})
+    coord = _mk_job(
+        store,
+        parent_id=todo.id,
+        status="waiting_children",
+        meta={"job_type": "demo_campaign", "executor": "coordinator"},
+        title="campaign",
+    )
+    stuck_child = _mk_job(store, parent_id=coord, status="queued")
+    with store.pool.connection() as conn:
+        set_meta(
+            conn,
+            coord,
+            wake_when={
+                "kind": "children_done",
+                "payload": {"child_job_ids": [stuck_child]},
+            },
+            wake_deadline=0.0,  # unix epoch 0 — always in the past
+        )
+        conn.commit()
+
+    result = wake_runner.run_wake_pass(store)
+
+    assert result["ok"] == 1
+    assert _status_of(store, coord) == "queued"
+    # The bubble lands on the coordinator's own PARENT todo, not on the
+    # coordinator job itself.
+    assert f"child-failed:{stuck_child}" in _tags_of(store, todo.id)
+    assert not any(t.startswith("child-failed:") for t in _tags_of(store, coord))
+    # The coordinator job records what happened on itself, for its own
+    # next slice to see.
+    coord_meta = _job_meta(store, coord)
+    assert coord_meta["degraded_children"] == [stuck_child]
+    assert "wake_degraded_at" in coord_meta
+    # The straggler itself is UNTOUCHED — the parent stops waiting, it
+    # doesn't force-fail the child (that's the sweeper/reclaim's job).
+    assert _status_of(store, stuck_child) == "queued"
+    # REQUIRED: the real coordinator claim (same flags coordinator._claim_jobs
+    # uses) must see the re-queued job as claimable.
+    with store.pool.connection() as conn:
+        claimed = claim_executor_jobs(
+            conn, executor="coordinator", limit=10, exclude_paused=True, node=None
+        )
+        conn.rollback()  # inspection only — don't actually consume the claim
+    assert coord in {r[0] for r in claimed}
+
+
+def test_future_deadline_parent_keeps_waiting(store: Store) -> None:
+    """A waiting_children parent whose deadline is still hours away is
+    left alone even with a non-terminal child — no false degrade."""
+    todo = store.insert_ref(kind="todo", slug=None, title="root", meta={})
+    coord = _mk_job(
+        store,
+        parent_id=todo.id,
+        status="waiting_children",
+        meta={"job_type": "demo_campaign", "executor": "coordinator"},
+        title="campaign",
+    )
+    stuck_child = _mk_job(store, parent_id=coord, status="running")
+    with store.pool.connection() as conn:
+        set_meta(
+            conn,
+            coord,
+            wake_when={
+                "kind": "children_done",
+                "payload": {"child_job_ids": [stuck_child]},
+            },
+            wake_deadline=time.time() + 3600,
+        )
+        conn.commit()
+
+    result = wake_runner.run_wake_pass(store)
+
+    assert result["claimed"] == 0
+    assert _status_of(store, coord) == "waiting_children"
+    assert not any(t.startswith("child-failed:") for t in _tags_of(store, coord))
+
+
+def test_past_deadline_all_children_terminal_uses_clean_wake_not_degraded(
+    store: Store,
+) -> None:
+    """A past-deadline parent whose children are now ALL terminal wakes
+    the CLEAN way (children_done) — the deadline path only ever fires for
+    a genuine timeout, never as a second route to the happy ending, so no
+    spurious child-failed bubble lands on a parent that was about to wake
+    normally anyway."""
+    todo = store.insert_ref(kind="todo", slug=None, title="root", meta={})
+    coord = _mk_job(
+        store,
+        parent_id=todo.id,
+        status="waiting_children",
+        meta={"job_type": "demo_campaign", "executor": "coordinator"},
+        title="campaign",
+    )
+    done_child = _mk_job(store, parent_id=coord, status="succeeded")
+    with store.pool.connection() as conn:
+        set_meta(
+            conn,
+            coord,
+            wake_when={
+                "kind": "children_done",
+                "payload": {"child_job_ids": [done_child]},
+            },
+            wake_deadline=0.0,
+        )
+        conn.commit()
+
+    result = wake_runner.run_wake_pass(store)
+
+    assert result["ok"] == 1
+    assert _status_of(store, coord) == "queued"
+    assert not any(  # no degraded bubble — the clean wake fired instead
+        t.startswith("child-failed:") for t in _tags_of(store, coord)
+    )

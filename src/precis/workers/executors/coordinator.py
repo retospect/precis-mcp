@@ -24,6 +24,19 @@ Differences from ``claude_inproc``:
 - The dispatcher path is ``spec.dispatch(ctx, spec)`` only —
   built-in fallback ``if/elif`` doesn't apply here (coordinator
   has no built-in job_types).
+- A ``children_done`` ``Yield`` also gets ``meta.wake_deadline`` stamped
+  at park time (§H piece 5, ``docs/proposals/compute-lane-lease-epoch.md``)
+  — MAX of the children's own ``params.resources.wall_seconds`` plus
+  margin, floored at ``PRECIS_WAKE_DEADLINE_HOURS`` (default 6h; also the
+  fallback when no child declares a budget at all) so a resource-
+  serialized fan-out (executor concurrency limit / slot scarcity running
+  children one-at-a-time) isn't tripped early by a tight MAX — see
+  :func:`_children_wake_deadline_s`. :mod:`precis.workers.wake_runner`
+  re-queues a past-deadline parent "woken-degraded" (a ``child-failed:<id>``
+  bubble per still
+  non-terminal child) instead of waiting on a wake condition an
+  unschedulable/stuck child might never satisfy — the master's "a parent
+  never blocks forever on a child".
 
 See ``docs/design/dft-phase-0-pr-3-coordinator-executor.md`` for
 the full design rationale.
@@ -33,6 +46,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import TYPE_CHECKING, Any
 
 from psycopg import Connection
@@ -116,6 +130,72 @@ _STATUS_FOR_WAKE_KIND: dict[str, str] = {
 # The cumulative job lifetime is unbounded because each yield
 # releases the slot.
 _LEASE_MINUTES = 5
+
+#: Margin (seconds) ADDED on top of the known max child wall-budget before
+#: a ``children_done`` wake-deadline fires (§H piece 5, compute-lane-
+#: lease-epoch.md) — a child that gets reclaimed/retried under its own
+#: executor's attempt cap still needs room beyond one raw ``wall_seconds``
+#: before the parent gives up waiting; matches the scale of ``ssh_node``'s
+#: own lease margin (``_LEASE_MARGIN_S``).
+_WAKE_DEADLINE_MARGIN_S = 3600
+
+
+def _wake_deadline_hours_default() -> float:
+    """Fallback wake-deadline (hours) when NO child in a ``children_done``
+    fan-out declares a ``params.resources.wall_seconds`` budget at all.
+    ``PRECIS_WAKE_DEADLINE_HOURS``, default 6.0, floor 0.1."""
+    raw = os.environ.get("PRECIS_WAKE_DEADLINE_HOURS")
+    if raw is None:
+        return 6.0
+    try:
+        return max(0.1, float(raw))
+    except ValueError:
+        return 6.0
+
+
+def _children_wake_deadline_s(conn: Connection, child_job_ids: list[int]) -> float:
+    """Wall-clock budget (seconds from NOW) before a ``children_done``
+    Yield is treated as deadlocked (§H piece 5 — the master's "a parent
+    never blocks forever on a child").
+
+    MAX (not sum) of the children's own ``params.resources.wall_seconds``:
+    children minted via ``DispatchContext.spawn_child`` fan out and run
+    CONCURRENTLY (the coordinator fan-out primitive — see its docstring),
+    so the parent's true worst case is bounded by the SLOWEST child, not
+    their total; summing would over-count a wide, cheap fan-out and under-
+    protect a narrow, expensive one relative to what's actually blocking.
+
+    **Floored at ``PRECIS_WAKE_DEADLINE_HOURS`` (review Finding 5).** A
+    naive ``MAX(child wall) + margin`` under-counts a *resource-serialized*
+    fan-out: the claiming executor's own concurrency limit (e.g. a GPU
+    node running ``limit=1`` ssh_node jobs) or slot scarcity can legitimately
+    run a wide fan-out of individually-quick children one at a time — the
+    parent's honest wait is the width of the fan-out times each child's
+    wall_seconds, not any single child's own budget. Rather than try to
+    infer serialization width here, the deadline is floored at the same
+    ``PRECIS_WAKE_DEADLINE_HOURS`` default (6h) used when NO child declares
+    a budget at all — so a tight MAX can't trip the deadline early on a
+    fan-out that's still making honest, one-at-a-time progress. The
+    computed MAX+margin still WINS when it exceeds the floor (a genuinely
+    long-running child's own budget is respected, never clamped down)."""
+    known: list[float] = []
+    if child_job_ids:
+        rows = conn.execute(
+            "SELECT meta->'params'->'resources'->>'wall_seconds' "
+            "FROM refs WHERE ref_id = ANY(%s)",
+            (child_job_ids,),
+        ).fetchall()
+        for (raw,) in rows:
+            if raw is None:
+                continue
+            try:
+                known.append(float(raw))
+            except (TypeError, ValueError):
+                continue
+    floor_s = _wake_deadline_hours_default() * 3600
+    if not known:
+        return floor_s
+    return max(max(known) + _WAKE_DEADLINE_MARGIN_S, floor_s)
 
 
 # ── Claim ─────────────────────────────────────────────────────────
@@ -311,12 +391,25 @@ def _persist_dispatch_result(store: Any, ref_id: int, result: Any) -> None:
                 gripe_rollback=None,
             )
             return
+        # §H piece 5: a ``children_done`` park gets a ``meta.wake_deadline``
+        # computed NOW (park time) — the master's "a parent never blocks
+        # forever on a child". wake_runner treats a past-deadline parent as
+        # woken-degraded instead of waiting out a wake condition that may
+        # never fire (an unschedulable / permanently-stuck child never
+        # reaches a terminal STATUS on its own).
+        extra_meta: dict[str, Any] = {}
+        if wake.kind == "children_done":
+            child_ids = [int(c) for c in (wake.payload.get("child_job_ids") or [])]
+            with store.pool.connection() as budget_conn:
+                deadline_s = _children_wake_deadline_s(budget_conn, child_ids)
+            extra_meta["wake_deadline"] = time.time() + deadline_s
         with store.pool.connection() as conn:
             _set_meta(
                 conn,
                 ref_id,
                 coordinator_state=result.state,
                 wake_when={"kind": wake.kind, "payload": wake.payload},
+                **extra_meta,
             )
             _set_status(store, ref_id, status, conn=conn)
             conn.commit()

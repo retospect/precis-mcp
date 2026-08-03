@@ -501,18 +501,44 @@ high-prio quest/project claims its compute ahead of commodity work,
 oldest-first within a band. An all-unset queue is byte-identical to the
 old FIFO. The capability-rarity term (§5.3, 6d) is not yet added.
 
-**ssh_node crash recovery — lease-steal (claim-side).** `run_ssh_node_pass`
-passes `reclaim_stale_running=True` to `claim_executor_jobs`, so a
-`STATUS:running` job whose lease has *provably* expired (non-null and
-`< now()`) is claimable again — its worker died mid-dispatch (a deploy
-restart is the common cause; the ssh_node dispatch is in-process, so a dead
-worker == dead compute). The steal bumps `meta.attempts`; past `_MAX_ATTEMPTS`
-(3) it's failed + bubbled (poison-guard against a job that crashes its worker
-every time), and a stolen job's stale `meta.reserved` slots are refunded
-before it re-reserves. Opt-in per caller — `claude_inproc`/`coordinator` are
-unchanged (they'd need their own ensure-dead story for a re-run). A live-lease
-running job is never stolen. Container dispatchers (dft) must reap their own
-handle before relaunch; autocatpath (in-process) has nothing to kill.
+**Boot-epoch lease + generalized crash recovery (§H cycle c,
+`docs/proposals/compute-lane-lease-epoch.md`, built).** Every worker
+process mints a `worker_boot_id` (uuid4) at startup
+(`workers/heartbeat.py::mint_boot_id`) and advertises it in
+`host_heartbeat.meta.boot_ids: {process: boot_id}` (nested-merged per
+process on write, no migration — meta is JSONB, so a host running both
+profiles never clobbers the other's generation). `claim_executor_jobs`
+(`workers/executors/_common.py`) stamps `meta.lease_boot_id` /
+`lease_process` / `lease_host` on EVERY claim, fresh or reclaimed, for
+every executor uniformly. With `reclaim_stale_running=True` (now
+`ssh_node`, `claude_inproc`, AND `claude_docker` — was `ssh_node`-only
+pre-§H-c) a `STATUS:running` row is claimable via EITHER of two arms:
+**expiry** (unchanged — lease provably past) or **epoch** (the row's
+stamped `lease_boot_id` no longer matches the CURRENT advertised
+generation for its `(lease_host, lease_process)` — the holder was
+provably replaced, e.g. a deploy bounce — reclaimable even while
+`lease_until` is still hours away). A live holder (boot_id still
+matches) is never stolen by either arm, regardless of lease age.
+
+**Generalized attempt cap, epoch-aware (`poison_guard`).** The bump +
+classification happens once, in `claim_executor_jobs`; each executor's
+own claim wrapper then calls the shared `poison_guard` on every claimed
+row. Critically: **only an *expiry*-reason reclaim bumps
+`meta.attempts`** — an *epoch*-reason reclaim (redeploy churn, not a
+crash-loop) never does, so a deploy bounce mid-run can't burn the
+crash-loop poison guard the way it used to. Every reclaim (either reason)
+appends a capped forensic `meta.reclaims: [{at, why}]` entry. Past
+`PRECIS_MAX_JOB_ATTEMPTS` (default 3) EXPIRY reclaims, the row is failed
++ bubbled (`failure_class='infra'`) instead of run again. A stolen job's
+stale `meta.reserved` slots are refunded before it re-reserves.
+`coordinator` still doesn't opt into `reclaim_stale_running` at all — a
+crashed slice has no reclaim path of its own, so it stays on the
+sweeper's wall-clock backstop (below). `claude_docker`'s claim gained a
+REQUIRED re-adopt branch: a reclaimed row that already carries
+`meta.container` (a prior generation's launch survived independent of
+the worker, conmon-style) is never relaunched — the next poll resumes
+ownership by name-match; `ssh_node`'s detached submit/poll protocol
+(below) has the analogous re-adopt guard on `meta.compute_handle`.
 
 **Job containers carry CPU-limit flags (nice-all-jobs).** Every spawned
 `docker/podman run` (`struct_relax`, `fold`, TTS, sandbox agents) splices
@@ -525,22 +551,58 @@ systemd inference units (llama-swap/embedder/marker/ollama) get matching
 `Nice`/`CPUAffinity`, the macOS plists `Nice`/`LowPriorityIO` (worker plists
 stay `ProcessType=Interactive` for jetsam).
 
-**The `sweeper` excludes `ssh_node`-executor jobs** (`meta.executor IS
-DISTINCT FROM 'ssh_node'` on both its enumerate + transition-re-verify
-queries): the sweeper fails an expired-lease `STATUS:running` job outright,
-which would *race and win* the claim-side steal at lease expiry — stranding
-the compute result as `failed` instead of retrying it. So the executor owns
-crash-recovery for its own jobs; the sweeper still reaps every other
-executor's (`claude_inproc` plan_tick, etc.). **Exception (gr172886 part-b):
-a distinct `_reap_dead_node_orphans` pass** *does* terminalize an
-expired-lease `ssh_node` job — but only when its `meta.params.target_node`
-host is *provably dead* (no `precis-worker[-agent]` `worker_logs` within
+**The `sweeper` excludes the three lease-owning executors** (§H piece 6 —
+was `ssh_node`-only, now `ssh_node` / `claude_inproc` / `claude_docker`,
+`_LEASE_OWNING_EXECUTORS` in `sweeper.py`): the sweeper's wall-clock
+`PRECIS_STUCK_JOB_HOURS` age arm fails an expired-lease `STATUS:running`
+job outright, which would *race and win* the claim-side epoch/expiry
+steal — stranding the compute result as `failed` instead of retrying it.
+Now that all three self-heal via the boot-epoch mechanism above (a
+same-node successor reclaims in one pass, a hang is still caught by the
+expiry arm and capped by `poison_guard`), the wall-clock backstop is
+redundant for them specifically. `coordinator` is deliberately NOT
+excluded — it has no reclaim path of its own, so a crashed slice still
+depends on this wall-clock sweep as its only crash recovery (documented
+as a known gap in `executors/coordinator.py` — requeue-from-checkpoint is
+future work). **Exception (gr172886 part-b): a distinct
+`_reap_dead_node_orphans` pass** *does* terminalize an expired-lease
+`ssh_node` job — but only when its `meta.params.target_node` host is
+*provably dead* (no `precis-worker[-agent]` `worker_logs` within
 `DEAD_WORKER_SILENCE_MIN` **and** no fresh `host_heartbeat`), the one case
-where there is no live executor left to race. Same infra terminal as the
-executor's own poison-guard (`STATUS:failed` + `failure_class='infra'` +
-bubble → §C harvest re-dispatches), tagged `reaped:dead-node-orphan`. The
-quick-restart-mid-lease latency it leaves is deferred to
-`docs/proposals/compute-lane-lease-epoch.md` (Option A).
+where there is no live executor left to race at all. Same infra terminal
+as the executor's own poison-guard (`STATUS:failed` +
+`failure_class='infra'` + bubble → §C harvest re-dispatches), tagged
+`reaped:dead-node-orphan`.
+
+**`ssh_node` detached submit/poll protocol (§H piece 4,
+`docs/proposals/compute-lane-lease-epoch.md`, gr187627, built).** A
+job_type exposing BOTH `spec.submit`/`spec.poll` (`JobTypeSpec`) never
+blocks a worker pass: `submit(ctx, spec) -> handle` launches the compute
+DETACHED (the plugin owns HOW — `nohup`/`docker run -d`/`sbatch`) and
+returns immediately; the handle is persisted to `meta.compute_handle`
+and every subsequent `ssh_node` pass polls all this-host in-flight
+handles (`poll(ctx, handle) -> bool`) — a cheap status check + lease
+renewal, never a multi-hour block. A plugin with only the legacy
+blocking `spec.dispatch` still works (backward compat — both precis-dft's
+`gpaw_relax` and catpath's `autocatpath_seed` live out-of-tree and
+haven't migrated yet), but `ssh_node` logs a deprecation warning (once
+per job_type per process) naming gr187627 — the live incident where the
+blocking call starved the claiming worker's whole pass rotation long
+enough to trip host-dark.
+
+**`wake_runner` child-deadlock deadline (§H piece 5, built).** A
+`children_done` `Yield` gets `meta.wake_deadline` stamped at park time
+(`executors/coordinator.py` — MAX of the children's own
+`params.resources.wall_seconds` + margin, or `PRECIS_WAKE_DEADLINE_HOURS`
+(default 6h) when none declare one). `wake_runner` re-queues a past-
+deadline `waiting_children` parent "woken-degraded" — a
+`child-failed:<id>` open tag on the PARENT job for every still non-
+terminal child (visibility only, never a forced fail — the child's own
+executor/sweeper still owns its terminalization), then `STATUS:queued`
+so the coordinator's next slice resumes control. Closes the one
+remaining "blocks forever" gap: a permanently-unschedulable child (no
+live executor ever claims it) never reaches a terminal STATUS on its
+own, so the plain `children_done` wake could never fire either.
 
 **Two `precis worker` profiles.** (The "four LaunchDaemons" framing this
 section used to carry — worker/watch/heartbeat/dream as four separate
@@ -708,8 +770,11 @@ worker pass and its own still-live timer, pending §L.)
 * `sweeper` — fails `kind='job'` rows whose `STATUS:running` is older
   than `PRECIS_STUCK_JOB_HOURS` (1.0h), tagging `swept:claim-orphaned`
   so the parent's failure-bubble unblocks the cascade. Recovers
-  deploy-time claim orphans — **except `ssh_node`-executor jobs**, which
-  the executor itself reclaims + retries (see the crash-recovery note above).
+  deploy-time claim orphans — **except the three lease-owning executors**
+  (`ssh_node` / `claude_inproc` / `claude_docker`, §H piece 6), which each
+  reclaim + retry their own crashed jobs via the boot-epoch mechanism
+  (see the crash-recovery note above); `coordinator` still relies on this
+  wall-clock sweep.
 * `corpus_reconcile` — maintains the per-host `pdf_locations` presence
   ledger (migration 0052). Each node stats the held-paper PDFs under its
   own `PRECIS_CORPUS_DIR` roots (preferring `pdfs.storage_path`, falling

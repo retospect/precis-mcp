@@ -73,6 +73,51 @@ class JobTypeSpec:
     #: ``ctx.meta['coordinator_state']``. Annotated loosely because the
     #: in-tree built-ins return ``None``.
     dispatch: Callable[..., Any] | None = None
+    #: Optional DETACHED dispatch pair (§H piece 4,
+    #: ``docs/proposals/compute-lane-lease-epoch.md`` / gr187627) — the
+    #: ``ssh_node`` executor's non-blocking protocol. When BOTH ``submit``
+    #: and ``poll`` are set, ``ssh_node`` prefers them over ``dispatch``:
+    #:
+    #: * ``submit(ctx, spec) -> handle`` launches the compute DETACHED
+    #:   (the plugin owns HOW — ``nohup``, ``docker run -d``, ``sbatch``,
+    #:   …) and returns a JSON-serializable handle (typically a str/dict
+    #:   naming the remote process/container/job). It must return quickly
+    #:   — the whole point is the claiming worker's pass rotation never
+    #:   blocks on the run. ``submit`` must NOT call ``ctx.set_status`` —
+    #:   the job stays ``STATUS:running`` (already set by the claim) until
+    #:   ``poll`` drives it terminal.
+    #: * ``poll(ctx, handle) -> bool`` is called once per ``ssh_node`` pass
+    #:   for every in-flight handle THIS host submitted (the handle is
+    #:   round-tripped through ``meta.compute_handle``). Returns ``True``
+    #:   once it has driven the job to a terminal ``STATUS`` via
+    #:   ``ctx.set_status`` / ``ctx.record_failure`` (the executor does
+    #:   nothing further); ``False`` while still running (the executor
+    #:   renews the lease and polls again next pass — ``poll`` itself
+    #:   should NOT touch the lease).
+    #:
+    #: A plugin that hasn't migrated (only ``dispatch`` set) keeps working
+    #: — ``ssh_node`` falls back to the legacy blocking call, logging a
+    #: deprecation warning naming gr187627 (the multi-hour block starves
+    #: the claiming worker's whole pass rotation, which is exactly what
+    #: this protocol exists to fix).
+    submit: Callable[..., Any] | None = None
+    poll: Callable[..., Any] | None = None
+    #: Optional wall-clock kill hook (§H piece 2, ``docs/proposals/
+    #: compute-lane-lease-epoch.md`` — a detached submit/poll job_type has
+    #: no termination path once the sweeper's own wall-clock retirement
+    #: (§H piece 6) excludes its executor: ``ssh_node``'s ``_poll_one``
+    #: renews the lease forever while ``poll`` returns falsy, so a run
+    #: that never self-terminates would poll indefinitely. When
+    #: ``_poll_one`` finds ``meta.deadline`` in the past, it calls
+    #: ``kill(ctx, handle)`` (if the job_type declares one) BEFORE
+    #: terminalizing the row ``STATUS:failed`` — the plugin's chance to
+    #: cancel the remote compute (ssh + kill a PID, cancel a Slurm job,
+    #: …) so the wall-clock kill isn't purely a DB-side fiction. Optional:
+    #: a job_type with no ``kill`` still gets terminalized on schedule,
+    #: it just can't proactively stop the remote side (mirrors
+    #: ``claude_docker``'s ``_terminate``, which always CAN kill because
+    #: it owns the container directly).
+    kill: Callable[..., Any] | None = None
 
 
 JOB_TYPE_PLUGIN_GROUP = "precis.job_types"

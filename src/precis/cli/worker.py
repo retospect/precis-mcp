@@ -491,6 +491,18 @@ def run(args: argparse.Namespace) -> None:
     # path, so unattended deploys to a fresh DB don't die at boot.
     _attach_db_log_handler(dsn)
     _record_boot_event(store, profile=args.profile)
+    # §H boot epoch (compute-lane-lease-epoch.md): mint + advertise THIS
+    # process's generation NOW, before ref_passes ever registers — both
+    # profiles pass through here, and a claim can happen seconds after boot,
+    # well inside the heartbeat pass's 60s throttle window. Without this the
+    # epoch-reclaim arm in executors/_common.py would see a stale/absent
+    # boot_id for up to a minute post-restart.
+    from precis.workers.heartbeat import advertise_boot_id_now
+
+    try:
+        advertise_boot_id_now(store)
+    except Exception:
+        log.warning("worker: boot_id advertise failed", exc_info=True)
     try:
         handlers = _build_handlers(args, store)
         if args.status:

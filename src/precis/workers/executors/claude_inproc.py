@@ -64,6 +64,9 @@ from precis.workers.executors._common import (
     is_cancel_requested as _is_cancel_requested,
 )
 from precis.workers.executors._common import (
+    poison_guard as _poison_guard,
+)
+from precis.workers.executors._common import (
     record_failure as _record_failure,
 )
 from precis.workers.executors._common import (
@@ -92,8 +95,22 @@ _GRIPE_COMMENT_KIND = "gripe_comment"
 def _claim_jobs(
     conn: Connection, *, limit: int
 ) -> list[tuple[int, str, dict[str, Any]]]:
-    """Lock up to ``limit`` claimable claude_inproc jobs."""
-    return claim_executor_jobs(conn, executor=_EXECUTOR_NAME, limit=limit)
+    """Lock up to ``limit`` claimable claude_inproc jobs.
+
+    ``reclaim_stale_running=True`` (§H, compute-lane-lease-epoch.md): the
+    dispatch runs entirely in-process (a ``claude -p`` subprocess this
+    worker owns), so a worker restart mid-tick means the compute is
+    genuinely dead — same "worker death = compute death" assumption
+    ``ssh_node`` was written under. Before this, a bounced worker's
+    plan_tick/fix_gripe job sat ``STATUS:running`` for the full 90-min
+    lease before anything reclaimed it (the "bounce wedge", gr187627's
+    generalization). The epoch arm now reclaims it on the FIRST post-
+    restart claim pass, no matter which host restarts; the expiry arm
+    still covers a same-generation hang.
+    """
+    return claim_executor_jobs(
+        conn, executor=_EXECUTOR_NAME, limit=limit, reclaim_stale_running=True
+    )
 
 
 def _linked_gripe_id(store: Any, job_ref_id: int) -> int | None:
@@ -170,12 +187,23 @@ def run_claude_inproc_pass(store: Any, *, limit: int = 4) -> dict[str, int]:
     # Stage 1: claim under a short tx. Lease must be written
     # before we release the FOR UPDATE lock so concurrent runners
     # don't double-claim.
+    poisoned = 0
+    to_run: list[tuple[int, str, dict[str, Any]]] = []
     with store.pool.connection() as conn:
         rows = _claim_jobs(conn, limit=claim_n)
         if not rows:
             conn.commit()
             return {"claimed": 0, "ok": 0, "failed": 0}
-        for ref_id, _title, _meta in rows:
+        for ref_id, title, meta in rows:
+            # Crash-loop guard (§H piece 3): the bump (expiry-only) + the
+            # reclaim classification already happened inside
+            # claim_executor_jobs; this just applies the cap the way
+            # ssh_node's original guard did. Was a known interim gap
+            # ("ZERO attempt cap of its own") since claude_inproc's
+            # reclaim_stale_running landed — now closed.
+            if _poison_guard(store, conn, ref_id, meta):
+                poisoned += 1
+                continue
             # Lease must outlive the longest possible job. A plan_tick
             # tick can request up to ``timeout_s=3600`` (60 min, per
             # plan_tick.PARAMS_SCHEMA), and the executor does extra work
@@ -196,24 +224,34 @@ def run_claude_inproc_pass(store: Any, *, limit: int = 4) -> dict[str, int]:
                 (ref_id,),
             )
             _set_status(store, ref_id, _RUNNING, conn=conn)
+            to_run.append((ref_id, title, meta))
         conn.commit()
+
+    if not to_run:
+        return {"claimed": len(rows), "ok": 0, "failed": poisoned}
 
     # Stage 2: run the claimed jobs. Sequential by default; a thread pool
     # when concurrency>1 (each _run_one blocks on a subprocess that
     # releases the GIL, so threads parallelise the wall-clock).
-    pool_size = min(concurrency, len(rows))
+    pool_size = min(concurrency, len(to_run))
     if pool_size <= 1:
-        results = [_run_job_safe(store, rid, title, meta) for rid, title, meta in rows]
+        results = [
+            _run_job_safe(store, rid, title, meta) for rid, title, meta in to_run
+        ]
     else:
         with ThreadPoolExecutor(max_workers=pool_size) as ex:
             results = list(
                 ex.map(
                     lambda r: _run_job_safe(store, r[0], r[1], r[2]),
-                    rows,
+                    to_run,
                 )
             )
     ok = sum(1 for r in results if r)
-    return {"claimed": len(rows), "ok": ok, "failed": len(results) - ok}
+    return {
+        "claimed": len(rows),
+        "ok": ok,
+        "failed": (len(results) - ok) + poisoned,
+    }
 
 
 # ── Per-job dispatch ──────────────────────────────────────────────

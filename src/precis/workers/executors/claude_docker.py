@@ -90,6 +90,9 @@ from precis.workers.executors._common import (
     claim_executor_jobs,
 )
 from precis.workers.executors._common import (
+    poison_guard as _poison_guard,
+)
+from precis.workers.executors._common import (
     set_meta as _set_meta,
 )
 from precis.workers.executors._common import (
@@ -504,9 +507,37 @@ def run_claude_docker_pass(store: Any, *, limit: int = 4) -> dict[str, int]:
     slots = _concurrency() - inflight
     launched = 0
     if slots > 0 and _load_ok():
-        rows = _claim(store, node, limit=min(limit, slots))
+        rows, poisoned = _claim(store, node, limit=min(limit, slots))
+        launched += poisoned
+        failed += poisoned
         for ref_id, _title, meta in rows:
             launched += 1
+            if meta.get("container"):
+                # Re-adopt (§H, REQUIRED — see _claim's docstring): this
+                # claim reclaimed a row that already has a launched
+                # container stamped (the claiming process died AFTER
+                # ``_launch`` wrote ``meta.container`` but before it reached
+                # a terminal STATUS — e.g. between two poll ticks). The
+                # container survives a worker restart independent of the
+                # worker (conmon), so launching a SECOND one under the same
+                # name would either collide or silently orphan the first.
+                # Never launch here: STATUS:running + meta.container is
+                # exactly what step 1's ``_running_jobs`` selects, so the
+                # NEXT pass's poll (this one already ran step 1 before this
+                # claim) resumes ownership by name-match — inspect(name)
+                # still running -> keep polling; gone -> _poll_job's normal
+                # vanished-container path fails it. Counts as ok (no new
+                # failure surfaced by the reclaim itself).
+                _append_chunk(
+                    store,
+                    ref_id,
+                    _JOB_EVENT_KIND,
+                    f"runner: re-adopted job {ref_id} (container "
+                    f"{meta.get('container')} already launched by a prior "
+                    "worker generation) — resuming poll, not relaunching",
+                )
+                ok += 1
+                continue
             if _launch_safe(store, ref_id, meta, node):
                 ok += 1
             else:
@@ -516,11 +547,29 @@ def run_claude_docker_pass(store: Any, *, limit: int = 4) -> dict[str, int]:
 
 def _claim(
     store: Any, node: str | None, *, limit: int
-) -> list[tuple[int, str, dict[str, Any]]]:
+) -> tuple[list[tuple[int, str, dict[str, Any]]], int]:
     """Claim queued claude_docker jobs and mark them running under a
-    ``wall_seconds``-sized lease (in the claim tx, so no double-claim)."""
+    ``wall_seconds``-sized lease (in the claim tx, so no double-claim).
+
+    Returns ``(rows, poisoned)`` — ``poisoned`` counts rows that hit the
+    crash-loop guard (§H piece 3, :func:`_common.poison_guard`) and were
+    failed + bubbled right here instead of being handed back to run;
+    ``rows`` excludes them.
+
+    ``reclaim_stale_running=True`` (§H, compute-lane-lease-epoch.md): the
+    detached container outlives the launching worker process, so
+    ``_running_jobs``' poll loop already self-heals across a restart FOR a
+    row that made it far enough to get ``meta.container`` stamped. The
+    epoch/expiry arms here close the one narrow gap that leaves — a claim
+    that set ``STATUS:running`` but crashed before ``_launch`` wrote
+    ``meta.container`` — which would otherwise sit until the lease expires.
+    A reclaimed row that DOES already carry ``meta.container`` is handled
+    by the re-adopt branch in :func:`run_claude_docker_pass` (never
+    re-launched; the poll loop resumes ownership by name-match)."""
     if limit <= 0:
-        return []
+        return [], 0
+    poisoned = 0
+    claimed: list[tuple[int, str, dict[str, Any]]] = []
     with store.pool.connection() as conn:
         rows = claim_executor_jobs(
             conn,
@@ -528,11 +577,19 @@ def _claim(
             limit=limit,
             node=node,
             parent_not_paused=True,
+            reclaim_stale_running=True,
         )
         if not rows:
             conn.commit()
-            return []
-        for ref_id, _title, meta in rows:
+            return [], 0
+        for ref_id, title, meta in rows:
+            # Crash-loop guard (§H piece 3): a container-relaunch job that
+            # keeps dying its worker every generation eventually stops
+            # stealing itself forever — a redeploy-only (``epoch``-reason)
+            # reclaim never reaches this cap on its own.
+            if _poison_guard(store, conn, ref_id, meta):
+                poisoned += 1
+                continue
             conn.execute(
                 "UPDATE refs SET meta = meta || jsonb_build_object("
                 "  'lease_until', (now() + make_interval(secs => %s))::text"
@@ -540,8 +597,9 @@ def _claim(
                 (_lease_seconds(meta), ref_id),
             )
             _set_status(store, ref_id, _RUNNING, conn=conn)
+            claimed.append((ref_id, title, meta))
         conn.commit()
-    return rows
+    return claimed, poisoned
 
 
 def _lease_seconds(meta: dict[str, Any]) -> int:

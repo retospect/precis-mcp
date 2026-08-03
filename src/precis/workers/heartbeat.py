@@ -49,6 +49,7 @@ import platform
 import re
 import subprocess
 import time
+import uuid
 from typing import Any
 
 from precis.workers.runner import BatchResult
@@ -56,6 +57,65 @@ from precis.workers.runner import BatchResult
 log = logging.getLogger(__name__)
 
 _FLOAT_RE = re.compile(r"-?\d+(?:\.\d+)?")
+
+# ── Worker boot epoch (§H, compute-lane-lease-epoch.md) ────────────
+#
+# One uuid4 minted the first time THIS process asks for it (module-global —
+# NOT persisted; a fresh process gets a fresh id by construction, which is
+# exactly the "this generation is provably gone" signal the epoch-reclaim
+# arm in ``executors/_common.py`` needs). ``_boot_process`` is the
+# ``worker_logs.process``-shaped name (``PRECIS_PROCESS`` env, e.g.
+# ``precis-worker`` / ``precis-worker-agent``) this boot_id is advertised
+# under — a host can run more than one profile (melchior runs both), so
+# the advertised value is keyed ``(host, process)``, not just ``host``.
+_boot_id: str | None = None
+_boot_process: str | None = None
+
+
+def mint_boot_id(process: str | None = None) -> str:
+    """Mint (once) and return this process's boot epoch.
+
+    Idempotent per process lifetime — a second call (from a second pass
+    registration site, a test, …) returns the SAME id rather than minting a
+    fresh one; only a real process restart gets a new boot_id.
+
+    ``process is None`` (no ``PRECIS_PROCESS`` env at mint time) means this
+    boot_id is minted but will NEVER be advertised (:func:`_own_boot_ids_
+    meta` requires both a boot_id AND a process name) — so
+    ``executors/_common.py``'s epoch-reclaim arm can't ever prove this
+    worker's claims are *replaced* (it correctly stamps no ``lease_boot_id``
+    at all for such a worker, see ``_this_worker_lease_identity``, Finding
+    3), and this worker's claims fall back to lease-expiry-only recovery.
+    Logged once (this branch only runs once per process lifetime) so the
+    degraded-recovery-latency tradeoff is visible in the worker's own log
+    rather than silently discovered during an incident.
+    """
+    global _boot_id, _boot_process
+    if _boot_id is None:
+        _boot_id = uuid.uuid4().hex
+        _boot_process = process
+        if process is None:
+            log.warning(
+                "heartbeat: boot epoch minted without PRECIS_PROCESS — "
+                "epoch reclaim disabled for this worker's claims (falls "
+                "back to lease-expiry-only recovery)"
+            )
+    return _boot_id
+
+
+def current_boot_id() -> str | None:
+    """This process's minted boot_id, or ``None`` before :func:`mint_boot_id`
+    has ever been called (e.g. a non-worker CLI invocation)."""
+    return _boot_id
+
+
+def _own_boot_ids_meta() -> dict[str, Any]:
+    """This process's own ``{process: boot_id}`` contribution to
+    ``host_heartbeat.meta.boot_ids`` — ``{}`` when no boot_id has been
+    minted (e.g. the bare ``precis heartbeat`` CLI, which never mints one)."""
+    if _boot_id and _boot_process:
+        return {"boot_ids": {_boot_process: _boot_id}}
+    return {}
 
 
 def resolve_host(override: str | None = None) -> str:
@@ -418,6 +478,10 @@ def _collect_and_upsert(
         "top_cpu": collect_top_cpu(),
     }
     meta.update(_probe_nas())
+    # §H boot epoch: this process's own {process: boot_id} entry, merged
+    # (never clobbered) with any other process's entry on the same host row
+    # by record_heartbeat's nested-merge SQL — see _heartbeat_ops.py.
+    meta.update(_own_boot_ids_meta())
 
     store.record_heartbeat(
         host,
@@ -489,10 +553,68 @@ def run_heartbeat_pass(store: Any, *, host: str | None = None) -> BatchResult:
     return BatchResult(handler="heartbeat", claimed=1, ok=1, failed=0)
 
 
+def advertise_boot_id_now(store: Any, *, host: str | None = None) -> str:
+    """Mint (once) and immediately advertise this process's boot epoch.
+
+    Called once at worker startup — BEFORE the first throttled
+    :func:`run_heartbeat_pass` fires (see ``cli/worker.py``'s ``run()``,
+    right after :func:`precis.cli.worker._record_boot_event`, the one site
+    both the ``system`` and ``agent`` profiles pass through) — so a claim
+    happening seconds after boot already sees this generation's boot_id
+    advertised (the epoch-reclaim protocol; ``executors/_common.py``).
+    Without this, the 60s heartbeat throttle would leave a stale/absent
+    boot_id in ``host_heartbeat`` for up to a minute post-boot.
+
+    Bypasses the throttle for this one call (a boot event is a one-off,
+    not a hot loop) but resets the throttle clock afterwards so the next
+    regular pass doesn't immediately re-fire.
+
+    **Self-heal window (Finding 7).** ``_collect_and_upsert`` here is
+    best-effort — a failed write (network blip, DB hiccup) is caught and
+    logged, not raised, so a boot event never fails worker startup over a
+    heartbeat write. If THIS call's advertisement fails, the boot_id stays
+    minted (:func:`current_boot_id`) but unadvertised until the next
+    regular :func:`run_heartbeat_pass` succeeds — at most one
+    ``PRECIS_HEARTBEAT_INTERVAL_SECONDS`` (default 60s) later. Any row this
+    worker claims in that window IS epoch-stealable (its stamped
+    ``lease_boot_id`` has no matching advertisement — see the epoch arm's
+    COALESCE-sentinel in ``executors/_common.py``), but only for that long:
+    once the next heartbeat lands, the advertisement catches up and the
+    epoch arm no longer treats this generation as gone. Contrast Finding
+    3's fix (no ``PRECIS_PROCESS`` at all): that case never advertises and
+    is handled by never stamping a ``lease_boot_id`` in the first place;
+    this is the narrower, self-correcting gap of a *transient* advertise
+    failure for a worker that DOES have ``PRECIS_PROCESS`` set.
+    """
+    global _last_beat_monotonic
+    process = _resolve_process_name_for_boot()
+    boot_id = mint_boot_id(process)
+    resolved = resolve_host(host)
+    try:
+        _collect_and_upsert(store, resolved)
+    except Exception:
+        log.warning("heartbeat: boot-time boot_id advertise failed", exc_info=True)
+    _last_beat_monotonic = time.monotonic()
+    return boot_id
+
+
+def _resolve_process_name_for_boot() -> str | None:
+    """``PRECIS_PROCESS`` env — the same identity ``worker_logs.process`` /
+    the DB log handler use. Local import to dodge a module-load cycle
+    (``utils.db_log_handler`` is a leaf module, but keeping the import
+    lazy here matches this module's other lazy-import conventions)."""
+    from precis.utils.db_log_handler import _resolve_process_name
+
+    return _resolve_process_name()
+
+
 __all__ = [
+    "advertise_boot_id_now",
     "collect_and_report",
     "collect_loads",
     "collect_top_cpu",
+    "current_boot_id",
+    "mint_boot_id",
     "read_temp_c",
     "resolve_host",
     "run_heartbeat_pass",

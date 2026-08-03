@@ -129,7 +129,7 @@ def _mint_running_job(
     *,
     backdate_hours: float,
     lease_offset_hours: float | None = None,
-    executor: str = "claude_inproc",
+    executor: str = "coordinator",
     job_type: str = "plan_tick",
     params: dict | None = None,
 ) -> int:
@@ -140,9 +140,12 @@ def _mint_running_job(
     still owns the job — must not be swept), a negative value an
     *expired* one. ``None`` leaves the meta lease-less (legacy job).
 
-    ``executor`` sets ``meta.executor`` — ``ssh_node`` jobs are excluded
-    from the sweep (that executor reclaims its own expired-lease running
-    jobs), so this parameter drives the exclusion test.
+    ``executor`` sets ``meta.executor`` — default ``"coordinator"``, the
+    one executor that still depends on this wall-clock sweep as its only
+    crash recovery (§H piece 6: ``ssh_node`` / ``claude_inproc`` /
+    ``claude_docker`` all now reclaim their own expired-lease running jobs
+    and are excluded from the generic timeout sweep — pass one of those
+    explicitly to exercise/assert that exclusion).
     """
     meta: dict = {"job_type": job_type, "executor": executor}
     if params is not None:
@@ -232,12 +235,13 @@ def test_stale_running_job_with_live_lease_is_left_alone(
     """A job past the hours threshold but with an unexpired ``lease_until``
     is still owned by a live worker — the sweeper must not touch it.
 
-    This is the plan_tick case: the ``claude_inproc`` executor stamps a
-    90-min lease so a long tick isn't false-swept at the 1h mark."""
+    Mirrors the ``coordinator`` executor's own short-lease-per-slice
+    pattern (a live lease means a slice is still in flight, even once the
+    original ``STATUS:running`` tag is well past the hours threshold)."""
     r = handler.put(text="parent")
     rid = _id_of(r.body)
     # STATUS:running is 1.1h old (> threshold) but the lease still has
-    # ~30 min to run, mirroring a plan_tick claimed ~60 min ago.
+    # ~30 min to run, mirroring a coordinator slice claimed ~1h ago.
     job_id = _mint_running_job(store, rid, backdate_hours=1.1, lease_offset_hours=0.5)
 
     result = run_sweeper_pass(store, limit=10)
@@ -401,23 +405,92 @@ def test_ssh_node_job_is_never_swept(handler: TodoHandler, store: Store) -> None
     assert f"child-failed:{job_id}" not in parent_tags
 
 
-def test_swept_job_kills_its_claude_docker_container(
+def test_claude_inproc_job_is_never_swept_by_generic_timeout(
+    handler: TodoHandler, store: Store
+) -> None:
+    """§H piece 6: ``claude_inproc`` also now reclaims its own expired-lease
+    running jobs (epoch-aware lease-steal + generalized attempt cap) — the
+    ~90-min bounce wedge this closed would have been re-introduced by the
+    generic sweep racing it. Mirrors ``test_ssh_node_job_is_never_swept``."""
+    r = handler.put(text="parent")
+    rid = _id_of(r.body)
+    job_id = _mint_running_job(
+        store,
+        rid,
+        backdate_hours=2.0,
+        lease_offset_hours=-0.5,
+        executor="claude_inproc",
+    )
+
+    result = run_sweeper_pass(store, limit=10)
+
+    assert result.claimed == 0
+    assert result.ok == 0
+    job_tags = {str(t) for t in store.tags_for(job_id)}
+    assert "STATUS:running" in job_tags  # left for the executor to reclaim
+    parent_tags = {str(t) for t in store.tags_for(rid)}
+    assert f"child-failed:{job_id}" not in parent_tags
+
+
+def test_coordinator_job_still_swept_by_generic_timeout(
+    handler: TodoHandler, store: Store
+) -> None:
+    """``coordinator`` does NOT opt into ``reclaim_stale_running`` (a
+    crashed slice has no reclaim path of its own — see
+    ``executors/coordinator.py``'s own note), so it must NOT be swept into
+    the §H piece 6 exclusion list — it still depends on this wall-clock
+    sweep as its only crash recovery."""
+    r = handler.put(text="parent")
+    rid = _id_of(r.body)
+    job_id = _mint_running_job(
+        store,
+        rid,
+        backdate_hours=2.0,
+        lease_offset_hours=-0.1,
+        executor="coordinator",
+    )
+
+    result = run_sweeper_pass(store, limit=10)
+
+    assert result.ok == 1
+    job_tags = {str(t) for t in store.tags_for(job_id)}
+    assert "STATUS:failed" in job_tags
+    assert "swept:claim-orphaned" in job_tags
+
+
+def test_claude_docker_job_is_never_swept_by_generic_timeout(
     handler: TodoHandler, store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A swept ``claude_docker``-executor job's container is force-removed
-    immediately (gripe 50905), not left for the lazy per-boot reconcile."""
+    """§H piece 6: ``claude_docker`` now reclaims its own expired-lease
+    running jobs (epoch-aware lease-steal + generalized attempt cap), so
+    it's excluded from the generic wall-clock timeout sweep exactly like
+    ``ssh_node`` — mirrors ``test_ssh_node_job_is_never_swept``. (Its
+    container is instead reaped on its OWN terminal paths, including a
+    wall-clock deadline kill — ``executors/claude_docker.py``'s
+    ``_poll_job``/``_terminate`` — not by this sweeper's
+    ``_kill_job_container`` any more.)"""
     from precis.workers.executors import claude_docker
 
     killed: list[str] = []
     monkeypatch.setattr(claude_docker, "_reap", lambda name: killed.append(name))
     r = handler.put(text="parent")
     rid = _id_of(r.body)
-    job_id = _mint_running_job(store, rid, backdate_hours=2.0, executor="claude_docker")
+    job_id = _mint_running_job(
+        store,
+        rid,
+        backdate_hours=2.0,
+        lease_offset_hours=-0.5,
+        executor="claude_docker",
+    )
 
     result = run_sweeper_pass(store, limit=10)
 
-    assert result.ok == 1
-    assert killed == [claude_docker.container_name(job_id)]
+    assert result.claimed == 0
+    assert result.ok == 0
+    job_tags = {str(t) for t in store.tags_for(job_id)}
+    assert "STATUS:running" in job_tags  # left for the executor to reclaim
+    assert "STATUS:failed" not in job_tags
+    assert killed == []
 
 
 def test_swept_struct_relax_job_kills_its_compute_container(
@@ -435,11 +508,12 @@ def test_swept_struct_relax_job_kills_its_compute_container(
     )
     r = handler.put(text="parent")
     rid = _id_of(r.body)
-    # executor left at the default (claude_inproc) so this reaches the
-    # generic timeout path — a real struct_relax job runs under ssh_node,
-    # which is excluded above; this pins the job_type→kill_container wiring
-    # itself, independent of that exclusion (belt-and-suspenders is the
-    # stale-container watchdog, tested separately).
+    # executor left at the default (coordinator, non-lease-owning) so this
+    # reaches the generic timeout path — a real struct_relax job runs under
+    # ssh_node, which is excluded above; this pins the job_type→
+    # kill_container wiring itself, independent of that exclusion
+    # (belt-and-suspenders is the stale-container watchdog, tested
+    # separately).
     job_id = _mint_running_job(
         store,
         rid,

@@ -65,3 +65,55 @@ def test_recent_heartbeats_ordered_by_host(store: Store) -> None:
     store.record_heartbeat("balthazar", load1=0.0)
     hosts = [hb.host for hb in store.recent_heartbeats()]
     assert hosts == sorted(hosts)
+
+
+# ── §H boot epoch: meta.boot_ids nested-merge (compute-lane-lease-epoch.md) ──
+
+
+def test_boot_ids_merge_across_two_processes_on_one_host(store: Store) -> None:
+    """A host running BOTH profiles (melchior runs system + agent) advertises
+    two processes' boot_ids under the SAME host_heartbeat row (PK is host,
+    not (host, process)) — a full-meta replace by one process's beat must
+    not wipe the other's last-advertised generation."""
+    store.record_heartbeat(
+        "melchior-boot-1",
+        meta={"platform": "Darwin", "boot_ids": {"precis-worker": "sys-gen-1"}},
+    )
+    store.record_heartbeat(
+        "melchior-boot-1",
+        meta={"platform": "Darwin", "boot_ids": {"precis-worker-agent": "agent-gen-1"}},
+    )
+    hb = _by_host(store.recent_heartbeats(), "melchior-boot-1")[0]
+    assert hb.meta["boot_ids"] == {
+        "precis-worker": "sys-gen-1",
+        "precis-worker-agent": "agent-gen-1",
+    }
+
+
+def test_boot_ids_same_process_overwrites_its_own_entry(store: Store) -> None:
+    """A process's OWN re-beat with a new boot_id (a restart) replaces just
+    its own entry — the merge is per-process-key, not append-only."""
+    store.record_heartbeat(
+        "melchior-boot-2", meta={"boot_ids": {"precis-worker": "gen-1"}}
+    )
+    store.record_heartbeat(
+        "melchior-boot-2", meta={"boot_ids": {"precis-worker": "gen-2"}}
+    )
+    hb = _by_host(store.recent_heartbeats(), "melchior-boot-2")[0]
+    assert hb.meta["boot_ids"] == {"precis-worker": "gen-2"}
+
+
+def test_boot_ids_survive_a_beat_that_omits_them(store: Store) -> None:
+    """The REGULAR full-snapshot heartbeat write (platform/release/top_cpu,
+    no boot_ids key at all) must not wipe a previously-advertised boot_id —
+    every ``_collect_and_upsert`` call includes its OWN process's boot_ids
+    entry, but a caller that never minted one (a bare ``precis heartbeat``)
+    must not erase what a worker process on the same host already
+    advertised."""
+    store.record_heartbeat(
+        "melchior-boot-3", meta={"boot_ids": {"precis-worker": "gen-1"}}
+    )
+    store.record_heartbeat("melchior-boot-3", meta={"platform": "Darwin"})
+    hb = _by_host(store.recent_heartbeats(), "melchior-boot-3")[0]
+    assert hb.meta["boot_ids"] == {"precis-worker": "gen-1"}
+    assert hb.meta["platform"] == "Darwin"

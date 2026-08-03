@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import stat
+import time
 from pathlib import Path
 from typing import Any
 
@@ -487,6 +488,156 @@ def test_claim_is_node_pinned_and_leased(
     assert meta["container"] == f"sandbox-{jid}"
     assert "lease_until" in meta
     assert meta["run_host"] == "spark"
+
+
+# ── §H boot epoch: reclaim + re-adopt (compute-lane-lease-epoch.md) ────
+
+
+def _mk_running_job_with_container(
+    store: Store,
+    *,
+    jid_params: dict[str, Any],
+    lease_boot_id: str,
+    lease_process: str,
+    lease_host: str,
+) -> int:
+    """A STATUS:running claude_docker job that already has a launched
+    container stamped (as if a PRIOR worker generation's ``_launch``
+    completed, then that generation died before the job reached a
+    terminal STATUS) — stands in for the narrow race the epoch arm
+    closes for this executor."""
+    ref = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="sandbox_run job (orphaned mid-run)",
+        meta={
+            "executor": "claude_docker",
+            "job_type": "sandbox_run",
+            "params": jid_params,
+        },
+    )
+    jid = int(ref.id)
+    name = claude_docker.container_name(jid)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || jsonb_build_object("
+            "  'container', %s::text,"
+            "  'container_id', 'ctr-prior'::text,"
+            "  'run_host', %s::text,"
+            "  'deadline', %s::float,"
+            "  'lease_until', (now() + interval '1 hour')::text,"
+            "  'lease_boot_id', %s::text,"
+            "  'lease_process', %s::text,"
+            "  'lease_host', %s::text"
+            ") WHERE ref_id = %s",
+            (
+                name,
+                jid_params.get("target_node") or "",
+                time.time() + 3600,
+                lease_boot_id,
+                lease_process,
+                lease_host,
+                jid,
+            ),
+        )
+        conn.commit()
+    store.add_tag(ref.id, Tag.parse_strict("STATUS:running"), set_by="agent")
+    return jid
+
+
+def test_epoch_reclaim_re_adopts_live_container_without_relaunch(
+    store: Store, sandbox_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A running job whose stamped generation has been replaced (deploy
+    bounce) is reclaimed via the epoch arm — but since it already has a
+    launched, still-alive container, the pass must RE-ADOPT (resume
+    polling) rather than relaunch under the same name (this branch is
+    REQUIRED — see claude_docker._claim's docstring)."""
+    store.record_heartbeat(
+        "spark-docker-epoch", meta={"boot_ids": {"claude_docker": "new-gen"}}
+    )
+    jid = _mk_running_job_with_container(
+        store,
+        jid_params=_valid_params(target_node="spark"),
+        lease_boot_id="dead-gen",
+        lease_process="claude_docker",
+        lease_host="spark-docker-epoch",
+    )
+    # Seed the stub container as still running under this job's name.
+    (sandbox_env / f"{claude_docker.container_name(jid)}.state").write_text("running 0")
+    monkeypatch.setenv("PRECIS_NODE", "spark")
+
+    launch_calls: list[int] = []
+
+    def _fake_launch(store_: Any, ref_id: int, meta: Any, node: Any) -> bool:
+        launch_calls.append(ref_id)
+        return True
+
+    monkeypatch.setattr(claude_docker, "_launch_safe", _fake_launch)
+
+    result = claude_docker.run_claude_docker_pass(store, limit=4)
+
+    assert launch_calls == []  # never relaunched under the reclaimed name
+    assert result["claimed"] == 1
+    assert result["ok"] == 1
+    assert _status(store, jid) == "running"  # still tracked, not terminalized
+    summaries_and_events = [
+        c.text
+        for c in store.list_blocks_for_ref(jid)
+        if getattr(c, "chunk_kind", None) == "job_event"
+    ]
+    assert any("re-adopted" in t for t in summaries_and_events)
+    # The claim re-stamped THIS worker's own lease identity (host, at least)
+    # over the dead generation's stamp.
+    assert _meta(store, jid)["lease_host"] != "spark-docker-epoch"
+
+
+def test_poison_guard_fails_past_max_attempts(
+    store: Store, sandbox_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A container-launch job re-claimed past the shared attempt cap is
+    failed (bubbled), never (re-)launched — §H piece 3, generalized from
+    ssh_node's original guard, now closing claude_docker's own gap."""
+    from precis.workers.executors._common import MAX_ATTEMPTS
+
+    ref = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="sandbox_run job (crash-looping)",
+        meta={
+            "executor": "claude_docker",
+            "job_type": "sandbox_run",
+            "params": _valid_params(),
+            "attempts": MAX_ATTEMPTS,
+        },
+    )
+    jid = int(ref.id)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || jsonb_build_object("
+            "  'lease_until', (now() - interval '1 hour')::text"
+            ") WHERE ref_id = %s",
+            (jid,),
+        )
+        conn.commit()
+    store.add_tag(ref.id, Tag.parse_strict("STATUS:running"), set_by="agent")
+
+    launch_calls: list[int] = []
+
+    def _fake_launch(store_: Any, ref_id: int, meta: Any, node: Any) -> bool:
+        launch_calls.append(ref_id)
+        return True
+
+    monkeypatch.setattr(claude_docker, "_launch_safe", _fake_launch)
+
+    result = claude_docker.run_claude_docker_pass(store, limit=4)
+
+    assert launch_calls == []
+    assert result["claimed"] == 1
+    assert result["ok"] == 0
+    assert result["failed"] == 1
+    assert _status(store, jid) == "failed"
+    assert _meta(store, jid)["failure_class"] == "infra"
 
 
 def test_concurrency_cap(

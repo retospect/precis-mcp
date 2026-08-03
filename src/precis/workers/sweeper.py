@@ -17,6 +17,25 @@ same predicate the reclaim path uses (:func:`claim_executor_jobs` in
 ``executors/_common.py``). The hours threshold then backstops lease-less
 legacy jobs and adds margin past a just-expired lease.
 
+**Retired for lease-owning executors (§H piece 6, compute-lane-lease-
+epoch.md — "lease is the single job-liveness authority").** ``ssh_node``,
+``claude_inproc`` and ``claude_docker`` all now opt into
+``reclaim_stale_running`` (§H pieces 1-3): a claim under any of those
+executors stamps a per-generation ``lease_boot_id`` and self-heals via
+BOTH the epoch arm (a same-node successor proves the holder replaced,
+reclaims in one pass) and the expiry arm (a same-generation hang, capped
+by ``meta.attempts``/:func:`claim_executor_jobs`'s poison guard) — no
+external wall-clock timeout is needed, and one racing against the
+executor's own lease-steal only risks stranding the barrier (see the
+dead-node-reap note below, unchanged). :func:`_enumerate_orphans`
+therefore excludes rows from all three, not just ``ssh_node`` as before —
+see its docstring. ``coordinator`` is the one exception: it does NOT opt
+into ``reclaim_stale_running`` (a crashed slice has no re-claim path of
+its own — see ``executors/coordinator.py``'s own note), so its rows still
+depend on this wall-clock sweep as their only crash recovery; the
+exclusion set is deliberately the three lease-owning executors, not
+"every row that happens to carry a lease".
+
 **Dead-node compute-lane reap (gr172886 part-b).** ``ssh_node`` jobs are
 excluded from the generic timeout sweep above (see the module note on
 :func:`_enumerate_orphans`) because that executor owns its own crash
@@ -52,12 +71,16 @@ The sweeper:
    itself stop whatever OS process/container the job launched. Two
    best-effort hooks close that gap, for two different situations:
    * ``_kill_job_container`` fires right here, in this same timeout
-     transition, for whatever job it's sweeping — but ``ssh_node`` jobs
-     (which is what a ``struct_relax`` DFT relax runs under) are excluded
-     from this transition entirely (see :func:`_enumerate_orphans`), so in
-     practice this immediate path is defense-in-depth for *other*
-     compute-lane executors this sweep does reach (today: ``claude_docker``),
-     not the DFT relax that motivated the gripe.
+     transition, for whatever job it's sweeping — but every lease-owning
+     executor (``ssh_node``, and since §H piece 6 also ``claude_inproc`` /
+     ``claude_docker``) is excluded from this transition entirely (see
+     :func:`_enumerate_orphans`), so in current practice this call is
+     defense-in-depth for a FUTURE non-lease-owning, container-per-job
+     executor, not any executor live today — ``claude_docker`` now reaps
+     its own container on every terminal path (including a wall-clock
+     deadline kill), and a ``struct_relax`` DFT relax (``ssh_node``) never
+     reaches this call site either; see :func:`_kill_job_container`'s
+     docstring for the one path that IS still live (the dead-node reap).
    * ``_reap_stale_dft_containers`` is a separate, unconditional watchdog
      run every pass on the DFT node: it force-removes any ``precis-job-*``
      container past a safe age regardless of any job's DB-row state. Since
@@ -108,6 +131,15 @@ from precis.workers.runner import BatchResult
 #: sweep expensive; a genuine capability outage trips the alert on the
 #: first few jobs regardless.
 _UNSCHEDULABLE_SCAN_CAP = 500
+
+#: Executors that own the full lease-lifecycle for their own jobs (§H,
+#: compute-lane-lease-epoch.md pieces 1-3: boot epoch + epoch-aware
+#: reclaim + generalized attempt cap) — :func:`_enumerate_orphans`
+#: excludes their rows from the generic wall-clock sweep (see its
+#: docstring). ``coordinator`` is deliberately absent: it doesn't opt
+#: into ``reclaim_stale_running`` and has no reclaim path of its own, so
+#: it still depends on this wall-clock sweep as its only crash recovery.
+_LEASE_OWNING_EXECUTORS = frozenset({"ssh_node", "claude_inproc", "claude_docker"})
 
 log = logging.getLogger(__name__)
 
@@ -627,15 +659,26 @@ def _enumerate_orphans(
     ``STATUS:`` row per ref ever exists at a given time). Its
     ``ref_tags.created_at`` is the claim timestamp.
 
-    ``ssh_node``-executor jobs are excluded: that executor reclaims its own
-    expired-lease running jobs (lease-steal + attempt cap in
-    ``executors/ssh_node.py``), so a swept→failed here would race — and win —
-    the steal, stranding the barrier instead of retrying it. The executor
-    owns the crash-recovery story for its jobs; the sweeper must not fail
-    them out from under it — *unless* there is no live executor left to
-    race, which is the one case :func:`_enumerate_dead_node_orphans` /
-    :func:`_reap_dead_node_orphans` reap instead (gr172886 part-b, a
-    distinct pass — this exclusion itself is unchanged).
+    **Lease-owning executors are excluded (§H piece 6).** ``ssh_node``,
+    ``claude_inproc`` and ``claude_docker`` all reclaim their own
+    expired-lease running jobs (epoch-aware lease-steal + generalized
+    attempt cap, ``executors/_common.py``'s ``claim_executor_jobs`` /
+    ``poison_guard``), so a swept→failed here would race — and could win —
+    the steal, stranding the barrier instead of retrying it. Each of those
+    executors owns the full crash-recovery story for its jobs now (a
+    same-node successor reclaims in one pass via the epoch arm; a hang is
+    still caught by the expiry arm and capped by ``meta.attempts``) — the
+    sweeper must not fail them out from under it — *unless* there is no
+    live executor left to race at all, which is the one case
+    :func:`_enumerate_dead_node_orphans` / :func:`_reap_dead_node_orphans`
+    reap instead (gr172886 part-b, ``ssh_node``-only, a distinct pass —
+    this exclusion itself is unchanged). ``coordinator`` (and any future
+    executor that doesn't opt into ``reclaim_stale_running``) is
+    deliberately NOT in this exclusion list — it still relies on this
+    wall-clock sweep as its only crash recovery (see
+    ``executors/coordinator.py``'s own note on the gap), so excluding
+    "every row with a lease" rather than "every row from a lease-owning
+    executor" would silently strand a crashed coordinator slice forever.
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
@@ -648,7 +691,7 @@ def _enumerate_orphans(
                AND r.deleted_at IS NULL
                AND t.namespace = 'STATUS'
                AND t.value = 'running'
-               AND (r.meta->>'executor') IS DISTINCT FROM 'ssh_node'
+               AND COALESCE(r.meta->>'executor', '') <> ALL(%s)
                AND rt.created_at < now() - %s::interval
                AND (
                     (r.meta->>'lease_until') IS NULL
@@ -657,7 +700,7 @@ def _enumerate_orphans(
              ORDER BY r.ref_id
              LIMIT %s
             """,
-            (f"{threshold_hours} hours", limit),
+            (list(_LEASE_OWNING_EXECUTORS), f"{threshold_hours} hours", limit),
         ).fetchall()
     return [
         _Orphan(
@@ -891,7 +934,19 @@ def _kill_job_container(ref_id: int, meta: dict) -> None:
     live container (and, for a DFT relax, the GPU it holds) to a lazy
     per-boot reconcile. Matches only a known container-naming convention
     keyed off ``meta`` (never a blanket kill); a docker/ssh failure is
-    logged and swallowed so it can never abort the sweep."""
+    logged and swallowed so it can never abort the sweep.
+
+    Only the ``struct_relax`` (``ssh_node``-executor) branch is live today:
+    it's reached from :func:`_transition_dead_node_orphan_to_failed`
+    (gr172886 part-b's dead-node reap, the one case ``ssh_node`` rows DO
+    still terminalize outside their own executor). A ``claude_docker``
+    branch used to fire from the generic timeout sweep too, but §H piece 6
+    excluded that executor from :func:`_enumerate_orphans` (it now reaps
+    its own container on every terminal path, including a wall-clock
+    deadline kill — see ``executors/claude_docker.py``'s ``_poll_job`` /
+    ``_terminate``), so that branch would never be called and was removed
+    rather than left as unreachable dead code.
+    """
     try:
         job_type = meta.get("job_type")
         if job_type == "struct_relax":
@@ -899,10 +954,6 @@ def _kill_job_container(ref_id: int, meta: dict) -> None:
 
             target_node = (meta.get("params") or {}).get("target_node")
             struct_relax.kill_container(ref_id, node=target_node)
-        elif meta.get("executor") == "claude_docker":
-            from precis.workers.executors import claude_docker
-
-            claude_docker._reap(claude_docker.container_name(ref_id))
     except Exception:  # pragma: no cover - defensive
         log.warning("sweeper: container kill for job #%d raised", ref_id, exc_info=True)
 

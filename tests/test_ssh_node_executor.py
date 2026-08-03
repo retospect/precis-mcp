@@ -7,6 +7,7 @@ without that plugin installed.
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import pytest
@@ -14,6 +15,7 @@ import pytest
 from precis.store import Store
 from precis.store.types import Tag
 from precis.workers.executors import EXECUTOR_PROVIDES, ssh_node
+from precis.workers.executors._common import claim_executor_jobs
 from precis.workers.job_types import JobTypeSpec
 
 pytestmark = pytest.mark.db
@@ -69,7 +71,13 @@ def _meta(store: Store, ref_id: int) -> dict[str, Any]:
     return dict(row[0] or {})
 
 
-def _spec(*, dispatch: Any, name: str = "fake_relax") -> JobTypeSpec:
+def _spec(
+    *,
+    dispatch: Any = None,
+    submit: Any = None,
+    poll: Any = None,
+    name: str = "fake_relax",
+) -> JobTypeSpec:
     def _run(*_a: Any, **_k: Any) -> str:
         return "noop"
 
@@ -81,6 +89,8 @@ def _spec(*, dispatch: Any, name: str = "fake_relax") -> JobTypeSpec:
         description="fake relax for tests",
         run=_run,
         dispatch=dispatch,
+        submit=submit,
+        poll=poll,
     )
 
 
@@ -236,9 +246,18 @@ def _mk_running_job(
     lease_offset_s: int,
     attempts: int | None = None,
     target_node: str | None = None,
+    lease_boot_id: str | None = None,
+    lease_process: str | None = None,
+    lease_host: str | None = None,
+    compute_handle: Any = None,
 ) -> int:
     """A STATUS:running job with a lease ``lease_offset_s`` from now (negative =
-    expired) — stands in for a job whose worker died mid-dispatch."""
+    expired) — stands in for a job whose worker died mid-dispatch. The
+    ``lease_boot_id``/``lease_process``/``lease_host`` trio (§H,
+    compute-lane-lease-epoch.md) stands in for a PRIOR claim's stamp — the
+    generation that (allegedly) died. ``compute_handle`` (§H piece 4) stands
+    in for a prior generation's successful ``spec.submit()`` — a detached
+    job's compute may still be alive."""
     params: dict[str, Any] = {}
     if target_node is not None:
         params["target_node"] = target_node
@@ -249,6 +268,14 @@ def _mk_running_job(
     }
     if attempts is not None:
         meta["attempts"] = attempts
+    if lease_boot_id is not None:
+        meta["lease_boot_id"] = lease_boot_id
+    if lease_process is not None:
+        meta["lease_process"] = lease_process
+    if lease_host is not None:
+        meta["lease_host"] = lease_host
+    if compute_handle is not None:
+        meta["compute_handle"] = compute_handle
     ref = store.insert_ref(
         kind="job", slug=None, title="orphaned running job", meta=meta
     )
@@ -317,3 +344,623 @@ def test_poison_guard_fails_past_max_attempts(
     # crash-loop guard is an INFRA failure (the worker died mid-dispatch, not
     # a physical verdict) — a struct_relax-style harvest must be able to tell.
     assert _meta(store, rid)["failure_class"] == "infra"
+
+
+# ── §H boot epoch: epoch-aware reclaim (compute-lane-lease-epoch.md) ──
+
+
+def test_epoch_mismatch_reclaims_before_lease_expiry(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A running job whose claiming generation is provably replaced (the
+    host's CURRENT advertised boot_id for that process differs) is stolen
+    on the FIRST claim pass — even while its lease is still hours away
+    from expiring. This is the whole point: recovery in one pass, not one
+    lease-floor."""
+    _succeeds(ssh_node, monkeypatch)
+    store.record_heartbeat(
+        "spark-epoch-1", meta={"boot_ids": {"ssh_node": "new-generation"}}
+    )
+    rid = _mk_running_job(
+        store,
+        lease_offset_s=3600,  # far future — expiry arm alone would NOT fire
+        attempts=1,
+        lease_boot_id="dead-generation",
+        lease_process="ssh_node",
+        lease_host="spark-epoch-1",
+    )
+
+    result = ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert _status(store, rid) == "succeeded"
+
+
+def test_live_holder_unexpired_lease_never_stolen_by_epoch_arm(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A running job whose stamped lease_boot_id STILL matches the host's
+    currently-advertised boot_id (a genuinely live holder) is left alone by
+    the epoch arm, regardless of lease age — same guarantee as the plain
+    expiry arm, now proven against the epoch mechanism too."""
+    _succeeds(ssh_node, monkeypatch)
+    store.record_heartbeat(
+        "spark-epoch-2", meta={"boot_ids": {"ssh_node": "same-generation"}}
+    )
+    rid = _mk_running_job(
+        store,
+        lease_offset_s=3600,
+        attempts=1,
+        lease_boot_id="same-generation",
+        lease_process="ssh_node",
+        lease_host="spark-epoch-2",
+    )
+
+    result = ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert result["claimed"] == 0
+    assert _status(store, rid) == "running"  # untouched
+
+
+def test_live_holder_expired_lease_still_reclaimed_by_expiry_arm(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A same-generation holder (boot_id matches) whose lease has genuinely
+    expired (a hang, not a restart) is still reclaimed — the epoch arm's
+    presence doesn't disable the pre-existing expiry arm."""
+    _succeeds(ssh_node, monkeypatch)
+    store.record_heartbeat(
+        "spark-epoch-3", meta={"boot_ids": {"ssh_node": "same-generation"}}
+    )
+    rid = _mk_running_job(
+        store,
+        lease_offset_s=-60,
+        attempts=1,
+        lease_boot_id="same-generation",
+        lease_process="ssh_node",
+        lease_host="spark-epoch-3",
+    )
+
+    result = ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert _status(store, rid) == "succeeded"
+
+
+def test_no_advertisement_at_all_reclaims_via_epoch_arm(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No ``host_heartbeat`` row for the stamped ``lease_host`` at all (the
+    host is provably gone, or never reported one for this process) counts
+    as "not currently advertised" — same as an explicit mismatch."""
+    _succeeds(ssh_node, monkeypatch)
+    rid = _mk_running_job(
+        store,
+        lease_offset_s=3600,
+        attempts=1,
+        lease_boot_id="dead-generation",
+        lease_process="ssh_node",
+        lease_host="spark-never-reported",
+    )
+
+    result = ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert _status(store, rid) == "succeeded"
+
+
+def test_claim_stamps_this_workers_lease_identity(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every claim (fresh-queued here) stamps THIS worker's own boot_id /
+    process / host onto the row — the uniform stamp every executor gets,
+    win or lose the epoch arm ever firing on it."""
+    from precis.workers import heartbeat as _heartbeat_mod
+
+    _succeeds(ssh_node, monkeypatch)
+    monkeypatch.setattr(_heartbeat_mod, "_boot_id", "this-workers-boot-id")
+    monkeypatch.setattr(_heartbeat_mod, "_boot_process", "ssh_node")
+    monkeypatch.setenv("PRECIS_PROCESS", "ssh_node")
+    monkeypatch.setenv("PRECIS_HOST_NAME", "spark-claimer")
+    rid = _mk_job(store, params={"resources": {"wall_seconds": 1800}})
+
+    ssh_node.run_ssh_node_pass(store, limit=2)
+
+    meta = _meta(store, rid)
+    assert meta["lease_boot_id"] == "this-workers-boot-id"
+    assert meta["lease_process"] == "ssh_node"
+    assert meta["lease_host"] == "spark-claimer"
+
+
+def test_null_lease_boot_id_falls_back_to_expiry_only(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A row with no stamped lease_boot_id at all (pre-epoch / a caller that
+    never minted one) is unaffected by the epoch arm — expiry is still the
+    only signal, exactly today's behaviour."""
+    _succeeds(ssh_node, monkeypatch)
+    rid = _mk_running_job(store, lease_offset_s=3600, attempts=1)  # no lease_boot_id
+
+    result = ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert result["claimed"] == 0
+    assert _status(store, rid) == "running"
+
+
+def test_unadvertised_worker_stamps_no_lease_boot_id(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review Finding 3: a worker with a MINTED boot_id but no
+    PRECIS_PROCESS never ADVERTISES that boot_id (``_own_boot_ids_meta``
+    requires both) — so it must never STAMP it as ``lease_boot_id`` either,
+    or the epoch arm's "no live advertisement" sentinel would read the
+    unadvertised-but-genuinely-live claim as provably gone and steal it on
+    the very next claim pass. Confirmed via the meta this claim stamps."""
+    from precis.workers import heartbeat as _heartbeat_mod
+
+    _succeeds(ssh_node, monkeypatch)
+    monkeypatch.setattr(_heartbeat_mod, "_boot_id", "unadvertised-boot-id")
+    monkeypatch.setattr(_heartbeat_mod, "_boot_process", None)
+    monkeypatch.delenv("PRECIS_PROCESS", raising=False)
+    rid = _mk_job(store, params={"resources": {"wall_seconds": 1800}})
+
+    ssh_node.run_ssh_node_pass(store, limit=2)
+
+    meta = _meta(store, rid)
+    assert meta["lease_boot_id"] is None
+    assert meta["lease_process"] is None
+    assert meta["lease_host"] is None
+
+
+def test_unadvertised_worker_claim_not_epoch_stealable_while_lease_live(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """§H Finding 3, end-to-end through the REAL SQL claim path: a job
+    claimed by an unadvertised worker (no PRECIS_PROCESS) stamps no
+    lease_boot_id (see above), so — with its lease still in the future —
+    it is NOT claimable via the epoch arm, only via expiry (unchanged from
+    today's null-lease_boot_id behaviour). Pre-fix, this same claim would
+    have stamped the unadvertised (but real) boot_id, and the epoch arm's
+    COALESCE-sentinel would have immediately treated it as provably gone
+    and stolen it right here."""
+    from precis.workers import heartbeat as _heartbeat_mod
+
+    monkeypatch.setattr(_heartbeat_mod, "_boot_id", "unadvertised-boot-id")
+    monkeypatch.setattr(_heartbeat_mod, "_boot_process", None)
+    monkeypatch.delenv("PRECIS_PROCESS", raising=False)
+    monkeypatch.setattr(
+        ssh_node,
+        "get_job_type",
+        lambda name: _spec(dispatch=lambda c, s: None),  # leaves STATUS:running
+    )
+    rid = _mk_job(store, params={"resources": {"wall_seconds": 1800}})
+
+    ssh_node.run_ssh_node_pass(store, limit=2)  # claims fresh; lease is live+future
+
+    assert _status(store, rid) == "running"
+    assert _meta(store, rid)["lease_boot_id"] is None
+
+    with store.pool.connection() as conn:
+        claimed = claim_executor_jobs(
+            conn, executor="ssh_node", limit=2, reclaim_stale_running=True
+        )
+        conn.rollback()  # inspection only
+
+    assert claimed == []  # not epoch-stealable — no lease_boot_id to compare
+    assert _status(store, rid) == "running"  # untouched
+
+
+# ── §H piece 3: generalized attempt cap ────────────────────────────
+
+
+def test_epoch_reclaim_does_not_bump_attempts(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The master's "redeploy mid-run does not burn the poison guard" —
+    an epoch reclaim leaves meta.attempts untouched, only the forensic
+    reclaims list grows."""
+    _succeeds(ssh_node, monkeypatch)
+    store.record_heartbeat(
+        "spark-epoch-4", meta={"boot_ids": {"ssh_node": "new-generation"}}
+    )
+    rid = _mk_running_job(
+        store,
+        lease_offset_s=3600,
+        attempts=1,
+        lease_boot_id="dead-generation",
+        lease_process="ssh_node",
+        lease_host="spark-epoch-4",
+    )
+
+    result = ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    meta = _meta(store, rid)
+    assert meta["attempts"] == 1  # unchanged — this was an epoch reclaim
+    assert meta["reclaims"][-1]["why"] == "epoch"
+
+
+def test_interleaved_epoch_reclaims_never_advance_attempts(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two SUCCESSIVE epoch reclaims (two different worker generations, each
+    a redeploy — never a crash-loop) never bump meta.attempts, no matter how
+    many times the row changes hands this way."""
+    from precis.workers import heartbeat as _heartbeat_mod
+
+    def _idle_dispatch(ctx: Any, _s: Any) -> None:
+        pass  # leaves STATUS:running — stands in for a still-in-flight run
+
+    monkeypatch.setattr(
+        ssh_node, "get_job_type", lambda name: _spec(dispatch=_idle_dispatch)
+    )
+    monkeypatch.setenv("PRECIS_PROCESS", "ssh_node")
+    monkeypatch.setenv("PRECIS_HOST_NAME", "spark-interleave")
+    rid = _mk_running_job(
+        store,
+        lease_offset_s=3600,
+        attempts=1,
+        lease_boot_id="gen-minus-1",
+        lease_process="ssh_node",
+        lease_host="spark-interleave",
+    )
+
+    # Generation 1 claims: epoch mismatch (dead "gen-minus-1" vs advertised
+    # "gen-1").
+    monkeypatch.setattr(_heartbeat_mod, "_boot_id", "gen-1")
+    monkeypatch.setattr(_heartbeat_mod, "_boot_process", "ssh_node")
+    store.record_heartbeat("spark-interleave", meta={"boot_ids": {"ssh_node": "gen-1"}})
+    result = ssh_node.run_ssh_node_pass(store, limit=2)
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert _meta(store, rid)["attempts"] == 1
+    assert _meta(store, rid)["lease_boot_id"] == "gen-1"
+
+    # Another bounce before generation 1 finished: put the row back at
+    # STATUS:running with an unexpired lease (gen-1's own claim stamp), so
+    # generation 2's claim can ONLY fire via the epoch arm, not expiry.
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || jsonb_build_object("
+            "  'lease_until', (now() + make_interval(secs => 3600))::text"
+            ") WHERE ref_id = %s",
+            (rid,),
+        )
+        conn.commit()
+    store.add_tag(rid, Tag.parse_strict("STATUS:running"), set_by="agent")
+
+    # Generation 2 claims: advertise a new boot_id, provably replacing gen-1.
+    monkeypatch.setattr(_heartbeat_mod, "_boot_id", "gen-2")
+    store.record_heartbeat("spark-interleave", meta={"boot_ids": {"ssh_node": "gen-2"}})
+    result = ssh_node.run_ssh_node_pass(store, limit=2)
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    meta = _meta(store, rid)
+    assert meta["attempts"] == 1  # STILL unchanged — two epoch reclaims, zero bumps
+    assert [r["why"] for r in meta["reclaims"][-2:]] == ["epoch", "epoch"]
+
+
+# ── §H piece 4: detached submit/poll protocol (gr187627) ───────────
+
+
+def test_submit_launches_detached_and_never_blocks(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A job_type exposing BOTH submit and poll never reaches the blocking
+    dispatch path — submit returns a handle, the job stays STATUS:running
+    (poll drives it terminal on a LATER pass), and the handle is persisted
+    to meta.compute_handle for the next pass's poll step to find."""
+    submitted: list[int] = []
+
+    def _submit(ctx: Any, _spec: Any) -> str:
+        submitted.append(ctx.ref_id)
+        return "remote-pid-4242"
+
+    def _poll(ctx: Any, handle: str) -> bool:  # pragma: no cover — not reached here
+        return False
+
+    monkeypatch.setattr(
+        ssh_node, "get_job_type", lambda name: _spec(submit=_submit, poll=_poll)
+    )
+    rid = _mk_job(store, params={"resources": {"wall_seconds": 1800}})
+
+    result = ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert submitted == [rid]
+    assert _status(store, rid) == "running"  # NOT auto-finalized — poll's job
+    assert _meta(store, rid)["compute_handle"] == "remote-pid-4242"
+
+
+def test_poll_still_running_renews_lease_without_finishing(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A poll that returns False (still running) leaves STATUS alone but
+    renews the lease — so the generic expiry-reclaim arm can't fire
+    mid-run just because the original claim's lease is aging out."""
+    polled: list[Any] = []
+
+    def _poll(ctx: Any, handle: Any) -> bool:
+        polled.append(handle)
+        return False
+
+    monkeypatch.setattr(
+        ssh_node,
+        "get_job_type",
+        lambda name: _spec(poll=_poll, submit=lambda c, s: None),
+    )
+    rid = _mk_running_job(
+        store, lease_offset_s=-60, compute_handle="remote-pid-1"
+    )  # already-expired lease — must be renewed by the poll step, not reclaimed
+
+    result = ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert result == {"claimed": 0, "ok": 0, "failed": 0}
+    assert polled == ["remote-pid-1"]
+    assert _status(store, rid) == "running"
+    meta = _meta(store, rid)
+    assert meta["lease_until"] is not None
+    # Renewed into the future, not the seeded expired value.
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT (meta->>'lease_until')::timestamptz > now() "
+            "FROM refs WHERE ref_id = %s",
+            (rid,),
+        ).fetchone()
+        assert row is not None
+        (still_future,) = row
+    assert still_future is True
+
+
+def test_poll_terminal_drives_status_and_counts_ok(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A poll that returns True (terminal) means the plugin already called
+    ctx.set_status — the executor does nothing further and counts it ok."""
+
+    def _poll(ctx: Any, handle: Any) -> bool:
+        ctx.set_status("succeeded")
+        return True
+
+    monkeypatch.setattr(
+        ssh_node,
+        "get_job_type",
+        lambda name: _spec(poll=_poll, submit=lambda c, s: None),
+    )
+    rid = _mk_running_job(store, lease_offset_s=3600, compute_handle="remote-pid-2")
+
+    result = ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert result == {"claimed": 0, "ok": 1, "failed": 0}
+    assert _status(store, rid) == "succeeded"
+
+
+def test_poll_missing_resolvable_poll_fails_infra(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An in-flight row whose job_type can't be resolved (or lost its
+    poll) is defensively INFRA-failed rather than polled forever."""
+    monkeypatch.setattr(ssh_node, "get_job_type", lambda name: None)
+    rid = _mk_running_job(store, lease_offset_s=3600, compute_handle="remote-pid-3")
+
+    result = ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert result == {"claimed": 0, "ok": 1, "failed": 0}
+    assert _status(store, rid) == "failed"
+    assert _meta(store, rid)["failure_class"] == "infra"
+
+
+def test_legacy_dispatch_still_works_with_deprecation_warning(
+    store: Store, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A job_type with only ``dispatch`` (no submit/poll) still runs exactly
+    as before — backward compat — but ssh_node logs a deprecation warning
+    naming gr187627, once per job_type per process (not once per job)."""
+    ssh_node._warned_legacy_job_types.clear()
+    _succeeds(ssh_node, monkeypatch)
+    rid1 = _mk_job(store, params={"resources": {"wall_seconds": 1800}})
+    rid2 = _mk_job(store, params={"resources": {"wall_seconds": 1800}})
+
+    with caplog.at_level("WARNING", logger="precis.workers.executors.ssh_node"):
+        r1 = ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert r1 == {"claimed": 2, "ok": 2, "failed": 0}
+    assert _status(store, rid1) == "succeeded"
+    assert _status(store, rid2) == "succeeded"
+    gr_warnings = [rec for rec in caplog.records if "gr187627" in rec.getMessage()]
+    assert len(gr_warnings) == 1  # once per job_type, not once per job
+
+
+# ── §H piece 2: detached poll wall-clock deadline ───────────────────
+
+
+def test_submit_stamps_a_wall_clock_deadline(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """§H piece 2: submitting a detached job stamps meta.deadline so
+    ``_poll_one`` has a termination bound — the sweeper's own wall-clock
+    retirement (§H piece 6) leaves no other one for a detached job_type."""
+    before = time.time()
+
+    def _submit(ctx: Any, _spec: Any) -> str:
+        return "remote-pid-deadline"
+
+    monkeypatch.setattr(
+        ssh_node,
+        "get_job_type",
+        lambda name: _spec(submit=_submit, poll=lambda c, h: False),
+    )
+    rid = _mk_job(store, params={"resources": {"wall_seconds": 1800}})
+
+    ssh_node.run_ssh_node_pass(store, limit=2)
+
+    meta = _meta(store, rid)
+    assert meta["deadline"] >= before + 1800
+    # Wall_seconds + the same margin _lease_seconds uses.
+    assert meta["deadline"] <= before + 1800 + ssh_node._LEASE_MARGIN_S + 5
+
+
+def test_poll_in_deadline_still_renews(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A poll before the deadline still renews the lease and calls
+    poll() normally — the deadline only trips once it's actually past."""
+    polled: list[Any] = []
+
+    def _poll(ctx: Any, handle: Any) -> bool:
+        polled.append(handle)
+        return False
+
+    monkeypatch.setattr(
+        ssh_node,
+        "get_job_type",
+        lambda name: _spec(poll=_poll, submit=lambda c, s: None),
+    )
+    rid = _mk_running_job(
+        store, lease_offset_s=3600, compute_handle="remote-pid-indeadline"
+    )
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || jsonb_build_object('deadline', %s::float) "
+            "WHERE ref_id = %s",
+            (time.time() + 3600, rid),
+        )
+        conn.commit()
+
+    result = ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert result == {"claimed": 0, "ok": 0, "failed": 0}
+    assert polled == ["remote-pid-indeadline"]
+    assert _status(store, rid) == "running"
+
+
+def test_poll_past_deadline_terminalizes_without_kill_hook(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A poll past its deadline stops polling and fails the job even when
+    the job_type has no ``kill`` hook — a bound job_type still gets
+    terminalized on schedule, it just can't proactively stop the remote
+    side."""
+    polled: list[Any] = []
+
+    def _poll(ctx: Any, handle: Any) -> bool:  # pragma: no cover — must not fire
+        polled.append(handle)
+        return False
+
+    monkeypatch.setattr(
+        ssh_node,
+        "get_job_type",
+        lambda name: _spec(poll=_poll, submit=lambda c, s: None),
+    )
+    rid = _mk_running_job(
+        store, lease_offset_s=3600, compute_handle="remote-pid-timeout"
+    )
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || jsonb_build_object('deadline', %s::float) "
+            "WHERE ref_id = %s",
+            (time.time() - 5, rid),
+        )
+        conn.commit()
+
+    result = ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert result == {"claimed": 0, "ok": 1, "failed": 0}
+    assert polled == []  # poll() never called past the deadline
+    assert _status(store, rid) == "failed"
+    tags = {str(t) for t in store.tags_for(rid)}
+    assert "swept:wall-timeout" in tags
+    events = [
+        c.text
+        for c in store.list_blocks_for_ref(rid)
+        if getattr(c, "chunk_kind", None) == "job_event"
+    ]
+    assert any("killed at wall-clock deadline" in t for t in events)
+
+
+def test_poll_past_deadline_calls_kill_hook_when_present(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the job_type declares ``kill``, a past-deadline poll calls it
+    (a chance to actually stop the remote compute) before terminalizing."""
+    killed: list[tuple[Any, Any]] = []
+
+    def _kill(ctx: Any, handle: Any) -> None:
+        killed.append((ctx.ref_id, handle))
+
+    monkeypatch.setattr(
+        ssh_node,
+        "get_job_type",
+        lambda name: JobTypeSpec(
+            name="fake_relax",
+            params_schema={"type": "object"},
+            compatible_executors=frozenset({"ssh_node"}),
+            requires=frozenset({"has_gpaw"}),
+            description="fake relax for tests",
+            run=lambda *a, **k: "noop",
+            submit=lambda c, s: None,
+            poll=lambda c, h: False,
+            kill=_kill,
+        ),
+    )
+    rid = _mk_running_job(store, lease_offset_s=3600, compute_handle="remote-pid-kill")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || jsonb_build_object('deadline', %s::float) "
+            "WHERE ref_id = %s",
+            (time.time() - 5, rid),
+        )
+        conn.commit()
+
+    result = ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert result == {"claimed": 0, "ok": 1, "failed": 0}
+    assert killed == [(rid, "remote-pid-kill")]
+    assert _status(store, rid) == "failed"
+
+
+def test_reclaimed_row_with_compute_handle_is_re_adopted_not_double_submitted(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """§H piece 4, REQUIRED: an epoch-reclaimed row that already has
+    meta.compute_handle (a prior generation's submit already succeeded,
+    the detached compute may still be alive) must NEVER be re-submitted —
+    that would double-launch the remote compute. Mirrors claude_docker's
+    re-adopt branch."""
+    submit_calls: list[int] = []
+
+    def _submit(ctx: Any, _spec: Any) -> str:  # pragma: no cover — must not fire
+        submit_calls.append(ctx.ref_id)
+        return "should-not-happen"
+
+    monkeypatch.setattr(
+        ssh_node,
+        "get_job_type",
+        lambda name: _spec(submit=_submit, poll=lambda c, h: False),
+    )
+    store.record_heartbeat(
+        "spark-epoch-readopt", meta={"boot_ids": {"ssh_node": "new-generation"}}
+    )
+    rid = _mk_running_job(
+        store,
+        lease_offset_s=3600,  # far future — only the epoch arm can fire
+        attempts=1,
+        lease_boot_id="dead-generation",
+        lease_process="ssh_node",
+        lease_host="spark-epoch-readopt",
+        compute_handle="remote-pid-still-alive",
+    )
+
+    result = ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert submit_calls == []  # never re-submitted
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert _status(store, rid) == "running"  # still tracked, not terminalized
+    assert _meta(store, rid)["compute_handle"] == "remote-pid-still-alive"
+    # The claim re-stamped THIS worker's own lease identity over the dead
+    # generation's stamp (so the epoch arm doesn't misfire again next pass).
+    assert _meta(store, rid)["lease_boot_id"] != "dead-generation"
+    events = [
+        c.text
+        for c in store.list_blocks_for_ref(rid)
+        if getattr(c, "chunk_kind", None) == "job_event"
+    ]
+    assert any("re-adopted" in t for t in events)

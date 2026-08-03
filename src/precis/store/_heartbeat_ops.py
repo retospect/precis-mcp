@@ -80,7 +80,16 @@ class HeartbeatMixin:
 
         Re-running for the same ``host`` overwrites the previous row
         (latest-snapshot semantics) and bumps ``ts`` so staleness is
-        always measured from the most recent report.
+        always measured from the most recent report — EXCEPT
+        ``meta.boot_ids`` (§H boot epoch, compute-lane-lease-epoch.md),
+        which is nested-merged instead of replaced: a host can run more
+        than one worker process (melchior runs both ``system`` and
+        ``agent``), each advertising its own boot_id under the SAME
+        ``host_heartbeat`` row (PK is ``host``, not ``(host, process)``),
+        so a full ``meta`` replace by process A's beat would silently wipe
+        process B's last-advertised boot_id. Merging old + new
+        ``boot_ids`` (new entry wins per-process key) keeps every live
+        process's generation visible regardless of write order.
         """
         sql = (
             "INSERT INTO host_heartbeat "
@@ -89,7 +98,11 @@ class HeartbeatMixin:
             "ON CONFLICT (host) DO UPDATE SET "
             "ts = now(), temp_c = EXCLUDED.temp_c, load1 = EXCLUDED.load1, "
             "load5 = EXCLUDED.load5, load15 = EXCLUDED.load15, "
-            "meta = EXCLUDED.meta"
+            "meta = EXCLUDED.meta || jsonb_build_object("
+            "  'boot_ids',"
+            "  COALESCE(host_heartbeat.meta->'boot_ids', '{}'::jsonb)"
+            "    || COALESCE(EXCLUDED.meta->'boot_ids', '{}'::jsonb)"
+            ")"
         )
         params = (
             host,

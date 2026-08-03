@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -329,9 +329,33 @@ class TestCoordinatorPersistsReturn:
             "kind": "children_done",
             "payload": {"child_job_ids": [11, 12]},
         }
+        # §H piece 5: a children_done park gets a wake_deadline stamped —
+        # the FakeConn returns no rows, so this falls back to the default
+        # (6h) — a roughly-6h-out unix timestamp, not None/absent.
+        import time as _time
+
+        assert "wake_deadline" in merged
+        assert merged["wake_deadline"] > _time.time()
+        assert merged["wake_deadline"] < _time.time() + 7 * 3600
         # parked at the status the wake_runner watches — NOT left running
         assert calls["status"] == [coordinator._WAITING_CHILDREN]
         assert calls["failures"] == []
+
+    def test_non_children_done_yield_gets_no_wake_deadline(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """§H piece 5 is scoped to ``children_done`` only — an ``at_time``/
+        ``tag_cleared``/``tag_added`` park has no children to deadlock on."""
+        calls = self._run_with(
+            monkeypatch,
+            lambda ctx, spec: Yield(
+                state={},
+                wake_when=WakeWhen(kind="at_time", payload={"ts": 0}),
+            ),
+        )
+        merged = {k: v for m in calls["meta"] for k, v in m.items()}
+        assert "wake_deadline" not in merged
+        assert calls["status"] == [coordinator._WAITING_TIME]
 
     def test_unknown_wake_kind_fails_loudly(
         self, monkeypatch: pytest.MonkeyPatch
@@ -353,6 +377,103 @@ class TestCoordinatorPersistsReturn:
         assert len(calls["failures"]) == 1
         assert "expected Done|Yield" in calls["failures"][0]
         assert calls["status"] == []  # not left at running
+
+
+class _RowsConn:
+    """Minimal fake ``Connection`` returning a fixed set of rows —
+    enough to unit-test ``_children_wake_deadline_s``'s pure MAX+margin /
+    fallback logic without a live database."""
+
+    def __init__(self, rows: list[tuple]) -> None:
+        self._rows = rows
+
+    def execute(self, *_args: Any, **_kw: Any) -> _RowsConn:
+        return self
+
+    def fetchall(self) -> list[tuple]:
+        return self._rows
+
+
+def _rows_conn(rows: list[tuple]) -> Any:
+    """`_RowsConn` typed as a real Connection for mypy — the fake only
+    needs execute/fetchall, and `_children_wake_deadline_s` is unit-pure."""
+    from psycopg import Connection
+
+    return cast(Connection, _RowsConn(rows))
+
+
+class TestChildrenWakeDeadline:
+    """§H piece 5: MAX (not sum) of the children's wall_seconds + margin,
+    FLOORED at PRECIS_WAKE_DEADLINE_HOURS (default 6h) — review Finding 5:
+    a resource-serialized fan-out (executor concurrency limit / slot
+    scarcity) can legitimately take far longer than any single child's own
+    wall_seconds, so a tight MAX alone must never trip the deadline early.
+    The floor also covers the "no child declares a budget at all" case."""
+
+    def test_large_known_wall_seconds_beats_the_floor(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When MAX(wall)+margin exceeds the default 6h floor, the
+        computed value wins — a genuinely long-running child's own budget
+        is respected, never clamped down."""
+        monkeypatch.delenv("PRECIS_WAKE_DEADLINE_HOURS", raising=False)
+        conn = _rows_conn([("18000",), ("72000",), (None,)])
+        deadline_s = coordinator._children_wake_deadline_s(conn, [1, 2, 3])
+        assert deadline_s == 72000 + coordinator._WAKE_DEADLINE_MARGIN_S
+
+    def test_small_known_wall_seconds_floors_at_default_hours(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A KNOWN but small per-child wall_seconds budget still floors at
+        PRECIS_WAKE_DEADLINE_HOURS — the master's "resource-serialized
+        fan-out isn't tripped early" fix. Pre-fix, this would have
+        returned 900 + margin (~1h15m), well under the 6h floor."""
+        monkeypatch.delenv("PRECIS_WAKE_DEADLINE_HOURS", raising=False)
+        conn = _rows_conn([("900",)])
+        deadline_s = coordinator._children_wake_deadline_s(conn, [1])
+        assert deadline_s == 6.0 * 3600
+        assert deadline_s > 900 + coordinator._WAKE_DEADLINE_MARGIN_S
+
+    def test_no_known_budget_falls_back_to_default_hours(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("PRECIS_WAKE_DEADLINE_HOURS", raising=False)
+        conn = _rows_conn([(None,), (None,)])
+        assert coordinator._children_wake_deadline_s(conn, [1, 2]) == 6.0 * 3600
+
+    def test_empty_child_list_falls_back_to_default_hours(self) -> None:
+        conn = _rows_conn([])
+        assert coordinator._children_wake_deadline_s(conn, []) == 6.0 * 3600
+
+    def test_default_hours_env_overridable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PRECIS_WAKE_DEADLINE_HOURS", "2")
+        conn = _rows_conn([])
+        assert coordinator._children_wake_deadline_s(conn, []) == 2.0 * 3600
+
+    def test_floor_itself_is_env_overridable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The floor a small known budget lands on is the SAME env-
+        overridable default — not a hardcoded 6h. A 0s known child budget
+        computes to exactly the margin (3600s); a floor set well above
+        that (2h) must win."""
+        monkeypatch.setenv("PRECIS_WAKE_DEADLINE_HOURS", "2")
+        conn = _rows_conn([("0",)])
+        deadline_s = coordinator._children_wake_deadline_s(conn, [1])
+        assert deadline_s == 2.0 * 3600
+
+    def test_malformed_wall_seconds_ignored(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A malformed wall_seconds value is ignored (not treated as
+        known); the one valid small value present still floors at the
+        default hours rather than surfacing 900 + margin directly."""
+        monkeypatch.delenv("PRECIS_WAKE_DEADLINE_HOURS", raising=False)
+        conn = _rows_conn([("not-a-number",), ("900",)])
+        deadline_s = coordinator._children_wake_deadline_s(conn, [1, 2])
+        assert deadline_s == 6.0 * 3600
 
 
 class TestWaitingStatusVocab:

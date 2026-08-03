@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import socket
+from datetime import UTC, datetime
 from typing import Any
 
 from psycopg import Connection
@@ -75,6 +76,56 @@ _DEFAULT_JOB_PRIO = 5
 #: ``FOR UPDATE`` lock set. 1 (or no ``resource_slots``) ⇒ pre-6d behaviour.
 _CLAIM_OVERFETCH = 3
 
+#: Sentinel used where SQL needs a value that can never equal a real
+#: ``lease_boot_id`` (a uuid4 hex, always 32 lowercase hex chars — see
+#: :func:`precis.workers.heartbeat.mint_boot_id`) — so
+#: ``COALESCE(<no live advertisement>, this)`` reliably compares UNEQUAL and
+#: the epoch-reclaim arm fires when there's no live (host, process) row to
+#: compare against at all (host_heartbeat missing the host, or missing that
+#: process's entry — the generation is provably not currently advertised,
+#: which is the same "provably gone" signal as an explicit mismatch). Must
+#: be a plain SQL-safe string (NUL bytes aren't valid in a postgres ``text``
+#: value/param).
+_NO_ADVERTISED_BOOT_ID = "__no_advertised_boot_id__"
+
+# ── Attempt cap (§H piece 3, generalized from ssh_node's original guard) ──
+
+#: Reclaim-reason tags stamped onto ``meta.reclaims`` (forensic, capped list)
+#: — ``EPOCH`` = the holder was provably replaced (redeploy/bounce), does
+#: NOT burn the poison guard; ``EXPIRY`` = the lease itself ran out with no
+#: proof the holder changed (a hang, or no successor info), DOES count
+#: toward ``meta.attempts``. See :func:`claim_executor_jobs`'s docstring.
+RECLAIM_WHY_EPOCH = "epoch"
+RECLAIM_WHY_EXPIRY = "expiry"
+
+#: Cap on ``meta.reclaims`` length — forensics, not an unbounded log.
+_RECLAIMS_CAP = 10
+
+
+def max_job_attempts() -> int:
+    """Max run-attempts before a re-claimed job is treated as poison.
+
+    Default 3, ``PRECIS_MAX_JOB_ATTEMPTS``-overridable, floor 1. Only
+    lease-EXPIRY reclaims bump ``meta.attempts`` (see
+    :func:`claim_executor_jobs`) — a job crash-looping its worker every
+    generation eventually poison-fails; a job merely caught by redeploy
+    churn does not burn this budget.
+    """
+    raw = os.environ.get("PRECIS_MAX_JOB_ATTEMPTS")
+    if raw is None:
+        return 3
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 3
+
+
+#: Computed once at import (mirrors ``sweeper.STUCK_JOB_HOURS``) — every
+#: executor that opts into ``reclaim_stale_running`` compares against this
+#: same cap, so ``ssh_node._MAX_ATTEMPTS`` et al re-export it rather than
+#: defining their own.
+MAX_ATTEMPTS = max_job_attempts()
+
 
 def _scarcity(requires: dict[str, int], host_count: dict[str, int]) -> float:
     """A job's capability-scarcity score — the first claim-order key (§5.3).
@@ -104,6 +155,40 @@ def reserve_host() -> str:
     so a decrement lands on the same row the probe advertised.
     """
     return os.environ.get("PRECIS_HOST_NAME") or socket.gethostname()
+
+
+def _this_worker_lease_identity() -> tuple[str | None, str | None, str | None]:
+    """``(boot_id, process, host)`` this worker stamps onto every job it
+    claims (§H boot epoch, compute-lane-lease-epoch.md).
+
+    Returns the real triple ONLY when BOTH a boot_id has been minted AND a
+    ``PRECIS_PROCESS`` is set — i.e. only when this worker's boot_id is
+    actually *advertised* in ``host_heartbeat.meta.boot_ids`` (see
+    ``heartbeat._own_boot_ids_meta``, which requires the same two things).
+    Otherwise returns ``(None, None, None)`` so the claimed row stamps no
+    ``lease_boot_id`` at all and falls to the safe expiry-only arm.
+
+    This asymmetry matters: ``mint_boot_id()`` can succeed (return a
+    non-null id) even when ``process`` is ``None`` — a worker started
+    without ``PRECIS_PROCESS`` — but ``_own_boot_ids_meta`` then never
+    advertises that id under any ``(host, process)`` key. Before this
+    guard, such a worker still stamped its (unadvertised) boot_id onto
+    every row it claimed; the SQL epoch arm's COALESCE-sentinel then read
+    "no live advertisement for this (host, process)" as "provably gone"
+    and stole the row out from under a genuinely live holder on the very
+    next claim pass. Returning ``(None, None, None)`` here means an
+    unadvertised worker's claims are indistinguishable from a pre-epoch
+    caller's — correct, since neither can be proven-replaced by the epoch
+    arm — and they fall back to the pre-existing lease-expiry arm, exactly
+    like a null-boot_id row always has.
+    """
+    from precis.workers.heartbeat import current_boot_id
+
+    process = os.environ.get("PRECIS_PROCESS") or None
+    boot_id = current_boot_id()
+    if boot_id is None or process is None:
+        return None, None, None
+    return boot_id, process, reserve_host()
 
 
 def effective_requires(meta: dict[str, Any]) -> dict[str, int]:
@@ -141,6 +226,48 @@ def _advertised_by_host(conn: Connection) -> dict[str, set[str]]:
     for host, resource in rows:
         out.setdefault(str(host), set()).add(str(resource))
     return out
+
+
+def _advertised_boot_ids(conn: Connection) -> dict[tuple[str, str], str]:
+    """``(host, process) -> currently-advertised boot_id`` from
+    ``host_heartbeat.meta.boot_ids`` (§H, compute-lane-lease-epoch.md).
+
+    Mirrors the SQL epoch-arm's correlated subquery (kept as a Python
+    lookup here so the reclaim-reason classification below — which needs
+    to run in Python either way, to decide expiry-vs-epoch for the attempt
+    bump — doesn't re-query per row).
+    """
+    rows = conn.execute(
+        "SELECT host, meta -> 'boot_ids' FROM host_heartbeat"
+    ).fetchall()
+    out: dict[tuple[str, str], str] = {}
+    for host, boot_ids in rows:
+        if not boot_ids:
+            continue
+        for process, boot_id in dict(boot_ids).items():
+            out[(str(host), str(process))] = str(boot_id)
+    return out
+
+
+def _reclaim_reason(
+    meta: dict[str, Any], advertised_boot_ids: dict[tuple[str, str], str]
+) -> str:
+    """Classify a running row's reclaim as ``epoch`` or ``expiry`` (§H piece
+    3) — the SAME predicate the SQL epoch arm uses (a non-null
+    ``lease_boot_id`` that doesn't match the currently-advertised generation
+    for its ``(lease_host, lease_process)``), just evaluated in Python so the
+    attempt-bump decision can be made once per claimed row instead of
+    per-row SQL. A row with no ``lease_boot_id`` (or one that still matches
+    the live advertisement — the plain-hang case) is an ``expiry`` reclaim.
+    """
+    lease_boot_id = meta.get("lease_boot_id")
+    if lease_boot_id:
+        current = advertised_boot_ids.get(
+            (str(meta.get("lease_host")), str(meta.get("lease_process")))
+        )
+        if current != lease_boot_id:
+            return RECLAIM_WHY_EPOCH
+    return RECLAIM_WHY_EXPIRY
 
 
 def _mem_pressured_hosts(conn: Connection) -> set[str]:
@@ -201,17 +328,53 @@ def claim_executor_jobs(
     Claimable = ``kind='job'``, ``meta.executor`` matches,
     ``STATUS:queued``, not terminal, lease expired or absent.
 
-    **Crash recovery (``reclaim_stale_running``).** Off by default, so
-    ``claude_inproc`` / ``coordinator`` behaviour is unchanged. When on
-    (``ssh_node`` only), a ``STATUS:running`` row whose lease has
-    *provably* expired (``lease_until`` non-null and ``< now()``) is also
-    claimable — its worker died mid-dispatch (e.g. a deploy restart) and
-    the lease, sized to outlive the job plus margin, is the death-
-    presumption signal. Stealing re-runs the job (the ssh_node caller
-    bumps ``meta.attempts`` and poison-guards past a cap); a stolen row's
-    stale ``meta.reserved`` slots are refunded here before it re-reserves,
-    so a crash can't leak resource slots. A running job with a *live*
-    (unexpired) lease is never stolen — the lease clause excludes it.
+    **Crash recovery (``reclaim_stale_running``).** Off by default (only
+    ``coordinator`` leaves it off today), so a caller that doesn't opt in
+    keeps yesterday's expiry-only steal behaviour unchanged. When on
+    (``ssh_node``, ``claude_inproc``, ``claude_docker``), a
+    ``STATUS:running`` row is claimable via EITHER of two independent
+    arms:
+
+    * **Expiry arm** (unchanged) — the lease has *provably* expired
+      (``lease_until`` non-null and ``< now()``). The lease, sized to
+      outlive the job plus margin, is the death-presumption signal when no
+      faster proof exists.
+    * **Epoch arm** (§H, ``docs/proposals/compute-lane-lease-epoch.md``) —
+      the row's stamped ``meta.lease_boot_id`` is non-null and does NOT
+      match the boot_id currently advertised (``host_heartbeat.meta.
+      boot_ids``) for ``(meta.lease_host, meta.lease_process)`` — i.e. the
+      process that claimed it has been replaced (deploy bounce, jetsam
+      cull) — even while ``lease_until`` is still in the future. A row
+      whose ``lease_boot_id`` IS the currently-advertised value (a live
+      holder) is never stolen by this arm regardless of lease age. A row
+      with a null ``lease_boot_id`` (pre-epoch / a caller that never
+      minted one) falls back to the expiry arm alone — no regression.
+
+    Either arm stealing re-runs the job; a stolen row's stale
+    ``meta.reserved`` slots are refunded here before it re-reserves, so a
+    crash can't leak resource slots.
+
+    **Lease-identity stamp.** Every successful claim (fresh-queued OR
+    reclaimed) through this function stamps ``meta.lease_boot_id`` /
+    ``meta.lease_process`` / ``meta.lease_host`` with THIS worker's own
+    identity (:func:`_this_worker_lease_identity`) — uniformly, for every
+    executor, whether or not it opts into ``reclaim_stale_running`` — so a
+    later successor (of any executor that DOES opt in) can tell this claim
+    apart from its own. ``lease_boot_id`` is null when this process never
+    minted a boot_id (see :func:`_this_worker_lease_identity`).
+
+    **Attempt cap (§H piece 3, generalized from ssh_node's original
+    guard).** Every RE-claim of a ``STATUS:running`` row (``reclaim_
+    stale_running=True`` only) bumps ``meta.attempts`` — EXCEPT an
+    ``epoch``-reason reclaim (the holder was provably replaced by a
+    redeploy/bounce, not a crash-loop) does NOT bump it; only ``expiry``-
+    reason reclaims (a hang, or no successor info) count. Either way the
+    reclaim is appended to a capped ``meta.reclaims: [{at, why}]``
+    forensic list. This function only does the bookkeeping — the actual
+    cap enforcement (fail + bubble past :data:`MAX_ATTEMPTS`) is
+    :func:`poison_guard`, which every ``reclaim_stale_running`` caller
+    invokes on its own claimed rows before running them (mirrors
+    ssh_node's original inline guard, now shared).
 
     **Claim ordering (slice 6a).** ``ORDER BY COALESCE(prio, 5) DESC,
     ref_id ASC`` — highest ``refs.prio`` first (the dispatcher propagates
@@ -311,12 +474,37 @@ def claim_executor_jobs(
                AND (r.meta->>'lease_until')::timestamptz < now()
              )"""
         status_params += [STATUS_NAMESPACE, RUNNING]
+        # Epoch arm (§H): a running row whose claiming process has been
+        # replaced is claimable NOW, even while lease_until is still in the
+        # future — see the docstring. ``lease_boot_id`` non-null gates it
+        # (a null-boot_id row falls through to the expiry arm above only).
+        # The sentinel makes "no live advertisement at all" (host_heartbeat
+        # missing the host, or missing that process's entry) compare
+        # UNEQUAL too — same "provably gone" signal as an explicit mismatch.
+        status_lease_sql += """
+             OR (
+               EXISTS (
+                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                  WHERE rt.ref_id = r.ref_id
+                    AND t.namespace = %s AND t.value = %s
+               )
+               AND (r.meta->>'lease_boot_id') IS NOT NULL
+               AND (r.meta->>'lease_boot_id') <> COALESCE(
+                     (SELECT hh.meta #>> ARRAY['boot_ids', r.meta->>'lease_process']
+                        FROM host_heartbeat hh
+                       WHERE hh.host = r.meta->>'lease_host'),
+                     %s
+                   )
+             )"""
+        status_params += [STATUS_NAMESPACE, RUNNING, _NO_ADVERTISED_BOOT_ID]
     status_lease_sql += """
            )"""
 
     rows = conn.execute(
         f"""
-        SELECT r.ref_id, r.title, r.meta, r.prio
+        SELECT r.ref_id, r.title, r.meta, r.prio,
+               (SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id)
+                 WHERE rt.ref_id = r.ref_id AND t.namespace = %s LIMIT 1)
           FROM refs r
          WHERE r.kind = 'job'
            AND r.deleted_at IS NULL
@@ -336,6 +524,7 @@ def claim_executor_jobs(
            FOR UPDATE OF r SKIP LOCKED
         """,
         (
+            STATUS_NAMESPACE,
             executor,
             node,
             *status_params,
@@ -368,11 +557,80 @@ def claim_executor_jobs(
     ranked = sorted(rows, key=_order_key)
     pressured = _mem_pressured_hosts(conn)
 
+    lease_boot_id, lease_process, lease_host = _this_worker_lease_identity()
+    # Only fetched when needed — a caller that never reclaims running rows
+    # (``coordinator``) never re-claims, so there's nothing to classify.
+    advertised_boot_ids = _advertised_boot_ids(conn) if reclaim_stale_running else {}
+
+    def _stamp_lease_identity(
+        ref_id: int, meta: dict[str, Any], status_value: str | None
+    ) -> None:
+        """Stamp THIS worker's lease identity onto every claim (§H), and —
+        for a RE-claim of a running row — the generalized attempt cap (§H
+        piece 3). See the docstring's "Lease-identity stamp" and "Attempt
+        cap" sections.
+
+        A fresh claim (``status_value != RUNNING``, i.e. the row was
+        ``STATUS:queued``) only gets the lease-identity stamp — uniform
+        across every executor, whether or not it opts into
+        ``reclaim_stale_running``. A RE-claim additionally: classifies WHY
+        (:func:`_reclaim_reason`) using the row's OLD ``lease_boot_id``
+        (still in ``meta`` at this point — not yet overwritten below);
+        bumps ``meta.attempts`` only for an ``expiry`` reclaim (an
+        ``epoch`` reclaim — the holder was provably replaced by a
+        redeploy/bounce — must NOT burn the poison guard); and appends a
+        capped forensic entry to ``meta.reclaims``. The caller (each
+        executor's own claim wrapper) is responsible for checking
+        ``meta['attempts']`` against :data:`MAX_ATTEMPTS` and poison-
+        failing — this function only does the bookkeeping, mirroring
+        ssh_node's original split of "compute the count" vs "act on it".
+
+        Note (Finding 6): the classification above reads ``advertised_
+        boot_ids`` — a Python snapshot of ``host_heartbeat`` taken once,
+        up front, by :func:`_advertised_boot_ids` — while the SQL epoch
+        arm that decided this row was even claimable read the SAME table
+        via its own correlated subquery, at a slightly earlier instant (a
+        separate statement in the same transaction). A heartbeat landing
+        in the gap between those two reads can only ever make this
+        classification WRONG about *why* (e.g. call an actually-epoch
+        reclaim an ``expiry`` one, bumping ``attempts`` one extra time it
+        "shouldn't" have) — it can never cause a THEFT: the candidate set
+        was already ``FOR UPDATE … SKIP LOCKED`` row-locked by the SQL
+        query before either read, so no other worker can claim the same
+        row concurrently regardless of which side of the heartbeat gap
+        either read landed on.
+        """
+        fields: dict[str, Any] = {
+            "lease_boot_id": lease_boot_id,
+            "lease_process": lease_process,
+            "lease_host": lease_host,
+        }
+        if reclaim_stale_running and status_value == RUNNING:
+            why = _reclaim_reason(meta, advertised_boot_ids)
+            attempts = int(meta.get("attempts") or 0)
+            if why == RECLAIM_WHY_EXPIRY:
+                attempts += 1
+            reclaims = list(meta.get("reclaims") or [])
+            reclaims.append({"at": datetime.now(UTC).isoformat(), "why": why})
+            reclaims = reclaims[-_RECLAIMS_CAP:]
+            fields["attempts"] = attempts
+            fields["reclaims"] = reclaims
+            meta["attempts"] = attempts
+            meta["reclaims"] = reclaims
+        conn.execute(
+            "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
+            (Jsonb(fields), ref_id),
+        )
+        meta["lease_boot_id"] = lease_boot_id
+        meta["lease_process"] = lease_process
+        meta["lease_host"] = lease_host
+
     claimed: list[tuple[int, str, dict[str, Any]]] = []
     for r in ranked:
         if len(claimed) >= limit:
             break  # scarcity-ranked top ``limit`` reserved; leave the rest locked-free
         ref_id, title, meta = int(r[0]), str(r[1]), dict(r[2] or {})
+        status_value = r[4] if len(r) > 4 else None
         if reclaim_stale_running and meta.get("reserved"):
             # A stolen (crash-recovered) job still carries the dead worker's
             # reservation — refund it before this claim re-reserves, so slots
@@ -381,6 +639,7 @@ def claim_executor_jobs(
             meta.pop("reserved", None)
         requires = effective_requires(meta)
         if not requires:
+            _stamp_lease_identity(ref_id, meta, status_value)
             claimed.append((ref_id, title, meta))
             continue
         # The resource lives where the job runs: its target_node (an
@@ -413,6 +672,7 @@ def claim_executor_jobs(
                 (json.dumps(reserved), ref_id),
             )
             meta["reserved"] = reserved
+        _stamp_lease_identity(ref_id, meta, status_value)
         claimed.append((ref_id, title, meta))
     return claimed
 
@@ -556,13 +816,80 @@ def record_failure(
         conn.commit()
 
 
+def poison_guard(
+    store: Any,
+    conn: Connection,
+    ref_id: int,
+    meta: dict[str, Any],
+    *,
+    max_attempts: int | None = None,
+) -> bool:
+    """The crash-loop guard's ACTION (§H piece 3) — shared by every
+    executor that opts into ``reclaim_stale_running``.
+
+    ``claim_executor_jobs`` already computed ``meta['attempts']``
+    (bumped only for ``expiry`` reclaims — an ``epoch`` reclaim never
+    reaches this cap on its own). This just applies the cap's
+    consequence, generalized from ssh_node's original inline guard:
+    past the cap, the row is INFRA-failed + bubbled instead of run again
+    — a job that crash-loops its worker every generation eventually
+    stops stealing itself forever, but a job merely caught by redeploy
+    churn (all-``epoch`` reclaims) never trips this.
+
+    Returns True (and fails the job, in ``conn``'s transaction) when
+    poisoned; False when the caller should proceed to run it normally.
+    ``max_attempts`` overrides :data:`MAX_ATTEMPTS` for a caller with its
+    own cap (defaults to the shared one — no known caller needs a
+    different value today, but the hook costs nothing).
+
+    **Reclaim-churn backstop (Finding 4).** ``epoch`` reclaims never bump
+    ``meta.attempts`` by design (a redeploy isn't a crash-loop), which
+    leaves a gap: a job whose HOST reboots (or otherwise bounces its
+    worker generation) every single run is reclaimed via the epoch arm
+    every time, ``attempts`` stays at 0 forever, and the attempt cap above
+    never trips — the job "poison"-loops in a way the attempt cap was
+    built to catch, just via a different door. ``meta.reclaims`` (capped
+    at :data:`_RECLAIMS_CAP`, forensic list of every reclaim regardless of
+    reason) already bounds this either way, so once its length hits the
+    cap this guard trips too, REGARDLESS of ``attempts`` — a churn-only
+    poison job still eventually fails + bubbles instead of reclaiming
+    forever.
+    """
+    cap = MAX_ATTEMPTS if max_attempts is None else max_attempts
+    attempts = int(meta.get("attempts") or 0)
+    reclaims = meta.get("reclaims") or []
+    reclaim_churn = len(reclaims) >= _RECLAIMS_CAP
+    if attempts <= cap and not reclaim_churn:
+        return False
+    if reclaim_churn and attempts <= cap:
+        reason = (
+            f"runner: {len(reclaims)} reclaims recorded (reclaim-churn cap "
+            f"{_RECLAIMS_CAP} reached) while only {attempts} run attempt(s) "
+            "were counted — an epoch-reclaim-only crash-loop (e.g. a host "
+            "that reboots every run) evades the attempt cap by never "
+            "bumping it; failing as a poison-guard backstop"
+        )
+    else:
+        reason = f"runner: exceeded {cap} run attempts (crash-loop guard) — failing"
+    append_chunk(store, ref_id, JOB_EVENT_KIND, reason, conn=conn)
+    set_meta(conn, ref_id, failure_class="infra")
+    set_status(store, ref_id, FAILED, conn=conn)
+    from precis.handlers._job_bubble import bubble_job_failure
+
+    bubble_job_failure(store, ref_id, conn=conn)
+    return True
+
+
 __all__ = [
     "CANCELLED",
     "CANCEL_REQUESTED",
     "FAILED",
     "JOB_EVENT_KIND",
     "JOB_SUMMARY_KIND",
+    "MAX_ATTEMPTS",
     "QUEUED",
+    "RECLAIM_WHY_EPOCH",
+    "RECLAIM_WHY_EXPIRY",
     "RUNNING",
     "STATUS_NAMESPACE",
     "SUCCEEDED",
@@ -576,6 +903,8 @@ __all__ = [
     "current_status",
     "effective_requires",
     "is_cancel_requested",
+    "max_job_attempts",
+    "poison_guard",
     "record_failure",
     "release_job_reservation",
     "reserve_host",

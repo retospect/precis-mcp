@@ -247,6 +247,69 @@ def test_set_status_nonterminal_does_not_refund(store: Store) -> None:
     assert _free(store, "rh_k", "gpu") == 0  # still held while running
 
 
+def test_epoch_reclaim_refunds_stale_reservation_before_re_reserving(
+    store: Store,
+) -> None:
+    """§H piece 2 acceptance: a STATUS:running row epoch-reclaimed (the
+    holder was provably replaced, even with `lease_until` still in the
+    future) has its stale `meta.reserved` slot refunded before this claim
+    re-reserves — same crash-recovery semantics as an expiry reclaim, no
+    leak (the slot doesn't come back free-and-unclaimed) and no double-
+    reserve (the capacity-1 host isn't driven negative)."""
+    host = "rh_epoch_refund"
+    store.sync_host_resource_slots(host, {"gpu": 1})
+    store.record_heartbeat(host, meta={"boot_ids": {"ex_res_epoch": "new-gen"}})
+
+    ref = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="orphaned reserved job",
+        meta={
+            "job_type": "demo",
+            "executor": "ex_res_epoch",
+            "params": {},
+            "requires": {"gpu": 1},
+            "reserved": {"host": host, "slots": {"gpu": 1}},
+            "lease_boot_id": "dead-gen",
+            "lease_process": "ex_res_epoch",
+            "lease_host": host,
+        },
+    )
+    jid = int(ref.id)
+    store.add_tag(ref.id, Tag.closed("STATUS", "running"), set_by="agent")
+    with store.pool.connection() as conn:
+        # A capacity-1 host with the slot already held by the prior
+        # (dead) generation's reservation — free=0, mirroring what the
+        # original claim actually left behind.
+        conn.execute(
+            "UPDATE resource_slots SET free = 0 WHERE host = %s AND resource = 'gpu'",
+            (host,),
+        )
+        conn.execute(
+            "UPDATE refs SET meta = meta || jsonb_build_object("
+            "  'lease_until', (now() + interval '1 hour')::text"  # far future
+            ") WHERE ref_id = %s",
+            (jid,),
+        )
+        conn.commit()
+    assert _free(store, host, "gpu") == 0  # sanity: pre-exhausted
+
+    with store.pool.connection() as conn:
+        rows = claim_executor_jobs(
+            conn,
+            executor="ex_res_epoch",
+            limit=10,
+            reserve_host_id=host,
+            reclaim_stale_running=True,
+        )
+        conn.commit()
+
+    assert [r[0] for r in rows] == [jid]  # reclaimed via the epoch arm
+    assert rows[0][2]["reserved"] == {"host": host, "slots": {"gpu": 1}}
+    # Refunded then re-reserved — net free still 0 (held, not leaked/doubled).
+    assert _free(store, host, "gpu") == 0
+
+
 # ── requires derivation + target_node host + self-gating (slice 6d) ───────
 
 

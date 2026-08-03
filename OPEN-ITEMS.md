@@ -245,18 +245,6 @@ grounded (291 at conf≥0.7 + 115 medium 0.5–0.7), each tagged
   `tools_needed`-aware (or pin a provider). · Test: a fake transport raising
   `HTTPError(fp=<body>)` → `LlmResult.error` contains the body text, not just
   "HTTP Error 400".
-- **gr172886 part-(b) Option A — worker-generation lease epoch (quick-restart
-  latency)** · Status: open (filed, not built) · Severity: hardening · Spec:
-  `docs/proposals/compute-lane-lease-epoch.md`. Part-(b) Option B (the sweeper
-  dead-node reap) covers the *dead-worker* half; this closes the
-  *quick-restart-mid-lease* half — a worker that bounces and comes back still
-  waits out the full 2h lease before its own steal reclaims. Fix = stamp a
-  per-process `boot_id` on the running-job lease so a restarted worker reclaims
-  its dead predecessor's jobs on the first claim pass (protocol surgery on
-  `claim_executor_jobs`/`reclaim_stale_running` — gated on tests that a *live*
-  holder is never stolen). Non-urgent; revisit priority once B has run in prod
-  and real quick-restart wedges can be counted. Related: `worker-agent-silent-
-  outage` above (the dead-worker root cause B/nursery already alert on).
 ---
 ## 🚨 Deploy fresh-resolves deps instead of installing from `uv.lock` — gate-green can deploy-break
 
@@ -472,29 +460,36 @@ that work, plus a deploy op:
 
 ---
 ## autocatpath ssh_node jobs can't survive routine spark redeploys (poison-guard burns pre-compute)
-- Status: open · Severity: critical · Owner: `src/precis/workers/executors/ssh_node.py`
-  (+ `_common.py::reclaim_stale_running`) · Test: n/a yet.
-- `ssh_node` dispatch blocks the precis-worker thread synchronously for the whole
-  remote autocatpath run (module docstring). When ansible redeploys land on spark
-  (~96 worker restarts / 1.5 days, 7 forced SIGKILLs in one day), the worker gets
-  SIGTERM, can't drain the in-flight dispatch, and is SIGKILLed after systemd's
-  ~90 s stop timeout — each kill costs the job one attempt. Any autocatpath job whose
-  real runtime spans a deploy cycle (NO→NH₃ ammonia network at `seeds:[0,1,2]`
-  ≈ 90 min, `wall_seconds=5400`) is nearly guaranteed to exhaust
-  `ssh_node._MAX_ATTEMPTS=3` and fail `failure_class=infra` before autocatpath emits a
-  result. Evidence: job 172888 (quest 164903 / cand 172608) — 3 attempts
-  (2026-07-26 10:34 / 13:04 / 15:34 UTC) each SIGKILLed by a redeploy before any
-  NEB/relax progress logged; no autocatpath traceback (pure infra); CUDA OOM ruled
-  out. Blocks qu164903 from ever landing a `barrier_trusted` pathway, independent
-  of the autocatpath desorption/NEB fixes (ede15ea).
-- Secondary: `reclaim_stale_running` presumes death from `lease_until < now()`
-  only — never checks whether the worker is actually alive — so stale-detection
-  lags the real kill by up to ~1 h.
-- Fix directions (triage): drain-before-restart (don't SIGTERM the worker while a
-  autocatpath job is in flight) · async/non-blocking `ssh_node` dispatch so SIGTERM is
-  handled cleanly and the lease survives a restart · exclude spark from routine
-  redeploys · make the poison guard distinguish killed-by-restart from genuine
-  crash-looping (or raise `_MAX_ATTEMPTS`).
+- Status: open, NARROWED (§H cycle c / gr187627 shipped the in-tree half) ·
+  Severity: critical → hardening (the poison-guard-burn half is fixed; the
+  blocking-dispatch half needs a catpath-repo migration) · Owner:
+  `src/precis/workers/executors/ssh_node.py` (+ `_common.py`) for the shipped
+  half, **catpath repo** (`autocatpath_seed`'s `JobTypeSpec`) for what's left.
+- **Shipped (§H cycle c, `docs/proposals/compute-lane-lease-epoch.md`):**
+  (1) the poison guard now distinguishes killed-by-restart (an *epoch*-reason
+  reclaim — the claiming generation was provably replaced) from genuine
+  crash-looping (an *expiry*-reason reclaim) — only the latter bumps
+  `meta.attempts`, so a redeploy-mid-run job no longer burns
+  `PRECIS_MAX_JOB_ATTEMPTS` toward poison-fail; (2) `reclaim_stale_running`
+  now also fires on the epoch arm (a same-node successor reclaims on its
+  FIRST claim pass, not after the full lease), closing the "stale-detection
+  lags the real kill by up to ~1h" secondary; (3) `ssh_node` grew a
+  backward-compatible detached submit/poll protocol (`JobTypeSpec.submit`/
+  `.poll`) so a MIGRATED job_type never blocks the worker thread at all —
+  the claiming worker's pass rotation stays live through a redeploy, no
+  SIGKILL race, no drain-before-restart need.
+- **Still open — the catpath-repo half:** `autocatpath_seed`'s `JobTypeSpec`
+  still only exposes the legacy blocking `dispatch` (out-of-tree, this repo
+  can't touch it) — `ssh_node` falls back to it with a deprecation warning
+  (naming gr187627) but the run still blocks the worker thread for its
+  duration, so a redeploy landing mid-run still costs a SIGKILL (now a
+  cheaper one — an epoch reclaim, not an attempts-bump — but still a
+  restart of the compute). Do: port `autocatpath_seed`'s dispatch to
+  `submit`/`poll` (submit: `ssh spark docker run -d …`, returns a
+  container-name/pid handle; poll: `ssh spark docker inspect …`) in the
+  catpath repo, mirroring `claude_docker`'s detach shape. Evidence (still
+  relevant context): job 172888 (quest 164903 / cand 172608) — 3 attempts
+  each SIGKILLed by a redeploy before any NEB/relax progress logged.
 
 ---
 ## LLM routing: all tiers remote via OpenRouter (local-first DEFERRED)
