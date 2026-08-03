@@ -1866,11 +1866,19 @@ detectors + Discord webhook) shipped + deployed. Owner `workers/nursery.py`,
 - **Set `PRECIS_OPS_ALERT_TARGET` on system-profile workers** *(ops, open).*
   Critical push is dark until set (cluster ansible env); until then
   worker-restart/dead-worker alerts only land in `/alerts`, not proactively.
-- **Tier B — lease as the single job-substrate liveness authority** *(open).* Let
-  the reclaim path take over a `running` job whose lease expired (requeue-from-
-  checkpoint), then retire the sweeper's `PRECIS_STUCK_JOB_HOURS` clock. Needs a
-  per-job attempt cap. Owner `executors/_common.py`, `sweeper.py`,
-  `executors/coordinator.py`.
+- **Tier B — lease as the single job-substrate liveness authority** *(shipped
+  622dd03c for `ssh_node`/`claude_inproc`/`claude_docker`; NARROWED, still
+  open for `coordinator`).* Reclaim now takes over a `running` job whose
+  lease expired (epoch-aware `reclaim_stale_running` + a generalized,
+  epoch-vs-expiry `poison_guard` attempt cap — `executors/_common.py`), and
+  the sweeper's `PRECIS_STUCK_JOB_HOURS` wall-clock is retired for those
+  three lease-owning executors (`sweeper.py::_LEASE_OWNING_EXECUTORS`).
+  Remaining: `coordinator` deliberately does NOT opt into
+  `reclaim_stale_running` (a crashed slice has no re-claim path of its
+  own) and still depends on the wall-clock sweep as its only crash
+  recovery — giving it one, or accepting the wall-clock as its permanent
+  backstop, is the open piece. Spec:
+  `docs/proposals/compute-lane-lease-epoch.md` (status: built).
 - **De-SPOF the agent worker** *(open, ops — highest-value).* `plan_tick` runs
   only on melchior operationally (hermes `~/.claude` OAuth + `PRECIS_MCP_CONFIG`).
   Provision a second agent host (caspar/balthazar) with the OAuth state + an
