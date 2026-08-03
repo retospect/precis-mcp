@@ -2075,29 +2075,6 @@ Owner `mcp_modalities.py::register_skill_prompts`; artefact
 
 ## ⏸️ Snoozed — blocked upstream
 
-- **Dependabot #75 — `brace-expansion` DoS (high, GHSA-mh99-v99m-4gvg;
-  unbounded expansion → OOM).** `Recheck-after: 2026-08-27`. `Unblock-when:`
-  `@zilliz/claude-context-core` (via `glob`→`minimatch`) ships a release whose
-  `minimatch` is compatible with `brace-expansion ≥5.0.8` — i.e. `npm audit
-  --prefix scripts/code-search` stops reporting **"No fix available."**
-  **Investigated 2026-07-30:** the chain is `brace-expansion` → `minimatch` →
-  `glob` → `@zilliz/claude-context-core@0.1.15` (pinned). The advisory flags
-  **all** `brace-expansion <=5.0.7`; the only patch is `5.0.8+`, but at its 3.x
-  major brace-expansion moved its export from a callable **default** to a
-  **named** `expand`, and *every* published `minimatch` still default-imports
-  it. Forcing `overrides: {"brace-expansion":"5.0.9"}` regenerates a clean
-  `npm audit` (0 vulns) but **breaks the seeder at glob-match time** —
-  `TypeError: brace_expansion.default is not a function` in both the CJS and
-  ESM `minimatch` builds (import-time smoke passes because `braceExpand` runs
-  lazily; a real `code-index` run crashes). This is why `npm audit` reports
-  "No fix available" outright — no compatible resolution exists yet. Tolerable:
-  `scripts/code-search` is a **dev-only** code-index seeder that globs our own
-  repo paths + hardcoded ignore patterns (`.claude/**`, `*.mp3`, `feed.xml`) —
-  no attacker-controlled brace input, so the DoS vector isn't reachable from
-  our usage (same reasoning as the Pillow block). **Recheck:** `npm audit
-  --prefix scripts/code-search`; if a fix appears (upstream `minimatch`/
-  `claude-context-core` bump), take it; else bump `Recheck-after` +4 weeks.
-
 - **Dependabot #56–#67 — `pillow` heap-OOB/DoS/decompression-bomb-bypass (12
   alerts, mostly high).** `Recheck-after: 2026-08-08`. `Unblock-when:`
   `marker-pdf` drops its `Pillow<11.0.0` cap. **Re-verified 2026-07-25:** still
