@@ -14,6 +14,7 @@ See ``docs`` / CLAUDE.md "psycopg % LIKE / fake-store gap".
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 from precis.health_checks import _KEYWORDS_VERSION
@@ -23,9 +24,11 @@ from precis_web.routes.status import (
     _automations,
     _background_anomalies,
     _backlog_counts,
+    _health_ctx,
     _liveness,
     _llm_ops_ctx,
     _recent_passes,
+    _services_ctx,
 )
 
 
@@ -291,3 +294,65 @@ def test_llm_ops_ctx_ignores_stale_override_on_non_steerable_source(store: Any) 
         assert row["effective"] == "—"
     finally:
         budget_settings.clear_setting(store, live_config.op_key("classify"))
+
+
+# ── §K console v2 (gr162694): next-run, reserve, top_cpu wiring ─────
+
+
+def test_services_ctx_next_run_cadence_vs_every_cycle_vs_job_executor(
+    store: Any,
+) -> None:
+    """gr162694 #1, end to end through ``_services_ctx``: a cadence-backed
+    row (``watch_poll``) shows its lease's wall-clock next fire, a plain
+    per-cycle pass (``embed``) shows "every cycle", and a ``job_*``
+    executor pass (data-driven, no fixed schedule) shows blank."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO scheduler_leases (name, interval_s, next_fire_at) "
+            "VALUES ('watch_poll', 3600, now() + interval '5 minutes')"
+        )
+        conn.commit()
+    ctx = _services_ctx(store, "*")
+    rows = {r["name"]: r for cat in ctx["categories"] for r in cat["services"]}
+    assert rows["watch_poll"]["next_run"]["text"].startswith("in ")
+    assert rows["job_ssh_node"]["next_run"] is None
+    assert rows["embed"]["next_run"]["text"] == "every cycle"
+
+
+def test_services_ctx_reserve_scoped_to_selected_host(store: Any) -> None:
+    """gr162694 #4: the reserve banner/form context is scoped to whichever
+    host is selected — an unreserved host sees no active reserve."""
+    from precis.workers.service_config import set_reserve
+
+    set_reserve(store, "melchior", hours=1, actor="ops")
+    scoped = _services_ctx(store, "melchior")
+    assert scoped["reserve"] is not None
+    assert scoped["reserve"]["actor"] == "ops"
+    other = _services_ctx(store, "caspar")
+    assert other["reserve"] is None
+
+
+def test_health_ctx_surfaces_reserve_latest_error_and_top_cpu(store: Any) -> None:
+    """gr162694 #2/#4/#5, end to end through ``_health_ctx``: the reserve
+    banner, the truncated latest-error line, and the heartbeat's already-
+    collected ``top_cpu`` all ride the same per-host strip row."""
+    from precis.workers.service_config import set_reserve
+
+    set_reserve(store, "melchior", hours=1, actor="ops")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO host_heartbeat (host, ts, load1, load5, load15, meta) "
+            "VALUES ('melchior', now(), 1.0, 1.0, 1.0, "
+            "        jsonb_build_object('top_cpu', jsonb_build_array("
+            "          jsonb_build_object('cmd', 'postgres', 'cpu', 42.0))))"
+        )
+        conn.execute(
+            "INSERT INTO worker_logs (host, pass, level, logger, message) "
+            "VALUES ('melchior', 'x', 'CRITICAL', 'l', 'disk full')"
+        )
+        conn.commit()
+    ctx = _health_ctx(store, SimpleNamespace(corpus_dirs=[]))
+    hb = {h["host"]: h for h in ctx["heartbeats"]}["melchior"]
+    assert hb["reserve"]["actor"] == "ops"
+    assert hb["top_cpu"] == [{"cmd": "postgres", "cpu": 42.0}]
+    assert hb["errors_6h"]["latest"]["line"] == "disk full"

@@ -39,11 +39,16 @@ from precis.budget import settings as budget_settings
 from precis.utils.llm import live_config
 from precis.utils.llm.router import Tier
 from precis.workers.service_config import (
+    RESERVE_SERVICE,
+    clear_reserve,
     clear_service_config,
+    set_reserve,
     set_service_model,
     set_service_prio,
 )
 from precis_web.deps import get_store
+from precis_web.timefmt import abs_ts as _abs_ts
+from precis_web.timefmt import age_seconds as _age_seconds
 from precis_web.timefmt import ago as _ago
 
 router = APIRouter(prefix="/factory", tags=["factory"])
@@ -224,37 +229,57 @@ def _slots_by_host(store: Any) -> dict[str, list[dict[str, Any]]]:
     return out
 
 
-def _errors_by_host(store: Any) -> dict[str, dict[str, Any]]:
-    """host -> {count, samples[]} of recent ERROR/CRITICAL ``worker_logs``.
+#: gr162694 #2 wants "level >= warning", not just ERROR/CRITICAL — a host
+#: quietly emitting WARNINGs (no hard failure yet) should still surface.
+_ERROR_LEVELS = ("WARNING", "ERROR", "CRITICAL")
 
-    A per-machine health readout for the host strip: how many error-level log
-    lines each host emitted in the last :data:`_ERROR_WINDOW`, plus the newest
-    few (time-ago + pass + trimmed message) for the mouseover. Empty on error
-    (the console degrades rather than 500s, same as every other reader here).
+#: The visible truncated line's length — the spec's "~80 chars"; the full
+#: line + timestamp still carries in the chip's ``title=`` mouseover.
+_LATEST_ERROR_LINE_CHARS = 80
+
+
+def _errors_by_host(store: Any) -> dict[str, dict[str, Any]]:
+    """host -> {count, samples[], latest} of recent WARNING+ ``worker_logs``.
+
+    A per-machine health readout for the host strip: how many warning-or-
+    worse log lines each host emitted in the last :data:`_ERROR_WINDOW`,
+    plus the newest few (time-ago + pass + trimmed message) for the
+    mouseover, plus ``latest`` — the single most recent line, truncated to
+    :data:`_LATEST_ERROR_LINE_CHARS` for direct display (gr162694 #2: the
+    strip should show *what* broke, not just a count behind a hover),
+    carrying the full line + absolute timestamp in its own ``title``. Empty
+    on error (the console degrades rather than 500s, same as every other
+    reader here).
     """
     try:
         with store.pool.connection() as conn:
             cur = conn.execute(
-                "SELECT host, ts, pass, message FROM worker_logs "
-                "WHERE level IN ('ERROR', 'CRITICAL') "
+                "SELECT host, ts, level, pass, message FROM worker_logs "
+                "WHERE level = ANY(%s) "
                 "  AND ts > now() - %s::interval "
                 "ORDER BY ts DESC LIMIT 300",
-                (_ERROR_WINDOW,),
+                (list(_ERROR_LEVELS), _ERROR_WINDOW),
             )
             rows = cur.fetchall()
     except Exception:
         log.warning("factory: worker_logs error read failed", exc_info=True)
         return {}
     out: dict[str, dict[str, Any]] = {}
-    for host, ts, pass_, message in rows:
-        entry = out.setdefault(host, {"count": 0, "samples": []})
+    for host, ts, level, pass_, message in rows:
+        entry = out.setdefault(host, {"count": 0, "samples": [], "latest": None})
         entry["count"] += 1
+        full = (message or "").strip().replace("\n", " ")
+        if entry["latest"] is None:  # rows arrive newest-first
+            entry["latest"] = {
+                "line": full[:_LATEST_ERROR_LINE_CHARS],
+                "title": f"{_abs_ts(ts)} · {level} · {pass_ or '?'} · {full}",
+            }
         if len(entry["samples"]) < 5:
             entry["samples"].append(
                 {
                     "ago": _ago(ts),
                     "pass": pass_ or "?",
-                    "msg": (message or "").strip().replace("\n", " ")[:160],
+                    "msg": full[:160],
                 }
             )
     return out
@@ -337,6 +362,119 @@ def _activity(store: Any) -> dict[str, dict[str, Any]]:
     return health_checks.activity_by_handler(store)
 
 
+def _reserves(store: Any) -> dict[str, dict[str, Any]]:
+    """host -> its active (unexpired) reserve row (§B-2, gr162694 §K).
+
+    ``service_config``'s ``reserve`` pseudo-service (``workers/
+    service_config.py``) is otherwise invisible outside the claim
+    transaction it gates — an operator who reserved a host and forgot
+    would only discover it days later via a starved queue. Keyed by the
+    literal ``host`` column, so a wildcard (``ALL_HOSTS``) reserve shows
+    up under that key; the caller decides how to fan it out to every
+    host's row. Empty on error, same as every other reader here.
+    """
+    try:
+        with store.pool.connection() as conn:
+            cur = conn.execute(
+                "SELECT host, expires_at, actor FROM service_config "
+                "WHERE service = %s AND expires_at IS NOT NULL AND expires_at > now()",
+                (RESERVE_SERVICE,),
+            )
+            rows = cur.fetchall()
+    except Exception:
+        log.warning("factory: reserve read failed", exc_info=True)
+        return {}
+    return {
+        host: {"expires_at": expires_at, "actor": actor}
+        for host, expires_at, actor in rows
+    }
+
+
+#: Executor passes are named ``job_<executor>`` (``job_ssh_node``,
+#: ``job_claude_inproc``, ``job_claude_docker``) — they drain ``kind='job'``
+#: rows reactively (fires only when work exists), not on a fixed cadence, so
+#: "next run" is blank for them (gr162694 #1's "pull/claim executor passes").
+_JOB_EXECUTOR_PREFIX = "job_"
+
+
+def _scheduler_leases(store: Any) -> dict[str, dict[str, Any]]:
+    """cadence name -> its ``scheduler_leases`` row (empty on error).
+
+    Backs the Services sub-tab's "next run" column (gr162694 #1):
+    ``workers/scheduler.py``'s ``CADENCES`` each claim a lease per fire,
+    ``next_fire_at`` being the wall-clock next attempt. Everything else
+    either runs every worker loop cycle or drains a job queue reactively
+    (see :func:`_next_run`).
+    """
+    try:
+        with store.pool.connection() as conn:
+            cur = conn.execute(
+                "SELECT name, next_fire_at, interval_s, last_fired_at, last_host "
+                "FROM scheduler_leases"
+            )
+            rows = cur.fetchall()
+    except Exception:
+        log.warning("factory: scheduler_leases read failed", exc_info=True)
+        return {}
+    return {
+        name: {
+            "next_fire_at": next_fire_at,
+            "interval_s": int(interval_s),
+            "last_fired_at": last_fired_at,
+            "last_host": last_host,
+        }
+        for name, next_fire_at, interval_s, last_fired_at, last_host in rows
+    }
+
+
+def _duration(secs: float) -> str:
+    """Compact duration text ('45s', '3m', '2h', '1d') — mirrors ``_ago``'s
+    buckets minus the trailing 'ago' (used for both past and future deltas)."""
+    secs = max(0.0, secs)
+    if secs < 90:
+        return f"{int(secs)}s"
+    if secs < 5400:
+        return f"{int(secs / 60)}m"
+    if secs < 172800:
+        return f"{int(secs / 3600)}h"
+    return f"{int(secs / 86400)}d"
+
+
+def _next_run(
+    service_name: str, kind: str, leases: dict[str, dict[str, Any]]
+) -> dict[str, str] | None:
+    """The Services sub-tab "next run" cell for one row (gr162694 #1).
+
+    A cadence claimed via ``scheduler_leases`` shows its wall-clock next
+    fire (overdue reads "overdue Xm", pending reads "in Xm"); every other
+    ``pass``-kind row runs every idle worker-loop cycle ("every cycle")
+    EXCEPT the ``job_*`` executor passes, which drain ``kind='job'`` rows
+    reactively — blank, same as a daemon/serving/compute row. ``None`` →
+    the template renders "—".
+    """
+    lease = leases.get(service_name)
+    if lease is not None:
+        secs_until = -(_age_seconds(lease["next_fire_at"]) or 0.0)
+        when, mag = ("overdue", -secs_until) if secs_until <= 0 else ("in", secs_until)
+        last = (
+            f"last fired {_ago(lease['last_fired_at'])} on {lease['last_host']}"
+            if lease["last_fired_at"]
+            else "never fired yet"
+        )
+        title = (
+            f"Cadence lease — every {lease['interval_s']}s; {last}; "
+            f"next attempt ~{_abs_ts(lease['next_fire_at'])}."
+        )
+        return {"text": f"{when} {_duration(mag)}", "title": title}
+    if kind != "pass" or service_name.startswith(_JOB_EXECUTOR_PREFIX):
+        return None
+    return {
+        "text": "every cycle",
+        "title": "Runs every worker loop cycle — no fixed schedule, "
+        "checks for due work each tick.",
+    }
+
+
 def _llm_models(store: Any) -> list[str]:
     """Model ids from the ``llm`` catalog for the model_pref dropdown."""
     try:
@@ -415,6 +553,38 @@ async def clear(
         clear_service_config(store, host, service)
     except Exception:
         log.warning("factory: clear failed", exc_info=True)
+    return _redirect(host)
+
+
+@router.post("/reserve", response_model=None)
+async def reserve(
+    request: Request,
+    host: str = Form(...),
+    hours: float = Form(4.0),
+) -> RedirectResponse:
+    """Put ``host`` (or ``*`` for every host) into reserve mode for ``hours``
+    (§B-2, gr162694 §K) — the ONE door is :func:`set_reserve`; an out-of-
+    range ``hours`` (<= 0 or > 168) is its ``ValueError``, logged and
+    refused rather than silently clamped (unlike ``/prio``'s clamp)."""
+    store = get_store(request)
+    try:
+        set_reserve(store, host, hours=hours, actor="web")
+    except ValueError:
+        log.warning("factory: reserve refused — bad hours=%r for host=%s", hours, host)
+    except Exception:
+        log.warning("factory: reserve failed", exc_info=True)
+    return _redirect(host)
+
+
+@router.post("/release", response_model=None)
+async def release(request: Request, host: str = Form(...)) -> RedirectResponse:
+    """Clear ``host``'s reserve row (§B-2) — the ONE door is
+    :func:`clear_reserve`."""
+    store = get_store(request)
+    try:
+        clear_reserve(store, host)
+    except Exception:
+        log.warning("factory: release failed", exc_info=True)
     return _redirect(host)
 
 

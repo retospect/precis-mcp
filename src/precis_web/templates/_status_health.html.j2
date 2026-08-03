@@ -52,6 +52,12 @@
   <div class="flex flex-wrap gap-2">
     {% for h in heartbeats %}
     <div class="rounded-lg border {% if h.stale %}border-slate-200 bg-slate-50{% else %}border-emerald-200 bg-emerald-50{% endif %} px-3 py-2 text-xs">
+      {% if h.reserve %}
+      <div class="mb-1 rounded bg-violet-100 border border-violet-300 text-violet-800 px-1.5 py-0.5 text-[11px]"
+           title="Reserve mode blocks new heavy claims on {{ h.host }} until it expires (service_config pseudo-row, §B-2). Set by {{ h.reserve.actor or 'unknown' }}.">
+        🔒 reserved until {{ h.reserve.expires_at | abs_ts }}
+      </div>
+      {% endif %}
       <div class="flex items-center gap-2">
         <span class="font-mono font-semibold text-slate-800">{{ h.host }}</span>
         {% if h.stale %}
@@ -70,6 +76,11 @@
         <span class="font-mono">{{ '%.2f'|format(h.load1) }} / {{ '%.2f'|format(h.load5) }} / {{ '%.2f'|format(h.load15) }}</span>
         {% else %}<span class="font-mono">—</span>{% endif %}
       </div>
+      {% if h.top_cpu %}
+      <div class="text-slate-400 mt-0.5" title="Top processes by CPU% (heartbeat self-probe) — diagnostic only, not the liveness signal.">
+        cpu: {% for p in h.top_cpu %}{{ p.cmd }} {{ p.cpu }}%{% if not loop.last %} · {% endif %}{% endfor %}
+      </div>
+      {% endif %}
       {% if h.slots %}
       <div class="mt-1 flex flex-wrap gap-1" title="Resources this host advertises (heartbeat self-probe). free/capacity slots.">
         {% for sl in h.slots %}
@@ -93,8 +104,11 @@
         <span class="rounded px-1 py-0.5 text-[11px] bg-rose-100 text-rose-700">{{ h.problems }} err/warn 24h</span>
         {% endif %}
         {% if h.errors_6h %}
+        {# The most recent WARNING+ line, visible (not just a count behind a
+           hover) — gr162694 #2. title= carries the full line + absolute ts
+           plus the older samples, for the full picture on mouseover. #}
         <span class="rounded px-1 py-0.5 text-[11px] bg-rose-100 border border-rose-300 text-rose-700 cursor-help"
-          title="{% for e in h.errors_6h.samples %}{{ e.ago }} · {{ e.pass }} · {{ e.msg }}&#10;{% endfor %}{% if h.errors_6h.count > h.errors_6h.samples|length %}…and {{ h.errors_6h.count - h.errors_6h.samples|length }} more{% endif %}">⚠ {{ h.errors_6h.count }} error{{ '' if h.errors_6h.count == 1 else 's' }} (6h)</span>
+          title="{% if h.errors_6h.latest %}{{ h.errors_6h.latest.title }}&#10;{% endif %}{% for e in h.errors_6h.samples %}{{ e.ago }} · {{ e.pass }} · {{ e.msg }}&#10;{% endfor %}{% if h.errors_6h.count > h.errors_6h.samples|length %}…and {{ h.errors_6h.count - h.errors_6h.samples|length }} more{% endif %}">⚠ {{ h.errors_6h.latest.line if h.errors_6h.latest else (h.errors_6h.count|string + ' errors') }}{% if h.errors_6h.count > 1 %} <span class="text-rose-500">(+{{ h.errors_6h.count - 1 }})</span>{% endif %}</span>
         {% endif %}
         {% if not h.problems and not h.errors_6h %}
         <span class="text-emerald-600" title="No WARNING/ERROR worker logs from {{ h.host }} recently.">no recent errors</span>

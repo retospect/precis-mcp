@@ -26,6 +26,32 @@
   <span class="text-xs text-slate-400">prio 0 = off · 1–10 = claim weight · blank = env/profile default ({{ default_prio }})</span>
 </form>
 
+{# ── Reserve mode (§B-2, gr162694 #4) — a TTL'd gate on heavy claims for
+     the selected host. Read-only banner if already reserved; a short-lived
+     form to set/release it otherwise. Both POST the ONE door
+     (service_config.set_reserve/clear_reserve), never a raw UPSERT. #}
+<section class="mb-4">
+  {% if reserve %}
+  <div class="rounded-lg border border-violet-300 bg-violet-50 px-3 py-2 text-sm flex items-center gap-3"
+       title="Reserve mode blocks new heavy claims on {{ selected_host }} until it expires (service_config pseudo-row, §B-2). Set by {{ reserve.actor or 'unknown' }}.">
+    <span class="text-violet-800">🔒 <strong>{{ selected_host }}</strong> reserved until {{ reserve.expires_at | abs_ts }}</span>
+    <form method="post" action="/factory/release">
+      <input type="hidden" name="host" value="{{ selected_host }}">
+      <button class="rounded bg-violet-700 text-white text-xs px-2 py-1 hover:bg-violet-800 transition">Release now</button>
+    </form>
+  </div>
+  {% else %}
+  <form method="post" action="/factory/reserve" class="flex items-center gap-2 text-xs text-slate-500">
+    <input type="hidden" name="host" value="{{ selected_host }}">
+    <span>Reserve {{ selected_host }} for</span>
+    <input type="number" name="hours" value="4" min="0.1" max="168" step="0.5"
+           class="w-16 rounded border border-slate-300 px-1 py-0.5">
+    <span>hours (blocks new heavy claims)</span>
+    <button class="rounded bg-slate-700 text-white px-2 py-1 hover:bg-slate-800 transition">Reserve</button>
+  </form>
+  {% endif %}
+</section>
+
 {# ── LLM placement chains — the ADR 0066 Phase B operator editor ── #}
 <section class="mb-6">
   <div class="rounded-lg border border-slate-200 bg-white p-4 max-w-2xl">
@@ -163,14 +189,15 @@
     <table class="min-w-full text-xs">
       <thead class="bg-slate-50 text-slate-500">
         <tr>
-          <th class="text-left font-medium px-3 py-2">service</th>
-          <th class="text-left font-medium px-3 py-2">kind</th>
-          <th class="text-left font-medium px-3 py-2">profile</th>
-          <th class="text-left font-medium px-3 py-2">needs</th>
-          <th class="text-left font-medium px-3 py-2">prio ({{ selected_host }})</th>
-          <th class="text-left font-medium px-3 py-2">model</th>
-          <th class="text-left font-medium px-3 py-2">last ok</th>
-          <th class="text-left font-medium px-3 py-2">last fail</th>
+          <th class="text-left font-medium px-3 py-2" title="The ServiceSpec registry key — the --only / service_config.service token.">service</th>
+          <th class="text-left font-medium px-3 py-2" title="What sort of runnable this is: pass / job / compute / daemon / serving.">kind</th>
+          <th class="text-left font-medium px-3 py-2" title="Worker profiles that run this in the default rotation; the env var below is the deploy-time enable flag, if any.">profile</th>
+          <th class="text-left font-medium px-3 py-2" title="Capability requirements (gpu/podman/tts/…), whether it calls an LLM, and any external service it depends on.">needs</th>
+          <th class="text-left font-medium px-3 py-2" title="Claim weight for the editing host — 0 = off, 1-10 = weight, blank = env/profile default.">prio ({{ selected_host }})</th>
+          <th class="text-left font-medium px-3 py-2" title="Pinned model_pref for the editing host, if any — blank = auto (router picks).">model</th>
+          <th class="text-left font-medium px-3 py-2" title="When this handler last logged a batch with ok > 0 (worker_logs); hover for the absolute timestamp.">last ok</th>
+          <th class="text-left font-medium px-3 py-2" title="When this handler last logged a batch with failed > 0 (worker_logs); hover for the absolute timestamp.">last fail</th>
+          <th class="text-left font-medium px-3 py-2" title="Wall-clock next fire for a scheduler_leases cadence; 'every cycle' for a per-tick pass; blank for job-queue executors (data-driven, not scheduled).">next run</th>
         </tr>
       </thead>
       <tbody class="divide-y divide-slate-100">
@@ -239,8 +266,12 @@
             <span class="text-slate-300">—</span>
             {% endif %}
           </td>
-          <td class="px-3 py-2 {% if s.last_ok %}text-emerald-700{% else %}text-slate-300{% endif %}">{{ s.last_ok or '—' }}</td>
-          <td class="px-3 py-2 {% if s.last_fail %}text-rose-700{% else %}text-slate-300{% endif %}">{{ s.last_fail or '—' }}</td>
+          <td class="px-3 py-2 {% if s.last_ok %}text-emerald-700{% else %}text-slate-300{% endif %}"
+              {% if s.last_ok_title %}title="{{ s.last_ok_title }}"{% endif %}>{{ s.last_ok or '—' }}</td>
+          <td class="px-3 py-2 {% if s.last_fail %}text-rose-700{% else %}text-slate-300{% endif %}"
+              {% if s.last_fail_title %}title="{{ s.last_fail_title }}"{% endif %}>{{ s.last_fail or '—' }}</td>
+          <td class="px-3 py-2 text-slate-600"
+              {% if s.next_run %}title="{{ s.next_run.title }}"{% endif %}>{{ s.next_run.text if s.next_run else '—' }}</td>
         </tr>
         {% endfor %}
       </tbody>

@@ -21,7 +21,7 @@ from fastapi.responses import HTMLResponse
 
 from precis import health_checks
 from precis.workers.registry import SERVICES, ServiceKind
-from precis.workers.service_config import DEFAULT_PRIO
+from precis.workers.service_config import ALL_HOSTS, DEFAULT_PRIO
 from precis_web.deps import get_store, get_web_config, templates
 from precis_web.routes.factory import _ALL, _CATEGORY_ORDER
 from precis_web.routes.factory import _activity as _factory_activity
@@ -30,8 +30,12 @@ from precis_web.routes.factory import _errors_by_host as _factory_errors_by_host
 from precis_web.routes.factory import _host_options as _factory_host_options
 from precis_web.routes.factory import _hosts as _factory_hosts
 from precis_web.routes.factory import _llm_models as _factory_llm_models
+from precis_web.routes.factory import _next_run as _factory_next_run
 from precis_web.routes.factory import _quests as _factory_quests
+from precis_web.routes.factory import _reserves as _factory_reserves
+from precis_web.routes.factory import _scheduler_leases as _factory_scheduler_leases
 from precis_web.routes.factory import _slots_by_host as _factory_slots_by_host
+from precis_web.timefmt import abs_ts as _abs_ts
 from precis_web.timefmt import age_seconds as _age_seconds
 from precis_web.timefmt import ago as _ago
 
@@ -905,11 +909,20 @@ def _health_ctx(store: Any, cfg: Any) -> dict[str, Any]:
     ``/factory`` — see the module docstring on the host-strip merge)."""
     heartbeats = _safe(lambda: _heartbeats(store)) or []
     host_logs = {h["host"]: h for h in (_safe(lambda: _hosts(store)) or [])}
+    # factory's own `_hosts` reads `host_heartbeat` too (a second, capability-
+    # oriented pass over the same table) and already parses `meta.top_cpu` —
+    # gr162694 #5 just wires that already-gathered field into the strip; no
+    # new collection.
+    top_cpu_by_host = {h["host"]: h["top_cpu"] for h in _factory_hosts(store)}
     slots_by_host = _factory_slots_by_host(store)
     errors_by_host = _factory_errors_by_host(store)
+    reserves = _factory_reserves(store)
+    wildcard_reserve = reserves.get(ALL_HOSTS)
     for hb in heartbeats:
         hb["slots"] = slots_by_host.get(hb["host"], [])
         hb["errors_6h"] = errors_by_host.get(hb["host"])
+        hb["reserve"] = reserves.get(hb["host"]) or wildcard_reserve
+        hb["top_cpu"] = top_cpu_by_host.get(hb["host"], [])
         lg = host_logs.pop(hb["host"], None)
         hb["log_ago"] = lg["ago"] if lg else None
         hb["problems"] = lg["problems"] if lg else 0
@@ -959,6 +972,8 @@ def _services_ctx(store: Any, host: str) -> dict[str, Any]:
     host_options = _factory_host_options(hosts, config)
     if host not in host_options:
         host = _ALL
+    leases = _factory_scheduler_leases(store)
+    reserves = _factory_reserves(store)
 
     # Explicit rows for the selected host, and the cross-host override hints.
     exact: dict[str, tuple[int, str | None]] = {
@@ -988,7 +1003,16 @@ def _services_ctx(store: Any, host: str) -> dict[str, Any]:
             "model_pref": ex[1] if ex is not None else None,
             "others": ", ".join(others.get(spec.name, [])),
             "last_ok": _ago(act["last_ok"]) if act.get("last_ok") else None,
+            # gr162694 #4 (tooltip half only — the session drill-through is
+            # out of scope): the absolute wall-clock the relative "Xh ago"
+            # text hides, from the same row already loaded above.
+            "last_ok_title": _abs_ts(act["last_ok"]) if act.get("last_ok") else None,
             "last_fail": _ago(act["last_fail"]) if act.get("last_fail") else None,
+            "last_fail_title": (
+                _abs_ts(act["last_fail"]) if act.get("last_fail") else None
+            ),
+            # gr162694 #1: cadence next-fire, "every cycle", or blank.
+            "next_run": _factory_next_run(spec.name, spec.kind.value, leases),
         }
         by_category.setdefault(spec.category, []).append(row)
 
@@ -1007,6 +1031,9 @@ def _services_ctx(store: Any, host: str) -> dict[str, Any]:
         "quests": _factory_quests(store),
         "llm_chains": _llm_chain_ctx(store),
         "llm_ops": _llm_ops_ctx(store),
+        # §B-2 reserve mode (gr162694 §K item 4) — the selected host's own
+        # row, or the wildcard's if it carries no row of its own.
+        "reserve": reserves.get(host) or reserves.get(ALL_HOSTS),
     }
 
 

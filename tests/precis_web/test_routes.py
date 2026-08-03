@@ -3446,6 +3446,48 @@ def test_status_services_tab_renders_llm_operations_panel(client) -> None:
     assert "model pinned in code for correctness" in resp.text
 
 
+def test_status_services_tab_renders_next_run_column(client) -> None:
+    """gr162694 #1: every category table carries a "next run" column, with
+    every header carrying a tooltip (#3) — a ``job_*`` executor pass shows
+    blank ("—"), a plain per-cycle pass shows "every cycle" (no
+    scheduler_leases rows under the FakeStore, which degrades to empty)."""
+    resp = client.get("/status?tab=services")
+    assert resp.status_code == 200
+    assert ">next run<" in resp.text
+    assert "every cycle" in resp.text
+    # header tooltips (gr162694 #3) — one per column, terse one-liners.
+    for col_title in (
+        "The ServiceSpec registry key",
+        "What sort of runnable this is",
+        "Worker profiles that run this",
+        "Capability requirements",
+        "Claim weight for the editing host",
+        "Pinned model_pref",
+        "last logged a batch with ok",
+        "last logged a batch with failed",
+        "Wall-clock next fire",
+    ):
+        assert col_title in resp.text, col_title
+
+
+def test_status_services_tab_renders_reserve_form_when_not_reserved(client) -> None:
+    """§B-2 (gr162694 #4): with no active reserve row (FakeStore degrades to
+    empty), the Services tab shows the reserve *form*, not the banner."""
+    resp = client.get("/status?tab=services")
+    assert resp.status_code == 200
+    assert 'action="/factory/reserve"' in resp.text
+    assert "blocks new heavy claims" in resp.text
+    assert "reserved until" not in resp.text
+
+
+def test_status_health_tab_renders_with_no_reserve_or_errors(client) -> None:
+    """Health tab still renders cleanly with the new reserve/top_cpu wiring
+    when the FakeStore's SQL degrades to empty (no template regression)."""
+    resp = client.get("/status?tab=health")
+    assert resp.status_code == 200
+    assert "Machines" in resp.text
+
+
 def test_status_budget_tab_renders_tote_and_caps(client) -> None:
     """``?tab=budget`` renders the retired Budget page's content."""
     resp = client.get("/status?tab=budget")

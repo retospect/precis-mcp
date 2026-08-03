@@ -437,6 +437,21 @@ footgun (it dragged SMALL's `summarizer` alias to OpenRouter → 400); a
 chain rung pins a concrete valid slug + its own transport, so it reaches
 OpenRouter without touching the other tiers.
 
+**Console v2 (§K, gr162694).** The Services tab adds a next-run column
+(cadence services compute wall-clock next fire from `scheduler_leases`
+via `factory.py::_scheduler_leases`/`_next_run`; per-cycle passes show
+"every cycle"; the `job_*` executor drains render blank — name-prefix
+heuristic, noted inline) and `title=` tooltips on every column header +
+last-ok/last-fail cells. The host strip shows each host's newest
+`worker_logs` line at `level >= WARNING` truncated (full line + ts in
+the tooltip), the heartbeat's `top_cpu` self-probe, and — when a §B-2
+reserve row is active — a reserve banner with its expiry.
+`POST /factory/reserve` / `/factory/release` drive reserve mode through
+the one-door helpers (`workers.service_config.set_reserve`/
+`clear_reserve`; out-of-range hours refused, never clamped). Deferred:
+the last-ok/last-fail click-through session drill-down (gr162694 #4's
+second half).
+
 **Capability universalization (slice 5).** The *incidental* kind gates —
 a raw-cache dir any host can create, edgar's descriptive User-Agent
 string — are dropped from `KindSpec.requires_env` and defaulted via
