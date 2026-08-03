@@ -10,6 +10,7 @@ parser registration and implementation live in a sibling module:
 - :mod:`precis.cli.ingest`    — ``precis jobs ingest{,-md,-oracles}``
 - :mod:`precis.cli.perplexity`— ``precis jobs import-perplexity``
 - :mod:`precis.cli.patent`    — ``precis jobs {watch,list,run}-patent-watches``
+- :mod:`precis.cli.jobs_admin`— ``precis jobs kill`` (§B-2 operator backstop)
 
 Keeping the dispatch table in one place is the cost; the benefit is
 that each subcommand owns a single file you can read without
@@ -37,6 +38,7 @@ from precis.cli import (
     gripe,
     heartbeat,
     ingest,
+    jobs_admin,
     llm,
     logs,
     maintenance,
@@ -347,6 +349,7 @@ def _build_parser() -> argparse.ArgumentParser:
     perplexity.add_parser(jobs_sub)
     patent.add_parsers(jobs_sub)
     provenance.add_parsers(jobs_sub)
+    jobs_admin.add_parser(jobs_sub)
 
     return parser
 
@@ -372,6 +375,7 @@ _JOB_DISPATCH: dict[str, tuple[object, str]] = {
     "reingest-patents": (patent, "run_reingest_cli"),
     "check-provenance": (provenance, "run"),
     "sync-retraction-watch": (provenance, "run_sync"),
+    "kill": (jobs_admin, "run"),
 }
 
 

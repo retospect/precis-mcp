@@ -17,19 +17,30 @@ Examples::
     precis service seed melchior classify 5      # deploy-time only: insert
                                                   # iff absent, never clobbers
                                                   # a console override
+    precis service reserve --hours 2             # §B-2: stop new heavy
+                                                  # claims (ssh_node/
+                                                  # claude_docker) on THIS
+                                                  # host for 2h
+    precis service release                       # lift this host's reserve
 """
 
 from __future__ import annotations
 
 import argparse
+import sys
 
 from precis.cli._common import resolve_dsn
+from precis.corpus_layout import host_name
 from precis.store import Store
 from precis.workers.registry import SERVICES_BY_NAME
 from precis.workers.service_config import (
+    ALL_HOSTS,
+    RESERVE_SERVICE,
+    clear_reserve,
     clear_service_config,
     list_service_config,
     seed_service_prio,
+    set_reserve,
     set_service_model,
     set_service_prio,
 )
@@ -87,6 +98,58 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     sd.add_argument("--actor", default=None, help="Who made the change (audit).")
     sd.add_argument("--database-url", default=None, help="Postgres DSN override.")
 
+    rs = ssub.add_parser(
+        "reserve",
+        help="Stop new heavy (ssh_node/claude_docker) claims on a host "
+        "(§B-2) — auto-expires.",
+    )
+    rs.add_argument(
+        "--host",
+        default=None,
+        help="Host to reserve (default: this host, via the same host_name() "
+        "identity the claim gate uses).",
+    )
+    rs.add_argument(
+        "--all", action="store_true", help="Reserve every host ('*') instead."
+    )
+    rs.add_argument(
+        "--hours",
+        type=float,
+        default=4.0,
+        help="Reserve duration in hours (default 4; refuses <= 0 or > 168).",
+    )
+    rs.add_argument("--actor", default=None, help="Who made the change (audit).")
+    rs.add_argument("--database-url", default=None, help="Postgres DSN override.")
+
+    rl = ssub.add_parser("release", help="Lift a host's reserve (§B-2).")
+    rl.add_argument(
+        "--host", default=None, help="Host to release (default: this host)."
+    )
+    rl.add_argument(
+        "--all", action="store_true", help="Release the '*' (all-hosts) reserve."
+    )
+    rl.add_argument("--database-url", default=None, help="Postgres DSN override.")
+
+
+def _refuse_reserve_service(name: str) -> None:
+    """Exit(2) when a generic verb targets the ``reserve`` pseudo-service.
+
+    ``reserve`` rows are only valid through ``precis service reserve`` /
+    ``release`` (``set_reserve`` enforces the required ``expires_at`` +
+    hour bounds). The generic UPSERTs don't set ``expires_at``, so a
+    ``service prio <host> reserve N`` would mint an inert row — or mutate
+    ``prio`` on a live reserve without touching what actually gates it
+    (``reserve_active`` reads only ``expires_at``). One door.
+    """
+    if name == RESERVE_SERVICE:
+        print(
+            f"service: {RESERVE_SERVICE!r} is the reserve-mode pseudo-service "
+            "— use 'precis service reserve' / 'precis service release', not "
+            "the generic verbs",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
 
 def _warn_unknown_service(name: str) -> None:
     """Note when a name isn't a registered pass — a likely typo, not fatal.
@@ -106,6 +169,22 @@ def _cmd_list(store: Store) -> None:
     if not rows:
         print("service_config is empty — all passes at their env/profile default.")
         return
+    # `expires_at` is only shown when at least one row carries one (§B-2
+    # reserve rows are the only writer today) — keeps the common table
+    # narrow when nothing is TTL'd.
+    has_expiry = any(r.get("expires_at") for r in rows)
+    if has_expiry:
+        print(
+            f"{'host':<14} {'service':<20} {'prio':>4}  {'model_pref':<24} "
+            f"{'expires_at':<26} actor"
+        )
+        for r in rows:
+            print(
+                f"{r['host']!s:<14} {r['service']!s:<20} "
+                f"{r['prio']!s:>4}  {r['model_pref'] or '-'!s:<24} "
+                f"{r['expires_at'] or '-'!s:<26} {r['actor'] or '-'}"
+            )
+        return
     print(f"{'host':<14} {'service':<20} {'prio':>4}  {'model_pref':<24} actor")
     for r in rows:
         print(
@@ -116,6 +195,7 @@ def _cmd_list(store: Store) -> None:
 
 
 def _cmd_prio(store: Store, args: argparse.Namespace) -> None:
+    _refuse_reserve_service(args.service)
     _warn_unknown_service(args.service)
     set_service_prio(store, args.host, args.service, args.prio, actor=args.actor)
     state = "OFF" if args.prio == 0 else f"weight {args.prio}"
@@ -123,6 +203,7 @@ def _cmd_prio(store: Store, args: argparse.Namespace) -> None:
 
 
 def _cmd_model(store: Store, args: argparse.Namespace) -> None:
+    _refuse_reserve_service(args.service)
     _warn_unknown_service(args.service)
     model = None if args.clear else args.model
     set_service_model(store, args.host, args.service, model, actor=args.actor)
@@ -131,6 +212,7 @@ def _cmd_model(store: Store, args: argparse.Namespace) -> None:
 
 
 def _cmd_clear(store: Store, args: argparse.Namespace) -> None:
+    _refuse_reserve_service(args.service)
     removed = clear_service_config(store, args.host, args.service)
     if removed:
         print(f"service_config: removed {args.host}/{args.service}")
@@ -139,6 +221,7 @@ def _cmd_clear(store: Store, args: argparse.Namespace) -> None:
 
 
 def _cmd_seed(store: Store, args: argparse.Namespace) -> None:
+    _refuse_reserve_service(args.service)
     _warn_unknown_service(args.service)
     inserted = seed_service_prio(
         store, args.host, args.service, args.prio, actor=args.actor
@@ -150,6 +233,34 @@ def _cmd_seed(store: Store, args: argparse.Namespace) -> None:
             f"service_config: {args.host}/{args.service} already has a row "
             "— left untouched"
         )
+
+
+def _reserve_target_host(args: argparse.Namespace) -> str:
+    """``--all`` -> the ``*`` wildcard; else ``--host`` or this host's own
+    identity — the SAME ``host_name()`` the claim gate resolves via
+    ``reserve_host()`` (``PRECIS_HOST_NAME`` or the hostname), so an
+    operator running this on the box they mean to reserve can't diverge
+    from what the claim actually checks."""
+    return ALL_HOSTS if args.all else (args.host or host_name())
+
+
+def _cmd_reserve(store: Store, args: argparse.Namespace) -> None:
+    host = _reserve_target_host(args)
+    expires_at = set_reserve(store, host, hours=args.hours, actor=args.actor)
+    print(
+        f"service_config: {host} reserved until {expires_at} "
+        f"({args.hours:g}h) — new ssh_node/claude_docker claims stop there "
+        "immediately; in-flight jobs finish normally"
+    )
+
+
+def _cmd_release(store: Store, args: argparse.Namespace) -> None:
+    host = _reserve_target_host(args)
+    removed = clear_reserve(store, host)
+    if removed:
+        print(f"service_config: released reserve on {host}")
+    else:
+        print(f"service_config: no reserve row for {host}")
 
 
 def run(args: argparse.Namespace) -> None:
@@ -166,6 +277,10 @@ def run(args: argparse.Namespace) -> None:
             _cmd_clear(store, args)
         elif args.service_cmd == "seed":
             _cmd_seed(store, args)
+        elif args.service_cmd == "reserve":
+            _cmd_reserve(store, args)
+        elif args.service_cmd == "release":
+            _cmd_release(store, args)
         else:  # pragma: no cover — argparse `required=True` guards this
             raise SystemExit(f"unknown service subcommand: {args.service_cmd!r}")
     finally:

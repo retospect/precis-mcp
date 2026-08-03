@@ -785,6 +785,35 @@ def test_poll_deadline_kills_and_sweeps(store: Store, sandbox_env: Path) -> None
     claude_docker.run_claude_docker_pass(store, limit=4)  # poll → wall-timeout
     assert _status(store, jid) == "failed"
     assert "swept:wall-timeout" in _tags(store, jid)
+
+
+def test_poll_kill_requested_kills_and_sweeps(store: Store, sandbox_env: Path) -> None:
+    """§B-2 operator kill backstop, claude_docker's smaller shape (no
+    ctx/spec.kill — it just ``_terminate``s the container): a container
+    still ``running`` (i.e. would never trip the deadline) is still
+    force-terminated once ``meta.kill_requested`` is stamped, ahead of the
+    deadline check."""
+    parent = store.insert_ref(kind="todo", slug=None, title="owner", meta={})
+    jid = _mk_queued_job(store, params=_valid_params(), parent_id=parent.id)
+    claude_docker.run_claude_docker_pass(store, limit=4)  # launch (still running)
+    assert _status(store, jid) == "running"
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || jsonb_build_object("
+            "'kill_requested', jsonb_build_object("
+            "'at', '2026-01-01T00:00:00+00:00', 'actor', 'operator', "
+            "'note', 'stuck sandbox run')) WHERE ref_id = %s",
+            (jid,),
+        )
+        conn.commit()
+    claude_docker.run_claude_docker_pass(store, limit=4)  # poll → operator kill
+    assert _status(store, jid) == "failed"
+    assert "swept:killed-by-operator" in _tags(store, jid)
+    summaries = _job_summary_texts(store, jid)
+    assert any(
+        "killed by operator" in s and "stuck sandbox run" in s for s in summaries
+    )
+    assert any(t.startswith("child-failed:") for t in _tags(store, parent.id))
     # Container reaped (state file gone).
     assert not (sandbox_env / f"sandbox-{jid}.state").exists()
 

@@ -35,6 +35,7 @@ from precis.store._resource_slots_ops import (
 )
 from precis.store.types import BlockInsert
 from precis.workers.registry import SERVICES_BY_NAME
+from precis.workers.service_config import reserve_active
 
 log = logging.getLogger(__name__)
 
@@ -322,6 +323,7 @@ def claim_executor_jobs(
     parent_not_paused: bool = False,
     reserve_host_id: str | None = None,
     reclaim_stale_running: bool = False,
+    respect_reserve: bool = False,
 ) -> list[tuple[int, str, dict[str, Any]]]:
     """Lock up to ``limit`` claimable jobs for ``executor``.
 
@@ -409,6 +411,23 @@ def claim_executor_jobs(
     :func:`_doable_exclusion_clause` so the vocabulary stays in sync
     with the dispatcher's candidate query.
 
+    **Reserve mode (§B-2, workers/service_config.py).** When
+    ``respect_reserve`` is True (``ssh_node``/``claude_docker`` — the
+    box-heavy compute lane; ``coordinator``/``claude_inproc`` do NOT pass
+    this, the light cloud lane keeps running), an active reserve row for
+    THIS claiming host (:func:`~precis.workers.service_config.
+    reserve_active`, using the SAME host identity as ``lease_host`` —
+    ``reserve_host_id`` or :func:`reserve_host`, never the ``node``/
+    ``PRECIS_NODE`` claim-gate identity, so the reserved box and the gated
+    box can't diverge) short-circuits this call to ``[]`` before any row is
+    even looked at — no new claims, fresh or reclaimed, including a
+    prio=1 job (reserve is absolute; the operator releases it explicitly).
+    In-flight rows are completely untouched: this only gates NEW claims, so
+    polls/leases/finalization of already-running work continue exactly as
+    if nothing changed — that is the "in-flight finishes cleanly" contract.
+    Checked fresh every pass (no cache), so a reserve set OR an expiry
+    reached takes effect within one claim cycle.
+
     **Node gate (ADR 0043 §23 #3).** A job may pin itself to a node via
     ``meta.params.target_node`` (``struct_relax`` sets it so the GPU
     relax is claimed by the node that ssh+stages it, keeping the NFS
@@ -425,6 +444,11 @@ def claim_executor_jobs(
     """
     if limit <= 0:
         raise ValueError("limit must be positive")
+
+    if respect_reserve and reserve_active(conn, reserve_host_id or reserve_host()):
+        # Absolute stop on new heavy claims for this host — in-flight rows
+        # are never touched here, only this claim call returns empty.
+        return []
 
     exclusion_sql = ""
     if exclude_paused:
@@ -819,6 +843,29 @@ def record_failure(
         conn.commit()
 
 
+def maybe_reset_gpu_after_kill(meta: dict[str, Any]) -> bool | None:
+    """Best-effort GPU reclaim after a kill (wall-clock deadline OR the §B-2
+    operator ``kill_requested`` backstop) of a job whose resolved
+    requirements include ``gpu`` (:func:`effective_requires` — an explicit
+    ``meta.requires`` or a ``struct_relax``/``fold`` job_type).
+
+    Returns the ``reset_gpu()`` result when attempted (record it on
+    ``meta.kill_gpu_reset``); ``None`` when the job never required a GPU —
+    the common, no-op path, so a non-GPU kill (the vast majority: sandbox
+    containers, plugin dispatchers with no ``requires``) is unaffected.
+
+    Lazy-imports :mod:`precis.workers.job_types.struct_relax` (which itself
+    already lazy-imports in a few places) so importing this module never
+    pulls that one in — only a GPU-requiring kill ever reaches it.
+    """
+    if "gpu" not in effective_requires(meta):
+        return None
+    from precis.workers.job_types import struct_relax
+
+    node = (meta.get("params") or {}).get("target_node")
+    return struct_relax.reset_gpu(node=node)
+
+
 def poison_guard(
     store: Any,
     conn: Connection,
@@ -907,6 +954,7 @@ __all__ = [
     "effective_requires",
     "is_cancel_requested",
     "max_job_attempts",
+    "maybe_reset_gpu_after_kill",
     "poison_guard",
     "record_failure",
     "release_job_reservation",

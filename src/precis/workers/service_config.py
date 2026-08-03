@@ -22,12 +22,25 @@ way as ``prio`` (exact-host-over-``*``, TTL-cached): the in-pass thread-pool
 width a cloud-calling categorizer (``classify``, ADR 0047) fans its per-row
 LLM cascade across. ``NULL``/no row -> 1 (today's serial behaviour, so an
 empty table is unchanged); :func:`set_service_concurrency` is its write side.
+
+``expires_at`` (migration 0104) backs the §B-2 **reserve mode**: a
+``(host | '*', service='reserve')`` row is a pseudo-service — nothing calls
+``enabled('reserve')``; it exists purely so :func:`reserve_active` (checked
+live inside the claim transaction, :func:`~precis.workers.executors._common.
+claim_executor_jobs`) can gate ALL new heavy (``ssh_node``/``claude_docker``)
+claims on that host until the row's ``expires_at`` passes. :func:`set_reserve`
+/ :func:`clear_reserve` are its write side (``precis service reserve|release``
+CLI); :func:`reserve_active`'s predicate — not a background reaper — is what
+makes an unattended reserve auto-expire.
 """
 
 from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
+
+from psycopg import Connection
 
 from precis.store import Store
 
@@ -269,7 +282,7 @@ def list_service_config(store: Store) -> list[dict[str, object]]:
     with store.pool.connection() as conn:
         cur = conn.execute(
             "SELECT host, service, prio, model_pref, write_level, "
-            "       concurrency, updated_at, actor "
+            "       concurrency, expires_at, updated_at, actor "
             "FROM service_config ORDER BY host, service"
         )
         assert cur.description is not None
@@ -277,13 +290,94 @@ def list_service_config(store: Store) -> list[dict[str, object]]:
         return [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
 
 
+# ── Reserve mode (§B-2, docs/proposals/gpu-priority.md) ────────────────
+#
+# A pseudo-service: `(host | '*', service='reserve', prio=1, expires_at=
+# <required>)`. Nothing ever calls `ServiceConfigResolver.enabled('reserve')`
+# — its only reader is `reserve_active`, called live inside the claim
+# transaction. Showing it in `precis service list` (and later the §K
+# console) is a feature, not a leak.
+
+#: The pseudo-service name a reserve row is stored under.
+RESERVE_SERVICE = "reserve"
+
+#: Upper bound on `set_reserve`'s `hours` — a longer reserve is a config
+#: change (use `service prio 0`), not a "mode" an operator might forget to
+#: lift. One week.
+_RESERVE_MAX_HOURS = 168.0
+
+
+def set_reserve(
+    store: Store,
+    host: str,
+    *,
+    hours: float = 4.0,
+    actor: str | None = None,
+) -> datetime:
+    """Put ``host`` (or ``ALL_HOSTS`` for every host) into reserve mode for
+    ``hours`` (default 4; refuses ``<= 0`` or ``> 168`` — a week is a config
+    change, not a mode). UPSERT — reserving an already-reserved host resets
+    the expiry to ``now() + hours``. Returns the new ``expires_at`` (for the
+    CLI to print).
+    """
+    if not 0 < hours <= _RESERVE_MAX_HOURS:
+        raise ValueError(f"hours must be in (0, {_RESERVE_MAX_HOURS}], got {hours}")
+    with store.pool.connection() as conn:
+        cur = conn.execute(
+            "INSERT INTO service_config "
+            "(host, service, prio, expires_at, actor, updated_at) "
+            "VALUES (%s, %s, 1, now() + make_interval(secs => %s), %s, now()) "
+            "ON CONFLICT (host, service) DO UPDATE SET "
+            "  prio = 1, "
+            "  expires_at = EXCLUDED.expires_at, "
+            "  actor = EXCLUDED.actor, "
+            "  updated_at = EXCLUDED.updated_at "
+            "RETURNING expires_at",
+            (host, RESERVE_SERVICE, hours * 3600.0, actor),
+        )
+        row = cur.fetchone()
+        conn.commit()
+        assert row is not None
+        return row[0]  # type: ignore[no-any-return]
+
+
+def clear_reserve(store: Store, host: str) -> bool:
+    """Delete ``host``'s reserve row. Returns True when one was removed."""
+    return clear_service_config(store, host, RESERVE_SERVICE)
+
+
+def reserve_active(conn: Connection, host: str) -> bool:
+    """True when ``host`` (or the ``'*'`` wildcard) carries a live
+    (unexpired) reserve row.
+
+    Takes a LIVE conn so it can be checked inside the claim transaction
+    (:func:`~precis.workers.executors._common.claim_executor_jobs`) — one
+    cheap indexed ``SELECT`` per heavy-claim pass, no cache. Auto-expiry is
+    this predicate alone: an expired row is simply inert (excluded by
+    ``expires_at > now()``); nothing reaps it, and the next
+    :func:`set_reserve` UPSERTs over it regardless.
+    """
+    row = conn.execute(
+        "SELECT 1 FROM service_config "
+        "WHERE service = %s AND host IN (%s, %s) "
+        "  AND expires_at IS NOT NULL AND expires_at > now() "
+        "LIMIT 1",
+        (RESERVE_SERVICE, host, ALL_HOSTS),
+    ).fetchone()
+    return row is not None
+
+
 __all__ = [
     "ALL_HOSTS",
     "DEFAULT_PRIO",
+    "RESERVE_SERVICE",
     "ServiceConfigResolver",
+    "clear_reserve",
     "clear_service_config",
     "list_service_config",
+    "reserve_active",
     "seed_service_prio",
+    "set_reserve",
     "set_service_concurrency",
     "set_service_model",
     "set_service_prio",

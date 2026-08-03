@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import argparse
 
+import pytest
+
 from precis.cli.main import _build_parser
-from precis.cli.service import _cmd_prio, _cmd_seed
+from precis.cli.service import _cmd_prio, _cmd_release, _cmd_reserve, _cmd_seed
 from precis.workers.service_config import list_service_config, set_service_prio
 
 # ---------------------------------------------------------------------------
@@ -45,6 +47,21 @@ def test_existing_subcommands_still_parse():
     ):
         args = parser.parse_args(argv)
         assert args.cmd == "service"
+
+
+def test_reserve_release_subcommands_registered():
+    parser = _build_parser()
+    args = parser.parse_args(
+        ["service", "reserve", "--host", "melchior", "--hours", "2"]
+    )
+    assert args.service_cmd == "reserve"
+    assert args.host == "melchior"
+    assert args.hours == 2.0
+    assert args.all is False
+
+    args2 = parser.parse_args(["service", "release", "--all"])
+    assert args2.service_cmd == "release"
+    assert args2.all is True
 
 
 # ---------------------------------------------------------------------------
@@ -84,3 +101,77 @@ def test_cmd_prio_still_upserts_unconditionally(store, capsys) -> None:
     rows = {(r["host"], r["service"]): r for r in list_service_config(store)}
     assert rows[("melchior", "classify")]["prio"] == 0
     assert rows[("melchior", "classify")]["actor"] == "console"
+
+
+# ---------------------------------------------------------------------------
+# reserve / release (§B-2)
+# ---------------------------------------------------------------------------
+
+
+def _reserve_ns(**overrides):
+    defaults = dict(host="melchior", all=False, hours=4.0, actor=None)
+    defaults.update(overrides)
+    return argparse.Namespace(**defaults)
+
+
+def _release_ns(**overrides):
+    defaults = dict(host="melchior", all=False)
+    defaults.update(overrides)
+    return argparse.Namespace(**defaults)
+
+
+def test_cmd_reserve_creates_row_with_expiry(store, capsys) -> None:
+    _cmd_reserve(store, _reserve_ns())
+    rows = {(r["host"], r["service"]): r for r in list_service_config(store)}
+    row = rows[("melchior", "reserve")]
+    assert row["prio"] == 1
+    assert row["expires_at"] is not None
+    assert "reserved until" in capsys.readouterr().out
+
+
+def test_cmd_reserve_all_flag_uses_wildcard(store, capsys) -> None:
+    _cmd_reserve(store, _reserve_ns(all=True))
+    rows = {(r["host"], r["service"]): r for r in list_service_config(store)}
+    assert ("*", "reserve") in rows
+
+
+def test_cmd_release_removes_row(store, capsys) -> None:
+    _cmd_reserve(store, _reserve_ns())
+    _cmd_release(store, _release_ns())
+    rows = {(r["host"], r["service"]): r for r in list_service_config(store)}
+    assert ("melchior", "reserve") not in rows
+    assert "released reserve" in capsys.readouterr().out
+
+
+def test_cmd_release_no_row_reports_cleanly(store, capsys) -> None:
+    _cmd_release(store, _release_ns())
+    assert "no reserve row" in capsys.readouterr().out
+
+
+def test_cmd_reserve_hours_bounds_enforced(store) -> None:
+    with pytest.raises(ValueError):
+        _cmd_reserve(store, _reserve_ns(hours=0))
+    with pytest.raises(ValueError):
+        _cmd_reserve(store, _reserve_ns(hours=200))
+
+
+def test_generic_verbs_refuse_reserve_pseudo_service(store, capsys) -> None:
+    """The generic verbs must not touch the ``reserve`` pseudo-service —
+    ``set_service_prio``'s UPSERT doesn't set ``expires_at``, so a
+    ``service prio <host> reserve N`` would mint an inert row (or mutate
+    ``prio`` on a live reserve without touching what gates it). One door:
+    ``service reserve`` / ``release``."""
+    from precis.cli.service import _cmd_clear, _cmd_model
+
+    for cmd, ns in (
+        (_cmd_prio, _ns(service="reserve", prio=1)),
+        (_cmd_seed, _ns(service="reserve", prio=1)),
+        (_cmd_model, _ns(service="reserve", model="m", clear=False)),
+        (_cmd_clear, _ns(service="reserve")),
+    ):
+        with pytest.raises(SystemExit) as exc:
+            cmd(store, ns)
+        assert exc.value.code == 2
+        assert "pseudo-service" in capsys.readouterr().err
+    rows = {(r["host"], r["service"]): r for r in list_service_config(store)}
+    assert ("melchior", "reserve") not in rows

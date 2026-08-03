@@ -37,7 +37,13 @@ Each pass:
 0. **Poll** in-flight (``STATUS:running`` + ``meta.compute_handle``)
    detached jobs pinned to this host: ``spec.poll(ctx, handle)`` — renews
    the lease while still running, lets the plugin drive it terminal via
-   ``ctx`` when done. Past ``meta.deadline`` (stamped at submit time, §H
+   ``ctx`` when done. A row carrying ``meta.kill_requested`` (§B-2,
+   ``precis jobs kill`` — an operator-requested force-kill, e.g. the
+   injected-hang drill) is terminalized the SAME way, at THIS poll tick,
+   ahead of the deadline check below — takes effect at the next poll for a
+   detached job; a no-op for a legacy blocking ``dispatch`` (below) until
+   that call returns, since this executor can't observe it mid-run. Past
+   ``meta.deadline`` (stamped at submit time, §H
    piece 2), the pass stops calling ``poll`` and terminalizes the job
    itself instead — a never-completing ``poll`` would otherwise renew the
    lease forever, and the sweeper's own wall-clock retirement (§H piece 6)
@@ -87,6 +93,9 @@ from precis.workers.executors._common import (
 )
 from precis.workers.executors._common import (
     is_cancel_requested as _is_cancel_requested,
+)
+from precis.workers.executors._common import (
+    maybe_reset_gpu_after_kill as _maybe_reset_gpu_after_kill,
 )
 from precis.workers.executors._common import (
     poison_guard as _poison_guard,
@@ -216,6 +225,7 @@ def run_ssh_node_pass(store: Any, *, limit: int = 1) -> dict[str, int]:
             node=node,
             parent_not_paused=True,
             reclaim_stale_running=True,
+            respect_reserve=True,
         )
         if not rows:
             conn.commit()
@@ -325,12 +335,59 @@ def _polling_jobs(
     return [(int(r[0]), str(r[1]), dict(r[2] or {})) for r in rows]
 
 
+def _kill_and_terminalize(
+    store: Any,
+    ref_id: int,
+    title: str,
+    meta: dict[str, Any],
+    handle: Any,
+    spec: Any,
+    *,
+    swept_tag: str,
+    summary: str,
+) -> None:
+    """Shared terminalize-via-kill path for both the wall-clock deadline and
+    the §B-2 operator ``kill_requested`` backstop: call the job_type's
+    optional ``spec.kill``, then a terminal ``STATUS:failed`` + the given
+    ``swept:<tag>`` + a bubble to the parent — and, when the job's resolved
+    requirements include ``gpu``, a best-effort GPU reclaim recorded on
+    ``meta.kill_gpu_reset`` (:func:`_common.maybe_reset_gpu_after_kill`)."""
+    ctx = _build_dispatch_context(store, ref_id, title, meta)
+    if spec.kill is not None:
+        try:
+            spec.kill(ctx, handle)
+        except Exception:  # pragma: no cover — defensive
+            log.warning(
+                "ssh_node: kill(handle=%r) of job %d raised",
+                handle,
+                ref_id,
+                exc_info=True,
+            )
+    from precis.handlers._job_bubble import bubble_job_failure
+    from precis.store import Tag
+
+    gpu_reset = _maybe_reset_gpu_after_kill(meta)
+    with store.pool.connection() as conn:
+        _append_chunk(store, ref_id, _JOB_EVENT_KIND, summary, conn=conn)
+        store.add_tag(
+            ref_id,
+            Tag.parse_strict(f"swept:{swept_tag}"),
+            set_by="system",
+            conn=conn,
+        )
+        if gpu_reset is not None:
+            _set_meta(conn, ref_id, kill_gpu_reset=gpu_reset)
+        _set_status(store, ref_id, _FAILED, conn=conn)
+        conn.commit()
+    bubble_job_failure(store, ref_id)
+
+
 def _poll_one(store: Any, ref_id: int, title: str, meta: dict[str, Any]) -> bool:
     """Poll one in-flight detached job via its job_type's ``poll``.
 
     Returns ``True`` once the plugin has driven the job to a terminal
     ``STATUS`` (via ``ctx`` — this function does nothing further, OR this
-    function drove it terminal itself via the wall-clock deadline below);
+    function drove it terminal itself via the kill checks below);
     ``False`` while still running, having renewed the lease here (``poll``
     itself must not touch the lease — that's the executor's job, exactly
     like the claim-time stamp)."""
@@ -352,6 +409,30 @@ def _poll_one(store: Any, ref_id: int, title: str, meta: dict[str, Any]) -> bool
         )
         return True
 
+    # §B-2 operator kill backstop (`precis jobs kill`) — takes precedence
+    # over the wall-clock deadline below (an operator kill is deliberate;
+    # honor it even if the deadline hasn't tripped yet). Same terminal path
+    # as a deadline kill, just a different swept tag/summary.
+    kill_requested = meta.get("kill_requested")
+    if kill_requested:
+        note = kill_requested.get("note") if isinstance(kill_requested, dict) else None
+        summary = (
+            f"runner: killed by operator ({note})"
+            if note
+            else "runner: killed by operator"
+        )
+        _kill_and_terminalize(
+            store,
+            ref_id,
+            title,
+            meta,
+            handle,
+            spec,
+            swept_tag="killed-by-operator",
+            summary=summary,
+        )
+        return True
+
     # §H piece 2: a never-completing ``poll`` would otherwise renew the
     # lease forever below — with the sweeper's wall-clock retirement (§H
     # piece 6) there is no OTHER termination path for a detached submit/
@@ -361,37 +442,16 @@ def _poll_one(store: Any, ref_id: int, title: str, meta: dict[str, Any]) -> bool
     # own wall-clock deadline kill in ``_poll_job``).
     deadline = meta.get("deadline")
     if deadline is not None and time.time() > float(deadline):
-        ctx = _build_dispatch_context(store, ref_id, title, meta)
-        if spec.kill is not None:
-            try:
-                spec.kill(ctx, handle)
-            except Exception:  # pragma: no cover — defensive
-                log.warning(
-                    "ssh_node: kill(handle=%r) of job %d raised",
-                    handle,
-                    ref_id,
-                    exc_info=True,
-                )
-        from precis.handlers._job_bubble import bubble_job_failure
-        from precis.store import Tag
-
-        with store.pool.connection() as conn:
-            _append_chunk(
-                store,
-                ref_id,
-                _JOB_EVENT_KIND,
-                f"runner: killed at wall-clock deadline (handle {handle!r})",
-                conn=conn,
-            )
-            store.add_tag(
-                ref_id,
-                Tag.parse_strict("swept:wall-timeout"),
-                set_by="system",
-                conn=conn,
-            )
-            _set_status(store, ref_id, _FAILED, conn=conn)
-            conn.commit()
-        bubble_job_failure(store, ref_id)
+        _kill_and_terminalize(
+            store,
+            ref_id,
+            title,
+            meta,
+            handle,
+            spec,
+            swept_tag="wall-timeout",
+            summary=f"runner: killed at wall-clock deadline (handle {handle!r})",
+        )
         return True
 
     ctx = _build_dispatch_context(store, ref_id, title, meta)

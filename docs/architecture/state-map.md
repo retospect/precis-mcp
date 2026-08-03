@@ -504,6 +504,35 @@ commodity work, oldest-first within a band. An all-unset queue is
 byte-identical to the old FIFO. The capability-rarity term (§5.3, 6d) is
 not yet added.
 
+**Reserve mode + operator kill backstop (§B-2 cycle b, built).** Reserve
+is a pseudo-`service_config` row (`host|'*'`, `service='reserve'`,
+migration 0104's `expires_at` — nullable, NULL everywhere else): an
+operator `precis service reserve [--host H|--all] [--hours N]` (default
+this host, 4h; refuses `<= 0` or `> 168`) stops ALL new heavy claims —
+`claim_executor_jobs(..., respect_reserve=True)`, which only `ssh_node`
+and `claude_docker` pass — on that host, checked live inside the claim
+transaction (`workers/service_config.py::reserve_active`, one indexed
+`SELECT`, no cache) so it takes effect within one claim cycle and
+in-flight jobs finish untouched. Auto-expires: `reserve_active`'s
+predicate alone (`expires_at > now()`) is the expiry, nothing reaps a
+stale row. `coordinator`/`claude_inproc` never pass `respect_reserve` —
+the light cloud lane keeps running. `precis service release [--host
+H|--all]` lifts it early; `precis service list` shows `expires_at` when
+any row carries one. The companion **`precis jobs kill <ref_id>
+[--note]`** is a CLI-side REQUEST only (validates `kind='job'` +
+`STATUS:running`, stamps `meta.kill_requested`) — the OWNING executor's
+poll loop (`ssh_node._poll_one` / `claude_docker._poll_job`) honors it at
+the next tick, the SAME terminal path as their existing wall-clock
+`meta.deadline` kill (`spec.kill`/`_terminate` → `STATUS:failed` +
+`swept:killed-by-operator` + parent bubble) — immediate for a detached
+job, a no-op for a legacy blocking `dispatch` until that call returns on
+its own. Either kill path (deadline or operator), when the job's
+resolved `requires` includes `gpu` (`effective_requires` — explicit
+`meta.requires` or a `struct_relax`/`fold` job_type), best-effort
+`struct_relax.reset_gpu()`s the job's node and records the bool on
+`meta.kill_gpu_reset` (lazy-imported, so a non-GPU kill — the common
+path — never touches that module).
+
 **Boot-epoch lease + generalized crash recovery (§H cycle c,
 `docs/proposals/compute-lane-lease-epoch.md`, built).** Every worker
 process mints a `worker_boot_id` (uuid4) at startup

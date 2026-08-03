@@ -917,6 +917,152 @@ def test_poll_past_deadline_calls_kill_hook_when_present(
     assert _status(store, rid) == "failed"
 
 
+# ── §B-2 piece 5: operator kill backstop (`precis jobs kill`) ──────
+
+
+def _mk_hung_job_with_kill_request(
+    store: Store,
+    *,
+    compute_handle: Any,
+    note: str | None = None,
+    parent_id: int | None = None,
+    requires: dict[str, int] | None = None,
+) -> int:
+    """A STATUS:running detached job already carrying ``meta.kill_requested``
+    — stands in for an operator having run ``precis jobs kill`` against an
+    in-flight job whose plugin ``poll`` never terminates on its own (the
+    injected-hang drill)."""
+    request: dict[str, Any] = {"at": "2026-01-01T00:00:00+00:00", "actor": "operator"}
+    if note is not None:
+        request["note"] = note
+    meta: dict[str, Any] = {
+        "executor": "ssh_node",
+        "job_type": "fake_relax",
+        "params": {},
+        "compute_handle": compute_handle,
+        "kill_requested": request,
+    }
+    if requires is not None:
+        meta["requires"] = requires
+    ref = store.insert_ref(
+        kind="job", slug=None, title="hung job", meta=meta, parent_id=parent_id
+    )
+    store.add_tag(ref.id, Tag.parse_strict("STATUS:running"), set_by="agent")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || jsonb_build_object("
+            "  'lease_until', (now() + make_interval(secs => 3600))::text"
+            ") WHERE ref_id = %s",
+            (int(ref.id),),
+        )
+        conn.commit()
+    return int(ref.id)
+
+
+def test_kill_requested_terminalizes_via_kill_hook_and_bubbles(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The injected-hang drill (§B-2 acceptance, verbatim): a running
+    detached job whose ``poll`` never terminates on its own and whose
+    ``kill`` records the invocation. A stamped ``meta.kill_requested``
+    drives the NEXT ``_poll_one`` to call ``kill`` (never ``poll`` —
+    the kill check runs first), terminal-fail with
+    ``swept:killed-by-operator``, and bubble to the parent."""
+    killed: list[tuple[Any, Any]] = []
+    polled: list[Any] = []
+
+    def _poll(ctx: Any, handle: Any) -> bool:
+        polled.append(handle)
+        return False  # would hang forever if ever reached
+
+    def _kill(ctx: Any, handle: Any) -> None:
+        killed.append((ctx.ref_id, handle))
+
+    monkeypatch.setattr(
+        ssh_node,
+        "get_job_type",
+        lambda name: JobTypeSpec(
+            name="fake_relax",
+            params_schema={"type": "object"},
+            compatible_executors=frozenset({"ssh_node"}),
+            requires=frozenset({"has_gpaw"}),
+            description="fake relax for tests",
+            run=lambda *a, **k: "noop",
+            poll=_poll,
+            submit=lambda c, s: None,
+            kill=_kill,
+        ),
+    )
+    parent = store.insert_ref(kind="todo", slug=None, title="owner", meta={})
+    rid = _mk_hung_job_with_kill_request(
+        store,
+        compute_handle="remote-pid-hang",
+        note="operator drill",
+        parent_id=parent.id,
+    )
+
+    result = ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert result == {"claimed": 0, "ok": 1, "failed": 0}
+    assert killed == [(rid, "remote-pid-hang")]
+    assert polled == []  # kill_requested short-circuits BEFORE poll() is ever called
+    assert _status(store, rid) == "failed"
+    tags = {str(t) for t in store.tags_for(rid)}
+    assert "swept:killed-by-operator" in tags
+    events = [
+        c.text
+        for c in store.list_blocks_for_ref(rid)
+        if getattr(c, "chunk_kind", None) == "job_event"
+    ]
+    assert any("killed by operator" in t and "operator drill" in t for t in events)
+    parent_tags = {str(t) for t in store.tags_for(parent.id)}
+    assert any(t.startswith("child-failed:") for t in parent_tags)
+    assert "kill_gpu_reset" not in _meta(store, rid)  # no gpu requires — untouched
+
+
+def test_kill_requested_with_gpu_requires_resets_gpu(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A GPU-requiring job (``meta.requires`` explicit, or a
+    ``struct_relax``/``fold`` job_type via the registry) gets a best-effort
+    ``struct_relax.reset_gpu`` after the kill, recorded on
+    ``meta.kill_gpu_reset``."""
+    from precis.workers.job_types import struct_relax
+
+    reset_calls: list[dict[str, Any]] = []
+
+    def _fake_reset_gpu(*, node: str | None = None, **_kw: Any) -> bool:
+        reset_calls.append({"node": node})
+        return True
+
+    monkeypatch.setattr(struct_relax, "reset_gpu", _fake_reset_gpu)
+    monkeypatch.setattr(
+        ssh_node,
+        "get_job_type",
+        lambda name: JobTypeSpec(
+            name="fake_relax",
+            params_schema={"type": "object"},
+            compatible_executors=frozenset({"ssh_node"}),
+            requires=frozenset({"has_gpaw"}),
+            description="fake relax for tests",
+            run=lambda *a, **k: "noop",
+            poll=lambda c, h: False,
+            submit=lambda c, s: None,
+            kill=lambda c, h: None,
+        ),
+    )
+    rid = _mk_hung_job_with_kill_request(
+        store, compute_handle="remote-pid-gpu", requires={"gpu": 1}
+    )
+
+    result = ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert result == {"claimed": 0, "ok": 1, "failed": 0}
+    assert reset_calls == [{"node": None}]  # no target_node pinned in this test
+    assert _meta(store, rid)["kill_gpu_reset"] is True
+    assert _status(store, rid) == "failed"
+
+
 def test_reclaimed_row_with_compute_handle_is_re_adopted_not_double_submitted(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

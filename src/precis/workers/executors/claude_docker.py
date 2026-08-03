@@ -19,7 +19,9 @@ Each pass does three things:
 2. **Poll** in-flight (``STATUS:running`` + ``meta.container``) jobs
    pinned to this node: ``inspect`` status/exit, **renew the lease**
    (heartbeat) so a legit multi-hour run never trips the stuck-job
-   sweeper; reap on exit or past the wall-clock ``deadline``.
+   sweeper; reap on exit, past the wall-clock ``deadline``, or on a §B-2
+   operator ``meta.kill_requested`` (``precis jobs kill``) — the same
+   ``_terminate`` path, at the next poll tick.
 3. **Claim + launch** queued jobs up to ``PRECIS_SANDBOX_CONCURRENCY``
    (default 2), gated by ``target_node == PRECIS_NODE`` and an optional
    ``PRECIS_LOAD_CEILING`` load gate. Launch is detached
@@ -578,6 +580,7 @@ def _claim(
             node=node,
             parent_not_paused=True,
             reclaim_stale_running=True,
+            respect_reserve=True,
         )
         if not rows:
             conn.commit()
@@ -913,6 +916,7 @@ def _poll_job(store: Any, ref_id: int, meta: dict[str, Any]) -> str | None:
     (lease heartbeated)."""
     name = str(meta.get("container") or container_name(ref_id))
     deadline = float(meta.get("deadline") or 0.0)
+    kill_requested = meta.get("kill_requested")
     state = _inspect(name)
 
     if state is None:
@@ -943,6 +947,28 @@ def _poll_job(store: Any, ref_id: int, meta: dict[str, Any]) -> str | None:
             meta=meta,
         )
         return _SUCCEEDED if ok else _FAILED
+
+    # Still running (or created). §B-2 operator kill backstop (`precis jobs
+    # kill`) takes precedence over the wall-clock deadline check below —
+    # same terminal path (_terminate), different swept tag/summary.
+    if kill_requested:
+        note = kill_requested.get("note") if isinstance(kill_requested, dict) else None
+        summary = (
+            f"sandbox_run job:{ref_id}: killed by operator ({note})."
+            if note
+            else f"sandbox_run job:{ref_id}: killed by operator."
+        )
+        _terminate(
+            store,
+            ref_id,
+            name,
+            status=_FAILED,
+            summary=summary,
+            exit_code=None,
+            swept="killed-by-operator",
+            meta=meta,
+        )
+        return _FAILED
 
     # Still running (or created). Wall-clock kill?
     if deadline and time.time() > deadline:
