@@ -503,6 +503,7 @@ async def index(
             deleted=show_deleted,
             oldest=(sort == "oldest"),
             untried=(sort == "untried"),
+            downloadable_first=(state == "stub"),
         )
         # Exact total for the browse "showing N of K" header + last-page
         # jump — the no-query list is a plain filtered ``refs`` query, so

@@ -2671,18 +2671,29 @@ PDF-less paper with no external id (which renders no download link, per
 `item_view.ItemPresenter.links`) is excluded rather than floating to the top of
 the untried sort; this matches `stub_backlog`'s definition (the MCP
 `search(view='stubs')` / `precis stubs` surface). Id-less un-ingested papers
-still list under the broader `paper_chunks=without` browse. The queue (a paper
+still list under the broader `paper_chunks=without` browse. The queue also
+passes `recent_refs(downloadable_first=True)` — a leading ORDER BY term that
+floats rows with a *hand-downloadable* id (DOI/arXiv, the `('doi','arxiv')`
+subset item_view renders a LibKey/arXiv PDF link for — **not** the
+`(doi|arxiv|s2)` fetchable whitelist) ahead of the rest, so S2-only stubs
+(fetchable by the OA worker but with no clickable PDF) sink to the tail instead
+of burying openable rows under a fresh S2-heavy import; it reorders only, the
+row set + `count_recent_refs` are unchanged. The queue (a paper
 stub with a LibKey/arXiv fetch link) defaults to `sort=untried`:
 `store.recent_refs(untried=True)`
 `LEFT JOIN`s the latest `ref_events` row per ref with `source='manual:open'`
 (index `ref_events_ref_id_source_ts_idx`) so never-manually-opened stubs
 surface before re-checked ones (freshest-added first within "never",
-oldest-attempt first within "tried"). The row template's "Open all
-downloads" button (`drive/index.html.j2`) fires
-`navigator.sendBeacon('/downloads/mark-tried', …)` alongside its staggered
-tab-opening burst — one `manual:open`/`opened` `ref_events` row per shown
-ref (`POST /downloads/mark-tried`, `drive.downloads_router`, un-prefixed
-sibling of `drive.router`) — so those refs sink to the back of the untried
+oldest-attempt first within "tried"). The row template (`drive/index.html.j2`)
+fires `navigator.sendBeacon('/downloads/mark-tried', …)` with a **single**
+ref_id **as each tab opens** — per-tab inside the "Open all" stagger (via
+`markOne()` in `openOne`), *not* one up-front batch for the whole page, **and**
+on a manual click/auxclick of an individual row's download link — so
+cancelling the run or closing the browser marks only what actually opened
+(the unopened rest stay untried and correctly re-surface), and hand-opened
+papers get marked too (`POST /downloads/mark-tried`, `drive.downloads_router`,
+un-prefixed sibling of `drive.router`; one `manual:open`/`opened` `ref_events`
+row per open). Those refs sink to the back of the untried
 sort and a plain reload naturally serves the next batch; no pagination
 bookkeeping. Same shape as the OA fetch cascade's own attempt log
 (`workers/fetch_oa.py`, `source='fetcher:<leg>'`) — a human lane on the

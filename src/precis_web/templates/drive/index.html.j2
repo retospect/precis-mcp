@@ -701,13 +701,19 @@
    again while a run is pending cancels the remaining timers. Button stays
    hidden until there's a downloadable row.
 
-   Marking tried: the same click also records a manual-open attempt (one
-   ref_events row per shown ref, source='manual:open') via
-   navigator.sendBeacon('/downloads/mark-tried', …) — same-origin, no
-   external traffic, fire-and-forget (a beacon has no response to read).
-   That's what sinks these rows to the back of the sort=untried queue on
-   the next page load, so reloading the top of that sort naturally serves
-   the next batch — no pagination bookkeeping needed here. #}
+   Marking tried: a ref is marked opened (one ref_events row,
+   source='manual:open') at the moment ITS OWN tab opens — per-tab inside
+   the stagger, NOT all-up-front on the button click — via
+   navigator.sendBeacon('/downloads/mark-tried', …) (same-origin, fire-and-
+   forget). So cancelling the run or closing the browser mid-burst marks
+   only what actually opened; the unopened rest stay untried and correctly
+   re-surface next pass (the previous all-up-front mark instead lost every
+   un-opened row on an abort). The same per-ref mark also fires on a MANUAL
+   click of a single row's download link (the operator who walks the queue
+   by hand rather than pressing "Open all"), so hand-opened papers sink to
+   the back too. Marking sinks these rows to the back of the sort=untried
+   queue on the next load, so reloading the top of that sort serves the
+   next batch — no pagination bookkeeping needed here. #}
 <script>
 (function () {
   const btn = document.getElementById("open-all-downloads");
@@ -717,21 +723,33 @@
   if (!links.length) return;  // no downloadable rows → leave the button hidden
 
   const urls = links.map((a) => a.href);
-  const refIds = Array.from(
-    new Set(links.map((a) => a.dataset.refId).filter(Boolean))
-  );
   const N = urls.length;
 
-  function markTried() {
-    if (!refIds.length) return;
+  // Mark ONE ref opened (source='manual:open') the instant its tab opens —
+  // so an aborted run only marks what actually opened. Fire-and-forget.
+  function markOne(refId) {
+    if (!refId) return;
     const body = new URLSearchParams();
-    refIds.forEach((id) => body.append("ref_id", id));
+    body.append("ref_id", refId);
     if (navigator.sendBeacon) {
       navigator.sendBeacon("/downloads/mark-tried", body);
     } else {
       fetch("/downloads/mark-tried", { method: "POST", body, keepalive: true });
     }
   }
+
+  // A manual open of a single row's download link marks just that ref —
+  // covering the operator who walks the queue by hand instead of pressing
+  // "Open all". Left-click, cmd/ctrl-click (background tab) both fire
+  // 'click'; middle-click fires 'auxclick'. The "Open all" path dispatches
+  // its click on a throwaway <a> (openOne), never these row links, so it
+  // does not double-fire this handler.
+  links.forEach((a) => {
+    const mark = () => markOne(a.dataset.refId);
+    a.addEventListener("click", mark);
+    a.addEventListener("auxclick", mark);
+  });
+
   const MIN_GAP = 10, MAX_GAP = 30;  // seconds between staggered opens
   // Whole-second gap in [MIN_GAP, MAX_GAP]. Math.random is fine here — this
   // is a UI convenience, not reproducible state.
@@ -769,6 +787,7 @@
       ctrlKey: true, metaKey: true,   // background-tab modifier
     }));
     a.remove();
+    markOne(links[i].dataset.refId);  // mark THIS ref as its tab opens
     opened += 1;
     if (opened >= N) {
       running = false;
@@ -789,11 +808,12 @@
         "The first opens now; the rest are staggered " + MIN_GAP + "-" + MAX_GAP +
         "s apart to go easy on the library servers.\n" +
         "Allow pop-ups for this site (one-time browser setting) or only the " +
-        "first will open.\nClick the button again to cancel the pending ones.")) {
+        "first will open.\nClick the button again to cancel the pending ones.\n" +
+        "Each row is marked tried only as its tab opens, so cancelling leaves " +
+        "the rest for next time.")) {
       return;
     }
 
-    markTried();  // one manual:open ref_event per shown ref, fire-and-forget
     running = true;
     opened = 0;
     timers = [];

@@ -1841,6 +1841,7 @@ class RefsMixin:
         deleted: bool = False,
         oldest: bool = False,
         untried: bool = False,
+        downloadable_first: bool = False,
         limit: int = 30,
         offset: int = 0,
     ) -> list[Ref]:
@@ -1879,7 +1880,14 @@ class RefsMixin:
         refs oldest-attempt-first — a ``LEFT JOIN`` against the last
         ``ref_events`` row per ref with ``source='manual:open'`` (written by
         ``POST /downloads/mark-tried``, ``routes/drive.py``'s "Open all
-        downloads" button). Kinds with no rows simply don't appear; an empty
+        downloads" button). ``downloadable_first=True`` prepends a ranking
+        term (applied under any sort) that floats rows carrying a *hand-
+        downloadable* id — DOI/arXiv, the ones item_view renders a LibKey/arXiv
+        PDF link for — ahead of the rest; the "Stubs (to get)" queue sets it so
+        S2-only stubs (fetchable by the OA worker but with no clickable PDF)
+        sink to the tail instead of burying openable rows under a fresh S2-heavy
+        import. It reorders only — the row set (and ``count_recent_refs``) is
+        unchanged. Kinds with no rows simply don't appear; an empty
         ``kinds`` returns nothing. ``offset`` pages past the first window.
         """
         if not kinds or (ref_ids is not None and not ref_ids):
@@ -1896,6 +1904,20 @@ class RefsMixin:
             ref_ids=ref_ids,
             deleted=deleted,
         )
+        # Leading ORDER BY term for the "Stubs (to get)" download queue: rank
+        # rows that carry a manual download link (DOI/arXiv → LibKey/arXiv PDF,
+        # per item_view.ItemPresenter.links) ahead of the rest, so S2-only
+        # stubs (fetchable by the OA worker but with no hand-clickable PDF)
+        # sink below the openable ones instead of burying them under a fresh
+        # S2-heavy import. Intentionally the ('doi','arxiv') subset — NOT the
+        # ('doi','arxiv','s2') stub whitelist — since only those two render a
+        # download link. Empty (no reordering) unless the caller opts in.
+        dl_rank = (
+            "(EXISTS (SELECT 1 FROM ref_identifiers ri2 WHERE ri2.ref_id = r.ref_id "
+            "AND ri2.id_kind IN ('doi', 'arxiv'))) DESC, "
+            if downloadable_first
+            else ""
+        )
         if untried:
             params.append(limit)
             params.append(offset)
@@ -1907,8 +1929,8 @@ class RefsMixin:
                     "   WHERE source = 'manual:open' GROUP BY ref_id"
                     ") mt ON mt.ref_id = r.ref_id "
                     f"WHERE {' AND '.join(clauses)} "
-                    "ORDER BY (mt.last_tried IS NULL) DESC, mt.last_tried ASC, "
-                    "r.created_at DESC, r.ref_id DESC "
+                    f"ORDER BY {dl_rank}(mt.last_tried IS NULL) DESC, "
+                    "mt.last_tried ASC, r.created_at DESC, r.ref_id DESC "
                     "LIMIT %s OFFSET %s",
                     params,
                 ).fetchall()
@@ -1920,7 +1942,7 @@ class RefsMixin:
             rows = conn.execute(
                 f"SELECT {_REFS_COLS_ALIASED} FROM refs r "
                 f"WHERE {' AND '.join(clauses)} "
-                f"ORDER BY r.updated_at {direction}, r.ref_id {direction} "
+                f"ORDER BY {dl_rank}r.updated_at {direction}, r.ref_id {direction} "
                 "LIMIT %s OFFSET %s",
                 params,
             ).fetchall()

@@ -144,6 +144,42 @@ def test_recent_refs_has_external_id_filter(store):
     ) == len(listed)
 
 
+def test_recent_refs_downloadable_first_ranks_doi_arxiv_ahead_of_s2(store):
+    """``downloadable_first=True`` (the "Stubs (to get)" queue) floats rows
+    with a hand-downloadable id (DOI/arXiv → a LibKey/arXiv PDF link) ahead of
+    S2-only rows, so the download queue's first page fills with openable papers
+    instead of S2-only stubs that render no download link. Regression for the
+    S2-heavy import that buried 5,598 downloadable stubs under "Untried first"."""
+    # An S2-only stub created NEWEST — under plain untried (created_at DESC) it
+    # would sort first; downloadable_first must sink it below the DOI/arXiv rows.
+    doi_stub, _ = store.upsert_stub_paper(
+        identifiers=[("doi", "10.1/dl-doi")], title="DOI paper", set_by="system"
+    )
+    arxiv_stub, _ = store.upsert_stub_paper(
+        identifiers=[("arxiv", "2401.00099")], title="arXiv paper", set_by="system"
+    )
+    s2_stub, _ = store.upsert_stub_paper(
+        identifiers=[("s2", "deadbeef" * 5)], title="S2-only paper", set_by="system"
+    )
+
+    ordered = [
+        r.id
+        for r in store.recent_refs(
+            ["paper"],
+            has_pdf=False,
+            has_external_id=True,
+            untried=True,
+            downloadable_first=True,
+        )
+        if r.id in {doi_stub, arxiv_stub, s2_stub}
+    ]
+    # Both downloadable stubs precede the S2-only one, despite it being newest.
+    assert ordered.index(s2_stub) == max(
+        ordered.index(doi_stub), ordered.index(arxiv_stub), ordered.index(s2_stub)
+    )
+    assert ordered[-1] == s2_stub
+
+
 def test_recent_refs_oldest_reverses_order(store):
     """``oldest=True`` flips the browse order to oldest-first (the
     ``/drive?sort=oldest`` facet) — the exact reverse of the default."""

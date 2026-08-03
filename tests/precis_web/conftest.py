@@ -860,6 +860,7 @@ class FakeStore(_FakeStoreBase):
         deleted=False,
         oldest=False,
         untried=False,
+        downloadable_first=False,
         limit=30,
         offset=0,
     ):
@@ -889,6 +890,7 @@ class FakeStore(_FakeStoreBase):
         self.recent_deleted = deleted
         self.recent_oldest = oldest
         self.recent_untried = untried
+        self.recent_downloadable_first = downloadable_first
         self.recent_offset = offset
         rows = self._recent_src(kinds, deleted=deleted, ref_ids=ref_ids)
         if oldest:

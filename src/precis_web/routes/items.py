@@ -175,6 +175,7 @@ def _recent_rows(
     deleted: bool = False,
     oldest: bool = False,
     untried: bool = False,
+    downloadable_first: bool = False,
 ) -> tuple[list[dict[str, Any]], bool]:
     """The no-query landing: most-recently-*edited* source items, newest
     first (``recent_refs`` orders by ``updated_at``, so a re-worked draft
@@ -212,6 +213,7 @@ def _recent_rows(
         deleted=deleted,
         oldest=oldest,
         untried=untried,
+        downloadable_first=downloadable_first,
         limit=_PAGE_SIZE + 1,
         offset=offset,
     )

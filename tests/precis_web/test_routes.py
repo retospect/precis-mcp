@@ -524,6 +524,8 @@ def test_drive_stub_queue_requires_fetchable_id(runtime, client) -> None:
     assert resp.status_code == 200
     assert runtime.store.recent_has_pdf is False
     assert runtime.store.recent_has_external_id is True
+    # …and ranks hand-downloadable (DOI/arXiv) rows ahead of S2-only ones.
+    assert runtime.store.recent_downloadable_first is True
 
 
 def test_drive_non_stub_views_do_not_require_fetchable_id(runtime, client) -> None:
@@ -533,10 +535,12 @@ def test_drive_non_stub_views_do_not_require_fetchable_id(runtime, client) -> No
     resp = client.get("/drive")
     assert resp.status_code == 200
     assert runtime.store.recent_has_external_id is None
+    assert runtime.store.recent_downloadable_first is False
 
     resp2 = client.get("/drive?paper_chunks=without")
     assert resp2.status_code == 200
     assert runtime.store.recent_has_external_id is None
+    assert runtime.store.recent_downloadable_first is False
 
 
 def test_drive_browse_shows_exact_count(client) -> None:
