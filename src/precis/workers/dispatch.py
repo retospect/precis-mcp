@@ -434,9 +434,10 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool]:
         llm_tier = row[5]
         executor_tag = row[6]
         # The parent todo's prio flows down the DAG onto the minted job so
-        # the claim ordering (slice 6a) can favour it — quests/high-prio
-        # projects get their compute claimed first. NULL stays NULL → the
-        # claim's COALESCE default (byte-identical to FIFO for unset work).
+        # the claim ordering (slice 6a, 0014 direction: lower = more urgent)
+        # can favour it — quests/urgent projects get their compute claimed
+        # first. NULL stays NULL → the claim's COALESCE default (byte-
+        # identical to FIFO for unset work).
         parent_prio = int(row[7]) if row[7] is not None else None
 
         # Planner-coroutine path: when a todo carries ``meta.llm_tier``

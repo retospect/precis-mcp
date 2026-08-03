@@ -852,9 +852,11 @@ def _job_prio(store: Store, job_id: int) -> int | None:
 
 
 def test_minted_job_inherits_parent_prio(handler: TodoHandler, store: Store) -> None:
-    """A high-prio parent todo flows its prio onto the minted job (6a)."""
+    """A parent todo's prio flows onto the minted job verbatim (6a) — this
+    only checks the value propagates unchanged, not the claim direction
+    (see ``test_claim_ordering.py`` for the 0014 ASC pin)."""
     r = handler.put(
-        text="high-prio work",
+        text="non-default-prio work",
         meta={"executor": "claude_inproc", "job_type": "fix_gripe", "params": {}},
         prio=9,
     )

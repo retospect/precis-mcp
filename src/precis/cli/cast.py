@@ -177,7 +177,7 @@ def install_cast_watches(store: Store) -> list[int]:
                 "params": {},
                 "cast_watch": cast,
             },
-            prio=2,  # the cron tier; note: prio doesn't affect job-execution order
+            prio=2,  # the cron tier; jobs claim in prio ASC order (0014, lower first)
             parent_id=watches,
         )
         store.add_tag(ref.id, Tag.closed("STATUS", "open"), set_by="system")

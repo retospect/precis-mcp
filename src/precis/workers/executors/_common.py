@@ -376,10 +376,12 @@ def claim_executor_jobs(
     invokes on its own claimed rows before running them (mirrors
     ssh_node's original inline guard, now shared).
 
-    **Claim ordering (slice 6a).** ``ORDER BY COALESCE(prio, 5) DESC,
-    ref_id ASC`` — highest ``refs.prio`` first (the dispatcher propagates
-    the parent todo's prio onto the job, so a high-prio quest/project has
-    its compute claimed ahead of commodity work), oldest-first
+    **Claim ordering (slice 6a).** ``ORDER BY COALESCE(prio, 5) ASC,
+    ref_id ASC`` — LOWER ``refs.prio`` first, the ``0014_refs_prio.sql``
+    convention every writer follows (prio=1 chat/preempt · 2 cron · 5
+    default; NULL reads as 5): the dispatcher propagates the parent
+    todo's prio onto the job, so a high-urgency (low-number) quest/
+    project has its compute claimed ahead of commodity work, oldest-first
     (``ref_id``) as the within-prio tiebreak / anti-starvation term. An
     all-unset queue collapses to ``ref_id`` ASC — the pre-6a FIFO. The
     capability-rarity term (§5.3) is layered on in 6d.
@@ -519,7 +521,7 @@ def claim_executor_jobs(
                     AND t.namespace = %s
                     AND t.value = ANY(%s)
                ){exclusion_sql}{parent_sql}
-         ORDER BY COALESCE(r.prio, %s) DESC, r.ref_id ASC
+         ORDER BY COALESCE(r.prio, %s) ASC, r.ref_id ASC
          LIMIT %s
            FOR UPDATE OF r SKIP LOCKED
         """,
@@ -539,11 +541,12 @@ def claim_executor_jobs(
     advertised = _advertised_by_host(conn)
 
     # Scarcity re-rank (6d-deferred, §5.3): capability-rarity is the FIRST
-    # claim-order key, then prio, then age. ``host_count[res]`` = how many hosts
-    # advertise ``res`` (rarer → higher scarcity). The SQL already returned rows
-    # in prio/age order and stably; re-sorting by (-scarcity, -prio, ref_id)
-    # keeps that order within a scarcity tier — so a queue with no ``requires``
-    # (scarcity 0 everywhere) is byte-identical to the pre-6d prio/age claim.
+    # claim-order key, then prio (0014 direction — LOWER is more urgent), then
+    # age. ``host_count[res]`` = how many hosts advertise ``res`` (rarer →
+    # higher scarcity). The SQL already returned rows in prio/age order and
+    # stably; re-sorting by (-scarcity, prio, ref_id) keeps that order within a
+    # scarcity tier — so a queue with no ``requires`` (scarcity 0 everywhere)
+    # is byte-identical to the pre-6d prio/age claim.
     host_count: dict[str, int] = {}
     for _h, res_set in advertised.items():
         for res in res_set:
@@ -552,7 +555,7 @@ def claim_executor_jobs(
     def _order_key(r: Any) -> tuple[float, int, int]:
         prio = int(r[3]) if r[3] is not None else _DEFAULT_JOB_PRIO
         scarcity = _scarcity(effective_requires(dict(r[2] or {})), host_count)
-        return (-scarcity, -prio, int(r[0]))
+        return (-scarcity, prio, int(r[0]))
 
     ranked = sorted(rows, key=_order_key)
     pressured = _mem_pressured_hosts(conn)

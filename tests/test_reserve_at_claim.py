@@ -157,8 +157,11 @@ def test_claim_without_requires_unaffected(store: Store) -> None:
 
 
 def test_scarcity_ranks_rare_capability_first(store: Store) -> None:
-    """A low-prio job needing a RARE capability is claimed ahead of a
-    high-prio job needing a common one (§5.3: scarcity → prio → age).
+    """A less-urgent (high-number-prio) job needing a RARE capability is
+    claimed ahead of a more-urgent (low-number-prio) job needing a common
+    one (§5.3: scarcity → prio → age) — proving scarcity is the FIRST sort
+    key, ranking above prio (0014: lower prio == more urgent) rather than
+    merely riding along with it.
 
     Uses test-unique resource tokens so the shared test DB's other rows can't
     pollute the per-resource host count that drives the scarcity score.
@@ -166,19 +169,20 @@ def test_scarcity_ranks_rare_capability_first(store: Store) -> None:
     store.sync_host_resource_slots("sc_solo", {"scarce_x": 1})  # 1 host — rare
     for h in ("sc_1", "sc_2", "sc_3"):
         store.sync_host_resource_slots(h, {"common_y": 2})  # 3 hosts — common
-    _common = _queue_job(store, executor="ex_sc", requires={"common_y": 1}, prio=9)
-    rare = _queue_job(store, executor="ex_sc", requires={"scarce_x": 1}, prio=1)
+    _common = _queue_job(store, executor="ex_sc", requires={"common_y": 1}, prio=1)
+    rare = _queue_job(store, executor="ex_sc", requires={"scarce_x": 1}, prio=9)
     rows = _claim(store, "ex_sc", "sc_1", limit=1)  # only the top-ranked
     assert [r[0] for r in rows] == [rare]
 
 
 def test_no_requires_queue_keeps_prio_age_order(store: Store) -> None:
     """With nothing requiring a capability, scarcity is 0 everywhere and the
-    claim order collapses to prio DESC, age ASC — byte-identical to pre-6d."""
+    claim order collapses to prio ASC (0014: lower == more urgent), age ASC —
+    byte-identical to pre-6d."""
     lo = _queue_job(store, executor="ex_sc2", prio=2)
     hi = _queue_job(store, executor="ex_sc2", prio=8)
     rows = _claim(store, "ex_sc2", "h1", limit=10)
-    assert [r[0] for r in rows] == [hi, lo]
+    assert [r[0] for r in rows] == [lo, hi]
 
 
 # ── 6d-deferred: soft memory-pressure veto ───────────────────────────────

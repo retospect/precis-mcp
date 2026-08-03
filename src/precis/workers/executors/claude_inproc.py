@@ -1090,10 +1090,11 @@ def _mint_auto_decompose(
     from precis.store.types import Tag
 
     # Propagate the parent's prio onto the minted job, same as the normal
-    # dispatch.py mint path (``_claim_and_dispatch``) — otherwise a
-    # high-prio parent's decompose tick lands at the claim-order default
-    # (COALESCE(prio, 5), _common.py::claim_executor_jobs) and queues behind
-    # every other prio-5+ job, defeating the point of an urgent auto-recovery.
+    # dispatch.py mint path (``_claim_and_dispatch``) — otherwise an urgent
+    # (low-number) parent's decompose tick lands at the claim-order default
+    # (COALESCE(prio, 5), _common.py::claim_executor_jobs, ASC = lower-first)
+    # and queues behind every more-urgent prio<5 job, defeating the point of
+    # an urgent auto-recovery.
     parent_prio_row = conn.execute(
         "SELECT prio FROM refs WHERE ref_id = %s", (parent_ref_id,)
     ).fetchone()

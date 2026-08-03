@@ -494,12 +494,15 @@ capability-rarity ordering + soft memory signals. `target_node` stays (node
 gate + cache-affinity hint), not retired.
 
 **Claim ordering — prio+age (slice 6a).** `claim_executor_jobs`
-(`workers/executors/_common.py`) orders `COALESCE(prio, 5) DESC, ref_id
-ASC` (was pure `ORDER BY ref_id` FIFO), and `dispatch` mints each child
-job with `prio = <parent todo's prio>` — so prio flows down the DAG and a
-high-prio quest/project claims its compute ahead of commodity work,
-oldest-first within a band. An all-unset queue is byte-identical to the
-old FIFO. The capability-rarity term (§5.3, 6d) is not yet added.
+(`workers/executors/_common.py`) orders `COALESCE(prio, 5) ASC, ref_id
+ASC` (was pure `ORDER BY ref_id` FIFO) — LOWER prio claims first, the
+`0014_refs_prio.sql` convention every prio writer follows (prio=1
+chat/preempt, 2 cron, 5 default/NULL) — and `dispatch` mints each child
+job with `prio = <parent todo's prio>` — so prio flows down the DAG and
+an urgent (low-number) quest/project claims its compute ahead of
+commodity work, oldest-first within a band. An all-unset queue is
+byte-identical to the old FIFO. The capability-rarity term (§5.3, 6d) is
+not yet added.
 
 **Boot-epoch lease + generalized crash recovery (§H cycle c,
 `docs/proposals/compute-lane-lease-epoch.md`, built).** Every worker
