@@ -42,3 +42,13 @@ precis_agent_image: "precis-agent:latest"
 # hosts in the `gateway` group; PRECIS_DREAM_SOUL_PATH points at it so the
 # `dream_agent` scheduler cadence's eligible() gate finds a readable file.
 precis_dream_soul_path: /opt/asa/etc/SOUL.md
+
+# Embedder plumbing (gr185401): same values/reasoning as the precis_worker
+# role's precis_worker_embedder* — the agent profile's embedder consumers
+# (taproot chase verify, anything through load_config()) read the ENV, and
+# without these the config default "mock"/an in-process bge-m3 (no torch in
+# this venv) is what they get. RemoteEmbedder is a pure-HTTP client; the
+# port comes from inventory all.vars.embedder_port so the daemon and the
+# precis_embedder service can never drift apart.
+precis_worker_agent_embedder: remote
+precis_worker_agent_embedder_url: "http://127.0.0.1:{{ embedder_port | default(8181) }}"

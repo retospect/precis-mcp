@@ -44,6 +44,10 @@ Environment=PGPASSFILE=/home/deploy/.pgpass
 Environment=PRECIS_DATABASE_URL={{ precis_worker_agent_dsn }}
 Environment=PRECIS_PROCESS=precis-worker-agent
 Environment=PRECIS_SOURCE=precis-worker-agent
+# Embedder plumbing (gr185401): agent-profile embedder consumers read the
+# ENV via load_config(); mirrors the precis_worker role's §F-b env block.
+Environment=PRECIS_EMBEDDER={{ precis_worker_agent_embedder }}
+Environment=PRECIS_EMBEDDER_URL={{ precis_worker_agent_embedder_url }}
 
 # Review gates — the passes we DO want here (all containerize via claude -p).
 Environment=PRECIS_STRUCTURAL_REVIEW=1

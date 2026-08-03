@@ -48,6 +48,15 @@
        `precis logs --process precis-worker-agent` filters cleanly. #}
     <key>PRECIS_PROCESS</key>
     <string>precis-worker-agent</string>
+    {# Embedder plumbing (gr185401): the agent profile's embedder
+       consumers (taproot chase verify, anything via load_config())
+       read the ENV — without these they fall back to PrecisConfig's
+       "mock" default / an in-process bge-m3 this venv can't load.
+       Mirrors the precis_worker role's §F-b env block. #}
+    <key>PRECIS_EMBEDDER</key>
+    <string>{{ precis_worker_agent_embedder }}</string>
+    <key>PRECIS_EMBEDDER_URL</key>
+    <string>{{ precis_worker_agent_embedder_url }}</string>
     {# Gate envs — set to "1" to enable the corresponding review
        pass. Clearing any of these mutes the pass without
        uninstalling. #}
