@@ -494,19 +494,63 @@ claim txn — `reserve_resource_slots` (all-or-nothing conditional decrement,
 the lock itself) stamps `meta.reserved`; an unservable job is dropped from
 the batch and waits for a host with capacity. `release_job_reservation`
 refunds at terminal (`set_status`) and on crash recovery (the sweeper,
-which writes `STATUS:failed` directly) — idempotent + capped. No prod job
-carries `requires` yet, so nothing reserves until 6d wires the compute
-job-types; the mechanism is inert until opt-in.
+which writes `STATUS:failed` directly) — idempotent + capped. `embed_batch`
+(§F cycle a, below) is the first prod job_type to carry `requires` — dark
+behind `PRECIS_MATERIALIZE_EMBED` — so the mechanism is now exercised but
+still inert for every OTHER job_type until it opts in.
 
 **6d — activation + self-gating (partial, unshipped).** `effective_requires`
 derives a job's needs from its `job_type` ServiceSpec (`struct_relax`/`fold`
-→ `{gpu:1}`); the claim reserves on `target_node`-or-local and *self-gates*
-— only a resource that host advertises is reserved, an unadvertised one
-falls back to the node-gate pin (no deploy stall). The sweeper flags a
-queued job needing an unadvertised capability with no pin
-(`_alert_unschedulable_jobs` → `scheduler` alert source). Deferred:
-capability-rarity ordering + soft memory signals. `target_node` stays (node
-gate + cache-affinity hint), not retired.
+→ `{gpu:1}`, `embed_batch` → `{embedder:1}`); the claim reserves on
+`target_node`-or-local and *self-gates* — only a resource that host
+advertises is reserved, an unadvertised one falls back to the node-gate pin
+(no deploy stall). The sweeper flags a queued job needing an unadvertised
+capability with no pin (`_alert_unschedulable_jobs` → `scheduler` alert
+source). Deferred: capability-rarity ordering + soft memory signals.
+`target_node` stays (node gate + cache-affinity hint), not retired.
+
+**`embedder` resource slot (§F cycle a, additive).** `capability_probe.py`
+advertises an `embedder` `resource_slots` row when the host's configured
+embedder answers `/readyz` (capacity `PRECIS_EMBEDDER_SLOTS`, default 1) —
+same present/absent discipline as `gpu`/`podman`/`tts`, except a failed
+probe is definitively `absent` (0), not `unknown`: unlike a flaky
+`nvidia-smi` subprocess, a failed round-trip to THIS host's own embedder
+endpoint IS the "not ready right now" signal. This is bge-m3's slot
+(ADR 0020's `precis serve-embeddings` daemon); the `llm:` rows for
+llama-swap-served models are separate (`workers/llm_serving.py`).
+
+**`job_inproc` executor (§F cycle a, new).** The generic bounded in-proc
+lane, sibling of `claude_inproc`/`ssh_node`: claims ONE job per pass tick
+via `claim_executor_jobs(respect_reserve=True, reclaim_stale_running=True)`
+and runs the job_type's `dispatch(ctx, spec)` synchronously — no submit/
+poll (nothing to detach), no kill hook (nothing to cancel mid-run), no
+coordinator semantics. Exists so a job_type that both (a) needs a counted
+`resource_slots` reservation and (b) is bounded (minutes, not hours) has a
+lane — `claude_inproc` never passes `respect_reserve`, and `ssh_node`/
+`claude_docker` are heavier-weight (remote/detached). Registers on the
+`system` profile (`_SYS`), every node, `default_profiles`-gated like
+`job_ssh_node` — not dark itself; it just has nothing to claim until a
+`job_inproc`-compatible job_type is minted.
+
+**`embed_batch` job_type + the `materialize` cadence (§F cycle a, dark).**
+`embed_batch` (`workers/job_types/embed_batch.py`) is a bounded work order
+that drains up to `params.limit` (default 2000) chunks through the SAME
+derived-queue `claim_batch`/`EmbedHandler` machinery the standing `embed`
+pass uses (ADR 0007 — share, don't duplicate the fine-grained queue), so
+the two can run concurrently without conflict (the chunk-level
+`chunk_claims` lease dedupes). `EmbedderUnavailable` mid-run fails the JOB
+`failure_class="infra"` (not the chunks) — no retry-in-job, no mint-fail
+loop. The `materialize` scheduler cadence (`workers/materialize.py`, 300s,
+fleet-singleton via the lease — mirrors `health_digest`'s
+`ref_pass=True`/no-`default_profiles` shape) mints bounded `embed_batch`
+jobs (`prio=8`) only above `PRECIS_EMBED_BACKLOG_HIGH` (default 500) and
+only when none are already live, with a 15-min failed-job cooldown —
+hysteresis coalesces churn into few large batches. **Entirely dark unless
+`PRECIS_MATERIALIZE_EMBED=1`** — with it unset, `run_materialize_pass` is a
+pure no-op and the standing `embed` pass drains exactly as before. Cutting
+the standing pass over to this materialized path (retiring the always-on
+embedder daemon in favor of a slot-bounded batch-drainer) is §F cycle b,
+together with elastic embedder residency.
 
 **Claim ordering — prio+age (slice 6a).** `claim_executor_jobs`
 (`workers/executors/_common.py`) orders `COALESCE(prio, 5) ASC, ref_id

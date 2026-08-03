@@ -54,6 +54,7 @@ _EXPECTED_SYSTEM = frozenset(
         "job_coordinator",
         "wake_runner",
         "job_ssh_node",
+        "job_inproc",
         "clusterize",
         "corpus_reconcile",
         "paper_reconcile",

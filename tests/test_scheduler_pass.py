@@ -317,6 +317,47 @@ def test_health_digest_service_spec_is_manual_only(store) -> None:
     assert spec.enable_env is None
 
 
+def test_materialize_cadence_is_host_agnostic_every_5min(store) -> None:
+    """§F cycle a: the materialize cadence has no host_affinity/eligible
+    gate — any live worker can win it, mirroring health_digest — at the
+    documented 300s interval."""
+    from precis.workers.scheduler import CADENCES
+
+    cad = next(c for c in CADENCES if c.name == "materialize")
+    assert cad.interval_s == 300
+    assert cad.host_affinity is None
+    assert cad.eligible is None
+    assert cad.resolve_interval is None
+
+
+def test_materialize_cadence_fires_the_pass(store, monkeypatch) -> None:
+    """The cadence's ``run`` calls into ``run_materialize_pass`` — cover the
+    wiring, not the pass's own behaviour (``tests/workers/
+    test_materialize.py``). Dark by default (PRECIS_MATERIALIZE_EMBED
+    unset) so the inner pass no-ops, but the cadence itself still fires
+    cleanly (claimed=1, ok=1) — the lease claim doesn't know or care that
+    the work inside is dark."""
+    monkeypatch.delenv("PRECIS_MATERIALIZE_EMBED", raising=False)
+    from precis.workers.scheduler import CADENCES
+
+    cad = next(c for c in CADENCES if c.name == "materialize")
+    r = run_scheduler_pass(store, host="h", cadences=(cad,))
+    assert (r.claimed, r.ok, r.failed) == (1, 1, 0)
+
+
+def test_materialize_service_spec_is_manual_only(store) -> None:
+    """§F cycle a: ``ref_pass=True`` for the totality-test wiring site, but
+    NO ``default_profiles`` — mirrors ``health_digest``: the standing
+    trigger is the cadence's lease claim, not the default per-cycle
+    rotation."""
+    from precis.workers.registry import SERVICES_BY_NAME
+
+    spec = SERVICES_BY_NAME["materialize"]
+    assert spec.ref_pass is True
+    assert spec.default_profiles == frozenset()
+    assert spec.enable_env is None
+
+
 def test_anki_sync_cadence_ineligible_by_default(store, monkeypatch) -> None:
     """``PRECIS_ANKI_ENABLED`` unset (the test default) ⇒ the ``anki_sync``
     cadence's ``eligible`` gate is False, so it never claims."""

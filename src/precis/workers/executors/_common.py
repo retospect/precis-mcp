@@ -287,6 +287,56 @@ def _mem_pressured_hosts(conn: Connection) -> set[str]:
     return {str(r[0]) for r in rows}
 
 
+def renew_lease_if_mine(
+    conn: Connection, ref_id: int, meta: dict[str, Any], lease_seconds: int
+) -> bool:
+    """Renew ``ref_id``'s ``lease_until`` IFF this claim's lease identity
+    still matches the DB row right now — the "still mine" half of a
+    long-running in-proc drain loop's mid-run lease keepalive (e.g.
+    ``job_inproc``'s ``embed_batch``, whose ``params.limit`` batch can run
+    past ``PRECIS_JOB_INPROC_LEASE_S`` on a slow embedder).
+
+    Compares ``meta``'s ``lease_boot_id``/``lease_process``/``lease_host``
+    — the SAME triple :func:`claim_executor_jobs`'s ``_stamp_lease_identity``
+    stamped at claim time — against the row's CURRENT values, using
+    null-safe ``IS NOT DISTINCT FROM`` on all three (a worker with no
+    minted boot_id stamps all-``None`` identity — see
+    :func:`_this_worker_lease_identity` — and plain SQL ``=`` never
+    matches ``NULL = NULL``, which would make every renewal on such a
+    worker spuriously "fail").
+
+    Returns ``True`` (lease extended by ``lease_seconds``) when the
+    identity still matches; ``False`` when the row's identity has since
+    changed (or the row is gone) — i.e. another worker generation has
+    already reclaimed it (epoch or expiry arm) while this one kept
+    running. The caller MUST stop its work immediately without writing a
+    terminal status on a lost lease: the new claimant now owns the job and
+    will drive it to completion (or failure) itself; a stale write here
+    would race it.
+    """
+    row = conn.execute(
+        """
+        UPDATE refs
+           SET meta = meta || jsonb_build_object(
+                 'lease_until', (now() + make_interval(secs => %s))::text
+               )
+         WHERE ref_id = %s
+           AND meta->>'lease_boot_id' IS NOT DISTINCT FROM %s
+           AND meta->>'lease_process' IS NOT DISTINCT FROM %s
+           AND meta->>'lease_host' IS NOT DISTINCT FROM %s
+         RETURNING ref_id
+        """,
+        (
+            lease_seconds,
+            ref_id,
+            meta.get("lease_boot_id"),
+            meta.get("lease_process"),
+            meta.get("lease_host"),
+        ),
+    ).fetchone()
+    return row is not None
+
+
 def release_job_reservation(conn: Connection, ref_id: int) -> None:
     """Refund + clear a job's ``meta.reserved`` slots (idempotent).
 
@@ -958,6 +1008,7 @@ __all__ = [
     "poison_guard",
     "record_failure",
     "release_job_reservation",
+    "renew_lease_if_mine",
     "reserve_host",
     "set_meta",
     "set_status",

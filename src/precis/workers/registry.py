@@ -282,6 +282,23 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-health-digest-help",
     ),
     ServiceSpec(
+        # §F cycle a (docs/proposals/cluster-scheduling.md §F). Fleet-
+        # singleton via the `materialize` scheduler cadence (workers/
+        # scheduler.py, 300s) — same shape as `health_digest` just above:
+        # NOT `default_profiles`, so this registration is for a manual
+        # `--only materialize` run only; the standing trigger is the
+        # cadence's lease claim. DARK unless PRECIS_MATERIALIZE_EMBED=1 —
+        # see workers/materialize.py's module docstring.
+        name="materialize",
+        label="Demand materializer (§F)",
+        category="jobs",
+        kind=ServiceKind.PASS,
+        ref_pass=True,
+        one_line="Mints bounded embed_batch jobs above the backlog "
+        "high-water mark; dark until PRECIS_MATERIALIZE_EMBED=1.",
+        doc_skill="precis-job-help",
+    ),
+    ServiceSpec(
         # §A: the collection+upsert core moved to workers/heartbeat.py so it
         # can run as a per-host pass too, not just the manual/timer-fired
         # `precis heartbeat` CLI. Deliberately NOT on scheduler_leases —
@@ -347,6 +364,20 @@ SERVICES: tuple[ServiceSpec, ...] = (
         default_profiles=_SYS,
         ref_pass=True,
         one_line="Drain jobs that shell out to a remote node.",
+        doc_skill="precis-job-help",
+    ),
+    ServiceSpec(
+        # §F cycle a: the generic in-proc lane for a BOUNDED job_type
+        # (embed_batch is the first) that also needs slot reservation
+        # (respect_reserve=True) — see workers/executors/job_inproc.py.
+        name="job_inproc",
+        label="In-process job executor (bounded, generic)",
+        category="jobs",
+        kind=ServiceKind.PASS,
+        default_profiles=_SYS,
+        ref_pass=True,
+        one_line="Drain bounded in-proc job_types one-per-tick "
+        "(embed_batch is the first).",
         doc_skill="precis-job-help",
     ),
     ServiceSpec(
@@ -514,6 +545,22 @@ SERVICES: tuple[ServiceSpec, ...] = (
         enable_env="PRECIS_SANDBOX_ENABLED",
         requires=frozenset({"podman"}),
         one_line="Drain sandbox_run jobs in a cgroup-capped container.",
+        doc_skill="precis-job-help",
+    ),
+    ServiceSpec(
+        # §F cycle a: the first `requires`-carrying job_type (not a pass/
+        # compute-lane row) — `effective_requires` derives {'embedder': 1}
+        # from THIS row's `requires`, matching struct_relax/fold's
+        # gpu-derivation shape. `kind=ServiceKind.JOB` (a job_type drained
+        # by an executor pass), not PASS/COMPUTE: `job_inproc` is the
+        # executor pass that drains it, registered separately above.
+        name="embed_batch",
+        label="Embed batch (job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        requires=frozenset({"embedder"}),
+        one_line="Bounded work order draining the derived embed queue "
+        "(ADR 0007) — minted by the materialize cadence, dark by default.",
         doc_skill="precis-job-help",
     ),
     ServiceSpec(

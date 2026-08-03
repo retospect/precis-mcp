@@ -20,6 +20,8 @@ _OVERRIDE_ENVS = (
     "PRECIS_PODMAN_SLOTS",
     "PRECIS_TTS_SLOTS",
     "PRECIS_TTS_IMAGE",
+    "PRECIS_EMBEDDER_SLOTS",
+    "PRECIS_EMBEDDER_URL",
 )
 
 
@@ -40,7 +42,7 @@ def test_vocabulary_derives_from_registry() -> None:
     """The evaluated set is exactly the union of every ``requires`` token."""
     vocab = cap.capability_vocabulary()
     # The capabilities services declare today.
-    assert {"gpu", "podman", "tts"} <= vocab
+    assert {"gpu", "podman", "tts", "embedder"} <= vocab
     # Every probe key is a real capability some service requires (no orphans).
     assert set(cap._PROBES) <= vocab
 
@@ -196,6 +198,55 @@ def test_tts_absent(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cap._probe_tts() == 0
 
 
+# ── embedder (§F cycle a) ─────────────────────────────────────────────
+
+
+def test_embedder_env_override_wins(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PRECIS_EMBEDDER_SLOTS", "3")
+    # Override bypasses the readyz probe entirely (mirrors gpu/podman/tts).
+    monkeypatch.setattr(cap, "_embedder_ready", lambda url: False)
+    assert cap._probe_embedder() == 3
+
+
+def test_embedder_absent_without_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PRECIS_EMBEDDER_URL", raising=False)
+    assert cap._probe_embedder() == 0
+
+
+def test_embedder_present_when_readyz_answers(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PRECIS_EMBEDDER_URL", "http://127.0.0.1:8181")
+    monkeypatch.setattr(cap, "_embedder_ready", lambda url: True)
+    assert cap._probe_embedder() == cap._EMBEDDER_DEFAULT_SLOTS
+
+
+def test_embedder_unknown_when_configured_but_readyz_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A URL IS configured but the probe ATTEMPT fails (timeout,
+    connection error, non-200) is UNKNOWN (None), mirroring gpu/tts — NOT
+    absent (0). A busy daemon missing one 3s /readyz round-trip must not
+    retract its resource_slots row (that would silently drop the claim
+    gate exactly when the host is busiest)."""
+    monkeypatch.setenv("PRECIS_EMBEDDER_URL", "http://127.0.0.1:8181")
+    monkeypatch.setattr(cap, "_embedder_ready", lambda url: False)
+    assert cap._probe_embedder() is None
+
+
+def test_embedder_uses_first_endpoint_of_comma_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PRECIS_EMBEDDER_URL", "http://127.0.0.1:8181,http://other:8181")
+    seen: list[str] = []
+
+    def _ready(url: str) -> bool:
+        seen.append(url)
+        return True
+
+    monkeypatch.setattr(cap, "_embedder_ready", _ready)
+    assert cap._probe_embedder() == cap._EMBEDDER_DEFAULT_SLOTS
+    assert seen == ["http://127.0.0.1:8181"]
+
+
 # ── probe_host_resources: the safe aggregate ────────────────────────────
 
 
@@ -206,10 +257,12 @@ def test_probe_host_resources_covers_vocabulary(
     monkeypatch.setattr(cap, "find_spec", lambda name: None)
     result = cap.probe_host_resources()
     assert set(result) == set(cap.capability_vocabulary())
-    # a bare host: no nvidia-smi, no podman, no tts → all definitively absent
+    # a bare host: no nvidia-smi, no podman, no tts, no embedder URL →
+    # all definitively absent
     assert result["gpu"] == 0
     assert result["podman"] == 0
     assert result["tts"] == 0
+    assert result["embedder"] == 0
 
 
 def test_probe_host_resources_unknown_for_missing_probe(

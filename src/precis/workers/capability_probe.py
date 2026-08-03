@@ -31,9 +31,12 @@ import logging
 import os
 import shutil
 import subprocess
+import urllib.error
+import urllib.request
 from collections.abc import Callable
 from importlib.util import find_spec
 
+from precis.embedder_wire import PATH_READY
 from precis.workers.registry import SERVICES
 
 log = logging.getLogger(__name__)
@@ -190,12 +193,81 @@ def _probe_tts() -> int:
     return 0
 
 
+#: Default embedder slot capacity when the readyz probe succeeds and no
+#: ``PRECIS_EMBEDDER_SLOTS`` override is set. bge-m3 batches internally
+#: (``EmbedHandler``/``embed_batch`` already forward-pass a whole claimed
+#: batch at once), so 1 concurrent *reservation* is the safe default — a
+#: host that can genuinely run more sets the override.
+_EMBEDDER_DEFAULT_SLOTS = 1
+
+#: Short — this probe is a live network round-trip to a service on THIS
+#: host (loopback-ish), not a flaky remote call; a slow/hung answer should
+#: read as absent quickly rather than stalling the heartbeat cycle.
+_EMBEDDER_PROBE_TIMEOUT_S = 3.0
+
+
+def _embedder_ready(url: str) -> bool:
+    """``GET <url>/readyz`` → ``True`` on HTTP 200, ``False`` otherwise
+    (non-200, connection refused, timeout — anything that isn't a clean
+    ready answer). Extracted so tests can monkeypatch this one seam
+    instead of mocking ``urllib`` internals (mirrors ``shutil.which`` /
+    ``find_spec`` being the other probes' injectable seam)."""
+    req = urllib.request.Request(url.rstrip("/") + PATH_READY, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=_EMBEDDER_PROBE_TIMEOUT_S) as resp:
+            return int(resp.status) == 200
+    except (urllib.error.URLError, OSError, ValueError, TimeoutError):
+        return False
+
+
+def _probe_embedder() -> int | None:
+    """Embedder slot count: ``PRECIS_EMBEDDER_SLOTS`` override, else 1 if
+    this host's configured embedder (``PRECIS_EMBEDDER_URL``, the same
+    endpoint :class:`precis.embedder.RemoteEmbedder` reads — the first
+    endpoint when several are comma-listed) answers ``/readyz``.
+
+    Mirrors the ``gpu``/``tts`` three-outcome discipline (module
+    docstring), NOT a two-outcome present/absent probe: no
+    ``PRECIS_EMBEDDER_URL`` configured at all is the definitive **absent**
+    (``0``) — this host was never told to run an embedder, so there's
+    nothing to advertise or retract. A URL IS configured but the probe
+    ATTEMPT fails (timeout, connection refused, non-200 — anything
+    :func:`_embedder_ready` returns ``False`` for) is **unknown**
+    (``None``, leave the row) — a 3s ``/readyz`` timeout while the daemon
+    is busy serving a large batch must not retract the slot: doing so
+    deletes the ``resource_slots`` row, and the claim path's
+    unadvertised-requires fallback (``_common.claim_executor_jobs``'s
+    self-gating) then claims ``embed_batch`` jobs with NO reservation at
+    all — the capacity gate silently disappears exactly when the host is
+    busiest. The heartbeat re-advertises the instant ``/readyz`` answers
+    again either way. This is bge-m3's slot (ADR 0020's ``precis
+    serve-embeddings`` daemon); the ``llm:`` rows for llama-swap-served
+    models are advertised separately by :mod:`precis.workers.llm_serving`.
+    """
+    override = _env_slots("PRECIS_EMBEDDER_SLOTS")
+    if override is not None:
+        return override
+    # PRECIS_EMBEDDER_URL is a Tier-1 PrecisConfig field (embedder_url) —
+    # read via load_config(), not raw os.environ (docs/conventions/
+    # env-vars.md; tests/test_env_config_policy.py guards this).
+    from precis.config import load_config
+
+    url = load_config().embedder_url
+    if not url:
+        return 0
+    endpoint = url.split(",", 1)[0].strip()
+    if not endpoint:
+        return 0
+    return _EMBEDDER_DEFAULT_SLOTS if _embedder_ready(endpoint) else None
+
+
 #: Capability token → its presence probe. A probe returns a capacity
 #: (``> 0`` present, ``0`` absent) or ``None`` (unknown — leave the row).
 _PROBES: dict[str, Callable[[], int | None]] = {
     "gpu": _probe_gpu,
     "podman": _probe_podman,
     "tts": _probe_tts,
+    "embedder": _probe_embedder,
 }
 
 

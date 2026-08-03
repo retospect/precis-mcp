@@ -145,6 +145,30 @@ def test_active_reserve_blocks_claude_docker_style_claim(store: Store) -> None:
     assert rows == []
 
 
+def test_active_reserve_blocks_job_inproc_style_claim(store: Store) -> None:
+    """§F cycle a: ``job_inproc`` passes ``respect_reserve=True`` too — the
+    box-heavy bounded lane, same as ``ssh_node``/``claude_docker``."""
+    rid = _queue_job(store, executor="job_inproc")
+    set_reserve(store, "melchior", hours=1.0)
+    with store.pool.connection() as conn:
+        rows = claim_executor_jobs(
+            conn,
+            executor="job_inproc",
+            limit=10,
+            reserve_host_id="melchior",
+            respect_reserve=True,
+        )
+        conn.commit()
+    assert rows == []
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id) "
+            "WHERE rt.ref_id = %s AND t.namespace = 'STATUS' AND t.value = 'queued'",
+            (rid,),
+        ).fetchone()
+    assert row is not None  # untouched, still queued
+
+
 def test_reserve_does_not_gate_a_call_that_opts_out(store: Store) -> None:
     """coordinator / claude_inproc never pass respect_reserve — the light
     cloud lane keeps running even while the box is reserved."""

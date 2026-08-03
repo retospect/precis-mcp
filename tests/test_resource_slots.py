@@ -39,6 +39,28 @@ def test_sync_leaves_unknown_untouched(store) -> None:
     assert slots[0].capacity == 1
 
 
+def test_embedder_probe_timeout_leaves_row_untouched(store, monkeypatch) -> None:
+    """A configured-but-timing-out embedder probe reads ``unknown`` (None),
+    not ``absent`` (0) — the capacity-1 row must survive a transient
+    ``/readyz`` miss (e.g. a 3s timeout while the daemon is busy serving a
+    batch), not get deleted out from under the claim path's reservation
+    gate."""
+    from precis.workers import capability_probe as cap
+
+    store.sync_host_resource_slots("melchior", {"embedder": 1})
+    monkeypatch.setenv("PRECIS_EMBEDDER_URL", "http://127.0.0.1:8181")
+    monkeypatch.delenv("PRECIS_EMBEDDER_SLOTS", raising=False)
+    monkeypatch.setattr(cap, "_embedder_ready", lambda url: False)
+
+    verdict = cap._probe_embedder()
+    assert verdict is None
+    store.sync_host_resource_slots("melchior", {"embedder": verdict})
+
+    slots = store.resource_slots_for_host("melchior")
+    assert [s.resource for s in slots] == ["embedder"]
+    assert slots[0].capacity == 1
+
+
 def test_capacity_change_adjusts_free_by_delta(store) -> None:
     """Growing capacity grows free by the same delta (no stomp)."""
     store.sync_host_resource_slots("melchior", {"podman": 2})

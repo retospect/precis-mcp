@@ -208,6 +208,7 @@ _REF_PASS_PRIORITY: dict[str, PassBand] = {
     "_job_claude_inproc_pass": PassBand.JOB,
     "_job_coordinator_pass": PassBand.JOB,
     "_job_ssh_node_pass": PassBand.JOB,
+    "_job_inproc_pass": PassBand.JOB,
     "_job_claude_docker_pass": PassBand.JOB,
     "_wake_runner_pass": PassBand.JOB,
     "_auto_check_pass": PassBand.PLANNER,
@@ -980,6 +981,26 @@ def run(args: argparse.Namespace) -> None:
                 )
 
             ref_passes.append(_job_ssh_node_pass)
+
+        # job_inproc — §F cycle a: the generic bounded in-proc lane
+        # (embed_batch is the first job_type). One job per pass tick
+        # (limit=1) — a claimed job runs synchronously and must self-limit
+        # its own work (minutes, not hours). See
+        # workers/executors/job_inproc.py.
+        if _register("job_inproc"):
+            from precis.workers.executors.job_inproc import run_job_inproc_pass
+            from precis.workers.runner import BatchResult as _BatchResult
+
+            def _job_inproc_pass(batch_size: int) -> _BatchResult:
+                r = run_job_inproc_pass(store, limit=1)
+                return _BatchResult(
+                    handler="job_inproc",
+                    claimed=r["claimed"],
+                    ok=r["ok"],
+                    failed=r["failed"],
+                )
+
+            ref_passes.append(_job_inproc_pass)
 
         # job_claude_docker — drains sandbox_run jobs (meta.executor==
         # 'claude_docker') by launching a detached, cgroup-capped
@@ -1929,6 +1950,23 @@ def run(args: argparse.Namespace) -> None:
                 return run_health_digest_pass(store)
 
             ref_passes.append(_health_digest_pass)
+
+        # materialize — §F cycle a (docs/proposals/cluster-scheduling.md
+        # §F). Same shape as health_digest just above: this registration is
+        # for a manual/ad-hoc `--only materialize` run only (no
+        # `default_profiles`, no `enable_env`). The STANDING trigger is the
+        # `materialize` scheduler-lease cadence (workers/scheduler.py
+        # CADENCES, 300s, host-agnostic), which calls `run_materialize_pass`
+        # directly. DARK unless PRECIS_MATERIALIZE_EMBED=1 — see
+        # workers/materialize.py.
+        if _register("materialize"):
+            from precis.workers.materialize import run_materialize_pass
+            from precis.workers.runner import BatchResult as _BatchResult
+
+            def _materialize_pass(batch_size: int) -> _BatchResult:
+                return run_materialize_pass(store)
+
+            ref_passes.append(_materialize_pass)
 
         # Real work before background I/O. The run loop is sequential
         # per cycle, so ordering is priority: job execution + planner

@@ -167,6 +167,23 @@ def _run_health_digest(store: Any, batch_size: int) -> None:
     )
 
 
+def _run_materialize(store: Any, batch_size: int) -> None:
+    """One demand-materializer tick (§F cycle a, ``docs/proposals/
+    cluster-scheduling.md`` §F), fired from the host-agnostic
+    ``materialize`` cadence (any live worker can win it — unpinned, like
+    ``health_digest``). ``batch_size`` is unused. DARK unless
+    ``PRECIS_MATERIALIZE_EMBED=1`` — see workers/materialize.py."""
+    from precis.workers.materialize import run_materialize_pass
+
+    result = run_materialize_pass(store)
+    log.info(
+        "scheduler: materialize inner result claimed=%d ok=%d failed=%d",
+        result.claimed,
+        result.ok,
+        result.failed,
+    )
+
+
 def _dream_agent_eligible() -> bool:
     from precis.workers.dream_agent import eligible
 
@@ -217,6 +234,11 @@ CADENCES: tuple[Cadence, ...] = (
     # §A's lease machinery IS the fleet-singleton throttle, so
     # workers/health_digest.py doesn't invent its own.
     Cadence(name="health_digest", interval_s=3600, run=_run_health_digest),
+    # §F cycle a: the demand materializer. Host-agnostic like health_digest
+    # — any live worker can win it. DARK unless PRECIS_MATERIALIZE_EMBED=1
+    # (workers/materialize.py); this cadence firing every 5 min is itself
+    # harmless — the pass no-ops until the flag is set.
+    Cadence(name="materialize", interval_s=300, run=_run_materialize),
     Cadence(
         name="dream_agent",
         interval_s=15 * 60,

@@ -147,6 +147,11 @@ everywhere; only `python` stays hidden (no `PRECIS_PYTHON_ROOTS`).
 | `PRECIS_WAKE_DEADLINE_HOURS` | Fallback child-deadlock deadline (§H piece 5, `executors/coordinator.py`) for a `children_done` park whose children declare NO `params.resources.wall_seconds` budget at all — `wake_runner` re-queues a past-deadline `waiting_children` parent "woken-degraded" instead of waiting on a wake condition an unschedulable child might never satisfy. | `6.0` | not set ⇒ `6.0` | ✅ New (§H cycle c). |
 | `PRECIS_SUMMARIZE_CONCURRENCY` | LLM-summarize concurrency | `3` | `1` on melchior | ✅ Deliberately throttled on the loaded host. |
 | `PRECIS_SUMMARIZE_TIMEOUT` | LLM-summarize per-call timeout | `120.0` | `120` on melchior | ✅ Explicit = default. |
+| `PRECIS_MATERIALIZE_EMBED` | §F cycle a dark-ship flag (`workers/materialize.py`) — the whole `materialize` cadence is a pure no-op unless set. | off | not set | ✅ New (§F cycle a). Intentionally dark — cutover to the materialized embed path is §F cycle b. |
+| `PRECIS_EMBED_BACKLOG_HIGH` | Unembedded-chunk backlog high-water mark above which `materialize` mints bounded `embed_batch` jobs. | `500` | not set ⇒ `500` | ✅ New (§F cycle a). Inert while `PRECIS_MATERIALIZE_EMBED` is unset. |
+| `PRECIS_EMBED_BATCH_MAX_JOBS` | Max `embed_batch` jobs `materialize` mints in one tick (`min(ceil(backlog/limit), this)`). | `4` | not set ⇒ `4` | ✅ New (§F cycle a). Inert while `PRECIS_MATERIALIZE_EMBED` is unset. |
+| `PRECIS_EMBEDDER_SLOTS` | `embedder` `resource_slots` capacity override (`capability_probe.py`) — bypasses the `/readyz` probe entirely, same as `PRECIS_GPU_COUNT`/`PRECIS_PODMAN_SLOTS`. | `1` when `/readyz` answers, else `0` | not set ⇒ probed | ✅ New (§F cycle a). Additive — advertises regardless of `PRECIS_MATERIALIZE_EMBED`; only consumed once a `requires={'embedder'}` job_type (`embed_batch`) actually claims. |
+| `PRECIS_JOB_INPROC_LEASE_S` | Claim lease window (seconds) for the `job_inproc` executor (`workers/executors/job_inproc.py`) — must outlive the bounded work order. | `1800` | not set ⇒ `1800` | ✅ New (§F cycle a). |
 
 ---
 

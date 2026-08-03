@@ -282,6 +282,14 @@ def _load_good_search() -> JobTypeSpec:
     return good_search.SPEC
 
 
+def _load_embed_batch() -> JobTypeSpec:
+    # Bounded in-proc work order draining the derived embed queue (§F
+    # cycle a). Runs via plugin dispatch under the job_inproc executor.
+    from precis.workers.job_types import embed_batch
+
+    return embed_batch.SPEC
+
+
 def _load_quest_tick() -> JobTypeSpec:
     # Perpetual catalyst-quest loop (harvest → review+propose → dispatch sims →
     # wait → repeat). Runs via plugin dispatch under the coordinator executor.
@@ -476,6 +484,9 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "quest_tick":
         _REGISTRY["quest_tick"] = _load_quest_tick()
         return _REGISTRY["quest_tick"]
+    if name == "embed_batch":
+        _REGISTRY["embed_batch"] = _load_embed_batch()
+        return _REGISTRY["embed_batch"]
     # Fall through to plugin-discovered specs. Cached on first
     # lookup so subsequent calls are cheap.
     plugins = _get_plugin_specs()
@@ -508,6 +519,7 @@ def known_job_types() -> list[str]:
         "good_search",
         "good_search_triage",
         "quest_tick",
+        "embed_batch",
     ]
     plugin_names = sorted(_get_plugin_specs())
     # Built-ins first so the error-message ordering is stable for

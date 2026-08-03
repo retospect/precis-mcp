@@ -12,11 +12,11 @@ Mismatched-dim embedders raise on INSERT — caller should pre-check
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from psycopg import Connection
 
-from precis.embedder import Embedder, EmbedderUnavailable
+from precis.embedder import Embedder, EmbedderUnavailable, make_embedder
 from precis.workers.base import ChunkRow, WorkerHandler
 
 
@@ -195,4 +195,91 @@ class EmbedHandler(WorkerHandler):
         )
 
 
-__all__ = ["EmbedHandler"]
+def resolve_embedder(
+    *,
+    name: str | None = None,
+    dim: int = 1024,
+    url: str | None = None,
+    timeout: float | None = None,
+    max_retries: int | None = None,
+) -> Embedder:
+    """Build the configured :class:`~precis.embedder.Embedder` from
+    explicit args, falling back to ``PrecisConfig`` (Tier 1 —
+    ``load_config()``, not raw env: ``embedder``/``embedder_url``/
+    ``embedder_timeout``/``embedder_max_retries`` are all ``PrecisConfig``
+    fields). Extracted here (§F cycle a) so a caller with no
+    ``argparse.Namespace`` — ``embed_batch``'s job dispatch — doesn't have
+    to re-derive them; ``cli/worker.py``'s ``_resolve_embedder`` reads the
+    SAME fields via its argparse ``--embedder*`` flags (env-defaulted at
+    parse time in the bootstrap zone). Raises ``ValueError`` for an
+    unknown embedder name or a missing ``remote`` URL (see
+    :func:`~precis.embedder.make_embedder`).
+    """
+    from precis.config import load_config
+
+    cfg = load_config()
+    return make_embedder(
+        name or cfg.embedder,
+        dim=dim,
+        url=url if url is not None else cfg.embedder_url,
+        timeout=timeout if timeout is not None else cfg.embedder_timeout,
+        max_retries=(
+            max_retries if max_retries is not None else cfg.embedder_max_retries
+        ),
+    )
+
+
+def unembedded_chunk_count(conn: Connection) -> int:
+    """Chunks still needing the corpus's default embedder's vector — the
+    SAME predicate :class:`EmbedHandler`'s derived-queue claim
+    (``WorkerHandler._claim_fresh``) uses: no current, non-stale
+    ``chunk_embeddings`` row for that model, excluding
+    ``chunk_kind='references'`` and ``meta.no_index`` chunks.
+
+    Read-only — no ``chunk_claims`` lease is taken or consulted, so this is
+    a backlog *count* (including chunks a live worker already has leased),
+    not "claimable right now".
+
+    The target model is resolved via ``embedders.is_default = TRUE`` (the
+    same anchor :meth:`~precis.store.Store.embedding_dim` uses) rather
+    than constructing a live ``Embedder`` — resolving it that way would
+    cost a network round-trip (``RemoteEmbedder.model``) and could itself
+    raise when the embedder is down, which a cheap periodic backlog count
+    must never depend on.
+
+    Shared by the ``materialize`` cadence (backlog high-water threshold)
+    and ``embed_batch`` (the "queue_remaining" summary figure) so the two
+    can never disagree about what "backlog" means (§F cycle a).
+    """
+    row = conn.execute(
+        "SELECT name FROM embedders WHERE is_default = TRUE ORDER BY name LIMIT 1"
+    ).fetchone()
+    if row is None:
+        return 0
+    model_name = str(row[0])
+    skip_kinds = EmbedHandler.skip_chunk_kinds
+    skip_clause = ""
+    params: list[Any] = [model_name]
+    if skip_kinds:
+        skip_clause = "AND c.chunk_kind <> ALL(%s)"
+        params.append(list(skip_kinds))
+    count_row = conn.execute(
+        f"""
+        SELECT count(*)
+          FROM chunks c
+         WHERE NOT EXISTS (
+                 SELECT 1 FROM {EmbedHandler.output_table} o
+                  WHERE o.chunk_id = c.chunk_id
+                    AND o.{EmbedHandler.model_column} = %s
+                    AND (o.status = 'failed'
+                         OR o.content_sha IS NOT DISTINCT FROM c.content_sha)
+               )
+           AND (c.meta->>'no_index') IS DISTINCT FROM 'true'
+           {skip_clause}
+        """,
+        params,
+    ).fetchone()
+    return int(count_row[0]) if count_row else 0
+
+
+__all__ = ["EmbedHandler", "resolve_embedder", "unembedded_chunk_count"]

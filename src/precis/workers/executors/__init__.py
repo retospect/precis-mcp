@@ -54,6 +54,15 @@ EXECUTOR_PROVIDES: dict[str, frozenset[str]] = {
     # sandbox hosts), so this capability set is only *satisfiable*
     # there; a data host without podman + the OAuth token can't run it.
     "claude_docker": frozenset({"podman", "claude_oauth"}),
+    # ``job_inproc`` (§F cycle a) runs a BOUNDED job_type's plugin
+    # ``dispatch`` in-process, synchronously, one per pass tick — the
+    # generic sibling of ``claude_inproc`` for non-claude work that also
+    # wants slot reservation (``respect_reserve=True``). Empty PROVIDES:
+    # the actual resource gate (``embed_batch`` needing an ``embedder``
+    # slot) is the separate `resource_slots` reservation
+    # (``ServiceSpec.requires`` / ``effective_requires``), not this
+    # executor-capability check.
+    "job_inproc": frozenset(),
 }
 
 

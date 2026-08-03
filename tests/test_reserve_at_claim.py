@@ -314,6 +314,45 @@ def test_epoch_reclaim_refunds_stale_reservation_before_re_reserving(
     assert _free(store, host, "gpu") == 0
 
 
+# ── §F cycle a acceptance: free=0 two-claim race ──────────────────────────
+
+
+def test_free_zero_two_claim_race_exactly_one_wins(store: Store) -> None:
+    """Two concurrent claims racing for a capacity-1 resource (the shape
+    ``job_inproc``'s ``embed_batch`` uses against the ``embedder`` slot) —
+    the all-or-nothing conditional decrement inside ``claim_executor_jobs``
+    IS the lock: exactly one of the two queued jobs claims the slot, the
+    other stays queued. Driven with a REAL concurrent race (two threads,
+    two pool connections), not sequential same-connection calls, so the
+    row-lock on the shared ``resource_slots`` row is actually contended."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    store.sync_host_resource_slots("race_host", {"embedder": 1})
+    j1 = _queue_job(store, executor="ex_race", requires={"embedder": 1})
+    j2 = _queue_job(store, executor="ex_race", requires={"embedder": 1})
+
+    def _do_claim() -> list[tuple[int, str, dict[str, object]]]:
+        return _claim(store, "ex_race", "race_host", limit=1)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(_do_claim) for _ in range(2)]
+        results = [f.result() for f in futures]
+
+    claimed_ids = [r[0][0] for r in results if r]
+    assert len(claimed_ids) == 1  # exactly one claim across both racers
+    assert claimed_ids[0] in (j1, j2)
+    assert _free(store, "race_host", "embedder") == 0  # the winner holds it
+
+    # The loser's job is untouched — still queued, no reservation stamped.
+    loser = j2 if claimed_ids[0] == j1 else j1
+    with store.pool.connection() as conn:
+        meta_row = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s", (loser,)
+        ).fetchone()
+    assert meta_row is not None
+    assert "reserved" not in meta_row[0]
+
+
 # ── requires derivation + target_node host + self-gating (slice 6d) ───────
 
 
