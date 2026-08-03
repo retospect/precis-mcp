@@ -32,6 +32,20 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 say() { printf '\n\033[1m▶ %s\033[0m\n' "$*"; }
 die() { printf '\n\033[31m✖ %s\033[0m\n' "$*" >&2; exit 1; }
 
+# ── freshness guard: ansible renders roles/templates from THIS checkout, while
+# the venvs install precis-mcp@<ref> from git — a local tree behind origin/<ref>
+# deploys NEW code with STALE units (bit us 2026-08-03: workers restarted
+# without the §F-b env exports). Refuse the skew unless explicitly overridden.
+if [[ -z "${PRECIS_DEPLOY_ALLOW_STALE:-}" ]]; then
+    git -C "$REPO_ROOT" fetch -q origin "$REF" 2>/dev/null || true
+    _remote="$(git -C "$REPO_ROOT" rev-parse -q --verify "origin/${REF}" 2>/dev/null || true)"
+    if [[ -n "$_remote" ]] && ! git -C "$REPO_ROOT" merge-base --is-ancestor "$_remote" HEAD; then
+        die "local tree does not contain origin/${REF} ($(git -C "$REPO_ROOT" rev-parse --short HEAD) vs ${_remote:0:8}) — templates would render stale. Sync this checkout (git merge origin/${REF}) or set PRECIS_DEPLOY_ALLOW_STALE=1."
+    fi
+    _dirty="$(git -C "$REPO_ROOT" status --porcelain -- deploy/ 2>/dev/null || true)"
+    [[ -z "$_dirty" ]] || die "deploy/ tree has uncommitted changes — templates would render unshipped state. Commit/ship first, or set PRECIS_DEPLOY_ALLOW_STALE=1."
+fi
+
 # ── slice 12a: install-from-tree is the DEFAULT (cutover complete 2026-07-19).
 # Deploy runs ansible from the portable in-repo `deploy/` tree. Overlay (private
 # inventory + vault) resolution, symlink-free and checkout-independent:
