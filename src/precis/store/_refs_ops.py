@@ -51,7 +51,11 @@ from precis.store._mappers import (
     _REFS_COLS_LEN,
     _row_to_ref,
 )
-from precis.store._stub_predicate import stub_predicate_sql
+from precis.store._stub_predicate import (
+    MANUAL_DOWNLOAD_ID_KINDS,
+    fetchable_id_exists_sql,
+    stub_predicate_sql,
+)
 from precis.store._tag_filter import build_tag_filter
 from precis.store.types import ActorSlug, Ref, ResolvedHandle, Tag
 from precis.utils import handle_registry
@@ -1765,8 +1769,9 @@ class RefsMixin:
         "of N" denominator can never filter differently.
 
         ``has_external_id`` filters on the presence of a fetchable external
-        identifier (``ref_identifiers`` with ``id_kind IN (doi, arxiv, s2)``)
-        — ``True`` keeps only refs that carry one. It's what makes the
+        identifier (the shared :func:`fetchable_id_exists_sql` test over
+        :data:`STUB_ID_KINDS` — doi/arxiv/s2) — ``True`` keeps only refs that
+        carry one. It's what makes the
         ``/drive`` "Stubs (to get)" queue (``has_pdf=False`` +
         ``has_external_id=True``) match the canonical stub definition shared by
         :meth:`stub_backlog` (MCP ``search(view='stubs')`` / ``precis stubs``):
@@ -1806,11 +1811,10 @@ class RefsMixin:
                 "(r.meta ? 'schedule')" if has_schedule else "NOT (r.meta ? 'schedule')"
             )
         if has_external_id is not None:
-            exists = (
-                "EXISTS (SELECT 1 FROM ref_identifiers ri "
-                "WHERE ri.ref_id = r.ref_id "
-                "AND ri.id_kind IN ('doi', 'arxiv', 's2'))"
-            )
+            # Reuse the canonical fetchable-id test (STUB_ID_KINDS:
+            # doi/arxiv/s2) so this filter can't drift from stub_backlog's
+            # definition. gr189161.
+            exists = fetchable_id_exists_sql("r")
             clauses.append(exists if has_external_id else f"NOT {exists}")
         if parent_id is not None:
             clauses.append("r.parent_id = %s")
@@ -1909,12 +1913,12 @@ class RefsMixin:
         # per item_view.ItemPresenter.links) ahead of the rest, so S2-only
         # stubs (fetchable by the OA worker but with no hand-clickable PDF)
         # sink below the openable ones instead of burying them under a fresh
-        # S2-heavy import. Intentionally the ('doi','arxiv') subset — NOT the
-        # ('doi','arxiv','s2') stub whitelist — since only those two render a
-        # download link. Empty (no reordering) unless the caller opts in.
+        # S2-heavy import. Intentionally MANUAL_DOWNLOAD_ID_KINDS (doi/arxiv)
+        # — NOT the full STUB_ID_KINDS whitelist — since only those two render a
+        # download link. ri2 sub-alias so this coexists with the has_external_id
+        # filter's ri. Empty (no reordering) unless the caller opts in. gr189161.
         dl_rank = (
-            "(EXISTS (SELECT 1 FROM ref_identifiers ri2 WHERE ri2.ref_id = r.ref_id "
-            "AND ri2.id_kind IN ('doi', 'arxiv'))) DESC, "
+            f"({fetchable_id_exists_sql('r', sub_alias='ri2', id_kinds=MANUAL_DOWNLOAD_ID_KINDS)}) DESC, "
             if downloadable_first
             else ""
         )

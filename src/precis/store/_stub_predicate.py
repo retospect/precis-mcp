@@ -31,6 +31,58 @@ _STUB_ID_KIND_ORDER: tuple[str, ...] = ("doi", "arxiv", "s2")
 
 STUB_ID_KINDS: frozenset[str] = frozenset(_STUB_ID_KIND_ORDER)
 
+#: The subset a *human* can hand-download from — ``item_view`` renders a
+#: LibKey (DOI) or arXiv PDF link for exactly these. Narrower than
+#: :data:`STUB_ID_KINDS`: an S2-only stub is fetchable by the ``fetch_oa``
+#: worker but carries no clickable link, so the ``/drive`` "Stubs (to get)"
+#: queue floats DOI/arXiv rows ahead of it (``downloadable_first``).
+MANUAL_DOWNLOAD_ID_KINDS: frozenset[str] = frozenset(("doi", "arxiv"))
+
+
+def _accepted_id_kinds(id_kinds: Iterable[str], *, caller: str) -> list[str]:
+    """Intersect ``id_kinds`` with the fixed :data:`STUB_ID_KINDS` order.
+
+    Walking the hard-coded order and keeping only requested tokens means
+    the strings that ever reach an ``IN (...)`` list are the fixed
+    literals, never a caller-supplied string — the difference between a
+    filter and a SQL-injection seam. Raises if nothing survives.
+    """
+    requested = set(id_kinds)
+    accepted = [k for k in _STUB_ID_KIND_ORDER if k in requested]
+    if not accepted:
+        raise ValueError(
+            f"{caller}: no valid id_kinds in {tuple(id_kinds)!r} "
+            f"(accepted: {sorted(STUB_ID_KINDS)})"
+        )
+    return accepted
+
+
+def fetchable_id_exists_sql(
+    alias: str = "r",
+    *,
+    sub_alias: str = "ri",
+    id_kinds: Iterable[str] = _STUB_ID_KIND_ORDER,
+) -> str:
+    """``EXISTS (...)`` fragment: does ``<alias>`` carry an external
+    identifier of one of ``id_kinds``?
+
+    The single source of truth for the "has a fetchable id" test —
+    reused by :func:`stub_predicate_sql` and by the ``/drive`` browse's
+    ``has_external_id`` filter / ``downloadable_first`` ranking
+    (``store/_refs_ops.py``) so none of them hand-copy the id-kind
+    whitelist. ``sub_alias`` names the inner ``ref_identifiers`` row so
+    two fragments (e.g. a WHERE filter *and* an ORDER-BY rank) can
+    coexist in one query without colliding. The ``IN (...)`` list is
+    built injection-safe via :func:`_accepted_id_kinds`.
+    """
+    accepted = _accepted_id_kinds(id_kinds, caller="fetchable_id_exists_sql")
+    kinds_sql = ", ".join(f"'{k}'" for k in accepted)
+    return (
+        f"EXISTS (SELECT 1 FROM ref_identifiers {sub_alias} "
+        f"WHERE {sub_alias}.ref_id = {alias}.ref_id "
+        f"AND {sub_alias}.id_kind IN ({kinds_sql}))"
+    )
+
 
 def stub_predicate_sql(
     alias: str = "r", id_kinds: Iterable[str] = _STUB_ID_KIND_ORDER
@@ -42,24 +94,11 @@ def stub_predicate_sql(
     must alias the ``refs`` row accordingly (``r`` everywhere today).
 
     ``id_kinds`` narrows which external-identifier kinds count as
-    fetchable (e.g. the DOI-only chase queue passes ``('doi',)``). The
-    accepted list is built by walking the fixed :data:`STUB_ID_KINDS`
-    order and keeping only the tokens the caller asked for — so the
-    text spliced into the ``IN (...)`` list is always one of the three
-    hard-coded literals, never a caller-supplied string, regardless of
-    what garbage ``id_kinds`` might contain.
+    fetchable (e.g. the DOI-only chase queue passes ``('doi',)``); the
+    id-presence test is delegated to :func:`fetchable_id_exists_sql`.
     """
-    requested = set(id_kinds)
-    accepted = [k for k in _STUB_ID_KIND_ORDER if k in requested]
-    if not accepted:
-        raise ValueError(
-            f"stub_predicate_sql: no valid id_kinds in {tuple(id_kinds)!r} "
-            f"(accepted: {sorted(STUB_ID_KINDS)})"
-        )
-    kinds_sql = ", ".join(f"'{k}'" for k in accepted)
     return (
         f"{alias}.kind = 'paper' AND {alias}.pdf_sha256 IS NULL "
         f"AND {alias}.deleted_at IS NULL "
-        f"AND EXISTS (SELECT 1 FROM ref_identifiers ri "
-        f"WHERE ri.ref_id = {alias}.ref_id AND ri.id_kind IN ({kinds_sql}))"
+        f"AND {fetchable_id_exists_sql(alias, id_kinds=id_kinds)}"
     )
