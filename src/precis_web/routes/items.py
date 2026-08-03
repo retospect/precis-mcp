@@ -70,8 +70,13 @@ _DEFAULT_SOURCE_KINDS: tuple[str, ...] = (
     "conv",
 )
 
-#: Results per page.
-_PAGE_SIZE = 30
+#: Results per page — shared by the /drive + /items browse and search
+#: lists. Large by design: this is a self-hosted daily-use tool where
+#: scanning a long queue in one page (e.g. the "Stubs (to get)" download
+#: queue) beats clicking through many short pages. Per-row work is all
+#: batched (one query each for flags/chunks/tags/identifiers), so a wide
+#: page stays cheap.
+_PAGE_SIZE = 100
 
 
 def _parse_date(raw: str) -> datetime | None:
@@ -164,6 +169,7 @@ def _recent_rows(
     *,
     has_chunks: bool | None = None,
     has_schedule: bool | None = None,
+    has_external_id: bool | None = None,
     unfiled_only: bool = False,
     ref_ids: list[int] | None = None,
     deleted: bool = False,
@@ -177,6 +183,9 @@ def _recent_rows(
     ``sort=untried`` facet / the downloads queue's default), optionally
     narrowed by the tag chips, the stub
     filter (``has_pdf=False`` → only stubs, the "papers to get" queue), the
+    fetchable-id filter (``has_external_id=True`` → only refs with a
+    DOI/arXiv/S2 — paired with ``has_pdf=False`` by the "Stubs (to get)" queue
+    so id-less, non-fetchable papers don't crowd it), the
     ingested/chunk-less filter (``has_chunks`` — the "chunked"/"unchunked"
     state facet), the folder facet (``folder_id`` — one folder's direct
     children; only artifact kinds carry a ``parent_id``, so this is a no-op
@@ -196,6 +205,7 @@ def _recent_rows(
         has_pdf=has_pdf,
         has_chunks=has_chunks,
         has_schedule=has_schedule,
+        has_external_id=has_external_id,
         parent_id=folder_id,
         unfiled_only=unfiled_only,
         ref_ids=ref_ids,

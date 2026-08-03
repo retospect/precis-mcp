@@ -2664,8 +2664,16 @@ Structures, CAD, Figures, Mermaid). Nav template:
 `src/precis_web/routes/drive.py::index` is Items' cross-kind chunk search
 (`q=`, kind/tag facets, `sort=relevance|recency|oldest|untried`, `since/until`,
 `state=stub`, pagination) grafted onto Drive's folder tree (`_flatten_tree`)
-+ CRUD. `state=stub`'s downloads queue (a paper stub with a LibKey/arXiv
-fetch link) defaults to `sort=untried`: `store.recent_refs(untried=True)`
++ CRUD. `state=stub`'s downloads queue is scoped to *fetchable* stubs —
+`recent_refs(has_pdf=False, has_external_id=True)`, an `EXISTS ref_identifiers
+(doi|arxiv|s2)` clause in the shared `_recent_refs_where` builder — so a
+PDF-less paper with no external id (which renders no download link, per
+`item_view.ItemPresenter.links`) is excluded rather than floating to the top of
+the untried sort; this matches `stub_backlog`'s definition (the MCP
+`search(view='stubs')` / `precis stubs` surface). Id-less un-ingested papers
+still list under the broader `paper_chunks=without` browse. The queue (a paper
+stub with a LibKey/arXiv fetch link) defaults to `sort=untried`:
+`store.recent_refs(untried=True)`
 `LEFT JOIN`s the latest `ref_events` row per ref with `source='manual:open'`
 (index `ref_events_ref_id_source_ts_idx`) so never-manually-opened stubs
 surface before re-checked ones (freshest-added first within "never",

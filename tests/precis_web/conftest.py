@@ -853,6 +853,7 @@ class FakeStore(_FakeStoreBase):
         has_pdf=None,
         has_chunks=None,
         has_schedule=None,
+        has_external_id=None,
         parent_id=None,
         unfiled_only=False,
         ref_ids=None,
@@ -881,6 +882,7 @@ class FakeStore(_FakeStoreBase):
         self.recent_has_pdf = has_pdf
         self.recent_has_chunks = has_chunks
         self.recent_has_schedule = has_schedule
+        self.recent_has_external_id = has_external_id
         self.recent_parent_id = parent_id
         self.recent_unfiled_only = unfiled_only
         self.recent_ref_ids = ref_ids
@@ -922,6 +924,7 @@ class FakeStore(_FakeStoreBase):
         has_pdf=None,
         has_chunks=None,
         has_schedule=None,
+        has_external_id=None,
         parent_id=None,
         unfiled_only=False,
         ref_ids=None,

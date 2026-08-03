@@ -1753,6 +1753,7 @@ class RefsMixin:
         has_pdf: bool | None,
         has_chunks: bool | None,
         has_schedule: bool | None = None,
+        has_external_id: bool | None = None,
         parent_id: int | None,
         unfiled_only: bool = False,
         ref_ids: list[int] | None,
@@ -1762,6 +1763,16 @@ class RefsMixin:
         builder feeding both :meth:`recent_refs` (the page) and
         :meth:`count_recent_refs` (its exact total), so the list and its
         "of N" denominator can never filter differently.
+
+        ``has_external_id`` filters on the presence of a fetchable external
+        identifier (``ref_identifiers`` with ``id_kind IN (doi, arxiv, s2)``)
+        — ``True`` keeps only refs that carry one. It's what makes the
+        ``/drive`` "Stubs (to get)" queue (``has_pdf=False`` +
+        ``has_external_id=True``) match the canonical stub definition shared by
+        :meth:`stub_backlog` (MCP ``search(view='stubs')`` / ``precis stubs``):
+        a PDF-less paper with no DOI/arXiv/S2 isn't fetchable, so it isn't a
+        stub and shouldn't crowd the download queue (its row carries no
+        download link at all).
 
         ``has_schedule`` filters on ``meta ? 'schedule'`` — the §M facet
         normalization's "recurring" predicate (replaces the old
@@ -1794,6 +1805,13 @@ class RefsMixin:
             clauses.append(
                 "(r.meta ? 'schedule')" if has_schedule else "NOT (r.meta ? 'schedule')"
             )
+        if has_external_id is not None:
+            exists = (
+                "EXISTS (SELECT 1 FROM ref_identifiers ri "
+                "WHERE ri.ref_id = r.ref_id "
+                "AND ri.id_kind IN ('doi', 'arxiv', 's2'))"
+            )
+            clauses.append(exists if has_external_id else f"NOT {exists}")
         if parent_id is not None:
             clauses.append("r.parent_id = %s")
             params.append(parent_id)
@@ -1816,6 +1834,7 @@ class RefsMixin:
         has_pdf: bool | None = None,
         has_chunks: bool | None = None,
         has_schedule: bool | None = None,
+        has_external_id: bool | None = None,
         parent_id: int | None = None,
         unfiled_only: bool = False,
         ref_ids: list[int] | None = None,
@@ -1835,6 +1854,10 @@ class RefsMixin:
         all of them (the tag-filter chips with no search query).
         ``has_pdf=False`` keeps only stubs (``pdf_sha256 IS NULL`` — the
         "papers to get" filter); ``True`` keeps only those with a PDF.
+        ``has_external_id=True`` further keeps only refs carrying a fetchable
+        identifier (DOI / arXiv / S2) — the ``/drive`` "Stubs (to get)" queue
+        pairs it with ``has_pdf=False`` so id-less (non-fetchable) papers don't
+        crowd the download queue, matching :meth:`stub_backlog`'s definition.
         ``has_chunks`` filters on the presence of at least one body chunk
         (``ord >= 0``) — ``True`` keeps only ingested refs, ``False`` only
         chunk-less ones (the "chunked"/"unchunked" state facet). ``parent_id``
@@ -1867,6 +1890,7 @@ class RefsMixin:
             has_pdf=has_pdf,
             has_chunks=has_chunks,
             has_schedule=has_schedule,
+            has_external_id=has_external_id,
             parent_id=parent_id,
             unfiled_only=unfiled_only,
             ref_ids=ref_ids,
@@ -1910,6 +1934,7 @@ class RefsMixin:
         has_pdf: bool | None = None,
         has_chunks: bool | None = None,
         has_schedule: bool | None = None,
+        has_external_id: bool | None = None,
         parent_id: int | None = None,
         unfiled_only: bool = False,
         ref_ids: list[int] | None = None,
@@ -1928,6 +1953,7 @@ class RefsMixin:
             has_pdf=has_pdf,
             has_chunks=has_chunks,
             has_schedule=has_schedule,
+            has_external_id=has_external_id,
             parent_id=parent_id,
             unfiled_only=unfiled_only,
             ref_ids=ref_ids,

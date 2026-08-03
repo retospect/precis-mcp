@@ -386,6 +386,13 @@ async def index(
     # Both shape only the recent/browse view, not search (a search hit
     # matched a live chunk, so neither filter is meaningful there).
     has_pdf = False if state == "stub" else None
+    # The "Stubs (to get)" download queue shows only *fetchable* stubs — a
+    # PDF-less paper with no DOI/arXiv/S2 renders no download link (see
+    # item_view.ItemPresenter.links) and can't be tried, so it isn't a stub
+    # (matching store.stub_backlog, the MCP/CLI definition). Scope this to the
+    # stub queue only; the broader ``paper_chunks=without`` browse still lists
+    # id-less un-ingested papers.
+    has_external_id = True if state == "stub" else None
     show_deleted = state == "deleted"
     since_dt = _parse_date(since)
     until_dt = _parse_date(until)
@@ -491,6 +498,7 @@ async def index(
             has_chunks=has_chunks,
             unfiled_only=unfiled_only,
             has_schedule=has_schedule,
+            has_external_id=has_external_id,
             ref_ids=fetch_ref_ids,
             deleted=show_deleted,
             oldest=(sort == "oldest"),
@@ -515,6 +523,7 @@ async def index(
             has_pdf=has_pdf,
             has_chunks=has_chunks,
             has_schedule=has_schedule,
+            has_external_id=has_external_id,
             parent_id=folder_id,
             unfiled_only=unfiled_only,
             ref_ids=fetch_ref_ids,

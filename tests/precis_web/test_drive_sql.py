@@ -111,6 +111,39 @@ def test_recent_refs_has_chunks_filter(store):
     assert with_chunk.id not in unchunked
 
 
+def test_recent_refs_has_external_id_filter(store):
+    """``has_external_id`` narrows to refs carrying a fetchable DOI/arXiv/S2 —
+    what makes ``/drive``'s "Stubs (to get)" queue (``has_pdf=False`` +
+    ``has_external_id=True``) show only *fetchable* stubs, matching
+    ``stub_backlog``. A PDF-less paper with no external id is not a stub (its
+    row renders no download link), so it must not surface in the download
+    queue — the regression for the id-less papers that floated to the top of
+    the "Untried first" sort."""
+    fetchable, _ = store.upsert_stub_paper(
+        identifiers=[("doi", "10.1/fetchable")], title="Has a DOI", set_by="system"
+    )
+    idless = store.insert_ref(kind="paper", slug="idless2024", title="No DOI", meta={})
+
+    stub_queue = {
+        r.id for r in store.recent_refs(["paper"], has_pdf=False, has_external_id=True)
+    }
+    assert fetchable in stub_queue  # a fetchable stub belongs in the queue
+    assert idless.id not in stub_queue  # the id-less paper is excluded
+
+    # The inverse selects exactly the id-less papers (the complement).
+    without = {r.id for r in store.recent_refs(["paper"], has_external_id=False)}
+    assert idless.id in without
+    assert fetchable not in without
+
+    # count_recent_refs applies the identical filter, so "N of K" can't lie.
+    listed = store.recent_refs(
+        ["paper"], has_pdf=False, has_external_id=True, limit=1000
+    )
+    assert store.count_recent_refs(
+        ["paper"], has_pdf=False, has_external_id=True
+    ) == len(listed)
+
+
 def test_recent_refs_oldest_reverses_order(store):
     """``oldest=True`` flips the browse order to oldest-first (the
     ``/drive?sort=oldest`` facet) — the exact reverse of the default."""

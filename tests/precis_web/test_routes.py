@@ -514,6 +514,31 @@ def test_drive_paper_chunks_without_explicit_oldest_overrides_untried_default(
     assert runtime.store.recent_has_chunks is False
 
 
+def test_drive_stub_queue_requires_fetchable_id(runtime, client) -> None:
+    """The "Stubs (to get)" queue (state=stub) threads ``has_external_id=True``
+    down to recent_refs — only PDF-less papers carrying a fetchable DOI/arXiv/S2
+    are "stubs to get" (a id-less paper renders no download link), matching
+    store.stub_backlog's definition. The real exclusion is exercised against
+    real PG in test_drive_sql.py; here we assert the filter reaches the store."""
+    resp = client.get("/drive?state=stub")
+    assert resp.status_code == 200
+    assert runtime.store.recent_has_pdf is False
+    assert runtime.store.recent_has_external_id is True
+
+
+def test_drive_non_stub_views_do_not_require_fetchable_id(runtime, client) -> None:
+    """The fetchable-id filter is scoped to the stub download queue: the
+    default browse and the ``paper_chunks=without`` un-ingested browse leave
+    ``has_external_id`` unset, so id-less papers still list there."""
+    resp = client.get("/drive")
+    assert resp.status_code == 200
+    assert runtime.store.recent_has_external_id is None
+
+    resp2 = client.get("/drive?paper_chunks=without")
+    assert resp2.status_code == 200
+    assert runtime.store.recent_has_external_id is None
+
+
 def test_drive_browse_shows_exact_count(client) -> None:
     """The no-query browse renders an exact "Showing N of K <noun>" header —
     the FakeStore's canned landing has 2 source rows (paper + web), so it
@@ -805,16 +830,20 @@ def test_drive_tag_filter_flows_to_recent(runtime, client) -> None:
 
 def test_drive_search_page_param_flows_to_offset(runtime, client) -> None:
     """``page=2`` passes ``offset=_PAGE_SIZE`` down to the search
-    primitive (Slice-3 pagination past the 30-item cap)."""
+    primitive (Slice-3 pagination past the per-page cap)."""
+    from precis_web.routes.items import _PAGE_SIZE
+
     resp = client.get("/drive?q=query&page=2")
     assert resp.status_code == 200
-    assert runtime.store.search_offset == 30
+    assert runtime.store.search_offset == _PAGE_SIZE
 
 
 def test_drive_recent_page_param_flows_to_offset(runtime, client) -> None:
+    from precis_web.routes.items import _PAGE_SIZE
+
     resp = client.get("/drive?page=2")
     assert resp.status_code == 200
-    assert runtime.store.recent_offset == 30
+    assert runtime.store.recent_offset == _PAGE_SIZE
 
 
 def test_drive_no_next_link_when_only_two_canned_rows(client) -> None:
@@ -831,12 +860,14 @@ def test_drive_has_next_shows_next_link_with_filters_preserved(runtime, client) 
     filters + the incremented page number."""
     from types import SimpleNamespace
 
+    from precis_web.routes.items import _PAGE_SIZE
+
     from .conftest import make_ref
 
     pref = make_ref(id=10, kind="paper", slug="smith2024", title="A paper")
     blk = SimpleNamespace(id=1001, pos=0, text="passage about the query")
-    # 31 hits so the +1-over-fetch probe reports a next page.
-    runtime.store.cross_kind_hits = [(blk, pref, 0.9)] * 31
+    # One more than a full page so the +1-over-fetch probe reports a next page.
+    runtime.store.cross_kind_hits = [(blk, pref, 0.9)] * (_PAGE_SIZE + 1)
 
     resp = client.get("/drive?q=query&submitted=1&k=paper&sort=recency")
     assert resp.status_code == 200
