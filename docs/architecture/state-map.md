@@ -2678,6 +2678,34 @@ Every bespoke list this replaced — `/items`, `/papers` (+`/papers/triage`),
 and the legacy `/drafts/{id}` reader path now 307-redirects there). The 🔍 loupe and
 the flag-toggle bounce-back (`src/precis_web/routes/flags.py`) both
 default to `/drive` now.
+The `state=stub` queue's "Fetch next 25 ↑" button (`POST
+/drive/requeue-stubs`, `Store.requeue_stubs_for_fetch`) batch-stamps the
+top never-tried DOI stubs with `meta.oa_requeued` (+ a `ref_events` row,
+mirroring `paper_hygiene.requeue_stranded_fetches`'s stamping pattern) so
+`fetch_oa`'s claim query — which orders `jsonb_exists(meta,
+'oa_requeued') DESC` first — picks them up on its very next pass; already-
+stamped stubs are excluded from selection, so re-clicking can't double-
+stamp. Redirects back with `?requeued=<n>` for the shared `notice` banner.
+
+**Stub-eligibility predicate — one shared fragment
+(`src/precis/store/_stub_predicate.py::stub_predicate_sql`).** The "is this
+a fetchable paper stub" check (`kind='paper' AND pdf_sha256 IS NULL AND
+deleted_at IS NULL AND` an external identifier of an accepted kind exists)
+used to be hand-copied at three call sites; now `stub_predicate_sql(alias,
+id_kinds=…)` builds it once, whitelist-filtering `id_kinds` against the
+fixed `STUB_ID_KINDS = {doi, arxiv, s2}` (never splicing a caller string
+straight into SQL). Consumed by `Store.stub_backlog` /
+`.stub_backlog_count` (`store/_refs_ops.py`) and
+`fetch_oa.claim_stubs_to_fetch`. `stub_backlog` also takes `id_kinds=` and
+`sort='oldest-request'|'last-tried'` (`last-tried` = latest fetcher-attempt
+ASC NULLS FIRST, so never-tried stubs surface first); the "deprioritized
+stubs sink to the back" rule stays the outermost `ORDER BY` term in both
+modes. `search(kind='paper', view='chase-queue')`
+(`runtime/dispatch.py`/`search.py::_dispatch_chase_queue`, intercepted
+before kind resolution like `view='stubs'`) calls
+`stub_backlog(id_kinds=('doi',), sort='last-tried')` for a DOI-only,
+never-tried-first slice of the same backlog. Docs: `docs/design/
+stubs-mcp-and-skill.md`; skill: `precis-stubs-help`.
 
 **Gripes workbench (`/gripes`, new).** `src/precis_web/routes/gripes.py`
 is the first write surface for the dev bug tracker (`kind='gripe'`):

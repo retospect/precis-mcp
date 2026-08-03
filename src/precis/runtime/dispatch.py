@@ -220,6 +220,14 @@ class DispatchMixin(RuntimeShape):
         if verb == "search" and str(args.get("view") or "").strip() == "stubs":
             return self._dispatch_stubs(dict(args))
 
+        # Chase-queue view: ``search(view='chase-queue')`` is the DOI-only,
+        # never-tried-first slice of the same stub backlog — a tighter feed
+        # for "what should I go find a DOI-resolvable PDF for right now"
+        # (docs/design/stubs-mcp-and-skill.md). Paper-only; ignores ``q=``.
+        # Intercept before kind resolution, same as ``view='stubs'``.
+        if verb == "search" and str(args.get("view") or "").strip() == "chase-queue":
+            return self._dispatch_chase_queue(dict(args))
+
         # Angle spray: ``search`` with ``angle=`` or ``like=`` is the
         # diverse-cone semantic sampler (docs/design/dreaming.md), not
         # the lexical+RRF path. Intercept before kind resolution — it

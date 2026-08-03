@@ -2,7 +2,7 @@
 id: precis-stubs-help
 title: precis — papers we still need to get
 summary: paper acquisition backlog — stub list, fetch state, reason each is waiting
-applies-to: search(kind='paper', view='stubs'), put (kind='paper')
+applies-to: search(kind='paper', view='stubs'|'chase-queue'), put (kind='paper')
 status: active
 ---
 
@@ -26,6 +26,20 @@ Each row shows the ref id, the best external identifier, the cite key,
 and a one-line state (`awaiting fetch`, `no OA version available`,
 `PDF downloaded; awaiting watcher ingest`, …). Newest stub first.
 `q=` is ignored — the view *is* the filter.
+
+## What should I go find a PDF for right now?
+## Just the DOI stubs nobody has tried fetching yet
+
+```python
+search(kind="paper", view="chase-queue")
+search(kind="paper", view="chase-queue", n=50)  # default 25
+```
+
+A tighter slice of the same backlog: DOI-only (the identifier kind the
+`fetch_oa` cascade covers most reliably), ordered never-tried-first
+rather than oldest-request-first. Use `view='stubs'` for the full
+backlog (every id kind, longest-waiting first); use `view='chase-queue'`
+when you want the next thing worth chasing down manually.
 
 ## See just the papers a dream decided to chase
 

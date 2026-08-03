@@ -301,6 +301,7 @@ async def index(
     cited_by: str = "",
     page: int = 1,
     submitted: str = "",
+    requeued: int = 0,
 ) -> HTMLResponse:
     """The merged Drive surface: Items' cross-kind search/facet engine
     plus Drive's folder-tree sidebar, per-row quick actions, a "show
@@ -326,7 +327,11 @@ async def index(
     each reload naturally surfaces the next un-attempted batch once "Open
     all downloads" marks the current page tried); ``since=``/``until=``
     bound the date window; ``page=`` pages past the ``_PAGE_SIZE`` cap.
-    With no ``q`` the landing shows the recent list.
+    With no ``q`` the landing shows the recent list. ``requeued=`` is the
+    stamped-count round-trip from the "Fetch next N" button
+    (``POST /drive/requeue-stubs``) — a redirect-only query param, not a
+    facet, so it renders one notice banner and doesn't otherwise change
+    the page.
 
     Kind selection persists in an ``items_kinds`` cookie (unchanged
     name — pre-dates the merge, no reason to churn a cookie key): an
@@ -576,12 +581,19 @@ async def index(
     )
     crumbs = _breadcrumb(store, folder_id) if current and folder_id else []
     # A stale bookmark to a deleted folder shouldn't dead-end the operator
-    # — fall back to the unfiltered landing with a soft notice.
-    notice = (
-        f"folder #{folder_id} not found (deleted?)"
-        if folder_raw and current is None
-        else None
-    )
+    # — fall back to the unfiltered landing with a soft notice. The
+    # "Fetch next N" round-trip (``requeued=``) is the other notice
+    # source; a bad folder bookmark wins if somehow both fire at once
+    # (folder resolution failing is the more actionable thing to surface).
+    if folder_raw and current is None:
+        notice = f"folder #{folder_id} not found (deleted?)"
+    elif requeued > 0:
+        stub = "stub" if requeued == 1 else "stubs"
+        notice = (
+            f"queued {requeued} {stub} for fetch — fetch_oa will pick them up next pass"
+        )
+    else:
+        notice = None
 
     # Watch-dir drop-zone info (papers_needed.py:15-19's second gap) — the
     # cluster's manual-ingest paths, when the web host can read the plist.
@@ -876,6 +888,40 @@ async def tag_item(
         redirect=redirect,
         error_title="Tag",
     )
+
+
+#: Cap on the "Fetch next N" batch-requeue button (Part 3 of
+#: docs/design/stubs-mcp-and-skill.md) — bounds one click's blast radius
+#: on the fetch queue regardless of what a hand-crafted request posts.
+_REQUEUE_STUBS_MAX = 25
+
+
+@router.post("/requeue-stubs")
+async def requeue_stubs(
+    request: Request,
+    limit: int = Form(_REQUEUE_STUBS_MAX),
+    back: str = Form("/drive?state=stub"),
+) -> Response:
+    """ "Fetch next N" — jump the top-N never-tried DOI stubs to the front
+    of the ``fetch_oa`` queue.
+
+    Calls :meth:`Store.requeue_stubs_for_fetch`, which stamps
+    ``meta.oa_requeued`` (+ a ``ref_events`` row) on each selected stub —
+    the same marker :func:`precis.ingest.paper_hygiene.
+    requeue_stranded_fetches` uses, which ``fetch_oa``'s claim query
+    orders first. Not routed through a handler verb: like
+    ``/downloads/mark-tried``, this is a direct operational stamp, not a
+    domain write on a handler-owned kind. ``limit`` is clamped to
+    ``_REQUEUE_STUBS_MAX`` even though the button's own form always
+    posts that value — a floor against a hand-crafted request. Redirects
+    back with ``requeued=<count>`` so the landing page can flash it.
+    """
+    store = get_store(request)
+    n = max(1, min(int(limit), _REQUEUE_STUBS_MAX))
+    stamped = await asyncio.to_thread(store.requeue_stubs_for_fetch, limit=n)
+    redirect = _safe_local_redirect(back, "/drive?state=stub")
+    sep = "&" if "?" in redirect else "?"
+    return RedirectResponse(url=f"{redirect}{sep}requeued={stamped}", status_code=303)
 
 
 @downloads_router.post("/downloads/mark-tried")

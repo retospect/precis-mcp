@@ -87,6 +87,7 @@ from precis import secrets as _secrets
 from precis.alerts import raise_alert as _raise_alert
 from precis.alerts import resolve_stale_alerts as _resolve_alerts
 from precis.ingest.fetch_sidecar import read_sidecar, sidecar_path, write_sidecar
+from precis.store._stub_predicate import stub_predicate_sql
 
 log = logging.getLogger(__name__)
 
@@ -278,7 +279,7 @@ def claim_stubs_to_fetch(
     if limit <= 0:
         raise ValueError("limit must be positive")
     rows = conn.execute(
-        """
+        f"""
         -- ``min(id_value)`` (not a bare scalar subquery): a ref can carry
         -- more than one identifier of the same kind (two DOIs / cite_keys
         -- from a dedup-merge or messy metadata), and a bare scalar subquery
@@ -320,9 +321,7 @@ def claim_stubs_to_fetch(
                    AND q.deleted_at IS NULL
                    AND t.namespace = 'STATUS' AND t.value = 'active'
           ) qb ON TRUE
-         WHERE r.kind = 'paper'
-           AND r.pdf_sha256 IS NULL
-           AND r.deleted_at IS NULL
+         WHERE {stub_predicate_sql("r")}
            AND (
                  fe.last_ts IS NULL
                  OR fe.last_ts < now() - (
@@ -332,11 +331,6 @@ def claim_stubs_to_fetch(
                         %s::double precision
                       ) * INTERVAL '1 hour'
                  )
-           )
-           AND EXISTS (
-                 SELECT 1 FROM ref_identifiers ri
-                  WHERE ri.ref_id = r.ref_id
-                    AND ri.id_kind IN ('doi', 'arxiv', 's2')
            )
          -- jsonb_exists(...) not the `?` operator: `?` collides with the
          -- param placeholder scan in a parameterised query.

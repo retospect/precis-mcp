@@ -36,8 +36,8 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
-from datetime import datetime
-from typing import TYPE_CHECKING, Any, ClassVar
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from psycopg import Connection
 from psycopg.types.json import Jsonb
@@ -51,6 +51,7 @@ from precis.store._mappers import (
     _REFS_COLS_LEN,
     _row_to_ref,
 )
+from precis.store._stub_predicate import stub_predicate_sql
 from precis.store._tag_filter import build_tag_filter
 from precis.store.types import ActorSlug, Ref, ResolvedHandle, Tag
 from precis.utils import handle_registry
@@ -512,16 +513,18 @@ class RefsMixin:
         limit: int = 50,
         offset: int = 0,
         awaiting: bool = False,
+        id_kinds: tuple[str, ...] = ("doi", "arxiv", "s2"),
+        sort: Literal["oldest-request", "last-tried"] = "oldest-request",
     ) -> list[dict[str, Any]]:
-        """The "papers we still need to get" backlog, oldest-request-first.
+        """The "papers we still need to get" backlog.
 
         A *stub* is a ``paper`` ref with an external identifier
-        (DOI / arXiv / S2) registered but ``pdf_sha256 IS NULL`` — the
-        chase worker and the dream ``acquire`` tool both mint these so
-        the ``fetch_oa`` worker can auto-grab an OA PDF later. This
-        method surfaces them joined with the latest ``fetcher:%``
-        attempt per ref, returning one dict per stub with a one-line
-        ``state`` summary an operator (or agent) can scan.
+        (DOI / arXiv / S2 by default) registered but ``pdf_sha256 IS
+        NULL`` — the chase worker and the dream ``acquire`` tool both
+        mint these so the ``fetch_oa`` worker can auto-grab an OA PDF
+        later. This method surfaces them joined with the latest
+        ``fetcher:%`` attempt per ref, returning one dict per stub with
+        a one-line ``state`` summary an operator (or agent) can scan.
 
         Each row also carries provenance an operator wants when
         triaging the backlog: ``created_at`` (when the stub was first
@@ -532,25 +535,45 @@ class RefsMixin:
         event *per cascade leg*, so raw event count over-reports;
         collapsing to distinct minute-buckets recovers the pass count).
 
-        Ordered **oldest-request-first** (``created_at ASC, ref_id
-        ASC``) so the longest-waiting stubs — the ones most overdue for
-        manual intervention — sort to the top. The tie-break on
-        ``ref_id`` keeps the order total and stable across pages.
-        Stubs the operator has marked unreachable via **both** manual
-        routes (``OPEN:cant-get-uol`` **and** ``OPEN:cant-get-scholar``),
-        or flagged a book (``OPEN:is-book``), sink to the back of the
-        list — nothing more to auto-try there, so they shouldn't crowd
-        out still-gettable stubs.
+        ``id_kinds`` narrows the eligible external-identifier kinds
+        (default ``('doi', 'arxiv', 's2')``, matching every prior
+        caller's behavior); validated against the fixed whitelist in
+        :func:`precis.store._stub_predicate.stub_predicate_sql` so it
+        can't become a SQL-injection seam.
 
-        Shared by ``precis stubs`` (CLI) and ``search(view='stubs')``
-        (MCP) so both render from one query
+        ``sort`` picks the ordering within the non-deprioritized bucket:
+
+        - ``'oldest-request'`` (default) — ``created_at ASC, ref_id
+          ASC``, so the longest-waiting stubs — the ones most overdue
+          for manual intervention — sort to the top. Unchanged from
+          this method's original (pre-``sort=``) behavior.
+        - ``'last-tried'`` — latest fetcher-attempt timestamp ASC with
+          ``NULLS FIRST`` (never-attempted stubs on top), then
+          ``ref_id`` as a stable tie-break. Powers the "DOI-only,
+          never-tried first" chase queue (``view='chase-queue'``).
+
+        In both modes, stubs the operator has marked unreachable via
+        **both** manual routes (``OPEN:cant-get-uol`` **and**
+        ``OPEN:cant-get-scholar``), or flagged a book
+        (``OPEN:is-book``), sink to the back of the list as the
+        outermost ``ORDER BY`` term — nothing more to auto-try there,
+        so they shouldn't crowd out still-gettable stubs.
+
+        Shared by ``precis stubs`` (CLI) and ``search(view='stubs'
+        | 'chase-queue')`` (MCP) so all render from one query
         (docs/design/stubs-mcp-and-skill.md).
 
         ``awaiting=True`` restricts to rows the fetcher would actually
         try on its next pass: never attempted, or attempted >24h ago
         and not yet ``fetch_ok``.
         """
-        sql = """
+        order_sql = {
+            "oldest-request": "s.created_at ASC, s.ref_id ASC",
+            "last-tried": "le.ts ASC NULLS FIRST, s.ref_id ASC",
+        }.get(sort)
+        if order_sql is None:
+            raise ValueError(f"stub_backlog: unknown sort {sort!r}")
+        sql = f"""
             WITH stubs AS (
                 SELECT r.ref_id,
                        -- min(): a ref can carry >1 value of a kind (PK is
@@ -569,14 +592,7 @@ class RefsMixin:
                        r.created_at,
                        r.meta->>'set_by' AS requested_by
                   FROM refs r
-                 WHERE r.kind = 'paper'
-                   AND r.pdf_sha256 IS NULL
-                   AND r.deleted_at IS NULL
-                   AND EXISTS (
-                         SELECT 1 FROM ref_identifiers ri
-                          WHERE ri.ref_id = r.ref_id
-                            AND ri.id_kind IN ('doi', 'arxiv', 's2')
-                   )
+                 WHERE {stub_predicate_sql("r", id_kinds)}
             ),
             latest_event AS (
                 SELECT DISTINCT ON (ref_id) ref_id, ts, source, event, payload
@@ -636,8 +652,8 @@ class RefsMixin:
                      OR (le.ts < now() - INTERVAL '24 hours' AND le.event <> 'fetch_ok'))
                 ELSE TRUE END
              -- Deprioritized stubs (FALSE < TRUE, so ASC) last, then
-             -- oldest-request-first within each bucket.
-             ORDER BY (dp.ref_id IS NOT NULL) ASC, s.created_at ASC, s.ref_id ASC
+             -- the requested sort within each bucket.
+             ORDER BY (dp.ref_id IS NOT NULL) ASC, {order_sql}
              LIMIT %s OFFSET %s
         """
         out: list[dict[str, Any]] = []
@@ -664,22 +680,15 @@ class RefsMixin:
         """Total stub count under the same filter as :meth:`stub_backlog`.
 
         Lets the pager show "page N of M" and a grand total instead of a
-        bare next/prev probe. Mirrors the ``stubs`` CTE and the
-        ``awaiting`` next-pass predicate exactly — keep the two WHERE
-        clauses in sync.
+        bare next/prev probe. Shares the stub predicate with
+        :meth:`stub_backlog` via :func:`stub_predicate_sql`, so the two
+        can't drift out of sync.
         """
-        sql = """
+        sql = f"""
             WITH stubs AS (
                 SELECT r.ref_id
                   FROM refs r
-                 WHERE r.kind = 'paper'
-                   AND r.pdf_sha256 IS NULL
-                   AND r.deleted_at IS NULL
-                   AND EXISTS (
-                         SELECT 1 FROM ref_identifiers ri
-                          WHERE ri.ref_id = r.ref_id
-                            AND ri.id_kind IN ('doi', 'arxiv', 's2')
-                   )
+                 WHERE {stub_predicate_sql("r")}
             ),
             latest_event AS (
                 SELECT DISTINCT ON (ref_id) ref_id, ts, event
@@ -699,6 +708,71 @@ class RefsMixin:
         with self.pool.connection() as conn:
             row = conn.execute(sql, (awaiting,)).fetchone()
         return int(row[0]) if row else 0
+
+    def requeue_stubs_for_fetch(self, *, limit: int = 25) -> int:
+        """ "Fetch next N" — jump the top ``limit`` never-tried DOI stubs
+        to the front of the ``fetch_oa`` queue.
+
+        Selects the same universe ``stub_backlog(id_kinds=('doi',),
+        sort='last-tried')`` would surface at the top — DOI stubs with
+        no ``fetcher:%`` attempt yet, oldest-request-first among those —
+        and stamps each with ``meta.oa_requeued`` plus a ``ref_events``
+        row (``source='paper_reconcile'``, ``event='oa_requeued'``),
+        mirroring :func:`precis.ingest.paper_hygiene.
+        requeue_stranded_fetches`'s stamping pattern. ``fetch_oa``'s
+        claim query orders ``jsonb_exists(r.meta, 'oa_requeued') DESC``
+        first, so a stamped stub is claimed on the worker's very next
+        pass rather than waiting its turn.
+
+        Already-stamped stubs (``r.meta ? 'oa_requeued'``) are excluded
+        from selection, and the per-ref stamp only applies if the flag
+        is still absent at write time — idempotent, so re-clicking
+        "Fetch next N" (or two overlapping requests) can't double-stamp
+        or double-count. Returns the number of stubs newly stamped.
+        """
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT r.ref_id
+                  FROM refs r
+                  LEFT JOIN LATERAL (
+                        SELECT max(e.ts) AS last_ts
+                          FROM ref_events e
+                         WHERE e.ref_id = r.ref_id AND e.source LIKE 'fetcher:%%'
+                  ) fe ON TRUE
+                 WHERE {stub_predicate_sql("r", ("doi",))}
+                   AND fe.last_ts IS NULL
+                   AND NOT (r.meta ? 'oa_requeued')
+                 ORDER BY r.created_at ASC, r.ref_id ASC
+                 LIMIT %s
+                """,
+                (limit,),
+            ).fetchall()
+            ref_ids = [int(row[0]) for row in rows]
+            stamped = 0
+            for ref_id in ref_ids:
+                cur = conn.execute(
+                    "UPDATE refs SET meta = meta || %s::jsonb "
+                    "WHERE ref_id = %s AND NOT (meta ? 'oa_requeued')",
+                    (
+                        Jsonb({"oa_requeued": {"at": datetime.now(UTC).isoformat()}}),
+                        ref_id,
+                    ),
+                )
+                if cur.rowcount:
+                    conn.execute(
+                        "INSERT INTO ref_events "
+                        "(ref_id, source, event, payload) "
+                        "VALUES (%s, %s, %s, %s::jsonb)",
+                        (
+                            ref_id,
+                            "paper_reconcile",
+                            "oa_requeued",
+                            Jsonb({"batch": True}),
+                        ),
+                    )
+                    stamped += 1
+        return stamped
 
     def ingest_timestamps(self, ref_id: int) -> dict[str, Any]:
         """When a ref was ingested, broken out by stage.

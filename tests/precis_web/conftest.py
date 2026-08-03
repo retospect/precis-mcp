@@ -986,9 +986,22 @@ class FakeStore(_FakeStoreBase):
             }
         return {"ref": None, "pdf": None, "first_chunk": None}
 
-    def stub_backlog(self, *, limit: int = 50, offset: int = 0, awaiting: bool = False):
+    def stub_backlog(
+        self,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        awaiting: bool = False,
+        id_kinds: tuple = ("doi", "arxiv", "s2"),
+        sort: str = "oldest-request",
+    ):
         # Two canned stubs: one never-attempted (always shown),
         # one attempted >24h ago with a failure (shown in both views).
+        # ``id_kinds``/``sort`` accepted for signature parity with the
+        # real store — the fake's canned two rows aren't re-filtered or
+        # re-ordered on them (no route test exercises that combination
+        # against this fake; the real predicate/order is covered by
+        # tests/test_stubs.py against a real store).
         all_rows = [
             {
                 "ref_id": 90,
@@ -1022,6 +1035,12 @@ class FakeStore(_FakeStoreBase):
     def stub_backlog_count(self, *, awaiting: bool = False) -> int:
         # Mirrors the two canned rows above (both awaiting under the fake).
         return 2
+
+    def requeue_stubs_for_fetch(self, *, limit: int = 25) -> int:
+        # Canned "one never-tried DOI stub got stamped" so the
+        # /drive/requeue-stubs route test has a non-trivial count to
+        # assert on without a real store.
+        return 1
 
     def locked_ref_ids(self, ref_ids):
         # No live Postgres locks under the fake; the Tasks tab's

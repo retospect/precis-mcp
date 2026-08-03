@@ -616,13 +616,30 @@
       {% endif %}
     {% else %}
       {# Default landing: the recent list (or stub/deleted/cited_by queue) under the search. #}
-      <h2 class="text-sm font-semibold text-slate-600 mb-2">
-        {% if cited_by %}Papers to fetch{% if cited_by_title %} — {{ cited_by_title }}{% endif %}
-        {% elif state == 'stub' %}Stubs — papers to get
-        {% elif state == 'deleted' %}Deleted — soft-deleted refs
-        {% elif current %}{{ current.title }}
-        {% else %}Recently added{% endif %}
-      </h2>
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="text-sm font-semibold text-slate-600">
+          {% if cited_by %}Papers to fetch{% if cited_by_title %} — {{ cited_by_title }}{% endif %}
+          {% elif state == 'stub' %}Stubs — papers to get
+          {% elif state == 'deleted' %}Deleted — soft-deleted refs
+          {% elif current %}{{ current.title }}
+          {% else %}Recently added{% endif %}
+        </h2>
+        {# "Fetch next N" — jumps the top never-tried DOI stubs to the front
+           of the fetch_oa queue (POST /drive/requeue-stubs stamps
+           meta.oa_requeued, docs/design/stubs-mcp-and-skill.md Part 3).
+           Only on the stub queue itself — the button's DOI-only, never-tried
+           selection is meaningless on any other state/facet. #}
+        {% if state == 'stub' %}
+        <form method="post" action="/drive/requeue-stubs" class="shrink-0">
+          <input type="hidden" name="back" value="/drive?state=stub" />
+          <button type="submit"
+                  class="rounded-md bg-sky-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-700"
+                  title="Jump the top 25 never-tried DOI stubs to the front of the fetch queue.">
+            Fetch next 25 ↑
+          </button>
+        </form>
+        {% endif %}
+      </div>
       {% if cited_by %}
       <p class="mb-2 text-xs text-slate-500">
         Papers this draft cites but the corpus is still missing (0 body blocks) — grab a copy via the find: links, or drop a PDF in the watch-dir below.

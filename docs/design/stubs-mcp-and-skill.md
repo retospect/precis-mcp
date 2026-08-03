@@ -3,6 +3,55 @@
 **Status**: done
 **Slug**: `stubs-mcp-and-skill`
 
+**Amendment (chase-queue + batch requeue).** Three follow-ups landed on
+top of the original design below, all reusing its query/state-summary
+core rather than forking it:
+
+1. **DRY the stub predicate.** The "is this a fetchable stub" check
+   (`kind='paper' AND pdf_sha256 IS NULL AND deleted_at IS NULL AND` an
+   accepted external identifier exists) was hand-copied at three call
+   sites — `Store.stub_backlog`, `.stub_backlog_count`
+   (`store/_refs_ops.py`), and `fetch_oa.claim_stubs_to_fetch`. It now
+   lives once, `src/precis/store/_stub_predicate.py::stub_predicate_sql
+   (alias, id_kinds=…)`, whitelist-filtering `id_kinds` against the
+   fixed `STUB_ID_KINDS = {doi, arxiv, s2}` before splicing into the SQL
+   `IN (...)` list — the whitelist decides what text can appear, never a
+   raw caller string. All three sites consume it; `fetch_oa`'s own
+   backoff-interval clause, quest-weight `LATERAL` join, `ORDER BY`, and
+   `FOR UPDATE ... SKIP LOCKED` are untouched.
+
+2. **`view='chase-queue'`** — a DOI-only, never-tried-first slice of the
+   same backlog for "what should I go find a PDF for right now" rather
+   than "what's been waiting longest". `Store.stub_backlog` gained
+   `id_kinds: tuple[str, ...] = ('doi', 'arxiv', 's2')` and `sort:
+   Literal['oldest-request', 'last-tried'] = 'oldest-request'` (both
+   default to prior behavior, so every existing caller is unaffected).
+   `sort='last-tried'` orders by the latest `fetcher:%` attempt
+   timestamp ASC with `NULLS FIRST` (never-attempted on top), tie-broken
+   on `ref_id`; the deprioritized-stubs-sink-to-the-back rule stays the
+   outermost `ORDER BY` term in both sort modes.
+   `search(kind='paper', view='chase-queue')` intercepts before kind
+   resolution exactly like `view='stubs'`
+   (`runtime/dispatch.py`/`search.py::_dispatch_chase_queue`) and calls
+   `store.stub_backlog(id_kinds=('doi',), sort='last-tried', limit=n)`.
+   Same render shape as `view='stubs'` (paper-only, `q=` ignored,
+   `n=`/`page_size=` caps rows), just a different header and backlog
+   slice.
+
+3. **"Fetch next N" batch requeue (Drive UI).** The `state=stub` queue
+   (`/drive?state=stub`) offers a "Fetch next 25 ↑" button
+   (`POST /drive/requeue-stubs`) that calls
+   `Store.requeue_stubs_for_fetch(limit=25)`: selects the top never-tried
+   DOI stubs (no `fetcher:%` event yet) and stamps each with
+   `meta.oa_requeued` + a `ref_events` row (`source='paper_reconcile'`,
+   `event='oa_requeued'`) — the same marker/stamping shape
+   `paper_hygiene.requeue_stranded_fetches` uses, which `fetch_oa`'s
+   claim query orders `jsonb_exists(meta, 'oa_requeued') DESC` first, so
+   a stamped stub is claimed on the very next pass. Already-stamped
+   stubs are excluded from selection (idempotent — a repeat click can't
+   double-stamp or double-count). The route redirects back with
+   `?requeued=<n>` for the existing `notice` banner to flash.
+
 ## Problem
 
 The corpus tracks *stub* papers — `paper` refs with an external

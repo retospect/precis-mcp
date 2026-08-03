@@ -81,7 +81,7 @@ or `mode='verbatim'` (chunk tagged with all query words).
 | `scope` | str | Restrict to one ref's blocks. |
 | `exclude` | list[str] | Skip-list (specific slugs to drop). `page=` is the normal pagination. |
 | `source` | str | Patent only: `'both'` (default) / `'local'` / `'remote'`. |
-| `view` | str | Alternate result shape. `view='dreamable'` returns a salience-focus-region pick from the most-due seed (cross-kind only; `q=` not required for this view). `view='stubs'` returns the paper-acquisition backlog — paper refs with an external id but no PDF yet (`q=` ignored; see `precis-stubs-help`). |
+| `view` | str | Alternate result shape. `view='dreamable'` returns a salience-focus-region pick from the most-due seed (cross-kind only; `q=` not required for this view). `view='stubs'` returns the paper-acquisition backlog — paper refs with an external id but no PDF yet (`q=` ignored; see `precis-stubs-help`). `view='chase-queue'` is a tighter, DOI-only, never-tried-first slice of the same backlog (`q=` ignored). |
 | `angle` | float | Salience-rotation search; pairs with `like=` (or `q=` for a seed). See `precis-dreaming-help`. |
 | `like` | str | Seed ref handle for `angle=` search; e.g. `like='pc40'`. |
 | `status` | str | Shorthand for `tags=['STATUS:<value>']` on kinds with a STATUS axis. `finding` defaults to `'established'`, `gripe` to `'open'`; pass another value for a specific cohort, or `'*'` for all regardless. On kinds with no STATUS default it simply adds the filter when given, and is ignored when omitted. |

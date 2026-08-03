@@ -452,6 +452,42 @@ def test_drive_stub_explicit_recency_overrides_untried_default(runtime, client) 
     assert 'value="recency" selected' in resp.text
 
 
+def test_drive_stub_state_shows_fetch_next_n_button(client) -> None:
+    """The stub queue (state=stub) offers the "Fetch next N" batch-requeue
+    button, posting to /drive/requeue-stubs; it's absent off the stub
+    queue (meaningless — DOI-only, never-tried selection)."""
+    resp = client.get("/drive?state=stub")
+    assert resp.status_code == 200
+    assert 'action="/drive/requeue-stubs"' in resp.text
+    assert "Fetch next 25" in resp.text
+
+    resp = client.get("/drive")
+    assert resp.status_code == 200
+    assert 'action="/drive/requeue-stubs"' not in resp.text
+
+
+def test_requeue_stubs_redirects_with_stamped_count(client) -> None:
+    """POST /drive/requeue-stubs calls the store method and redirects back
+    to the stub queue carrying the stamped count for the notice banner."""
+    resp = client.post(
+        "/drive/requeue-stubs",
+        data={"back": "/drive?state=stub"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    location = resp.headers["location"]
+    assert location.startswith("/drive?state=stub")
+    assert "requeued=1" in location  # FakeStore.requeue_stubs_for_fetch() == 1
+
+
+def test_requeue_stubs_notice_renders_on_redirect_target(client) -> None:
+    """Following the redirect, the landing page flashes the stamped count
+    via the shared ``notice`` banner."""
+    resp = client.get("/drive?state=stub&requeued=3")
+    assert resp.status_code == 200
+    assert "queued 3 stubs for fetch" in resp.text
+
+
 def test_drive_paper_chunks_without_also_defaults_to_untried_sort(
     runtime, client
 ) -> None:

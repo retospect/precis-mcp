@@ -217,6 +217,57 @@ def test_stub_backlog_tolerates_duplicate_same_kind_identifiers(store: Store) ->
     assert rows[0]["identifier"] == "10.1/dup"
 
 
+# ── store engine: id_kinds / sort (Part 2) ───────────────────────────
+
+
+def test_stub_backlog_id_kinds_doi_only_excludes_other_kinds(store: Store) -> None:
+    doi_only = _stub(store, cite_key="doi2024", doi="10.1/doi")
+    _stub(store, cite_key="arxiv2024", arxiv="2401.00002")
+    rows = store.stub_backlog(id_kinds=("doi",))
+    assert [r["ref_id"] for r in rows] == [doi_only]
+
+
+def test_stub_backlog_id_kinds_doi_only_excludes_s2_only(store: Store) -> None:
+    doi_only = _stub(store, cite_key="doi2024b", doi="10.1/doib")
+    ref = store.insert_ref(kind="paper", slug="s2only2024", title="X", meta={})
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO ref_identifiers (ref_id, id_kind, id_value, source) "
+            "VALUES (%s, 's2', 's2abc', 'manual')",
+            (ref.id,),
+        )
+    rows = store.stub_backlog(id_kinds=("doi",))
+    assert [r["ref_id"] for r in rows] == [doi_only]
+
+
+def test_stub_backlog_sort_last_tried_never_tried_first(store: Store) -> None:
+    # `tried` was attempted recently; `never` has no fetcher event at all.
+    # oldest-request-first would put `tried` on top (created first); the
+    # last-tried sort must put the never-attempted one on top instead.
+    tried = _stub(store, cite_key="tried2024", doi="10.1/tried")
+    _fetch_event(store, tried, "no_oa_version", hours_ago=1)
+    never = _stub(store, cite_key="never2024b", doi="10.1/neverb")
+    order = [r["ref_id"] for r in store.stub_backlog(sort="last-tried")]
+    assert order == [never, tried]
+
+
+def test_stub_backlog_sort_last_tried_orders_by_oldest_attempt(store: Store) -> None:
+    a = _stub(store, cite_key="a2024b", doi="10.1/ab")
+    b = _stub(store, cite_key="b2024b", doi="10.1/bb")
+    _fetch_event(store, a, "no_oa_version", hours_ago=1)  # tried 1h ago
+    _fetch_event(store, b, "no_oa_version", hours_ago=5)  # tried 5h ago (older)
+    order = [r["ref_id"] for r in store.stub_backlog(sort="last-tried")]
+    assert order == [b, a]  # longest-since-tried first
+
+
+def test_stub_backlog_sort_default_unchanged(store: Store) -> None:
+    # Omitting id_kinds/sort reproduces the original oldest-request-first
+    # behavior — default args must not shift existing callers.
+    a = _stub(store, cite_key="a2024c", doi="10.1/ac")
+    b = _stub(store, cite_key="b2024c", arxiv="2401.00003")
+    assert [r["ref_id"] for r in store.stub_backlog()] == [a, b]
+
+
 # ── dispatch: search(view='stubs') ──────────────────────────────────
 
 
@@ -246,3 +297,97 @@ def test_view_stubs_ignores_q(runtime_with_store: PrecisRuntime) -> None:
         "search", {"view": "stubs", "q": "totally unrelated query"}
     )
     assert f"ref {rid}" in out
+
+
+# ── dispatch: search(view='chase-queue') ─────────────────────────────
+
+
+def test_view_chase_queue_empty_message(runtime_with_store: PrecisRuntime) -> None:
+    out = runtime_with_store.dispatch("search", {"view": "chase-queue"})
+    assert "no DOI-only stubs" in out
+
+
+def test_view_chase_queue_is_doi_only(runtime_with_store: PrecisRuntime) -> None:
+    store = runtime_with_store.hub.store
+    assert store is not None
+    doi_rid = _stub(store, cite_key="cq_doi2024", doi="10.1/cqdoi")
+    arxiv_rid = _stub(store, cite_key="cq_arxiv2024", arxiv="2401.00004")
+
+    out = runtime_with_store.dispatch("search", {"view": "chase-queue"})
+    assert "chase queue" in out
+    assert f"ref {doi_rid}" in out
+    assert f"ref {arxiv_rid}" not in out
+
+
+def test_view_chase_queue_never_tried_first(runtime_with_store: PrecisRuntime) -> None:
+    store = runtime_with_store.hub.store
+    assert store is not None
+    tried = _stub(store, cite_key="cq_tried2024", doi="10.1/cqtried")
+    _fetch_event(store, tried, "no_oa_version", hours_ago=1)
+    never = _stub(store, cite_key="cq_never2024", doi="10.1/cqnever")
+
+    out = runtime_with_store.dispatch("search", {"view": "chase-queue"})
+    assert out.index(f"ref {never}") < out.index(f"ref {tried}")
+
+
+def test_view_chase_queue_ignores_q(runtime_with_store: PrecisRuntime) -> None:
+    store = runtime_with_store.hub.store
+    assert store is not None
+    rid = _stub(store, cite_key="cq_qignored2024", doi="10.1/cqqignored")
+
+    out = runtime_with_store.dispatch(
+        "search", {"view": "chase-queue", "q": "totally unrelated query"}
+    )
+    assert f"ref {rid}" in out
+
+
+# ── store engine: requeue_stubs_for_fetch (Part 3) ───────────────────
+
+
+def _has_oa_requeued(store: Store, ref_id: int) -> bool:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta ? 'oa_requeued' FROM refs WHERE ref_id = %s", (ref_id,)
+        ).fetchone()
+    return bool(row and row[0])
+
+
+def test_requeue_stubs_for_fetch_stamps_never_tried_doi_stubs(store: Store) -> None:
+    a = _stub(store, cite_key="rq_a2024", doi="10.1/rqa")
+    b = _stub(store, cite_key="rq_b2024", doi="10.1/rqb")
+    # An arxiv-only stub is out of scope (requeue is DOI-only).
+    _stub(store, cite_key="rq_c2024", arxiv="2401.00005")
+
+    stamped = store.requeue_stubs_for_fetch(limit=25)
+    assert stamped == 2
+    assert _has_oa_requeued(store, a)
+    assert _has_oa_requeued(store, b)
+
+    events = store.events_for(a)
+    assert any(e.event == "oa_requeued" for e in events)
+
+
+def test_requeue_stubs_for_fetch_caps_at_limit(store: Store) -> None:
+    for i in range(5):
+        _stub(store, cite_key=f"rq_lim{i}2024", doi=f"10.1/rqlim{i}")
+    stamped = store.requeue_stubs_for_fetch(limit=2)
+    assert stamped == 2
+
+
+def test_requeue_stubs_for_fetch_skips_already_stamped(store: Store) -> None:
+    a = _stub(store, cite_key="rq_skip2024", doi="10.1/rqskip")
+    first = store.requeue_stubs_for_fetch(limit=25)
+    assert first == 1
+    assert _has_oa_requeued(store, a)
+
+    # A second call must not re-stamp / double-count the already-stamped stub.
+    second = store.requeue_stubs_for_fetch(limit=25)
+    assert second == 0
+
+
+def test_requeue_stubs_for_fetch_excludes_already_tried(store: Store) -> None:
+    tried = _stub(store, cite_key="rq_tried2024", doi="10.1/rqtried")
+    _fetch_event(store, tried, "no_oa_version", hours_ago=1)
+    stamped = store.requeue_stubs_for_fetch(limit=25)
+    assert stamped == 0
+    assert not _has_oa_requeued(store, tried)

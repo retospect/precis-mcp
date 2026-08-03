@@ -4,7 +4,8 @@
 merge across handlers' ``search_hits``), the tags-only cross-kind sweep,
 ``folder=`` subtree scoping, the post-fan-out tag backstop filter, the
 ``sort=``/``since=``/``until=`` source-search primitive, and the
-``view='stubs'`` backlog view. The angle spray and dreamable region live
+``view='stubs'`` backlog view and its ``view='chase-queue'`` DOI-only,
+never-tried-first sibling. The angle spray and dreamable region live
 in :mod:`precis.runtime.angle` — those also fan out across kinds but pick
 their own seed rather than ranking a ``q=`` query.
 """
@@ -86,6 +87,64 @@ class SearchMixin(RuntimeShape):
                 (
                     "search(kind='paper', tags=['DREAM:acquire'])",
                     "just the papers a dream wanted",
+                ),
+                (
+                    "get(kind='skill', id='precis-stubs-help')",
+                    "how the backlog works",
+                ),
+            ]
+        )
+        return Response(body=body)
+
+    def _dispatch_chase_queue(self, args: dict[str, Any]) -> Response:
+        """The DOI-only, never-tried-first chase queue:
+        ``search(view='chase-queue')``.
+
+        A tighter slice of the same stub backlog ``view='stubs'``
+        surfaces (docs/design/stubs-mcp-and-skill.md): DOI-only (the
+        identifier kind the fetcher cascade covers most reliably) and
+        ordered never-tried-first rather than oldest-request-first —
+        "what should I go find a PDF for right now" rather than "what's
+        been waiting longest". Paper-only; ``q=`` is ignored (like
+        ``view='stubs'``). ``n=`` / ``page_size=`` cap the row count.
+        Read-only — surfacing the queue does not touch the fetch
+        pipeline.
+        """
+        from precis.utils.next_block import render_next_section
+
+        store = self.hub.store
+        if store is None:
+            raise Unsupported("view='chase-queue' needs a store-backed deployment")
+
+        n = int(args.get("n") or args.get("page_size") or self._STUBS_DEFAULT_N)
+        if n < 1:
+            raise BadInput("n must be >= 1", next="search(view='chase-queue', n=25)")
+
+        rows = store.stub_backlog(id_kinds=("doi",), sort="last-tried", limit=n)
+        if not rows:
+            return Response(
+                body=(
+                    "no DOI-only stubs — nothing waiting in the chase queue. "
+                    "Nothing to acquire."
+                )
+            )
+
+        lines = [f"chase queue — DOI-only, never-tried first ({len(rows)} shown):", ""]
+        for r in rows:
+            ident = r["identifier"] or "(no external id)"
+            cite = r["cite_key"] or f"ref {r['ref_id']}"
+            lines.append(f"  ref {r['ref_id']}  {ident}  [{cite}]")
+            lines.append(f"      {r['state']}")
+        body = "\n".join(lines)
+        body += render_next_section(
+            [
+                (
+                    f"get(kind='paper', id={rows[0]['ref_id']})",
+                    "open a stub to see what links to it",
+                ),
+                (
+                    "search(kind='paper', view='stubs')",
+                    "the full acquisition backlog (every id kind)",
                 ),
                 (
                     "get(kind='skill', id='precis-stubs-help')",
