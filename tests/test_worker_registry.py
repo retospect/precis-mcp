@@ -35,9 +35,12 @@ from precis.workers.registry import (
 # The frozen behaviour snapshot: exactly the pass names the old
 # hand-written ``frozenset`` literals gated into each profile. If a
 # future edit changes profile membership it must update this on purpose.
+# "embed" was removed §F cycle b (cluster-scheduling.md §F): the standing
+# embed pass lost its default rotation slot — the demand materializer's
+# embed_batch/job_inproc path drains the queue in prod now; ``--only
+# embed`` still works (see workers/registry.py + cli/worker.py).
 _EXPECTED_SYSTEM = frozenset(
     {
-        "embed",
         "summarize",
         "chunk_keywords",
         "chase",
@@ -157,6 +160,18 @@ def test_derived_profiles_match_the_frozen_snapshot() -> None:
     """Slice 1 is a no-op refactor: derived sets == the old literals."""
     assert service_names_for_profile("system") == _EXPECTED_SYSTEM
     assert service_names_for_profile("agent") == _EXPECTED_AGENT
+
+
+def test_embed_service_spec_is_manual_only() -> None:
+    """§F cycle b cutover: ``embed`` has no ``default_profiles`` — it's
+    absent from the system-profile rotation (see the frozen snapshot
+    above) but stays a real ``ServiceSpec`` (``--only embed`` /
+    ``precis worker --status`` still work). Mirrors how
+    ``materialize``/``health_digest`` are manual-triggered rows."""
+    spec = SERVICES_BY_NAME["embed"]
+    assert spec.default_profiles == frozenset()
+    assert "embed" not in service_names_for_profile("system")
+    assert "embed" not in service_names_for_profile("agent")
 
 
 def test_enable_env_gates_cover_the_default_off_passes() -> None:

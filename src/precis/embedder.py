@@ -73,6 +73,16 @@ class Embedder(Protocol):
     # immediately. Added 2026-06-17 as a post-regression fix.
     def warmup(self) -> None: ...
 
+    # ``unload`` is called by the embedder service's idle-unload path
+    # (embedder_service.py, §F cycle b) after PRECIS_EMBEDDER_IDLE_S of
+    # no ``/embed`` activity — never on the request path. It releases
+    # any loaded weights/session state so the process's RSS/accelerator
+    # memory drops while idle; a subsequent ``warmup()`` re-loads
+    # lazily. Idempotent — safe to call when nothing is loaded. Backends
+    # with no persistent load (Mock, Remote — the model lives
+    # server-side) return immediately.
+    def unload(self) -> None: ...
+
 
 # ---------------------------------------------------------------------------
 # Mock — deterministic, no external deps. Used in all unit tests.
@@ -113,6 +123,10 @@ class MockEmbedder:
 
     def warmup(self) -> None:
         # No-op: deterministic hashing has nothing to load.
+        return None
+
+    def unload(self) -> None:
+        # No-op: nothing is ever loaded to begin with.
         return None
 
     def embed_one(self, text: str) -> list[float]:
@@ -291,6 +305,33 @@ class BgeM3Embedder:
         # the vector — it's the side effect we want.
         st.encode(["warmup"], normalize_embeddings=True)  # type: ignore[attr-defined]
 
+    def unload(self) -> None:
+        """Release the loaded ``SentenceTransformer`` + free accelerator
+        cache (§F cycle b idle-unload). Idempotent — a no-op if nothing
+        is loaded. Dropping the Python reference alone doesn't return
+        MPS/CUDA-allocated memory to the OS/driver; ``gc.collect()``
+        clears any reference cycles the ``SentenceTransformer`` object
+        graph holds, then the accelerator's own cache-empty call
+        releases what it was holding. Guarded by availability so this
+        runs harmlessly on CPU-only hosts too. The next ``embed()`` /
+        ``warmup()`` call re-loads lazily via ``_ensure_loaded``.
+        """
+        if self._st is None:
+            return
+        self._st = None
+        import gc
+
+        gc.collect()
+        try:
+            import torch
+        except ImportError:  # pragma: no cover - torch always present here
+            return
+        mps = getattr(torch.backends, "mps", None)
+        if mps is not None and mps.is_available():
+            torch.mps.empty_cache()
+        elif torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
     def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
@@ -434,6 +475,12 @@ class RemoteEmbedder:
 
     def warmup(self) -> None:
         # No-op: the remote backend's model is loaded server-side.
+        return None
+
+    def unload(self) -> None:
+        # No-op: idle-unload is the SERVICE's own concern (it wraps the
+        # in-process backend directly, never a RemoteEmbedder) — this
+        # client has no local weights to release.
         return None
 
     def embed(self, texts: list[str]) -> list[list[float]]:

@@ -1,4 +1,5 @@
-"""The demand materializer (§F cycle a) — hysteresis + dark-ship discipline.
+"""The demand materializer (§F cycle a/b) — hysteresis + the
+default-ON/opt-out cutover discipline.
 
 Drives :func:`precis.workers.materialize.run_materialize_pass` directly
 against a synthetic ``_BacklogSource`` (a controllable fake backlog count)
@@ -7,6 +8,12 @@ multi-thousand-chunk corpus. ``embed_batch``'s own drain behaviour is
 covered in ``tests/workers/test_embed_batch.py``; the cadence WIRING
 (``materialize`` in ``scheduler.CADENCES``) is covered in
 ``tests/test_scheduler_pass.py``.
+
+§F cycle b flipped the module's own dark-ship gate to default-ON — the
+autouse fixture below still pins ``PRECIS_MATERIALIZE_EMBED=1``
+explicitly for every hysteresis/mint test in this file (belt-and-braces
+against the default ever drifting back), but the cutover itself is
+covered by the "default-ON, '0' is the opt-out" section.
 """
 
 from __future__ import annotations
@@ -97,13 +104,32 @@ def _enable_materialize(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PRECIS_EMBED_BATCH_MAX_JOBS", raising=False)
 
 
-# ── dark-ship discipline ─────────────────────────────────────────────────
+# ── §F cycle b cutover: default-ON, "0" is the opt-out ───────────────────
 
 
-def test_dark_flag_off_is_a_pure_noop(
+def test_unset_flag_is_active_by_default(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """§F cycle b: the materializer is now the standing drain — an unset
+    ``PRECIS_MATERIALIZE_EMBED`` (the fleet default post-cutover) mints,
+    same as the explicit ``"1"`` the autouse fixture sets for every other
+    test in this file."""
     monkeypatch.delenv("PRECIS_MATERIALIZE_EMBED", raising=False)
+    backlog = {"n": 999_999}
+    monkeypatch.setattr(m, "_BACKLOG_SOURCES", (_fake_source(backlog),))
+
+    result = m.run_materialize_pass(store)
+
+    assert result.claimed == 4
+    assert _queued_job_count(store, "fake_batch") == 4
+
+
+def test_explicit_off_is_a_pure_noop(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``PRECIS_MATERIALIZE_EMBED=0`` is the documented opt-out/rollback —
+    a byte-identical no-op regardless of how far over the backlog is."""
+    monkeypatch.setenv("PRECIS_MATERIALIZE_EMBED", "0")
     backlog = {"n": 999_999}
     monkeypatch.setattr(m, "_BACKLOG_SOURCES", (_fake_source(backlog),))
 
@@ -275,3 +301,85 @@ def test_backlog_high_and_max_jobs_env_overrides(
     # ceil(60/10) = 6, capped at overridden max_jobs (2)
     assert result.claimed == 2
     assert _queued_job_count(store, "fake_batch") == 2
+
+
+# ── backlog WARNING (poor-man's liveness until §D) ───────────────────────
+
+
+def test_backlog_above_4x_high_logs_warning(
+    store: Store, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A backlog piled up to 4x HIGH despite mints already in flight is a
+    liveness signal (embed_batch not claiming / the embedder unreachable)
+    — one WARNING line, not a new alert kind."""
+    backlog = {"n": m._DEFAULT_BACKLOG_HIGH * 4 + 1}  # just over 4x HIGH
+    monkeypatch.setattr(m, "_BACKLOG_SOURCES", (_fake_source(backlog),))
+
+    with caplog.at_level("WARNING", logger="precis.workers.materialize"):
+        m.run_materialize_pass(store)
+
+    assert any(
+        "backlog" in rec.message and "not draining" in rec.message
+        for rec in caplog.records
+    )
+
+
+def test_backlog_below_4x_high_is_silent(
+    store: Store, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Just above the mint threshold (HIGH) but well under the 4x
+    liveness line — no WARNING, normal churn."""
+    backlog = {"n": m._DEFAULT_BACKLOG_HIGH + 1}
+    monkeypatch.setattr(m, "_BACKLOG_SOURCES", (_fake_source(backlog),))
+
+    with caplog.at_level("WARNING", logger="precis.workers.materialize"):
+        m.run_materialize_pass(store)
+
+    assert not any("not draining" in rec.message for rec in caplog.records)
+
+
+def test_backlog_warning_fires_once_per_tick(
+    store: Store, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """One line per tick, not one per something-else — a single
+    ``run_materialize_pass`` call over one source logs the WARNING
+    exactly once even though the backlog stays far over 4x HIGH."""
+    backlog = {"n": m._DEFAULT_BACKLOG_HIGH * 5}
+    monkeypatch.setattr(m, "_BACKLOG_SOURCES", (_fake_source(backlog),))
+
+    with caplog.at_level("WARNING", logger="precis.workers.materialize"):
+        m.run_materialize_pass(store)
+
+    warnings = [r for r in caplog.records if "not draining" in r.message]
+    assert len(warnings) == 1
+
+
+def test_backlog_warning_reports_live_jobs_count(
+    store: Store, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The WARNING carries ``live_jobs=N`` so an operator can tell
+    "stuck" (0 live — nothing is draining it) from "draining a big
+    legacy backlog" (jobs minted and running, just behind) — without
+    changing the fire condition (still purely count vs. 4x HIGH)."""
+    backlog = {"n": m._DEFAULT_BACKLOG_HIGH * 5}
+    src = _fake_source(backlog)
+    monkeypatch.setattr(m, "_BACKLOG_SOURCES", (src,))
+
+    with caplog.at_level("WARNING", logger="precis.workers.materialize"):
+        first = m.run_materialize_pass(store)
+
+    # First tick mints jobs (backlog above HIGH, nothing live yet) —
+    # the WARNING fired on the SAME tick reports 0 live (queued jobs
+    # aren't inserted until after the WARNING is logged).
+    assert first.claimed > 0
+    warning = next(r for r in caplog.records if "not draining" in r.message)
+    assert "live_jobs=0" in warning.message
+
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="precis.workers.materialize"):
+        m.run_materialize_pass(store)
+
+    # Second tick: the first tick's jobs are still queued/live — the
+    # WARNING now reports a nonzero live_jobs (draining, not stuck).
+    warning = next(r for r in caplog.records if "not draining" in r.message)
+    assert "live_jobs=0" not in warning.message

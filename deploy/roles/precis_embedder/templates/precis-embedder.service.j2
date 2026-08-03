@@ -3,6 +3,10 @@
 # so the same-node `precis worker` embeds via PRECIS_EMBEDDER=remote.
 # Linux unit runs on the GPU node, where CUDA does the forward pass. See ADR
 # 0020/0021 in the precis-mcp repo.
+#
+# §F cycle b: --idle-s makes the daemon elastic — it unloads the model
+# after that many idle seconds (0 disables) and reloads lazily on the
+# next /embed; the unit itself (and the watchdog) stays standing.
 
 [Unit]
 Description=precis-mcp embedding service (serve-embeddings, bge-m3)
@@ -25,7 +29,8 @@ ExecStart={{ precis_embedder_venv }}/bin/precis serve-embeddings \
   --host {{ precis_embedder_host }} \
   --port {{ precis_embedder_port }} \
   --embedder {{ precis_embedder_backend }} \
-  --max-inflight {{ precis_embedder_max_inflight }}
+  --max-inflight {{ precis_embedder_max_inflight }} \
+  --idle-s {{ precis_embedder_idle_s }}
 
 Restart=always
 RestartSec=30

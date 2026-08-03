@@ -10,6 +10,11 @@
 
   Bound to loopback only — the sole consumers are same-node daemons and
   the service is unauthenticated.
+
+  §F cycle b: --idle-s makes the daemon elastic — it unloads the model
+  after that many idle seconds (0 disables) and reloads lazily on the
+  next /embed; the daemon itself (and this LaunchDaemon/watchdog) stays
+  standing throughout.
 #}
 <plist version="1.0">
 <dict>
@@ -24,7 +29,7 @@
   <array>
     <string>/bin/bash</string>
     <string>-c</string>
-    <string>exec {{ precis_embedder_venv }}/bin/precis serve-embeddings --host {{ precis_embedder_host }} --port {{ precis_embedder_port }} --embedder {{ precis_embedder_backend }} --max-inflight {{ precis_embedder_max_inflight }}</string>
+    <string>exec {{ precis_embedder_venv }}/bin/precis serve-embeddings --host {{ precis_embedder_host }} --port {{ precis_embedder_port }} --embedder {{ precis_embedder_backend }} --max-inflight {{ precis_embedder_max_inflight }} --idle-s {{ precis_embedder_idle_s }}</string>
   </array>
 
   <key>UserName</key>

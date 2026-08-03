@@ -8,12 +8,14 @@ up-to-date as new chunks land. Two modes:
 * ``precis worker --status`` — print one ``(total | ok | failed |
   pending)`` row per registered handler and exit. No work claimed.
 
-By default both handlers run: ``embed:bge-m3`` and
-``summarize:rake-lemma``. ``--only embed`` / ``--only summarize``
-isolates one. For CI / tests, ``--embedder mock`` swaps the heavy
-sentence-transformers model for the deterministic
-:class:`precis.embedder.MockEmbedder` so the worker can be exercised
-without downloading weights.
+By default ``summarize:rake-lemma`` runs. ``embed:bge-m3`` is
+manual-only as of §F cycle b — the demand materializer's
+``embed_batch``/``job_inproc`` path drains the embed queue in prod now
+— so it only builds via an explicit ``--only embed`` (a one-off local
+drain, or the ``PRECIS_MATERIALIZE_EMBED=0`` rollback). For CI / tests,
+``--embedder mock`` swaps the heavy sentence-transformers model for the
+deterministic :class:`precis.embedder.MockEmbedder` so the worker can be
+exercised without downloading weights.
 """
 
 from __future__ import annotations
@@ -2072,10 +2074,16 @@ def _build_handlers(
 ) -> list[WorkerHandler]:
     """Materialise the handler list per ``--only`` / ``--profile`` flags.
 
-    Embed / summarize handlers belong to the ``system`` profile; the
-    ``agent`` profile is purely ref-pass driven (LLM reviewers + dream)
-    and skips the heavy embedder load when it doesn't need it. Honour
-    ``--only`` as the override for ad-hoc invocations.
+    Summarize belongs to the ``system`` profile by default; the ``agent``
+    profile is purely ref-pass driven (LLM reviewers + dream) and skips
+    the heavy embedder load when it doesn't need it. ``embed`` is
+    manual-only as of §F cycle b (the materializer → embed_batch →
+    job_inproc path is the standing drain of the embed queue in prod
+    now, see ``workers/registry.py`` + ``workers/materialize.py``) — it
+    only builds on an explicit ``--only embed`` (a one-off local drain,
+    or the documented rollback: ``PRECIS_MATERIALIZE_EMBED=0`` + ``precis
+    worker --only embed`` on any node). Honour ``--only`` as the override
+    for ad-hoc invocations generally.
     """
     handlers: list[WorkerHandler] = []
     profile = getattr(args, "profile", "system")
@@ -2084,6 +2092,8 @@ def _build_handlers(
     def _want(name: str) -> bool:
         if args.only is not None:
             return args.only == name
+        if name == "embed":
+            return False
         return is_system
 
     if _want("embed"):

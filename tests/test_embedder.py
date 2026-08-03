@@ -214,4 +214,7 @@ class TestProtocol:
             def warmup(self) -> None:
                 return None
 
+            def unload(self) -> None:
+                return None
+
         assert isinstance(Minimal(), Embedder)

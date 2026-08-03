@@ -27,7 +27,7 @@ already pins `IdentityAgent none` for the cluster hosts (on-disk
 | `precis-worker.log`        | all         | system-profile worker (embed, summarize, chunk_keywords, dispatch, nursery, `scheduler` [cron_tick/watch_poll], `heartbeat`, `paper_reconcile`, …). The big one (100s of MB–1 GB). |
 | `precis-worker-agent.log`  | melchior    | agent-profile worker (structural/deep_review, `job_claude_inproc` plan_tick, quota_check, and — since §A — the `scheduler` pass's `dream_agent`/`anki_sync` cadence fires, folded from the retired `precis-dream.log`/`precis-anki-sync.log` daemons below). Owner `deploy`. |
 | `precis-web.log`           | melchior    | FastAPI/uvicorn web UI. uvicorn lines have no leading timestamp. |
-| `precis-embedder.log`      | all         | `serve-embeddings` (bge-m3), loopback `127.0.0.1:8181`. Health: `curl 127.0.0.1:8181/readyz` → `ready`. |
+| `precis-embedder.log`      | all         | `serve-embeddings` (bge-m3), loopback `127.0.0.1:8181`. Health: `curl 127.0.0.1:8181/readyz` → `200` + JSON `{"status": "ready"\|"warming", "state": "loaded"\|"idle"\|"warming"}` (§F cycle b: `idle` is still 200 — a lazy reload happens on the next `/embed`). |
 | `precis-watch.log`         | all         | ingest inbox watcher. |
 | `precis-heartbeat.log`     | all         | per-node liveness heartbeat (still-live launchd/systemd timer; §A also runs it as a `--profile=system` worker pass — same log, `precis-worker.log`, for that half). |
 

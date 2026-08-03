@@ -15,6 +15,13 @@ Examples::
     precis serve-embeddings --port 9000
     precis serve-embeddings --embedder mock       # CI / smoke, no weights
     precis serve-embeddings --revision $HF_SHA    # pin the served revision
+    precis serve-embeddings --idle-s 0            # never idle-unload
+
+Idle-unload (§F cycle b): the model releases its weights after
+``--idle-s`` (default 1800s / ``PRECIS_EMBEDDER_IDLE_S``) with no
+``/embed`` activity and reloads lazily on the next one — the daemon
+stays up (still launchd/systemd + watchdog-supervised); only the model
+residency is elastic.
 """
 
 from __future__ import annotations
@@ -74,6 +81,16 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         help="Skip background warmup; /readyz reports ready immediately. "
         "Mainly for the mock embedder in tests.",
     )
+    p.add_argument(
+        "--idle-s",
+        type=float,
+        default=float(os.environ.get("PRECIS_EMBEDDER_IDLE_S", "1800")),
+        help="Idle-unload the model after this many seconds with no "
+        "/embed activity (default: 1800 = 30min); 0 disables (never "
+        "unload). The self-probe thread carries the check; /readyz "
+        "stays 200 while idle (a lazy reload happens on the next "
+        "/embed). See ADR 0020 / cluster-scheduling.md §F.",
+    )
 
 
 def run(args: argparse.Namespace) -> None:
@@ -91,4 +108,5 @@ def run(args: argparse.Namespace) -> None:
         revision=args.revision,
         max_inflight=args.max_inflight,
         warm=not args.no_warm,
+        idle_s=args.idle_s,
     )

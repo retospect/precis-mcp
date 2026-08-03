@@ -140,13 +140,19 @@ _AGT = frozenset({"agent"})
 SERVICES: tuple[ServiceSpec, ...] = (
     # ── System-worker passes (every node) ───────────────────────────
     ServiceSpec(
+        # §F cycle b cutover: the materializer (workers/materialize.py) →
+        # embed_batch → job_inproc path is now the standing drain of the
+        # embed queue — NOT `default_profiles`, so this registration is
+        # for a manual `--only embed` run only (still useful for a
+        # one-off local drain / the rollback story). EmbedHandler and its
+        # machinery stay; embed_batch reuses them directly.
         name="embed",
         label="Embed (bge-m3)",
         category="discovery",
         kind=ServiceKind.PASS,
-        default_profiles=_SYS,
         log_name="embed:bge-m3",
-        one_line="Fill chunk_embeddings for chunks that lack a vector.",
+        one_line="Fill chunk_embeddings for chunks that lack a vector "
+        "(manual/rollback only — materializer drains this in prod).",
         doc_skill="precis-overview",
     ),
     ServiceSpec(

@@ -517,7 +517,28 @@ probe is definitively `absent` (0), not `unknown`: unlike a flaky
 `nvidia-smi` subprocess, a failed round-trip to THIS host's own embedder
 endpoint IS the "not ready right now" signal. This is bge-m3's slot
 (ADR 0020's `precis serve-embeddings` daemon); the `llm:` rows for
-llama-swap-served models are separate (`workers/llm_serving.py`).
+llama-swap-served models are separate (`workers/llm_serving.py`). `/readyz`
+answers 200 for both `loaded` and `idle` (§F cycle b, below) — idle-unload
+never retracts this slot.
+
+**Embedder idle-unload (§F cycle b, elastic residency).**
+`precis serve-embeddings` (`embedder_service.py`) stays a standing,
+launchd/systemd + watchdog-supervised daemon — no worker-spawned
+serving — but its MODEL is now elastic: after `PRECIS_EMBEDDER_IDLE_S`
+(default 1800s; ansible `precis_embedder_idle_s`; `0` disables) of no
+`POST /embed`, the existing self-probe thread releases the weights
+(drop ref → `gc.collect()` → accelerator cache empty, guarded by
+availability) and `/readyz` reports `state: idle` while staying 200 (the
+model CAN still serve — a synchronous lazy reload happens on the next
+`/embed`, concurrent callers blocking on that reload rather than racing
+a duplicate one). The self-probe skips its own encode while idle (it
+would otherwise reload the model every tick and the unload would never
+hold). `/model` answers without loading (name/dim are static per
+backend). `/metrics` adds `precis_embedder_loaded` +
+`precis_embedder_last_activity_age_seconds`. This realizes the master
+proposal's "warm for a batch, released after" acceptance via residency
+elasticity rather than daemon lifecycle — see the round's spec for the
+recorded amendment.
 
 **`job_inproc` executor (§F cycle a, new).** The generic bounded in-proc
 lane, sibling of `claude_inproc`/`ssh_node`: claims ONE job per pass tick
@@ -532,25 +553,44 @@ lane — `claude_inproc` never passes `respect_reserve`, and `ssh_node`/
 `job_ssh_node` — not dark itself; it just has nothing to claim until a
 `job_inproc`-compatible job_type is minted.
 
-**`embed_batch` job_type + the `materialize` cadence (§F cycle a, dark).**
-`embed_batch` (`workers/job_types/embed_batch.py`) is a bounded work order
-that drains up to `params.limit` (default 2000) chunks through the SAME
-derived-queue `claim_batch`/`EmbedHandler` machinery the standing `embed`
-pass uses (ADR 0007 — share, don't duplicate the fine-grained queue), so
-the two can run concurrently without conflict (the chunk-level
-`chunk_claims` lease dedupes). `EmbedderUnavailable` mid-run fails the JOB
-`failure_class="infra"` (not the chunks) — no retry-in-job, no mint-fail
-loop. The `materialize` scheduler cadence (`workers/materialize.py`, 300s,
-fleet-singleton via the lease — mirrors `health_digest`'s
-`ref_pass=True`/no-`default_profiles` shape) mints bounded `embed_batch`
-jobs (`prio=8`) only above `PRECIS_EMBED_BACKLOG_HIGH` (default 500) and
-only when none are already live, with a 15-min failed-job cooldown —
-hysteresis coalesces churn into few large batches. **Entirely dark unless
-`PRECIS_MATERIALIZE_EMBED=1`** — with it unset, `run_materialize_pass` is a
-pure no-op and the standing `embed` pass drains exactly as before. Cutting
-the standing pass over to this materialized path (retiring the always-on
-embedder daemon in favor of a slot-bounded batch-drainer) is §F cycle b,
-together with elastic embedder residency.
+**`embed_batch` job_type + the `materialize` cadence (§F cycle b —
+CUTOVER LIVE).** `embed_batch` (`workers/job_types/embed_batch.py`) is a
+bounded work order that drains up to `params.limit` (default 2000)
+chunks through the SAME derived-queue `claim_batch`/`EmbedHandler`
+machinery the (now manual-only) `embed` pass uses (ADR 0007 — share,
+don't duplicate the fine-grained queue). `EmbedderUnavailable` mid-run
+fails the JOB `failure_class="infra"` (not the chunks) — no retry-in-job,
+no mint-fail loop. The `materialize` scheduler cadence
+(`workers/materialize.py`, 300s, fleet-singleton via the lease — mirrors
+`health_digest`'s `ref_pass=True`/no-`default_profiles` shape) mints
+bounded `embed_batch` jobs (`prio=8`) only above `PRECIS_EMBED_BACKLOG_HIGH`
+(default 500) and only when none are already live, with a 15-min
+failed-job cooldown — hysteresis coalesces churn into few large batches.
+A backlog piled up past 4×`PRECIS_EMBED_BACKLOG_HIGH` logs a rate-limited
+WARNING (poor-man's liveness until §D) surfacing in `worker_logs`/the §K
+console last-error strip.
+
+**Default-ON as of §F cycle b** — `PRECIS_MATERIALIZE_EMBED=0` (or any
+non-truthy token) is the documented opt-out/rollback; the standing
+`embed` pass has lost its `default_profiles` rotation slot in
+`registry.py` (`--only embed` still works — a one-off local drain or the
+rollback partner: set the env var off fleet-wide AND run
+`--only embed` on any node). The chunk queue stays derived (ADR 0007), so
+an outage delays embeddings, never loses them. **Two §F-a-era gaps fixed
+in the same ship** (verified against the live templates/code, not just
+inferred): (1) the worker daemon templates (`deploy/roles/precis_worker/`)
+didn't export `PRECIS_EMBEDDER`/`PRECIS_EMBEDDER_URL` as *env* — only as
+CLI args, which only reach `cli/worker.py`'s own resolution, not
+`capability_probe`/`embed_batch`'s `load_config()`-based reads — so the
+`embedder` slot never advertised and `embed_batch` fell back to
+`PrecisConfig`'s `"mock"` default; both vars are now exported (env),
+mirroring `asa_bot`/`asa_slack`'s plists. (2) `embed_batch` passed the
+literal `"bge-m3"` into `resolve_embedder`, permanently shadowing
+`PrecisConfig.embedder` (`name or cfg.embedder` never falls through once
+`name` is truthy) — an absent `params.embedder` (the materializer-minted
+default) now passes `None` so the fallback actually reaches the
+configured backend; `params.embedder` remains a real override for a
+caller that wants to force one.
 
 **Claim ordering — prio+age (slice 6a).** `claim_executor_jobs`
 (`workers/executors/_common.py`) orders `COALESCE(prio, 5) ASC, ref_id

@@ -259,6 +259,90 @@ def test_lease_renewed_each_iteration_while_draining(
 # ── bad params ────────────────────────────────────────────────────────────
 
 
+# ── §F cycle b: backend resolution respects the configured embedder ─────
+
+
+def test_default_params_resolve_remote_backend_not_local_bge_m3(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A materializer-minted job's ``params`` carries no ``embedder`` key.
+    Before the §F cycle b fix, ``embed_batch`` passed the literal string
+    ``"bge-m3"`` into ``resolve_embedder`` — which shadows
+    ``PrecisConfig.embedder`` unconditionally (``name or cfg.embedder``
+    never falls through when ``name`` is already truthy) — so a prod
+    worker configured for ``embedder="remote"`` built a LOCAL
+    ``BgeM3Embedder`` (a torch import the worker venv doesn't even have)
+    instead of the configured ``RemoteEmbedder`` client. Pin the real
+    (unpatched) ``resolve_embedder`` call: config ``embedder="remote"`` +
+    a URL ⇒ ``EmbedHandler`` is constructed with a genuine
+    ``RemoteEmbedder``, not ``BgeM3Embedder``. ``EmbedHandler`` itself is
+    swapped for a capturing double so no real HTTP call or DB write is
+    needed to see the type."""
+    monkeypatch.setenv("PRECIS_EMBEDDER", "remote")
+    monkeypatch.setenv("PRECIS_EMBEDDER_URL", "http://127.0.0.1:8181")
+    seed_chunks(store, ["a"])
+
+    captured: dict[str, Any] = {}
+
+    class _CapturingHandler:
+        def __init__(self, embedder: Any) -> None:
+            captured["embedder"] = embedder
+
+        def claim_batch(self, conn: Any, *, limit: int) -> list[Any]:
+            return []  # nothing to drain — the point is the ctor arg
+
+    monkeypatch.setattr(embed_batch, "EmbedHandler", _CapturingHandler)
+
+    ctx = _mk_ctx(store, params={"limit": 5})
+    embed_batch._dispatch(ctx, embed_batch.SPEC)
+
+    from precis.embedder import RemoteEmbedder
+
+    assert isinstance(captured["embedder"], RemoteEmbedder)
+
+
+def test_default_params_pass_name_none_to_resolve_embedder(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Direct unit check of the call shape: no ``params.embedder`` ⇒
+    ``resolve_embedder(name=None, ...)`` — the explicit "no override"
+    signal ``resolve_embedder`` needs to fall through to
+    ``load_config().embedder``."""
+    captured: dict[str, Any] = {}
+
+    def _fake_resolve(**kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return make_mock_bge_m3()
+
+    monkeypatch.setattr(embed_batch, "resolve_embedder", _fake_resolve)
+    seed_chunks(store, ["a"])
+
+    ctx = _mk_ctx(store, params={"limit": 5})
+    embed_batch._dispatch(ctx, embed_batch.SPEC)
+
+    assert captured["name"] is None
+
+
+def test_explicit_embedder_param_still_overrides(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``params.embedder`` remains a real override for a caller (or a
+    future job_type) that wants to force a specific backend."""
+    captured: dict[str, Any] = {}
+
+    def _fake_resolve(**kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return make_mock_bge_m3()
+
+    monkeypatch.setattr(embed_batch, "resolve_embedder", _fake_resolve)
+    seed_chunks(store, ["a"])
+
+    ctx = _mk_ctx(store, params={"limit": 5, "embedder": "mock"})
+    embed_batch._dispatch(ctx, embed_batch.SPEC)
+
+    assert captured["name"] == "mock"
+
+
 def test_nonpositive_limit_fails_infra_without_touching_the_queue(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -45,7 +45,11 @@ codebase, two packaging forms, identical wire contract — an accepted
 deviation from "everything is a container".
 
 **Correctness contract.** The service exposes `/model` (`{name, dim,
-revision}`), `/healthz`, `/readyz`, `/metrics`. `RemoteEmbedder`
+revision}`), `/healthz`, `/readyz`, `/metrics`. (§F cycle b: `/readyz`
+also answers 200 for an *idle* model — see the idle-unload elastic-
+residency amendment in `docs/proposals/cluster-scheduling.md` §F — with
+a `state` field distinguishing `loaded`/`idle`; only warming/wedged is
+503.) `RemoteEmbedder`
 asserts `dim == store.embedding_dim()` and `name ==` the embedders-table
 row before its first encode (catching a wrong/upgraded model that would
 otherwise silently corrupt vectors). Backpressure via a bounded

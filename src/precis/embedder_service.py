@@ -15,10 +15,29 @@ unboundedly, and the client's backoff (ADR 0020) does the rest.
 Endpoints (paths from :mod:`precis.embedder_wire`):
 
 - ``GET  /healthz`` — process is up (always 200 once serving).
-- ``GET  /readyz``  — model weights are loaded (200) or warming (503).
+- ``GET  /readyz``  — the model CAN serve: loaded (200) or idle (200,
+  ``state`` field says so — a lazy reload happens transparently on the
+  next ``/embed``) or still warming/wedged (503).
 - ``GET  /model``   — :class:`ModelInfo` (name, dim, revision, wire).
+  Answers without loading (name/dim are static per backend).
 - ``POST /embed``   — :class:`EmbedRequest` → :class:`EmbedResponse`.
+  Triggers a synchronous lazy reload first if the model is idle.
 - ``GET  /metrics`` — plaintext counters for scraping.
+
+**Idle-unload (§F cycle b, ``docs/proposals/cluster-scheduling.md`` §F,
+the "elastic residency" amendment).** The RAM/GPU an idle-but-resident
+model holds is the scarce resource, not the process — so rather than the
+worker spinning the whole daemon up/down per batch, the ALREADY-standing
+daemon (still launchd/systemd + watchdog-supervised) elastically
+unloads its own model weights after ``PRECIS_EMBEDDER_IDLE_S`` (default
+1800s; ``0`` disables — the never-unload opt-out) of no ``POST /embed``
+activity, and lazily reloads on the next one. The existing self-probe
+thread (below) carries the idle check too — no second thread. The
+self-probe itself must never wake an idle model (it would just reset
+the idle clock every tick and the unload would never hold), so it
+skips its own probe-encode while idle; ``/readyz`` staying 200 in that
+state is what keeps the capability-probe's ``embedder`` resource_slots
+row advertised regardless.
 """
 
 from __future__ import annotations
@@ -26,6 +45,8 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING
 
@@ -90,6 +111,8 @@ class EmbedderService:
         probe_interval_s: float = 30.0,
         probe_timeout_s: float = 20.0,
         probe_fail_threshold: int = 2,
+        idle_s: float = 1800.0,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._embedder = embedder
         self._revision = revision
@@ -102,6 +125,22 @@ class EmbedderService:
         self._encode_lock = threading.Lock()
         self._ready = threading.Event()
         self.metrics = _Metrics()
+        # Idle-unload (§F cycle b). ``idle_s <= 0`` disables — never
+        # unload. ``clock`` is injectable (mirrors ``RemoteEmbedder``'s
+        # ``sleep`` seam) so tests can fake elapsed time instead of
+        # sleeping for real. ``_loaded`` tracks whether the underlying
+        # backend currently holds weights; distinct from ``_ready``,
+        # which the self-probe uses for "can serve at all" — a model can
+        # be unloaded (idle) yet still ``ready`` (it serves via a
+        # transparent lazy reload). ``_idle_lock`` serialises the
+        # unload/reload transition; concurrent ``/embed`` callers block
+        # on it during a reload, then proceed (max_inflight bounds them
+        # once loaded).
+        self._idle_s = idle_s
+        self._clock = clock
+        self._idle_lock = threading.Lock()
+        self._loaded = not warm
+        self._last_activity = clock()
         # Self-probe config (gripe 51394: "embedder health signals
         # lie" — ``_ready`` used to be a set-once-never-cleared latch,
         # so /readyz stayed 200 forever even after the embedder wedged
@@ -157,7 +196,127 @@ class EmbedderService:
 
     def _probe_loop(self) -> None:
         while not self._probe_stop.wait(self._probe_interval_s):
-            self._run_probe_once()
+            self._probe_tick()
+
+    def _probe_tick(self) -> None:
+        """One iteration of the probe loop's periodic work: the idle
+        check first, then (only if still loaded) the self-probe encode.
+        Split out from :meth:`_probe_loop` so tests can drive a single
+        tick synchronously against a fake clock instead of waiting out
+        ``probe_interval_s`` for real."""
+        self._maybe_idle_unload()
+        if not self._loaded:
+            # Idle: skip the self-probe entirely. It would call the RAW
+            # embedder's ``embed()`` directly (bypassing this service's
+            # own lazy-reload path), which on an unloaded BgeM3Embedder
+            # raises ``Upstream("embedder warming")`` — a probe
+            # "failure" that would eventually flip ``/readyz`` to 503
+            # for a model that's merely idle by design, and would also
+            # reload the model every tick, defeating the whole point of
+            # idle-unload.
+            return
+        self._run_probe_once()
+
+    def state(self) -> str:
+        """One of ``"warming"`` / ``"loaded"`` / ``"idle"`` — surfaced on
+        ``/readyz`` and ``/metrics``. Independent of :attr:`ready`: a
+        self-probe-detected wedge clears ``ready`` (503) regardless of
+        load state, while "idle" is still ``ready`` — the service CAN
+        serve, via a transparent lazy reload on the next ``/embed``."""
+        if not self._ready.is_set():
+            return "warming"
+        return "loaded" if self._loaded else "idle"
+
+    def _idle_age_s(self) -> float:
+        """Seconds since the last ``POST /embed`` (or boot, if none yet)."""
+        return self._clock() - self._last_activity
+
+    def _maybe_idle_unload(self) -> None:
+        """Unload the model if idle for ``idle_s`` — no-op if disabled
+        (``idle_s <= 0``), already idle, still warming (nothing loaded
+        yet to release), or an encode is currently in flight.
+
+        Encodes are serialised under ``_encode_lock`` (:meth:`embed`),
+        so a non-blocking acquire of it is the guard against unloading
+        mid-encode: an in-flight encode holds the lock, this tick's
+        ``acquire(blocking=False)`` fails, and we skip — no busy-wait,
+        no risk of yanking the model out from under a real request; the
+        next probe tick (``probe_interval_s`` later) tries again.
+
+        Lock ordering: ``_idle_lock`` first, then (while still holding
+        it) a non-blocking try of ``_encode_lock`` — never the reverse.
+        :meth:`embed` never nests the two: it takes ``_idle_lock``
+        (inside ``_ensure_loaded_for_request``) and fully releases it
+        BEFORE separately taking ``_encode_lock`` later in the same
+        call — so there is no path that could deadlock against this
+        method's ordering.
+        """
+        if self._idle_s <= 0:
+            return
+        with self._idle_lock:
+            if not self._loaded or not self._ready.is_set():
+                return
+            if self._idle_age_s() < self._idle_s:
+                return
+            if not self._encode_lock.acquire(blocking=False):
+                # A real encode is in flight right now — leave it alone;
+                # try again next tick.
+                return
+            try:
+                self._embedder.unload()
+                self._loaded = False
+                log.info(
+                    "embedder idle-unload: released after %.0fs with no "
+                    "/embed activity (idle_s=%.0f)",
+                    self._idle_age_s(),
+                    self._idle_s,
+                )
+            finally:
+                self._encode_lock.release()
+
+    def _ensure_loaded_for_request(self) -> None:
+        """Synchronous lazy reload — but ONLY in the ready-but-unloaded
+        ("idle") state. Called at the top of :meth:`embed`, before
+        admission control — concurrent ``/embed`` callers arriving
+        during a reload block on ``_idle_lock`` (not the admission
+        semaphore) and proceed the instant it completes, rather than
+        racing a second reload.
+
+        Still-warming (cold boot, ``_ready`` not yet set) is
+        deliberately left untouched: this method's job is the
+        idle<->loaded transition, not "wait for or duplicate the
+        initial boot warmup". The background ``_warm()`` thread owns
+        that; if a request thread ALSO called ``self._embedder.warmup()``
+        here during that window, two concurrent model loads would race
+        (real backends: two competing SentenceTransformer
+        constructions) and this method would set ``_loaded = True``
+        while ``_ready`` was still False, so :meth:`state` would report
+        "warming" while ``_loaded`` disagreed (review finding, §F cycle
+        b). Returning immediately instead falls through to ``embed()``'s
+        normal ``self._embedder.embed(texts)`` call under
+        ``_encode_lock`` — EXACTLY the pre-idle-unload code path — so a
+        request arriving during boot warmup gets precisely the error
+        the raw backend has always raised there
+        (``BgeM3Embedder._raise_if_warming`` -> ``Upstream``), mapped by
+        the HTTP handler to the same status a client's backoff already
+        tolerates (the ansible role docs "the worker tolerates a
+        warming embedder").
+
+        Lock ordering: this acquires ``_idle_lock`` and releases it
+        BEFORE ``embed()`` goes on to acquire ``_encode_lock`` — the two
+        are never nested, only sequential, so there's no ordering
+        hazard with :meth:`_maybe_idle_unload` (which acquires
+        ``_idle_lock`` then, while still holding it, non-blockingly
+        tries ``_encode_lock``).
+        """
+        if not self._ready.is_set():
+            return
+        with self._idle_lock:
+            if self._loaded:
+                return
+            self._embedder.warmup()
+            self._loaded = True
+            log.info("embedder lazy-reload: model reloaded after idle")
 
     def _run_probe_once(self) -> None:
         """Perform one real, timeout-guarded probe embed and update
@@ -290,6 +449,17 @@ class EmbedderService:
             revision=self._revision,
         )
 
+    def render_metrics(self) -> str:
+        """``self.metrics.render()`` plus the idle-unload residency
+        signals (§F cycle b) — cheap, aids ops (is this instance
+        currently paying to hold weights? how long since it last did
+        real work?)."""
+        return (
+            self.metrics.render()
+            + f"precis_embedder_loaded {int(self._loaded)}\n"
+            + f"precis_embedder_last_activity_age_seconds {self._idle_age_s():.1f}\n"
+        )
+
     def _warm(self) -> None:
         try:
             # Call ``warmup()`` (not ``embed()``) — the public
@@ -298,7 +468,16 @@ class EmbedderService:
             # supposed to clear that gate. Routing through ``embed``
             # caused the warm thread to fast-fail on the very gate it
             # was meant to clear (2026-06-15 → 2026-06-16 regression).
-            self._embedder.warmup()
+            # Belt-and-braces (§F cycle b review): hold ``_idle_lock``
+            # across the call + the ``_loaded`` flip, same as
+            # ``_ensure_loaded_for_request`` — this thread only ever
+            # runs before ``_ready`` is set, so ``_ensure_loaded_for_
+            # request`` never contends for the lock at the same time in
+            # practice, but the lock makes that invariant robust rather
+            # than implicit.
+            with self._idle_lock:
+                self._embedder.warmup()
+                self._loaded = True
             self._ready.set()
             log.info(
                 "embedder warm: model=%s dim=%d",
@@ -310,7 +489,16 @@ class EmbedderService:
             log.exception("embedder warmup failed; /readyz stays 503")
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        """Admission-controlled, serialised encode. Raises `Busy` when full."""
+        """Admission-controlled, serialised encode. Raises `Busy` when full.
+
+        Any call is "activity" for the idle clock, and reloads the model
+        first if it's currently idle (§F cycle b) — both BEFORE admission
+        control, so a burst of callers arriving during a reload queue on
+        the reload lock rather than each independently discovering
+        ``Busy``/racing a duplicate reload.
+        """
+        self._last_activity = self._clock()
+        self._ensure_loaded_for_request()
         if not self._sem.acquire(blocking=False):
             with self.metrics._lock:
                 self.metrics.rejected_429 += 1
@@ -366,14 +554,20 @@ def _make_handler(service: EmbedderService) -> type[BaseHTTPRequestHandler]:
             if self.path == PATH_HEALTH:
                 self._send_text(200, "ok")
             elif self.path == PATH_READY:
+                # §F cycle b: idle is still 200 — the JSON `state` field
+                # is what distinguishes "loaded" from "idle" (both
+                # serve); only "warming"/wedged is 503. A plain
+                # status-code check (the watchdog, capability_probe)
+                # keeps working unchanged.
+                state = service.state()
                 if service.ready:
-                    self._send_text(200, "ready")
+                    self._send_json(200, {"status": "ready", "state": state})
                 else:
-                    self._send_text(503, "warming")
+                    self._send_json(503, {"status": "warming", "state": state})
             elif self.path == PATH_MODEL:
                 self._send_json(200, service.model_info().to_dict())
             elif self.path == PATH_METRICS:
-                self._send_text(200, service.metrics.render())
+                self._send_text(200, service.render_metrics())
             else:
                 self._send_json(404, {"error": "not found"})
 
@@ -429,18 +623,24 @@ def serve(
     revision: str | None = None,
     max_inflight: int = 4,
     warm: bool = True,
+    idle_s: float = 1800.0,
 ) -> None:
     """Run the embedding service until interrupted (blocking)."""
     service = EmbedderService(
-        embedder, revision=revision, max_inflight=max_inflight, warm=warm
+        embedder,
+        revision=revision,
+        max_inflight=max_inflight,
+        warm=warm,
+        idle_s=idle_s,
     )
     httpd = make_server(service, host=host, port=port)
     log.info(
-        "serving embeddings on http://%s:%d (model=%s, max_inflight=%d)",
+        "serving embeddings on http://%s:%d (model=%s, max_inflight=%d, idle_s=%.0f)",
         host,
         port,
         embedder.model,
         max_inflight,
+        idle_s,
     )
     try:
         httpd.serve_forever()

@@ -10,6 +10,7 @@ sides cannot drift without it going red.
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 import urllib.error
@@ -68,8 +69,13 @@ def test_embed_roundtrip(service_url: str) -> None:
 def test_healthz_and_readyz(service_url: str) -> None:
     status, body = _get(service_url + "/healthz")
     assert status == 200 and body == "ok"
-    status, _ = _get(service_url + "/readyz")
+    status, body = _get(service_url + "/readyz")
     assert status == 200  # mock warms instantly
+    # §F cycle b: /readyz is now JSON with a `state` field (a plain
+    # status-code check — the watchdog, capability_probe — still works
+    # unchanged; this pins the richer body for the state-aware readers).
+    payload = json.loads(body)
+    assert payload["state"] == "loaded"
 
 
 def test_metrics_endpoint(service_url: str) -> None:
@@ -78,6 +84,9 @@ def test_metrics_endpoint(service_url: str) -> None:
     status, body = _get(service_url + "/metrics")
     assert status == 200
     assert "precis_embedder_embed_total" in body
+    # §F cycle b residency signals.
+    assert "precis_embedder_loaded 1" in body
+    assert "precis_embedder_last_activity_age_seconds" in body
 
 
 def test_dim_boundary_check_against_live_service(service_url: str) -> None:
@@ -125,6 +134,9 @@ def test_warm_thread_calls_warmup_not_embed() -> None:
         def warmup(self) -> None:
             self.warmup_calls += 1
 
+        def unload(self) -> None:
+            pass
+
     probe = WarmProbe()
     service = EmbedderService(probe, revision="t", max_inflight=4, warm=True)
     # Warm thread is daemonised; give it a moment to run.
@@ -162,6 +174,9 @@ class _TogglableEmbedder:
         return True
 
     def warmup(self) -> None:
+        pass
+
+    def unload(self) -> None:
         pass
 
 

@@ -53,6 +53,21 @@
     <string>precis-worker</string>
     <key>PRECIS_SOURCE</key>
     <string>precis-worker</string>
+    {# §F cycle b: the CLI args above (--embedder / --embedder-url) only
+       reach cli/worker.py's OWN embedder resolution (the standing
+       `embed` pass, now manual-only). `capability_probe._probe_embedder`
+       and embed_batch's `resolve_embedder` both read PrecisConfig via
+       load_config() — i.e. the ENV, not argv — so without these two the
+       probe never advertises the `embedder` resource_slots row (no URL
+       to check) and a resolve with no explicit override falls back to
+       PrecisConfig's "mock" default (not this host's configured
+       backend). Same values as the CLI flags above; mirrors asa_bot's/
+       asa_slack's plists, which already export both for their own
+       embedded precis MCP subprocess. #}
+    <key>PRECIS_EMBEDDER</key>
+    <string>{{ precis_worker_embedder }}</string>
+    <key>PRECIS_EMBEDDER_URL</key>
+    <string>{{ precis_worker_embedder_url }}</string>
     {# Planner-coroutine guardrails. Read by the dispatch pass when
        it gates each candidate parent — the dispatch pass runs in the
        system profile (here), even though the job execution happens

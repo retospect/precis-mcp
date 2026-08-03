@@ -179,10 +179,13 @@ class TestBuildHandlers:
         defaults.update(overrides)
         return argparse.Namespace(**defaults)
 
-    def test_default_includes_both(self):
+    def test_default_excludes_embed_includes_summarize(self):
+        """§F cycle b: ``embed`` is manual-only — the materializer drains
+        the embed queue in prod now — so the default (no ``--only``)
+        system-profile rotation is ``summarize`` alone."""
         handlers = _build_handlers(self._ns())
         names = [h.name for h in handlers]
-        assert names == ["embed:mock", "summarize:rake-lemma"]
+        assert names == ["summarize:rake-lemma"]
 
     def test_only_embed_excludes_summarizer(self):
         handlers = _build_handlers(self._ns(only="embed"))

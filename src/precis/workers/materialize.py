@@ -9,12 +9,15 @@ is the pair of "mint only above HIGH" + "mint nothing while the previous
 batch hasn't fully drained" — churn coalesces into few large batches by
 construction rather than a trickle of tiny ones.
 
-**DARK by default.** :func:`run_materialize_pass` is a byte-identical
-no-op unless ``PRECIS_MATERIALIZE_EMBED=1`` — this ship soaks the
-machinery (the ``job_inproc`` executor, the ``embed_batch`` job_type, the
-``embedder`` resource slot) without changing what the standing ``embed``
-pass drains in prod. Cutting the standing pass over to this materialized
-path is §F cycle b, together with elastic embedder residency.
+**ON by default (§F cycle b cutover).** :func:`run_materialize_pass` is
+active unless ``PRECIS_MATERIALIZE_EMBED=0`` (or any non-truthy token) —
+the standing ``embed`` pass has lost its rotation slot in
+``registry.py`` (manual-only via ``--only embed``), so this materializer
+→ ``embed_batch`` → ``job_inproc`` path is now the only thing draining
+the embed queue in prod. Rollback: set ``PRECIS_MATERIALIZE_EMBED=0``
+fleet-wide and run ``precis worker --only embed`` on any node (or revert
+the ship) — the chunk queue is derived (ADR 0007), so an outage delays
+embeddings, never loses them.
 
 **One small table, not a rewrite, for a second backlog source.**
 :data:`_BACKLOG_SOURCES` is deliberately generic — `(name, job_type,
@@ -54,6 +57,13 @@ _FAILED_COOLDOWN_MINUTES = 15
 
 _MINT_PRIO = 8  # background under 0014 ASC (lower = more urgent)
 
+#: Backlog-WARNING multiplier over PRECIS_EMBED_BACKLOG_HIGH — a
+#: poor-man's liveness signal (until §D's real one): a queue piling up to
+#: 4x the mint threshold despite (presumably) already-minted jobs means
+#: something downstream of minting is stuck (embed_batch jobs not
+#: claiming, or the embedder unreachable), not just normal churn.
+_BACKLOG_WARN_MULTIPLIER = 4
+
 #: The mint tick's wall-clock bucket width — mirrors ``scheduler.CADENCES``'s
 #: "materialize" ``interval_s`` (300s, see ``workers/scheduler.py``), so a
 #: concurrent/repeated mint landing in the same cadence window derives the
@@ -62,12 +72,14 @@ _TICK_BUCKET_S = 300
 
 
 def materialize_embed_enabled() -> bool:
-    """``PRECIS_MATERIALIZE_EMBED`` — the dark-ship flag. Unset/falsy ⇒
-    :func:`run_materialize_pass` is a pure no-op (byte-identical prod
-    behaviour: no mints, the standing ``embed`` pass untouched)."""
+    """``PRECIS_MATERIALIZE_EMBED`` — default-ON as of §F cycle b (the
+    cutover): unset ⇒ active, matching the standing ``embed`` pass losing
+    its rotation slot (``registry.py``). ``PRECIS_MATERIALIZE_EMBED=0``
+    (or any non-truthy token) is the documented opt-out/rollback — see
+    the module docstring's rollback story."""
     from precis.utils.env import env_flag
 
-    return env_flag(_MATERIALIZE_EMBED_ENV)
+    return env_flag(_MATERIALIZE_EMBED_ENV, default=True)
 
 
 def _backlog_high() -> int:
@@ -259,7 +271,27 @@ def _mint_jobs(store: Any, src: _BacklogSource, n: int) -> int:
 
 def _materialize_one(store: Any, src: _BacklogSource) -> int:
     count = src.count_fn(store)
-    if count <= _backlog_high():
+    high = _backlog_high()
+    if count > high * _BACKLOG_WARN_MULTIPLIER:
+        # One line per tick (this function runs once per Cadence tick per
+        # source) — surfaces in worker_logs and the §K console last-error
+        # strip without a dedicated alert. live_jobs is included so an
+        # operator can tell "stuck" (0 live — nothing is draining it)
+        # from "draining a big legacy backlog" (>0 live — jobs are
+        # minted and running, just haven't caught up yet); a separate
+        # query from the hysteresis check below (only paid when this
+        # WARNING branch actually fires) — doesn't change the fire
+        # condition, which stays purely count-vs-high*4.
+        log.warning(
+            "materialize: %s backlog %d and not draining — check "
+            "embed_batch jobs / embedder (high=%d, warn>%d, live_jobs=%d)",
+            src.name,
+            count,
+            high,
+            high * _BACKLOG_WARN_MULTIPLIER,
+            _live_jobs(store, src.job_type),
+        )
+    if count <= high:
         return 0
     if _live_jobs(store, src.job_type) > 0:
         # A bounded batch and no more until it drains.
@@ -273,7 +305,7 @@ def _materialize_one(store: Any, src: _BacklogSource) -> int:
             "materialize: %s backlog=%d > high=%d — minted %d %s job(s)",
             src.name,
             count,
-            _backlog_high(),
+            high,
             minted,
             src.job_type,
         )

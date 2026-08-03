@@ -38,6 +38,16 @@ precis_embedder_backend: bge-m3
 # Concurrent embed requests admitted before the service returns 429.
 precis_embedder_max_inflight: 4
 
+# Idle-unload (§F cycle b, elastic residency): release the model's
+# weights after this many seconds with no /embed activity, reloading
+# lazily on the next one. /readyz stays 200 while idle (state field
+# says so) so the daemon+watchdog and the capability-probe slot row are
+# unaffected. 0 disables (never unload). Override per-host/group: a
+# host that serves interactive search (precis serve / the MCP) pays a
+# cold bge-m3 load on the FIRST query after an idle window — a longer
+# value (or 0) there trades idle RAM for latency.
+precis_embedder_idle_s: 1800
+
 # Shared HF cache with precis_worker on the same host — local disk, off
 # NFS/NAS, so bge-m3 isn't dragged over the network on each load.
 precis_embedder_hf_home: "{{ precis_worker_hf_home | default('/var/lib/precis/hf-cache') }}"

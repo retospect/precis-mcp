@@ -17,9 +17,18 @@ def env_truthy(raw: str | None) -> bool:
     return str(raw or "").strip().lower() in _TRUTHY
 
 
-def env_flag(var: str) -> bool:
-    """True when env var ``var`` is set to a truthy token."""
-    return env_truthy(os.environ.get(var))
+def env_flag(var: str, *, default: bool = False) -> bool:
+    """Truthiness of env var ``var``, with a caller-chosen unset default.
+
+    Unset (``None``) -> ``default``. Set -> :func:`env_truthy` of the
+    value, regardless of ``default`` — so a default-ON gate's documented
+    opt-out is any non-truthy token (``"0"``, ``"false"``, ...), not just
+    the absence of the var.
+    """
+    raw = os.environ.get(var)
+    if raw is None:
+        return default
+    return env_truthy(raw)
 
 
 def env_csv_set(var: str) -> frozenset[str]:

@@ -333,10 +333,11 @@ def test_materialize_cadence_is_host_agnostic_every_5min(store) -> None:
 def test_materialize_cadence_fires_the_pass(store, monkeypatch) -> None:
     """The cadence's ``run`` calls into ``run_materialize_pass`` — cover the
     wiring, not the pass's own behaviour (``tests/workers/
-    test_materialize.py``). Dark by default (PRECIS_MATERIALIZE_EMBED
-    unset) so the inner pass no-ops, but the cadence itself still fires
-    cleanly (claimed=1, ok=1) — the lease claim doesn't know or care that
-    the work inside is dark."""
+    test_materialize.py``). §F cycle b: the gate is default-ON now, but
+    this test still asserts the CADENCE claim/ok counters (claimed=1,
+    ok=1) — the lease claim fires regardless of what the inner pass finds
+    (here: an empty test corpus, so it mints nothing, but that's an
+    ``ok`` no-op, not a skip)."""
     monkeypatch.delenv("PRECIS_MATERIALIZE_EMBED", raising=False)
     from precis.workers.scheduler import CADENCES
 

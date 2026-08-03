@@ -1,15 +1,15 @@
 """``embed_batch`` job_type — a bounded work order draining the derived
-embed queue (§F cycle a, ``docs/proposals/cluster-scheduling.md`` §F).
+embed queue (§F, ``docs/proposals/cluster-scheduling.md`` §F).
 
 ADR 0007 is respected: the *fine-grained* queue stays the derived
 ``chunks``/``chunk_embeddings`` predicate with its own per-chunk
 ``chunk_claims`` lease (:class:`~precis.workers.embed.EmbedHandler`,
 :mod:`precis.workers.base`) — this job_type is a *coarse* work order on
 top of it, not a new queue. It shares the SAME ``claim_batch`` /
-``process_batch`` / ``write_ok`` / ``write_failed`` machinery the standing
-``embed`` pass uses, so an ``embed_batch`` job and the standing pass can
-run concurrently without conflict — the chunk-level lease dedupes their
-claims.
+``process_batch`` / ``write_ok`` / ``write_failed`` machinery the (now
+manual-only, §F cycle b) ``embed`` pass uses, so an ``embed_batch`` job
+and a manual ``--only embed`` run can still coexist without conflict —
+the chunk-level lease dedupes their claims.
 
 Runs under the ``job_inproc`` executor only: a bounded (minutes, not
 hours) in-process loop, ``params.limit`` chunks or until the derived queue
@@ -19,10 +19,10 @@ is empty, whichever comes first. ``requires={'embedder': 1}`` (via the
 ``{'gpu': 1}``) reserves an embedder slot at claim time.
 
 Minted by the ``materialize`` scheduler cadence
-(:mod:`precis.workers.materialize`) — dark behind
-``PRECIS_MATERIALIZE_EMBED`` — but nothing stops an operator or another
-job_type from ``put(kind='job', job_type='embed_batch', executor=
-'job_inproc', ...)`` directly.
+(:mod:`precis.workers.materialize`) — **default-ON as of §F cycle b**
+(``PRECIS_MATERIALIZE_EMBED=0`` is the opt-out) — but nothing stops an
+operator or another job_type from ``put(kind='job', job_type=
+'embed_batch', executor='job_inproc', ...)`` directly.
 """
 
 from __future__ import annotations
@@ -70,8 +70,6 @@ DESCRIPTION = (
 #: this is the materializer's per-tick mint ceiling.
 _DEFAULT_LIMIT = 2000
 
-_DEFAULT_EMBEDDER_NAME = "bge-m3"
-
 #: Chunks claimed per handler.claim_batch() call inside the loop — mirrors
 #: the worker CLI's --batch-size default (cli/worker.py).
 _MICRO_BATCH = 32
@@ -86,7 +84,18 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             failure_class="infra",
         )
         return
-    embedder_name = str(params.get("embedder", _DEFAULT_EMBEDDER_NAME))
+    # §F cycle b fix: an EXPLICIT params.embedder is an override; absent
+    # (the materializer-minted default) must fall through to
+    # ``resolve_embedder``'s own ``name or cfg.embedder`` — passing the
+    # bare string ``"bge-m3"`` here (the old default) shadowed
+    # ``PrecisConfig.embedder`` unconditionally, so a prod job on
+    # ``embedder='remote'`` built a LOCAL ``BgeM3Embedder`` (a torch
+    # import the worker venv doesn't even have — see the module
+    # docstring's [embed] extra note) instead of the configured
+    # ``RemoteEmbedder`` client.
+    embedder_name = params.get("embedder")
+    if embedder_name is not None:
+        embedder_name = str(embedder_name)
 
     try:
         embedder = resolve_embedder(name=embedder_name, dim=ctx.store.embedding_dim())
