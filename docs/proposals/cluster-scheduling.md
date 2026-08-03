@@ -278,10 +278,17 @@ containerization, the autocatpath harvest concurrency edge, `gr1821xx`, the
 ### Pillar 3 — Elastic resources on demand (law 1 applied to scarcity)
 
 - **§F — Demand-materialized batches + counted slots + elastic serving.**
-  **Cycle a SHIPPED dark** (`bf7e2581`: materializer cadence + `embed_batch`
-  + `job_inproc` + embedder slot probe, gated on `PRECIS_MATERIALIZE_EMBED`);
-  cycle b remains: elastic residency, the embed pass→job cutover, on-demand
-  embedder in ansible.
+  **SHIPPED for the embedder** (`bf7e2581` cycle a: materializer +
+  `embed_batch` + `job_inproc` + slot probe; `b2ff8de1` cycle b: cutover —
+  materializer default-ON, embed pass manual-only — plus daemon idle-unload
+  residency and the env/backend fixes that lit the slot rows; `5e9a5d13`
+  agent-role env). **Amendment:** the daemon stays launchd/systemd-supervised;
+  residency = idle-unload + lazy-reload IN the daemon
+  (`PRECIS_EMBEDDER_IDLE_S`, `/readyz` 200 while idle) — the materializer's
+  high-water mint gate already supplies pile-earned spin-up, so no worker
+  process management and the watchdog stays. **LLM elastic residency
+  (llama-swap models) remains spec** — activation via
+  `local-first-capacity-valve.md` first.
   - **Count → threshold → batch-mint.** A cheap periodic demand-count mints a
     batch of low-`prio` jobs when a backlog crosses a threshold (>500
     unembedded chunks → mint the next 5000); below threshold, nothing;
@@ -499,11 +506,12 @@ no `torch-cuda` base-image mirror, and §L's OS-agnostic manage story
 | **executor claim** | `FOR UPDATE SKIP LOCKED`, `ORDER BY COALESCE(prio,5) ASC` (0014 direction, test-pinned §B-2), reserve-at-claim | **live** | `executors/_common.py::claim_executor_jobs` |
 | **reserve mode** | TTL'd `service='reserve'` row gates new heavy claims (ssh_node + claude_docker); auto-expires | **live** (§B-2) | `workers/service_config.py::reserve_active` · `cli/service.py` |
 | **operator kill** | `precis jobs kill` stamps `kill_requested`; owning executor kills at next poll + GPU reset | **live** (§B-2) | `cli/jobs_admin.py` · `executors/_common.py::maybe_reset_gpu_after_kill` |
-| **materializer + `embed_batch`** | backlog-count → mint slot-gated bounded batch jobs; `job_inproc` executor drains | **dark** (`PRECIS_MATERIALIZE_EMBED`) | `workers/materialize.py` · `workers/job_types/embed_batch.py` · `executors/job_inproc.py` |
+| **materializer + `embed_batch`** | backlog-count → mint slot-gated bounded batch jobs; `job_inproc` executor drains | **live** (default-ON; `PRECIS_MATERIALIZE_EMBED=0` opt-out) | `workers/materialize.py` · `workers/job_types/embed_batch.py` · `executors/job_inproc.py` |
+| **embedder idle-unload** | daemon releases model RAM/GPU after idle, lazy-reloads on demand | **live** (`PRECIS_EMBEDDER_IDLE_S`, 1800s) | `embedder_service.py` · ADR 0020 |
 | **`mint_child_job`** | mints child jobs, copies parent `prio` | **live** | `workers/dispatch.py::run_dispatch_pass` |
 | **container executors** | dispatch heavy/agentic work into rootless podman; `mode:run` + pinned `image` + `precis_access:read` | **dark**/gated | `executors/{claude_docker,agent_container}.py` · `job_types/sandbox_run.py` |
 | **§C fuse/split** | RDMA topology modes | **spec** (gated) | `gpu-cluster-modes.md` |
-| **§F elastic serving** | spin a model up for a batch, release when drained | **spec** (batch-mint half shipped dark — row above) | this doc, §F |
+| **§F elastic serving** | spin a model up for a batch, release when drained | **live for the embedder** (rows above); **spec for LLM** models | this doc, §F |
 
 ### The serving primitive (shared by all LLM traces)
 
@@ -521,7 +529,9 @@ no `torch-cuda` base-image mirror, and §L's OS-agnostic manage story
    (quality-invisible). **[live plumbing; latent while 2 is dark]**
 4. **§F makes it elastic:** the worker starts the server when backlog + a
    free slot call for it, tears it down when drained — warm for the batch,
-   RAM/GPU freed after. **[spec — today the servers stand as daemons]**
+   RAM/GPU freed after. **[spec for LLM servers — today they stand as
+   daemons. Shipped for the embedder in the amended shape: the daemon
+   stands, the MODEL unloads after idle (`b2ff8de1`)]**
 
 ### 1. "I need a small model" (classify / summarize / triage)
 
