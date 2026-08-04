@@ -10,18 +10,6 @@ tracked separately in `docs/improvement-plan.md` (same delete-on-ship rule).
 
 ---
 
-## 🔧 /smartdraft reader: O(all-hubs) claims derivation → 10-16 s TTFB (root-caused 2026-08-04)
-
-Status: open (fix decided, next cycle) · Severity: critical (user-facing page stall) · Owner: `src/precis_web/routes/smartdraft.py` + `src/precis/taproot/{seniority,cite,trust}.py` + `src/precis_web/claim_render.py` · Test: query-count regression — page load issues near-constant DB round-trips as hub-cite count grows 5→100 (needs a query-counting fixture; none exists), and `?focus=` doesn't change the count materially.
-
-Measured on `dr173020` (121 hubs): 9.7-16.5 s TTFB ≈ 1,800-2,000 DB round-trips; the lazy `/blocks` twin is 0.06 s. Three stacked defects, fix all three together (memoization alone would mask the scoping defect until a 300-hub draft resurfaces it):
-
-- **(A) Scope** — `claims`/`claims_evidence` (`smartdraft.py` ~166-169) feed every node's text including `skel` placeholders; filter to rendered nodes like `review_by_dc` does (`if m.mode != "skel"`). Decision made: the Claims rail is viewport-scoped (matches the diamond↔rail sync shipped 2026-08-04). Same defect in `_hub_and_citation_stats` (~213-214) — whole-draft un-deduped per-token resolve on every render.
-- **(B) Batch** — plural entry point for hub evidence: `is_claim_hub`/`_fetch_evidence_rows`/`_fetch_paper_facts`/`ref_cite_keys` all have `ANY(%s)` patterns already; resolve all N heads in a handful of bulk queries. Also fixes the same per-hub tax in docx/latex export (`export/docx.py:589`, `export/latex.py:505,535`).
-- **(C) De-dup** — `render_claim_evidence` derives each hub TWICE (`finding_cite_keys` + `claim_trust`→`_hub_trust`→`finding_cite_keys` again) and `is_claim_hub` fires ~4×/hub; thread the computed `HubEvidence` into `claim_trust`, memoize `is_claim_hub` per request. Also halves `/claim` page cost.
-
----
-
 ## 🔧 axis:taproot demotes freshly-minted claim hubs (root-caused 2026-08-04) + fleet remediation
 
 Status: open (fleet remediation pending) · Severity: bug · Owner: `src/precis/workers/axis_pass.py::_claim_ref` · Test: `run_axis_pass(axis_id='taproot')` over a live `TAPROOT:claim` hub must skip it, not reclassify.
