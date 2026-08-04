@@ -408,6 +408,31 @@ class IdentifiersMixin:
         with self.pool.connection() as c:
             return _do(c)
 
+    def ref_cite_keys_bulk(self, ref_ids: Iterable[int]) -> dict[int, list[str]]:
+        """Batch twin of :meth:`ref_cite_keys` — every ``cite_key`` alias
+        (oldest first) for many refs in one query instead of one per ref.
+
+        A claim hub's N supporters used to cost N ``ref_cite_keys`` round
+        trips — twice over, once for the render and once more when
+        ``claim_trust`` re-derived the same hub (OPEN-ITEMS.md "/smartdraft
+        reader" batch B). A missing ref_id is simply absent from the
+        returned dict (its aliases are ``[]``, same as an empty
+        :meth:`ref_cite_keys` call)."""
+        ids = list({int(r) for r in ref_ids})
+        if not ids:
+            return {}
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT ref_id, id_value FROM ref_identifiers "
+                "WHERE ref_id = ANY(%s) AND id_kind = 'cite_key' "
+                "ORDER BY ref_id, created_at, id_value",
+                (ids,),
+            ).fetchall()
+        out: dict[int, list[str]] = {}
+        for ref_id, value in rows:
+            out.setdefault(int(ref_id), []).append(str(value))
+        return out
+
     def identifier_owner(
         self,
         scheme: str,

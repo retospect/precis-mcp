@@ -30,6 +30,7 @@ Derivation (taproot.md, locked decision):
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -111,6 +112,32 @@ def is_claim_hub(store: Any, ref_id: int) -> bool:
     check other modules (e.g. :mod:`precis.taproot.cite`) should call
     rather than reaching into the private name."""
     return _is_claim_hub(store, ref_id)
+
+
+def is_claim_hub_bulk(store: Any, ref_ids: Iterable[int]) -> dict[int, bool]:
+    """Bulk twin of :func:`is_claim_hub` — one query for many ``ref_ids``
+    instead of one per id (the smartdraft reader's Claims rail resolves a
+    whole render-window's worth of distinct cite heads in one pass; the
+    per-head O(N) query count was the O(all-hubs) TTFB defect's first
+    tax — OPEN-ITEMS.md's "``/smartdraft`` reader" item)."""
+    ids = sorted({int(r) for r in ref_ids})
+    if not ids:
+        return {}
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.ref_id
+            FROM refs r
+            JOIN ref_tags rt ON rt.ref_id = r.ref_id
+            JOIN tags t ON t.tag_id = rt.tag_id
+                       AND t.namespace = %(ns)s AND t.value = %(val)s
+            WHERE r.ref_id = ANY(%(ids)s) AND r.kind = 'finding'
+              AND r.deleted_at IS NULL
+            """,
+            {"ns": TAPROOT_NAMESPACE, "val": TAPROOT_CLAIM, "ids": ids},
+        ).fetchall()
+    hub_ids = {int(row[0]) for row in rows}
+    return {rid: rid in hub_ids for rid in ids}
 
 
 def _find_originators(store: Any, supporter_ids: list[int]) -> set[int]:
@@ -293,14 +320,21 @@ def derive_refines(store: Any, hub_ref_id: int) -> ClaimLinks:
     return ClaimLinks(refines=refines, refined_by=refined_by)
 
 
-def derive_evidence(store: Any, hub_ref_id: int) -> HubEvidence:
+def derive_evidence(
+    store: Any, hub_ref_id: int, *, assume_hub: bool = False
+) -> HubEvidence:
     """Derive a claim hub's evidence, split into originators/corroborators/
     contradictors. Pure read — writes nothing.
 
     Raises :class:`BadInput` when ``hub_ref_id`` is not a live
-    ``TAPROOT:claim`` finding.
+    ``TAPROOT:claim`` finding — unless ``assume_hub=True``, which skips the
+    check (one fewer query) for a caller that already confirmed it, e.g.
+    via :func:`is_claim_hub`/:func:`is_claim_hub_bulk` a moment ago
+    (:mod:`precis.taproot.trust`'s ``claim_trust``/``_hub_trust``, or
+    ``precis_web.claim_render``'s bulk render path). Public default stays
+    ``False`` — the safety check is the contract unless a caller opts out.
     """
-    if not _is_claim_hub(store, hub_ref_id):
+    if not assume_hub and not _is_claim_hub(store, hub_ref_id):
         raise BadInput(
             f"ref_id={hub_ref_id} is not a TAPROOT:claim finding",
             next=(
@@ -350,12 +384,156 @@ def derive_evidence(store: Any, hub_ref_id: int) -> HubEvidence:
     )
 
 
+# ── Bulk derivation (OPEN-ITEMS.md "/smartdraft reader" perf fix, batch B) ──
+#
+# A page (or export) resolving many hubs at once — e.g. the smartdraft
+# reader's Claims rail, cited-hub-per-window — shouldn't pay N x (3+)
+# queries for N hubs. These bulk twins fetch the SAME three query shapes
+# :func:`derive_evidence` does, but once across every hub, then partition
+# the results back per hub in Python. Assumes every id in ``hub_ref_ids``
+# is already a confirmed live ``TAPROOT:claim`` hub (via
+# :func:`is_claim_hub_bulk`) — no per-hub re-check, mirroring
+# ``derive_evidence(assume_hub=True)``.
+
+
+def _fetch_evidence_rows_bulk(
+    store: Any, hub_ref_ids: list[int]
+) -> dict[int, list[tuple[int, str, dict[str, Any]]]]:
+    """Bulk twin of :func:`_fetch_evidence_rows` — one query for every hub
+    in ``hub_ref_ids`` instead of one per hub. Same ``p.kind = 'paper'``
+    endpoint-disambiguation guard (see :func:`_fetch_evidence_rows`'s
+    docstring for why that matters)."""
+    out: dict[int, list[tuple[int, str, dict[str, Any]]]] = {h: [] for h in hub_ref_ids}
+    if not hub_ref_ids:
+        return out
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT l.dst_ref_id, l.src_ref_id, l.relation, l.meta
+            FROM links l
+            JOIN refs p ON p.ref_id = l.src_ref_id
+            WHERE l.dst_ref_id = ANY(%(hubs)s)
+              AND l.relation = ANY(%(roles)s)
+              AND p.kind = 'paper'
+              AND p.deleted_at IS NULL
+            """,
+            {"hubs": hub_ref_ids, "roles": list(_ALL_ROLES)},
+        ).fetchall()
+    for hub_id, src, relation, meta in rows:
+        out.setdefault(int(hub_id), []).append((int(src), str(relation), meta or {}))
+    return out
+
+
+def _find_originators_bulk(
+    store: Any, supporters_by_hub: dict[int, list[int]]
+) -> dict[int, set[int]]:
+    """Bulk twin of :func:`_find_originators` — one ``cites`` query across
+    the UNION of every hub's supporter set, then re-partitioned per hub.
+
+    Safe even when a paper supports more than one hub: a ``cites`` edge
+    only counts toward a given hub when BOTH endpoints are in THAT hub's
+    own supporter set, so pooling candidate ids into one query first and
+    filtering per hub afterward gives the same answer :func:`_find_originators`
+    would for each hub called separately."""
+    all_ids = sorted({rid for ids in supporters_by_hub.values() for rid in ids})
+    if not all_ids:
+        return {h: set() for h in supporters_by_hub}
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT src_ref_id, dst_ref_id FROM links "
+            "WHERE relation = %s AND src_ref_id = ANY(%s) AND dst_ref_id = ANY(%s)",
+            (_CITES_RELATION, all_ids, all_ids),
+        ).fetchall()
+    edges = [(int(src), int(dst)) for src, dst in rows if src != dst]
+    out: dict[int, set[int]] = {}
+    for hub_id, supporter_ids in supporters_by_hub.items():
+        s = set(supporter_ids)
+        out[hub_id] = {dst for src, dst in edges if src in s and dst in s}
+    return out
+
+
+def derive_evidence_bulk(
+    store: Any, hub_ref_ids: Iterable[int]
+) -> dict[int, HubEvidence]:
+    """Bulk twin of :func:`derive_evidence` — resolve many hubs' evidence in
+    THREE queries total (evidence rows, intra-set ``cites``, paper facts),
+    regardless of N, instead of N x (3+). ``hub_ref_ids`` is assumed already
+    hub-confirmed (see module note above); an id that turns out to carry no
+    evidence rows simply gets an empty :class:`HubEvidence` back, same as
+    :func:`derive_evidence` would for an evidence-less hub."""
+    ids = list(dict.fromkeys(int(h) for h in hub_ref_ids))  # dedupe, keep order
+    if not ids:
+        return {}
+
+    rows_by_hub = _fetch_evidence_rows_bulk(store, ids)
+
+    support_by_hub: dict[int, dict[int, dict[str, Any]]] = {}
+    contradict_by_hub: dict[int, dict[int, dict[str, Any]]] = {}
+    all_paper_ids: set[int] = set()
+    for hub_id in ids:
+        support_edges: dict[int, dict[str, Any]] = {}
+        contradict_edges: dict[int, dict[str, Any]] = {}
+        for src_ref_id, relation, meta in rows_by_hub.get(hub_id, []):
+            target = (
+                contradict_edges if relation == _CONTRADICTS_ROLE else support_edges
+            )
+            target.setdefault(src_ref_id, meta)
+            all_paper_ids.add(src_ref_id)
+        support_by_hub[hub_id] = support_edges
+        contradict_by_hub[hub_id] = contradict_edges
+
+    originators_by_hub = _find_originators_bulk(
+        store, {h: list(s) for h, s in support_by_hub.items()}
+    )
+    facts = _fetch_paper_facts(store, all_paper_ids)
+
+    out: dict[int, HubEvidence] = {}
+    for hub_id in ids:
+        support_edges = support_by_hub[hub_id]
+        contradict_edges = contradict_by_hub[hub_id]
+        originator_ids = originators_by_hub.get(hub_id, set())
+        coverage_note = (
+            _UNDETERMINED_NOTE if support_edges and not originator_ids else None
+        )
+
+        originators: list[EvidenceEdge] = []
+        corroborators: list[EvidenceEdge] = []
+        for ref_id, meta in support_edges.items():
+            is_originator = ref_id in originator_ids
+            edge = _build_edge(
+                ref_id,
+                meta,
+                facts,
+                derived_role="establishes" if is_originator else "corroborates",
+                is_originator=is_originator,
+            )
+            (originators if is_originator else corroborators).append(edge)
+
+        contradictors = [
+            _build_edge(
+                ref_id, meta, facts, derived_role="contradicts", is_originator=False
+            )
+            for ref_id, meta in contradict_edges.items()
+        ]
+
+        out[hub_id] = HubEvidence(
+            hub_ref_id=hub_id,
+            originators=_sort_group(originators),
+            corroborators=_sort_group(corroborators),
+            contradictors=_sort_group(contradictors),
+            coverage_note=coverage_note,
+        )
+    return out
+
+
 __all__ = [
     "ClaimLinks",
     "ClaimRef",
     "EvidenceEdge",
     "HubEvidence",
     "derive_evidence",
+    "derive_evidence_bulk",
     "derive_refines",
     "is_claim_hub",
+    "is_claim_hub_bulk",
 ]

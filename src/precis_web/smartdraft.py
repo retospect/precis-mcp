@@ -1095,6 +1095,37 @@ def claim_trust_for_block(
     return {"label": label, "heads": offenders}
 
 
+def _prepopulate_trust_cache(store: Any, nodes: list[ChunkNode]) -> dict[str, Any]:
+    """Bulk-resolve every distinct cite head across ``nodes`` into
+    :func:`claim_trust_for_block`'s cache shape up front — the batch
+    counterpart to that function's own lazy per-head ``claim_trust`` call.
+
+    A render window with many distinct hub cites used to cost one FULL
+    ``claim_trust`` derivation (~7 round trips once a hub's supporters are
+    counted) PER distinct head; pre-warming the shared cache with
+    :func:`~precis.taproot.trust.claim_trust_bulk` collapses all of them
+    into a handful of bulk queries regardless of head count
+    (OPEN-ITEMS.md's "/smartdraft reader" O(all-hubs) TTFB fix). A head
+    that never resolves to a finding is simply absent here — the per-node
+    loop's lazy ``if head not in cache`` fallback still handles it (one
+    no-op resolve, no store hit for an ``fi``-shaped head)."""
+    from precis.taproot.trust import claim_trust_bulk
+    from precis_web.claim_render import cite_heads_in, resolve_head_ref_id
+
+    head_ref: dict[str, int] = {}
+    for n in nodes:
+        for head in cite_heads_in(n.text or ""):
+            if head in head_ref:
+                continue
+            ref_id = resolve_head_ref_id(store, head)
+            if ref_id is not None:
+                head_ref[head] = ref_id
+    if not head_ref:
+        return {}
+    states = claim_trust_bulk(store, head_ref.values())
+    return {head: states.get(ref_id) for head, ref_id in head_ref.items()}
+
+
 def review_payloads_for(
     nodes: list[ChunkNode],
     status_by_chunk: dict[int, dict[str, Any]],
@@ -1106,13 +1137,14 @@ def review_payloads_for(
     and claim-trust flags can hit the store (``no per-block DB hits`` means
     no per-RENDER-set blowup either — this shares one ``integrity_cache``
     AND one ``trust_cache`` across the whole call, so a paper/finding
-    cited from several of these blocks costs one store hit, not N). Each
-    payload is :func:`review_indicator`'s dict plus ``integrity_ok`` (5c)
-    and ``claim_trust`` (finding-trust-surfaces §3 — ``None`` /
-    ``{"label": "unverified"|"unsupported", "heads": [...]}``, worst-of
-    across the block's cite heads)."""
+    cited from several of these blocks costs one store hit, not N; the
+    trust cache is additionally pre-warmed in bulk up front, see
+    :func:`_prepopulate_trust_cache`). Each payload is :func:`review_indicator`'s
+    dict plus ``integrity_ok`` (5c) and ``claim_trust`` (finding-trust-
+    surfaces §3 — ``None`` / ``{"label": "unverified"|"unsupported",
+    "heads": [...]}``, worst-of across the block's cite heads)."""
     integrity_cache: dict[int, bool] = {}
-    trust_cache: dict[str, Any] = {}
+    trust_cache: dict[str, Any] = _prepopulate_trust_cache(store, nodes)
     out: dict[str, dict[str, Any]] = {}
     for n in nodes:
         ind = review_indicator(n.chunk_id, n.chunk_kind, status_by_chunk)

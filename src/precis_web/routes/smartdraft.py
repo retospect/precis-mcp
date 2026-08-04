@@ -25,7 +25,7 @@ from precis.store._tags_ops import _escape_like
 from precis.store.types import Tag
 from precis.utils.embed_query import embed_query
 from precis_web import draft_eyes, smartdraft
-from precis_web.claim_render import hub_cite_heads, render_claim_evidence
+from precis_web.claim_render import hub_cite_heads, render_claims_evidence
 from precis_web.deps import get_runtime, get_store, templates
 from precis_web.draft_links import chunk_links
 from precis_web.linkify import popover_chip
@@ -160,13 +160,25 @@ async def reader(
     links_in = _connection_chips(focus_links["links_in"])
     flags = _flag_chips(focus_links["flags"])
 
+    # Nodes that ACTUALLY render in the middle pane — excludes the `skel`
+    # placeholder rows full-document mode uses as inert scroll spacers for
+    # everything outside the ±40 window (see `assemble_view`). Every
+    # per-request derivation below that scans middle-pane text (claims,
+    # review payloads, the hub/citation-lifecycle scoreboard) scopes to
+    # THIS list, not `view.middle`/`nodes` — a `skel` row's `.node.text` is
+    # the full original chunk text even though nothing renders it, so
+    # scanning `view.middle` unfiltered silently re-widens every one of
+    # these back to O(whole draft) in full-document mode (the
+    # "/smartdraft reader O(all-hubs) TTFB" defect — OPEN-ITEMS.md).
+    rendered_nodes = [m.node for m in view.middle if m.mode != "skel"]
+
     # Taproot claim-hub cites (violet anchors): the hub heads cited anywhere
-    # in the middle pane, resolved once and shared by every linkify call in
-    # the template; the right-rail "Claims" panel lists their evidence.
-    claims = hub_cite_heads(store, [m.node.text or "" for m in view.middle])
-    claims_evidence = [
-        e for h in claims if (e := render_claim_evidence(store, h)) is not None
-    ]
+    # in the RENDERED middle pane, resolved once and shared by every
+    # linkify call in the template; the right-rail "Claims" panel lists
+    # their evidence via the batch entry point (`render_claims_evidence`)
+    # so N distinct hubs cost a handful of bulk queries, not N x ~16.
+    claims = hub_cite_heads(store, [n.text or "" for n in rendered_nodes])
+    claims_evidence = render_claims_evidence(store, claims)
 
     # Tools pane (right-rail bottom): the export/metadata/lifecycle controls
     # ported from the classic reader. All reuse the classic /drafts/{ident}/…
@@ -199,9 +211,7 @@ async def reader(
     # renders. ``/blocks`` hydration threads the same helper over its own
     # hydrated window (see ``blocks`` below), which never carries ``skel``
     # rows to begin with.
-    review_by_dc = smartdraft.review_payloads_for(
-        [m.node for m in view.middle if m.mode != "skel"], review_status, store
-    )
+    review_by_dc = smartdraft.review_payloads_for(rendered_nodes, review_status, store)
     # ``focus_review`` — kept for back-compat with any other call site that
     # still expects the OLD raw-ledger shape (``{checker: {...}}``, not the
     # derived indicator); the widget itself reads ``review_by_dc``.
@@ -210,7 +220,7 @@ async def reader(
     )
 
     checker_counts = smartdraft.checker_rollup(review_status)
-    hub_stats = _hub_and_citation_stats(request, store, nodes)
+    hub_stats = _hub_and_citation_stats(request, store, rendered_nodes)
     shape_stats = _document_shape_stats(store, ref.id)
 
     return templates.TemplateResponse(
@@ -309,12 +319,21 @@ def _hub_and_citation_stats(
     computation the outline's ``## Hygiene`` "N of M cited passages have a
     hub" line uses — see ``_hygiene_lines``) plus the citation lifecycle
     counts (``_citations_view``'s to-fetch/to-re-ground/to-promote/done
-    partition). Both reused, not reimplemented; both derived from the
-    already-loaded node list (no extra query — ``nodes`` carry the
-    ``.dc``/``.text`` either helper needs). Degrades to all-zero when no
-    handler is wired (a bare test ``FakeRuntime`` has no ``.hub`` — this
-    dropdown entry is advisory, not load-bearing, so it fails soft rather
-    than 500ing the whole reader)."""
+    partition). Both reused, not reimplemented; both derived from
+    ``nodes`` (no extra query — they carry the ``.dc``/``.text`` either
+    helper needs). Degrades to all-zero when no handler is wired (a bare
+    test ``FakeRuntime`` has no ``.hub`` — this dropdown entry is
+    advisory, not load-bearing, so it fails soft rather than 500ing the
+    whole reader).
+
+    ``nodes`` is deliberately the caller's scoped choice, not the whole
+    draft — the ``reader()`` call site passes only what full-document mode
+    actually RENDERS (excludes ``skel`` placeholders), so this dropdown's
+    numbers are viewport-scoped and will differ from the MCP
+    ``get(kind='draft')`` hygiene line's whole-draft count for a large
+    draft (same underlying computation, deliberately different input —
+    OPEN-ITEMS.md's "/smartdraft reader" scope fix; the MCP hygiene
+    surface itself is untouched, see ``_hygiene_lines``)."""
     from precis.handlers._citations_view import _build_rows, _collect_raw_cites
 
     grounded, total = 0, 0

@@ -16,6 +16,7 @@ import difflib
 import hashlib
 import io
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -382,6 +383,47 @@ class DraftMixin:
             "chunk_kind": row[2],
             "text": row[3] or "",
         }
+
+    def universal_chunks(self, handles: Iterable[str]) -> dict[str, dict[str, Any]]:
+        """Bulk twin of :meth:`universal_chunk` — resolve many chunk
+        handles in one query instead of one per handle.
+
+        A claim hub's evidence rows each carry a ``source_handle``
+        grounding pointer; a page rendering many hubs at once (the
+        smartdraft reader's Claims rail — OPEN-ITEMS.md batch B) was
+        paying one query per DISTINCT grounding chunk across every hub.
+        Since the numeric id a handle decodes to IS the ``chunk_id``
+        regardless of kind code, one ``ANY(%s)`` query resolves them all;
+        a handle that isn't a well-formed chunk handle (or is the
+        ``cad`` kind, which lives outside ``chunks`` — see
+        :meth:`universal_chunk`) is simply absent from the result."""
+        by_chunk_id: dict[int, list[str]] = {}
+        for h in handles:
+            parsed = handle_registry.parse(h.strip())
+            if parsed is None or not parsed[1] or parsed[0] == "cad":
+                continue
+            by_chunk_id.setdefault(parsed[2], []).append(h)
+        if not by_chunk_id:
+            return {}
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT chunk_id, ref_id, ord, chunk_kind, text FROM chunks "
+                "WHERE chunk_id = ANY(%s)",
+                (list(by_chunk_id),),
+            ).fetchall()
+        out: dict[str, dict[str, Any]] = {}
+        for chunk_id, ref_id, ord_, chunk_kind, text in rows:
+            for h in by_chunk_id.get(int(chunk_id), []):
+                parsed = handle_registry.parse(h.strip())
+                assert parsed is not None  # filtered above
+                out[h] = {
+                    "kind": parsed[0],
+                    "ref_id": int(ref_id),
+                    "ord": ord_,
+                    "chunk_kind": chunk_kind,
+                    "text": text or "",
+                }
+        return out
 
     def chunk_text_at(self, ref_id: int, ord: int) -> str | None:
         """The text of one chunk addressed by ``(ref_id, ord)`` — the

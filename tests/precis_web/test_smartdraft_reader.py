@@ -347,10 +347,11 @@ def test_smartdraft_full_doc_review_payload_skips_skel_placeholders(
     (inert scroll spacers, ~60 of the 101 chunks here) never reach
     ``sd_review_widget`` and must not cost ``cite_integrity_ok`` a call each.
     Counts calls to ``smartdraft.cite_integrity_ok`` itself (not the raw
-    store hit) — the page ALSO runs an unrelated whole-draft citation scan
+    store hit) — the page ALSO runs an unrelated citation scan
     (``_hub_and_citation_stats`` → ``_collect_raw_cites``, item 5(a)'s
-    rollup numbers) that legitimately walks every node and would otherwise
-    swamp a bare ``resolve_handle`` call count."""
+    rollup numbers, itself scoped to the rendered window post the
+    "/smartdraft reader" perf fix) that would otherwise swamp a bare
+    ``resolve_handle`` call count."""
     store = CitedBigDraftFakeStore()
     calls: list[str] = []
     from precis_web import smartdraft as smartdraft_mod

@@ -32,7 +32,10 @@ from precis.taproot.seniority import (
 
 
 def _cite_keys_for_group(
-    store: Any, edges: list[EvidenceEdge]
+    store: Any,
+    edges: list[EvidenceEdge],
+    *,
+    cite_key_map: dict[int, list[str]] | None = None,
 ) -> tuple[list[str], list[int]]:
     """Resolve each edge's paper to its (oldest) ``cite_key`` alias.
 
@@ -40,11 +43,22 @@ def _cite_keys_for_group(
     ``cite_key`` alias at all is dropped from the render rather than
     failing the whole hub, and its ``ref_id`` is reported back so the
     caller can warn about it.
+
+    ``cite_key_map`` — a pre-fetched ``{paper_ref_id: aliases}`` map
+    (:func:`~precis.store.Store.ref_cite_keys_bulk`) — skips the
+    per-paper ``store.ref_cite_keys`` round trip entirely when given
+    (the batch B fix: this was an N+1 per hub, and a *second* N+1 when
+    ``claim_trust`` re-derived the same hub — see :mod:`precis.taproot.trust`).
+    ``None`` (the default) preserves the old per-edge query behaviour.
     """
     cite_keys: list[str] = []
     skipped: list[int] = []
     for edge in edges:
-        aliases = store.ref_cite_keys(edge.paper_ref_id)
+        aliases = (
+            cite_key_map.get(edge.paper_ref_id, [])
+            if cite_key_map is not None
+            else store.ref_cite_keys(edge.paper_ref_id)
+        )
         if aliases:
             cite_keys.append(aliases[0])
         else:
@@ -53,7 +67,10 @@ def _cite_keys_for_group(
 
 
 def hub_cite_keys(
-    store: Any, evidence: HubEvidence
+    store: Any,
+    evidence: HubEvidence,
+    *,
+    cite_key_map: dict[int, list[str]] | None = None,
 ) -> tuple[list[str], list[tuple[str, str]]]:
     """Locked resolution policy for a claim hub's living citation.
 
@@ -66,9 +83,16 @@ def hub_cite_keys(
     Returns ``(cite_keys, notes)`` where ``notes`` are ``(status,
     detail)`` diagnostic pairs meant for a caller's warning/summary log
     (skipped no-cite_key papers, the corroborator-fallback flag).
+
+    ``cite_key_map`` threads through to :func:`_cite_keys_for_group` — a
+    bulk caller resolving many hubs at once passes one pre-fetched map
+    covering every supporter across every hub instead of paying a query
+    per supporter here.
     """
     notes: list[tuple[str, str]] = []
-    originator_keys, skipped = _cite_keys_for_group(store, evidence.originators)
+    originator_keys, skipped = _cite_keys_for_group(
+        store, evidence.originators, cite_key_map=cite_key_map
+    )
     for ref_id in skipped:
         notes.append(
             (
@@ -79,7 +103,9 @@ def hub_cite_keys(
     if originator_keys:
         return originator_keys, notes
 
-    corroborator_keys, skipped = _cite_keys_for_group(store, evidence.corroborators)
+    corroborator_keys, skipped = _cite_keys_for_group(
+        store, evidence.corroborators, cite_key_map=cite_key_map
+    )
     for ref_id in skipped:
         notes.append(
             (
@@ -113,7 +139,13 @@ class FindingCite:
     evidence: HubEvidence | None = None
 
 
-def finding_cite_keys(store: Any, ref_id: int) -> FindingCite:
+def finding_cite_keys(
+    store: Any,
+    ref_id: int,
+    *,
+    assume_hub: bool = False,
+    cite_key_map: dict[int, list[str]] | None = None,
+) -> FindingCite:
     """Resolve a finding ref to its bibliographic cite_key(s) — the one
     entry point both ``precis resolve`` and the draft exporters call.
 
@@ -122,10 +154,16 @@ def finding_cite_keys(store: Any, ref_id: int) -> FindingCite:
     living citation, recomputed on every call. A plain finding resolves
     off its own ``meta``: the ``primary_cite_key`` once the chase has
     established it, else the ``pub_id`` placeholder.
+
+    ``assume_hub``/``cite_key_map`` are the batch-B perf knobs — a caller
+    that already confirmed ``ref_id`` is a hub (skips the redundant
+    ``is_claim_hub`` re-check) and/or pre-fetched cite_key aliases in bulk
+    can thread both through here. Both default to the old per-call
+    behaviour.
     """
-    if is_claim_hub(store, ref_id):
-        evidence = derive_evidence(store, ref_id)
-        cite_keys, notes = hub_cite_keys(store, evidence)
+    if assume_hub or is_claim_hub(store, ref_id):
+        evidence = derive_evidence(store, ref_id, assume_hub=assume_hub)
+        cite_keys, notes = hub_cite_keys(store, evidence, cite_key_map=cite_key_map)
         return FindingCite(
             cite_keys=cite_keys,
             is_hub=True,

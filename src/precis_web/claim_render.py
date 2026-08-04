@@ -11,12 +11,17 @@ shown for context but does not print.
 
 A hub is cited by a **cite head** — either its 6-char ``[<pub_id>]`` or its
 ``[fi<id>]`` finding handle (the two grammars the reference ring also
-mines, `utils/refeye.py`). :func:`render_claim_evidence` resolves either
-head to the hub's ref_id and defers to `finding_cite_keys` for the
-evidence.
+mines, `utils/refeye.py`). :func:`render_claim_evidence` resolves a head to
+the hub's ref_id, then `derive_evidence` for the evidence (the same
+derivation `finding_cite_keys` calls internally — this module reuses the
+lower-level function directly so it can also thread the result into
+`claim_trust`, once, rather than re-deriving it). :func:`render_claims_evidence`
+is the plural twin — many cite heads' evidence in a handful of bulk queries
+regardless of hub count (OPEN-ITEMS.md "/smartdraft reader" perf fix).
 
 Consumers: the ``/claim/<head>`` page, the ``/preview/claim/<head>`` hover
-fragment, and the reader sidebars.
+fragment, and the reader sidebars (singular for one hub; plural for a
+render-window's worth at once).
 """
 
 from __future__ import annotations
@@ -27,8 +32,15 @@ from typing import Any
 
 from markupsafe import Markup
 
-from precis.taproot.cite import finding_cite_keys
-from precis.taproot.seniority import EvidenceEdge, is_claim_hub
+from precis.taproot.cite import hub_cite_keys
+from precis.taproot.seniority import (
+    EvidenceEdge,
+    HubEvidence,
+    derive_evidence,
+    derive_evidence_bulk,
+    is_claim_hub,
+    is_claim_hub_bulk,
+)
 from precis.taproot.trust import claim_trust
 from precis.utils import handle_registry
 from precis.utils.pub_id_lookup import lookup_pub_id_finding
@@ -94,17 +106,22 @@ def hub_cite_heads(store: Any, texts: Iterable[str]) -> frozenset[str]:
     hub — the ``claims`` side-channel a reader threads into
     :func:`precis_web.linkify.linkify_refs` so a ``[fi123]`` / ``[<pub_id>]``
     cite renders as a claim anchor. Each distinct head is resolved once
-    across the window, so a hub cited many times costs one lookup."""
-    heads: set[str] = set()
-    resolved: dict[str, bool] = {}
+    across the window (first to a ref_id, then the hub check runs as ONE
+    bulk query over every distinct ref_id — :func:`~precis.taproot.
+    seniority.is_claim_hub_bulk` — rather than one ``is_claim_hub`` round
+    trip per head, OPEN-ITEMS.md's "/smartdraft reader" batch B)."""
+    head_ref: dict[str, int] = {}
     for text in texts:
         for head in cite_heads_in(text):
-            if head not in resolved:
-                ref_id = _resolve_head_ref_id(store, head)
-                resolved[head] = ref_id is not None and is_claim_hub(store, ref_id)
-            if resolved[head]:
-                heads.add(head)
-    return frozenset(heads)
+            if head in head_ref:
+                continue
+            ref_id = _resolve_head_ref_id(store, head)
+            if ref_id is not None:
+                head_ref[head] = ref_id
+    if not head_ref:
+        return frozenset()
+    hub_flags = is_claim_hub_bulk(store, head_ref.values())
+    return frozenset(h for h, rid in head_ref.items() if hub_flags.get(rid))
 
 
 def _edge_row(edge: EvidenceEdge, *, starred: bool) -> dict[str, Any]:
@@ -245,7 +262,10 @@ def _render_quote(text: str) -> tuple[Markup, bool]:
 
 
 def _grounding_chunks(
-    store: Any, rows: Iterable[tuple[dict[str, Any], str]]
+    store: Any,
+    rows: Iterable[tuple[dict[str, Any], str]],
+    *,
+    chunk_cache: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """The distinct grounding passages (``source_handle`` chunks) across the
     evidence rows, print-set-first order — the claim page's passage list and
@@ -261,7 +281,12 @@ def _grounding_chunks(
     the paper handles. ``entry["text"]`` stays the OLD whitespace-collapsed
     quote (popover compatibility, char-sliced there); ``entry["quote_html"]``
     is the new structure-preserving render (:func:`_render_quote`) the full
-    claim page's ``<blockquote>`` uses."""
+    claim page's ``<blockquote>`` uses.
+
+    ``chunk_cache`` — a pre-fetched ``{handle: chunk}`` map
+    (:func:`~precis.store.Store.universal_chunks`) — skips the per-handle
+    ``store.universal_chunk`` round trip when given (a bulk caller resolving
+    many hubs' grounding passages in one query, OPEN-ITEMS.md batch B)."""
     out: list[dict[str, Any]] = []
     by_handle: dict[str, dict[str, Any]] = {}
     for row, role_label in rows:
@@ -270,7 +295,14 @@ def _grounding_chunks(
             continue
         entry = by_handle.get(handle)
         if entry is None:
-            chunk = store.universal_chunk(handle) if row["source_is_chunk"] else None
+            if row["source_is_chunk"]:
+                chunk = (
+                    chunk_cache.get(handle)
+                    if chunk_cache is not None
+                    else store.universal_chunk(handle)
+                )
+            else:
+                chunk = None
             raw_text = (chunk or {}).get("text") or ""
             collapsed = " ".join(raw_text.split())
             if len(collapsed) > _CHUNK_QUOTE_CHARS:
@@ -295,21 +327,43 @@ def _grounding_chunks(
     return out
 
 
-def render_claim_evidence(store: Any, head: str) -> dict[str, Any] | None:
-    """Resolve a cite head to its claim hub + derived evidence, shaped for the
-    web. Returns ``None`` when ``head`` doesn't resolve to a live
-    ``TAPROOT:claim`` hub (an ordinary finding, a bare paper cite, or prose
-    that merely looks like a head) — the caller then renders nothing special.
-    """
-    ref_id = _resolve_head_ref_id(store, head)
-    if ref_id is None:
-        return None
-    cite = finding_cite_keys(store, ref_id)
-    if not cite.is_hub or cite.evidence is None:
-        return None
-    evidence = cite.evidence
+def _supporter_ref_ids(evidence: HubEvidence) -> set[int]:
+    """The paper ref_ids whose ``cite_key`` a hub's print-set resolution
+    might need — originators AND corroborators (the fallback group), same
+    set :func:`~precis.taproot.cite.hub_cite_keys` walks."""
+    return {e.paper_ref_id for e in (*evidence.originators, *evidence.corroborators)}
 
-    hub_ref = store.fetch_refs_by_ids([ref_id]).get(ref_id)
+
+def _source_handles(evidence: HubEvidence) -> set[str]:
+    """Every distinct grounding ``source_handle`` across all three roles."""
+    return {
+        e.source_handle
+        for e in (
+            *evidence.originators,
+            *evidence.corroborators,
+            *evidence.contradictors,
+        )
+        if e.source_handle
+    }
+
+
+def _render_one(
+    store: Any,
+    head: str,
+    ref_id: int,
+    evidence: HubEvidence,
+    hub_ref: Any,
+    *,
+    cite_key_map: dict[int, list[str]] | None = None,
+    chunk_cache: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Shape one already-resolved hub's evidence for the web — the shared
+    tail both :func:`render_claim_evidence` (singular) and
+    :func:`render_claims_evidence` (bulk) call once they've each derived
+    ``evidence`` their own way. ``cite_key_map``/``chunk_cache`` are the
+    batch-B perf knobs threaded down to :func:`~precis.taproot.cite.
+    hub_cite_keys` / :func:`_grounding_chunks`; ``None`` (the singular
+    caller's default) falls back to their old per-call query behaviour."""
     claim = " ".join((getattr(hub_ref, "title", None) or "").split()) if hub_ref else ""
 
     # Print set (★): originators when derived, else corroborators as the
@@ -320,7 +374,12 @@ def render_claim_evidence(store: Any, head: str) -> dict[str, Any] | None:
     # "unsupported" is deferred — see `claim_trust`'s hub arm). Was a
     # dormant `None` placeholder; `claim_trust` is the ONE mapping every
     # trust surface reads, so this can't drift from the export/badge label.
-    status = claim_trust(store, ref_id).label
+    # Threading `evidence` (+ `cite_key_map`/`ref`) here is what stops
+    # `claim_trust` from re-deriving this SAME hub's evidence a second time
+    # (the "derives each hub twice" defect, OPEN-ITEMS.md batch C).
+    status = claim_trust(
+        store, ref_id, evidence=evidence, cite_key_map=cite_key_map, ref=hub_ref
+    ).label
     originators = [_edge_row(e, starred=True) for e in evidence.originators]
     corroborators = [
         _edge_row(e, starred=corroborators_print) for e in evidence.corroborators
@@ -335,6 +394,7 @@ def render_claim_evidence(store: Any, head: str) -> dict[str, Any] | None:
         + [(r, "corroborator") for r in corroborators]
         + [(r, "contradictor") for r in contradictors]
     )
+    cite_keys, _notes = hub_cite_keys(store, evidence, cite_key_map=cite_key_map)
     return {
         "head": head,
         "hub_ref_id": ref_id,
@@ -343,7 +403,101 @@ def render_claim_evidence(store: Any, head: str) -> dict[str, Any] | None:
         "originators": originators,
         "corroborators": corroborators,
         "contradictors": contradictors,
-        "chunks": _grounding_chunks(store, grounding_rows),
+        "chunks": _grounding_chunks(store, grounding_rows, chunk_cache=chunk_cache),
         "coverage_note": evidence.coverage_note,
-        "inflight": cite.inflight,
+        "inflight": not cite_keys,
     }
+
+
+def render_claim_evidence(store: Any, head: str) -> dict[str, Any] | None:
+    """Resolve a cite head to its claim hub + derived evidence, shaped for the
+    web. Returns ``None`` when ``head`` doesn't resolve to a live
+    ``TAPROOT:claim`` hub (an ordinary finding, a bare paper cite, or prose
+    that merely looks like a head) — the caller then renders nothing special.
+
+    Single-hub entry point (also the export call-sites' resolution path via
+    :func:`~precis.taproot.cite.finding_cite_keys` — this function itself
+    isn't reused there, just the same locked policy). Still batches its
+    OWN cite_key/grounding-chunk lookups into one query each rather than
+    one per supporter/passage (OPEN-ITEMS.md batch B/C applied inward) —
+    a page resolving MANY hubs at once should call :func:`render_claims_evidence`
+    instead, which additionally batches ACROSS hubs.
+    """
+    ref_id = _resolve_head_ref_id(store, head)
+    if ref_id is None or not is_claim_hub(store, ref_id):
+        return None
+    evidence = derive_evidence(store, ref_id, assume_hub=True)
+    cite_key_map = store.ref_cite_keys_bulk(_supporter_ref_ids(evidence))
+    chunk_cache = store.universal_chunks(_source_handles(evidence))
+    hub_ref = store.fetch_refs_by_ids([ref_id]).get(ref_id)
+    return _render_one(
+        store,
+        head,
+        ref_id,
+        evidence,
+        hub_ref,
+        cite_key_map=cite_key_map,
+        chunk_cache=chunk_cache,
+    )
+
+
+def render_claims_evidence(store: Any, heads: Iterable[str]) -> list[dict[str, Any]]:
+    """Plural twin of :func:`render_claim_evidence` — resolve MANY cite
+    heads' claim-hub evidence in a handful of bulk queries, regardless of
+    how many distinct hubs are involved, instead of the ~16 round trips
+    per hub the singular path costs (OPEN-ITEMS.md "/smartdraft reader"
+    O(all-hubs) TTFB fix, batch B). Output is the SAME shape, order, and
+    content as ``[e for h in heads if (e := render_claim_evidence(store, h))
+    is not None]`` — heads that don't resolve to a live hub are silently
+    dropped, same as the singular function returning ``None``.
+
+    Used by the smartdraft reader for its Claims rail (a render-window's
+    worth of distinct hub cites); the docx/latex exporters keep calling
+    the singular :func:`~precis.taproot.cite.finding_cite_keys` path
+    directly (unaffected by this function existing)."""
+    head_ref: dict[str, int] = {}
+    ref_ids: list[int] = []
+    for head in heads:
+        if head in head_ref:
+            continue
+        ref_id = _resolve_head_ref_id(store, head)
+        if ref_id is None:
+            continue
+        head_ref[head] = ref_id
+        if ref_id not in ref_ids:
+            ref_ids.append(ref_id)
+    if not ref_ids:
+        return []
+
+    hub_flags = is_claim_hub_bulk(store, ref_ids)
+    hub_ref_ids = [r for r in ref_ids if hub_flags.get(r)]
+    if not hub_ref_ids:
+        return []
+
+    evidence_by_hub = derive_evidence_bulk(store, hub_ref_ids)
+    supporter_ids: set[int] = set()
+    source_handles: set[str] = set()
+    for ev in evidence_by_hub.values():
+        supporter_ids |= _supporter_ref_ids(ev)
+        source_handles |= _source_handles(ev)
+    cite_key_map = store.ref_cite_keys_bulk(supporter_ids)
+    chunk_cache = store.universal_chunks(source_handles)
+    hub_refs = store.fetch_refs_by_ids(hub_ref_ids)
+
+    out: list[dict[str, Any]] = []
+    for head, ref_id in head_ref.items():
+        evidence = evidence_by_hub.get(ref_id)
+        if evidence is None:
+            continue
+        out.append(
+            _render_one(
+                store,
+                head,
+                ref_id,
+                evidence,
+                hub_refs.get(ref_id),
+                cite_key_map=cite_key_map,
+                chunk_cache=chunk_cache,
+            )
+        )
+    return out
