@@ -27,6 +27,12 @@ from pathlib import Path
 from typing import Any
 
 from precis.export._patent_cite import format_patent_citation, paper_inline_citation
+from precis.export._trust_marks import (
+    UNSUPPORTED_MARK_TEXT,
+    record_override_event,
+    unverified_claims_entries,
+    unverified_mark_text,
+)
 from precis.export.latex import (
     _COMBINED,
     _PATENT_DOC_TYPE,
@@ -113,6 +119,15 @@ class _Ctx:
     endnote: bool = False  # emit EndNote CWYW fields instead of plain [n]
     resolved: dict[str, dict[str, Any]] = field(default_factory=dict)  # slug→record
     doc_type: str = ""  # meta.workspace.doc_type; "patent" → in-text, no refs
+    #: Trust-mark bookkeeping (finding-trust-surfaces.md), mirrors
+    #: ``export/latex.py``'s ``_Ctx.trust`` — set in ``__post_init__``.
+    trust: Any = None
+
+    def __post_init__(self) -> None:
+        if self.trust is None and self.store is not None:
+            from precis.export._trust_marks import TrustTracker
+
+            self.trust = TrustTracker(self.store)
 
     @property
     def patent_mode(self) -> bool:
@@ -306,6 +321,10 @@ def export_docx(
     # it — only emit it when the draft defines no terms of its own.
     if not terms:
         _append_acronyms(doc, ctx)
+    # "Unverified claims" end-matter (finding-trust-surfaces.md §1), before
+    # the bibliography/end — no-op when nothing was marked. Independent of
+    # patent_mode: a finding cite renders (and can be marked) either way.
+    _append_unverified_claims(doc, ctx)
     if not ctx.patent_mode:
         # A patent specification cites prior art in-text — no References list.
         _append_references(doc, ctx)
@@ -315,6 +334,11 @@ def export_docx(
         install_document_vars(
             doc, list(range(1, len(ctx.cited) + 1)), style="Annotated"
         )
+
+    # ``ref_events`` export record (finding-trust-surfaces.md §2) — one row
+    # naming every finding this export rendered clean only via an author's
+    # override. No-op (no row) when nothing was overridden.
+    record_override_event(store, ref, ctx.trust)
 
     target_path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(target_path))
@@ -586,6 +610,43 @@ def _finding_cite_keys_pinned(tgt: str, pin: str | None, ctx: _Ctx) -> list[str]
     return keys
 
 
+#: colours for the two trust-mark runs — muted grey for "pending", loud red
+#: for "contradicted" (mirrors ``export/latex.py``'s bold vs. plain marker).
+_UNVERIFIED_INK = "666666"
+_UNSUPPORTED_INK = "B00020"
+
+
+def _render_trust_mark(ctx: _Ctx, finding_ref_id: int, paragraph: Any) -> None:
+    """The inline trust mark appended after a finding-backed cite
+    (finding-trust-surfaces.md §1) — mirrors
+    :func:`precis.export.latex._trust_mark_latex`. No-op for a clean
+    citation (AC 6: identical content to today). Unverified gets a muted
+    italic run; unsupported the louder bold red run.
+
+    "Export always works, always marks" (finding-trust-surfaces.md,
+    decided — no refusing/strict mode): any resolution failure (malformed
+    ``meta``, a store hiccup) degrades to no mark rather than aborting an
+    export that previously worked."""
+    if ctx.trust is None:
+        return
+    try:
+        state = ctx.trust.resolve(finding_ref_id)
+    except Exception:  # pragma: no cover — store hiccup / malformed meta
+        return
+    if state.label == "clean":
+        return
+    from docx.shared import RGBColor
+
+    if state.label == "unsupported":
+        run = paragraph.add_run(f" {UNSUPPORTED_MARK_TEXT}")
+        run.bold = True
+        run.font.color.rgb = RGBColor.from_string(_UNSUPPORTED_INK)
+        return
+    run = paragraph.add_run(f" {unverified_mark_text(state)}")
+    run.italic = True
+    run.font.color.rgb = RGBColor.from_string(_UNVERIFIED_INK)
+
+
 def _render_target(
     tgt: str, surface: str | None, ctx: _Ctx, paragraph: Any, *, pin: str | None = None
 ) -> None:
@@ -602,7 +663,7 @@ def _render_target(
     # LaTeX) rendered with no citations and no References section at all.
     parsed = handle_registry.parse(tgt)
     if parsed is not None:
-        kind, is_chunk, _pk = parsed
+        kind, is_chunk, pk = parsed
         if kind in ("paper", "patent"):
             if ctx.patent_mode:
                 _inline_source_cite(tgt, kind, surface, ctx, paragraph)
@@ -615,6 +676,7 @@ def _render_target(
         if kind == "finding":
             for slug in _finding_cite_keys_pinned(tgt, pin, ctx):
                 _cite(slug, ctx, paragraph)
+            _render_trust_mark(ctx, pk, paragraph)
             return
         # draft cross-ref / other record handle → not a citation.
         ctx.last_cite = None
@@ -848,3 +910,20 @@ def _append_acronyms(doc: Any, ctx: _Ctx) -> None:
         p = doc.add_paragraph()
         p.add_run(short).bold = True
         p.add_run(f" — {ctx.abbrevs[short]}")
+
+
+def _append_unverified_claims(doc: Any, ctx: _Ctx) -> None:
+    """An "Unverified claims" section — one entry per finding that
+    rendered with a trust mark (finding-trust-surfaces.md AC 1/2),
+    mirroring :func:`precis.export.latex.build_unverified_claims_section`.
+    No-op when nothing was marked. Entry wording is shared with the latex
+    exporter via :func:`precis.export._trust_marks.unverified_claims_entries`.
+    """
+    entries = unverified_claims_entries(ctx.trust)
+    if not entries:
+        return
+    doc.add_heading("Unverified claims", level=1)
+    for title, tag, detail in entries:
+        p = doc.add_paragraph()
+        p.add_run(f"{title} ").bold = True
+        p.add_run(f"({tag}){detail}")

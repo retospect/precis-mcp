@@ -49,6 +49,7 @@ The chase worker (C5: ``precis.workers.chase``) does not live here
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any, ClassVar
 
 from psycopg.errors import UniqueViolation
@@ -1254,15 +1255,18 @@ class FindingHandler(NumericRefHandler):
         *,
         id: int | str | None = None,
         pick_candidate: str | int | None = None,
+        unacquirable_note: str | None = None,
         dry_run: bool | str | None = None,
         **_kw: Any,
     ) -> Response:
-        """Resolve a ``STATUS:multi_candidate`` finding by picking one cite.
+        """Resolve a ``STATUS:multi_candidate`` finding by picking one cite,
+        OR record an author's unacquirable-source override. Mutually
+        exclusive kwargs — pass exactly one.
 
-        When the chase reaches a chunk citing multiple references
-        (e.g. ``[12,13]``) and can't disambiguate automatically, it
-        tags the finding ``STATUS:multi_candidate`` and writes one
-        ``derived-from`` link per candidate with
+        **Pick a candidate.** When the chase reaches a chunk citing
+        multiple references (e.g. ``[12,13]``) and can't disambiguate
+        automatically, it tags the finding ``STATUS:multi_candidate`` and
+        writes one ``derived-from`` link per candidate with
         ``meta.candidate=true``. The user reads the candidates via
         ``get(kind='finding', id=N)``, then promotes one with:
 
@@ -1280,27 +1284,67 @@ class FindingHandler(NumericRefHandler):
 
         Idempotent — picking the same candidate twice is fine
         (re-flips to tracing, no-op on links).
+
+        **Unacquirable override.** A print-only / undigitized source is
+        legitimately citeable even when no digital copy is obtainable.
+        Recording that intent suppresses the trust surfaces' "unverified"
+        mark on this claim (docs/proposals/finding-trust-surfaces.md;
+        never the "unsupported" mark — a negative terminal verification
+        always outranks the override, the paper was read):
+
+            edit(kind='finding', id=N, unacquirable_note='print-only 1962 monograph')
+
+        Sets ``meta.unacquirable_override = {by, at, note}``. Settable
+        pre-emptively on ANY lifecycle state — not gated to
+        ``STATUS:dead_chain(reason=unacquirable)``, since the author may
+        know a source is print-only before the chase ever attempts
+        acquisition. ``note`` is required (empty/whitespace rejected — a
+        silent override defeats the audit purpose); ``at`` is
+        server-stamped; ``by`` is ``'agent'`` today (no caller-identity
+        channel exists yet for a handler to read one from). Idempotent —
+        re-setting just overwrites the prior ``by``/``at``/``note``.
+
+        Neither op supports ``dry_run`` (see below).
         """
-        if dry_run:
-            # edit(kind='finding') resolves a candidate pick (link
-            # rewrites + status flip), not a text region — there is no
-            # faithful preview yet. Reject loudly rather than silently
-            # apply on dry_run (that was a data-loss footgun).
+        if pick_candidate is not None and unacquirable_note is not None:
             raise BadInput(
-                "edit(kind='finding') does not support dry_run — it promotes a "
-                "candidate cite (rewrites links + flips status); omit dry_run to apply",
-                next="edit(kind='finding', id=<N>, pick_candidate='<cite_key>')",
+                "edit(kind='finding') accepts pick_candidate OR "
+                "unacquirable_note, not both",
+                next=(
+                    "edit(kind='finding', id=<N>, pick_candidate='<cite_key>') or "
+                    "edit(kind='finding', id=<N>, unacquirable_note='<why>')"
+                ),
+            )
+        if dry_run:
+            # Neither op has a faithful preview yet: pick_candidate rewrites
+            # links + flips status; unacquirable_note writes an audit-trail
+            # meta patch. Reject loudly rather than silently apply on
+            # dry_run (a data-loss footgun either way).
+            raise BadInput(
+                "edit(kind='finding') does not support dry_run — it either "
+                "promotes a candidate cite (rewrites links + flips status) or "
+                "records an unacquirable-source override; omit dry_run to apply",
+                next=(
+                    "edit(kind='finding', id=<N>, pick_candidate='<cite_key>') or "
+                    "edit(kind='finding', id=<N>, unacquirable_note='<why>')"
+                ),
             )
         if id is None:
             raise BadInput(
                 "edit(kind='finding') requires id=<finding ref_id or pub_id>",
-                next=("edit(kind='finding', id=<N>, pick_candidate='<cite_key>')"),
+                next=(
+                    "edit(kind='finding', id=<N>, pick_candidate='<cite_key>') or "
+                    "edit(kind='finding', id=<N>, unacquirable_note='<why>')"
+                ),
             )
+        if unacquirable_note is not None:
+            return self._set_unacquirable_override(id, unacquirable_note)
         if pick_candidate is None or (
             isinstance(pick_candidate, str) and not pick_candidate.strip()
         ):
             raise BadInput(
-                "edit(kind='finding') requires pick_candidate=<cite_key or ref_id>",
+                "edit(kind='finding') requires pick_candidate=<cite_key or ref_id> "
+                "or unacquirable_note=<why source can't be digitally acquired>",
                 next=(
                     "pick_candidate='miller23a' (or the candidate's ref_id) — "
                     "see get(kind='finding', id=N) for the candidate list"
@@ -1391,6 +1435,44 @@ class FindingHandler(NumericRefHandler):
                 f"status flipped to STATUS:{_STATUS_TRACING}\n"
                 f"next: precis worker --only chase --once  "
                 f"(or wait for the next pass)"
+            )
+        )
+
+    # ──────────────────────────────────────────────────────────────────
+    # edit — unacquirable_note (trust-surfaces override write path)
+    # ──────────────────────────────────────────────────────────────────
+
+    def _set_unacquirable_override(self, raw_id: int | str, note: str) -> Response:
+        """Write ``meta.unacquirable_override`` — the write path behind
+        ``edit(kind='finding', unacquirable_note=…)``
+        (docs/proposals/finding-trust-surfaces.md). ``note`` required
+        non-empty; the override is otherwise settable on any finding
+        regardless of its current lifecycle status."""
+        if not note.strip():
+            raise BadInput(
+                "edit(kind='finding') requires a non-empty unacquirable_note "
+                "— a silent override defeats the audit purpose",
+                next=(
+                    "edit(kind='finding', id=<N>, "
+                    "unacquirable_note='<why this source cannot be digitally acquired>')"
+                ),
+            )
+        finding_ref_id = self._resolve_finding_ref_id(raw_id)
+        override = {
+            "by": "agent",
+            "at": datetime.now(UTC).isoformat(),
+            "note": note.strip(),
+        }
+        self.store.update_ref(
+            finding_ref_id, meta_patch={"unacquirable_override": override}
+        )
+        return Response(
+            body=(
+                f"recorded unacquirable override on finding id={finding_ref_id}\n"
+                f"note: {override['note']}\n"
+                "trust surfaces now render this claim clean (unless a terminal "
+                "verification found the source doesn't back it — that always "
+                "outranks the override)"
             )
         )
 
@@ -1545,6 +1627,18 @@ class FindingHandler(NumericRefHandler):
             lines.append(f"chain (in flight, {len(chain)} hop(s)):")
             for hop in chain:
                 lines.append(f"  ref_id={hop.get('ref_id')} ord={hop.get('ord')}")
+
+        # Trust-surfaces override (finding-trust-surfaces.md §2): an
+        # author's stated reason a print-only / undigitized source can
+        # never be acquired, suppressing the export/badge "unverified"
+        # mark. Shown whenever set, regardless of current lifecycle status.
+        override = meta.get("unacquirable_override")
+        if isinstance(override, dict) and override.get("note"):
+            lines.append("")
+            lines.append(
+                f"unacquirable override: {override['note']} "
+                f"(by {override.get('by', '?')}, at {override.get('at', '?')})"
+            )
 
         # Acquisition-mode findings (finding-acquisition-mode.md): the
         # DREAM:acquire paper stub(s) this claim is waiting on before the

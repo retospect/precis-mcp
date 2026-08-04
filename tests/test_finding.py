@@ -1345,6 +1345,70 @@ class TestPickCandidate:
         assert "picked candidate a" in out.body
 
 
+# ── edit(unacquirable_note=...) — trust-surfaces override write path ──
+
+
+class TestUnacquirableOverride:
+    """``edit(kind='finding', id=N, unacquirable_note=...)`` — writes
+    ``meta.unacquirable_override`` (docs/proposals/finding-trust-surfaces.md
+    §2). Settable pre-emptively on any lifecycle status."""
+
+    def _seed_finding(self, store) -> int:
+        _seed_paper(store)
+        h = _make_handler(store)
+        resp = h.put(title="t", body="b", scope={}, cited_in="miller23a")
+        return int(_search(r"id=(\d+)", resp.body).group(1))
+
+    def test_happy_path_sets_override(self, store) -> None:
+        finding_id = self._seed_finding(store)
+        h = _make_handler(store)
+        out = h.edit(id=finding_id, unacquirable_note="print-only 1962 monograph")
+        assert "recorded unacquirable override" in out.body
+        assert "print-only 1962 monograph" in out.body
+
+        ref = store.get_ref(kind="finding", id=finding_id)
+        override = (ref.meta or {}).get("unacquirable_override")
+        assert override is not None
+        assert override["note"] == "print-only 1962 monograph"
+        assert override["by"] == "agent"
+        assert override["at"]  # server-stamped, non-empty
+
+    def test_settable_on_any_status_preemptively(self, store) -> None:
+        """Still STATUS:tracing (the chase hasn't given up yet) — the
+        override is allowed pre-emptively, not gated to dead_chain."""
+        finding_id = self._seed_finding(store)
+        h = _make_handler(store)
+        h.edit(id=finding_id, unacquirable_note="known print-only up front")
+        ref = store.get_ref(kind="finding", id=finding_id)
+        assert (ref.meta or {}).get("unacquirable_override") is not None
+
+    def test_empty_note_rejected(self, store) -> None:
+        finding_id = self._seed_finding(store)
+        h = _make_handler(store)
+        with pytest.raises(BadInput, match="non-empty unacquirable_note"):
+            h.edit(id=finding_id, unacquirable_note="   ")
+
+    def test_both_kwargs_rejected(self, store) -> None:
+        finding_id = self._seed_finding(store)
+        h = _make_handler(store)
+        with pytest.raises(BadInput, match="not both"):
+            h.edit(id=finding_id, pick_candidate="x", unacquirable_note="why")
+
+    def test_dry_run_rejected(self, store) -> None:
+        finding_id = self._seed_finding(store)
+        h = _make_handler(store)
+        with pytest.raises(BadInput, match="does not support dry_run"):
+            h.edit(id=finding_id, unacquirable_note="why", dry_run=True)
+
+    def test_render_shows_override(self, store) -> None:
+        finding_id = self._seed_finding(store)
+        h = _make_handler(store)
+        h.edit(id=finding_id, unacquirable_note="print-only 1962 monograph")
+        out = h.get(id=finding_id)
+        assert "unacquirable override: print-only 1962 monograph" in out.body
+        assert "by agent" in out.body
+
+
 # ── retraction propagation into findings ────────────────────────────
 
 

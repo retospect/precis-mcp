@@ -27,6 +27,7 @@ from typing import Any
 
 from precis.taproot.cite import finding_cite_keys
 from precis.taproot.seniority import EvidenceEdge, is_claim_hub
+from precis.taproot.trust import claim_trust
 from precis.utils import handle_registry
 from precis.utils.pub_id_lookup import lookup_pub_id_finding
 
@@ -56,6 +57,17 @@ def _resolve_head_ref_id(store: Any, head: str) -> int | None:
         return int(ref_id)
     lookup = lookup_pub_id_finding(store, head)
     return lookup["ref_id"] if lookup is not None else None
+
+
+def resolve_head_ref_id(store: Any, head: str) -> int | None:
+    """Public alias for :func:`_resolve_head_ref_id` — the canonical
+    cite-head → finding ref_id resolver. Exposed (rather than making the
+    caller reach for the underscore name) so the smartdraft claim-trust
+    badge (``smartdraft.py::claim_trust_for_block``, finding-trust-
+    surfaces §3) reuses the exact same resolution the ``/claim`` page and
+    the ``claims`` side-channel already use — head resolution can never
+    fork across surfaces."""
+    return _resolve_head_ref_id(store, head)
 
 
 def cite_heads_in(text: str) -> list[str]:
@@ -173,6 +185,12 @@ def render_claim_evidence(store: Any, head: str) -> dict[str, Any] | None:
     # Print set (★): originators when derived, else corroborators as the
     # fallback — the same policy `finding_cite_keys` prints from.
     corroborators_print = not evidence.originators
+    # The hub-derived trust label (finding-trust-surfaces §3): empty print
+    # set → "unverified", any print-visible supporter → "clean" (hub
+    # "unsupported" is deferred — see `claim_trust`'s hub arm). Was a
+    # dormant `None` placeholder; `claim_trust` is the ONE mapping every
+    # trust surface reads, so this can't drift from the export/badge label.
+    status = claim_trust(store, ref_id).label
     originators = [_edge_row(e, starred=True) for e in evidence.originators]
     corroborators = [
         _edge_row(e, starred=corroborators_print) for e in evidence.corroborators
@@ -182,7 +200,7 @@ def render_claim_evidence(store: Any, head: str) -> dict[str, Any] | None:
         "head": head,
         "hub_ref_id": ref_id,
         "claim": claim,
-        "status": None,
+        "status": status,
         "originators": originators,
         "corroborators": corroborators,
         "contradictors": contradictors,

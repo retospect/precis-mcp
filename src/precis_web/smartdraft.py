@@ -1053,6 +1053,48 @@ def cite_integrity_ok(store: Any, text: str, cache: dict[int, bool]) -> bool:
     return True
 
 
+def claim_trust_for_block(
+    store: Any, text: str, cache: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Worst-of claim trust across ``text``'s distinct cite heads —
+    ``docs/proposals/finding-trust-surfaces.md`` §3 (editor badges), the
+    ``claim_trust`` counterpart to :func:`cite_integrity_ok`. ``None`` when
+    the block cites nothing shaky (no cite heads, or every resolved head is
+    ``clean`` — including one whose ``unacquirable_override`` already
+    folded it to clean, :mod:`precis.taproot.trust`'s job, not this
+    function's). A head that doesn't resolve to a *finding* (a bare paper
+    cite, or prose that merely looks like a cite head) is skipped —
+    that's ``cite_integrity_ok``'s domain, not trust's.
+
+    ``cache`` (shared across one render's blocks, exactly like
+    ``cite_integrity_ok``'s own cache) maps a head to its resolved
+    :class:`~precis.taproot.trust.TrustState`, or ``None`` for a head that
+    doesn't resolve to a finding — so a claim cited from several blocks in
+    this render costs one ``claim_trust`` store round-trip, not N."""
+    if "[" not in (text or ""):
+        return None  # cheap pre-check: no bracket token, no cite head possible
+    from precis.taproot.trust import claim_trust
+    from precis_web.claim_render import cite_heads_in, resolve_head_ref_id
+
+    offenders: list[dict[str, Any]] = []
+    for head in cite_heads_in(text):
+        if head not in cache:
+            ref_id = resolve_head_ref_id(store, head)
+            cache[head] = claim_trust(store, ref_id) if ref_id is not None else None
+        state = cache[head]
+        if state is None or state.label == "clean":
+            continue
+        offenders.append({"head": head, "label": state.label, "note": state.note})
+    if not offenders:
+        return None
+    label = (
+        "unsupported"
+        if any(o["label"] == "unsupported" for o in offenders)
+        else "unverified"
+    )
+    return {"label": label, "heads": offenders}
+
+
 def review_payloads_for(
     nodes: list[ChunkNode],
     status_by_chunk: dict[int, dict[str, Any]],
@@ -1060,19 +1102,24 @@ def review_payloads_for(
 ) -> dict[str, dict[str, Any]]:
     """``{dc: payload}`` for every reviewable node in ``nodes`` — scoped to
     the per-request RENDERED set (the middle pane, or one ``/blocks``
-    hydration window), never the whole draft, because the integrity flag
-    can hit the store (``no per-block DB hits`` means no per-RENDER-set
-    blowup either — this shares one ``integrity_cache`` across the whole
-    call, so a paper cited from several of these blocks costs one store
-    hit, not N). Each payload is :func:`review_indicator`'s dict plus
-    ``integrity_ok``."""
-    cache: dict[int, bool] = {}
+    hydration window), never the whole draft, because both the integrity
+    and claim-trust flags can hit the store (``no per-block DB hits`` means
+    no per-RENDER-set blowup either — this shares one ``integrity_cache``
+    AND one ``trust_cache`` across the whole call, so a paper/finding
+    cited from several of these blocks costs one store hit, not N). Each
+    payload is :func:`review_indicator`'s dict plus ``integrity_ok`` (5c)
+    and ``claim_trust`` (finding-trust-surfaces §3 — ``None`` /
+    ``{"label": "unverified"|"unsupported", "heads": [...]}``, worst-of
+    across the block's cite heads)."""
+    integrity_cache: dict[int, bool] = {}
+    trust_cache: dict[str, Any] = {}
     out: dict[str, dict[str, Any]] = {}
     for n in nodes:
         ind = review_indicator(n.chunk_id, n.chunk_kind, status_by_chunk)
         if ind is None:
             continue
-        ind["integrity_ok"] = cite_integrity_ok(store, n.text, cache)
+        ind["integrity_ok"] = cite_integrity_ok(store, n.text, integrity_cache)
+        ind["claim_trust"] = claim_trust_for_block(store, n.text, trust_cache)
         out[n.dc] = ind
     return out
 

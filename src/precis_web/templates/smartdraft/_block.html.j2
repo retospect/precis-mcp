@@ -21,7 +21,13 @@
    green/human · amber/dirty, ``review.state``) whose title is the
    per-checker tooltip matrix (``review.tooltip``, precomputed server-side —
    ``precis_web.smartdraft.review_indicator``) plus a red integrity marker
-   (``review.integrity_ok is false``, item 5c). ``review`` is one entry of
+   (``review.integrity_ok is false``, item 5c) plus a claim-trust overlay
+   (``review.claim_trust``, ``docs/proposals/finding-trust-surfaces.md`` §3
+   — orthogonal to the dot's prose-review state: an amber ``?`` for an
+   unverified-backed citation, a louder red ``‼`` for an unsupported one,
+   ``sd-trust-unsupported``/``sd-trust-unverified`` in ``view.html.j2``;
+   unsupported wins visually over a plain integrity ``!`` via CSS source
+   order, not template logic). ``review`` is one entry of
    ``review_by_dc`` (``None`` → the block isn't reviewable, render nothing).
    Click opens a small action menu: mark/un-review, run one lens or all
    (a heading's "all" implicitly covers its subtree — the fanout's own
@@ -40,8 +46,9 @@
 <span class="relative inline-block" x-data="{ open: false }" @click.outside="open = false">
   <button type="button" @click="open = !open"
           title="{{ review.tooltip }}{% if not review.integrity_ok %}
-⚠ integrity: an unresolved or unheld citation{% endif %}"
-          class="sd-review sd-review-dot {{ review.state }}{% if not review.integrity_ok %} sd-integrity{% endif %}">●</button>
+⚠ integrity: an unresolved or unheld citation{% endif %}{% if review.claim_trust %}{% for h in review.claim_trust.heads %}
+{% if h.label == 'unsupported' %}‼ UNSUPPORTED: [{{ h.head }}] — cited source does not back this claim{% else %}⚠ unverified claim: [{{ h.head }}] — {{ h.note }}{% endif %}{% endfor %}{% endif %}"
+          class="sd-review sd-review-dot {{ review.state }}{% if not review.integrity_ok %} sd-integrity{% endif %}{% if review.claim_trust %} sd-trust-{{ review.claim_trust.label }}{% endif %}">●</button>
   <span x-show="open" x-cloak @click.stop class="sd-review-menu absolute left-0 z-30 mt-1 block w-48 rounded border border-slate-200 bg-white text-left text-xs shadow-lg">
     <button type="button" @click="open = false" onclick="sdReviewHuman('{{ n.dc }}')" class="block w-full px-2 py-1 text-left hover:bg-slate-100">✓ mark reviewed</button>
     {% if hr %}

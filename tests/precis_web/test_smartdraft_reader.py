@@ -376,6 +376,142 @@ def test_smartdraft_full_doc_review_payload_skips_skel_placeholders(
     assert len(calls) == 41
 
 
+# ── claim_trust_for_block — the unit-level counterpart to cite_integrity_ok
+# (finding-trust-surfaces §3). ``claim_trust`` itself is monkeypatched — its
+# real derivation over hub/lifecycle state is ``test_taproot_trust.py``'s job,
+# DB-backed; this only proves ``claim_trust_for_block``'s head-scan, cache,
+# and worst-of/ignore-unresolved contract. ``store`` is never dereferenced by
+# the FI-handle path (a pure ``handle_registry.parse``), so a bare ``object()``
+# stands in.
+
+
+def test_claim_trust_for_block_unverified_head(monkeypatch: pytest.MonkeyPatch) -> None:
+    from precis.taproot.trust import TrustState
+
+    monkeypatch.setattr(
+        "precis.taproot.trust.claim_trust",
+        lambda store, ref_id: TrustState(
+            label="unverified",
+            note="source pending",
+            overridden=False,
+            status="tracing",
+        ),
+    )
+
+    result = smartdraft.claim_trust_for_block(object(), "See [fi42] for details.", {})
+
+    assert result == {
+        "label": "unverified",
+        "heads": [{"head": "fi42", "label": "unverified", "note": "source pending"}],
+    }
+
+
+def test_claim_trust_for_block_unsupported_ranks_above_unverified(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis.taproot.trust import TrustState
+
+    states = {
+        42: TrustState(
+            label="unverified",
+            note="source pending",
+            overridden=False,
+            status="tracing",
+        ),
+        43: TrustState(
+            label="unsupported",
+            note="chunk reports the opposite trend",
+            overridden=False,
+            status="established",
+        ),
+    }
+    monkeypatch.setattr(
+        "precis.taproot.trust.claim_trust", lambda store, ref_id: states[ref_id]
+    )
+
+    result = smartdraft.claim_trust_for_block(object(), "See [fi42] and [fi43].", {})
+
+    assert result is not None
+    assert result["label"] == "unsupported"
+    assert {h["head"] for h in result["heads"]} == {"fi42", "fi43"}
+
+
+def test_claim_trust_for_block_all_clean_is_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis.taproot.trust import TrustState
+
+    monkeypatch.setattr(
+        "precis.taproot.trust.claim_trust",
+        lambda store, ref_id: TrustState(
+            label="clean", note=None, overridden=False, status="established"
+        ),
+    )
+
+    assert smartdraft.claim_trust_for_block(object(), "Clean claim [fi42].", {}) is None
+
+
+def test_claim_trust_for_block_no_heads_skips_scan_entirely(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No bracket token at all → the cheap regex pre-check skips the head
+    scan (and therefore ``claim_trust``) entirely — never even reaches the
+    cite-head grammar."""
+    calls: list[int] = []
+    monkeypatch.setattr(
+        "precis.taproot.trust.claim_trust",
+        lambda store, ref_id: calls.append(ref_id),
+    )
+
+    result = smartdraft.claim_trust_for_block(object(), "Plain prose, no cites.", {})
+
+    assert result is None
+    assert calls == []
+
+
+def test_claim_trust_for_block_ignores_unresolved_head(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cite-head-shaped token that doesn't resolve to a finding (a bare
+    paper cite, or prose that merely looks like a head) is ignored — that's
+    ``cite_integrity_ok``'s domain, not trust's."""
+    monkeypatch.setattr(
+        "precis_web.claim_render.resolve_head_ref_id", lambda store, head: None
+    )
+
+    result = smartdraft.claim_trust_for_block(object(), "See [abcdef] over there.", {})
+
+    assert result is None
+
+
+def test_claim_trust_for_block_shares_cache_across_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One ``claim_trust`` store round-trip per distinct head across the
+    WHOLE render, not per block — the shared ``cache`` dict, exactly like
+    ``cite_integrity_ok``'s own (docstring's stated per-render cost bar)."""
+    from precis.taproot.trust import TrustState
+
+    calls: list[int] = []
+
+    def fake_claim_trust(store: object, ref_id: int) -> TrustState:
+        calls.append(ref_id)
+        return TrustState(
+            label="unverified",
+            note="source pending",
+            overridden=False,
+            status="tracing",
+        )
+
+    monkeypatch.setattr("precis.taproot.trust.claim_trust", fake_claim_trust)
+    cache: dict[str, object] = {}
+
+    smartdraft.claim_trust_for_block(object(), "See [fi42].", cache)
+    smartdraft.claim_trust_for_block(object(), "Also cites [fi42] again.", cache)
+
+    assert calls == [42]
+
+
 def test_smartdraft_full_doc_virtualizes_long_draft(
     big_draft_client: TestClient,
 ) -> None:
@@ -580,6 +716,126 @@ def test_smartdraft_blocks_hydration_carries_review_payload(
     r = review_matrix_client.get(f"/smartdraft/sdt/blocks?dcs={dc3}")
     assert r.status_code == 200
     assert 'class="sd-review sd-review-dot human"' in r.text
+
+
+class ClaimTrustFakeStore(SmartDraftFakeStore):
+    """Chunks whose prose cites findings by ``fi<id>`` handle — the
+    claim-trust badge's cite-head grammar (``docs/proposals/
+    finding-trust-surfaces.md`` §3). ``fi<id>`` resolves to its ref_id
+    via a pure ``handle_registry.parse`` (no store hit), so these fixture
+    "findings" need no backing ref row — only ``precis.taproot.trust.
+    claim_trust`` itself is monkeypatched per test (deriving a real trust
+    label needs ``tags_for``/``fetch_refs_by_ids``/hub machinery a plain
+    ``FakeStore`` doesn't cheaply fake, mirrored by ``tests/
+    test_taproot_trust.py``'s own DB-backed ``store`` fixture instead).
+    Every body chunk is reviewable-but-never-reviewed ("empty" dot state)
+    so the overlay is the only thing distinguishing one from another."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._chunks = [
+            _sd_chunk(1, "heading", "Claim trust badge draft", 0),
+            _sd_chunk(2, "paragraph", "Alpha claim [fi777].", 1),
+            _sd_chunk(3, "paragraph", "Beta claim [fi778].", 1),
+            _sd_chunk(4, "paragraph", "Gamma claim [fi777] and [fi778].", 1),
+            _sd_chunk(5, "paragraph", "Clean claim [fi779].", 1),
+        ]
+
+    def review_status_for_draft(self, ref_id):
+        return [
+            {
+                "chunk_id": c.chunk_id,
+                "checker": None,
+                "approved_sha": None,
+                "verdict": None,
+                "at": None,
+                "dirty": True,
+            }
+            for c in self._chunks
+            if c.chunk_kind != "heading"
+        ]
+
+
+@pytest.fixture
+def claim_trust_client(tmp_path) -> TestClient:
+    app = create_app(
+        runtime=FakeRuntime(ClaimTrustFakeStore()),
+        web_config=WebConfig(corpus_dir=tmp_path),
+    )
+    return TestClient(app)
+
+
+def _dc_block(html: str, dc: str) -> str:
+    """The single rendered ``<div data-dc="dc">…</div>`` for one block —
+    ``sd_doc_block`` deliberately nests no ``<div>`` inside its widget, so
+    the next ``</div>`` after the opening tag is always this block's own
+    close (see ``_block.html.j2``'s own comment to that effect)."""
+    marker = f'<div data-dc="{dc}"'
+    start = html.index(marker)
+    end = html.index("</div>", start)
+    return html[start:end]
+
+
+def test_smartdraft_badge_marks_unverified_and_unsupported_claims(
+    monkeypatch: pytest.MonkeyPatch, claim_trust_client: TestClient
+) -> None:
+    """finding-trust-surfaces §3: a block citing an unverified-backed
+    finding gets the amber "?" overlay class (``sd-trust-unverified``) plus
+    a tooltip line naming the head; one citing an unsupported-backed
+    finding gets the louder ``sd-trust-unsupported`` class + tooltip line.
+    A block citing BOTH ranks worst-of: the overlay class is
+    ``sd-trust-unsupported`` (not also ``-unverified``), but the tooltip
+    still lists every offending head. A clean-backed citation carries
+    neither class nor tooltip line (AC 6 spirit — reads like today)."""
+    from precis.taproot.trust import TrustState
+
+    states = {
+        777: TrustState(
+            label="unverified",
+            note="source pending",
+            overridden=False,
+            status="tracing",
+        ),
+        778: TrustState(
+            label="unsupported",
+            note="chunk reports the opposite trend",
+            overridden=False,
+            status="established",
+        ),
+        779: TrustState(
+            label="clean", note=None, overridden=False, status="established"
+        ),
+    }
+    monkeypatch.setattr(
+        "precis.taproot.trust.claim_trust", lambda store, ref_id: states[ref_id]
+    )
+
+    r = claim_trust_client.get("/smartdraft/sdt?relevance=0&focus=dc1")
+    assert r.status_code == 200
+
+    dc2 = handle_registry.format_handle("draft", 2, chunk=True)
+    dc3 = handle_registry.format_handle("draft", 3, chunk=True)
+    dc4 = handle_registry.format_handle("draft", 4, chunk=True)
+    dc5 = handle_registry.format_handle("draft", 5, chunk=True)
+
+    seg2 = _dc_block(r.text, dc2)
+    assert "sd-trust-unverified" in seg2
+    assert "sd-trust-unsupported" not in seg2
+    assert "⚠ unverified claim: [fi777] — source pending" in seg2
+
+    seg3 = _dc_block(r.text, dc3)
+    assert "sd-trust-unsupported" in seg3
+    assert "‼ UNSUPPORTED: [fi778] — cited source does not back this claim" in seg3
+
+    seg4 = _dc_block(r.text, dc4)
+    assert "sd-trust-unsupported" in seg4
+    assert "sd-trust-unverified" not in seg4  # worst-of: unsupported wins the class
+    assert "⚠ unverified claim: [fi777] — source pending" in seg4  # both heads noted
+    assert "‼ UNSUPPORTED: [fi778] — cited source does not back this claim" in seg4
+
+    seg5 = _dc_block(r.text, dc5)
+    assert "sd-trust-unverified" not in seg5
+    assert "sd-trust-unsupported" not in seg5
 
 
 def test_smartdraft_toolbar_rollup_badge_shows_counts_and_review_complete(

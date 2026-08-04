@@ -37,6 +37,12 @@ from typing import Any
 from pylatexenc.latexencode import UnicodeToLatexEncoder
 
 from precis.export._patent_cite import format_patent_citation, paper_inline_citation
+from precis.export._trust_marks import (
+    UNSUPPORTED_MARK_TEXT,
+    record_override_event,
+    unverified_claims_entries,
+    unverified_mark_text,
+)
 from precis.utils import handle_registry, mentions
 from precis.utils.authors import build_byline
 from precis.utils.draft_markup import DRAFT_CITE_PATTERN
@@ -168,6 +174,10 @@ class RenderResult:
     #: figure assets to materialise beside main.tex — (relpath, bytes). ADR 0058
     #: slice 4: raster blobs pass through, SVG/canvas figures rasterise to PNG.
     figures: list[tuple[str, bytes]] = field(default_factory=list)
+    #: the render pass's :class:`~precis.export._trust_marks.TrustTracker`
+    #: (``None`` when the render had no store) — carries the accumulated
+    #: end-matter marks + override record for :func:`export_draft`.
+    trust: Any = None
 
 
 @dataclass
@@ -364,6 +374,16 @@ class _Ctx:
     footnote_refs: bool = (
         False  # reMarkable mode: source cites → self-contained footnotes
     )
+    #: Trust-mark bookkeeping (finding-trust-surfaces.md) — set in
+    #: ``__post_init__`` from ``store`` so every existing call site that
+    #: only ever passed ``store=`` keeps working unchanged.
+    trust: Any = None
+
+    def __post_init__(self) -> None:
+        if self.trust is None and self.store is not None:
+            from precis.export._trust_marks import TrustTracker
+
+            self.trust = TrustTracker(self.store)
 
     @property
     def patent_mode(self) -> bool:
@@ -503,7 +523,33 @@ def _render_finding_cite(tgt: str, pin: str | None, ctx: _Ctx) -> str:
             ctx.warnings.append(
                 f"pin on {tgt} ignored — pins only apply to a Taproot claim hub cite"
             )
-    return _cite_keys(keys, ctx)
+    return _cite_keys(keys, ctx) + _trust_mark_latex(ctx, pk)
+
+
+def _trust_mark_latex(ctx: _Ctx, finding_ref_id: int) -> str:
+    """The inline trust mark appended after a finding-backed cite
+    (finding-trust-surfaces.md §1). Empty for a clean citation — AC 6
+    requires byte-identical content to today. Unverified gets a
+    ``\\textsuperscript{?}`` flag plus a bracketed note; unsupported gets
+    the louder bold bracket. Resolved (and cached / accumulated for the
+    end-matter list) via :func:`precis.taproot.trust.claim_trust`, the ONE
+    mapping this and the docx exporter both read.
+
+    "Export always works, always marks" (finding-trust-surfaces.md,
+    decided — no refusing/strict mode): any resolution failure (malformed
+    ``meta``, a store hiccup) degrades to no mark rather than aborting an
+    export that previously worked."""
+    if ctx.trust is None:
+        return ""
+    try:
+        state = ctx.trust.resolve(finding_ref_id)
+    except Exception:  # pragma: no cover — store hiccup / malformed meta
+        return ""
+    if state.label == "clean":
+        return ""
+    if state.label == "unsupported":
+        return f"\\textbf{{{_tex(UNSUPPORTED_MARK_TEXT)}}}"
+    return f"\\textsuperscript{{?}}{_tex(unverified_mark_text(state))}"
 
 
 def _render_target(
@@ -860,6 +906,7 @@ def render_body(
         acronym_keys=ctx.keymap,
         warnings=ctx.warnings,
         figures=ctx.figures,
+        trust=ctx.trust,
     )
 
 
@@ -1101,6 +1148,23 @@ def build_source_appendix(bundle: Any, warnings: list[str]) -> str:
     return "\n".join(lines)
 
 
+def build_unverified_claims_section(trust: Any) -> str:
+    """An unnumbered "Unverified claims" end-matter section — one entry
+    per finding that rendered with a trust mark (finding-trust-surfaces.md
+    AC 1/2), listing the claim title, its state, and what it's waiting on.
+    Empty string when nothing was marked (``trust`` is ``None`` or has no
+    accumulated marks), so a clean draft's output is unaffected. Entry
+    wording is shared with the docx exporter via
+    :func:`precis.export._trust_marks.unverified_claims_entries`."""
+    entries = unverified_claims_entries(trust)
+    if not entries:
+        return ""
+    lines = ["\\section*{Unverified claims}", ""]
+    for title, tag, detail in entries:
+        lines.append(f"\\par\\noindent {_tex(title)} ({tag}){_tex(detail)}")
+    return "\n".join(lines)
+
+
 def assemble_document(
     *,
     title: str,
@@ -1110,6 +1174,7 @@ def assemble_document(
     appendix: str = "",
     doc_type: str = "",
     remarkable: bool = False,
+    unverified_section: str = "",
 ) -> str:
     """Assemble the full ``main.tex`` around the checked-in preamble.
 
@@ -1124,6 +1189,11 @@ def assemble_document(
 
     ``remarkable=True`` injects the reMarkable-2 page geometry after the
     preamble (send-to-tablet export).
+
+    ``unverified_section`` (:func:`build_unverified_claims_section`) is an
+    optional pre-rendered "Unverified claims" block placed BEFORE the
+    bibliography — empty when the export marked nothing, so an all-clean
+    draft's output is unchanged (AC 6).
     """
     patent_mode = doc_type == _PATENT_DOC_TYPE
     parts = [
@@ -1150,6 +1220,8 @@ def assemble_document(
         "",
         "\\printglossaries",
     ]
+    if unverified_section:
+        parts += ["", unverified_section]
     if not patent_mode:
         parts.append("\\printbibliography")
     if appendix:
@@ -1222,6 +1294,7 @@ def export_draft(
                 )
         appendix_tex = build_source_appendix(source_bundle, rendered.warnings)
 
+    unverified_tex = build_unverified_claims_section(rendered.trust)
     main_tex = assemble_document(
         title=title,
         author_block=author_block,
@@ -1230,7 +1303,12 @@ def export_draft(
         appendix=appendix_tex,
         doc_type=doc_type,
         remarkable=remarkable,
+        unverified_section=unverified_tex,
     )
+    # ``ref_events`` export record (finding-trust-surfaces.md §2) — one row
+    # naming every finding this export rendered clean only via an author's
+    # override. No-op (no row) when nothing was overridden.
+    record_override_event(store, ref, rendered.trust)
 
     # Materialise figure images beside main.tex (ADR 0058 slice 4) — the body
     # references them as pics/<dc>.<ext> via \includegraphics.
@@ -1271,6 +1349,7 @@ __all__ = [
     "build_author_block",
     "build_bib",
     "build_source_appendix",
+    "build_unverified_claims_section",
     "export_draft",
     "render_body",
 ]

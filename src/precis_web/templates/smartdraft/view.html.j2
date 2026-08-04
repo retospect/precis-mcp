@@ -131,14 +131,22 @@
      (awaiting human), emerald = human-approved, amber = human-approved but
      edited since. A trailing red "!" (::after) marks the deterministic
      citation-integrity flag (item 5c) — orthogonal to the ledger state, so
-     it never overrides the dot's own colour. */
+     it never overrides the dot's own colour. Claim-trust overlay
+     (finding-trust-surfaces §3, same ::after slot): "?" amber for an
+     unverified-backed cite, "‼" louder red+bold for an unsupported one —
+     ALL applicable overlay classes are added to a block (see
+     _block.html.j2), and since only one ::after can render, source order
+     here (not template logic) picks the winner when several apply:
+     unsupported > integrity-fail > unverified, loudest-last. */
   .sd-review { cursor: pointer; }
   .sd-review-dot { line-height: 1; font-size: 13px; vertical-align: middle; }
   .sd-review-dot.empty { color: #cbd5e1; }    /* slate-300 */
   .sd-review-dot.machine { color: #38bdf8; }  /* sky-400 — hollow/machine-green */
   .sd-review-dot.human { color: #059669; }    /* emerald-600 */
   .sd-review-dot.dirty { color: #d97706; }    /* amber-600 */
+  .sd-review-dot.sd-trust-unverified::after { content: "?"; color: #d97706; font-weight: 700; }  /* amber-600 */
   .sd-review-dot.sd-integrity::after { content: "!"; color: #dc2626; font-weight: 700; }
+  .sd-review-dot.sd-trust-unsupported::after { content: "‼"; color: #dc2626; font-weight: 700; }
   .sd-review-menu { white-space: normal; }
   /* Toolbar rollup badge (item 8) — N/M, emerald "review-complete" at N=M>0. */
   .sd-badge-rollup { border: 1px solid #e2e8f0; color: #64748b; }         /* slate-200/500 */

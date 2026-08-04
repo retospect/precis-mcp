@@ -105,6 +105,12 @@ class _FindingStore:
     def fetch_refs_by_ids(self, ids):
         return {i: self._refs[i] for i in ids if i in self._refs}
 
+    def tags_for(self, _ref_id):
+        # No STATUS tag → precis.taproot.trust defaults to 'tracing'
+        # (unverified/"source pending") — these tests exercise cite-key
+        # resolution, not the trust mark, so an untagged fixture is fine.
+        return []
+
 
 def test_escapes_latex_specials() -> None:
     out, _ = _inline("100% pure & cheap_at $5 #1 {x}")

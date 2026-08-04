@@ -1023,8 +1023,23 @@ host → GPU node → gateway last, gated on a `dream_agent`-under-
   normal lifecycle. Stubs exhausted past `PRECIS_ACQUIRE_GRACE_DAYS`
   (default 7) → `dead_chain(reason=unacquirable)`, stubs surface in the
   hand-download queue. Planner lit-hunt template now teaches this shape
-  (the gr183824/gr183865 fix). Trust surfaces (export marking, editor
-  badges) are **not built** — `docs/proposals/finding-trust-surfaces.md`.
+  (the gr183824/gr183865 fix). Trust surfaces
+  (`docs/proposals/finding-trust-surfaces.md`) — stage (a) **built**:
+  the shared derivation `taproot/trust.py::claim_trust` (clean/
+  unverified/unsupported, hub vs. lifecycle, override-aware), docx/latex
+  export marking + end-matter "Unverified claims" list + the
+  `ref_events` override record, and the `edit(kind='finding',
+  unacquirable_note=…)` write path. Stage (b) — the smartdraft editor
+  badge — **built**: `smartdraft.py::review_payloads_for` computes a
+  `claim_trust` field per block (worst-of across its cite heads, sharing
+  one per-render cache like the `integrity_ok` scan) via `claim_render.
+  resolve_head_ref_id` + `taproot/trust.py::claim_trust`;
+  `_block.html.j2::sd_review_widget` overlays it on the shipped
+  `sd-integrity` dot (`?` amber unverified, `‼` red-bold unsupported,
+  ranked above integrity's `!` in `view.html.j2`'s CSS source order) —
+  the four-state dot itself untouched. `claim_render.py::
+  render_claim_evidence`'s dormant hub `status` is now populated from
+  the same derivation.
 
 **Unified `claude -p` agentic dispatch — `utils/claude_agent.py`.**
 Peer to `utils/claude_p.py` (one-shot JSON judge). Carries the
