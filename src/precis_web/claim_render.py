@@ -94,17 +94,63 @@ def hub_cite_heads(store: Any, texts: Iterable[str]) -> frozenset[str]:
 def _edge_row(edge: EvidenceEdge, *, starred: bool) -> dict[str, Any]:
     """One supporter row for the templates. ``starred`` = this paper reaches
     the ``.bib`` on export (the ★ the user asked for); ``source_handle`` is
-    the grounding ``pc<id>`` passage, ``None`` until the chase populates it."""
+    the grounding ``pc<id>`` passage, ``None`` until the chase populates it.
+    ``source_is_chunk`` = the handle parses as a universal chunk handle, so
+    the template may render it as a ``/c/<handle>`` anchor (the legacy
+    ``slug~ord`` form stays plain text)."""
+    parsed = handle_registry.parse(edge.source_handle) if edge.source_handle else None
     return {
         "handle": handle_registry.format_handle("paper", edge.paper_ref_id),
         "paper_ref_id": edge.paper_ref_id,
         "title": edge.title,
         "year": edge.year,
         "source_handle": edge.source_handle,
+        "source_is_chunk": parsed is not None and parsed[1],
         "integrity": edge.integrity,
         "role": edge.derived_role,
         "starred": starred,
     }
+
+
+#: Quote budget per grounding passage on the claim page; the popover clamps
+#: further via CSS.
+_CHUNK_QUOTE_CHARS = 700
+
+
+def _grounding_chunks(
+    store: Any, rows: Iterable[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """The distinct grounding passages (``source_handle`` chunks) across the
+    evidence rows, print-set-first order — the claim page's passage list and
+    the hover popover's cited-chunk lines. Each entry quotes the chunk's
+    verbatim text when the handle resolves (`_draft_ops.py::universal_chunk`);
+    a dangling or non-chunk handle keeps its row with an empty quote so the
+    pointer stays visible rather than silently vanishing."""
+    out: list[dict[str, Any]] = []
+    by_handle: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        handle = row["source_handle"]
+        if not handle:
+            continue
+        entry = by_handle.get(handle)
+        if entry is None:
+            chunk = store.universal_chunk(handle) if row["source_is_chunk"] else None
+            text = " ".join(((chunk or {}).get("text") or "").split())
+            if len(text) > _CHUNK_QUOTE_CHARS:
+                text = text[:_CHUNK_QUOTE_CHARS].rstrip() + "…"
+            entry = {
+                "handle": handle,
+                "is_chunk": row["source_is_chunk"],
+                "text": text,
+                "papers": [],
+                "starred": False,
+            }
+            by_handle[handle] = entry
+            out.append(entry)
+        if row["handle"] not in entry["papers"]:
+            entry["papers"].append(row["handle"])
+        entry["starred"] = entry["starred"] or row["starred"]
+    return out
 
 
 def render_claim_evidence(store: Any, head: str) -> dict[str, Any] | None:
@@ -127,16 +173,20 @@ def render_claim_evidence(store: Any, head: str) -> dict[str, Any] | None:
     # Print set (★): originators when derived, else corroborators as the
     # fallback — the same policy `finding_cite_keys` prints from.
     corroborators_print = not evidence.originators
+    originators = [_edge_row(e, starred=True) for e in evidence.originators]
+    corroborators = [
+        _edge_row(e, starred=corroborators_print) for e in evidence.corroborators
+    ]
+    contradictors = [_edge_row(e, starred=False) for e in evidence.contradictors]
     return {
         "head": head,
         "hub_ref_id": ref_id,
         "claim": claim,
         "status": None,
-        "originators": [_edge_row(e, starred=True) for e in evidence.originators],
-        "corroborators": [
-            _edge_row(e, starred=corroborators_print) for e in evidence.corroborators
-        ],
-        "contradictors": [_edge_row(e, starred=False) for e in evidence.contradictors],
+        "originators": originators,
+        "corroborators": corroborators,
+        "contradictors": contradictors,
+        "chunks": _grounding_chunks(store, originators + corroborators + contradictors),
         "coverage_note": evidence.coverage_note,
         "inflight": cite.inflight,
     }

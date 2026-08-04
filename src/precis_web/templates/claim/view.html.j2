@@ -25,7 +25,7 @@
   <a href="/r/paper/{{ row.paper_ref_id }}" class="font-mono text-sky-700 underline decoration-dotted">{{ row.handle }}</a>
   <span class="text-slate-700">{{ row.title }}</span>
   {% if row.year %}<span class="text-slate-400">({{ row.year }})</span>{% endif %}
-  {% if row.source_handle %}<span class="text-slate-400">· grounded at <span class="font-mono">{{ row.source_handle }}</span></span>{% endif %}
+  {% if row.source_handle %}<span class="text-slate-400">· grounded at {% if row.source_is_chunk %}{{ ('[' ~ row.source_handle ~ ']') | linkify_refs }}{% else %}<span class="font-mono">{{ row.source_handle }}</span>{% endif %}</span>{% endif %}
   {% if row.integrity != 'clean' %}
   <span class="text-[11px] rounded bg-rose-100 text-rose-700 px-1.5 py-0.5">⚠ {{ row.integrity }}</span>
   {% endif %}
@@ -66,6 +66,28 @@
   <ul class="space-y-1.5">
     {% for row in contradictors %}
     {{ evidence_row(row) }}
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+{% if chunks %}
+<section class="mt-6">
+  <h2 class="text-sm font-semibold mb-2 text-slate-700">Grounding passages</h2>
+  <ul class="space-y-3">
+    {% for c in chunks %}
+    <li class="text-sm">
+      <p class="flex flex-wrap items-baseline gap-x-1.5 text-xs">
+        {% if c.starred %}<span class="text-amber-500" title="grounds a print-visible source">★</span>{% endif %}
+        {% if c.is_chunk %}{{ ('[' ~ c.handle ~ ']') | linkify_refs }}{% else %}<span class="font-mono text-slate-600">{{ c.handle }}</span>{% endif %}
+        <span class="text-slate-400">grounds {{ c.papers | join(', ') }}</span>
+      </p>
+      {% if c.text %}
+      <blockquote class="mt-1 border-l-2 border-slate-200 pl-3 text-slate-600 italic">{{ c.text }}</blockquote>
+      {% else %}
+      <p class="mt-1 text-xs text-slate-400 italic">passage text not available</p>
+      {% endif %}
+    </li>
     {% endfor %}
   </ul>
 </section>

@@ -132,6 +132,74 @@ def test_claim_preview_fragment(claim_client: TestClient, hub: Hub) -> None:
     assert _CLAIM.sentence in r.text
 
 
+def _seed_hub_with_chunk(hub: Hub) -> tuple[int, str, str]:
+    """Mint a claim hub whose corroborating edge grounds at a REAL paper
+    chunk. Returns ``(hub_ref_id, chunk_handle, chunk_text)``."""
+    store = hub.store
+    claim_hub = mint_hub(store, _CLAIM)
+    paper = store.insert_ref(
+        kind="paper", slug="claim-grounded", title="The grounded report", year=2003
+    ).id
+    chunk_text = "Pd/C converts aryl halides at 25 °C when K2CO3 is present."
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "INSERT INTO chunks (ref_id, ord, chunk_kind, text, meta) "
+            "VALUES (%s, 0, 'paragraph', %s, '{}'::jsonb) RETURNING chunk_id",
+            (paper, chunk_text),
+        ).fetchone()
+        assert row is not None
+        chunk_id = int(row[0])
+    chunk_handle = handle_registry.format_handle("paper", chunk_id, chunk=True)
+    attach_evidence(
+        store,
+        hub_ref_id=claim_hub,
+        paper_ref_id=paper,
+        role="corroborates",
+        meta={"source_handle": chunk_handle},
+    )
+    return claim_hub, chunk_handle, chunk_text
+
+
+def test_claim_view_grounding_passage_linked_and_quoted(
+    claim_client: TestClient, hub: Hub
+) -> None:
+    hub_ref_id, chunk_handle, chunk_text = _seed_hub_with_chunk(hub)
+    fi_handle = handle_registry.format_handle("finding", hub_ref_id)
+
+    r = claim_client.get(f"/claim/{fi_handle}")
+
+    assert r.status_code == 200
+    assert "Grounding passages" in r.text
+    assert chunk_text in r.text
+    assert f"/c/{chunk_handle}" in r.text  # the chunk is clickable
+
+
+def test_claim_view_dangling_source_handle_degrades(
+    claim_client: TestClient, hub: Hub
+) -> None:
+    # _seed_hub grounds at pc999, which has no chunks row in the test DB.
+    hub_ref_id, _pub_id = _seed_hub(hub)
+    fi_handle = handle_registry.format_handle("finding", hub_ref_id)
+
+    r = claim_client.get(f"/claim/{fi_handle}")
+
+    assert r.status_code == 200
+    assert "Grounding passages" in r.text
+    assert "/c/pc999" in r.text  # still clickable — hover degrades server-side
+    assert "passage text not available" in r.text
+
+
+def test_claim_preview_lists_cited_chunks(claim_client: TestClient, hub: Hub) -> None:
+    hub_ref_id, chunk_handle, chunk_text = _seed_hub_with_chunk(hub)
+    fi_handle = handle_registry.format_handle("finding", hub_ref_id)
+
+    r = claim_client.get(f"/preview/claim/{fi_handle}")
+
+    assert r.status_code == 200
+    assert f"/c/{chunk_handle}" in r.text
+    assert chunk_text[:80] in r.text
+
+
 def test_claim_view_non_hub_finding_shows_missing(
     claim_client: TestClient, hub: Hub
 ) -> None:

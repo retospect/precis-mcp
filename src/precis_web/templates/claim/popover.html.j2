@@ -27,6 +27,21 @@
     {% endfor %}
   </ul>
   {% endif %}
+  {% set starred_chunks = chunks | selectattr('starred') | list if chunks else [] %}
+  {% if starred_chunks %}
+  <ul class="space-y-0.5">
+    {% for c in starred_chunks %}
+    <li class="text-[11px] text-slate-500">
+      {% if c.is_chunk %}
+      <a href="/c/{{ c.handle }}" target="_blank" rel="noopener" class="font-mono text-sky-700 underline decoration-dotted">§{{ c.handle }}</a>
+      {% else %}
+      <span class="font-mono">{{ c.handle }}</span>
+      {% endif %}
+      {% if c.text %}<span class="italic line-clamp-2">“{{ c.text[:200] }}{% if c.text | length > 200 %}…{% endif %}”</span>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
   {% set unstarred_corroborators = corroborators | rejectattr('starred') | list %}
   {% if unstarred_corroborators or contradictors %}
   <p class="text-[11px] text-slate-400">

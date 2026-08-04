@@ -2743,7 +2743,14 @@ The master kinds table lives in the `precis-overview` skill.
     `templates/claim/`). `claim_render.render_claim_evidence` resolves a
     head (fi-handle or pub_id) to its hub and derives evidence via
     `taproot/cite.py::finding_cite_keys`, ★-marking the print-visible
-    originators (corroborator fallback, same policy as A1). Both `/drafts`
+    originators (corroborator fallback, same policy as A1). Grounding
+    chunks surface on both claim surfaces
+    (`claim_render.py::_grounding_chunks`): each evidence row's
+    `source_handle` renders as a clickable `/c/<handle>` anchor, the claim
+    page adds a "Grounding passages" section quoting each distinct chunk,
+    and the hover popover lists the ★-set's cited chunks with clamped
+    quotes (dangling / legacy `slug~ord` handles degrade to plain text,
+    "passage text not available"). Both `/drafts`
     and `/smartdraft` thread `claims=` into every `linkify_refs` call and
     list cited claims in a sidebar / right-rail panel. A non-hub `[fi<id>]`
     (generic finding anchor) or bare `[pub_id]` (literal) renders unchanged
