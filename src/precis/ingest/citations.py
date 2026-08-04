@@ -56,29 +56,29 @@ def _to_s2_id(paper_id: str) -> str:
     reraise=True,
 )
 def _get_references(sch: SemanticScholar, paper_id: str) -> list[dict[str, Any]]:
-    """Get papers this paper cites."""
-    try:
-        paper = sch.get_paper(
-            paper_id,
-            fields=["references.title", "references.externalIds", "references.year"],
-        )
-        if not paper or not hasattr(paper, "references") or not paper.references:
-            return []
-        return [
-            {
-                "title": getattr(r, "title", "") or "",
-                "doi": (
-                    (r.externalIds or {}).get("DOI")
-                    if hasattr(r, "externalIds")
-                    else None
-                ),
-                "year": getattr(r, "year", None),
-                "s2_id": getattr(r, "paperId", None),
-            }
-            for r in paper.references
-        ]
-    except Exception:
+    """Get papers this paper cites.
+
+    Raises after the retry budget on S2 failure — swallowing here would
+    make a transient error indistinguishable from a truly reference-less
+    paper, and callers persist/stamp the result as truth.
+    """
+    paper = sch.get_paper(
+        paper_id,
+        fields=["references.title", "references.externalIds", "references.year"],
+    )
+    if not paper or not hasattr(paper, "references") or not paper.references:
         return []
+    return [
+        {
+            "title": getattr(r, "title", "") or "",
+            "doi": (
+                (r.externalIds or {}).get("DOI") if hasattr(r, "externalIds") else None
+            ),
+            "year": getattr(r, "year", None),
+            "s2_id": getattr(r, "paperId", None),
+        }
+        for r in paper.references
+    ]
 
 
 @retry(
@@ -88,26 +88,24 @@ def _get_references(sch: SemanticScholar, paper_id: str) -> list[dict[str, Any]]
     reraise=True,
 )
 def _get_citations(sch: SemanticScholar, paper_id: str) -> list[dict[str, Any]]:
-    """Get papers that cite this paper."""
-    try:
-        paper = sch.get_paper(
-            paper_id,
-            fields=["citations.title", "citations.externalIds", "citations.year"],
-        )
-        if not paper or not hasattr(paper, "citations") or not paper.citations:
-            return []
-        return [
-            {
-                "title": getattr(c, "title", "") or "",
-                "doi": (
-                    (c.externalIds or {}).get("DOI")
-                    if hasattr(c, "externalIds")
-                    else None
-                ),
-                "year": getattr(c, "year", None),
-                "s2_id": getattr(c, "paperId", None),
-            }
-            for c in paper.citations
-        ]
-    except Exception:
+    """Get papers that cite this paper.
+
+    Raises after the retry budget on S2 failure — see ``_get_references``.
+    """
+    paper = sch.get_paper(
+        paper_id,
+        fields=["citations.title", "citations.externalIds", "citations.year"],
+    )
+    if not paper or not hasattr(paper, "citations") or not paper.citations:
         return []
+    return [
+        {
+            "title": getattr(c, "title", "") or "",
+            "doi": (
+                (c.externalIds or {}).get("DOI") if hasattr(c, "externalIds") else None
+            ),
+            "year": getattr(c, "year", None),
+            "s2_id": getattr(c, "paperId", None),
+        }
+        for c in paper.citations
+    ]

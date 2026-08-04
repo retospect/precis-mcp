@@ -201,6 +201,28 @@ def test_ensure_s2_neighbors_fetches_once_then_skips_within_ttl(hub: Hub) -> Non
     assert calls["n"] == 1
 
 
+def test_materialize_fetch_failure_leaves_unstamped_and_retries(hub: Hub) -> None:
+    """An S2 failure (``fetch_citations`` raises, e.g. the references call
+    dying after its retry budget) must persist NOTHING and stamp NOTHING —
+    a partial result stored as truth would freeze an empty bibliography for
+    a whole TTL. The next call retries and succeeds."""
+    g = _build_graph(hub.store)
+    good_fetch = cl.fetch_citations
+
+    def failing_fetch(paper_id: str) -> dict[str, list[dict[str, object]]]:
+        raise RuntimeError("s2 down")
+
+    cl.fetch_citations = failing_fetch  # type: ignore[assignment]
+    written = cl.materialize_citation_edges(hub.store, {g["a"]}, ttl_days=30)
+    assert written == 0
+    assert hub.store.events_for(g["a"], source="citation_edges") == []
+    assert hub.store.s2_neighbors_fresh(g["a"]) is False
+
+    cl.fetch_citations = good_fetch  # type: ignore[assignment]
+    assert cl.ensure_s2_neighbors(hub.store, g["a"], ttl_days=30) is True
+    assert len(hub.store.list_s2_neighbors(g["a"], "cites")) == 3
+
+
 def test_ensure_s2_neighbors_refetches_fresh_stamp_with_no_rows(hub: Hub) -> None:
     """A pre-0106 ``citation_edges`` stamp is fresh while ``s2_neighbors``
     has no rows (the fetch predated persistence) — the stamp alone must not
