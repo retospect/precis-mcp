@@ -1,5 +1,5 @@
 ---
-status: draft
+status: implemented (slices 1-2 shipped 2026-08-04; slice 3 rides hub_refine)
 title: Claim-page rendering + smartdraft claim interaction (diamond↔rail, docked claim pane, paper-at-position)
 model: sonnet
 ---

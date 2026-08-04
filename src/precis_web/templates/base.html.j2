@@ -8,6 +8,16 @@
      scan). Replaces the in-browser Play CDN, which warns in production and is
      slower on first paint. See tailwind.config.js. #}
   <link rel="stylesheet" href="/static/tailwind.css" />
+  {# Vendored KaTeX (docs/proposals/smartdraft-claim-ux.md slice 1 item 2) —
+     self-hosted like tailwind.css/pdf.js above, no runtime CDN fetch
+     (tailnet-only deployment). Renders math ONLY inside an opt-in
+     ``.tex-scope`` container (see the init script near the end of body) —
+     grounding quotes and similar verbatim paper/draft text, never
+     document-wide (single-``$`` auto-render over arbitrary page prose is
+     false-positive-prone). #}
+  <link rel="stylesheet" href="/static/katex/katex.min.css" />
+  <script src="/static/katex/katex.min.js" defer></script>
+  <script src="/static/katex/contrib/auto-render.min.js" defer></script>
   <script src="https://unpkg.com/htmx.org@2.0.3" defer></script>
   <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
   <style>[x-cloak] { display: none !important; }</style>
@@ -232,6 +242,41 @@
         },
       };
     }
+  </script>
+  <script>
+    // KaTeX auto-render, scoped to opt-in ``.tex-scope`` containers
+    // (docs/proposals/smartdraft-claim-ux.md slice 1 item 2). Delimiters
+    // cover both the ``$…$``/``$$…$$`` a paper's markdown chunk text uses
+    // and the ``\(…\)``/``\[…\]`` a LaTeX-imported passage may still carry.
+    // Re-run on ``htmx:afterSwap`` too, so content an htmx fragment loads
+    // AFTER the initial render (a preview card, a swapped panel, …) still
+    // gets its math typeset — the katex/auto-render scripts are ``defer``
+    // in <head>, which always finishes before this fires.
+    function renderTexScopes(root) {
+      if (!window.renderMathInElement) return;
+      (root || document).querySelectorAll('.tex-scope').forEach((el) => {
+        window.renderMathInElement(el, {
+          delimiters: [
+            { left: '$$', right: '$$', display: true },
+            { left: '\\[', right: '\\]', display: true },
+            { left: '$', right: '$', display: false },
+            { left: '\\(', right: '\\)', display: false },
+          ],
+          ignoredTags: ['script', 'style', 'textarea', 'pre', 'code'],
+          throwOnError: false,
+        });
+      });
+    }
+    document.addEventListener('DOMContentLoaded', (_e) => renderTexScopes(document));
+    document.addEventListener('htmx:afterSwap', (e) => {
+      const target = e.detail && e.detail.target;
+      if (!target) return;
+      if (target.matches && target.matches('.tex-scope')) {
+        renderTexScopes(target.parentElement || document);
+      } else {
+        renderTexScopes(target);
+      }
+    });
   </script>
 </body>
 </html>

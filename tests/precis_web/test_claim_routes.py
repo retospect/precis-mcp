@@ -200,6 +200,105 @@ def test_claim_preview_lists_cited_chunks(claim_client: TestClient, hub: Hub) ->
     assert chunk_text[:80] in r.text
 
 
+def _insert_chunk(store, *, ref_id: int, ord: int, text: str) -> str:
+    """Insert a real paper chunk, return its universal chunk handle — the
+    grounding-quote render fix (docs/proposals/smartdraft-claim-ux.md slice
+    1) needs REAL chunk text, not the ``pc999``-dangling-handle shape
+    `_seed_hub` uses."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "INSERT INTO chunks (ref_id, ord, chunk_kind, text, meta) "
+            "VALUES (%s, %s, 'paragraph', %s, '{}'::jsonb) RETURNING chunk_id",
+            (ref_id, ord, text),
+        ).fetchone()
+        assert row is not None
+        chunk_id = int(row[0])
+    return handle_registry.format_handle("paper", chunk_id, chunk=True)
+
+
+def test_claim_view_renders_table_math_and_all_three_passages(
+    claim_client: TestClient, hub: Hub
+) -> None:
+    """A hub grounded by three distinct passages — one plain, one a
+    markdown pipe table, one carrying ``$…$`` TeX — across all three
+    evidence roles (originator/corroborator/contradictor). The full
+    ``/claim/<head>`` render must: turn the table into a real ``<table>``
+    (not one flattened pipe run — fi191167), mark the quote container
+    ``tex-scope`` so client KaTeX picks up the TeX span, list all three
+    passages (not just the ★ print set), and leave the claim TITLE as
+    plain text (titles never get math-processed — the "Already decided"
+    policy)."""
+    store = hub.store
+    claim_hub = mint_hub(store, _CLAIM)
+
+    plain_paper = store.insert_ref(
+        kind="paper", slug="claim-plain", title="Plain-passage paper", year=2010
+    ).id
+    plain_text = "Pd/C converts aryl halides at 25 °C when K2CO3 is present."
+    plain_handle = _insert_chunk(store, ref_id=plain_paper, ord=0, text=plain_text)
+    attach_evidence(
+        store,
+        hub_ref_id=claim_hub,
+        paper_ref_id=plain_paper,
+        role="establishes",
+        meta={"source_handle": plain_handle},
+    )
+
+    table_paper = store.insert_ref(
+        kind="paper", slug="claim-table", title="Table-passage paper", year=2011
+    ).id
+    table_text = (
+        "| Catalyst | Yield (%) |\n| --- | --- |\n| Pd/C | 92 |\n| Pd(OAc)2 | 78 |"
+    )
+    table_handle = _insert_chunk(store, ref_id=table_paper, ord=0, text=table_text)
+    attach_evidence(
+        store,
+        hub_ref_id=claim_hub,
+        paper_ref_id=table_paper,
+        role="corroborates",
+        meta={"source_handle": table_handle},
+    )
+    # Seniority is DERIVED from the intra-supporter citation graph, not the
+    # write-time role (`seniority.py`) — without a `cites` edge among the
+    # supporters, both would fall back to "corroborator". table_paper
+    # citing plain_paper makes plain_paper the derived originator.
+    store.add_link(src_ref_id=table_paper, dst_ref_id=plain_paper, relation="cites")
+
+    tex_paper = store.insert_ref(
+        kind="paper", slug="claim-tex", title="TeX-passage paper", year=2012
+    ).id
+    tex_text = "The rate constant scales as $k = A e^{-E_a/RT}$ across the series."
+    tex_handle = _insert_chunk(store, ref_id=tex_paper, ord=0, text=tex_text)
+    attach_evidence(
+        store,
+        hub_ref_id=claim_hub,
+        paper_ref_id=tex_paper,
+        role="contradicts",
+        meta={"source_handle": tex_handle},
+    )
+
+    fi_handle = handle_registry.format_handle("finding", claim_hub)
+
+    r = claim_client.get(f"/claim/{fi_handle}")
+
+    assert r.status_code == 200
+    body = r.text
+    assert "<table" in body
+    assert 'class="tex-scope' in body
+    # All three distinct grounding passages are listed, not just the ★
+    # print set (originator only).
+    assert f"/c/{plain_handle}" in body
+    assert f"/c/{table_handle}" in body
+    assert f"/c/{tex_handle}" in body
+    assert plain_text in body
+    assert "(originator)" in body
+    assert "(corroborator)" in body
+    assert "(contradictor)" in body
+    # The claim title stays plain text — no math engine over it.
+    title_line = next(line for line in body.splitlines() if "<h1" in line)
+    assert "tex-scope" not in title_line
+
+
 def test_claim_view_non_hub_finding_shows_missing(
     claim_client: TestClient, hub: Hub
 ) -> None:

@@ -983,6 +983,65 @@ def test_smartdraft_reader_loads_katex_for_inline_math(
     assert "window.__sdRenderMath" in body
 
 
+def test_smartdraft_reader_has_docked_claim_pane(smartdraft_client: TestClient) -> None:
+    """smartdraft-claim-ux slice 2 item 6: a docked "Claim" panel at the top
+    of the right rail — hidden by default, with a close button and an
+    "open full page" link out to ``/claim/<head>``. It's what a prose ◆ /
+    Claims-rail chip click (item 5/6's delegated handler) loads
+    ``/preview/claim/<head>`` into via htmx."""
+    r = smartdraft_client.get("/smartdraft/sdt")
+    assert r.status_code == 200
+    body = r.text
+    assert 'id="claim-pane"' in body
+    assert (
+        "hidden"
+        in body[body.index('id="claim-pane"') : body.index('id="claim-pane"') + 200]
+    )
+    assert 'id="claim-pane-body"' in body
+    assert 'id="claim-pane-close"' in body
+    assert 'id="claim-pane-open"' in body
+    assert "open full page ↗" in body
+
+
+def test_smartdraft_reader_claim_delegate_script_present(
+    smartdraft_client: TestClient,
+) -> None:
+    """The diamond↔rail sync + docked-pane click delegate (items 5/6): one
+    delegated handler keyed on ``data-claim-head`` (shared by the prose ◆
+    and its Claims-rail chip), loading the preview fragment via htmx and
+    closing on the pane's own ✕ — not a listener per anchor."""
+    r = smartdraft_client.get("/smartdraft/sdt")
+    assert r.status_code == 200
+    body = r.text
+    assert "function claimPaneOpen(head)" in body
+    assert "function claimPaneClose(" in body
+    assert "function claimFlashCounterpart(head, from)" in body
+    assert "'/preview/claim/' + head" in body
+    assert "htmx.ajax(" in body
+    assert "[data-claim-head]" in body
+    assert "claim-pane-close" in body
+    # hover sync: both diamond and rail chip toggle the same highlight class
+    assert "sd-claim-hl" in body
+    assert "mouseover" in body and "mouseout" in body
+
+
+def test_smartdraft_claims_rail_chip_carries_data_claim_head(
+    smartdraft_client: TestClient,
+) -> None:
+    """The Claims-rail chip (violet, linking to ``/claim/<head>``) carries
+    the SAME ``data-claim-head`` attribute the prose ◆ anchor does (linkify
+    ``_render_claim_hub``), so the hover-sync / click delegate can find both
+    sides of a citation without a kind-specific lookup."""
+    from pathlib import Path
+
+    import precis_web
+
+    tpl_path = (
+        Path(precis_web.__file__).parent / "templates" / "smartdraft" / "view.html.j2"
+    )
+    assert 'data-claim-head="{{ entry.head }}"' in tpl_path.read_text()
+
+
 def test_smartdraft_review_toc_button_forces_rerun_outstanding_stays_incremental(
     smartdraft_client: TestClient,
 ) -> None:

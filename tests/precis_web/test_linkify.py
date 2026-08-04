@@ -694,6 +694,44 @@ def test_ref_anchor_opens_new_tab() -> None:
     assert 'target="_blank"' in out and 'rel="noopener"' in out
 
 
+# ---- Paper cite anchors reuse a named window + land at the cited passage ---
+# (smartdraft-claim-ux slice 2 item 7): the compact § cite and a paper-chunk
+# (pc<id>) universal handle both already carry the cited chunk in their href
+# (the existing ``?chunk=`` deep-link — the paper reader jumps to it,
+# routes_web.papers._cited_chunk + the reader's ``paperDoc()`` JS); this pins
+# that they ALSO share one ``target="precis-paper"`` window instead of
+# spawning a new tab per citation.
+
+
+def test_compact_paper_cite_targets_named_window() -> None:
+    out = str(linkify_refs("see [§kong24~2] here", compact=True))
+    assert 'target="precis-paper"' in out
+    assert "/r/paper/kong24?chunk=2" in out  # href already lands at the passage
+
+
+def test_paper_chunk_handle_targets_named_window() -> None:
+    out = str(linkify_refs("supported by [pc10]", compact=True))
+    assert 'target="precis-paper"' in out
+    assert 'href="/c/pc10"' in out  # /c/ resolves through to ?chunk=<ord>
+
+
+def test_non_paper_chunk_handle_keeps_default_target() -> None:
+    """A draft-chunk handle (¶) isn't a paper citation — it must keep the
+    ordinary ``_blank`` target, not the paper window."""
+    out = str(linkify_refs("see [dc41] here", compact=True))
+    assert 'target="precis-paper"' not in out
+    assert 'target="_blank"' in out
+
+
+def test_paper_record_handle_bare_cite_keeps_default_target() -> None:
+    """Only the § compact cite / pc-handle chunk anchors get the named
+    window — a non-compact paper ref (outside the compact reader) is
+    untouched, still a fresh tab per click."""
+    out = str(linkify_refs("paper:kong24~2"))
+    assert 'target="precis-paper"' not in out
+    assert 'target="_blank"' in out
+
+
 def test_abbrev_highlight_wraps_known_tokens() -> None:
     """A defined abbreviation is wrapped in an instant-tooltip <abbr.pa>
     (definition in .pa-pop, NOT the laggy native title); the longest short
@@ -891,6 +929,14 @@ def test_claim_hub_head_renders_claim_anchor() -> None:
     assert 'href="/claim/fi123"' in out
     assert 'hx-get="/preview/claim/fi123"' in out
     assert "◆" in out  # compact claim sigil
+
+
+def test_claim_hub_anchor_carries_data_claim_head() -> None:
+    """smartdraft-claim-ux slice 2 item 5: the prose ◆ carries
+    ``data-claim-head`` so the reader's diamond↔rail-sync JS can find every
+    element citing the same hub."""
+    out = str(linkify_refs("see [fi123]", compact=True, claims=frozenset({"fi123"})))
+    assert 'data-claim-head="fi123"' in out
 
 
 def test_pub_id_head_renders_claim_anchor_when_hub() -> None:

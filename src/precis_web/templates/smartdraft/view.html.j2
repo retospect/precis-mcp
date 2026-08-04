@@ -173,6 +173,16 @@
   .sd-dot-sourced { background: #16a34a; }
   .sd-dot-pending { background: #d97706; }
   .sd-dot-unsourced { background: #dc2626; }
+  /* Diamond ↔ Claims-rail sync (smartdraft-claim-ux slice 2, item 5):
+     hovering either the prose ◆ or its rail chip highlights BOTH — every
+     element sharing the same data-claim-head. sd-claim-flash is the
+     one-shot "there it is" pulse a click's scroll-to-counterpart adds. */
+  .sd-claim-hl { background: #ede9fe; box-shadow: inset 0 0 0 1px #a78bfa; border-radius: .2rem; } /* violet-100 + violet-400 ring */
+  .sd-claim-flash { animation: sd-claim-pulse .9s ease-out; border-radius: .2rem; }
+  @keyframes sd-claim-pulse {
+    0% { background: #c4b5fd; }   /* violet-300 */
+    100% { background: transparent; }
+  }
 </style>
 
 {# KaTeX — same client-side $…$ / $$…$$ math render the classic /drafts reader
@@ -293,7 +303,10 @@
        (an overflow-auto ancestor would clip them at the panel edge). ── #}
   <div class="rounded border border-slate-200 bg-white">
     <div class="border-b border-slate-100 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Focus</div>
-    <div class="space-y-2 p-3 text-sm">
+    {# ``tex-scope`` (smartdraft-claim-ux slice 1's KaTeX convention) marks
+       this as a prose container eligible for math rendering — the sanctioned
+       overlap point with that slice; nothing else in this file changes. #}
+    <div class="space-y-2 p-3 text-sm tex-scope">
       {% for m in view.middle %}
         {% set n = m.node %}
         {% set hd = 'font-semibold text-slate-900 text-base' if n.is_heading else '' %}
@@ -425,8 +438,32 @@
     </div>
   </div>
 
-  {# ── RIGHT: collaboration (working set + request box) — sticky sidebar ── #}
-  <div class="sticky top-2 self-start rounded border border-slate-200 bg-white" x-data="smartAsk('{{ ident }}', '{{ focus_dc }}')">
+  {# ── RIGHT: docked Claim pane + collaboration — one sticky grid column.
+       The claim pane (smartdraft-claim-ux slice 2, item 6 — a "4th column"
+       without an actual grid change) sits ABOVE Collaborate: a persistent,
+       scrollable panel, hidden until a prose ◆ or a Claims-rail chip is
+       clicked (the delegated handler below, in the click listener). It loads
+       the SAME ``/preview/claim/<head>`` fragment the hover popover uses, so
+       the two surfaces never drift. Both panels are siblings inside ONE
+       ``sticky`` wrapper (not each individually sticky) — the grid only
+       expects a single child per column; a second top-level sticky div here
+       would wrap onto a 4th, unstyled grid row instead of stacking in the
+       right column. ── #}
+  <div class="sticky top-2 self-start space-y-2">
+    <div id="claim-pane" class="hidden rounded border border-violet-200 bg-violet-50">
+      <div class="flex items-center justify-between border-b border-violet-100 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-violet-600">
+        <span>Claim</span>
+        <div class="flex items-center gap-2 normal-case tracking-normal">
+          <a id="claim-pane-open" href="/claim/" target="_blank" rel="noopener"
+             class="font-normal text-violet-600 hover:underline">open full page ↗</a>
+          <button type="button" id="claim-pane-close" title="close"
+                  class="font-normal text-violet-400 hover:text-violet-700">✕</button>
+        </div>
+      </div>
+      <div id="claim-pane-body" class="max-h-72 overflow-y-auto p-2 text-xs tex-scope"></div>
+    </div>
+
+  <div class="rounded border border-slate-200 bg-white" x-data="smartAsk('{{ ident }}', '{{ focus_dc }}')">
     <div class="border-b border-slate-100 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Collaborate</div>
     <div class="space-y-2 p-2 text-xs">
       {% if needs %}
@@ -504,7 +541,7 @@
         <div class="flex max-h-40 flex-wrap gap-1 overflow-y-auto">
           {% for entry in claims_evidence %}
           {% set starred = (entry.originators + entry.corroborators) | selectattr('starred') | map(attribute='handle') | list %}
-          <a href="/claim/{{ entry.head }}"
+          <a href="/claim/{{ entry.head }}" data-claim-head="{{ entry.head }}"
              class="max-w-[16rem] truncate rounded bg-violet-50 px-1.5 py-0.5 text-[11px] text-violet-700 hover:bg-violet-100"
              title="{{ entry.claim }}">{{ entry.claim[:80] }}{% if entry.claim | length > 80 %}…{% endif %}{% if starred %} [{{ starred | join(', ') }}]{% endif %}</a>
           {% endfor %}
@@ -787,6 +824,7 @@
       </div>
     </div>
   </div>
+  </div>
 
   {# nav state travels INSIDE #sd-content so a swap carries the fresh values.
      focusHandle (base58) lets the keyboard reach the focus block's inline
@@ -811,9 +849,12 @@ window.__sdRenderMath = function () { __renderMath(document.getElementById('sd-c
 // Citation hover popovers load lazily via htmx AFTER the initial KaTeX pass, so
 // render math in each popover fragment as it swaps in (a cited quote has $…$
 // too). Same handler the classic reader uses; the swap target is .ref-popover.
+// The docked claim pane (#claim-pane-body) loads the same kind of fragment
+// via htmx.ajax — same treatment, same math-bearing grounding quotes.
 document.body.addEventListener('htmx:afterSwap', function (e) {
   const t = (e.detail && e.detail.target) || e.target;
-  if (t && t.classList && t.classList.contains('ref-popover')) __renderMath(t);
+  if (!t || !t.classList) return;
+  if (t.classList.contains('ref-popover') || t.id === 'claim-pane-body') __renderMath(t);
 });
 
 // No-reload navigation: every TOC/result/toggle link + the search form + the
@@ -967,6 +1008,72 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
       n.parentNode.replaceChild(span, n);
     });
   }
+  // ── Claim diamond ↔ Claims-rail sync + docked pane (smartdraft-claim-ux
+  // slice 2, items 5/6). Every element sharing a `[fi123]` cite carries
+  // `data-claim-head="fi123"` — the prose ◆ (linkify's `_render_claim_hub`)
+  // AND its Claims-rail chip. Both hover-highlight the other; a plain click
+  // on either loads the SAME `/preview/claim/<head>` fragment used by the
+  // hover popover into the docked #claim-pane and scrolls/flashes the
+  // counterpart element into view. One delegated listener pair (mouseover/
+  // mouseout, which bubble — mouseenter/leave don't) on #sd-content, not one
+  // per anchor, matching the rest of this reader's event-delegation idiom.
+  function claimHeadEls(head) {
+    return document.querySelectorAll('[data-claim-head="' + CSS.escape(head) + '"]');
+  }
+  function claimPaneOpen(head) {
+    const pane = document.getElementById('claim-pane');
+    const body = document.getElementById('claim-pane-body');
+    const openLink = document.getElementById('claim-pane-open');
+    if (!pane || !body) return;
+    pane.classList.remove('hidden');
+    pane.dataset.head = head;
+    if (openLink) openLink.setAttribute('href', '/claim/' + head);
+    body.innerHTML = '<div class="p-2 text-slate-400">Loading…</div>';
+    const url = '/preview/claim/' + head;
+    if (window.htmx) {
+      window.htmx.ajax('GET', url, { target: '#claim-pane-body', swap: 'innerHTML' });
+    } else {
+      fetch(url).then((r) => r.text()).then((html) => { body.innerHTML = html; });
+    }
+  }
+  function claimPaneClose() {
+    const pane = document.getElementById('claim-pane');
+    if (!pane) return;
+    pane.classList.add('hidden');
+    delete pane.dataset.head;
+  }
+  // Scroll the FIRST counterpart element (excluding the one just clicked)
+  // into view and flash it — clicking a rail chip finds the prose diamond
+  // and vice versa. A brief class toggle (not the hover ring) so it reads
+  // as a one-shot "there it is" rather than a sticky highlight.
+  function claimFlashCounterpart(head, from) {
+    const els = Array.from(claimHeadEls(head)).filter((el) => el !== from);
+    const target = els[0];
+    if (!target) return;
+    target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    target.classList.add('sd-claim-flash');
+    setTimeout(() => target.classList.remove('sd-claim-flash'), 900);
+  }
+  (function installClaimHoverSync() {
+    const cont = document.getElementById('sd-content');
+    if (!cont) return;
+    let hoverHead = null;
+    function setHead(head) {
+      if (hoverHead === head) return;
+      if (hoverHead) claimHeadEls(hoverHead).forEach((el) => el.classList.remove('sd-claim-hl'));
+      hoverHead = head;
+      if (hoverHead) claimHeadEls(hoverHead).forEach((el) => el.classList.add('sd-claim-hl'));
+    }
+    cont.addEventListener('mouseover', (e) => {
+      const el = e.target.closest ? e.target.closest('[data-claim-head]') : null;
+      setHead(el ? el.getAttribute('data-claim-head') : null);
+    });
+    cont.addEventListener('mouseout', (e) => {
+      const to = e.relatedTarget;
+      if (to && to.closest && to.closest('[data-claim-head="' + hoverHead + '"]')) return;
+      setHead(null);
+    });
+  })();
   window.addEventListener('DOMContentLoaded', afterSwap);
   window.addEventListener('popstate', () => swapFrom(location.href));
   // Delegate: any internal /smartdraft link (TOC rows, results, header toggles)
@@ -979,6 +1086,26 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
     // would also bubble into the block-click branch below and navTo() away
     // from the very menu the click just opened.
     if (e.target.closest && e.target.closest('.sd-review, .sd-review-menu')) return;
+    // Docked claim pane's own ✕ (see #claim-pane above the delegate helpers).
+    if (e.target.closest && e.target.closest('#claim-pane-close')) {
+      e.preventDefault();
+      claimPaneClose();
+      return;
+    }
+    // A plain (unmodified — metaKey/ctrlKey already returned above; a
+    // middle-click never reaches 'click' at all) left-click on a prose ◆ or
+    // a Claims-rail chip feeds the docked pane instead of opening a new tab
+    // (smartdraft-claim-ux item 6); the anchor's own target="_blank" (or the
+    // rail chip's plain href) still drives modified-click / right-click
+    // "open in new tab", since those never preventDefault here.
+    const claimEl = e.target.closest ? e.target.closest('[data-claim-head]') : null;
+    if (claimEl && claimEl.closest('#sd-content')) {
+      e.preventDefault();
+      const head = claimEl.getAttribute('data-claim-head');
+      claimPaneOpen(head);
+      claimFlashCounterpart(head, claimEl);
+      return;
+    }
     const a = e.target.closest ? e.target.closest('a') : null;
     if (a && a.closest('#sd-content')) {
       // Focus-nav rows carry a short data-dc (not a full URL — that bloated the

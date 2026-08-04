@@ -151,6 +151,15 @@ _CITE_EXTERNAL_CLS = "text-amber-600 underline decoration-dotted hover:decoratio
 _CLAIM_ANCHOR_CLS = "text-violet-700 underline decoration-dotted hover:decoration-solid"
 _CLAIM_SIGIL = "◆"
 
+#: Named window target for a paper citation (smartdraft-claim-ux slice 2,
+#: item 7): successive clicks on paper cites reuse ONE side window instead of
+#: spawning a new tab per click, so a reader can keep the manuscript and the
+#: cited paper open side-by-side. Only the compact ``§`` glyph cite
+#: (:func:`_render_compact_cite`) and a paper-*chunk* (``pc<id>``) universal
+#: handle get this — every other anchor keeps the ordinary ``target="_blank"``
+#: (a fresh tab per ref).
+_PAPER_WINDOW = "precis-paper"
+
 #: Inline claim-hub cite grammar — the same heads + pins
 #: :data:`precis.utils.pub_id_lookup.PLACEHOLDER_RE` mines, but with named
 #: groups so :func:`_linkify_prose`'s dispatch stays a group-name check. It
@@ -175,13 +184,27 @@ def _cite_style(key: str, local: frozenset[str] | None) -> tuple[str, str]:
 
 
 def _anchor_html(
-    *, href: str, preview_url: str, label: str, anchor_cls: str = _ANCHOR_CLS
+    *,
+    href: str,
+    preview_url: str,
+    label: str,
+    anchor_cls: str = _ANCHOR_CLS,
+    target: str = "_blank",
+    extra_attrs: str = "",
 ) -> str:
     """The shared hover-preview anchor. An ``<a href>`` (so right-click /
     open-in-new-tab work without JS) wrapped in an Alpine/htmx span that
     eagerly fetches a popover card from ``preview_url`` on hover, then
     shows it after a hover-intent delay. ``href``, ``preview_url`` and
     ``label`` must already be HTML-safe.
+
+    ``target`` defaults to ``"_blank"`` (a fresh tab per click); a caller
+    passing a named window (e.g. ``"precis-paper"``, smartdraft-claim-ux
+    slice 2) gets one reused window across successive clicks instead.
+    ``extra_attrs`` is spliced verbatim onto the ``<a>`` tag (already
+    HTML-safe, caller-built — e.g. ``data-claim-head="…"``) so a call site
+    can carry extra hooks for client-side JS without every anchor needing
+    to know about them.
 
     Single source for every reference surface — ``kind:ref`` mentions AND
     ``¶`` draft-chunk cross-refs — so hover-preview + click-navigate are
@@ -285,6 +308,7 @@ def _anchor_html(
         "window.__refPopover.release($el);"
     )
     pop_id = f"refpop-{uuid.uuid4().hex[:10]}"
+    attrs = f" {extra_attrs}" if extra_attrs else ""
     return (
         f'<span x-data="{{hovered: false, hoverTimer: null, closeTimer: null, '
         f"popStyle: ''}}\" "
@@ -292,8 +316,8 @@ def _anchor_html(
         f'@mouseenter="{open_expr}" '
         f'@mouseleave="{delayed_close_expr}" '
         f'@click.outside="{immediate_close_expr}">'
-        f'<a class="{anchor_cls}" '
-        f'href="{href}" target="_blank" rel="noopener" '
+        f'<a class="{anchor_cls}"{attrs} '
+        f'href="{href}" target="{target}" rel="noopener" '
         f'hx-get="{preview_url}" '
         f'hx-trigger="mouseenter once" '
         f'hx-target="#{pop_id}" hx-swap="innerHTML">'
@@ -444,6 +468,10 @@ def _render_claim_hub(
         preview_url=f"/preview/claim/{safe_head}",
         label=label,
         anchor_cls=_CLAIM_ANCHOR_CLS,
+        # Smartdraft's diamond↔rail sync + docked claim pane (smartdraft-
+        # claim-ux slice 2) key off this attribute — additive, so every
+        # other cite kind's anchor markup is unchanged.
+        extra_attrs=f'data-claim-head="{safe_head}"',
     )
 
 
@@ -461,6 +489,10 @@ def _render_compact_cite(
         preview_url=f"/preview/paper/{safe_slug}{suffix}",
         label=glyph,  # full-size 1-char marker (easy to hover), flow intact
         anchor_cls=anchor_cls,
+        # href already lands at the cited chunk (the ``?chunk=`` suffix
+        # above); the named window means successive clicks reuse ONE paper
+        # tab instead of spawning one per citation (smartdraft-claim-ux).
+        target=_PAPER_WINDOW,
     )
 
 
@@ -600,6 +632,12 @@ def _render_universal_handle(
             preview_url=f"/preview/chunk/{h}",
             label=shown,
             anchor_cls=anchor_cls,
+            # A paper-chunk handle (``pc10``) already lands at the cited
+            # passage (``/c/<h>`` resolves through the universal-chunk →
+            # ``/r/paper/<id>?chunk=<ord>`` redirect chain); the named
+            # window reuses one paper tab across successive citations
+            # (smartdraft-claim-ux) — other chunk kinds keep ``_blank``.
+            target=_PAPER_WINDOW if kind == "paper" else "_blank",
         )
     # A record handle. In the compact draft reader an inline *evidence
     # citation* — a paper/patent referenced in the prose, e.g. ``[pa42624]``

@@ -80,10 +80,16 @@
       <p class="flex flex-wrap items-baseline gap-x-1.5 text-xs">
         {% if c.starred %}<span class="text-amber-500" title="grounds a print-visible source">★</span>{% endif %}
         {% if c.is_chunk %}{{ ('[' ~ c.handle ~ ']') | linkify_refs }}{% else %}<span class="font-mono text-slate-600">{{ c.handle }}</span>{% endif %}
-        <span class="text-slate-400">grounds {{ c.papers | join(', ') }}</span>
+        <span class="text-slate-400">grounds
+          {% for p in c.papers %}{{ p.handle }} <span class="italic">({{ p.role }})</span>{% if not loop.last %}, {% endif %}{% endfor %}
+        </span>
       </p>
-      {% if c.text %}
-      <blockquote class="mt-1 border-l-2 border-slate-200 pl-3 text-slate-600 italic">{{ c.text }}</blockquote>
+      {% if c.quote_html %}
+      {# tex-scope: this is verbatim paper/draft text, which legitimately
+         carries $…$/$$…$$ TeX (the claim title above never does — policy,
+         see docs/proposals/smartdraft-claim-ux.md "Already decided") — the
+         base.html.j2 init script runs client-side KaTeX over this element. #}
+      <blockquote class="tex-scope mt-1 border-l-2 border-slate-200 pl-3 text-slate-600">{{ c.quote_html }}</blockquote>
       {% else %}
       <p class="mt-1 text-xs text-slate-400 italic">passage text not available</p>
       {% endif %}
