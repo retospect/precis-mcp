@@ -148,6 +148,7 @@ class FakeStore(_FakeStoreBase):
         #: Canned held incoming `cites` links (the "held" half of the
         #: Cited tab union): {ref_id: [Link-shaped row with src_ref_id]}.
         self.cites_in: dict[int, list[Any]] = {}
+        self.cites_out: dict[int, list[Any]] = {}
         #: {(scheme, value): ref_id} — find_ref_by_identifier's canned
         #: table (the fetch-ref route's post-dispatch resolve).
         self.identifier_lookup: dict[tuple[str, str], int] = {}
@@ -478,6 +479,8 @@ class FakeStore(_FakeStoreBase):
         # ``self.cites_in``.
         if direction == "in" and relation == "cites":
             return list(self.cites_in.get(ref_id, []))
+        if direction == "out" and relation == "cites":
+            return list(self.cites_out.get(ref_id, []))
         return []
 
     def list_s2_neighbors(self, ref_id, direction):

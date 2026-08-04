@@ -131,6 +131,28 @@ def test_refs_fragment_non_paper_docfamily_ref_errors(
     assert _no_network_ensure_s2_neighbors == []
 
 
+def test_sources_fragment_held_cite_shown_when_s2_list_elided(client, runtime) -> None:
+    """Some publishers elide the S2 reference list (e.g. Elsevier) — the
+    Sources tab must still show held outgoing ``cites`` links, unnumbered
+    (the bibliography ordinal only means anything S2-side)."""
+    runtime.store.cites_out[10] = [SimpleNamespace(dst_ref_id=11)]
+    resp = client.get("/papers/10/refs/sources")
+    assert resp.status_code == 200
+    assert "/papers/jones2025" in resp.text
+
+
+def test_sources_fragment_dedupes_held_row_against_s2_list(client, runtime) -> None:
+    """A held cited paper also present in the S2 references list renders
+    once, as the numbered S2 row."""
+    runtime.store.cites_out[10] = [SimpleNamespace(dst_ref_id=11)]
+    runtime.store.s2_neighbors[(10, "cites")] = [
+        _nb(s2_id="S2SAME", title="Same paper", year=2025, held_ref_id=11),
+    ]
+    resp = client.get("/papers/10/refs/sources")
+    assert resp.status_code == 200
+    assert resp.text.count("/papers/jones2025") == 1
+
+
 # ── GET /papers/{id}/refs/cited ─────────────────────────────────────────
 
 

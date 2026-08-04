@@ -767,23 +767,53 @@ def _refs_row(
 
 
 def _sources_rows(store: Any, ref: Any) -> list[dict[str, Any]]:
-    """This paper's outgoing bibliography, S2 order (approximate)."""
+    """This paper's outgoing bibliography, S2 order (approximate), unioned
+    with held outgoing ``cites`` links — some publishers elide the S2
+    reference list entirely (e.g. Elsevier), and the held edges are then
+    all we can show."""
+    held_links = store.links_for(ref.id, direction="out", relation="cites")
+    cited_ids = {lk.dst_ref_id for lk in held_links}
     neighbors = store.list_s2_neighbors(ref.id, "cites")
-    held_ids = {nb.held_ref_id for nb in neighbors if nb.held_ref_id}
-    refs = store.fetch_refs_by_ids(list(held_ids)) if held_ids else {}
-    return [
-        _refs_row(
-            ref_id=ref.id,
-            direction="sources",
-            n=i,
-            held_ref=refs.get(nb.held_ref_id) if nb.held_ref_id else None,
-            s2_id=nb.s2_id,
-            doi=nb.doi,
-            title=nb.title,
-            year=nb.year,
+    want_ids = cited_ids | {nb.held_ref_id for nb in neighbors if nb.held_ref_id}
+    refs = store.fetch_refs_by_ids(list(want_ids)) if want_ids else {}
+    remaining = {
+        rid
+        for rid in cited_ids
+        if refs.get(rid) is not None and refs[rid].kind == "paper"
+    }
+    rows: list[dict[str, Any]] = []
+    for i, nb in enumerate(neighbors, start=1):
+        held_ref = refs.get(nb.held_ref_id) if nb.held_ref_id else None
+        if held_ref is not None:
+            remaining.discard(nb.held_ref_id)
+        rows.append(
+            _refs_row(
+                ref_id=ref.id,
+                direction="sources",
+                n=i,
+                held_ref=held_ref,
+                s2_id=nb.s2_id,
+                doi=nb.doi,
+                title=nb.title,
+                year=nb.year,
+            )
         )
-        for i, nb in enumerate(neighbors, start=1)
-    ]
+    # Held cited papers the S2 list doesn't carry (elided or stale) —
+    # unnumbered: the bibliography ordinal only means anything S2-side.
+    for rid in sorted(remaining):
+        rows.append(
+            _refs_row(
+                ref_id=ref.id,
+                direction="sources",
+                n=None,
+                held_ref=refs[rid],
+                s2_id=None,
+                doi=None,
+                title=None,
+                year=None,
+            )
+        )
+    return rows
 
 
 def _cited_rows(store: Any, ref: Any) -> list[dict[str, Any]]:
