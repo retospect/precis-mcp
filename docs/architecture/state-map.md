@@ -214,7 +214,7 @@ cheap-but-real pass is never flagged.
   spin-loop finding set churns every second, so the old
   `(category, ref_id)` digest fingerprint changed every pass and the
   per-node per-minute writer emitted >2000 near-dup memories/day.)
-* `health_digest` (§D, `docs/proposals/health-watchdog.md`, Phase 1) — the
+* `health_digest` (§D, `docs/proposals/health-watchdog.md`, Phases 1+2) — the
   slow-rot sibling of nursery: SQL-only, no LLM, fired hourly via the
   `health_digest` **scheduler-lease cadence** (`workers/scheduler.py`
   CADENCES, host-agnostic — any live worker can win it; §A's lease
@@ -240,7 +240,18 @@ cheap-but-real pass is never flagged.
   registry so a new pass needs zero digest edits). Findings raise
   `kind='alert'` under `alert_source="watchdog:<group>"` (severity capped
   to info/warn — nursery keeps `critical`), auto-resolving via the same
-  `resolve_stale_alerts` sweep nursery uses. Push policy: a templated
+  `resolve_stale_alerts` sweep nursery uses. **Remediation router** (Phase 2,
+  3424f110): every still-open `watchdog:<group>` alert older than its class's
+  self-heal budget (`cadence` 6h · `coherence` 24h · `discovery` 12h ·
+  catch-all outcome 24h-warn/never-info; group `meta` never gripes) files
+  exactly one auto-closing `kind='gripe'` — the `watchdog-condition:
+  <source>/<fingerprint>` marker line at `gripe_body` ord 0 is the dedup +
+  auto-close key, re-scanned each eval (no cached state), close = comment +
+  soft-delete, flood cap 3 new gripes/eval, `origin:health-digest-router`
+  tag. A stale `embed` backlog finding (and its gripe) carries
+  `_diagnose_embed_pipeline`'s culprit line — first stuck stage of the §F
+  materialize → `embed_batch` → slot-gated `job_inproc` chain (minting? slots
+  advertised? jobs succeeding?). Push policy: a templated
   (zero-LLM) `kind='message'` digest to `PRECIS_OPS_ALERT_TARGET` on the
   daily heartbeat (`app_settings['health_digest:last_push']` > 24h — an
   all-green push IS the dead-man's proof the watchdog is alive) or a
@@ -567,8 +578,10 @@ bounded `embed_batch` jobs (`prio=8`) only above `PRECIS_EMBED_BACKLOG_HIGH`
 (default 500) and only when none are already live, with a 15-min
 failed-job cooldown — hysteresis coalesces churn into few large batches.
 A backlog piled up past 4×`PRECIS_EMBED_BACKLOG_HIGH` logs a rate-limited
-WARNING (poor-man's liveness until §D) surfacing in `worker_logs`/the §K
-console last-error strip.
+WARNING surfacing in `worker_logs`/the §K console last-error strip — since
+§D Phase 2 (3424f110) the real liveness signal is `health_digest`'s stale
+`embed` finding + `_diagnose_embed_pipeline` culprit line (the WARNING
+stays as cheap local corroboration).
 
 **Default-ON as of §F cycle b** — `PRECIS_MATERIALIZE_EMBED=0` (or any
 non-truthy token) is the documented opt-out/rollback; the standing
@@ -739,7 +752,15 @@ own, so the plain `children_done` wake could never fire either.
 section used to carry — worker/watch/heartbeat/dream as four separate
 daemons — is stale post-§A: `dream`'s standalone LaunchDaemon is retired,
 folded onto the `scheduler` pass below; `heartbeat` is now BOTH a per-host
-worker pass and its own still-live timer, pending §L.)
+worker pass and its own still-live timer, pending §L.) A third value,
+`--profile all` (§L-a), is the exact union of both rotations — the
+collapsed one-worker-per-host profile. Dark: no deployed unit passes it;
+the rewritten `deploy/playbooks/20b-precis-worker-collapsed.yml` (env
+parity with all four live unit templates verified per host group) +
+`retire-split-agents.yml` are the §L-b cutover pair, both un-imported,
+run order + per-host preconditions in 20b's header (canary system-only
+host → GPU node → gateway last, gated on a `dream_agent`-under-
+`PRECIS_AGENT_CONTAINER` smoke test).
 
 * `precis worker --profile=system` runs on every cluster node and
   drives every chunk-level + SQL ref-level pass: `embed`, `summarize`,

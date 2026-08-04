@@ -191,6 +191,17 @@ dream throttle** (the one live cost bug).
   every managed pass restarts on deploy (bounce-coverage gap); teardown reaps
   subprocesses (`gr171254`, `gr176337`); prod DB password out of plists into
   vault (`gr171431`).
+  **Cycle a SHIPPED, dark** (`df041901`): `--profile all` = the exact union
+  of both rotations (test-pinned down to `_build_handlers`); `20b` rewritten
+  to verified env-parity with all four live unit templates per host group;
+  `retire-split-agents.yml` authored; worker-agent role split
+  provision/units (render-identical for playbook 37). Nothing imported —
+  prod byte-identical. **Cycle b = the in-window cutover** (run order +
+  preconditions in `20b`'s header): canary system-only host → GPU node →
+  gateway LAST, the gateway step gated on a `dream_agent`-under-
+  `PRECIS_AGENT_CONTAINER` smoke test (static trace found no blocker —
+  SOUL/MCP/OAuth all round-trip the container seam; never empirically
+  exercised there).
   **Blast-radius window — acknowledged.** Today's four profiles crudely
   isolate passes (the 4-day outage killed only the *agent* worker; the
   system worker kept running). One collapsed worker per host means one
@@ -348,15 +359,17 @@ Track 2 (`served_by` seeding), `gr175799`, `gr51393`, spark provisioning
 
 ### Pillar 4 — Monitorable (law 6's observability)
 
-- **§D — Liveness net.** A periodic outcome-based digest that reaches out,
-  escalates with age, and routes each finding onto a standing fix-path. SLA
-  is forgiving ("never urgent, don't let it rot for days" — the failures it
-  guards are slow: the 4-day worker-agent outage, `chunk_keywords` dead
-  26 d). SQL-first so it doesn't depend on the fleet it watches; composes
-  with nursery (the fast critical lane). **Coupled to §F: one liveness
-  truth** — the same registry (`ServiceSpec × service_config × worker_logs`)
-  plus the same backlog signal; alarm on backlog-present-but-not-draining,
-  never on quiet. Full spec: `health-watchdog.md`.
+- **§D — Liveness net. SHIPPED through Phase 2** (Phase 1 `a1d1573f`:
+  Layer-1 checks + derived cadence staleness + derived Layer-2 coherence +
+  daily-heartbeat push + dead-man ping; Phase 2 `3424f110`: the remediation
+  router — condition-fingerprinted auto-closing gripes after per-class
+  self-heal budgets, flood-capped — and the §F coupling made concrete:
+  a stale `embed` backlog finding names the first stuck stage of the
+  materialize → `embed_batch` → slot-gated chain). SQL-first, composes with
+  nursery (the fast critical lane); alarm on backlog-present-but-not-
+  draining, never on quiet. Remaining under the §D umbrella: Phase 3 (brief
+  lane, surface canaries, alert-triage disposition) and the P6 autonomy
+  rungs. Full spec: `health-watchdog.md`.
 - **§K — Factory console v2. SHIPPED** (`474b88d0`): per-cadence next-run,
   per-host last-error, `resource_slots` free/capacity chips, reserve
   banner + reserve/release controls, live `prio` knobs (`gr162694`, Track 3

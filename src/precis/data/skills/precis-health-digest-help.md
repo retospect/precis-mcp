@@ -1,14 +1,14 @@
 ---
 id: precis-health-digest-help
 title: precis — health_digest liveness-net worker pass
-summary: hourly outcome-based liveness digest — curated Layer-1 outcome checks + derived cadence-staleness + derived registry coherence, pushed daily/on-degradation as kind='alert' + a Discord digest
-applies-to: precis worker --only health_digest; kind='alert' (alert-source:watchdog:*)
+summary: hourly outcome-based liveness digest — curated Layer-1 outcome checks + derived cadence-staleness + derived registry coherence, pushed daily/on-degradation as kind='alert' + a Discord digest; persistent findings route to auto-closing gripes
+applies-to: precis worker --only health_digest; kind='alert' (alert-source:watchdog:*); kind='gripe' (origin:health-digest-router)
 status: active
 ---
 
 # precis-health-digest-help — the §D liveness net
 
-`health_digest` (`docs/proposals/health-watchdog.md` §D, Phase 1) is the
+`health_digest` (`docs/proposals/health-watchdog.md` §D, Phases 1+2) is the
 slow-rot sibling of `nursery` (`precis-nursery-help`): nursery's `critical`
 lane pages the moment a worker/dispatch outage happens, but many outcomes
 degrade over hours-to-days with nothing that urgent watching them (a
@@ -71,8 +71,31 @@ Each non-`ok` check raises a `kind='alert'` under
 `alert_source="watchdog:<group>"` (fingerprint = the check name), severity
 capped to `info`/`warn` — nursery keeps the `critical` lane, this pass never
 pages. `resolve_stale_alerts` auto-closes whatever goes fresh again, same
-dedup/lifecycle as nursery (see `precis-alert-help`). No gripe filing in
-this slice — the remediation router is a later phase.
+dedup/lifecycle as nursery (see `precis-alert-help`).
+
+## Remediation router (Phase 2)
+
+An open `watchdog:<group>` alert that outlives its class's **self-heal
+budget** (`cadence` 6h · `coherence` 24h · `discovery` 12h · other outcome
+groups 24h at `warn`, never at `info`; the `meta` group — alert-backlog-rot
+— never gripes) is routed to **exactly one** `kind='gripe'`, tagged
+`origin:health-digest-router`. Recognize one by its first body line:
+
+```
+watchdog-condition: <alert_source>/<fingerprint>
+```
+
+That marker is the dedup AND auto-close key: the router re-scans open
+gripes for it every eval, so a repeat sighting never duplicates, and the
+moment the underlying check goes fresh the gripe is auto-closed (resolution
+comment + soft-delete). **Don't hand-close these against a still-stale
+condition** — they'll close themselves when the condition actually clears;
+fixing the *cause* is the useful act (each carries a class-specific nudge:
+the exact toggle for config drift, the stalled host for a cadence, the
+first stuck pipeline stage for a backlog). A stale `embed` finding (and its
+gripe) also carries the §F culprit line — which stage of materialize →
+`embed_batch` → slot-gated claim is stuck. New gripes are flood-capped at 3
+per eval; the overflow files next hour.
 
 ## Push policy
 
