@@ -432,6 +432,9 @@
       {% if needs %}
       <div class="rounded border border-amber-200 bg-amber-50 p-1.5">
         <div class="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700">Needs · in-flight</div>
+        {# Cap + scroll (not the sticky rail as a whole — that would clip the
+           Tools pane's upward-opening Meta popovers, which aren't teleported). #}
+        <div class="max-h-40 overflow-y-auto">
         {% for w in needs %}
         <div class="flex items-center gap-1 py-0.5 text-[10px]">
           {% if w.asks %}<span title="{{ w.asks | join('; ') }}">✋</span>{% endif %}
@@ -439,6 +442,7 @@
           <span class="shrink-0 rounded px-1 {% if w.blocked %}bg-rose-100 text-rose-700{% else %}bg-slate-200 text-slate-600{% endif %}">{{ w.status }}</span>
         </div>
         {% endfor %}
+        </div>
       </div>
       {% endif %}
 
@@ -451,7 +455,7 @@
       {% if cited_sources %}
       <div class="rounded border border-slate-200 bg-white p-1.5">
         <div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Cited sources</div>
-        <div class="flex flex-wrap gap-1">
+        <div class="flex max-h-32 flex-wrap gap-1 overflow-y-auto">
           {% for c in cited_sources %}{{ c }}{% endfor %}
         </div>
       </div>
@@ -469,6 +473,7 @@
       {% if links_out or links_in or flags %}
       <div class="rounded border border-slate-200 bg-white p-1.5">
         <div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Links</div>
+        <div class="max-h-40 overflow-y-auto">
         {% if links_out %}
         <div class="mb-1 flex flex-wrap items-center gap-1">
           <span class="text-[10px] text-slate-400" title="this chunk links to →">out</span>
@@ -487,6 +492,7 @@
           {% for c in flags %}{{ c }}{% endfor %}
         </div>
         {% endif %}
+        </div>
       </div>
       {% endif %}
 
@@ -495,7 +501,7 @@
       {% if claims_evidence %}
       <div class="rounded border border-slate-200 bg-white p-1.5">
         <div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Claims</div>
-        <div class="flex flex-wrap gap-1">
+        <div class="flex max-h-40 flex-wrap gap-1 overflow-y-auto">
           {% for entry in claims_evidence %}
           {% set starred = (entry.originators + entry.corroborators) | selectattr('starred') | map(attribute='handle') | list %}
           <a href="/claim/{{ entry.head }}"
@@ -531,6 +537,7 @@
       {% if fig_nodes %}
       <div class="rounded border border-slate-200 bg-white p-1.5">
         <div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Figures · clearance</div>
+        <div class="max-h-40 overflow-y-auto">
         {% for fn in fig_nodes %}
         <div class="flex items-center gap-1.5 py-0.5 text-[10px]">
           <a href="{{ qs(fn.dc) }}" data-dc="{{ fn.dc }}"
@@ -539,6 +546,7 @@
           {{ draft_figures.clearance_badge(ident, fn.base58, fn.figure_origin, fn.figure_cleared, fn.figure_permission) }}
         </div>
         {% endfor %}
+        </div>
       </div>
       {% endif %}
 
@@ -551,11 +559,13 @@
       <div class="rounded border border-slate-200 bg-white p-1.5">
         <div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Occurs in {{ term_occurrences | length }} place{{ 's' if term_occurrences | length != 1 else '' }}</div>
         {% if term_occurrences %}
+        <div class="max-h-40 overflow-y-auto">
         {% for on in term_occurrences %}
         <a href="{{ qs(on.dc) }}" data-dc="{{ on.dc }}"
            class="block truncate rounded px-1 py-0.5 text-[10px] text-slate-600 hover:bg-slate-50 hover:text-sky-700"
            title="{{ on.summary }}">{{ on.summary }}</a>
         {% endfor %}
+        </div>
         {% else %}
         <div class="text-[10px] text-slate-400">not yet used elsewhere in this draft</div>
         {% endif %}
