@@ -217,6 +217,44 @@ def test_stub_backlog_tolerates_duplicate_same_kind_identifiers(store: Store) ->
     assert rows[0]["identifier"] == "10.1/dup"
 
 
+# ── store engine: retraction exclusion ────────────────────────────────
+
+
+def test_stub_backlog_excludes_retracted(store: Store) -> None:
+    # A stub already stamped retracted has nothing worth fetching an OA
+    # copy for — it must drop out of the backlog entirely, not just get
+    # deprioritized.
+    retracted = _stub(store, cite_key="retracted2024", doi="10.1/retracted")
+    store.set_retraction_status(retracted, status="retracted")
+    want = _stub(store, cite_key="want2024b", doi="10.1/wantb")
+    assert [r["ref_id"] for r in store.stub_backlog()] == [want]
+
+
+def test_stub_backlog_keeps_null_retraction_status(store: Store) -> None:
+    # NULL == never checked — the state every stub starts in — must stay
+    # eligible so the fetch-time gate actually gets a chance to check it.
+    unchecked = _stub(store, cite_key="unchecked2024", doi="10.1/unchecked")
+    assert [r["ref_id"] for r in store.stub_backlog()] == [unchecked]
+
+
+def test_stub_backlog_keeps_non_retracted_statuses(store: Store) -> None:
+    # 'corrected' / 'expression_of_concern' are informational, not a
+    # fetch-blocker — only the exact 'retracted' literal excludes.
+    corrected = _stub(store, cite_key="corrected2024", doi="10.1/corrected")
+    store.set_retraction_status(corrected, status="corrected")
+    concern = _stub(store, cite_key="concern2024", doi="10.1/concern")
+    store.set_retraction_status(concern, status="expression_of_concern")
+    rows = {r["ref_id"] for r in store.stub_backlog()}
+    assert rows == {corrected, concern}
+
+
+def test_stub_backlog_count_excludes_retracted(store: Store) -> None:
+    retracted = _stub(store, cite_key="cnt_retracted2024", doi="10.1/cntretracted")
+    store.set_retraction_status(retracted, status="retracted")
+    _stub(store, cite_key="cnt_want2024", doi="10.1/cntwant")
+    assert store.stub_backlog_count() == 1
+
+
 # ── store engine: id_kinds / sort (Part 2) ───────────────────────────
 
 

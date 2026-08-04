@@ -52,6 +52,23 @@ core rather than forking it:
    double-stamp or double-count). The route redirects back with
    `?requeued=<n>` for the existing `notice` banner to flash.
 
+4. **Retraction gate.** `fetch_oa` now runs a cheap, DOI-only
+   Crossref retraction check on each claimed stub *before* the
+   download cascade — reusing
+   `precis.ingest.provenance.check_doi`/`dominant_status` (no second
+   classifier). A retracted paper has nothing worth chasing an OA copy
+   for: the worker stamps `refs.retraction_status='retracted'` via the
+   existing `Store.set_retraction_status` and drops a
+   `source='fetch_oa'`, `event='retraction_skip'` `ref_events` row
+   instead of running any download leg. `stub_predicate_sql` (the
+   shared predicate behind `stub_backlog`, `stub_backlog_count`,
+   `requeue_stubs_for_fetch`, and `claim_stubs_to_fetch`) now also
+   excludes `retraction_status = 'retracted'` rows by default (`IS
+   DISTINCT FROM` — `NULL`/unchecked and the other non-retracted
+   statuses stay eligible), so a retracted stub also disappears from
+   `view='stubs'` / `view='chase-queue'` once stamped, converging in at
+   most one more chase attempt.
+
 ## Problem
 
 The corpus tracks *stub* papers — `paper` refs with an external

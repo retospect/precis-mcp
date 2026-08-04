@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -299,6 +300,20 @@ class TestClaimStubs:
             stubs = claim_stubs_to_fetch(conn, limit=10)
             conn.commit()
         assert [s.ref_id for s in stubs] == [ref_id]
+
+    def test_excludes_already_retracted(self, store: Store) -> None:
+        # A stub already stamped retracted has nothing worth chasing an
+        # OA copy for — the shared stub predicate drops it from the
+        # claim query, same as ``stub_backlog``.
+        retracted = _seed_paper_stub(
+            store, cite_key="retracted2024", doi="10.1234/retracted"
+        )
+        store.set_retraction_status(retracted, status="retracted")
+        want = _seed_paper_stub(store, cite_key="wanted2024", doi="10.1234/wanted")
+        with store.pool.connection() as conn:
+            stubs = claim_stubs_to_fetch(conn, limit=10)
+            conn.commit()
+        assert [s.ref_id for s in stubs] == [want]
 
     def test_orders_newest_first(self, store: Store) -> None:
         first = _seed_paper_stub(store, cite_key="a2024", doi="10.1/a")
@@ -1741,6 +1756,203 @@ class TestRunCascade:
             lambda url, target: _write_synthetic_pdf(target, size=128),
         )
         result = run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
+        assert result == {"claimed": 1, "ok": 1, "failed": 0}
+
+
+class TestRetractionGate:
+    """Fetch-time retraction gate: reuses ``precis.ingest.provenance.
+    check_doi`` for the classification, hard-skips the download cascade
+    on a hit, and stamps ``refs.retraction_status`` + a ``fetch_oa``
+    breadcrumb so the stub drops out of every future claim/browse.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _enable_oa_fetch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PRECIS_OA_FETCH", "1")
+        monkeypatch.delenv("PRECIS_ELSEVIER_API_KEY", raising=False)
+        monkeypatch.delenv("PRECIS_WILEY_TDM_TOKEN", raising=False)
+        monkeypatch.delenv("PRECIS_CORE_API_KEY", raising=False)
+        # Hermetic defaults for every leg the (non-retracted) test still
+        # exercises after the gate passes.
+        monkeypatch.setattr(
+            fetch_oa,
+            "_query_unpaywall",
+            lambda doi, *, email: {"best_oa_location": None},
+        )
+        monkeypatch.setattr(
+            fetch_oa, "_query_crossref_pdf_links", lambda doi, *, email: []
+        )
+        monkeypatch.setattr(
+            fetch_oa, "_query_openalex_pdf_urls", lambda doi, *, email: []
+        )
+        monkeypatch.setattr(fetch_oa, "_query_europepmc_oa_pmcid", lambda doi: None)
+        monkeypatch.setattr(
+            fetch_oa, "_query_core_fulltext_urls", lambda doi, *, api_key: []
+        )
+        monkeypatch.setattr(fetch_oa, "_query_s2_openaccess", lambda paper_id: None)
+
+    def test_retracted_stub_stamps_status_and_skips_download(
+        self,
+        store: Store,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        ref_id = _seed_paper_stub(store, doi="10.1234/retracted-paper")
+        monkeypatch.setattr(
+            fetch_oa,
+            "_download_pdf",
+            lambda url, target: pytest.fail(
+                "retracted stub must never reach the download cascade"
+            ),
+        )
+        crossref_msg = {
+            "title": ["Now-retracted findings"],
+            "DOI": "10.1234/retracted-paper",
+            "update-to": [
+                {
+                    "DOI": "10.1234/retracted-paper-r1",
+                    "type": "retraction",
+                    "label": "Retraction Notice",
+                    "updated": {"date-parts": [[2024, 3, 1]]},
+                },
+            ],
+        }
+        with patch(
+            "precis.ingest.provenance._fetch_crossref_message",
+            return_value=crossref_msg,
+        ):
+            result = run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
+
+        assert result == {"claimed": 1, "ok": 1, "failed": 0}
+        ref = store.get_ref(kind="paper", id=ref_id)
+        assert ref is not None
+        assert ref.retraction_status == "retracted"
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT source, event FROM ref_events WHERE ref_id = %s ORDER BY ts",
+                (ref_id,),
+            ).fetchall()
+        assert rows == [("fetch_oa", "retraction_skip")]
+
+    def test_retracted_stub_excluded_from_next_claim(
+        self,
+        store: Store,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Converges: once stamped, the shared stub predicate drops the
+        # ref from the claim query — the gate never re-fires.
+        ref_id = _seed_paper_stub(store, doi="10.1234/retracted-once")
+        crossref_msg = {
+            "DOI": "10.1234/retracted-once",
+            "update-to": [
+                {
+                    "DOI": "10.1234/retracted-once-r1",
+                    "type": "retraction",
+                    "updated": {"date-parts": [[2024, 3, 1]]},
+                },
+            ],
+        }
+        with patch(
+            "precis.ingest.provenance._fetch_crossref_message",
+            return_value=crossref_msg,
+        ):
+            run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
+
+        with store.pool.connection() as conn:
+            stubs = claim_stubs_to_fetch(conn, limit=10)
+            conn.commit()
+        assert [s.ref_id for s in stubs] == []
+        assert ref_id not in [r["ref_id"] for r in store.stub_backlog()]
+
+    def test_clean_stub_proceeds_to_normal_cascade(
+        self,
+        store: Store,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        ref_id = _seed_paper_stub(store, doi="10.1234/clean-paper")
+        monkeypatch.setattr(
+            fetch_oa,
+            "_query_unpaywall",
+            lambda doi, *, email: {
+                "best_oa_location": {"url_for_pdf": "https://x/y.pdf"}
+            },
+        )
+        monkeypatch.setattr(
+            fetch_oa,
+            "_download_pdf",
+            lambda url, target: _write_synthetic_pdf(target, size=128),
+        )
+        crossref_msg = {
+            "title": ["A perfectly fine paper"],
+            "DOI": "10.1234/clean-paper",
+        }
+        with patch(
+            "precis.ingest.provenance._fetch_crossref_message",
+            return_value=crossref_msg,
+        ):
+            result = run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
+
+        assert result == {"claimed": 1, "ok": 1, "failed": 0}
+        ref = store.get_ref(kind="paper", id=ref_id)
+        assert ref is not None
+        assert ref.retraction_status is None
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT source, event FROM ref_events WHERE ref_id = %s ORDER BY ts",
+                (ref_id,),
+            ).fetchall()
+        assert ("fetch_oa", "retraction_skip") not in rows
+        assert ("fetcher:unpaywall", "fetch_ok") in rows
+
+    def test_crossref_check_failure_falls_through_to_cascade(
+        self,
+        store: Store,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # A provenance-check outage (transport error) must never block
+        # acquiring a PDF — the cascade still runs.
+        _seed_paper_stub(store, doi="10.1234/check-failed")
+        monkeypatch.setattr(
+            fetch_oa,
+            "_query_unpaywall",
+            lambda doi, *, email: {
+                "best_oa_location": {"url_for_pdf": "https://x/y.pdf"}
+            },
+        )
+        monkeypatch.setattr(
+            fetch_oa,
+            "_download_pdf",
+            lambda url, target: _write_synthetic_pdf(target, size=128),
+        )
+        with patch(
+            "precis.ingest.provenance._fetch_crossref_message",
+            side_effect=RuntimeError("Crossref unreachable"),
+        ):
+            result = run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
+        assert result == {"claimed": 1, "ok": 1, "failed": 0}
+
+    def test_arxiv_only_stub_skips_gate_no_doi(
+        self,
+        store: Store,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # No DOI → nothing to check against Crossref; the gate is a
+        # silent no-op and the arXiv leg still runs.
+        _seed_paper_stub(store, doi=None, arxiv="2401.55555")
+        monkeypatch.setattr(
+            fetch_oa,
+            "_download_pdf",
+            lambda url, target: _write_synthetic_pdf(target, size=128),
+        )
+        with patch(
+            "precis.ingest.provenance._fetch_crossref_message",
+            side_effect=AssertionError("must not be called for a DOI-less stub"),
+        ):
+            result = run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
         assert result == {"claimed": 1, "ok": 1, "failed": 0}
 
 

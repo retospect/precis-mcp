@@ -52,6 +52,15 @@ Event vocabulary (same shape across all three sources):
 - ``invalid_identifier`` — the identifier failed format validation
 - ``identifier_missing`` — the ref had no usable identifier for this source
 
+Ahead of the cascade, each claimed stub also runs a ``fetch-time
+retraction gate`` (see :func:`_apply_retraction_gate`): a cheap,
+DOI-only Crossref check, reusing ``precis.ingest.provenance.check_doi``,
+that hard-skips a retracted paper before any download leg runs. A hit
+stamps ``refs.retraction_status='retracted'`` and writes its own
+``source='fetch_oa'``, ``event='retraction_skip'`` breadcrumb — after
+which :func:`precis.store._stub_predicate.stub_predicate_sql` excludes
+the ref from every future claim query and stub/chase-queue browse.
+
 ``precis stubs`` (CLI subcommand, Step 4) reads the latest event
 per stub to render the backlog.
 
@@ -354,6 +363,106 @@ def claim_stubs_to_fetch(
         )
         for r in rows
     ]
+
+
+# ── Retraction gate ─────────────────────────────────────────────────
+#
+# Fetch-time retraction check: run once per claimed stub, *before* the
+# (expensive) download cascade — a retracted paper has nothing worth
+# chasing an OA copy for. Reuses ``precis.ingest.provenance.check_doi``
+# (the module's one public entry point) for the actual Crossref fetch +
+# severity classification — see ``docs/design/provenance-kind-plan.md``
+# — rather than a second, drifting copy of the retraction taxonomy.
+
+_RETRACTION_GATE_SOURCE = "fetch_oa"
+
+
+def _check_stub_retraction(stub: StubRef, *, mailto: str) -> Any:
+    """Run the reused Crossref retraction check for one stub's own DOI.
+
+    Returns the :class:`~precis.ingest.provenance.ProvenanceResult`, or
+    ``None`` when there's nothing to decide from: no DOI on the stub, a
+    malformed DOI, the DOI is unknown to Crossref, or the check itself
+    errored (network blip, 5xx, …). The caller treats ``None`` as "not
+    known to be retracted" and proceeds with the normal fetch cascade —
+    a provenance-check outage must never block acquiring a PDF.
+
+    ``check_doi`` is imported lazily so importing this module doesn't
+    require the ``[paper]`` extra's ``habanero`` dependency at module
+    load time — only a stub whose retraction actually gets checked
+    needs it installed (same lazy-import pattern
+    ``check_doi``/``_fetch_crossref_message`` themselves already use,
+    for the same reason).
+
+    Runs the ``store=None`` (classification-only) path deliberately: no
+    notice-ref ingestion, no ``STATUS:*`` tag, no link write. That
+    heavier write-through is an explicit-check concern (a manual
+    ``precis provenance check-doi`` run), not something a background OA
+    chase should trigger as a side effect on every claimed stub.
+    """
+    if not stub.doi or not _DOI_RE.match(stub.doi):
+        return None
+    from precis.ingest.provenance import check_doi
+
+    try:
+        result = check_doi(stub.doi, store=None, mailto=mailto or None)
+    except Exception as exc:
+        log.warning(
+            "fetch_oa: retraction check errored for ref_id=%s doi=%s: %s",
+            stub.ref_id,
+            stub.doi,
+            str(exc)[:200],
+        )
+        return None
+    if result.status != "ok":
+        return None
+    return result
+
+
+def _apply_retraction_gate(store: Any, stub: StubRef, *, mailto: str) -> bool:
+    """Stamp + skip when ``stub`` turns out to be retracted.
+
+    Returns ``True`` when the stub is retracted — the caller must skip
+    the download cascade for this pass. On a hit: persists
+    ``refs.retraction_status`` via the existing ``Store.
+    set_retraction_status`` (never a hand-written UPDATE — see
+    ``store/_refs_ops.py``) and drops this worker's own ``ref_events``
+    breadcrumb (``source='fetch_oa'``, ``event='retraction_skip'``) so
+    the stub's audit trail shows *why* the cascade never ran, matching
+    the shape every other fetch_oa outcome is recorded in.
+
+    Once stamped, :func:`precis.store._stub_predicate.stub_predicate_sql`
+    excludes the ref from every future candidate query and browse — this
+    branch fires at most once per stub (a re-claim can't happen because
+    the claim query itself no longer returns the row).
+    """
+    result = _check_stub_retraction(stub, mailto=mailto)
+    if result is None:
+        return False
+
+    from precis.ingest.provenance import dominant_status
+
+    statuses = [n.status for n in result.notices if n.status is not None]
+    if dominant_status(statuses) != "retracted":
+        return False
+
+    notices = [n for n in result.notices if n.status == "retracted"]
+    notice_dois = [n.notice_doi for n in notices]
+    dated = [n.notice_date for n in notices if n.notice_date is not None]
+    store.set_retraction_status(
+        stub.ref_id,
+        status="retracted",
+        retracted_at=min(dated) if dated else None,
+        reason="; ".join(notice_dois) if notice_dois else None,
+        url=f"https://doi.org/{notice_dois[0]}" if notice_dois else None,
+    )
+    store.append_event(
+        stub.ref_id,
+        source=_RETRACTION_GATE_SOURCE,
+        event="retraction_skip",
+        payload={"doi": stub.doi, "notice_dois": notice_dois},
+    )
+    return True
 
 
 # ── Deterministic publisher PDF patterns ───────────────────────────
@@ -1358,7 +1467,9 @@ def run_oa_fetch_pass(
 ) -> dict[str, int]:
     """Process up to ``limit`` stubs through the OA fetcher cascade.
 
-    Per stub: tries publisher → Elsevier → Wiley → Unpaywall →
+    Per stub: first the retraction gate (:func:`_apply_retraction_gate`)
+    — a retracted paper skips straight to the next stub, no download leg
+    ever runs. Otherwise tries publisher → Elsevier → Wiley → Unpaywall →
     Crossref → OpenAlex → Europe PMC → CORE → arXiv → S2 in order.
     The cascade stops at the first ``fetch_ok``; intermediate
     ``no_oa_version`` / ``fetch_failed`` outcomes still produce an
@@ -1471,6 +1582,14 @@ def run_oa_fetch_pass(
     failed = 0
     for stub in stubs:
         try:
+            # Retraction gate — cheapest possible check, ahead of every
+            # other leg (including the markup-first pass): a retracted
+            # paper has nothing worth chasing an OA copy for, so decide
+            # this before paying for any download attempt.
+            if _apply_retraction_gate(store, stub, mailto=email):
+                ok += 1
+                continue
+
             # Markup-first pass (gated by PRECIS_FETCH_MARKUP): try for a
             # structured full-text source before the PDF cascade. Best-
             # effort — its failure must never block the PDF fetch, which

@@ -2810,17 +2810,35 @@ used to be hand-copied at three call sites; now `stub_predicate_sql(alias,
 id_kinds=…)` builds it once, whitelist-filtering `id_kinds` against the
 fixed `STUB_ID_KINDS = {doi, arxiv, s2}` (never splicing a caller string
 straight into SQL). Consumed by `Store.stub_backlog` /
-`.stub_backlog_count` (`store/_refs_ops.py`) and
-`fetch_oa.claim_stubs_to_fetch`. `stub_backlog` also takes `id_kinds=` and
-`sort='oldest-request'|'last-tried'` (`last-tried` = latest fetcher-attempt
-ASC NULLS FIRST, so never-tried stubs surface first); the "deprioritized
-stubs sink to the back" rule stays the outermost `ORDER BY` term in both
-modes. `search(kind='paper', view='chase-queue')`
+`.stub_backlog_count` / `.requeue_stubs_for_fetch` (`store/_refs_ops.py`)
+and `fetch_oa.claim_stubs_to_fetch`. `stub_backlog` also takes `id_kinds=`
+and `sort='oldest-request'|'last-tried'` (`last-tried` = latest
+fetcher-attempt ASC NULLS FIRST, so never-tried stubs surface first); the
+"deprioritized stubs sink to the back" rule stays the outermost `ORDER BY`
+term in both modes. `search(kind='paper', view='chase-queue')`
 (`runtime/dispatch.py`/`search.py::_dispatch_chase_queue`, intercepted
 before kind resolution like `view='stubs'`) calls
 `stub_backlog(id_kinds=('doi',), sort='last-tried')` for a DOI-only,
-never-tried-first slice of the same backlog. Docs: `docs/design/
+never-tried-first slice of the same backlog. The predicate also defaults
+`exclude_retracted=True` — `refs.retraction_status IS DISTINCT FROM
+'retracted'` (so `NULL`/unchecked and the other, non-blocking statuses
+stay eligible) — dropping an already-retracted stub from every candidate
+query and browse alike. Docs: `docs/design/
 stubs-mcp-and-skill.md`; skill: `precis-stubs-help`.
+
+**`fetch_oa` fetch-time retraction gate.** Before the download cascade,
+`run_oa_fetch_pass` runs `_apply_retraction_gate` on each claimed stub: a
+DOI-only Crossref check reusing `precis.ingest.provenance.check_doi` /
+`dominant_status` (classification-only, `store=None` — no notice-ref
+ingestion/tag/link write-through) rather than a second copy of the
+retraction taxonomy. A hit stamps `refs.retraction_status='retracted'`
+via the existing `Store.set_retraction_status` and writes a
+`source='fetch_oa'`, `event='retraction_skip'` `ref_events` breadcrumb
+instead of running any download leg; a check failure (network blip, DOI
+unknown to Crossref, no DOI on the stub) degrades to "not known
+retracted" and the normal cascade proceeds. Once stamped, the shared
+stub predicate above excludes the ref from every future claim, so the
+gate fires at most once per stub.
 
 **Gripes workbench (`/gripes`, new).** `src/precis_web/routes/gripes.py`
 is the first write surface for the dev bug tracker (`kind='gripe'`):

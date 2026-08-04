@@ -96,6 +96,17 @@ get(kind="semanticscholar", id="cites:<held-doi>")  # papers citing it
 get(kind="semanticscholar", id="<title or topic>")  # search → ranked hits + DOIs
 ```
 
+## Why did a stub disappear from the backlog without a PDF?
+
+`fetch_oa` checks each claimed stub's own DOI against Crossref for a
+retraction *before* trying to download it — a retracted paper has
+nothing worth chasing an OA copy for. A hit stamps the paper's
+retraction status and drops a `retraction_skip` event instead of a
+fetch attempt; `view='stubs'` / `view='chase-queue'` then stop
+listing it (retracted papers aren't something we still need to get).
+Confirm via `get(kind='paper', id=<ref_id>)`, which shows the
+retraction status on a retracted ref.
+
 ## See also
 
 ```python
