@@ -110,6 +110,17 @@
     - service: job_claude_docker
       enabled: >-
         {{ (inventory_hostname in (groups['agent_sandbox_hosts'] | default([]))) }}
+    # cast_audio narrates the daily reading-brief cast (now the combined
+    # news→personal morning episode). Its enable flag lives in the tts role's
+    # tts.env (PRECIS_CAST_AUDIO_ENABLED), invisible to this precis_worker seed
+    # loop — so the original §L seed missed it and the pass silently went dark
+    # on the TTS host after §L retired the env gate. Seed it on the TTS host so
+    # a redeploy re-asserts it. (briefing_audio — the standalone news-only
+    # episode — is deliberately NOT seeded: it stays default-OFF = retired,
+    # superseded by the combined episode.)
+    - service: cast_audio
+      enabled: >-
+        {{ (inventory_hostname in (precis_capabilities.tts_render | default([]))) }}
   loop_control:
     label: "{{ item.service }} (was-enabled={{ item.enabled }})"
   when: item.enabled | bool
