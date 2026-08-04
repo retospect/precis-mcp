@@ -2,7 +2,7 @@
 id: precis-taproot-help
 title: precis — the cross-paper claim-evidence graph (Taproot)
 summary: claim hubs (finding tagged TAPROOT:claim) aggregate many papers as typed evidence edges; [fi<id>] is a living citation that resolves to the current best originator(s)
-applies-to: get/search (kind='finding', tags=['TAPROOT:claim'], view='evidence'); citing [fi<id>] in prose; put/link(kind='finding') hub-authoring doors; put(kind='job', job_type='taproot_backfill') for draft backfill; precis taproot mint / refine / backfill (CLI equivalents)
+applies-to: get/search (kind='finding', tags=['TAPROOT:claim'], view='evidence'); citing [fi<id>] in prose; put/link/edit(kind='finding') hub-authoring doors; put(kind='job', job_type='taproot_backfill') for draft backfill; precis taproot mint / refine / backfill (CLI equivalents)
 status: active
 ---
 
@@ -86,6 +86,14 @@ asserts two distinct claims can supply evidence to two different hubs
 — so a given `[pc<id>]` handle doesn't map to a single `[fi<id>]`. Pick
 the hub for the specific claim your sentence makes, not just "the hub
 near this chunk."
+
+**If a cited `[fi<id>]` errors "not a TAPROOT:claim finding":** the
+finding either never was a hub, or was demoted to `TAPROOT:review` — a
+2026-08-04 axis-pass race (fixed), but pre-fix casualties exist. Check
+its tags (`get(id='fi<id>')`); if the sentence is meta-prose, de-cite
+the draft down to the underlying `[pc<id>]`; if it passes the rubric
+(above), restore the `TAPROOT:claim` tag
+(`tag(kind='finding', id='fi<id>', add=['TAPROOT:claim'])`).
 
 ## Turn a draft's [pc<id>] cites into a hub cite
 
@@ -185,6 +193,14 @@ source paragraph. The bar is therefore stricter than for an inline citation.
   - Salvage rule: when meta-prose wraps real content, extract the
     underlying fact (the specific properties or values being compared),
     not the practice. If the passage states only the practice, don't mint.
+- **Ground on the primary, not the proxy.** If the grounding passage
+  attributes the fact onward ("Ganji et al. [15] showed…"), that passage
+  is testimony, not the source. Search the corpus for the primary
+  (`search(kind='paper', author='…')`); if held, attach a chunk of the
+  primary as the supporter — seniority then derives it as originator
+  automatically — and keep the citing passage as corroborator. If not
+  held, it's a chase-finding candidate (`precis-finding-help`), not a
+  hub grounding.
 
 **Soft flags — mint, but expect review:**
 
@@ -197,7 +213,12 @@ source paragraph. The bar is therefore stricter than for an inline citation.
     mixing, without site-specific covalent attachment."
 - **Grounding depth.** One supporter is mintable; definitions and
   landscape/survey claims also want a secondary source (a review) — the
-  `hub_refine` pass attaches corroborators when enabled.
+  `hub_refine` pass attaches corroborators when enabled. Abstract-only
+  grounding is fine for a definition/existence claim; a measurement or
+  mechanism claim grounded only on an abstract/intro chunk also wants the
+  body passage carrying the claim's specifics attached — `hub_refine`'s
+  job when enabled, `link(kind='finding', rel='corroborates',
+  target='pc<id>')` manually meanwhile.
 - **Notation.** Claim sentences are plain text rendered without a math
   engine (list views, page titles, MCP output): write formulas with
   UTF-8 sub/superscripts and symbols — `C₆₀`, `g-C₃N₄`, `≈10,000 cm²/Vs`,
@@ -279,12 +300,46 @@ this page. `id` must resolve to a live `TAPROOT:claim` hub (`fi<id>`, a
 pub_id, or a bare ref_id); anything else, or `mode='remove'`, falls
 through to the generic finding-link door.
 
-## Sharpen a claim — link a reworded version (don't merge)
+## Reword a hub in place
 
-When you have a sharper/reworded version of an existing claim, **mint it
-as its own hub, then link it** — don't try to edit or merge the original.
-Both wordings stay independently citable, and the fisheye Claims ring
-shows the next editor that a sharper version exists.
+Same claim, better wording — a rubric fix (dangling referent, meta-prose,
+empty intensifier, TeX→UTF-8 notation) rewords the hub, it doesn't mint a
+new one:
+
+```python
+edit(
+    kind="finding",
+    id="fi42",
+    title="Hybridization of fullerenes with 2D materials has been pursued "
+    "across graphene, g-C₃N₄, TMDs, h-BN, and black phosphorus.",
+)
+```
+
+Retitles the hub in place (`src/precis/taproot/hub.py::refine_claim_sentence`):
+`refs.title` updates (`[:200]`), the `finding_body` chunk is DELETE+INSERT
+re-emitted (embedding/summary cascade re-runs), card variants (`ord < 0`) are
+dropped for card_forge to re-emit, and a new content-derived `pub_id` is added
+— the **old** `pub_id` is kept as an alias, so existing `[<pub_id>]` cites
+keep resolving. Evidence edges are untouched. Rejects a non-hub finding and
+`dry_run` (no preview; the write is direct). If the new wording's `pub_id`
+already belongs to a *different* live ref, that's a duplicate-hub signal —
+the call raises naming that ref rather than silently fusing it; see "Merge
+duplicate hubs" below.
+
+**Not this door for a materially sharper/narrower claim** — that's a new
+mint + `refines` link, below, not a retitle.
+
+## Sharpen, refine, or merge a claim hub
+
+Three different operations on an existing hub:
+
+- **Same claim, better wording** → reword in place, above.
+- **Materially sharper/narrower claim** → mint a new hub and link it
+  `refines` the original, below. Both wordings stay independently citable,
+  and the fisheye Claims ring shows the next editor that a sharper version
+  exists.
+- **Duplicate hubs** (two hubs converged separately on the same claim) →
+  merge, below.
 
 ```python
 # 1. mint the sharper claim (its own hub / fi<id>)
@@ -303,11 +358,38 @@ sharper one shows `↳ refines fi<original>`.
 The CLI equivalent: `precis taproot refine --from fi<sharper> --to
 fi<original>` (`--dry-run` to preview).
 
+### Merge duplicate hubs
+
+No automated merge door — the `pub_id`-collision raise from a reword attempt
+above is the handoff, not a self-serve button. Pick the survivor (better
+wording / more evidence), then:
+
+```python
+# 1. repoint every citing draft chunk from the dup to the survivor
+edit(
+    kind="draft",
+    id="dc1652005",
+    mode="find-replace",
+    find="[fi<dup>]",
+    text="[fi<survivor>]",
+)
+# 2. move evidence unique to the dup onto the survivor
+link(kind="finding", id="fi<survivor>", rel="corroborates", target="pc<chunk>")
+# 3. retire the dup
+delete(kind="finding", id="fi<dup>")
+```
+
+Repeat step 1 for every draft chunk citing `[fi<dup>]` (`search(kind='draft',
+q='[fi<dup>]')`) and step 2 for every evidence edge the dup holds that the
+survivor doesn't; delete last — a draft still citing the dup would 404 once
+it's gone.
+
 ## Maturity — what's live vs dark
 
 | | |
 |---|---|
 | Hub mint / evidence attach (`src/precis/taproot/hub.py`) — `put(kind='finding', supporters=…)`, `link(kind='finding', rel='establishes'\|'corroborates'\|'contradicts')`, and CLI `precis taproot mint` | live |
+| Hub reword-in-place (`hub.py::refine_claim_sentence`) — `edit(kind='finding', title=…)` | live |
 | Seniority derivation (originator/corroborator split) | live |
 | Living-citation resolve + authorial pins (`precis resolve`) | live |
 | Fisheye reference-ring Claims explosion | live |

@@ -293,6 +293,17 @@ no resolvable inline citation. Mark it terminal with
 `pick_candidate='self'`, or — if a fetch never ran — ask the user to
 run `precis worker --only fetch`.
 
+**`edit(kind='finding', ...)` accepts exactly one of** `pick_candidate=`
+(above) | `title=` | `unacquirable_note=` — passing more than one errors.
+`title=` retitles a `TAPROOT:claim` hub in place (rejects a plain finding);
+see `precis-taproot-help`'s "Reword a hub in place". `unacquirable_note=`
+records that a print-only/undigitized source is legitimately citeable
+despite no digital copy being obtainable:
+
+```python
+edit(kind="finding", id=42, unacquirable_note="print-only 1962 monograph")
+```
+
 ## The inbound counterpart — who cites *this* paper (dark, opt-in)
 
 Everything above is outbound: X cites Y, chase it down to Y's
