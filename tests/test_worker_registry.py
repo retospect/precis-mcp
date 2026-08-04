@@ -61,6 +61,7 @@ _EXPECTED_SYSTEM = frozenset(
         "clusterize",
         "corpus_reconcile",
         "paper_reconcile",
+        "disk_check",
     }
 )
 _EXPECTED_AGENT = frozenset(

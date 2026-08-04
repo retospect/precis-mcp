@@ -262,6 +262,14 @@ cheap-but-real pass is never flagged.
   with no `default_profiles` (mirrors `dream_agent` — the manual `--only
   health_digest` registration is separate from the cadence's standing
   trigger). See `precis-health-digest-help`.
+* `disk_check` — SQL-free system-profile pass, every node, every cycle
+  (gripe 191008: the data node's SSD hit 100% and `psycopg` `DiskFull`
+  stalled all prod writes). `shutil.disk_usage` on `PRECIS_DISK_WATCH_PATHS`
+  (default `/`); raises `kind='alert'` `alert_source="disk_check"`,
+  fingerprint `<host>:<path>`, warn at `PRECIS_DISK_WARN_PCT` (85) / critical
+  at `PRECIS_DISK_CRIT_PCT` (93), pages once on a fresh-or-escalating
+  critical, auto-resolves via the shared `resolve_stale_alerts` sweep. The
+  Prometheus `HighDiskUsage<85%` rule is the infra-level backstop.
 * `structural` — opus, 6h dedup, agent profile. Drift, sibling
   contradictions, depth/fanout warnings. Dedup is symmetric: a **failed**
   dispatch (non-paused error — e.g. the agent container missing

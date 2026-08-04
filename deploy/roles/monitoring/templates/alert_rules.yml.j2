@@ -10,13 +10,18 @@ groups:
         annotations:
           summary: "{% raw %}{{ $labels.instance }}{% endraw %} is down"
 
+      # Warn at 85% (was 90%) with a shorter window so the node has headroom
+      # before a volume fills — gripe 191008 (the data node hit 100% and
+      # DiskFull stalled all prod writes). The precis-native disk_check pass is
+      # the primary, operator-visible watch; this Prometheus rule is the
+      # infra-level backstop.
       - alert: HighDiskUsage
-        expr: (node_filesystem_avail_bytes / node_filesystem_size_bytes) < 0.1
-        for: 10m
+        expr: (node_filesystem_avail_bytes / node_filesystem_size_bytes) < 0.15
+        for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "{% raw %}Disk usage above 90% on {{ $labels.instance }}{% endraw %}"
+          summary: "{% raw %}Disk usage above 85% on {{ $labels.instance }}{% endraw %}"
 
       - alert: HighMemoryUsage
         expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) > 0.9

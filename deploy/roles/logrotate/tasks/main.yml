@@ -16,3 +16,30 @@
     dest: /etc/logrotate.d/shared_logs
     mode: "0644"
   become: true
+
+# ── /var/log/precis-*.log worker/embedder logs (gripe 191008) ──
+# These are launchd/systemd StandardOutPath redirects with no SIGHUP reopen, so
+# rename-based rotation would strand the daemon on the renamed inode. A portable
+# copy-truncate script + cron handles them on every worker node (macOS + Linux).
+- name: Ensure /usr/local/bin exists
+  ansible.builtin.file:
+    path: /usr/local/bin
+    state: directory
+    mode: "0755"
+  become: true
+
+- name: Deploy precis worker-log copy-truncate rotator
+  ansible.builtin.template:
+    src: rotate-precis-logs.sh.j2
+    dest: /usr/local/bin/rotate-precis-logs
+    mode: "0755"
+  become: true
+
+- name: Schedule precis worker-log rotation (every 6h)
+  ansible.builtin.cron:
+    name: "rotate precis worker logs"
+    minute: "20"
+    hour: "*/6"
+    job: "/usr/local/bin/rotate-precis-logs"
+    user: root
+  become: true

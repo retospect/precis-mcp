@@ -19,6 +19,7 @@ from precis.alerts import (
     STATE_OPEN,
     STATE_RESOLVED,
     list_open_alerts,
+    open_alert_severity,
     raise_alert,
     resolve_stale_alerts,
 )
@@ -94,6 +95,33 @@ def test_raise_alert_distinct_fingerprints_are_distinct_rows(store: Store) -> No
     a1, _ = raise_alert(store, source="s", fingerprint="fp:1", title="a")
     a2, _ = raise_alert(store, source="s", fingerprint="fp:2", title="b")
     assert a1 != a2
+
+
+def test_open_alert_severity_reads_the_current_open_row(store: Store) -> None:
+    assert (
+        open_alert_severity(store, source="s", fingerprint="fp:sev") is None
+    )  # nothing open yet
+
+    raise_alert(store, source="s", fingerprint="fp:sev", title="a", severity="warn")
+    assert open_alert_severity(store, source="s", fingerprint="fp:sev") == "warn"
+
+    # A repeat raise at a higher severity bumps the SAME open row (dedup on
+    # fingerprint) — this is the case disk_check's warn->crit escalation
+    # relies on: open_alert_severity must read the PRIOR value, so a caller
+    # can tell "bumped from warn" apart from "already critical".
+    raise_alert(store, source="s", fingerprint="fp:sev", title="a", severity="critical")
+    assert open_alert_severity(store, source="s", fingerprint="fp:sev") == "critical"
+
+    # Scoped to (source, fingerprint) — an unrelated fingerprint is untouched.
+    assert open_alert_severity(store, source="s", fingerprint="fp:other") is None
+
+
+def test_open_alert_severity_none_after_resolve(store: Store) -> None:
+    raise_alert(
+        store, source="s", fingerprint="fp:resolved", title="a", severity="warn"
+    )
+    resolve_stale_alerts(store, source="s", live_fingerprints=set())
+    assert open_alert_severity(store, source="s", fingerprint="fp:resolved") is None
 
 
 def test_open_alert_unique_index_blocks_duplicate(store: Store) -> None:

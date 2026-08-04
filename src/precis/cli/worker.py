@@ -348,6 +348,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "dispatch",
             "sweeper",
             "quota_check",
+            "disk_check",
             "watch_poll",
             "news_poll",
             "mail_poll",
@@ -1935,6 +1936,21 @@ def run(args: argparse.Namespace) -> None:
                 return run_quota_check_pass(store, limit=batch_size)
 
             ref_passes.append(_quota_check_pass)
+
+        # Disk-check pass — gripe 191008: caspar's DB SSD hit 100%, psycopg
+        # DiskFull stalled ALL prod writes ~1.5h before anyone noticed (the
+        # Prometheus 90% rule reached no one). System profile, every node:
+        # dfs the configured watch paths (default "/") and raises a
+        # precis-native kind='alert' (warn/critical) so it lands in the
+        # /alerts tab and, on a fresh critical, the ops Discord push.
+        if _register("disk_check"):
+            from precis.workers.disk_check import run_disk_check_pass
+            from precis.workers.runner import BatchResult as _BatchResult
+
+            def _disk_check_pass(batch_size: int) -> _BatchResult:
+                return run_disk_check_pass(store, limit=batch_size)
+
+            ref_passes.append(_disk_check_pass)
 
         # dream_agent — a Python-side dispatch through call_claude_agent
         # (loads the directive prompt + soul + MCP config from env-pointed

@@ -9,8 +9,18 @@
 #   2. tar+zstd the directory onto the NAS as a single archive. zstd
 #      compresses ~20% better than gzip at similar CPU cost, and the
 #      single-file artifact is simpler for off-site sync / inspection.
-#   3. Retain 7 days locally (fast restore), 90 days on NAS (durable
-#      archive). Adjust the *_RETENTION_DAYS values below.
+#   3. Retain 2 days locally (fast restore — the DB volume is the same SSD
+#      Postgres runs on, so we keep the local footprint tiny), 90 days on the
+#      NAS (durable archive). Adjust the *_RETENTION_DAYS values below.
+#
+# Rotation is failure-proof by construction (regression: gripe 191008 — the
+# 2026-08-04 data-node DiskFull that stalled all prod writes). The local prune
+# used to run LAST, after pg_dump and the NAS tar, so any upstream failure
+# (NAS mount flap, missing pg17 client on cron's PATH) aborted the script under
+# `set -e` BEFORE the prune — local dumps then accumulated forever until the DB
+# volume hit 100%. It now runs up-front AND via a `trap … EXIT`, so it fires on
+# success, failure, or the free-space guard's early exit. A pre-flight guard
+# also skips the dump entirely rather than run Postgres into DiskFull.
 
 set -euo pipefail
 
@@ -31,10 +41,55 @@ DATE_TAG=$(date +%Y-%m-%d)
 LOCAL_DUMP_DIR="${LOCAL_BACKUP_DIR}/precis_prod_${TIMESTAMP}"
 NAS_ARCHIVE="${NAS_BACKUP_DIR}/precis_prod_${DATE_TAG}.tar.zst"
 
-LOCAL_RETENTION_DAYS=7
+# `find -mtime +N` rounds age down to whole days, so +2 keeps ~3 nightly dumps
+# (today + the prior two) — a small, bounded local footprint (~3× one dump);
+# the NAS holds the real 90-day history.
+LOCAL_RETENTION_DAYS=2
 NAS_RETENTION_DAYS=90
+# Refuse to dump if the backup volume (same SSD as the Postgres data dir on the
+# data node) would be left dangerously full — a skipped backup beats a DiskFull
+# that stalls every prod write (gripe 191008).
+MIN_FREE_GB=25
 
 mkdir -p "${LOCAL_BACKUP_DIR}" "${NAS_BACKUP_DIR}"
+
+# ── Local retention sweep (runs up-front AND on EXIT) ──
+# Placed before pg_dump and armed as an EXIT trap so it ALWAYS runs, even if a
+# later step (dump / NAS tar) fails under `set -e`. Freshly-created dumps are
+# never caught (-mtime +N excludes the new one). See gripe 191008.
+prune_local() {
+  find "${LOCAL_BACKUP_DIR}" -maxdepth 1 -type d -name "precis_prod_*" \
+    -mtime "+${LOCAL_RETENTION_DAYS}" -exec rm -rf {} + 2>/dev/null || true
+  # Legacy plain-SQL gz dumps from the pre-2026-05 era — purge on same cadence.
+  find "${LOCAL_BACKUP_DIR}" -maxdepth 1 -name "cluster_*.sql.gz" \
+    -mtime "+${LOCAL_RETENTION_DAYS}" -delete 2>/dev/null || true
+}
+
+# pg_dump --format=directory writes straight to the FINAL path, so a mid-run
+# failure leaves an incomplete dir with mtime=now — which the age-based prune
+# above won't reclaim for days, precisely when the volume is under pressure.
+# Track completion and, on any abnormal exit, delete the partial dir. Then
+# always prune. Both run on success, failure, or the free-space guard's exit.
+DUMP_OK=0
+on_exit() {
+  if [ "${DUMP_OK}" -eq 0 ] && [ -n "${LOCAL_DUMP_DIR:-}" ] && [ -d "${LOCAL_DUMP_DIR}" ]; then
+    echo "[$(date)] Reclaiming partial/aborted dump dir ${LOCAL_DUMP_DIR}"
+    rm -rf "${LOCAL_DUMP_DIR}" 2>/dev/null || true
+  fi
+  prune_local
+}
+trap on_exit EXIT
+echo "[$(date)] Pruning local dumps older than ${LOCAL_RETENTION_DAYS} days (pre-flight)..."
+prune_local
+
+# ── Pre-flight free-space guard ──
+# POSIX `df -Pk` (portable across macOS/Linux): column 4 = available 1K-blocks.
+AVAIL_GB=$(df -Pk "${LOCAL_BACKUP_DIR}" | awk 'NR==2 {print int($4/1024/1024)}')
+if [ "${AVAIL_GB:-0}" -lt "${MIN_FREE_GB}" ]; then
+  echo "[$(date)] [ERROR] only ${AVAIL_GB}GB free on backup volume (< ${MIN_FREE_GB}GB) — SKIPPING dump to avoid DiskFull"
+  logger -t pg-backup "ABORT: ${AVAIL_GB}GB free < ${MIN_FREE_GB}GB threshold; skipped nightly pg_dump (gripe 191008 guard)"
+  exit 1
+fi
 
 echo "[$(date)] Starting pg_dump (directory format, 4 parallel workers, zlib level 6)..."
 # precis_prod is the live primary DB (24 GB+, self-migrated by precis-mcp). The
@@ -46,6 +101,7 @@ pg_dump -U {{ pg_user }} -d precis_prod \
   --jobs=4 \
   --compress=6 \
   --file="${LOCAL_DUMP_DIR}"
+DUMP_OK=1  # dump completed — the EXIT trap must NOT reclaim this dir now
 
 LOCAL_SIZE=$(du -sh "${LOCAL_DUMP_DIR}" | cut -f1)
 echo "[$(date)] Local dump complete: ${LOCAL_DUMP_DIR} (${LOCAL_SIZE})"
@@ -57,14 +113,7 @@ tar --use-compress-program='zstd -T0' -cf "${NAS_ARCHIVE}" \
 NAS_SIZE=$(du -h "${NAS_ARCHIVE}" | cut -f1)
 echo "[$(date)] NAS archive complete: ${NAS_ARCHIVE} (${NAS_SIZE})"
 
-# ── Retention sweep ──
-echo "[$(date)] Pruning local dumps older than ${LOCAL_RETENTION_DAYS} days..."
-find "${LOCAL_BACKUP_DIR}" -maxdepth 1 -type d -name "precis_prod_*" \
-  -mtime "+${LOCAL_RETENTION_DAYS}" -exec rm -rf {} +
-# Legacy plain-SQL gz dumps from the pre-2026-05 era — purge on same cadence.
-find "${LOCAL_BACKUP_DIR}" -maxdepth 1 -name "cluster_*.sql.gz" \
-  -mtime "+${LOCAL_RETENTION_DAYS}" -delete
-
+# ── NAS retention sweep ── (local prune already ran up-front + on EXIT trap)
 echo "[$(date)] Pruning NAS archives older than ${NAS_RETENTION_DAYS} days..."
 find "${NAS_BACKUP_DIR}" -maxdepth 1 -name "precis_prod_*.tar.zst" \
   -mtime "+${NAS_RETENTION_DAYS}" -delete

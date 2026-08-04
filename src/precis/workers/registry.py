@@ -520,6 +520,16 @@ SERVICES: tuple[ServiceSpec, ...] = (
         one_line="Refresh the Claude OAuth utilisation snapshot; page on 401.",
         doc_skill="precis-nursery-help",
     ),
+    ServiceSpec(
+        name="disk_check",
+        label="Disk-space watch",
+        category="health",
+        kind=ServiceKind.PASS,
+        default_profiles=_SYS,
+        ref_pass=True,
+        one_line="Raise an alert before a node's disk fills (gripe 191008).",
+        doc_skill="precis-nursery-help",
+    ),
     # ── Autonomous / cron / default-off passes (no default profile) ──
     ServiceSpec(
         name="quest_loop_reconcile",

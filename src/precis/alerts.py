@@ -227,6 +227,39 @@ def raise_alert(
         return int(ref.id), True
 
 
+def open_alert_severity(store: Store, *, source: str, fingerprint: str) -> str | None:
+    """Return the ``severity`` of the currently-open alert for ``(source,
+    fingerprint)``, or ``None`` if none is open.
+
+    Read-only sibling of the dedup SELECT in :func:`raise_alert` (same
+    ``COALESCE`` rolling-deploy shim, same ``t.namespace = 'OPEN'`` join,
+    same ``ORDER BY created_at DESC LIMIT 1``) — a caller that needs to
+    know the *prior* severity before calling ``raise_alert`` (e.g. to
+    detect a warn→critical escalation, which bumps an existing open row
+    rather than inserting a fresh one, so ``is_new`` alone can't signal
+    it) reads it here first.
+    """
+    with store.tx() as conn:
+        row = conn.execute(
+            """
+            SELECT meta->>'severity' AS severity
+              FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE r.kind = 'alert'
+               AND r.deleted_at IS NULL
+               AND COALESCE(r.alert_source, r.meta->>'alert_source') = %s
+               AND COALESCE(r.fingerprint, r.meta->>'fingerprint') = %s
+               AND t.namespace = 'OPEN'
+               AND t.value = %s
+             ORDER BY r.created_at DESC
+             LIMIT 1
+            """,
+            (source, fingerprint, STATE_OPEN),
+        ).fetchone()
+    return row[0] if row is not None else None
+
+
 def _flip_resolved(
     store: Store, conn: Any, ref_id: int, *, resolved_by: str = ""
 ) -> None:
@@ -586,6 +619,7 @@ __all__ = [
     "STATE_RESOLVED",
     "list_open_alerts",
     "notify_critical_alert",
+    "open_alert_severity",
     "queue_ops_message",
     "raise_alert",
     "resolve_alert",

@@ -1,0 +1,36 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Copy-truncate rotation for the launchd/systemd-owned /var/log/precis-*.log
+# worker logs (gripe 191008 — these were unrotated and had grown to ~1 GB).
+#
+# Why copy-truncate and not newsyslog/logrotate-rename: the worker/embedder
+# daemons write via a plain StandardOutPath stdout redirect and install NO
+# SIGHUP handler (see src/precis/cli/worker.py — "we deliberately do NOT install
+# SIGHUP"). A rename would leave the daemon writing to the *renamed* inode while
+# the freshly-created file stayed empty. Copy-truncate preserves the inode: we
+# copy the current contents aside, then truncate the file in place (`: > file`),
+# so the daemon's open fd keeps writing to the now-empty file. No restart, no
+# signal, no lost fd. Portable across the macOS worker nodes and the Linux
+# inference node.
+set -euo pipefail
+
+MAX_BYTES=$(( 200 * 1024 * 1024 ))   # rotate a log once it exceeds 200 MB
+KEEP=5                               # keep this many compressed generations
+
+shopt -s nullglob
+for log in /var/log/precis-*.log; do
+  # Portable size: macOS `stat -f%z`, Linux `stat -c%s`.
+  size=$(stat -f%z "$log" 2>/dev/null || stat -c%s "$log" 2>/dev/null || echo 0)
+  [ "${size:-0}" -gt "$MAX_BYTES" ] || continue
+
+  ts=$(date +%Y%m%d_%H%M%S)
+  cp "$log" "${log}.${ts}"
+  : > "$log"                         # truncate in place — keeps the daemon's fd valid
+  gzip -f "${log}.${ts}"
+  logger -t rotate-precis-logs "rotated ${log} (was ${size} bytes)"
+
+  # Prune old compressed generations, newest-first, keeping $KEEP.
+  ls -1t "${log}."*.gz 2>/dev/null | tail -n +$((KEEP + 1)) | while read -r old; do
+    rm -f "$old"
+  done
+done
