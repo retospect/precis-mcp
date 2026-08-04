@@ -48,6 +48,7 @@ The chase worker (C5: ``precis.workers.chase``) does not live here
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, ClassVar
 
 from psycopg.errors import UniqueViolation
@@ -65,7 +66,9 @@ from precis.utils import handle_registry
 
 _STATUS_NAMESPACE = "STATUS"
 _STATUS_TRACING = "tracing"
+_STATUS_ACQUIRING = "acquiring"
 _DERIVED_FROM = "derived-from"
+_AWAITS_EVIDENCE = "awaits-evidence"
 # A taproot claim hub (``taproot/hub.py::mint_hub``) is a ``finding`` ref
 # tagged this closed value. Hubs are stamped ``STATUS:canonical`` — off the
 # chase-status lifecycle (a hub is a canonicalized claim node, not an
@@ -75,6 +78,31 @@ _DERIVED_FROM = "derived-from"
 # *tag* rather than a status, a minted hub is visible without the
 # ``status='*'`` workaround regardless of the hub's status value.
 _TAPROOT_CLAIM_TAG = "TAPROOT:claim"
+
+
+@dataclass(frozen=True, slots=True)
+class _WantDescriptor:
+    """One parsed ``wants=`` entry (finding-acquisition-mode.md §2).
+
+    Exactly one of ``doi`` / ``arxiv`` / (``title`` and ``url``) is
+    guaranteed non-None by :meth:`FindingHandler._parse_want` — ``title``
+    and ``url`` may additionally ride along on a doi/arxiv descriptor as
+    enrichment (a nicer stub title, an informational landing-page url).
+    """
+
+    doi: str | None
+    arxiv: str | None
+    title: str | None
+    url: str | None
+    year: int | None
+
+
+def _clean_str(value: Any) -> str | None:
+    """Strip a scalar to ``None`` on empty/whitespace-only/absent."""
+    if value is None:
+        return None
+    s = str(value).strip()
+    return s or None
 
 
 class FindingHandler(NumericRefHandler):
@@ -118,6 +146,8 @@ class FindingHandler(NumericRefHandler):
         scope: dict[str, Any] | None = None,
         cited_in: str | None = None,
         supporters: list[dict[str, Any]] | None = None,
+        wants: list[dict[str, Any]] | None = None,
+        provenance: str | None = None,
         parent_id: int | None = None,
         tags: list[str] | None = None,
         link: str | None = None,
@@ -131,12 +161,13 @@ class FindingHandler(NumericRefHandler):
         text: str | None = None,
         **_kw: Any,
     ) -> Response:
-        """Create a finding.
+        """Create a finding — trimodal.
 
-        Required: ``title`` (short claim title, ≤200 chars),
-        ``body`` (claim text + setup envelope as flowing prose),
-        ``cited_in`` (the starting frontier of the chase, in
-        ``<cite_key>[~<ord>]`` or ``kind:identifier[~<ord>]`` form).
+        **Ordinary (chase) mode.** Required: ``title`` (short claim
+        title, ≤200 chars), ``body`` (claim text + setup envelope as
+        flowing prose), ``cited_in`` (the starting frontier of the
+        chase, in ``<cite_key>[~<ord>]`` or ``kind:identifier[~<ord>]``
+        form).
 
         Recommended: ``scope`` (structured setup as a dict — used
         for filtering and for two-agents-collapse dedup; e.g.
@@ -147,6 +178,18 @@ class FindingHandler(NumericRefHandler):
         ``pub_id`` → second call collides at the UNIQUE constraint
         on ``ref_identifiers (id_kind='pub_id')`` and returns the
         existing finding's id.
+
+        **Acquisition mode** (finding-acquisition-mode.md) — the claim's
+        supporting paper isn't in the corpus yet: pass ``wants=`` (a list
+        of ``{'doi':…}`` / ``{'arxiv':…}`` / ``{'title':…,'url':…}``
+        descriptors, ≥1) and ``provenance=`` (a ref/chunk handle for
+        where the claim came from) INSTEAD of ``cited_in=``. Mints
+        ``STATUS:acquiring`` plus one ``DREAM:acquire`` paper stub per
+        descriptor; the chase worker grounds it once a stub lands a PDF.
+        See :meth:`_put_acquiring`.
+
+        **Hub mode** (ADR 0073) — pass ``supporters=`` instead of
+        ``cited_in=``/``wants=`` to mint/converge a Taproot claim hub.
 
         Existing-id ``put`` is rejected (mutate via tag/link/delete
         per the seven-verb surface).
@@ -168,15 +211,17 @@ class FindingHandler(NumericRefHandler):
         # REQUIRES paper supporters, so this door can never mint a thin-air hub.
         # ``title=``/``body=`` carry the canonical claim sentence.
         if supporters is not None:
-            if cited_in is not None:
+            if cited_in is not None or wants is not None:
                 raise BadInput(
-                    "hub-mint and chase-finding are different modes — pass "
-                    "supporters= (a Taproot claim hub grounded in papers) OR "
-                    "cited_in= (a chase finding to walk to its primary), "
-                    "not both.",
+                    "hub-mint, chase-finding, and acquisition-mint are "
+                    "different modes — pass supporters= (a Taproot claim "
+                    "hub grounded in papers) OR cited_in= (a chase finding "
+                    "to walk to its primary) OR wants=/provenance= "
+                    "(acquisition mode), not more than one.",
                     next="keep one: supporters=[{'paper':'pa5',"
-                    "'source_handle':'pc293'}] for a hub, or cited_in='pc42' "
-                    "for a chase finding",
+                    "'source_handle':'pc293'}] for a hub, cited_in='pc42' "
+                    "for a chase finding, or wants=[{'doi':'10.1/x'}], "
+                    "provenance='pc42' for acquisition mode",
                 )
             sentence = (body_text or title or "").strip()
             if not sentence:
@@ -212,6 +257,44 @@ class FindingHandler(NumericRefHandler):
                     f"cite it inline as [fi{result['hub_ref_id']}] — resolves to "
                     "the current derived originator(s) on every render"
                 )
+            )
+
+        # --- Acquisition mode (finding-acquisition-mode.md) ---
+        # A finding born with ``wants=`` (paper descriptors, no
+        # ``cited_in=``/``supporters=``) records a claim whose supporting
+        # paper(s) aren't in the corpus yet: mint STATUS:acquiring,
+        # atomically upsert a DREAM:acquire stub per descriptor, link
+        # finding --awaits-evidence--> stub, and let the chase worker
+        # ground it once fetch_oa lands a PDF. Checked before the
+        # missing-field report below so a caller mixing modes gets a
+        # mode-conflict error, not a confusing "missing cited_in" one.
+        if wants is not None:
+            # supporters is not None is unreachable here: the earlier
+            # `if supporters is not None:` block above already catches
+            # (and rejects, when wants is also set) any supporters=+wants=
+            # combination before control ever reaches this branch.
+            if cited_in is not None:
+                raise BadInput(
+                    "acquisition-mode (wants=) is a separate mode from "
+                    "cited_in= (chase finding) and supporters= (taproot "
+                    "hub) — pass exactly one.",
+                    next=(
+                        "wants=[{'doi':'10.1234/xyz'}], provenance='pc42' "
+                        "for acquisition mode; OR cited_in='pc42' for an "
+                        "ordinary chase finding; OR supporters=[...] for "
+                        "a hub"
+                    ),
+                )
+            return self._put_acquiring(
+                title=title,
+                body_text=body_text,
+                scope=scope,
+                wants=wants,
+                provenance=provenance,
+                parent_id=parent_id,
+                tags=tags,
+                link=link,
+                rel=rel,
             )
 
         # Report EVERY missing required field at once, not one per call.
@@ -435,6 +518,301 @@ class FindingHandler(NumericRefHandler):
                 f"substitutes the primary cite_key once STATUS:established)"
             )
         )
+
+    # ──────────────────────────────────────────────────────────────────
+    # _put_acquiring — acquisition-mode mint (finding-acquisition-mode.md)
+    # ──────────────────────────────────────────────────────────────────
+
+    def _put_acquiring(
+        self,
+        *,
+        title: str | None,
+        body_text: str | None,
+        scope: dict[str, Any] | None,
+        wants: list[dict[str, Any]],
+        provenance: str | None,
+        parent_id: int | None,
+        tags: list[str] | None,
+        link: str | None,
+        rel: str | None,
+    ) -> Response:
+        """Mint an acquisition-mode finding: a claim whose supporting
+        paper(s) aren't in the corpus yet.
+
+        Atomically (one ``store.tx()``): creates the finding
+        ``STATUS:acquiring``, upserts a ``DREAM:acquire`` paper stub per
+        ``wants=`` descriptor (the existing :meth:`~precis.store.Store.
+        upsert_stub_paper` path — the same one ``put(kind='paper')``'s
+        ``acquire`` uses), links ``finding --awaits-evidence--> stub`` for
+        each, and links ``finding --derived-from--> provenance`` (the
+        weakened no-thin-air invariant: traceable to *something* at mint,
+        just not yet to corpus evidence). ``chase.py``'s acquiring arm
+        polls the linked stubs and grounds the finding once one gains
+        chunks; a doi/arxiv stub is separately auto-claimed by
+        ``fetch_oa``.
+        """
+        missing: list[str] = []
+        if not title or not title.strip():
+            missing.append("title=<short claim title>")
+        if not body_text or not body_text.strip():
+            missing.append("body=<claim text + setup as prose>")
+        if not wants:
+            missing.append(
+                "wants=[{'doi':…}|{'arxiv':…}|{'title':…,'url':…}, …] "
+                "(>=1 descriptor of the paper(s) this claim expects "
+                "grounding from)"
+            )
+        if not provenance or not str(provenance).strip():
+            missing.append(
+                "provenance=<ref/chunk handle for where this claim came from>"
+            )
+        if missing:
+            raise BadInput(
+                "put(kind='finding', wants=...) requires " + ", ".join(missing),
+                next=(
+                    "put(kind='finding', title='<short claim title>', "
+                    "body='<claim text + setup>', "
+                    "wants=[{'doi':'10.1234/xyz'}], provenance='pc42')  "
+                    "— provenance is the ref/chunk handle where this claim "
+                    "came from (a research note, the lit-hunt todo, or the "
+                    "citing chunk); each wants= entry is {'doi':…}, "
+                    "{'arxiv':…}, or {'title':…,'url':…}"
+                ),
+            )
+        if scope is not None and not isinstance(scope, dict):
+            raise BadInput(
+                f"scope must be a dict, got {type(scope).__name__}",
+                next="scope={'electrode': 'Cu', 'ambient': 'N2', ...}",
+            )
+        assert title is not None  # narrowed by the `missing` guard above
+        assert body_text is not None  # narrowed by the `missing` guard above
+        assert provenance is not None  # narrowed by the `missing` guard above
+
+        parsed_wants = [self._parse_want(i, w) for i, w in enumerate(wants)]
+
+        # Resolve provenance up front — a bad handle fails before any
+        # write, mirroring the ordinary mode's cited_in resolution.
+        provenance_target = parse_link_target(str(provenance).strip(), store=self.store)
+
+        # Auto-inject parent_id from the runtime context (PRECIS_CURRENT_TODO
+        # env), same as the ordinary path — a finding minted inside a
+        # lit-hunt tick must be parented on that todo so
+        # all_child_findings_resolved sees it.
+        if parent_id is None:
+            from precis.utils.workspace import current_todo_from_env
+
+            parent_id = current_todo_from_env()
+        parent_int: int | None = None
+        if parent_id is not None:
+            try:
+                parent_int = parent_id if isinstance(parent_id, int) else int(parent_id)
+            except (TypeError, ValueError) as exc:
+                raise BadInput(
+                    f"parent_id must be an integer, got {parent_id!r}",
+                    next="parent_id=<int> (the parent todo's id)",
+                ) from exc
+
+        extra_target: LinkTarget | None = None
+        extra_relation: str = rel or "cites"
+        if link is not None:
+            extra_target = parse_link_target(link, store=self.store)
+
+        body_clean = body_text.strip()
+        title_clean = title.strip()[:200]
+
+        # Deterministic dedup key: same (body, scope, wants) → same pub_id,
+        # mirroring the ordinary mode's cited_in-keyed collapse.
+        wants_key = "|".join(
+            sorted(
+                f"{field}={value}"
+                for w in parsed_wants
+                for field, value in (
+                    ("doi", w.doi),
+                    ("arxiv", w.arxiv),
+                    ("title", w.title),
+                    ("url", w.url),
+                )
+                if value
+            )
+        )
+        paper_id = make_finding_paper_id(
+            body_text=body_clean,
+            scope=scope or {},
+            initial_cite_pub_id=f"acquire:{wants_key}",
+        )
+        pub_id = make_pub_id(paper_id)
+
+        meta: dict[str, Any] = {
+            "scope": scope or {},
+            "paper_id": paper_id,
+            "pub_id": pub_id,
+            # Empty at mint — chase.py's acquiring arm seeds this once a
+            # linked stub is grounded (has chunks); an empty chain here is
+            # NOT dead_chain the way it is for the ordinary (tracing) mode.
+            "chain": [],
+            "wants": [
+                {
+                    field: value
+                    for field, value in (
+                        ("doi", w.doi),
+                        ("arxiv", w.arxiv),
+                        ("title", w.title),
+                        ("url", w.url),
+                        ("year", w.year),
+                    )
+                    if value is not None
+                }
+                for w in parsed_wants
+            ],
+        }
+
+        try:
+            with self.store.tx() as conn:
+                ref = self.store.insert_ref(
+                    kind=self.kind,
+                    slug=None,
+                    title=title_clean,
+                    meta=meta,
+                    parent_id=parent_int,
+                    conn=conn,
+                )
+                conn.execute(
+                    "INSERT INTO ref_identifiers "
+                    "(id_kind, id_value, ref_id, source) "
+                    "VALUES (%s, %s, %s, %s)",
+                    ("pub_id", pub_id, ref.id, "agent"),
+                )
+                self.store.insert_blocks(
+                    ref.id,
+                    [
+                        BlockInsert(
+                            pos=0,
+                            text=body_clean,
+                            meta={"chunk_kind": "finding_body"},
+                        )
+                    ],
+                    conn=conn,
+                )
+                self.store.add_tag(
+                    ref.id,
+                    Tag.closed(_STATUS_NAMESPACE, _STATUS_ACQUIRING),
+                    set_by="agent",
+                    replace_prefix=True,
+                    conn=conn,
+                )
+                apply_tag_ops(
+                    self.store, self.kind, ref.id, tags=tags, untags=None, conn=conn
+                )
+                self.store.add_link(
+                    src_ref_id=ref.id,
+                    dst_ref_id=provenance_target.ref_id,
+                    dst_pos=provenance_target.pos,
+                    relation=_DERIVED_FROM,
+                    conn=conn,
+                )
+                if extra_target is not None:
+                    self.store.add_link(
+                        src_ref_id=ref.id,
+                        dst_ref_id=extra_target.ref_id,
+                        dst_pos=extra_target.pos,
+                        relation=extra_relation,
+                        conn=conn,
+                    )
+                stub_lines: list[str] = []
+                for w in parsed_wants:
+                    identifiers: list[tuple[str, str]] = []
+                    if w.doi:
+                        identifiers.append(("doi", w.doi))
+                    if w.arxiv:
+                        identifiers.append(("arxiv", w.arxiv))
+                    stub_ref_id, created = self.store.upsert_stub_paper(
+                        identifiers=identifiers,
+                        title=w.title,
+                        year=w.year,
+                        set_by="dream",
+                        conn=conn,
+                    )
+                    if created:
+                        self.store.add_tag(
+                            stub_ref_id,
+                            Tag.closed("DREAM", "acquire"),
+                            set_by="agent",
+                            conn=conn,
+                        )
+                    if w.url:
+                        # Informational only in this build — no fetch leg
+                        # reads a bare URL yet (finding-acquisition-mode.md
+                        # "Explicitly NOT in scope"); a human sees it via
+                        # get(kind='paper', id=<stub>).
+                        self.store.update_ref(
+                            stub_ref_id,
+                            meta_patch={"acquire_url": w.url},
+                            conn=conn,
+                        )
+                    self.store.add_link(
+                        src_ref_id=ref.id,
+                        dst_ref_id=stub_ref_id,
+                        relation=_AWAITS_EVIDENCE,
+                        conn=conn,
+                    )
+                    stub_handle = (
+                        handle_registry.try_format("paper", stub_ref_id)
+                        or f"ref:{stub_ref_id}"
+                    )
+                    stub_lines.append(
+                        f"  {stub_handle} ({'minted' if created else 'already tracked'})"
+                    )
+        except UniqueViolation:
+            # Collision on pub_id: this finding already exists.
+            return self._collision_response(pub_id)
+
+        return Response(
+            body=(
+                f"created finding id={ref.id} pub_id={pub_id}\n"
+                f"title: {title_clean}\n"
+                f"provenance: {provenance_target.raw}\n"
+                f"status: STATUS:{_STATUS_ACQUIRING}\n"
+                f"awaiting evidence from {len(parsed_wants)} paper(s):\n"
+                + "\n".join(stub_lines)
+                + "\n"
+                f"placeholder: [{pub_id}] (use in text; precis resolve "
+                f"substitutes the primary cite_key once STATUS:established)"
+            )
+        )
+
+    def _parse_want(self, index: int, want: Any) -> _WantDescriptor:
+        """Parse one ``wants=`` entry into a :class:`_WantDescriptor`.
+
+        Accepts ``{'doi': …}``, ``{'arxiv': …}``, or ``{'title': …, 'url':
+        …}`` — a ``title=``/``url=`` may additionally ride along a doi/arxiv
+        descriptor as enrichment. Rejects anything matching none of the
+        three shapes.
+        """
+        if not isinstance(want, dict):
+            raise BadInput(
+                f"wants[{index}] must be a dict, got {type(want).__name__}",
+                next="wants=[{'doi': '10.1234/xyz'}] — one descriptor per paper",
+            )
+        doi = _clean_str(want.get("doi"))
+        arxiv = _clean_str(want.get("arxiv"))
+        w_title = _clean_str(want.get("title"))
+        url = _clean_str(want.get("url"))
+        year: int | None = None
+        raw_year = want.get("year")
+        if raw_year is not None:
+            try:
+                year = int(raw_year)
+            except (TypeError, ValueError):
+                year = None
+        if not (doi or arxiv or (w_title and url)):
+            raise BadInput(
+                f"wants[{index}] needs doi=, arxiv=, or both title= and url=",
+                next=(
+                    "wants=[{'doi':'10.1234/xyz'}] or {'arxiv':'2401.00001'} "
+                    "or {'title':'<best-known title>','url':'<landing page>'}"
+                ),
+            )
+        return _WantDescriptor(doi=doi, arxiv=arxiv, title=w_title, url=url, year=year)
 
     # ──────────────────────────────────────────────────────────────────
     # link — intercept Taproot evidence/refine edges on a claim hub
@@ -666,9 +1044,10 @@ class FindingHandler(NumericRefHandler):
         """Lexical search across findings with a status-axis default.
 
         ``status=`` is a finding-specific shorthand for filtering by
-        the ``STATUS:`` closed-vocab tag. Pass ``status='tracing'`` /
-        ``'multi_candidate'`` / ``'dead_chain'`` to inspect each
-        cohort, or ``status='*'`` to see all findings regardless.
+        the ``STATUS:`` closed-vocab tag. Pass ``status='acquiring'`` /
+        ``'tracing'`` / ``'multi_candidate'`` / ``'dead_chain'`` to
+        inspect each cohort, or ``status='*'`` to see all findings
+        regardless.
 
         The shorthand desugars to ``tags=['STATUS:<value>']`` and
         unions with any explicit ``tags=`` the caller passed, so
@@ -1166,6 +1545,27 @@ class FindingHandler(NumericRefHandler):
             lines.append(f"chain (in flight, {len(chain)} hop(s)):")
             for hop in chain:
                 lines.append(f"  ref_id={hop.get('ref_id')} ord={hop.get('ord')}")
+
+        # Acquisition-mode findings (finding-acquisition-mode.md): the
+        # DREAM:acquire paper stub(s) this claim is waiting on before the
+        # chase worker can ground it. Only present on STATUS:acquiring
+        # findings (and any that once were, before flipping to tracing —
+        # the link is never removed, only walked past).
+        awaits = self.store.links_for(
+            ref.id, direction="out", relation=_AWAITS_EVIDENCE
+        )
+        if awaits:
+            lines.append("")
+            lines.append("awaiting evidence from:")
+            for link in awaits:
+                stub = self._fetch_ref_any_kind(link.dst_ref_id)
+                handle = handle_registry.try_format(stub.kind, stub.id) or (
+                    stub.slug or f"ref:{stub.id}"
+                )
+                held = (
+                    "held" if stub.pdf_sha256 is not None else "stub (awaiting fetch)"
+                )
+                lines.append(f"  {handle} ({held}) — {stub.title}")
 
         # User-curated misattribution links (seeded by migration
         # 0004 as the ``misattributes`` relation). These are

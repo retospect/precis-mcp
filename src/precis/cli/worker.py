@@ -621,7 +621,7 @@ def run(args: argparse.Namespace) -> None:
             ref_passes.append(_chunk_keywords_pass)
 
         # Finding-chase pass — same sibling-worker pattern, but for
-        # STATUS:tracing findings. Default-off LLM hooks via
+        # STATUS:tracing/acquiring findings. Default-off LLM hooks via
         # --with-llm or PRECIS_CHASE_LLM=1. See ADR 0018 §"Worker"
         # for the sibling-vs-base-class rationale.
         if _register("chase"):
@@ -632,23 +632,29 @@ def run(args: argparse.Namespace) -> None:
             from precis.workers.embed import EmbedHandler
             from precis.workers.runner import BatchResult as _BatchResult
 
-            # Taproot Phase-3 W1 forward bridge (default-OFF,
-            # PRECIS_TAPROOT_CHASE_ENABLED, imported as _TAPROOT_CHASE_ENV
-            # so the two modules share one source of truth for the env
-            # name) needs an embedder for canon.block's ANN lookup, but
-            # the bridge only ever fires together with an LLM chase
-            # verdict (with_llm=True) -- see workers/chase.py's
-            # _taproot_bridge docstring. Reuse the already-booted
-            # EmbedHandler's embedder when one exists (no extra model
-            # load — safe to hold onto even if the bridge never fires);
-            # only eagerly construct a fresh embedder when the flag is
-            # on, no embedder is already up (e.g. a bare ``--only chase``
-            # run), AND the LLM hooks are actually on. Skip it (with a
-            # warning) on the flag-on-but-no-LLM misconfiguration: the
-            # bridge can never do anything without a verifier verdict, so
-            # loading bge-m3 for nothing is pure waste. Any construction
-            # failure degrades to ``None`` (the bridge logs and no-ops)
-            # rather than taking the whole pass down.
+            # The embedder threaded as ``taproot_embedder`` is dual-purpose
+            # (workers/chase.py's ``advance_finding`` docstring): the
+            # Taproot Phase-3 W1 forward bridge's ``canon.block`` ANN
+            # lookup, AND (finding-acquisition-mode.md) the acquiring
+            # arm's claim-text grounding search over a newly-fetched
+            # stub's chunks. Both degrade gracefully to a deterministic
+            # fallback with no embedder (the bridge no-ops; the
+            # acquiring arm falls back to lexical overlap, same idiom as
+            # the tracing arm's own ``_select_target_chunk``) -- so this
+            # deliberately does NOT eagerly resolve a fresh embedder by
+            # default. ``--embedder`` defaults to the REAL ``bge-m3``
+            # model (a multi-GB download/load) -- constructing one on
+            # every ordinary ``chase`` pass boot (this pass is NOT
+            # default-off, unlike ``hub_refine``/``chase_trigger`` below)
+            # would turn a deterministic-by-default worker into one that
+            # silently depends on a model load, tests included. Reuse the
+            # already-booted EmbedHandler's embedder when one exists (no
+            # extra load — safe to hold onto even if neither consumer
+            # fires); only eagerly construct fresh when the taproot flag
+            # AND the LLM hooks are both on (the same "worth paying for
+            # it" gate the bridge alone used before this feature). Any
+            # construction failure degrades to ``None`` rather than
+            # taking the whole pass down.
             _chase_embed_handler = next(
                 (h for h in handlers if isinstance(h, EmbedHandler)), None
             )
@@ -657,34 +663,36 @@ def run(args: argparse.Namespace) -> None:
             )
             _chase_with_llm = args.with_llm or env_flag("PRECIS_CHASE_LLM")
             if _chase_embed_handler is not None:
-                chase_taproot_embedder = _chase_embed_handler.embedder
+                chase_embedder = _chase_embed_handler.embedder
             elif _chase_taproot_flag_on and _chase_with_llm:
                 try:
-                    chase_taproot_embedder = _resolve_embedder(args, store)
+                    chase_embedder = _resolve_embedder(args, store)
                 except Exception:
                     log.warning(
-                        "chase: taproot embedder unavailable — forward "
-                        "bridge will degrade to no-op",
+                        "chase: embedder unavailable -- taproot bridge "
+                        "will degrade to no-op",
                         exc_info=True,
                     )
-                    chase_taproot_embedder = None
+                    chase_embedder = None
             else:
                 if _chase_taproot_flag_on and not _chase_with_llm:
                     log.warning(
                         "chase: %s is on but no LLM hook is enabled "
                         "(--with-llm / PRECIS_CHASE_LLM) — the taproot "
                         "forward bridge needs a verifier verdict to do "
-                        "anything, so no embedder is being loaded for it",
+                        "anything, so no embedder is being loaded for it "
+                        "(acquisition-mode grounding still degrades to "
+                        "lexical matching without one)",
                         _TAPROOT_CHASE_ENV,
                     )
-                chase_taproot_embedder = None
+                chase_embedder = None
 
             def _chase_pass(batch_size: int) -> _BatchResult:
                 r = run_finding_chase_pass(
                     store,
                     limit=batch_size,
                     with_llm=args.with_llm,
-                    taproot_embedder=chase_taproot_embedder,
+                    taproot_embedder=chase_embedder,
                 )
                 return _BatchResult(
                     handler="finding_chase",

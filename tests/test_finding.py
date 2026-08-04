@@ -52,6 +52,16 @@ def _seed_paper(store, *, cite_key: str = "miller23a") -> int:
     return ref.id
 
 
+def _seed_memory(store, *, text: str = "a research note") -> int:
+    """Insert a minimal memory ref — a provenance= target for acquisition
+    mode (a numeric kind, addressed as ``memory:<id>``)."""
+    from precis.store.types import BlockInsert
+
+    ref = store.insert_ref(kind="memory", slug=None, title=text[:80], meta={})
+    store.insert_blocks(ref.id, [BlockInsert(pos=0, text=text, meta={})])
+    return ref.id
+
+
 # ── put validation ──────────────────────────────────────────────────
 
 
@@ -588,6 +598,28 @@ class TestSearch:
         with pytest.raises(BadInput, match="requires q="):
             h.search(status="*")
 
+    def test_default_cohort_excludes_acquiring(self, store) -> None:
+        """AC #6: the default search() cohort is an allowlist
+        (established + taproot hubs) — an ``acquiring`` finding is
+        excluded by construction, no filter edit involved. An explicit
+        ``status='acquiring'`` filter does return it."""
+        mem_id = _seed_memory(store)
+        h = _make_handler(store)
+        resp = h.put(
+            title="acquiring claim about batteries",
+            body="battery claim body awaiting a paper",
+            wants=[{"doi": "10.1234/battery-claim"}],
+            provenance=f"memory:{mem_id}",
+        )
+        acquiring_id = int(_search(r"id=(\d+)", resp.body).group(1))
+
+        out_default = h.search(q="batteries")
+        assert "acquiring claim about batteries" not in out_default.body
+
+        out_filtered = h.search(q="batteries", status="acquiring")
+        assert str(acquiring_id) in out_filtered.body
+        assert "acquiring claim about batteries" in out_filtered.body
+
     def test_recency_list_when_only_status_supplied(self, store) -> None:
         """``search(status='tracing')`` with no q= returns a recency
         list of tracing findings (mirrors the base handler's
@@ -754,6 +786,154 @@ class TestPutSupportersHubMint:
         resp = h.put(title="t", body="b", cited_in="miller23a")
         assert "created finding id=" in resp.body
         assert "STATUS:tracing" in resp.body
+
+
+class TestPutAcquisitionMode:
+    """``put(kind='finding', wants=[...], provenance=...)`` — the third
+    mint mode (finding-acquisition-mode.md): a claim whose supporting
+    paper isn't in the corpus yet. AC #1 / #2 / #8 (regression)."""
+
+    def test_wants_mints_acquiring_finding_with_linked_stub(self, store) -> None:
+        """AC #1: mints STATUS:acquiring, a DREAM:acquire stub linked
+        awaits-evidence, and the stub is claimable by fetch_oa (carries
+        the doi)."""
+        from precis.workers.fetch_oa import claim_stubs_to_fetch
+
+        mem_id = _seed_memory(store)
+        h = _make_handler(store)
+        resp = h.put(
+            title="claim awaiting a paper",
+            body="claim body text that needs grounding",
+            wants=[{"doi": "10.1234/acquire-test"}],
+            provenance=f"memory:{mem_id}",
+        )
+        assert "STATUS:acquiring" in resp.body
+        fid = int(_search(r"id=(\d+)", resp.body).group(1))
+
+        tag_strs = {str(t) for t in store.tags_for(fid)}
+        assert "STATUS:acquiring" in tag_strs
+
+        awaits = store.links_for(fid, direction="out", relation="awaits-evidence")
+        assert len(awaits) == 1
+        stub_id = awaits[0].dst_ref_id
+        stub_ref = store.get_ref(kind="paper", id=stub_id)
+        assert stub_ref is not None
+        assert stub_ref.pdf_sha256 is None  # a bare stub, nothing ingested yet
+        stub_tags = {str(t) for t in store.tags_for(stub_id)}
+        assert "DREAM:acquire" in stub_tags
+
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT id_value FROM ref_identifiers "
+                "WHERE ref_id = %s AND id_kind = 'doi'",
+                (stub_id,),
+            ).fetchone()
+        assert row is not None and row[0] == "10.1234/acquire-test"
+
+        # The provenance link (derived-from, the weakened no-thin-air
+        # anchor) landed too.
+        provenance_links = store.links_for(
+            fid, direction="out", relation="derived-from"
+        )
+        assert any(link.dst_ref_id == mem_id for link in provenance_links)
+
+        # fetch_oa's own claim query picks up the stub (doi-fetchable).
+        with store.pool.connection() as conn:
+            claimed = claim_stubs_to_fetch(conn, limit=10)
+        assert any(c.ref_id == stub_id for c in claimed)
+
+    def test_title_url_want_mints_stub_without_fetchable_id(self, store) -> None:
+        """A ``{'title':…,'url':…}`` descriptor is valid (AC #1's other
+        shape) but mints a stub fetch_oa can't auto-claim (no doi/arxiv/
+        s2) — it waits on the hand-download queue instead."""
+        from precis.workers.fetch_oa import claim_stubs_to_fetch
+
+        mem_id = _seed_memory(store)
+        h = _make_handler(store)
+        resp = h.put(
+            title="claim awaiting an unindexed paper",
+            body="claim body text",
+            wants=[{"title": "Some Preprint", "url": "https://example.org/paper.pdf"}],
+            provenance=f"memory:{mem_id}",
+        )
+        assert "STATUS:acquiring" in resp.body
+        fid = int(_search(r"id=(\d+)", resp.body).group(1))
+        awaits = store.links_for(fid, direction="out", relation="awaits-evidence")
+        assert len(awaits) == 1
+        stub_id = awaits[0].dst_ref_id
+        with store.pool.connection() as conn:
+            claimed = claim_stubs_to_fetch(conn, limit=10)
+        assert not any(c.ref_id == stub_id for c in claimed)
+
+    def test_missing_provenance_rejected(self, store) -> None:
+        """AC #2: no provenance= is BadInput naming the missing piece."""
+        h = _make_handler(store)
+        with pytest.raises(BadInput, match="provenance"):
+            h.put(
+                title="t",
+                body="b",
+                wants=[{"doi": "10.1234/acquire-test"}],
+            )
+
+    def test_empty_wants_rejected(self, store) -> None:
+        """AC #2: empty wants= is BadInput naming the missing piece."""
+        mem_id = _seed_memory(store)
+        h = _make_handler(store)
+        with pytest.raises(BadInput, match="wants"):
+            h.put(title="t", body="b", wants=[], provenance=f"memory:{mem_id}")
+
+    def test_want_descriptor_missing_identifier_rejected(self, store) -> None:
+        """A wants= entry that carries neither doi/arxiv nor title+url
+        is rejected."""
+        mem_id = _seed_memory(store)
+        h = _make_handler(store)
+        with pytest.raises(BadInput, match="doi=, arxiv=, or both title="):
+            h.put(
+                title="t",
+                body="b",
+                wants=[{"title": "no url here"}],
+                provenance=f"memory:{mem_id}",
+            )
+
+    def test_wants_and_cited_in_together_rejected(self, store) -> None:
+        _seed_paper(store, cite_key="miller23a")
+        mem_id = _seed_memory(store)
+        h = _make_handler(store)
+        with pytest.raises(BadInput, match="separate mode"):
+            h.put(
+                title="t",
+                body="b",
+                wants=[{"doi": "10.1234/acquire-test"}],
+                cited_in="miller23a",
+                provenance=f"memory:{mem_id}",
+            )
+
+    def test_wants_and_supporters_together_rejected(self, store) -> None:
+        _seed_paper(store, cite_key="miller23a")
+        mem_id = _seed_memory(store)
+        h = _make_handler(store)
+        with pytest.raises(BadInput, match="different modes"):
+            h.put(
+                title="t",
+                wants=[{"doi": "10.1234/acquire-test"}],
+                supporters=[{"paper": "miller23a"}],
+                provenance=f"memory:{mem_id}",
+            )
+
+    def test_ordinary_and_hub_modes_unaffected(self, store) -> None:
+        """AC #8 (regression): the ordinary cited_in= mint and the
+        taproot supporters= hub mint are unchanged by the new mode."""
+        _seed_paper(store, cite_key="miller23a")
+        h = _make_handler(store)
+        ordinary = h.put(title="t1", body="b1", cited_in="miller23a")
+        assert "created finding id=" in ordinary.body
+        assert "STATUS:tracing" in ordinary.body
+
+        hub = h.put(
+            title="amine loading raises CO2 capacity",
+            supporters=[{"paper": "miller23a"}],
+        )
+        assert "claim hub fi" in hub.body
 
 
 # ── link(rel=...) — Taproot evidence/refine routing (ADR 0073) ──────────

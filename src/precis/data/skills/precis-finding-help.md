@@ -96,6 +96,63 @@ same `put` — it will keep failing. Instead:
 - your own synthesis with no single source → it is **not** a finding;
   write it into the draft or record a `memory` instead.
 
+## The claim's source isn't in the corpus yet — acquisition mode
+
+If you have a claim but no in-corpus chunk to cite, do **not** retry
+`cited_in=` with a guessed handle. Mint the finding in **acquisition
+mode** instead: pass `wants=` (paper descriptors) and `provenance=`
+(where the claim came from) in place of `cited_in=`.
+
+```python
+put(
+    kind="finding",
+    title="gate-bias 2.4 kV / 30 s on Si/SiO2",
+    body=(
+        "Device prep: 2.4 kV applied across the 50 nm gate oxide "
+        "for 30 s on Si/SiO2 MOSCAPs, N2 ambient."
+    ),
+    wants=[{"doi": "10.1234/xyz"}],  # or {'arxiv':…} or {'title':…,'url':…}
+    provenance="pc17",  # the research note / hunt todo / citing chunk
+)
+# → created finding id=43  pub_id=de45f6
+#   status: STATUS:acquiring
+#   awaiting evidence from 1 paper(s):
+#     pa88 (minted)
+```
+
+`wants=` is a list of ≥1 descriptor dicts, each one of `{'doi':…}`,
+`{'arxiv':…}`, or `{'title':…, 'url':…}` — one per paper the claim
+expects grounding from. The call **atomically** mints a `DREAM:acquire`
+paper stub per descriptor and links it `awaits-evidence`; a doi/arxiv
+stub is auto-claimed by `fetch_oa`, a title+url one waits on the hand-
+download queue. `provenance=` is a ref/chunk handle — required, and
+distinct from `cited_in=`: it's where *this claim* came from (a
+research note, a lit-hunt todo, the chunk that cited the not-yet-held
+paper), not a pointer into a paper the corpus already holds.
+
+The chase worker polls the linked stub(s); once one lands a PDF with
+chunks, it grounds the finding — best-matching passage via embedding
+search when the chase pass has an embedder configured (opt-in,
+`PRECIS_TAPROOT_CHASE_ENABLED` + `--with-llm`/`PRECIS_CHASE_LLM`; off by
+default, so a stock deployment falls back to the same deterministic
+lexical-overlap heuristic the ordinary chase uses), plus the STANCE
+verifier under `--with-llm` — sets `cited_in`/the chain, and flips
+`STATUS:acquiring` → `STATUS:tracing` — the rest of the lifecycle
+proceeds exactly as an ordinary finding's. If every linked stub is
+still unfetched after `PRECIS_ACQUIRE_GRACE_DAYS` (default 7) with no
+live fetch attempt still in flight, the finding gives up honestly:
+`STATUS:dead_chain(reason=unacquirable)`, and its stub(s) surface in
+the `/drive` hand-download queue.
+
+Omitting `provenance=`, or passing an empty `wants=`, is a `BadInput`
+naming the missing piece — acquisition mode never mints a thin-air
+claim, it just weakens "traceable to a corpus chunk" to "traceable to
+*something*" at mint time.
+
+`acquiring` findings are excluded from the default
+`search(kind='finding')` cohort (same as `tracing`) — filter explicitly
+with `status='acquiring'` to see the backlog.
+
 ## Find an existing finding before creating one
 ## Search findings to avoid duplicates
 ## Has someone already chased this claim?
@@ -161,10 +218,11 @@ never `tracing`/`established`), and the default cohort unions hubs in by
 their `TAPROOT:claim` tag alongside `established` findings. Drill one with
 `view='evidence'` (above).
 
-`put(kind='finding', ...)` is **bimodal**: `supporters=` (no `cited_in`)
-mints/converges a claim hub; `cited_in=` (no `supporters`) makes an
-ordinary chase-target finding, as above — passing both, or neither,
-errors. Mint still **requires paper supporters** (a draft's own novel
+`put(kind='finding', ...)` is **trimodal**: `supporters=` (no `cited_in`/
+`wants=`) mints/converges a claim hub; `cited_in=` makes an ordinary
+chase-target finding, as above; `wants=`+`provenance=` mints an
+acquisition-mode finding (above) — mixing modes errors. Hub mint still
+**requires paper supporters** (a draft's own novel
 assertion never becomes a thin-air hub); `link(kind='finding',
 rel='establishes'|'corroborates'|'contradicts', target=<pc/pa handle>)`
 attaches evidence to an existing hub. Full contract:

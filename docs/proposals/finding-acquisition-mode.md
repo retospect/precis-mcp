@@ -1,8 +1,19 @@
 ---
-status: ready
+status: built
 title: Acquisition-mode findings — claim-first mint with automated paper chase and verified grounding
 model: opus
 ---
+
+> **Built** (2026-08-04): shipped as specced — `STATUS:acquiring` vocab,
+> migration `0105` (`awaits-evidence`), the acquisition put branch
+> (`_put_acquiring`), chase claim-query widening + acquiring arm +
+> give-up (`PRECIS_ACQUIRE_GRACE_DAYS`), planner lit-hunt template
+> rewrite, skill docs, tests per the 9 ACs. One implementation note:
+> grounding uses a deterministic lexical fallback when no embedder is
+> configured (the chase pass keeps its conservative embedder gating —
+> an unconditional bge-m3 load on ordinary passes was tried and
+> reverted as a regression). Trust surfaces live in
+> `finding-trust-surfaces.md` (not built).
 
 # Acquisition-mode findings — claim-first mint with automated paper chase and verified grounding
 

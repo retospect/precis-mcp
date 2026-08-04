@@ -80,12 +80,31 @@ _TAPROOT_CHASE_ENV = "PRECIS_TAPROOT_CHASE_ENABLED"
 
 _STATUS_NAMESPACE = "STATUS"
 _TRACING = "tracing"
+_ACQUIRING = "acquiring"
 _ESTABLISHED = "established"
 _DEAD_CHAIN = "dead_chain"
 _CYCLE = "cycle"
 _MULTI_CANDIDATE = "multi_candidate"
 
 _DERIVED_FROM = "derived-from"
+_AWAITS_EVIDENCE = "awaits-evidence"
+
+# Acquisition-mode give-up reason (finding-acquisition-mode.md §4): a
+# dead_chain transition written when every linked awaits-evidence stub is
+# fetch-exhausted (see :func:`_stub_exhausted`) past the grace window.
+_UNACQUIRABLE = "unacquirable"
+
+# Env override for the acquisition-mode grace window — how long an
+# `acquiring` finding may sit on fetch-exhausted stubs before the chase
+# gives up on it (flips to `dead_chain(reason=unacquirable)`). Decided
+# 2026-08-04 (post-review): env-tunable, default 7 days. Distinct from
+# WAITING_ABANDON_AFTER_DAYS below (14d) — that one fires on elapsed time
+# alone for the *tracing* arm's frontier-stub wait; this one additionally
+# requires every linked stub to be fetch-exhausted (see the module docs
+# for the "honest give-up" rationale: age alone isn't enough when the
+# stub might still land a PDF).
+_ACQUIRE_GRACE_ENV = "PRECIS_ACQUIRE_GRACE_DAYS"
+ACQUIRE_GRACE_DAYS_DEFAULT = 7.0
 
 # Backoff for findings stuck on a chunk-less frontier stub. When
 # ``advance_finding`` returns ``"waiting"`` it leaves STATUS:tracing
@@ -153,6 +172,12 @@ class FindingRow:
     ref_id: int
     title: str
     meta: dict[str, Any]
+    #: STATUS tag value at claim time — ``'tracing'`` or ``'acquiring'``
+    #: (finding-acquisition-mode.md). Decides which arm of
+    #: :func:`advance_finding` runs. Defaults to ``'tracing'`` when no
+    #: STATUS tag is found (defensive; shouldn't happen for a row this
+    #: query claims).
+    status: str = _TRACING
 
 
 @dataclass
@@ -199,7 +224,16 @@ def claim_tracing_findings(
     waiting_backoff_minutes: int = WAITING_BACKOFF_MINUTES,
     waiting_backoff_max_minutes: int = WAITING_BACKOFF_MAX_MINUTES,
 ) -> list[FindingRow]:
-    """Lock and return up to ``limit`` ``STATUS:tracing`` findings.
+    """Lock and return up to ``limit`` ``STATUS:tracing`` OR
+    ``STATUS:acquiring`` findings.
+
+    Widened for acquisition-mode findings (finding-acquisition-mode.md
+    §3): this is the *sole* feeder of :func:`advance_finding`, so an
+    ``acquiring`` row that isn't claimed here never reaches its arm —
+    the claim query is the load-bearing half of making that arm
+    reachable in the real worker loop, not just in a hand-built unit
+    test. Each returned :class:`FindingRow` carries its own ``status``
+    so :func:`advance_finding` dispatches to the right arm.
 
     ``FOR UPDATE OF r SKIP LOCKED`` lets concurrent chase workers
     coexist — each one claims a disjoint subset. The lock is held
@@ -218,7 +252,12 @@ def claim_tracing_findings(
     run of ``waiting`` events since the finding's last non-waiting
     outcome, so any progress resets the backoff to ``base``. Any other
     most-recent outcome (or none yet) leaves the finding eligible, so a
-    chain that just advanced keeps moving promptly.
+    chain that just advanced keeps moving promptly. This same
+    per-``ref_id`` backoff — keyed on ``source='chase'`` regardless of
+    *why* a finding is waiting — also throttles an ``acquiring`` finding
+    whose linked stub(s) have no chunks yet (:func:`_advance_acquiring`
+    returns the same ``"waiting"`` outcome), and its accumulated age
+    feeds the acquisition-mode grace-window give-up check.
 
     Excludes ``TAPROOT:claim`` findings (taproot hubs, :func:`~precis.
     taproot.hub.mint_hub`). A hub now mints with ``STATUS:canonical``, off
@@ -236,7 +275,13 @@ def claim_tracing_findings(
 
     rows = conn.execute(
         """
-        SELECT r.ref_id, r.title, r.meta
+        SELECT r.ref_id, r.title, r.meta,
+               COALESCE(
+                 (SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id)
+                   WHERE rt.ref_id = r.ref_id AND t.namespace = %(status_ns)s
+                   LIMIT 1),
+                 %(tracing)s
+               ) AS status
           FROM refs r
           LEFT JOIN LATERAL (
                 SELECT e.event, e.ts FROM ref_events e
@@ -267,7 +312,7 @@ def claim_tracing_findings(
                  SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
                   WHERE rt.ref_id = r.ref_id
                     AND t.namespace = %(status_ns)s
-                    AND t.value = %(tracing)s
+                    AND t.value = ANY(%(statuses)s)
                )
            -- A taproot hub is a `finding` too (STATUS:tracing until its
            -- originators resolve) but isn't a chase-owned chain -- skip
@@ -313,6 +358,7 @@ def claim_tracing_findings(
             "source": _SOURCE,
             "status_ns": _STATUS_NAMESPACE,
             "tracing": _TRACING,
+            "statuses": [_TRACING, _ACQUIRING],
             "taproot_ns": TAPROOT_NAMESPACE,
             "taproot_claim": TAPROOT_CLAIM,
             "base": float(waiting_backoff_minutes),
@@ -321,7 +367,9 @@ def claim_tracing_findings(
         },
     ).fetchall()
     return [
-        FindingRow(ref_id=int(r[0]), title=str(r[1]), meta=dict(r[2] or {}))
+        FindingRow(
+            ref_id=int(r[0]), title=str(r[1]), meta=dict(r[2] or {}), status=str(r[3])
+        )
         for r in rows
     ]
 
@@ -345,15 +393,30 @@ def advance_finding(
     ``"waiting"``) plus the populated :class:`_Event` the runner
     flushes to ``ref_events``.
 
+    Dispatches on ``finding.status`` first: an ``acquiring`` finding
+    (finding-acquisition-mode.md) runs :func:`_advance_acquiring` —
+    poll its linked ``awaits-evidence`` stubs, ground on the first one
+    that gains chunks, or give up once every stub is fetch-exhausted
+    past the grace window — never the ``tracing`` logic below (an empty
+    ``meta.chain`` is expected and NOT ``dead_chain`` for this arm,
+    unlike the tracing arm's own empty-chain check just below).
+
     ``taproot_enabled`` (Phase-3 W1 forward bridge) mints/attaches a
     taproot claim hub off the terminal verdict when a chain establishes
     -- see :func:`_taproot_bridge`. Only takes effect together with
     ``with_llm`` (the bridge needs the LLM ``verification`` verdict);
     ``taproot_embedder`` is the ``.embed_one``-shaped embedder
     :func:`precis.taproot.canon.block` needs — ``None`` degrades the
-    bridge to a no-op (logged), never a crash.
+    bridge to a no-op (logged), never a crash. The SAME embedder is
+    reused (also degrading to a lexical fallback on ``None``) by
+    :func:`_advance_acquiring`'s claim-text grounding search — it's a
+    general block-embedder, not taproot-specific, despite the name.
     """
     ev = _Event()
+    if finding.status == _ACQUIRING:
+        return _advance_acquiring(
+            conn, store, finding, ev, with_llm=with_llm, embedder=taproot_embedder
+        )
     chain = list(finding.meta.get("chain") or [])
     if not chain:
         _set_status(conn, finding.ref_id, _DEAD_CHAIN, reason="empty_chain")
@@ -485,6 +548,277 @@ def advance_finding(
     store.update_ref(finding.ref_id, meta_patch={"chain": chain}, conn=conn)
     ev.next = {"ref_id": next_ref_id}
     return "advanced", ev
+
+
+# ── Acquisition-mode arm (finding-acquisition-mode.md) ────────────────
+
+
+def _acquire_grace_days() -> float:
+    """The acquisition-mode give-up grace window, in days.
+
+    Reads :data:`_ACQUIRE_GRACE_ENV` (``PRECIS_ACQUIRE_GRACE_DAYS``);
+    falls back to :data:`ACQUIRE_GRACE_DAYS_DEFAULT` (7) on unset or
+    unparseable input. Read fresh per call (not cached) so a live env
+    change (or a test's monkeypatch) takes effect on the next pass.
+    """
+    raw = os.environ.get(_ACQUIRE_GRACE_ENV)
+    if not raw:
+        return ACQUIRE_GRACE_DAYS_DEFAULT
+    try:
+        return float(raw)
+    except ValueError:
+        return ACQUIRE_GRACE_DAYS_DEFAULT
+
+
+def _stub_exhausted(conn: Connection, stub_ref_id: int) -> bool:
+    """Fetch-exhaustion judgment for one ``awaits-evidence`` stub.
+
+    True when the stub has **no fetchable identifier at all** (doi /
+    arxiv / s2 — the same trio :mod:`precis.store._stub_predicate` uses;
+    a bare title+url stub never even enters ``fetch_oa``'s claim query,
+    so it's exhausted from the moment it's minted), OR ``fetch_oa`` has
+    already run **at least one** cascade attempt against it that came up
+    empty (any ``source LIKE 'fetcher:%'`` ref_event whose ``event`` is
+    NOT ``fetch_ok``) and it still carries no PDF.
+
+    **A ``fetch_ok`` event always means NOT exhausted**, checked first
+    and unconditionally — regardless of grace-window age or any earlier
+    failed leg. ``fetch_ok`` means a leg downloaded the PDF into the
+    watch inbox; ingest (``precis watch`` → ``precis_add`` →
+    ``register_aliases_and_maybe_upgrade``) runs as a LATER, separate
+    pass that sets ``refs.pdf_sha256`` and writes the chunks this
+    function's caller is polling for. Without this check, a stub whose
+    PDF landed but hasn't been ingested yet reads as indistinguishable
+    from a stub every leg failed on — and if the grace window had
+    already elapsed (e.g. a sibling ``wants=`` stub failed earlier), the
+    acquiring arm would fire ``dead_chain(unacquirable)`` the instant
+    before evidence actually arrives: silent, permanent loss right as
+    the claim was about to be grounded. Picked "exclude fetch_ok from
+    tried" over a ``refs.pdf_sha256 IS NULL`` co-condition because
+    ``pdf_sha256`` isn't set until ingest completes — the same later
+    step that lands chunks — so it can't distinguish
+    "PDF fetched, awaiting ingest" from "never fetched" either; the
+    ``fetch_ok`` event is the fetch cascade's own, immediate signal.
+
+    This is deliberately NOT the same thing as "``fetch_oa`` has given
+    up" — it never does; a closed-access stub just backs off to a
+    monthly retry forever (see ``fetch_oa.claim_stubs_to_fetch``), since
+    a paper can become OA later. This is a SEPARATE, acquiring-arm-only
+    judgment about whether continuing to poll the *finding* is still
+    honest hope, feeding the grace-window give-up in
+    :func:`_advance_acquiring` — the stub itself is untouched either way
+    and stays in the hand-download queue (``f971f012``).
+    """
+    row = conn.execute(
+        """
+        SELECT
+            EXISTS (SELECT 1 FROM ref_identifiers
+                     WHERE ref_id = %(rid)s
+                       AND id_kind IN ('doi', 'arxiv', 's2')) AS has_id,
+            EXISTS (SELECT 1 FROM ref_events
+                     WHERE ref_id = %(rid)s
+                       AND source LIKE 'fetcher:%%'
+                       AND event <> 'fetch_ok') AS tried_and_failed,
+            EXISTS (SELECT 1 FROM ref_events
+                     WHERE ref_id = %(rid)s
+                       AND source LIKE 'fetcher:%%'
+                       AND event = 'fetch_ok') AS fetch_succeeded
+        """,
+        {"rid": stub_ref_id},
+    ).fetchone()
+    if row is None:
+        return True
+    has_id, tried_and_failed, fetch_succeeded = (
+        bool(row[0]),
+        bool(row[1]),
+        bool(row[2]),
+    )
+    if fetch_succeeded:
+        return False  # PDF fetched, ingest pending -- never exhausted
+    return (not has_id) or tried_and_failed
+
+
+def _select_grounding_chunk(
+    store: Any,
+    embedder: Any,
+    claim_text: str,
+    stub_ref_id: int,
+    chunks: list[tuple[int, int, str]],
+) -> tuple[int, int, str]:
+    """Pick the chunk in a freshly-grounded stub that best supports the
+    claim: ``(chunk_id, ord, text)``.
+
+    Claim-text embedding search (:meth:`~precis.store.Store.search_blocks`
+    ``mode='semantic'``, scoped to the stub) over the paper's own chunks
+    when ``embedder`` is available — the "existing grounding machinery"
+    finding-acquisition-mode.md §3 calls for. Degrades to the same
+    lexical title/claim-overlap heuristic :func:`_select_target_chunk`
+    uses for the ordinary chase when there's no embedder, or when the
+    search errors — never a hard failure (mirrors the taproot forward
+    bridge's own embedder-unavailable degrade).
+    """
+    if embedder is not None and claim_text.strip():
+        try:
+            query_vec = embedder.embed_one(claim_text)
+            hits = store.search_blocks(
+                q=claim_text,
+                query_vec=query_vec,
+                mode="semantic",
+                kind="paper",
+                scope_ref_id=stub_ref_id,
+                limit=1,
+            )
+            if hits:
+                block, _ref, _score = hits[0]
+                match = next((c for c in chunks if c[0] == block.id), None)
+                if match is not None:
+                    return match
+        except Exception:  # pragma: no cover — defensive
+            log.warning(
+                "chase: acquire-arm embedding search failed for stub "
+                "ref_id=%s, falling back to lexical",
+                stub_ref_id,
+                exc_info=True,
+            )
+    claim_tokens = _tokenize(claim_text)
+    if not claim_tokens:
+        return chunks[0]
+    return max(chunks, key=lambda c: _overlap(claim_tokens, _tokenize(c[2])))
+
+
+def _ground_on_stub(
+    conn: Connection,
+    store: Any,
+    finding: FindingRow,
+    ev: _Event,
+    *,
+    stub_ref_id: int,
+    chunks: list[tuple[int, int, str]],
+    with_llm: bool,
+    embedder: Any,
+) -> tuple[str, _Event]:
+    """Seed the finding's chain at the grounded stub and flip
+    ``acquiring`` → ``tracing`` so the normal lifecycle proceeds on the
+    next pass (one hop per call, matching the tracing arm's own
+    discipline)."""
+    from precis.store.types import Tag
+
+    claim_text = _claim_body(conn, finding.ref_id)
+    chunk_id, chunk_ord, chunk_text = _select_grounding_chunk(
+        store, embedder, claim_text, stub_ref_id, chunks
+    )
+    ev.frontier = {"ref_id": stub_ref_id, "ord": chunk_ord, "chunk_id": chunk_id}
+
+    hop: dict[str, Any] = {
+        "ref_id": stub_ref_id,
+        "chunk_id": chunk_id,
+        "ord": chunk_ord,
+    }
+    if with_llm:
+        target = _fetch_ref(conn, stub_ref_id)
+        verification = _verify_support_with_caveats(
+            claim=claim_text,
+            scope=finding.meta.get("scope") or {},
+            target_cite_key=(target or {}).get("slug") or f"ref:{stub_ref_id}",
+            target_chunk_ord=chunk_ord,
+            target_chunk_text=chunk_text,
+        )
+        if verification:
+            hop["verification"] = verification
+            ev.llm = {
+                "hook": "verify",
+                "supports": verification.get("supports"),
+                "caveats_n": len(verification.get("caveats") or []),
+                "cited_others_n": len(verification.get("cited_others") or []),
+            }
+
+    store.add_link(
+        src_ref_id=finding.ref_id,
+        dst_ref_id=stub_ref_id,
+        dst_pos=chunk_ord,
+        relation=_DERIVED_FROM,
+        conn=conn,
+    )
+    store.update_ref(finding.ref_id, meta_patch={"chain": [hop]}, conn=conn)
+    store.add_tag(
+        finding.ref_id,
+        Tag.closed(_STATUS_NAMESPACE, _TRACING),
+        set_by="chase",
+        replace_prefix=True,
+        conn=conn,
+    )
+    ev.next = {"ref_id": stub_ref_id, "chunk_id": chunk_id, "ord": chunk_ord}
+    ev.reason = "grounded"
+    return "advanced", ev
+
+
+def _advance_acquiring(
+    conn: Connection,
+    store: Any,
+    finding: FindingRow,
+    ev: _Event,
+    *,
+    with_llm: bool,
+    embedder: Any,
+) -> tuple[str, _Event]:
+    """Advance an ``acquiring`` finding by at most one step.
+
+    Polls the finding's linked ``awaits-evidence`` stubs (see
+    :func:`~precis.handlers.finding.FindingHandler._put_acquiring`).
+    The FIRST stub found with body chunks gets grounded (see
+    :func:`_ground_on_stub`) — ``"advanced"``, flips to ``tracing``.
+    While every stub is still bare, this is a no-op ``"waiting"`` pass
+    UNLESS every stub is fetch-exhausted (:func:`_stub_exhausted`) past
+    the acquisition-mode grace window (:func:`_acquire_grace_days`), in
+    which case it's an honest ``dead_chain(reason=unacquirable)`` give-up
+    (finding-acquisition-mode.md §4) — never the tracing arm's
+    empty-chain instant-dead (an acquiring finding is MINTED with an
+    empty ``meta.chain`` by design).
+    """
+    stub_links = store.links_for(
+        finding.ref_id, direction="out", relation=_AWAITS_EVIDENCE
+    )
+    if not stub_links:
+        # put(kind='finding', wants=...) always links >=1 stub -- an
+        # acquiring finding with none is an upstream anomaly, not a
+        # legitimate "still waiting" state. Defensive dead, not an
+        # infinite wait on nothing to poll.
+        _set_status(conn, finding.ref_id, _DEAD_CHAIN, reason="no_stubs")
+        ev.reason = "no_stubs"
+        return "dead", ev
+
+    all_exhausted = True
+    for stub_link in stub_links:
+        stub_ref_id = stub_link.dst_ref_id
+        stub = _fetch_ref(conn, stub_ref_id)
+        if stub is None:
+            continue  # soft-deleted stub -- neither blocks nor grounds
+        chunks = _fetch_chunks(conn, stub_ref_id)
+        if chunks:
+            return _ground_on_stub(
+                conn,
+                store,
+                finding,
+                ev,
+                stub_ref_id=stub_ref_id,
+                chunks=chunks,
+                with_llm=with_llm,
+                embedder=embedder,
+            )
+        if not _stub_exhausted(conn, stub_ref_id):
+            all_exhausted = False
+
+    if all_exhausted:
+        waits, run_age_days = _waiting_run_stats(conn, finding.ref_id)
+        grace_days = _acquire_grace_days()
+        if run_age_days >= grace_days:
+            _set_status(conn, finding.ref_id, _DEAD_CHAIN, reason=_UNACQUIRABLE)
+            ev.reason = _UNACQUIRABLE
+            ev.frontier["waited_days"] = round(run_age_days, 1)
+            ev.frontier["waits"] = waits
+            return "dead", ev
+
+    return "waiting", ev
 
 
 # ── Runner ─────────────────────────────────────────────────────────

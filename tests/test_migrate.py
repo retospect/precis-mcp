@@ -76,6 +76,10 @@ def test_seeds_populated(fresh_db: str) -> None:
     assert {"agent", "user", "system"}.issubset(actors)
     assert {"paper", "memory", "todo", "anki", "web", "youtube"}.issubset(kinds)
     assert {"related-to", "blocks", "contradicts"}.issubset(relations)
+    # finding-acquisition-mode.md §2 / migration 0105 — links.relation FKs
+    # to relations(slug), so a fresh DB must seed this alongside the rest
+    # (ADR 0073's `establishes` precedent — the trap this AC guards).
+    assert "awaits-evidence" in relations
 
 
 def test_extensions_installed(fresh_db: str) -> None:

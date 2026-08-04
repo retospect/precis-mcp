@@ -590,3 +590,79 @@ def test_pass_skips_done_leaves(handler: TodoHandler, store: Store) -> None:
     run_auto_check_pass(store, limit=50)
     events_after = [e for e in store.events_for(rid) if e.source == "auto-check"]
     assert len(events_after) == len(events_before)
+
+
+# ── all_child_findings_resolved evaluator ────────────────────────────
+# AC #4 (finding-acquisition-mode.md): a lit-hunt todo whose children
+# are all `acquiring` is NOT resolved (poll-again), same as `tracing`;
+# a todo whose children reached a terminal finding status resolves
+# exactly as before. No code change was needed for the exclusion (any
+# status outside the resolved set already polls again by construction)
+# — these tests verify that, they don't exercise a new branch.
+
+
+def _seed_child_finding(store: Store, *, parent_id: int, status: str | None) -> int:
+    from precis.store.types import Tag
+
+    ref = store.insert_ref(
+        kind="finding", slug=None, title="child claim", meta={}, parent_id=parent_id
+    )
+    if status is not None:
+        store.add_tag(
+            ref.id, Tag.closed("STATUS", status), set_by="agent", replace_prefix=True
+        )
+    return ref.id
+
+
+def test_all_child_findings_resolved_false_when_acquiring(
+    handler: TodoHandler, store: Store
+) -> None:
+    from precis.workers.auto_check_evaluators import all_child_findings_resolved
+
+    r = handler.put(text="lit hunt")
+    rid = _id_of(r.body)
+    _seed_child_finding(store, parent_id=rid, status="acquiring")
+    assert (
+        all_child_findings_resolved.evaluate(
+            store, {"type": "all_child_findings_resolved"}, ref_id=rid
+        )
+        is False
+    )
+
+
+def test_all_child_findings_resolved_false_when_mixed_acquiring_and_established(
+    handler: TodoHandler, store: Store
+) -> None:
+    """One resolved child does not outvote a still-acquiring sibling."""
+    from precis.workers.auto_check_evaluators import all_child_findings_resolved
+
+    r = handler.put(text="lit hunt")
+    rid = _id_of(r.body)
+    _seed_child_finding(store, parent_id=rid, status="established")
+    _seed_child_finding(store, parent_id=rid, status="acquiring")
+    assert (
+        all_child_findings_resolved.evaluate(
+            store, {"type": "all_child_findings_resolved"}, ref_id=rid
+        )
+        is False
+    )
+
+
+def test_all_child_findings_resolved_true_when_all_terminal(
+    handler: TodoHandler, store: Store
+) -> None:
+    """Unchanged behaviour: established / dead_chain / multi_candidate
+    children resolve the todo exactly as before."""
+    from precis.workers.auto_check_evaluators import all_child_findings_resolved
+
+    r = handler.put(text="lit hunt")
+    rid = _id_of(r.body)
+    _seed_child_finding(store, parent_id=rid, status="established")
+    _seed_child_finding(store, parent_id=rid, status="dead_chain")
+    _seed_child_finding(store, parent_id=rid, status="multi_candidate")
+    assert (
+        all_child_findings_resolved.evaluate(
+            store, {"type": "all_child_findings_resolved"}, ref_id=rid
+        )
+        is True
+    )

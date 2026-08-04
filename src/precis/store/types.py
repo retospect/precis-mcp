@@ -219,6 +219,15 @@ Relation = Literal[
     # relation='refines')`. Keep in sync with the `relations` seed in
     # 0100_taproot_refines_relation.sql.
     "refines",
+    # Acquisition-mode findings — migration 0105
+    # (docs/proposals/finding-acquisition-mode.md). `awaits-evidence` binds
+    # a `finding` (STATUS:acquiring) to each `DREAM:acquire` paper stub its
+    # `wants=` descriptors minted; the chase worker polls the linked stubs
+    # and grounds the finding once one gains chunks. No inverse: the finding
+    # reads its stubs via `links_for(finding, direction='out',
+    # relation='awaits-evidence')`. Keep in sync with the `relations` seed
+    # in 0105_awaits_evidence_relation.sql.
+    "awaits-evidence",
 ]
 ActorSlug = Literal["agent", "user", "system"]
 
@@ -736,6 +745,9 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
     #     open → doing → done (or blocked / won't-do)
     # * finding — the citation-chase lifecycle (chase worker):
     #     tracing → established (or multi_candidate / dead_chain)
+    #     acquiring → tracing → ... (docs/proposals/finding-acquisition-mode.md
+    #     — a claim minted before its supporting paper is in the corpus;
+    #     precedes tracing, never terminal on its own)
     #
     # Both are unioned here so filter-time validation
     # (``Tag.normalize_filter`` → ``parse_strict``) accepts either.
@@ -753,6 +765,13 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
             "established",
             "multi_candidate",
             "dead_chain",
+            # Acquisition-mode findings (finding-acquisition-mode.md) — a
+            # claim minted via wants=/provenance= before its supporting
+            # paper is in the corpus. Precedes `tracing`; the chase worker
+            # polls the linked `awaits-evidence` stub(s) and flips this to
+            # `tracing` once one is grounded, or to `dead_chain` on honest
+            # give-up (all stubs exhausted past the grace window).
+            "acquiring",
             # taproot claim hub (hub.py::mint_hub) — a canonicalized claim
             # node, off the chase-status lifecycle (never `tracing` /
             # `established`).

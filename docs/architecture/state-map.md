@@ -985,6 +985,24 @@ host → GPU node → gateway last, gated on a `dream_agent`-under-
   *deployed* — prod ran pre-fix code well after the merge, so a
   spin-loop digest spike usually means "redeploy", not "new bug"
   (check the deployed sha under `~deploy/.cache/uv/git-v0/checkouts/`).
+* `finding` acquisition mode (2026-08-04,
+  `docs/proposals/finding-acquisition-mode.md`, built) — claim-first
+  mint: `put(kind='finding', title=…, body=…, wants=[{doi|arxiv|
+  title+url}, …], provenance=<ref>)` with no `cited_in` mints
+  `STATUS:acquiring`, atomically upserting a `DREAM:acquire` paper stub
+  per descriptor + `awaits-evidence` links (relation seeded by
+  migration `0105`) and a `derived-from` provenance link
+  (`handlers/finding.py::FindingHandler._put_acquiring`). Chase's claim
+  query takes `acquiring` alongside `tracing`; the acquiring arm
+  (`workers/chase.py::_advance_acquiring`) polls the stubs — empty
+  chain is *not* `dead_chain` here — grounds on ingest (lexical
+  fallback by default; embedding search + STANCE only when the taproot
+  bridge embedder is already on), then flips → `tracing` into the
+  normal lifecycle. Stubs exhausted past `PRECIS_ACQUIRE_GRACE_DAYS`
+  (default 7) → `dead_chain(reason=unacquirable)`, stubs surface in the
+  hand-download queue. Planner lit-hunt template now teaches this shape
+  (the gr183824/gr183865 fix). Trust surfaces (export marking, editor
+  badges) are **not built** — `docs/proposals/finding-trust-surfaces.md`.
 
 **Unified `claude -p` agentic dispatch — `utils/claude_agent.py`.**
 Peer to `utils/claude_p.py` (one-shot JSON judge). Carries the

@@ -603,3 +603,238 @@ def test_card_combined_reemits_at_chain_termination(store) -> None:
     assert len(rows) == 1
     assert "STALE CARD" not in rows[0][0]
     assert "primary=primary" in rows[0][0]
+
+
+# ── acquisition mode (finding-acquisition-mode.md) ───────────────────
+#
+# All of these go through run_finding_chase_pass (the worker-loop entry
+# point), NOT a hand-built call to advance_finding -- the readiness
+# review's explicit trap: without claim_tracing_findings widened to
+# also claim STATUS:acquiring, this arm is unreachable in the real
+# worker loop even if a hand-built FindingRow test would pass.
+
+
+def _seed_memory(store, *, text: str = "a research note") -> int:
+    ref = store.insert_ref(kind="memory", slug=None, title=text[:80], meta={})
+    store.insert_blocks(ref.id, [BlockInsert(pos=0, text=text, meta={})])
+    return ref.id
+
+
+def _seed_acquiring_finding(
+    store,
+    *,
+    wants: list[dict[str, Any]],
+    body: str = "a claim awaiting corpus evidence",
+) -> tuple[int, int]:
+    """Mint an acquisition-mode finding; returns ``(finding_ref_id,
+    stub_ref_id)`` — the single linked stub (every test here uses one
+    ``wants=`` descriptor)."""
+    mem_id = _seed_memory(store)
+    h = _make_handler(store)
+    resp = h.put(
+        title="acquisition-mode claim",
+        body=body,
+        wants=wants,
+        provenance=f"memory:{mem_id}",
+    )
+    id_m = re.search(r"id=(\d+)", resp.body)
+    assert id_m is not None, f"create-ack missing id=; got {resp.body!r}"
+    fid = int(id_m.group(1))
+    awaits = store.links_for(fid, direction="out", relation="awaits-evidence")
+    assert len(awaits) == 1
+    return fid, awaits[0].dst_ref_id
+
+
+def test_acquiring_finding_claimed_but_stays_acquiring_while_stub_bare(store) -> None:
+    """AC #3 (part 1): an acquiring finding IS claimed by
+    run_finding_chase_pass (the widened claim query), but with a
+    chunk-less stub it stays STATUS:acquiring -- NOT dead_chain, unlike
+    the tracing arm's own empty-chain check."""
+    fid, _stub_id = _seed_acquiring_finding(store, wants=[{"doi": "10.1/acq-a"}])
+
+    result = run_finding_chase_pass(store, limit=10)
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert _status_tag(store, fid) == "acquiring"
+    assert _chain(store, fid) == []
+
+
+def test_acquiring_finding_grounds_once_stub_gains_chunks(store) -> None:
+    """AC #3 (part 2): once the linked stub is ingested with chunks, the
+    NEXT pass grounds the finding -- chain populated, cited_in-equivalent
+    derived-from link set, status flips to tracing -- and the pre-existing
+    lifecycle proceeds unchanged from there (a further pass on the now-
+    tracing, no-inline-cite frontier establishes it)."""
+    claim_text = "a claim awaiting corpus evidence"
+    fid, stub_id = _seed_acquiring_finding(
+        store, wants=[{"doi": "10.1/acq-b"}], body=claim_text
+    )
+
+    # First pass: stub still bare -- stays acquiring (already covered
+    # above; re-asserted here as the pre-condition for this scenario).
+    run_finding_chase_pass(store, limit=10)
+    assert _status_tag(store, fid) == "acquiring"
+
+    # That first pass wrote a "waiting" chase event, which the claim
+    # query's exponential backoff would otherwise suppress for up to an
+    # hour (the same throttle a tracing finding's frontier-stub wait
+    # gets -- see test_claim_skips_recently_waiting_finding). Age it out
+    # so the next pass below can reclaim promptly, same as
+    # test_claim_reclaims_after_backoff_window does for the tracing arm.
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE ref_events SET ts = ts - INTERVAL '2 hours' "
+            "WHERE ref_id = %s AND source = 'chase'",
+            (fid,),
+        )
+        conn.commit()
+
+    # The stub "lands a PDF": give it a body chunk (what fetch_oa +
+    # ingest would have done).
+    store.insert_blocks(
+        stub_id,
+        [BlockInsert(pos=0, text=f"{claim_text}, stated directly.", meta={})],
+    )
+
+    result = run_finding_chase_pass(store, limit=10)
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert _status_tag(store, fid) == "tracing"
+    chain = _chain(store, fid)
+    assert len(chain) == 1
+    assert int(chain[0]["ref_id"]) == stub_id
+
+    links = store.links_for(fid, direction="out", relation="derived-from")
+    assert any(link.dst_ref_id == stub_id for link in links)
+
+    # The pre-existing lifecycle proceeds unchanged: no inline cites on
+    # the grounded chunk -> the next pass establishes it, same as an
+    # ordinary chase finding.
+    result2 = run_finding_chase_pass(store, limit=10)
+    assert result2 == {"claimed": 1, "ok": 1, "failed": 0}
+    assert _status_tag(store, fid) == "established"
+
+
+def test_acquiring_give_up_after_grace_window_when_stubs_exhausted(store) -> None:
+    """AC #5: once every linked stub is fetch-exhausted (>=1 fetcher:%
+    attempt, still no PDF) AND the finding has been waiting past the
+    acquisition-mode grace window, the pass gives up exactly once --
+    dead_chain(reason=unacquirable) -- and the stub still surfaces in
+    the hand-download queue (stub_backlog), unaffected."""
+    fid, stub_id = _seed_acquiring_finding(store, wants=[{"doi": "10.1/acq-c"}])
+
+    # fetch_oa already tried this stub at least once and came up empty.
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO ref_events (ref_id, source, event, payload) "
+            "VALUES (%s, 'fetcher:unpaywall', 'no_oa_version', '{}'::jsonb)",
+            (stub_id,),
+        )
+        conn.commit()
+
+    # The finding has been "waiting" (chase's own backoff bookkeeping)
+    # for 10 days -- past the default 7-day acquisition grace window,
+    # and well past the exponential backoff's 24h cap, so the claim
+    # query still reclaims it (mirrors test_claim_reclaims_after_widened_window).
+    _insert_chase_event(store, fid, "waiting", minutes_ago=14400)
+
+    result = run_finding_chase_pass(store, limit=10)
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert _status_tag(store, fid) == "dead_chain"
+
+    with store.pool.connection() as conn:
+        meta_row = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s", (fid,)
+        ).fetchone()
+    assert (meta_row[0] or {}).get("dead_reason") == "unacquirable"
+
+    # A second pass doesn't re-claim a dead_chain finding at all (the
+    # claim query only selects tracing/acquiring) -- "exactly once".
+    with store.pool.connection() as conn:
+        reclaimed = claim_tracing_findings(conn, limit=10)
+        conn.commit()
+    assert fid not in [f.ref_id for f in reclaimed]
+
+    # The stub is untouched by the finding's give-up -- it still
+    # surfaces in the hand-download queue.
+    backlog_ids = {row["ref_id"] for row in store.stub_backlog(limit=50)}
+    assert stub_id in backlog_ids
+
+
+def test_acquiring_waits_within_grace_window_even_when_exhausted(store) -> None:
+    """A stub that's already fetch-exhausted does NOT trigger give-up
+    before the grace window has elapsed -- age is required, not just
+    exhaustion (the "honest give-up" requires both)."""
+    fid, stub_id = _seed_acquiring_finding(store, wants=[{"doi": "10.1/acq-d"}])
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO ref_events (ref_id, source, event, payload) "
+            "VALUES (%s, 'fetcher:unpaywall', 'no_oa_version', '{}'::jsonb)",
+            (stub_id,),
+        )
+        conn.commit()
+
+    result = run_finding_chase_pass(store, limit=10)
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert _status_tag(store, fid) == "acquiring"
+
+
+def test_acquiring_stays_acquiring_when_fetch_ok_pending_ingest_past_grace(
+    store,
+) -> None:
+    """A ``fetch_ok`` success event means a PDF is inbound but not yet
+    ingested -- NOT exhausted, regardless of grace-window age or an
+    earlier failed leg on the same stub. Without excluding fetch_ok from
+    ``_stub_exhausted``, give-up could fire the instant before evidence
+    actually arrives (reviewer-flagged bug). Once chunks land on a later
+    pass, the finding grounds normally."""
+    claim_text = "a claim awaiting corpus evidence"
+    fid, stub_id = _seed_acquiring_finding(
+        store, wants=[{"doi": "10.1/acq-e"}], body=claim_text
+    )
+    with store.pool.connection() as conn:
+        # An earlier leg failed, then a later one succeeded -- fetch_ok
+        # must win regardless of event order.
+        conn.execute(
+            "INSERT INTO ref_events (ref_id, source, event, payload) "
+            "VALUES (%s, 'fetcher:unpaywall', 'no_oa_version', '{}'::jsonb)",
+            (stub_id,),
+        )
+        conn.execute(
+            "INSERT INTO ref_events (ref_id, source, event, payload) "
+            "VALUES (%s, 'fetcher:arxiv', 'fetch_ok', '{}'::jsonb)",
+            (stub_id,),
+        )
+        conn.commit()
+
+    # Age the finding's own "waiting" bookkeeping well past the grace
+    # window -- if fetch_ok weren't excluded from exhaustion, this alone
+    # (combined with the failed unpaywall leg above) would be enough to
+    # trigger give-up.
+    _insert_chase_event(store, fid, "waiting", minutes_ago=14400)
+
+    result = run_finding_chase_pass(store, limit=10)
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert _status_tag(store, fid) == "acquiring"  # NOT dead_chain
+
+    # Age out the "waiting" event this pass itself just wrote (else the
+    # claim-query backoff suppresses the finding on the next pass below
+    # -- same throttle test_acquiring_finding_grounds_once_stub_gains_chunks
+    # works around).
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE ref_events SET ts = ts - INTERVAL '2 hours' "
+            "WHERE ref_id = %s AND source = 'chase'",
+            (fid,),
+        )
+        conn.commit()
+
+    # Ingest lands the chunks on a later pass -- grounds normally.
+    store.insert_blocks(
+        stub_id,
+        [BlockInsert(pos=0, text=f"{claim_text}, stated directly.", meta={})],
+    )
+    result2 = run_finding_chase_pass(store, limit=10)
+    assert result2 == {"claimed": 1, "ok": 1, "failed": 0}
+    assert _status_tag(store, fid) == "tracing"
+    chain = _chain(store, fid)
+    assert len(chain) == 1
+    assert int(chain[0]["ref_id"]) == stub_id

@@ -381,9 +381,19 @@ cite. Work cheapest-first:
 
    The `paper_ingested` leaf auto-resolves once the paper lands +
    embeds; your re-tick then cites it by a chunk handle `[pc<id>]`.
-4. **Only a fuzzy claim, no id?** → `put(kind='finding',
-   text='<claim>', ...)` so `finding_chase` resolves it via
-   Unpaywall / arXiv / S2 / EPO, then cite on a re-tick.
+4. **Only a fuzzy claim, no id?** → mint an acquisition-mode finding
+   so the claim is on record and `fetch_oa` chases the paper for you:
+
+       put(kind='finding', title='<short claim title>',
+           body='<claim — include the paper title/DOI if you have one>',
+           wants=[{'doi': '10.x/y'}],  # or {'arxiv':…} or {'title':…,'url':…}
+           provenance=<this citing todo/chunk handle>)
+
+   `wants=` mints a paper stub per descriptor and links it
+   `awaits-evidence`; `fetch_oa` auto-claims a doi/arxiv stub (a
+   title+url-only one needs a hand download). `chase` grounds the
+   finding once the stub lands a PDF (`STATUS:acquiring` → `tracing` →
+   `established`); cite it on a re-tick.
 
 Either way, write `[citation pending]` in your prose as the
 placeholder — but ALWAYS with a stub or finding actually chasing it
@@ -405,17 +415,21 @@ finishes — no follow-up tick from you needed:
       text='''
   Literature hunt — find and ingest these N papers. For each:
   1. search(kind='paper', q='<title or DOI>') to check the corpus.
-  2. If not in corpus, mint
+  2. If not in corpus, mint an acquisition-mode finding:
        put(kind='finding',
-           text='<claim — include the paper title/DOI so chase can find it>',
-           verifier_confidence=0.5)
-     (No source_handle: the paper isn't in the corpus yet, so there is
-     no pc<id> handle to copy — never guess one.)
-     The finding_chase worker auto-resolves via Unpaywall / arXiv /
-     S2 / EPO OPS. No need to tag STATUS:done — your
+           title='<short claim title>',
+           body='<claim — include the paper title/DOI so it is traceable>',
+           wants=[{'doi': '10.x/y'}],  # or {'arxiv':…} or {'title':…,'url':…}
+           provenance='todo:<the id of this todo>')
+     `wants=` mints a paper stub per descriptor and links it
+     `awaits-evidence` — no source_handle to guess: the paper isn't in
+     the corpus yet, so there is no pc<id> handle to copy.
+     `fetch_oa` auto-claims a doi/arxiv stub; `chase` grounds the
+     finding once one lands a PDF. No need to tag STATUS:done — your
      `all_child_findings_resolved` auto_check fires when every
      finding reaches a terminal state (established, dead_chain, or
-     multi_candidate).
+     multi_candidate) — `acquiring` (still being fetched) blocks the
+     close, same as `tracing`.
 
   Papers needed:
     1. <citation-style identifier> — <topic>
