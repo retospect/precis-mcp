@@ -1,0 +1,54 @@
+{# One Sources/Cited row (paper-viewer-nav slice 3) — reused as-is by
+   /papers/{ref_id}/refs/{direction} (looped, inside _refs_panel.html.j2)
+   and by /papers/{ref_id}/fetch-ref's htmx single-row swap (standalone,
+   ``row`` as the whole context). ``row`` is built by
+   routes/papers.py::_refs_row — self-contained (carries ``ref_id`` /
+   ``direction``), so it needs no outer template context either way. The
+   Fetch form's ``hx-target="closest .refs-row"`` swaps THIS div without
+   needing a synchronised DOM id. #}
+<div class="refs-row border-b border-slate-100 py-1.5 text-xs last:border-0">
+  <div class="flex items-baseline gap-1.5">
+    {% if row.n %}<span class="w-5 shrink-0 text-right text-slate-400">{{ row.n }}.</span>{% endif %}
+    {% if row.held %}
+    <a href="{{ row.url }}" class="font-medium text-sky-700 hover:underline">{{ row.title }}</a>
+    {% if row.year %}<span class="text-slate-400">({{ row.year }})</span>{% endif %}
+    <span class="rounded bg-emerald-50 px-1 text-[10px] text-emerald-700" title="held in this corpus">held</span>
+    {% else %}
+    <span class="font-medium text-slate-800">{{ row.title }}</span>
+    {% if row.year %}<span class="text-slate-400">({{ row.year }})</span>{% endif %}
+    {% endif %}
+  </div>
+  {% if not row.held %}
+  <div class="mt-0.5 flex flex-wrap items-center gap-2 pl-6 text-[11px]">
+    {% if row.s2_url %}
+    <a href="{{ row.s2_url }}" target="_blank" rel="noopener" class="text-sky-700 hover:underline">Semantic Scholar</a>
+    {% endif %}
+    {% if row.doi_url %}
+    <a href="{{ row.doi_url }}" target="_blank" rel="noopener" class="text-sky-700 hover:underline">DOI</a>
+    {% endif %}
+    {% if row.scholar_url %}
+    <a href="{{ row.scholar_url }}" target="_blank" rel="noopener" class="text-sky-700 hover:underline">Scholar</a>
+    {% endif %}
+    {% if row.can_fetch %}
+    <form method="post" action="/papers/{{ row.ref_id }}/fetch-ref"
+          hx-post="/papers/{{ row.ref_id }}/fetch-ref"
+          hx-target="closest .refs-row" hx-swap="outerHTML"
+          class="ml-auto inline">
+      <input type="hidden" name="doi" value="{{ row.doi or '' }}" />
+      <input type="hidden" name="s2_id" value="{{ row.s2_id or '' }}" />
+      <input type="hidden" name="title" value="{{ row.title or '' }}" />
+      <input type="hidden" name="year" value="{{ row.year or '' }}" />
+      <input type="hidden" name="n" value="{{ row.n or '' }}" />
+      <input type="hidden" name="direction" value="{{ row.direction }}" />
+      <input type="hidden" name="return_to"
+             value="/papers/{{ row.ref_id }}?tab={{ 'Sources' if row.direction == 'sources' else 'Cited' }}" />
+      <button type="submit"
+              class="rounded border border-sky-300 bg-sky-50 px-2 py-0.5 text-sky-700 hover:bg-sky-100"
+              title="mint/reuse a fetchable stub and jump the fetch_oa queue">
+        Fetch
+      </button>
+    </form>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>

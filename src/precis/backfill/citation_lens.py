@@ -15,9 +15,15 @@ references/cited_by **once** (TTL-gated by a ``citation_edges`` ref_event),
 resolves each neighbour against ``ref_identifiers`` (DOI / S2 id), and — only
 when the neighbour resolves to a *held* ref — writes a ``cites`` edge into
 ``links`` (idempotent; one direction, since ``cited-by`` is the read-time
-rewrite). Neighbours **not** in the corpus are ignored: acquiring them is
-chase/watch_poll's job, not backfill's. Once the edges exist the lens is pure
-SQL over ``links`` and the fetch is skipped until the TTL lapses.
+rewrite). A neighbour **not** in the corpus gets no ``links`` edge —
+acquiring it is chase/watch_poll's job, not backfill's — but as of
+paper-viewer-nav slice 3 the *full* neighbour list (held or not) is also
+persisted into ``s2_neighbors`` (migration 0106) on the same fetch, so the web
+reader can render a complete Sources/Cited tab, including fetchable stubs for
+the non-held majority. Once materialised the ``links``/lens-query side is pure
+SQL and the fetch is skipped until the TTL lapses — see
+:func:`ensure_s2_neighbors` for the single-ref on-demand entry point the web
+layer calls.
 
 **Degrades to nothing.** No ``[paper]`` extra, no network, or an S2 hiccup → the
 materialise step is a caught no-op (freshness is *not* stamped, so it retries),
@@ -132,6 +138,22 @@ def _held_ref_for_neighbor(conn: Any, neighbor: dict[str, Any]) -> int | None:
     return None
 
 
+def _s2_neighbor_row(
+    neighbor: dict[str, Any], held_ref_id: int | None
+) -> dict[str, Any]:
+    """Shape one S2 neighbour dict (``{title, doi, year, s2_id}`` per
+    ``ingest/citations.py::citations()``) for
+    :meth:`Store.replace_s2_neighbors` — carries the resolved
+    ``held_ref_id`` alongside the raw S2 fields."""
+    return {
+        "s2_id": neighbor.get("s2_id"),
+        "doi": neighbor.get("doi"),
+        "title": neighbor.get("title"),
+        "year": neighbor.get("year"),
+        "held_ref_id": held_ref_id,
+    }
+
+
 # ── materialisation ──────────────────────────────────────────────────
 
 
@@ -168,9 +190,16 @@ def materialize_citation_edges(
                 refs = result.get("references") or []
                 cby = result.get("cited_by") or []
                 edges = 0
+
+                # Resolve each neighbour's held_ref_id once and reuse it for
+                # both the held↔held `cites` edge (unchanged behaviour) and
+                # the full s2_neighbors write-through (source-backfill
+                # slice 3 — every neighbour persisted, not just held ones).
+                refs_held = [(nb, _held_ref_for_neighbor(conn, nb)) for nb in refs]
+                cby_held = [(nb, _held_ref_for_neighbor(conn, nb)) for nb in cby]
+
                 # references: this paper cites the neighbour → cites(rid → held)
-                for nb in refs:
-                    held = _held_ref_for_neighbor(conn, nb)
+                for nb, held in refs_held:
                     if held is not None and held != rid:
                         store.add_link(
                             src_ref_id=rid,
@@ -181,8 +210,7 @@ def materialize_citation_edges(
                         )
                         edges += 1
                 # cited_by: the neighbour cites this paper → cites(held → rid)
-                for nb in cby:
-                    held = _held_ref_for_neighbor(conn, nb)
+                for nb, held in cby_held:
                     if held is not None and held != rid:
                         store.add_link(
                             src_ref_id=held,
@@ -192,6 +220,26 @@ def materialize_citation_edges(
                             conn=conn,
                         )
                         edges += 1
+
+                # Full neighbour lists (paper-viewer-nav slice 3): persist
+                # every S2 neighbour, held or not, so the web reader can
+                # render a complete Sources/Cited tab. Same delete+insert
+                # refresh both directions ride — never a partial write, so
+                # a paper with an empty bibliography correctly clears any
+                # stale rows from a prior fetch.
+                store.replace_s2_neighbors(
+                    rid,
+                    "cites",
+                    [_s2_neighbor_row(nb, held) for nb, held in refs_held],
+                    conn=conn,
+                )
+                store.replace_s2_neighbors(
+                    rid,
+                    "cited_by",
+                    [_s2_neighbor_row(nb, held) for nb, held in cby_held],
+                    conn=conn,
+                )
+
                 store.append_event(
                     rid,
                     source=_EDGE_SOURCE,
@@ -209,6 +257,31 @@ def materialize_citation_edges(
             # break the workspace. Freshness is not stamped → retried next run.
             log.debug("citation_lens: materialise failed for ref %s: %s", rid, exc)
     return written
+
+
+def ensure_s2_neighbors(
+    store: Any, ref_id: int, *, ttl_days: int | None = None
+) -> bool:
+    """The single-ref on-demand entry point (paper-viewer-nav slice 3 §4):
+    fetch-and-persist ``s2_neighbors`` (+ held↔held ``cites`` edges) for
+    **one** ref, honouring the same ``citation_edges`` 30-day TTL
+    :func:`materialize_citation_edges` gates on — a thin single-ref
+    convenience wrapper, not a second fetch path. The web reader calls this
+    when opening the Sources/Cited tabs so an old paper's bibliography
+    backfills inline on first view, then is a no-op on every later view
+    until the TTL lapses.
+
+    Returns ``True`` if a fetch was attempted this call (fresh or not is
+    then whatever :func:`materialize_citation_edges` achieved — it never
+    raises, and leaves freshness un-stamped on failure so the next call
+    retries), ``False`` if skipped because the edges are already fresh.
+    Never raises.
+    """
+    ttl = ttl_days if ttl_days is not None else _ttl_days()
+    if _is_fresh(store, ref_id, ttl):
+        return False
+    materialize_citation_edges(store, {ref_id}, ttl_days=ttl)
+    return True
 
 
 # ── the lens query ───────────────────────────────────────────────────

@@ -60,6 +60,20 @@ function paperDoc(paperId, citedOrd, hasPdf, initialTab) {
     jpage: '',
     jord: '',
     jumpChunk: null,
+    // Small status line surfaced next to the Jump tab: '' when the last
+    // find/jump was a clean phrase match, else a note that we landed on
+    // an approximate page (or that the entered ord/handle was garbage).
+    findStatus: '',
+    // Generation counter for _findAndCount — bumped on every call so an
+    // older, still-listening call can tell its `updatefindmatchescount`
+    // result apart from a newer one's (pdf.js's event carries no query
+    // correlation, so two overlapping finds would otherwise cross-talk).
+    _findGen: 0,
+    // Sources / Cited: server-rendered HTML fragments (unlike every other
+    // tab's JSON + client-rendered list), lazy-loaded once per tab per
+    // page load — see setTab() / _loadRefs().
+    sourcesLoaded: false,
+    citedLoaded: false,
 
     init() {
       // A ?chunk=N citation deep link: land on that chunk (text shown in
@@ -71,6 +85,43 @@ function paperDoc(paperId, citedOrd, hasPdf, initialTab) {
       }
       // Warm the rapid-nav gloss list if we open straight onto Navigate.
       if (this.tab === 'Navigate' && this.mode !== 'toc') this.loadChunks();
+      // A ?tab=Sources/Cited deep link opens straight onto one of the
+      // htmx-fragment tabs — same lazy-load setTab() does on click.
+      this._loadRefsIfNeeded(this.tab);
+    },
+
+    // ── tab switch + Sources/Cited lazy fragment load ────────────────
+    setTab(t) {
+      this.tab = t;
+      this._loadRefsIfNeeded(t);
+    },
+    _loadRefsIfNeeded(t) {
+      if (t === 'Sources' && !this.sourcesLoaded) {
+        this.sourcesLoaded = true;
+        this._loadRefs('sources', 'refs-sources-panel');
+      }
+      if (t === 'Cited' && !this.citedLoaded) {
+        this.citedLoaded = true;
+        this._loadRefs('cited', 'refs-cited-panel');
+      }
+    },
+    // Server-rendered HTML fragment (not JSON) — the row markup (held
+    // link vs. off-site links + Fetch form) lives in the Jinja template,
+    // not duplicated in JS. htmx.ajax swaps it in and wires up any
+    // hx-* attributes the fragment itself carries (the per-row Fetch
+    // form); falls back to a plain fetch+innerHTML if htmx isn't loaded.
+    _loadRefs(direction, targetId) {
+      const url = `/papers/${this.paperId}/refs/${direction}`;
+      if (window.htmx) {
+        window.htmx.ajax('GET', url, { target: '#' + targetId, swap: 'innerHTML' });
+      } else {
+        fetch(url, { cache: 'no-store' })
+          .then((r) => r.text())
+          .then((html) => {
+            const el = document.getElementById(targetId);
+            if (el) el.innerHTML = html;
+          });
+      }
     },
 
     // ── pdf.js viewer control ───────────────────────────────────────
@@ -102,12 +153,69 @@ function paperDoc(paperId, citedOrd, hasPdf, initialTab) {
     async findInPdf(query, page) {
       const app = await this._app();
       if (!app) return;
-      if (page) app.page = Number(page);
-      if (!query) return;
-      app.eventBus.dispatch('find', {
-        source: null, type: '', query,
-        caseSensitive: false, entireWord: false,
-        highlightAll: true, findPrevious: false, matchDiacritics: false,
+      const phrase = (query || '').trim();
+      this.findStatus = '';
+      if (!phrase) {
+        // No usable phrase at all — the page jump is the only anchor we have.
+        if (page) { app.page = Number(page); this.findStatus = '~p.' + page; }
+        return;
+      }
+      // Trust the phrase first: dispatch the find *without* jumping to the
+      // (often-wrong) page_first guess, and let pdf.js's own text-layer
+      // match position the viewport. Only fall back to the page guess —
+      // marked visibly approximate — when the phrase doesn't match.
+      const total = await this._findAndCount(app, phrase);
+      // A newer findInPdf call started while this one's find was still
+      // pending (see _findAndCount) — that call owns findStatus and the
+      // page fallback now; this one has nothing more to do.
+      if (total === null) return;
+      if (total < 1) {
+        if (page) {
+          app.page = Number(page);
+          this.findStatus = 'text not found — jumped to p.' + page + ' (approximate)';
+        } else {
+          this.findStatus = 'text not found';
+        }
+      }
+    },
+    // Dispatch a pdf.js text-layer find and resolve with the settled match
+    // total. `updatefindmatchescount` fires progressively as pages are
+    // scanned; resolve as soon as it reports >=1 (the viewport is already
+    // positioned by then), else time out at 0. Always unsubscribes on the
+    // way out, so a repeated call never leaks a listener.
+    //
+    // pdf.js's `updatefindmatchescount` event carries no query
+    // correlation — if a second call starts before the first's listener
+    // has unsubscribed (a fresh Jump/nav click within the 1.5s window),
+    // both listeners see every event and could resolve each other's
+    // promise with the wrong query's count. `_findGen` disambiguates:
+    // each call captures the generation at dispatch time, and only
+    // resolves a real total if it's still the current generation when a
+    // match lands; a superseded call still always unsubscribes (so it
+    // never leaks a listener) but resolves `null` — a "stale, not a
+    // real total" sentinel `findInPdf` skips (no findStatus write, no
+    // page fallback) rather than mistaking for "0 matches".
+    _findAndCount(app, query) {
+      const gen = ++this._findGen;
+      return new Promise((resolve) => {
+        let done = false;
+        const finish = (total) => {
+          if (done) return;
+          done = true;
+          app.eventBus.off('updatefindmatchescount', onCount);
+          resolve(gen === this._findGen ? total : null);
+        };
+        const onCount = (e) => {
+          const total = e && e.matchesCount ? e.matchesCount.total : 0;
+          if (total >= 1) finish(total);
+        };
+        app.eventBus.on('updatefindmatchescount', onCount);
+        setTimeout(() => finish(0), 1500);
+        app.eventBus.dispatch('find', {
+          source: null, type: '', query,
+          caseSensitive: false, entireWord: false,
+          highlightAll: true, findPrevious: false, matchDiacritics: false,
+        });
       });
     },
     _phrase(text) {
@@ -250,7 +358,13 @@ function paperDoc(paperId, citedOrd, hasPdf, initialTab) {
         const d = await (await fetch(`/papers/${this.paperId}/chunk/${s.lo}`, { cache: 'no-store' })).json();
         if (d.chunk) { this.findInPdf(this._phrase(d.chunk.text), d.chunk.page || s.page); return; }
       } catch (e) { /* fall through */ }
-      this.findInPdf(s.keywords && s.keywords[0] ? s.keywords[0] : '', s.page);
+      // No chunk text to fetch — fall back to the segment's own label. A
+      // single stemmed KeyBERT keyword rarely matches the PDF's rendered
+      // text layer verbatim (the red pdf.js notFound bar); running the
+      // joined keyword phrase through the same clean-word extraction as a
+      // chunk's text gives the find a real multi-word run to try.
+      const label = (s.keywords || []).join(' ');
+      this.findInPdf(this._phrase(label), s.page);
     },
     // Drill into a multi-chunk cluster: push its ord range and re-cluster.
     // A single-chunk row (lo === hi) has nothing finer to show.
@@ -288,14 +402,29 @@ function paperDoc(paperId, citedOrd, hasPdf, initialTab) {
       if (this.jpage) this.gotoPage(this.jpage);
     },
     async jumpOrd() {
-      const ord = this.jord;
-      if (ord === '' || ord === null) return;
+      const raw = (this.jord || '').trim();
+      if (!raw) return;
+      // Accept the same compound handles the TOC displays (`pa<id>~lo..hi`):
+      // strip the prefix and take the low end of a range client-side, so a
+      // handle pasted straight out of the TOC works here too instead of
+      // silently doing nothing (the box used to be `type="number"`, which
+      // couldn't even accept the ``~``/``..`` characters).
+      const m = raw.match(/^(?:pa\d+~)?(\d+)(?:\.\.\d+)?$/);
+      if (!m) {
+        this.jumpChunk = null;
+        this.findStatus = '"' + raw + '" isn\'t a chunk number — paste "N" or a TOC handle';
+        return;
+      }
+      const ord = m[1];
       try {
         const data = await (await fetch(`/papers/${this.paperId}/chunk/${ord}`, { cache: 'no-store' })).json();
         this.jumpChunk = data.chunk;
       } catch (e) { this.jumpChunk = null; }
       if (this.jumpChunk) {
+        this.findStatus = '';
         this.findInPdf(this._phrase(this.jumpChunk.text), this.jumpChunk.page);
+      } else {
+        this.findStatus = 'chunk ' + ord + ' not found';
       }
     },
   };

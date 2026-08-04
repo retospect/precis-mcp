@@ -24,6 +24,7 @@ from precis.store.types import (
     CacheEntry,
     Link,
     Ref,
+    S2Neighbor,
 )
 
 
@@ -475,6 +476,23 @@ def _row_to_cache_entry(row: tuple) -> CacheEntry:
     )
 
 
+def _row_to_s2_neighbor(row: tuple) -> S2Neighbor:
+    """Map an ``s2_neighbors`` row tuple in the order:
+    (ref_id, direction, ord, s2_id, doi, title, year, held_ref_id, fetched_at)
+    """
+    return S2Neighbor(
+        ref_id=row[0],
+        direction=row[1],
+        ord=row[2],
+        s2_id=row[3],
+        doi=row[4],
+        title=row[5],
+        year=row[6],
+        held_ref_id=row[7],
+        fetched_at=row[8],
+    )
+
+
 __all__ = [
     "SEMANTIC_DISTANCE_FLOOR",
     "_AGENT_WRITABLE_PREFIXES",
@@ -490,4 +508,5 @@ __all__ = [
     "_row_to_cache_entry",
     "_row_to_link",
     "_row_to_ref",
+    "_row_to_s2_neighbor",
 ]

@@ -1611,6 +1611,60 @@ def test_paper_retriage_adds_tag_and_redirects(client, runtime) -> None:
     assert args == {"kind": "paper", "id": 10, "add": ["needs-triage"]}
 
 
+def test_paper_reviewed_toggle_sets_then_clears_stamp(client, runtime) -> None:
+    """POST /papers/{id}/reviewed is a bidirectional toggle: the first
+    call stamps ``human_verified_at/by`` (identity = the web process's
+    configured write source), the second clears it — a direct store op,
+    not a dispatched verb."""
+    store = runtime.store
+    ref = store.fetch_refs_by_ids([10]).get(10)
+    assert ref.human_verified_at is None
+
+    resp = client.post("/papers/10/reviewed", follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/papers/10?tab=Meta"
+    assert ref.human_verified_at is not None
+    assert ref.human_verified_by == "web:owner"
+
+    resp = client.post("/papers/10/reviewed", follow_redirects=False)
+    assert resp.status_code == 303
+    assert ref.human_verified_at is None
+    assert ref.human_verified_by is None
+
+
+def test_paper_reviewed_set_clears_needs_triage(client, runtime) -> None:
+    """Marking a paper reviewed also clears a lingering needs-triage flag
+    (dispatched through the tag verb, same mechanics as ``untriage``)."""
+    runtime.store.triaged_ref_ids.add(10)
+    resp = client.post("/papers/10/reviewed", follow_redirects=False)
+    assert resp.status_code == 303
+    verb, args = runtime.calls[-1]
+    assert verb == "tag"
+    assert args == {"kind": "paper", "id": 10, "remove": ["needs-triage"]}
+
+
+def test_paper_reviewed_unknown_ref_404s(client) -> None:
+    """An unknown/deleted paper 404s rather than silently redirecting."""
+    resp = client.post("/papers/999999/reviewed", follow_redirects=False)
+    assert resp.status_code == 404
+
+
+def test_paper_edit_clears_reviewed_stamp(client, runtime) -> None:
+    """A successful metadata edit clears any existing review sign-off —
+    a review can't cover metadata that has since changed."""
+    store = runtime.store
+    ref = store.fetch_refs_by_ids([10]).get(10)
+    store.set_human_verified(10, by="web:owner")
+    assert ref.human_verified_at is not None
+
+    resp = client.post(
+        "/papers/10/edit", data={"title": "New title"}, follow_redirects=False
+    )
+    assert resp.status_code == 303
+    assert ref.human_verified_at is None
+    assert ref.human_verified_by is None
+
+
 def test_paper_replace_pdf_swaps_file_bypassing_ocr(client, runtime, tmp_path) -> None:
     """Uploading a replacement PDF overwrites the on-disk corpus file (so
     the viewer serves good bytes) and refreshes the storage_path pointer —
@@ -1904,6 +1958,23 @@ def test_paper_detail_shows_triage_panel_when_tagged(client, runtime) -> None:
     assert resp.status_code == 200
     assert "Needs triage" in resp.text
     assert "/papers/10/triage-lookup" in resp.text
+
+
+def test_paper_detail_shows_reviewed_row(client, runtime) -> None:
+    """The Meta tab renders the reviewed sign-off + undo once stamped,
+    and the plain "Mark reviewed" button before that."""
+    resp = client.get("/papers/10")
+    assert resp.status_code == 200
+    assert "Mark reviewed" in resp.text
+    assert "Reviewed ✓" not in resp.text
+
+    runtime.store.set_human_verified(10, by="alice")
+
+    resp = client.get("/papers/10")
+    assert resp.status_code == 200
+    assert "Reviewed ✓" in resp.text
+    assert "by alice" in resp.text
+    assert "/papers/10/reviewed" in resp.text
 
 
 def test_triage_lookup_prefills_from_s2(client) -> None:

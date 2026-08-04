@@ -109,6 +109,9 @@ async def detail(request: Request, slug: str) -> HTMLResponse:
         "initial_tab": "Meta",
         "pdf_url": f"/pres/{ref.id}/pdf",
         "meta_panel": "pres/_meta_panel.html.j2",
+        # Sources/Cited (S2 bibliography) are paper-only — pres has no S2
+        # neighbour graph.
+        "show_refs_tabs": False,
         "cite_key": ref.slug or "",
         "pdf_lookup_paths": [],
         "corpus_dirs": [str(p) for p in cfg.corpus_dirs],

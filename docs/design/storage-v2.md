@@ -793,6 +793,35 @@ The verifier itself is client-side workflow (a subagent the
 writing thread spawns); this kind only owns the storage door.
 See `precis-citation-help` for the agent surface.
 
+### `s2_neighbors` table — persisted S2 bibliography/citers
+
+Migration `0106_s2_neighbors.sql` (paper-viewer-nav slice 3). Every
+Semantic Scholar neighbour `backfill/citation_lens.py` already fetches —
+not just the held↔held subset it materializes into `cites` link edges —
+persisted for the web reader's Sources/Cited tabs:
+
+```sql
+CREATE TABLE s2_neighbors (
+  ref_id      bigint      NOT NULL REFERENCES refs (ref_id) ON DELETE CASCADE,
+  direction   text        NOT NULL CHECK (direction IN ('cites', 'cited_by')),
+  ord         int         NOT NULL,   -- S2 list position (approximate bibliography order)
+  s2_id       text,
+  doi         text,
+  title       text,
+  year        int,
+  held_ref_id bigint      REFERENCES refs (ref_id) ON DELETE SET NULL,
+  fetched_at  timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (ref_id, direction, ord)
+);
+```
+
+Refresh = DELETE all `(ref_id, direction)` rows then INSERT the fresh
+list (`Store.replace_s2_neighbors`), riding the same `citation_edges`
+30-day TTL the `cites`-edge materialization already gates on — no new
+fetch path. `held_ref_id` resolved against `ref_identifiers` at write
+time; NULL means not (yet) held. No `arxiv` column — S2's
+reference/citation rows never carry one.
+
 ### Sentence splitter + dehyphenation + chunker version
 
 `precis.utils.sentences.split_sentences` wraps pysbd 0.3.4 with

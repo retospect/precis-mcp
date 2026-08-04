@@ -4,6 +4,12 @@
 `42379` (`PRIO:low`). Noted in `CHANGELOG.md` as the follow-up to the
 two-pane paper reader shipped 2026-06-24/25.
 
+As of `docs/proposals/paper-viewer-nav.md` slice 1 (2026-08-04) the web
+layer no longer trusts `page_first` as a hard anchor — it's phrase-first
+PDF.js find now, `page_first` only a visibly-marked approximate fallback.
+This design's remaining value: true page/bbox accuracy for that fallback,
+plus the per-region hover/highlight-precision work below.
+
 ## Goal
 
 Give the paper reader (`/papers`) **precise per-chunk highlight overlays**

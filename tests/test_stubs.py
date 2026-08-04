@@ -429,3 +429,35 @@ def test_requeue_stubs_for_fetch_excludes_already_tried(store: Store) -> None:
     stamped = store.requeue_stubs_for_fetch(limit=25)
     assert stamped == 0
     assert not _has_oa_requeued(store, tried)
+
+
+def test_requeue_stubs_for_fetch_ref_ids_scopes_to_one_stub(store: Store) -> None:
+    """``ref_ids=`` (paper-viewer-nav slice 3's single-paper Fetch) stamps
+    only the named stub even when other eligible stubs exist."""
+    a = _stub(store, cite_key="rq_scope_a2024", doi="10.1/rqscopea")
+    b = _stub(store, cite_key="rq_scope_b2024", doi="10.1/rqscopeb")
+    stamped = store.requeue_stubs_for_fetch(ref_ids=[a])
+    assert stamped == 1
+    assert _has_oa_requeued(store, a)
+    assert not _has_oa_requeued(store, b)
+
+
+def test_requeue_stubs_for_fetch_id_kinds_widens_to_s2_only_stub(store: Store) -> None:
+    """The single-ref caller widens ``id_kinds`` past the batch button's
+    DOI-only default so an S2-only stub (no DOI resolved yet) still gets
+    stamped."""
+    ref = store.insert_ref(kind="paper", slug="rq_s2only2024", title="X", meta={})
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO ref_identifiers (ref_id, id_kind, id_value, source) "
+            "VALUES (%s, 's2', 'abc123', 'manual')",
+            (ref.id,),
+        )
+    # DOI-only default (the batch caller's behaviour) skips it...
+    assert store.requeue_stubs_for_fetch(ref_ids=[ref.id]) == 0
+    # ...but widening id_kinds picks it up.
+    stamped = store.requeue_stubs_for_fetch(
+        ref_ids=[ref.id], id_kinds=("doi", "arxiv", "s2")
+    )
+    assert stamped == 1
+    assert _has_oa_requeued(store, ref.id)

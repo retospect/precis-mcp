@@ -181,6 +181,30 @@ def test_chunk_endpoint_returns_chunk_key(client) -> None:
     assert "chunk" in resp.json()
 
 
+def test_chunk_endpoint_accepts_range_selector(client) -> None:
+    """The ``{ref_id}/chunk/{sel}`` param widened to ``str`` (slice 1) — a
+    Jump-box/TOC-style ``lo..hi`` range must route without a 422, not just
+    a bare ord."""
+    resp = client.get("/papers/10/chunk/3..5")
+    assert resp.status_code == 200
+    assert "chunk" in resp.json()
+
+
+def test_chunk_endpoint_accepts_compound_handle(client) -> None:
+    """The ADR-0032 compound handle the TOC displays (``pa<id>~lo..hi``)
+    must also route — the widened ``str`` param, not just the ``N..M``
+    the old ``int`` typing at least tolerated for a bare ord."""
+    resp = client.get("/papers/10/chunk/pa10~3..5")
+    assert resp.status_code == 200
+    assert "chunk" in resp.json()
+
+
+def test_chunk_endpoint_garbage_selector_returns_null_not_500(client) -> None:
+    resp = client.get("/papers/10/chunk/not-a-selector")
+    assert resp.status_code == 200
+    assert resp.json()["chunk"] is None
+
+
 def test_rawchunks_endpoint_lists_verbatim_text_in_reading_order(
     client, runtime
 ) -> None:

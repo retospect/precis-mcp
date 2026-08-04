@@ -30,6 +30,7 @@ from fastapi.responses import (
     Response,
 )
 
+from precis.backfill.citation_lens import ensure_s2_neighbors
 from precis.corpus_layout import corpus_pdf_dest
 from precis.errors import BadInput, NotFound
 from precis.utils.authors import author_names
@@ -50,6 +51,7 @@ from precis_web.deps import (
     redirect_or_error,
     templates,
 )
+from precis_web.paper_links import doi_url, scholar_title_url
 
 router = APIRouter(prefix="/papers", tags=["papers"])
 
@@ -294,6 +296,7 @@ def _render_detail(
         store.identifiers_for_refs([ref_id]).get(ref_id, {})
     )
     has_triage = triage or store.has_tag(ref_id, "OPEN", _TRIAGE_TAG)
+    verified_at = getattr(ref, "human_verified_at", None)
     stamps = store.ingest_timestamps(ref_id)
     n_chunks = store.count_blocks(ref_id)
     tags = _detail_tags(store, ref_id)
@@ -334,6 +337,11 @@ def _render_detail(
         "is_triage": has_triage,
         "prefill": prefill,
         "triage_msg": triage_msg,
+        # "Reviewed" sign-off (refs.human_verified_at/by) — the Meta tab's
+        # mark-reviewed / undo row.
+        "is_reviewed": bool(verified_at),
+        "reviewed_at": verified_at.strftime("%Y-%m-%d") if verified_at else "",
+        "reviewed_by": getattr(ref, "human_verified_by", None) or "",
         # Editable short handle (cite_key) + a free suggestion.
         "slug_default": slug_default,
         "suggested_slug": suggested_slug,
@@ -361,6 +369,11 @@ def _render_detail(
             "initial_tab": initial_tab,
             "pdf_url": f"/papers/{ref_id}/pdf",
             "meta_panel": "papers/_meta_panel.html.j2",
+            # Sources/Cited tabs (S2 bibliography + citing papers) are
+            # paper-only — cfp/pres/datasheet siblings share this reader
+            # shell but have no S2 neighbour graph (``refs_panel``/
+            # ``fetch_ref`` 404 a non-paper ref_id too).
+            "show_refs_tabs": ref.kind == "paper",
             "cite_key": cite_key,
             "pdf_lookup_paths": [
                 str(p) for p in _pdf_candidates(cfg.corpus_dirs, pdf_keys)
@@ -383,16 +396,29 @@ def _render_detail(
     return templates.TemplateResponse(request, "papers/detail.html.j2", context)
 
 
+#: ADR-0032 compound-handle chunk selector: an optional ``pa<ref_id>~``
+#: prefix (the TOC's own display form, e.g. ``pa1483~13..15``) followed by
+#: a bare ord or an inclusive ``lo..hi`` range. Shared by ``?chunk=``, the
+#: Jump box, and TOC clicks — all funnel through :func:`_cited_chunk`.
+_SEL_RE = re.compile(r"^(?:pa(\d+)~)?(\d+)(?:\.\.\d+)?$")
+
+
 def _cited_chunk(store: Any, ref_id: int, chunk: str | None) -> dict[str, Any] | None:
-    """Resolve a ``?chunk=N`` (or ``N..M``) citation to the cited chunk's
-    verbatim text + PDF page, for the highlighted "cited passage" card.
-    ``pN`` page-jumps and missing chunks return ``None``."""
+    """Resolve a chunk selector — ``N``, ``N..M``, or the compound
+    ``pa<ref_id>~N[..M]`` handle the TOC displays — to the cited chunk's
+    verbatim text + PDF page, for the highlighted "cited passage" card. A
+    range uses its low end. ``pN`` page-jumps, missing chunks, and a
+    compound handle naming a *different* paper (never resolve into
+    another ref's chunk under this ``ref_id``'s URL) all return ``None``."""
     if not chunk:
         return None
-    m = re.match(r"^(\d+)(?:\.\.\d+)?$", chunk)
+    m = _SEL_RE.match(chunk)
     if m is None:  # e.g. ``p23`` — a page jump, no chunk text
         return None
-    ord_ = int(m.group(1))
+    pa_id, lo = m.group(1), m.group(2)
+    if pa_id is not None and int(pa_id) != ref_id:
+        return None
+    ord_ = int(lo)
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT text, page_first FROM chunks WHERE ref_id = %s AND ord = %s",
@@ -657,16 +683,308 @@ async def raw_chunks_in_paper(request: Request, ref_id: int) -> JSONResponse:
     )
 
 
-@router.get("/{ref_id}/chunk/{ord}")
-async def chunk_in_paper(request: Request, ref_id: int, ord: int) -> JSONResponse:
-    """Resolve a single chunk ``ord`` → ``{ord, page, text}`` for the
-    sidebar "jump to chunk" affordance. 404-as-empty when absent."""
+@router.get("/{ref_id}/chunk/{sel}")
+async def chunk_in_paper(request: Request, ref_id: int, sel: str) -> JSONResponse:
+    """Resolve a chunk selector → ``{ord, page, text}`` for the sidebar
+    "jump to chunk" affordance. ``sel`` accepts a bare ord, an ``lo..hi``
+    range (low end wins), or the ADR-0032 compound handle the TOC itself
+    displays (``pa<ref_id>~lo..hi``) — anything else, including a compound
+    handle naming a different paper, 404s-as-empty (see ``_cited_chunk``,
+    which every one of these forms funnels through)."""
     store = get_store(request)
     ref = _resolve_paper(store, str(ref_id), kinds=_DOC_FAMILY)
     if ref is None:
         return JSONResponse({"chunk": None})
-    cited = _cited_chunk(store, ref.id, str(ord))
+    cited = _cited_chunk(store, ref.id, sel)
     return JSONResponse({"chunk": cited})
+
+
+# ── Sources / Cited tabs (paper-viewer-nav slice 3) ────────────────────
+#
+# The bibliography a paper cites ("sources") and the papers that cite it
+# ("cited") — S2's citation graph, persisted per-paper into
+# ``s2_neighbors`` (migration 0106) so the reader can render a full tab
+# without minting a ref per reference. A held neighbour (``held_ref_id``
+# set) links straight into the corpus; a non-held one shows title/year +
+# off-site links + a Fetch button when it carries an identifier to fetch
+# by.
+
+#: The two valid ``{ref_id}/refs/{direction}`` path values — web-facing
+#: names, distinct from the ``s2_neighbors.direction`` DB values
+#: (``cites`` / ``cited_by``) :func:`_sources_rows` / :func:`_cited_rows`
+#: query directly.
+_REFS_DIRECTIONS: frozenset[str] = frozenset({"sources", "cited"})
+
+
+def _refs_row(
+    *,
+    ref_id: int,
+    direction: str,
+    n: int | None,
+    held_ref: Any | None,
+    s2_id: str | None,
+    doi: str | None,
+    title: str | None,
+    year: int | None,
+) -> dict[str, Any]:
+    """One Sources/Cited row. ``ref_id``/``direction`` identify the *owning*
+    paper (this reader's own ref, not the neighbour) — carried on the row
+    itself so the fetch-ref endpoint's single-row htmx response is
+    self-contained and needs no outer template context."""
+    base: dict[str, Any] = {
+        "ref_id": ref_id,
+        "direction": direction,
+        "n": n,
+        "s2_id": s2_id or None,
+        "doi": doi or None,
+        "year": year,
+    }
+    if held_ref is not None:
+        base.update(
+            {
+                "held": True,
+                "url": f"/papers/{held_ref.slug or held_ref.id}",
+                "title": held_ref.title or "(untitled)",
+                "year": held_ref.year,
+            }
+        )
+        return base
+    base.update(
+        {
+            "held": False,
+            "title": title or "(untitled)",
+            "s2_url": (
+                f"https://www.semanticscholar.org/paper/{s2_id}" if s2_id else ""
+            ),
+            "doi_url": doi_url(doi) if doi else "",
+            "scholar_url": scholar_title_url(title) if title else "",
+            # The row's own Fetch button — only when there's something to
+            # fetch by (a bare title-only neighbour is links-only).
+            "can_fetch": bool(s2_id or doi),
+        }
+    )
+    return base
+
+
+def _sources_rows(store: Any, ref: Any) -> list[dict[str, Any]]:
+    """This paper's outgoing bibliography, S2 order (approximate)."""
+    neighbors = store.list_s2_neighbors(ref.id, "cites")
+    held_ids = {nb.held_ref_id for nb in neighbors if nb.held_ref_id}
+    refs = store.fetch_refs_by_ids(list(held_ids)) if held_ids else {}
+    return [
+        _refs_row(
+            ref_id=ref.id,
+            direction="sources",
+            n=i,
+            held_ref=refs.get(nb.held_ref_id) if nb.held_ref_id else None,
+            s2_id=nb.s2_id,
+            doi=nb.doi,
+            title=nb.title,
+            year=nb.year,
+        )
+        for i, nb in enumerate(neighbors, start=1)
+    ]
+
+
+def _cited_rows(store: Any, ref: Any) -> list[dict[str, Any]]:
+    """Papers citing this one: held incoming ``cites`` links unioned with
+    the S2 ``cited_by`` neighbour list, deduped on the held ref — a held
+    citer appearing in both shows once, as held."""
+    held_links = store.links_for(ref.id, direction="in", relation="cites")
+    citer_ids = {lk.src_ref_id for lk in held_links}
+    neighbors = store.list_s2_neighbors(ref.id, "cited_by")
+    want_ids = citer_ids | {nb.held_ref_id for nb in neighbors if nb.held_ref_id}
+    refs = store.fetch_refs_by_ids(list(want_ids)) if want_ids else {}
+    # Paper-only, live-only — links_for can in principle surface a
+    # non-paper or soft-deleted citer; the tab is a paper bibliography view.
+    remaining = {
+        rid
+        for rid in citer_ids
+        if refs.get(rid) is not None and refs[rid].kind == "paper"
+    }
+    rows: list[dict[str, Any]] = []
+    for nb in neighbors:
+        held_ref = refs.get(nb.held_ref_id) if nb.held_ref_id else None
+        if held_ref is not None:
+            remaining.discard(nb.held_ref_id)
+        rows.append(
+            _refs_row(
+                ref_id=ref.id,
+                direction="cited",
+                n=None,
+                held_ref=held_ref,
+                s2_id=nb.s2_id,
+                doi=nb.doi,
+                title=nb.title,
+                year=nb.year,
+            )
+        )
+    # Held citers S2's cited_by list doesn't (yet) carry — still real
+    # citations, so they're shown too, just without off-site metadata
+    # (a held row needs none — it links straight into the corpus).
+    for rid in sorted(remaining):
+        rows.append(
+            _refs_row(
+                ref_id=ref.id,
+                direction="cited",
+                n=None,
+                held_ref=refs[rid],
+                s2_id=None,
+                doi=None,
+                title=None,
+                year=None,
+            )
+        )
+    return rows
+
+
+@router.get(
+    "/{ref_id}/refs/{direction}", response_class=HTMLResponse, response_model=None
+)
+async def refs_panel(request: Request, ref_id: int, direction: str) -> HTMLResponse:
+    """Sources/Cited tab fragment — lazily loaded on first tab open
+    (``paper-viewer.js``'s ``setTab``). ``direction`` is ``sources`` (this
+    paper's outgoing bibliography) or ``cited`` (incoming citations).
+
+    :func:`ensure_s2_neighbors` backfills an old paper's S2 neighbour list
+    inline on first view — this may hit the network the very first time a
+    reader opens either tab; every call inside the 30-day TTL after that is
+    a cheap presence check + a pure-SQL read. Run off the event loop
+    (worker thread) since the network call, when it fires, must not freeze
+    other requests.
+
+    Paper-only: the Sources/Cited tabs read the S2 neighbour graph, which
+    only a ``paper`` carries — a ``cfp``/``pres``/``datasheet`` sibling
+    (also in ``_DOC_FAMILY``, for the shared reader shell's other sidebar
+    endpoints) 404s here *before* the S2 backfill, same as ``reviewed``'s
+    owning-ref guard.
+    """
+    if direction not in _REFS_DIRECTIONS:
+        raise NotFound(f"unknown refs direction {direction!r}")
+    store = get_store(request)
+    ref = _resolve_paper(store, str(ref_id), kinds=_DOC_FAMILY)
+    if ref is None:
+        raise NotFound(f"paper id={ref_id} not found")
+    if ref.kind != "paper":
+        return _paper_error(request, "Refs error", f"paper id={ref_id} not found", 404)
+    await asyncio.to_thread(ensure_s2_neighbors, store, ref.id)
+    rows = (
+        _sources_rows(store, ref) if direction == "sources" else _cited_rows(store, ref)
+    )
+    return templates.TemplateResponse(
+        request,
+        "papers/_refs_panel.html.j2",
+        {"ref": ref, "direction": direction, "rows": rows},
+    )
+
+
+@router.post("/{ref_id}/fetch-ref", response_model=None)
+async def fetch_ref(
+    request: Request,
+    ref_id: int,
+    doi: str = Form(""),
+    s2_id: str = Form(""),
+    title: str = Form(""),
+    year: str = Form(""),
+    n: str = Form(""),
+    direction: str = Form("sources"),
+    return_to: str = Form(""),
+) -> Response:
+    """Mint-or-reuse a fetchable stub for one Sources/Cited row — the
+    single-paper sibling of the batch ``/drive/requeue-stubs`` "Fetch next
+    N" button. ``doi=`` / ``s2_id=`` are whatever the row carries (its own
+    Fetch button only renders when it has one — see :func:`_refs_row`'s
+    ``can_fetch``); at least one is required here too.
+
+    Dispatches ``put(kind='paper', identifier=…)`` — the same door
+    ``put(kind='paper', doi=…)`` uses from the MCP surface — so
+    vocabulary/tree-guard validation and the S2-enrich → ``upsert_stub_
+    paper`` idempotency stay single-sourced (``PaperHandler.acquire``).
+    ``Response.ref_id`` is in-process-only metadata (for a ``Hub.sibling``
+    caller); a dispatched web write reads the *store* back for the minted/
+    reused id via :meth:`Store.find_ref_by_identifier` rather than
+    scraping the ack string. ``verify=False``: the row's identifier
+    already came from a live S2 fetch, so the acquire path's own
+    hallucination guard would just be a redundant second S2 round-trip.
+
+    On success: :meth:`Store.requeue_stubs_for_fetch` (scoped to the one
+    ref) jumps the ``fetch_oa`` queue, and
+    :meth:`Store.update_s2_neighbor_held` stamps this row (and its mirror
+    in the other direction, if any) so the tab shows it as held/queued
+    immediately — without waiting for the next ``citation_lens`` refresh.
+
+    htmx-aware (the ``flags.py`` pattern): an ``HX-Request`` gets the
+    re-rendered single row back (swapped via ``hx-target="closest
+    .refs-row"``); a plain form POST (no JS) 303-redirects to the tab.
+    """
+    store = get_store(request)
+    ref = store.fetch_refs_by_ids([ref_id], include_deleted=False).get(ref_id)
+    if ref is None or ref.kind != "paper":
+        return _paper_error(request, "Fetch error", f"paper id={ref_id} not found", 404)
+    doi = doi.strip().lower()
+    s2_id = s2_id.strip()
+    title = title.strip()
+    yr: int | None = int(year) if year.strip().lstrip("-").isdigit() else None
+    n_val: int | None = int(n) if n.strip().isdigit() else None
+    if direction not in _REFS_DIRECTIONS:
+        direction = "sources"
+    if not doi and not s2_id:
+        return _paper_error(
+            request,
+            "Fetch error",
+            "fetch-ref requires a doi or s2_id — this row carries neither",
+            400,
+        )
+    payload: dict[str, Any] = {
+        "kind": "paper",
+        "identifier": f"doi:{doi}" if doi else f"s2:{s2_id}",
+        "verify": False,
+    }
+    if title:
+        payload["title"] = title
+    if yr is not None:
+        payload["year"] = yr
+    body, is_error = await await_dispatch(request, "put", payload)
+    if is_error:
+        return _paper_error(request, "Fetch error", body, 400)
+
+    scheme, value = ("doi", doi) if doi else ("s2", s2_id)
+    new_ref_id = store.find_ref_by_identifier(scheme, value, kind="paper")
+    held_ref = None
+    if new_ref_id is not None:
+        await asyncio.to_thread(
+            store.requeue_stubs_for_fetch,
+            ref_ids=[new_ref_id],
+            id_kinds=("doi", "arxiv", "s2"),
+        )
+        await asyncio.to_thread(
+            store.update_s2_neighbor_held,
+            ref_id,
+            new_ref_id,
+            s2_id=s2_id or None,
+            doi=doi or None,
+        )
+        held_ref = store.fetch_refs_by_ids([new_ref_id]).get(new_ref_id)
+
+    if request.headers.get("HX-Request") == "true":
+        row = _refs_row(
+            ref_id=ref_id,
+            direction=direction,
+            n=n_val,
+            held_ref=held_ref,
+            s2_id=s2_id or None,
+            doi=doi or None,
+            title=title or None,
+            year=yr,
+        )
+        return templates.TemplateResponse(
+            request, "papers/_refs_row.html.j2", {"row": row}
+        )
+    tab = "Sources" if direction == "sources" else "Cited"
+    fallback = f"/papers/{ref_id}?tab={tab}"
+    return RedirectResponse(
+        url=_safe_papers_redirect(return_to or fallback), status_code=303
+    )
 
 
 @router.post("/{ref_id}/triage-lookup", response_model=None)
@@ -1031,6 +1349,9 @@ async def edit(
             "tag",
             {"kind": "paper", "id": ref_id, "remove": [_TRIAGE_TAG]},
         )
+    # A review can't cover metadata that has since changed — clear any
+    # existing sign-off. Idempotent: clearing an unset stamp is a no-op.
+    store.clear_human_verified(ref_id)
     return RedirectResponse(url=f"/papers/{ref_id}", status_code=303)
 
 
@@ -1280,6 +1601,50 @@ async def retriage(
         {"kind": "paper", "id": ref_id, "add": [_TRIAGE_TAG]},
         redirect=_safe_papers_redirect(return_to or f"/papers/{ref_id}?tab=Meta"),
         error_title="Mark-for-review error",
+    )
+
+
+@router.post("/{ref_id}/reviewed", response_model=None)
+async def reviewed(
+    request: Request,
+    ref_id: int,
+    return_to: str = Form(""),
+) -> Response:
+    """Toggle the ``human_verified_at`` sign-off stamp (Meta tab "Mark
+    reviewed" / undo).
+
+    ``refs.human_verified_at/by/note`` are plumbed on every ref
+    (:meth:`Store.set_human_verified` / ``clear_human_verified``,
+    ``_refs_ops.py:1382``) but sit outside the tag vocabulary a dispatched
+    verb validates — this is a direct store op, like ``/drive``'s other
+    operational stamps, not a named preset over ``tag``. Marking reviewed
+    also clears a lingering ``needs-triage`` flag (a paper can't be both
+    unreviewed metadata and signed off). ``by`` is the web process's
+    configured write identity (``web:owner`` by default).
+    """
+    store = get_store(request)
+    cfg = get_web_config(request)
+    ref = store.fetch_refs_by_ids([ref_id], include_deleted=False).get(ref_id)
+    if ref is None or ref.kind != "paper":
+        return _paper_error(
+            request, "Review error", f"paper id={ref_id} not found", 404
+        )
+    try:
+        if getattr(ref, "human_verified_at", None):
+            store.clear_human_verified(ref_id)
+        else:
+            store.set_human_verified(ref_id, by=cfg.source)
+            if store.has_tag(ref_id, "OPEN", _TRIAGE_TAG):
+                await await_dispatch(
+                    request,
+                    "tag",
+                    {"kind": "paper", "id": ref_id, "remove": [_TRIAGE_TAG]},
+                )
+    except NotFound as exc:
+        return _paper_error(request, "Review error", str(exc), 400)
+    return RedirectResponse(
+        url=_safe_papers_redirect(return_to or f"/papers/{ref_id}?tab=Meta"),
+        status_code=303,
     )
 
 

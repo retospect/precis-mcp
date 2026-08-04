@@ -9,6 +9,7 @@ from precis.ingest.marker import (
     _JUNK_HEADING_RE,
     _MD_LINK_RE,
     _MERGE_TARGET_CHARS,
+    _assign_pages,
     _clean_text,
     _mark_junk,
     _merge_small_blocks,
@@ -635,3 +636,36 @@ class TestCleanTextDehyphenation:
         # The blank-line collapse compresses 3+ newlines to 2 but the
         # paragraph break stays a paragraph break.
         assert "ending-" in result or "ending second" not in result.replace("\n", " ")
+
+
+class TestAssignPages:
+    """``_assign_pages`` is the ingest-time TOC-anchor carry-forward guess
+    behind ``chunks.page_first`` — untested since introduction
+    (paper-viewer-nav.md slice 1). These pin its documented-coarse
+    behavior, not fix it: the web layer's find-first anchoring (slice 1)
+    exists precisely because this guess can be this coarse."""
+
+    def test_no_toc_anchors_yields_all_page_zero(self) -> None:
+        # No TOC entries at all -> nothing to anchor on, so every chunk
+        # gets the degenerate "page 0" guess even across a multi-page doc.
+        chunks = ["intro text", "middle text", "closing text"]
+        assert _assign_pages(chunks, total_pages=5, toc=[]) == [0, 0, 0]
+
+    def test_anchors_carry_forward_between_toc_entries(self) -> None:
+        # Two TOC anchors landing on chunks 1 and 4; chunks strictly
+        # between an anchor and the next one inherit the *earlier*
+        # anchor's page (carry-forward), not an interpolated value.
+        chunks = [
+            "front matter",
+            "SECTION ONE heading text",
+            "body paragraph one",
+            "body paragraph two",
+            "SECTION TWO heading text",
+            "trailing text",
+        ]
+        toc = [
+            {"title": "SECTION ONE heading text", "page_id": 2},
+            {"title": "SECTION TWO heading text", "page_id": 4},
+        ]
+        assignments = _assign_pages(chunks, total_pages=6, toc=toc)
+        assert assignments == [0, 2, 2, 2, 4, 4]

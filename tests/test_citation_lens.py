@@ -136,6 +136,71 @@ def test_find_citation_candidates_builds_lead_chunk_candidates(hub: Hub) -> None
         assert c.score == 1.0  # co-citation degree 1
 
 
+def test_materialize_writes_s2_neighbors_both_directions(hub: Hub) -> None:
+    """paper-viewer-nav slice 3: the FULL neighbour list (held or not)
+    lands in ``s2_neighbors``, not just the held↔held subset that gets a
+    ``cites`` edge."""
+    g = _build_graph(hub.store)
+    cl.materialize_citation_edges(hub.store, {g["a"]}, ttl_days=30)
+
+    cites = hub.store.list_s2_neighbors(g["a"], "cites")
+    assert [n.s2_id for n in cites] == ["S2B", "S2E", "S2D"]  # ord = S2 list order
+    by_s2 = {n.s2_id: n for n in cites}
+    assert by_s2["S2B"].held_ref_id == g["b"]
+    assert by_s2["S2E"].held_ref_id == g["e"]  # held stub — no body, still resolved
+    assert by_s2["S2D"].held_ref_id is None  # D is not held — persisted anyway
+    assert by_s2["S2D"].title == "Not held"
+
+    cited_by = hub.store.list_s2_neighbors(g["a"], "cited_by")
+    assert len(cited_by) == 1
+    assert cited_by[0].doi == "10.1/CCC"
+    assert cited_by[0].held_ref_id == g["c"]
+
+    assert hub.store.s2_neighbors_fresh(g["a"]) is True
+    # B was never fetched from as a seed — no neighbours persisted for it.
+    assert hub.store.s2_neighbors_fresh(g["b"]) is False
+
+
+def test_materialize_refresh_replaces_s2_neighbors(hub: Hub) -> None:
+    g = _build_graph(hub.store)
+    cl.materialize_citation_edges(hub.store, {g["a"]}, ttl_days=30)
+    assert len(hub.store.list_s2_neighbors(g["a"], "cites")) == 3
+
+    def shrunk_fetch(paper_id: str) -> dict[str, list[dict[str, object]]]:
+        return {"references": [{"s2_id": "S2B", "title": "Kumar"}], "cited_by": []}
+
+    cl.fetch_citations = shrunk_fetch  # type: ignore[assignment]
+    cl.materialize_citation_edges(hub.store, {g["a"]}, ttl_days=0)  # force re-fetch
+
+    cites = hub.store.list_s2_neighbors(g["a"], "cites")
+    assert [n.s2_id for n in cites] == ["S2B"]  # E and D dropped, no dup rows
+    assert hub.store.list_s2_neighbors(g["a"], "cited_by") == []  # cleared too
+
+
+def test_ensure_s2_neighbors_fetches_once_then_skips_within_ttl(hub: Hub) -> None:
+    g = _build_graph(hub.store)
+    calls = {"n": 0}
+    base_fetch = cl.fetch_citations
+
+    def counting_fetch(paper_id: str) -> dict[str, list[dict[str, object]]]:
+        calls["n"] += 1
+        return base_fetch(paper_id)
+
+    cl.fetch_citations = counting_fetch  # type: ignore[assignment]
+
+    assert hub.store.s2_neighbors_fresh(g["a"]) is False
+    fetched = cl.ensure_s2_neighbors(hub.store, g["a"], ttl_days=30)
+    assert fetched is True
+    assert calls["n"] == 1
+    assert hub.store.s2_neighbors_fresh(g["a"]) is True
+    assert len(hub.store.list_s2_neighbors(g["a"], "cites")) == 3
+
+    # second call within the TTL: no re-fetch, S2 not hit again.
+    fetched_again = cl.ensure_s2_neighbors(hub.store, g["a"], ttl_days=30)
+    assert fetched_again is False
+    assert calls["n"] == 1
+
+
 def test_disabled_by_env(hub: Hub, monkeypatch: pytest.MonkeyPatch) -> None:
     g = _build_graph(hub.store)
     monkeypatch.setenv("PRECIS_BACKFILL_CITATION_LENS", "0")

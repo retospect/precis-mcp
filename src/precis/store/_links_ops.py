@@ -40,8 +40,8 @@ from psycopg_pool import ConnectionPool
 
 from precis.errors import BadInput
 from precis.store._argument_ops import retracted_endpoint
-from precis.store._mappers import _lookup_chunk_id, _row_to_link
-from precis.store.types import ActorSlug, Link, Relation
+from precis.store._mappers import _lookup_chunk_id, _row_to_link, _row_to_s2_neighbor
+from precis.store.types import ActorSlug, Link, Relation, S2Direction, S2Neighbor
 
 
 def _resolve_chunk_id_for_link(
@@ -493,6 +493,141 @@ class LinksMixin:
             {"old": old_ref_id},
         )
         return cur.rowcount or 0
+
+    # -- s2_neighbors (paper-viewer-nav slice 3) ------------------------
+
+    def replace_s2_neighbors(
+        self,
+        ref_id: int,
+        direction: S2Direction,
+        neighbors: list[dict[str, Any]],
+        *,
+        conn: Connection | None = None,
+    ) -> int:
+        """Replace all ``s2_neighbors`` rows for ``(ref_id, direction)`` with
+        a fresh list — DELETE then INSERT, so a refresh is idempotent and
+        never collides on ``s2_id`` (a neighbour list can repeat or omit
+        ids). ``ord`` is assigned from list position (S2's own ordering;
+        approximate bibliography order for ``direction='cites'``).
+
+        Each dict may carry ``s2_id`` / ``doi`` / ``title`` / ``year`` /
+        ``held_ref_id`` (all optional, ``None`` when absent) — resolution
+        of ``held_ref_id`` against ``ref_identifiers`` is the caller's job
+        (:mod:`precis.backfill.citation_lens`), this method is pure
+        persistence. Returns the number of rows inserted (``len(neighbors)``).
+        """
+
+        def _do(c: Connection) -> int:
+            c.execute(
+                "DELETE FROM s2_neighbors WHERE ref_id = %s AND direction = %s",
+                (ref_id, direction),
+            )
+            if not neighbors:
+                return 0
+            rows = [
+                (
+                    ref_id,
+                    direction,
+                    i,
+                    nb.get("s2_id"),
+                    nb.get("doi"),
+                    nb.get("title"),
+                    nb.get("year"),
+                    nb.get("held_ref_id"),
+                )
+                for i, nb in enumerate(neighbors)
+            ]
+            cur = c.cursor()
+            cur.executemany(
+                "INSERT INTO s2_neighbors "
+                "  (ref_id, direction, ord, s2_id, doi, title, year, held_ref_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                rows,
+            )
+            return len(rows)
+
+        if conn is not None:
+            return _do(conn)
+        with self.pool.connection() as c:
+            return _do(c)
+
+    def list_s2_neighbors(
+        self, ref_id: int, direction: S2Direction
+    ) -> list[S2Neighbor]:
+        """This ref's persisted S2 neighbour list for one ``direction``,
+        ordered by ``ord`` (S2's own list order — approximate bibliography
+        order for ``direction='cites'``). Empty list = never fetched (or
+        the fetch returned nothing) — the signal the web layer uses to
+        decide whether to trigger a first-view backfill fetch."""
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT ref_id, direction, ord, s2_id, doi, title, year, "
+                "       held_ref_id, fetched_at "
+                "FROM s2_neighbors WHERE ref_id = %s AND direction = %s "
+                "ORDER BY ord",
+                (ref_id, direction),
+            ).fetchall()
+        return [_row_to_s2_neighbor(r) for r in rows]
+
+    def s2_neighbors_fresh(self, ref_id: int) -> bool:
+        """Cheap presence check: has ``ref_id`` ever had its S2 neighbour
+        list persisted (either direction)? **Not** a TTL check — the
+        ``citation_edges`` ref_event (``citation_lens._is_fresh``) is the
+        30-day staleness gate that decides whether to re-fetch; this is
+        purely "is there anything to show yet", the signal the web layer
+        needs to decide whether opening Sources/Cited should trigger an
+        inline first-view backfill fetch (paper-viewer-nav slice 3 §4)."""
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM s2_neighbors WHERE ref_id = %s LIMIT 1",
+                (ref_id,),
+            ).fetchone()
+        return row is not None
+
+    def update_s2_neighbor_held(
+        self,
+        ref_id: int,
+        held_ref_id: int,
+        *,
+        s2_id: str | None = None,
+        doi: str | None = None,
+        conn: Connection | None = None,
+    ) -> int:
+        """Stamp ``held_ref_id`` on every persisted ``s2_neighbors`` row of
+        ``ref_id`` matching ``s2_id`` or ``doi`` — in **either** citation
+        direction, since the same external paper is the same physical
+        object whether it showed up as this paper's source or its citer.
+
+        Called right after a single-row Fetch (``POST
+        /papers/{ref_id}/fetch-ref``) mints or reuses the stub, so the row
+        flips to held/queued immediately instead of waiting for the next
+        ``citation_lens`` TTL refresh. No-op (returns 0, no query run) when
+        neither identifier is given — the Fetch button never posts without
+        at least one anyway (see ``routes/papers.py::fetch_ref``).
+        """
+        clauses: list[str] = []
+        params: list[Any] = [held_ref_id, ref_id]
+        if s2_id:
+            clauses.append("s2_id = %s")
+            params.append(s2_id)
+        if doi:
+            clauses.append("doi = %s")
+            params.append(doi)
+        if not clauses:
+            return 0
+        sql = (
+            "UPDATE s2_neighbors SET held_ref_id = %s "
+            f"WHERE ref_id = %s AND ({' OR '.join(clauses)})"
+        )
+
+        def _do(c: Connection) -> int:
+            cur = c.execute(sql, params)
+            return cur.rowcount or 0
+
+        if conn is not None:
+            return _do(conn)
+        with self.pool.connection() as c:
+            return _do(c)
 
     def merge_refs(self, victim_ref_id: int, survivor_ref_id: int) -> int:
         """Absorb ``victim_ref_id`` into ``survivor_ref_id`` and retire the victim.

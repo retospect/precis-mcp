@@ -2567,7 +2567,35 @@ The master kinds table lives in the `precis-overview` skill.
 - **`chunks.numerics TEXT[]`** — GIN-indexed lexical filter
   (`WHERE numerics @> ARRAY['1.523 eV']`); direct-SQL only, not yet in search verbs.
 - **`precis web`** — browser UI (Tasks/Papers/Console/Conversations/Status).
-  Two-pane paper reader (`routes/papers.py` + vendored pdf.js); the **sole draft
+  Two-pane paper reader (`routes/papers.py` + vendored pdf.js). Chunk
+  anchoring is **phrase-first, page-fallback**
+  (`static/paper-viewer.js::findInPdf`/`_findAndCount`): dispatches the
+  PDF.js text find and lets `updatefindmatchescount` position the
+  viewport, only jumping to `page_first` (still an ingest-time,
+  substring-matched TOC-carry-forward guess — `marker.py::_assign_pages`;
+  true per-block pages/bbox deferred,
+  `docs/design/paper-reader-bbox-backfill.md`) when the phrase misses,
+  and then marks that jump visibly approximate (`~p.N`). The chunk selector — route
+  `GET /papers/{ref_id}/chunk/{sel}`, `?chunk=`, and the Jump box — takes
+  a bare ord, an `lo..hi` range, or the ADR-0032 compound handle the TOC
+  itself displays (`pa<ref_id>~lo..hi`), all through one resolver
+  (`_cited_chunk`). Reader tabs: Navigate/Jump/**Sources**/**Cited**/Meta
+  — Sources (outgoing bibliography) and Cited (incoming) render from the
+  new `s2_neighbors` table (migration `0106`; `ref_id, direction
+  cites|cited_by, ord, s2_id, doi, title, year, held_ref_id, fetched_at`),
+  persisted by `backfill/citation_lens.py`'s existing TTL'd S2 fetch
+  (previously kept only the held↔held `cites`/`cited_by` link subset and
+  discarded the rest) union'd with held `links_for(relation='cites')`
+  rows; `ensure_s2_neighbors` is the on-demand single-ref entry the tab
+  calls to backfill an old paper inline on first view. Each non-held row
+  gets a **Fetch** button (`POST /papers/{ref_id}/fetch-ref`) that mints
+  or reuses a stub (`put(kind='paper', identifier=…)`) and scopes
+  `requeue_stubs_for_fetch(ref_ids=[…], id_kinds=(doi, arxiv, s2))` to
+  jump the `fetch_oa` queue immediately. The Meta tab gained a
+  **reviewed** toggle (`POST /papers/{ref_id}/reviewed`) — the first
+  writer of `refs.human_verified_at/by` for papers
+  (`store.set_human_verified`/`clear_human_verified`); a metadata edit
+  clears the stamp, setting it clears `needs-triage`. The **sole draft
   reader is `/smartdraft`** (`routes/smartdraft.py` + `smartdraft.py`) — the
   three-pane fisheye reader (left TOC · middle focus+neighbourhood · right
   collaborate). The classic virtual-scroll reader (`GET /drafts/{ident}`) was

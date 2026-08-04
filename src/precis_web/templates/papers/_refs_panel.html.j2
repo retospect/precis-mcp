@@ -1,0 +1,19 @@
+{# Sources/Cited tab fragment (paper-viewer-nav slice 3) — lazy-loaded
+   by paper-viewer.js's setTab() into #refs-sources-panel / #refs-cited-panel
+   on first open. ``ref`` / ``direction`` / ``rows`` built by
+   routes/papers.py::refs_panel (rows shaped by _refs_row). #}
+{% if rows %}
+<div class="space-y-0.5">
+  {% for row in rows %}
+    {% include "papers/_refs_row.html.j2" %}
+  {% endfor %}
+</div>
+{% else %}
+<p class="text-xs text-slate-400">
+  {% if direction == 'sources' %}
+  no bibliography data from Semantic Scholar for this paper yet.
+  {% else %}
+  no citations of this paper found (held or via Semantic Scholar).
+  {% endif %}
+</p>
+{% endif %}

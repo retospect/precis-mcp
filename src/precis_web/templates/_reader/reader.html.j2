@@ -5,16 +5,19 @@
    fully generic: they are driven entirely by ``paperDoc`` (paper-viewer.js),
    which fetches the kind-agnostic
    ``/papers/{id}/{search,toc,chunks,rawchunks,chunk}`` endpoints (any
-   ``_DOC_FAMILY`` ref, so pres reuses them). Only the Meta
-   tab differs per kind — it ``{% include doc.meta_panel %}``, so a paper
-   plugs its bibliographic edit form and a pres plugs its attribution form.
-   Both live inside the ``x-data="paperDoc(...)"`` scope, so a meta-panel
-   button can call ``gotoPage(n)`` to drive the PDF (e.g. a clickable slide
-   list).
+   ``_DOC_FAMILY`` ref, so pres reuses them). The Meta tab differs per
+   kind — it ``{% include doc.meta_panel %}``, so a paper plugs its
+   bibliographic edit form and a pres plugs its attribution form. The
+   Sources/Cited tabs (S2 bibliography + citing-papers, paper-viewer-nav
+   slice 3) are paper-only — ``doc.show_refs_tabs`` gates them out of the
+   tab strip for the cfp/pres/datasheet siblings, which have no S2
+   neighbour graph. All live inside the ``x-data="paperDoc(...)"`` scope,
+   so a meta-panel button can call ``gotoPage(n)`` to drive the PDF (e.g. a
+   clickable slide list).
 
    Required ``doc`` context: id, title, handle, slug, list_url, list_label,
    n_chunks, pdf_on_disk, has_pdf, cited_ord, initial_tab, pdf_url,
-   meta_panel, cite_key, pdf_lookup_paths, corpus_dirs. #}
+   meta_panel, cite_key, pdf_lookup_paths, corpus_dirs, show_refs_tabs. #}
 <style>
   [x-cloak]{display:none!important}
   .nav-result.active{box-shadow:inset 0 0 0 2px #f59e0b;background:#fffbeb}
@@ -43,10 +46,12 @@
     {# ── sidebar ───────────────────────────────────────────────── #}
     <aside x-show="sidebarOpen"
            class="flex w-[22rem] shrink-0 flex-col overflow-hidden rounded-lg border border-slate-200 bg-white">
-      {# tab strip #}
+      {# tab strip — Sources/Cited are paper-only (see doc.show_refs_tabs
+         note at the top of this file). #}
+      {% set _tabs = ['Navigate', 'Jump'] + (['Sources', 'Cited'] if doc.show_refs_tabs else []) + ['Meta'] %}
       <div class="flex shrink-0 border-b border-slate-200 text-xs font-medium">
-        <template x-for="t in ['Navigate','Jump','Meta']" :key="t">
-          <button type="button" @click="tab = t"
+        <template x-for="t in {{ _tabs | tojson }}" :key="t">
+          <button type="button" @click="setTab(t)"
                   class="flex-1 px-2 py-2 hover:bg-slate-50"
                   :class="tab === t ? 'border-b-2 border-emerald-500 text-emerald-700' : 'text-slate-500'"
                   x-text="t"></button>
@@ -177,6 +182,7 @@
 
         {# ── Jump: chunk ord / page / verbatim text ─────────────── #}
         <div x-show="tab === 'Jump'" x-cloak class="space-y-3 text-xs">
+          <p x-show="findStatus" x-cloak class="rounded border-l-2 border-amber-400 bg-amber-50 px-2 py-1 text-[10px] text-amber-700" x-text="findStatus"></p>
           <form @submit.prevent="jumpText()">
             <label class="block text-slate-500">Find verbatim text</label>
             <div class="mt-1 flex gap-1">
@@ -194,9 +200,9 @@
             </div>
           </form>
           <form @submit.prevent="jumpOrd()">
-            <label class="block text-slate-500">Go to chunk (ord)</label>
+            <label class="block text-slate-500">Go to chunk (ord or TOC handle)</label>
             <div class="mt-1 flex gap-1">
-              <input x-model="jord" type="number" min="0" placeholder="chunk #"
+              <input x-model="jord" type="text" placeholder="chunk # or pa123~4..5"
                      class="w-full rounded border border-slate-300 px-2 py-1" />
               <button class="shrink-0 rounded bg-emerald-600 px-2 py-1 text-white hover:bg-emerald-700">Go</button>
             </div>
@@ -205,6 +211,19 @@
             <div class="font-mono text-[10px] text-amber-700">chunk <span x-text="jumpChunk && jumpChunk.ord"></span><template x-if="jumpChunk && jumpChunk.page"> · p<span x-text="jumpChunk && jumpChunk.page"></span></template></div>
             <p class="mt-1 text-xs leading-snug text-slate-700" x-text="jumpChunk && jumpChunk.text"></p>
           </div>
+        </div>
+
+        {# ── Sources / Cited: S2 bibliography + citing-papers tabs
+           (paper-viewer-nav slice 3). Each panel is a server-rendered
+           fragment (held rows link locally; non-held rows carry off-site
+           links + a Fetch button) — HTML, not JSON, unlike every other
+           sidebar tab, so it's lazy-loaded via htmx (setTab(), in
+           paper-viewer.js) instead of an Alpine ``x-for`` list. #}
+        <div x-show="tab === 'Sources'" x-cloak id="refs-sources-panel" class="text-xs">
+          <p class="text-slate-400">loading…</p>
+        </div>
+        <div x-show="tab === 'Cited'" x-cloak id="refs-cited-panel" class="text-xs">
+          <p class="text-slate-400">loading…</p>
         </div>
 
         {# ── Meta: kind-specific panel (paper bibliographic / pres attribution) #}

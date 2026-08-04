@@ -74,6 +74,22 @@ def scholar_url(identifier: str) -> str:
     return f"https://scholar.google.com/scholar?hl=en&as_sdt=0%2C5&q={q}&btnG="
 
 
+def scholar_title_url(title: str) -> str:
+    """Google Scholar search on a bare *title* (paper-viewer-nav slice 3).
+
+    :func:`scholar_url` above only accepts an identifier-shaped token
+    (DOI / arXiv id, via :func:`_search_token`) — an S2 neighbour row
+    without either (opaque ``s2:`` hash, or no identifier at all) still
+    has a title, which is the only usable Scholar query left. Same query
+    shape as :func:`scholar_url`, keyed on the title text instead.
+    """
+    t = (title or "").strip()
+    if not t:
+        return ""
+    q = quote(t, safe="")
+    return f"https://scholar.google.com/scholar?hl=en&as_sdt=0%2C5&q={q}&btnG="
+
+
 def arxiv_pdf_url(identifier: str) -> str:
     """Direct arXiv PDF for an ``arxiv:`` identifier (else '').
 

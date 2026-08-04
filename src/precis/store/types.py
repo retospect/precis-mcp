@@ -21,6 +21,9 @@ from precis.errors import BadInput
 Density = Literal["sparse", "medium", "dense"]
 CacheFreshness = Literal["pinned", "fresh", "stale", "expired"]
 Namespace = Literal["closed", "flag", "open"]
+#: Direction of an ``s2_neighbors`` row relative to its ``ref_id`` — 'cites'
+#: is this paper's outgoing bibliography, 'cited_by' is papers citing it.
+S2Direction = Literal["cites", "cited_by"]
 Relation = Literal[
     # Initial migration (0001).
     "related-to",
@@ -464,6 +467,25 @@ class Link:
     #: link-rollup overlay (source-backfill 8a) walks up to a visible ancestor.
     src_chunk_id: int | None = None
     dst_chunk_id: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class S2Neighbor:
+    """A row from ``s2_neighbors`` — one Semantic Scholar bibliography /
+    cited-by neighbour of a held paper (migration 0106, paper-viewer-nav
+    slice 3). ``held_ref_id`` is ``None`` when the neighbour isn't (yet)
+    held in the corpus; ``ord`` is the neighbour's position in the S2 list
+    the fetch returned."""
+
+    ref_id: int
+    direction: S2Direction
+    ord: int
+    s2_id: str | None
+    doi: str | None
+    title: str | None
+    year: int | None
+    held_ref_id: int | None
+    fetched_at: datetime
 
 
 @dataclass(frozen=True, slots=True)

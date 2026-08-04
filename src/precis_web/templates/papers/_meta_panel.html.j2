@@ -2,7 +2,8 @@
    Rendered inside the shared reader's Meta tab (_reader/reader.html.j2),
    which supplies the ``x-show="tab === 'Meta'"`` wrapper. Reads the paper
    detail context (paper, pa_handle, n_chunks, pdf_on_disk, authors_display,
-   abstract, ingested, tags) built by papers._render_detail. #}
+   abstract, ingested, tags, is_reviewed, reviewed_at, reviewed_by) built
+   by papers._render_detail. #}
 <dl class="space-y-1 text-xs">
   <div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">handle</dt><dd class="font-mono">{{ pa_handle }}</dd></div>
   <div class="flex gap-2"><dt class="w-20 shrink-0 text-slate-400">id</dt><dd>#{{ paper.id }}</dd></div>
@@ -20,6 +21,27 @@
   <span><span class="text-slate-400">ref </span><span title="{{ ingested.ref | abs_ts }}">{{ ingested.ref | ago or '—' }}</span></span>
   <span><span class="text-slate-400">PDF </span><span title="{{ ingested.pdf | abs_ts }}">{{ ingested.pdf | ago or '—' }}</span></span>
   <span><span class="text-slate-400">first chunk </span><span title="{{ ingested.first_chunk | abs_ts }}">{{ ingested.first_chunk | ago or '—' }}</span></span>
+</div>
+
+{# "Reviewed" sign-off row (refs.human_verified_at/by) — a compact
+   mark-reviewed / undo toggle, distinct from the ``needs-triage`` tag
+   below (a review can cover a paper that never needed triage). #}
+<div class="flex items-center gap-2 border-t border-slate-100 pt-2 text-xs">
+  {% if is_reviewed %}
+  <span class="rounded border border-emerald-300 bg-emerald-50 px-2 py-1 text-emerald-800">
+    Reviewed ✓ {{ reviewed_at }}{% if reviewed_by %} by {{ reviewed_by }}{% endif %}
+  </span>
+  <form method="post" action="/papers/{{ paper.id }}/reviewed" class="inline">
+    <button type="submit" class="text-slate-400 hover:text-rose-600" title="undo — clear the review stamp">undo</button>
+  </form>
+  {% else %}
+  <form method="post" action="/papers/{{ paper.id }}/reviewed" class="inline">
+    <button type="submit"
+            class="rounded border border-emerald-300 bg-emerald-50 px-2 py-1 text-emerald-800 hover:bg-emerald-100">
+      Mark reviewed ✓
+    </button>
+  </form>
+  {% endif %}
 </div>
 
 {# Tag chips. OPEN (free) tags — the ``needs-triage`` review flag

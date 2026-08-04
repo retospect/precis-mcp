@@ -713,20 +713,35 @@ class RefsMixin:
             row = conn.execute(sql, (awaiting,)).fetchone()
         return int(row[0]) if row else 0
 
-    def requeue_stubs_for_fetch(self, *, limit: int = 25) -> int:
-        """ "Fetch next N" — jump the top ``limit`` never-tried DOI stubs
-        to the front of the ``fetch_oa`` queue.
+    def requeue_stubs_for_fetch(
+        self,
+        *,
+        limit: int = 25,
+        ref_ids: list[int] | None = None,
+        id_kinds: tuple[str, ...] = ("doi",),
+    ) -> int:
+        """ "Fetch next N" — jump the top ``limit`` never-tried stubs to the
+        front of the ``fetch_oa`` queue.
 
-        Selects the same universe ``stub_backlog(id_kinds=('doi',),
-        sort='last-tried')`` would surface at the top — DOI stubs with
-        no ``fetcher:%`` attempt yet, oldest-request-first among those —
-        and stamps each with ``meta.oa_requeued`` plus a ``ref_events``
-        row (``source='paper_reconcile'``, ``event='oa_requeued'``),
-        mirroring :func:`precis.ingest.paper_hygiene.
-        requeue_stranded_fetches`'s stamping pattern. ``fetch_oa``'s
-        claim query orders ``jsonb_exists(r.meta, 'oa_requeued') DESC``
-        first, so a stamped stub is claimed on the worker's very next
-        pass rather than waiting its turn.
+        Selects the same universe ``stub_backlog(id_kinds=id_kinds,
+        sort='last-tried')`` would surface at the top — stubs with no
+        ``fetcher:%`` attempt yet, oldest-request-first among those — and
+        stamps each with ``meta.oa_requeued`` plus a ``ref_events`` row
+        (``source='paper_reconcile'``, ``event='oa_requeued'``), mirroring
+        :func:`precis.ingest.paper_hygiene.requeue_stranded_fetches`'s
+        stamping pattern. ``fetch_oa``'s claim query orders
+        ``jsonb_exists(r.meta, 'oa_requeued') DESC`` first, so a stamped
+        stub is claimed on the worker's very next pass rather than waiting
+        its turn.
+
+        ``ref_ids`` narrows selection to that set — the single-paper
+        sibling of the batch "Fetch next N" button
+        (``POST /papers/{ref_id}/fetch-ref``, paper-viewer-nav slice 3):
+        pass a one-element list right after minting/reusing a stub so it
+        jumps the queue immediately instead of waiting its unstamped turn.
+        ``id_kinds`` defaults to DOI-only (the batch caller's long-standing
+        behaviour); the single-ref caller widens it to include ``arxiv`` /
+        ``s2`` since a per-row Fetch may only carry an S2 id.
 
         Already-stamped stubs (``r.meta ? 'oa_requeued'``) are excluded
         from selection, and the per-ref stamp only applies if the flag
@@ -734,6 +749,8 @@ class RefsMixin:
         "Fetch next N" (or two overlapping requests) can't double-stamp
         or double-count. Returns the number of stubs newly stamped.
         """
+        extra_clause = " AND r.ref_id = ANY(%s)" if ref_ids is not None else ""
+        params: list[Any] = [limit] if ref_ids is None else [ref_ids, limit]
         with self.pool.connection() as conn:
             rows = conn.execute(
                 f"""
@@ -744,17 +761,18 @@ class RefsMixin:
                           FROM ref_events e
                          WHERE e.ref_id = r.ref_id AND e.source LIKE 'fetcher:%%'
                   ) fe ON TRUE
-                 WHERE {stub_predicate_sql("r", ("doi",))}
+                 WHERE {stub_predicate_sql("r", id_kinds)}
                    AND fe.last_ts IS NULL
                    AND NOT (r.meta ? 'oa_requeued')
+                   {extra_clause}
                  ORDER BY r.created_at ASC, r.ref_id ASC
                  LIMIT %s
                 """,
-                (limit,),
+                params,
             ).fetchall()
-            ref_ids = [int(row[0]) for row in rows]
+            selected_ids = [int(row[0]) for row in rows]
             stamped = 0
-            for ref_id in ref_ids:
+            for ref_id in selected_ids:
                 cur = conn.execute(
                     "UPDATE refs SET meta = meta || %s::jsonb "
                     "WHERE ref_id = %s AND NOT (meta ? 'oa_requeued')",

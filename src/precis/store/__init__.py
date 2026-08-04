@@ -31,6 +31,8 @@ from precis.store.types import (
     Namespace,
     Ref,
     Relation,
+    S2Direction,
+    S2Neighbor,
     Tag,
 )
 
@@ -47,6 +49,8 @@ __all__ = [
     "Namespace",
     "Ref",
     "Relation",
+    "S2Direction",
+    "S2Neighbor",
     "Store",
     "Tag",
     "as_background_actor",

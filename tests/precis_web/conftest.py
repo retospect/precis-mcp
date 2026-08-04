@@ -45,6 +45,9 @@ def make_ref(**kw: Any) -> SimpleNamespace:
         "authors": None,
         "updated_at": None,
         "meta": {},
+        "human_verified_at": None,
+        "human_verified_by": None,
+        "human_verified_note": None,
     }
     base.update(kw)
     return SimpleNamespace(**base)
@@ -136,6 +139,32 @@ class FakeStore(_FakeStoreBase):
         #: (ref_id, ord, kind). Tests populate it to exercise the
         #: console resolver's chunk-handle branch (``pc…``).
         self.chunk_handles: dict[int, tuple[int, int, str]] = {}
+        # ── Sources/Cited tabs (paper-viewer-nav slice 3) ──────────────
+        #: Canned S2 neighbour rows the /papers/{id}/refs/{direction}
+        #: fragment reads: {(ref_id, 'cites'|'cited_by'): [row, ...]},
+        #: each row a SimpleNamespace carrying s2_id/doi/title/year/
+        #: held_ref_id (the S2Neighbor fields the routes read).
+        self.s2_neighbors: dict[tuple[int, str], list[Any]] = {}
+        #: Canned held incoming `cites` links (the "held" half of the
+        #: Cited tab union): {ref_id: [Link-shaped row with src_ref_id]}.
+        self.cites_in: dict[int, list[Any]] = {}
+        #: {(scheme, value): ref_id} — find_ref_by_identifier's canned
+        #: table (the fetch-ref route's post-dispatch resolve).
+        self.identifier_lookup: dict[tuple[str, str], int] = {}
+        #: (ref_id, direction) calls the fake reports as "already fresh"
+        #: — unused by default (ensure_s2_neighbors is monkeypatched at
+        #: the routes-module import site in the refs-tab tests, so this
+        #: store method is rarely exercised directly).
+        self.s2_neighbors_fresh_ids: set[int] = set()
+        #: (owner_ref_id, held_ref_id, s2_id, doi) tuples recorded by
+        #: update_s2_neighbor_held — the fetch-ref route's post-mint
+        #: stamp, so a test can assert what was stamped.
+        self.s2_neighbor_held_updates: list[
+            tuple[int, int, str | None, str | None]
+        ] = []
+        #: ref_ids lists passed to requeue_stubs_for_fetch(ref_ids=...)
+        #: (the single-paper Fetch's queue-jump call).
+        self.requeue_ref_id_calls: list[list[int]] = []
         self.todos = [
             make_ref(id=1, kind="todo", title="Build the thing", parent_id=None),
             make_ref(id=2, kind="todo", title="Draft the spec", parent_id=1),
@@ -444,8 +473,40 @@ class FakeStore(_FakeStoreBase):
 
     def links_for(self, ref_id, *, direction="both", relation=None):
         # No follow-up discussions in the fake — detail pages render the
-        # empty Discussion state.
+        # empty Discussion state. The one populated case: held incoming
+        # `cites` links (the Cited tab's held half) — tests seed
+        # ``self.cites_in``.
+        if direction == "in" and relation == "cites":
+            return list(self.cites_in.get(ref_id, []))
         return []
+
+    def list_s2_neighbors(self, ref_id, direction):
+        # The Sources/Cited fragment's neighbour-list read — tests seed
+        # ``self.s2_neighbors``; empty by default (renders the "no
+        # reference data" note).
+        return list(self.s2_neighbors.get((ref_id, direction), []))
+
+    def s2_neighbors_fresh(self, ref_id: int) -> bool:
+        return ref_id in self.s2_neighbors_fresh_ids
+
+    def find_ref_by_identifier(self, scheme, value, *, kind=None):
+        # fetch-ref's post-dispatch resolve of the minted/reused stub —
+        # tests seed ``self.identifier_lookup``.
+        return self.identifier_lookup.get((scheme, value))
+
+    def update_s2_neighbor_held(
+        self, ref_id, held_ref_id, *, s2_id=None, doi=None, conn=None
+    ) -> int:
+        self.s2_neighbor_held_updates.append((ref_id, held_ref_id, s2_id, doi))
+        n = 0
+        for key in ((ref_id, "cites"), (ref_id, "cited_by")):
+            for row in self.s2_neighbors.get(key, []):
+                if (s2_id and getattr(row, "s2_id", None) == s2_id) or (
+                    doi and getattr(row, "doi", None) == doi
+                ):
+                    row.held_ref_id = held_ref_id
+                    n += 1
+        return n
 
     def chunk_connections(self, ref_id, handles):
         # No graph edges in the base fake corpus — DraftFakeStore /
@@ -673,6 +734,31 @@ class FakeStore(_FakeStoreBase):
         if ref_id in self.deleted_ref_ids:
             raise NotFound(f"ref id={ref_id} not found (or already deleted)")
         self.deleted_ref_ids.add(ref_id)
+
+    def set_human_verified(self, ref_id, *, by, note=None, conn=None):
+        """Stamp a fake ref's ``human_verified_*`` trio (mirrors
+        ``Store.set_human_verified``); raises NotFound on an unknown ref."""
+        import datetime as _dt
+
+        from precis.errors import NotFound
+
+        for ref in self._for_kind(None):
+            if ref.id == ref_id:
+                ref.human_verified_at = _dt.datetime.now(_dt.UTC)
+                ref.human_verified_by = by
+                ref.human_verified_note = note
+                return
+        raise NotFound(f"ref id={ref_id} not found (or already deleted)")
+
+    def clear_human_verified(self, ref_id, *, conn=None):
+        """Clear a fake ref's ``human_verified_*`` trio (mirrors
+        ``Store.clear_human_verified``); a no-op on an unknown ref."""
+        for ref in self._for_kind(None):
+            if ref.id == ref_id:
+                ref.human_verified_at = None
+                ref.human_verified_by = None
+                ref.human_verified_note = None
+                return
 
     def merge_refs(self, victim_ref_id, survivor_ref_id):
         """Record a duplicate-merge: soft-delete the victim (mirrors the real
@@ -1041,10 +1127,19 @@ class FakeStore(_FakeStoreBase):
         # Mirrors the two canned rows above (both awaiting under the fake).
         return 2
 
-    def requeue_stubs_for_fetch(self, *, limit: int = 25) -> int:
+    def requeue_stubs_for_fetch(
+        self,
+        *,
+        limit: int = 25,
+        ref_ids: list[int] | None = None,
+        id_kinds: tuple[str, ...] = ("doi",),
+    ) -> int:
         # Canned "one never-tried DOI stub got stamped" so the
         # /drive/requeue-stubs route test has a non-trivial count to
-        # assert on without a real store.
+        # assert on without a real store. ``ref_ids`` (the single-paper
+        # Fetch's queue-jump call) is recorded, not simulated further.
+        if ref_ids is not None:
+            self.requeue_ref_id_calls.append(list(ref_ids))
         return 1
 
     def locked_ref_ids(self, ref_ids):
