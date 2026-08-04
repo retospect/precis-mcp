@@ -621,12 +621,26 @@ def test_autocatpath_explore_dispatch_writes_back(pathway_store: Store) -> None:
 
 
 def test_seed_job_dispatch_writes_partial_onto_its_own_meta(
-    pathway_store: Store,
+    pathway_store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The `autocatpath_seed` job dispatch (what ssh_node runs, minutes-
-    scale — the gr180096 wedge fix) runs ONE (model, seed) unit and stashes
-    the partial for the sibling aggregate job to read."""
+    """The `autocatpath_seed` job dispatch (what ssh_node runs — the gr180096
+    wedge fix) runs ONE (model, seed) unit and stashes the partial for the
+    sibling aggregate job to read.
+
+    ``_dispatch`` now runs the compute OUT of the worker process (gr191351 —
+    the in-worker MACE/CUDA deadlock). Here we route the subprocess variant to
+    the in-process ``run_seed_partial`` so the shape assertions stay fast and
+    deterministic without a real child spawn; the real subprocess boundary is
+    covered by ``test_run_seed_partial_subprocess_*`` below."""
     from precis_pathway import seed_job
+
+    monkeypatch.setattr(
+        runner,
+        "run_seed_partial_subprocess",
+        lambda *a, **k: runner.run_seed_partial(
+            *a, **{kk: vv for kk, vv in k.items() if kk != "timeout"}
+        ),
+    )
 
     ctx = _FakeCtx(
         store=pathway_store,
@@ -650,6 +664,136 @@ def test_seed_job_dispatch_writes_partial_onto_its_own_meta(
     partial = ctx.meta_updates["partial"]
     assert isinstance(partial, dict) and partial["states"]
     assert any(kind == "job_summary" for kind, _text in ctx.chunks)
+
+
+def test_seed_job_dispatch_sizes_timeout_from_wall_seconds(
+    pathway_store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``_dispatch`` runs the compute out-of-process and bounds it at the job's
+    declared ``resources.wall_seconds`` (gr191351) — the value that keeps a
+    genuine MACE/CUDA hang from wedging the worker for the whole ssh_node lease.
+    Passing no wall budget falls back to the subprocess default (unset)."""
+    from precis_pathway import seed_job
+
+    seen: dict[str, Any] = {}
+
+    def _fake_sub(
+        config: dict[str, Any],
+        seed: int,
+        model_index: int,
+        *,
+        force_backend: str | None = None,
+        slab_extxyz: str | None = None,
+        timeout: int = runner._DEFAULT_SEED_TIMEOUT_S,
+    ) -> dict[str, Any]:
+        seen.update(
+            seed=seed,
+            model_index=model_index,
+            timeout=timeout,
+            force_backend=force_backend,
+        )
+        return {
+            "seed": seed,
+            "model": "emt",
+            "model_index": model_index,
+            "partial": {"states": {"s0": {}}},
+            "lattice": {},
+        }
+
+    monkeypatch.setattr(runner, "run_seed_partial_subprocess", _fake_sub)
+
+    ctx = _FakeCtx(
+        store=pathway_store,
+        params={
+            "config": _yaml_dict(FANOUT),
+            "force_backend": "emt",
+            "seed": 2,
+            "model_index": 0,
+            "content_key": "k",
+            "resources": {"wall_seconds": 1234},
+        },
+    )
+    seed_job._dispatch(ctx, seed_job.SPEC)
+
+    assert ctx.status == "succeeded", ctx.failure
+    assert seen["seed"] == 2
+    assert seen["force_backend"] == "emt"
+    assert seen["timeout"] == 1234  # the declared wall budget, not the default
+
+
+def test_run_seed_partial_subprocess_end_to_end_emt() -> None:
+    """The real out-of-process boundary: a fresh child runs one EMT seed and the
+    parent parses back the JSON-serialisable partial. Proves the subprocess round
+    -trip (the gr191351 isolation) actually works end-to-end, EMT standing in for
+    the MACE backend that must not load in the worker process."""
+    cfg = _yaml_dict(FANOUT)
+    result = runner.run_seed_partial_subprocess(cfg, 0, 0, force_backend="emt")
+    assert result["seed"] == 0
+    assert result["model"] == "emt"
+    assert result["partial"]["states"], "no states in the per-seed partial"
+
+
+def test_run_seed_partial_subprocess_timeout_is_killed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A run that exceeds its wall budget is SIGKILLed by subprocess and surfaces
+    as a clean RuntimeError — so the blocking ssh_node dispatch returns (failed)
+    rather than wedging the worker pass for the lease horizon (gr191351)."""
+    import subprocess
+
+    def _fake_run(cmd: list[str], **kw: Any) -> Any:
+        raise subprocess.TimeoutExpired(cmd, float(kw.get("timeout") or 1))
+
+    monkeypatch.setattr("subprocess.run", _fake_run)
+    with pytest.raises(RuntimeError, match="wall budget"):
+        runner.run_seed_partial_subprocess({}, 0, 0, timeout=1)
+
+
+def test_run_seed_partial_subprocess_child_error_surfaces(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A child that reports an in-band error envelope (rc 0, ok=False) raises a
+    RuntimeError naming the error — the parent never mistakes it for success."""
+    import json as _json
+    import subprocess
+
+    def _fake_run(cmd: list[str], **kw: Any) -> Any:
+        out_path = cmd[-1]
+        with open(out_path, "w", encoding="utf-8") as fh:
+            _json.dump({"ok": False, "error": "ValueError: bad backend"}, fh)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("subprocess.run", _fake_run)
+    with pytest.raises(RuntimeError, match="compute error.*bad backend"):
+        runner.run_seed_partial_subprocess({}, 0, 0, timeout=10)
+
+
+def test_subprocess_main_round_trips_envelope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The child entrypoint writes an ``ok`` envelope on success and an error
+    envelope (never a bare crash) on failure — the contract the parent parses."""
+    import json as _json
+
+    monkeypatch.setattr(
+        runner, "run_seed_partial", lambda *a, **k: {"seed": 3, "model": "emt"}
+    )
+    req = tmp_path / "req.json"
+    out = tmp_path / "out.json"
+    req.write_text(_json.dumps({"config": {}, "seed": 3, "model_index": 0}))
+    rc = runner._subprocess_main(["prog", str(req), str(out)])
+    assert rc == 0
+    payload = _json.loads(out.read_text())
+    assert payload["ok"] and payload["result"]["seed"] == 3
+
+    def _boom(*a: Any, **k: Any) -> Any:
+        raise ValueError("nope")
+
+    monkeypatch.setattr(runner, "run_seed_partial", _boom)
+    rc = runner._subprocess_main(["prog", str(req), str(out)])
+    assert rc == 1
+    payload = _json.loads(out.read_text())
+    assert payload["ok"] is False and "nope" in payload["error"]
 
 
 def test_seed_job_dispatch_malformed_params_fails_cleanly(

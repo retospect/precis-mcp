@@ -30,12 +30,15 @@ import copy
 import hashlib
 import io
 import json
+import logging
 from typing import Any
 
 from autocatpath import __version__, provenance
 from autocatpath.config import Config
 from autocatpath.graph import build_graph
 from autocatpath.pipeline import Results, g_has_edge, run
+
+log = logging.getLogger(__name__)
 
 
 def network_topology(config: dict[str, Any]) -> dict[str, Any]:
@@ -381,6 +384,104 @@ def run_seed_partial(
     }
 
 
+#: Default subprocess wall-clock bound (s) when a job declares no
+#: ``resources.wall_seconds`` — mirrors ``quest.compute._autocatpath_wall_seconds``'s
+#: own 90-min default so a hand-minted seed still gets the same bound the
+#: dispatcher would have stamped.
+_DEFAULT_SEED_TIMEOUT_S = 5400
+
+
+def run_seed_partial_subprocess(
+    config: dict[str, Any],
+    seed: int,
+    model_index: int,
+    *,
+    force_backend: str | None = None,
+    slab_extxyz: str | None = None,
+    timeout: int = _DEFAULT_SEED_TIMEOUT_S,
+) -> dict[str, Any]:
+    """Run :func:`run_seed_partial` in a FRESH child process — killable + isolated.
+
+    Isolation is load-bearing on a GPU node (gr191351): loading MACE/CUDA in the
+    long-lived precis-worker process deadlocks — the main thread spins in
+    ``libcuda.so`` for hours while the ssh_node lease (2h floor) protects it from
+    reclaim, wedging *every* system pass on that host (``cast_audio`` included)
+    into a SIGKILL-restart loop. The identical MACE load in a fresh process
+    completes in seconds. Running the compute out-of-process also makes a genuine
+    hang *killable*: ``subprocess`` SIGKILLs the child at ``timeout`` and this
+    raises, so the blocking ``ssh_node`` dispatch returns (as a failure) within a
+    bounded time instead of holding the worker's pass for the whole lease horizon.
+
+    ``timeout`` must stay below the ssh_node lease (``max(7200, wall+3600)``) so
+    the child is killed before the lease can expire and the job be double-claimed;
+    the caller (:mod:`precis_pathway.seed_job`) passes the job's declared
+    ``resources.wall_seconds``, which is always < that lease by construction.
+
+    Inputs and the returned dict are exactly :func:`run_seed_partial`'s (all
+    JSON-serialisable). The JSON result is exchanged via a temp file, never
+    stdout, so MACE's chatty logging can't corrupt it; child stdout/stderr are
+    logged for diagnosis and, on failure, folded into the raised error.
+    """
+    import os
+    import subprocess
+    import sys
+    import tempfile
+
+    request = {
+        "config": config,
+        "seed": seed,
+        "model_index": model_index,
+        "force_backend": force_backend,
+        "slab_extxyz": slab_extxyz,
+    }
+    with tempfile.TemporaryDirectory(prefix="autocatpath-seed-") as td:
+        req_path = os.path.join(td, "request.json")
+        out_path = os.path.join(td, "result.json")
+        with open(req_path, "w", encoding="utf-8") as fh:
+            json.dump(request, fh)
+
+        cmd = [sys.executable, "-m", "precis_pathway.runner", req_path, out_path]
+        try:
+            proc = subprocess.run(
+                cmd,
+                timeout=timeout,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            # subprocess.run has already SIGKILLed the child by here — the
+            # hung MACE/CUDA process is gone, the worker pass is free again.
+            tail = (exc.stderr or exc.stdout or "")[-2000:]
+            raise RuntimeError(
+                f"autocatpath_seed compute exceeded its {timeout}s wall budget "
+                f"and was killed (seed={seed} model_index={model_index}); "
+                f"last output: {tail!r}"
+            ) from exc
+
+        if proc.stdout:
+            log.debug("autocatpath_seed child stdout:\n%s", proc.stdout[-4000:])
+        if proc.stderr:
+            log.debug("autocatpath_seed child stderr:\n%s", proc.stderr[-4000:])
+
+        if proc.returncode != 0 or not os.path.exists(out_path):
+            tail = (proc.stderr or proc.stdout or "<no output>")[-2000:]
+            raise RuntimeError(
+                f"autocatpath_seed subprocess failed (rc={proc.returncode}, "
+                f"seed={seed} model_index={model_index}); last output: {tail!r}"
+            )
+
+        with open(out_path, encoding="utf-8") as fh:
+            payload = json.load(fh)
+
+    if not payload.get("ok"):
+        raise RuntimeError(
+            f"autocatpath_seed compute error (seed={seed} model_index={model_index}): "
+            f"{payload.get('error')}"
+        )
+    return payload["result"]
+
+
 def aggregate_seed_partials(
     config: dict[str, Any],
     seed_results: list[dict[str, Any]],
@@ -427,3 +528,47 @@ def _snapshot_yaml(cfg: Config) -> str:
     import yaml
 
     return yaml.safe_dump(cfg.to_dict(), sort_keys=False)
+
+
+def _subprocess_main(argv: list[str]) -> int:
+    """Child entrypoint for :func:`run_seed_partial_subprocess`.
+
+    Reads a ``run_seed_partial`` request (JSON) from ``argv[1]`` and writes
+    ``{"ok": True, "result": <run_seed_partial output>}`` — or ``{"ok": False,
+    "error": ...}`` on any exception — to ``argv[2]``. The result goes to a file,
+    not stdout, so MACE's stdout logging can't corrupt the JSON envelope the
+    parent parses. Never raises: a failure is reported in the envelope so the
+    parent can surface a clean job failure rather than an opaque non-zero exit.
+    """
+    req_path, out_path = argv[1], argv[2]
+    with open(req_path, encoding="utf-8") as fh:
+        req = json.load(fh)
+    try:
+        result = run_seed_partial(
+            req["config"],
+            int(req["seed"]),
+            int(req["model_index"]),
+            force_backend=req.get("force_backend"),
+            slab_extxyz=req.get("slab_extxyz"),
+            # Child logs go to stdout (parent captures + logs them); the JSON
+            # result travels by file, so this can't corrupt the envelope.
+            log=lambda *a, **k: print(*a, **k),
+        )
+        payload: dict[str, Any] = {"ok": True, "result": result}
+    except Exception as exc:
+        import traceback
+
+        payload = {
+            "ok": False,
+            "error": f"{type(exc).__name__}: {exc}",
+            "traceback": traceback.format_exc(),
+        }
+    with open(out_path, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh)
+    return 0 if payload["ok"] else 1
+
+
+if __name__ == "__main__":
+    import sys
+
+    raise SystemExit(_subprocess_main(sys.argv))

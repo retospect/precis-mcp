@@ -735,12 +735,21 @@ returns immediately; the handle is persisted to `meta.compute_handle`
 and every subsequent `ssh_node` pass polls all this-host in-flight
 handles (`poll(ctx, handle) -> bool`) — a cheap status check + lease
 renewal, never a multi-hour block. A plugin with only the legacy
-blocking `spec.dispatch` still works (backward compat — both precis-dft's
-`gpaw_relax` and catpath's `autocatpath_seed` live out-of-tree and
-haven't migrated yet), but `ssh_node` logs a deprecation warning (once
-per job_type per process) naming gr187627 — the live incident where the
-blocking call starved the claiming worker's whole pass rotation long
-enough to trip host-dark.
+blocking `spec.dispatch` still works (backward compat — precis-dft's
+`gpaw_relax` lives out-of-tree and `autocatpath_seed`, IN-tree at
+`src/precis_pathway/seed_job.py`, haven't migrated to submit/poll yet),
+but `ssh_node` logs a deprecation warning (once per job_type per process)
+naming gr187627 — the live incident where the blocking call starved the
+claiming worker's whole pass rotation long enough to trip host-dark.
+**`autocatpath_seed` runs its MACE compute OUT of the worker process**
+(gr191351): `_dispatch` → `runner.run_seed_partial_subprocess` spawns a
+fresh `python -m precis_pathway.runner` child, killable at the job's
+`resources.wall_seconds`. Loading MACE/CUDA in the long-lived worker
+deadlocked on spark (torch+cu130 — main thread spinning in `libcuda.so`,
+2h lease shielding it from reclaim, every *system* pass incl. `cast_audio`
+starved); a fresh process loads it in ~10 s and a hang is bounded rather
+than wedging the pass for the lease horizon. (Still blocks the pass for
+that bounded window — the full submit/poll port is the durable end-state.)
 
 **`wake_runner` child-deadlock deadline (§H piece 5, built).** A
 `children_done` `Yield` gets `meta.wake_deadline` stamped at park time

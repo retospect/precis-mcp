@@ -42,19 +42,26 @@ to a §L regression **plus** an independent, more serious spark worker deadlock.
   advertised capability), not a hand-maintained list, so no future role-gated
   pass regresses the same way.
 
-- **spark system worker deadlocks on MACE/e3nn init (CUDA 13.0) — BLOCKS all
-  spark system passes** · Status: open · Severity: critical · gripe **191351**.
-  Every `precis-worker` boot on spark hangs deterministically at MACE model init
-  (`CUDA version: 13.0` → `Using head Default out of ['Default']`), main thread
-  spinning in a futex, worker threads all futex-waiting, on a SIGKILL-restart
-  cycle (hang durations growing 3→92 min). A restart does NOT clear it. So
-  `cast_audio` (now correctly enabled) cannot run until this is fixed, and every
-  other spark system pass is stalled too (the embedder daemon is separate +
-  healthy). Likely a CUDA 13.0 × torch/MACE/e3nn incompat, **or** the autocatpath
-  MACE ref-pass plugin eager-loading its model in the *system* worker at
-  `discover_plugin_ref_passes` time — it should opt out of `profile=system`
-  and/or lazy-load (out-of-tree `autocatpath` factory). Onset ~Aug 3 02:40.
-  Needs infra/version diagnosis — larger than the audio task, deferred to user.
+- **spark system worker deadlocks on MACE/CUDA — code fix SHIPPED, verify
+  post-deploy** · Status: fix shipped, pending spark verification · Severity:
+  critical → verifying · gripe **191351**. **Corrected root cause** (the
+  ref-pass-plugin hypothesis was wrong — autocatpath registers *no*
+  `precis.ref_passes` entry point): spark's `system` worker claims
+  `autocatpath_seed` jobs (`job_ssh_node` is a `_SYS` pass, jobs pinned to spark
+  via `target_node`) and its **legacy blocking `ssh_node` dispatch ran MACE
+  in-process** — loading MACE/CUDA (torch 2.13+cu130, CUDA 13.0) in the
+  long-lived worker deadlocks (main thread spinning in `libcuda.so`), the 2h
+  ssh_node lease shields it from reclaim, and every *system* pass on spark
+  (`cast_audio` included) starves into a SIGKILL-restart loop. The identical
+  MACE load in a *fresh* process completes in ~10 s (probed). **Fix (shipped):**
+  `autocatpath_seed._dispatch` now runs the compute out-of-process via
+  `runner.run_seed_partial_subprocess` — killable, bounded by the job's declared
+  `resources.wall_seconds`, isolated from the worker's CUDA/thread state.
+  **Verify after deploy:** spark's `precis-worker` stays up (no SIGKILL loop) and
+  `cast_audio` publishes the combined morning episode. Residual risk: if the hang
+  is a genuine CUDA-13.0 incompat (a fresh subprocess *also* hangs), the timeout
+  still un-wedges the worker but seeds fail at the wall budget — then pursue the
+  submit/poll migration below. Delete this item once spark is confirmed healthy.
 
 - **Docker Hub egress on spark (gripe 189697) — deferred; needed only for the
   1.5s pause** · Status: blocked · Severity: polish. TLS handshake to Docker
@@ -551,17 +558,23 @@ that work, plus a deploy op:
   `.poll`) so a MIGRATED job_type never blocks the worker thread at all —
   the claiming worker's pass rotation stays live through a redeploy, no
   SIGKILL race, no drain-before-restart need.
-- **Still open — the catpath-repo half:** `autocatpath_seed`'s `JobTypeSpec`
-  still only exposes the legacy blocking `dispatch` (out-of-tree, this repo
-  can't touch it) — `ssh_node` falls back to it with a deprecation warning
-  (naming gr187627) but the run still blocks the worker thread for its
-  duration, so a redeploy landing mid-run still costs a SIGKILL (now a
-  cheaper one — an epoch reclaim, not an attempts-bump — but still a
-  restart of the compute). Do: port `autocatpath_seed`'s dispatch to
-  `submit`/`poll` (submit: `ssh spark docker run -d …`, returns a
-  container-name/pid handle; poll: `ssh spark docker inspect …`) in the
-  catpath repo, mirroring `claude_docker`'s detach shape. Evidence (still
-  relevant context): job 172888 (quest 164903 / cand 172608) — 3 attempts
+- **Still open — the blocking-dispatch half (IN-TREE — correction):**
+  `autocatpath_seed`'s `JobTypeSpec` lives at **`src/precis_pathway/seed_job.py`
+  in THIS repo** (pyproject `precis.job_types` = `precis_pathway.seed_job:SPEC`),
+  *not* the external catpath repo as this item previously claimed. It still only
+  exposes the legacy blocking `dispatch`, so `ssh_node` falls back to it (with the
+  gr187627 deprecation warning) and the run **still blocks the worker pass** for
+  its duration — a redeploy mid-run still costs a SIGKILL (now the cheaper epoch
+  reclaim, not an attempts-bump). **Partial mitigation shipped (gr191351):** the
+  dispatch now runs the MACE compute in a killable out-of-process subprocess
+  (`runner.run_seed_partial_subprocess`), so the compute no longer runs *in* the
+  worker process (no CUDA/thread-state deadlock) and a hang is bounded by the
+  wall budget instead of the full lease — but the pass is still occupied for that
+  bounded window. **Durable end-state:** port the dispatch to `submit`/`poll`
+  (submit: `ssh spark docker run -d …` → container handle; poll: `ssh spark docker
+  inspect …`), mirroring `claude_docker`'s detach shape, so the pass never blocks
+  at all. Now an in-tree change (`seed_job.py` + `runner.py`), not a cross-repo
+  one. Evidence (still relevant context): job 172888 (quest 164903 / cand 172608) — 3 attempts
   each SIGKILLed by a redeploy before any NEB/relax progress logged.
 
 ---

@@ -86,6 +86,14 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         return
     force_backend = params.get("force_backend")
     slab_extxyz = params.get("slab_extxyz")
+    # Kill the compute at its OWN declared wall budget (default 5400s). The
+    # ssh_node lease sits a full margin above this (max(7200, wall+3600)), so a
+    # timeout-kill always precedes any reclaim/double-claim window.
+    resources = params.get("resources") or {}
+    try:
+        timeout_s = int(resources.get("wall_seconds") or 0)
+    except (TypeError, ValueError):
+        timeout_s = 0
 
     ctx.append_chunk(
         "job_event",
@@ -95,13 +103,18 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     try:
         from precis_pathway import runner
 
-        result = runner.run_seed_partial(
-            config,
-            seed,
-            model_index,
-            force_backend=force_backend,
-            slab_extxyz=slab_extxyz,
-        )
+        # Out-of-process (gr191351): loading MACE/CUDA in the long-lived worker
+        # deadlocks on the GPU node and wedges every system pass (cast_audio
+        # included) until SIGKILL; a fresh child process loads it in seconds and
+        # a genuine hang is killed at the wall budget instead of holding the pass
+        # for the whole lease horizon.
+        kw: dict[str, Any] = {
+            "force_backend": force_backend,
+            "slab_extxyz": slab_extxyz,
+        }
+        if timeout_s > 0:
+            kw["timeout"] = timeout_s
+        result = runner.run_seed_partial_subprocess(config, seed, model_index, **kw)
     except Exception as exc:  # pragma: no cover - env/compute dependent
         log.warning("autocatpath_seed: run failed", exc_info=True)
         ctx.record_failure(f"autocatpath_seed: run failed: {exc}")
