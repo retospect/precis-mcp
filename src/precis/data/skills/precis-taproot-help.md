@@ -163,6 +163,52 @@ put(
 
 CLI equivalent: `precis taproot backfill --chunk dc1652005 --apply [--ref-level]`.
 
+## What makes a mintable claim
+
+A hub's sentence is read alone — in other drafts, years later, without its
+source paragraph. The bar is therefore stricter than for an inline citation.
+
+**Hard gates — fix or don't mint:**
+
+- **Self-contained.** Resolve every "this / these / it / such" against the
+  source passage and inline the referent. A dangling demonstrative is a
+  correctness hazard on reuse, not a style nit.
+  - Bad: "This strategy has been pursued across the principal families of
+    2D materials." (whose strategy?)
+  - Good: "Hybridization of fullerenes with 2D materials has been pursued
+    across graphene, g-C₃N₄, TMDs, h-BN, and black phosphorus."
+- **A world-claim.** About materials, results, mechanisms — never about the
+  literature's habits, the paper's own structure ("we will discuss…"), or a
+  bare pointer ("see [12]").
+  - Bad: "The properties of these materials are commonly tabulated for
+    comparative reference." → not a claim.
+  - Salvage rule: when meta-prose wraps real content, extract the
+    underlying fact (the specific properties or values being compared),
+    not the practice. If the passage states only the practice, don't mint.
+
+**Soft flags — mint, but expect review:**
+
+- **Specificity.** Carry the number / material / mechanism the passage
+  states; strip empty intensifiers ("extraordinary", "remarkable"). A
+  capability claim needs its conditions or contrast to have content.
+  - Weak: "Graphene can be physically mixed without site-specific
+    attachment."
+  - Better: "Graphene–fullerene composites can be formed by physical
+    mixing, without site-specific covalent attachment."
+- **Grounding depth.** One supporter is mintable; definitions and
+  landscape/survey claims also want a secondary source (a review) — the
+  `hub_refine` pass attaches corroborators when enabled.
+
+**Sorts of claims** — the bar shifts by sort:
+
+| Sort | Example | Bar |
+|------|---------|-----|
+| Measurement | "Single-wall carbon nanocones were observed with opening angles of ≈19°, 39°, 60°, 85°, and 113°." | Carry the numbers; one primary source suffices. |
+| Definition | "The term 'nanobud' refers to structures in which fullerenes are directly bonded to a carbon nanotube or graphene surface." | Coining paper as originator; wants a review as corroborator. |
+| Capability | "Graphene–fullerene composites can be formed by physical mixing, without covalent attachment." | Name the conditions or the contrast, else vacuous. |
+| Mechanism | "Charge transfer at the C60–nanotube junction alters field-emission behavior." | Name the mechanism, not "plays an important role". |
+| Landscape | "Fullerene–2D hybridization has been pursued across graphene, g-C₃N₄, TMDs, h-BN, and black phosphorus." | Most prone to dangling referents; reviews are the right grounding. |
+
 ## Mint a claim hub from a claim I've already sourced
 
 `put(kind='finding', ...)` is **bimodal**: `supporters=` (no `cited_in`)

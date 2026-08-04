@@ -24,6 +24,7 @@ from precis.taproot.hub import (
     attach_evidence,
     link_claims,
     mint_hub,
+    refine_claim_sentence,
 )
 from tests.workers._helpers import seed_ref
 
@@ -164,6 +165,186 @@ def test_mint_hub_pub_id_resolves_back_to_the_hub(store: Any) -> None:
 
     assert row is not None
     assert row[0] == hub
+
+
+def _pub_id_ref(store: Any, pub_id: str) -> int | None:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT ref_id FROM ref_identifiers WHERE id_kind = 'pub_id' AND id_value = %s",
+            (pub_id,),
+        ).fetchone()
+    return int(row[0]) if row else None
+
+
+def _pub_id_count(store: Any, ref_id: int) -> int:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM ref_identifiers "
+            "WHERE ref_id = %s AND id_kind = 'pub_id'",
+            (ref_id,),
+        ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def _card_ords(store: Any, ref_id: int) -> list[int]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ord FROM chunks WHERE ref_id = %s AND ord < 0", (ref_id,)
+        ).fetchall()
+    return sorted(int(r[0]) for r in rows)
+
+
+def _ref_title(store: Any, ref_id: int) -> str:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT title FROM refs WHERE ref_id = %s", (ref_id,)
+        ).fetchone()
+    return str(row[0]) if row else ""
+
+
+# ── refine_claim_sentence ────────────────────────────────────────────────
+
+
+def test_refine_claim_sentence_updates_title_and_body(store: Any) -> None:
+    hub = mint_hub(store, _CLAIM)
+    new_sentence = "Pd/C reliably catalyzes Suzuki coupling of aryl halides at RT."
+
+    result = refine_claim_sentence(store, hub, new_sentence)
+
+    assert result["hub_ref_id"] == hub
+    assert result["old_title"] == _CLAIM.sentence[:200]
+    assert result["new_title"] == new_sentence[:200]
+    assert _ref_title(store, hub) == new_sentence[:200]
+    assert _finding_body(store, hub) == new_sentence
+
+
+def test_refine_claim_sentence_replaces_ord0_chunk_not_updates_in_place(
+    store: Any,
+) -> None:
+    """The old ord=0 finding_body row is gone (a fresh chunk_id lands at
+    the same ord=0 slot) -- DELETE+INSERT, never an in-place UPDATE."""
+    hub = mint_hub(store, _CLAIM)
+    with store.pool.connection() as conn:
+        old_chunk_id = conn.execute(
+            "SELECT chunk_id FROM chunks WHERE ref_id = %s AND ord = 0", (hub,)
+        ).fetchone()[0]
+
+    refine_claim_sentence(store, hub, "A reworded, sharper claim sentence.")
+
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT chunk_id, text FROM chunks WHERE ref_id = %s AND ord = 0", (hub,)
+        ).fetchone()
+    assert row is not None
+    new_chunk_id, text = row
+    assert new_chunk_id != old_chunk_id
+    assert text == "A reworded, sharper claim sentence."
+    # The old chunk_id is truly gone (not just superseded) -- DELETE, not append.
+    with store.pool.connection() as conn:
+        stale = conn.execute(
+            "SELECT 1 FROM chunks WHERE chunk_id = %s", (old_chunk_id,)
+        ).fetchone()
+    assert stale is None
+
+
+def test_refine_claim_sentence_drops_stale_card_variants(store: Any) -> None:
+    """No pass re-derives a hub's card_combined off content changes (see
+    the docstring) -- the retitle door deletes ord<0 rows so a stale card
+    never keeps matching the OLD wording in canon.block's ANN index."""
+    hub = mint_hub(store, _CLAIM)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+            "VALUES (%s, -1, 'card_combined', %s)",
+            (hub, _CLAIM.sentence),
+        )
+        conn.commit()
+    assert _card_ords(store, hub) == [-1]
+
+    refine_claim_sentence(store, hub, "A different, reworded claim sentence.")
+
+    assert _card_ords(store, hub) == []
+
+
+def test_refine_claim_sentence_mints_new_pub_id_and_keeps_old_as_alias(
+    store: Any,
+) -> None:
+    hub = mint_hub(store, _CLAIM)
+    old_pub_id = _pub_id(store, hub)
+    assert old_pub_id is not None
+    new_sentence = "An entirely different wording of the catalysis claim."
+
+    result = refine_claim_sentence(store, hub, new_sentence)
+
+    expected_new_pub_id = make_pub_id(
+        make_taproot_hub_paper_id(new_sentence, _CLAIM.scope)
+    )
+    assert result["pub_id"] == expected_new_pub_id
+    assert result["pub_id"] != old_pub_id
+    assert result["pub_id_alias_kept"] is True
+
+    # Both pub_ids still resolve to the same hub -- the old handle keeps
+    # working for prose that already cited it.
+    assert _pub_id_ref(store, old_pub_id) == hub
+    assert _pub_id_ref(store, expected_new_pub_id) == hub
+    assert _pub_id_count(store, hub) == 2
+
+
+def test_refine_claim_sentence_identical_resulting_sentence_is_a_noop_on_identifiers(
+    store: Any,
+) -> None:
+    """Rewording to text that hashes to the SAME pub_id (e.g. only
+    whitespace/case differences normalize_text_for_hash absorbs, or a
+    revert to the original wording) writes no new ref_identifiers row."""
+    hub = mint_hub(store, _CLAIM)
+    assert _pub_id_count(store, hub) == 1
+
+    result = refine_claim_sentence(store, hub, _CLAIM.sentence)
+
+    assert result["pub_id"] == _pub_id(store, hub)
+    assert result["pub_id_alias_kept"] is False
+    assert _pub_id_count(store, hub) == 1
+
+
+def test_refine_claim_sentence_rejects_pub_id_collision_with_another_ref(
+    store: Any,
+) -> None:
+    hub = mint_hub(store, _CLAIM)
+    other_sentence = "Some other, already-canonicalized claim sentence."
+    other_hub = mint_hub(store, CanonicalClaim(sentence=other_sentence, scope={}))
+
+    with pytest.raises(ValueError, match=f"ref_id={other_hub}"):
+        refine_claim_sentence(store, hub, other_sentence, scope={})
+
+    # Nothing was written on the collision -- rolled back atomically.
+    assert _ref_title(store, hub) == _CLAIM.sentence[:200]
+    assert _finding_body(store, hub) == _CLAIM.sentence
+
+
+def test_refine_claim_sentence_rejects_non_hub(store: Any) -> None:
+    plain = seed_ref(store, title="a plain finding", kind="finding")
+    with pytest.raises(ValueError, match="not a TAPROOT:claim hub"):
+        refine_claim_sentence(store, plain, "a new sentence")
+
+
+def test_refine_claim_sentence_rejects_empty_sentence(store: Any) -> None:
+    hub = mint_hub(store, _CLAIM)
+    with pytest.raises(ValueError, match="non-empty sentence"):
+        refine_claim_sentence(store, hub, "   ")
+
+
+def test_refine_claim_sentence_scope_override_replaces_meta_scope(store: Any) -> None:
+    hub = mint_hub(store, _CLAIM)
+    new_scope = {"material": "Pd/C", "method": "Suzuki coupling", "regime": "80C"}
+
+    result = refine_claim_sentence(store, hub, _CLAIM.sentence, scope=new_scope)
+
+    ref = store.get_ref(kind="finding", id=hub)
+    assert (ref.meta or {}).get("scope") == new_scope
+    # Same sentence, different scope -> different pub_id (scope feeds the hash).
+    expected = make_pub_id(make_taproot_hub_paper_id(_CLAIM.sentence, new_scope))
+    assert result["pub_id"] == expected
+    assert _pub_id_ref(store, expected) == hub
 
 
 # ── attach_evidence ─────────────────────────────────────────────────────

@@ -10,6 +10,40 @@ tracked separately in `docs/improvement-plan.md` (same delete-on-ship rule).
 
 ---
 
+## 🔧 Taproot claim-quality residuals from the nanobuds-copy audit (2026-08-04)
+
+Status: open · Severity: feature · Owner: `src/precis/taproot/backfill.py` (placement) + prod data fixes via the new retitle door · Test: backfill regression that an `[fi]` cite is only ever placed against a `TAPROOT:claim` hub.
+
+Audit of all 125 `[fi]` hubs cited by draft `dr173020` against the new claim rubric (~15 hard failures, ~12 soft flags — reword table shown to Reto 2026-08-04, prod application pending his go-ahead):
+
+- **Backfill placed `[fi]` cites against NON-hub findings** — `fi189520`, `fi189540`, `fi191261` are plain chase-findings, not `TAPROOT:claim` hubs (`view='evidence'` rejects them). Find the placement path that allowed it; fix + regression test. Prose fix: revert those three cites to `[pc]` or re-ground.
+- **`fi190988` is mis-grounded** — its "Configurations D and E" (C60-bombardment) claim is attached to Qin 2022 (electrochemical); grounding chunk doesn't contain the claim. Needs re-grounding before any retitle; needs a `needs_review` todo.
+- **`fi191265` ≈ `fi191319`** — same paper (Ravi 2020, vitamins B9/B12 inner-filter effect), two hubs; merge candidate, don't retitle into a collision.
+- **Retitle batch (11 hubs)** — apply the approved rewordings via `edit(kind='finding', id='fi…', title=…)` after ship+deploy: fi189526, fi189536, fi189549, fi190995, fi191152, fi191297, fi191299, fi191163, fi191167, fi191308 (+ fi189521 soft sharpen if approved).
+- **v2 follow-on: persist `claim_type`** — extractor returns the claim sort (measurement/definition/capability/mechanism/landscape) into hub meta so `hub_refine` can prioritize thin definitions/landscape claims for corroborators, lint can flag a capability claim with no regime, and dedup can treat definitions specially. Design pass first.
+
+---
+
+## 🔧 MCP `put(kind='job')` can't set `parent_id` → ad-hoc job submit unreachable; taproot backfill recipe wrong
+
+Status: open · Severity: feature · Owner: `src/precis/tools/core.py::put` + skills `precis-taproot-help`/`precis-job-help` · Test: an MCP-surface test that `put(kind='job', parent_id=<todo>, job_type=…)` succeeds.
+
+- **Discovered dogfooding `taproot_backfill` (ship 6dbe5e94).** `JobHandler.put` accepts `parent_id` (handlers/job.py:146), but the MCP tool `core.py::put()` **never forwards it** — `parent_id` isn't in the generated tool schema. So the ad-hoc `put(kind='job', parent_id=<todo>, …)` path that `precis-job-help` documents is **uncallable through the MCP**; every ad-hoc job submit errors "requires parent_id." The only MCP-reachable launch is the canonical `put(kind='todo', meta={'executor','job_type','params'})` + dispatch-worker mint.
+- **My `precis-taproot-help` backfill recipe is consequently wrong** — it shows a bare `put(kind='job', job_type='taproot_backfill', params=…)` that fails. Fix it to the canonical todo+meta form (verified working: todo `188904` → job `188905`).
+- **Fix:** (a) forward `parent_id` in `core.py::put()` (one-line add to the signature + payload) so ad-hoc submit works and derived-compute jobs can parent directly on their subject ref (e.g. the draft) per ADR 0044; (b) correct the taproot + job-help recipes. `parent_id` also wants a companion for the polymorphic build-subject case (a draft/structure ref, not only a todo).
+
+---
+
+## 🔧 `plan_tick` backlog starves the single melchior `claude_inproc` worker (SPOF throughput)
+
+Status: open · Severity: polish (verify not chronic) · Owner: `src/precis/workers/executors/claude_inproc.py` + planner dispatch · Test: n/a (ops observation).
+
+- **Observed 2026-08-03 during the taproot dogfood:** 102 jobs `STATUS:queued`, ~100 of them `plan_tick` (planner-coroutine ticks from todos 186940–187042), draining a few per pass on the one melchior agent worker (the `agent_worker_inproc_topology` SPOF). An ad-hoc `taproot_backfill` job (188905) sat unclaimed for 20+ min simply queued behind the pile.
+- Likely aggravated by the agent-worker restart at 14:19 UTC (deploy bounce) letting the queue accumulate during the gap — but a 100-deep planner-tick queue on a single sequential worker is a standing throughput/SPOF risk (and possibly a planner-runaway signal — that many active `meta.llm_tier` todos ticking). Related: `spend_limit_parks_todos`, planner guardrails.
+- **To decide:** is this transient post-deploy catch-up (drains on its own) or chronic (needs a second agent-worker / plan_tick rate-limit / claim-priority for ad-hoc jobs)? A cheap draining-vs-growing sample answers it. Cluster-ops mis-diagnosed this as `service_config`-disabled — it is NOT (the pass `default_profiles=_AGT`, default-on; registry.py:83).
+
+---
+
 ## 🔧 provenance flag — make `corrected` / `expression_of_concern` *do* something downstream
 
 Status: deferred · Severity: feature · Owner: `src/precis/runtime/search.py` + citation-grounding filter · Test: n/a yet (design phase).

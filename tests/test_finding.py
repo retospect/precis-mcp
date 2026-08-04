@@ -1344,6 +1344,96 @@ class TestPickCandidate:
         out = h.edit(id=pub_id, pick_candidate="a")
         assert "picked candidate a" in out.body
 
+    def test_pick_candidate_path_unaffected_by_title_routing(self, store) -> None:
+        """Sanity: adding the ``title=`` retitle door doesn't disturb the
+        pre-existing pick_candidate path when ``title`` isn't passed."""
+        finding_id, cand_ids = self._seed_multi_candidate(
+            store, candidate_keys=("a", "b")
+        )
+        h = _make_handler(store)
+        out = h.edit(id=finding_id, pick_candidate="a")
+        assert "picked candidate a" in out.body
+
+
+# ── edit(title=...) — retitle a TAPROOT:claim hub ────────────────────
+
+
+class TestRetitleHub:
+    """``edit(kind='finding', id=<hub>, title=…)`` routes through
+    ``taproot/hub.py::refine_claim_sentence`` for a claim hub; a plain
+    finding has no title-edit door."""
+
+    def _finding_body(self, store, ref_id: int) -> str | None:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT text FROM chunks WHERE ref_id = %s AND ord = 0 "
+                "AND chunk_kind = 'finding_body'",
+                (ref_id,),
+            ).fetchone()
+        return row[0] if row else None
+
+    def test_retitle_hub_updates_title_and_body(self, store) -> None:
+        hub = mint_hub(
+            store,
+            CanonicalClaim(
+                sentence="Pd/C catalyzes Suzuki coupling at RT.",
+                scope={"material": "Pd/C"},
+            ),
+        )
+        h = _make_handler(store)
+        new_sentence = "Pd/C reliably catalyzes Suzuki coupling of aryl halides at RT."
+
+        out = h.edit(id=hub, title=new_sentence)
+
+        assert f"retitled claim hub fi{hub}" in out.body
+        ref = store.get_ref(kind="finding", id=hub)
+        assert ref.title == new_sentence
+        assert self._finding_body(store, hub) == new_sentence
+
+    def test_retitle_hub_by_pub_id(self, store) -> None:
+        hub = mint_hub(
+            store, CanonicalClaim(sentence="Original claim wording.", scope={})
+        )
+        with store.pool.connection() as conn:
+            pub_id = conn.execute(
+                "SELECT id_value FROM ref_identifiers "
+                "WHERE ref_id = %s AND id_kind = 'pub_id'",
+                (hub,),
+            ).fetchone()[0]
+        h = _make_handler(store)
+
+        out = h.edit(id=pub_id, title="Reworded claim wording.")
+        assert f"retitled claim hub fi{hub}" in out.body
+
+    def test_retitle_hub_collision_raises_bad_input(self, store) -> None:
+        hub = mint_hub(
+            store, CanonicalClaim(sentence="First claim sentence.", scope={})
+        )
+        mint_hub(store, CanonicalClaim(sentence="Second claim sentence.", scope={}))
+        h = _make_handler(store)
+
+        with pytest.raises(BadInput, match="dedup/merge candidate"):
+            h.edit(id=hub, title="Second claim sentence.")
+
+    def test_retitle_non_hub_finding_rejected(self, store) -> None:
+        """A plain chase finding has no ``edit(title=…)`` door."""
+        _seed_paper(store)
+        h = _make_handler(store)
+        resp = h.put(title="t", body="b", cited_in="miller23a")
+        finding_id = int(_search(r"id=(\d+)", resp.body).group(1))
+
+        with pytest.raises(BadInput, match="TAPROOT:claim"):
+            h.edit(id=finding_id, title="a new title")
+
+        # Untouched.
+        ref = store.get_ref(kind="finding", id=finding_id)
+        assert ref.title == "t"
+
+    def test_retitle_requires_id(self, store) -> None:
+        h = _make_handler(store)
+        with pytest.raises(BadInput, match="requires id"):
+            h.edit(title="a new title")
+
 
 # ── edit(unacquirable_note=...) — trust-surfaces override write path ──
 
@@ -1391,7 +1481,7 @@ class TestUnacquirableOverride:
     def test_both_kwargs_rejected(self, store) -> None:
         finding_id = self._seed_finding(store)
         h = _make_handler(store)
-        with pytest.raises(BadInput, match="not both"):
+        with pytest.raises(BadInput, match="exactly one of"):
             h.edit(id=finding_id, pick_candidate="x", unacquirable_note="why")
 
     def test_dry_run_rejected(self, store) -> None:

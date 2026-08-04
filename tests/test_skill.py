@@ -102,7 +102,9 @@ def test_search_finds_term(skill: SkillHandler) -> None:
 
 
 def test_search_no_match(skill: SkillHandler) -> None:
-    out = skill.search(q="xyzzy-no-such-token-anywhere")
+    # Nonsense tokens only — common English words ("such", "no") would
+    # word-match whatever skill happens to use them in prose.
+    out = skill.search(q="xyzzy-frobnitz-quuxwomble")
     # Two acceptable headlines depending on whether the test rig wired
     # an embedder (then "no skills mention" — semantic genuinely found
     # nothing) or didn't (then the warming-hint shape from broad-pass

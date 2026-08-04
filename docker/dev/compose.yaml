@@ -28,8 +28,18 @@ services:
   # synchronous_commit are off so a throwaway test DB stays near memory-speed
   # despite being disk-backed — crash-safety is irrelevant for a DB that's
   # rebuilt from migrations on every run.
+  # init: true — without it postgres runs as PID 1 and REAPS ORPHANS. A
+  # healthcheck that hits its timeout under -n6 suite load gets its shell
+  # killed; the orphaned pg_isready reparents to the postmaster and exits 2
+  # ("no response"), which the postmaster reads as a crashed backend →
+  # kills every connection → the rest of the suite errors out in recovery
+  # mode (the 2026-08-04 all-red gates; same family as gr176231). tini as
+  # PID 1 absorbs strays. The exec-form healthcheck (no CMD-SHELL) removes
+  # the orphaning intermediary too, and the 10s timeout stops the check
+  # from being killed mid-flight just because the DB is busy.
   precis-test-db:
     image: pgvector/pgvector:pg17
+    init: true
     environment:
       POSTGRES_USER: postgres
       POSTGRES_DB: precis_test
@@ -43,9 +53,9 @@ services:
       - -c
       - synchronous_commit=off
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d precis_test"]
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "precis_test"]
       interval: 2s
-      timeout: 3s
+      timeout: 10s
       retries: 40
     # No published host port — the gate reaches it over the compose network.
 

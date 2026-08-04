@@ -325,6 +325,168 @@ def mint_hub(
         return _do(c)
 
 
+def refine_claim_sentence(
+    store: Any,
+    hub_ref_id: int,
+    sentence: str,
+    *,
+    scope: dict[str, Any] | None = None,
+    set_by: str = "agent",
+    conn: Any = None,
+) -> dict[str, Any]:
+    """Reword a ``TAPROOT:claim`` hub's claim sentence in place. Returns a
+    summary dict (see below).
+
+    The claim sentence lives in three places (:func:`mint_hub`): ``refs.title``
+    (truncated ``[:200]``), the ``finding_body`` chunk at ``ord=0``, and
+    implicitly in the content-derived ``pub_id``. This is the retitle door
+    that keeps all three in sync when a hub's wording needs fixing (e.g. a
+    claim-quality rubric flags a dangling demonstrative) — there is otherwise
+    no way to reword a hub short of deleting and re-minting it, which would
+    orphan every evidence edge already attached.
+
+    Writes, all inside one transaction:
+
+    1. ``refs.title = sentence.strip()[:200]``; ``meta.scope`` is replaced
+       (not merged) when ``scope`` is given, else the hub's existing scope
+       is kept.
+    2. The ``finding_body`` chunk (``ord=0``) is replaced via DELETE+INSERT
+       (:meth:`~precis.store.Store.replace_body_chunk`) — never an in-place
+       text UPDATE, so the embedding/summary cascade re-runs on the new
+       wording (repo convention: ``chunks`` is append-only except for the
+       DELETE+INSERT re-emit path).
+    3. Every card variant (``ord < 0``) is deleted. No pass in this codebase
+       re-derives a hub's ``card_combined`` off ``finding_body``/title
+       content changes — :func:`mint_hub` itself never emits one, and the
+       one pass that DELETE+INSERTs a finding's ``card_combined``
+       (``workers/chase.py::_snapshot_chain``) only runs at chain
+       termination for a ``STATUS:tracing`` finding, never for a
+       ``STATUS:canonical`` hub. Deleting here is the safe branch: a stale
+       card must never keep matching the OLD wording in
+       :func:`~precis.taproot.canon.block`'s ANN dedup index; the async
+       card-forge path :func:`mint_hub` already documents as populating a
+       fresh hub's card re-emits the new one.
+    4. The ``pub_id`` is recomputed from ``(new sentence, effective scope)``
+       via :func:`~precis.identity.make_taproot_hub_paper_id` /
+       :func:`~precis.identity.make_pub_id`. If it differs from the hub's
+       existing pub_id(s), the new one is INSERTed as an additional
+       ``ref_identifiers`` row (``id_kind='pub_id'``) and the OLD row is
+       **kept** as an alias — draft prose that already cites the old
+       ``[<pub_id>]`` handle must keep resolving. If the new pub_id already
+       belongs to a *different* live ref, that's a dedup/merge candidate —
+       raised as a :class:`ValueError` rather than silently merged (the
+       caller decides).
+
+    Args:
+        hub_ref_id: The claim hub's ref_id. Must be a live ``TAPROOT:claim``
+            ``finding``.
+        sentence: The new claim sentence. Required non-empty.
+        scope: When given, replaces ``meta.scope`` wholesale and feeds the
+            new pub_id derivation. ``None`` (default) keeps the hub's
+            existing scope.
+        set_by: Audit actor for the chunk-replace event.
+        conn: An open transaction to fold this write into (mirrors every
+            other function in this module); ``None`` opens its own
+            ``store.tx()``.
+
+    Returns:
+        ``{"hub_ref_id", "old_title", "new_title", "pub_id",
+        "pub_id_alias_kept"}`` — ``pub_id`` is the (possibly unchanged)
+        current pub_id after the write; ``pub_id_alias_kept`` is True iff a
+        new pub_id row was inserted (the old one stays live as an alias).
+
+    Raises:
+        ValueError: ``hub_ref_id`` isn't a live ``TAPROOT:claim`` hub,
+            ``sentence`` is empty/whitespace, or the new pub_id already
+            belongs to a different ref (names that ref_id).
+    """
+    stripped = sentence.strip() if sentence else ""
+    if not stripped:
+        raise ValueError("refine_claim_sentence requires a non-empty sentence")
+
+    def _do(c: Any) -> dict[str, Any]:
+        if not _is_claim_hub(store, hub_ref_id, conn=c):
+            raise ValueError(f"ref_id={hub_ref_id} is not a TAPROOT:claim hub")
+
+        row = c.execute(
+            "SELECT title, meta FROM refs WHERE ref_id = %s AND deleted_at IS NULL",
+            (hub_ref_id,),
+        ).fetchone()
+        if (
+            row is None
+        ):  # pragma: no cover — defensive, _is_claim_hub already checked live
+            raise ValueError(f"ref_id={hub_ref_id} not found")
+        old_title = str(row[0] or "")
+        current_meta = dict(row[1] or {})
+        effective_scope = (
+            dict(scope) if scope is not None else dict(current_meta.get("scope") or {})
+        )
+
+        new_title = stripped[:200]
+        store.update_ref(
+            hub_ref_id,
+            title=new_title,
+            meta_patch={"scope": effective_scope} if scope is not None else None,
+            conn=c,
+        )
+
+        # (2) finding_body chunk — DELETE+INSERT at ord=0.
+        store.replace_body_chunk(
+            hub_ref_id, stripped, chunk_kind="finding_body", source=set_by, conn=c
+        )
+
+        # (3) card variants — no staleness-detecting pass exists for a hub
+        # (see the docstring); DELETE so a stale card never keeps matching
+        # the old wording, relying on the async card-forge re-emit.
+        c.execute("DELETE FROM chunks WHERE ref_id = %s AND ord < 0", (hub_ref_id,))
+
+        # (4) pub_id — recompute, alias the old one, guard a cross-ref collision.
+        new_paper_id = make_taproot_hub_paper_id(stripped, effective_scope)
+        new_pub_id = make_pub_id(new_paper_id)
+        existing = c.execute(
+            "SELECT ref_id FROM ref_identifiers "
+            "WHERE id_kind = 'pub_id' AND id_value = %s",
+            (new_pub_id,),
+        ).fetchone()
+        alias_kept = False
+        if existing is None:
+            c.execute(
+                "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
+                "VALUES (%s, %s, %s, %s)",
+                ("pub_id", new_pub_id, hub_ref_id, "taproot"),
+            )
+            alias_kept = True
+        elif int(existing[0]) != hub_ref_id:
+            raise ValueError(
+                f"new pub_id={new_pub_id} for the reworded sentence already "
+                f"belongs to ref_id={int(existing[0])} — this looks like a "
+                "dedup/merge candidate; refine_claim_sentence never merges "
+                "hubs silently"
+            )
+        # else: unchanged (or reverted-to-a-previous-wording) pub_id already
+        # on this hub — no-op.
+
+        log.info(
+            "taproot: refined hub ref_id=%s title=%r -> %r pub_id=%s",
+            hub_ref_id,
+            old_title,
+            new_title,
+            new_pub_id,
+        )
+        return {
+            "hub_ref_id": hub_ref_id,
+            "old_title": old_title,
+            "new_title": new_title,
+            "pub_id": new_pub_id,
+            "pub_id_alias_kept": alias_kept,
+        }
+
+    if conn is not None:
+        return _do(conn)
+    with store.tx() as c:
+        return _do(c)
+
+
 def attach_evidence(
     store: Any,
     *,
@@ -585,4 +747,5 @@ __all__ = [
     "attach_evidence",
     "link_claims",
     "mint_hub",
+    "refine_claim_sentence",
 ]

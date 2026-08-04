@@ -141,12 +141,37 @@ _EXTRACT_SYS = (
 
 _EXTRACT_PROMPT = """\
 Does this passage assert a specific, citable scientific claim (a concrete
-result, measurement, or finding), or does it only point to other work
-without asserting anything itself (e.g. "See [12]", a Related-Work sentence
-that is only a citation list, "several studies exist")?
+result, measurement, definition, capability, or finding), or does it only
+point to other work without asserting anything itself (e.g. "See [12]", a
+Related-Work sentence that is only a citation list, "several studies exist")?
 
 PASSAGE:
 {excerpt}
+
+Rules — the claim will be read ALONE, without this passage:
+1. Self-contained: resolve every "this/these/it/such" from the passage and
+   inline the referent. If the referent is not in the passage, claim = null.
+2. A world-claim: about materials, results, or mechanisms — not about the
+   literature or the text itself. If meta-prose wraps real content
+   ("properties are commonly tabulated…"), extract the underlying fact
+   (the specific properties or values), never the practice; if the passage
+   states only the practice, claim = null.
+3. Specific: keep the numbers, materials, and conditions the passage
+   states; drop empty intensifiers ("extraordinary", "remarkable").
+
+Examples:
+- "This strategy has been pursued across the principal families of 2D
+  materials."  -> BAD (dangling "This strategy"); with the referent in the
+  passage: "Hybridization of fullerenes with 2D materials has been pursued
+  across graphene, g-C3N4, TMDs, h-BN, and black phosphorus."
+- "The properties of these materials are commonly tabulated for
+  comparative reference."  -> claim = null (practice, not a world-claim).
+- "Single-wall carbon nanocones were observed with opening angles of
+  approximately 19, 39, 60, 85, and 113 degrees."  -> GOOD (specific,
+  self-contained).
+- "Graphene exhibits extraordinary tensile strength."  -> weak; if the
+  passage states the value, prefer "Graphene exhibits a tensile strength
+  of ~130 GPa."
 
 If it asserts a claim: normalize it to ONE sentence, plus any of
 material/method/quantity/regime it names (omit keys it doesn't name).

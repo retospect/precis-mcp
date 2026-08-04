@@ -1255,13 +1255,15 @@ class FindingHandler(NumericRefHandler):
         *,
         id: int | str | None = None,
         pick_candidate: str | int | None = None,
+        title: str | None = None,
         unacquirable_note: str | None = None,
         dry_run: bool | str | None = None,
         **_kw: Any,
     ) -> Response:
         """Resolve a ``STATUS:multi_candidate`` finding by picking one cite,
-        OR record an author's unacquirable-source override. Mutually
-        exclusive kwargs — pass exactly one.
+        retitle a ``TAPROOT:claim`` hub, or record an author's
+        unacquirable-source override. Mutually exclusive kwargs — pass
+        exactly one.
 
         **Pick a candidate.** When the chase reaches a chunk citing
         multiple references (e.g. ``[12,13]``) and can't disambiguate
@@ -1285,6 +1287,16 @@ class FindingHandler(NumericRefHandler):
         Idempotent — picking the same candidate twice is fine
         (re-flips to tracing, no-op on links).
 
+        ``title=`` is a **different** operation, only valid on a
+        ``TAPROOT:claim`` hub (``id`` must resolve to one — see
+        :func:`~precis.taproot.authoring.resolve_hub_ref_id`): it reroutes
+        through :func:`precis.taproot.hub.refine_claim_sentence`, the single
+        write door that keeps ``refs.title``, the ``finding_body`` chunk,
+        and the content-derived ``pub_id`` in sync when a hub's claim
+        sentence is reworded (fixing a claim-quality issue, e.g. a dangling
+        demonstrative). A plain (non-hub) finding has no ``edit(title=…)``
+        door — mutate its claim via a fresh ``put()``.
+
         **Unacquirable override.** A print-only / undigitized source is
         legitimately citeable even when no digital copy is obtainable.
         Recording that intent suppresses the trust surfaces' "unverified"
@@ -1304,17 +1316,35 @@ class FindingHandler(NumericRefHandler):
         channel exists yet for a handler to read one from). Idempotent —
         re-setting just overwrites the prior ``by``/``at``/``note``.
 
-        Neither op supports ``dry_run`` (see below).
+        No op here supports ``dry_run`` (see below).
         """
-        if pick_candidate is not None and unacquirable_note is not None:
+        given = [
+            name
+            for name, value in (
+                ("pick_candidate", pick_candidate),
+                ("title", title),
+                ("unacquirable_note", unacquirable_note),
+            )
+            if value is not None
+        ]
+        if len(given) > 1:
             raise BadInput(
-                "edit(kind='finding') accepts pick_candidate OR "
-                "unacquirable_note, not both",
+                "edit(kind='finding') accepts exactly one of pick_candidate, "
+                f"title, or unacquirable_note — got {', '.join(given)}",
                 next=(
-                    "edit(kind='finding', id=<N>, pick_candidate='<cite_key>') or "
+                    "edit(kind='finding', id=<N>, pick_candidate='<cite_key>') / "
+                    "edit(kind='finding', id='fi<N>', title='<reworded claim>') / "
                     "edit(kind='finding', id=<N>, unacquirable_note='<why>')"
                 ),
             )
+        if title is not None:
+            if dry_run:
+                raise BadInput(
+                    "edit(kind='finding', title=…) does not support dry_run — "
+                    "the retitle has no preview; omit dry_run to apply",
+                    next="edit(kind='finding', id='fi<N>', title='<reworded claim>')",
+                )
+            return self._retitle_hub(id=id, title=title)
         if dry_run:
             # Neither op has a faithful preview yet: pick_candidate rewrites
             # links + flips status; unacquirable_note writes an audit-trail
@@ -1435,6 +1465,64 @@ class FindingHandler(NumericRefHandler):
                 f"status flipped to STATUS:{_STATUS_TRACING}\n"
                 f"next: precis worker --only chase --once  "
                 f"(or wait for the next pass)"
+            )
+        )
+
+    # ──────────────────────────────────────────────────────────────────
+    # edit(title=...) — retitle a TAPROOT:claim hub (taproot/hub.py door)
+    # ──────────────────────────────────────────────────────────────────
+
+    def _retitle_hub(self, *, id: int | str | None, title: str) -> Response:
+        """``edit(kind='finding', title=…)`` — reword a claim hub's sentence.
+
+        ``id`` must resolve to a live ``TAPROOT:claim`` hub (mirrors the
+        ``link()`` Taproot-routing check above). A plain finding — no
+        ``edit(title=…)`` door exists for it — raises the same sharp
+        ``BadInput`` an unresolvable/non-hub target does.
+        """
+        if id is None:
+            raise BadInput(
+                "edit(kind='finding', title=…) requires id=<hub ref_id, "
+                "fi<id> handle, or pub_id>",
+                next="edit(kind='finding', id='fi<N>', title='<reworded claim>')",
+            )
+        try:
+            hub_ref_id = authoring.resolve_hub_ref_id(self.store, id)
+        except BadInput:
+            hub_ref_id = None
+        if hub_ref_id is None:
+            raise BadInput(
+                f"edit(kind='finding', title=…) only retitles a TAPROOT:claim "
+                f"hub — id={id!r} does not resolve to one",
+                next=(
+                    "a plain (non-hub) finding has no title-edit door — "
+                    "record a fresh put(kind='finding', title=…) instead"
+                ),
+            )
+        try:
+            result = hub.refine_claim_sentence(
+                self.store, hub_ref_id, title, set_by="agent"
+            )
+        except ValueError as exc:
+            raise BadInput(
+                f"edit(kind='finding', id='fi{hub_ref_id}', title=…) failed: {exc}",
+                next=(
+                    "the reworded sentence's pub_id collides with a different "
+                    "hub — pick distinct wording, or resolve the dedup by hand "
+                    "(link_claims / delete one hub) before retitling"
+                ),
+            ) from exc
+        alias_note = (
+            " (old pub_id kept as an alias — existing [handle] cites still resolve)"
+            if result["pub_id_alias_kept"]
+            else ""
+        )
+        return Response(
+            body=(
+                f"retitled claim hub fi{hub_ref_id}\n"
+                f"old: {result['old_title']}\n"
+                f"new: {result['new_title']}\n"
+                f"pub_id: {result['pub_id']}{alias_note}"
             )
         )
 
