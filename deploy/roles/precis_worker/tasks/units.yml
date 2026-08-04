@@ -1,0 +1,77 @@
+---
+# precis_worker unit HALF: the SPLIT `--profile system` unit render+load+
+# status. Only playbook 20 (rollback path) runs this — the live collapsed
+# unit is rendered by roles/service_unit from 20b instead.
+- name: Pre-create precis-worker log file (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.file:
+    path: /var/log/precis-worker.log
+    state: touch
+    owner: deploy
+    group: wheel
+    mode: "0644"
+  become: true
+  changed_when: false
+
+# ── macOS: LaunchDaemon ──
+- name: Render precis-worker LaunchDaemon (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.template:
+    src: precis-worker.plist.j2
+    dest: /Library/LaunchDaemons/com.precis.worker.plist
+    mode: "0644"
+  become: true
+  notify: reload precis worker (macos)
+
+# Idempotent load. Previously this was an unconditional ``bootout``
+# followed by an unconditional ``bootstrap`` — that killed the
+# running worker on every play, and if ``bootstrap`` silent-failed
+# (rc=0 but daemon didn't actually start) the worker ended up gone
+# for hours. Symptom seen 2026-06-16: ``--tags precis`` ran clean
+# on three nodes and left every precis-worker unloaded. Now we just
+# load-if-needed; the actual reload-with-new-plist happens via the
+# handler (``reload precis worker (macos)``) only when the install
+# or plist task fires it, mirroring the precis_web role.
+- name: Load precis-worker LaunchDaemon (macOS — idempotent)
+  when: os_family == "darwin"
+  ansible.builtin.command: >
+    launchctl load -w /Library/LaunchDaemons/com.precis.worker.plist
+  become: true
+  changed_when: false
+  failed_when: false
+
+# ── Linux: systemd ──
+- name: Render precis-worker systemd unit (Linux)
+  when: os_family == "linux"
+  ansible.builtin.template:
+    src: precis-worker.service.j2
+    dest: /etc/systemd/system/precis-worker.service
+    mode: "0644"
+  become: true
+  notify: reload precis worker (linux)
+
+- name: Enable + start precis-worker (Linux)
+  when: os_family == "linux"
+  ansible.builtin.systemd:
+    name: precis-worker
+    daemon_reload: true
+    enabled: true
+    state: started
+  become: true
+
+# ── Verification ──
+- name: Check precis worker status (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.command: launchctl print system/com.precis.worker
+  become: true
+  register: precis_status_macos
+  changed_when: false
+  failed_when: false
+
+- name: Check precis worker status (Linux)
+  when: os_family == "linux"
+  ansible.builtin.command: systemctl is-active precis-worker
+  become: true
+  register: precis_status_linux
+  changed_when: false
+  failed_when: false

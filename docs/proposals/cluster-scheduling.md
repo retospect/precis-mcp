@@ -200,9 +200,18 @@ dream throttle** (the one live cost bug).
   collapsed + verified (spark's split agent unit retired; first prod runs
   of both `service_unit` branches — a launch-time parse bug in its macOS
   reload task was found+fixed, `901a7c26`); `site.yml` +
-  `redeploy-precis.yml` now import `20b` in place of `20`+`37`. Residual:
-  the gateway rides the next deploy (its split pair keeps running until
-  then), then `retire-split-agents.yml --limit` it; the gateway's
+  `redeploy-precis.yml` now import `20b` in place of `20`+`37`; the
+  gateway collapsed via the first flipped deploy. Second same-day fix:
+  20b's `roles:`-section `tasks_from:` silently ran the FULL worker-agent
+  role (units.yml re-rendered the just-retired split units) — converted
+  to task-level `import_role` + the precis_worker role got the same
+  provision/units split, both test-pinned. KNOWN RESIDUAL (griped, next
+  wave): under `--profile all`, `chase`'s unbounded S2-backoff batches
+  can starve same-band reviewers for ~1-2h stretches (85 min observed) —
+  the gr187627/gr191264 serial-rotation class, newly exposed by
+  co-locating `chase` with the reviewers; fix = move
+  `structural`/`deep_review` onto scheduler-lease cadences (§A pattern),
+  NOT a band reorder (masking). The gateway's
   `precis_agent_container_enabled` stays false pending the
   `dream_agent`-under-`PRECIS_AGENT_CONTAINER` smoke test (static trace
   found no blocker; never empirically exercised there).

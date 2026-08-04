@@ -263,20 +263,36 @@
     _l_b_env: >-
       {{ _l_b_base_env | combine(_l_b_review_env) | combine(_l_b_container_env)
          | combine(_l_b_dream_env) | combine(_l_b_anki_env) | combine(_l_b_gateway_extras_env) }}
-  roles:
+  # tasks: + import_role, NOT a `roles:` list — in a `roles:` entry,
+  # `tasks_from:` is not a selector, it silently becomes a role VAR and the
+  # role runs its FULL main.yml. That exact bug re-rendered the split
+  # `precis-worker-agent` unit (units.yml) on every §L-b run, resurrecting
+  # the daemon retire-split-agents.yml had just booted out (2026-08-04).
+  # `import_role` honors tasks_from.
+  tasks:
     # still provisions the venv + deps + dirs + the shared env facts + the
-    # §L system-flag seed …
-    - role: precis_worker
+    # §L system-flag seed — provisioning HALF only (units.yml is the split
+    # `--profile system` render, playbook 20's rollback path; running it
+    # here would double-render com.precis.worker split-then-collapsed
+    # every deploy).
+    - name: precis_worker provisioning only (no split-unit render)
+      ansible.builtin.import_role:
+        name: precis_worker
+        tasks_from: provision
     # … plus the agent-profile PROVISIONING side-effects (colima sidecar,
     # SOUL copy, deploy's mcp.json, anki install, the quest_loop_reconcile
     # seed) — NOT that role's own unit render (units.yml), which this play
     # replaces with the single service_unit render below. Only the two
     # host groups that ran the split agent unit need this.
-    - role: precis_worker_agent
-      tasks_from: provision
+    - name: precis_worker_agent provisioning only (no unit render)
+      ansible.builtin.import_role:
+        name: precis_worker_agent
+        tasks_from: provision
       when: inventory_hostname in (groups['gateway'] + groups['inference'])
     # … and renders the ONE launch unit through the multiplatform abstraction.
-    - role: service_unit
+    - name: render + load the collapsed worker unit
+      ansible.builtin.import_role:
+        name: service_unit
       vars:
         service_unit_name: worker
         service_unit_run_as: deploy
