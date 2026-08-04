@@ -13,6 +13,10 @@ input-aware staleness; (4) ``last_push`` only stamped on an actual push;
 (5) the dead-man ping's LAN opt-in; (6) the push title keeps "degraded" even
 when the heartbeat also happens to be due; (7) the ``hosts_alive`` LIMIT
 matches nursery's ``host-dark`` LIMIT.
+
+§D Phase 2 (the remediation router, ``_route_findings``) + the §F embed-
+pipeline culprit diagnosis (``_diagnose_embed_pipeline``) are covered in
+their own section near the bottom of this file.
 """
 
 from __future__ import annotations
@@ -24,17 +28,21 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from precis.alerts import OPS_ALERT_TARGET_ENV, list_open_alerts
+from precis.alerts import OPS_ALERT_TARGET_ENV, list_open_alerts, raise_alert
+from precis.store.types import Tag
 from precis.workers import health_digest, nursery
 from precis.workers.health_digest import (
     CheckResult,
     _cadence_staleness_checks,
     _check_chunks_extracted,
+    _diagnose_embed_pipeline,
     _idle_aware_backlog_checks,
     _layer2_checks,
     _maybe_push,
+    _open_marker_gripes,
     _ping_deadman,
     _render_digest,
+    _route_findings,
     _sync_alerts,
     run_health_digest_pass,
 )
@@ -590,3 +598,250 @@ def test_run_health_digest_pass_end_to_end_smoke(store, monkeypatch) -> None:
     result = run_health_digest_pass(store, specs=[])  # no Layer-2 candidates
     assert result.handler == "health_digest"
     assert result.claimed >= 1  # at least the curated + cadence checks ran
+
+
+# ── §D Phase 2: remediation router ──────────────────────────────────────
+
+
+def _seed_watchdog_alert(
+    store,
+    *,
+    group: str,
+    name: str,
+    hours_old: float,
+    severity: str = "warn",
+    title: str | None = None,
+    detail: str = "",
+) -> int:
+    """Raise a ``watchdog:<group>`` alert (via the real :func:`raise_alert`
+    dedup path, exactly like ``_sync_alerts`` would) then backdate
+    ``created_at`` — mirrors ``_seed_paper``'s backdate idiom above."""
+    ref_id, _ = raise_alert(
+        store,
+        source=f"watchdog:{group}",
+        fingerprint=name,
+        title=title or f"[{group}] {name} stale",
+        detail=detail,
+        severity=severity,
+    )
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET created_at = now() - (%s || ' hours')::interval "
+            "WHERE ref_id = %s",
+            (hours_old, ref_id),
+        )
+        conn.commit()
+    return int(ref_id)
+
+
+def test_router_files_exactly_one_gripe_and_dedups_on_second_eval(store) -> None:
+    # "coherence" group budget is 24h.
+    _seed_watchdog_alert(store, group="coherence", name="some-pass", hours_old=30)
+
+    routed = _route_findings(store)
+    assert ("coherence", "some-pass") in routed
+
+    gripes = store.list_refs(kind="gripe", tags=["STATUS:open"])
+    assert len(gripes) == 1
+    body = store.list_blocks_for_ref(gripes[0].id)[0].text
+    assert body.startswith("watchdog-condition: watchdog:coherence/some-pass")
+    assert "STATUS:open" in " ".join(str(t) for t in store.tags_for(gripes[0].id))
+
+    # Second eval — the marker dedup must not file a duplicate.
+    routed2 = _route_findings(store)
+    assert routed2 == routed
+    assert len(store.list_refs(kind="gripe", tags=["STATUS:open"])) == 1
+
+
+def test_router_under_budget_alert_files_nothing(store) -> None:
+    # 1h old, well under coherence's 24h self-heal budget.
+    _seed_watchdog_alert(store, group="coherence", name="some-pass", hours_old=1)
+
+    routed = _route_findings(store)
+    assert routed == frozenset()
+    assert store.list_refs(kind="gripe", tags=["STATUS:open"]) == []
+
+
+def test_router_never_gripe_group_stays_silent_regardless_of_age(store) -> None:
+    """The ``meta`` group (``alert_backlog_rot``) never routes to a gripe —
+    a gripe about gripe-rot would feed the very rot it reports."""
+    _seed_watchdog_alert(
+        store, group="meta", name="alert_backlog_rot", hours_old=1000, severity="info"
+    )
+
+    routed = _route_findings(store)
+    assert routed == frozenset()
+    assert store.list_refs(kind="gripe", tags=["STATUS:open"]) == []
+
+
+def test_router_auto_closes_when_condition_clears(store) -> None:
+    from precis.alerts import resolve_alert
+    from precis.store.types import BlockInsert
+
+    alert_id = _seed_watchdog_alert(
+        store, group="coherence", name="some-pass", hours_old=30
+    )
+    _route_findings(store)
+    gripes = store.list_refs(kind="gripe", tags=["STATUS:open"])
+    assert len(gripes) == 1
+    gripe_id = int(gripes[0].id)
+
+    # A plain, non-watchdog gripe must be untouched by the auto-close sweep.
+    other = store.insert_ref(kind="gripe", slug=None, title="unrelated", meta={})
+    store.insert_blocks(
+        other.id,
+        [
+            BlockInsert(
+                pos=0, text="an ordinary gripe", meta={"chunk_kind": "gripe_body"}
+            )
+        ],
+    )
+    store.add_tag(
+        other.id, Tag.closed("STATUS", "open"), set_by="system", replace_prefix=True
+    )
+
+    # A marker gripe whose alert is STILL open must stay open.
+    routed_still_live = _route_findings(store)
+    assert ("coherence", "some-pass") in routed_still_live
+    with store.pool.connection() as conn:
+        still_open = conn.execute(
+            "SELECT deleted_at FROM refs WHERE ref_id = %s", (gripe_id,)
+        ).fetchone()
+    assert still_open[0] is None
+
+    # Condition clears (mirrors what resolve_stale_alerts does when a check
+    # goes fresh again).
+    resolve_alert(store, alert_id)
+    routed_after = _route_findings(store)
+    assert routed_after == frozenset()
+
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT deleted_at FROM refs WHERE ref_id = %s", (gripe_id,)
+        ).fetchone()
+        comment = conn.execute(
+            "SELECT text FROM chunks WHERE ref_id = %s AND chunk_kind = 'gripe_comment' "
+            "ORDER BY ord DESC LIMIT 1",
+            (gripe_id,),
+        ).fetchone()
+        other_row = conn.execute(
+            "SELECT deleted_at FROM refs WHERE ref_id = %s", (other.id,)
+        ).fetchone()
+    assert row[0] is not None  # soft-deleted
+    assert comment is not None and "auto-closed by health_digest" in comment[0]
+    assert other_row[0] is None  # non-watchdog gripe untouched
+
+
+def test_router_flood_cap_limits_new_gripes_per_eval(store) -> None:
+    for i in range(5):
+        _seed_watchdog_alert(store, group="coherence", name=f"pass-{i}", hours_old=30)
+
+    routed = _route_findings(store)
+    assert len(routed) == 3
+    assert len(store.list_refs(kind="gripe", tags=["STATUS:open"])) == 3
+
+    # The other two are picked up on the next eval (no flood-cap re-check
+    # needed here — this just proves nothing was lost, only deferred).
+    routed2 = _route_findings(store)
+    assert len(routed | routed2) == 5
+    assert len(store.list_refs(kind="gripe", tags=["STATUS:open"])) == 5
+
+
+def test_open_marker_gripes_parses_source_and_fingerprint(store) -> None:
+    _seed_watchdog_alert(store, group="coherence", name="some-pass", hours_old=30)
+    _route_findings(store)
+    markers = _open_marker_gripes(store)
+    assert ("watchdog:coherence", "some-pass") in markers
+
+
+# ── §F coupling: embed-pipeline culprit diagnosis ───────────────────────
+
+
+def test_diagnose_embed_no_jobs_minted_and_silent_materializer(store) -> None:
+    """(a) Nothing minted, materialize has never logged — stage 1 fires."""
+    with store.pool.connection() as conn:
+        result = _diagnose_embed_pipeline(conn)
+    assert "materializer silent" in result
+
+
+def test_diagnose_embed_queued_jobs_but_no_embedder_slots(store) -> None:
+    """(b) A job WAS minted (stage 1 passes) and is queued, but no
+    ``resource_slots`` row for ``embedder`` exists anywhere — stage 2
+    fires."""
+    ref = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="embed_batch (test)",
+        meta={"job_type": "embed_batch"},
+    )
+    store.add_tag(
+        ref.id, Tag.closed("STATUS", "queued"), set_by="system", replace_prefix=True
+    )
+
+    with store.pool.connection() as conn:
+        result = _diagnose_embed_pipeline(conn)
+    assert "no embedder capacity advertised" in result
+
+
+def test_diagnose_embed_jobs_claimed_but_failing(store) -> None:
+    """(c) A job was minted and reached a terminal ``failed`` status with
+    no successes in the window — stage 3 fires, with the error snippet."""
+    from precis.store.types import BlockInsert
+
+    ref = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="embed_batch (test)",
+        meta={"job_type": "embed_batch"},
+    )
+    store.add_tag(
+        ref.id, Tag.closed("STATUS", "failed"), set_by="system", replace_prefix=True
+    )
+    store.insert_blocks(
+        ref.id,
+        [
+            BlockInsert(
+                pos=0,
+                text="embed_batch: embedder unreachable: boom",
+                meta={"chunk_kind": "job_event"},
+            )
+        ],
+    )
+
+    with store.pool.connection() as conn:
+        result = _diagnose_embed_pipeline(conn)
+    assert "jobs claimed but failing" in result
+    assert "boom" in result
+
+
+def test_diagnose_embed_all_nominal_when_nothing_explains_it(store) -> None:
+    """(d) A job succeeded recently and nothing else is amiss — the honest
+    fallback, not a false-precision guess."""
+    ref = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="embed_batch (test)",
+        meta={"job_type": "embed_batch"},
+    )
+    store.add_tag(
+        ref.id, Tag.closed("STATUS", "succeeded"), set_by="system", replace_prefix=True
+    )
+
+    with store.pool.connection() as conn:
+        result = _diagnose_embed_pipeline(conn)
+    assert "all stages nominal" in result
+
+
+# ── router ↔ digest render: routed findings prefix louder ────────────────
+
+
+def test_render_digest_prefixes_routed_findings() -> None:
+    checks = [CheckResult("coherence", "some-pass", "stale", "broke", "warn")]
+    body = _render_digest(checks, routed=frozenset({("coherence", "some-pass")}))
+    assert "⛳ gripe filed:" in body
+
+
+def test_render_digest_no_prefix_when_not_routed() -> None:
+    checks = [CheckResult("coherence", "some-pass", "stale", "broke", "warn")]
+    body = _render_digest(checks)
+    assert "⛳" not in body
