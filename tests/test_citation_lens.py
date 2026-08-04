@@ -201,6 +201,32 @@ def test_ensure_s2_neighbors_fetches_once_then_skips_within_ttl(hub: Hub) -> Non
     assert calls["n"] == 1
 
 
+def test_ensure_s2_neighbors_refetches_fresh_stamp_with_no_rows(hub: Hub) -> None:
+    """A pre-0106 ``citation_edges`` stamp is fresh while ``s2_neighbors``
+    has no rows (the fetch predated persistence) — the stamp alone must not
+    suppress the fetch, or old papers show empty Sources/Cited tabs until
+    the TTL lapses."""
+    g = _build_graph(hub.store)
+    cl.ensure_s2_neighbors(hub.store, g["a"], ttl_days=30)
+    with hub.store.pool.connection() as conn:
+        conn.execute("DELETE FROM s2_neighbors WHERE ref_id = %s", (g["a"],))
+    assert hub.store.s2_neighbors_fresh(g["a"]) is False
+
+    calls = {"n": 0}
+    base_fetch = cl.fetch_citations
+
+    def counting_fetch(paper_id: str) -> dict[str, list[dict[str, object]]]:
+        calls["n"] += 1
+        return base_fetch(paper_id)
+
+    cl.fetch_citations = counting_fetch  # type: ignore[assignment]
+
+    fetched = cl.ensure_s2_neighbors(hub.store, g["a"], ttl_days=30)
+    assert fetched is True
+    assert calls["n"] == 1
+    assert len(hub.store.list_s2_neighbors(g["a"], "cites")) == 3
+
+
 def test_disabled_by_env(hub: Hub, monkeypatch: pytest.MonkeyPatch) -> None:
     g = _build_graph(hub.store)
     monkeypatch.setenv("PRECIS_BACKFILL_CITATION_LENS", "0")

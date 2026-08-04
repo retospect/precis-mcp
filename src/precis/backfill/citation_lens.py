@@ -179,7 +179,9 @@ def materialize_citation_edges(
     ttl = ttl_days if ttl_days is not None else _ttl_days()
     written = 0
     for rid in sorted(cited_ref_ids):
-        if _is_fresh(store, rid, ttl):
+        # Fresh stamp alone isn't enough: a pre-0106 fetch stamped the ref
+        # while persisting no s2_neighbors rows — re-fetch until rows exist.
+        if _is_fresh(store, rid, ttl) and store.s2_neighbors_fresh(rid):
             continue
         try:
             with store.pool.connection() as conn:
@@ -278,7 +280,10 @@ def ensure_s2_neighbors(
     Never raises.
     """
     ttl = ttl_days if ttl_days is not None else _ttl_days()
-    if _is_fresh(store, ref_id, ttl):
+    # A pre-0106 ``citation_edges`` stamp can be fresh while the table has
+    # no rows (the fetch predates persistence) — presence must also count,
+    # else old papers show empty tabs until the TTL lapses.
+    if _is_fresh(store, ref_id, ttl) and store.s2_neighbors_fresh(ref_id):
         return False
     materialize_citation_edges(store, {ref_id}, ttl_days=ttl)
     return True
