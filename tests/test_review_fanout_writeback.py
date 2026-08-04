@@ -120,6 +120,10 @@ class TestMintReviewFanout:
             assert ("closed", "STATUS", "open") in tags
             expected_tier = "sonnet" if lens in ("flow", "cites") else "opus"
             assert ref.meta.get("llm_tier") == expected_tier
+            # User-triggered fanout mints in the 0014 band-2 (cron) tier so
+            # its plan_ticks aren't starved behind the recurring stream by
+            # the prio-ASC claude_inproc claim (_FANOUT_PRIO).
+            assert ref.prio == 2
 
         assert len(seen_pairs) == expected
 
@@ -494,6 +498,7 @@ class TestDocLenses:
         assert ref.meta.get("review") == "toc"
         assert ref.meta.get("llm_tier") == "opus"
         assert "author" not in ref.meta
+        assert ref.prio == 2  # doc lenses share _FANOUT_PRIO (band 2)
 
     def test_toc_not_minted_when_scope_given(self, store: Store) -> None:
         ref_id = _draft_with_chunks(store, name="doclens-scope")

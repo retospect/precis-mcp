@@ -186,6 +186,17 @@ _HEADING_LENSES = frozenset({"structure", "adversarial"})
 #: ``flow``/``adversarial``/``toc`` never author regardless of the flag.
 _AUTHOR_ELIGIBLE_LENSES = frozenset({"cites", "structure"})
 
+#: ``refs.prio`` for fanout-minted review todos (0014 scale: lower = more
+#: urgent). The fanout is a *user-triggered* pass (the "run outstanding
+#: checks" button / CLI), so it mints in band 2 — the cron band — where
+#: the ``claude_inproc`` claim's ``prio ASC, ref_id ASC`` order drains it
+#: FIFO alongside recurring spawns. At the NULL default (band 5) a big
+#: fanout starves indefinitely behind the continuously re-minted
+#: recurring stream (news_poll/briefing/... mint at 2); band 1 would
+#: instead preempt-starve those cadences for the whole batch. The
+#: dispatcher propagates this prio verbatim onto the ``plan_tick`` jobs.
+_FANOUT_PRIO = 2
+
 
 def _brief_for(lens: str, anchor: str) -> str:
     brief = _WEAVE_LENS_BRIEFS.get(lens) or _FANOUT_ONLY_BRIEFS.get(lens)
@@ -331,6 +342,7 @@ def mint_review_fanout(
                 text=_brief_for(lens, anchor),
                 llm_tag=_LENS_TIER.get(lens, "sonnet"),
                 author=use_author,
+                prio=_FANOUT_PRIO,
             )
             if todo_id is None:
                 skipped += 1
@@ -401,6 +413,7 @@ def _mint_doc_lenses(
             text=_brief_for(lens, anchor),
             llm_tag=_LENS_TIER.get(lens, "opus"),
             author=False,  # doc lenses are never author-eligible
+            prio=_FANOUT_PRIO,
         )
         if todo_id is None:
             skipped += 1

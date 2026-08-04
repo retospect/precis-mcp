@@ -137,6 +137,7 @@ def mint_review_todo(
     text: str,
     llm_tag: str = _REVIEW_LLM_TAG,
     author: bool = False,
+    prio: int | None = None,
 ) -> int | None:
     """Mint one review-todo for ``(lens, anchor)`` parented on
     ``parent_id``, or ``None`` if a live one already exists (idempotent
@@ -148,6 +149,13 @@ def mint_review_todo(
     this section — plus ``meta.llm_tier=<llm_tag>`` (so the dispatcher
     actually picks it up; see ``workers/dispatch.py``'s auto-run-signal
     predicate) and ``STATUS:open``.
+
+    ``prio`` flows onto the minted ref verbatim (``refs.prio``, 0014
+    scale: lower = more urgent, ``NULL`` = default band 5). The
+    dispatcher propagates it onto the ``plan_tick`` jobs it mints, and
+    the ``claude_inproc`` claim orders ``prio ASC`` — so a user-triggered
+    fanout minting at 2 shares the cron band (FIFO within it) instead of
+    starving at 5 behind the continuously re-minted recurring stream.
 
     ``author=True`` additionally stamps ``meta.author=True`` on the
     minted todo. This is plumbing only (no authoring behavior lives here
@@ -174,6 +182,7 @@ def mint_review_todo(
             title=text,
             meta=meta,
             parent_id=parent_id,
+            prio=prio,
             conn=conn,
         )
         store.add_tag(

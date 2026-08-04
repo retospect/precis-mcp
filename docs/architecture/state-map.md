@@ -2547,7 +2547,12 @@ The master kinds table lives in the `precis-overview` skill.
   used by the writeback, so mint-time and record-time agree). Lens ×
   chunk-kind mapping keys off `PROSE_CHUNK_KINDS`
   (`src/precis/utils/wordcount.py`) — `flow`/`cites` mint on prose
-  chunks only, never headings/equations/tables/terms. **Writeback** —
+  chunks only, never headings/equations/tables/terms. Fanout todos mint
+  at `refs.prio=2` (`_FANOUT_PRIO`; 0014 band 2 — user-triggered work
+  sharing the cron band): at the NULL default (band 5) a big fanout's
+  `plan_tick`s starve indefinitely behind the continuously re-minted
+  recurring stream under the prio-ASC `claude_inproc` claim (hit live
+  2026-08-03 post-ASC-flip). **Writeback** —
   `src/precis/workers/executors/claude_inproc.py::
   _maybe_record_review_pass`, gated on a clean non-resumed `verdict:
   done` tick with zero filed findings and no open change-request; for
