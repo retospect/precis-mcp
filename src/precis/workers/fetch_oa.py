@@ -55,11 +55,20 @@ Event vocabulary (same shape across all three sources):
 Ahead of the cascade, each claimed stub also runs a ``fetch-time
 retraction gate`` (see :func:`_apply_retraction_gate`): a cheap,
 DOI-only Crossref check, reusing ``precis.ingest.provenance.check_doi``,
-that hard-skips a retracted paper before any download leg runs. A hit
-stamps ``refs.retraction_status='retracted'`` and writes its own
-``source='fetch_oa'``, ``event='retraction_skip'`` breadcrumb — after
-which :func:`precis.store._stub_predicate.stub_predicate_sql` excludes
-the ref from every future claim query and stub/chase-queue browse.
+that stamps the paper's dominant provenance status before any download
+leg runs. It acts on all three statuses, differently:
+
+- ``retracted`` — hard-skip: stamp ``refs.retraction_status='retracted'``,
+  write a ``source='fetch_oa'``, ``event='retraction_skip'`` breadcrumb,
+  and never run the cascade. :func:`precis.store._stub_predicate.
+  stub_predicate_sql` then excludes the ref from every future claim query
+  and stub/chase-queue browse — so this fires at most once.
+- ``corrected`` / ``expression_of_concern`` — soft flag: stamp the status
+  (reader-banner only) and *continue* the fetch (we still want the PDF).
+  Emits an ``event='provenance_flag'`` breadcrumb. These stubs stay
+  fetch-eligible, so the gate re-checks each pass to catch a later
+  ``corrected → retracted`` upgrade; it only re-writes on an actual
+  status change, so an unchanged flag is a no-op.
 
 ``precis stubs`` (CLI subcommand, Step 4) reads the latest event
 per stub to render the backlog.
@@ -239,6 +248,13 @@ class StubRef:
     arxiv: str | None
     s2_id: str | None
     cite_key: str | None
+    #: Current ``refs.retraction_status`` (``None`` / ``corrected`` /
+    #: ``expression_of_concern`` on a claimed stub — a ``retracted`` one is
+    #: excluded by the claim predicate so it never reaches here). Lets the
+    #: retraction gate stamp only on a *change*, so a corrected/EoC stub —
+    #: which stays fetch-eligible and re-checks every pass — doesn't re-emit
+    #: an identical event each time.
+    retraction_status: str | None = None
 
 
 def claim_stubs_to_fetch(
@@ -303,7 +319,8 @@ def claim_stubs_to_fetch(
                (SELECT min(id_value) FROM ref_identifiers
                  WHERE ref_id = r.ref_id AND id_kind = 's2')       AS s2_id,
                (SELECT min(id_value) FROM ref_identifiers
-                 WHERE ref_id = r.ref_id AND id_kind = 'cite_key') AS cite_key
+                 WHERE ref_id = r.ref_id AND id_kind = 'cite_key') AS cite_key,
+               r.retraction_status                                 AS retraction_status
           FROM refs r
           LEFT JOIN LATERAL (
                 SELECT count(*) AS attempts, max(e.ts) AS last_ts
@@ -360,6 +377,7 @@ def claim_stubs_to_fetch(
             arxiv=r[2],
             s2_id=r[3],
             cite_key=r[4],
+            retraction_status=r[5],
         )
         for r in rows
     ]
@@ -420,21 +438,39 @@ def _check_stub_retraction(stub: StubRef, *, mailto: str) -> Any:
 
 
 def _apply_retraction_gate(store: Any, stub: StubRef, *, mailto: str) -> bool:
-    """Stamp + skip when ``stub`` turns out to be retracted.
+    """Stamp the stub's provenance status; skip the cascade only if retracted.
 
-    Returns ``True`` when the stub is retracted — the caller must skip
-    the download cascade for this pass. On a hit: persists
-    ``refs.retraction_status`` via the existing ``Store.
-    set_retraction_status`` (never a hand-written UPDATE — see
-    ``store/_refs_ops.py``) and drops this worker's own ``ref_events``
-    breadcrumb (``source='fetch_oa'``, ``event='retraction_skip'``) so
-    the stub's audit trail shows *why* the cascade never ran, matching
-    the shape every other fetch_oa outcome is recorded in.
+    Returns ``True`` only when the stub is **retracted** — the caller
+    must then skip the download cascade for this pass (a retracted paper
+    has nothing worth chasing an OA copy for). ``corrected`` /
+    ``expression_of_concern`` are informational: we stamp them so the
+    reader banner shows the flag, but return ``False`` — we still want
+    the PDF, now annotated. A clean stub (no gradeable notice) also
+    returns ``False``.
 
-    Once stamped, :func:`precis.store._stub_predicate.stub_predicate_sql`
-    excludes the ref from every future candidate query and browse — this
-    branch fires at most once per stub (a re-claim can't happen because
-    the claim query itself no longer returns the row).
+    On a status *change* it persists ``refs.retraction_status`` via the
+    existing ``Store.set_retraction_status`` (never a hand-written
+    UPDATE — see ``store/_refs_ops.py``) and drops this worker's own
+    ``ref_events`` breadcrumb (``source='fetch_oa'``): ``retraction_skip``
+    for a retracted hit (why the cascade never ran) or ``provenance_flag``
+    for a soft flag (why the fetch continued with an annotation).
+
+    **Re-check bounding (design decision (a), OPEN-ITEMS).** A retracted
+    stub is dropped by :func:`precis.store._stub_predicate.stub_predicate_sql`
+    from every future claim — so that branch fires at most once. A
+    corrected/EoC stub, by contrast, *stays* fetch-eligible (the predicate
+    excludes only ``retracted``) until it acquires a PDF, so it re-runs
+    this check on every pass — deliberately, to catch a later
+    ``corrected → retracted`` upgrade. To keep that idempotent we compare
+    the freshly-detected status against ``stub.retraction_status`` and
+    only write + emit an event when it actually changed; an unchanged
+    soft flag is a no-op, not a duplicate ``ref_events`` row each pass.
+
+    ``propagate_to_findings`` is left on only for ``retracted``: restoring
+    a citing finding to ``tracing`` and clearing its human-verified stamp
+    is a *retraction* action — a mere correction/EoC must not taint a
+    finding that walked through the paper. The soft-flag downstream
+    (search downrank / citation flag) lands separately.
     """
     result = _check_stub_retraction(stub, mailto=mailto)
     if result is None:
@@ -443,26 +479,34 @@ def _apply_retraction_gate(store: Any, stub: StubRef, *, mailto: str) -> bool:
     from precis.ingest.provenance import dominant_status
 
     statuses = [n.status for n in result.notices if n.status is not None]
-    if dominant_status(statuses) != "retracted":
+    status = dominant_status(statuses)
+    if status is None:
         return False
 
-    notices = [n for n in result.notices if n.status == "retracted"]
-    notice_dois = [n.notice_doi for n in notices]
-    dated = [n.notice_date for n in notices if n.notice_date is not None]
-    store.set_retraction_status(
-        stub.ref_id,
-        status="retracted",
-        retracted_at=min(dated) if dated else None,
-        reason="; ".join(notice_dois) if notice_dois else None,
-        url=f"https://doi.org/{notice_dois[0]}" if notice_dois else None,
-    )
-    store.append_event(
-        stub.ref_id,
-        source=_RETRACTION_GATE_SOURCE,
-        event="retraction_skip",
-        payload={"doi": stub.doi, "notice_dois": notice_dois},
-    )
-    return True
+    retracted = status == "retracted"
+    if status != stub.retraction_status:
+        notices = [n for n in result.notices if n.status == status]
+        notice_dois = [n.notice_doi for n in notices if n.notice_doi]
+        dated = [n.notice_date for n in notices if n.notice_date is not None]
+        store.set_retraction_status(
+            stub.ref_id,
+            status=status,
+            retracted_at=min(dated) if dated else None,
+            reason="; ".join(notice_dois) if notice_dois else None,
+            url=f"https://doi.org/{notice_dois[0]}" if notice_dois else None,
+            propagate_to_findings=retracted,
+        )
+        store.append_event(
+            stub.ref_id,
+            source=_RETRACTION_GATE_SOURCE,
+            event="retraction_skip" if retracted else "provenance_flag",
+            payload={
+                "doi": stub.doi,
+                "status": status,
+                "notice_dois": notice_dois,
+            },
+        )
+    return retracted
 
 
 # ── Deterministic publisher PDF patterns ───────────────────────────

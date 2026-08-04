@@ -52,22 +52,32 @@ core rather than forking it:
    double-stamp or double-count). The route redirects back with
    `?requeued=<n>` for the existing `notice` banner to flash.
 
-4. **Retraction gate.** `fetch_oa` now runs a cheap, DOI-only
-   Crossref retraction check on each claimed stub *before* the
-   download cascade — reusing
-   `precis.ingest.provenance.check_doi`/`dominant_status` (no second
-   classifier). A retracted paper has nothing worth chasing an OA copy
-   for: the worker stamps `refs.retraction_status='retracted'` via the
-   existing `Store.set_retraction_status` and drops a
-   `source='fetch_oa'`, `event='retraction_skip'` `ref_events` row
-   instead of running any download leg. `stub_predicate_sql` (the
-   shared predicate behind `stub_backlog`, `stub_backlog_count`,
-   `requeue_stubs_for_fetch`, and `claim_stubs_to_fetch`) now also
-   excludes `retraction_status = 'retracted'` rows by default (`IS
-   DISTINCT FROM` — `NULL`/unchecked and the other non-retracted
-   statuses stay eligible), so a retracted stub also disappears from
-   `view='stubs'` / `view='chase-queue'` once stamped, converging in at
-   most one more chase attempt.
+4. **Provenance gate.** `fetch_oa` now runs a cheap, DOI-only
+   Crossref check on each claimed stub *before* the download cascade —
+   reusing `precis.ingest.provenance.check_doi`/`dominant_status` (no
+   second classifier) — and stamps the *dominant* status, acting on
+   each differently:
+   - **`retracted`** — a retracted paper has nothing worth chasing an OA
+     copy for: stamp `refs.retraction_status='retracted'` via the
+     existing `Store.set_retraction_status` (finding re-grade on), drop a
+     `source='fetch_oa'`, `event='retraction_skip'` row, and run no
+     download leg. `stub_predicate_sql` (the shared predicate behind
+     `stub_backlog`, `stub_backlog_count`, `requeue_stubs_for_fetch`,
+     and `claim_stubs_to_fetch`) excludes `retraction_status =
+     'retracted'` rows by default (`IS DISTINCT FROM` — `NULL`/unchecked
+     and the non-retracted statuses stay eligible), so the stub also
+     disappears from `view='stubs'` / `view='chase-queue'`, converging in
+     at most one more chase attempt.
+   - **`corrected` / `expression_of_concern`** — informational: stamp the
+     status for the reader banner (finding re-grade *off* — a correction
+     isn't a taint), drop an `event='provenance_flag'` row, then
+     **proceed** with the fetch (we still want the PDF, now flagged).
+     These stay fetch-eligible, so the gate re-checks every pass — but
+     only writes on a status *change* (gated on `StubRef.retraction_status`
+     carried from the claim), keeping the re-check idempotent while still
+     catching a later `corrected → retracted` upgrade (decision (a),
+     OPEN-ITEMS). The search-downrank / citation-flag consumers that make
+     the soft flag *do* something land separately.
 
 ## Problem
 

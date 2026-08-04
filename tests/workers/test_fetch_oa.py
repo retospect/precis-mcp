@@ -1760,10 +1760,13 @@ class TestRunCascade:
 
 
 class TestRetractionGate:
-    """Fetch-time retraction gate: reuses ``precis.ingest.provenance.
-    check_doi`` for the classification, hard-skips the download cascade
-    on a hit, and stamps ``refs.retraction_status`` + a ``fetch_oa``
-    breadcrumb so the stub drops out of every future claim/browse.
+    """Fetch-time provenance gate: reuses ``precis.ingest.provenance.
+    check_doi`` for the classification and stamps the dominant status,
+    acting on each differently — ``retracted`` hard-skips the cascade
+    and drops the stub from every future claim/browse; ``corrected`` /
+    ``expression_of_concern`` stamp a reader-banner flag but let the
+    fetch proceed, staying eligible and re-checking (idempotently) to
+    catch a later corrected→retracted upgrade.
     """
 
     @pytest.fixture(autouse=True)
@@ -1954,6 +1957,199 @@ class TestRetractionGate:
         ):
             result = run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
         assert result == {"claimed": 1, "ok": 1, "failed": 0}
+
+    @pytest.mark.parametrize(
+        ("update_type", "expected_status"),
+        [
+            ("correction", "corrected"),
+            ("expression_of_concern", "expression_of_concern"),
+        ],
+    )
+    def test_soft_flag_stamps_status_but_proceeds_with_fetch(
+        self,
+        store: Store,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        update_type: str,
+        expected_status: str,
+    ) -> None:
+        # corrected / expression_of_concern are informational: stamp the
+        # status for the reader banner, but STILL fetch the PDF (unlike a
+        # retraction, which hard-skips). The download cascade must run.
+        ref_id = _seed_paper_stub(store, doi=f"10.1234/{update_type}-paper")
+        monkeypatch.setattr(
+            fetch_oa,
+            "_query_unpaywall",
+            lambda doi, *, email: {
+                "best_oa_location": {"url_for_pdf": "https://x/y.pdf"}
+            },
+        )
+        monkeypatch.setattr(
+            fetch_oa,
+            "_download_pdf",
+            lambda url, target: _write_synthetic_pdf(target, size=128),
+        )
+        crossref_msg = {
+            "DOI": f"10.1234/{update_type}-paper",
+            "update-to": [
+                {
+                    "DOI": f"10.1234/{update_type}-paper-n1",
+                    "type": update_type,
+                    "updated": {"date-parts": [[2024, 5, 1]]},
+                },
+            ],
+        }
+        with patch(
+            "precis.ingest.provenance._fetch_crossref_message",
+            return_value=crossref_msg,
+        ):
+            result = run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
+
+        # Fetch succeeded — the soft flag did not block the cascade.
+        assert result == {"claimed": 1, "ok": 1, "failed": 0}
+        ref = store.get_ref(kind="paper", id=ref_id)
+        assert ref is not None
+        assert ref.retraction_status == expected_status
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT source, event FROM ref_events WHERE ref_id = %s ORDER BY ts",
+                (ref_id,),
+            ).fetchall()
+        # A provenance_flag breadcrumb (not retraction_skip), and the
+        # cascade's own fetch_ok — proof it proceeded.
+        assert ("fetch_oa", "provenance_flag") in rows
+        assert ("fetch_oa", "retraction_skip") not in rows
+        assert ("fetcher:unpaywall", "fetch_ok") in rows
+
+    def test_soft_flagged_stub_stays_in_backlog(
+        self,
+        store: Store,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Contrast with test_retracted_stub_excluded_from_next_claim: a
+        # corrected stub is stamped but the predicate excludes only
+        # `retracted`, so it stays fetch-eligible until it gets a PDF.
+        ref_id = _seed_paper_stub(store, doi="10.1234/corrected-still-wanted")
+        # Hermetic default legs (autouse fixture) find no PDF → stub survives.
+        crossref_msg = {
+            "DOI": "10.1234/corrected-still-wanted",
+            "update-to": [
+                {
+                    "DOI": "10.1234/corrected-still-wanted-c1",
+                    "type": "correction",
+                    "updated": {"date-parts": [[2024, 5, 1]]},
+                },
+            ],
+        }
+        with patch(
+            "precis.ingest.provenance._fetch_crossref_message",
+            return_value=crossref_msg,
+        ):
+            run_oa_fetch_pass(store, limit=10, inbox_dir=tmp_path, email="a@b")
+
+        ref = store.get_ref(kind="paper", id=ref_id)
+        assert ref is not None and ref.retraction_status == "corrected"
+        assert ref_id in [r["ref_id"] for r in store.stub_backlog()]
+
+    def test_soft_flag_recheck_is_idempotent(
+        self,
+        store: Store,
+    ) -> None:
+        # A corrected/EoC stub re-checks on every future claim (design
+        # decision (a): catch a later corrected→retracted upgrade). An
+        # UNCHANGED status must be a no-op — no duplicate write, no second
+        # ref_events row each pass.
+        ref_id = _seed_paper_stub(store, doi="10.1234/corr-idem")
+        crossref_msg = {
+            "DOI": "10.1234/corr-idem",
+            "update-to": [
+                {
+                    "DOI": "10.1234/corr-idem-c1",
+                    "type": "correction",
+                    "updated": {"date-parts": [[2024, 5, 1]]},
+                },
+            ],
+        }
+        first = StubRef(
+            ref_id=ref_id,
+            doi="10.1234/corr-idem",
+            arxiv=None,
+            s2_id=None,
+            cite_key="k",
+            retraction_status=None,
+        )
+        # Second claim reflects the now-persisted status (as the claim
+        # query would return it).
+        second = StubRef(
+            ref_id=ref_id,
+            doi="10.1234/corr-idem",
+            arxiv=None,
+            s2_id=None,
+            cite_key="k",
+            retraction_status="corrected",
+        )
+        with patch(
+            "precis.ingest.provenance._fetch_crossref_message",
+            return_value=crossref_msg,
+        ):
+            skip1 = fetch_oa._apply_retraction_gate(store, first, mailto="a@b")
+            skip2 = fetch_oa._apply_retraction_gate(store, second, mailto="a@b")
+
+        assert skip1 is False and skip2 is False
+        with store.pool.connection() as conn:
+            events = conn.execute(
+                "SELECT event FROM ref_events "
+                "WHERE ref_id = %s AND source = 'fetch_oa'",
+                (ref_id,),
+            ).fetchall()
+        assert [e[0] for e in events] == ["provenance_flag"]
+
+    def test_corrected_upgrades_to_retracted(
+        self,
+        store: Store,
+    ) -> None:
+        # The whole point of re-checking a soft-flagged stub: when the
+        # correction is later escalated to a retraction, the gate stamps
+        # `retracted` and flips to hard-skip.
+        ref_id = _seed_paper_stub(store, doi="10.1234/corr-then-retract")
+        store.set_retraction_status(
+            ref_id, status="corrected", propagate_to_findings=False
+        )
+        crossref_msg = {
+            "DOI": "10.1234/corr-then-retract",
+            "update-to": [
+                {
+                    "DOI": "10.1234/corr-then-retract-r1",
+                    "type": "retraction",
+                    "updated": {"date-parts": [[2024, 6, 1]]},
+                },
+            ],
+        }
+        stub = StubRef(
+            ref_id=ref_id,
+            doi="10.1234/corr-then-retract",
+            arxiv=None,
+            s2_id=None,
+            cite_key="k",
+            retraction_status="corrected",
+        )
+        with patch(
+            "precis.ingest.provenance._fetch_crossref_message",
+            return_value=crossref_msg,
+        ):
+            skip = fetch_oa._apply_retraction_gate(store, stub, mailto="a@b")
+
+        assert skip is True
+        ref = store.get_ref(kind="paper", id=ref_id)
+        assert ref is not None and ref.retraction_status == "retracted"
+        with store.pool.connection() as conn:
+            evs = conn.execute(
+                "SELECT event FROM ref_events "
+                "WHERE ref_id = %s AND source = 'fetch_oa' ORDER BY ts",
+                (ref_id,),
+            ).fetchall()
+        assert evs[-1][0] == "retraction_skip"
 
 
 class TestMarkupRacePrintableOnly:

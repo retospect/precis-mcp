@@ -98,14 +98,16 @@ get(kind="semanticscholar", id="<title or topic>")  # search → ranked hits + D
 
 ## Why did a stub disappear from the backlog without a PDF?
 
-`fetch_oa` checks each claimed stub's own DOI against Crossref for a
-retraction *before* trying to download it — a retracted paper has
-nothing worth chasing an OA copy for. A hit stamps the paper's
-retraction status and drops a `retraction_skip` event instead of a
-fetch attempt; `view='stubs'` / `view='chase-queue'` then stop
-listing it (retracted papers aren't something we still need to get).
-Confirm via `get(kind='paper', id=<ref_id>)`, which shows the
-retraction status on a retracted ref.
+`fetch_oa` checks each claimed stub's own DOI against Crossref *before*
+trying to download it. A **retraction** has nothing worth chasing an OA
+copy for: the worker stamps `retraction_status='retracted'`, drops a
+`retraction_skip` event instead of a fetch attempt, and `view='stubs'` /
+`view='chase-queue'` stop listing it. A **correction** or **expression
+of concern** is only a flag: the worker stamps the status (so the reader
+banner shows it) but still fetches the PDF — so those stubs stay in the
+backlog until acquired, and the gate re-checks them each pass to catch a
+later escalation to `retracted`. Confirm via `get(kind='paper',
+id=<ref_id>)`, which shows the status on the ref.
 
 ## See also
 

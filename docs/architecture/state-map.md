@@ -2875,14 +2875,21 @@ stubs-mcp-and-skill.md`; skill: `precis-stubs-help`.
 DOI-only Crossref check reusing `precis.ingest.provenance.check_doi` /
 `dominant_status` (classification-only, `store=None` — no notice-ref
 ingestion/tag/link write-through) rather than a second copy of the
-retraction taxonomy. A hit stamps `refs.retraction_status='retracted'`
-via the existing `Store.set_retraction_status` and writes a
-`source='fetch_oa'`, `event='retraction_skip'` `ref_events` breadcrumb
-instead of running any download leg; a check failure (network blip, DOI
-unknown to Crossref, no DOI on the stub) degrades to "not known
-retracted" and the normal cascade proceeds. Once stamped, the shared
-stub predicate above excludes the ref from every future claim, so the
-gate fires at most once per stub.
+retraction taxonomy. It stamps the *dominant* status and acts on each
+differently: **`retracted`** — stamp `refs.retraction_status='retracted'`
+via `Store.set_retraction_status` (with `propagate_to_findings=True`, the
+finding re-grade), write a `source='fetch_oa'`, `event='retraction_skip'`
+breadcrumb, and skip every download leg; once stamped the shared stub
+predicate above drops the ref from every future claim, so this fires at
+most once. **`corrected` / `expression_of_concern`** — a soft flag: stamp
+the status for the reader banner (`propagate_to_findings=False` — a mere
+correction must not taint a citing finding) with an `event='provenance_flag'`
+breadcrumb, then **proceed** with the fetch (we still want the PDF). These
+stubs stay eligible, so the gate re-checks each pass — writing only on an
+actual status *change* (`StubRef.retraction_status`-gated), which keeps the
+re-check idempotent and catches a later `corrected → retracted` upgrade. A
+check failure (network blip, DOI unknown to Crossref, no DOI on the stub)
+degrades to "not known" and the normal cascade proceeds.
 
 **Gripes workbench (`/gripes`, new).** `src/precis_web/routes/gripes.py`
 is the first write surface for the dev bug tracker (`kind='gripe'`):
