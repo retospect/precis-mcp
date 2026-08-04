@@ -22,6 +22,21 @@ Registered via the ``precis.job_types`` entry point (``autocatpath_seed =
 precis_pathway.seed_job:SPEC``). Needs no host capability; the node pin
 (``target_node``, same seam as ``autocatpath_explore``) routes it to a box
 with autocatpath + the backend installed.
+
+**Detached submit/poll (§H piece 4, gr187627).** ``_dispatch`` above stays
+as the legacy blocking fallback (a mixed-version window where an older
+``ssh_node`` build only knows ``dispatch`` still works), but ``ssh_node``
+prefers ``_submit``/``_poll``/``_kill`` when both ``submit`` and ``poll``
+are set: ``_submit`` parses/validates params exactly like ``_dispatch``
+then launches :func:`precis_pathway.runner.submit_seed_partial_detached`
+(a detached child, NOT docker — no autocatpath image exists, and the child
+process already provides gr191351's MACE/CUDA isolation) and returns its
+handle without blocking; ``_poll`` calls
+:func:`~precis_pathway.runner.poll_seed_partial_detached` each pass and, on
+a terminal result, does exactly ``_dispatch``'s post-run tail (same
+``set_meta`` shape, same ``job_summary`` chunk) so a caller reading
+``meta.partial`` can't tell which protocol produced it; ``_kill`` is the
+wall-clock backstop ``ssh_node`` calls past ``meta.deadline``.
 """
 
 from __future__ import annotations
@@ -146,6 +161,109 @@ def _run(*_a: Any, **_k: Any) -> Any:
     raise NotImplementedError("autocatpath_seed runs via dispatch(), not run()")
 
 
+def _submit(ctx: Any, spec: Any) -> dict[str, Any] | None:
+    """Detached submit half (§H piece 4) — same param parsing/validation as
+    ``_dispatch``; malformed params fail the SAME way, ``ctx.record_failure``
+    + return ``None``. ``ssh_node._run_one`` still stamps
+    ``meta.compute_handle=None`` + a deadline right after a submit that
+    returns ``None``, but that's harmless: ``record_failure`` already drove
+    the row to ``STATUS:failed``, so it drops out of ``_polling_jobs``'
+    ``STATUS:running`` selection and nothing ever polls the null handle.
+
+    Must NOT call ``ctx.set_status`` on the happy path (the executor
+    contract, ``JobTypeSpec.submit``'s docstring) — the row stays
+    ``STATUS:running`` (already set by the claim) until ``_poll`` drives it
+    terminal."""
+    params = (ctx.meta or {}).get("params") or {}
+    try:
+        config = dict(params["config"])
+        seed = int(params["seed"])
+        model_index = int(params["model_index"])
+    except (KeyError, TypeError, ValueError) as exc:
+        ctx.record_failure(f"autocatpath_seed: malformed params ({exc})")
+        return None
+    force_backend = params.get("force_backend")
+    slab_extxyz = params.get("slab_extxyz")
+
+    ctx.append_chunk(
+        "job_event",
+        f"autocatpath_seed: {config.get('name', '?')} seed={seed} "
+        f"model#{model_index} (detached submit)",
+    )
+
+    try:
+        from precis_pathway import runner
+
+        return runner.submit_seed_partial_detached(
+            config,
+            seed,
+            model_index,
+            force_backend=force_backend,
+            slab_extxyz=slab_extxyz,
+        )
+    except Exception as exc:  # pragma: no cover - spawn/env dependent
+        log.warning("autocatpath_seed: submit failed", exc_info=True)
+        ctx.record_failure(f"autocatpath_seed: submit failed: {exc}")
+        return None
+
+
+def _poll(ctx: Any, handle: Any) -> bool:
+    """Detached poll half (§H piece 4) — on "done", does exactly
+    ``_dispatch``'s post-run tail (same ``set_meta`` fields, same
+    ``job_summary`` chunk shape) so the aggregate job's read of
+    ``meta.partial`` can't tell which protocol produced it. ``content_key``/
+    ``seed``/``model_index`` come from ``ctx.meta['params']`` — the executor
+    rebuilds ``ctx`` fresh from the DB row every poll tick
+    (``ssh_node._polling_jobs``), so this always sees the row's current
+    params, not a submit-time snapshot."""
+    from precis_pathway import runner
+
+    status = runner.poll_seed_partial_detached(handle)
+    state = status.get("state")
+    if state == "running":
+        return False
+
+    if state == "failed":
+        tail = status.get("tail") or ""
+        reason = f"autocatpath_seed: run failed: {status.get('error')}"
+        if tail:
+            reason = f"{reason}\n--- tail ---\n{tail}"
+        ctx.record_failure(reason)
+        return True
+
+    # state == "done"
+    params = (ctx.meta or {}).get("params") or {}
+    seed = int(params["seed"])
+    model_index = int(params["model_index"])
+    result = status["result"]
+    partial = result["partial"]
+    ctx.set_meta(
+        content_key=params.get("content_key"),
+        seed=seed,
+        model_index=model_index,
+        model=result["model"],
+        partial=partial,
+        lattice=result.get("lattice") or {},
+    )
+    n_states = len(partial.get("states") or {})
+    n_warnings = len(partial.get("warnings") or [])
+    ctx.append_chunk(
+        "job_summary",
+        f"autocatpath_seed: seed={seed} model={result['model']}: "
+        f"{n_states} state(s), {n_warnings} warning(s).",
+    )
+    ctx.set_status("succeeded")
+    return True
+
+
+def _kill(ctx: Any, handle: Any) -> None:
+    """``ssh_node`` wall-clock kill hook (§H piece 2) — best-effort SIGKILL
+    of the detached child's process group plus scratch-dir cleanup."""
+    from precis_pathway import runner
+
+    runner.kill_seed_partial_detached(handle)
+
+
 SPEC = JobTypeSpec(
     name=NAME,
     params_schema=_PARAMS_SCHEMA,
@@ -154,6 +272,9 @@ SPEC = JobTypeSpec(
     description=DESCRIPTION,
     run=_run,
     dispatch=_dispatch,
+    submit=_submit,
+    poll=_poll,
+    kill=_kill,
 )
 
 

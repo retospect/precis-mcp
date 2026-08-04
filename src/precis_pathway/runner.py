@@ -391,6 +391,17 @@ def run_seed_partial(
 _DEFAULT_SEED_TIMEOUT_S = 5400
 
 
+def _child_cmd(req_path: str, out_path: str) -> list[str]:
+    """The argv both the blocking (:func:`run_seed_partial_subprocess`) and
+    detached (:func:`submit_seed_partial_detached`) protocols spawn — the
+    same ``python -m precis_pathway.runner req out`` child entrypoint
+    (:func:`_subprocess_main`). Factored out so a test can stub the whole
+    launch by monkeypatching this one function."""
+    import sys
+
+    return [sys.executable, "-m", "precis_pathway.runner", req_path, out_path]
+
+
 def run_seed_partial_subprocess(
     config: dict[str, Any],
     seed: int,
@@ -424,7 +435,6 @@ def run_seed_partial_subprocess(
     """
     import os
     import subprocess
-    import sys
     import tempfile
 
     request = {
@@ -440,7 +450,7 @@ def run_seed_partial_subprocess(
         with open(req_path, "w", encoding="utf-8") as fh:
             json.dump(request, fh)
 
-        cmd = [sys.executable, "-m", "precis_pathway.runner", req_path, out_path]
+        cmd = _child_cmd(req_path, out_path)
         try:
             proc = subprocess.run(
                 cmd,
@@ -480,6 +490,277 @@ def run_seed_partial_subprocess(
             f"{payload.get('error')}"
         )
     return payload["result"]
+
+
+def _tail_logs(scratch_dir: str, limit: int = 2000) -> str:
+    """Last ``limit`` chars of the detached child's captured stderr+stdout —
+    the diagnosis a blocking run gets for free from ``subprocess.run``'s
+    ``capture_output`` (:func:`run_seed_partial_subprocess`), reconstructed
+    here from the files :func:`submit_seed_partial_detached` redirected the
+    child into (a detached ``Popen`` can't be waited on for output)."""
+    import os
+
+    chunks = []
+    for name in ("stderr.log", "stdout.log"):
+        path = os.path.join(scratch_dir, name)
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                chunks.append(fh.read())
+        except OSError:
+            continue
+    return "".join(chunks)[-limit:]
+
+
+def _cleanup_detached(scratch_dir: str) -> None:
+    """Best-effort scratch-dir removal — a detached submit's dir is a bare
+    ``tempfile.mkdtemp`` (not context-managed, unlike the blocking sibling's
+    ``TemporaryDirectory``), so nothing else reclaims it."""
+    import shutil
+
+    shutil.rmtree(scratch_dir, ignore_errors=True)
+
+
+def _reap_zombie(pid: int) -> bool:
+    """Best-effort ``os.waitpid(pid, os.WNOHANG)`` reap.
+
+    :func:`submit_seed_partial_detached` discards its ``Popen`` object right
+    after spawning (the whole point of "detached" — nothing keeps tracking
+    it), so nothing else ever calls ``.wait()``/``.poll()`` on that PID once
+    the child exits. Without an explicit reap here, the child sits
+    ``<defunct>`` in the ORIGINAL submitting process's process table
+    forever — for the succeeding-job path that's every job the fan-out
+    runs, not a rare failure case, so this is called on EVERY terminal
+    branch of :func:`poll_seed_partial_detached`, not just the crash one.
+
+    Returns ``True`` if THIS call reaped an already-exited child,
+    ``False`` otherwise (still running, or ``ChildProcessError``/ECHILD —
+    not our child, e.g. this poll runs in a worker generation that
+    restarted since submit, or it was already reaped by an earlier call —
+    silently ignored either way: an orphaned zombie is reparented to
+    init/a subreaper and reaped there instead)."""
+    import os
+
+    try:
+        reaped_pid, _status = os.waitpid(pid, os.WNOHANG)
+    except ChildProcessError:
+        return False
+    return reaped_pid == pid
+
+
+def _process_alive(pid: int) -> bool:
+    """Liveness probe that reaps a same-process zombie (:func:`_reap_zombie`)
+    before falling back to the cross-process ``kill(pid, 0)`` signal-0
+    probe — see :func:`_reap_zombie` for why the reap matters: a bare
+    ``os.kill(pid, 0)`` on an un-reaped zombie still succeeds (the kernel
+    keeps the process-table entry until it's reaped), so without the reap
+    attempt first this would misreport "running" forever for a same-process
+    child that already exited."""
+    import os
+
+    if _reap_zombie(pid):
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Signal permitted-but-blocked (pid owned by another user's
+        # process) reads as "alive" — same reused-pid caveat the callers'
+        # docstrings note; the wall-clock deadline bounds it regardless.
+        return True
+
+
+def submit_seed_partial_detached(
+    config: dict[str, Any],
+    seed: int,
+    model_index: int,
+    *,
+    force_backend: str | None = None,
+    slab_extxyz: str | None = None,
+    work_dir: str | None = None,
+) -> dict[str, Any]:
+    """Launch :func:`run_seed_partial` in a DETACHED child — the ssh_node
+    ``submit`` half of the §H piece 4 protocol (``docs/proposals/compute-
+    lane-lease-epoch.md`` / gr187627). Where
+    :func:`run_seed_partial_subprocess` blocks the caller for the run's
+    whole duration, this returns almost immediately: it writes the request
+    file, spawns the same child entrypoint (:func:`_child_cmd`) via
+    ``Popen`` in its own session (``start_new_session=True`` — the child
+    becomes its own process-group leader, so
+    :func:`kill_seed_partial_detached` can reach everything it spawns, not
+    just its immediate PID — the same isolation
+    :func:`run_seed_partial_subprocess`'s docstring explains for gr191351),
+    and returns a handle WITHOUT waiting on it.
+
+    The scratch dir is a PERSISTENT ``tempfile.mkdtemp`` (not the blocking
+    sibling's context-managed ``TemporaryDirectory`` — it must outlive this
+    call so a LATER pass's :func:`poll_seed_partial_detached` can still find
+    ``result.json``, potentially after a worker restart; the compute
+    survives independent of the worker, per ``ssh_node``'s re-adopt note).
+    Cleanup happens inside :func:`poll_seed_partial_detached` once the job
+    reaches a terminal state, or inside :func:`kill_seed_partial_detached`
+    on a wall-clock kill — never here.
+
+    Returns the JSON-serialisable handle
+    ``{"pid", "pgid", "dir", "started_at"}`` persisted onto
+    ``meta.compute_handle`` by the executor.
+    """
+    import json as _json
+    import os
+    import subprocess
+    import tempfile
+    import time
+
+    request = {
+        "config": config,
+        "seed": seed,
+        "model_index": model_index,
+        "force_backend": force_backend,
+        "slab_extxyz": slab_extxyz,
+    }
+    scratch = work_dir or tempfile.mkdtemp(prefix="autocatpath-seed-")
+    req_path = os.path.join(scratch, "request.json")
+    out_path = os.path.join(scratch, "result.json")
+    with open(req_path, "w", encoding="utf-8") as fh:
+        _json.dump(request, fh)
+
+    cmd = _child_cmd(req_path, out_path)
+    with (
+        open(os.path.join(scratch, "stdout.log"), "wb") as out_fh,
+        open(os.path.join(scratch, "stderr.log"), "wb") as err_fh,
+    ):
+        proc = subprocess.Popen(
+            cmd,
+            stdout=out_fh,
+            stderr=err_fh,
+            start_new_session=True,
+        )
+    # start_new_session=True makes the child its own session/process-group
+    # leader, so its pgid is its pid — no separate os.getpgid round-trip.
+    return {
+        "pid": proc.pid,
+        "pgid": proc.pid,
+        "dir": scratch,
+        "started_at": time.time(),
+    }
+
+
+def poll_seed_partial_detached(handle: dict[str, Any]) -> dict[str, Any]:
+    """Poll one detached submit — the ssh_node ``poll`` half.
+
+    Checks ``result.json`` FIRST: a child that wrote its envelope and exited
+    in the same instant must resolve to done/failed, not a stale "running"
+    read of a pid that's already gone. ``_subprocess_main`` writes it
+    atomically (``result.json.tmp`` + ``os.replace``), so an EXISTING
+    ``result.json`` should always be a complete, parseable envelope — an
+    unreadable file is therefore treated as a race/defense-in-depth case,
+    not the normal failure path: fall back to PID liveness
+    (:func:`_process_alive`) instead of terminalizing outright, so a poll
+    that somehow still landed mid-write (or hit any other transient read
+    glitch) doesn't misclassify a genuinely still-running job as failed.
+    Only when the file is absent AND the process is dead does "no envelope"
+    itself mean an infra failure (the child crashed before it could write
+    one). A reused pid racing back to life in either gap would misread as
+    "running" — accepted per the design brief: ``ssh_node``'s wall-clock
+    deadline (:func:`kill_seed_partial_detached`) bounds it regardless.
+
+    Every terminal branch reaps the child (:func:`_reap_zombie`) before
+    returning — not just the crash path: the succeeding-job path is the
+    COMMON one, so skipping the reap there would leave a ``<defunct>``
+    zombie per job the fan-out runs, exhausting the worker's process table
+    over enough jobs.
+
+    Returns one of ``{"state": "running"}``,
+    ``{"state": "done", "result": <run_seed_partial output>}``, or
+    ``{"state": "failed", "error": ..., "tail": ...}``. Terminal states
+    remove the scratch dir (best-effort) after extracting what they need.
+    """
+    import json as _json
+    import os
+
+    scratch = handle["dir"]
+    pid = handle["pid"]
+    out_path = os.path.join(scratch, "result.json")
+
+    if os.path.exists(out_path):
+        try:
+            with open(out_path, encoding="utf-8") as fh:
+                payload = _json.load(fh)
+        except (OSError, ValueError) as exc:
+            # Defense-in-depth (see docstring): still alive -> keep polling,
+            # no reap/cleanup (nothing has exited yet); dead with an
+            # unreadable file -> a genuine infra failure.
+            if _process_alive(pid):
+                return {"state": "running"}
+            result = {
+                "state": "failed",
+                "error": f"result.json unreadable: {exc}",
+                "tail": _tail_logs(scratch),
+            }
+            _cleanup_detached(scratch)
+            return result
+        # Envelope parsed cleanly -> the child is done one way or another;
+        # reap now, on the SUCCEEDING branch too, or it never happens.
+        _reap_zombie(pid)
+        if payload.get("ok"):
+            result = {"state": "done", "result": payload["result"]}
+            _cleanup_detached(scratch)
+            return result
+        result = {
+            "state": "failed",
+            "error": str(payload.get("error")),
+            "tail": _tail_logs(scratch),
+        }
+        _cleanup_detached(scratch)
+        return result
+
+    if _process_alive(pid):
+        return {"state": "running"}
+
+    # _process_alive already reaped it (if it was ours to reap) as part of
+    # determining "dead" — no separate _reap_zombie call needed here.
+    result = {
+        "state": "failed",
+        "error": "child process exited without writing result.json",
+        "tail": _tail_logs(scratch),
+    }
+    _cleanup_detached(scratch)
+    return result
+
+
+def kill_seed_partial_detached(handle: dict[str, Any]) -> None:
+    """Best-effort SIGKILL of a detached submit's whole process group — the
+    ssh_node wall-clock kill hook (§H piece 2), invoked once
+    ``meta.deadline`` passes. ``os.killpg`` reaches every descendant the
+    child may have spawned (MACE/CUDA workers), not just its own PID — the
+    same reason :func:`submit_seed_partial_detached` starts a new session.
+    Guards ``ProcessLookupError``/``PermissionError`` (already dead is the
+    common case: this only fires once the compute has overrun its own wall
+    budget by a full margin) and removes the scratch dir regardless of
+    whether the kill landed. Also reaps the killed PID (``os.waitpid``,
+    best-effort) when this happens to be the process that submitted it —
+    same zombie concern :func:`_process_alive` explains: a killed child
+    that's never reaped would otherwise sit defunct in this worker process
+    for the rest of its life."""
+    import os
+    import signal
+
+    pgid = handle.get("pgid")
+    if pgid is not None:
+        try:
+            os.killpg(int(pgid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    pid = handle.get("pid")
+    if pid is not None:
+        try:
+            os.waitpid(int(pid), 0)
+        except (ChildProcessError, OSError):
+            pass
+    scratch = handle.get("dir")
+    if scratch:
+        _cleanup_detached(scratch)
 
 
 def aggregate_seed_partials(
@@ -539,7 +820,19 @@ def _subprocess_main(argv: list[str]) -> int:
     not stdout, so MACE's stdout logging can't corrupt the JSON envelope the
     parent parses. Never raises: a failure is reported in the envelope so the
     parent can surface a clean job failure rather than an opaque non-zero exit.
+
+    The write is ATOMIC (a same-dir ``.tmp`` file + ``os.replace``), not a
+    direct ``open(out_path, "w")`` — load-bearing for
+    :func:`poll_seed_partial_detached`, which polls ``out_path`` from a
+    separate process with no synchronization: a direct write leaves a
+    window where the file exists but is only partially flushed, and a poll
+    landing in that window would JSONDecodeError a job that's actually
+    SUCCEEDING. ``os.replace`` is atomic on POSIX (same filesystem — both
+    paths share this scratch dir), so a poll only ever observes the file
+    fully absent or fully written, never in between.
     """
+    import os
+
     req_path, out_path = argv[1], argv[2]
     with open(req_path, encoding="utf-8") as fh:
         req = json.load(fh)
@@ -563,8 +856,10 @@ def _subprocess_main(argv: list[str]) -> int:
             "error": f"{type(exc).__name__}: {exc}",
             "traceback": traceback.format_exc(),
         }
-    with open(out_path, "w", encoding="utf-8") as fh:
+    tmp_path = f"{out_path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as fh:
         json.dump(payload, fh)
+    os.replace(tmp_path, out_path)
     return 0 if payload["ok"] else 1
 
 

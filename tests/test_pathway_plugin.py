@@ -768,6 +768,229 @@ def test_run_seed_partial_subprocess_child_error_surfaces(
         runner.run_seed_partial_subprocess({}, 0, 0, timeout=10)
 
 
+# ────────── §H piece 4: detached submit/poll/kill (gr187627) ──────────
+#
+# Stub children (never real autocatpath) — ``_child_cmd`` is monkeypatched
+# so these exercise the real Popen/poll/killpg plumbing without paying for
+# an EMT run or depending on timing races against the actual compute.
+
+_STUB_GATED_OK = """\
+import json, os, sys, time
+req_path, out_path = sys.argv[1], sys.argv[2]
+with open(req_path, encoding="utf-8") as fh:
+    req = json.load(fh)
+go_path = os.path.join(os.path.dirname(out_path), "go")
+while not os.path.exists(go_path):
+    time.sleep(0.02)
+result = {
+    "seed": req["seed"],
+    "model": "stub",
+    "model_index": req["model_index"],
+    "partial": {"states": {"s0": {}}, "warnings": []},
+    "lattice": {},
+}
+with open(out_path, "w", encoding="utf-8") as fh:
+    json.dump({"ok": True, "result": result}, fh)
+"""
+
+_STUB_FAILS_LOUDLY = """\
+import sys
+sys.stderr.write("boom stub failure\\n")
+sys.exit(3)
+"""
+
+_STUB_SLEEPS = """\
+import time
+time.sleep(30)
+"""
+
+# Writes a deliberately-truncated result.json (bypassing the real child's
+# atomic tmp+os.replace) then stays alive — exercises poll's OWN
+# defense-in-depth for an unreadable file, independent of the atomic-write
+# fix (which just makes this scenario rare, not impossible: a poll landing
+# on ANY other transient read glitch must still get this right).
+_STUB_TRUNCATED_THEN_SLEEPS = """\
+import sys, time
+out_path = sys.argv[2]
+with open(out_path, "w", encoding="utf-8") as fh:
+    fh.write('{"ok": true, "resul')
+time.sleep(30)
+"""
+
+
+def _write_stub(tmp_path: Path, text: str, name: str = "stub.py") -> Path:
+    script = tmp_path / name
+    script.write_text(text)
+    return script
+
+
+def _patch_child_cmd(monkeypatch: pytest.MonkeyPatch, script: Path) -> None:
+    import sys
+
+    monkeypatch.setattr(
+        runner, "_child_cmd", lambda req, out: [sys.executable, str(script), req, out]
+    )
+
+
+def _poll_until_terminal(
+    handle: dict[str, Any], *, timeout: float = 5.0
+) -> dict[str, Any]:
+    import time
+
+    status: dict[str, Any] = {"state": "running"}
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        status = runner.poll_seed_partial_detached(handle)
+        if status["state"] != "running":
+            return status
+        time.sleep(0.02)
+    return status  # pragma: no cover - only hit on a genuine test hang
+
+
+def test_submit_seed_partial_detached_returns_handle_without_blocking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``submit`` spawns the child detached and returns almost immediately —
+    the whole point of the protocol is that the caller never waits on the
+    run. The gated stub can't finish until the test releases it, so a fast
+    return proves ``submit`` didn't block on completion."""
+    import os
+    import time
+
+    script = _write_stub(tmp_path, _STUB_GATED_OK)
+    _patch_child_cmd(monkeypatch, script)
+
+    before = time.time()
+    handle = runner.submit_seed_partial_detached({}, 7, 1, force_backend="emt")
+    elapsed = time.time() - before
+
+    assert elapsed < 2.0  # never waits on the (gated, un-released) child
+    assert set(handle) == {"pid", "pgid", "dir", "started_at"}
+    assert handle["pgid"] == handle["pid"]
+    assert os.path.isdir(handle["dir"])
+    assert os.path.exists(os.path.join(handle["dir"], "request.json"))
+
+    # cleanup: release the gate so the child exits instead of leaking.
+    open(os.path.join(handle["dir"], "go"), "w").close()
+    _poll_until_terminal(handle)
+
+
+def test_poll_seed_partial_detached_running_then_done(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The happy path: running while gated, done (with the child's result)
+    once released — and the scratch dir is gone afterward."""
+    import os
+
+    script = _write_stub(tmp_path, _STUB_GATED_OK)
+    _patch_child_cmd(monkeypatch, script)
+    handle = runner.submit_seed_partial_detached({}, 7, 1)
+
+    assert runner.poll_seed_partial_detached(handle) == {"state": "running"}
+
+    open(os.path.join(handle["dir"], "go"), "w").close()
+    status = _poll_until_terminal(handle)
+
+    assert status["state"] == "done"
+    assert status["result"]["seed"] == 7
+    assert status["result"]["model_index"] == 1
+    assert status["result"]["partial"]["states"]
+    assert not os.path.exists(handle["dir"])  # terminal states clean up
+
+
+def test_poll_seed_partial_detached_done_reaps_the_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BLOCKER regression: the succeeding-job path is the COMMON one, so a
+    reap only on the crash branch leaks a ``<defunct>`` zombie per job the
+    fan-out runs. After a "done" poll the pid must be genuinely gone — a
+    same-process ``os.waitpid``/``os.kill`` probe on a lingering zombie
+    would NOT raise, so a raise here is the proof it was actually reaped."""
+    import os
+
+    script = _write_stub(tmp_path, _STUB_GATED_OK)
+    _patch_child_cmd(monkeypatch, script)
+    handle = runner.submit_seed_partial_detached({}, 3, 0)
+    open(os.path.join(handle["dir"], "go"), "w").close()
+
+    status = _poll_until_terminal(handle)
+    assert status["state"] == "done"
+
+    with pytest.raises(ChildProcessError):
+        os.waitpid(handle["pid"], os.WNOHANG)
+    with pytest.raises(ProcessLookupError):
+        os.kill(handle["pid"], 0)
+
+
+def test_poll_seed_partial_detached_unreadable_json_while_alive_is_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BLOCKER regression: an unreadable/truncated result.json while the
+    child is STILL ALIVE must not terminalize the job — only a genuinely
+    dead process with a broken file is an infra failure. Prevents a poll
+    that lands mid-write from misclassifying a SUCCEEDING job as failed."""
+    import os
+    import time
+
+    script = _write_stub(tmp_path, _STUB_TRUNCATED_THEN_SLEEPS)
+    _patch_child_cmd(monkeypatch, script)
+    handle = runner.submit_seed_partial_detached({}, 0, 0)
+
+    out_path = os.path.join(handle["dir"], "result.json")
+    deadline = time.time() + 5
+    while time.time() < deadline and not os.path.exists(out_path):
+        time.sleep(0.02)
+    assert os.path.exists(out_path)  # the (truncated) file is there...
+
+    status = runner.poll_seed_partial_detached(handle)
+
+    assert status == {"state": "running"}  # ...but the child is alive, so
+    assert os.path.exists(handle["dir"])  # not terminalized, not cleaned up
+
+    runner.kill_seed_partial_detached(handle)  # cleanup
+
+
+def test_poll_seed_partial_detached_failed_child_no_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A child that exits non-zero without ever writing ``result.json``
+    (rc != 0, no envelope) is folded into a failed state carrying the
+    stderr tail — not polled forever."""
+    import os
+
+    script = _write_stub(tmp_path, _STUB_FAILS_LOUDLY)
+    _patch_child_cmd(monkeypatch, script)
+    handle = runner.submit_seed_partial_detached({}, 0, 0)
+
+    status = _poll_until_terminal(handle)
+
+    assert status["state"] == "failed"
+    assert "result.json" in status["error"]
+    assert "boom stub failure" in status["tail"]
+    assert not os.path.exists(handle["dir"])
+
+
+def test_kill_seed_partial_detached_terminates_process_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``kill`` SIGKILLs the whole detached process group and removes the
+    scratch dir — the ``ssh_node`` wall-clock deadline backstop."""
+    import os
+    import time
+
+    script = _write_stub(tmp_path, _STUB_SLEEPS)
+    _patch_child_cmd(monkeypatch, script)
+    handle = runner.submit_seed_partial_detached({}, 0, 0)
+    os.kill(handle["pid"], 0)  # still alive
+
+    runner.kill_seed_partial_detached(handle)
+    time.sleep(0.3)
+
+    with pytest.raises(ProcessLookupError):
+        os.kill(handle["pid"], 0)
+    assert not os.path.exists(handle["dir"])
+
+
 def test_subprocess_main_round_trips_envelope(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -805,6 +1028,162 @@ def test_seed_job_dispatch_malformed_params_fails_cleanly(
     seed_job._dispatch(ctx, seed_job.SPEC)
     assert ctx.status == "failed"
     assert ctx.failure and "malformed params" in ctx.failure
+
+
+# ─────── §H piece 4: autocatpath_seed's detached submit/poll/kill ─────────
+
+
+def test_seed_job_submit_returns_handle_and_does_not_set_status(
+    pathway_store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``_submit`` hands back the launcher's handle untouched and — unlike
+    ``_dispatch`` — must NOT drive STATUS: the row stays ``running`` (set by
+    the claim) until a LATER pass's ``_poll`` sees it terminal."""
+    from precis_pathway import seed_job
+
+    handle_out = {"pid": 111, "pgid": 111, "dir": "/tmp/nope", "started_at": 1.0}
+    monkeypatch.setattr(
+        runner, "submit_seed_partial_detached", lambda *a, **k: dict(handle_out)
+    )
+    ctx = _FakeCtx(
+        store=pathway_store,
+        params={
+            "config": _yaml_dict(FANOUT),
+            "force_backend": "emt",
+            "seed": 1,
+            "model_index": 0,
+            "content_key": "deadbeef",
+        },
+    )
+
+    handle = seed_job._submit(ctx, seed_job.SPEC)
+
+    assert handle == handle_out
+    assert ctx.status is None
+    assert ctx.failure is None
+    assert any(kind == "job_event" for kind, _text in ctx.chunks)
+
+
+def test_seed_job_submit_malformed_params_fails_cleanly(
+    pathway_store: Store,
+) -> None:
+    """Mirrors ``_dispatch``'s malformed-params path exactly — ``ctx.
+    record_failure`` and a ``None`` return (never a raised exception, since
+    ``ssh_node._run_one`` doesn't wrap ``submit`` in a job_type-specific
+    try/except)."""
+    from precis_pathway import seed_job
+
+    ctx = _FakeCtx(store=pathway_store, params={"config": {}})  # missing seed
+    handle = seed_job._submit(ctx, seed_job.SPEC)
+    assert handle is None
+    assert ctx.status == "failed"
+    assert ctx.failure and "malformed params" in ctx.failure
+
+
+def test_seed_job_poll_running_returns_false(
+    pathway_store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis_pathway import seed_job
+
+    monkeypatch.setattr(
+        runner, "poll_seed_partial_detached", lambda handle: {"state": "running"}
+    )
+    ctx = _FakeCtx(store=pathway_store, params={})
+    terminal = seed_job._poll(ctx, {"pid": 1})
+    assert terminal is False
+    assert ctx.status is None
+
+
+def test_seed_job_poll_done_sets_meta_and_succeeds(
+    pathway_store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On "done", ``_poll`` must produce the SAME ``meta`` shape
+    ``_dispatch`` writes (content_key/seed/model_index/model/partial/
+    lattice) so a caller reading ``meta.partial`` back can't tell which
+    protocol ran the job."""
+    from precis_pathway import seed_job
+
+    result = {
+        "seed": 1,
+        "model": "emt",
+        "model_index": 0,
+        "partial": {"states": {"s0": {}}, "warnings": []},
+        "lattice": {"emt": 3.9},
+    }
+    monkeypatch.setattr(
+        runner,
+        "poll_seed_partial_detached",
+        lambda handle: {"state": "done", "result": result},
+    )
+    ctx = _FakeCtx(
+        store=pathway_store,
+        params={
+            "config": _yaml_dict(FANOUT),
+            "seed": 1,
+            "model_index": 0,
+            "content_key": "deadbeef",
+        },
+    )
+
+    terminal = seed_job._poll(ctx, {"pid": 1, "dir": "/tmp/nope"})
+
+    assert terminal is True
+    assert ctx.failure is None
+    assert ctx.status == "succeeded"
+    assert set(ctx.meta_updates) == {
+        "content_key",
+        "seed",
+        "model_index",
+        "model",
+        "partial",
+        "lattice",
+    }
+    assert ctx.meta_updates["content_key"] == "deadbeef"
+    assert ctx.meta_updates["seed"] == 1
+    assert ctx.meta_updates["model_index"] == 0
+    assert ctx.meta_updates["model"] == "emt"
+    assert ctx.meta_updates["partial"] == result["partial"]
+    assert ctx.meta_updates["lattice"] == {"emt": 3.9}
+    assert any(kind == "job_summary" for kind, _text in ctx.chunks)
+
+
+def test_seed_job_poll_failed_records_failure(
+    pathway_store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis_pathway import seed_job
+
+    monkeypatch.setattr(
+        runner,
+        "poll_seed_partial_detached",
+        lambda handle: {"state": "failed", "error": "boom", "tail": "stderr tail"},
+    )
+    ctx = _FakeCtx(
+        store=pathway_store, params={"config": {}, "seed": 0, "model_index": 0}
+    )
+
+    terminal = seed_job._poll(ctx, {"pid": 1})
+
+    assert terminal is True
+    assert ctx.status == "failed"
+    assert ctx.failure is not None
+    assert "boom" in ctx.failure
+    assert "stderr tail" in ctx.failure
+
+
+def test_seed_job_kill_delegates_to_runner(
+    pathway_store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis_pathway import seed_job
+
+    calls: list[Any] = []
+    monkeypatch.setattr(
+        runner, "kill_seed_partial_detached", lambda handle: calls.append(handle)
+    )
+    ctx = _FakeCtx(store=pathway_store, params={})
+
+    seed_job._kill(ctx, {"pid": 1, "pgid": 1, "dir": "/tmp/nope"})
+
+    assert calls == [{"pid": 1, "pgid": 1, "dir": "/tmp/nope"}]
 
 
 def _seed_a_todo_tree(
