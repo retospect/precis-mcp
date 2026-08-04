@@ -42,26 +42,26 @@ to a §L regression **plus** an independent, more serious spark worker deadlock.
   advertised capability), not a hand-maintained list, so no future role-gated
   pass regresses the same way.
 
-- **spark system worker deadlocks on MACE/CUDA — code fix SHIPPED, verify
-  post-deploy** · Status: fix shipped, pending spark verification · Severity:
-  critical → verifying · gripe **191351**. **Corrected root cause** (the
-  ref-pass-plugin hypothesis was wrong — autocatpath registers *no*
-  `precis.ref_passes` entry point): spark's `system` worker claims
-  `autocatpath_seed` jobs (`job_ssh_node` is a `_SYS` pass, jobs pinned to spark
-  via `target_node`) and its **legacy blocking `ssh_node` dispatch ran MACE
-  in-process** — loading MACE/CUDA (torch 2.13+cu130, CUDA 13.0) in the
-  long-lived worker deadlocks (main thread spinning in `libcuda.so`), the 2h
-  ssh_node lease shields it from reclaim, and every *system* pass on spark
-  (`cast_audio` included) starves into a SIGKILL-restart loop. The identical
-  MACE load in a *fresh* process completes in ~10 s (probed). **Fix (shipped):**
-  `autocatpath_seed._dispatch` now runs the compute out-of-process via
-  `runner.run_seed_partial_subprocess` — killable, bounded by the job's declared
-  `resources.wall_seconds`, isolated from the worker's CUDA/thread state.
-  **Verify after deploy:** spark's `precis-worker` stays up (no SIGKILL loop) and
-  `cast_audio` publishes the combined morning episode. Residual risk: if the hang
-  is a genuine CUDA-13.0 incompat (a fresh subprocess *also* hangs), the timeout
-  still un-wedges the worker but seeds fail at the wall budget — then pursue the
-  submit/poll migration below. Delete this item once spark is confirmed healthy.
+- **spark seed MACE compute completion on CUDA 13.0 (worker-wedge FIXED+verified)**
+  · Status: wedge resolved+verified; seed-completion unconfirmed · Severity:
+  critical → low · gripe **191351**. **Wedge FIXED (7497c30d, deployed +
+  live-verified):** spark's `system` worker was running `autocatpath_seed`'s MACE
+  compute *in-process* via the blocking `ssh_node` dispatch (`job_ssh_node` is a
+  `_SYS` pass; jobs pinned to spark via `target_node`), and loading MACE/CUDA
+  (torch 2.13+cu130) in the long-lived worker deadlocked (main thread in
+  `libcuda.so`), the 2h lease shielding it from reclaim, starving every system
+  pass incl. `cast_audio` into a SIGKILL loop. `_dispatch` now runs the compute
+  out-of-process (`runner.run_seed_partial_subprocess`, killable, bounded by
+  `resources.wall_seconds`). Verified on spark post-deploy: worker stable (same
+  PID 35+ min, main thread in `ppoll` not CUDA), a killed seed child recorded a
+  clean failure without wedging, passes rotating. **Residual (low): a seed has
+  not yet been observed COMPLETING in-subprocess on CUDA 13.0** — the one run seen
+  was SIGTERM'd by the deploy bounce (rc=-15), inconclusive on whether MACE
+  actually produces a result there or just fails cleanly at the wall budget. Do:
+  watch one autocatpath_seed on spark run to `succeeded` (or confirm it fails and,
+  if so, treat CUDA-13/torch-2.13 as the compute defect — separate from the wedge,
+  which is fixed). The full submit/poll migration (below) remains the durable
+  end-state so the pass never blocks even for the bounded window.
 
 - **Docker Hub egress on spark (gripe 189697) — deferred; needed only for the
   1.5s pause** · Status: blocked · Severity: polish. TLS handshake to Docker
