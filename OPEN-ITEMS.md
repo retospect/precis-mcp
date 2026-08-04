@@ -1102,11 +1102,13 @@ state lives in the in-repo `deploy/` tree (`~/work/cluster` was retired
   (vault fallback already shipped, mirrors precis's `utils/claude_oauth`) —
   live cutover is an ordered ops sequence (seed vault → verify → flip run-as
   → scope vault read → retire hermes), not yet applied.
-- **Plist / `service_unit` collapse** *(feature, open — deploy-day op).* The
-  final "~15 daemons → 3 managed units + embedder-subprocess" consolidation;
-  the abstract `service_unit` role (renders launchd|systemd from one spec) is
-  built (`roles/service_unit/examples/collapsed-worker.yml`) but not applied
-  anywhere. Depends on the ops items above settling first.
+- **Plist / `service_unit` collapse — gateway residual** *(op, open).* §L-b
+  executed 2026-08-04: balthazar/caspar/spark run the collapsed
+  `--profile all` unit (spark's split agent retired); imports flipped to
+  20b. REMAINING: melchior cutover + `retire-split-agents.yml --limit
+  melchior` (permission-blocked in-session; next `scripts/deploy` applies
+  20b there, then run the retire play), and the dream×container decision
+  before ever flipping `precis_agent_container_enabled` on the gateway.
 - **Deploy factory-console tooltips + per-host errors** *(polish, open).*
   Shipped main `ac7712fa`, needs a `precis-web` redeploy to actually render
   on `/factory`.

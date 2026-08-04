@@ -89,13 +89,14 @@
 # dream-pass.sh) is booted out by retire-thin-timers.yml.
 
 # Playbooks 33-36 (precis_schedule / precis_nursery / precis_structural /
-# precis_deep_review) were retired by the Slice-5 consolidation. Their
-# passes now ride either the system worker (schedule / nursery — see
-# 20-precis-worker.yml + roles/precis_worker) or the agent worker
-# (structural / deep_review — see 37-precis-worker-agent.yml).
+# precis_deep_review) were retired by the Slice-5 consolidation; 37 (the
+# split agent-profile worker) by the §L-b collapse (2026-08-04). Every
+# worker pass — system and agent profile alike — now rides the ONE
+# collapsed `precis worker --profile all` unit per host (20b below;
+# retire-split-agents.yml booted the old com.precis.worker-agent units out).
 
-- name: "37 — precis worker (agent profile, the gateway)"
-  ansible.builtin.import_playbook: playbooks/37-precis-worker-agent.yml
+- name: "20b — precis worker (collapsed, --profile all, every host)"
+  ansible.builtin.import_playbook: playbooks/20b-precis-worker-collapsed.yml
 
 - name: "38 — precis web tab UI (gateway, tailnet HTTPS)"
   ansible.builtin.import_playbook: playbooks/38-precis-web.yml

@@ -195,13 +195,17 @@ dream throttle** (the one live cost bug).
   of both rotations (test-pinned down to `_build_handlers`); `20b` rewritten
   to verified env-parity with all four live unit templates per host group;
   `retire-split-agents.yml` authored; worker-agent role split
-  provision/units (render-identical for playbook 37). Nothing imported —
-  prod byte-identical. **Cycle b = the in-window cutover** (run order +
-  preconditions in `20b`'s header): canary system-only host → GPU node →
-  gateway LAST, the gateway step gated on a `dream_agent`-under-
-  `PRECIS_AGENT_CONTAINER` smoke test (static trace found no blocker —
-  SOUL/MCP/OAuth all round-trip the container seam; never empirically
-  exercised there).
+  provision/units (render-identical for playbook 37).
+  **Cycle b EXECUTED 2026-08-04**: canary balthazar → caspar → spark all
+  collapsed + verified (spark's split agent unit retired; first prod runs
+  of both `service_unit` branches — a launch-time parse bug in its macOS
+  reload task was found+fixed, `901a7c26`); `site.yml` +
+  `redeploy-precis.yml` now import `20b` in place of `20`+`37`. Residual:
+  the gateway rides the next deploy (its split pair keeps running until
+  then), then `retire-split-agents.yml --limit` it; the gateway's
+  `precis_agent_container_enabled` stays false pending the
+  `dream_agent`-under-`PRECIS_AGENT_CONTAINER` smoke test (static trace
+  found no blocker; never empirically exercised there).
   **Blast-radius window — acknowledged.** Today's four profiles crudely
   isolate passes (the 4-day outage killed only the *agent* worker; the
   system worker kept running). One collapsed worker per host means one

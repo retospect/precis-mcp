@@ -189,8 +189,13 @@
 - name: "Refresh /opt/precis/embedder-venv (embedder) — FIRST, dependents need it"
   ansible.builtin.import_playbook: playbooks/19a-precis-embedder.yml
 
-- name: "Refresh /opt/precis/venv          (worker, watch)"
-  ansible.builtin.import_playbook: playbooks/20-precis-worker.yml
+# §L-b (2026-08-04): the COLLAPSED worker playbook replaced
+# 20-precis-worker.yml here — one `precis worker --profile all` unit per
+# host (same com.precis.worker / precis-worker.service label, rendered via
+# roles/service_unit). 20 stays on disk as the documented rollback
+# (re-running it restores a split system-profile unit on one host).
+- name: "Refresh /opt/precis/venv          (collapsed worker, --profile all)"
+  ansible.builtin.import_playbook: playbooks/20b-precis-worker-collapsed.yml
 
 # §L: the standalone heartbeat timer (role `precis_heartbeat`, playbook
 # 40-precis-heartbeat.yml) is RETIRED — heartbeat is a per-host `heartbeat`
@@ -206,18 +211,17 @@
 - name: "Re-render the embedder watchdog plist (all nodes — kicks a wedged embedder)"
   ansible.builtin.import_playbook: playbooks/41-precis-embedder-watchdog.yml
 
-- name: "Refresh /opt/mcps/venv            (web, worker-agent, watch-poll, cron-tick)"
+- name: "Refresh /opt/mcps/venv            (web; agent passes ride the collapsed worker since §L-b)"
   ansible.builtin.import_playbook: playbooks/38-precis-web.yml
 
-# The agent-worker plist (the gateway only) carries env the web play does NOT
-# re-render — the review-pass gates plus the feature toggles that live only
-# on the agent profile (PRECIS_QUEST_LOOP_ENABLED, PRECIS_DIAGRAM_AGENTIC,
-# PRECIS_CARD_FORGE_AUTONOMY, …). 38 refreshes the shared /opt/mcps/venv the
-# agent worker runs from; this play then re-renders + reloads its plist so a
-# plain `scripts/deploy` applies agent-env changes too (previously they
-# needed a separate `ansible-playbook playbooks/37-…` and silently drifted).
-- name: "Re-render the worker-agent plist   (the gateway — agent-profile env)"
-  ansible.builtin.import_playbook: playbooks/37-precis-worker-agent.yml
+# §L-b (2026-08-04): 37-precis-worker-agent.yml is RETIRED from this flow —
+# the split agent unit's passes + env now ride the collapsed worker above
+# (20b carries the full agent env union, verified per-host; the
+# precis_worker_agent role's PROVISIONING half still runs, included from 20b
+# with tasks_from: provision). retire-split-agents.yml boots the old
+# com.precis.worker-agent / precis-worker-agent.service out per host in the
+# cutover window. Do not re-add the 37 import: it would re-render a second,
+# competing agent daemon alongside the collapsed unit.
 
 # ── 2. Force-bounce every precis daemon so fresh code is in memory ──
 - name: "Bounce all precis daemons"

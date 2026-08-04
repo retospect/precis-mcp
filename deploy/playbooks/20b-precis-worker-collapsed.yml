@@ -36,16 +36,19 @@
 # service_config prio — capability (probe) × prio (console) is still the
 # control surface for everything else (classify, llm_summarize, sandbox, …).
 #
-# DARK: NOT imported by site.yml or redeploy-precis.yml (do not add it to
-# either — that is the §L-b cutover itself, done host-by-host, not a code
-# change). At cutover the collapsed unit REPLACES com.precis.worker IN
+# LIVE since §L-b (2026-08-04): imported by BOTH site.yml and
+# redeploy-precis.yml, replacing 20-precis-worker.yml + the
+# 37-precis-worker-agent.yml import (20/37 stay on disk as the documented
+# per-host rollback). The collapsed unit REPLACES com.precis.worker IN
 # PLACE (same `com.precis.worker` launchd label / `precis-worker` systemd
 # unit — `service_unit_name: worker` below matches `precis_worker`'s own
 # unit name on purpose, so this playbook's render clobbers that one, not a
 # second daemon alongside it); retire-split-agents.yml then boots out the
 # now-redundant `com.precis.worker-agent` unit.
 #
-# §L-b RUN ORDER (per host, ops-driven, NOT part of this dark cycle):
+# §L-b RUN ORDER (per host, ops-driven — executed 2026-08-04: scheduler →
+# data → inference done + the inference host's split agent retired; the
+# gateway rides the next deploy. Kept for the record and any future host):
 #   1. CANARY on a system-only host first — `scheduler` or `data` group:
 #      identical pass set to today (no agent-only pass ever fires there —
 #      no PRECIS_STRUCTURAL_REVIEW/PRECIS_MCP_CONFIG/dream/anki/quest env is

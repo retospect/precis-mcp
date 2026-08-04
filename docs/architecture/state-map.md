@@ -765,19 +765,23 @@ remaining "blocks forever" gap: a permanently-unschedulable child (no
 live executor ever claims it) never reaches a terminal STATUS on its
 own, so the plain `children_done` wake could never fire either.
 
-**Two `precis worker` profiles.** (The "four LaunchDaemons" framing this
-section used to carry — worker/watch/heartbeat/dream as four separate
-daemons — is stale post-§A: `dream`'s standalone LaunchDaemon is retired,
-folded onto the `scheduler` pass below; `heartbeat` is now BOTH a per-host
-worker pass and its own still-live timer, pending §L.) A third value,
-`--profile all` (§L-a), is the exact union of both rotations — the
-collapsed one-worker-per-host profile. Dark: no deployed unit passes it;
-the rewritten `deploy/playbooks/20b-precis-worker-collapsed.yml` (env
-parity with all four live unit templates verified per host group) +
-`retire-split-agents.yml` are the §L-b cutover pair, both un-imported,
-run order + per-host preconditions in 20b's header (canary system-only
-host → GPU node → gateway last, gated on a `dream_agent`-under-
-`PRECIS_AGENT_CONTAINER` smoke test).
+**One collapsed `precis worker` per host (§L-b, 2026-08-04).** The
+`--profile` flag has three values: `system` / `agent` (the historical
+split rotations) and `all` (§L-a) — the exact union of both. Since the
+§L-b cutover, every cut-over host runs ONE `com.precis.worker` /
+`precis-worker.service` unit with `--profile all`, rendered by
+`deploy/playbooks/20b-precis-worker-collapsed.yml` through the
+`service_unit` role (imported by `site.yml` + `redeploy-precis.yml`;
+`retire-split-agents.yml` booted out the split `com.precis.worker-agent`
+units). Cutover state: scheduler/data/inference hosts done + verified;
+the gateway's cutover rides the next deploy (its split pair keeps
+running until then — both shapes coexist safely since claims are
+row-locked). The gateway keeps `precis_agent_container_enabled: false`
+(in-process `claude -p`) until the dream×container interaction is
+verified. Rollback per host: re-run `playbooks/20-precis-worker.yml` /
+`37-precis-worker-agent.yml` (kept on disk, no longer imported). The
+profile split below describes pass OWNERSHIP (which env gates what),
+not separate daemons anymore.
 
 * `precis worker --profile=system` runs on every cluster node and
   drives every chunk-level + SQL ref-level pass: `embed`, `summarize`,
