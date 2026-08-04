@@ -1,8 +1,25 @@
 ---
 # 20b-precis-worker-collapsed.yml — the Phase-2 COLLAPSED worker (slice 10 /
-# §7 / §15h). ONE `precis worker` daemon per host, its launch unit rendered
-# through the `service_unit` abstraction instead of a hand-written plist. The
-# runnable form of roles/service_unit/examples/collapsed-worker.yml.
+# §7 / §15h, §L-a machinery / §L-b cutover). ONE `precis worker --profile all`
+# daemon per host, its launch unit rendered through the `service_unit`
+# abstraction instead of a hand-written plist. The runnable form of
+# roles/service_unit/examples/collapsed-worker.yml, now carrying every env
+# var either split daemon (precis_worker / precis_worker_agent) needed — the
+# per-host `_l_b_env` below is a verified (per-host dry-run, per §L-a review
+# round 2) exact union of `precis-worker.{plist,service}.j2` +
+# `precis-worker-agent.{plist,service}.j2`'s env keys, OS/group-conditioned
+# the same way those four templates already condition each key; nothing is
+# deliberately dropped. Gaps the §L-a scout + reviewer rounds closed: stale
+# `--profile system` (both the exec flag AND `_build_handlers`'s own
+# `is_system` literal — the handler list is built separately from the
+# registry's profile-union, so both needed the fix), missing review gates,
+# missing container vars, missing PRECIS_MCP_CONFIG, missing
+# PRECIS_EMBEDDER(_URL), wrong Linux HOME/PGPASSFILE, missing gateway
+# extras, missing PRECIS_SUMMARIZE_CONCURRENCY/TIMEOUT, missing
+# PRECIS_TAPROOT_CHASE_ENABLED/PRECIS_CHASE_LLM/PRECIS_FETCH_MARKUP, missing
+# VLLM_GPU_MEMORY_UTILIZATION/SURYA_INFERENCE_PORT, missing
+# PRECIS_LOCAL_SERVE_CONFIG + the PRECIS_SUMMARIZE_MODEL override, missing
+# /Library/TeX/texbin on darwin PATH.
 #
 # What it replaces at cutover: the two profile plists (system + agent,
 # already merged into one `com.precis.worker-agent` per §A's dream_agent/
@@ -13,18 +30,58 @@
 # `scheduler` pass (live by default on both profiles, no flag) whether this
 # collapsed unit ships or not; this playbook's remaining value is the
 # service_unit-rendered single-daemon-per-host shape, not the cadence fold
-# (already done). The daemon carries NONE of the retired PRECIS_*_ENABLED
-# flags — capability (probe) × prio (console) is the whole control surface.
+# (already done). `--profile all` carries every review/job pass too, but the
+# review passes (structural/deep_review/diagram) and the container path stay
+# gated by their own env (PRECIS_STRUCTURAL_REVIEW=1 etc below) plus the live
+# service_config prio — capability (probe) × prio (console) is still the
+# control surface for everything else (classify, llm_summarize, sandbox, …).
 #
-# DARK: NOT imported by site.yml or redeploy-precis.yml. The Phase-2 window
-# runs this in place of 20-precis-worker.yml + 37-precis-worker-agent.yml,
-# AFTER the run-as→deploy cutover (it renders run_as: deploy) and an
-# `ansible --check` rehearsal against the wired overlay. Preconditions to
-# validate in-window:
+# DARK: NOT imported by site.yml or redeploy-precis.yml (do not add it to
+# either — that is the §L-b cutover itself, done host-by-host, not a code
+# change). At cutover the collapsed unit REPLACES com.precis.worker IN
+# PLACE (same `com.precis.worker` launchd label / `precis-worker` systemd
+# unit — `service_unit_name: worker` below matches `precis_worker`'s own
+# unit name on purpose, so this playbook's render clobbers that one, not a
+# second daemon alongside it); retire-split-agents.yml then boots out the
+# now-redundant `com.precis.worker-agent` unit.
+#
+# §L-b RUN ORDER (per host, ops-driven, NOT part of this dark cycle):
+#   1. CANARY on a system-only host first — `scheduler` or `data` group:
+#      identical pass set to today (no agent-only pass ever fires there —
+#      no PRECIS_STRUCTURAL_REVIEW/PRECIS_MCP_CONFIG/dream/anki/quest env is
+#      set on those groups below, so quest_loop_reconcile/structural/
+#      deep_review/job_claude_inproc register structurally but never turn
+#      on). Rollback if anything looks wrong: re-run 20-precis-worker.yml
+#      (restores the split `com.precis.worker` unit) or a plain redeploy.
+#   2. The GPU node (`inference` group) next — its reviews already run
+#      containerized (PRECIS_AGENT_CONTAINER=1 unconditional below, mirrors
+#      today's precis-worker-agent.service.j2), so folding system + agent
+#      passes onto one host here changes NOTHING about how those reviews
+#      execute, only that the same host now also runs embed/summarize/
+#      fetch/dispatch/… out of the same process.
+#   3. The gateway LAST — and only after an explicit decision on
+#      `precis_agent_container_enabled` there (see the investigate-and-
+#      report finding in the §L-a scout on dream_agent × PRECIS_AGENT_
+#      CONTAINER: the colima runtime exists, but flipping the flag routes
+#      dream_agent's `call_claude_agent` dispatch through the container
+#      branch, and dream's system/directive prompts + OAuth state are
+#      currently host-native — verify that interaction survives
+#      containerization BEFORE flipping `precis_agent_container_enabled`
+#      for the gateway; until then leave it `false` (the default below) so
+#      the collapsed gateway unit keeps running claude -p in-process, same
+#      as today's split `com.precis.worker-agent`).
+#   4. Once a host's collapsed unit is confirmed healthy (a `worker: started`
+#      row in worker_logs, `precis worker --status` shows every expected
+#      handler, a claim cycle observed for both formerly-system and
+#      formerly-agent passes), run retire-split-agents.yml against that ONE
+#      host to remove the now-redundant `com.precis.worker-agent` unit.
+#
+# Preconditions already true today (nothing to flip here anymore):
 #   * the §15i/§A scheduler already owns cron_tick/watch_poll/dream_agent/
-#     anki_sync fleet-wide (live, no flag) — nothing to flip here anymore
+#     anki_sync fleet-wide (live, no flag)
 #   * every folded pass has a ServiceSpec (reconcile stays retired, not
 #     re-added — paper_reconcile already covers it)
+#   * run-as→deploy cutover is done for both split unit families
 
 - name: Deploy the collapsed precis worker (one service_unit per host)
   hosts:
@@ -33,37 +90,210 @@
     - data
     - inference
   become: true
+  vars:
+    # ── base env: core daemon vars + the embedder pair, common to every
+    # collapsed unit regardless of host (review gates are NOT here — see
+    # `_l_b_review_env` below, scoped to gateway+GPU node only). NOTE: no `#`
+    # comments inside the folded scalar below — YAML block scalars take
+    # everything indented under them literally, a `#` there lands IN the
+    # Jinja string, not as a YAML comment.
+    #
+    # PRECIS_EMBEDDER / PRECIS_EMBEDDER_URL (§F cycle b, b2ff8de1):
+    # capability_probe._probe_embedder / embed_batch's resolve_embedder both
+    # read load_config() ENV, not the --embedder/--embedder-url CLI flags
+    # below — export both or the embedder resource_slots row never
+    # advertises (mirrors precis-worker.plist.j2 / precis-worker.service.j2).
+    #
+    # PGPASSFILE (§L, gr171431 §1): this unit's Linux HOME diverges from the
+    # pgpass role's deploy home (/home/deploy) — point PGPASSFILE at the
+    # pgpass role's actual file directly instead of changing HOME (mirrors
+    # precis-worker.service.j2 / precis-worker-agent.service.j2).
+    #
+    # PATH's /Library/TeX/texbin (darwin only): mactex-no-gui's latexmk +
+    # biber, needed by the compile guard job_claude_inproc's planner can
+    # invoke — mirrors precis-worker-agent.plist.j2 (the system-worker
+    # plist doesn't carry it, but this collapsed unit also gets the agent
+    # profile's provisioning, which installs mactex — see the
+    # precis_worker_agent/provision role include below).
+    #
+    # PRECIS_SUMMARIZE_CONCURRENCY / PRECIS_SUMMARIZE_TIMEOUT (darwin only —
+    # mirrors precis-worker.plist.j2:98-101; the Linux precis-worker.service.j2
+    # never carried these, so this collapsed unit doesn't gain them on Linux
+    # either): CONFIG, not a gate — kept unconditional so a `service prio`
+    # flip on `llm_summarize` doesn't also need a redeploy to pick up tuning.
+    #
+    # PRECIS_TAPROOT_CHASE_ENABLED / PRECIS_CHASE_LLM (darwin +
+    # precis_worker_taproot_chase, mirrors precis-worker.plist.j2:114-119) and
+    # PRECIS_FETCH_MARKUP (darwin + precis_worker_fetch_markup, mirrors
+    # precis-worker.plist.j2:125-128): sub-features INSIDE the always-
+    # registered `chase`/`fetch` passes, not their own service_config
+    # service, so they stay plain env gates set via host_vars on whichever
+    # darwin host needs them (the gateway, in practice) — same as today.
+    #
+    # VLLM_GPU_MEMORY_UTILIZATION / SURYA_INFERENCE_PORT (linux only, mirrors
+    # precis-worker.service.j2:63-64 — gripe 171249's GPU-memory insurance for
+    # any marker/OCR path a job on the GPU node spawns): inert on non-GPU/
+    # non-docker hosts, so unconditional on Linux is the same "harmless
+    # everywhere it isn't the GPU node" shape the source template already has
+    # (there's only one Linux host group here — `inference` — so no further
+    # gating is needed to match it exactly).
+    #
+    # PRECIS_LOCAL_SERVE_CONFIG + the PRECIS_SUMMARIZE_MODEL override (darwin
+    # only, `is defined` — mirrors precis-worker.plist.j2:148-158 AND
+    # precis-worker-agent.plist.j2's identical block): host-local served_by
+    # bypass (litellm-retire Track 2). Combined LAST so it naturally
+    # overrides whatever `precis_shared_env`'s own PRECIS_SUMMARIZE_MODEL set
+    # — the source templates achieve the same end by skipping that one key
+    # in their shared-env loop; `combine()`'s last-writer-wins ordering makes
+    # that explicit skip unnecessary here.
+    _l_b_base_env: >-
+      {{ precis_shared_env
+         | combine({
+             'HOME': ('/var/lib/precis' if os_family == 'linux' else '/Users/deploy'),
+             'PATH': (
+               precis_worker_venv + '/bin:/opt/homebrew/bin:/Library/TeX/texbin:/usr/local/bin:/usr/bin:/bin'
+               if os_family == 'darwin'
+               else precis_worker_venv + '/bin:/usr/local/bin:/usr/bin:/bin'
+             ),
+             'PRECIS_DATABASE_URL': precis_worker_dsn,
+             'HF_HOME': precis_worker_hf_home,
+             'PRECIS_PROCESS': 'precis-worker',
+             'PRECIS_SOURCE': 'precis-worker',
+             'PRECIS_MAX_TICKS': (precis_max_ticks | default(10000)) | string,
+             'PRECIS_MAX_TODO_USD': (precis_max_todo_usd | default(5.0)) | string,
+             'PRECIS_DAILY_COST_CEILING': (precis_daily_cost_ceiling | default(50.0)) | string,
+             'PRECIS_JOB_CPU_SHARES': precis_job_cpu_shares | default(''),
+           })
+         | combine({'PRECIS_JOB_CPUSET': precis_job_cpuset | default('')} if os_family == 'linux' else {})
+         | combine({'PRECIS_EMBEDDER': precis_worker_embedder, 'PRECIS_EMBEDDER_URL': precis_worker_embedder_url})
+         | combine({'PGPASSFILE': '/home/deploy/.pgpass'} if os_family == 'linux' else {})
+         | combine({
+             'PRECIS_SUMMARIZE_CONCURRENCY': (precis_worker_summarize_concurrency | default(3)) | string,
+             'PRECIS_SUMMARIZE_TIMEOUT': (precis_worker_summarize_timeout | default(120)) | string,
+           } if os_family == 'darwin' else {})
+         | combine(
+             {'PRECIS_TAPROOT_CHASE_ENABLED': '1', 'PRECIS_CHASE_LLM': '1'}
+             if (os_family == 'darwin' and (precis_worker_taproot_chase | default(false))) else {}
+           )
+         | combine(
+             {'PRECIS_FETCH_MARKUP': '1'}
+             if (os_family == 'darwin' and (precis_worker_fetch_markup | default(false))) else {}
+           )
+         | combine({
+             'VLLM_GPU_MEMORY_UTILIZATION': surya_vllm_gpu_mem_util | default('0.25'),
+             'SURYA_INFERENCE_PORT': surya_inference_port | default('8912'),
+           } if os_family == 'linux' else {})
+         | combine({'PRECIS_LOCAL_SERVE_CONFIG': precis_local_serve_config} if (os_family == 'darwin' and precis_local_serve_config is defined) else {})
+         | combine({'PRECIS_SUMMARIZE_MODEL': precis_local_llm_model_override} if (os_family == 'darwin' and precis_local_llm_model_override is defined) else {}) }}
+    # ── review gates + PRECIS_MCP_CONFIG: gateway + GPU node ONLY — the
+    # exact two groups that ran the split `com.precis.worker-agent` unit
+    # today (precis-worker-agent.plist.j2 / .service.j2 both set these
+    # three unconditionally; `scheduler`/`data` NEVER have). Scoping this
+    # to the same host set as the container vars below is what makes the
+    # header's §L-b step-1 canary claim true: a `scheduler`/`data` collapsed
+    # unit registers structural/deep_review/diagram structurally
+    # (`--profile all`) but the pass never turns on there — no env, no
+    # service_config row — same as today. PRECIS_MCP_CONFIG stays gateway-
+    # only within that set (the GPU node deliberately omits it so
+    # job_claude_inproc self-skips there — no repo checkout /
+    # PRECIS_FIX_REPO_DIR on that host; see precis-worker-agent.service.j2's
+    # own comment on this). ──
+    _l_b_review_env: >-
+      {{ (
+        {'PRECIS_STRUCTURAL_REVIEW': '1', 'PRECIS_DEEP_REVIEW': '1', 'PRECIS_DIAGRAM_AGENTIC': '1'}
+        | combine({'PRECIS_MCP_CONFIG': precis_worker_agent_mcp_config} if inventory_hostname in groups['gateway'] else {})
+      ) if inventory_hostname in (groups['gateway'] + groups['inference']) else {} }}
+    # ── §13 container executor: Linux/GPU node runs it unconditionally
+    # (mirrors precis-worker-agent.service.j2 today); macOS gateway stays
+    # gated behind precis_agent_container_enabled (default false — see the
+    # header's §L-b step 3: flip only after dream_agent × container is
+    # verified) using the colima docker bin (mirrors precis-worker-agent.
+    # plist.j2). ──
+    _l_b_container_env: >-
+      {{ (
+        {
+          'PRECIS_AGENT_CONTAINER': '1',
+          'PRECIS_CONTAINER_BIN': '/usr/bin/docker',
+          'PRECIS_AGENT_IMAGE': precis_agent_image | default('precis-agent:latest'),
+        } if os_family == 'linux' else (
+          ({'PRECIS_AGENT_CONTAINER': '1'} if (precis_agent_container_enabled | default(false)) else {})
+          | combine({
+            'PRECIS_CONTAINER_BIN': precis_worker_agent_container_bin,
+            'PRECIS_AGENT_IMAGE': precis_agent_image | default('precis-agent:latest'),
+          })
+        )
+      ) if inventory_hostname in (groups['gateway'] + groups['inference']) else {} }}
+    # ── gateway-only extras — dream_agent, anki_sync, quest loop,
+    # card_forge, autocatpath routing, load-ceiling — conditioned on the
+    # exact same host/group checks precis-worker-agent.plist.j2 uses today. ──
+    _l_b_dream_env: >-
+      {{ {'PRECIS_DREAM_AGENT': '1', 'PRECIS_DREAM_SOUL_PATH': precis_dream_soul_path | default('/opt/asa/etc/SOUL.md')}
+         if inventory_hostname in groups['gateway'] else {} }}
+    _l_b_anki_env: >-
+      {{ (
+        {
+          'PRECIS_ANKI_ENABLED': '1',
+          'PRECIS_ANKI_USER': anki_user | default(vault_anki_user | default('')),
+          'PRECIS_ANKI_PASSWORD': vault_anki_password | default(''),
+          'PRECIS_ANKI_MIRROR_DIR': anki_mirror_dir | default('/opt/mcps/anki-mirror'),
+          'PRECIS_ANKI_DECK': anki_deck | default('Precis'),
+        }
+        | combine({'PRECIS_ANKI_FIX_ENABLED': '1'} if (anki_sync_fix | default(false)) else {})
+        | combine({'PRECIS_ANKI_PROJECT_ENABLED': '1'} if (anki_sync_project | default(true)) else {})
+      ) if inventory_hostname in groups['precis_anki_sync'] else {} }}
+    _l_b_gateway_extras_env: >-
+      {{ (
+        {
+          'PRECIS_QUEST_LOOP_ENABLED': ('1' if (precis_quest_loop_enabled | default(false)) else '0'),
+          'PRECIS_QUEST_WEEKLY_CHARS': (precis_quest_weekly_chars | default(2000000)) | string,
+          'PRECIS_CARD_FORGE_AUTONOMY': precis_card_forge_autonomy | default('act'),
+        }
+        | combine(
+          {'PRECIS_AUTOCATPATH_ROUTE_NODE': (precis_capabilities.autocatpath | first)}
+          if ((precis_capabilities.autocatpath | default([])) | length > 0) else {}
+        )
+        | combine(
+          {'PRECIS_LOAD_CEILING': precis_worker_agent_load_ceiling}
+          if (precis_worker_agent_load_ceiling | default('')) else {}
+        )
+      ) if inventory_hostname in groups['gateway'] else {} }}
+    _l_b_env: >-
+      {{ _l_b_base_env | combine(_l_b_review_env) | combine(_l_b_container_env)
+         | combine(_l_b_dream_env) | combine(_l_b_anki_env) | combine(_l_b_gateway_extras_env) }}
   roles:
-    # still provisions the venv + deps + dirs + the shared env facts …
+    # still provisions the venv + deps + dirs + the shared env facts + the
+    # §L system-flag seed …
     - role: precis_worker
-    # … but renders the launch unit through the multiplatform abstraction.
+    # … plus the agent-profile PROVISIONING side-effects (colima sidecar,
+    # SOUL copy, deploy's mcp.json, anki install, the quest_loop_reconcile
+    # seed) — NOT that role's own unit render (units.yml), which this play
+    # replaces with the single service_unit render below. Only the two
+    # host groups that ran the split agent unit need this.
+    - role: precis_worker_agent
+      tasks_from: provision
+      when: inventory_hostname in (groups['gateway'] + groups['inference'])
+    # … and renders the ONE launch unit through the multiplatform abstraction.
     - role: service_unit
       vars:
         service_unit_name: worker
         service_unit_run_as: deploy
+        # Deliberate deviation from precis-worker-agent.plist.j2's
+        # WorkingDirectory (/Users/deploy): keep the SYSTEM unit's /tmp
+        # (service_unit's own default) — the NFS getcwd() EPERM trap
+        # (precis-worker.plist.j2's comment) applies to every collapsed
+        # unit, since it also carries the system-profile passes that can
+        # run from an NFS-mounted cwd; /Users/deploy never hit that trap
+        # only because the split agent unit never ran those passes.
+        service_unit_working_dir: /tmp
         service_unit_process_type: Interactive   # jetsam band (RAM-pressured host)
         service_unit_schedule:
           mode: keepalive
         service_unit_exec: >-
-          {{ precis_worker_venv }}/bin/precis worker --profile system
+          {{ precis_worker_venv }}/bin/precis worker --profile all
           --batch-size {{ precis_worker_batch_size }}
           --idle-seconds {{ precis_worker_idle_seconds }}
           --embedder {{ precis_worker_embedder }}
           --embedder-url {{ precis_worker_embedder_url }}
           --summarizer-model {{ precis_worker_summarizer }}
-        # Core daemon vars + shared API keys only — NO ENABLE toggles. The
-        # `scheduler` pass is live by default (no flag, §A) so this daemon
-        # already owns the recurring-work cadences (§15i) with no env here.
-        service_unit_env: >-
-          {{ precis_shared_env | combine({
-            'HOME': '/Users/deploy',
-            'PATH': precis_worker_venv + '/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin',
-            'PRECIS_DATABASE_URL': precis_worker_dsn,
-            'HF_HOME': precis_worker_hf_home,
-            'PRECIS_PROCESS': 'precis-worker',
-            'PRECIS_SOURCE': 'precis-worker',
-            'PRECIS_MAX_TICKS': (precis_max_ticks | default(10000)) | string,
-            'PRECIS_MAX_TODO_USD': (precis_max_todo_usd | default(5.0)) | string,
-            'PRECIS_DAILY_COST_CEILING': (precis_daily_cost_ceiling | default(50.0)) | string,
-          }) }}
+        service_unit_env: "{{ _l_b_env }}"
   tags: [precis-worker-collapsed, precis]

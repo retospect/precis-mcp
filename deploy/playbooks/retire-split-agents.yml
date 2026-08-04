@@ -1,0 +1,76 @@
+---
+# retire-split-agents.yml — §L-b cutover step 4 (dark until run; NOT imported
+# by site.yml or redeploy-precis.yml). Boots out ONLY the split
+# `com.precis.worker-agent` unit (launchd macOS / systemd Linux) on a host
+# AFTER 20b has rendered that host's COLLAPSED worker there — the collapsed
+# unit runs `--profile all`, which already carries every pass the split
+# agent unit ran, so leaving the split unit loaded would double-claim the
+# same job/pass queues for no benefit.
+#
+# RUN ORDER (per host, §L-b window — see 20b-precis-worker-collapsed.yml's
+# header for the full 3-step cutover sequence this is step 3 of):
+#   1. 20b renders + loads the collapsed `com.precis.worker` unit there.
+#   2. Confirm it's healthy (worker_logs boot row, `precis worker --status`,
+#      a claim cycle observed for both the old system- and agent-only
+#      passes).
+#   3. Run THIS playbook against that one host to retire the now-redundant
+#      split agent unit.
+#
+# Deliberately does NOT touch the colima sidecar (com.precis.colima) or its
+# provisioning (SOUL copy, mcp.json, anki install) — those stay owned by
+# precis_worker_agent's provision.yml, which the collapsed unit's own 20b
+# play already re-runs on every deploy (`tasks_from: provision`); colima in
+# particular is still wanted once PRECIS_AGENT_CONTAINER=1 flips for the
+# collapsed unit on this host. Only the worker-agent LAUNCH UNIT is retired.
+#
+# Mirrors retire-thin-timers.yml's shape: OS-aware bootout/rm/assert-gone,
+# idempotent (tolerates already-removed), check-mode-safe (`failed_when:
+# false` on the teardown steps; only the final assert can fail the run).
+#
+# Reversal: re-run 37-precis-worker-agent.yml against the host (git history
+# has the play; it's still imported by site.yml/redeploy-precis.yml today).
+
+- name: Retire the split agent-profile worker unit (folded into the collapsed worker, §L-b)
+  hosts:
+    - gateway
+    - inference
+  become: true
+  tasks:
+    - name: Bootout com.precis.worker-agent (macOS, tolerate not-loaded)
+      when: os_family == "darwin"
+      ansible.builtin.command: "launchctl bootout system/com.precis.worker-agent"
+      register: _bootout
+      changed_when: _bootout.rc == 0
+      failed_when: false
+
+    - name: Remove the com.precis.worker-agent plist (macOS)
+      when: os_family == "darwin"
+      ansible.builtin.file:
+        path: /Library/LaunchDaemons/com.precis.worker-agent.plist
+        state: absent
+
+    - name: Assert com.precis.worker-agent is gone (macOS)
+      when: os_family == "darwin"
+      ansible.builtin.command: "launchctl print system/com.precis.worker-agent"
+      register: _still_loaded
+      changed_when: false
+      failed_when: _still_loaded.rc == 0    # rc==0 means it is STILL loaded → fail loudly
+
+    - name: Stop + disable precis-worker-agent (Linux)
+      when: os_family == "linux"
+      ansible.builtin.systemd:
+        name: precis-worker-agent
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    - name: Remove the precis-worker-agent systemd unit file (Linux)
+      when: os_family == "linux"
+      ansible.builtin.file:
+        path: /etc/systemd/system/precis-worker-agent.service
+        state: absent
+
+    - name: systemd daemon-reload after unit removal (Linux)
+      when: os_family == "linux"
+      ansible.builtin.systemd:
+        daemon_reload: true

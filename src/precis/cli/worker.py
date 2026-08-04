@@ -310,7 +310,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     )
     p.add_argument(
         "--profile",
-        choices=("system", "agent"),
+        choices=("system", "agent", "all"),
         default="system",
         help="Which pass rotation to run. 'system' (default) = the "
         "everything-except-heavy-LLM rotation: embed, summarize, "
@@ -321,7 +321,11 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "PRECIS_STRUCTURAL_REVIEW=1, PRECIS_DEEP_REVIEW=1) and via the "
         "PRECIS_LOAD_CEILING load-avg gate, so an agent profile worker "
         "that hits a tick with nothing to do exits in milliseconds. "
-        "Slice-5 consolidation: deploy one LaunchDaemon per profile.",
+        "'all' = the union of both rotations (§L-a collapsed-worker "
+        "enablement, one-worker-per-host) — dark until a §L-b playbook "
+        "run actually renders a unit with it; unused by any deployed "
+        "unit today. Slice-5 consolidation: deploy one LaunchDaemon "
+        "per profile.",
     )
     p.add_argument(
         "--only",
@@ -926,8 +930,10 @@ def run(args: argparse.Namespace) -> None:
         # cadence; this pass just guarantees that loop exists, self-healing one
         # that rested (a coordinator job idem-keyed `quest_tick:<id>` re-mints
         # once its predecessor reaches a terminal status). See
-        # precis.quest.loop.reconcile_quest_loops.
-        if args.profile == "agent" and _register("quest_loop_reconcile"):
+        # precis.quest.loop.reconcile_quest_loops. §L-a: 'all' (the collapsed
+        # one-worker-per-host profile) carries every agent-only pass too, so
+        # it registers there as well — 'system' alone still never does.
+        if args.profile in ("agent", "all") and _register("quest_loop_reconcile"):
             from precis.quest.loop import reconcile_quest_loops
             from precis.workers.runner import BatchResult as _QBatchResult
 
@@ -2087,7 +2093,10 @@ def _build_handlers(
     """
     handlers: list[WorkerHandler] = []
     profile = getattr(args, "profile", "system")
-    is_system = profile == "system"
+    # §L-a: 'all' (the collapsed one-worker-per-host profile) carries the
+    # system-profile handlers too — summarize must build there, or 'all'
+    # isn't actually the union service_names_for_profile() claims it is.
+    is_system = profile in ("system", "all")
 
     def _want(name: str) -> bool:
         if args.only is not None:

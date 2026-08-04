@@ -900,7 +900,16 @@ def service_names_for_profile(profile: Profile) -> frozenset[str]:
 
     ``cli/worker.py`` derives its ``system_passes`` / ``agent_passes``
     from this instead of the old hand-written ``frozenset`` literals.
+
+    ``"all"`` (§L-a collapsed-worker enablement, one-worker-per-host) is
+    not a real ``default_profiles`` member on any :class:`ServiceSpec` —
+    it's the union of the ``system`` and ``agent`` rotations, for the
+    single collapsed worker that eventually replaces both split units on
+    a host. Handled here, not at call sites, so ``--profile all`` reads
+    like any other profile everywhere else in ``cli/worker.py``.
     """
+    if profile == "all":
+        return service_names_for_profile("system") | service_names_for_profile("agent")
     return frozenset(s.name for s in SERVICES if profile in s.default_profiles)
 
 

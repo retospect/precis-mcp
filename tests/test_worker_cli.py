@@ -76,6 +76,25 @@ class TestParser:
         args2 = parser.parse_args(["worker", "--only", "summarize"])
         assert args2.only == "summarize"
 
+    def test_worker_profile_defaults_to_system(self):
+        parser = _build_parser()
+        args = parser.parse_args(["worker"])
+        assert args.profile == "system"
+
+    def test_worker_profile_accepts_system_agent_all(self):
+        # §L-a collapsed-worker enablement: 'all' is a new accepted value
+        # (dark — nothing passes it yet); 'system'/'agent' stay accepted
+        # unchanged.
+        parser = _build_parser()
+        for profile in ("system", "agent", "all"):
+            args = parser.parse_args(["worker", "--profile", profile])
+            assert args.profile == profile
+
+    def test_worker_profile_rejects_unknown_value(self):
+        parser = _build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["worker", "--profile", "bogus"])
+
     def test_worker_embedder_mock(self):
         parser = _build_parser()
         args = parser.parse_args(["worker", "--embedder", "mock"])
@@ -202,6 +221,25 @@ class TestBuildHandlers:
             self._ns(only="summarize", summarizer_model="rake-v2")
         )
         assert handlers[0].name == "summarize:rake-v2"
+
+    def test_profile_all_builds_summarize_handler(self):
+        """§L-a regression: `--profile all` claims to be the exact union of
+        `system` + `agent` (service_names_for_profile), but the handler list
+        is built by a SEPARATE `is_system` literal in this function, not the
+        registry union — a registry-only test can't catch this function
+        drifting out of sync. `summarize` is system-profile-only, so it must
+        still build under 'all' (embed stays excluded regardless of profile —
+        the §F cycle b manual-only cutover, unrelated to this gate)."""
+        handlers = _build_handlers(self._ns(profile="all"))
+        names = [h.name for h in handlers]
+        assert names == ["summarize:rake-lemma"]
+
+    def test_profile_agent_excludes_summarize(self):
+        """Pin the other side of the same gate: the agent profile (LLM
+        reviewers + dream, no chunk-level handlers) must NOT build
+        summarize — 'all' is the only profile besides 'system' that does."""
+        handlers = _build_handlers(self._ns(profile="agent"))
+        assert handlers == []
 
 
 # ---------------------------------------------------------------------------
@@ -459,6 +497,68 @@ class TestShouldRegister:
         assert not _should_register(
             "hub_refine", "dispatch", profile_passes=frozenset({"dispatch"})
         )
+
+
+# ---------------------------------------------------------------------------
+# §L-a collapsed-worker enablement — the one hard profile gate that
+# ``_should_register``/``profile_passes`` doesn't cover: quest_loop_reconcile
+# registers on ``args.profile`` directly (worker.py, not the registry table),
+# so pin its literal condition rather than the registry union alone.
+# ---------------------------------------------------------------------------
+
+
+def test_quest_loop_reconcile_registers_under_agent_and_all_not_system():
+    """``--profile all`` must carry every agent-only pass, including the
+    one hard-coded profile check that isn't derived from
+    ``service_names_for_profile`` (worker.py ~930). 'system' alone must
+    never register it — a system-profile worker (still today's split
+    deploy) stays byte-identical."""
+    import ast
+    from pathlib import Path
+
+    from precis.cli import worker as worker_mod
+
+    source = Path(worker_mod.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    condition: ast.expr | None = None
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.If)
+            and isinstance(node.test, ast.BoolOp)
+            and isinstance(node.test.op, ast.And)
+            and any(
+                isinstance(v, ast.Call)
+                and isinstance(v.func, ast.Name)
+                and v.func.id == "_register"
+                and v.args
+                and isinstance(v.args[0], ast.Constant)
+                and v.args[0].value == "quest_loop_reconcile"
+                for v in node.test.values
+            )
+        ):
+            condition = node.test
+            break
+    assert condition is not None, (
+        'no `if ... and _register("quest_loop_reconcile")` guard found '
+        "in cli/worker.py — has the gate been restructured?"
+    )
+
+    profile_check = next(
+        v
+        for v in condition.values  # type: ignore[attr-defined]
+        if isinstance(v, ast.Compare) and isinstance(v.left, ast.Attribute)
+    )
+    assert isinstance(profile_check.comparators[0], ast.Tuple)
+    profiles: set[str] = {
+        str(elt.value)
+        for elt in profile_check.comparators[0].elts
+        if isinstance(elt, ast.Constant)
+    }
+    assert profiles == {"agent", "all"}, (
+        "quest_loop_reconcile's profile gate must be exactly "
+        f"args.profile in ('agent', 'all'), found {sorted(profiles)}"
+    )
 
 
 class TestControlCutoverGateDefaults:

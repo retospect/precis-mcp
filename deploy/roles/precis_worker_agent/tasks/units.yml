@@ -1,0 +1,78 @@
+---
+# precis_worker_agent/tasks/units.yml — §L-a role split. Renders + loads the
+# split `com.precis.worker-agent` launch unit (macOS LaunchDaemon / Linux
+# systemd service) — the part of the old main.yml that 20b (the collapsed-
+# worker playbook) does NOT want, because it renders its own single unit via
+# the `service_unit` role instead. See provision.yml for everything else
+# (still shared with 20b via `tasks_from: provision`).
+
+- name: Ensure /var/log/precis-worker-agent.log
+  when: os_family == "darwin"
+  ansible.builtin.file:
+    path: /var/log/precis-worker-agent.log
+    state: touch
+    # Owner/mode must let ``deploy`` (the UserName in the plist, slice 2B;
+    # was hermes) write to stdout/stderr. With ``root:wheel 0644`` (the
+    # launchd default) bash can't open the log for write and the daemon
+    # exits 78 (EX_CONFIG) before logging anything — the failure mode is
+    # silent because there's no log to write the error into.
+    mode: "0664"
+    owner: deploy
+    group: admin
+    modification_time: preserve
+    access_time: preserve
+  become: true
+
+- name: Ensure precis-worker-agent LaunchDaemon plist
+  when: os_family == "darwin"
+  ansible.builtin.template:
+    src: precis-worker-agent.plist.j2
+    dest: /Library/LaunchDaemons/com.precis.worker-agent.plist
+    mode: "0644"
+    owner: root
+    group: wheel
+  become: true
+  notify: restart precis-worker-agent
+
+- name: Load precis-worker-agent LaunchDaemon
+  when: os_family == "darwin"
+  ansible.builtin.command: >
+    launchctl load -w /Library/LaunchDaemons/com.precis.worker-agent.plist
+  become: true
+  changed_when: false
+  failed_when: false
+
+# ── Linux/systemd (the GPU node) — factory Phase-2 slice 2: containerized review
+# worker. Same role, os_family branch; reuses /opt/precis/venv (the system
+# worker's) since the agent profile is the same precis binary. ──
+- name: Ensure /var/log/precis-worker-agent.log (Linux, deploy-writable)
+  when: os_family == "linux"
+  ansible.builtin.file:
+    path: /var/log/precis-worker-agent.log
+    state: touch
+    mode: "0664"
+    owner: deploy
+    group: deploy
+    modification_time: preserve
+    access_time: preserve
+  become: true
+
+- name: Ensure precis-worker-agent systemd unit (Linux)
+  when: os_family == "linux"
+  ansible.builtin.template:
+    src: precis-worker-agent.service.j2
+    dest: /etc/systemd/system/precis-worker-agent.service
+    mode: "0644"
+    owner: root
+    group: root
+  become: true
+  notify: restart precis-worker-agent (linux)
+
+- name: Enable + start precis-worker-agent (Linux)
+  when: os_family == "linux"
+  ansible.builtin.systemd:
+    name: precis-worker-agent
+    enabled: true
+    state: started
+    daemon_reload: true
+  become: true

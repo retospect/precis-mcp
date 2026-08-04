@@ -162,6 +162,15 @@ def test_derived_profiles_match_the_frozen_snapshot() -> None:
     assert service_names_for_profile("agent") == _EXPECTED_AGENT
 
 
+def test_all_profile_is_the_exact_union_of_system_and_agent() -> None:
+    """§L-a collapsed-worker enablement: ``--profile all`` is a new value
+    nothing passes yet (dark), but it must be the exact union of the two
+    existing rotations — no pass gains or loses membership in ``system``
+    / ``agent`` by this change (pinned above), and ``all`` adds nothing
+    beyond their union."""
+    assert service_names_for_profile("all") == _EXPECTED_SYSTEM | _EXPECTED_AGENT
+
+
 def test_embed_service_spec_is_manual_only() -> None:
     """§F cycle b cutover: ``embed`` has no ``default_profiles`` — it's
     absent from the system-profile rotation (see the frozen snapshot
