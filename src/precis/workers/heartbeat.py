@@ -48,9 +48,14 @@ import os
 import platform
 import re
 import subprocess
+import threading
 import time
 import uuid
-from typing import Any
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from precis.store import Store
 
 from precis.workers.runner import BatchResult
 
@@ -553,6 +558,118 @@ def run_heartbeat_pass(store: Any, *, host: str | None = None) -> BatchResult:
     return BatchResult(handler="heartbeat", claimed=1, ok=1, failed=0)
 
 
+#: How long the thread sleeps between attempts (short — the 60s pacing
+#: comes from the shared throttle above, NOT from this sleep, so a beat
+#: lands promptly once the interval elapses and an env-tuned shorter
+#: interval works with no thread change). A module global (not a local
+#: constant) so tests can monkeypatch it down for a fast-running loop.
+_THREAD_TICK_SECONDS = 5.0
+
+
+def _sleep_with_stop_check(duration: float, should_stop: Callable[[], bool]) -> None:
+    """Sleep ``duration`` seconds in ~1s increments, returning early the
+    moment ``should_stop()`` flips — so a shutdown request is noticed
+    promptly rather than sleeping through it."""
+    remaining = duration
+    while remaining > 0 and not should_stop():
+        step = min(1.0, remaining)
+        time.sleep(step)
+        remaining -= step
+
+
+def _heartbeat_thread_body(
+    dsn: str,
+    host: str | None,
+    should_stop: Callable[[], bool],
+) -> None:
+    """The ``start_heartbeat_thread`` loop body — see that function's
+    docstring for the design rationale."""
+    from precis.store import Store
+
+    store: Store | None = None
+    while not should_stop():
+        try:
+            if store is None:
+                try:
+                    store = Store.connect(dsn)
+                except Exception:
+                    log.warning(
+                        "heartbeat thread: failed to connect; retrying",
+                        exc_info=True,
+                    )
+                    store = None
+            if store is not None:
+                result = run_heartbeat_pass(store, host=host)
+                # run_heartbeat_pass swallows its own exceptions and
+                # reports them as failed=1 — that's the ONLY failure
+                # signal available here, so treat it as "this store's
+                # connection is suspect" and reconnect next tick.
+                if result.failed > 0:
+                    try:
+                        store.close()
+                    except Exception:
+                        pass
+                    store = None
+        except Exception:
+            # Belt-and-suspenders: a probe bug in this loop must never
+            # take the whole worker down with it.
+            log.warning("heartbeat thread: tick failed", exc_info=True)
+
+        _sleep_with_stop_check(_THREAD_TICK_SECONDS, should_stop)
+
+    if store is not None:
+        try:
+            store.close()
+        except Exception:
+            pass
+
+
+def start_heartbeat_thread(
+    dsn: str,
+    *,
+    host: str | None = None,
+    should_stop: Callable[[], bool] | None = None,
+) -> threading.Thread:
+    """Start a dedicated daemon thread that beats independently of the
+    serial worker rotation (gr191264).
+
+    ``workers/runner.py``'s ``run_loop`` runs handlers then ref_passes
+    strictly serially — a single long pass (observed: an ~8-min fetch_oa
+    markup-ingest batch) starves the in-rotation ``heartbeat`` pass, and the
+    ``host_heartbeat`` row goes stale toward nursery's 10-minute host-dark
+    threshold even though the worker is demonstrably alive. This thread
+    bounds staleness to roughly ``PRECIS_HEARTBEAT_INTERVAL_SECONDS``
+    regardless of how long any single rotation pass runs.
+
+    Owns a SEPARATE ``Store.connect(dsn)`` from the main loop's store —
+    psycopg connections aren't usable concurrently across threads. Calls
+    the same :func:`run_heartbeat_pass` used by the in-rotation pass, so
+    the module-global throttle (``_last_beat_monotonic``) is SHARED:
+    whichever of thread/rotation fires most recently wins the interval and
+    the other no-ops (``claimed=0``) — this is normal, not a bug, and keeps
+    a double-fire against the still-live launchd/systemd timer harmless.
+
+    Like :func:`run_heartbeat_pass` (§A), this deliberately touches no
+    ``scheduler_leases`` / claim machinery — heartbeat is the liveness
+    signal that machinery is judged by, so it must never depend on it. The
+    thread never crashes the worker: a connect failure or an in-pass
+    exception is caught and logged, and the loop just retries on the next
+    tick.
+
+    Returns the started (daemon, so it won't block process exit) thread;
+    the caller usually just fires-and-forgets it.
+    """
+    stop = should_stop or (lambda: False)
+    thread = threading.Thread(
+        target=_heartbeat_thread_body,
+        args=(dsn, host, stop),
+        name="heartbeat",
+        daemon=True,
+    )
+    thread.start()
+    return thread
+
+
 def advertise_boot_id_now(store: Any, *, host: str | None = None) -> str:
     """Mint (once) and immediately advertise this process's boot epoch.
 
@@ -618,4 +735,5 @@ __all__ = [
     "read_temp_c",
     "resolve_host",
     "run_heartbeat_pass",
+    "start_heartbeat_thread",
 ]

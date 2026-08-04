@@ -704,3 +704,116 @@ class TestClassifyTopicsEnabledSlugs:
             topics_env=frozenset(),
             slugs=["safety", "batteries"],
         ) == ["safety"]
+
+
+# ---------------------------------------------------------------------------
+# gr191264 — dedicated heartbeat thread wiring. ``run()`` needs a live DSN,
+# store, and handler build-out to execute end to end, so (matching this
+# file's existing style, e.g. ``test_ref_pass_priority_keys_match_registered_
+# passes`` / ``test_quest_loop_reconcile_registers_...`` above) this pins the
+# gate as a static AST check rather than exercising the whole function.
+# ---------------------------------------------------------------------------
+
+
+class TestHeartbeatThreadWiring:
+    @staticmethod
+    def _find_heartbeat_thread_guard():
+        import ast
+        from pathlib import Path
+
+        from precis.cli import worker as worker_mod
+
+        source = Path(worker_mod.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.If):
+                continue
+            test = node.test
+            if not (isinstance(test, ast.BoolOp) and isinstance(test.op, ast.And)):
+                continue
+            has_registered_flag = any(
+                isinstance(v, ast.Name) and v.id == "heartbeat_registered"
+                for v in test.values
+            )
+            has_not_once = any(
+                isinstance(v, ast.UnaryOp)
+                and isinstance(v.op, ast.Not)
+                and isinstance(v.operand, ast.Attribute)
+                and v.operand.attr == "once"
+                for v in test.values
+            )
+            if has_registered_flag and has_not_once:
+                return node
+        raise AssertionError(
+            "no `if heartbeat_registered and not args.once:` guard found in "
+            "cli/worker.py — has the gr191264 heartbeat-thread wiring been "
+            "restructured?"
+        )
+
+    def test_heartbeat_thread_started_only_when_registered_and_not_once(self):
+        """The guard must gate on BOTH the in-rotation pass having
+        registered AND ``--once`` being absent — a one-shot rotation
+        doesn't need a background thread, and `--only <other-pass>` must
+        not spawn one either."""
+        guard = self._find_heartbeat_thread_guard()
+
+        import ast
+
+        calls = [
+            n
+            for n in ast.walk(guard)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name)
+            and n.func.id == "start_heartbeat_thread"
+        ]
+        assert calls, "guard body must call start_heartbeat_thread(...)"
+
+    def test_heartbeat_thread_guard_comes_after_signal_handler_install(self):
+        """The thread must start after ``stop_flag`` exists (its
+        ``should_stop`` callable reads it) — i.e. after
+        ``_install_signal_handlers()``, not before."""
+        import ast
+        from pathlib import Path
+
+        from precis.cli import worker as worker_mod
+
+        source = Path(worker_mod.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+
+        install_lineno = None
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id == "stop_flag"
+                and isinstance(node.value, ast.Call)
+                and isinstance(node.value.func, ast.Name)
+                and node.value.func.id == "_install_signal_handlers"
+            ):
+                install_lineno = node.lineno
+                break
+        assert install_lineno is not None, (
+            "no `stop_flag = _install_signal_handlers()` found"
+        )
+
+        guard = self._find_heartbeat_thread_guard()
+        assert guard.lineno > install_lineno
+
+    def test_heartbeat_thread_call_passes_should_stop(self):
+        """``start_heartbeat_thread`` must be wired to the same stop_flag
+        the rotation itself honors — else a shutdown signal would leave the
+        thread running past process exit intent."""
+        import ast
+
+        guard = self._find_heartbeat_thread_guard()
+        call = next(
+            n
+            for n in ast.walk(guard)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name)
+            and n.func.id == "start_heartbeat_thread"
+        )
+        kwarg_names = {kw.arg for kw in call.keywords}
+        assert "should_stop" in kwarg_names

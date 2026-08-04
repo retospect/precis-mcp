@@ -587,6 +587,10 @@ def run(args: argparse.Namespace) -> None:
         # the annotation below is stringized (``from __future__ import
         # annotations``) so no runtime import is needed here.
         ref_passes: list[RefPass] = []
+        # gr191264: whether the in-rotation heartbeat pass registered below —
+        # used after the loop to decide whether to also start the dedicated
+        # heartbeat thread (see that site for why).
+        heartbeat_registered = False
         if _register("chunk_keywords"):
             from precis.workers.chunk_keywords import run_chunk_keywords_pass
 
@@ -1817,6 +1821,7 @@ def run(args: argparse.Namespace) -> None:
                 return run_heartbeat_pass(store)
 
             ref_passes.append(_heartbeat_pass)
+            heartbeat_registered = True
 
         # Structural review pass — Slice 3 of todo-tree-plan.md.
         # Opus-class semantic review of the tree's shape (drift
@@ -2040,6 +2045,26 @@ def run(args: argparse.Namespace) -> None:
         )
 
         stop_flag = _install_signal_handlers()
+        # gr191264: the rotation above is strictly serial (handlers then
+        # ref_passes) — a single long pass (observed: an ~8-min fetch_oa
+        # markup-ingest batch) starves the in-rotation heartbeat pass past
+        # nursery's HOST_DARK_SILENCE_MIN, flapping a false host-dark
+        # critical even though the worker is alive. A dedicated thread beats
+        # independently of the rotation, bounding staleness to roughly the
+        # heartbeat interval regardless of pass length; the in-rotation pass
+        # above stays as a backstop (idempotent UPSERT + shared throttle
+        # make a double-fire harmless). Skipped for `--once` (a one-shot
+        # rotation doesn't need a background thread) and when heartbeat
+        # didn't register at all (`--only <other-pass>`). Note: a live
+        # `service_config` prio flip only gates the in-rotation pass above
+        # (via `_pass_gate`) — NOT this thread, deliberately: the gate
+        # resolver is a DB read, and heartbeat must not depend on one. This
+        # is a boot-time-only gate; toggling heartbeat off via service_config
+        # after boot doesn't stop an already-started thread.
+        if heartbeat_registered and not args.once:
+            from precis.workers.heartbeat import start_heartbeat_thread
+
+            start_heartbeat_thread(dsn, should_stop=lambda: stop_flag["stop"])
         run_loop(
             handlers,
             store,

@@ -847,7 +847,12 @@ host → GPU node → gateway last, gated on a `dream_agent`-under-
   judged by), self-throttled via an in-process timestamp
   (`PRECIS_HEARTBEAT_INTERVAL_SECONDS`, default 60s). The still-live timers
   keep firing too (retiring them is §L) — a double-fire is a harmless
-  idempotent UPSERT.
+  idempotent UPSERT. Since gr191264, `precis worker` also starts a dedicated
+  `start_heartbeat_thread` daemon thread (own `Store.connect`, sharing the
+  same module-global throttle) so the rotation's strict seriality — one long
+  handler/ref_pass starving this pass for its whole duration — can no longer
+  flap a false host-dark nursery alert; the in-rotation pass above stays as
+  an idempotent backstop.
 
 **Notable passes:**
 
