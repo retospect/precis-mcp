@@ -21,6 +21,59 @@ Status: open · Severity: feature · Owner: `src/precis/workers/fetch_oa.py` (`_
 
 ---
 
+## Residuals (2026-08-04 — morning-audio outage investigation)
+
+Chased from "fix the morning report / docker-hub unlock". The combined morning
+episode ships in code (`148403c4`) but produced **no audio Aug 3–4**; root-caused
+to a §L regression **plus** an independent, more serious spark worker deadlock.
+
+- **§L seed omits the tts-role passes — cast_audio FIXED, class still open** ·
+  Status: open (class) · Severity: bug · Owner:
+  `deploy/roles/precis_worker/tasks/main.yml` §L seed. §L retired
+  `PRECIS_*_ENABLED` as the live gate; pass enablement is now a `service_config`
+  prio row, seeded at deploy from a **hardcoded 4-service list**
+  (`llm_summarize`/`classify`/`llm_reconcile`/`job_claude_docker`).
+  `cast_audio`/`briefing_audio` — whose enable flags live in the *tts role's*
+  `tts.env`, invisible to this loop — got no row and silently went dark on spark
+  when §L deployed (~Aug 2). **Fixed:** live `precis service prio spark
+  cast_audio 5` + a shipped seed entry gated on `precis_capabilities.tts_render`
+  (`3eec86d0`). `briefing_audio` intentionally left OFF — the standalone
+  news-only episode is retired, and §L's default-off *is* the retirement, so the
+  `tts.env` `PRECIS_BRIEFING_AUDIO_ENABLED=0` flip is now moot. **Generalization
+  still open:** drive the seed from the registry's `enable_env` set (×
+  advertised capability), not a hand-maintained list, so no future role-gated
+  pass regresses the same way.
+
+- **spark system worker deadlocks on MACE/e3nn init (CUDA 13.0) — BLOCKS all
+  spark system passes** · Status: open · Severity: critical · gripe **191351**.
+  Every `precis-worker` boot on spark hangs deterministically at MACE model init
+  (`CUDA version: 13.0` → `Using head Default out of ['Default']`), main thread
+  spinning in a futex, worker threads all futex-waiting, on a SIGKILL-restart
+  cycle (hang durations growing 3→92 min). A restart does NOT clear it. So
+  `cast_audio` (now correctly enabled) cannot run until this is fixed, and every
+  other spark system pass is stalled too (the embedder daemon is separate +
+  healthy). Likely a CUDA 13.0 × torch/MACE/e3nn incompat, **or** the autocatpath
+  MACE ref-pass plugin eager-loading its model in the *system* worker at
+  `discover_plugin_ref_passes` time — it should opt out of `profile=system`
+  and/or lazy-load (out-of-tree `autocatpath` factory). Onset ~Aug 3 02:40.
+  Needs infra/version diagnosis — larger than the audio task, deferred to user.
+
+- **Docker Hub egress on spark (gripe 189697) — deferred; needed only for the
+  1.5s pause** · Status: blocked · Severity: polish. TLS handshake to Docker
+  Hub/ECR (AWS-hosted) stalls from spark; ghcr.io/Cloudflare work. Plus
+  `tts_base_image` (`python:3.11`) ≠ Dockerfile `FROM` (`3.12`), so the
+  pull-if-missing guard checks the wrong image. Unblock (not executed):
+  pre-seed `python:3.12-slim-bookworm` from melchior (arm64, reaches Docker Hub)
+  → `docker load` on spark, then `45-tts.yml`. Only the 1.5s inter-article pause
+  needs this; the combine + news-retirement do not.
+
+- **News wire still composes ~2h late** (Aug 4: 08:14 vs 06:00 UTC target) ·
+  Status: open · Severity: feature. Agent-worker lateness persists after the
+  H2/H5 fixes — the deferred H1/H3/H4 reliability track (memory
+  `worker-agent-silent-outage`).
+
+---
+
 ## 🎯 Taproot self-plagiarism detection — cross-draft hub reuse
 
 Status: open · Severity: feature · Owner: `src/precis/taproot/` + export handlers · Test: n/a yet (design phase).
