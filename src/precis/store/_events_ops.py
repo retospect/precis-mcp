@@ -8,11 +8,9 @@ writes events here; consumers read either chronologically per ref
 (``view='log'`` on a handler) or cross-ref by ``(source, event)``
 for incident timelines.
 
-Two write helpers:
+Write helper:
 
-- :meth:`append_event` — single-row insert; the typical case.
-- :meth:`append_events` — bulk insert; useful when a worker pass
-  produces many events and wants one round-trip.
+- :meth:`append_event` — single-row insert.
 
 Two read helpers:
 

@@ -550,6 +550,17 @@ def store() -> Iterator[Store]:
     a deny-list on purpose: any new data table is wiped automatically,
     so a forgotten table can't pollute the shared DB across tests.
 
+    Also drops :mod:`precis.budget.meter`'s process-global, short-TTL
+    ``BudgetStatus`` cache (gr188847): it's keyed only by wall-clock
+    TTL, not by which ``Store`` asked, so a test that trips the
+    breaker against its own fake/real store (e.g.
+    ``test_budget.py``'s over-cap cases) can leave a *tripped* status
+    cached for up to 15s — long enough for an unrelated test's real
+    (unmocked) ``breaker.gate_tier`` call, against a freshly truncated
+    (zero-spend) store, to see the stale trip and wrongly refuse a
+    paid tier. Resetting it here closes the whole class rather than
+    patching the one flaky test.
+
     Skips when no postgres reachable at ``PG_TEST_DSN``.
     """
     if not _pg_available():
@@ -558,6 +569,9 @@ def store() -> Iterator[Store]:
             "or start a server to run db-tagged tests"
         )
     _truncate_data_tables(_active_dsn())
+    from precis.budget import meter as _budget_meter
+
+    _budget_meter.bind_store(None)
     s = Store.connect(_active_dsn())
     dbname = str(conninfo_to_dict(_active_dsn()).get("dbname") or "")
     before = _live_backends(dbname) if _LEAKCHECK else set()
