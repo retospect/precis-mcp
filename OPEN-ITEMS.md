@@ -10,6 +10,17 @@ tracked separately in `docs/improvement-plan.md` (same delete-on-ship rule).
 
 ---
 
+## 🔧 fetch-time retraction gate — carry `corrected` + `expression_of_concern` along
+
+Status: open · Severity: feature · Owner: `src/precis/workers/fetch_oa.py` (`_apply_retraction_gate`) · Test: extend `tests/workers/test_fetch_oa.py::TestRetractionGate`.
+
+- The fetch-time retraction gate (shipped `3a641405`) stamps `retraction_status` and skips the chase only for `retracted`. It **detects** `corrected` / `expression_of_concern` via `provenance.check_doi` but discards them — so those informational statuses never reach the reader banner via the chase path (only a manual `precis provenance check-doi` populates them).
+- **Agreed extension (Reto, this session):** persist the dominant status for *all three* (with `reason`/`url`) — same plumbing, different action: `retracted` = stamp + skip (as now); `corrected` / `expression_of_concern` = stamp + **proceed** with the fetch (still want the PDF, now flagged). Predicate exclusion stays `retracted`-only (already correct — corrected/EoC must stay eligible so they still get fetched).
+- **Open design call — re-check bounding:** a stamped corrected/EoC stub stays eligible (no PDF yet), so it re-checks Crossref on every future claim until it acquires a PDF. (a) accept the re-check — simple, catches a `corrected→retracted` upgrade, ~1 extra Crossref call per already-networked attempt (**leaning this**); (b) add a `last_retraction_check` breadcrumb + TTL to throttle — saves calls, adds state, can miss a fast upgrade. Decide before building.
+- **Downstream (later, separate):** when search-downrank / citation-flag consumers land, `retracted` = hard action, `corrected`/`EoC` = soft flag — same column, different severity.
+
+---
+
 ## 🎯 Taproot self-plagiarism detection — cross-draft hub reuse
 
 Status: open · Severity: feature · Owner: `src/precis/taproot/` + export handlers · Test: n/a yet (design phase).
