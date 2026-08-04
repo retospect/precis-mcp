@@ -198,6 +198,10 @@ source paragraph. The bar is therefore stricter than for an inline citation.
 - **Grounding depth.** One supporter is mintable; definitions and
   landscape/survey claims also want a secondary source (a review) — the
   `hub_refine` pass attaches corroborators when enabled.
+- **Notation.** Claim sentences are plain text rendered without a math
+  engine (list views, page titles, MCP output): write formulas with
+  UTF-8 sub/superscripts and symbols — `C₆₀`, `g-C₃N₄`, `≈10,000 cm²/Vs`,
+  `μB` — never TeX fragments (`C$_{60}$`, `$\mu_B$`).
 
 **Sorts of claims** — the bar shifts by sort:
 

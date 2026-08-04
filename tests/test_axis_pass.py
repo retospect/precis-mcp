@@ -14,6 +14,8 @@ from types import SimpleNamespace
 from typing import Any
 
 from precis.store.types import Tag
+from precis.taproot.canon import CanonicalClaim
+from precis.taproot.hub import mint_hub
 from precis.workers.axis_pass import _SYS, prompt_preview, run_axis_pass
 from tests.workers._helpers import seed_chunk, seed_ref
 
@@ -122,6 +124,56 @@ def test_ref_level_version_bump_reclaims(store: Any) -> None:
     assert bumped == {"claimed": 1, "ok": 1, "failed": 0, "dist": {"physics": 1}}
     assert _ref_tag(store, ref_id, "DOMAIN") == "physics"  # replaced
     assert _ref_tag(store, ref_id, "DOMAINCASCADE") == "2"
+
+
+# ── foreign-writer guard: a ref-level axis never overrides another door's
+# ── classification (mint_hub race, 2026-08-04 incident) ────────────────
+
+
+def test_axis_never_claims_a_ref_already_tagged_in_its_own_namespace(
+    store: Any,
+) -> None:
+    """A freshly minted taproot hub carries TAPROOT:claim (mint_hub, the
+    system write door) but no TAPROOTCASCADE marker — the exact shape that
+    let the axis:taproot pass claim it seconds after mint and silently
+    replace TAPROOT:claim with TAPROOT:review (``replace_prefix=True``) on
+    a SMALL-model "review" read, demoting a live evidenced hub. The pass
+    must skip any ref already carrying a tag in its own output namespace,
+    whoever wrote it — not just its own cascade marker."""
+    hub_ref_id = mint_hub(
+        store, CanonicalClaim(sentence="Pd/C catalyzes Suzuki coupling.", scope={})
+    )
+    assert _ref_tag(store, hub_ref_id, "TAPROOT") == "claim"
+
+    client = _FakeClient("review")
+    result = run_axis_pass(
+        store,
+        dispatch=client,
+        axis_id="taproot",
+        batch_size=10,
+        ref_ids=[hub_ref_id],
+    )
+
+    assert result == {"claimed": 0, "ok": 0, "failed": 0}
+    assert client.calls == []  # never even reached the LLM
+    assert _ref_tag(store, hub_ref_id, "TAPROOT") == "claim"  # not demoted
+
+
+def test_axis_still_classifies_a_finding_with_no_taproot_tag(store: Any) -> None:
+    """Companion negative: the foreign-writer guard must not disable the
+    axis outright — a plain finding with no TAPROOT:* tag is still
+    claimed and classified normally."""
+    ref_id = seed_ref(store, title="An editorial note", kind="finding")
+    seed_chunk(store, ref_id=ref_id, text=_LONG_PARA, ord=0)
+
+    client = _FakeClient("review")
+    result = run_axis_pass(
+        store, dispatch=client, axis_id="taproot", batch_size=10, ref_ids=[ref_id]
+    )
+
+    assert result == {"claimed": 1, "ok": 1, "failed": 0, "dist": {"review": 1}}
+    assert _ref_tag(store, ref_id, "TAPROOT") == "review"
+    assert len(client.calls) == 1
 
 
 # ── ref-level axis WITH prereq (material waits on domain) ───────────────

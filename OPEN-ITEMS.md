@@ -10,17 +10,17 @@ tracked separately in `docs/improvement-plan.md` (same delete-on-ship rule).
 
 ---
 
-## 🔧 Taproot claim-quality residuals from the nanobuds-copy audit (2026-08-04)
+## 🔧 axis:taproot demotes freshly-minted claim hubs (root-caused 2026-08-04) + fleet remediation
 
-Status: open · Severity: feature · Owner: `src/precis/taproot/backfill.py` (placement) + prod data fixes via the new retitle door · Test: backfill regression that an `[fi]` cite is only ever placed against a `TAPROOT:claim` hub.
+Status: open (fix in flight this worktree) · Severity: bug · Owner: `src/precis/workers/axis_pass.py::_claim_ref` · Test: `run_axis_pass(axis_id='taproot')` over a live `TAPROOT:claim` hub must skip it, not reclassify.
 
-Audit of all 125 `[fi]` hubs cited by draft `dr173020` against the new claim rubric (~15 hard failures, ~12 soft flags — reword table shown to Reto 2026-08-04, prod application pending his go-ahead):
+Root cause of the nanobuds-copy "non-hub `[fi]` cites": NOT the backfill (placement validates via `_is_claim_hub` and the evidence edges landed). The `axis:taproot` pass (enabled fleet-wide since 2026-07-30) claims every `finding` lacking its `TAPROOTCASCADE` marker — including hubs `mint_hub` just created — and its `replace_prefix=True` write swaps `TAPROOT:claim`→`TAPROOT:review` on a SMALL-model "review" verdict, 23–72 s after mint. Any future mint (backfill or `chase` bridge) races the same window until fixed.
 
-- **Backfill placed `[fi]` cites against NON-hub findings** — `fi189520`, `fi189540`, `fi191261` are plain chase-findings, not `TAPROOT:claim` hubs (`view='evidence'` rejects them). Find the placement path that allowed it; fix + regression test. Prose fix: revert those three cites to `[pc]` or re-ground.
-- **`fi190988` is mis-grounded** — its "Configurations D and E" (C60-bombardment) claim is attached to Qin 2022 (electrochemical); grounding chunk doesn't contain the claim. Needs re-grounding before any retitle; needs a `needs_review` todo.
-- **`fi191265` ≈ `fi191319`** — same paper (Ravi 2020, vitamins B9/B12 inner-filter effect), two hubs; merge candidate, don't retitle into a collision.
-- **Retitle batch (11 hubs)** — apply the approved rewordings via `edit(kind='finding', id='fi…', title=…)` after ship+deploy: fi189526, fi189536, fi189549, fi190995, fi191152, fi191297, fi191299, fi191163, fi191167, fi191308 (+ fi189521 soft sharpen if approved).
+- **Fix (in flight):** axis pass must never claim a ref already carrying any tag in its output namespace — backfill-classify only, never override. + regression tests in `tests/test_axis_pass.py`.
+- **Fleet remediation (after fix deploys):** finder query (links with hub-role relations into findings now lacking `TAPROOT:claim`) returned 12 rows on 2026-08-04. Nanobuds four are handled (fi189520/189540/191261 de-cited from `dr173020`; fi191180 is an uncited orphan duplicate of retired fi191261 — leave demoted). Remaining **8 in the DNA-origami/nanozyme domain** (fi176420, fi176447, fi176451, fi176820, fi176871, fi177633, fi178235, fi178237) need per-claim triage: restore `TAPROOT:claim` where the rubric passes (fi176451's mechanism claim clearly does), leave demoted + de-cite where meta-prose — check which draft cites them first.
+- **Secondary defect** (distinct, filed as gripe 191953): `backfill.py::apply_chunk` rewrites prose to an `[fi]` cite even when `attach_evidence` raised for an "attach" placement with a pre-populated `plan.hub_ref_id`.
 - **v2 follow-on: persist `claim_type`** — extractor returns the claim sort (measurement/definition/capability/mechanism/landscape) into hub meta so `hub_refine` can prioritize thin definitions/landscape claims for corroborators, lint can flag a capability claim with no regime, and dedup can treat definitions specially. Design pass first.
+- **Grounding-depth policy (from Reto's fi189527 question):** abstract-only grounding is fine for definition/existence claims; measurement/mechanism claims want a body-passage corroborator too. Fold into the `hub_refine` dark pass design (search inside the paper for the meat passage, attach as second chunk).
 
 ---
 

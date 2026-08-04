@@ -485,11 +485,34 @@ def _claim_ref(
             SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
             WHERE rt.ref_id = r.ref_id AND t.namespace = %(marker_ns)s AND t.value = %(version)s
           )
+          -- An axis pass backfills unclassified refs — it must never claim
+          -- a ref that already carries a tag in its OWN output namespace
+          -- written by someone else (no cascade marker at all, any
+          -- version): mint_hub (taproot/hub.py) writes TAPROOT:claim with
+          -- no TAPROOTCASCADE marker, and this pass claimed + silently
+          -- demoted it to TAPROOT:review seconds later via replace_prefix
+          -- (2026-08-04 incident, confirmed 12x on prod) before the
+          -- classifier could ever have run. A ref this axis previously
+          -- classified itself always carries BOTH tags together (written
+          -- in the same transaction below), so an ns-tag-with-no-marker
+          -- combination can only mean a foreign writer — a version bump
+          -- (ns tag + a stale-version marker) stays reclaimable as before.
+          AND NOT (
+            EXISTS (
+              SELECT 1 FROM ref_tags rt2 JOIN tags t2 ON t2.tag_id = rt2.tag_id
+              WHERE rt2.ref_id = r.ref_id AND t2.namespace = %(ns)s
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM ref_tags rt3 JOIN tags t3 ON t3.tag_id = rt3.tag_id
+              WHERE rt3.ref_id = r.ref_id AND t3.namespace = %(marker_ns)s
+            )
+          )
         ORDER BY r.ref_id
         LIMIT %(limit)s
     """
     params: dict[str, Any] = {
         "kinds": kinds,
+        "ns": ns,
         "marker_ns": marker_ns,
         "version": version,
         "limit": limit,

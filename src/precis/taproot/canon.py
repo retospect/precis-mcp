@@ -158,6 +158,9 @@ Rules — the claim will be read ALONE, without this passage:
    states only the practice, claim = null.
 3. Specific: keep the numbers, materials, and conditions the passage
    states; drop empty intensifiers ("extraordinary", "remarkable").
+4. Plain text, no TeX: the claim renders without a math engine — write
+   formulas with UTF-8 sub/superscripts ("C60" -> "C₆₀", "g-C$_3$N$_4$"
+   -> "g-C₃N₄", "cm$^2$/Vs" -> "cm²/Vs").
 
 Examples:
 - "This strategy has been pursued across the principal families of 2D
