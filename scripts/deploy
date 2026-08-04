@@ -19,9 +19,17 @@
 #
 # Usage:  scripts/deploy            # deploy main (default)
 #         scripts/deploy some-branch
+#
+# PRECIS_DEPLOY_EXTRA_VARS — optional extra `-e key=value` pairs passed through
+# to ansible-playbook, space-separated (e.g. "precis_embedder_trace=true" for
+# the gr172390 pass-1 diagnosis runbook). Playbook-run only, never persisted.
 set -euo pipefail
 
 REF="${1:-main}"
+EXTRA_ARGS=()
+for _v in ${PRECIS_DEPLOY_EXTRA_VARS:-}; do
+    EXTRA_ARGS+=(-e "$_v")
+done
 CLUSTER_DIR="${PRECIS_CLUSTER_DIR:-${HOME}/work/cluster}"
 # Repo root captured BEFORE any `cd` below (install-from-tree changes CLUSTER_DIR
 # to a subdir, and legacy mode's CLUSTER_DIR can be an entirely different
@@ -89,11 +97,13 @@ rm -f /tmp/precis-deploy-ping.$$
 if [[ "$REF" == "main" ]]; then
     say "deploying main to the cluster"
     ansible-playbook redeploy-precis.yml ${INV_ARGS[@]+"${INV_ARGS[@]}"} \
+        ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
         || die "redeploy failed — see the failing task above (nodes may be on mixed versions; re-run once fixed)."
 else
     say "deploying ref '${REF}' to the cluster"
     ansible-playbook redeploy-precis.yml ${INV_ARGS[@]+"${INV_ARGS[@]}"} \
         -e precis_worker_git_ref="$REF" -e precis_web_git_ref="$REF" \
+        ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
         || die "redeploy failed — see the failing task above (nodes may be on mixed versions; re-run once fixed)."
 fi
 
