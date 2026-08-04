@@ -61,40 +61,44 @@
   when:
     - os_family == "darwin"
     - _service_unit_plist is changed
-  ansible.builtin.shell: |
-    set -u
-    unit=com.precis.{{ service_unit_name }}
-    plist="/Library/LaunchDaemons/${unit}.plist"
-    for attempt in 1 2 3 4 5; do
-      launchctl bootout "system/${unit}" 2>/dev/null || true
-      # bootout is ASYNC — poll until the label is actually gone before
-      # bootstrapping, else a late teardown reaps the freshly-loaded daemon
-      # (a fixed sleep raced it and left a daemon dead on a green deploy —
-      # gr176223; mirrors the tasks/reload_launchd.yml + blanket-bounce fix).
-      i=0
-      while launchctl print "system/${unit}" >/dev/null 2>&1 && [ "$i" -lt 120 ]; do
-        sleep 0.5; i=$((i + 1))
-      done
-      [ "$i" -ge 120 ] && echo "${unit}: still tearing down after 60s, bootstrapping anyway (attempt ${attempt})" >&2
-      launchctl bootstrap system "${plist}" 2>/dev/null \
-        || launchctl load -wF "${plist}" 2>/dev/null || true
-      sleep 1
-      launchctl kickstart "system/${unit}" 2>/dev/null || true
-      sleep 1
-      if launchctl print "system/${unit}" 2>/dev/null | grep -qE 'pid = [0-9]+'; then
-        # settle re-assert: confirm it's STILL up after a window, catching a
-        # residual late teardown before we call the reload a success (gr176223).
-        sleep 8
+  # cmd: (not free-form) — ansible's free-form splitter quote-counts the whole
+  # block including shell comments, so a stray apostrophe in a comment breaks
+  # the play at load time; the cmd: key skips that splitter entirely.
+  ansible.builtin.shell:
+    cmd: |
+      set -u
+      unit=com.precis.{{ service_unit_name }}
+      plist="/Library/LaunchDaemons/${unit}.plist"
+      for attempt in 1 2 3 4 5; do
+        launchctl bootout "system/${unit}" 2>/dev/null || true
+        # bootout is ASYNC — poll until the label is actually gone before
+        # bootstrapping, else a late teardown reaps the freshly-loaded daemon
+        # (a fixed sleep raced it and left a daemon dead on a green deploy —
+        # gr176223; mirrors the tasks/reload_launchd.yml + blanket-bounce fix).
+        i=0
+        while launchctl print "system/${unit}" >/dev/null 2>&1 && [ "$i" -lt 120 ]; do
+          sleep 0.5; i=$((i + 1))
+        done
+        [ "$i" -ge 120 ] && echo "${unit}: still tearing down after 60s, bootstrapping anyway (attempt ${attempt})" >&2
+        launchctl bootstrap system "${plist}" 2>/dev/null \
+          || launchctl load -wF "${plist}" 2>/dev/null || true
+        sleep 1
+        launchctl kickstart "system/${unit}" 2>/dev/null || true
+        sleep 1
         if launchctl print "system/${unit}" 2>/dev/null | grep -qE 'pid = [0-9]+'; then
-          echo "${unit}: running (attempt ${attempt})"
-          exit 0
+          # settle re-assert: confirm it's STILL up after a window, catching a
+          # residual late teardown before we call the reload a success (gr176223).
+          sleep 8
+          if launchctl print "system/${unit}" 2>/dev/null | grep -qE 'pid = [0-9]+'; then
+            echo "${unit}: running (attempt ${attempt})"
+            exit 0
+          fi
         fi
-      fi
-      echo "${unit}: not running after attempt ${attempt}, retrying" >&2
-      sleep 2
-    done
-    echo "${unit}: FAILED to come up after 5 attempts" >&2
-    exit 1
+        echo "${unit}: not running after attempt ${attempt}, retrying" >&2
+        sleep 2
+      done
+      echo "${unit}: FAILED to come up after 5 attempts" >&2
+      exit 1
   become: true
   changed_when: true
 
