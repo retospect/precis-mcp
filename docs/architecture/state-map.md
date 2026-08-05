@@ -70,7 +70,15 @@ for the durable pin of that boundary.
   `dispatch` worker
   walks open todos carrying `meta.executor`, mints `kind='job'` under
   each with `FOR UPDATE SKIP LOCKED`, and auto-injects
-  `meta.auto_check={'type':'child_job_succeeded'}`. On job failure
+  `meta.auto_check={'type':'child_job_succeeded'}`. A **succeeded**
+  child job blocks re-mint for a deterministic (non-`llm_tier`) parent —
+  the parent is done-pending-resolution and the `auto_check` pass flips it
+  `STATUS:done` next sweep; only a `plan_tick` coroutine re-ticks on
+  success (`dispatch._job_blocks_dispatch_sql`). Without this brake, gr192606:
+  the daily `briefing` todo re-minted 46 jobs in 23h — each destructively
+  replacing the `briefing-<date>` news ref (so the combined morning audio
+  spliced whichever transient compose was live) — while the `auto_check`
+  pass sat starved behind the same wedged `system` worker. On job failure
   the parent gets a `child-failed:<job_id>` open tag (the
   failure-bubble, `handlers/_job_bubble.py`); the doable view excludes
   bubbled parents so they stop re-entering the rotation until the

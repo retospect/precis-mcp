@@ -21,7 +21,9 @@ dispatcher does **not** auto-re-dispatch after a failure (per the
 "bubble back up" rule — the parent decides). Once any child job is
 queued / running / succeeded / failed, no new job mints until the
 parent's owner intervenes (remove the ``child-failed:N`` tag,
-delete the failed child job, or change the executor).
+delete the failed child job, or change the executor). The lone
+exception is a ``plan_tick`` coroutine parent, which re-ticks on its
+own succeeded jobs — see ``_job_blocks_dispatch_sql`` for the gate.
 
 Multi-host concurrency
 ----------------------
@@ -146,6 +148,56 @@ def _parked_child_still_blocks_sql(parent_alias: str, child_alias: str) -> str:
        )"""
 
 
+def _job_blocks_dispatch_sql(parent_alias: str, child_alias: str) -> str:
+    """SQL bool: child job ``child_alias`` should block its ``parent_alias``'s
+    (re-)dispatch.
+
+    Two cases block:
+
+    * **In-flight** (``queued`` / ``running`` — anything not terminal): real
+      work is underway; never mint a second concurrent job.
+    * **Terminally succeeded, non-coroutine.** For a *deterministic* parent
+      (``meta.executor`` + a ``child_job_succeeded`` auto_check) a ``succeeded``
+      child IS the finished work — the parent is done-pending-resolution and the
+      ``auto_check`` pass flips it ``STATUS:done`` on its next sweep. Re-minting
+      in the gap between the job succeeding and that flip is the runaway
+      (gr192606: the daily ``briefing`` todo minted 46 jobs in 23h — each one
+      destructively replacing the ``briefing-<date>`` news ref — because the
+      ``auto_check`` pass was starved by the same wedged ``system`` worker).
+
+    A succeeded child is therefore EXEMPT from blocking only when the parent
+    legitimately re-ticks on success — i.e. it is a planner coroutine. We test
+    the same signal ``child_job_succeeded``'s guard 1 uses (``meta ? 'llm_tier'``
+    on the parent) so the dispatch re-candidacy gate and the auto_check
+    resolution gate stay in agreement about who self-resolves; we also exempt a
+    child whose ``job_type`` is itself self-resolving (``plan_tick``) as
+    belt-and-suspenders for any future coroutine dispatched under a non-tier
+    parent. ``done`` / ``won't-do`` are settled and never block; ``failed``
+    doesn't block here either — a failed child bubbles ``child-failed:N`` onto
+    the parent, which the exclusion registry (``_doable_exclusion_clause``)
+    handles. Used identically in ``_candidate_parent_ids`` and
+    ``_claim_and_dispatch`` so the enumerate/lock gates stay symmetric.
+    """
+    # Invariant: _SELF_RESOLVING_JOB_TYPES is non-empty (``{'plan_tick'}``), so the
+    # rendered ``NOT IN (...)`` is always valid SQL. If it's ever made dynamic and
+    # could empty, guard this to avoid an ``NOT IN ()`` syntax error.
+    self_resolving = ", ".join(f"'{t}'" for t in sorted(_SELF_RESOLVING_JOB_TYPES))
+    status = (
+        "COALESCE("
+        "(SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+        f"WHERE rt.ref_id = {child_alias}.ref_id AND t.namespace = 'STATUS' LIMIT 1),"
+        " 'open')"
+    )
+    return f"""(
+           {status} NOT IN ('done', 'failed', 'succeeded', 'won''t-do')
+           OR (
+               {status} = 'succeeded'
+               AND NOT ({parent_alias}.meta ? 'llm_tier')
+               AND COALESCE({child_alias}.meta->>'job_type', '') NOT IN ({self_resolving})
+           )
+       )"""
+
+
 def _halt_bad_dispatch(
     store: Store, conn: Any, ref_id: int, detail: str
 ) -> tuple[int, bool]:
@@ -237,15 +289,15 @@ def _candidate_parent_ids(store: Store, *, limit: int) -> list[int]:
       ``meta.executor`` set (back-compat with the v1 ``fix_gripe``
       shape; new code uses ``meta.llm_tier`` / the ``executor:`` tag).
     * STATUS in ``open|doing`` (paused / done / blocked skip).
-    * No **live** child job — a child of ``kind='job'`` whose own
-      STATUS is anything other than ``done`` / ``succeeded`` /
-      ``won't-do`` / ``failed``. Completed jobs from prior ticks are
-      fine; only an in-flight (``queued`` / ``running``) job blocks.
-      ``succeeded`` is the executor's terminal value for a clean run
-      and MUST be in this set, else a ``plan_tick`` coroutine could
-      never re-tick after its first successful tick. (Failed jobs
-      bubble ``child-failed:N`` to the parent which the exclusion
-      registry handles.)
+    * No **blocking** child job — see ``_job_blocks_dispatch_sql``. An
+      in-flight (``queued`` / ``running``) job always blocks. A
+      ``succeeded`` job blocks too UNLESS its job_type is a self-resolving
+      coroutine (``plan_tick``): for a deterministic parent a succeeded
+      child is the finished work (auto_check resolves the parent next
+      sweep), so re-minting in that gap is the gr192606 runaway; only
+      ``plan_tick`` legitimately re-ticks on success. ``done`` /
+      ``won't-do`` never block; ``failed`` bubbles ``child-failed:N`` to
+      the parent, which the exclusion registry handles.
     * No **live** child todo — a child of ``kind='todo'`` whose own
       STATUS is open / doing (the planner spawned children and they
       are still working). This is the coroutine yield: a parent that
@@ -296,11 +348,9 @@ def _candidate_parent_ids(store: Store, *, limit: int) -> list[int]:
                     WHERE c.parent_id = r.ref_id
                       AND c.kind = 'job'
                       AND c.deleted_at IS NULL
-                      AND COALESCE(
-                            (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
-                              WHERE rt.ref_id = c.ref_id AND t.namespace = 'STATUS' LIMIT 1),
-                            'open'
-                          ) NOT IN ('done', 'failed', 'succeeded', 'won''t-do')
+                      AND """
+            + _job_blocks_dispatch_sql("r", "c")
+            + """
                )
                AND NOT EXISTS (
                    SELECT 1 FROM refs c
@@ -385,11 +435,9 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool]:
                     WHERE c.parent_id = r.ref_id
                       AND c.kind = 'job'
                       AND c.deleted_at IS NULL
-                      AND COALESCE(
-                            (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
-                              WHERE rt.ref_id = c.ref_id AND t.namespace = 'STATUS' LIMIT 1),
-                            'open'
-                          ) NOT IN ('done', 'failed', 'succeeded', 'won''t-do')
+                      AND """
+            + _job_blocks_dispatch_sql("r", "c")
+            + """
                )
                AND NOT EXISTS (
                    SELECT 1 FROM refs c

@@ -201,8 +201,11 @@ class TestNewsLeadIn:
         return captured
 
     def test_news_segments_prepended_ahead_of_the_brief(
-        self, store: Any, monkeypatch: Any
+        self, store: Any, monkeypatch: Any, caplog: Any
     ) -> None:
+        import logging
+
+        caplog.set_level(logging.INFO, logger="precis.workers.cast_audio")
         captured = self._patch_render(monkeypatch)
         date_tag = f"news-{uuid.uuid4().hex[:8]}"
         self._seed_news(store, date_tag, "A world-news headline for the wire.")
@@ -239,10 +242,15 @@ class TestNewsLeadIn:
         news_segments = [s for s in segments if s not in brief_segments]
         assert news_segments and all(s.gap_after == 1.5 for s in news_segments)
         assert brief_segments and all(s.gap_after is None for s in brief_segments)
+        # Observability: the combine path logs what it prepended.
+        assert any("news lead-in prepended" in rec.message for rec in caplog.records)
 
     def test_degrades_to_brief_only_when_no_news_ref(
-        self, store: Any, monkeypatch: Any
+        self, store: Any, monkeypatch: Any, caplog: Any
     ) -> None:
+        import logging
+
+        caplog.set_level(logging.INFO, logger="precis.workers.cast_audio")
         captured = self._patch_render(monkeypatch)
         date_tag = f"nonews-{uuid.uuid4().hex[:8]}"
         ref, _ = create_cast_draft(
@@ -264,6 +272,8 @@ class TestNewsLeadIn:
         segments = captured["segments"]
         assert all("headline" not in s.text for s in segments)
         assert any("Brief-only content" in s.text for s in segments)
+        # Observability: the degrade path logs why it skipped the news lead-in.
+        assert any("news lead-in skipped" in rec.message for rec in caplog.records)
 
     def test_nidra_never_gets_news_prepended(
         self, store: Any, monkeypatch: Any

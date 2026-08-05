@@ -75,8 +75,8 @@ to a §L regression **plus** an independent, more serious spark worker deadlock.
   advertised capability), not a hand-maintained list, so no future role-gated
   pass regresses the same way.
 
-- **spark seed MACE compute completion on CUDA 13.0 (worker-wedge FIXED+verified)**
-  · Status: wedge resolved+verified; seed-completion unconfirmed · Severity:
+- **spark autocatpath_seed durable submit/poll migration (wedge + completion RESOLVED)**
+  · Status: only the durable end-state remains · Severity:
   critical → low · gripe **191351**. **Wedge FIXED (7497c30d, deployed +
   live-verified):** spark's `system` worker was running `autocatpath_seed`'s MACE
   compute *in-process* via the blocking `ssh_node` dispatch (`job_ssh_node` is a
@@ -87,14 +87,14 @@ to a §L regression **plus** an independent, more serious spark worker deadlock.
   out-of-process (`runner.run_seed_partial_subprocess`, killable, bounded by
   `resources.wall_seconds`). Verified on spark post-deploy: worker stable (same
   PID 35+ min, main thread in `ppoll` not CUDA), a killed seed child recorded a
-  clean failure without wedging, passes rotating. **Residual (low): a seed has
-  not yet been observed COMPLETING in-subprocess on CUDA 13.0** — the one run seen
-  was SIGTERM'd by the deploy bounce (rc=-15), inconclusive on whether MACE
-  actually produces a result there or just fails cleanly at the wall budget. Do:
-  watch one autocatpath_seed on spark run to `succeeded` (or confirm it fails and,
-  if so, treat CUDA-13/torch-2.13 as the compute defect — separate from the wedge,
-  which is fixed). The full submit/poll migration (below) remains the durable
-  end-state so the pass never blocks even for the bounded window.
+  clean failure without wedging, passes rotating. **Seed completion CONFIRMED (2026-08-04): worker stable 22h-plus; ref 190130 (00:31 UTC) COMPLETED in-subprocess (seed=0 mace:medium, 16 states, meta.partial populated).**
+  The SIGTERM'd seeds seen since (rc=-15) trace to worker restarts from
+  concurrent sibling-deploy bounces (`signal 15 received` at ~20:35 UTC →
+  restart), which the out-of-process subprocess path survives cleanly — no
+  wedge, the fix working as designed. Remaining (low): port the still-blocking
+  `_dispatch` to the ssh_node `submit`/`poll` protocol (`seed_job.py` +
+  `runner.py`, cross-ref the poison-guard item below) so the pass never blocks
+  even for the bounded in-subprocess window. Closeable: gripe **191351**.
 
 - **Docker Hub egress on spark (gripe 189697) — deferred; needed only for the
   1.5s pause** · Status: blocked · Severity: polish. TLS handshake to Docker
@@ -109,6 +109,84 @@ to a §L regression **plus** an independent, more serious spark worker deadlock.
   Status: open · Severity: feature. Agent-worker lateness persists after the
   H2/H5 fixes — the deferred H1/H3/H4 reliability track (memory
   `worker-agent-silent-outage`).
+
+---
+
+## Morning audio combine — dispatch runaway FIXED (gr192606); verify next morning cycle
+
+Status: fix shipped, pending one-morning-cycle prod verification · Owner:
+`src/precis/workers/dispatch.py`, `cast_audio.py` · Regression:
+`test_dispatch_worker.py::test_succeeded_child_job_blocks_deterministic_parent`.
+
+- ROOT CAUSE (gr192606): the daily `briefing` instance todo re-minted 46 jobs in
+  23h — each *destructively* DELETE+recreating the `briefing-<date>` news ref
+  (`run_briefing`/`put_cache_entry`, same-slug replace) — so `_news_lead_in`
+  spliced whichever transient mid-day compose was live at the 16:45 UTC
+  narration. The combine code was always correct (slug resolution +
+  `markdown_segments` 1:1 verified); the defect was upstream dispatch. Corrected
+  arithmetic: a full wire is ~half URL chars → ~6.5 min spoken, so a perfect
+  combine is ~25-26 min, not ~30.
+- FIXED (this commit): `dispatch._job_blocks_dispatch_sql` — a `succeeded` child
+  job now blocks re-dispatch of a deterministic (non-`llm_tier`) parent, so the
+  briefing runs ONCE/day and the news ref is stable by narration. Holds even
+  when the `auto_check` pass is starved — which is what let it balloon: the same
+  wedged catpath `system` worker (since fixed, 7497c30d) also starved auto_check.
+- OBSERVABILITY (this commit): `_news_lead_in` logs prepend/skip with ref id +
+  char/segment counts (do-next #1 from the old triage — done).
+- VERIFY: after one morning cycle post-deploy, confirm the podcast episode is
+  full news wire + personal brief ≈ 25-26 min (one episode, `source="brief"`)
+  and the "news lead-in prepended N segment(s)" log line appears on spark.
+- Residual (low, optional defense-in-depth): (1) a stability contract on the
+  daily news ref (version instead of destructive slug-replace) so even a
+  legitimate single daily recompose never destroys an already-delivered brief;
+  (2) the `derived-from` link from the cast draft to the news ref.
+- SUPERSEDED sub-finding: gr192606 also flagged tick-cap "didn't halt at 10" for
+  the single-ref briefing instance (unexplained — the monotonic per-ref counter
+  *should* have). Moot now: the new brake stops re-mint at #1, long before 10.
+  The confirmed planner-guardrail COST-cap hole found alongside is filed in the
+  next item.
+- REJECTED: the old plan's "reorder news/brief crons" would MASK not fix — it
+  narrows the race window but leaves the runaway; unneeded now the runaway's gone.
+
+## Unbraked LLM-pass cluster — persistently-failing rows re-LLM'd every sweep
+
+Status: open · Severity: correctness (token/$ leak) · Found: 2026-08-05 Opus
+leak-hunt alongside gr192606 · Owner: `workers/{classify_topics,axis_pass,
+inject_scan,paper_glossary,hub_refine}.py` + `planner_guardrails.py`
+
+Shared shape (identical to gr192606's): a candidate query excludes rows only on a
+SUCCESS-written done-marker; the failure/exception branch skips the marker and
+there is no claim-time lease / attempt-cap / cooldown — so a persistently-failing
+row (dead endpoint, breaker refusal, unparseable JSON) is re-fetched and re-LLM'd
+every sweep, unbounded. Fix pattern already in-tree: `classify.py` and chunk-level
+`axis_pass` take a claim-time `chunk_claims` lease BEFORE the LLM call, braking the
+row regardless of outcome. Apply the same (a lease row, or a `failed_at`/attempt
+column written AT claim) to each site.
+
+Sites (severity order; several default-OFF, but real when enabled):
+1. `classify_topics.run_classify_topics_pass` — HAS PROD HISTORY (gr172740/173317,
+   "5570 failed, no rows"); routes to paid OpenRouter. Marker = `TOPICCASCADE=`
+   ref tag, success-only; `_classify_one`→None on any failure re-loops. ADR 0068
+   per-topic enable.
+2. `axis_pass.run_axis_pass` **ref-level** path — no lease (the chunk-level path
+   IS leased, not a leak); its own docstring already defers a "failed-lease
+   reaper". Default-OFF.
+3. `inject_scan.run_inject_scan_pass` — email lane; re-does IMAP fetch + model
+   each sweep for `tier<1` rows the model can't parse.
+4. `paper_glossary.run_paper_glossary_pass` — `data is None`/bare-except write no
+   marker (the converged-empty branches DO — those are fine). Default-OFF.
+5. `hub_refine.run_hub_refine_pass` — mechanism confirmed, occurrence plausible
+   (a raise after the per-candidate verify-LLM loop rolls back the refresh
+   stamp). Default-OFF.
+
+Plus — planner-guardrail COST backstops are INERT (confirmed): `_read_cost_usd`
+(per-todo $2 cap) and `_read_daily_cost` (global $20/day ceiling) sum
+`job.meta->>'cost_usd'`, but NOTHING writes `cost_usd` onto a job ref's meta (real
+cost lands on the subject ref's `ref_events`). Both read $0 forever — the daily
+ceiling could never have caught gr192606 or any leak; the per-ref tick cap
+(default 10, monotonic, and it DOES apply to deterministic parents) is the only
+live planner backstop. Fix: stamp `meta.cost_usd` on the job at completion, or
+re-point the two reads at the `ref_events` cost column.
 
 ---
 

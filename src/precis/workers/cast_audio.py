@@ -132,14 +132,34 @@ def _news_lead_in(
 
     news_ref = store.get_ref(kind="news", id=f"briefing-{date_tag}")
     if news_ref is None:
+        log.info(
+            "cast_audio: news lead-in skipped — no briefing-%s news ref; "
+            "narrating brief-only",
+            date_tag,
+        )
         return segments
     news_body = _news_brief_text(store, news_ref.id)
     if not news_body:
+        log.info(
+            "cast_audio: news lead-in skipped — briefing-%s (ref %s) has empty "
+            "body; narrating brief-only",
+            date_tag,
+            news_ref.id,
+        )
         return segments
     news_segments = [
         replace(seg, gap_after=_NEWS_LEAD_IN_PAUSE_S)
         for seg in markdown_segments(news_body, voice=voice, lang=default_lang)
     ]
+    log.info(
+        "cast_audio: news lead-in prepended %d segment(s) (~%d chars) from "
+        "briefing-%s (ref %s) ahead of %d brief segment(s)",
+        len(news_segments),
+        len(news_body),
+        date_tag,
+        news_ref.id,
+        len(segments),
+    )
     return [*news_segments, *segments]
 
 

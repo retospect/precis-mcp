@@ -280,6 +280,68 @@ def test_succeeded_child_job_does_not_block_redispatch(
     assert pid in _candidate_parent_ids(store, limit=10)
 
 
+def test_succeeded_child_job_blocks_deterministic_parent(
+    handler: TodoHandler, store: Store
+) -> None:
+    """gr192606: a DETERMINISTIC parent (meta.executor + child_job_succeeded
+    auto_check, no llm_tier) whose child job has STATUS:succeeded must NOT be
+    re-dispatched. The succeeded child is the finished work; auto_check flips
+    the parent STATUS:done on its next sweep. Re-minting in that gap was the
+    runaway (46 jobs/23h for the daily 'briefing' todo, each destructively
+    replacing the briefing-<date> news ref) — the mirror image of the planner
+    test above, which stays re-dispatchable because it self-resolves."""
+    from precis.store.types import Tag
+    from precis.workers.dispatch import _candidate_parent_ids
+
+    parent = handler.put(
+        text="deterministic briefing",
+        meta={"executor": "claude_inproc", "job_type": "fix_gripe", "params": {}},
+    )
+    pid = id_of(parent.body)
+    job = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="succeeded briefing job",
+        meta={"job_type": "fix_gripe"},
+        parent_id=pid,
+    )
+    store.add_tag(
+        job.id, Tag.closed("STATUS", "succeeded"), set_by="system", replace_prefix=True
+    )
+    # Not a candidate, and a full pass mints nothing new.
+    assert pid not in _candidate_parent_ids(store, limit=10)
+    result = run_dispatch_pass(store)
+    assert result.ok == 0
+    assert len(_child_jobs_under(store, pid)) == 1
+
+
+def test_succeeded_plan_tick_child_exempts_non_tier_parent(
+    handler: TodoHandler, store: Store
+) -> None:
+    """Belt-and-suspenders: even without meta.llm_tier, a succeeded child whose
+    job_type is self-resolving (``plan_tick``) does NOT block — the coroutine
+    drives its own re-ticking regardless of how its parent is tagged."""
+    from precis.store.types import Tag
+    from precis.workers.dispatch import _candidate_parent_ids
+
+    parent = handler.put(
+        text="explicit plan_tick, no llm_tier",
+        meta={"executor": "claude_inproc", "job_type": "plan_tick", "params": {}},
+    )
+    pid = id_of(parent.body)
+    job = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="prior plan_tick",
+        meta={"job_type": "plan_tick"},
+        parent_id=pid,
+    )
+    store.add_tag(
+        job.id, Tag.closed("STATUS", "succeeded"), set_by="system", replace_prefix=True
+    )
+    assert pid in _candidate_parent_ids(store, limit=10)
+
+
 def test_running_child_job_blocks_redispatch(
     handler: TodoHandler, store: Store
 ) -> None:
