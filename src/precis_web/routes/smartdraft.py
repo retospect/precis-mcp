@@ -25,7 +25,11 @@ from precis.store._tags_ops import _escape_like
 from precis.store.types import Tag
 from precis.utils.embed_query import embed_query
 from precis_web import draft_eyes, smartdraft
-from precis_web.claim_render import hub_cite_heads, render_claims_evidence
+from precis_web.claim_render import (
+    cite_heads_in,
+    hub_cite_heads,
+    render_claims_evidence,
+)
 from precis_web.deps import get_runtime, get_store, templates
 from precis_web.draft_links import chunk_links
 from precis_web.linkify import popover_chip
@@ -178,7 +182,15 @@ async def reader(
     # their evidence via the batch entry point (`render_claims_evidence`)
     # so N distinct hubs cost a handful of bulk queries, not N x ~16.
     claims = hub_cite_heads(store, [n.text or "" for n in rendered_nodes])
-    claims_evidence = render_claims_evidence(store, claims)
+    # The rail's Claims panel lists hubs in reading order — first appearance
+    # in the middle pane, not frozenset iteration order
+    # (render_claims_evidence preserves its input order).
+    ordered_heads: list[str] = []
+    for n in rendered_nodes:
+        for h in cite_heads_in(n.text or ""):
+            if h in claims and h not in ordered_heads:
+                ordered_heads.append(h)
+    claims_evidence = render_claims_evidence(store, ordered_heads)
 
     # Tools pane (right-rail bottom): the export/metadata/lifecycle controls
     # ported from the classic reader. All reuse the classic /drafts/{ident}/…

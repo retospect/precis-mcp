@@ -16,6 +16,7 @@ from precis.cli.main import _build_parser
 from precis.cli.worker import (
     _axis_id_default_on,
     _build_handlers,
+    _capability_ok,
     _classify_topics_enabled_slugs,
     _print_status,
     _resolve_embedder,
@@ -23,6 +24,7 @@ from precis.cli.worker import (
 )
 from precis.embedder import MockEmbedder, RemoteEmbedder
 from precis.format import toon
+from precis.workers.registry import SERVICES_BY_NAME, service_names_for_profile
 
 # ---------------------------------------------------------------------------
 # Parser registration
@@ -497,6 +499,40 @@ class TestShouldRegister:
         assert not _should_register(
             "hub_refine", "dispatch", profile_passes=frozenset({"dispatch"})
         )
+
+
+class TestCapabilityGateDefault:
+    """gr193672 — ``--profile all``'s union carries the ``_AGT``-only passes
+    onto every host, so profile membership alone defaulted
+    ``job_claude_inproc``/``quota_check`` ON on hosts with no claude CLI /
+    MCP config and plan ticks hard-failed there. ``_capability_ok`` is the
+    ANDed no-row baseline fix; a ``service_config`` row still overrides."""
+
+    def test_registry_pins_capability_env_on_the_two_agent_passes(self):
+        for name in ("job_claude_inproc", "quota_check"):
+            assert SERVICES_BY_NAME[name].capability_env == ("PRECIS_MCP_CONFIG",)
+
+    def test_capability_env_absent_or_empty_defaults_off(self):
+        for name in ("job_claude_inproc", "quota_check"):
+            assert _capability_ok(name, {}) is False
+            assert _capability_ok(name, {"PRECIS_MCP_CONFIG": ""}) is False
+
+    def test_capability_env_present_defaults_on(self):
+        for name in ("job_claude_inproc", "quota_check"):
+            assert _capability_ok(name, {"PRECIS_MCP_CONFIG": "/etc/precis/mcp.json"})
+
+    def test_pass_without_capability_env_is_unaffected(self):
+        # dispatch has no capability_env; an unknown name has no spec at
+        # all — both stay pure profile-membership defaults.
+        assert _capability_ok("dispatch", {}) is True
+        assert _capability_ok("some_plugin_pass", {}) is True
+
+    def test_profile_all_union_still_carries_the_agent_passes(self):
+        # Registration is deliberately untouched (§L register-all,
+        # gate-live): the union carries them; only the gate default keeps
+        # them dark off-gateway.
+        union = service_names_for_profile("all")
+        assert {"job_claude_inproc", "quota_check"} <= union
 
 
 # ---------------------------------------------------------------------------

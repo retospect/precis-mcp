@@ -343,7 +343,11 @@ formerly-env-gated pass), when its name starts with `axis:`, or when the
 core registry has never heard of it at all (a `precis.ref_passes` plugin
 factory's own pass name — it already gated its own eligibility). `--only X`
 still forces exactly one pass. The per-cycle gate's no-row baseline
-(`_gate_default_on`/`_profile_default_on`) is `name in profile_passes` —
+(`_gate_default_on`/`_profile_default_on`) is `name in profile_passes`
+ANDed with the spec's `capability_env` all set non-empty on this host
+(`_capability_ok`; gr193672 — `--profile all`'s union otherwise defaulted
+`job_claude_inproc`/`quota_check` ON fleet-wide and plan ticks hard-failed
+off-gateway; both now carry `capability_env=("PRECIS_MCP_CONFIG",)`) —
 **`PRECIS_*_ENABLED` is retired as a live default**: a formerly-env-gated
 pass (classify/hub_refine/llm_summarize/paper_glossary/…) with no row now
 defaults OFF outright, not "whatever the env said." Two narrower exceptions
@@ -781,10 +785,14 @@ split rotations) and `all` (§L-a) — the exact union of both. Since the
 `deploy/playbooks/20b-precis-worker-collapsed.yml` through the
 `service_unit` role (imported by `site.yml` + `redeploy-precis.yml`;
 `retire-split-agents.yml` booted out the split `com.precis.worker-agent`
-units). Cutover state: scheduler/data/inference hosts done + verified;
-the gateway's cutover rides the next deploy (its split pair keeps
-running until then — both shapes coexist safely since claims are
-row-locked). The gateway keeps `precis_agent_container_enabled: false`
+units). Cutover state: fleet-complete — scheduler/data/inference done
+2026-08-04, and the gateway confirmed on `--profile all` with its split
+agent unit retired (probed 2026-08-05, gr193672 forensics). That union
+default-ON'd the `_AGT`-only `job_claude_inproc`/`quota_check` on hosts
+that cannot run them (gr193672) — fixed by `ServiceSpec.capability_env`
+(the §L gate paragraph above); the interim prio-0 `service_config` mutes
+on caspar/balthazar predate that fix and can be cleared once it deploys.
+The gateway keeps `precis_agent_container_enabled: false`
 (in-process `claude -p`) until the dream×container interaction is
 verified. Rollback per host: re-run `playbooks/20-precis-worker.yml` /
 `37-precis-worker-agent.yml` (kept on disk, no longer imported). The

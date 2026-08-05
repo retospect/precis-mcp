@@ -53,8 +53,13 @@
 #      identical pass set to today (no agent-only pass ever fires there —
 #      no PRECIS_STRUCTURAL_REVIEW/PRECIS_MCP_CONFIG/dream/anki/quest env is
 #      set on those groups below, so quest_loop_reconcile/structural/
-#      deep_review/job_claude_inproc register structurally but never turn
-#      on). Rollback if anything looks wrong: re-run 20-precis-worker.yml
+#      deep_review register structurally but never turn on; job_claude_inproc
+#      and quota_check needed their own gate for the same promise to hold —
+#      gr193672: with no enable_env, profile-union membership defaulted them
+#      ON fleet-wide and plan ticks hard-failed off-gateway. Their
+#      ServiceSpec.capability_env=(PRECIS_MCP_CONFIG,) now keeps them
+#      default-OFF wherever that env is absent). Rollback if anything looks
+#      wrong: re-run 20-precis-worker.yml
 #      (restores the split `com.precis.worker` unit) or a plain redeploy.
 #   2. The GPU node (`inference` group) next — its reviews already run
 #      containerized (PRECIS_AGENT_CONTAINER=1 unconditional below, mirrors

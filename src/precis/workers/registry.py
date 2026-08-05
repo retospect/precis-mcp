@@ -109,6 +109,15 @@ class ServiceSpec:
     #: into a row from today's plist flag state, and quest_loop_reconcile's
     #: registration-vs-gate-default alignment test still pins it.
     enable_env: str | None = None
+    #: env vars that must ALL be set non-empty on this host for the pass to
+    #: default ON when profile membership alone says yes (gr193672: under
+    #: ``--profile all`` the union carries the ``_AGT``-only passes onto
+    #: every host, and one with no gate defaulted ON on hosts that cannot
+    #: run it — claude_inproc plan ticks hard-failed wherever the claude
+    #: CLI / MCP config is absent). Consulted by ``_profile_default_on``
+    #: (cli/worker.py) as the no-row baseline only — an explicit
+    #: ``service_config`` row still overrides in either direction.
+    capability_env: tuple[str, ...] = ()
     # ── capability + cost (feeds later slices) ──────────────────────
     requires: frozenset[str] = field(default_factory=frozenset)
     uses_model: bool = False
@@ -487,6 +496,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         category="jobs",
         kind=ServiceKind.PASS,
         default_profiles=_AGT,
+        capability_env=("PRECIS_MCP_CONFIG",),
         ref_pass=True,
         uses_model=True,
         uses_external=("anthropic",),
@@ -515,6 +525,11 @@ SERVICES: tuple[ServiceSpec, ...] = (
         category="health",
         kind=ServiceKind.PASS,
         default_profiles=_AGT,
+        # PRECIS_MCP_CONFIG is a proxy: the real dependency is the claude
+        # CLI + OAuth creds, but 20b deploys that whole agent env bundle
+        # only to the gateway group, so its presence IS the deploy-
+        # controlled "claude-capable host" marker.
+        capability_env=("PRECIS_MCP_CONFIG",),
         ref_pass=True,
         uses_external=("anthropic",),
         one_line="Refresh the Claude OAuth utilisation snapshot; page on 401.",

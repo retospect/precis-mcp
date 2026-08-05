@@ -26,6 +26,7 @@ import logging
 import os
 import signal
 import sys
+from collections.abc import Mapping
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
@@ -97,6 +98,25 @@ def _should_register(
     if spec is None:
         return True
     return bool(spec.enable_env)
+
+
+def _capability_ok(name: str, environ: Mapping[str, str]) -> bool:
+    """Whether this host satisfies ``name``'s ``ServiceSpec.capability_env``
+    (every named var set non-empty) — vacuously true for a pass with none,
+    or with no spec at all.
+
+    gr193672: ``--profile all`` (§L-b collapsed worker) carries the
+    ``_AGT``-only passes in every host's ``profile_passes``, so profile
+    membership alone defaulted ``job_claude_inproc`` / ``quota_check`` ON
+    fleet-wide and claude plan ticks hard-failed wherever the claude CLI /
+    MCP config is absent. This feeds ``_profile_default_on``'s no-row
+    baseline only; an explicit ``service_config`` row still overrides in
+    either direction (the §L control surface is unchanged).
+    """
+    spec = SERVICES_BY_NAME.get(name)
+    if spec is None or not spec.capability_env:
+        return True
+    return all(environ.get(var) for var in spec.capability_env)
 
 
 def _axis_id_default_on(service: str, axes_env: frozenset[str]) -> bool | None:
@@ -567,9 +587,12 @@ def run(args: argparse.Namespace) -> None:
             now defaults OFF absent an explicit row (seeded at deploy time
             from today's live flag state, see the seed task in
             ``deploy/roles/precis_worker*``); only profile-rotation
-            membership still contributes a default-ON verdict.
+            membership still contributes a default-ON verdict — ANDed
+            (gr193672) with the spec's ``capability_env`` being satisfied
+            on this host, so ``--profile all``'s union can't default an
+            agent-capability pass ON where it cannot run.
             """
-            return name in profile_passes
+            return name in profile_passes and _capability_ok(name, os.environ)
 
         def _register(name: str) -> bool:
             """Boot gate: whether ``name`` registers into ``ref_passes`` on
