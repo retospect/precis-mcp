@@ -93,7 +93,7 @@
   <a id="toc-{{ n.dc }}" href="?focus={{ n.dc }}" data-dc="{{ n.dc }}"
      style="padding-left: {{ 0.4 + n.depth * 0.6 }}rem"
      class="sd-row{% if q and n.dc in hit_dcs %} sd-hit{% elif n.dc == focus_dc %} sd-focus{% elif row.shared %} sd-shared{% elif row.pressure >= 0.4 %} sd-hot{% endif %}">
-    {%- if n.provenance %}<span class="sd-dot sd-dot-{{ n.provenance }}" title="{{ n.provenance }}"></span>{% endif -%}
+    {%- if n.provenance %}<span class="sd-dot sd-dot-{{ n.provenance }}" title="{{ sd_block.prov_title(n.provenance) }}"></span>{% endif -%}
     <span class="sd-btext">{% if debug %}<span class="sd-dc">{{ n.dc }}</span> {% endif %}· {{ n.summary }}</span>
     <span class="sd-badge">{%- if row.shared %}<span title="shares a keyword with the focus">🔑</span>{% endif -%}{%- if n.pinned %}📌{% endif -%}{%- if n.locked %}🔒{% endif -%}</span>
   </a>

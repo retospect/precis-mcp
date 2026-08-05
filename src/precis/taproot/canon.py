@@ -150,7 +150,11 @@ PASSAGE:
 
 Rules — the claim will be read ALONE, without this passage:
 1. Self-contained: resolve every "this/these/it/such" from the passage and
-   inline the referent. If the referent is not in the passage, claim = null.
+   inline the referent. The same goes for temporal/discourse openers that
+   point outside the sentence — "Subsequent(ly)", "Previous(ly)",
+   "Further", "Earlier", "In contrast", "Similarly", "However", "Also":
+   inline what they refer to ("Compared to X, …") or drop the connective.
+   If the referent is not in the passage, claim = null.
 2. A world-claim: about materials, results, or mechanisms — not about the
    literature or the text itself. If meta-prose wraps real content
    ("properties are commonly tabulated…"), extract the underlying fact
@@ -169,6 +173,11 @@ Examples:
   across graphene, g-C3N4, TMDs, h-BN, and black phosphorus."
 - "The properties of these materials are commonly tabulated for
   comparative reference."  -> claim = null (practice, not a world-claim).
+- "Subsequent DFT-D3 calculations reduced the sidewall binding energy to
+  +0.74 eV."  -> BAD (subsequent to what?); with the referent in the
+  passage: "Including pairwise dispersion corrections (DFT-D3) reduces
+  the calculated C₆₀-nanotube sidewall binding energy from ~+1.5 eV to
+  +0.74 eV."
 - "Single-wall carbon nanocones were observed with opening angles of
   approximately 19, 39, 60, 85, and 113 degrees."  -> GOOD (specific,
   self-contained).

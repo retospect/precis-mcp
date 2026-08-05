@@ -299,10 +299,36 @@ def test_fetch_ref_dispatch_error_surfaces(client, runtime) -> None:
 # ── reader tab strip ─────────────────────────────────────────────────
 
 
+def _tab_xfor_attr(html: str) -> str | None:
+    """The tab strip's ``x-for`` expression as a *browser* would parse it.
+
+    A substring check on the raw HTML is not enough: ``tojson`` emits raw
+    double quotes, so inside a double-quoted attribute the array text is
+    still present in the page while the parsed attribute value is the
+    truncated ``t in [`` (the bug that killed the tab strip fleet-wide).
+    """
+    from html.parser import HTMLParser
+
+    found: list[str] = []
+
+    class _P(HTMLParser):
+        def handle_starttag(self, tag: str, attrs: list) -> None:
+            if tag != "template":
+                return
+            xfor = dict(attrs).get("x-for") or ""
+            if xfor.startswith("t in "):
+                found.append(xfor)
+
+    _P().feed(html)
+    return found[0] if found else None
+
+
 def test_reader_tab_strip_contains_sources_and_cited(client) -> None:
     resp = client.get("/papers/smith2024")
     assert resp.status_code == 200
-    assert '["Navigate", "Jump", "Sources", "Cited", "Meta"]' in resp.text
+    assert _tab_xfor_attr(resp.text) == (
+        't in ["Navigate", "Jump", "Sources", "Cited", "Meta"]'
+    )
 
 
 def test_reader_tab_strip_excludes_sources_and_cited_for_pres(client) -> None:
@@ -314,4 +340,4 @@ def test_reader_tab_strip_excludes_sources_and_cited_for_pres(client) -> None:
     ``refs_panel`` guard now 404s regardless of kind)."""
     resp = client.get("/pres/2001-lecture01")
     assert resp.status_code == 200
-    assert '["Navigate", "Jump", "Meta"]' in resp.text
+    assert _tab_xfor_attr(resp.text) == 't in ["Navigate", "Jump", "Meta"]'

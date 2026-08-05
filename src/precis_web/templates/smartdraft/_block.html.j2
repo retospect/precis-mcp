@@ -10,10 +10,20 @@
    via the delegated handler in view.html.j2 (which explicitly skips a click
    landing inside .sd-review/.sd-review-menu, below, so the indicator/dropdown
    don't also trigger a focus-nav). #}
+{# Human-readable reason behind a grounding-provenance colour — shared by the
+   block's left-border bar (title below) and the TOC dot (view.html.j2), so
+   hovering either red marker answers "why is this red". #}
+{% macro prov_title(provenance) -%}
+{%- if provenance == 'sourced' -%}sourced — cites a corpus paper/patent
+{%- elif provenance == 'pending' -%}pending — cites a finding; the source is still being chased
+{%- elif provenance == 'unsourced' -%}unsourced — this paragraph cites nothing; add a cite or run source-backfill
+{%- else -%}{{ provenance }}{%- endif -%}
+{%- endmacro %}
+
 {% macro sd_doc_block(n, display, debug, claims, review, ident) -%}
 {%- set hd = 'font-semibold text-slate-900 text-base' if n.is_heading else '' -%}
 {%- set prov = ' sd-prov-' ~ n.provenance if n.provenance else '' -%}
-<div data-dc="{{ n.dc }}" class="block cursor-pointer whitespace-pre-wrap rounded px-2 py-1 text-slate-700 hover:bg-slate-50 {{ hd }}{{ prov }}">{% if debug %}<span class="font-mono text-[9px] text-sky-500">{{ n.dc }} </span>{% endif %}{% if review %}{{ sd_review_widget(n, review, ident) }} {% endif %}{{ display | linkify_refs(markdown=True, compact=True, claims=claims) }}</div>
+<div data-dc="{{ n.dc }}" class="block cursor-pointer whitespace-pre-wrap rounded px-2 py-1 text-slate-700 hover:bg-slate-50 {{ hd }}{{ prov }}"{% if n.provenance %} title="{{ prov_title(n.provenance) }}"{% endif %}>{% if debug %}<span class="font-mono text-[9px] text-sky-500">{{ n.dc }} </span>{% endif %}{% if review %}{{ sd_review_widget(n, review, ident) }} {% endif %}{{ display | linkify_refs(markdown=True, compact=True, claims=claims) }}</div>
 {%- endmacro %}
 
 {# The per-block review indicator + dropdown (smartdraft-review-status-ui

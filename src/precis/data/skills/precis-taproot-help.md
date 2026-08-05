@@ -185,6 +185,17 @@ source paragraph. The bar is therefore stricter than for an inline citation.
     2D materials." (whose strategy?)
   - Good: "Hybridization of fullerenes with 2D materials has been pursued
     across graphene, g-C₃N₄, TMDs, h-BN, and black phosphorus."
+  - Temporal/discourse openers count too — "Subsequent(ly)",
+    "Previous(ly)", "Further", "Earlier", "In contrast", "Similarly",
+    "However", "Also" all point at prose the hub won't carry. Inline the
+    referent ("Compared to X, …") or drop the connective.
+    - Bad: "Subsequent DFT-D3 calculations reduced the sidewall binding
+      energy to +0.74 eV." (subsequent to what?)
+    - Good: "Including pairwise dispersion corrections (DFT-D3) reduces
+      the calculated C₆₀–nanotube sidewall binding energy from ~+1.5 eV
+      to +0.74 eV."
+  - Fixing one found later: `edit(kind='finding', id='fi<id>',
+    title='<self-contained rewording>')` retitles the hub in place.
 - **A world-claim.** About materials, results, mechanisms — never about the
   literature's habits, the paper's own structure ("we will discuss…"), or a
   bare pointer ("see [12]").

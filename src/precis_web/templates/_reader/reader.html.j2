@@ -50,7 +50,10 @@
          note at the top of this file). #}
       {% set _tabs = ['Navigate', 'Jump'] + (['Sources', 'Cited'] if doc.show_refs_tabs else []) + ['Meta'] %}
       <div class="flex shrink-0 border-b border-slate-200 text-xs font-medium">
-        <template x-for="t in {{ _tabs | tojson }}" :key="t">
+        {# single-quoted attribute — ``tojson`` escapes ``'`` but NOT ``"``,
+           so a double-quoted attribute is terminated by the array's first
+           quote and Alpine sees ``t in [`` (the whole tab strip dies). #}
+        <template x-for='t in {{ _tabs | tojson }}' :key="t">
           <button type="button" @click="setTab(t)"
                   class="flex-1 px-2 py-2 hover:bg-slate-50"
                   :class="tab === t ? 'border-b-2 border-emerald-500 text-emerald-700' : 'text-slate-500'"
