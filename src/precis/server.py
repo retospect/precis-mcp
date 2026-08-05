@@ -368,27 +368,34 @@ def _install_edit_schema_constraints(mcp_app: FastMCP) -> None:
 
     Pydantic generates a flat schema where ``text``, ``find`` and
     ``where`` are all optional (because the Python-level defaults
-    are ``None``). That's a lie — **every** wire-level mode requires
-    ``text=``, ``find-replace`` and ``insert`` additionally require
-    ``find=``, and ``insert`` also requires ``where=``. Small models
-    read the schema's ``required`` array at face value; burying the
-    coupling in prose cost a retry loop on qwen3:8b (MCP critic
-    MAJOR-C, 2026-05-03 — small models called ``edit(... mode=
-    'find-replace', find=..., before=..., after=...)`` repeatedly
-    with no ``text=`` and did not recover from the runtime error).
+    are ``None``). That's a lie for the *text-mutation* modes —
+    ``find-replace`` (default), ``insert``, ``append``, ``replace`` —
+    every one of those needs ``text=``; ``find-replace`` and ``insert``
+    additionally require ``find=``, and ``insert`` also requires
+    ``where=``. Small models read the schema's ``required`` array at
+    face value; burying the coupling in prose cost a retry loop on
+    qwen3:8b (MCP critic MAJOR-C, 2026-05-03 — small models called
+    ``edit(... mode='find-replace', find=..., before=..., after=...)``
+    repeatedly with no ``text=`` and did not recover from the runtime
+    error).
 
-    Constraints applied:
-
-    - ``text`` is appended to top-level ``required`` (unconditional —
-      every mode needs it).
-    - The mode-conditional coupling for ``find`` / ``where`` is encoded
-      in per-property ``description`` fields. We *cannot* use top-level
-      ``allOf`` + ``if/then`` here: Anthropic's ``/v1/messages`` API
-      rejects ``oneOf``/``allOf``/``anyOf`` at the root of
-      ``tools[].custom.input_schema`` with a 400, which blocks every
-      tool call. Property descriptions are the next-best signal for
-      schema-reading clients, and the runtime ``BadInput`` path remains
-      the safety net.
+    But ``text`` is **not** universal: a growing family of structural /
+    metadata ops — ``move=``, ``table=``, ``cell=``, ``review=``,
+    ``authors=``, ``sub=``, ``scaffold=``, ``word_target=``,
+    ``authoring=``, ``voice=``/``lang=``, ``origin=``/``permission=`` —
+    never touch ``text=`` at all. Marking ``text`` top-level ``required``
+    (the original fix above) blocked every one of those calls for a
+    strict-schema client unless the caller padded a dummy ``text=None``
+    (gr192827 item 1). We can't express "required unless one of these
+    other fields is set" with a *flat* JSON-Schema ``required`` array,
+    and we can't fall back to ``allOf``/``if``/``then`` either:
+    Anthropic's ``/v1/messages`` API rejects ``oneOf``/``allOf``/``anyOf``
+    at the root of ``tools[].custom.input_schema`` with a 400, which
+    blocks every tool call. So ``text`` is **not** added to top-level
+    ``required`` — the coupling for ``text`` (like ``find``/``where``) is
+    encoded in its ``description`` instead, and the runtime ``BadInput``
+    path (each handler's own "requires text=/move=/..." error) is the
+    safety net for a caller that ignores the description.
 
     The mutation runs once at module import. FastMCP's ``list_tools``
     copies ``tool.parameters`` into the wire ``inputSchema`` on every
@@ -399,17 +406,15 @@ def _install_edit_schema_constraints(mcp_app: FastMCP) -> None:
         return
     params = tool.parameters
     # Sentinel keeps the mutation idempotent: multiple imports or a
-    # second call from a test harness must not re-append ``text`` to
-    # ``required`` or duplicate the coupling notes.
+    # second call from a test harness must not re-append the coupling
+    # notes or duplicate the required-array historically added here.
     if params.get("x-precis-edit-constraints-installed"):
         return
 
-    # ``text`` is required on every wire-level mode. Top-level
-    # ``required`` is the field small models read first.
-    required = list(params.get("required", []))
-    if "text" not in required:
-        required.append("text")
-    params["required"] = required
+    # ``text`` is intentionally left OUT of top-level ``required`` — see
+    # the docstring: it's required on the text-mutation modes but NOT on
+    # move=/table=/cell=/review=/authors=/sub=/… structural ops, and a
+    # flat ``required`` array can't express that condition.
 
     # Mode-conditional coupling, encoded as description suffixes on the
     # affected properties. Small models scan property descriptions
@@ -417,11 +422,20 @@ def _install_edit_schema_constraints(mcp_app: FastMCP) -> None:
     # is the safety net when they ignore both.
     properties = params.get("properties") or {}
 
+    _TEXT_COUPLING = (
+        " REQUIRED WHEN: mode='find-replace' (default), 'insert', 'append',"
+        " or 'replace' — i.e. every plain text-mutation edit. NOT required"
+        " for structural/non-text ops: move=, table=, cell=, review=,"
+        " authors=, sub=, scaffold=, word_target=, authoring=,"
+        " voice=/lang=, origin=/permission=."
+    )
     _MODE_COUPLING = " REQUIRED WHEN: mode='find-replace' (default) or mode='insert'."
     _WHERE_COUPLING = " REQUIRED WHEN: mode='insert'. Value: 'before' or 'after'."
     _MODE_NOTE = (
         " Per-mode required args: 'find-replace' (default) → find=, text=;"
         " 'insert' → find=, text=, where=; 'append'/'replace' → text=."
+        " Structural ops (move=, table=, cell=, review=, authors=, sub=, …)"
+        " carry their own required arg instead of text=."
     )
 
     def _append_desc(prop: str, suffix: str) -> None:
@@ -433,6 +447,7 @@ def _install_edit_schema_constraints(mcp_app: FastMCP) -> None:
             return
         schema["description"] = (existing + suffix).strip()
 
+    _append_desc("text", _TEXT_COUPLING)
     _append_desc("find", _MODE_COUPLING)
     _append_desc("where", _WHERE_COUPLING)
     _append_desc("mode", _MODE_NOTE)

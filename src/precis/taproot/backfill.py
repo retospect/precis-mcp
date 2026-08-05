@@ -821,6 +821,17 @@ def apply_chunk(
         # atomicity isn't available through the draft edit door, so on failure
         # we rewrite prose only for the groups whose hub actually landed, and
         # a re-run converges onto them (idempotent).
+        #
+        # ``hub_landed`` — not ``plan.hub_ref_id`` — is the "did this call's
+        # write commit?" signal: for ``attach``, ``plan.hub_ref_id`` is
+        # already populated at plan time (the ANN-matched candidate, set in
+        # ``_run_cascade`` before any write runs), so it's non-None even when
+        # ``apply_placement``/``attach_evidence`` below raises. Gating the
+        # except-path skip on ``plan.hub_ref_id`` would append an
+        # ``[fi<hub>]`` cite for a hub whose evidence edge never landed this
+        # call — silent draft corruption. ``hub_landed`` only flips True once
+        # ``apply_placement`` has actually returned a committed hub.
+        hub_landed = False
         try:
             hub_ref_id = apply_placement(
                 store,
@@ -835,6 +846,7 @@ def apply_chunk(
                 plan.note = "risky merge — filed for review, prose left as [pc…]"
                 continue
             plan.hub_ref_id = hub_ref_id
+            hub_landed = True
             # Remaining supporter papers → corroborating evidence on the hub.
             for handle, paper_ref_id in plan.supporters[1:]:
                 attach_evidence(
@@ -848,8 +860,8 @@ def apply_chunk(
         except Exception as exc:  # isolate one group, keep the batch going
             plan.action = "error"
             plan.note = f"write failed, prose left as [pc…]: {exc}"
-            if plan.hub_ref_id is None:
-                continue  # no hub landed — nothing to point prose at
+            if not hub_landed:
+                continue  # no hub write landed on this call — nothing to point prose at
 
         # Collapse the whole contiguous same-kind run (cites + inter-cite
         # whitespace) to a SINGLE [fi<hub>] with one span-replace — no leftover

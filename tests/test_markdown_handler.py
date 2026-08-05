@@ -453,6 +453,40 @@ def test_put_edit_match_all_replaces_every_occurrence(
     assert "Y is Y and Y." in raw
 
 
+def test_put_edit_match_nth_picks_specified(
+    handler: MarkdownHandler, md_root: Path
+) -> None:
+    """td48771 Phase 2: ``match='nth'`` at the handler level — the resolver
+    behaviour (test_edit_resolve.py) round-tripped through a real file."""
+    _write(md_root, "doc.md", "# T\n\nx is x and x.\n")
+    handler.edit(
+        id="doc",
+        mode="find-replace",
+        find="x",
+        text="Y",
+        match="nth",
+        nth=2,
+    )
+    raw = (md_root / "doc.md").read_text()
+    assert "x is Y and x." in raw
+
+
+def test_put_edit_match_nth_out_of_range_errors(
+    handler: MarkdownHandler, md_root: Path
+) -> None:
+    _write(md_root, "doc.md", "# T\n\nx is x.\n")
+    with pytest.raises(BadInput) as excinfo:
+        handler.edit(
+            id="doc",
+            mode="find-replace",
+            find="x",
+            text="Y",
+            match="nth",
+            nth=5,
+        )
+    assert "nth=5" in str(excinfo.value)
+
+
 def test_put_edit_ambiguous_match_unique_errors(
     handler: MarkdownHandler, md_root: Path
 ) -> None:
@@ -682,3 +716,71 @@ def test_put_edit_dry_run_rejects_unknown_mode(
             text="y",
             dry_run="brief",
         )
+
+
+# ── td48771 Phase 3: cascade invariant ─────────────────────────────────
+#
+# A body edit must never leave a stale chunk_embeddings/chunk_summaries
+# row pointing at superseded text (CLAUDE.md "Don't mutate body chunks").
+# For file kinds the re-ingest path (``insert_blocks(replace=True)``)
+# DELETEs the ref's chunks and re-INSERTs fresh rows; the FK's
+# ``ON DELETE CASCADE`` takes chunk_embeddings/chunk_summaries with it,
+# and the new chunk starts with no embedding — the worker will refill it.
+
+
+def test_put_edit_cascades_stale_embedding_away(
+    handler: MarkdownHandler, md_root: Path
+) -> None:
+    """The ``hub`` fixture wires a MockEmbedder, so ingest embeds
+    synchronously (test-harness convenience, not a worker pass) — that
+    means the invariant to check post-edit isn't "no embedding yet" but
+    "no stale/orphaned row survives the old chunk_id, and the new one is
+    freshly derived from the new text, not a leaked copy of the old
+    vector"."""
+    _write(md_root, "doc.md", "# Title\n\nFirst paragraph with fox.\n")
+    handler.get(id="doc")  # force ingest — embeds synchronously
+    ref = handler.store.get_ref(kind="markdown", id="doc")
+    assert ref is not None
+    old_block = next(
+        b for b in handler.store.list_blocks_for_ref(ref.id) if "fox" in b.text
+    )
+    with handler.store.pool.connection() as conn:
+        old_vector = conn.execute(
+            "SELECT vector FROM chunk_embeddings WHERE chunk_id = %s",
+            (old_block.id,),
+        ).fetchone()
+    assert old_vector is not None  # sanity: ingest embedded it
+
+    handler.edit(id="doc", mode="find-replace", find="fox", text="cat")
+
+    with handler.store.pool.connection() as conn:
+        # The old chunk row (and its embedding) is gone — cascade delete,
+        # not a stale row left pointing at superseded text.
+        assert (
+            conn.execute(
+                "SELECT 1 FROM chunks WHERE chunk_id = %s", (old_block.id,)
+            ).fetchone()
+            is None
+        )
+        assert (
+            conn.execute(
+                "SELECT 1 FROM chunk_embeddings WHERE chunk_id = %s",
+                (old_block.id,),
+            ).fetchone()
+            is None
+        )
+
+    fresh_ref = handler.store.get_ref(kind="markdown", id="doc")
+    assert fresh_ref is not None
+    new_block = next(
+        b for b in handler.store.list_blocks_for_ref(fresh_ref.id) if "cat" in b.text
+    )
+    assert new_block.id != old_block.id
+    with handler.store.pool.connection() as conn:
+        new_vector = conn.execute(
+            "SELECT vector FROM chunk_embeddings WHERE chunk_id = %s",
+            (new_block.id,),
+        ).fetchone()
+    assert new_vector is not None
+    # Freshly derived from "cat", not the old "fox" vector.
+    assert new_vector != old_vector

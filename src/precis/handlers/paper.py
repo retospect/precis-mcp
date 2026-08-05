@@ -67,6 +67,7 @@ from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref, Store, Tag
 from precis.utils import handle_registry
 from precis.utils.authors import to_name_dicts
+from precis.utils.edit_resolve import normalize_dry_run
 from precis.utils.embed_query import embed_query
 from precis.utils.next_block import render_next_section
 from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
@@ -952,17 +953,12 @@ class PaperHandler(Handler):
         :func:`precis.utils.authors.to_name_dicts`. ``abstract`` merges
         into ``meta``; ``doi`` / ``arxiv`` replace this ref's alias via
         :meth:`Store.set_ref_identifier`.
+
+        ``dry_run=True`` (or ``'diff'`` / ``'full'``) previews the patch
+        as ``field: old → new`` lines and writes nothing — inherited by
+        cfp/datasheet (both ``PaperHandler`` subclasses).
         """
-        if dry_run:
-            # Multi-field metadata patch (title/year/authors/abstract/
-            # identifier) — no faithful preview yet. Reject rather than
-            # silently apply on dry_run (that was a data-loss footgun).
-            # Inherited by cfp/datasheet (PaperHandler subclasses).
-            raise BadInput(
-                f"edit(kind={self.spec.kind!r}) does not support dry_run yet — "
-                "it patches bibliographic metadata; omit dry_run to apply",
-                next=f"edit(kind={self.spec.kind!r}, id=<slug|id>, year=2024)",
-            )
+        dry_mode = normalize_dry_run(dry_run)
         ref_id = self._resolve_paper_ref_id(id)
         new_title = title.strip() if isinstance(title, str) and title.strip() else None
         new_authors = to_name_dicts(authors) if authors else None
@@ -982,6 +978,16 @@ class PaperHandler(Handler):
             raise BadInput(
                 "edit(kind='paper') needs at least one field to change",
                 next="edit(kind='paper', id=<slug|id>, authors=[...], year=2024)",
+            )
+        if dry_mode:
+            return self._render_paper_dry_run(
+                ref_id,
+                new_title=new_title,
+                year=year,
+                new_authors=new_authors,
+                meta_patch=meta_patch,
+                doi=doi if has_doi else None,
+                arxiv=arxiv if has_arxiv else None,
             )
         changed: list[str] = []
         with self.store.tx() as conn:
@@ -1037,6 +1043,54 @@ class PaperHandler(Handler):
             body=(
                 f"updated paper id={ref_id}: "
                 f"{', '.join(changed) if changed else 'no change'}."
+            )
+        )
+
+    def _render_paper_dry_run(
+        self,
+        ref_id: int,
+        *,
+        new_title: str | None,
+        year: int | None,
+        new_authors: list[dict[str, Any]] | None,
+        meta_patch: dict[str, Any],
+        doi: str | None,
+        arxiv: str | None,
+    ) -> Response:
+        """Preview a bibliographic metadata patch without writing it.
+
+        Mirrors the file-kind dry_run contract (real preview, no I/O)
+        adapted to a field patch rather than a text buffer: reads the
+        live ``Ref`` + identifiers, renders each changed field as
+        ``old → new``, and touches neither ``refs`` nor
+        ``ref_identifiers`` — no :meth:`Store.tx` is opened.
+        """
+        old = self.store.fetch_refs_by_ids([ref_id], include_deleted=False).get(ref_id)
+        if old is None:
+            raise NotFound(f"{self.spec.kind} id={ref_id} not found")
+        old_ids = self.store.identifiers_for_refs([ref_id]).get(ref_id, {})
+        lines: list[str] = []
+        if new_title is not None:
+            lines.append(f"title: {old.title!r} → {new_title!r}")
+        if year is not None:
+            lines.append(f"year: {old.year!r} → {year!r}")
+        if new_authors:
+            old_n = len(old.authors or [])
+            lines.append(f"authors: {old_n} → {len(new_authors)}")
+        if "abstract" in meta_patch:
+            old_abstract = (old.meta or {}).get("abstract", "")
+            new_abstract = meta_patch["abstract"]
+            old_len = len(old_abstract) if isinstance(old_abstract, str) else 0
+            lines.append(f"abstract: {old_len} chars → {len(new_abstract)} chars")
+        if doi:
+            lines.append(f"doi: {old_ids.get('doi', '(none)')!r} → {doi!r}")
+        if arxiv:
+            lines.append(f"arxiv: {old_ids.get('arxiv', '(none)')!r} → {arxiv!r}")
+        body = "\n".join(f"  {line}" for line in lines) if lines else "  (no change)"
+        return Response(
+            body=(
+                f"DRY RUN (no write) — would update {self.spec.kind} id={ref_id}:\n"
+                f"{body}"
             )
         )
 

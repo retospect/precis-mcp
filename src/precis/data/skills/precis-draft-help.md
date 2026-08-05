@@ -27,6 +27,16 @@ chunk the reference sits in (source) as well as the target chunk, so a
 reader can see *which paragraph* cites a finding/paper, not just that the
 draft as a whole does.
 
+## Reorder chunks — quick reference
+
+```python
+edit(kind="draft", id="dc16", move={"before": "dc15"})  # reorder among siblings
+```
+
+`move=` takes `before`/`after` (siblings), `parent`+`before`/`after`/`last`
+(reparent), or `into`+`last` (append to a section). Full grammar +
+examples: *Reorder / move*, below.
+
 ## Search a draft (lexical / semantic)
 
 ```python
@@ -895,7 +905,12 @@ exact `[pc<id>]` chunk, never the whole paper). Neither needs a
 hand-maintained bibliography **footer**; citation handles resolve to
 one entry per paper at export. Skim the **outline**
 (`get(kind='draft', id=…)`) first — it's the cheapest place to catch
-both before they reach a compile.
+both before they reach a compile; its hygiene footer truncates each
+list to 8 entries. For the full, un-elided lists (clearing a long
+backlog of undefined abbreviations one alphabetical batch at a time
+otherwise costs several paginated outline round-trips), use
+`get(kind='draft', id=…, view='hygiene')` — same two checks, no
+outline body, no truncation.
 
 ## Writing well — structure + common mistakes
 

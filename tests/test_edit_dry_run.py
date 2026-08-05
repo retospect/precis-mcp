@@ -7,10 +7,16 @@ discarded it, then wrote anyway — so a caller "previewing" a change
 actually mutated the ref. The file/chunk kinds (plaintext family, draft)
 already honoured it.
 
-Fix: todo + folder now *honour* dry_run (cheap preview, no write); the
-kinds whose edit is a bespoke op (finding candidate-pick, paper metadata
-patch, structure graph ops) *reject* dry_run loudly instead of applying
-it. Either way, no editable kind silently writes on dry_run.
+Fix (2026-07-04): todo + folder honour dry_run (cheap preview, no write);
+finding / paper / structure reject it loudly instead of applying it.
+
+Fix (td48769, 2026-08-05): paper / cfp / datasheet now honour dry_run
+too — a real ``field: old → new`` preview, no write — bringing them to
+parity with the file kinds. ``finding`` and ``structure`` still reject:
+finding's ``edit`` surface (pick_candidate / title / unacquirable_note)
+has no faithful preview and was reworked by the trust/retitle ship, so
+its dry_run-preview arm is deferred (see OPEN-ITEMS); structure ops
+mutate the cell/bond graph and may dispatch compute.
 """
 
 from __future__ import annotations
@@ -21,11 +27,13 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.errors import BadInput
-from precis.handlers.finding import FindingHandler
+from precis.handlers.cfp import CfpHandler
+from precis.handlers.datasheet import DatasheetHandler
 from precis.handlers.folder import FolderHandler
 from precis.handlers.paper import PaperHandler
 from precis.handlers.structure import StructureHandler
 from precis.handlers.todo import TodoHandler
+from precis.store.types import BlockInsert
 
 # ── honour: no write, returns a preview ──────────────────────────────
 
@@ -62,19 +70,81 @@ def test_folder_edit_dry_run_does_not_rename(hub: Hub) -> None:
     assert h.store.list_refs(kind="folder", limit=1)[0].title == "Original name"
 
 
-# ── reject: loud error, no write ─────────────────────────────────────
+def _seed_paper_ref(
+    hub: Hub, *, kind: str = "paper", slug: str = "wang2020state", **kw
+) -> int:
+    """Insert a minimal ``kind`` ref (paper / cfp / datasheet all share
+    the ``refs`` shape) + one body chunk. Returns the ref_id."""
+    ref = hub.store.insert_ref(
+        kind=kind,
+        slug=slug,
+        title=kw.pop("title", "Original title"),
+        authors=kw.pop("authors", [{"name": "Wang, Q."}]),
+        year=kw.pop("year", 2020),
+        meta=kw.pop("meta", {"abstract": "Original abstract."}),
+    )
+    hub.store.insert_blocks(ref.id, [BlockInsert(pos=0, text="Body chunk.", meta={})])
+    return ref.id
 
 
-def test_finding_edit_dry_run_rejected(hub: Hub) -> None:
-    h = FindingHandler(hub=hub)
-    with pytest.raises(BadInput, match="dry_run"):
-        h.edit(id=1, pick_candidate="miller23a", dry_run=True)
-
-
-def test_paper_edit_dry_run_rejected(hub: Hub) -> None:
+def test_paper_edit_dry_run_previews_field_patch_and_does_not_write(hub: Hub) -> None:
     h = PaperHandler(hub=hub)
-    with pytest.raises(BadInput, match="dry_run"):
-        h.edit(id="somepaper", year=2024, dry_run=True)
+    ref_id = _seed_paper_ref(hub, kind="paper", slug="wang2020state", year=2020)
+
+    resp = h.edit(id=ref_id, year=2024, title="New title", dry_run=True)
+    assert "dry run" in resp.body.lower()
+    assert "2020" in resp.body and "2024" in resp.body
+    assert "New title" in resp.body
+
+    ref = hub.store.fetch_refs_by_ids([ref_id])[ref_id]
+    assert ref.year == 2020
+    assert ref.title == "Original title"
+
+
+def test_cfp_edit_dry_run_reuses_papers_preview(hub: Hub) -> None:
+    """``CfpHandler`` doesn't override ``edit`` — it inherits
+    ``PaperHandler.edit`` verbatim (see ``test_cfp_subclasses_paper_for_dry_reuse``
+    in ``test_cfp_handler.py``), so the dry_run preview proven above for
+    paper applies to cfp unchanged. (A live DB round-trip through
+    ``insert_ref(kind='cfp', ...)`` isn't exercised here: the local test-DB
+    baseline schema is missing the ``cfp`` row present in prod's ``kinds``
+    table — filed as a gripe, out of scope for td48769.)"""
+    assert CfpHandler.edit is PaperHandler.edit
+    h = CfpHandler(hub=hub)
+    assert h.spec.kind == "cfp"
+
+
+def test_datasheet_edit_dry_run_previews_meta_patch_and_does_not_write(
+    hub: Hub,
+) -> None:
+    h = DatasheetHandler(hub=hub)
+    ref_id = _seed_paper_ref(hub, kind="datasheet", slug="ds2026")
+
+    resp = h.edit(id=ref_id, vendor="Espressif", dry_run=True)
+    assert "dry run" in resp.body.lower()
+    assert "Espressif" in resp.body
+
+    ref = hub.store.fetch_refs_by_ids([ref_id])[ref_id]
+    assert (ref.meta or {}).get("vendor") is None
+
+
+def test_datasheet_edit_dry_run_previews_both_meta_and_bib_and_does_not_write(
+    hub: Hub,
+) -> None:
+    h = DatasheetHandler(hub=hub)
+    ref_id = _seed_paper_ref(hub, kind="datasheet", slug="ds2026combo", year=2020)
+
+    resp = h.edit(id=ref_id, vendor="Espressif", year=2025, dry_run=True)
+    assert "dry run" in resp.body.lower()
+    assert "Espressif" in resp.body
+    assert "2020" in resp.body and "2025" in resp.body
+
+    ref = hub.store.fetch_refs_by_ids([ref_id])[ref_id]
+    assert ref.year == 2020
+    assert (ref.meta or {}).get("vendor") is None
+
+
+# ── reject: loud error, no write ─────────────────────────────────────
 
 
 def test_structure_edit_dry_run_rejected(hub: Hub) -> None:

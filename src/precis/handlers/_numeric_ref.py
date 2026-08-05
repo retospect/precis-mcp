@@ -111,6 +111,39 @@ def _extract_summary(body: str) -> tuple[str, int]:
     return summary, len(tail.split())
 
 
+def _tag_response_body(
+    *,
+    sense: str,
+    ref_id: int,
+    added: list[Tag],
+    removed_ok: list[Tag],
+    removed_noop: list[Tag],
+) -> str:
+    """Compose the ``tag()`` success message (gr192827 item 10b/10c).
+
+    A removal used to report the same ``"tagged {sense} id=N"`` shape as
+    an add — indistinguishable, and a bulk cleanup that removed nothing
+    (wrong tag form) still reported blanket success. This names the verb
+    that actually happened (``tagged`` / ``untagged`` / both) and calls
+    out any ``remove=`` entry that was a no-op (the tag wasn't present).
+    """
+    if added and removed_ok:
+        verb = "tagged/untagged"
+    elif added:
+        verb = "tagged"
+    elif removed_ok:
+        verb = "untagged"
+    else:
+        verb = None
+    body = (
+        f"{verb} {sense} id={ref_id}" if verb else f"no change to {sense} id={ref_id}"
+    )
+    if removed_noop:
+        noop_list = ", ".join(str(t) for t in removed_noop)
+        body += f" (no such tag, unchanged: {noop_list})"
+    return body
+
+
 class NumericRefHandler(Handler):
     """Base class for numeric-id ref kinds (memory, todo, gripe, anki, …)."""
 
@@ -908,6 +941,8 @@ class NumericRefHandler(Handler):
         parsed_remove: list[Tag] = (
             [Tag.parse_strict(s, kind=self.kind) for s in remove] if remove else []
         )
+        removed_ok: list[Tag] = []
+        removed_noop: list[Tag] = []
         with self.store.tx() as conn:
             for t in parsed_add:
                 self.store.add_tag(
@@ -918,9 +953,20 @@ class NumericRefHandler(Handler):
                     conn=conn,
                 )
             for t in parsed_remove:
-                self.store.remove_tag(ref_id, t, conn=conn)
+                if self.store.remove_tag(ref_id, t, conn=conn):
+                    removed_ok.append(t)
+                else:
+                    removed_noop.append(t)
             self._after_tag_mutation(ref_id, parsed_add, parsed_remove, conn=conn)
-        return Response(body=f"tagged {self._sense()} id={ref_id}")
+        return Response(
+            body=_tag_response_body(
+                sense=self._sense(),
+                ref_id=ref_id,
+                added=parsed_add,
+                removed_ok=removed_ok,
+                removed_noop=removed_noop,
+            )
+        )
 
     def _after_tag_mutation(
         self,

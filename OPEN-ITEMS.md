@@ -43,6 +43,46 @@ Status: open · Severity: polish (verify not chronic) · Owner: `src/precis/work
 
 ---
 
+## Residuals (2026-08-05 — paper-editing + taproot-chasing agent-fix bundle)
+
+Two pieces of that session's bundle collided at ship-time with sibling work
+that merged to `main` first (trust-surfaces `70dfd3bc`/`897b77cf`,
+clickable-grounding `b7e22467`, smartdraft bulk derivation `af06f8e2`). Both
+were **deferred out of the ship** rather than force-merged onto correctness-
+sensitive taproot/claim code; redo each against the new `main`, combining with
+the sibling feature it overlaps.
+
+- **td48769 finding arm — dry_run preview deferred** · Status: open · Severity:
+  feature · Owner: `src/precis/handlers/finding.py::FindingHandler.edit`. The
+  paper/cfp/datasheet dry_run-preview arms shipped; the **finding** arm was
+  reverted because `finding.edit` was reworked by the trust/retitle ship into a
+  three-op surface (`pick_candidate` / `title=` retitle-hub door /
+  `unacquirable_note=` override) that **deliberately rejects** `dry_run` with a
+  documented "no faithful preview" rationale. Reconciling needs a design call:
+  give `pick_candidate` a real no-write preview (it rewrites links + flips
+  status — the preview my dropped code computed via the validated
+  `picked_link`/`other_links` is faithful) while `title=` keeps rejecting (a
+  retitle has no preview) and `unacquirable_note=` either previews its meta
+  patch or keeps rejecting. Test scaffold existed (dropped
+  `test_finding_edit_dry_run_previews_pick_and_does_not_write`).
+
+- **Taproot evidence-edge read-side multi-handle (`source_handles`) deferred** ·
+  Status: open · Severity: polish · Owner: `src/precis/taproot/seniority.py`
+  (`derive_evidence` **and** the new `derive_evidence_bulk`) + `utils/refeye.py`
+  + `precis_web/claim_render.py` + `templates/claim/view.html.j2`. This is the
+  read-side half of the existing "Evidence edge records one grounding pointer"
+  item: the write side (`f899551d`) already lands two `links` rows for a paper
+  grounding one claim via two passages; my read-side fix (widen `EvidenceEdge`
+  to a `source_handles` list so both surface) collided with the sibling's
+  clickable-grounding render (single `source_handle` → `/c/<handle>` anchor) and
+  its **bulk** derivation path (`derive_evidence_bulk`, smartdraft's hot path).
+  Redo: widen to `source_handles` in **both** the single-hub and bulk derivation
+  functions, and render **each** handle in the list clickable (combine with the
+  sibling's `source_is_chunk` parse), not just the first. The conn= threading
+  half of that cleanup shipped fine.
+
+---
+
 ## 🔧 provenance flag — make `corrected` / `expression_of_concern` *do* something downstream
 
 Status: deferred · Severity: feature · Owner: `src/precis/runtime/search.py` + citation-grounding filter · Test: n/a yet (design phase).

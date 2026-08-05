@@ -409,6 +409,61 @@ def test_apply_converges_onto_existing_hub(draft: DraftHandler, hub: Hub) -> Non
     assert edge is not None
 
 
+def test_apply_attach_evidence_raise_leaves_prose_untouched(
+    draft: DraftHandler, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # gr191953: an "attach" plan has plan.hub_ref_id populated at PLAN time
+    # (the ANN-matched candidate, set before any write runs) — a false
+    # "landed" signal. If attach_evidence then raises (transient DB error,
+    # FK hiccup, …), the prose must NOT be rewritten to cite [fi<hub>] for a
+    # hub whose evidence edge never actually landed this call.
+    from precis.taproot.authoring import seed_claim_hub
+
+    paper_a = seed_ref(hub.store, title="paper A", kind="paper")
+    existing = seed_claim_hub(
+        hub.store,
+        sentence="Ribbons are semiconducting.",
+        scope={},
+        supporters=[{"paper": paper_a}],
+    )
+    hub_id = existing["hub_ref_id"]
+
+    paper_b, pc = _pc_of(hub.store, paper_title="paper B")
+    original_text = f"Ribbons are semiconducting [{pc}]."
+    dc = _seed_draft_para(draft, hub, original_text)
+    links_before = _links_count(hub.store)
+
+    def _raising_attach_evidence(*_a: Any, **_k: Any) -> None:
+        raise RuntimeError("simulated transient write failure")
+
+    monkeypatch.setattr("precis.taproot.hub.attach_evidence", _raising_attach_evidence)
+
+    result = apply_chunk(
+        hub.store,
+        embedder=None,
+        draft_handler=draft,
+        chunk_id=dc,
+        extract_fn=_extract_const("Ribbons are semiconducting (reworded)."),
+        block_fn=_block_hit(hub_id, "Ribbons are semiconducting."),
+        judge_fn=lambda a, b: _verdict("same", 0.99),
+        merge_confirm_fn=_never_called,  # high-confidence same → no escalation
+    )
+
+    plan = result.plans[0]
+    assert plan.action == "error"
+    # No evidence edge landed on this call.
+    assert _links_count(hub.store) == links_before
+    # Prose must be left exactly as it was — no [fi<hub>] cite for a hub
+    # whose evidence edge never landed.
+    assert result.rewritten_text is None
+    with hub.store.pool.connection() as conn:
+        text = conn.execute(
+            "SELECT text FROM chunks WHERE chunk_id = %s", (dc,)
+        ).fetchone()[0]
+    assert text == original_text
+    assert f"[fi{hub_id}]" not in text
+
+
 def test_apply_collapses_adjacent_cites_to_one_hub(
     draft: DraftHandler, hub: Hub
 ) -> None:

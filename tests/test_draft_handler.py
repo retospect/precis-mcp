@@ -1104,13 +1104,50 @@ def test_outline_surfaces_blocked_work(draft: DraftHandler, hub: Hub) -> None:
     assert "Work in progress" in out
     assert f"todo:{child.id}" in out
     assert "blocked" in out
-    assert f"job:{job.id} failed" in out
+    # gr192827 item 3: the per-job history line collapses to a
+    # per-status count ("1 failed"), not the raw ``job:<id> failed``.
+    assert "1 failed" in out
+    assert f"job:{job.id}" not in out
 
 
 def test_outline_clean_draft_has_no_work_section(draft: DraftHandler, hub: Hub) -> None:
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
     assert "Work in progress" not in draft.get(id="nt").body
+
+
+def test_outline_wip_job_history_collapses_to_counts(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """A todo with many retried child jobs used to print the whole
+    history (``job:187049 succeeded, job:187242 succeeded, …`` x20) —
+    gr192827 item 3 collapses it to per-status counts."""
+    from precis.store.types import Tag
+
+    store = hub.store
+    proj = _proj(hub)
+    draft.put(id="nt", title="T", project=proj)
+
+    child = store.insert_ref(
+        kind="todo", slug=None, title="Enrich section", parent_id=proj
+    )
+    store.add_tag(
+        child.id, Tag.closed("STATUS", "open"), set_by="agent", replace_prefix=True
+    )
+    statuses = ["succeeded"] * 5 + ["failed"] + ["running"]
+    for st in statuses:
+        job = store.insert_ref(
+            kind="job", slug=None, title="tick", parent_id=child.id, meta={}
+        )
+        store.add_tag(
+            job.id, Tag.closed("STATUS", st), set_by="system", replace_prefix=True
+        )
+
+    out = draft.get(id="nt").body
+    assert "Work in progress" in out
+    assert "5 ok / 1 failed / 1 running" in out
+    # No raw per-job ``job:<id> <status>`` entries leak into the summary.
+    assert "succeeded" not in out
 
 
 def test_outline_surfaces_hygiene_debt(draft: DraftHandler, hub: Hub) -> None:
@@ -1141,6 +1178,48 @@ def test_outline_clean_draft_has_no_hygiene_section(
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
     assert "## Hygiene" not in draft.get(id="nt").body
+
+
+def test_hygiene_view_returns_full_lists_unelided(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """gr192827 item 9: get(kind='draft', view='hygiene') returns the
+    COMPLETE undefined-abbreviation and whole-paper-cite lists, un-elided
+    (no "+N more" truncation) — and nothing else, no outline body / WIP
+    block. The default outline footer keeps its truncated-to-8 rendering
+    unchanged."""
+    proj = _proj(hub)
+    paper = hub.store.insert_ref(kind="paper", slug="liu24", title="Liu 2024")
+    draft.put(id="nt", title="T", project=proj)
+    th = _order(hub, "nt")[0].handle
+    abbrevs = [f"ABBR{i}" for i in range(12)]
+    prose = " ".join(f"The {a} device works." for a in abbrevs)
+    prose += f" See [pa{paper.id}] for background."
+    draft.put(
+        id="nt",
+        chunk_kind="paragraph",
+        text=prose,
+        at={"after": "¶" + th},
+    )
+
+    # The outline footer still elides — behavior preserved.
+    outline = draft.get(id="nt").body
+    assert "more" in outline
+
+    out = draft.get(id="nt", view="hygiene").body
+
+    # Every abbreviation present, none elided behind "+N more".
+    for a in abbrevs:
+        assert a in out, f"{a} missing from un-elided hygiene view"
+    assert "more)" not in out
+    assert f"[pa{paper.id}]" in out
+
+    # Not the outline body or WIP block — hygiene-only.
+    assert "hygiene report" in out
+    assert not re.search(r"— \d+ chunks?\b", out)
+    assert "[paragraph]" not in out
+    assert "[heading]" not in out
+    assert "## Work in progress" not in out
 
 
 # ── Fix C: dangling [finding #slug] markers are flagged on read ─────

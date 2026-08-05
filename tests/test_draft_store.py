@@ -274,6 +274,71 @@ def test_edit_text_stale_base_sha_raises(store: Store) -> None:
     assert survived.text == "v2"
 
 
+def test_edit_text_invalidates_embedding_and_summary_cascade(store: Store) -> None:
+    """td48771 Phase 3: unlike markdown/plaintext/tex (whose re-ingest path
+    DELETEs + re-INSERTs chunks, cascading away stale derived rows),
+    ``edit_text`` mutates the chunk row in place — the invariant it must
+    hold instead is that ``chunks.content_sha`` bumps so the embed/summarize
+    workers' staleness check (``chunk_embeddings.content_sha IS NOT
+    DISTINCT FROM chunks.content_sha`` — see embed.py's
+    ``unembedded_chunk_count``) sees a mismatch and re-derives."""
+    from precis.store._draft_ops import content_sha
+
+    proj = _project(store)
+    ref, title = store.create_draft(name="nt", title="T", project_ref_id=proj)
+    p = store.add_chunks(
+        ref_id=ref.id, chunk_kind="paragraph", text="v1", at={"after": title.handle}
+    )[0]
+    old_sha = content_sha(p.text)
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT name FROM embedders WHERE is_default = TRUE LIMIT 1"
+        ).fetchone()
+        assert row is not None
+        embedder_name = row[0]
+        conn.execute(
+            "INSERT INTO chunk_embeddings "
+            "(chunk_id, embedder, vector, status, content_sha) "
+            "VALUES (%s, %s, %s, 'ok', %s)",
+            (p.chunk_id, embedder_name, [0.0] * store.embedding_dim(), old_sha),
+        )
+        conn.execute(
+            "INSERT INTO chunk_summaries "
+            "(chunk_id, summarizer, text, status, content_sha) "
+            "VALUES (%s, 'llm-v1', 'old summary', 'ok', %s)",
+            (p.chunk_id, old_sha),
+        )
+        conn.commit()
+
+    store.edit_text(p.handle, "v2")
+
+    with store.pool.connection() as conn:
+        chunks_row = conn.execute(
+            "SELECT content_sha FROM chunks WHERE chunk_id = %s", (p.chunk_id,)
+        ).fetchone()
+        emb_row = conn.execute(
+            "SELECT content_sha FROM chunk_embeddings WHERE chunk_id = %s",
+            (p.chunk_id,),
+        ).fetchone()
+        summ_row = conn.execute(
+            "SELECT content_sha FROM chunk_summaries WHERE chunk_id = %s",
+            (p.chunk_id,),
+        ).fetchone()
+    assert chunks_row is not None
+    assert emb_row is not None
+    assert summ_row is not None
+    new_sha, emb_sha, summ_sha = chunks_row[0], emb_row[0], summ_row[0]
+    assert new_sha != old_sha
+    # The chunk row is still in place (in-place edit, not delete+insert —
+    # the ADR 0035 "computed chunks" model), but its content_sha has moved
+    # on from the embedding/summary rows still on file — the derived rows
+    # are now stale and the worker will re-derive them.
+    assert emb_sha == old_sha
+    assert emb_sha != new_sha
+    assert summ_sha == old_sha
+    assert summ_sha != new_sha
+
+
 def test_move_reorder_and_reparent(store: Store) -> None:
     proj = _project(store)
     ref, title = store.create_draft(name="nt", title="T", project_ref_id=proj)

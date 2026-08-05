@@ -211,13 +211,19 @@ class TagsMixin:
         *,
         pos: int | None = None,
         conn: Connection | None = None,
-    ) -> None:
-        """Remove a tag from a ref / chunk. Idempotent (no-op on miss)."""
+    ) -> bool:
+        """Remove a tag from a ref / chunk. Idempotent (no-op on miss).
+
+        Returns ``True`` when a row was actually deleted, ``False`` on a
+        no-op (the tag wasn't present) — lets a caller like ``tag()``
+        report "no such tag" instead of a blanket success on a removal
+        that changed nothing (gr192827 item 10c).
+        """
         namespace, value = _tag_to_namespace_value(tag)
 
-        def _do(c: Connection) -> None:
+        def _do(c: Connection) -> bool:
             if pos is None:
-                c.execute(
+                cur = c.execute(
                     "DELETE FROM ref_tags rt "
                     "USING tags t "
                     "WHERE rt.tag_id = t.tag_id "
@@ -226,9 +232,9 @@ class TagsMixin:
                     "  AND t.value = %s",
                     (ref_id, namespace, value),
                 )
-                return
+                return cur.rowcount > 0
             chunk_id = _resolve_chunk_id(c, ref_id, pos)
-            c.execute(
+            cur = c.execute(
                 "DELETE FROM chunk_tags ct "
                 "USING tags t "
                 "WHERE ct.tag_id = t.tag_id "
@@ -237,12 +243,12 @@ class TagsMixin:
                 "  AND t.value = %s",
                 (chunk_id, namespace, value),
             )
+            return cur.rowcount > 0
 
         if conn is not None:
-            _do(conn)
-        else:
-            with self.pool.connection() as c:
-                _do(c)
+            return _do(conn)
+        with self.pool.connection() as c:
+            return _do(c)
 
     def tags_for(
         self,

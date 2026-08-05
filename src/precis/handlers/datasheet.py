@@ -34,6 +34,7 @@ from precis.errors import BadInput
 from precis.handlers.paper import PaperHandler
 from precis.protocol import KindSpec
 from precis.response import Response
+from precis.utils.edit_resolve import normalize_dry_run
 
 # Reader views a datasheet supports — paper's enum minus the bibliographic
 # citation-export formats (a datasheet is cited as a part's evidence, not a
@@ -122,9 +123,41 @@ class DatasheetHandler(PaperHandler):
         as a ``datasheet-of`` graph edge: ``part`` is a catalog-table kind, not
         a ``refs`` row, so it can't yet be a link target. Promote to the seeded
         relation once parts become ref-backed.
+
+        ``dry_run=True`` previews the datasheet-specific ``meta`` patch (and,
+        when bibliographic fields are also passed, the inherited paper
+        preview) without writing either.
         """
         meta_patch = self._datasheet_meta_patch(vendor, subtype, part_lcsc)
         bib = {k: kw[k] for k in _PAPER_EDIT_FIELDS if kw.get(k) not in (None, "")}
+
+        if not meta_patch and not bib:
+            raise BadInput(
+                "edit(kind='datasheet') needs at least one field to change",
+                next="edit(kind='datasheet', id=<slug>, vendor='Espressif')",
+            )
+
+        if normalize_dry_run(dry_run):
+            meta_preview: Response | None = None
+            if meta_patch:
+                ref_id = self._resolve_paper_ref_id(id)
+                lines = "\n".join(f"  {k}: {v!r}" for k, v in meta_patch.items())
+                meta_preview = Response(
+                    body=(
+                        f"DRY RUN (no write) — would update datasheet id={ref_id}:\n"
+                        f"{lines}"
+                    )
+                )
+            if bib:
+                # The paper editor owns the bibliographic-field preview;
+                # stitch our meta-only preview in front when there is one
+                # so the caller sees both halves of the patch in one call.
+                bib_preview = super().edit(id=id, dry_run=dry_run, **bib)  # type: ignore[misc]
+                if meta_preview is None:
+                    return bib_preview
+                return Response(body=f"{meta_preview.body}\n\n{bib_preview.body}")
+            assert meta_preview is not None
+            return meta_preview
 
         if meta_patch:
             ref_id = self._resolve_paper_ref_id(id)
@@ -133,11 +166,6 @@ class DatasheetHandler(PaperHandler):
             # The paper editor rebuilds search cards + returns its own summary;
             # let it own the response when bibliographic fields also changed.
             return super().edit(id=id, dry_run=dry_run, **bib)  # type: ignore[misc]
-        if not meta_patch:
-            raise BadInput(
-                "edit(kind='datasheet') needs at least one field to change",
-                next="edit(kind='datasheet', id=<slug>, vendor='Espressif')",
-            )
         return Response(body=f"updated datasheet {id}: {', '.join(meta_patch)}.")
 
     @staticmethod

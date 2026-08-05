@@ -19,9 +19,12 @@ Tests cover:
 
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 
 import pytest
+
+from precis.dispatch import Hub
 
 # The seven verbs moved out of ``precis.server`` into the shared
 # tool registry (``precis.tools.core``) so the MCP server and the
@@ -29,6 +32,7 @@ import pytest
 # function-level docstring contract; importing the function from
 # its definition site is the most direct way to access the same
 # object FastMCP serialises into ``tools/list``.
+from precis.tools import core as tools_core
 from precis.tools.core import delete as delete_tool
 from precis.tools.core import edit as edit_tool
 
@@ -128,3 +132,77 @@ def test_edit_capable_skill_documents_delete_idiom(name: str) -> None:
         "it before their first edit won't know how to delete a matched "
         "span and will loop on BadInput when they try"
     )
+
+
+# ---------------------------------------------------------------------------
+# Wire-schema parameter coverage (gr192827 item 5)
+# ---------------------------------------------------------------------------
+
+#: draft-documented ``edit(...)`` params (precis-draft-help,
+#: precis-proposal-help, precis-audio-help) that were entirely absent
+#: from the wire ``edit`` tool's signature — no MCP client could ever
+#: send them, and the server answered "requires text=/move=/style=/..."
+#: as if the caller had passed nothing at all.
+_ONCE_MISSING_DRAFT_EDIT_PARAMS = (
+    "sub",
+    "authors",
+    "authoring",
+    "word_target",
+    "origin",
+    "permission",
+    "voice",
+    "lang",
+)
+
+
+@pytest.mark.parametrize("name", _ONCE_MISSING_DRAFT_EDIT_PARAMS)
+def test_edit_tool_signature_exposes_draft_params(name: str) -> None:
+    """precis-draft-help documents ``edit(sub=…)``, ``edit(authors=…)``,
+    etc — the wire-level ``edit`` tool must actually declare these
+    params so a strict-schema client can send them (gr192827 item 5)."""
+    params = inspect.signature(edit_tool).parameters
+    assert name in params, (
+        f"edit tool is missing {name!r} — draft-help documents "
+        f"edit({name}=...) but no client could ever send it"
+    )
+
+
+def test_edit_tool_sub_reaches_draft_handler(hub: Hub) -> None:
+    """Before the fix, ``tools_core.edit(kind='draft', sub=...)`` raised
+    ``TypeError: unexpected keyword argument 'sub'`` — the param wasn't
+    declared on the wire function's signature at all, so no MCP client
+    could ever reach the draft handler's regex-substitute op. Drive it
+    end-to-end through the exact callable FastMCP invokes."""
+    from precis.config import PrecisConfig
+    from precis.dispatch import boot
+    from precis.runtime import PrecisRuntime
+
+    store = hub.store
+    runtime = PrecisRuntime(
+        config=PrecisConfig(), hub=boot(store=store, embedder=hub.embedder)
+    )
+    tools_core._runtime = runtime
+    try:
+        proj = store.insert_ref(kind="todo", slug=None, title="Proj").id
+        tools_core.put(kind="draft", id="subtest", title="T", project=proj)
+        ref = store.get_ref(kind="draft", id="subtest")
+        assert ref is not None
+        title_handle = store.reading_order(ref.id)[0].handle
+        tools_core.put(
+            kind="draft",
+            id="subtest",
+            chunk_kind="paragraph",
+            text="alpha—beta",
+            at={"after": "¶" + title_handle},
+        )
+        out = tools_core.edit(
+            kind="draft",
+            id="subtest",
+            sub={"find": "—", "replace": ", "},
+            apply=True,
+        )
+        assert "[error:" not in str(out)
+        texts = [c.text for c in store.reading_order(ref.id) if c.text]
+        assert any("alpha, beta" in t for t in texts)
+    finally:
+        tools_core._runtime = None

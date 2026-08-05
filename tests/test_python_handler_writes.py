@@ -538,6 +538,24 @@ def test_edit_match_all_replaces_every_occurrence(
     assert "name: str" not in body
 
 
+def test_edit_match_nth_picks_specified(handler: PythonHandler, repo: Path) -> None:
+    """td48771 Phase 2: ``match='nth'`` at the handler level — only
+    'first'/'all'/ambiguous-unique were exercised through the handler;
+    the resolver-level coverage lives in test_edit_resolve.py."""
+    handler.edit(
+        id="r/pkg/m.py",
+        mode="find-replace",
+        find="name: str",
+        text="name: bytes",
+        match="nth",
+        nth=2,
+    )
+    body = (repo / "pkg" / "m.py").read_text()
+    assert body.count("name: bytes") == 1
+    assert "def greet(self, name: str)" in body  # first occurrence untouched
+    assert "def shout(self, name: bytes)" in body  # second occurrence changed
+
+
 def test_edit_unique_match_errors_when_ambiguous(
     handler: PythonHandler, repo: Path
 ) -> None:
@@ -685,6 +703,22 @@ def test_insert_after_function_definition(handler: PythonHandler, repo: Path) ->
     body = (repo / "pkg" / "m.py").read_text()
     assert "def twice" in body
     assert "def helper" in body  # original preserved
+
+
+def test_insert_before_function_definition(handler: PythonHandler, repo: Path) -> None:
+    """td48771 Phase 2: ``where='before'`` at the handler level — only
+    'after' was exercised through the handler with valid syntax; line 708
+    exercises 'before' only for the syntax-breakage gate."""
+    handler.edit(
+        id="r/pkg/m.py",
+        mode="insert",
+        find="def helper",
+        where="before",
+        text="def zeroth(x: int) -> int:\n    return 0\n\n\n",
+    )
+    body = (repo / "pkg" / "m.py").read_text()
+    assert "def zeroth" in body
+    assert body.index("def zeroth") < body.index("def helper")
 
 
 def test_insert_requires_where(handler: PythonHandler) -> None:

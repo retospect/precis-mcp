@@ -146,6 +146,7 @@ def _evidence_edge_exists(
     hub_ref_id: int,
     role: str,
     src_ord: int | None = None,
+    conn: Any = None,
 ) -> bool:
     """True iff a ``paper --role--> hub`` edge grounded at ``src_ord`` exists.
 
@@ -157,16 +158,27 @@ def _evidence_edge_exists(
     grounding work removes). The ``chunks`` LEFT JOIN maps ``src_chunk_id``
     back to ``ord`` (NULL for a ref-level edge), and ``IS NOT DISTINCT
     FROM`` makes NULL==NULL match so a ref-level lookup still works.
+
+    ``conn`` lets a caller looping over many supporters (e.g.
+    :func:`seed_claim_hub`) reuse one connection instead of opening a
+    throwaway one per call; ``conn=None`` keeps the original
+    open-a-short-lived-connection behavior.
     """
-    with store.pool.connection() as conn:
-        row = conn.execute(
+
+    def _query(c: Any) -> bool:
+        row = c.execute(
             "SELECT 1 FROM links l "
             "LEFT JOIN chunks c ON c.chunk_id = l.src_chunk_id "
             "WHERE l.src_ref_id = %s AND l.dst_ref_id = %s AND l.relation = %s "
             "AND c.ord IS NOT DISTINCT FROM %s",
             (paper_ref_id, hub_ref_id, role, src_ord),
         ).fetchone()
-    return row is not None
+        return row is not None
+
+    if conn is not None:
+        return _query(conn)
+    with store.pool.connection() as own_conn:
+        return _query(own_conn)
 
 
 def find_hub_by_pub_id(store: Any, pub_id: str) -> int | None:
@@ -242,64 +254,69 @@ def seed_claim_hub(
     # paper are distinct edges now that grounding lands on src_chunk_id, so
     # only a supporter naming the *same* passage collapses.
     seen_edges: set[tuple[int, str, int | None]] = set()
-    for supporter in supporters:
-        paper = supporter.get("paper")
-        if paper is None:
-            raise BadInput("supporter missing required 'paper' field")
-        role = supporter.get("role") or _DEFAULT_ROLE
-        if role not in HUB_ROLES:
-            raise BadInput(
-                f"invalid evidence role: {role!r}",
-                options=sorted(HUB_ROLES),
-                next=f"role must be one of {sorted(HUB_ROLES)}",
+    # One connection reused across every supporter's `_evidence_edge_exists`
+    # check (below) rather than opening N throwaway pool connections for an
+    # N-supporter mint.
+    with store.pool.connection() as conn:
+        for supporter in supporters:
+            paper = supporter.get("paper")
+            if paper is None:
+                raise BadInput("supporter missing required 'paper' field")
+            role = supporter.get("role") or _DEFAULT_ROLE
+            if role not in HUB_ROLES:
+                raise BadInput(
+                    f"invalid evidence role: {role!r}",
+                    options=sorted(HUB_ROLES),
+                    next=f"role must be one of {sorted(HUB_ROLES)}",
+                )
+            paper_ref_id = resolve_paper_ref_id(store, paper)
+            src_ord = _grounding_chunk_ord(
+                store,
+                paper_ref_id=paper_ref_id,
+                meta={"source_handle": supporter.get("source_handle")},
             )
-        paper_ref_id = resolve_paper_ref_id(store, paper)
-        src_ord = _grounding_chunk_ord(
-            store,
-            paper_ref_id=paper_ref_id,
-            meta={"source_handle": supporter.get("source_handle")},
-        )
 
-        edge_key = (paper_ref_id, role, src_ord)
-        if edge_key in seen_edges:
-            collapsed.append(
-                {
-                    "paper": paper,
-                    "paper_ref_id": paper_ref_id,
-                    "role": role,
-                    "source_handle": supporter.get("source_handle"),
-                }
+            edge_key = (paper_ref_id, role, src_ord)
+            if edge_key in seen_edges:
+                collapsed.append(
+                    {
+                        "paper": paper,
+                        "paper_ref_id": paper_ref_id,
+                        "role": role,
+                        "source_handle": supporter.get("source_handle"),
+                    }
+                )
+                continue
+
+            if _evidence_edge_exists(
+                store,
+                paper_ref_id=paper_ref_id,
+                hub_ref_id=hub_ref_id,
+                role=role,
+                src_ord=src_ord,
+                conn=conn,
+            ):
+                already += 1
+                seen_edges.add(edge_key)
+                continue
+
+            meta = {
+                "support": supporter.get("support", "yes"),
+                "caveats": list(supporter.get("caveats") or []),
+                "source_handle": supporter.get("source_handle"),
+            }
+            attach_evidence(
+                store,
+                hub_ref_id=hub_ref_id,
+                paper_ref_id=paper_ref_id,
+                role=role,
+                meta=meta,
+                set_by=set_by,
             )
-            continue
-
-        if _evidence_edge_exists(
-            store,
-            paper_ref_id=paper_ref_id,
-            hub_ref_id=hub_ref_id,
-            role=role,
-            src_ord=src_ord,
-        ):
-            already += 1
+            attached += 1
+            if src_ord is None:
+                ungrounded += 1
             seen_edges.add(edge_key)
-            continue
-
-        meta = {
-            "support": supporter.get("support", "yes"),
-            "caveats": list(supporter.get("caveats") or []),
-            "source_handle": supporter.get("source_handle"),
-        }
-        attach_evidence(
-            store,
-            hub_ref_id=hub_ref_id,
-            paper_ref_id=paper_ref_id,
-            role=role,
-            meta=meta,
-            set_by=set_by,
-        )
-        attached += 1
-        if src_ord is None:
-            ungrounded += 1
-        seen_edges.add(edge_key)
 
     return {
         "pub_id": pub_id,

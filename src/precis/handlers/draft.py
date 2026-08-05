@@ -144,6 +144,64 @@ def _find_paper_cite_tokens(text: str) -> list[str]:
     return out
 
 
+#: Job status → short display label for :func:`_summarize_job_counts`
+#: (mirrors the STATUS closed-vocab job lifecycle: queued → submitted →
+#: running → succeeded|failed|cancelled|cancel_requested). Insertion
+#: order is the *source* status order, not the display order — see
+#: ``_JOB_STATUS_LABEL_ORDER`` below for the latter (worth-a-look
+#: statuses first: ok, failed, running, …).
+_JOB_STATUS_LABELS: dict[str, str] = {
+    "succeeded": "ok",
+    "failed": "failed",
+    "running": "running",
+    "queued": "queued",
+    "submitted": "submitted",
+    "cancel_requested": "cancel_requested",
+    "cancelled": "cancelled",
+}
+
+#: Display-label render order, deduped by first occurrence (several
+#: statuses could in principle collapse to the same label). Must be
+#: built from ``_JOB_STATUS_LABELS.values()``, not its keys — the keys
+#: are raw statuses ("succeeded"), the labels are what actually lands
+#: in the ``counts`` dict ("ok").
+_JOB_STATUS_LABEL_ORDER: tuple[str, ...] = tuple(
+    dict.fromkeys(_JOB_STATUS_LABELS.values())
+)
+
+
+def _summarize_job_counts(jobs: tuple[tuple[int, str], ...]) -> str:
+    """Collapse a todo's child-job list to per-status counts.
+
+    The draft outline's "Work in progress" block used to spell out
+    every job (``job:187049 succeeded, job:187242 succeeded, …``) —
+    for a todo with 20 retries that's 20 comma-joined entries per line,
+    which alone pushed the outline into pagination (gr192827 item 3).
+    Callers care about the *shape* of the retry history (how many
+    landed, how many are still stuck), not each job id, so this
+    renders ``"5 ok / 1 failed / 1 running"`` instead.
+    """
+    if not jobs:
+        return ""
+    counts: dict[str, int] = {}
+    for _job_id, status in jobs:
+        label = _JOB_STATUS_LABELS.get(status, status)
+        counts[label] = counts.get(label, 0) + 1
+    ordered = [
+        f"{counts[label]} {label}"
+        for label in _JOB_STATUS_LABEL_ORDER
+        if label in counts
+    ]
+    # Any status outside the known lifecycle (future vocab addition)
+    # still renders, just after the recognised ones, in first-seen order.
+    extra = [
+        f"{n} {label}"
+        for label, n in counts.items()
+        if label not in _JOB_STATUS_LABEL_ORDER
+    ]
+    return " / ".join(ordered + extra)
+
+
 #: A figure's origin class (ADR 0034) — drives the clearance gate. ``original``
 #: is ours; ``own_graph`` is generated from data (ships a data supplement);
 #: ``third_party`` is reused under a publisher permission (carries the paper-trail).
@@ -490,6 +548,12 @@ class DraftHandler(Handler):
             from precis.handlers._citations_view import render_citations_view
 
             return render_citations_view(self.store, ref)
+        if view == "hygiene":
+            # gr192827 item 9 — the complete undefined-abbreviation +
+            # whole-paper-cite lists, un-elided, with nothing else. The
+            # outline footer (below) shows the same data truncated to 8
+            # entries per list.
+            return self._render_hygiene(s, ref)
         if view == "review-diff":
             raise BadInput(
                 "review-diff targets a chunk (dc<id>), not a whole draft",
@@ -509,8 +573,10 @@ class DraftHandler(Handler):
                     "link graph, view='integration' for the integration ledger "
                     "(a topic dossier only), view='review' for the approval "
                     "ledger, view='citations' for the citation lifecycle "
-                    "(to-fetch/to-re-ground/to-promote/done), or omit (or "
-                    "view='outline') for the outline"
+                    "(to-fetch/to-re-ground/to-promote/done), view='hygiene' "
+                    "for the full undefined-abbreviation/whole-paper-cite "
+                    "lists (un-elided), or omit (or view='outline') for the "
+                    "outline"
                 ),
             )
         return self._render_outline(s, ref)
@@ -2310,7 +2376,9 @@ class DraftHandler(Handler):
         lines.extend(self._hygiene_lines(ref.id, chunks))
         return Response(body="\n".join(lines))
 
-    def _hygiene_lines(self, ref_id: int, chunks: list[Any]) -> list[str]:
+    def _hygiene_lines(
+        self, ref_id: int, chunks: list[Any], *, elide: bool = True
+    ) -> list[str]:
         """Whole-draft specificity debt, surfaced on every ``get`` — not
         just a fresh write — so a legacy/bulk-authored draft that never
         passed through an incremental ``put``/``edit`` still gets flagged.
@@ -2328,14 +2396,27 @@ class DraftHandler(Handler):
         A third, informational-only line (never a ``⚠``) scoreboards how
         many of the draft's cited passages have a Taproot claim hub
         available to cite instead — see :meth:`_taproot_hub_scoreboard`.
+
+        ``elide=True`` (the outline footer's default) truncates each list to
+        8 entries with a "``+N more``" tail and points at
+        ``view='hygiene'`` for the rest. ``elide=False``
+        (``get(view='hygiene')``) prints every entry — gr192827 item 9: an
+        agent clearing 65 undefined abbreviations shouldn't need ~4
+        paginated outline round-trips to see the next alphabetical batch.
         """
         out: list[str] = []
         text = "\n\n".join(c.text for c in chunks if c.text)
+        limit = 8 if elide else None
 
         undefined = self.store.undefined_abbrevs(ref_id, text)
         if undefined:
-            shown = ", ".join(undefined[:8])
-            tail = f" (+{len(undefined) - 8} more)" if len(undefined) > 8 else ""
+            shown = ", ".join(undefined if limit is None else undefined[:limit])
+            tail = (
+                f" (+{len(undefined) - limit} more — see "
+                "get(kind='draft', id=<slug>, view='hygiene') for the full list)"
+                if limit is not None and len(undefined) > limit
+                else ""
+            )
             out.append(
                 f"⚠ {len(undefined)} undefined abbreviation(s): {shown}{tail}. "
                 "put(kind='draft', chunk_kind='term', text='<expansion>', "
@@ -2350,8 +2431,13 @@ class DraftHandler(Handler):
             for bare in _find_whole_ref_citations(c.text):
                 whole_refs.append(f"{c.dc}:[{bare}]")
         if whole_refs:
-            shown = ", ".join(whole_refs[:8])
-            tail = f" (+{len(whole_refs) - 8} more)" if len(whole_refs) > 8 else ""
+            shown = ", ".join(whole_refs if limit is None else whole_refs[:limit])
+            tail = (
+                f" (+{len(whole_refs) - limit} more — see "
+                "get(kind='draft', id=<slug>, view='hygiene') for the full list)"
+                if limit is not None and len(whole_refs) > limit
+                else ""
+            )
             out.append(
                 f"⚠ {len(whole_refs)} whole-paper (non-chunk) citation(s): "
                 f"{shown}{tail}. Drill to the supporting chunk when "
@@ -2369,6 +2455,23 @@ class DraftHandler(Handler):
         if not out:
             return []
         return ["", "## Hygiene", *out]
+
+    def _render_hygiene(self, slug: str, ref: Any) -> Response:
+        """``get(kind='draft', view='hygiene')`` — gr192827 item 9: the
+        complete, un-elided hygiene report (undefined abbreviations +
+        whole-paper citations), and nothing else — no outline body, no
+        WIP block, no pagination of unrelated content."""
+        chunks = self.store.reading_order(ref.id)
+        lines = self._hygiene_lines(ref.id, chunks, elide=False)
+        header = f"# {ref.title}  ({slug}) — hygiene report"
+        if not lines:
+            return Response(
+                body=f"{header}\n\nclean — no undefined abbreviations or "
+                "whole-paper citations found."
+            )
+        # Drop the leading blank + "## Hygiene" heading _hygiene_lines
+        # prepends for the outline footer; this view is already scoped.
+        return Response(body="\n".join([header, "", *lines[2:]]))
 
     def _taproot_hub_scoreboard(self, chunks: list[Any]) -> tuple[int, int]:
         """``(grounded, total)`` over every paper/patent cite token in the
@@ -2421,7 +2524,7 @@ class DraftHandler(Handler):
         out = ["", "## Work in progress"]
         for it in items:
             mark = "⚠ blocked" if it.blocked else "⚙ in flight"
-            jobs = ", ".join(f"job:{jid} {st}" for jid, st in it.jobs)
+            jobs = _summarize_job_counts(it.jobs)
             suffix = f" — {jobs}" if jobs else ""
             out.append(f"{mark}  todo:{it.todo_id}  {it.title}{suffix}")
         out.append(

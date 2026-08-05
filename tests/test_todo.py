@@ -128,6 +128,52 @@ def test_can_transition_to_doing(handler: TodoHandler) -> None:
     assert "STATUS:doing" in tags
 
 
+# ── tag(): remove UX (gr192827 item 10) ────────────────────────────────
+
+
+def test_tag_remove_accepts_displayed_open_prefix(handler: TodoHandler) -> None:
+    """A ``child-failed:<job>`` bubble displays as ``OPEN:child-failed:<job>``
+    everywhere (nursery digest, draft WIP hints, DB namespace column), but
+    the wire form never carries the ``OPEN:`` sentinel — it used to reject
+    ``remove=['OPEN:child-failed:N']`` as an unregistered closed axis.
+    ``tag(remove=...)`` must accept the displayed form too."""
+    r = handler.put(text="task")
+    todo_id = int(r.body.split("id=")[1].split()[0].rstrip(",.()"))
+    handler.tag(id=todo_id, add=["child-failed:999"])
+    assert "child-failed:999" in {str(t) for t in handler.store.tags_for(todo_id)}
+
+    handler.tag(id=todo_id, remove=["OPEN:child-failed:999"])
+    assert "child-failed:999" not in {str(t) for t in handler.store.tags_for(todo_id)}
+
+
+def test_tag_remove_response_says_untagged(handler: TodoHandler) -> None:
+    """A pure removal reports "untagged", distinct from an add's
+    "tagged" — the old response read "tagged todo id=N" for both."""
+    r = handler.put(text="task", tags=["topic:x"])
+    todo_id = int(r.body.split("id=")[1].split()[0].rstrip(",.()"))
+    resp = handler.tag(id=todo_id, remove=["topic:x"])
+    assert resp.body.startswith("untagged ")
+
+
+def test_tag_add_and_remove_together_names_both_verbs(handler: TodoHandler) -> None:
+    r = handler.put(text="task", tags=["topic:x"])
+    todo_id = int(r.body.split("id=")[1].split()[0].rstrip(",.()"))
+    resp = handler.tag(id=todo_id, add=["topic:y"], remove=["topic:x"])
+    assert "tagged" in resp.body
+    assert "untagged" in resp.body
+
+
+def test_tag_remove_noop_reports_no_such_tag(handler: TodoHandler) -> None:
+    """Removing a tag that isn't present must not report blanket success
+    — a bulk cleanup driven by the response shape needs to see that
+    nothing actually changed."""
+    r = handler.put(text="task")
+    todo_id = int(r.body.split("id=")[1].split()[0].rstrip(",.()"))
+    resp = handler.tag(id=todo_id, remove=["topic:never-set"])
+    assert "no such tag" in resp.body
+    assert "no change" in resp.body
+
+
 # ── get: single + list views ─────────────────────────────────────────
 
 

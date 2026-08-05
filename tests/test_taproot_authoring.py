@@ -219,6 +219,37 @@ def test_seed_claim_hub_is_idempotent(store: Any) -> None:
     assert len(_edges(store, src=paper, dst=first["hub_ref_id"])) == 1
 
 
+def test_seed_claim_hub_multi_supporter_idempotent_via_shared_connection(
+    store: Any,
+) -> None:
+    """``seed_claim_hub``'s ``_evidence_edge_exists`` check now reuses one
+    connection across the supporter loop (efficiency-only change) — a
+    multi-supporter mint must still attach each new edge exactly once and
+    detect every one of them as already-present on a re-run, same as
+    before the connection was threaded through."""
+    papers = [
+        seed_ref(store, title=f"Multi-supporter {i}", kind="paper") for i in range(3)
+    ]
+    spec: dict[str, Any] = {
+        "sentence": "Grubbs catalysts enable ring-closing metathesis.",
+        "scope": {},
+        "supporters": [{"paper": p, "role": "corroborates"} for p in papers],
+    }
+
+    first = seed_claim_hub(store, **spec)
+    assert first["attached"] == 3
+    assert first["already"] == 0
+    assert not first["collapsed"]
+
+    second = seed_claim_hub(store, **spec)
+    assert second["hub_ref_id"] == first["hub_ref_id"]
+    assert second["attached"] == 0
+    assert second["already"] == 3
+
+    for paper in papers:
+        assert len(_edges(store, src=paper, dst=first["hub_ref_id"])) == 1
+
+
 # ── many-to-many (load-bearing) ─────────────────────────────────────────
 
 

@@ -402,6 +402,60 @@ def test_put_insert_before_anchor(handler: PlaintextHandler, pt_root: Path) -> N
     assert "PREFIX: end of story" in (pt_root / "log.txt").read_text()
 
 
+def test_put_insert_after_anchor(handler: PlaintextHandler, pt_root: Path) -> None:
+    """td48771 Phase 2: ``where='after'`` — only ``before`` was exercised
+    at the handler level; the resolver-level coverage lives in
+    test_edit_resolve.py."""
+    _write(pt_root, "log.txt", "start of story.\n")
+    out = handler.edit(
+        id="log",
+        mode="insert",
+        find="start of",
+        where="after",
+        text=" the",
+    )
+    assert out.body.startswith("inserted block ")
+    assert "start of the story" in (pt_root / "log.txt").read_text()
+
+
+def test_put_edit_match_all_replaces_every_occurrence(
+    handler: PlaintextHandler, pt_root: Path
+) -> None:
+    _write(pt_root, "doc.txt", "x is x and x.\n")
+    handler.edit(id="doc", mode="find-replace", find="x", text="Y", match="all")
+    assert "Y is Y and Y." in (pt_root / "doc.txt").read_text()
+
+
+def test_put_edit_match_nth_picks_specified(
+    handler: PlaintextHandler, pt_root: Path
+) -> None:
+    _write(pt_root, "doc.txt", "x is x and x.\n")
+    handler.edit(id="doc", mode="find-replace", find="x", text="Y", match="nth", nth=2)
+    assert "x is Y and x." in (pt_root / "doc.txt").read_text()
+
+
+def test_put_edit_ambiguous_match_unique_errors(
+    handler: PlaintextHandler, pt_root: Path
+) -> None:
+    _write(pt_root, "doc.txt", "foo and foo.\n")
+    with pytest.raises(BadInput) as excinfo:
+        handler.edit(id="doc", mode="find-replace", find="foo", text="bar")
+    assert "matches" in str(excinfo.value)
+
+
+def test_put_edit_not_found_carries_actionable_hint(
+    handler: PlaintextHandler, pt_root: Path
+) -> None:
+    """``find`` is well-formed but absent from the file — distinct from
+    the requires-find/requires-text cases already covered above."""
+    _write(pt_root, "doc.txt", "hello world.\n")
+    with pytest.raises(BadInput) as excinfo:
+        handler.edit(id="doc", mode="find-replace", find="goodbye", text="x")
+    msg = str(excinfo.value)
+    assert "not found" in msg
+    assert "doc" in msg
+
+
 def test_edit_dry_run_diff(handler: PlaintextHandler, pt_root: Path) -> None:
     _write(pt_root, "doc.txt", "foo.\n")
     out = handler.edit(
@@ -663,3 +717,66 @@ def test_workspace_flag_set_by_system(handler: PlaintextHandler, pt_root: Path) 
             (ref.id,),
         ).fetchone()
     assert row is not None and row[0] == "system"
+
+
+# ── td48771 Phase 3: cascade invariant ─────────────────────────────────
+#
+# Same guarantee as test_markdown_handler.py's twin: a body edit must
+# never leave a stale chunk_embeddings row. Also covers ``tex`` (thin
+# PlaintextHandler subclass, same re-ingest path) per this file's own
+# "shared pipeline exercised here" convention.
+
+
+def test_put_edit_cascades_stale_embedding_away(
+    handler: PlaintextHandler, pt_root: Path
+) -> None:
+    """The ``hub`` fixture wires a MockEmbedder, so ingest embeds
+    synchronously (test-harness convenience, not a worker pass) — the
+    invariant to check post-edit is that no stale/orphaned row survives
+    the old chunk_id, and the new one is freshly derived from the new
+    text, not a leaked copy of the old vector. See test_markdown_handler
+    .py's twin for the file-kind rationale."""
+    _write(pt_root, "doc.txt", "First paragraph with fox.\n")
+    handler.get(id="doc")  # force ingest — embeds synchronously
+    ref = handler.store.get_ref(kind="plaintext", id="doc")
+    assert ref is not None
+    old_block = next(
+        b for b in handler.store.list_blocks_for_ref(ref.id) if "fox" in b.text
+    )
+    with handler.store.pool.connection() as conn:
+        old_vector = conn.execute(
+            "SELECT vector FROM chunk_embeddings WHERE chunk_id = %s",
+            (old_block.id,),
+        ).fetchone()
+    assert old_vector is not None  # sanity: ingest embedded it
+
+    handler.edit(id="doc", mode="find-replace", find="fox", text="cat")
+
+    with handler.store.pool.connection() as conn:
+        assert (
+            conn.execute(
+                "SELECT 1 FROM chunks WHERE chunk_id = %s", (old_block.id,)
+            ).fetchone()
+            is None
+        )
+        assert (
+            conn.execute(
+                "SELECT 1 FROM chunk_embeddings WHERE chunk_id = %s",
+                (old_block.id,),
+            ).fetchone()
+            is None
+        )
+
+    fresh_ref = handler.store.get_ref(kind="plaintext", id="doc")
+    assert fresh_ref is not None
+    new_block = next(
+        b for b in handler.store.list_blocks_for_ref(fresh_ref.id) if "cat" in b.text
+    )
+    assert new_block.id != old_block.id
+    with handler.store.pool.connection() as conn:
+        new_vector = conn.execute(
+            "SELECT vector FROM chunk_embeddings WHERE chunk_id = %s",
+            (new_block.id,),
+        ).fetchone()
+    assert new_vector is not None
+    assert new_vector != old_vector

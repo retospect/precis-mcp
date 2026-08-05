@@ -241,7 +241,14 @@ Per-kind gates:
 
 `put` on a file kind is creation-only; use `edit` to modify.
 
-`draft` chunks carry two more `edit` params outside this shared grammar:
+`draft` (and `proposal`) chunks carry more `edit` params outside this
+shared grammar — `move=` (reorder/reparent a chunk), `cell=` (a table
+chunk's cell), `sub=` (regex substitute, dry-run by default), `review=`
+(record a human sign-off), `authoring=` (let review lenses edit inline),
+`authors=` (set the byline), `word_target=` (a heading's length budget),
+`not_abbrev=` (silence an abbreviation hint) — all documented in
+`precis-draft-help`, not here.
+
 `review='human'` (+ optional `verdict=`, default `'approved'`) records that
 you — the human — signed off on a chunk at its *current* text, e.g.
 `edit(kind='draft', id='dc12', review='human')`. See
@@ -260,4 +267,7 @@ get(kind="skill", id="precis-python-help")  # python AST gates + ruff
 get(kind="skill", id="precis-plaintext-help")  # plaintext quirks
 get(kind="skill", id="precis-put-help")  # creating new files
 get(kind="skill", id="precis-delete-help")  # whole-file and whole-block removal
+get(
+    kind="skill", id="precis-draft-help"
+)  # draft-only edit ops: move/table/review/authoring/…
 ```

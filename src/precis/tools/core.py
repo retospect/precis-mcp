@@ -965,6 +965,38 @@ def edit(
     # draft abbreviations: mark token(s) as NOT an abbreviation (chem
     # formula, model name, …) to silence the undefined-abbrev write hint.
     not_abbrev: list[str] | None = None,
+    # draft regex substitute (see precis-draft-help "Find & substitute by
+    # regex"): sub={'find':…,'replace':…,'flags':…} (or a 's/find/replace/'
+    # string) rewrites every match across the id= scope (a draft slug or a
+    # dc<id> section/chunk). Previews by default; apply=True commits.
+    # Declared at the verb level (like move= above) so strict-schema MCP
+    # clients don't strip it — it was previously absent from this schema
+    # entirely (gr192827 item 5), so no client could ever send it.
+    sub: dict[str, Any] | str | None = None,
+    # draft byline (see precis-draft-help "Byline — authors & affiliations"):
+    # authors=[{'name':…,'affiliation':…,'ror':…}, 'Bare Name', …] sets the
+    # document-level byline (id= is the draft slug, not a chunk handle).
+    # Replaces the whole list; also accepted on kind='paper'/'pres' to repair
+    # bibliographic metadata.
+    authors: list[dict[str, Any]] | str | None = None,
+    # draft auto-author toggle (see precis-draft-help "Auto-author toggle"):
+    # authoring='on'|'off' lets the cites/structure review lenses edit the
+    # draft inline instead of only filing a change-request todo. id= is the
+    # draft slug (or any handle in it).
+    authoring: bool | str | None = None,
+    # draft heading word budget (see precis-proposal-help): word_target=
+    # {'min':…,'max':…} sets a section's word-count target; {} clears it.
+    word_target: dict[str, Any] | None = None,
+    # draft figure provenance (see precis-draft-help "Figures & images"):
+    # origin='original'|'own_graph'|'third_party' + permission={…} (the
+    # publisher paper-trail, required when origin='third_party') edit a
+    # figure chunk's clearance metadata — caption/image bytes stay put.
+    origin: str | None = None,
+    permission: dict[str, Any] | None = None,
+    # draft narration routing (see precis-audio-help): voice=/lang= set
+    # which Kokoro voice + language phonemizer speaks this chunk on export.
+    voice: str | None = None,
+    lang: str | None = None,
     # draft data/table chunk (chunk_kind='table', ADR 0035): replace the
     # canonical data (table={header,rows}) / legend (caption=) / provenance
     # (regen=); the markdown text re-derives. Field-level edits (docs/
@@ -1046,6 +1078,14 @@ def edit(
         "move": move,
         "base_sha": base_sha,
         "not_abbrev": not_abbrev,
+        "sub": sub,
+        "authors": authors,
+        "authoring": authoring,
+        "word_target": word_target,
+        "origin": origin,
+        "permission": permission,
+        "voice": voice,
+        "lang": lang,
         "table": table,
         "caption": caption,
         "regen": regen,

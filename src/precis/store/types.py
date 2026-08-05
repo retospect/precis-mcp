@@ -559,6 +559,19 @@ class Tag:
                 f"invalid tag: {s!r}",
                 next="tags must be non-empty strings (e.g. 'STATUS:done')",
             )
+        # ``OPEN`` is the internal DB namespace sentinel for free-form
+        # tags — never a real closed-vocab axis (see ``_CLOSED_VOCAB``,
+        # which never registers it). Several displays (nursery digest,
+        # draft "Work in progress" hints, the DB namespace column) render
+        # an open tag with its literal storage prefix, e.g.
+        # ``OPEN:child-failed:5``, even though the wire form never
+        # carries it. Copy-pasting that displayed form into
+        # ``tag(remove=[...])`` used to misparse as an unregistered
+        # closed axis ("unknown closed-prefix axis: 'OPEN'") — strip the
+        # sentinel and reparse the remainder as the open tag it actually
+        # names (gr192827 item 10a).
+        if s.startswith("OPEN:") and len(s) > len("OPEN:"):
+            s = s[len("OPEN:") :]
         # Hard length cap. Tags are short structured labels that the
         # `tags` table indexes — a 600-char "ask-user:<paragraph of
         # analysis>" value bloats the index, breaks attention-view

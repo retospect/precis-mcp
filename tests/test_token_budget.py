@@ -135,11 +135,20 @@ def test_tools_list_under_byte_budget() -> None:
     ``taproot=``/``ref_level=``/``apply=`` on ``edit`` (draft backfill; the
     ``apply=`` add also finally exposes the pre-existing ``sub=`` commit
     flag). Schema-side growth only — same shape as the prior bumps.
+
+    2026-08-05: cap raised from 21 KB → 22 KB to absorb the draft-edit
+    wire-schema params exposed by gr192827 item 5: ``sub=``/``authors=``/
+    ``authoring=``/``word_target=``/``origin=``/``permission=``/``voice=``/
+    ``lang=`` on ``edit`` — all documented in ``precis-draft-help`` and
+    accepted by the draft handler, but previously absent from the tool's
+    JSON schema so strict-schema clients could not send them (~240 B of
+    irreducible input-schema). Verb descriptions unchanged — schema-side
+    growth only, same shape as the prior bumps.
     """
     serialised = json.dumps(_tools_list_wire_shape(), separators=(",", ":"))
     size = len(serialised.encode("utf-8"))
-    assert size < 21 * 1024, (
-        f"tools/list wire-shape JSON is {size} bytes (cap: 20 KB). "
+    assert size < 22 * 1024, (
+        f"tools/list wire-shape JSON is {size} bytes (cap: 22 KB). "
         "Investigate which verb description or schema grew. The "
         "per-verb description cap (1 KB) is the easier diff to "
         "spot; bump that test's verbosity if needed."

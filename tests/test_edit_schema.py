@@ -10,11 +10,16 @@ lie costs a retry loop on 7B / 8B callers that trust the declared
 ``src/precis/server.py::_install_edit_schema_constraints`` rewrites
 the schema at import time to encode the per-mode coupling:
 
-- ``text`` is top-level required (true for every wire mode — schema
-  ``required`` array is the field small models read first).
-- ``find`` and ``where`` are mode-conditional; the coupling is
-  encoded in the ``description`` text of those properties (and of
-  ``mode``) so schema-reading clients still get the hint.
+- ``text``, ``find`` and ``where`` are all mode-conditional — none is
+  top-level ``required``. ``text`` is required on every text-mutation
+  mode (``find-replace``/``insert``/``append``/``replace``) but NOT on
+  the structural ops (``move=``, ``table=``, ``cell=``, ``review=``,
+  ``authors=``, ``sub=``, …) — gr192827 item 1 found that forcing
+  ``text`` unconditionally required blocked a plain ``edit(move=...)``
+  call for a strict-schema client (it demanded a dummy
+  ``text=None``). The coupling for all three is encoded in the
+  ``description`` text of those properties (and of ``mode``) so
+  schema-reading clients still get the hint.
 
 The old design used ``allOf`` + ``if/then`` to encode the
 mode-conditional coupling at the JSON-Schema level. That broke
@@ -23,10 +28,13 @@ Anthropic's ``/v1/messages`` API, which rejects
 ``tools[].custom.input_schema`` with a 400 and blocks every tool
 call. We dropped to description-only encoding plus the runtime
 ``BadInput`` safety net so the surface stays usable with the
-official API.
+official API. A flat top-level ``required`` array can't express
+"required unless one of these other fields is set" either, which is
+why ``text`` isn't there despite being required on the common path.
 
 These tests lock the new shape so a future refactor that
-re-introduces a top-level union keyword fails loudly in CI.
+re-introduces a top-level union keyword (or a blanket ``text``
+requirement that blocks structural ops again) fails loudly in CI.
 """
 
 from __future__ import annotations
@@ -42,14 +50,18 @@ def _edit_schema() -> dict[str, Any]:
     return tool.parameters
 
 
-def test_edit_schema_lists_text_as_required() -> None:
-    """``text`` is required on every wire-level mode; the top-level
-    ``required`` array must advertise it so small models emit it on
-    the first try rather than looping on BadInput."""
+def test_edit_schema_does_not_force_text_required() -> None:
+    """``text`` must NOT be top-level required — a growing family of
+    structural ops (``move=``, ``table=``, ``cell=``, ``review=``,
+    ``authors=``, ``sub=``, …) never touch ``text=`` at all, and a
+    blanket requirement blocks those calls for a strict-schema client
+    unless it pads a dummy ``text=None`` (gr192827 item 1)."""
     schema = _edit_schema()
     required = schema.get("required", [])
-    assert "text" in required, (
-        f"'text' must be top-level required; got required={required!r}"
+    assert "text" not in required, (
+        f"'text' must not be top-level required — it would block "
+        f"move=/table=/cell=/review=/authors=/sub= calls; "
+        f"got required={required!r}"
     )
 
 
@@ -67,6 +79,22 @@ def test_edit_schema_has_no_top_level_union_keywords() -> None:
             "array with a 400. Encode the constraint as property "
             "descriptions or rely on runtime BadInput instead."
         )
+
+
+def test_edit_schema_text_description_advertises_mode_coupling() -> None:
+    """The ``text`` property's description must call out which modes
+    require it, and must explicitly name at least one structural op
+    (``move=``) that does NOT need it — the schema-level signal that
+    replaces the removed blanket ``required`` entry (gr192827 item 1)."""
+    schema = _edit_schema()
+    desc = (schema.get("properties", {}).get("text", {}) or {}).get("description", "")
+    assert "find-replace" in desc and "insert" in desc, (
+        f"`text` description must name the modes that require it; got {desc!r}"
+    )
+    assert "move=" in desc, (
+        f"`text` description must call out a structural op that does NOT "
+        f"require text=; got {desc!r}"
+    )
 
 
 def test_edit_schema_find_description_advertises_mode_coupling() -> None:
@@ -105,25 +133,22 @@ def test_edit_schema_mode_description_enumerates_per_mode_required_args() -> Non
 
 
 def test_idempotent_schema_install_does_not_duplicate_clauses() -> None:
-    """Calling the installer twice must not duplicate the top-level
-    ``text`` requirement or re-append the description suffixes.
-    Guards against repeated module imports (e.g. under pytest with a
-    reload plugin).
+    """Calling the installer twice must not duplicate ``required`` or
+    re-append the description suffixes. Guards against repeated module
+    imports (e.g. under pytest with a reload plugin).
     """
     schema_before = _edit_schema()
     before_required = list(schema_before.get("required", []))
     before_props = {
         name: dict(schema_before.get("properties", {}).get(name, {}))
-        for name in ("mode", "find", "where")
+        for name in ("mode", "find", "where", "text")
     }
 
     server._install_edit_schema_constraints(server.mcp)
 
     schema_after = _edit_schema()
-    # `text` should appear exactly once.
-    assert schema_after.get("required", []).count("text") == 1
     assert schema_after.get("required", []) == before_required, (
-        "installer re-added `text` to required"
+        "installer mutated required on a second install"
     )
     # Property descriptions should be stable across re-runs.
     for name, before_schema in before_props.items():
