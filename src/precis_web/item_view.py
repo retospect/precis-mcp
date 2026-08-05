@@ -266,10 +266,29 @@ class ItemPresenter:
         out: list[dict[str, Any]] = []
         pub = doi_url(identifier)
         if pub:
+            is_arxiv = identifier.startswith("arxiv:")
             out.append(
                 {
-                    "label": "arXiv" if identifier.startswith("arxiv:") else "DOI",
+                    "label": "arXiv" if is_arxiv else "DOI",
                     "href": pub,
+                }
+            )
+            # Copy-to-clipboard entry (``clip``, no href) — the bare id for
+            # pasting into a library/ILL search, right beside the DOI link.
+            # Key is ``clip``, NOT ``copy``: Jinja's ``l.copy`` resolves the
+            # dict *method* (truthy on every link), which turned every find:
+            # link into a copy button. Strip only the known scheme prefixes:
+            # a DOI itself may legally contain ``:``.
+            bare = identifier
+            for prefix in ("doi:", "arxiv:"):
+                if bare.startswith(prefix):
+                    bare = bare[len(prefix) :]
+                    break
+            out.append(
+                {
+                    "label": "⧉",
+                    "clip": bare,
+                    "title": f"copy {'arXiv id' if is_arxiv else 'DOI'}: {bare}",
                 }
             )
         lk = libkey_url(identifier)

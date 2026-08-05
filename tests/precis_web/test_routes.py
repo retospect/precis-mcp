@@ -647,6 +647,18 @@ def test_drive_rows_show_paper_lookup_links(client) -> None:
     assert "doi.org/10.1038/nature01797" in resp.text
 
 
+def test_drive_rows_show_copy_doi_button_beside_links(client) -> None:
+    """The ⧉ copy-to-clipboard button carries the bare DOI in data-v,
+    WITHOUT displacing the find: anchors. Regression: the entry's dict key
+    must not be ``copy`` — Jinja resolves ``l.copy`` to the dict *method*
+    (truthy on every link), which turned every find: link into a copy
+    button and dropped the UoL/Scholar anchors from the page."""
+    resp = client.get("/drive")
+    assert 'data-v="10.1038/nature01797"' in resp.text
+    # The anchors must still be real links on the same page.
+    assert "uol.primo.exlibrisgroup.com" in resp.text
+
+
 def test_drive_download_links_carry_ref_id_for_mark_tried_beacon(client) -> None:
     """LibKey/arXiv download links carry data-ref-id alongside data-download
     so the "Open all downloads" button's sendBeacon can post exactly the

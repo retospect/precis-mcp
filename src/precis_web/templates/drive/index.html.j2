@@ -417,9 +417,18 @@
           <p class="text-xs text-slate-400 mt-0.5">
             find:
             {% for l in row.links %}
+              {%- if l.clip -%}
+              {# copy-to-clipboard entry (no href) — bare DOI/arXiv id for
+                 pasting into a library/ILL search. Key is ``clip`` because
+                 Jinja resolves ``l.copy`` to the dict method (always truthy). #}
+              <button type="button" data-v="{{ l.clip }}" title="{{ l.title }}"
+                      onclick="navigator.clipboard.writeText(this.dataset.v); this.textContent='✓'; setTimeout(() => { this.textContent='⧉'; }, 900)"
+                      class="text-sky-700 hover:underline">{{ l.label }}</button>
+              {%- else -%}
               <a href="{{ l.href }}" target="_blank" rel="noopener"
                  {% if l.download %}data-download data-ref-id="{{ row.id }}"{% endif %}
-                 class="{% if l.download %}font-medium text-emerald-700{% else %}text-sky-700{% endif %} hover:underline">{{ l.label }}</a>{% if not loop.last %} · {% endif %}
+                 class="{% if l.download %}font-medium text-emerald-700{% else %}text-sky-700{% endif %} hover:underline">{{ l.label }}</a>
+              {%- endif -%}{% if not loop.last %} · {% endif %}
             {% endfor %}
           </p>
         {% endif %}

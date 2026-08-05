@@ -155,7 +155,12 @@ def test_links_doi_row_carries_libkey_download_plus_search_tier() -> None:
     LibKey "to-pdf" link dropped when papers_needed folded into Drive."""
     links = ItemPresenter("paper").links("10.1016/j.enbuild.2024.114668")
     labels = [link["label"] for link in links]
-    assert labels == ["DOI", "LibKey ↓", "UoL", "Scholar"]
+    assert labels == ["DOI", "⧉", "LibKey ↓", "UoL", "Scholar"]
+    # The ⧉ entry is copy-to-clipboard (bare DOI, no href) — for pasting
+    # into a library/ILL search.
+    copy = next(link for link in links if link.get("clip"))
+    assert copy["clip"] == "10.1016/j.enbuild.2024.114668"
+    assert "href" not in copy
     libkey = next(link for link in links if link["label"] == "LibKey ↓")
     assert libkey["download"] is True
     assert libkey["href"] == (
@@ -173,6 +178,9 @@ def test_links_arxiv_row_gets_pdf_download_not_libkey() -> None:
     assert [link["label"] for link in downloads] == ["arXiv ↓"]
     assert downloads[0]["href"] == "https://arxiv.org/pdf/2401.01234"
     assert not any(link["label"] == "LibKey ↓" for link in links)
+    # Copy entry carries the bare arXiv id (scheme prefix stripped).
+    copy = next(link for link in links if link.get("clip"))
+    assert copy["clip"] == "2401.01234"
 
 
 def test_links_empty_without_identifier() -> None:
