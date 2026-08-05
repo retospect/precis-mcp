@@ -2306,6 +2306,11 @@ Owner `mcp_modalities.py::register_skill_prompts`; artefact
   fix; else bump `Recheck-after` +2 weeks. Cleared in the same pass: GitPython
   #71-74 → 3.1.55, pyasn1 #69/#70 → 0.6.4, setuptools #68 → 83.0.0 (main
   `ce531a4c`) — those were not blocked, just needed a lockfile bump.
+  **2026-08-05:** same lockfile-only clearance for the next round —
+  cryptography #80 (high, PKCS#7 Bleichenbacher) → 50.0.0, GitPython #77
+  (high) / #78 / #79 (git arg-injection) → 3.1.58; both transitive, no cap,
+  resolved cleanly via `uv lock --upgrade-package`. Pillow #56–67 remain the
+  only still-blocked entry.
 
 ## 🔵 Paper-ingest `equation` chunk kind — retire later *(deferred)*
 
