@@ -29,9 +29,9 @@ from typing import Any
 from precis.export._patent_cite import format_patent_citation, paper_inline_citation
 from precis.export._trust_marks import (
     UNSUPPORTED_MARK_TEXT,
+    mark_text,
     record_override_event,
     unverified_claims_entries,
-    unverified_mark_text,
 )
 from precis.export.latex import (
     _COMBINED,
@@ -642,7 +642,9 @@ def _render_trust_mark(ctx: _Ctx, finding_ref_id: int, paragraph: Any) -> None:
         run.bold = True
         run.font.color.rgb = RGBColor.from_string(_UNSUPPORTED_INK)
         return
-    run = paragraph.add_run(f" {unverified_mark_text(state)}")
+    # abstract-only / author-vouched / unverified — all calm italic marks;
+    # the bracket lead word (mark_text) carries the distinction.
+    run = paragraph.add_run(f" {mark_text(state)}")
     run.italic = True
     run.font.color.rgb = RGBColor.from_string(_UNVERIFIED_INK)
 

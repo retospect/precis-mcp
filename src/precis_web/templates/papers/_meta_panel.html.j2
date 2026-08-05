@@ -44,6 +44,44 @@
   {% endif %}
 </div>
 
+{# "Can't get it" — unacquirable-source declaration on THIS paper
+   (meta.unacquirable_override). Read through by precis.taproot.trust: every
+   claim whose blocking source is this paper then renders the calm Ⓐ
+   (abstract-only) / ✍ (author-vouched) mark instead of the ⚠ triangle —
+   never clean, since no one read the full text. POST /papers/<id>/
+   unacquirable (papers.unacquirable). #}
+<div class="border-t border-slate-100 pt-2 text-xs">
+  {% if unacquirable %}
+  <div class="flex flex-wrap items-center gap-2">
+    <span class="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-amber-800">
+      {% if unacquirable.mode == 'abstract' %}Ⓐ abstract-only{% else %}✍ author-vouched{% endif %}
+    </span>
+    {% if unacquirable.note %}<span class="text-slate-500">{{ unacquirable.note }}</span>{% endif %}
+    {% if unacquirable.by %}<span class="text-[10px] text-slate-400">— {{ unacquirable.by }}</span>{% endif %}
+    <form method="post" action="/papers/{{ paper.id }}/unacquirable" class="inline">
+      <input type="hidden" name="mode" value="clear" />
+      <button type="submit" class="text-slate-400 hover:text-rose-600"
+              title="clear the unacquirable declaration">undo</button>
+    </form>
+  </div>
+  {% else %}
+  <form method="post" action="/papers/{{ paper.id }}/unacquirable" class="space-y-1">
+    <p class="text-slate-400">Can't get this paper? Declare it — claims citing it stop reading as unverified ⚠.</p>
+    <input name="note" required autocomplete="off"
+           placeholder="why — e.g. paywalled; UoL + ILL + Scholar exhausted"
+           class="w-full rounded border border-slate-300 px-1.5 py-0.5 text-[11px]" />
+    <div class="flex flex-wrap gap-2">
+      <button type="submit" name="mode" value="abstract"
+              class="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-amber-800 hover:bg-amber-100"
+              title="the abstract on file clearly backs the claim — full text not read">Ⓐ Abstract backs it</button>
+      <button type="submit" name="mode" value="vouched"
+              class="rounded border border-slate-300 bg-slate-50 px-2 py-1 text-slate-700 hover:bg-slate-100"
+              title="source is unobtainable — accept the citation on my word">✍ I vouch for it</button>
+    </div>
+  </form>
+  {% endif %}
+</div>
+
 {# Tag chips. OPEN (free) tags — the ``needs-triage`` review flag
    included — carry a × that removes them via the tag verb; closed-
    vocab tags (STATUS:*, project:*, …) render inert (remove those

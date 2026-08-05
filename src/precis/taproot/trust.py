@@ -32,7 +32,27 @@ from precis.taproot.seniority import (
 )
 from precis.workers._chase_llm import is_corroborating
 
-TrustLabel = Literal["clean", "unverified", "unsupported"]
+TrustLabel = Literal["clean", "abstract", "vouched", "unverified", "unsupported"]
+
+#: Confidence ladder, worst (loudest) → best, for a "worst-of" reduction
+#: across a block's cite heads (``smartdraft.claim_trust_for_block``) and
+#: for CSS precedence. ``clean`` (verified full text) is quietest; the two
+#: author-declared/abstract-only middle states sit *below* ``unverified``
+#: (they're more trustworthy than "not looked yet") but are still marked;
+#: ``unsupported`` (read and contradicts) is loudest.
+_TRUST_SEVERITY: dict[str, int] = {
+    "clean": 0,
+    "abstract": 1,
+    "vouched": 2,
+    "unverified": 3,
+    "unsupported": 4,
+}
+
+
+def worse_trust(a: str, b: str) -> str:
+    """The louder of two trust labels (higher :data:`_TRUST_SEVERITY`)."""
+    return a if _TRUST_SEVERITY.get(a, 0) >= _TRUST_SEVERITY.get(b, 0) else b
+
 
 _STATUS_NAMESPACE = "STATUS"
 _STATUS_ESTABLISHED = "established"
@@ -61,10 +81,14 @@ class TrustState:
 
     label: TrustLabel
     note: str | None
-    #: True iff ``meta.unacquirable_override`` converted an otherwise-
-    #: unverified label to clean. Never true for "unsupported" (a negative
-    #: terminal verification always renders, override or not) or when the
-    #: derived label was already "clean".
+    #: True iff an ``unacquirable_override`` (the author's, on the finding
+    #: itself, or the source paper's, set from its Meta tab) converted an
+    #: otherwise-**unverified** label to the softer ``abstract`` (Ⓐ — the
+    #: abstract backs it) or ``vouched`` (✍ — author vouches, source
+    #: unobtainable). Never true for "unsupported" (a negative terminal
+    #: verification always renders, override or not) or a label that was
+    #: already "clean". The override no longer folds all the way to clean:
+    #: no one read the full text, so the claim keeps a (calm) mark.
     overridden: bool
     #: The raw machine status this was derived from — ``'hub'`` for a
     #: Taproot claim hub, else the STATUS tag value (or 'tracing' when
@@ -179,9 +203,48 @@ def claim_trust(
     else:
         label, note, status = _lifecycle_trust(store, finding_ref_id, meta)
 
-    if meta.get("unacquirable_override") and label == "unverified":
-        return TrustState(label="clean", note=note, overridden=True, status=status)
+    if label == "unverified":
+        override = meta.get("unacquirable_override") or _source_paper_override(
+            store, meta
+        )
+        if override:
+            # Mode picks the softer state: 'abstract' → Ⓐ (the abstract on
+            # file backs it), anything else (incl. a legacy override with no
+            # mode) → ✍ vouched (author asserts; source unobtainable). Never
+            # all the way to clean — no one read the full text.
+            soft: TrustLabel = (
+                "abstract" if override.get("mode") == "abstract" else "vouched"
+            )
+            return TrustState(
+                label=soft,
+                note=override.get("note") or note,
+                overridden=True,
+                status=status,
+            )
     return TrustState(label=label, note=note, overridden=False, status=status)
+
+
+def _source_paper_override(store: Any, meta: dict[str, Any]) -> dict[str, Any] | None:
+    """The ``unacquirable_override`` on a lifecycle finding's *source paper*
+    — the read-through that lets an author mark a paper unobtainable from
+    its own Meta tab and have every claim resting on it render calm,
+    without editing each finding.
+
+    A chased finding names its blocking paper as its chain frontier
+    (``meta.chain[-1].ref_id`` — the stub whose PDF it's waiting on). A hub
+    has no such chain (its trust comes from supporters, and an unverified
+    hub simply has none), so this is a no-op there — only the finding-level
+    override applies to hubs."""
+    chain = meta.get("chain") or []
+    if not (chain and isinstance(chain[-1], dict)):
+        return None
+    frontier_id = chain[-1].get("ref_id")
+    if not isinstance(frontier_id, int):
+        return None
+    ref = store.fetch_refs_by_ids([frontier_id]).get(frontier_id)
+    pmeta = (getattr(ref, "meta", None) or {}) if ref is not None else {}
+    override = pmeta.get("unacquirable_override")
+    return override if isinstance(override, dict) else None
 
 
 def claim_trust_bulk(
@@ -237,4 +300,10 @@ def claim_trust_bulk(
     return out
 
 
-__all__ = ["TrustLabel", "TrustState", "claim_trust", "claim_trust_bulk"]
+__all__ = [
+    "TrustLabel",
+    "TrustState",
+    "claim_trust",
+    "claim_trust_bulk",
+    "worse_trust",
+]

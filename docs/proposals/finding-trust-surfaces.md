@@ -24,6 +24,23 @@ blocked-by: finding-acquisition-mode (RESOLVED — substrate shipped f2b2bf20, 2
 > works around (chase flips to established despite a contradicts
 > verdict) is gripe gr191353.
 
+> **Amended 2026-08-05 — 3 labels → 5, + paper-level override (Reto).**
+> The two-label collapse below was extended: an unacquirable override no
+> longer folds to **clean** (no one read the full text) but to one of two
+> calm middle states between clean and unverified —
+> **abstract (Ⓐ)** "the abstract backs it" and **vouched (✍)** "author
+> vouches, source unobtainable". Full ladder, worst-of via
+> `trust.worse_trust`: `clean ‹ abstract ‹ vouched ‹ unverified ‹
+> unsupported`. The override now also lives on the **source paper**
+> (`meta.unacquirable_override {mode,note,by,at}`, set from the paper Meta
+> tab, `by='web:owner'`); `claim_trust` reads it through from a lifecycle
+> finding's chain-frontier paper, so a paper marked unobtainable once
+> softens every claim resting on it — no per-finding editing. Ⓐ is
+> human-asserted today; an automated abstract-verification pass that earns
+> Ⓐ without a human is a filed follow-on (OPEN-ITEMS). Exporters give Ⓐ/✍
+> a calm inline mark + the `export_override` audit row but keep them OUT
+> of the "Unverified claims" problem list.
+
 ## Motivation / why
 
 `finding-acquisition-mode` gives a claim a life *before* its evidence

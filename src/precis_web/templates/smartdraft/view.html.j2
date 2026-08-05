@@ -132,18 +132,25 @@
      edited since. A trailing red "!" (::after) marks the deterministic
      citation-integrity flag (item 5c) — orthogonal to the ledger state, so
      it never overrides the dot's own colour. Claim-trust overlay
-     (finding-trust-surfaces §3, same ::after slot): "?" amber for an
-     unverified-backed cite, "‼" louder red+bold for an unsupported one —
-     ALL applicable overlay classes are added to a block (see
-     _block.html.j2), and since only one ::after can render, source order
-     here (not template logic) picks the winner when several apply:
-     unsupported > integrity-fail > unverified, loudest-last. */
+     (finding-trust-surfaces §3, same ::after slot), quietest→loudest:
+     "Ⓐ" red for an abstract-only cite, "✍" calm slate for an author-vouched
+     one (both the softer states an unacquirable-override folds to), "?"
+     amber for unverified, "‼" red+bold for unsupported — ALL applicable
+     overlay classes are added to a block (see _block.html.j2), and since
+     only one ::after can render, source order here (not template logic)
+     picks the winner when several apply:
+     unsupported > integrity-fail > unverified > vouched > abstract,
+     loudest-last. */
   .sd-review { cursor: pointer; }
   .sd-review-dot { line-height: 1; font-size: 13px; vertical-align: middle; }
   .sd-review-dot.empty { color: #cbd5e1; }    /* slate-300 */
   .sd-review-dot.machine { color: #38bdf8; }  /* sky-400 — hollow/machine-green */
   .sd-review-dot.human { color: #059669; }    /* emerald-600 */
   .sd-review-dot.dirty { color: #d97706; }    /* amber-600 */
+  /* Softer-than-⚠ overlays, quietest first so a louder co-applied overlay
+     (integrity/unsupported, further down) wins by source order. */
+  .sd-review-dot.sd-trust-abstract::after { content: "Ⓐ"; color: #dc2626; }  /* abstract-only — red circled A (red per Reto; not bold, so it reads lighter than the ‼ contradiction mark) */
+  .sd-review-dot.sd-trust-vouched::after { content: "✍"; color: #64748b; }  /* author-vouched — calm slate-500 */
   .sd-review-dot.sd-trust-unverified::after { content: "?"; color: #d97706; font-weight: 700; }  /* amber-600 */
   .sd-review-dot.sd-integrity::after { content: "!"; color: #dc2626; font-weight: 700; }
   .sd-review-dot.sd-trust-unsupported::after { content: "‼"; color: #dc2626; font-weight: 700; }

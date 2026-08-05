@@ -266,10 +266,13 @@ def test_hub_with_supporter_is_clean(store: Any) -> None:
     assert result.overridden is False
 
 
-# ── override ─────────────────────────────────────────────────────────
+# ── override — folds to the softer abstract/vouched, never clean ──────
 
 
-def test_override_converts_unverified_to_clean(store: Any) -> None:
+def test_legacy_finding_override_folds_to_vouched(store: Any) -> None:
+    """A legacy finding-level override (no ``mode``) folds unverified → ✍
+    vouched (author asserts; source unobtainable), never all the way to
+    clean — no one read the full text."""
     ref_id = _finding(store)
     store.update_ref(ref_id, meta_patch={"dead_reason": "unacquirable"})
     _set_status(store, ref_id, "dead_chain")
@@ -286,10 +289,110 @@ def test_override_converts_unverified_to_clean(store: Any) -> None:
 
     result = claim_trust(store, ref_id)
 
-    assert result.label == "clean"
+    assert result.label == "vouched"
     assert result.overridden is True
-    # note is preserved even though the label flipped to clean.
-    assert result.note == "no OA copy obtainable; hand-download queued"
+    # the author's own note wins over the generic lifecycle note.
+    assert result.note == "print-only monograph"
+
+
+def test_finding_override_mode_abstract_folds_to_abstract(store: Any) -> None:
+    ref_id = _finding(store)  # STATUS:tracing → unverified
+    store.update_ref(
+        ref_id,
+        meta_patch={
+            "unacquirable_override": {
+                "mode": "abstract",
+                "by": "web:owner",
+                "at": "2026-08-04T00:00:00+00:00",
+                "note": "abstract states the result outright",
+            }
+        },
+    )
+
+    result = claim_trust(store, ref_id)
+
+    assert result.label == "abstract"
+    assert result.overridden is True
+    assert result.note == "abstract states the result outright"
+
+
+def test_paper_level_override_reads_through_frontier(store: Any) -> None:
+    """The author marks the SOURCE PAPER unobtainable (from its Meta tab);
+    a lifecycle finding whose chain frontier is that paper reads through and
+    renders ✍ — without the finding itself being edited."""
+    paper_id = _paper(store, cite_key="unob01a", title="Kroto 1985")
+    store.update_ref(
+        paper_id,
+        meta_patch={
+            "unacquirable_override": {
+                "mode": "vouched",
+                "by": "web:owner",
+                "at": "2026-08-04T00:00:00+00:00",
+                "note": "paywalled; UoL + UCSC exhausted",
+            }
+        },
+    )
+    ref_id = _finding(store)  # STATUS:tracing → unverified
+    store.update_ref(ref_id, meta_patch={"chain": [{"ref_id": paper_id, "ord": 0}]})
+
+    result = claim_trust(store, ref_id)
+
+    assert result.label == "vouched"
+    assert result.overridden is True
+    assert result.note == "paywalled; UoL + UCSC exhausted"
+
+
+def test_paper_level_override_abstract_mode_reads_through(store: Any) -> None:
+    paper_id = _paper(store, cite_key="unob02a")
+    store.update_ref(
+        paper_id,
+        meta_patch={
+            "unacquirable_override": {
+                "mode": "abstract",
+                "note": "abstract backs it",
+            }
+        },
+    )
+    ref_id = _finding(store)
+    store.update_ref(ref_id, meta_patch={"chain": [{"ref_id": paper_id, "ord": 0}]})
+
+    assert claim_trust(store, ref_id).label == "abstract"
+
+
+def test_finding_override_wins_over_paper_frontier(store: Any) -> None:
+    """A finding-level override short-circuits before the paper read-through
+    — the finding's own declaration is the more specific signal."""
+    paper_id = _paper(store, cite_key="unob03a")
+    store.update_ref(
+        paper_id,
+        meta_patch={"unacquirable_override": {"mode": "vouched", "note": "paper note"}},
+    )
+    ref_id = _finding(store)
+    store.update_ref(
+        ref_id,
+        meta_patch={
+            "chain": [{"ref_id": paper_id, "ord": 0}],
+            "unacquirable_override": {"mode": "abstract", "note": "finding note"},
+        },
+    )
+
+    result = claim_trust(store, ref_id)
+
+    assert result.label == "abstract"
+    assert result.note == "finding note"
+
+
+def test_paper_frontier_without_override_stays_unverified(store: Any) -> None:
+    """A frontier paper with no declaration doesn't fold — the read-through
+    is a no-op, the claim stays ⚠."""
+    paper_id = _paper(store, cite_key="unob04a")
+    ref_id = _finding(store)
+    store.update_ref(ref_id, meta_patch={"chain": [{"ref_id": paper_id, "ord": 0}]})
+
+    result = claim_trust(store, ref_id)
+
+    assert result.label == "unverified"
+    assert result.overridden is False
 
 
 def test_override_does_not_convert_unsupported(store: Any) -> None:
@@ -322,3 +425,21 @@ def test_override_absent_leaves_unverified(store: Any) -> None:
 
     assert result.label == "unverified"
     assert result.overridden is False
+
+
+# ── worst-of ordering (block badge / CSS precedence) ──────────────────
+
+
+def test_worse_trust_confidence_ladder() -> None:
+    """clean ‹ abstract ‹ vouched ‹ unverified ‹ unsupported — the block
+    badge takes the loudest of its cite heads."""
+    from precis.taproot.trust import worse_trust
+
+    assert worse_trust("clean", "abstract") == "abstract"
+    assert worse_trust("abstract", "vouched") == "vouched"
+    assert worse_trust("vouched", "unverified") == "unverified"
+    assert worse_trust("unverified", "unsupported") == "unsupported"
+    # associative worst-of across a mixed set
+    assert (
+        worse_trust(worse_trust("abstract", "unsupported"), "vouched") == "unsupported"
+    )

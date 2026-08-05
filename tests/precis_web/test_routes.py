@@ -1661,6 +1661,72 @@ def test_paper_reviewed_unknown_ref_404s(client) -> None:
     assert resp.status_code == 404
 
 
+def test_paper_unacquirable_sets_vouched_override(client, runtime) -> None:
+    """POST /papers/{id}/unacquirable mode=vouched stamps
+    meta.unacquirable_override {mode,note,by,at} — identity is the web write
+    source; a direct store op like /reviewed. taproot.trust reads it through
+    so claims resting on this paper render ✍ instead of ⚠."""
+    store = runtime.store
+    resp = client.post(
+        "/papers/10/unacquirable",
+        data={"mode": "vouched", "note": "paywalled; UoL + ILL exhausted"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/papers/10?tab=Meta"
+    ov = store.fetch_refs_by_ids([10])[10].meta["unacquirable_override"]
+    assert ov["mode"] == "vouched"
+    assert ov["note"] == "paywalled; UoL + ILL exhausted"
+    assert ov["by"] == "web:owner"
+    assert ov["at"]
+
+
+def test_paper_unacquirable_abstract_mode(client, runtime) -> None:
+    resp = client.post(
+        "/papers/10/unacquirable",
+        data={"mode": "abstract", "note": "abstract states it outright"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    ov = runtime.store.fetch_refs_by_ids([10])[10].meta["unacquirable_override"]
+    assert ov["mode"] == "abstract"
+
+
+def test_paper_unacquirable_requires_note(client, runtime) -> None:
+    """A silent override defeats the audit purpose — a set with a blank note
+    400s and writes nothing."""
+    resp = client.post(
+        "/papers/10/unacquirable",
+        data={"mode": "vouched", "note": "   "},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 400
+    assert "unacquirable_override" not in (
+        runtime.store.fetch_refs_by_ids([10])[10].meta or {}
+    )
+
+
+def test_paper_unacquirable_clear_drops_override(client, runtime) -> None:
+    store = runtime.store
+    store.update_ref(
+        10, meta_patch={"unacquirable_override": {"mode": "vouched", "note": "x"}}
+    )
+    resp = client.post(
+        "/papers/10/unacquirable", data={"mode": "clear"}, follow_redirects=False
+    )
+    assert resp.status_code == 303
+    assert store.fetch_refs_by_ids([10])[10].meta.get("unacquirable_override") is None
+
+
+def test_paper_unacquirable_unknown_ref_404s(client) -> None:
+    resp = client.post(
+        "/papers/999999/unacquirable",
+        data={"mode": "vouched", "note": "x"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 404
+
+
 def test_paper_edit_clears_reviewed_stamp(client, runtime) -> None:
     """A successful metadata edit clears any existing review sign-off —
     a review can't cover metadata that has since changed."""

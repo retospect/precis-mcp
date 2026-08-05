@@ -304,6 +304,26 @@ despite no digital copy being obtainable:
 edit(kind="finding", id=42, unacquirable_note="print-only 1962 monograph")
 ```
 
+This no longer folds the claim all the way to **clean** — no one read the
+full text — but to the calmer **✍ vouched** trust state (below): visible,
+not the ⚠ alarm.
+
+**Five trust states** (`taproot/trust.py`, read by the smartdraft badge +
+the exporters), least→most confident-that-something's-wrong:
+`clean` (full text read, backs it) ‹ `abstract` (**Ⓐ** — the abstract
+backs it, full text unread) ‹ `vouched` (**✍** — source unobtainable,
+author vouches) ‹ `unverified` (**⚠** — not checked yet) ‹ `unsupported`
+(**‼** — read and contradicts). A block badge takes the worst-of its
+cites; `unsupported` is never softened by any override.
+
+**Author-declared unobtainable belongs on the *paper*, not each finding.**
+Prefer marking the *source paper* unacquirable from its **Meta tab**
+(`Can't get it` → *Abstract backs it* Ⓐ / *I vouch for it* ✍ + a required
+note): `taproot.trust` reads that through from any claim whose blocking
+source is that paper, so one mark covers every claim resting on it. The
+per-finding `unacquirable_note=` above is the narrower door (this claim
+only) and still works.
+
 ## The inbound counterpart — who cites *this* paper (dark, opt-in)
 
 Everything above is outbound: X cites Y, chase it down to Y's

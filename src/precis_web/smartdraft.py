@@ -1060,9 +1060,12 @@ def claim_trust_for_block(
     ``docs/proposals/finding-trust-surfaces.md`` §3 (editor badges), the
     ``claim_trust`` counterpart to :func:`cite_integrity_ok`. ``None`` when
     the block cites nothing shaky (no cite heads, or every resolved head is
-    ``clean`` — including one whose ``unacquirable_override`` already
-    folded it to clean, :mod:`precis.taproot.trust`'s job, not this
-    function's). A head that doesn't resolve to a *finding* (a bare paper
+    ``clean``). A non-clean head keeps its label — the softer ``abstract``
+    (Ⓐ) / ``vouched`` (✍) an ``unacquirable_override`` folds an unverified
+    claim to, or ``unverified`` / ``unsupported`` — and the block badge is
+    the worst-of (:func:`~precis.taproot.trust.worse_trust`). A head that
+    resolves ``clean`` is skipped; one that doesn't resolve to a *finding*
+    (a bare paper
     cite, or prose that merely looks like a cite head) is skipped —
     that's ``cite_integrity_ok``'s domain, not trust's.
 
@@ -1087,11 +1090,11 @@ def claim_trust_for_block(
         offenders.append({"head": head, "label": state.label, "note": state.note})
     if not offenders:
         return None
-    label = (
-        "unsupported"
-        if any(o["label"] == "unsupported" for o in offenders)
-        else "unverified"
-    )
+    from precis.taproot.trust import worse_trust
+
+    label = "clean"
+    for o in offenders:
+        label = worse_trust(label, o["label"])
     return {"label": label, "heads": offenders}
 
 

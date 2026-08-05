@@ -39,9 +39,9 @@ from pylatexenc.latexencode import UnicodeToLatexEncoder
 from precis.export._patent_cite import format_patent_citation, paper_inline_citation
 from precis.export._trust_marks import (
     UNSUPPORTED_MARK_TEXT,
+    mark_text,
     record_override_event,
     unverified_claims_entries,
-    unverified_mark_text,
 )
 from precis.utils import handle_registry, mentions
 from precis.utils.authors import build_byline
@@ -549,7 +549,10 @@ def _trust_mark_latex(ctx: _Ctx, finding_ref_id: int) -> str:
         return ""
     if state.label == "unsupported":
         return f"\\textbf{{{_tex(UNSUPPORTED_MARK_TEXT)}}}"
-    return f"\\textsuperscript{{?}}{_tex(unverified_mark_text(state))}"
+    # Calm marker per label (ASCII-safe superscript; the bracket lead word
+    # from mark_text carries the full distinction).
+    marker = {"abstract": "A", "vouched": "v"}.get(state.label, "?")
+    return f"\\textsuperscript{{{marker}}}{_tex(mark_text(state))}"
 
 
 def _render_target(

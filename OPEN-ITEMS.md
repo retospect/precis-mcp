@@ -10,6 +10,18 @@ tracked separately in `docs/improvement-plan.md` (same delete-on-ship rule).
 
 ---
 
+## ✨ Trust-taxonomy follow-ons (5-state Ⓐ/✍ shipped)
+
+Status: open · Severity: feature/polish · Owner: `src/precis/taproot/trust.py`, `src/precis/workers/chase.py`, exporters · Test: below.
+
+The 5-state trust ladder (`clean` ‹ `abstract` Ⓐ ‹ `vouched` ✍ ‹ `unverified` ⚠ ‹ `unsupported` ‼) + a paper-level `meta.unacquirable_override` set from the paper Meta tab (read through by `taproot.trust`) shipped. Two deferred pieces:
+
+- **Auto-Ⓐ: abstract-grounded verification (the real capability).** Today `abstract` is *human-asserted* only (author picks "Abstract backs it" on the Meta tab). The follow-on is a chase/verify pass that, when the full text is unobtainable but the **held abstract** is present, runs an LLM judgment ("does this abstract unambiguously support the claim?") and sets `abstract` **without** a human — same state, earned by machine. Needs: the abstract-present check (S2/Crossref abstracts already stored), a MEDIUM-tier `is_corroborating`-style prompt scoped to the abstract, and a write path that stamps the override with `by='verify:abstract'`. Gate it behind the acquiring-arm give-up so it only fires once OA fetch is exhausted.
+- **Calm end-matter section in exporters (polish).** `abstract`/`vouched` claims currently get a calm inline body mark (`[abstract-only: …]` / `[author-vouched: …]`) + the `export_override` audit event, but are deliberately **excluded** from the "Unverified claims" problem list (they're not problems). Add a separate, calm end-matter section ("Declared-unobtainable sources") listing them for transparency — `docx.py`/`latex.py` + `_trust_marks.unverified_claims_entries` sibling. Currently they have an inline mark with no end-matter entry.
+- **Perf (polish, reviewer-flagged):** `claim_trust`'s paper-level read-through adds one `fetch_refs_by_ids([frontier_id])` per *unverified lifecycle* finding in the `claim_trust_bulk` loop (`trust.py`). Bounded (only unverified, only lifecycle), but the smartdraft reader could render many at once — batch the frontier-paper meta fetch across the bulk call if it shows up.
+
+---
+
 ## 🔧 axis:taproot demotes freshly-minted claim hubs (root-caused 2026-08-04) + fleet remediation
 
 Status: open (fleet remediation pending) · Severity: bug · Owner: `src/precis/workers/axis_pass.py::_claim_ref` · Test: `run_axis_pass(axis_id='taproot')` over a live `TAPROOT:claim` hub must skip it, not reclassify.

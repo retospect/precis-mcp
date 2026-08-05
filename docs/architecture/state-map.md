@@ -1045,18 +1045,26 @@ not separate daemons anymore.
   hand-download queue. Planner lit-hunt template now teaches this shape
   (the gr183824/gr183865 fix). Trust surfaces
   (`docs/proposals/finding-trust-surfaces.md`) — stage (a) **built**:
-  the shared derivation `taproot/trust.py::claim_trust` (clean/
-  unverified/unsupported, hub vs. lifecycle, override-aware), docx/latex
-  export marking + end-matter "Unverified claims" list + the
-  `ref_events` override record, and the `edit(kind='finding',
-  unacquirable_note=…)` write path. Stage (b) — the smartdraft editor
+  the shared derivation `taproot/trust.py::claim_trust`, now a **5-state
+  ladder** `clean ‹ abstract (Ⓐ) ‹ vouched (✍) ‹ unverified (⚠) ‹
+  unsupported (‼)` (`worse_trust` worst-of; hub vs. lifecycle,
+  override-aware), docx/latex export marking + end-matter "Unverified
+  claims" list (the calm Ⓐ/✍ folds get an inline mark + the `ref_events`
+  override record but are kept OUT of that problem list), and the write
+  paths: per-finding `edit(kind='finding', unacquirable_note=…)` and the
+  **paper-level** `meta.unacquirable_override {mode,note,by,at}` set from
+  the paper Meta tab (`POST /papers/{id}/unacquirable`, `web:owner`) which
+  `claim_trust` **reads through** from a lifecycle finding to its chain-
+  frontier paper — mark a source unobtainable once, every claim on it
+  softens. `mode` picks Ⓐ (abstract backs it) vs ✍ (author vouches); an
+  override never softens `unsupported`. Stage (b) — the smartdraft editor
   badge — **built**: `smartdraft.py::review_payloads_for` computes a
   `claim_trust` field per block (worst-of across its cite heads, sharing
   one per-render cache like the `integrity_ok` scan) via `claim_render.
   resolve_head_ref_id` + `taproot/trust.py::claim_trust`;
   `_block.html.j2::sd_review_widget` overlays it on the shipped
-  `sd-integrity` dot (`?` amber unverified, `‼` red-bold unsupported,
-  ranked above integrity's `!` in `view.html.j2`'s CSS source order) —
+  `sd-integrity` dot (`Ⓐ`/`✍` calm, `?` amber unverified, `‼` red-bold
+  unsupported, ranked in `view.html.j2`'s CSS source order) —
   the four-state dot itself untouched. `claim_render.py::
   render_claim_evidence`'s dormant hub `status` is now populated from
   the same derivation.

@@ -1558,9 +1558,12 @@ class FindingHandler(NumericRefHandler):
             body=(
                 f"recorded unacquirable override on finding id={finding_ref_id}\n"
                 f"note: {override['note']}\n"
-                "trust surfaces now render this claim clean (unless a terminal "
-                "verification found the source doesn't back it — that always "
-                "outranks the override)"
+                "trust surfaces now render this claim ✍ author-vouched — a calm "
+                "mark, no longer the ⚠ unverified triangle, but NOT clean (the "
+                "full text was never read). A terminal verification that the "
+                "source doesn't back it still outranks the override. To mark the "
+                "abstract as backing it instead (Ⓐ), declare it on the source "
+                "paper's Meta tab."
             )
         )
 

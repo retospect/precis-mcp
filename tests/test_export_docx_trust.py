@@ -201,7 +201,9 @@ def test_unsupported_renders_loud_distinct_mark(hub: Hub, tmp_path: Path) -> Non
 # is never suppressed by an override ───────────────────────────────────
 
 
-def test_override_renders_clean_and_records_ref_event(hub: Hub, tmp_path: Path) -> None:
+def test_override_renders_vouched_mark_and_records_ref_event(
+    hub: Hub, tmp_path: Path
+) -> None:
     fid = _finding(
         hub,
         cite_key="ac3over",
@@ -218,8 +220,14 @@ def test_override_renders_clean_and_records_ref_event(hub: Hub, tmp_path: Path) 
     text = _export_text(hub.store, ref, tmp_path, "over")
 
     assert "[1]" in text
+    # A legacy override folds to the CALM author-vouched mark, not clean and
+    # not the loud unverified/unsupported — and never lands in the
+    # "Unverified claims" problem list.
+    assert "author-vouched" in text
+    assert "print-only 1962 monograph" in text
     assert "unverified" not in text
     assert "UNSUPPORTED" not in text
+    assert "Unverified claims" not in text
 
     events = hub.store.events_for(ref.id, event="export_override")
     assert len(events) == 1

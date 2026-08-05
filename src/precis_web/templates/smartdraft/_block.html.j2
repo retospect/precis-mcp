@@ -57,7 +57,7 @@
   <button type="button" @click="open = !open"
           title="{{ review.tooltip }}{% if not review.integrity_ok %}
 ⚠ integrity: an unresolved or unheld citation{% endif %}{% if review.claim_trust %}{% for h in review.claim_trust.heads %}
-{% if h.label == 'unsupported' %}‼ UNSUPPORTED: [{{ h.head }}] — cited source does not back this claim{% else %}⚠ unverified claim: [{{ h.head }}] — {{ h.note }}{% endif %}{% endfor %}{% endif %}"
+{% if h.label == 'unsupported' %}‼ UNSUPPORTED: [{{ h.head }}] — cited source does not back this claim{% elif h.label == 'abstract' %}Ⓐ abstract-only: [{{ h.head }}] — the abstract backs it; full text not read{% if h.note %} — {{ h.note }}{% endif %}{% elif h.label == 'vouched' %}✍ author-vouched: [{{ h.head }}] — source unobtainable; accepted on the author's word{% if h.note %} — {{ h.note }}{% endif %}{% else %}⚠ unverified claim: [{{ h.head }}] — {{ h.note }}{% endif %}{% endfor %}{% endif %}"
           class="sd-review sd-review-dot {{ review.state }}{% if not review.integrity_ok %} sd-integrity{% endif %}{% if review.claim_trust %} sd-trust-{{ review.claim_trust.label }}{% endif %}">●</button>
   <span x-show="open" x-cloak @click.stop class="sd-review-menu absolute left-0 z-30 mt-1 block w-48 rounded border border-slate-200 bg-white text-left text-xs shadow-lg">
     <button type="button" @click="open = false" onclick="sdReviewHuman('{{ n.dc }}')" class="block w-full px-2 py-1 text-left hover:bg-slate-100">✓ mark reviewed</button>

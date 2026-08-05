@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlencode
 
@@ -342,6 +343,12 @@ def _render_detail(
         "is_reviewed": bool(verified_at),
         "reviewed_at": verified_at.strftime("%Y-%m-%d") if verified_at else "",
         "reviewed_by": getattr(ref, "human_verified_by", None) or "",
+        # "Can't get it" — the author's unacquirable-source declaration on
+        # this paper (meta.unacquirable_override {mode,note,by,at}). Set from
+        # the Meta tab; read through by taproot.trust so every claim resting
+        # on this paper renders Ⓐ (abstract-only) / ✍ (author-vouched)
+        # instead of ⚠. ``None`` when unset.
+        "unacquirable": (ref.meta or {}).get("unacquirable_override"),
         # Editable short handle (cite_key) + a free suggestion.
         "slug_default": slug_default,
         "suggested_slug": suggested_slug,
@@ -1676,6 +1683,62 @@ async def reviewed(
         url=_safe_papers_redirect(return_to or f"/papers/{ref_id}?tab=Meta"),
         status_code=303,
     )
+
+
+@router.post("/{ref_id}/unacquirable", response_model=None)
+async def unacquirable(
+    request: Request,
+    ref_id: int,
+    mode: str = Form(""),
+    note: str = Form(""),
+    return_to: str = Form(""),
+) -> Response:
+    """Set / clear this paper's unacquirable-source declaration (Meta tab
+    "Can't get it").
+
+    Writes ``meta.unacquirable_override = {mode, note, by, at}`` — the
+    read-through :mod:`precis.taproot.trust` consults so every claim whose
+    blocking source is this paper renders the calm ``Ⓐ`` (abstract-only,
+    ``mode='abstract'``) / ``✍`` (author-vouched, ``mode='vouched'``) mark
+    instead of the ``⚠`` emergency triangle — never all the way to clean
+    (no one read the full text). ``mode`` empty or ``'clear'`` drops the
+    override (set to JSON null; ``trust`` treats a non-dict value as unset).
+
+    A direct store op like ``/reviewed`` — a ref-meta stamp, not a
+    handler-owned kind; ``by`` is the web write identity (``web:owner``).
+    ``note`` is required when setting: a silent override defeats the audit
+    purpose (mirrors the finding handler's own guard)."""
+    store = get_store(request)
+    cfg = get_web_config(request)
+    ref = store.fetch_refs_by_ids([ref_id], include_deleted=False).get(ref_id)
+    if ref is None or ref.kind != "paper":
+        return _paper_error(
+            request, "Unacquirable error", f"paper id={ref_id} not found", 404
+        )
+    redirect = _safe_papers_redirect(return_to or f"/papers/{ref_id}?tab=Meta")
+    mode = (mode or "").strip().lower()
+    if mode in ("", "clear"):
+        store.update_ref(ref_id, meta_patch={"unacquirable_override": None})
+        return RedirectResponse(url=redirect, status_code=303)
+    if mode not in ("abstract", "vouched"):
+        return _paper_error(
+            request, "Unacquirable error", f"unknown mode {mode!r}", 400
+        )
+    if not note.strip():
+        return _paper_error(
+            request,
+            "Unacquirable error",
+            "a note is required — say why the source can't be obtained",
+            400,
+        )
+    override = {
+        "mode": mode,
+        "note": note.strip(),
+        "by": cfg.source,
+        "at": datetime.now(UTC).isoformat(),
+    }
+    store.update_ref(ref_id, meta_patch={"unacquirable_override": override})
+    return RedirectResponse(url=redirect, status_code=303)
 
 
 def _split_tags(raw: str) -> list[str]:
