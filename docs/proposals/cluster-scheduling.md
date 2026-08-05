@@ -209,7 +209,7 @@ dream throttle** (the one live cost bug).
   wave): under `--profile all`, `chase`'s unbounded S2-backoff batches
   can starve same-band reviewers for ~1-2h stretches (85 min observed) —
   the gr187627/gr191264 serial-rotation class, newly exposed by
-  co-locating `chase` with the reviewers; fix = move
+  co-locating `chase` with the reviewers; fixed (gr192752) by moving
   `structural`/`deep_review` onto scheduler-lease cadences (§A pattern),
   NOT a band reorder (masking). The gateway's
   `precis_agent_container_enabled` stays false pending the

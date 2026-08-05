@@ -427,24 +427,33 @@ SERVICES: tuple[ServiceSpec, ...] = (
     ),
     # ── Agent-worker passes (melchior / OAuth) ──────────────────────
     ServiceSpec(
+        # gr192752: cadence-fired via the `structural` scheduler lease
+        # (workers/scheduler.py) — NOT `default_profiles`, mirroring
+        # `health_digest`/`dream_agent`: registering into every rotation
+        # would need its own duplicate throttle, which §A's lease
+        # machinery already is. The lease is fleet-wide and the env gate
+        # is live on TWO hosts (gateway + inference), so one host's
+        # wedged rotation (chase monopolizing the strictly-serial
+        # `--profile all` loop) can no longer starve this reviewer — the
+        # other eligible host's scheduler pass wins the fire.
         name="structural",
         label="Structural reviewer",
         category="review",
         kind=ServiceKind.PASS,
-        default_profiles=_AGT,
         ref_pass=True,
         uses_model=True,
         uses_external=("anthropic",),
         cost_sources=("structural",),
-        one_line="Opus 6h-dedup review of tree shape (drift, contradictions).",
+        one_line="Opus 6h-dedup review of tree shape (drift, contradictions) "
+        "— `structural` scheduler cadence (gr192752), not a profile default.",
         doc_skill="precis-tasks-help",
         introspect=AgentIntrospect(
-            launchd_label="com.precis.worker-agent",
+            launchd_label="com.precis.worker",
             model_default="claude-opus-4-8",
             model_env="PRECIS_STRUCTURAL_MODEL",
             disallowed_tools=("WebFetch", "WebSearch"),
-            max_turns=12,
-            timeout_s=600,
+            max_turns=30,
+            timeout_s=900,
             env_keys=(
                 "PRECIS_STRUCTURAL_REVIEW",
                 "PRECIS_STRUCTURAL_MODEL",
@@ -459,24 +468,28 @@ SERVICES: tuple[ServiceSpec, ...] = (
         ),
     ),
     ServiceSpec(
+        # gr192752: same shape as `structural` just above — cadence-fired
+        # via the `deep_review` scheduler lease, not `default_profiles`.
+        # See that comment for the full rationale (cross-host failover is
+        # the fix, not an in-band reorder of the rotation).
         name="deep_review",
         label="Deep review",
         category="review",
         kind=ServiceKind.PASS,
-        default_profiles=_AGT,
         ref_pass=True,
         uses_model=True,
         uses_external=("anthropic",),
         cost_sources=("deep_review",),
-        one_line="Opus weekly Allen-style archive / prune / rebalance review.",
+        one_line="Opus weekly Allen-style archive / prune / rebalance review "
+        "— `deep_review` scheduler cadence (gr192752), not a profile default.",
         doc_skill="precis-tasks-help",
         introspect=AgentIntrospect(
-            launchd_label="com.precis.worker-agent",
+            launchd_label="com.precis.worker",
             model_default="claude-opus-4-8",
             model_env="PRECIS_DEEP_REVIEW_MODEL",
             disallowed_tools=("WebFetch", "WebSearch"),
-            max_turns=12,
-            timeout_s=900,
+            max_turns=60,
+            timeout_s=1800,
             env_keys=(
                 "PRECIS_DEEP_REVIEW",
                 "PRECIS_DEEP_REVIEW_MODEL",
@@ -503,7 +516,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         one_line="Drain claude_inproc jobs (plan_tick / fix_gripe / casts).",
         doc_skill="precis-fix-gripe-help",
         introspect=AgentIntrospect(
-            launchd_label="com.precis.worker-agent",
+            launchd_label="com.precis.worker",
             model_default="(per parent meta.llm_tier)",
             model_env="PRECIS_JOB_CLAUDE_MODEL",
             disallowed_tools=("WebFetch", "WebSearch"),
@@ -826,8 +839,9 @@ SERVICES: tuple[ServiceSpec, ...] = (
         introspect=AgentIntrospect(
             # §A: the standalone com.precis.dream LaunchDaemon (dream-pass.sh)
             # is retired — dream_agent's trigger is now the `dream_agent`
-            # scheduler cadence, running inside com.precis.worker-agent.
-            launchd_label="com.precis.worker-agent",
+            # scheduler cadence, running inside com.precis.worker (post-§L-b
+            # collapsed unit; the old com.precis.worker-agent label is stale).
+            launchd_label="com.precis.worker",
             model_default="claude-opus-4-8",
             model_env="PRECIS_DREAM_AGENT_MODEL",
             system_prompt_env="PRECIS_DREAM_SOUL_PATH",

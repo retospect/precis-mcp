@@ -46,7 +46,7 @@ def _raise_auth_alert(store: Store, host: str) -> None:
         "The Claude OAuth token is stale/revoked — plan_tick, reviewers, "
         "dream, and the /figure editor all 401. Re-drop the token into "
         "~hermes/.claude_oauth_token (+ ~deploy for precis-web) and restart "
-        "the agent worker (launchctl kickstart -k system/com.precis.worker-agent)."
+        "the agent worker (launchctl kickstart -k system/com.precis.worker)."
     )
     _ref, is_new = raise_alert(
         store,

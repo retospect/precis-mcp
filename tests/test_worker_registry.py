@@ -65,7 +65,11 @@ _EXPECTED_SYSTEM = frozenset(
     }
 )
 _EXPECTED_AGENT = frozenset(
-    {"structural", "deep_review", "job_claude_inproc", "quota_check", "scheduler"}
+    # gr192752: structural/deep_review dropped off the agent-profile
+    # rotation — they're cadence-fired via the scheduler lease now (see
+    # tests/test_scheduler_pass.py), not `default_profiles`. This pin is
+    # the regression guard: neither reviewer belongs in ANY profile union.
+    {"job_claude_inproc", "quota_check", "scheduler"}
 )
 
 
@@ -213,6 +217,40 @@ def test_agent_specs_are_the_introspect_bearing_rows() -> None:
     for s in agent_specs():
         assert s.kind is ServiceKind.PASS
         assert s.introspect is not None
+
+
+def test_agent_specs_launchd_label_is_the_collapsed_worker_unit() -> None:
+    """§L-b collapsed-unit pin: every introspect-bearing spec's
+    ``launchd_label`` must be ``com.precis.worker`` — the retired
+    ``com.precis.worker-agent`` label reads a plist that no longer exists
+    (precis_web/routes/env.py builds the plist path straight from this
+    field). Catches the drift the bare 4-name-set check above misses (a
+    stale label on one spec doesn't change the set of names)."""
+    for s in agent_specs():
+        assert s.introspect is not None
+        assert s.introspect.launchd_label == "com.precis.worker", s.name
+
+
+def test_structural_and_deep_review_introspect_timeouts_match_the_driver() -> None:
+    """Kill-the-drift-class pin: the registry's ``introspect.timeout_s`` /
+    ``max_turns`` for the two reviewers must equal the real driver config
+    (``STRUCTURAL`` / ``DEEP_REVIEW`` in workers/structural.py|deep_review.py)
+    — asserted against the imported ``Reviewer`` objects, not literals, so
+    this pin can't itself drift the way the registry copies did.
+    ``dream_agent``/``job_claude_inproc`` are deliberately excluded — their
+    driver config isn't a 1:1 ``Reviewer`` dataclass to compare against."""
+    from precis.workers.deep_review import DEEP_REVIEW
+    from precis.workers.structural import STRUCTURAL
+
+    structural_intro = SERVICES_BY_NAME["structural"].introspect
+    assert structural_intro is not None
+    assert structural_intro.timeout_s == STRUCTURAL.timeout_s
+    assert structural_intro.max_turns == STRUCTURAL.max_turns
+
+    deep_review_intro = SERVICES_BY_NAME["deep_review"].introspect
+    assert deep_review_intro is not None
+    assert deep_review_intro.timeout_s == DEEP_REVIEW.timeout_s
+    assert deep_review_intro.max_turns == DEEP_REVIEW.max_turns
 
 
 def test_service_names_are_unique() -> None:

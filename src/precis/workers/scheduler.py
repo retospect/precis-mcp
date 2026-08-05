@@ -184,6 +184,65 @@ def _run_materialize(store: Any, batch_size: int) -> None:
     )
 
 
+def _run_structural(store: Any, batch_size: int) -> None:
+    """One structural-review tick, fired from the host-agnostic
+    ``structural`` cadence (gr192752) instead of the old default-rotation
+    slot on the agent-profile worker. ``batch_size`` is unused — the review
+    driver's own 5h dedup window (``STRUCTURAL.min_interval_hours``) is the
+    true clock; this cadence is just the check tick, so a deduped fire is a
+    cheap no-op query. The inner ``BatchResult`` is logged for the same
+    reason as ``dream_agent``'s: distinguish an internally-gated no-op from
+    a real dispatch."""
+    from precis.workers.structural import run_structural_pass
+
+    result = run_structural_pass(store)
+    log.info(
+        "scheduler: structural inner result claimed=%d ok=%d failed=%d",
+        result.claimed,
+        result.ok,
+        result.failed,
+    )
+
+
+def _run_deep_review(store: Any, batch_size: int) -> None:
+    """One deep-review tick, fired from the host-agnostic ``deep_review``
+    cadence (gr192752) instead of the old default-rotation slot on the
+    agent-profile worker. ``batch_size`` is unused — the review driver's own
+    144h dedup window (``DEEP_REVIEW.min_interval_hours``) is the true
+    clock; this cadence is just the check tick, same shape as
+    ``_run_structural``."""
+    from precis.workers.deep_review import run_deep_review_pass
+
+    result = run_deep_review_pass(store)
+    log.info(
+        "scheduler: deep_review inner result claimed=%d ok=%d failed=%d",
+        result.claimed,
+        result.ok,
+        result.failed,
+    )
+
+
+def _structural_eligible() -> bool:
+    """The SAME gate ``run_structural_pass`` checks internally
+    (``precis.workers.review._gate_enabled``) — a host without
+    ``PRECIS_STRUCTURAL_REVIEW`` set skips *before* the claim, so the lease
+    is never advanced by a host that can't do the work (drop-no-fire, not a
+    stolen fire — a later eligible host still gets it)."""
+    from precis.workers.review import _gate_enabled
+    from precis.workers.structural import STRUCTURAL
+
+    return _gate_enabled(STRUCTURAL.gate_env)
+
+
+def _deep_review_eligible() -> bool:
+    """Same shape as ``_structural_eligible`` — reuses the review driver's
+    gate helper against ``PRECIS_DEEP_REVIEW``."""
+    from precis.workers.deep_review import DEEP_REVIEW
+    from precis.workers.review import _gate_enabled as _review_gate_enabled
+
+    return _review_gate_enabled(DEEP_REVIEW.gate_env)
+
+
 def _dream_agent_eligible() -> bool:
     from precis.workers.dream_agent import eligible
 
@@ -239,6 +298,36 @@ CADENCES: tuple[Cadence, ...] = (
     # (workers/materialize.py); this cadence firing every 5 min is itself
     # harmless — the pass no-ops until the flag is set.
     Cadence(name="materialize", interval_s=300, run=_run_materialize),
+    # gr192752: the two opus reviewers, migrated off the agent-profile
+    # default rotation. Under `--profile all` a long `chase` pass
+    # (PassBand.BACKGROUND, registered first) can monopolize the strictly-
+    # serial rotation for hours (synchronous S2 lookups, tenacity retries),
+    # starving both reviewers — observed 85-min starvation on the
+    # inference host. NO `host_affinity` here (unlike dream_agent/
+    # anki_sync) — eligibility is purely the env gate
+    # (PRECIS_STRUCTURAL_REVIEW / PRECIS_DEEP_REVIEW), which the collapsed-
+    # unit deploy template scopes to TWO hosts (gateway + inference). That
+    # is the actual fix: the lease is fleet-wide, so one host's wedged
+    # rotation can no longer starve a reviewer — the other eligible host's
+    # scheduler pass wins the fire instead. The interval below is just the
+    # check tick, not the true clock — the review driver's own internal
+    # dedup (5h structural / 144h deep_review, see STRUCTURAL/DEEP_REVIEW's
+    # `min_interval_hours`) still gates the actual review, so a deduped
+    # fire is a cheap no-op query and the real review lands within one
+    # tick of the window expiring, mirroring the old rotation's continuous
+    # attempts.
+    Cadence(
+        name="structural",
+        interval_s=3600,
+        run=_run_structural,
+        eligible=_structural_eligible,
+    ),
+    Cadence(
+        name="deep_review",
+        interval_s=6 * 3600,
+        run=_run_deep_review,
+        eligible=_deep_review_eligible,
+    ),
     Cadence(
         name="dream_agent",
         interval_s=15 * 60,

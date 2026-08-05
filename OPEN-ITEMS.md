@@ -1233,13 +1233,10 @@ state lives in the in-repo `deploy/` tree (`~/work/cluster` was retired
   (vault fallback already shipped, mirrors precis's `utils/claude_oauth`) —
   live cutover is an ordered ops sequence (seed vault → verify → flip run-as
   → scope vault read → retire hermes), not yet applied.
-- **Plist / `service_unit` collapse — gateway residual** *(op, open).* §L-b
-  executed 2026-08-04: balthazar/caspar/spark run the collapsed
-  `--profile all` unit (spark's split agent retired); imports flipped to
-  20b. REMAINING: melchior cutover + `retire-split-agents.yml --limit
-  melchior` (permission-blocked in-session; next `scripts/deploy` applies
-  20b there, then run the retire play), and the dream×container decision
-  before ever flipping `precis_agent_container_enabled` on the gateway.
+- **Gateway dream×container smoke test** *(op, open).* Before ever flipping
+  `precis_agent_container_enabled` on the gateway, verify the
+  dream×container interaction (in-process `claude -p` is the fallback
+  until then).
 - **Deploy factory-console tooltips + per-host errors** *(polish, open).*
   Shipped main `ac7712fa`, needs a `precis-web` redeploy to actually render
   on `/factory`.

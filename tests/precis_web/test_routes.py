@@ -2631,11 +2631,11 @@ def test_env_index_lists_all_agents(client) -> None:
 
 
 def test_env_select_dream_renders_detail(client, monkeypatch) -> None:
-    """``GET /env?agent=dream_agent`` reads the worker-agent daemon's plist
-    env (§A: dream_agent no longer has its own plist — it's a scheduler
-    cadence inside com.precis.worker-agent) and renders the system +
-    directive prompt inline. The web process's own env is irrelevant here —
-    we stub the plist read."""
+    """``GET /env?agent=dream_agent`` reads the collapsed worker daemon's
+    plist env (§A: dream_agent no longer has its own plist — it's a
+    scheduler cadence inside com.precis.worker, the §L-b collapsed unit)
+    and renders the system + directive prompt inline. The web process's own
+    env is irrelevant here — we stub the plist read."""
     from precis_web.routes import env as env_mod
 
     monkeypatch.setattr(
@@ -2654,8 +2654,9 @@ def test_env_select_dream_renders_detail(client, monkeypatch) -> None:
     # Env-var snapshot shows the gating flag as present.
     assert "PRECIS_DREAM_AGENT" in resp.text
     # Plist breadcrumb so the operator knows where the env came from —
-    # com.precis.worker-agent (§A: no separate com.precis.dream anymore).
-    assert "com.precis.worker-agent.plist" in resp.text
+    # com.precis.worker, the §L-b collapsed unit (§A: no separate
+    # com.precis.dream anymore).
+    assert "com.precis.worker.plist" in resp.text
 
 
 def test_env_missing_mcp_config_shows_warning(client, monkeypatch) -> None:

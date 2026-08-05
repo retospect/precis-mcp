@@ -359,6 +359,192 @@ def test_materialize_service_spec_is_manual_only(store) -> None:
     assert spec.enable_env is None
 
 
+# ── gr192752: structural / deep_review reviewers ────────────────────────
+
+
+def test_structural_cadence_is_hourly_unpinned_with_an_eligible_gate() -> None:
+    """gr192752: no ``host_affinity`` — eligibility is purely the
+    ``PRECIS_STRUCTURAL_REVIEW`` env gate, which the collapsed-unit deploy
+    template scopes to gateway + inference, so a wedged single host can no
+    longer starve the reviewer (the other eligible host's lease claim
+    wins)."""
+    from precis.workers.scheduler import CADENCES
+
+    cad = next(c for c in CADENCES if c.name == "structural")
+    assert cad.interval_s == 3600
+    assert cad.host_affinity is None
+    assert cad.eligible is not None
+    assert cad.resolve_interval is None
+
+
+def test_deep_review_cadence_is_6h_unpinned_with_an_eligible_gate() -> None:
+    from precis.workers.scheduler import CADENCES
+
+    cad = next(c for c in CADENCES if c.name == "deep_review")
+    assert cad.interval_s == 21600
+    assert cad.host_affinity is None
+    assert cad.eligible is not None
+    assert cad.resolve_interval is None
+
+
+def test_structural_cadence_eligible_follows_the_review_gate_env(
+    monkeypatch,
+) -> None:
+    """The cadence's ``eligible`` gate is the SAME one ``run_structural_pass``
+    checks internally — reusing ``precis.workers.review._gate_enabled``, not
+    a separately-maintained env read."""
+    from precis.workers.scheduler import CADENCES
+
+    cad = next(c for c in CADENCES if c.name == "structural")
+    assert cad.eligible is not None
+
+    monkeypatch.delenv("PRECIS_STRUCTURAL_REVIEW", raising=False)
+    assert cad.eligible() is False
+
+    monkeypatch.setenv("PRECIS_STRUCTURAL_REVIEW", "1")
+    assert cad.eligible() is True
+
+
+def test_deep_review_cadence_eligible_follows_the_review_gate_env(
+    monkeypatch,
+) -> None:
+    from precis.workers.scheduler import CADENCES
+
+    cad = next(c for c in CADENCES if c.name == "deep_review")
+    assert cad.eligible is not None
+
+    monkeypatch.delenv("PRECIS_DEEP_REVIEW", raising=False)
+    assert cad.eligible() is False
+
+    monkeypatch.setenv("PRECIS_DEEP_REVIEW", "1")
+    assert cad.eligible() is True
+
+
+def test_structural_cadence_ineligible_by_default_skips_without_claiming(
+    store, monkeypatch
+) -> None:
+    """End to end via ``run_scheduler_pass``: unset env ⇒ drop-no-fire, the
+    lease is never even seeded (a later eligible host still gets the
+    fire)."""
+    monkeypatch.delenv("PRECIS_STRUCTURAL_REVIEW", raising=False)
+    from precis.workers.scheduler import CADENCES
+
+    cad = next(c for c in CADENCES if c.name == "structural")
+    r = run_scheduler_pass(store, host="h", cadences=(cad,))
+    assert (r.claimed, r.ok, r.failed) == (0, 0, 0)
+    names = {lease.name for lease in store.scheduler_leases()}
+    assert cad.name not in names
+
+
+def test_structural_cadence_fires_the_pass(store, monkeypatch) -> None:
+    """The cadence's ``run`` calls into ``run_structural_pass`` — cover the
+    wiring, not the pass's own behaviour (``tests/test_structural.py``)."""
+    monkeypatch.setenv("PRECIS_STRUCTURAL_REVIEW", "1")
+    from precis.workers import structural as structural_mod
+    from precis.workers.runner import BatchResult
+    from precis.workers.scheduler import CADENCES
+
+    calls: list[object] = []
+
+    def _fake_run_structural_pass(store: object) -> BatchResult:
+        calls.append(store)
+        return BatchResult("structural", 0, 0, 0)
+
+    monkeypatch.setattr(
+        structural_mod, "run_structural_pass", _fake_run_structural_pass
+    )
+    cad = next(c for c in CADENCES if c.name == "structural")
+    r = run_scheduler_pass(store, host="h", cadences=(cad,))
+    assert (r.claimed, r.ok, r.failed) == (1, 1, 0)
+    assert calls == [store]
+
+
+def test_deep_review_cadence_fires_the_pass(store, monkeypatch) -> None:
+    """Same wiring cover as ``test_structural_cadence_fires_the_pass``, for
+    ``run_deep_review_pass`` (``tests/test_deep_review.py`` covers its own
+    behaviour)."""
+    monkeypatch.setenv("PRECIS_DEEP_REVIEW", "1")
+    from precis.workers import deep_review as deep_review_mod
+    from precis.workers.runner import BatchResult
+    from precis.workers.scheduler import CADENCES
+
+    calls: list[object] = []
+
+    def _fake_run_deep_review_pass(store: object) -> BatchResult:
+        calls.append(store)
+        return BatchResult("deep_review", 0, 0, 0)
+
+    monkeypatch.setattr(
+        deep_review_mod, "run_deep_review_pass", _fake_run_deep_review_pass
+    )
+    cad = next(c for c in CADENCES if c.name == "deep_review")
+    r = run_scheduler_pass(store, host="h", cadences=(cad,))
+    assert (r.claimed, r.ok, r.failed) == (1, 1, 0)
+    assert calls == [store]
+
+
+def test_run_structural_wrapper_calls_the_pass_function(monkeypatch) -> None:
+    """Unit-level cover for the wrapper itself, independent of the lease
+    claim path exercised above."""
+    from precis.workers import structural as structural_mod
+    from precis.workers.runner import BatchResult
+    from precis.workers.scheduler import _run_structural
+
+    calls: list[object] = []
+
+    def _fake_run_structural_pass(store: object) -> BatchResult:
+        calls.append(store)
+        return BatchResult("structural", 0, 0, 0)
+
+    monkeypatch.setattr(
+        structural_mod, "run_structural_pass", _fake_run_structural_pass
+    )
+    sentinel = object()
+    _run_structural(sentinel, 32)
+    assert calls == [sentinel]
+
+
+def test_run_deep_review_wrapper_calls_the_pass_function(monkeypatch) -> None:
+    from precis.workers import deep_review as deep_review_mod
+    from precis.workers.runner import BatchResult
+    from precis.workers.scheduler import _run_deep_review
+
+    calls: list[object] = []
+
+    def _fake_run_deep_review_pass(store: object) -> BatchResult:
+        calls.append(store)
+        return BatchResult("deep_review", 0, 0, 0)
+
+    monkeypatch.setattr(
+        deep_review_mod, "run_deep_review_pass", _fake_run_deep_review_pass
+    )
+    sentinel = object()
+    _run_deep_review(sentinel, 32)
+    assert calls == [sentinel]
+
+
+def test_structural_service_spec_is_manual_only() -> None:
+    """gr192752: ``ref_pass=True`` for the totality-test wiring site
+    (``--only structural`` still works), but NO ``default_profiles`` —
+    mirrors ``health_digest``/``materialize``: the standing trigger is the
+    cadence's lease claim, not the agent-profile default rotation."""
+    from precis.workers.registry import SERVICES_BY_NAME
+
+    spec = SERVICES_BY_NAME["structural"]
+    assert spec.ref_pass is True
+    assert spec.default_profiles == frozenset()
+    assert spec.enable_env is None
+
+
+def test_deep_review_service_spec_is_manual_only() -> None:
+    from precis.workers.registry import SERVICES_BY_NAME
+
+    spec = SERVICES_BY_NAME["deep_review"]
+    assert spec.ref_pass is True
+    assert spec.default_profiles == frozenset()
+    assert spec.enable_env is None
+
+
 def test_anki_sync_cadence_ineligible_by_default(store, monkeypatch) -> None:
     """``PRECIS_ANKI_ENABLED`` unset (the test default) ⇒ the ``anki_sync``
     cadence's ``eligible`` gate is False, so it never claims."""

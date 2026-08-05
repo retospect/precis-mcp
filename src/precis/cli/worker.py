@@ -335,17 +335,21 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         help="Which pass rotation to run. 'system' (default) = the "
         "everything-except-heavy-LLM rotation: embed, summarize, "
         "chunk_keywords, chase, fetch, tag_embeddings, auto_check, "
-        "schedule, nursery, dispatch, sweeper. 'agent' = "
-        "the LLM-heavy rotation: dream_agent, structural, deep_review. "
-        "Each of those gates itself via env (PRECIS_DREAM_AGENT=1, "
-        "PRECIS_STRUCTURAL_REVIEW=1, PRECIS_DEEP_REVIEW=1) and via the "
-        "PRECIS_LOAD_CEILING load-avg gate, so an agent profile worker "
-        "that hits a tick with nothing to do exits in milliseconds. "
-        "'all' = the union of both rotations (§L-a collapsed-worker "
-        "enablement, one-worker-per-host) — dark until a §L-b playbook "
-        "run actually renders a unit with it; unused by any deployed "
-        "unit today. Slice-5 consolidation: deploy one LaunchDaemon "
-        "per profile.",
+        "schedule, nursery, dispatch, sweeper. 'agent' = the OAuth "
+        "rotation: scheduler, job_claude_inproc, quota_check. "
+        "dream_agent/structural/deep_review are NOT in either rotation — "
+        "each is cadence-fired via the scheduler lease (workers/"
+        "scheduler.py CADENCES: dream_agent + anki_sync host-pinned "
+        "melchior, structural + deep_review env-gated on any eligible "
+        "host, gr192752) instead of the profile's per-cycle slot, so a "
+        "wedged host can't starve them. job_claude_inproc/quota_check "
+        "gate themselves via the PRECIS_LOAD_CEILING load-avg gate, so an "
+        "agent profile worker that hits a tick with nothing to do exits "
+        "in milliseconds. 'all' = the union of both rotations (§L-a "
+        "collapsed-worker enablement, one-worker-per-host) — dark until a "
+        "§L-b playbook run actually renders a unit with it; unused by any "
+        "deployed unit today. Slice-5 consolidation: deploy one "
+        "LaunchDaemon per profile.",
     )
     p.add_argument(
         "--only",
@@ -1847,14 +1851,19 @@ def run(args: argparse.Namespace) -> None:
             ref_passes.append(_heartbeat_pass)
             heartbeat_registered = True
 
-        # Structural review pass — Slice 3 of todo-tree-plan.md.
-        # Opus-class semantic review of the tree's shape (drift
-        # between outcomes and child actions, sibling
-        # contradictions, depth/fanout warnings). Explicit-only:
-        # NOT in the default rotation, since each pass is an
-        # opus call. Gated by PRECIS_STRUCTURAL_REVIEW=1; the
-        # Ansible role at cluster/roles/precis_structural sets
-        # the env + fires the LaunchDaemon at 6h cadence.
+        # Structural review pass — Slice 3 of todo-tree-plan.md. Opus-class
+        # semantic review of the tree's shape (drift between outcomes and
+        # child actions, sibling contradictions, depth/fanout warnings).
+        # This registration is for a manual/ad-hoc `--only structural` run
+        # only — gated by PRECIS_STRUCTURAL_REVIEW=1, same as always. The
+        # STANDING trigger is now the `structural` scheduler cadence
+        # (gr192752, workers/scheduler.py CADENCES), not the agent-profile
+        # default rotation: a long `chase` pass could monopolize the
+        # strictly-serial `--profile all` loop for hours and starve this
+        # reviewer, so the fleet-wide lease (live on any host carrying
+        # PRECIS_STRUCTURAL_REVIEW) replaces the in-rotation slot — the
+        # old per-pass LaunchDaemon (cluster/roles/precis_structural) is
+        # retired.
         if _register("structural"):
             from precis.workers.runner import BatchResult as _BatchResult
             from precis.workers.structural import run_structural_pass
@@ -1864,11 +1873,13 @@ def run(args: argparse.Namespace) -> None:
 
             ref_passes.append(_structural_pass)
 
-        # Deep review pass — Slice 3 of todo-tree-plan.md. Weekly
-        # full Allen-review. Explicit-only; gated by
-        # PRECIS_DEEP_REVIEW=1. Same shape as structural with a
-        # longer prompt, longer timeout, larger turn cap, and a
-        # 6-day dedup window.
+        # Deep review pass — Slice 3 of todo-tree-plan.md. Weekly full
+        # Allen-review; same shape as structural with a longer prompt,
+        # longer timeout, larger turn cap, and a 144h dedup window. This
+        # registration is for a manual/ad-hoc `--only deep_review` run
+        # only — gated by PRECIS_DEEP_REVIEW=1. The STANDING trigger is
+        # now the `deep_review` scheduler cadence (gr192752, same
+        # rationale as `structural` just above).
         if _register("deep_review"):
             from precis.workers.deep_review import run_deep_review_pass
             from precis.workers.runner import BatchResult as _BatchResult

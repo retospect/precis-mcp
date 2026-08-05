@@ -278,14 +278,24 @@ cheap-but-real pass is never flagged.
   at `PRECIS_DISK_CRIT_PCT` (93), pages once on a fresh-or-escalating
   critical, auto-resolves via the shared `resolve_stale_alerts` sweep. The
   Prometheus `HighDiskUsage<85%` rule is the infra-level backstop.
-* `structural` — opus, 6h dedup, agent profile. Drift, sibling
-  contradictions, depth/fanout warnings. Dedup is symmetric: a **failed**
+* `structural` — opus, 5h dedup. Drift, sibling contradictions,
+  depth/fanout warnings. Standing trigger is the `structural`
+  **scheduler-lease cadence** (gr192752, `workers/scheduler.py` CADENCES,
+  hourly check tick, host-agnostic — fires on any host carrying
+  `PRECIS_STRUCTURAL_REVIEW`), not an agent-profile rotation slot: a long
+  `chase` pass could monopolize the strictly-serial `--profile all` loop
+  for hours and starve the reviewer, so a fleet-wide lease lets the other
+  eligible host win the fire instead (`registry.py` drops
+  `default_profiles`; `cli/worker.py`'s `structural` wiring is now
+  manual/ad-hoc `--only structural` only). Dedup is symmetric: a **failed**
   dispatch (non-paused error — e.g. the agent container missing
   `PRECIS_DATABASE_URL` on a host) writes a `review-fail:<name>` cooldown
   marker so the pass backs off to `min_interval_hours` instead of
   re-dispatching every tick (was spinning spark to 124k ERROR/24h).
-* `deep_review` — opus, weekly dedup, agent profile. Allen-style
-  archive / prune / rebalance / long-wait review.
+* `deep_review` — opus, 144h dedup. Allen-style archive / prune /
+  rebalance / long-wait review. Same cadence-lease shift as `structural`
+  (gr192752): fires via the `deep_review` scheduler cadence (6h check
+  tick), not a profile rotation slot.
 
 **Explicit tier-1 tool-deny for the standing passes (gr179501).** These
 passes never set an `meta.envelope`, so the envelope defaults permissive —
@@ -794,7 +804,8 @@ that cannot run them (gr193672) — fixed by `ServiceSpec.capability_env`
 on caspar/balthazar predate that fix and can be cleared once it deploys.
 The gateway keeps `precis_agent_container_enabled: false`
 (in-process `claude -p`) until the dream×container interaction is
-verified. Rollback per host: re-run `playbooks/20-precis-worker.yml` /
+verified; that smoke test is the only thing gating the flip. Rollback
+per host: re-run `playbooks/20-precis-worker.yml` /
 `37-precis-worker-agent.yml` (kept on disk, no longer imported). The
 profile split below describes pass OWNERSHIP (which env gates what),
 not separate daemons anymore.
@@ -828,12 +839,16 @@ not separate daemons anymore.
   (`handlers/_links_render.py`), closing the paper-link-blindness gap
   that pass depended on.)
 * `precis worker --profile=agent` runs the passes that need the
-  hermes OAuth / `~/.claude` state on melchior: the LLM-heavy
-  reviewers (`structural`, `deep_review`) plus `job_claude_inproc`
+  hermes OAuth / `~/.claude` state on melchior: `job_claude_inproc`
   (planner-coroutine slice — moved off system 2026-06-15 so data-host
   workers stop claiming plan_tick/fix_gripe jobs they can't run and
   false-bubbling `child-failed`) and `quota_check`. It skips the
-  embedder load it doesn't need. `quota_check` also **watches claude
+  embedder load it doesn't need. The LLM-heavy reviewers (`structural`,
+  `deep_review`) are no longer a rotation member here (gr192752, see
+  `Review tiers` above) — each fires via its own scheduler-lease cadence
+  on any host carrying its env gate (`PRECIS_STRUCTURAL_REVIEW` /
+  `PRECIS_DEEP_REVIEW`, scoped to gateway + inference), not this
+  profile's per-cycle slot. `quota_check` also **watches claude
   auth**: `claude_quota.refresh_snapshot` returns a `RefreshOutcome`,
   and a genuine 401 (`AUTH_FAILED`, distinguished from free-tier
   `NO_LIMITS` / transient `UNAVAILABLE`) raises a **critical**
