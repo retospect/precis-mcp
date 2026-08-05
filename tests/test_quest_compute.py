@@ -455,6 +455,10 @@ class TestHarvest:
         return qid
 
     def _failed_autocatpath(self, store: Any, sid: int) -> None:
+        """Legacy flat shape: a failed ``autocatpath_explore`` job directly on
+        the candidate — retired by the seed/aggregate fan-out (47332ad3);
+        nothing mints these anymore, so a failure here is always stale-era
+        (gr191615 amnesty)."""
         from precis.store import Tag
 
         job = store.insert_ref(
@@ -466,11 +470,35 @@ class TestHarvest:
         )
         store.add_tag(job.id, Tag.closed("STATUS", "failed"), set_by="system")
 
+    def _failed_autocatpath_aggregate(self, store: Any, sid: int) -> None:
+        """Current fan-out shape: a failed ``autocatpath_aggregate`` job one
+        level down, under the aggregate todo (``T_agg``, a direct child of the
+        candidate) — mirrors what :func:`dispatch_autocatpath` mints (loosely,
+        per ``_ensure_autocatpath_todo``'s shape)."""
+        from precis.store import Tag
+
+        agg_todo = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title="autocatpath aggregate",
+            meta={"executor": "ssh_node", "job_type": "autocatpath_aggregate"},
+            parent_id=sid,
+        )
+        job = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="autocatpath_aggregate",
+            meta={"job_type": "autocatpath_aggregate"},
+            parent_id=agg_todo.id,
+        )
+        store.add_tag(job.id, Tag.closed("STATUS", "failed"), set_by="system")
+
     def test_failed_autocatpath_never_rules_out_candidate(self, store: Any) -> None:
-        """A failed ``autocatpath_explore`` (a crashed NEB — a compute/infra failure)
-        must NOT rule out: a barrier crash is never a physical verdict on the
-        material, unlike a relax non-convergence (ADR 0064 §C). Note-only with
-        no hub (dry preview)."""
+        """A failed legacy ``autocatpath_explore`` (retired pre-fan-out shape,
+        47332ad3) exercises the gr191615 amnesty's note-only path (no hub —
+        dry preview): it must NOT rule out, same as any autocatpath failure —
+        a barrier crash is never a physical verdict on the material, unlike a
+        relax non-convergence (ADR 0064 §C)."""
         qid = self._reaction_quest(store)
         sid = compute_mod.ensure_candidate(
             store, qid, {"name": "Fe", "structure": _SPEC}
@@ -485,17 +513,18 @@ class TestHarvest:
     def test_failed_autocatpath_with_hub_retries_once(
         self, store: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Given a hub, a candidate's first autocatpath failure gets its barrier
-        re-dispatched (via ``dispatch_autocatpath`` against the quest's reaction
-        config), the per-lane counter set to 1, and it is NOT ruled out — the
-        re-dispatch is what keeps the loop awaiting instead of reading the crash
-        as a dry tick (ADR 0064 §C)."""
+        """Given a hub, a candidate's first autocatpath failure (current-path
+        ``autocatpath_aggregate``) gets its barrier re-dispatched (via
+        ``dispatch_autocatpath`` against the quest's reaction config), the
+        per-lane counter set to 1, and it is NOT ruled out — the re-dispatch is
+        what keeps the loop awaiting instead of reading the crash as a dry
+        tick (ADR 0064 §C)."""
         qid = self._reaction_quest(store)
         sid = compute_mod.ensure_candidate(
             store, qid, {"name": "Fe", "structure": _SPEC}
         )
         assert sid is not None
-        self._failed_autocatpath(store, sid)
+        self._failed_autocatpath_aggregate(store, sid)
 
         calls: list[dict[str, Any]] = []
 
@@ -528,9 +557,10 @@ class TestHarvest:
     def test_failed_autocatpath_second_time_files_a_gripe_not_a_third_dispatch(
         self, store: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A second consecutive autocatpath failure (retry already used) files a
-        bounded ``autocatpath``-lane gripe instead of retrying again — never rules
-        out, and a subsequent harvest doesn't re-file (dedup)."""
+        """A second consecutive autocatpath failure (retry already used, current
+        path ``autocatpath_aggregate``) files a bounded ``autocatpath``-lane
+        gripe instead of retrying again — never rules out, and a subsequent
+        harvest doesn't re-file (dedup)."""
         qid = self._reaction_quest(store)
         sid = compute_mod.ensure_candidate(
             store, qid, {"name": "Fe", "structure": _SPEC}
@@ -539,7 +569,7 @@ class TestHarvest:
         store.stamp_ref_meta(
             sid, {"quest_autocatpath_infra_retries": 1}
         )  # retried once
-        self._failed_autocatpath(store, sid)
+        self._failed_autocatpath_aggregate(store, sid)
 
         dispatch_calls: list[int] = []
 
@@ -580,6 +610,92 @@ class TestHarvest:
         step2 = compute_mod.harvest_measures(store, qid, hub=hub)
         assert step2.ruled_out == 0
         assert len(gripe_calls) == 1  # unchanged
+
+    def test_stale_explore_failure_amnesty_redispatches_and_resets_counter(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr191615: a failed legacy ``autocatpath_explore`` job is always
+        stale pre-fan-out signal, so it gets a one-shot amnesty even when the
+        §C counter is already exhausted — bypasses the ladder (no gripe),
+        re-dispatches via the current seed/aggregate path, and resets the
+        counter to 0 for the fresh run's own full retry-once-then-gripe."""
+        qid = self._reaction_quest(store)
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.stamp_ref_meta(
+            sid, {"quest_autocatpath_infra_retries": 2}
+        )  # already exhausted by the dead poison-fail era
+        self._failed_autocatpath(store, sid)
+
+        dispatch_calls: list[dict[str, Any]] = []
+
+        def _fake_dispatch_autocatpath(
+            _s: Any, structure_ref_id: int, _config: Any, **_kw: Any
+        ) -> str:
+            dispatch_calls.append({"structure_ref_id": structure_ref_id})
+            return "autocatpath[ml]"
+
+        monkeypatch.setattr(
+            compute_mod, "dispatch_autocatpath", _fake_dispatch_autocatpath
+        )
+
+        gripe_calls: list[dict[str, Any]] = []
+
+        class _FakeGripeHandler:
+            def __init__(self, *, hub: Any) -> None:
+                self.hub = hub
+
+            def put(self, *, text: str, tags: list[str] | None = None) -> None:
+                gripe_calls.append({"text": text, "tags": tags})
+
+        monkeypatch.setattr("precis.handlers.gripe.GripeHandler", _FakeGripeHandler)
+
+        hub = object()
+        step = compute_mod.harvest_measures(store, qid, hub=hub)
+        assert step.ruled_out == 0
+        assert not any(str(t).startswith("ruled-out:") for t in store.tags_for(sid))
+        assert len(dispatch_calls) == 1
+        assert dispatch_calls[0]["structure_ref_id"] == sid
+        assert gripe_calls == []
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta.get("quest_autocatpath_infra_retries") == 0
+
+    def test_latest_autocatpath_job_prefers_newer_aggregate_over_stale_explore(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A candidate with an older failed legacy ``autocatpath_explore`` AND
+        a newer failed ``autocatpath_aggregate`` must be seen via the newer
+        aggregate (``_latest_autocatpath_job``'s cross-shape ORDER BY) —
+        harvest takes the counter-ladder path (dispatch + counter → 1), NOT
+        the stale-era amnesty (which would reset the counter to 0)."""
+        qid = self._reaction_quest(store)
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert sid is not None
+        self._failed_autocatpath(store, sid)  # older, legacy shape
+        self._failed_autocatpath_aggregate(store, sid)  # newer, current shape
+
+        dispatch_calls: list[dict[str, Any]] = []
+
+        def _fake_dispatch_autocatpath(
+            _s: Any, structure_ref_id: int, _config: Any, **_kw: Any
+        ) -> str:
+            dispatch_calls.append({"structure_ref_id": structure_ref_id})
+            return "autocatpath[ml]"
+
+        monkeypatch.setattr(
+            compute_mod, "dispatch_autocatpath", _fake_dispatch_autocatpath
+        )
+
+        hub = object()
+        step = compute_mod.harvest_measures(store, qid, hub=hub)
+        assert step.ruled_out == 0
+        assert len(dispatch_calls) == 1
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta.get("quest_autocatpath_infra_retries") == 1
 
 
 # ── frontier over the store ───────────────────────────────────────────

@@ -75,6 +75,19 @@ to a §L regression **plus** an independent, more serious spark worker deadlock.
   advertised capability), not a hand-maintained list, so no future role-gated
   pass regresses the same way.
 
+- **autocatpath fan-out: a terminally failed seed never escalates** · Status:
+  open · Severity: bug (latent stall class). A seed job that exhausts its
+  attempt cap leaves its seed todo's `child_job_succeeded` auto_check
+  permanently unsatisfied, so `T_agg` never becomes dispatchable and no
+  `autocatpath_aggregate` job ever exists — the ADR 0064 §C retry lane
+  (`quest/compute.py::harvest_measures`, which watches explore/aggregate jobs)
+  sees nothing, and the candidate waits forever with no retry, no gripe, no
+  rule-out. Noticed while fixing gr191615 (which covers only counters spent by
+  the retired explore-era failure mode). Do: decide the escalation signal for a
+  dead seed subtree — e.g. treat "all seed todos terminal but not all done" as
+  a failed barrier eval feeding the §C ladder, or a nursery detector on aged
+  undispatchable `T_agg` trees.
+
 - **spark autocatpath_seed durable submit/poll migration (wedge + completion RESOLVED)**
   · Status: only the durable end-state remains · Severity:
   critical → low · gripe **191351**. **Wedge FIXED (7497c30d, deployed +

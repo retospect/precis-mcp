@@ -2117,11 +2117,17 @@ The master kinds table lives in the `precis-overview` skill.
   **once** (`meta.quest_infra_retries`) so it goes non-terminal and the loop
   *awaits* it instead of drifting dry; a 2nd infra failure files a
   `quest-infra-failure` gripe and stops — never ruled out (no physical verdict).
-  The **barrier lane mirrors this** (§C completed): a failed `autocatpath_explore`
+  The **barrier lane mirrors this** (§C completed): a failed autocatpath job
   is *always* a crashed NEB (a compute failure, never a physical "no pathway"
   verdict), so it retries once (`meta.quest_autocatpath_infra_retries`) then gripes
   (`lane="autocatpath"`) and **never** rules out — `_latest_autocatpath_job` +
   `dispatch_autocatpath` re-dispatch, same retry-once-then-gripe shape as relax.
+  `_latest_autocatpath_job` watches **both shapes** — legacy `autocatpath_explore`
+  on the candidate and the fan-out's `autocatpath_aggregate` under `T_agg` — so
+  the ladder governs current-path failures; a failed *legacy* `autocatpath_explore`
+  (retired 47332ad3, nothing mints one) instead gets a one-shot **amnesty**
+  (gr191615): re-dispatched via the current seed/aggregate path with the counter
+  reset to 0, since the poison-fail era that spent it is dead.
   **Barrier quality gate** (`compute._pathway_quality`, gr172323): harvest
   lifts not only the scalar `barrier`/`span` but a trust verdict read from the
   linked pathway's `meta.warnings` — `barrier_trusted=False` iff any

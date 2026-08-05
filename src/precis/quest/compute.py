@@ -842,24 +842,44 @@ def _latest_relax_job(
 def _latest_autocatpath_job(
     store: Store, structure_ref_id: int
 ) -> tuple[str, dict[str, Any]] | None:
-    """The latest ``autocatpath_explore`` job's ``(STATUS, meta)`` under this candidate.
+    """The latest autocatpath job's ``(STATUS, meta)`` under this candidate,
+    across BOTH shapes (mirrors :func:`_fresh_autocatpath_jobs`):
+
+    * legacy flat — a ``autocatpath_explore`` job directly on the candidate
+      (pre-fan-out; retired by 47332ad3, nothing mints these anymore);
+    * the fan-out's aggregate — a ``autocatpath_aggregate`` job one level
+      down, under the aggregate todo (``T_agg``, itself a direct child of
+      the candidate — see :func:`dispatch_autocatpath`'s docstring).
 
     The sibling of :func:`_latest_relax_job` for the barrier lane. Unlike relax —
     where a ``failed`` job may carry a genuine *physical* verdict (non-convergence
-    ⇒ rule the candidate out) — a failed ``autocatpath_explore`` is **always** a
+    ⇒ rule the candidate out) — a failed autocatpath job is **always** a
     compute/infra failure: the NEB/barrier run crashed, which says nothing about
     whether the material has a viable pathway. So the harvest treats every autocatpath
-    failure as retry-eligible (ADR 0064 §C) and never rules out on it.
+    failure as retry-eligible (ADR 0064 §C) and never rules out on it. Watching both
+    shapes matters for two reasons: the retry lane must see failures of the CURRENT
+    path (``autocatpath_aggregate``, minted by :func:`dispatch_autocatpath`'s
+    seed/aggregate fan-out) — the legacy-only query left it blind to those; and a
+    failed legacy ``autocatpath_explore`` is always stale pre-fan-out signal (gr191615
+    — see the amnesty branch in :func:`harvest_measures`), never current-path noise.
     """
     with store.pool.connection() as conn:
         row = conn.execute(
             "SELECT t.value, j.meta FROM refs j "
             "JOIN ref_tags rt ON rt.ref_id = j.ref_id "
             "JOIN tags t ON t.tag_id = rt.tag_id "
-            "WHERE j.parent_id = %s AND j.kind = 'job' AND j.deleted_at IS NULL "
-            "AND j.meta->>'job_type' = 'autocatpath_explore' AND t.namespace = 'STATUS' "
+            "WHERE j.kind = 'job' AND j.deleted_at IS NULL "
+            "AND t.namespace = 'STATUS' "
+            "AND ((j.parent_id = %(sid)s "
+            "      AND j.meta->>'job_type' = 'autocatpath_explore') "
+            "  OR (j.meta->>'job_type' = 'autocatpath_aggregate' "
+            "      AND j.parent_id IN ( "
+            "            SELECT ref_id FROM refs "
+            "             WHERE parent_id = %(sid)s AND kind = 'todo' "
+            "               AND deleted_at IS NULL "
+            "          ))) "
             "ORDER BY j.ref_id DESC LIMIT 1",
-            (structure_ref_id,),
+            {"sid": structure_ref_id},
         ).fetchone()
     if row is None:
         return None
@@ -956,12 +976,18 @@ def harvest_measures(
       neither sense (no third dispatch, never ruled out). ``hub=None``
       (dry preview / callers that don't exercise this) preserves the
       original note-only behaviour.
-    * a candidate whose latest **autocatpath** (`autocatpath_explore`) job failed gets
-      the *same* retry-once-then-gripe treatment on its own counter
+    * a candidate whose latest **autocatpath** job failed gets the *same*
+      retry-once-then-gripe treatment on its own counter
       (``meta.quest_autocatpath_infra_retries``), but **never** ruled out: a failed
       autocatpath is always a crashed NEB (a compute/infra failure), never a
       physical "no viable pathway" verdict, so — unlike relax non-convergence —
       it carries no verdict on the material (ADR 0064 §C, barrier-lane mirror).
+      A failed legacy ``autocatpath_explore`` job (retired by the seed/aggregate
+      fan-out, 47332ad3 — nothing mints one anymore) instead gets a one-shot
+      **amnesty**: re-dispatched via the current path with the counter reset to
+      0, bypassing the ladder entirely, since the poison-fail defect that spent
+      it is fixed and the failure carries no signal against the current run
+      (gr191615).
     """
     from precis.quest.gaps import _live_servers
     from precis.utils import handle_registry
@@ -1108,7 +1134,34 @@ def harvest_measures(
                 (s.meta or {}).get("quest_autocatpath_infra_retries", 0) or 0
             )
             reaction = _quest_reaction_config(store, quest_id)
-            if hub is None or reaction is None:
+            # gr191615 amnesty: nothing has minted an `autocatpath_explore` job
+            # since the seed/aggregate fan-out landed (47332ad3) — every candidate
+            # now runs `autocatpath_aggregate` (see dispatch_autocatpath). So a
+            # *failed* explore job seen here is always from the since-fixed
+            # poison-fail era: it spent quest_autocatpath_infra_retries on a
+            # defect that no longer exists, which strands the candidate behind an
+            # already-exhausted counter for a failure with no current bearing.
+            # Re-dispatch bypasses the ladder and resets the counter so the fresh
+            # current-path run gets its own full §C retry-once-then-gripe.
+            # dispatch_autocatpath is content-addressed per engine token
+            # (T_agg/seed content keys), so a repeat tick before the new
+            # aggregate lands just collapses onto the same tree rather than
+            # double-dispatching; the amnesty stops firing on its own once that
+            # aggregate job becomes the latest job under the candidate.
+            if cp_job_meta.get("job_type") == "autocatpath_explore":
+                if hub is None or reaction is None:
+                    notes.append(
+                        f"stale-era autocatpath failure for {handle} "
+                        "(amnesty-eligible, not ruled out)"
+                    )
+                else:
+                    dispatch_autocatpath(store, s.id, reaction, hub=hub)
+                    store.stamp_ref_meta(s.id, {"quest_autocatpath_infra_retries": 0})
+                    notes.append(
+                        f"stale-era autocatpath failure for {handle} → amnesty "
+                        "re-dispatch via seed/aggregate"
+                    )
+            elif hub is None or reaction is None:
                 notes.append(
                     f"autocatpath infra failure for {handle} "
                     "(retry-eligible, not ruled out)"
