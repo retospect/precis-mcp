@@ -156,14 +156,34 @@ for the durable pin of that boundary.
   both read $0.00 and never fired — an orphaned tree burned $291 over 5 days
   under a $20/day ceiling. The tree cap is new: per-*todo* alone gave 258
   siblings $516 of headroom. `tests/test_planner_guardrails.py` pins each cap
-  against real ledger rows.)*
+  against real ledger rows.)* **The numbers above are code defaults; prod
+  runs the deploy templates' values** (tick 25, $5, $10, $50). Those
+  templates hardcoded `PRECIS_MAX_TICKS=10000` from the day the deploy tree
+  was authored (92311750) — the first and cheapest check, off for the life
+  of the system, which is how two todos reached 62 and 50 ticks unremarked —
+  and omitted `PRECIS_MAX_TREE_USD` entirely, leaving it at an untunable
+  code default. `tests/test_deploy_planner_caps.py` now asserts every render
+  site sets all four, from an overridable var, at a value that can actually
+  fire; a cap could previously be disabled in `deploy/` with nothing going
+  red. *(2026-08-06.)*
 * **Orphan subtrees.** `deleted_at` is **not transitive** — deleting a
   project todo leaves every descendant's own `deleted_at` NULL, and the
-  candidate query only checks the candidate's own flag. `dispatch._drop_orphaned`
-  walks the ancestor chain (depth-guarded against a cyclic `parent_id`) and
-  silently skips any candidate under a deleted todo — no `halt:` tag, since
-  the delete already said what should happen. *Minting* a child under a
-  deleted parent is still unguarded (OPEN-ITEMS).
+  candidate query only checks the candidate's own flag. The ancestor walk is
+  `utils/ref_tree.deleted_in_ancestry` (depth-guarded against a cyclic
+  `parent_id`), shared by both directions, because stopping a dead tree
+  dispatching does not stop it growing:
+  * *dispatching* — `dispatch._drop_orphaned` (strict ancestors; the
+    candidate query already filtered self) silently skips any candidate
+    under a deleted todo, no `halt:` tag, since the delete already said
+    what should happen.
+  * *growing* — `quest/weave_review.mint_review_todo` (the single primitive
+    behind both the per-weave trigger and the whole-draft fanout) raises
+    `OrphanedParentError` before inserting. Code-minting paths bypass
+    `TodoHandler.put`, and so bypassed its `check_parent_exists` liveness
+    check with nothing replacing it; a fanout over a draft whose project
+    was deleted two days earlier minted 258 live review-todos into the
+    grave, each then its own dispatch candidate.
+    *(2026-08-06; `tests/test_orphan_mint_guard.py`.)*
 * **Views.** `view='tree'` walks `kind IN ('todo','job')` so child
   jobs render with a `⚙` marker; `view='attention'` unions
   `asking-reto` leaves + `child-failed` parents for asa-bot's preamble;

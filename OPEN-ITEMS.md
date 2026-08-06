@@ -12,7 +12,7 @@ tracked separately in `docs/improvement-plan.md` (same delete-on-ship rule).
 
 ## Residuals (2026-08-06 — $291 planner cost-runaway RCA)
 
-Status: open · Severity: critical/feature · Owner: `src/precis/handlers/todo.py`, `src/precis/workers/claim.py`, `src/precis/budget/quota.py` · Test: below.
+Status: open · Severity: critical/feature · Owner: `src/precis/workers/job_types/plan_tick.py`, `src/precis/budget/quota.py` · Test: below.
 
 A soft-deleted project todo (43019) kept dispatching opus planner ticks for
 four days — $291 across 258 orphaned children, against a nominal $20/day
@@ -22,18 +22,24 @@ ancestor `deleted_at` check in dispatch; no tree-wide cap; a "clean" tick that
 called no precis verb counted as success). These are the residuals that fix
 did **not** cover:
 
-- **🚨 Minting a child todo under a soft-deleted parent isn't blocked.** The
-  258 children were *created* 2026-08-02, two days **after** their parent was
-  deleted on 2026-07-31. `_drop_orphaned` now stops the orphaned subtree from
-  *dispatching*, but nothing stops the tree from *growing* in the first place.
-  Owner: the `todo` put path (parent validation). Test: `put(kind='todo',
-  parent=<soft-deleted id>)` must reject.
-- **🔧 Stale job leases are never reaped.** Job ref 195999 ("plan_tick
-  dispatched from todo:186790") sat in `STATUS:running` for 7h+ with a dead
-  worker; an in-flight job blocks its parent's dispatch forever, so one dead
-  lease silently freezes a todo. Needs a lease timeout + reaper (mark
-  `failed` past N× the job's timeout). Test: a `running` job older than the
-  reap threshold is transitioned and its parent becomes dispatchable again.
+- **🚨 One third of every planner tick since 2026-08-02 ran with no tools at
+  all.** The ticks that drove todo 166542 to 62 ticks and 162719 to 50 were
+  not long, and not confused — the precis MCP server never finished
+  connecting, so the agent had *zero* precis verbs, burned a full opus run
+  writing "I am blocked" into a summary nobody reads, exited `completed`, and
+  was re-minted on the next sweep to do it again. Rate by day, from
+  `job_summary` chunks: 07-30 **0%**, 08-01 **0%**, then 08-02 **24.7%**,
+  08-03 **62.7%**, 08-04 **12.5%**, 08-05 **26.7%**, 08-06 **35.0%**. The
+  *loop* is closed (891a2d81 made a zero-precis-verb tick a resumable failure
+  instead of a success), but the **connect failure itself is unexplained and
+  still live** — it is pure waste at ~$0.10-0.70 a tick. Note 08-02 is also
+  the day the 258 orphans were minted; the obvious hypothesis is that the
+  extra dispatch candidates raised concurrency until MCP subprocess startup
+  began timing out on melchior (cf. jetsam pressure), which today's two fixes
+  attack from both ends — but that is a hypothesis, not a diagnosis. Owner:
+  `plan_tick` MCP spawn path + `PRECIS_INPROC_CONCURRENCY`. Test: a tick whose
+  MCP fails to register is observable as such (today you can only infer it
+  from prose in the summary).
 - **🔧 `budget/quota.py` `evaluate()` is dark, so OAuth spend has no global
   gate.** `budget/meter.py` deliberately excludes `OAUTH_TRANSPORTS`
   (`claude_agent` / `claude_p`) from the dollar meter as *notional* spend,

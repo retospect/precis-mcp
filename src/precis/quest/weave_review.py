@@ -39,7 +39,10 @@ parented straight on the quest ref despite the kind mismatch). The
 ``kind='todo'``-only parent check lives in ``TodoHandler.put``
 (``handlers._todo_guards.check_parent_exists``), which this module — like
 ``dispatch.py``'s job-minting — bypasses by calling the store layer
-directly. ``has_review``/``has_anchor`` only read the review-todo's own
+directly. That bypass also dropped ``check_parent_exists``'s *liveness*
+half, and nothing replaced it: see :class:`OrphanedParentError`, which
+:func:`mint_review_todo` now raises rather than minting into a deleted
+tree. ``has_review``/``has_anchor`` only read the review-todo's own
 ``refs.meta``, so this is sufficient for the reviewer engine to pick it
 up; the known tradeoff is the todo has no ``rotation_root`` ancestor, so
 a todo-tree hygiene sweep may flag it as an orphan — an accepted
@@ -66,6 +69,22 @@ from __future__ import annotations
 from typing import Any
 
 from precis.store.types import Tag
+from precis.utils.ref_tree import is_orphaned
+
+
+class OrphanedParentError(RuntimeError):
+    """Raised when asked to mint a review-todo into a dead tree.
+
+    Bypassing ``TodoHandler.put`` (see the module docstring) also bypasses
+    its ``check_parent_exists``, which has rejected a soft-deleted parent
+    since 2026-06-13. Nothing replaced that check on the store-layer path,
+    so a fanout over a draft whose project todo had been deleted two days
+    earlier minted 258 live review-todos into the grave — each one then a
+    dispatch candidate, which is how a deleted project kept billing
+    planner ticks. The check is by *ancestry*, not just the parent row:
+    ``deleted_at`` is not transitive (see :mod:`precis.utils.ref_tree`).
+    """
+
 
 #: Per-weave lens briefs. The generic reviewer persona
 #: (``_load_review_persona`` in ``workers/planner_prompt.py``) is loaded
@@ -143,6 +162,11 @@ def mint_review_todo(
     ``parent_id``, or ``None`` if a live one already exists (idempotent
     skip — see the module docstring).
 
+    Raises :class:`OrphanedParentError` if ``parent_id`` is soft-deleted
+    or sits under a soft-deleted ancestor — the guarantee
+    ``TodoHandler.put``'s ``check_parent_exists`` gives the interactive
+    path, restated here because this path deliberately bypasses it.
+
     Each carries ``meta.review=<lens>`` + ``meta.anchor=anchor`` — the
     shape :mod:`precis.utils.prompt.predicates`'s ``has_review``/
     ``has_anchor`` read to flip a ``plan_tick`` into reviewer mode over
@@ -170,6 +194,11 @@ def mint_review_todo(
     draft, parented on the draft's owning project todo) — same ref/tag
     shape, different parent + lens set.
     """
+    if is_orphaned(store, parent_id):
+        raise OrphanedParentError(
+            f"refusing to mint a {lens!r} review-todo under ref {parent_id}: "
+            "it is soft-deleted or lives under a soft-deleted ancestor"
+        )
     if _existing_review_todo(store, parent_id, lens, anchor) is not None:
         return None
     meta: dict[str, Any] = {"anchor": anchor, "review": lens, "llm_tier": llm_tag}

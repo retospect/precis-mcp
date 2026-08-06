@@ -59,6 +59,7 @@ from precis.handlers._todo_views import (
 )
 from precis.store import Store
 from precis.store.types import Tag
+from precis.utils.ref_tree import deleted_in_ancestry
 from precis.workers import planner_guardrails
 from precis.workers.executors import (
     EXECUTOR_PROVIDES,
@@ -406,11 +407,6 @@ def _candidate_parent_ids(store: Store, *, limit: int) -> list[int]:
     return _drop_orphaned(store, [int(r[0]) for r in rows])
 
 
-#: Max ancestor hops the orphan walk follows — a guard against a cyclic
-#: ``parent_id``, not a real depth limit (see ``planner_guardrails``).
-_MAX_ANCESTOR_DEPTH = 64
-
-
 def _drop_orphaned(store: Store, ids: list[int]) -> list[int]:
     """Filter out candidates with a soft-deleted **ancestor**.
 
@@ -429,23 +425,9 @@ def _drop_orphaned(store: Store, ids: list[int]) -> list[int]:
     """
     if not ids:
         return ids
-    with store.pool.connection() as conn:
-        rows = conn.execute(
-            """
-            WITH RECURSIVE anc (cand_id, parent_id, deleted_at, depth) AS (
-                SELECT r.ref_id, r.parent_id, r.deleted_at, 0
-                  FROM refs r WHERE r.ref_id = ANY(%(ids)s)
-                UNION ALL
-                SELECT a.cand_id, p.parent_id, p.deleted_at, a.depth + 1
-                  FROM anc a JOIN refs p ON p.ref_id = a.parent_id
-                 WHERE a.depth < %(max_depth)s
-            )
-            SELECT DISTINCT cand_id FROM anc
-             WHERE deleted_at IS NOT NULL AND depth > 0
-            """,
-            {"ids": ids, "max_depth": _MAX_ANCESTOR_DEPTH},
-        ).fetchall()
-    orphaned = {int(r[0]) for r in rows}
+    # Strict ancestors only — the candidate query already filtered rows
+    # whose own ``deleted_at`` is set.
+    orphaned = deleted_in_ancestry(store, ids)
     if orphaned:
         log.info(
             "dispatch: skipping %d candidate(s) under a deleted ancestor: %s",

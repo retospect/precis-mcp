@@ -71,13 +71,23 @@
     {# Planner-coroutine guardrails. Read by the dispatch pass when
        it gates each candidate parent — the dispatch pass runs in the
        system profile (here), even though the job execution happens
-       on the agent profile (the gateway). Defaults in code are 10/2/20;
-       bumped to give a real strategic-decomposition room to converge.
-       #}
+       on the agent profile (the gateway).
+
+       These are the ONLY brakes on planner spend, so set all four
+       explicitly: a cap left out of this block silently runs at its
+       code default, which no host can tune and nobody reading the
+       deploy can see. MAX_TICKS was 10000 — not "room to converge"
+       but the cap switched off, and since it is the FIRST check it
+       took the other three out of the fast path entirely. Real todos
+       converged in 5-13 ticks; the two runaways reached 50 and 62.
+       25 leaves genuine decomposition room and still trips a spin
+       long before the dollar caps notice. Override in host_vars. #}
     <key>PRECIS_MAX_TICKS</key>
-    <string>{{ precis_max_ticks | default(10000) }}</string>
+    <string>{{ precis_max_ticks | default(25) }}</string>
     <key>PRECIS_MAX_TODO_USD</key>
     <string>{{ precis_max_todo_usd | default(5.0) }}</string>
+    <key>PRECIS_MAX_TREE_USD</key>
+    <string>{{ precis_max_tree_usd | default(10.0) }}</string>
     <key>PRECIS_DAILY_COST_CEILING</key>
     <string>{{ precis_daily_cost_ceiling | default(50.0) }}</string>
     {# CPU-shares passthrough for containerized jobs this worker spawns

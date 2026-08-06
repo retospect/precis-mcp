@@ -106,16 +106,18 @@
     <key>PRECIS_LOAD_CEILING</key>
     <string>{{ precis_worker_agent_load_ceiling }}</string>
     {% endif %}
-    {# Planner-coroutine guardrails. Defaults are 10/2/20 in code;
-       bumped here so the first real production planner can converge
-       on a strategic with ~5-level decomposition before hitting the
-       tick cap, and the daily ceiling allows ~10 planning sessions
-       a day. Override at the host-vars level if a budget shift is
-       needed. #}
+    {# Planner-coroutine guardrails — must mirror the system-profile
+       plist, which is where the dispatch pass actually reads them.
+       Set all four explicitly; an omitted cap runs at an untunable,
+       invisible code default. MAX_TICKS was 10000, i.e. off, so the
+       first and cheapest check never fired: two todos reached 50 and
+       62 ticks unremarked while real ones converged in 5-13. #}
     <key>PRECIS_MAX_TICKS</key>
-    <string>{{ precis_max_ticks | default(10000) }}</string>
+    <string>{{ precis_max_ticks | default(25) }}</string>
     <key>PRECIS_MAX_TODO_USD</key>
     <string>{{ precis_max_todo_usd | default(5.0) }}</string>
+    <key>PRECIS_MAX_TREE_USD</key>
+    <string>{{ precis_max_tree_usd | default(10.0) }}</string>
     <key>PRECIS_DAILY_COST_CEILING</key>
     <string>{{ precis_daily_cost_ceiling | default(50.0) }}</string>
     {# CPU-shares passthrough for containerized jobs this worker spawns

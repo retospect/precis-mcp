@@ -61,8 +61,11 @@ Environment=PRECIS_CONTAINER_BIN=/usr/bin/docker
 Environment=PRECIS_AGENT_IMAGE={{ precis_agent_image | default('precis-agent:latest') }}
 
 # Planner-coroutine guardrails (mirror the the gateway plist defaults).
-Environment=PRECIS_MAX_TICKS={{ precis_max_ticks | default(10000) }}
+# All four caps are set explicitly: an unset one runs at its code default,
+# which is invisible from here (that is how the tree cap ran untunable).
+Environment=PRECIS_MAX_TICKS={{ precis_max_ticks | default(25) }}
 Environment=PRECIS_MAX_TODO_USD={{ precis_max_todo_usd | default(5.0) }}
+Environment=PRECIS_MAX_TREE_USD={{ precis_max_tree_usd | default(10.0) }}
 Environment=PRECIS_DAILY_COST_CEILING={{ precis_daily_cost_ceiling | default(50.0) }}
 
 # CPU-limit passthrough for containerized jobs this worker spawns
