@@ -52,6 +52,7 @@ from precis_web.deps import (
     redirect_or_error,
     templates,
 )
+from precis_web.item_view import _OPEN_URL_OVERRIDES
 from precis_web.paper_links import doi_url, scholar_title_url
 
 router = APIRouter(prefix="/papers", tags=["papers"])
@@ -209,6 +210,86 @@ def _paper_row(ref: Any) -> dict[str, Any]:
     }
 
 
+#: Max sources shown per (kind, relation) group in the backlinks panel — a
+#: heavily-cited paper can be linked from hundreds of sources; the tail is
+#: noted rather than dumped inline (the deep ``/backlinks`` page is the
+#: expansion, per OPEN-ITEMS).
+_BACKLINKS_GROUP_CAP = 40
+
+
+def _src_url(ref: Any) -> str:
+    """Canonical in-app URL for a *linking source* ref, kind-agnostic. Mirrors
+    ``item_view.open_url`` (the shared ``_OPEN_URL_OVERRIDES`` map + the
+    ``/refs/<kind>/<id>`` fallback), plus two overrides that map can't
+    express: a ``finding`` opens its claim page ``/claim/fi<id>`` (the
+    ``/claim`` route renders a friendly stub for a non-hub finding, so it's
+    safe for lifecycle findings too), and a ``paper`` links by ``slug or id``
+    to match this module's own idiom (``_refs_row``), preferring the stable
+    cite_key over the bare ref id."""
+    if ref.kind == "finding":
+        return f"/claim/{format_handle('finding', ref.id)}"
+    if ref.kind == "paper":
+        return f"/papers/{ref.slug or ref.id}"
+    tmpl = _OPEN_URL_OVERRIDES.get(ref.kind)
+    if tmpl:
+        return tmpl.format(id=ref.id, slug=ref.slug or ref.id)
+    return f"/refs/{ref.kind}/{ref.id}"
+
+
+def _backlinks(store: Any, ref_id: int) -> list[dict[str, Any]]:
+    """ "Who links here" — every held incoming edge into this ref, grouped by
+    ``(source kind, relation)`` and clickable to the source's canonical page.
+    Kind-agnostic: drafts (``cites``/``related-to``), findings
+    (``derived-from`` / hub evidence roles), dreams, quests, or other papers
+    all surface for free.
+
+    Reads the materialised ``links`` reverse index (``dst_ref_id`` is indexed)
+    — one cheap SQL read, no S2/network (unlike the Sources/Cited tabs).
+    *Coverage caveat:* this shows only *materialised* edges. Some inline draft
+    ``[pc]/[pa]/[fi]`` prose cites are scanned from chunk text on demand
+    (``handlers/_citations_view``) and may not have a ``links`` row until the
+    draft-save autolinker materialises them; a text-scan union is the
+    documented expansion (OPEN-ITEMS "Paper-page product gaps")."""
+    links = store.links_for(ref_id, direction="in")
+    if not links:
+        return []
+    src_ids = {lk.src_ref_id for lk in links if lk.src_ref_id != ref_id}
+    refs = store.fetch_refs_by_ids(list(src_ids)) if src_ids else {}
+    # Group by (kind, relation); dedupe on source ref (a source citing at N
+    # chunks yields N link rows but is one backlink) and count the edges.
+    groups: dict[tuple[str, str], dict[int, dict[str, Any]]] = {}
+    for lk in links:
+        src = refs.get(lk.src_ref_id)
+        if src is None or getattr(src, "deleted_at", None) is not None:
+            continue  # missing / soft-deleted source
+        bucket = groups.setdefault((src.kind, lk.relation), {})
+        row = bucket.get(src.id)
+        if row is None:
+            handle = format_handle(src.kind, src.id)
+            bucket[src.id] = {
+                "url": _src_url(src),
+                "title": _nav_snippet(src.title or "") or handle,
+                "handle": handle,
+                "edges": 1,
+            }
+        else:
+            row["edges"] += 1
+    out: list[dict[str, Any]] = []
+    for (kind, relation), bucket in sorted(groups.items()):
+        rows = sorted(bucket.values(), key=lambda r: r["handle"])
+        overflow = max(0, len(rows) - _BACKLINKS_GROUP_CAP)
+        out.append(
+            {
+                "kind": kind,
+                "relation": relation,
+                "count": len(rows),
+                "rows": rows[:_BACKLINKS_GROUP_CAP],
+                "overflow": overflow,
+            }
+        )
+    return out
+
+
 @router.get("", response_class=HTMLResponse)
 @router.get("/", response_class=HTMLResponse)
 async def index(q: str | None = None) -> Response:
@@ -349,6 +430,11 @@ def _render_detail(
         # on this paper renders Ⓐ (abstract-only) / ✍ (author-vouched)
         # instead of ⚠. ``None`` when unset.
         "unacquirable": (ref.meta or {}).get("unacquirable_override"),
+        # "Who links here" — held incoming edges (drafts / findings / dreams /
+        # papers) into this ref, grouped by (kind, relation), each clickable to
+        # the source's canonical page. Read-only over the ``links`` reverse
+        # index; rendered on the Meta tab.
+        "backlinks": _backlinks(store, ref_id),
         # Editable short handle (cite_key) + a free suggestion.
         "slug_default": slug_default,
         "suggested_slug": suggested_slug,

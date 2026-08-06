@@ -121,6 +121,35 @@
   </form>
 </div>
 
+{# "Referenced by" — who links here (drafts / findings / dreams / papers),
+   from the materialised ``links`` reverse index. Grouped by (source kind,
+   relation); each source is one clickable row into its canonical page.
+   Built by papers._backlinks. #}
+{% if backlinks %}
+<div class="border-t border-slate-100 pt-2">
+  <p class="text-[11px] uppercase tracking-wide text-slate-400">Referenced by</p>
+  <div class="mt-1 space-y-1.5">
+    {% for g in backlinks %}
+    <div>
+      <p class="text-[10px] text-slate-400">
+        <span class="font-mono text-slate-500">{{ g.kind }}</span>
+        · {{ g.relation }}{% if g.count > 1 %} · {{ g.count }}{% endif %}
+      </p>
+      <ul class="mt-0.5 space-y-0.5">
+        {% for r in g.rows %}
+        <li class="truncate">
+          <a class="text-sky-700 hover:underline" href="{{ r.url }}" title="{{ r.title }}">{{ r.title }}</a>
+          <span class="font-mono text-[10px] text-slate-400">{{ r.handle }}</span>{% if r.edges > 1 %}<span class="text-[10px] text-slate-400"> ×{{ r.edges }}</span>{% endif %}
+        </li>
+        {% endfor %}
+        {% if g.overflow %}<li class="text-[10px] italic text-slate-400">+{{ g.overflow }} more</li>{% endif %}
+      </ul>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
 {% if abstract %}
 <div class="border-t border-slate-100 pt-2">
   <p class="text-[11px] uppercase tracking-wide text-slate-400">Abstract</p>

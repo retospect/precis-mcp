@@ -2724,7 +2724,16 @@ The master kinds table lives in the `precis-overview` skill.
   also has a **Fill blanks from Semantic Scholar** button
   (`GET /papers/{ref_id}/s2-prefill`, read-only) that prefills only the
   *empty* edit-form fields from S2 (DOI/arXiv exact record → title search),
-  client-side — nothing persists until Save. The **sole draft
+  client-side — nothing persists until Save. The Meta tab also renders a
+  **"Referenced by"** backlinks panel (`papers._backlinks`) — every held
+  incoming edge from the materialized `links.dst_ref_id` reverse index,
+  grouped by (source kind, relation) and clickable to each source's canonical
+  page (`_src_url`: drafts→`/smartdraft`, findings→`/claim/fi…`,
+  papers→`/papers/…`, else `/refs/<kind>/<id>`), kind-agnostic. A source
+  citing at N chunks dedupes to one row with an `×N` edge count; shows only
+  materialized edges (inline prose cites not yet autolinked, and a deep
+  `/backlinks` page with per-passage detail, are the deferred expansion —
+  OPEN-ITEMS). The **sole draft
   reader is `/smartdraft`** (`routes/smartdraft.py` + `smartdraft.py`) — the
   three-pane fisheye reader (left TOC · middle focus+neighbourhood · right
   collaborate). The classic virtual-scroll reader (`GET /drafts/{ident}`) was
