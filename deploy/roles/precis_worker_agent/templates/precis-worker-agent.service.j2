@@ -10,7 +10,7 @@
 #   - job_claude_inproc (plan_tick / fix_gripe / casts) — needs a repo checkout
 #     (PRECIS_FIX_REPO_DIR) + is gated on PRECIS_MCP_CONFIG, which we leave UNSET
 #     here, so that pass self-skips (natural gate, no service_config needed).
-#   - briefing / casts — use the litellm loopback (the gateway's llama), absent here.
+#   - briefing / casts — use the gateway's local llama loopback, absent here.
 #   - quest loop / card_forge — the gateway-pinned budget / local-model use.
 # dream never runs here either (§A: the `dream_agent` scheduler cadence is
 # host-pinned to the gateway — workers/scheduler.py CADENCES — not to this

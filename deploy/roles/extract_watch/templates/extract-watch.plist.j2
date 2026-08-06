@@ -55,7 +55,7 @@
        ~/.acatome/config.toml values. Using agent_rw to match the
        one-off ingest pattern in 22-papers-sync. Embeddings are produced
        locally by sentence-transformers (default BAAI/bge-m3, 1024-dim)
-       so no LiteLLM env is needed when --no-summarize is on. #}
+       so no summarizer-LLM env is needed when --no-summarize is on. #}
     <key>ACATOME_PG_HOST</key>
     <string>{{ hostvars[postgres_host]['ansible_host'] }}</string>
     <key>ACATOME_PG_PORT</key>

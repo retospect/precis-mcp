@@ -138,13 +138,12 @@
     <string>{{ env_val }}</string>
     {% endif %}
     {% endfor %}
-    {# Host-local served_by bypass (litellm-retire, Track 2): point
-       Tier.LOCAL_SMALL straight at this host's real llama-swap model id
-       instead of a litellm alias, so router.local_serving's resource_slots
-       gate actually matches and the call skips litellm entirely. A litellm
-       alias name here (e.g. "qwen") never matches resource_slots' real-id
-       keys, so dispatch silently falls through to the (possibly saturated)
-       litellm proxy — see docs/design/local-model-router-integration.md. #}
+    {# Host-local served_by bypass (Track 2): point Tier.LOCAL_SMALL straight
+       at this host's real llama-swap model id, so router.local_serving's
+       resource_slots gate actually matches and the call is served locally.
+       An alias name here (e.g. "qwen") never matches resource_slots' real-id
+       keys, so dispatch would silently fall through instead of resolving to a
+       local slot — see docs/design/local-model-router-integration.md. #}
     {% if precis_local_llm_model_override is defined %}
     <key>PRECIS_SUMMARIZE_MODEL</key>
     <string>{{ precis_local_llm_model_override }}</string>

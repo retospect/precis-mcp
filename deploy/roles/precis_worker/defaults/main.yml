@@ -44,14 +44,14 @@ precis_worker_embedder_url: "http://127.0.0.1:{{ embedder_port | default(8181) }
 precis_worker_summarizer: rake-lemma
 
 # llm_summarize (chunk_summaries['llm-v1']) backfill. Default OFF; enable on a
-# single node (the gateway — co-located with the litellm `summarizer` alias) to
+# single node (the gateway — co-located with the summarizer llama-server) to
 # drain the backlog. Concurrency should match the 80B llama-server --parallel.
 precis_worker_summarize_llm: false
 precis_worker_summarize_concurrency: 3
 precis_worker_summarize_timeout: 120
 
 # chunk-tag classify cascade (ADR 0047). Default OFF; enable on the gateway
-# (the litellm `summarizer` alias host) like llm_summarize.
+# (the summarizer llama-server host) like llm_summarize.
 precis_worker_classify: false
 
 # taproot chase forward-bridge (ADR 0073 / Phase-3 W1). Default OFF; enable on

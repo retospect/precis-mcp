@@ -187,7 +187,7 @@
     <string>{{ env_val }}</string>
     {% endif %}
     {% endfor %}
-    {# Host-local served_by bypass (litellm-retire, Track 2) — mirrors
+    {# Host-local served_by bypass (Track 2) — mirrors
        precis-worker.plist.j2; see that template for the full rationale. #}
     {% if precis_local_llm_model_override is defined %}
     <key>PRECIS_SUMMARIZE_MODEL</key>

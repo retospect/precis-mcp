@@ -147,9 +147,9 @@
     # gating is needed to match it exactly).
     #
     # PRECIS_LOCAL_SERVE_CONFIG + the PRECIS_SUMMARIZE_MODEL override (darwin
-    # only, `is defined` — mirrors precis-worker.plist.j2:148-158 AND
-    # precis-worker-agent.plist.j2's identical block): host-local served_by
-    # bypass (litellm-retire Track 2). Combined LAST so it naturally
+    # only, `is defined` — mirrors precis-worker.plist.j2's PRECIS_SUMMARIZE_MODEL
+    # override block AND precis-worker-agent.plist.j2's identical block): host-local served_by
+    # bypass (Track 2). Combined LAST so it naturally
     # overrides whatever `precis_shared_env`'s own PRECIS_SUMMARIZE_MODEL set
     # — the source templates achieve the same end by skipping that one key
     # in their shared-env loop; `combine()`'s last-writer-wins ordering makes

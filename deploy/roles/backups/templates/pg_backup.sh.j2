@@ -94,8 +94,9 @@ fi
 echo "[$(date)] Starting pg_dump (directory format, 4 parallel workers, zlib level 6)..."
 # precis_prod is the live primary DB (24 GB+, self-migrated by precis-mcp). The
 # old `cluster` monolith was renamed to `openclaw` and is slated for retirement;
-# this nightly job intentionally covers precis_prod only. litellm/openclaw are
-# not dumped here (small / being retired) — revisit when openclaw is dealt with.
+# this nightly job intentionally covers precis_prod only. openclaw is not
+# dumped here (being retired) — revisit when openclaw is dealt with. (The
+# litellm DB was dropped in the 2026-08-06 litellm teardown.)
 pg_dump -U {{ pg_user }} -d precis_prod \
   --format=directory \
   --jobs=4 \
