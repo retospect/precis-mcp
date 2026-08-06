@@ -548,6 +548,19 @@ def test_unrecognised_display_target_stays_literal() -> None:
     assert "[see](note)" in out and "<a" not in out
 
 
+def test_marker_page_anchor_cite_renders_clean_bracket() -> None:
+    # Marker turns an inline citation "[11]" into a link [11](#page-5-0) whose
+    # target is inert PDF-viewer nav chrome. It must render as a plain "[11]",
+    # NOT leak the raw markdown (contrast the [see](note) case above, whose
+    # literal fallback is load-bearing and stays untouched).
+    out = str(linkify_refs("our previous Letter [11](#page-5-0)."))
+    assert "[11](#page-5-0)" not in out
+    assert "(#page-5-0)" not in out
+    assert "[11]" in out
+    assert out.count("11") == 1  # no duplication
+    assert "<a" not in out  # no dead anchor emitted
+
+
 def test_display_link_target_is_escaped_no_attribute_breakout() -> None:
     out = str(linkify_refs('[x](https://e.com" onclick="alert(1))'))
     # the double-quote in the URL must be escaped, never closing the attr

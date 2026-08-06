@@ -82,6 +82,10 @@ from precis.utils.mentions import (
     LOW_SIGNAL_KINDS as _LOW_SIGNAL_KINDS,
 )
 from precis.utils.mentions import (
+    PAGE_ANCHOR_HREF_RE,
+    strip_page_anchor_links,
+)
+from precis.utils.mentions import (
     REF_PATTERN as _REF_PATTERN,
 )
 
@@ -404,6 +408,13 @@ def _render_display_link(disp: str, tgt: str, raw: str) -> str:
             return _render_anchor(
                 m.group("kind"), m.group("id"), m.group("chunk"), label=label
             )
+    if PAGE_ANCHOR_HREF_RE.fullmatch(tgt):
+        # Marker's inert PDF page-anchor citation — collapse to a plain
+        # bracketed ``[11]`` rather than leaking the raw markdown. Scoped to
+        # this href shape only, so the general "unresolved target stays
+        # literal" behaviour below (load-bearing for authored [see](note))
+        # is unchanged. See mentions.strip_page_anchor_links.
+        return escape(strip_page_anchor_links(raw))
     return escape(raw)  # not a reference target — keep the literal
 
 

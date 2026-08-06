@@ -256,6 +256,41 @@ def test_unbracketed_pubnum_never_links() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_strip_page_anchor_links_keeps_bracketed_label() -> None:
+    # Marker's inert PDF page-anchor citation → plain bracketed citation.
+    assert (
+        mentions.strip_page_anchor_links("our previous Letter [11](#page-5-0).")
+        == "our previous Letter [11]."
+    )
+    # Single-number anchor form (#page-N) too.
+    assert mentions.strip_page_anchor_links("see [3](#page-2)") == "see [3]"
+
+
+def test_strip_page_anchor_links_normalises_inner_whitespace() -> None:
+    # A blank line Marker's block-merge fused inside the bracket span must be
+    # collapsed — else the claim-page paragraph splitter shreds it into a
+    # stray <p>11</p>.
+    assert (
+        mentions.strip_page_anchor_links("Letter [\n\n11\n\n](#page-5-0). Next")
+        == "Letter [11]. Next"
+    )
+
+
+def test_strip_page_anchor_links_drops_empty_anchor() -> None:
+    assert mentions.strip_page_anchor_links("x [](#page-5-0) y") == "x  y"
+
+
+def test_strip_page_anchor_links_leaves_real_external_links() -> None:
+    # Scoped to the #page-N-M href shape — a legitimate external link survives.
+    src = "see [Nature](https://doi.org/10.1/abc) for more"
+    assert mentions.strip_page_anchor_links(src) == src
+
+
+def test_strip_page_anchor_links_is_idempotent() -> None:
+    once = mentions.strip_page_anchor_links("Letter [11](#page-5-0).")
+    assert mentions.strip_page_anchor_links(once) == once
+
+
 def test_bare_bracket_pattern_no_pin_unchanged() -> None:
     m = mentions.BARE_BRACKET_REF_PATTERN.fullmatch("[fi42]")
     assert m is not None

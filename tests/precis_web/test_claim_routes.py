@@ -152,6 +152,85 @@ def test_claim_view_originator_handle_and_star(
     assert f'<a href="/r/paper/{originator}" target="precis-paper" class=' in r.text
 
 
+def test_render_quote_collapses_marker_page_anchor_without_shredding() -> None:
+    """A grounding quote whose verbatim paper text carries a Marker page-anchor
+    citation — with a blank line Marker's block-merge fused inside the bracket
+    span — must render as a clean ``[11]`` in ONE paragraph, not leak the raw
+    ``[11](#page-5-0)`` markdown nor shred into a stray ``<p>11</p>``."""
+    from precis_web.claim_render import _render_quote
+
+    html, _truncated = _render_quote(
+        "our previous Letter [\n\n11\n\n](#page-5-0). For the creation of NanoBuds."
+    )
+    out = str(html)
+    assert "<p>11</p>" not in out
+    assert "(#page-5-0)" not in out
+    assert "[11]" in out
+    assert out.count("<p>") == 1  # one paragraph, not shredded into three
+
+
+def test_claim_view_used_by_lists_citers(claim_client: TestClient, hub: Hub) -> None:
+    """The "Used by" section lists inbound ``cites`` edges (who invokes this
+    claim), distinct from the evidence roles. A chunk-pinned citer links to
+    the citing passage via its ``pc<id>`` handle targeting the shared
+    ``precis-paper`` window (so a click reuses the one paper tab — the
+    "click and get to pc" ask); a chunk-less citer falls back to the source
+    record handle plus its title."""
+    store = hub.store
+    claim_hub = mint_hub(store, _CLAIM)
+
+    # A paper that cites the claim, pinned to a real chunk.
+    citing_paper = store.insert_ref(
+        kind="paper", slug="cites-with-chunk", title="Builds on the claim", year=2024
+    ).id
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "INSERT INTO chunks (ref_id, ord, chunk_kind, text, meta) "
+            "VALUES (%s, 0, 'paragraph', %s, '{}'::jsonb) RETURNING chunk_id",
+            (citing_paper, "We adopt Pd/C at RT, as established."),
+        ).fetchone()
+        assert row is not None
+        citer_chunk_handle = handle_registry.format_handle(
+            "paper", int(row[0]), chunk=True
+        )
+    store.add_link(
+        src_ref_id=citing_paper, src_pos=0, dst_ref_id=claim_hub, relation="cites"
+    )
+
+    # A citer with no pinned chunk → falls back to the record handle.
+    chunkless = store.insert_ref(
+        kind="paper", slug="cites-no-chunk", title="Also cites, no anchor", year=2023
+    ).id
+    store.add_link(src_ref_id=chunkless, dst_ref_id=claim_hub, relation="cites")
+
+    fi_handle = handle_registry.format_handle("finding", claim_hub)
+    r = claim_client.get(f"/claim/{fi_handle}")
+
+    assert r.status_code == 200
+    assert "Used by" in r.text
+    # Chunk-pinned citer: clickable pc handle in the shared paper window.
+    assert f'href="/c/{citer_chunk_handle}" target="precis-paper"' in r.text
+    assert "Builds on the claim" in r.text
+    # Chunk-less citer: record handle + title still shown.
+    assert handle_registry.format_handle("paper", chunkless) in r.text
+    assert "Also cites, no anchor" in r.text
+
+
+def test_claim_view_no_used_by_without_citers(
+    claim_client: TestClient, hub: Hub
+) -> None:
+    """A hub with only evidence edges (no inbound ``cites``) shows no
+    "Used by" section — the intra-supporter ``cites`` edge ``_seed_hub``
+    writes points paper→paper, not at the hub, so it must not leak in."""
+    hub_ref_id, _pub_id = _seed_hub(hub)
+    fi_handle = handle_registry.format_handle("finding", hub_ref_id)
+
+    r = claim_client.get(f"/claim/{fi_handle}")
+
+    assert r.status_code == 200
+    assert "Used by" not in r.text
+
+
 def test_claim_view_by_pub_id(claim_client: TestClient, hub: Hub) -> None:
     hub_ref_id, pub_id = _seed_hub(hub)
 

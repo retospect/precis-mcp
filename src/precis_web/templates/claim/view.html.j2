@@ -120,6 +120,29 @@
 </section>
 {% endif %}
 
+{% if citers %}
+<section class="mt-6">
+  <h2 class="text-sm font-semibold mb-2 text-slate-700">Used by</h2>
+  {# Inbound `cites` edges — who invokes this claim. Each links to the citing
+     passage via the SAME [handle] | linkify_refs render the grounding
+     passages use, so a pc<id> chunk reuses the shared 'precis-paper' window
+     (a dc<id> draft chunk opens the draft reader) — the per-kind target is
+     chosen in linkify._render_universal_handle, not here. #}
+  <ul class="space-y-1.5">
+    {% for u in citers %}
+    <li class="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-sm">
+      {% if u.handle %}
+        {% if u.is_chunk %}{{ ('[' ~ u.handle ~ ']') | linkify_refs }}{% else %}<span class="font-mono text-slate-600">{{ u.handle }}</span>{% endif %}
+      {% endif %}
+      <span class="text-[11px] rounded bg-slate-100 text-slate-500 px-1.5 py-0.5">{{ u.kind }}</span>
+      {% if u.title %}<span class="text-slate-700">{{ u.title }}</span>{% endif %}
+      {% if u.year %}<span class="text-slate-400">({{ u.year }})</span>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
 {% if coverage_note %}
 <p class="mt-6 text-xs text-slate-500 italic">{{ coverage_note }}</p>
 {% endif %}

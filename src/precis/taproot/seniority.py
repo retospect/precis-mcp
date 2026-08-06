@@ -320,6 +320,54 @@ def derive_refines(store: Any, hub_ref_id: int) -> ClaimLinks:
     return ClaimLinks(refines=refines, refined_by=refined_by)
 
 
+@dataclass(frozen=True)
+class CiterEdge:
+    """One thing that *cites* this claim hub — the "who uses this claim" set,
+    an inbound ``cites`` edge (``src -> hub``). Distinct from the three
+    evidence roles (``establishes``/``corroborates``/``contradicts``, which
+    are a paper's *support* for the claim): a ``cites`` edge onto the hub is a
+    manuscript or paper INVOKING the claim, pinned to the citing chunk
+    (:attr:`src_chunk_id`) when the writer recorded one."""
+
+    src_ref_id: int
+    src_chunk_id: int | None
+    kind: str
+    title: str | None
+    year: int | None
+
+
+_CITES_INBOUND_ROLE = "cites"
+
+
+def hub_citers(store: Any, hub_ref_id: int) -> list[CiterEdge]:
+    """Everything that cites a claim hub — its inbound ``cites`` edges, joined
+    to the citing ref's kind/title/year. Pure read.
+
+    Read via an explicit ``dst_ref_id`` filter (never :func:`store.links_for`,
+    whose inverse rewrite would fold ``cited-by`` rows in — same clarity
+    reason :func:`_fetch_evidence_rows` and :func:`derive_refines` bypass it).
+    Soft-deleted citers are dropped. Any src kind is surfaced (a draft
+    manuscript, another paper) — the web layer turns ``(kind, src_chunk_id)``
+    into the universal chunk handle that links to the citing passage. Ordered
+    newest-first (NULL year last), then ``src_ref_id`` ascending for a stable
+    render.
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT l.src_ref_id, l.src_chunk_id, r.kind, r.title, r.year
+            FROM links l
+            JOIN refs r ON r.ref_id = l.src_ref_id
+            WHERE l.dst_ref_id = %(hub)s
+              AND l.relation = %(rel)s
+              AND r.deleted_at IS NULL
+            ORDER BY r.year DESC NULLS LAST, l.src_ref_id
+            """,
+            {"hub": hub_ref_id, "rel": _CITES_INBOUND_ROLE},
+        ).fetchall()
+    return [CiterEdge(r[0], r[1], r[2], r[3], r[4]) for r in rows]
+
+
 def derive_evidence(
     store: Any, hub_ref_id: int, *, assume_hub: bool = False
 ) -> HubEvidence:

@@ -34,6 +34,7 @@ from precis.ingest.text_chunker import (
     split_table,
     split_text,
 )
+from precis.utils.mentions import strip_page_anchor_links
 
 log = logging.getLogger(__name__)
 
@@ -569,6 +570,16 @@ def _marker_extract(pdf_path: Path, paper_id: str) -> list[dict[str, Any]]:
 
         page_num = page_assignments[i] if i < len(page_assignments) else 0
         block_type, text = _classify_chunk(chunk)
+
+        # Collapse Marker's inert page-anchor citation links
+        # (``[11](#page-5-0)`` → ``[11]``) in every block's body text — the
+        # heading-only ``_MD_LINK_RE`` scrub below never reached prose, so the
+        # raw markdown leaked into stored chunk text and corrupted the web
+        # reader / claim-page render (mentions.strip_page_anchor_links; scoped
+        # to the ``#page-N-M`` href so real external links survive). No-op on
+        # any block without the artifact; runs before the split/section paths
+        # so every downstream chunk inherits the repair.
+        text = strip_page_anchor_links(text)
 
         if block_type == "section_header":
             # Strip markdown links from heading text

@@ -34,15 +34,18 @@ from markupsafe import Markup
 
 from precis.taproot.cite import hub_cite_keys
 from precis.taproot.seniority import (
+    CiterEdge,
     EvidenceEdge,
     HubEvidence,
     derive_evidence,
     derive_evidence_bulk,
+    hub_citers,
     is_claim_hub,
     is_claim_hub_bulk,
 )
 from precis.taproot.trust import claim_trust
 from precis.utils import handle_registry
+from precis.utils.mentions import strip_page_anchor_links
 from precis.utils.pub_id_lookup import lookup_pub_id_finding
 from precis.utils.table_data import parse_markdown_table
 from precis_web.linkify import render_markdown
@@ -145,6 +148,35 @@ def _edge_row(edge: EvidenceEdge, *, starred: bool) -> dict[str, Any]:
     }
 
 
+def _citer_row(edge: CiterEdge) -> dict[str, Any]:
+    """One "Used by" row: a thing that cites this claim, shaped for the
+    template. ``handle`` is the citing chunk's universal handle (``pc<id>`` /
+    ``dc<id>``) when the edge pinned a ``src_chunk_id`` — so the template
+    renders it via ``linkify_refs`` as a hover-preview anchor that navigates
+    to the passage (a ``pc`` handle reusing the shared ``precis-paper``
+    window, a ``dc`` opening the draft reader — the target is chosen per-kind
+    in :func:`~precis_web.linkify._render_universal_handle`). A chunk-less
+    edge falls back to the source *record* handle, shown as plain mono text
+    (``is_chunk`` False → no anchor, mirroring the grounding-passage
+    convention); a code-less kind degrades to no handle, title only, rather
+    than vanishing. ``is_chunk`` gates the ``[handle] | linkify_refs`` vs
+    plain-text render."""
+    handle: str | None = None
+    is_chunk = False
+    if edge.src_chunk_id is not None:
+        handle = handle_registry.try_format(edge.kind, edge.src_chunk_id, chunk=True)
+        is_chunk = handle is not None
+    if handle is None:
+        handle = handle_registry.try_format(edge.kind, edge.src_ref_id)
+    return {
+        "handle": handle,
+        "is_chunk": is_chunk,
+        "kind": edge.kind,
+        "title": " ".join((edge.title or "").split()),
+        "year": edge.year,
+    }
+
+
 #: Quote budget per grounding passage in the ``/preview/claim`` popover
 #: (`entry["text"]`, whitespace-collapsed — the popover clamps further via
 #: line-clamp CSS on top of this). The FULL claim page renders a separate,
@@ -235,7 +267,13 @@ def _render_quote(text: str) -> tuple[Markup, bool]:
     (uncollapsed) text before block-splitting — never mid-table, since the
     whole-quote-is-a-table case above is handled first and clamps by row
     instead. Returns ``(html, truncated)``."""
-    text = (text or "").strip("\n")
+    # Collapse Marker's inert page-anchor citation links (``[11](#page-5-0)``)
+    # BEFORE splitting: it drops the raw markdown (render_markdown does no
+    # ref-linking, so it would otherwise show verbatim here) and, by
+    # whitespace-normalising the bracket's inner text, removes any blank line
+    # Marker's block-merge fused inside the span — the seam the paragraph
+    # splitter below would otherwise shred into a stray ``<p>11</p>``.
+    text = strip_page_anchor_links((text or "").strip("\n"))
     if not text.strip():
         return Markup(""), False
 
@@ -451,6 +489,21 @@ def render_claim_evidence(store: Any, head: str) -> dict[str, Any] | None:
         cite_key_map=cite_key_map,
         chunk_cache=chunk_cache,
     )
+
+
+def claim_citers(store: Any, hub_ref_id: int) -> list[dict[str, Any]]:
+    """The "Used by" rows for a claim hub — its inbound ``cites`` edges (who
+    invokes this claim), shaped for the template.
+
+    Kept OUT of :func:`render_claim_evidence`/:func:`_render_one` on purpose:
+    those share one locked output shape between the singular path and the bulk
+    :func:`render_claims_evidence` (the invariant
+    ``test_render_claims_evidence_matches_singular_calls`` pins), and citers
+    belong only to the full ``/claim/<head>`` page — not the hover popover, not
+    the smartdraft Claims rail (where a per-hub citers query would re-introduce
+    the round trip batch B removed). The full-page route calls this and merges
+    it into the context itself."""
+    return [_citer_row(e) for e in hub_citers(store, hub_ref_id)]
 
 
 def render_claims_evidence(store: Any, heads: Iterable[str]) -> list[dict[str, Any]]:

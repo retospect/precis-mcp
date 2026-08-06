@@ -135,6 +135,39 @@ LOW_SIGNAL_KINDS: frozenset[str] = frozenset({"tag", "link"})
 AUTHORING_PATTERN = re.compile(r"\[\[(?P<auth>[^\[\]]+)\]\]")
 #: ``[display](target)`` — markdown display link.
 DISPLAY_LINK_PATTERN = re.compile(r"\[(?P<disp>[^\[\]]*)\]\((?P<tgt>[^()]+)\)")
+
+#: Marker (PDF ingest) turns an inline citation like ``[11]`` into a markdown
+#: link ``[11](#page-5-0)`` whose target is its OWN synthetic in-document
+#: navigation anchor (``#page-<page>-<block>``) — inert PDF-viewer chrome, never
+#: a resolvable precis handle or a real external URL. Left verbatim it leaks the
+#: raw ``[11](#page-5-0)`` into rendered prose (the display-link renderer keeps
+#: an unresolved target literal on purpose — that's load-bearing for authored
+#: ``[see](note)`` prose, so we can't broaden that fallback) and, when Marker's
+#: block-merge has glued a blank line inside the bracket span, later shreds the
+#: paragraph. This href shape is the SSOT for "is this a Marker page anchor?".
+PAGE_ANCHOR_HREF_RE = re.compile(r"#page-\d+(?:-\d+)?")
+_PAGE_ANCHOR_LINK_RE = re.compile(
+    r"\[(?P<disp>[^\[\]]*)\]\(" + PAGE_ANCHOR_HREF_RE.pattern + r"\)"
+)
+
+
+def strip_page_anchor_links(text: str) -> str:
+    """Collapse Marker page-anchor citation links ``[11](#page-5-0)`` back to a
+    plain bracketed citation ``[11]``, keeping the visible brackets (the
+    citation marker the author saw) but dropping the dead anchor. The bracket's
+    inner text is whitespace-normalised, so a blank line Marker's block-merge
+    fused into the span can't survive to shred a paragraph downstream. Scoped
+    to :data:`PAGE_ANCHOR_HREF_RE` — a legitimately-authored
+    ``[label](https://…)`` external link is untouched. An empty-text anchor
+    (``[](#page-5-0)``) drops entirely. Idempotent."""
+
+    def _repl(m: re.Match[str]) -> str:
+        inner = " ".join(m.group("disp").split())
+        return f"[{inner}]" if inner else ""
+
+    return _PAGE_ANCHOR_LINK_RE.sub(_repl, text)
+
+
 #: A bare bracketed reference (no display text): ``[me6184]`` — the
 #: universal form (a handle is a ref to something), or the legacy sigil
 #: forms ``[¶h]`` / ``[§p~n]``. The handle alternative is ``<2-char
