@@ -147,6 +147,22 @@ decide whether to drill in. Fetch the full chunk with
 a chunk that only says "an improvement was noted" is a hallucination —
 cite a different chunk or chase a finding.
 
+## What happens to a paper's OWN inline `[N]` markers (automatic)
+
+The `[pc<id>]` handles above are how *you* cite while drafting. Separately,
+the system resolves the numbered `[N]` markers that already sit in an
+**ingested paper's body** ("as shown previously [34]"): the `bib_mark`
+pass maps each to the paper's parsed bibliography entry (`chunk_citations`
+→ `paper_bib_entries`), and `taproot.resolve_citation(store, chunk_id,
+marker)` returns the cited paper's identity (`doi` / `held_ref_id`). This
+is machinery, not a verb you call — but it powers a real check: taproot's
+hub-refine now **follows a claim's own citation** and verifies the claim
+against the paper it actually cites. When "we read the cited paper and the
+claimed content isn't there", the claim page shows a red *"cited source
+does not support this claim"* line (`meta.citation_misses` on the hub).
+Hub trust itself is unchanged — the miss is a surfaced fact, not a
+trust-state flip.
+
 ## See also
 
 ```python

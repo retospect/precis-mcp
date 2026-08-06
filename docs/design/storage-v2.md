@@ -866,14 +866,43 @@ memoization via `match_conf`). `refs.meta.bib_parse_version` is the
 paper-level convergence stamp (always written, even for a
 no-bibliography paper) — mirrors `s2_neighbors`' TTL discipline without
 sharing its refresh path. Read via `Store.list_bib_entries` (no
-insert/update accessor — `bib_parse` writes with raw SQL). Consumer: the
+insert/update accessor — `bib_parse` writes with raw SQL). Consumers: the
 paper reader's Sources tab (`docs/proposals/citation-sources-tab.md`)
 joins these onto `s2_neighbors`/held `cites` rows by `held_ref_id` ->
 `doi` -> `s2_id` to show the real `[N]` bracket marker and union in
-entries S2 doesn't carry — see
-`docs/architecture/state-map.md`'s Paper reader section. Taproot
-citation-following (`citation-taproot-resolve.md`) remains the other,
-still-`blocked-by` sibling.
+entries S2 doesn't carry (see `docs/architecture/state-map.md`'s Paper
+reader section); and `chunk_citations` (below) for taproot
+citation-following (`citation-taproot-resolve.md`, shipped).
+
+### `chunk_citations` table — inline marker → bib entry
+
+Migration `0109_chunk_citations.sql`
+(`docs/proposals/citation-taproot-resolve.md`, consumer slice). Records
+where a paper's parsed bib markers are *used inline* in its body — the
+join `paper_bib_entries` needs to answer "what paper does this claim's
+`[N]` cite?":
+
+```sql
+CREATE TABLE chunk_citations (
+  id           bigint      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  chunk_id     bigint      NOT NULL REFERENCES chunks (chunk_id) ON DELETE CASCADE,
+  marker       int         NOT NULL,   -- the [N] used in this chunk (denormalised)
+  bib_entry_id bigint      NOT NULL REFERENCES paper_bib_entries (id) ON DELETE CASCADE,
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (chunk_id, marker)
+);
+```
+
+Populated by the `bib_mark` worker pass (`workers/bib_mark.py`): pure
+regex over body chunks of papers that already have `paper_bib_entries`
+rows, extracting `[N]`, `[N,M]`, `[N–M]` (ranges expanded),
+`<sup>`-wrapped markers, keeping only numbers that are a real bib marker
+for that paper (the false-positive guard). Convergence via a
+`BIBMARK:<version>` chunk-tag done-marker (same idiom as `chase_trigger`'s
+`CHASETRIG`). Read by `taproot.resolve.resolve_citation` and hub-refine's
+citation-following Discover source. One coupling: a `BIB_PARSE_VERSION`
+bump re-mints `paper_bib_entries.id`s and `ON DELETE CASCADE`s these rows
+away, so pair a bib re-parse with a `BIBMARK_VERSION` bump.
 
 ### Sentence splitter + dehyphenation + chunker version
 

@@ -207,6 +207,26 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-overview",
     ),
     ServiceSpec(
+        # docs/proposals/citation-taproot-resolve.md: extracts inline
+        # citation markers ([126], [129,130], <sup>-wrapped) from paper
+        # body chunks into `chunk_citations`, keyed to the parsed
+        # `paper_bib_entries` marker (false-positive guarded — only real
+        # bib markers accepted). Default-ON like `bib_parse`; a
+        # `BIBMARK:<version>` chunk tag converges the sweep so normal
+        # cadence drains the backlog; `--only bib_mark` is the burst. Pure
+        # regex — no model, no external call.
+        name="bib_mark",
+        label="Inline citation-marker extraction",
+        category="discovery",
+        kind=ServiceKind.PASS,
+        default_profiles=_SYS,
+        ref_pass=True,
+        cost_sources=("bib_mark",),
+        one_line="Extract inline [N] markers into chunk_citations "
+        "(taproot.resolve_citation).",
+        doc_skill="precis-citation-help",
+    ),
+    ServiceSpec(
         name="chase",
         label="Finding chase",
         category="discovery",

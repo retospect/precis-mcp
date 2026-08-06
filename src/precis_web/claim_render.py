@@ -455,8 +455,26 @@ def _render_one(
         "contradictors": contradictors,
         "chunks": _grounding_chunks(store, grounding_rows, chunk_cache=chunk_cache),
         "coverage_note": evidence.coverage_note,
+        "citation_misses": _citation_miss_rows(hub_ref),
         "inflight": not cite_keys,
     }
+
+
+def _citation_miss_rows(hub_ref: Any) -> list[dict[str, Any]]:
+    """The hub's ``meta.citation_misses`` (hub_refine's citation-following
+    red flag, docs/proposals/citation-taproot-resolve.md) shaped for the
+    claim page: "we read the paper this claim cites and the content isn't
+    there". Each record is ``{marker, cited_ref, from_chunk}``; the template
+    renders a red line per miss, linking the cited paper by ref_id."""
+    meta = getattr(hub_ref, "meta", None) or {}
+    rows: list[dict[str, Any]] = []
+    for miss in meta.get("citation_misses") or []:
+        if not isinstance(miss, dict):
+            continue
+        rows.append(
+            {"marker": miss.get("marker"), "cited_ref_id": miss.get("cited_ref")}
+        )
+    return rows
 
 
 def render_claim_evidence(store: Any, head: str) -> dict[str, Any] | None:

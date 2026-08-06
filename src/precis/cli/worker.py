@@ -701,6 +701,27 @@ def run(args: argparse.Namespace) -> None:
 
             ref_passes.append(_bib_parse_pass)
 
+        # bib_mark — inline citation-marker extraction into chunk_citations
+        # (docs/proposals/citation-taproot-resolve.md). Default-ON like
+        # bib_parse above and drains the same way (a BIBMARK:<version> chunk
+        # tag done-marker converges, so normal cadence drains the backlog;
+        # `--only bib_mark` is the fast-path burst). Pure regex over body
+        # chunks of papers that already have paper_bib_entries rows — no
+        # LLM, no external call, no embedder dependency.
+        if _register("bib_mark"):
+            from precis.workers.bib_mark import run_bib_mark_pass
+
+            def _bib_mark_pass(batch_size: int) -> BatchResult:
+                r = run_bib_mark_pass(store, batch_size=batch_size)
+                return BatchResult(
+                    handler="bib_mark",
+                    claimed=r["chunks_swept"],
+                    ok=r["chunks_swept"],
+                    failed=r["failed"],
+                )
+
+            ref_passes.append(_bib_mark_pass)
+
         # Finding-chase pass — same sibling-worker pattern, but for
         # STATUS:tracing/acquiring findings. Default-off LLM hooks via
         # --with-llm or PRECIS_CHASE_LLM=1. See ADR 0018 §"Worker"

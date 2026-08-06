@@ -19,14 +19,22 @@ a blind periodic rescan (the incremental-trigger design,
    claim reopening it, or the long backstop), never-refined first, oldest
    ``last_refined_at`` next, ``SKIP LOCKED``, ``LIMIT`` :func:`_hubs_per_pass`
    — mirrors ``workers/inbound_chase.py``'s claim-query shape.
-2. **Discover** — a semantic (embedding-ANN) search over paper body chunks
-   for the claim sentence, top-``PRECIS_TAPROOT_REFINE_TOPK``. Note:
-   *not* ``taproot.canon.block`` — that ANN is over hub *cards* (dedup
-   against other hubs); this needs paper-*chunk* neighbours, the same
-   ``store.search_blocks`` engine ``PaperHandler.search`` drives (see
-   ``handlers/_paper_search.py``), run in ``mode='semantic'`` so
-   ``PRECIS_TAPROOT_REFINE_MIN_SIM`` (an optional cosine-distance floor)
-   means what its name says.
+2. **Discover** — TWO sources merged into one per-hub candidate list
+   (docs/proposals/citation-taproot-resolve.md), citation candidates first
+   so they win the shared per-paper dedup slot:
+   (a) a semantic (embedding-ANN) search over paper body chunks for the
+       claim sentence, top-``PRECIS_TAPROOT_REFINE_TOPK``. Note: *not*
+       ``taproot.canon.block`` — that ANN is over hub *cards* (dedup against
+       other hubs); this needs paper-*chunk* neighbours, the same
+       ``store.search_blocks`` engine ``PaperHandler.search`` drives (see
+       ``handlers/_paper_search.py``), run in ``mode='semantic'`` so
+       ``PRECIS_TAPROOT_REFINE_MIN_SIM`` (an optional cosine-distance floor)
+       means what its name says.
+   (b) **citation-following** (:func:`_citation_candidates`): the hub's own
+       evidence grounding chunks → ``chunk_citations`` →
+       ``taproot.resolve_citation`` → the *held* cited paper → a
+       paper-scoped semantic search for its top passage. So a claim reading
+       "X is true [34]" is checked against what [34] actually *is*.
 3. **Filter** — drop a candidate paper already carrying a ``corroborates``
    edge on this hub (the idempotency precheck, done *before* any LLM
    spend) or already recorded in the hub's rejection memo
@@ -55,9 +63,12 @@ a blind periodic rescan (the incremental-trigger design,
 
 Never a periodic full re-scan: idempotent attach + pre-verify existence
 check + rejection memo + due-set claim query together bound the per-run LLM
-spend to (at most) ``HUBS_PER_PASS x TOPK`` calls, in practice far less
-once memos fill in. See the build ticket's "Non-negotiable: it must
-converge" for the full rationale.
+spend to (at most) ``HUBS_PER_PASS x (TOPK + grounded-cite count)`` calls —
+the citation source adds at most one scoped verify per held paper the hub
+*already* grounds a citation against (a small, bounded set), and the shared
+per-paper dedup means a paper reached by both sources is still verified only
+once — in practice far less once memos fill in. See the build ticket's
+"Non-negotiable: it must converge" for the full rationale.
 
 Ship dark: ``PRECIS_TAPROOT_REFINE_ENABLED`` (default ``"0"``), like every
 other taproot flag. Once claiming work, the pass always verifies with the
@@ -71,8 +82,10 @@ embedder-unavailable degrade, ``workers/chase.py``'s ``_taproot_bridge``).
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -81,6 +94,7 @@ from psycopg import Connection
 from precis.store.types import Tag
 from precis.taproot.canon import TAPROOT_CLAIM, TAPROOT_NAMESPACE, claim_sha
 from precis.taproot.hub import HUB_ROLES, attach_evidence
+from precis.taproot.resolve import resolve_citation
 from precis.utils.embed_query import embed_query
 from precis.workers._chase_llm import _verify_support_with_caveats, is_corroborating
 
@@ -104,6 +118,16 @@ _ROLE = "corroborates"
 _META_LAST_REFINED_AT = "last_refined_at"
 _META_LAST_REFINED_SHA = "last_refined_sha"
 _META_REJECTED = "taproot_rejected"
+#: Citation-following (docs/proposals/citation-taproot-resolve.md): a
+#: ``supports=no`` verdict against a paper reached by *following a claim's
+#: own inline citation* is recorded here as ``{marker, cited_ref,
+#: from_chunk}`` — the queryable "we read the cited paper and the claimed
+#: content isn't there" red-flag record (rendered red on the claim page).
+_META_CITATION_MISSES = "citation_misses"
+#: Resolved-but-not-held cited papers (``{doi, marker, from_chunk}``) —
+#: surfaced for display ("cites a paper we don't hold"), never fetched here
+#: (auto-fetch is out of scope, a later proposal).
+_META_UNRESOLVED = "unresolved_citations"
 
 #: The trigger pass's due-marker (``workers/chase_trigger.py``) — a closed
 #: ref tag on a claim hub meaning "a new near paper landed, refresh me".
@@ -283,6 +307,22 @@ def _claim_hubs_due_for_refine(
     return locked_ids
 
 
+def _dedup_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Order-preserving dedup of small JSON-able record dicts (citation
+    misses / unresolved cites) — the accumulation across passes appends,
+    but a re-derivation of the same ``{marker, cited_ref, from_chunk}`` must
+    not grow the list every pass (convergence)."""
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for rec in records:
+        key = json.dumps(rec, sort_keys=True)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(rec)
+    return out
+
+
 def _fetch_hub_info(conn: Connection, ref_id: int) -> tuple[str, dict[str, Any]] | None:
     """``(title, meta)`` for a live hub finding — ``None`` if it's gone."""
     row = conn.execute(
@@ -318,6 +358,110 @@ def _attached_paper_ids(conn: Connection, hub_ref_id: int) -> set[int]:
     return {int(r[0]) for r in rows}
 
 
+@dataclass(frozen=True)
+class _Candidate:
+    """One discover-step candidate passage headed for Filter→Verify→Write.
+
+    ``via`` distinguishes the two discover sources: ``"semantic"`` (the
+    corpus-wide ANN, unchanged) and ``"citation"`` (a passage inside a
+    paper the claim's own inline citation points at). ``marker`` /
+    ``from_chunk`` are set only for ``"citation"`` — they carry the
+    citation-miss provenance (which inline marker, in which grounding
+    chunk) recorded when a citation-reached paper fails verify.
+    """
+
+    block: Any
+    ref: Any
+    via: str
+    marker: int | None = None
+    from_chunk: int | None = None
+
+    @property
+    def paper_ref_id(self) -> int:
+        return int(self.ref.id)
+
+
+def _citation_candidates(
+    conn: Connection,
+    store: Any,
+    hub_ref_id: int,
+    *,
+    claim_sentence: str,
+    query_vec: list[float],
+) -> tuple[list[_Candidate], list[dict[str, Any]]]:
+    """The **second** discover source (docs/proposals/citation-taproot-
+    resolve.md): follow this hub's *own* evidence citations.
+
+    For each grounding chunk of the hub's existing evidence edges
+    (``links.src_chunk_id``), read ``chunk_citations`` → ``resolve_citation``
+    → the *held* cited paper, then a paper-scoped semantic search
+    (``scope_ref_id=<cited paper>``) with the claim sentence yields that
+    paper's top candidate passage. Returns ``(candidates, unresolved)`` —
+    ``unresolved`` collects resolved-but-not-held cites (``{doi, marker,
+    from_chunk}``) for display.
+
+    The scoped search deliberately applies **no** ``max_distance`` floor:
+    citation-following's whole point is to verify against what the author
+    actually cited even when that passage wouldn't clear the corpus-wide
+    similarity floor — the floor governs only the semantic source.
+    """
+    rows = conn.execute(
+        "SELECT DISTINCT src_chunk_id FROM links "
+        "WHERE dst_ref_id = %s AND relation = ANY(%s) AND src_chunk_id IS NOT NULL",
+        (hub_ref_id, list(HUB_ROLES)),
+    ).fetchall()
+    candidates: list[_Candidate] = []
+    unresolved: list[dict[str, Any]] = []
+    seen_cited: set[int] = set()
+    for (src_chunk_id,) in rows:
+        src_chunk_id = int(src_chunk_id)
+        marker_rows = conn.execute(
+            "SELECT marker FROM chunk_citations WHERE chunk_id = %s ORDER BY marker",
+            (src_chunk_id,),
+        ).fetchall()
+        for (marker,) in marker_rows:
+            marker = int(marker)
+            res = resolve_citation(store, src_chunk_id, marker, conn=conn)
+            if res is None:
+                continue
+            if res.held_ref_id is None:
+                if res.doi:
+                    unresolved.append(
+                        {"doi": res.doi, "marker": marker, "from_chunk": src_chunk_id}
+                    )
+                continue
+            cited = res.held_ref_id
+            if cited == hub_ref_id or cited in seen_cited:
+                continue
+            seen_cited.add(cited)
+            # Only the single top passage is used (citation-following verifies
+            # one passage per cited paper), so rank just that — not topk.
+            # No max_distance floor: we verify against what the author cited
+            # even at low corpus-wide similarity (the verify step backstops).
+            hits = store.search_blocks(
+                q=claim_sentence,
+                query_vec=query_vec,
+                mode="semantic",
+                kind="paper",
+                scope_ref_id=cited,
+                limit=1,
+                max_distance=None,
+            )
+            if not hits:
+                continue
+            block, ref, _score = hits[0]
+            candidates.append(
+                _Candidate(
+                    block=block,
+                    ref=ref,
+                    via="citation",
+                    marker=marker,
+                    from_chunk=src_chunk_id,
+                )
+            )
+    return candidates, unresolved
+
+
 def _refine_one_hub(
     conn: Connection,
     store: Any,
@@ -329,6 +473,17 @@ def _refine_one_hub(
 ) -> None:
     """Discover + verify + attach corroborators for one hub, then stamp it.
 
+    **Two discover sources, one Filter→Verify→Write tail** (docs/proposals/
+    citation-taproot-resolve.md): the corpus-wide semantic ANN (unchanged)
+    and citation-following (:func:`_citation_candidates`). Both merge into a
+    single per-hub candidate list — **citation candidates first, so they win
+    the slot** — deduped by paper via ONE loop-local ``seen_papers`` set, so
+    a paper surfaced by both sources is verified exactly once. This keeps
+    the module's bounded-spend guarantee (the second source adds at most one
+    scoped verify per held cited paper the hub already grounds against, so
+    the per-hub worst case grows only by the hub's own grounded-citation
+    count, not unboundedly).
+
     Always writes ``meta.last_refined_at`` + ``meta.last_refined_sha`` on
     the way out (even when the hub's title is blank, or discovery/verify
     finds nothing new) — that unconditional stamp is what makes the claim
@@ -337,8 +492,9 @@ def _refine_one_hub(
 
     A **sha-reopen** — the stored ``last_refined_sha`` no longer matches
     the live title's :func:`taproot.canon.claim_sha` — clears the
-    rejection memo *before* discovery/verify run: the claim wording
-    changed, so an old ``supports=no`` verdict may no longer hold.
+    rejection memo (and the citation-miss / unresolved-cite records)
+    *before* discovery/verify run: the claim wording changed, so an old
+    ``supports=no`` verdict may no longer hold.
     """
     info = _fetch_hub_info(conn, hub_ref_id)
     if info is None:
@@ -353,6 +509,17 @@ def _refine_one_hub(
     rejected: dict[str, Any] = {} if reopened else dict(meta.get(_META_REJECTED) or {})
     attached = _attached_paper_ids(conn, hub_ref_id)
 
+    # Citation-miss / unresolved-cite records accumulate across passes
+    # (keyed by their record tuple, deduped at persist time). A sha-reopen
+    # clears them like the rejection memo — the old verdicts may no longer
+    # hold on the new wording.
+    citation_misses: list[dict[str, Any]] = (
+        [] if reopened else list(meta.get(_META_CITATION_MISSES) or [])
+    )
+    unresolved: list[dict[str, Any]] = (
+        [] if reopened else list(meta.get(_META_UNRESOLVED) or [])
+    )
+
     query_vec = embed_query(embedder, claim_sentence) if claim_sentence else None
     if claim_sentence and query_vec is None:
         log.warning(
@@ -361,7 +528,19 @@ def _refine_one_hub(
             hub_ref_id,
         )
     if claim_sentence and query_vec is not None:
-        candidates = store.search_blocks(
+        # Discover source 1 (new): citation-following. Built first so its
+        # passages win the shared-dedup slot over the semantic source.
+        cite_cands, new_unresolved = _citation_candidates(
+            conn,
+            store,
+            hub_ref_id,
+            claim_sentence=claim_sentence,
+            query_vec=query_vec,
+        )
+        unresolved.extend(new_unresolved)
+
+        # Discover source 2 (existing): corpus-wide semantic ANN.
+        sem_hits = store.search_blocks(
             q=claim_sentence,
             query_vec=query_vec,
             mode="semantic",
@@ -369,9 +548,14 @@ def _refine_one_hub(
             limit=topk,
             max_distance=min_sim,
         )
+        sem_cands = [
+            _Candidate(block=block, ref=ref, via="semantic")
+            for block, ref, _score in sem_hits
+        ]
+
         seen_papers: set[int] = set()
-        for block, ref, _score in candidates:
-            paper_ref_id = int(ref.id)
+        for cand in [*cite_cands, *sem_cands]:
+            paper_ref_id = cand.paper_ref_id
             if paper_ref_id == hub_ref_id or paper_ref_id in seen_papers:
                 continue
             seen_papers.add(paper_ref_id)
@@ -382,6 +566,7 @@ def _refine_one_hub(
             # _attached_paper_ids.
             if paper_ref_id in attached or str(paper_ref_id) in rejected:
                 continue
+            block, ref = cand.block, cand.ref
             verification = _verify_support_with_caveats(
                 claim=claim_sentence,
                 scope=scope,
@@ -420,11 +605,29 @@ def _refine_one_hub(
                 )
             elif supports in ("partial", "no"):
                 # "no", or a contradicting "partial" — judged once, memoed.
-                rejected[str(paper_ref_id)] = {
+                entry: dict[str, Any] = {
                     "at": datetime.now(UTC).isoformat(),
                     "supports": supports,
                     "contradicts": contradicts,
                 }
+                # A citation-reached rejection is ALSO a citation miss: "we
+                # read the paper the claim cites and the content isn't there"
+                # — marked on the memo + recorded as a queryable red flag.
+                # DELIBERATE: this fires for BOTH a plain ``no`` AND a
+                # contradicting ``partial`` (the ``elif`` above), slightly
+                # beyond the AC's literal "supports=no" — a cited source that
+                # *contradicts* the claim is a stronger miss than a bare "no"
+                # and belongs in the same red-flag bucket, not a separate one.
+                if cand.via == "citation":
+                    entry["via"] = "citation"
+                    citation_misses.append(
+                        {
+                            "marker": cand.marker,
+                            "cited_ref": paper_ref_id,
+                            "from_chunk": cand.from_chunk,
+                        }
+                    )
+                rejected[str(paper_ref_id)] = entry
             else:
                 # Verdict outside the {yes,partial,no} enum (missing key or
                 # an LLM-schema regression) — neither attach nor memo, so it
@@ -445,6 +648,12 @@ def _refine_one_hub(
         # Always persist on a reopen, even an emptied memo -- that's the
         # clear taking effect, not just skipped because nothing's pending.
         meta_patch[_META_REJECTED] = rejected
+    misses_deduped = _dedup_records(citation_misses)
+    if misses_deduped or reopened:
+        meta_patch[_META_CITATION_MISSES] = misses_deduped
+    unresolved_deduped = _dedup_records(unresolved)
+    if unresolved_deduped or reopened:
+        meta_patch[_META_UNRESOLVED] = unresolved_deduped
     store.update_ref(hub_ref_id, meta_patch=meta_patch, conn=conn)
 
 

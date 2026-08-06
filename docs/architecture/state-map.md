@@ -1454,11 +1454,57 @@ entries S2 itself may miss.
   poisoned by an outage window) and SMALL-LLM adjudication between two
   close-scored Crossref candidates. A matched `doi` resolves
   `held_ref_id` against `ref_identifiers`.
-- **Consumer: the Sources tab** (`citation-sources-tab`, §Paper reader
-  above) reads it via `store.list_bib_entries` to show real `[N]` bracket
-  markers and union in entries S2 misses — see that section for the join/
-  ordering rule. Taproot citation-following (`citation-taproot-resolve`)
-  is the other sibling, still `blocked-by` this base slice.
+- **Consumers** — the **Sources tab** (`citation-sources-tab`, §Paper
+  reader above) reads it via `store.list_bib_entries` to show real `[N]`
+  bracket markers and union in entries S2 misses (see that section for the
+  join/ordering rule); **taproot citation-following**
+  (`citation-taproot-resolve`, shipped — below) is the other consumer. This
+  base slice produces the table both read.
+
+## Inline citation markers → taproot resolution (`chunk_citations`)
+
+Design: `docs/proposals/citation-taproot-resolve.md` (shipped;
+`blocked-by` the `paper_bib_entries` base slice above). Extracts where a
+paper's parsed bib markers are *used inline* and wires
+citation-following into hub-refine's verify loop, so a claim reading
+"X is true [34]" is checked against what [34] actually *is*.
+
+- **`bib_mark` worker pass** (`workers/bib_mark.py`, migration
+  `0109_chunk_citations.sql`) — `_SYS`-lane, default-ON like `bib_parse`.
+  Pure regex over body chunks of papers that already have
+  `paper_bib_entries` rows: extracts inline `[N]`, `[N,M]`, `[N–M]`
+  (ranges expanded), `<sup>`-wrapped markers, keeps only numbers that are
+  a real bib marker for that paper (the **false-positive guard**), and
+  writes `(chunk_id, marker) → bib_entry_id` into `chunk_citations`.
+  Convergence via a `BIBMARK:<version>` chunk-tag done-marker (own,
+  independently bumpable, same drain idiom as `chase_trigger`'s
+  `CHASETRIG`) — a `BIB_PARSE_VERSION` bump cascades the rows away
+  (re-minted `paper_bib_entries.id`s), so pair a bib re-parse with a
+  `BIBMARK_VERSION` bump.
+- **`resolve_citation(store, chunk_id, marker) → BibResolution`**
+  (`taproot/resolve.py`) — the one shared API: a single-index lookup over
+  `chunk_citations` joined to `paper_bib_entries` returning the bib entry
+  + `doi`/`s2_id`/`held_ref_id`. NB unrelated to the pre-existing
+  worker-pass slug `resolve_citation:s2` (S2 stub enrichment) — same
+  words, different namespace.
+- **Hub-refine citation-following** (`workers/hub_refine.py`) — a **second
+  Discover source inside `_refine_one_hub`**, not a new pass. For each of
+  the hub's existing evidence grounding chunks it reads `chunk_citations`
+  → `resolve_citation` → the *held* cited paper → a paper-scoped
+  (`scope_ref_id`) semantic search for that paper's top passage. Both
+  discover sources merge into ONE per-paper-deduped candidate list
+  (citation first, wins the slot) sharing the single Filter→Verify→Write
+  tail + `seen_papers` set, so a paper reached by both is verified once.
+  A citation-reached `supports=no` writes a rejection memo entry marked
+  `via: 'citation'`, appends `meta.citation_misses`
+  (`{marker, cited_ref, from_chunk}`), and renders a red "cited source
+  does not support this claim" line on the claim page
+  (`precis_web/claim_render.py` + `templates/claim/view.html.j2`).
+  Resolved-but-not-held cites land in `meta.unresolved_citations`
+  (`{doi, marker, from_chunk}`) for display — **not fetched** (auto-fetch
+  is out of scope). **Hub trust is untouched** (decided deferral,
+  `finding-trust-surfaces.md`): the miss is its own surfaced fact, not a
+  trust-state flip.
 
 ## Chunk-tag classifier (ADR 0047 cascade)
 

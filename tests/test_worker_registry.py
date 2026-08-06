@@ -44,6 +44,7 @@ _EXPECTED_SYSTEM = frozenset(
         "summarize",
         "chunk_keywords",
         "bib_parse",
+        "bib_mark",
         "chase",
         "fetch",
         "gp_fetch",

@@ -92,6 +92,21 @@
 </section>
 {% endif %}
 
+{% if citation_misses %}
+<section class="mt-6">
+  <h2 class="text-sm font-semibold mb-2 text-rose-700">Citation misses</h2>
+  <ul class="space-y-1.5">
+    {% for m in citation_misses %}
+    <li class="flex flex-wrap items-baseline gap-x-1.5 text-sm text-rose-700">
+      <span class="rounded bg-rose-100 text-rose-700 px-1.5 py-0.5 text-[11px]">⚠ cited source does not support this claim</span>
+      {% if m.marker is not none %}<span class="text-slate-500">marker [{{ m.marker }}]</span>{% endif %}
+      {% if m.cited_ref_id %}<span class="text-slate-400">· <a href="/r/paper/{{ m.cited_ref_id }}" target="precis-paper" class="font-mono text-sky-700 underline decoration-dotted">cited paper</a></span>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
 {% if chunks %}
 <section class="mt-6">
   <h2 class="text-sm font-semibold mb-2 text-slate-700">Grounding passages</h2>

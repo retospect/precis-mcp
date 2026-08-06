@@ -17,9 +17,12 @@ from unittest.mock import MagicMock, patch
 
 from precis.store.types import BlockInsert, Tag
 from precis.taproot.canon import CanonicalClaim
-from precis.taproot.hub import mint_hub
+from precis.taproot.hub import attach_evidence, mint_hub
+from precis.utils import handle_registry
 from precis.workers._chase_llm import is_corroborating
+from precis.workers.bib_mark import run_bib_mark_pass
 from precis.workers.hub_refine import hub_refine_enabled, run_hub_refine_pass
+from precis_web.claim_render import render_claim_evidence
 from tests.workers._helpers import make_mock_bge_m3
 
 
@@ -482,3 +485,213 @@ def test_verify_call_uses_a_mock_object_not_the_real_router(store: Any) -> None:
         run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
     assert isinstance(mock_verify, MagicMock)
     assert mock_verify.call_count == 1
+
+
+# ── citation-following discover source (AC 3, AC 4) ──────────────────
+#
+# docs/proposals/citation-taproot-resolve.md: a second Discover source
+# inside _refine_one_hub follows the hub's OWN evidence citations —
+# grounding chunk -> chunk_citations -> resolve_citation -> held cited
+# paper -> scoped verify — sharing the single Filter/Verify/Write tail and
+# the loop-local seen_papers dedup with the semantic source.
+
+
+def _seed_bib_entry(store: Any, ref_id: int, marker: int, *, held_ref_id: int) -> int:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "INSERT INTO paper_bib_entries "
+            "(ref_id, marker, raw_text, held_ref_id, doi, parse_version) "
+            "VALUES (%s, %s, %s, %s, %s, 1) RETURNING id",
+            (ref_id, marker, f"cited {marker}", held_ref_id, f"10.1/{ref_id}.{marker}"),
+        ).fetchone()
+        conn.commit()
+    assert row is not None
+    return int(row[0])
+
+
+def _seed_citation_scenario(
+    store: Any, embedder: Any, *, claim: str, tag: str, marker: int = 126
+) -> tuple[int, int, int, int, int]:
+    """A hub whose EXISTING evidence grounds in a citing-paper chunk that
+    carries ``[marker]``, which resolves (via the real bib_mark sweep +
+    paper_bib_entries) to a HELD cited paper with a supporting passage.
+
+    Returns ``(hub, citing_paper, citing_chunk, cited_paper, cited_chunk)``.
+    """
+    hub = _seed_hub(store, sentence=claim)
+    citing, citing_chunk = _seed_paper_chunk(
+        store,
+        embedder,
+        cite_key=f"{tag}-citing",
+        text=f"Prior work established the effect [{marker}].",
+    )
+    cited, cited_chunk = _seed_paper_chunk(
+        store,
+        embedder,
+        cite_key=f"{tag}-cited",
+        text="A direct measurement statement supporting the claim.",
+    )
+    _seed_bib_entry(store, citing, marker, held_ref_id=cited)
+    # Populate chunk_citations end-to-end via the real sweep (not a direct
+    # insert) so AC 3 exercises the actual population path.
+    run_bib_mark_pass(store, batch_size=100)
+    # The hub's pre-existing evidence edge, grounded at the citing chunk.
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=citing,
+        role="corroborates",
+        meta={"support": "yes", "caveats": [], "source_handle": f"pc{citing_chunk}"},
+        set_by="system",
+    )
+    return hub, citing, citing_chunk, cited, cited_chunk
+
+
+def test_ac3_citation_reached_paper_is_discovered_and_attached(store: Any) -> None:
+    """AC 3 (load-bearing): driven from ``run_hub_refine_pass`` (not the
+    internals), a paper reached only by following the claim's own inline
+    citation is verified and attached — with a ``source_handle`` that is a
+    passage INSIDE the cited paper."""
+    embedder = make_mock_bge_m3()
+    hub, citing, _citing_chunk, cited, cited_chunk = _seed_citation_scenario(
+        store, embedder, claim="The catalyst sustains high turnover.", tag="ac3yes"
+    )
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+        result = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    # The already-attached citing paper is precheck-skipped; only the
+    # citation-reached cited paper is verified.
+    assert mock_verify.call_count == 1
+    corro = [e for e in _edges_from(store, cited) if e[0] == hub]
+    assert len(corro) == 1
+    _dst, relation, meta = corro[0]
+    assert relation == "corroborates"
+    # Grounded at a passage INSIDE the cited paper, not the citing chunk.
+    assert meta["source_handle"] == f"pc{cited_chunk}"
+
+
+def test_ac3_citation_miss_records_flag_and_renders_red(store: Any) -> None:
+    """AC 3 companion: the cited held paper does NOT contain the content →
+    no edge, a rejection memo entry marked ``via: 'citation'``, a
+    ``meta.citation_misses`` record on the hub, and a red miss line on the
+    claim page."""
+    embedder = make_mock_bge_m3()
+    hub, _citing, citing_chunk, cited, _cited_chunk = _seed_citation_scenario(
+        store, embedder, claim="The catalyst sustains high turnover.", tag="ac3no"
+    )
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_NO):
+        run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+
+    # No corroborating edge from the cited paper.
+    assert [e for e in _edges_from(store, cited) if e[0] == hub] == []
+
+    meta = _hub_meta(store, hub)
+    rejected = meta.get("taproot_rejected") or {}
+    assert rejected[str(cited)]["via"] == "citation"
+    misses = meta.get("citation_misses") or []
+    assert {"marker": 126, "cited_ref": cited, "from_chunk": citing_chunk} in misses
+
+    # The claim page renders the red miss line.
+    head = handle_registry.format_handle("finding", hub)
+    data = render_claim_evidence(store, head)
+    assert data is not None
+    rows = data["citation_misses"]
+    assert any(r["marker"] == 126 and r["cited_ref_id"] == cited for r in rows)
+
+
+def test_ac4_paper_reached_by_both_sources_is_verified_once(store: Any) -> None:
+    """AC 4 (intra-pass): a paper surfaced by BOTH the citation source and
+    the semantic ANN within one ``_refine_one_hub`` gets exactly ONE verify
+    call (the shared ``seen_papers`` dedup)."""
+    embedder = make_mock_bge_m3()
+    claim = "A dual-reachable claim about sustained turnover."
+    hub, _citing, _citing_chunk, cited, _cited_chunk = _seed_citation_scenario(
+        store, embedder, claim=claim, tag="ac4"
+    )
+
+    # Precondition: the SEMANTIC source alone ALSO surfaces the cited paper,
+    # so a single verify proves the shared dedup did the work — not that the
+    # semantic source simply missed it.
+    sem = store.search_blocks(
+        q=claim,
+        query_vec=embedder.embed_one(claim),
+        mode="semantic",
+        kind="paper",
+        limit=8,
+    )
+    assert cited in {int(ref.id) for _b, ref, _s in sem}
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+        run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+
+    assert mock_verify.call_count == 1
+    assert len([e for e in _edges_from(store, cited) if e[0] == hub]) == 1
+
+
+def test_ac4_citation_source_wins_the_shared_slot(store: Any) -> None:
+    """When both sources surface the same paper, the citation candidate wins
+    the single verify slot — proven on a ``no`` verdict, which only the
+    citation source marks ``via: 'citation'`` + records as a miss."""
+    embedder = make_mock_bge_m3()
+    claim = "Another dual-reachable claim about turnover stability."
+    hub, _citing, _citing_chunk, cited, _cited_chunk = _seed_citation_scenario(
+        store, embedder, claim=claim, tag="ac4b"
+    )
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_NO) as mock_verify:
+        run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+
+    assert mock_verify.call_count == 1
+    meta = _hub_meta(store, hub)
+    assert (meta.get("taproot_rejected") or {})[str(cited)]["via"] == "citation"
+    assert any(m["cited_ref"] == cited for m in (meta.get("citation_misses") or []))
+
+
+def test_ac4_second_pass_makes_no_new_verify_for_same_pair(store: Any) -> None:
+    """Cross-pass convergence for the citation source: a re-trigger over the
+    same state re-discovers the cited paper but attaches nothing new and
+    makes zero new verify calls (edge-exists precheck)."""
+    embedder = make_mock_bge_m3()
+    claim = "A convergence claim reached by citation."
+    hub, _citing, _citing_chunk, cited, _cited_chunk = _seed_citation_scenario(
+        store, embedder, claim=claim, tag="ac4conv"
+    )
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+        run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+        assert mock_verify.call_count == 1
+        assert len([e for e in _edges_from(store, cited) if e[0] == hub]) == 1
+
+        store.add_tag(hub, Tag.closed("TAPROOT_DUE", "1"), set_by="system")
+        run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+        # No new verify: the cited paper is already an attached supporter.
+        assert mock_verify.call_count == 1
+    assert len([e for e in _edges_from(store, cited) if e[0] == hub]) == 1
+
+
+def test_citation_contradicting_partial_also_records_a_miss(store: Any) -> None:
+    """A citation-reached ``partial`` flagged ``contradicts`` (a stronger
+    miss than a plain ``no``) is NOT attached and DOES land in
+    ``meta.citation_misses`` — the deliberate inclusion beyond the AC's
+    literal ``supports=no`` (a cited source that contradicts the claim is a
+    red flag too)."""
+    embedder = make_mock_bge_m3()
+    hub, _citing, citing_chunk, cited, _cited_chunk = _seed_citation_scenario(
+        store, embedder, claim="A claim its cited source contradicts.", tag="ac3contra"
+    )
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_PARTIAL_CONTRADICTS):
+        run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+
+    # Contradicting partial → not corroboration, so no edge.
+    assert [e for e in _edges_from(store, cited) if e[0] == hub] == []
+
+    meta = _hub_meta(store, hub)
+    rejected = meta.get("taproot_rejected") or {}
+    assert rejected[str(cited)]["via"] == "citation"
+    assert rejected[str(cited)]["contradicts"] is True
+    misses = meta.get("citation_misses") or []
+    assert {"marker": 126, "cited_ref": cited, "from_chunk": citing_chunk} in misses
