@@ -11,6 +11,7 @@ store + handler (the DB layer) wrap this core.
 from __future__ import annotations
 
 from .cell import Cell, ImageOffset
+from .measures import anchor_identity_verified
 from .measures import evaluate as evaluate_measure
 from .ops import OpError, apply_ops
 from .relax import RelaxResult, RelaxUnsupported, relax
@@ -28,6 +29,7 @@ __all__ = [
     "RelaxResult",
     "RelaxUnsupported",
     "Scene",
+    "anchor_identity_verified",
     "apply_ops",
     "evaluate_measure",
     "relax",

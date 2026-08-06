@@ -30,6 +30,7 @@ from fastapi import APIRouter, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from precis.errors import NotFound
+from precis.structure import Measure, anchor_identity_verified, evaluate_measure
 from precis.utils import mentions
 from precis.utils.authors import author_names
 from precis.utils.claude_agent import ClaudeAgentError
@@ -42,6 +43,7 @@ from precis_web.deps import (
     templates,
 )
 from precis_web.item_view import display_title
+from precis_web.routes.structure import _geom_payload
 
 router = APIRouter(prefix="/refs", tags=["refs"])
 
@@ -706,6 +708,174 @@ def _pathway_struct_row(
     }
 
 
+#: ``Measure.kind`` values the pathway-measures parser accepts — the ``op``
+#: field on a ``meta.measures`` entry passes straight through as ``kind``
+#: (per the proposal's "evaluator reuse layer" decision). Anything else is
+#: skipped with a note rather than raising — a forward-looking op shouldn't
+#: 500 the page.
+_PATHWAY_MEASURE_OPS = frozenset(
+    {"distance", "bond_length", "angle", "coordination", "min_distance"}
+)
+
+
+def _pathway_graph_payload(graph: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Trim ``meta.graph`` (a networkx ``node_link_data`` dict) to exactly what
+    the client-side energy diagram needs. Per the proposal's layout-ownership
+    decision, precis recomputes the diagram's topological x-order + hump
+    curves in JS from this raw graph — catpath emits no pixel anchor, so this
+    is intentionally *not* pre-laid-out server-side. Returns ``None`` when
+    there's no graph to draw (an early/sparse pathway — AC4-adjacent)."""
+    if not graph or not graph.get("nodes"):
+        return None
+    nodes = [
+        {
+            "id": str(n["id"]),
+            "energy": n.get("energy"),
+            "rel_energy": n.get("rel_energy"),
+            "energy_std": n.get("energy_std"),
+            "low_confidence": bool(n.get("low_confidence")),
+        }
+        for n in graph.get("nodes", [])
+        if n.get("id") is not None
+    ]
+    links = [
+        {
+            "source": str(e["source"]),
+            "target": str(e["target"]),
+            "kind": e.get("kind") or "reaction",
+            "barrier": e.get("barrier"),
+            "barrier_std": e.get("barrier_std"),
+            "delta_e": e.get("delta_e"),
+            "delta_e_std": e.get("delta_e_std"),
+            "low_confidence": bool(e.get("low_confidence")),
+        }
+        for e in graph.get("links", [])
+        if e.get("source") is not None and e.get("target") is not None
+    ]
+    return {"nodes": nodes, "links": links}
+
+
+def _pathway_measures(raw: Any) -> tuple[list[Measure], list[str]]:
+    """Parse ``meta.measures`` into ad-hoc :class:`~precis.structure.Measure`
+    objects for live per-state evaluation (``op`` -> ``kind``, ``atoms`` ->
+    ``operands``, ``element`` passthrough — item 3 / AC3). An entry with an
+    unrecognised ``op`` is skipped with a human-readable note rather than
+    raising; ``notes`` surfaces on the page so a bad measure def is legible,
+    not a silent drop."""
+    measures: list[Measure] = []
+    notes: list[str] = []
+    for i, item in enumerate(raw or []):
+        if not isinstance(item, dict):
+            notes.append(f"measure #{i}: not an object, skipped")
+            continue
+        op = item.get("op")
+        name = str(item.get("name") or op or f"measure {i}")
+        if op not in _PATHWAY_MEASURE_OPS:
+            notes.append(f"{name}: unknown op {op!r}, skipped")
+            continue
+        measures.append(
+            Measure(
+                kind=op,
+                operands=[str(a) for a in (item.get("atoms") or [])],
+                name=name,
+                element=item.get("element"),
+            )
+        )
+    return measures, notes
+
+
+def _pathway_state_ids(
+    graph: dict[str, Any] | None, structure_refs: dict[str, Any]
+) -> list[str]:
+    """The state universe for the sidebar/stepper. Every graph node id when a
+    graph is recorded — so a state with no linked geometry still appears
+    (AC4: "no geometry linked"), not silently dropped — else the linked-
+    structure keys alone (a graph-less, structures-only pathway). This is
+    just the list's *enumeration* order; the diagram's own x-layout is
+    recomputed independently in JS off the raw graph (see
+    ``_pathway_graph_payload``) — a small, accepted duplication."""
+    if graph and graph.get("nodes"):
+        return [str(n["id"]) for n in graph["nodes"] if n.get("id") is not None]
+    return sorted(str(k) for k in structure_refs)
+
+
+def _pathway_state_geoms_and_measures(
+    store: Any,
+    state_ids: list[str],
+    structure_refs: dict[str, Any],
+    measures: list[Measure],
+) -> tuple[dict[str, dict[str, Any] | None], list[dict[str, Any]]]:
+    """Per-state 3D geometry payloads (``None`` = "no geometry linked", AC4)
+    plus every measure's live per-state value + the identity-drift guard
+    (item 3 / AC3): ``anchor_identity_verified`` per state, folded to one
+    ``verified`` flag per measure (False if unverified in ANY state — never
+    silently trusted). Only states carrying geometry are evaluated at all
+    (AC4: measures only evaluate states that have geometry); a structure ref
+    that fails to load (missing, or a store that doesn't support it) degrades
+    the same as "no geometry linked" rather than 500ing the page.
+
+    Internally keyed by the measure's *list index*, not its display name —
+    two measures can legitimately share a name (or both fall back to the
+    same unnamed op), and a name-keyed dict would collapse them onto one
+    shared per-state bucket, silently overwriting the first's values with
+    the second's. The index is only an internal bookkeeping key; each
+    ``measures_out`` entry still carries its own ``name`` for display."""
+    geoms: dict[str, dict[str, Any] | None] = {}
+    per_state: dict[int, dict[str, dict[str, Any]]] = {
+        i: {} for i in range(len(measures))
+    }
+    verified: dict[int, bool] = dict.fromkeys(range(len(measures)), True)
+
+    for state_id in state_ids:
+        sid = structure_refs.get(state_id)
+        scene = None
+        if sid is not None:
+            try:
+                scene, _handles = store.structure_load(sid)
+            except Exception:
+                log.warning(
+                    "pathway state %r: structure_load(%r) failed",
+                    state_id,
+                    sid,
+                    exc_info=True,
+                )
+                scene = None
+        if scene is None or not scene.atoms:
+            geoms[state_id] = None
+            continue
+        geoms[state_id] = _geom_payload(scene, state_id)
+        for i, m in enumerate(measures):
+            value, verdict = evaluate_measure(scene, m)
+            per_state[i][state_id] = {
+                "value": value.get("value"),
+                "unit": value.get("unit"),
+                "error": value.get("error"),
+                "verdict": verdict,
+            }
+            if not anchor_identity_verified(scene, m):
+                verified[i] = False
+
+    measures_out: list[dict[str, Any]] = []
+    for i, m in enumerate(measures):
+        vals = per_state[i]
+        geom_state_ids = [s for s in state_ids if geoms.get(s) is not None]
+        trace_ok = bool(geom_state_ids) and all(
+            vals.get(s, {}).get("value") is not None for s in geom_state_ids
+        )
+        measures_out.append(
+            {
+                "name": m.name or m.kind,
+                "op": m.kind,
+                "atoms": m.operands,
+                "element": m.element,
+                "verified": verified[i],
+                "trace_ok": trace_ok,
+                "per_state": vals,
+            }
+        )
+    return geoms, measures_out
+
+
 async def _pathway_detail(request: Request, store: Any, ref: Any) -> HTMLResponse:
     """Detail page for ``kind='pathway'`` — a autocatpath reaction-energetics
     network (candidate structure → adsorbate/intermediate structures →
@@ -773,6 +943,30 @@ async def _pathway_detail(request: Request, store: Any, ref: Any) -> HTMLRespons
         "warnings": [str(w) for w in warnings_raw],
     }
 
+    # Interactive explorer (docs/proposals/reaction-pathway-explorer.md) — the
+    # clickable energy diagram (item 1), the per-state 3D cell viewer (item 2),
+    # and per-state measures (item 3). All three degrade gracefully: no graph
+    # -> no diagram; no/partial structure_refs -> per-state "no geometry
+    # linked" (AC4); an unrecognised measure op -> skipped with a note.
+    graph = meta.get("graph")
+    diagram = _pathway_graph_payload(graph)
+    measure_defs, measure_notes = _pathway_measures(meta.get("measures"))
+    state_ids = _pathway_state_ids(graph, structure_refs)
+    state_geoms, measures_summary = _pathway_state_geoms_and_measures(
+        store, state_ids, structure_refs, measure_defs
+    )
+    n_states_with_geom = sum(1 for g in state_geoms.values() if g is not None)
+    # A state's ``rel_energy`` may be recorded as explicitly null (computed
+    # but not yet available, distinct from "no graph node at all") — the
+    # state list surfaces that as its own "no energy yet" badge alongside
+    # the geometry one, and the JS diagram excludes these from level/hump/
+    # trace plotting rather than coercing null to 0 (item 3 hardening).
+    states_missing_energy = {
+        str(n["id"])
+        for n in (diagram["nodes"] if diagram else [])
+        if n.get("rel_energy") is None
+    }
+
     return templates.TemplateResponse(
         request,
         "refs/pathway_detail.html.j2",
@@ -793,6 +987,13 @@ async def _pathway_detail(request: Request, store: Any, ref: Any) -> HTMLRespons
             "structures": structures,
             "body_text": body_text,
             "results_summary": results_summary,
+            "diagram": diagram,
+            "state_ids": state_ids,
+            "state_geoms": state_geoms,
+            "n_states_with_geom": n_states_with_geom,
+            "states_missing_energy": states_missing_energy,
+            "measures": measures_summary,
+            "measure_notes": measure_notes,
         },
     )
 

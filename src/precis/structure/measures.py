@@ -27,6 +27,12 @@ _MEASURE_ARITY: dict[str, int] = {
 }
 _MEASURE_KINDS = frozenset(_MEASURE_ARITY)
 EYE = "eye"
+#: Labeled anchor → nearest atom of ``m.element``. Deliberately *not* a member
+#: of ``_MEASURE_ARITY``/``_MEASURE_KINDS`` — those gate the ``measure`` op /
+#: ``struct_measures`` persistence path (ops.py), and per the pathway-explorer
+#: evaluator-reuse decision this kind is only ever built ad-hoc and evaluated
+#: directly, never persisted through that path.
+MIN_DISTANCE = "min_distance"
 
 
 def is_eye(m: Measure) -> bool:
@@ -58,6 +64,62 @@ def _verdict(
     return None
 
 
+def _min_distance(scene: Scene, m: Measure) -> tuple[dict[str, Any], str | None]:
+    """``min_distance``: the sole labeled anchor → nearest atom of ``m.element``.
+
+    Identity-free by construction — the target side names an *element*, not an
+    atom, so it carries no cross-state label-drift risk (see
+    ``anchor_identity_verified``). Uses the same MIC distance as ``distance``
+    (``probe.distance`` / ``Scene.cell.mic``) — no separate geometric
+    convention. A missing anchor, an unset ``element``, or an element with no
+    (other) atoms in the scene each yield the same graceful
+    ``{'error': …}``/``'dangling'`` shape the rest of this module uses for a
+    dangling anchor, rather than raising.
+    """
+    if not m.operands:
+        return {"error": "min_distance needs an anchor atom"}, "dangling"
+    anchor = m.operands[0]
+    missing = _missing(scene, [anchor])
+    if missing:
+        return {"error": f"missing atoms: {', '.join(missing)}"}, "dangling"
+    if not m.element:
+        return {"error": "min_distance needs an 'element'"}, "dangling"
+    candidates = [
+        label
+        for label, atom in scene.atoms.items()
+        if atom.element == m.element and label != anchor
+    ]
+    if not candidates:
+        return {"error": f"no {m.element} atoms in scene"}, "dangling"
+    val = min(probe.distance(scene, anchor, label) for label in candidates)
+    verdict = _verdict(val, m.direction, m.goal)
+    if verdict == "fail" and m.strength == "soft":
+        verdict = "warn"
+    return {"value": round(val, 4), "unit": "Å"}, verdict
+
+
+def anchor_identity_verified(scene: Scene, m: Measure) -> bool:
+    """True iff every labeled anchor in ``m`` sits on a scene-**singleton**
+    element — i.e. is safe to treat as the same physical atom across states.
+
+    ``scene_from_ase`` (catpath) labels atoms with a per-element counter local
+    to each state's own ASE ordering: stable when an element occurs exactly
+    once in the scene, unguaranteed when it repeats (one Pd of a 12-Pd slab
+    could be a different physical atom next state). A dangling anchor (not in
+    ``scene.atoms``) is conservatively unverified. ``min_distance`` measures
+    have one anchor and an identity-free ``element`` target side, so they're
+    verified purely on that anchor's singleton-ness.
+    """
+    if not m.operands:
+        return False
+    counts = scene.composition()
+    for label in m.operands:
+        atom = scene.atoms.get(label)
+        if atom is None or counts.get(atom.element, 0) != 1:
+            return False
+    return True
+
+
 def evaluate(scene: Scene, m: Measure) -> tuple[dict[str, Any], str | None]:
     """Return ``(value_derived, verdict)`` for one marker against ``scene``.
 
@@ -65,6 +127,9 @@ def evaluate(scene: Scene, m: Measure) -> tuple[dict[str, Any], str | None]:
     ``{'error': 'missing atoms …'}`` value and a ``'dangling'`` verdict rather
     than raising — a marker outliving its atoms is a legible state, not a crash.
     """
+    if m.kind == MIN_DISTANCE:
+        return _min_distance(scene, m)
+
     missing = _missing(scene, m.operands)
     if missing:
         return {"error": f"missing atoms: {', '.join(missing)}"}, "dangling"
@@ -95,4 +160,12 @@ def evaluate(scene: Scene, m: Measure) -> tuple[dict[str, Any], str | None]:
     return {"value": round(val, 4), "unit": unit}, verdict
 
 
-__all__ = ["EYE", "_MEASURE_ARITY", "_MEASURE_KINDS", "evaluate", "is_eye"]
+__all__ = [
+    "EYE",
+    "MIN_DISTANCE",
+    "_MEASURE_ARITY",
+    "_MEASURE_KINDS",
+    "anchor_identity_verified",
+    "evaluate",
+    "is_eye",
+]

@@ -518,8 +518,13 @@
 (function () {
   const box = document.getElementById('sv-proposal');
   const pop = document.getElementById('sv-pop');
+  // Escapes both quote styles — this esc() feeds data-atoms="..."/
+  // data-desc="..."/value="..." attributes built from an agent-proposed
+  // op (opAtoms/JSON.stringify(op)); a lone `"` escape still leaves a `'`
+  // able to break out of a single-quoted attribute (stored XSS).
   const esc = (s) => String(s == null ? '' : s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
   // Popover follows the pointer and sits BELOW it (flips up only near the
   // bottom edge). Any [data-desc] element opts in — proposed ops + markers.

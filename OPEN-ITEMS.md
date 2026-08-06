@@ -10,6 +10,19 @@ tracked separately in `docs/improvement-plan.md` (same delete-on-ship rule).
 
 ---
 
+## 🔧 pathway `meta.measures` has no writer — explorer renders it, nothing can set it
+
+Status: open · Severity: feature · Owner: `src/precis_pathway/handler.py` · Test: edit-verb round-trip → measure card renders on `/refs/pathway/{id}`.
+
+The reaction-pathway explorer (shipped 2026-08-06, `docs/proposals/reaction-pathway-explorer.md`)
+evaluates and renders `refs.meta.measures` per state — but `PathwayHandler`
+has no `edit()` and `put()` drops meta kwargs, so no MCP verb can define a
+measure; the only writer today is a test seed / raw SQL. Follow-up: a small
+`edit(kind='pathway', id, measures=[{name, op, atoms, element?}])` surface
+(validate op ∈ {distance, angle, min_distance}, atoms list of labels) writing
+`meta.measures`. Until then the explorer's measures panel is dark on prod
+pathways. Sibling motion work: `docs/proposals/pathway-frame-capture.md` (draft).
+
 ## ✨ Trust-taxonomy follow-ons (5-state Ⓐ/✍ shipped)
 
 Status: open · Severity: feature/polish · Owner: `src/precis/taproot/trust.py`, `src/precis/workers/chase.py`, exporters · Test: below.

@@ -27,6 +27,111 @@
   </p>
 </div>
 
+{# ── Interactive explorer ─────────────────────────────────────────────
+   docs/proposals/reaction-pathway-explorer.md: a clickable energy diagram
+   (item 1) + an embedded per-state 3D cell viewer (item 2) + per-state
+   measures (item 3), rendered from ``meta.graph``/``structure_refs``/
+   ``measures``. Degrades per AC4: no graph -> no diagram (below); no/
+   partial ``structure_refs`` -> "no geometry linked" per state; an
+   unrecognised measure op -> skipped with a note (``measure_notes``). #}
+<section class="mb-6 rounded-lg border border-slate-200 bg-white p-4">
+  <h2 class="text-sm font-semibold text-slate-700 mb-2">Reaction explorer</h2>
+
+  {% if diagram %}
+  <div id="pw-diagram" class="w-full overflow-x-auto rounded border border-slate-100 bg-slate-50 p-1"></div>
+  {% else %}
+  <p class="text-sm text-slate-400 italic">no energetics graph recorded for this pathway yet.</p>
+  {% endif %}
+
+  {% if state_ids %}
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4">
+    {# ── state list + stepper — always present, works even if the SVG
+       diagram above doesn't (item 2 / graceful-degradation requirement).
+       Each row is a click target for AC1's "every state node is
+       clickable" too — a diagram node and its list row both resolve to
+       the same ``showState(id)``. ── #}
+    <div>
+      <div class="flex items-center gap-2 mb-1.5 flex-wrap">
+        <h3 class="text-xs font-semibold text-slate-600 uppercase tracking-wide">States</h3>
+        <span class="text-[11px] text-slate-400">{{ n_states_with_geom }}/{{ state_ids | length }} with geometry</span>
+        <div class="ml-auto flex items-center gap-1">
+          <button type="button" id="pw-prev" class="rounded border border-slate-300 px-2 py-0.5 text-[11px] hover:bg-slate-100">&larr; prev</button>
+          <button type="button" id="pw-next" class="rounded border border-slate-300 px-2 py-0.5 text-[11px] hover:bg-slate-100">next &rarr;</button>
+        </div>
+      </div>
+      <div id="pw-state-list" class="space-y-0.5 max-h-64 overflow-y-auto">
+        {% for sid in state_ids %}
+        <div class="pw-state-node flex items-center gap-2 text-xs rounded px-2 py-1 border border-slate-200 bg-white cursor-pointer hover:bg-sky-50"
+             data-state="{{ sid }}" role="button" tabindex="0">
+          <span class="font-mono text-slate-700">{{ sid }}</span>
+          {# distinct from "no geometry linked" — this state HAS a graph node
+             but its rel_energy hasn't been computed yet; still clickable. #}
+          {% if sid in states_missing_energy %}
+          <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-600 border border-amber-200" title="no computed energy yet for this state — excluded from the diagram">no energy yet</span>
+          {% endif %}
+          {% if state_geoms.get(sid) %}
+          <span class="ml-auto text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800">geometry</span>
+          {% else %}
+          <span class="ml-auto text-[10px] px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-500">no geometry linked</span>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+
+      {% if measures %}
+      {# ── per-state measures (item 3 / AC3) — the identity-drift guard
+         is rendered server-side (not JS-dependent): a measure whose anchor
+         repeats an element in any state carries the unverified chip and
+         is drawn dashed on the diagram; a singleton-anchored ``min_distance``
+         (e.g. N -> nearest Pd) carries neither and draws solid. ── #}
+      <h3 class="text-xs font-semibold text-slate-600 uppercase tracking-wide mt-3 mb-1">Measures</h3>
+      <div class="space-y-1">
+        {% for m in measures %}
+        <div class="text-xs rounded px-2 py-1 border border-slate-200 bg-white" data-measure="{{ m.name }}">
+          <div class="flex items-center gap-2 flex-wrap">
+            <span class="font-semibold text-slate-700">{{ m.name }}</span>
+            <span class="text-[10px] px-1 rounded bg-slate-100 text-slate-500">{{ m.op }}</span>
+            <span class="text-slate-400">{{ m.atoms | join(', ') }}{% if m.element %} &rarr; nearest {{ m.element }}{% endif %}</span>
+            {% if not m.trace_ok %}
+            <span class="ml-auto text-[10px] px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-600">no trace &mdash; missing in some state</span>
+            {% elif m.verified %}
+            <span class="ml-auto text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800">solid trace &mdash; identity verified</span>
+            {% else %}
+            <span class="ml-auto text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800"
+                  title="an anchor sits on a repeated element — the same label may not be the same physical atom across states">
+              &#9888; dashed &mdash; label-order identity &mdash; unverified across states
+            </span>
+            {% endif %}
+          </div>
+          <div class="pw-measure-value mt-1 text-slate-500" data-measure-value="{{ m.name }}">select a state to see its value</div>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+      {% if measure_notes %}
+      <ul class="mt-2 space-y-0.5">
+        {% for note in measure_notes %}
+        <li class="text-[11px] text-amber-700">&#9888; {{ note }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </div>
+
+    {# ── embedded per-state 3D cell viewer ── #}
+    <div>
+      <div id="pw-mol" class="relative w-full rounded-lg border border-slate-200 bg-white" style="height: 380px;"></div>
+      <p id="pw-mol-empty" class="text-sm text-slate-400 italic mt-2 hidden">no geometry linked for this state.</p>
+      <p class="text-[11px] text-slate-400 mt-1">
+        Drag to rotate &middot; scroll to zoom &middot; click an atom or bond for details.
+      </p>
+      <div id="pw-detail" class="mt-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm min-h-[52px]">
+        <span class="text-slate-400 text-xs">Click a state (diagram, list, or stepper) to load its cell; click an atom or bond to inspect it.</span>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+</section>
+
 {# ── Two-column: meta panel | linked structures ──────────────────────── #}
 <div class="mb-6 grid grid-cols-1 lg:grid-cols-2 gap-4">
   <section class="rounded-lg border border-slate-200 bg-white p-4">
@@ -141,4 +246,404 @@
   <p class="text-sm text-slate-400 italic">no body chunk recorded for this pathway.</p>
   {% endif %}
 </section>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://unpkg.com/3dmol@2.4.2/build/3Dmol-min.js"></script>
+<script>
+(function () {
+  // ── data blob — every state's geometry (item 2) + the raw trimmed graph
+  // (item 1) + every measure's per-state values (item 3), inlined once so
+  // clicking a node/row/stepper never re-fetches — 16 small cells, not a
+  // new endpoint (proposal "Target + blast radius"). ──
+  const V = {
+    diagram: {{ diagram | tojson }},
+    stateIds: {{ state_ids | tojson }},
+    stateGeoms: {{ state_geoms | tojson }},
+    measures: {{ measures | tojson }},
+  };
+
+  // Escapes quotes too — node ids/labels come straight off agent-written
+  // meta.graph and are interpolated into a quoted attribute
+  // (data-state="${esc(id)}") inside an innerHTML string below; a bare
+  // & < > escape lets a `"` in an id break out of the attribute (stored
+  // XSS).
+  const esc = (s) => String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  const num = (x, d = 3) => (x == null ? '—' : Number(x).toFixed(d));
+
+  // ── topological x-order — precis owns the diagram layout; catpath emits
+  // no pixel anchor (proposal decision). Kahn's algorithm over ALL edges
+  // (reaction + supply/branch) so every node lands somewhere; a cycle
+  // (shouldn't happen for a reaction network) falls back to node array
+  // order, mirroring catpath's own ``draw_graph`` fallback. ──
+  function topoOrder(nodes, links) {
+    const ids = nodes.map((n) => n.id);
+    const indeg = {}; ids.forEach((id) => { indeg[id] = 0; });
+    const adj = {}; ids.forEach((id) => { adj[id] = []; });
+    links.forEach((e) => {
+      if (adj[e.source] && indeg[e.target] != null) {
+        adj[e.source].push(e.target);
+        indeg[e.target] += 1;
+      }
+    });
+    const q = ids.filter((id) => indeg[id] === 0);
+    const order = [];
+    while (q.length) {
+      const n = q.shift();
+      order.push(n);
+      (adj[n] || []).forEach((m) => {
+        indeg[m] -= 1;
+        if (indeg[m] === 0) { q.push(m); }
+      });
+    }
+    return order.length === ids.length ? order : ids;
+  }
+
+  // ── smooth cosine hump — (x0,y0) up to (xm,yPeak) down to (x1,y1) — the
+  // same curve as catpath ``viz._hump``, so the shape reads like the PNG
+  // export even though precis draws its own SVG. Operates in whatever
+  // (x,y) space the caller passes (diagram idx/energy here). ──
+  function humpPoints(x0, y0, x1, y1, yPeak, n) {
+    n = n || 24;
+    const xm = (x0 + x1) / 2;
+    const pts = [];
+    for (let i = 0; i <= n; i++) {
+      const t = i / n;
+      if (t <= 0.5) {
+        const t1 = t * 2;
+        pts.push([x0 + (xm - x0) * t1, y0 + (yPeak - y0) * (1 - Math.cos(Math.PI * t1)) / 2]);
+      } else {
+        const t2 = (t - 0.5) * 2;
+        pts.push([xm + (x1 - xm) * t2, yPeak + (y1 - yPeak) * (1 - Math.cos(Math.PI * t2)) / 2]);
+      }
+    }
+    return pts;
+  }
+
+  const TRACE_COLORS = ['#7c3aed', '#0891b2', '#c026d3', '#059669'];
+
+  function renderDiagram() {
+    const g = V.diagram;
+    const el = document.getElementById('pw-diagram');
+    if (!g || !el || !g.nodes.length) { return; }
+
+    const order = topoOrder(g.nodes, g.links);
+    const xOf = {}; order.forEach((id, i) => { xOf[id] = i; });
+    const byId = {}; g.nodes.forEach((n) => { byId[n.id] = n; });
+
+    const W = Math.max(360, 130 * order.length + 60);
+    const H = 300;
+    const padL = 44, padR = 20, padT = 26, padB = 10;
+    const plotW = W - padL - padR, plotH = H - padT - padB;
+    const n = Math.max(order.length, 1);
+    const xScale = (idx) => padL + ((idx + 0.5) / n) * plotW;
+    const half = Math.min(0.34 * (plotW / n), 42);
+
+    // A node with no computed energy yet (rel_energy == null) is excluded
+    // from the y-scale, hump curves, and level line entirely — it gets its
+    // own dashed "no energy yet" placeholder below instead of coercing
+    // null to 0 (which would misleadingly plot it at the origin).
+    let yMin = Infinity, yMax = -Infinity;
+    g.nodes.forEach((nd) => {
+      if (nd.rel_energy == null) { return; }
+      const sd = nd.energy_std || 0;
+      yMin = Math.min(yMin, nd.rel_energy - sd);
+      yMax = Math.max(yMax, nd.rel_energy + sd);
+    });
+    g.links.forEach((e) => {
+      if (e.kind === 'supply') { return; }
+      const src = byId[e.source];
+      if (!src || src.rel_energy == null) { return; }
+      const peak = src.rel_energy + Math.max(e.barrier || 0, 0);
+      yMax = Math.max(yMax, peak + (e.barrier_std || 0));
+    });
+    if (!isFinite(yMin) || !isFinite(yMax)) { yMin = 0; yMax = 1; }
+    if (yMax - yMin < 1e-6) { yMax = yMin + 1; }
+    const yPad = (yMax - yMin) * 0.14;
+    yMin -= yPad; yMax += yPad;
+    const py = (y) => padT + plotH - ((y - yMin) / (yMax - yMin)) * plotH;
+
+    const parts = [];
+    parts.push(`<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" class="select-none" style="min-width:${W}px">`);
+
+    // y-axis gridlines + rel-energy ticks
+    for (let t = 0; t <= 4; t++) {
+      const y = yMin + (yMax - yMin) * (t / 4);
+      const yy = py(y);
+      parts.push(`<line x1="${padL}" y1="${yy}" x2="${W - padR}" y2="${yy}" stroke="#eef1f5" stroke-width="1"/>`);
+      parts.push(`<text x="${padL - 6}" y="${yy + 3}" font-size="8" fill="#94a3b8" text-anchor="end">${y.toFixed(2)}</text>`);
+    }
+
+    // edges — reaction (solid hump + Ea label) vs supply/branch (dashed, secondary)
+    g.links.forEach((e) => {
+      const src = byId[e.source], tgt = byId[e.target];
+      if (!src || !tgt || xOf[e.source] == null || xOf[e.target] == null) { return; }
+      // No energy on one end — nothing to plot a hump/line between.
+      if (src.rel_energy == null || tgt.rel_energy == null) { return; }
+      const x0 = xOf[e.source] + half, x1 = xOf[e.target] - half;
+      if (e.kind === 'supply') {
+        parts.push(`<line x1="${xScale(x0)}" y1="${py(src.rel_energy)}" x2="${xScale(x1)}" y2="${py(tgt.rel_energy)}" `
+          + `stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="4 3"/>`);
+        return;
+      }
+      const peakY = src.rel_energy + Math.max(e.barrier || 0, 0);
+      const curve = humpPoints(x0, src.rel_energy, x1, tgt.rel_energy, peakY)
+        .map(([x, y]) => `${xScale(x)},${py(y)}`).join(' ');
+      const color = e.low_confidence ? '#d9534f' : '#4a90d9';
+      parts.push(`<polyline points="${curve}" fill="none" stroke="${color}" stroke-width="2"/>`);
+      if ((e.barrier || 0) > 1e-3) {
+        const xm = xScale((x0 + x1) / 2);
+        const bsd = e.barrier_std || 0;
+        if (bsd > 1e-6) {
+          parts.push(`<line x1="${xm}" y1="${py(peakY - bsd)}" x2="${xm}" y2="${py(peakY + bsd)}" stroke="${color}" stroke-width="1"/>`);
+        }
+        const lab = bsd > 1e-6 ? `Ea=${e.barrier.toFixed(2)}±${bsd.toFixed(2)}` : `Ea=${e.barrier.toFixed(2)}`;
+        parts.push(`<text x="${xm}" y="${py(peakY + bsd) - 4}" font-size="7.5" fill="${color}" text-anchor="middle">${esc(lab)}</text>`);
+      }
+    });
+
+    // levels — ±1σ band, the level line, the label, low-confidence marked.
+    // A node with rel_energy == null never reaches the arithmetic/.toFixed
+    // below (that's the AC (b) guard) — it gets a dashed grey "no energy
+    // yet" placeholder at the plot floor instead, and keeps its click
+    // target so the state remains selectable from the diagram too.
+    order.forEach((id) => {
+      const nd = byId[id];
+      const x0 = xScale(xOf[id] - half), x1 = xScale(xOf[id] + half);
+      if (nd.rel_energy == null) {
+        const yFloor = padT + plotH - 4;
+        parts.push(`<line x1="${x0}" y1="${yFloor}" x2="${x1}" y2="${yFloor}" stroke="#cbd5e1" stroke-width="4" stroke-linecap="round" stroke-dasharray="2 4"/>`);
+        parts.push(`<text x="${(x0 + x1) / 2}" y="${yFloor - 8}" font-size="8" fill="#94a3b8" text-anchor="middle">${esc(nd.id)} (no energy yet)</text>`);
+        parts.push(`<rect class="pw-svg-node" data-state="${esc(id)}" x="${x0}" y="${padT}" width="${x1 - x0}" height="${plotH}" `
+          + `fill="transparent" stroke="none" style="cursor:pointer"/>`);
+        return;
+      }
+      const y = py(nd.rel_energy);
+      const color = nd.low_confidence ? '#d9534f' : '#4a90d9';
+      const sd = nd.energy_std || 0;
+      if (sd > 1e-6) {
+        parts.push(`<rect x="${x0}" y="${py(nd.rel_energy + sd)}" width="${x1 - x0}" height="${py(nd.rel_energy - sd) - py(nd.rel_energy + sd)}" `
+          + `fill="${color}" opacity="0.15"/>`);
+      }
+      parts.push(`<line x1="${x0}" y1="${y}" x2="${x1}" y2="${y}" stroke="${color}" stroke-width="4" stroke-linecap="round"/>`);
+      const lab = sd > 1e-6 ? `${nd.id} (${nd.rel_energy >= 0 ? '+' : ''}${nd.rel_energy.toFixed(2)}±${sd.toFixed(2)})` : `${nd.id}`;
+      parts.push(`<text x="${(x0 + x1) / 2}" y="${y - 8}" font-size="8" font-weight="bold" fill="${color}" text-anchor="middle">${esc(lab)}${nd.low_confidence ? ' ⚠' : ''}</text>`);
+      // click target — the whole plot-height column above this level, a
+      // per-node clickable target (AC1: "every state node is a click target")
+      parts.push(`<rect class="pw-svg-node" data-state="${esc(id)}" x="${x0}" y="${padT}" width="${x1 - x0}" height="${plotH}" `
+        + `fill="transparent" stroke="none" style="cursor:pointer"/>`);
+    });
+
+    // measure traces — a value/twin scale per measure, dashed when its
+    // identity guard failed anywhere (AC3: never render an unverified
+    // trace as trusted), solid when every anchor was a scene singleton.
+    let colorIdx = 0;
+    (V.measures || []).forEach((m) => {
+      if (!m.trace_ok) { return; }
+      const vals = order.map((id) => (m.per_state[id] || {}).value).filter((v) => v != null);
+      if (vals.length < 2) { return; }
+      let vMin = Math.min(...vals), vMax = Math.max(...vals);
+      if (vMax - vMin < 1e-9) { vMax = vMin + 1; }
+      const vPad = (vMax - vMin) * 0.12;
+      vMin -= vPad; vMax += vPad;
+      const vy = (v) => padT + plotH - ((v - vMin) / (vMax - vMin)) * plotH;
+      const color = TRACE_COLORS[colorIdx % TRACE_COLORS.length];
+      const pts = order
+        .map((id) => {
+          const cell = m.per_state[id];
+          return (cell && cell.value != null) ? `${xScale(xOf[id])},${vy(cell.value)}` : null;
+        })
+        .filter(Boolean).join(' ');
+      const dash = m.verified ? '' : ' stroke-dasharray="5 4"';
+      parts.push(`<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2"${dash} opacity="0.85"/>`);
+      order.forEach((id) => {
+        const cell = m.per_state[id];
+        if (!cell || cell.value == null) { return; }
+        parts.push(`<circle cx="${xScale(xOf[id])}" cy="${vy(cell.value)}" r="2.5" fill="${color}"/>`);
+      });
+      parts.push(`<text x="${W - padR}" y="${padT + 8 + colorIdx * 10}" font-size="7.5" fill="${color}" text-anchor="end">`
+        + `${esc(m.name)}${m.verified ? '' : ' (unverified)'}</text>`);
+      colorIdx += 1;
+    });
+
+    parts.push('</svg>');
+    el.innerHTML = parts.join('');
+  }
+
+  // ── selection: a diagram node, a state-list row, or a stepper button all
+  // resolve to the same showState(id) — item 2's "state list + stepper
+  // always present" + AC1's "every state node is clickable". ──
+  let selected = null;
+
+  function highlightState(id) {
+    document.querySelectorAll('.pw-state-node').forEach((row) => {
+      const on = row.getAttribute('data-state') === id;
+      row.classList.toggle('bg-sky-100', on);
+      row.classList.toggle('border-sky-300', on);
+    });
+    document.querySelectorAll('.pw-svg-node').forEach((n) => {
+      n.setAttribute('stroke', n.getAttribute('data-state') === id ? '#0284c7' : 'none');
+      n.setAttribute('stroke-width', '2');
+    });
+  }
+
+  function renderMeasuresPanel(id) {
+    (V.measures || []).forEach((m) => {
+      const cell = document.querySelector('[data-measure-value="' + CSS.escape(m.name) + '"]');
+      if (!cell) { return; }
+      const v = (m.per_state || {})[id];
+      if (!v) { cell.textContent = 'not evaluated for this state (no geometry)'; return; }
+      if (v.error) { cell.textContent = v.error; return; }
+      const unit = v.unit ? ' ' + v.unit : '';
+      const verdict = v.verdict ? ' [' + v.verdict + ']' : '';
+      cell.textContent = (v.value == null ? '—' : v.value) + unit + verdict;
+    });
+  }
+
+  // ── embedded 3D cell viewer (item 2) — one model at a time, restyled on
+  // state switch; lifted from structure/detail.html.j2's boot() but without
+  // the input/relaxed/overlay + clip-plane machinery (out of scope here). ──
+  let molViewer = null;
+  const detailEl = document.getElementById('pw-detail');
+
+  function row(k, v) {
+    return `<div class="flex gap-2"><span class="text-slate-400 w-28 shrink-0">${k}</span>`
+      + `<span class="font-medium text-slate-700">${v}</span></div>`;
+  }
+
+  function showAtomDetail(a) {
+    if (!a || !detailEl) { return; }
+    let extra = '';
+    if (a.magmom != null) extra += row('magmom', esc(a.magmom));
+    if (a.oxidation != null) extra += row('oxidation', esc(a.oxidation));
+    if (a.hybridization) extra += row('hybridization', esc(a.hybridization));
+    detailEl.innerHTML = `
+      <div class="flex items-center gap-2 mb-1.5">
+        <span class="inline-block w-3.5 h-3.5 rounded-full border border-slate-300" style="background:${esc(a.color)};"></span>
+        <span class="font-semibold text-slate-800">${esc(a.element)}</span>
+        <code class="text-xs text-slate-500">${esc(a.label)}</code>
+        <span class="ml-auto text-[10px] uppercase tracking-wide text-slate-400">atom</span>
+      </div>
+      <div class="grid grid-cols-1 gap-0.5 text-xs">
+        ${row('fractional', a.frac.map((x) => x.toFixed(4)).join(', '))}
+        ${row('cartesian Å', a.cart.map((x) => x.toFixed(3)).join(', '))}
+        ${row('coordination', esc(a.coordination))}
+        ${row('constraint', esc(a.fixed))}
+        ${extra}
+      </div>`;
+  }
+
+  function showBondDetail(b) {
+    if (!detailEl) { return; }
+    detailEl.innerHTML = `
+      <div class="flex items-center gap-2 mb-1.5">
+        <span class="font-semibold text-slate-800">${esc(b.i)} — ${esc(b.j)}</span>
+        <span class="ml-auto text-[10px] uppercase tracking-wide text-slate-400">bond</span>
+      </div>
+      <div class="grid grid-cols-1 gap-0.5 text-xs">
+        ${row('length Å', num(b.length))}
+        ${row('order', esc(b.order))}
+        ${row('kind', esc(b.kind))}
+        ${row('provenance', esc(b.provenance))}
+      </div>`;
+  }
+
+  function drawCell(viewer, L) {
+    const corner = (i, j, k) => ({
+      x: i*L[0][0] + j*L[1][0] + k*L[2][0],
+      y: i*L[0][1] + j*L[1][1] + k*L[2][1],
+      z: i*L[0][2] + j*L[1][2] + k*L[2][2],
+    });
+    const bits = [[0,0,0],[1,0,0],[0,1,0],[0,0,1],[1,1,0],[1,0,1],[0,1,1],[1,1,1]];
+    for (let a = 0; a < bits.length; a++) {
+      for (let b = a + 1; b < bits.length; b++) {
+        const diff = bits[a].reduce((cnt, v, idx) => cnt + (v !== bits[b][idx] ? 1 : 0), 0);
+        if (diff === 1) {
+          viewer.addLine({ start: corner(...bits[a]), end: corner(...bits[b]), color: '0x9aa4b2', dashed: true });
+        }
+      }
+    }
+  }
+
+  function showState(id) {
+    if (!V.stateIds.includes(id)) { return; }
+    selected = id;
+    highlightState(id);
+    renderMeasuresPanel(id);
+
+    const emptyMsg = document.getElementById('pw-mol-empty');
+    if (!molViewer) { return; }
+    molViewer.removeAllModels();
+    molViewer.removeAllShapes();
+    const geom = V.stateGeoms[id];
+    if (!geom) {
+      if (emptyMsg) { emptyMsg.classList.remove('hidden'); }
+      if (detailEl) { detailEl.innerHTML = '<span class="text-slate-400 text-xs">no geometry linked for this state.</span>'; }
+      molViewer.render();
+      return;
+    }
+    if (emptyMsg) { emptyMsg.classList.add('hidden'); }
+    const model = molViewer.addModel(geom.xyz, 'xyz');
+    const colorMap = {};
+    geom.atoms.forEach((a) => { colorMap[a.element] = a.color.replace('#', '0x'); });
+    model.setStyle({}, { sphere: { scale: 0.30, colorscheme: { prop: 'elem', map: colorMap } } });
+    model.setClickable({}, true, (atom) => {
+      const k = atom.index != null ? atom.index : atom.serial;
+      showAtomDetail(geom.atoms[k]);
+    });
+    geom.bonds.forEach((b) => {
+      molViewer.addCylinder({
+        start: { x: b.start[0], y: b.start[1], z: b.start[2] },
+        end: { x: b.end[0], y: b.end[1], z: b.end[2] },
+        radius: 0.12, fromCap: 1, toCap: 1,
+        color: b.provenance === 'declared' ? '0x64748b' : '0xc2cad6',
+        clickable: true, callback: () => showBondDetail(b),
+      });
+    });
+    drawCell(molViewer, geom.lattice);
+    molViewer.zoomTo();
+    molViewer.render();
+  }
+
+  function stepState(delta) {
+    const ids = V.stateIds || [];
+    if (!ids.length) { return; }
+    let i = ids.indexOf(selected);
+    if (i < 0) { i = 0; }
+    i = (i + delta + ids.length) % ids.length;
+    showState(ids[i]);
+  }
+
+  function bootMol() {
+    if (typeof $3Dmol === 'undefined') { return setTimeout(bootMol, 60); }
+    const el = document.getElementById('pw-mol');
+    if (!el || !V.stateIds.length) { return; }
+    molViewer = $3Dmol.createViewer(el, { backgroundColor: 'white' });
+    showState(V.stateIds[0]);
+  }
+
+  document.addEventListener('click', (ev) => {
+    const t = ev.target.closest('[data-state]');
+    if (t) { showState(t.getAttribute('data-state')); }
+  });
+  const prevBtn = document.getElementById('pw-prev');
+  const nextBtn = document.getElementById('pw-next');
+  if (prevBtn) prevBtn.addEventListener('click', () => stepState(-1));
+  if (nextBtn) nextBtn.addEventListener('click', () => stepState(1));
+
+  // A diagram-render failure (e.g. a still-unanticipated bad graph shape)
+  // must never abort the whole IIFE — the stepper + 3D viewer boot below
+  // are the graceful-degradation path (item 2) and have to run regardless.
+  try {
+    renderDiagram();
+  } catch (err) {
+    console.error('pathway diagram render failed', err);
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', bootMol);
+  } else { bootMol(); }
+})();
+</script>
 {% endblock %}

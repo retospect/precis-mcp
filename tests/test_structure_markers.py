@@ -17,10 +17,10 @@ from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.handlers.structure import StructureHandler
-from precis.structure import apply_ops, evaluate_measure
+from precis.structure import anchor_identity_verified, apply_ops, evaluate_measure
 from precis.structure.cell import Cell
 from precis.structure.ops import OpError
-from precis.structure.scene import Scene
+from precis.structure.scene import Measure, Scene
 
 _PD = json.dumps(
     {
@@ -123,6 +123,89 @@ def test_dangling_measure_after_vacancy():
     value, verdict = evaluate_measure(scene, scene.measures[0])
     assert verdict == "dangling"
     assert "missing atoms" in value["error"]
+
+
+# ── min_distance + anchor-identity guard (pathway-explorer proposal) ────────
+
+
+def _slab_scene() -> Scene:
+    """A repeated-Pd slab + a singleton N + a singleton O — for min_distance /
+    anchor-identity tests. aPd1@[0,0,0], aPd2@[0.03,0,0] (0.3 Å apart),
+    aPd3@[0.5,0.5,0] (far); aN1@[0.01,0,0] sits 0.1 Å from aPd1, 0.2 Å from
+    aPd2; aO1 is far from everything and unique.
+    """
+    scene = Scene(cell=Cell(np.eye(3) * 10.0, (True, True, False)))
+    apply_ops(
+        scene,
+        [
+            {"op": "add_atom", "element": "Pd", "frac": [0.0, 0.0, 0.0]},
+            {"op": "add_atom", "element": "Pd", "frac": [0.03, 0.0, 0.0]},
+            {"op": "add_atom", "element": "Pd", "frac": [0.5, 0.5, 0.0]},
+            {"op": "add_atom", "element": "N", "frac": [0.01, 0.0, 0.0]},
+            {"op": "add_atom", "element": "O", "frac": [0.5, 0.0, 0.5]},
+        ],
+    )
+    return scene
+
+
+def test_min_distance_basic_correctness():
+    scene = _slab_scene()
+    m = Measure(kind="min_distance", operands=["aN1"], element="Pd")
+    value, verdict = evaluate_measure(scene, m)
+    # aN1 is 0.1 Å from aPd1 (nearest), 0.2 Å from aPd2 — nearest wins
+    assert value["value"] == pytest.approx(0.1, abs=1e-6)
+    assert value["unit"] == "Å"
+    assert verdict is None  # no goal/direction set → nothing to grade
+
+
+def test_min_distance_excludes_anchor_when_anchor_is_target_element():
+    scene = _slab_scene()
+    # anchor itself is a Pd — the nearest *other* Pd must win, never 0 Å (self)
+    m = Measure(kind="min_distance", operands=["aPd1"], element="Pd")
+    value, verdict = evaluate_measure(scene, m)
+    assert value["value"] == pytest.approx(0.3, abs=1e-6)
+
+
+def test_min_distance_missing_element_is_graceful():
+    scene = _slab_scene()
+    # element unset entirely
+    m_unset = Measure(kind="min_distance", operands=["aN1"])
+    value, verdict = evaluate_measure(scene, m_unset)
+    assert verdict == "dangling"
+    assert "element" in value["error"]
+
+    # element set but no such atoms are present in the scene
+    m_empty = Measure(kind="min_distance", operands=["aN1"], element="Zn")
+    value, verdict = evaluate_measure(scene, m_empty)
+    assert verdict == "dangling"
+    assert "Zn" in value["error"]
+
+
+def test_min_distance_missing_anchor_is_dangling():
+    scene = _slab_scene()
+    m = Measure(kind="min_distance", operands=["aXx99"], element="Pd")
+    value, verdict = evaluate_measure(scene, m)
+    assert verdict == "dangling"
+    assert "missing atoms" in value["error"]
+
+
+def test_anchor_identity_verified_singleton_vs_repeated():
+    scene = _slab_scene()
+    # min_distance anchored on the singleton N — drift-safe
+    n_min_dist = Measure(kind="min_distance", operands=["aN1"], element="Pd")
+    assert anchor_identity_verified(scene, n_min_dist) is True
+
+    # a plain distance anchored on a repeated-element (Pd) atom — unverified
+    pd_dist = Measure(kind="distance", operands=["aPd1", "aN1"])
+    assert anchor_identity_verified(scene, pd_dist) is False
+
+    # both anchors singleton (N, O) — verified
+    no_dist = Measure(kind="distance", operands=["aN1", "aO1"])
+    assert anchor_identity_verified(scene, no_dist) is True
+
+    # a dangling anchor is conservatively unverified, not an error
+    dangling = Measure(kind="min_distance", operands=["aXx99"], element="Pd")
+    assert anchor_identity_verified(scene, dangling) is False
 
 
 # ── DB round-trip via the handler ────────────────────────────────────────

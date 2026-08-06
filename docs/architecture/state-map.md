@@ -2327,6 +2327,34 @@ The master kinds table lives in the `precis-overview` skill.
   `paper-of` edge exists, log/frontier/gaps), a "happening now" recent-log
   callout, dossier narrative+ledger, logbook tail, frontier/gaps panels, and a
   servers-lite kind-count footer replacing the old raw-handle-link dump.
+  **Pathway detail = interactive reaction explorer**
+  (`docs/proposals/reaction-pathway-explorer.md`, precis_web-only, no
+  migration): `/refs/pathway/{id}`
+  (`src/precis_web/routes/refs.py::_pathway_detail`,
+  `templates/refs/pathway_detail.html.j2`) renders (1) an inline SVG energy
+  diagram built client-side from `meta.graph` (JS-side topological layout,
+  reaction vs supply/branch edges, TS humps + Ea labels, ±1σ bands,
+  low-confidence nodes/edges marked red+⚠ — layout logic duplicated from
+  catpath's `draw_profile`, catpath owns data/precis owns presentation), (2)
+  a per-state 3Dmol cell viewer (reusing `routes/structure.py::_geom_payload`)
+  fed by inlined geometry blobs for each `meta.structure_refs` entry, with a
+  state list + prev/next stepper, and (3) per-state measures from the
+  optional `refs.meta.measures` JSONB list (`[{name, op, atoms, element?}]`,
+  parsed by `refs.py::_pathway_measures` into ad-hoc
+  `precis.structure.scene.Measure`s, evaluated per state via
+  `precis.structure.evaluate_measure` — `struct_measures` persistence is
+  **not** touched at the pathway level). A new evaluator-only
+  `min_distance` op (`src/precis/structure/measures.py::_min_distance`,
+  `Measure.element`) reads "labeled anchor → nearest atom of a named
+  element" — identity-free by construction, since the target side names no
+  atom. `measures.py::anchor_identity_verified` guards the older
+  `distance`/`angle` ops: an anchor on a scene-singleton element renders
+  solid/verified; one on a repeated element (label order isn't guaranteed
+  stable across `scene_from_ase`'s per-state ASE ordering) renders dashed
+  with "label-order identity — unverified across states." Degrades cleanly
+  without `meta.structure_refs` (diagram still renders; viewer shows "no
+  geometry linked"). Motion/animation (frame playback, true cross-state atom
+  tracking) is the unbuilt sibling `docs/proposals/pathway-frame-capture.md`.
 - **`llm`** — the model catalog (design-of-record `docs/proposals/llm-catalog.md`;
   slice 1 **live, read-only, ships dark**). Turns model choice from hardcoded
   constants (`router._TIER_MODEL` + `meta.llm_tier=opus|sonnet|haiku|local`) into a

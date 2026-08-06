@@ -81,6 +81,20 @@ for one candidate's whole landscape.
 - `view='warnings'` — where to distrust the numbers (non-converged NEB, bad geometry).
 - `view='methods'` — the citable methods paragraph; `view='config'` — the snapshot.
 
+## See the reaction — the interactive web explorer
+
+`/refs/pathway/{id}` (web, not an MCP verb) renders a clickable energy
+diagram (TS humps, Ea labels, ±1σ bands, low-confidence marked) plus a
+per-state 3D cell viewer stepping through the linked `structure` refs. When
+the pathway carries `refs.meta.measures` (`[{name, op, atoms, element?}]`),
+each state's measures overlay: `min_distance` (a labeled atom → nearest atom
+of an `element`) is identity-safe across states by construction; a plain
+`distance`/`angle` anchored on an atom whose element repeats in the slab
+renders flagged "unverified across states" (label order isn't guaranteed
+stable state-to-state). `refs.meta.measures` has no writer yet — no
+`put`/`edit` verb sets it; today it's a manually-authored JSONB field, not
+something a call from here produces.
+
 ## Moves worth having — a menu, not a recipe
 
 Compose these as the situation calls for. They're how a careful chemist works,

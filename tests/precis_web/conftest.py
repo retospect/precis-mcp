@@ -21,12 +21,15 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any
 
+import numpy as np
 import pytest
 
 pytest.importorskip("fastapi")
 
 from fastapi.testclient import TestClient
 
+from precis.structure.cell import Cell
+from precis.structure.scene import Scene
 from precis_web.app import create_app
 from precis_web.config import WebConfig
 from tests._fakes import FakeStore as _FakeStoreBase
@@ -166,6 +169,14 @@ class FakeStore(_FakeStoreBase):
         #: ref_ids lists passed to requeue_stubs_for_fetch(ref_ids=...)
         #: (the single-paper Fetch's queue-jump call).
         self.requeue_ref_id_calls: list[list[int]] = []
+        #: {ref_id: Scene} — the pathway-explorer's per-state ``structure_load``
+        #: fake (tests/precis_web/test_pathway_detail.py builds real
+        #: ``precis.structure.Scene`` objects via ``apply_ops``, same as the
+        #: real store's in-memory working object, ADR 0043 §12). A ref_id not
+        #: seeded here degrades the same as a real store's dangling structure
+        #: ref — the route treats a ``structure_load`` failure as "no
+        #: geometry linked", never a 500.
+        self.structure_scenes: dict[int, Any] = {}
         self.todos = [
             make_ref(id=1, kind="todo", title="Build the thing", parent_id=None),
             make_ref(id=2, kind="todo", title="Draft the spec", parent_id=1),
@@ -530,6 +541,20 @@ class FakeStore(_FakeStoreBase):
 
     def figure_canvas_ref(self, chunk_id):
         return None
+
+    def structure_load(self, ref_id: int):
+        """The pathway explorer's geometry source — a canned ``Scene`` from
+        ``self.structure_scenes``, mirroring the real ``Store.structure_load``
+        return shape (``(Scene, {label: atom_id})``). An unseeded ref_id
+        returns an atom-less ``Scene`` (empty ``atoms``/``bonds``/``measures``)
+        rather than raising — that's what the real store degrades to for a
+        ref with no ``struct_atoms`` rows (missing / not-yet-fetched), not a
+        ``KeyError``. The pathway route's "no geometry linked" branch (AC4)
+        is keyed on ``not scene.atoms``, so this fake has to hit that same
+        branch, not the (still-defensive) exception handler around the call."""
+        return self.structure_scenes.get(ref_id) or Scene(
+            cell=Cell(np.eye(3) * 10.0)
+        ), {}
 
     def get_ref(self, *, kind: str, id):
         for r in (

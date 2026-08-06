@@ -64,6 +64,11 @@ class Measure:
     * ``kind`` in ``{distance, angle, coordination, bond_length}`` — a **measure**
       over ``operands`` (atom labels) with an optional graded ``goal`` +
       ``direction`` (min|max|target) + ``strength`` (hard|soft|gauge).
+    * ``kind='min_distance'`` — an **identity-free** measure: a single labeled
+      anchor in ``operands`` to the nearest atom of ``element`` (the target
+      side names no atom, so it needs no cross-state identity guarantee).
+      Ad-hoc, evaluator-only (§ pathway-measure reuse layer) — never built by
+      the ``measure`` op / ``struct_measures`` persistence path.
 
     Anchors are held as **atom labels** (stable, never-recycled — §12), never
     row ids, so a marker survives the retire-and-reinsert of an edit.
@@ -77,6 +82,7 @@ class Measure:
     goal: dict[str, float] | None = None  # e.g. {'target': 2.4, 'tol': 0.1}
     strength: str = "gauge"  # hard | soft | gauge
     for_: str | None = None  # purpose / reason ("for")
+    element: str | None = None  # min_distance target element (e.g. 'Pd')
 
 
 @dataclass
