@@ -148,21 +148,6 @@ the sibling feature it overlaps.
   patch or keeps rejecting. Test scaffold existed (dropped
   `test_finding_edit_dry_run_previews_pick_and_does_not_write`).
 
-- **Taproot evidence-edge read-side multi-handle (`source_handles`) deferred** ·
-  Status: open · Severity: polish · Owner: `src/precis/taproot/seniority.py`
-  (`derive_evidence` **and** the new `derive_evidence_bulk`) + `utils/refeye.py`
-  + `precis_web/claim_render.py` + `templates/claim/view.html.j2`. This is the
-  read-side half of the existing "Evidence edge records one grounding pointer"
-  item: the write side (`f899551d`) already lands two `links` rows for a paper
-  grounding one claim via two passages; my read-side fix (widen `EvidenceEdge`
-  to a `source_handles` list so both surface) collided with the sibling's
-  clickable-grounding render (single `source_handle` → `/c/<handle>` anchor) and
-  its **bulk** derivation path (`derive_evidence_bulk`, smartdraft's hot path).
-  Redo: widen to `source_handles` in **both** the single-hub and bulk derivation
-  functions, and render **each** handle in the list clickable (combine with the
-  sibling's `source_is_chunk` parse), not just the first. The conn= threading
-  half of that cleanup shipped fine.
-
 ---
 
 ## 🔧 provenance flag — make `corrected` / `expression_of_concern` *do* something downstream
@@ -533,28 +518,6 @@ grounded (291 at conf≥0.7 + 115 medium 0.5–0.7), each tagged
 - **Taproot completeness inflow #3 — full corpus backfill (Phase 5)** · Status: deferred ·
   Severity: feature (slow-burn) · The exhaustive papers × claims pass. Subsumes #1/#2 at
   scale once their per-item mechanics are proven; keep as the batch backstop. Slow burn.
-- **Evidence edge records one grounding pointer when a paper grounds a claim
-  via >1 passage** · Status: open · Severity: polish · Owner:
-  `src/precis/taproot/authoring.py::seed_claim_hub` +
-  `taproot/seniority.py::EvidenceEdge` + `utils/refeye.py`. Two supporters that
-  collapse to the same `(paper, hub, role)` keep only the first `source_handle`
-  (now surfaced via the return's `collapsed`, not silently dropped — that was
-  the review fix). To record both passages, widen the edge meta to a
-  `source_handles` list and teach `EvidenceEdge`/the ring's Claims render to
-  show a list. · Test: seed one paper as two-passage supporter of one claim →
-  both grounding handles survive on the single edge.
-  **Partial progress (`f899551d`):** `seed_claim_hub`'s dedup key now includes
-  the grounding chunk ord (`(paper, hub, role, chunk)`, not just
-  `(paper, hub, role)`), so two distinct-passage supporters write two distinct
-  `links` rows instead of collapsing at write-time (see
-  `test_two_passages_of_one_paper_are_two_edges`) — the write-side data loss
-  this item opened with is gone. Still open: `seniority.py::derive_evidence`
-  groups evidence rows into a `dict` keyed by `src_ref_id`
-  (`support_edges.setdefault(...)`), so it still folds those two now-distinct
-  edges back down to one `EvidenceEdge` at read time — the Claims render still
-  shows only one grounding handle per paper. The remaining fix is exactly the
-  read-side half this item names (`EvidenceEdge`/`refeye.py` render a list, or
-  `derive_evidence` stops deduping by ref_id alone).
 
 ## Residuals (2026-07-30 session — gr172886 ship)
 
