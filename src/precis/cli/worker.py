@@ -241,6 +241,7 @@ _REF_PASS_PRIORITY: dict[str, PassBand] = {
     "_nursery_pass": PassBand.HEALTH,
     "_heartbeat_pass": PassBand.HEALTH,
     "_chase_pass": PassBand.BACKGROUND,
+    "_bib_parse_pass": PassBand.BACKGROUND,
     "_inbound_chase_pass": PassBand.BACKGROUND,
     "_hub_refine_pass": PassBand.BACKGROUND,
     "_chase_trigger_pass": PassBand.BACKGROUND,
@@ -357,6 +358,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "embed",
             "summarize",
             "chunk_keywords",
+            "bib_parse",
             "chase",
             "fetch",
             "gp_fetch",
@@ -651,6 +653,53 @@ def run(args: argparse.Namespace) -> None:
                 )
 
             ref_passes.append(_chunk_keywords_pass)
+
+        # bib_parse — per-paper bibliography parse + DOI match
+        # (docs/proposals/citation-bib-parse.md). Default-ON like
+        # chunk_keywords above: the `meta.bib_parse_version` predicate
+        # converges, so normal cadence drains the backlog; `--only
+        # bib_parse` is the fast-path burst backfill. SMALL-tier LLM via
+        # the router (ADR 0046 dispatch seam) for the messy-line parse
+        # fallback + close-candidate Crossref adjudication; Crossref
+        # itself goes through `safe_get` (SSRF guard), not this client.
+        if _register("bib_parse"):
+            from precis.utils.llm.router import DispatchClient as _BpDispatchClient
+            from precis.utils.llm.router import Tier as _BpTier
+            from precis.workers.runner import BatchResult as _BpBatchResult
+
+            # A ~20-entry parse-fallback batch (structured JSON per line) or a
+            # candidate-adjudication reply is far larger than the 220-token
+            # 2-part-summary the SMALL default caps at — that budget truncates
+            # the JSON mid-object so it never parses (every batch "fails").
+            # Pin the room via `max_tokens`, same as `paper_glossary` below;
+            # env-overridable.
+            _bp_client = _BpDispatchClient(
+                tier=_BpTier.SMALL,
+                model=os.environ.get("PRECIS_BIB_PARSE_MODEL") or "summarizer",
+                max_tokens=int(os.environ.get("PRECIS_BIB_PARSE_MAX_TOKENS") or 2000),
+                source="bib_parse",
+                log_call=True,
+                log_blobs=False,
+            )
+            _bp_mailto = os.environ.get("PRECIS_UNPAYWALL_EMAIL") or ""
+
+            def _bib_parse_pass(batch_size: int) -> _BpBatchResult:
+                from precis.workers.bib_parse import run_bib_parse_pass
+
+                r = run_bib_parse_pass(
+                    store,
+                    client=_bp_client,
+                    batch_size=min(batch_size, 4),
+                    mailto=_bp_mailto,
+                )
+                return _BpBatchResult(
+                    handler="bib_parse",
+                    claimed=r["claimed"],
+                    ok=r["ok"],
+                    failed=r["failed"],
+                )
+
+            ref_passes.append(_bib_parse_pass)
 
         # Finding-chase pass — same sibling-worker pattern, but for
         # STATUS:tracing/acquiring findings. Default-off LLM hooks via

@@ -1367,6 +1367,51 @@ vs "is what I cited true?").
   candidates into the draft — FIND + WORKSPACE only today, no
   auto-weave.
 
+## Bibliography parse + match (`paper_bib_entries`)
+
+Design: `docs/proposals/citation-bib-parse.md` (base slice; siblings
+`citation-sources-tab.md`, `citation-taproot-resolve.md` are
+`blocked-by` this). Turns each held paper's already-ingested numbered
+bibliography text into structured, DOI-matched rows — the ground truth
+`s2_neighbors` (S2's own reference list, sometimes narrow/incomplete)
+doesn't carry: no marker numbers, and title-less ACS/Wiley-style
+entries S2 itself may miss.
+
+- **`bib_parse` worker pass** (`workers/bib_parse.py`, migration
+  `0108_paper_bib_entries.sql`) — `_SYS`-lane, default-ON like
+  `chunk_keywords`/`fetch`; the `refs.meta.bib_parse_version` predicate
+  converges (a claimed paper is stamped even when it has no
+  bibliography, and is never re-claimed at the same version), so normal
+  worker cadence drains the backlog gradually — `--only bib_parse` is
+  the fast-path burst backfill.
+- **Detection is content-based, not `chunk_kind`** — a chunk qualifies
+  when most of its non-empty lines look like `- [N] ...`
+  (`chunk_kind='references'` chunks always qualify); bibliography text
+  commonly lands as `chunk_kind='paragraph'` despite the ingest retag
+  pass (a pre-existing heuristic-miss gap, observed here, not fixed
+  here). Entries are split on the `[N]` markers and deduped by marker
+  (chunk-overlap duplicates keep the first occurrence).
+- **Field extraction** — regex fast path for the ACS/Wiley `authors,
+  Journal YEAR, vol, page` shape; messy lines fall back to a SMALL-tier
+  LLM batch (ADR 0047 cascade philosophy), via the router
+  (`llm.chain.small`).
+- **Matcher** (decided policy) — local step is **DOI-exact only**
+  against the paper's own `s2_neighbors` rows (no fuzzy/tuple matching
+  — `s2_neighbors` has no authors/journal columns to compare against);
+  everything else goes to a Crossref bibliographic query
+  (`query.bibliographic=<raw_text>`) via `safe_get` (SSRF guard,
+  backoff), with per-entry negative memoization (`match_conf` doubles
+  as the "resolved" marker for a genuine no-candidates answer, so a
+  later pass doesn't re-query until `parse_version` bumps — a Crossref
+  *query failure*, network/outage, is deliberately NOT memoized this
+  way: `match_conf` stays NULL so the entry is retried, not permanently
+  poisoned by an outage window) and SMALL-LLM adjudication between two
+  close-scored Crossref candidates. A matched `doi` resolves
+  `held_ref_id` against `ref_identifiers`.
+- **No consumer yet** — Sources-tab `[N]` badges + taproot
+  citation-following are the sibling, `blocked-by` slices; this base
+  slice produces the table only.
+
 ## Chunk-tag classifier (ADR 0047 cascade)
 
 Controlled chunk/paper tags written by a measured **cascade**, not a

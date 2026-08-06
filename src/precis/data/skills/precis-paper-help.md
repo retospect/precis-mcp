@@ -309,6 +309,18 @@ citation gap: the held review's reference list almost always contains
 the primary source you're missing. (Cached 30 days; capped at 50 rows
 per hop.)
 
+## Parsed bibliography table (`paper_bib_entries`, base slice — no consumer yet)
+
+A worker pass (`bib_parse`) parses every held paper's numbered
+bibliography (`- [126] ...`) into `paper_bib_entries` rows — one per
+marker, with `authors`/`journal`/`year`/`volume`/`first_page` extracted
+and a `doi` resolved where possible (local `s2_neighbors` DOI-exact
+match, else a Crossref bibliographic query; `held_ref_id` set when we
+hold the cited paper). This is the base slice
+(`docs/proposals/citation-bib-parse.md`) — it produces the table only,
+with **no `get`/`search` surface yet**: the Sources-tab-badges and
+taproot-citation-following consumers are separate, blocked-by slices.
+
 ## See also
 
 ```python

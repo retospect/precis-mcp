@@ -185,6 +185,28 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-search-help",
     ),
     ServiceSpec(
+        # docs/proposals/citation-bib-parse.md: parses each held paper's
+        # bibliography (numeric-bracket entries) into `paper_bib_entries`
+        # rows and matches each to a DOI (local `s2_neighbors` exact match,
+        # else a Crossref bibliographic query) + `held_ref_id`. Default-ON
+        # like `chunk_keywords`/`fetch` above — the `meta.bib_parse_version`
+        # predicate converges (a claimed paper is stamped and never
+        # re-claimed at the same version) so normal cadence drains the
+        # backlog gradually; `--only bib_parse` is the fast-path burst.
+        name="bib_parse",
+        label="Bibliography parse + match",
+        category="discovery",
+        kind=ServiceKind.PASS,
+        default_profiles=_SYS,
+        ref_pass=True,
+        uses_model=True,
+        uses_external=("crossref",),
+        cost_sources=("bib_parse",),
+        one_line="Parse each paper's bibliography into paper_bib_entries, "
+        "DOI-matched (local s2_neighbors, else Crossref).",
+        doc_skill="precis-overview",
+    ),
+    ServiceSpec(
         name="chase",
         label="Finding chase",
         category="discovery",

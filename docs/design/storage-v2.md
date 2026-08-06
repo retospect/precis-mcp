@@ -822,6 +822,53 @@ fetch path. `held_ref_id` resolved against `ref_identifiers` at write
 time; NULL means not (yet) held. No `arxiv` column — S2's
 reference/citation rows never carry one.
 
+### `paper_bib_entries` table — parsed + DOI-matched bibliography
+
+Migration `0108_paper_bib_entries.sql`
+(`docs/proposals/citation-bib-parse.md`, base slice). The `bib_parse`
+worker pass (`workers/bib_parse.py`) turns each held paper's numbered
+bibliography text (already-ingested chunk lines like `- [126] ... 2020,
+12, 360.`) into structured rows — `s2_neighbors`'s sibling, keyed by
+citation *marker* rather than S2 list position:
+
+```sql
+CREATE TABLE paper_bib_entries (
+  id            bigint      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  ref_id        bigint      NOT NULL REFERENCES refs (ref_id) ON DELETE CASCADE,
+  marker        int         NOT NULL,   -- the [N] citation number
+  raw_text      text        NOT NULL,   -- the citation text, marker prefix stripped
+  authors       text,
+  journal       text,
+  year          int,
+  volume        text,
+  first_page    text,
+  doi           text,       -- resolved identity, NULL until/unless matched
+  s2_id         text,
+  held_ref_id   bigint      REFERENCES refs (ref_id) ON DELETE SET NULL,
+  parse_conf    real,
+  match_conf    real,       -- also the matcher's memoization marker (non-NULL = resolved,
+                             -- matched or genuinely not found; NULL after a query FAILURE
+                             -- (network/outage) so a later attempt retries it)
+  parse_version int         NOT NULL,
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (ref_id, marker)
+);
+```
+
+Detection is content-based (a chunk qualifies when most of its
+non-empty lines look like `- [N] ...`, not by `chunk_kind` — bibliography
+text commonly lands as `chunk_kind='paragraph'`); entries are extracted
+by regex (the ACS/Wiley `authors, Journal YEAR, vol, page` shape) with a
+SMALL-tier LLM batch fallback for lines that don't fit. Matching is
+local DOI-exact against the paper's own `s2_neighbors` rows first, else
+a Crossref bibliographic query (`safe_get`, backoff, per-entry negative
+memoization via `match_conf`). `refs.meta.bib_parse_version` is the
+paper-level convergence stamp (always written, even for a
+no-bibliography paper) — mirrors `s2_neighbors`' TTL discipline without
+sharing its refresh path. No consumer yet (Sources-tab badges + taproot
+citation-following are separate, blocked-by slices) — this migration
+only produces the table.
+
 ### Sentence splitter + dehyphenation + chunker version
 
 `precis.utils.sentences.split_sentences` wraps pysbd 0.3.4 with
