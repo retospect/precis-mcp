@@ -344,13 +344,31 @@ Status: open · Severity: polish · Owner: `src/precis/taproot/backfill.py` · T
   drops its contradicting partials while 176272/176360 keep theirs. Runbook:
   `docs/runbooks/taproot-chase-enablement.md`.
 
-- **Enable hub-refine + chase-trigger in prod (Phase 2)** · Status: deferred ·
+- **🚧 BLOCKER — taproot passes can't bootstrap: agent-worker embedder never warms** ·
+  Status: open · Severity: correctness (blocks all enablement) · gripe 185401.
+  Enablement was attempted live 2026-08-02 (`chase_trigger` prio 1 on melchior,
+  8 cycles) and rolled back: `claim_embeddings` stayed 0 because the
+  **agent** worker (`com.precis.worker-agent`, `precis worker --profile agent`,
+  no `--embedder` flag) builds a default **in-process bge-m3** that nothing
+  warms — the `embed` pass is `_SYS`-only (registry.py:133-137) and the worker
+  never calls `warmup()`, so `embed_query` fast-fails → `None` every cycle,
+  masked as `failed=0`. The runbook targeted the wrong process (system worker +
+  the `com.precis.embedder` service are warm; the agent worker is not). Fix
+  (recommended): resolve these passes' embedder as **remote** to the existing
+  `com.precis.embedder` service (avoids a 2nd in-process load → OOM risk on
+  melchior, cf. `worker-agent-silent-outage`); then correct the runbook. Also
+  clear/re-sweep the 14 `CHASETRIG` chunk_tags mis-marked against the empty
+  index (bump `CHASETRIG_VERSION` or delete them). **The two items below are
+  gated on this.**
+
+- **Enable hub-refine + chase-trigger in prod (Phase 2)** · Status: BLOCKED (gripe 185401) ·
   Severity: feature. `src/precis/workers/hub_refine.py` + `chase_trigger.py`
   ship dark (`PRECIS_TAPROOT_REFINE_ENABLED=0`,
   `PRECIS_TAPROOT_CHASE_TRIGGER_ENABLED=0`). **Enablement runbook:
   `docs/runbooks/taproot-chase-enablement.md`** (single-host `service_config`
   override, floor-tuning, one-time re-verify wave, bounds/rollback). NB the
   flip is NOT a plain role-env redeploy — see the single-instance note below.
+  **Cannot proceed until the embedder-warm blocker above is fixed.**
   Remaining v2 follow-ups (`TAPROOT:saturated` long-backoff after K empty
   passes, paper-version memo invalidation) live in
   `docs/proposals/taproot-hub-refine.md`'s "Out of scope" section, not here.
