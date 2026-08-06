@@ -22,6 +22,7 @@ from precis.store.migrate import Migrator
 from precis.store.store import SEMANTIC_DISTANCE_FLOOR, Store
 from precis.store.types import (
     ActorSlug,
+    BibEntry,
     Block,
     BlockInsert,
     CacheEntry,
@@ -39,6 +40,7 @@ from precis.store.types import (
 __all__ = [
     "SEMANTIC_DISTANCE_FLOOR",
     "ActorSlug",
+    "BibEntry",
     "Block",
     "BlockInsert",
     "CacheEntry",

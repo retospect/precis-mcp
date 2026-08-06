@@ -489,6 +489,31 @@ class S2Neighbor:
 
 
 @dataclass(frozen=True, slots=True)
+class BibEntry:
+    """A row from ``paper_bib_entries`` (migration 0108, citation-bib-parse)
+    — one parsed bibliography marker of a held paper's own reference list.
+    ``marker`` is the numeric bracket citation number (``[126]``);
+    ``doi``/``s2_id``/``held_ref_id`` are ``None`` until the ``bib_parse``
+    worker's identity matcher resolves them (``held_ref_id`` only ever set
+    once ``doi`` is). The Sources tab (citation-sources-tab) joins these
+    onto ``s2_neighbors`` rows to replace the positional badge with the
+    real bibliography marker; ``raw_text`` is the verbatim line, shown as
+    the display line for an entry S2 doesn't carry."""
+
+    ref_id: int
+    marker: int
+    raw_text: str
+    authors: str | None
+    journal: str | None
+    year: int | None
+    volume: str | None
+    first_page: str | None
+    doi: str | None
+    s2_id: str | None
+    held_ref_id: int | None
+
+
+@dataclass(frozen=True, slots=True)
 class Tag:
     """Unified tag representation across the three namespace tables."""
 

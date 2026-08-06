@@ -865,9 +865,15 @@ a Crossref bibliographic query (`safe_get`, backoff, per-entry negative
 memoization via `match_conf`). `refs.meta.bib_parse_version` is the
 paper-level convergence stamp (always written, even for a
 no-bibliography paper) — mirrors `s2_neighbors`' TTL discipline without
-sharing its refresh path. No consumer yet (Sources-tab badges + taproot
-citation-following are separate, blocked-by slices) — this migration
-only produces the table.
+sharing its refresh path. Read via `Store.list_bib_entries` (no
+insert/update accessor — `bib_parse` writes with raw SQL). Consumer: the
+paper reader's Sources tab (`docs/proposals/citation-sources-tab.md`)
+joins these onto `s2_neighbors`/held `cites` rows by `held_ref_id` ->
+`doi` -> `s2_id` to show the real `[N]` bracket marker and union in
+entries S2 doesn't carry — see
+`docs/architecture/state-map.md`'s Paper reader section. Taproot
+citation-following (`citation-taproot-resolve.md`) remains the other,
+still-`blocked-by` sibling.
 
 ### Sentence splitter + dehyphenation + chunker version
 

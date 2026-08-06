@@ -5,14 +5,25 @@
    routes/papers.py::_refs_row — self-contained (carries ``ref_id`` /
    ``direction``), so it needs no outer template context either way. The
    Fetch form's ``hx-target="closest .refs-row"`` swaps THIS div without
-   needing a synchronised DOM id. #}
+   needing a synchronised DOM id.
+
+   ``row.marker`` (citation-sources-tab, Sources tab only — never set on a
+   Cited row) is the real bibliography marker from a matched
+   ``paper_bib_entries`` row; bracket-styled (``[N]``) to distinguish it
+   from the plain positional ``row.n`` (``N.``) index it replaces.
+   ``row.raw_text`` is the verbatim parsed citation line for a union row
+   (a bib entry with no matching S2/held row) — shown instead of
+   ``row.title`` since a bare bib entry has no title field. #}
 <div class="refs-row border-b border-slate-100 py-1.5 text-xs last:border-0">
   <div class="flex items-baseline gap-1.5">
-    {% if row.n %}<span class="w-5 shrink-0 text-right text-slate-400">{{ row.n }}.</span>{% endif %}
+    {% if row.marker %}<span class="w-8 shrink-0 text-right text-slate-400">[{{ row.marker }}]</span>
+    {% elif row.n %}<span class="w-5 shrink-0 text-right text-slate-400">{{ row.n }}.</span>{% endif %}
     {% if row.held %}
     <a href="{{ row.url }}" class="font-medium text-sky-700 hover:underline">{{ row.title }}</a>
     {% if row.year %}<span class="text-slate-400">({{ row.year }})</span>{% endif %}
     <span class="rounded bg-emerald-50 px-1 text-[10px] text-emerald-700" title="held in this corpus">held</span>
+    {% elif row.raw_text %}
+    <span class="font-medium text-slate-800">{{ row.raw_text }}</span>
     {% else %}
     <span class="font-medium text-slate-800">{{ row.title }}</span>
     {% if row.year %}<span class="text-slate-400">({{ row.year }})</span>{% endif %}
@@ -39,6 +50,8 @@
       <input type="hidden" name="title" value="{{ row.title or '' }}" />
       <input type="hidden" name="year" value="{{ row.year or '' }}" />
       <input type="hidden" name="n" value="{{ row.n or '' }}" />
+      <input type="hidden" name="marker" value="{{ row.marker or '' }}" />
+      <input type="hidden" name="raw_text" value="{{ row.raw_text or '' }}" />
       <input type="hidden" name="direction" value="{{ row.direction }}" />
       <input type="hidden" name="return_to"
              value="/papers/{{ row.ref_id }}?tab={{ 'Sources' if row.direction == 'sources' else 'Cited' }}" />

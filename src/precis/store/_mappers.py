@@ -20,6 +20,7 @@ from typing import Any
 from psycopg import Connection
 
 from precis.store.types import (
+    BibEntry,
     Block,
     CacheEntry,
     Link,
@@ -493,6 +494,26 @@ def _row_to_s2_neighbor(row: tuple) -> S2Neighbor:
     )
 
 
+def _row_to_bib_entry(row: tuple) -> BibEntry:
+    """Map a ``paper_bib_entries`` row tuple in the order:
+    (ref_id, marker, raw_text, authors, journal, year, volume, first_page,
+    doi, s2_id, held_ref_id)
+    """
+    return BibEntry(
+        ref_id=row[0],
+        marker=row[1],
+        raw_text=row[2],
+        authors=row[3],
+        journal=row[4],
+        year=row[5],
+        volume=row[6],
+        first_page=row[7],
+        doi=row[8],
+        s2_id=row[9],
+        held_ref_id=row[10],
+    )
+
+
 __all__ = [
     "SEMANTIC_DISTANCE_FLOOR",
     "_AGENT_WRITABLE_PREFIXES",
@@ -504,6 +525,7 @@ __all__ = [
     "_SYSTEM_WRITABLE_PREFIXES",
     "_block_noise_clauses",
     "_pos_to_db",
+    "_row_to_bib_entry",
     "_row_to_block",
     "_row_to_cache_entry",
     "_row_to_link",

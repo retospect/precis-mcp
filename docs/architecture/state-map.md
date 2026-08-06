@@ -1454,9 +1454,11 @@ entries S2 itself may miss.
   poisoned by an outage window) and SMALL-LLM adjudication between two
   close-scored Crossref candidates. A matched `doi` resolves
   `held_ref_id` against `ref_identifiers`.
-- **No consumer yet** — Sources-tab `[N]` badges + taproot
-  citation-following are the sibling, `blocked-by` slices; this base
-  slice produces the table only.
+- **Consumer: the Sources tab** (`citation-sources-tab`, §Paper reader
+  above) reads it via `store.list_bib_entries` to show real `[N]` bracket
+  markers and union in entries S2 misses — see that section for the join/
+  ordering rule. Taproot citation-following (`citation-taproot-resolve`)
+  is the other sibling, still `blocked-by` this base slice.
 
 ## Chunk-tag classifier (ADR 0047 cascade)
 
@@ -2762,7 +2764,20 @@ The master kinds table lives in the `precis-overview` skill.
   gets a **Fetch** button (`POST /papers/{ref_id}/fetch-ref`) that mints
   or reuses a stub (`put(kind='paper', identifier=…)`) and scopes
   `requeue_stubs_for_fetch(ref_ids=[…], id_kinds=(doi, arxiv, s2))` to
-  jump the `fetch_oa` queue immediately. The Meta tab gained a
+  jump the `fetch_oa` queue immediately. **Sources is a merged view**
+  (citation-sources-tab, consumer of the `paper_bib_entries` base slice
+  below) — `store.list_bib_entries` (`store/_links_ops.py`) is joined
+  onto each S2/held row by `held_ref_id` -> `doi` -> `s2_id` (first match
+  wins); a matched row's positional index is **replaced** by its real
+  bracket marker (`[34]`, bracket-styled to distinguish it from the plain
+  `34.` positional badge kept on unmatched rows), and a parsed entry with
+  no S2/held row at all is unioned in as its own row (marker badge +
+  verbatim `raw_text` line, since a bare bib entry has no title). Row
+  order: marker-sorted bucket first (matched + union rows), then
+  unmatched S2 rows in S2 order, then unmatched held-but-not-in-S2 rows
+  appended last — a paper `bib_parse` hasn't reached yet renders byte-
+  identically to before (empty `paper_bib_entries` -> nothing matches ->
+  the original two-bucket rendering). The Meta tab gained a
   **reviewed** toggle (`POST /papers/{ref_id}/reviewed`) — the first
   writer of `refs.human_verified_at/by` for papers
   (`store.set_human_verified`/`clear_human_verified`); a metadata edit

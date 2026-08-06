@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import re
 from types import SimpleNamespace
 from typing import Any
 
@@ -33,6 +34,34 @@ def _nb(
     return SimpleNamespace(
         s2_id=s2_id, doi=doi, title=title, year=year, held_ref_id=held_ref_id
     )
+
+
+def _bib(
+    *,
+    marker: int,
+    raw_text: str = "raw citation text",
+    doi: str | None = None,
+    s2_id: str | None = None,
+    year: int | None = None,
+    held_ref_id: int | None = None,
+) -> SimpleNamespace:
+    """A minimal stand-in for ``store.types.BibEntry`` (citation-sources-
+    tab; only the fields the routes read: marker/raw_text/doi/s2_id/year/
+    held_ref_id)."""
+    return SimpleNamespace(
+        marker=marker,
+        raw_text=raw_text,
+        doi=doi,
+        s2_id=s2_id,
+        year=year,
+        held_ref_id=held_ref_id,
+    )
+
+
+#: A bracket marker badge exactly (``[34]``, not a Tailwind arbitrary-value
+#: class like ``text-[10px]``) — used to assert "no marker badges at all"
+#: without false-triggering on the template's own bracket classes.
+_MARKER_BADGE_RE = re.compile(r">\[\d+\]<")
 
 
 @pytest.fixture(autouse=True)
@@ -151,6 +180,146 @@ def test_sources_fragment_dedupes_held_row_against_s2_list(client, runtime) -> N
     resp = client.get("/papers/10/refs/sources")
     assert resp.status_code == 200
     assert resp.text.count("/papers/jones2025") == 1
+
+
+# ── Sources tab: paper_bib_entries merged view (citation-sources-tab) ───
+
+
+def test_sources_fragment_no_bib_entries_renders_positional_index_unchanged(
+    client, runtime
+) -> None:
+    """AC2: a paper with no ``paper_bib_entries`` rows renders the tab
+    exactly as today — positional ``n.`` badges, no bracket markers at
+    all. Regression pin for the citation-sources-tab merged view (this is
+    the pre-existing baseline the slice must not disturb when a paper
+    simply hasn't been claimed by ``bib_parse`` yet)."""
+    runtime.store.cites_out[10] = [SimpleNamespace(dst_ref_id=11)]
+    runtime.store.s2_neighbors[(10, "cites")] = [
+        _nb(s2_id="S2HELD", title="A held reference", year=2019, held_ref_id=11),
+        _nb(s2_id="S2EXT", doi="10.1/ext", title="An external reference", year=2021),
+    ]
+    resp = client.get("/papers/10/refs/sources")
+    assert resp.status_code == 200
+    assert "1." in resp.text
+    assert "2." in resp.text
+    assert _MARKER_BADGE_RE.search(resp.text) is None
+
+
+def test_sources_fragment_matched_row_shows_bracket_marker(client, runtime) -> None:
+    """AC1: a Sources row matched to a parsed ``paper_bib_entries`` row (by
+    ``doi``, here) shows the real bibliography marker, bracket-styled —
+    replacing its positional index."""
+    runtime.store.s2_neighbors[(10, "cites")] = [
+        _nb(s2_id="S2EXT", doi="10.1/ext", title="An external reference", year=2021),
+    ]
+    runtime.store.bib_entries[10] = [_bib(marker=34, doi="10.1/ext")]
+    resp = client.get("/papers/10/refs/sources")
+    assert resp.status_code == 200
+    assert ">[34]<" in resp.text
+    # The positional "1." badge is gone for this (now matched) row.
+    assert '<span class="w-5 shrink-0 text-right text-slate-400">1.</span>' not in (
+        resp.text
+    )
+
+
+def test_sources_fragment_matched_row_via_held_ref_id(client, runtime) -> None:
+    """A held row (S2 list elided, only reachable via the held ``cites``
+    link) matched via ``held_ref_id`` joins the marker bucket too — the
+    join order is held_ref_id -> doi -> s2_id, held_ref_id first."""
+    runtime.store.cites_out[10] = [SimpleNamespace(dst_ref_id=11)]
+    runtime.store.bib_entries[10] = [_bib(marker=8, held_ref_id=11)]
+    resp = client.get("/papers/10/refs/sources")
+    assert resp.status_code == 200
+    assert ">[8]<" in resp.text
+    assert "/papers/jones2025" in resp.text
+
+
+def test_sources_fragment_unmatched_entry_unions_in_with_raw_text(
+    client, runtime
+) -> None:
+    """AC1 + AC3 (dedup): a parsed entry with no matching S2/held row is
+    unioned in as a first-class row — marker badge, verbatim ``raw_text``
+    line, DOI link, and the Fetch button (it carries a DOI); a *matched*
+    entry never also shows up as a second, union row."""
+    runtime.store.s2_neighbors[(10, "cites")] = [
+        _nb(s2_id="S2EXT", doi="10.1/ext", title="An external reference", year=2021),
+    ]
+    runtime.store.bib_entries[10] = [
+        _bib(marker=5, doi="10.1/ext"),  # matches the S2 row above
+        _bib(  # matches nothing -> unioned in as its own row
+            marker=12,
+            doi="10.1/orphan",
+            raw_text="- [12] Z. Ali, ChemCatChem 2020, 12, 360.",
+        ),
+    ]
+    resp = client.get("/papers/10/refs/sources")
+    assert resp.status_code == 200
+    text = resp.text
+    # The matched row shows its marker, once.
+    assert text.count(">[5]<") == 1
+    # The union row: marker, verbatim raw_text, DOI link, Fetch button.
+    assert ">[12]<" in text
+    assert "Z. Ali, ChemCatChem 2020, 12, 360." in text
+    assert "https://doi.org/10.1/orphan" in text
+    assert "Fetch" in text
+    # Dedup: exactly two rows total (matched S2 row + union row) — the
+    # matched bib entry never *also* renders as a union row.
+    assert text.count('class="refs-row') == 2
+
+
+def test_sources_fragment_row_ordering_three_buckets(client, runtime) -> None:
+    """Ordering: rows with a real marker sort by marker number first
+    (union rows and matched S2/held rows alike); then unmatched S2 rows in
+    S2 order (today's positional badge, unchanged); then unmatched held-
+    but-not-in-S2 rows, appended last (today's placement)."""
+    runtime.store.s2_neighbors[(10, "cites")] = [
+        _nb(s2_id="S2A", doi="10.1/a", title="Row A", year=2001),  # stays unmatched
+        _nb(s2_id="S2B", doi="10.1/b", title="Row B", year=2002),  # matched
+    ]
+    runtime.store.cites_out[10] = [SimpleNamespace(dst_ref_id=11)]  # stays unmatched
+    runtime.store.bib_entries[10] = [
+        _bib(marker=50, doi="10.1/b"),  # matches Row B
+        _bib(marker=7, doi="10.1/union", raw_text="union row text"),  # union
+    ]
+    resp = client.get("/papers/10/refs/sources")
+    assert resp.status_code == 200
+    text = resp.text
+    # Marker bucket first, sorted by marker: [7] (union) before [50] (Row B).
+    i_marker7 = text.index(">[7]<")
+    i_marker50 = text.index(">[50]<")
+    i_row_a = text.index("Row A")
+    i_held = text.index("/papers/jones2025")
+    assert i_marker7 < i_marker50 < i_row_a < i_held
+    # Row A (unmatched S2 row) keeps its original positional "1." badge —
+    # byte-identical to what it would render without any bib entries.
+    assert '<span class="w-5 shrink-0 text-right text-slate-400">1.</span>' in text
+
+
+def test_sources_fragment_one_bib_entry_never_attaches_to_two_rows(
+    client, runtime
+) -> None:
+    """A single ``paper_bib_entries`` row must attach to at most ONE
+    display row, even when two distinct rows could each resolve to it via
+    a different key (stale/duplicate S2 data, or one row matched via
+    ``held_ref_id`` and another via ``doi`` to the same entry) — first-
+    match-wins per entry, not per row."""
+    runtime.store.s2_neighbors[(10, "cites")] = [
+        # Both neighbours resolve to the same held paper (duplicate S2
+        # rows) AND carry the same doi the one bib entry matches.
+        _nb(s2_id="S2X", doi="10.1/dup", title="Dup A", year=2001, held_ref_id=11),
+        _nb(s2_id="S2Y", doi="10.1/dup", title="Dup B", year=2002, held_ref_id=11),
+    ]
+    runtime.store.bib_entries[10] = [_bib(marker=9, doi="10.1/dup", held_ref_id=11)]
+    resp = client.get("/papers/10/refs/sources")
+    assert resp.status_code == 200
+    text = resp.text
+    # Exactly one row carries the marker badge.
+    assert text.count(">[9]<") == 1
+    # The other row keeps its plain positional badge instead.
+    assert (
+        '<span class="w-5 shrink-0 text-right text-slate-400">1.</span>' in text
+        or '<span class="w-5 shrink-0 text-right text-slate-400">2.</span>' in text
+    )
 
 
 # ── GET /papers/{id}/refs/cited ─────────────────────────────────────────
@@ -272,6 +441,50 @@ def test_fetch_ref_htmx_row_renders_held_when_stub_resolves_to_known_ref(
     assert resp.status_code == 200
     assert "/papers/jones2025" in resp.text
     assert "held" in resp.text
+
+
+def test_fetch_ref_htmx_row_keeps_marker_and_raw_text_for_union_row(
+    client, runtime
+) -> None:
+    """A union row (bib entry with no S2/held match — the DOI + Fetch
+    button case) posts its own bracket marker + verbatim raw_text as
+    hidden fields; the swapped-in row must keep both, not collapse to
+    "(untitled)" (the row has no ``title`` at all)."""
+    resp = client.post(
+        "/papers/10/fetch-ref",
+        data={
+            "doi": "10.1/orphan",
+            "marker": "12",
+            "raw_text": "- [12] Z. Ali, ChemCatChem 2020, 12, 360.",
+            "direction": "sources",
+        },
+        headers={"HX-Request": "true"},
+    )
+    assert resp.status_code == 200
+    assert ">[12]<" in resp.text
+    assert "Z. Ali, ChemCatChem 2020, 12, 360." in resp.text
+    assert "(untitled)" not in resp.text
+
+
+def test_fetch_ref_htmx_row_keeps_marker_for_matched_row(client, runtime) -> None:
+    """A matched S2 row's ``[N]`` badge must not silently downgrade to the
+    positional ``N.`` one after the reader's own Fetch click."""
+    resp = client.post(
+        "/papers/10/fetch-ref",
+        data={
+            "doi": "10.1/ext",
+            "title": "An external reference",
+            "n": "3",
+            "marker": "34",
+            "direction": "sources",
+        },
+        headers={"HX-Request": "true"},
+    )
+    assert resp.status_code == 200
+    assert ">[34]<" in resp.text
+    assert '<span class="w-5 shrink-0 text-right text-slate-400">3.</span>' not in (
+        resp.text
+    )
 
 
 def test_fetch_ref_non_htmx_redirects_to_tab(client, runtime) -> None:

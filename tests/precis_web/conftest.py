@@ -148,6 +148,12 @@ class FakeStore(_FakeStoreBase):
         #: each row a SimpleNamespace carrying s2_id/doi/title/year/
         #: held_ref_id (the S2Neighbor fields the routes read).
         self.s2_neighbors: dict[tuple[int, str], list[Any]] = {}
+        #: Canned parsed-bibliography rows (citation-sources-tab):
+        #: {ref_id: [row, ...]}, each row a SimpleNamespace carrying
+        #: marker/raw_text/doi/s2_id/year/held_ref_id (the BibEntry
+        #: fields the routes read). Empty by default — the "renders
+        #: exactly as today" no-op case (AC2).
+        self.bib_entries: dict[int, list[Any]] = {}
         #: Canned held incoming `cites` links (the "held" half of the
         #: Cited tab union): {ref_id: [Link-shaped row with src_ref_id]}.
         self.cites_in: dict[int, list[Any]] = {}
@@ -499,6 +505,13 @@ class FakeStore(_FakeStoreBase):
         # ``self.s2_neighbors``; empty by default (renders the "no
         # reference data" note).
         return list(self.s2_neighbors.get((ref_id, direction), []))
+
+    def list_bib_entries(self, ref_id):
+        # The Sources tab's parsed-bibliography read (citation-sources-
+        # tab) — tests seed ``self.bib_entries``; empty by default (no
+        # ``paper_bib_entries`` rows -> today's positional-index-only
+        # rendering, AC2).
+        return list(self.bib_entries.get(ref_id, []))
 
     def s2_neighbors_fresh(self, ref_id: int) -> bool:
         return ref_id in self.s2_neighbors_fresh_ids

@@ -309,17 +309,21 @@ citation gap: the held review's reference list almost always contains
 the primary source you're missing. (Cached 30 days; capped at 50 rows
 per hop.)
 
-## Parsed bibliography table (`paper_bib_entries`, base slice — no consumer yet)
+## Parsed bibliography table (`paper_bib_entries`)
 
 A worker pass (`bib_parse`) parses every held paper's numbered
 bibliography (`- [126] ...`) into `paper_bib_entries` rows — one per
 marker, with `authors`/`journal`/`year`/`volume`/`first_page` extracted
 and a `doi` resolved where possible (local `s2_neighbors` DOI-exact
 match, else a Crossref bibliographic query; `held_ref_id` set when we
-hold the cited paper). This is the base slice
-(`docs/proposals/citation-bib-parse.md`) — it produces the table only,
-with **no `get`/`search` surface yet**: the Sources-tab-badges and
-taproot-citation-following consumers are separate, blocked-by slices.
+hold the cited paper). `docs/proposals/citation-bib-parse.md` is the
+base slice that produces the table; it still has **no `get`/`search`
+MCP surface** — the web reader's paper **Sources tab** is the one
+consumer today (`citation-sources-tab.md`): a matched row's positional
+index is replaced by its real `[N]` bracket marker, and an entry S2
+doesn't carry is unioned in as its own row (verbatim `raw_text` line).
+Taproot in-prose citation-following (`citation-taproot-resolve.md`) is
+the remaining sibling slice.
 
 ## See also
 

@@ -34,6 +34,8 @@ from fastapi.responses import (
 from precis.backfill.citation_lens import ensure_s2_neighbors
 from precis.corpus_layout import corpus_pdf_dest
 from precis.errors import BadInput, NotFound
+from precis.identity import normalize_doi
+from precis.store.types import BibEntry
 from precis.utils.authors import author_names
 from precis.utils.embed_query import embed_query
 from precis.utils.handle_registry import format_handle
@@ -827,15 +829,27 @@ def _refs_row(
     doi: str | None,
     title: str | None,
     year: int | None,
+    marker: int | None = None,
+    raw_text: str | None = None,
 ) -> dict[str, Any]:
     """One Sources/Cited row. ``ref_id``/``direction`` identify the *owning*
     paper (this reader's own ref, not the neighbour) — carried on the row
     itself so the fetch-ref endpoint's single-row htmx response is
-    self-contained and needs no outer template context."""
+    self-contained and needs no outer template context.
+
+    ``marker``/``raw_text`` are citation-sources-tab additions (Sources
+    tab only — ``_cited_rows`` never passes them, so a Cited row's
+    rendering is untouched): ``marker`` is the real bibliography number
+    from a matched ``paper_bib_entries`` row, rendered bracket-styled
+    (``[N]``) in place of the positional ``n.`` badge; ``raw_text`` is the
+    verbatim parsed citation line for a union row (a bib entry with no
+    matching S2/held row) that has no ``title`` to fall back on."""
     base: dict[str, Any] = {
         "ref_id": ref_id,
         "direction": direction,
         "n": n,
+        "marker": marker,
+        "raw_text": raw_text,
         "s2_id": s2_id or None,
         "doi": doi or None,
         "year": year,
@@ -853,7 +867,12 @@ def _refs_row(
     base.update(
         {
             "held": False,
-            "title": title or "(untitled)",
+            # A union row (raw_text set, no title field on paper_bib_entries)
+            # has nothing to fall back to — leave title unset rather than
+            # stamping a spurious "(untitled)" the raw_text branch never
+            # displays anyway (it'd otherwise leak into the row's own
+            # hidden Fetch-form ``title`` field).
+            "title": title or (None if raw_text else "(untitled)"),
             "s2_url": (
                 f"https://www.semanticscholar.org/paper/{s2_id}" if s2_id else ""
             ),
@@ -867,54 +886,164 @@ def _refs_row(
     return base
 
 
+class _BibEntryIndex:
+    """Lookup structure over a paper's ``paper_bib_entries`` rows
+    (citation-sources-tab) for matching them onto ``s2_neighbors`` / held
+    ``cites`` rows — first match wins, in the order ``held_ref_id`` →
+    ``doi`` → ``s2_id`` (the proposal's join order). Built once per
+    :func:`_sources_rows` call; first-occurrence-wins on a duplicate key
+    (deterministic, mirrors the ``bib_parse`` worker's own dedup
+    discipline) since a real bibliography shouldn't produce one anyway.
+
+    ``match()`` is first-match-wins **per entry, across calls**: once an
+    entry has been attached to one row it's consumed and every later call
+    skips it (even via a different key) — without this, stale/duplicate S2
+    data (two neighbour rows sharing a DOI/held paper) or one row matching
+    via ``held_ref_id`` and another via ``doi`` to the *same* bib entry
+    would attach one marker to two display rows, showing the same
+    ``[N]`` badge twice."""
+
+    def __init__(self, entries: list[BibEntry]) -> None:
+        self._by_held: dict[int, BibEntry] = {}
+        self._by_doi: dict[str, BibEntry] = {}
+        self._by_s2: dict[str, BibEntry] = {}
+        self._consumed: set[int] = set()
+        for be in entries:
+            if be.held_ref_id is not None:
+                self._by_held.setdefault(be.held_ref_id, be)
+            nd = normalize_doi(be.doi)
+            if nd is not None:
+                self._by_doi.setdefault(nd, be)
+            if be.s2_id:
+                self._by_s2.setdefault(be.s2_id, be)
+
+    def _available(self, be: BibEntry | None) -> BibEntry | None:
+        if be is None or be.marker in self._consumed:
+            return None
+        return be
+
+    def match(
+        self,
+        *,
+        held_ref_id: int | None,
+        doi: str | None = None,
+        s2_id: str | None = None,
+    ) -> BibEntry | None:
+        be = None
+        if held_ref_id is not None:
+            be = self._available(self._by_held.get(held_ref_id))
+        if be is None:
+            nd = normalize_doi(doi)
+            if nd is not None:
+                be = self._available(self._by_doi.get(nd))
+        if be is None and s2_id:
+            be = self._available(self._by_s2.get(s2_id))
+        if be is not None:
+            self._consumed.add(be.marker)
+        return be
+
+
 def _sources_rows(store: Any, ref: Any) -> list[dict[str, Any]]:
-    """This paper's outgoing bibliography, S2 order (approximate), unioned
-    with held outgoing ``cites`` links — some publishers elide the S2
-    reference list entirely (e.g. Elsevier), and the held edges are then
-    all we can show."""
+    """This paper's outgoing bibliography — our merged view (citation-
+    sources-tab): the real bibliography marker from ``paper_bib_entries``
+    replaces the positional index on any S2/held row it matches (bracket-
+    styled, ``[N]``), and an unmatched parsed entry is unioned in as a
+    first-class row showing its ``raw_text`` verbatim. Three ordering
+    buckets, concatenated: rows with a real marker (sorted by marker) →
+    unmatched S2 rows (S2 order, today's positional ``n.`` badge) →
+    unmatched held-but-not-in-S2 rows (today's placement, appended last).
+    A paper with no ``paper_bib_entries`` rows renders byte-identically to
+    the pre-citation-sources-tab behaviour (empty index → nothing ever
+    matches → same two buckets, same order, same badges)."""
     held_links = store.links_for(ref.id, direction="out", relation="cites")
     cited_ids = {lk.dst_ref_id for lk in held_links}
     neighbors = store.list_s2_neighbors(ref.id, "cites")
-    want_ids = cited_ids | {nb.held_ref_id for nb in neighbors if nb.held_ref_id}
+    bib_entries = store.list_bib_entries(ref.id)
+    bib_index = _BibEntryIndex(bib_entries)
+    want_ids = (
+        cited_ids
+        | {nb.held_ref_id for nb in neighbors if nb.held_ref_id}
+        | {be.held_ref_id for be in bib_entries if be.held_ref_id}
+    )
     refs = store.fetch_refs_by_ids(list(want_ids)) if want_ids else {}
     remaining = {
         rid
         for rid in cited_ids
         if refs.get(rid) is not None and refs[rid].kind == "paper"
     }
-    rows: list[dict[str, Any]] = []
+
+    marker_bucket: list[tuple[int, dict[str, Any]]] = []
+    s2_bucket: list[dict[str, Any]] = []
+    held_bucket: list[dict[str, Any]] = []
+    matched_markers: set[int] = set()
+
     for i, nb in enumerate(neighbors, start=1):
         held_ref = refs.get(nb.held_ref_id) if nb.held_ref_id else None
         if held_ref is not None:
             remaining.discard(nb.held_ref_id)
-        rows.append(
-            _refs_row(
-                ref_id=ref.id,
-                direction="sources",
-                n=i,
-                held_ref=held_ref,
-                s2_id=nb.s2_id,
-                doi=nb.doi,
-                title=nb.title,
-                year=nb.year,
-            )
+        be = bib_index.match(held_ref_id=nb.held_ref_id, doi=nb.doi, s2_id=nb.s2_id)
+        row = _refs_row(
+            ref_id=ref.id,
+            direction="sources",
+            n=i,
+            held_ref=held_ref,
+            s2_id=nb.s2_id,
+            doi=nb.doi,
+            title=nb.title,
+            year=nb.year,
+            marker=be.marker if be is not None else None,
         )
-    # Held cited papers the S2 list doesn't carry (elided or stale) —
-    # unnumbered: the bibliography ordinal only means anything S2-side.
+        if be is not None:
+            matched_markers.add(be.marker)
+            marker_bucket.append((be.marker, row))
+        else:
+            s2_bucket.append(row)
+
+    # Held cited papers the S2 list doesn't carry (elided or stale) — a
+    # held row matched via held_ref_id joins the marker bucket; otherwise
+    # it keeps today's unnumbered, appended-last placement.
     for rid in sorted(remaining):
-        rows.append(
-            _refs_row(
-                ref_id=ref.id,
-                direction="sources",
-                n=None,
-                held_ref=refs[rid],
-                s2_id=None,
-                doi=None,
-                title=None,
-                year=None,
-            )
+        be = bib_index.match(held_ref_id=rid)
+        row = _refs_row(
+            ref_id=ref.id,
+            direction="sources",
+            n=None,
+            held_ref=refs[rid],
+            s2_id=None,
+            doi=None,
+            title=None,
+            year=None,
+            marker=be.marker if be is not None else None,
         )
-    return rows
+        if be is not None:
+            matched_markers.add(be.marker)
+            marker_bucket.append((be.marker, row))
+        else:
+            held_bucket.append(row)
+
+    # Parsed entries with no S2/held row at all — unioned in as first-class
+    # rows (marker + verbatim raw_text line); never also shown twice (a
+    # marker consumed by a match above is skipped here).
+    for be in bib_entries:
+        if be.marker in matched_markers:
+            continue
+        held_ref = refs.get(be.held_ref_id) if be.held_ref_id else None
+        row = _refs_row(
+            ref_id=ref.id,
+            direction="sources",
+            n=None,
+            held_ref=held_ref,
+            s2_id=be.s2_id,
+            doi=be.doi,
+            title=None,
+            year=be.year,
+            marker=be.marker,
+            raw_text=be.raw_text,
+        )
+        marker_bucket.append((be.marker, row))
+
+    marker_bucket.sort(key=lambda pair: pair[0])
+    return [row for _, row in marker_bucket] + s2_bucket + held_bucket
 
 
 def _cited_rows(store: Any, ref: Any) -> list[dict[str, Any]]:
@@ -1018,6 +1147,8 @@ async def fetch_ref(
     title: str = Form(""),
     year: str = Form(""),
     n: str = Form(""),
+    marker: str = Form(""),
+    raw_text: str = Form(""),
     direction: str = Form("sources"),
     return_to: str = Form(""),
 ) -> Response:
@@ -1047,6 +1178,13 @@ async def fetch_ref(
     htmx-aware (the ``flags.py`` pattern): an ``HX-Request`` gets the
     re-rendered single row back (swapped via ``hx-target="closest
     .refs-row"``); a plain form POST (no JS) 303-redirects to the tab.
+
+    ``marker=``/``raw_text=`` (citation-sources-tab) round-trip a matched/
+    union row's bracket marker + verbatim citation line through the
+    swap — without them, a union row's whole display line (it has no
+    ``title``) would vanish into "(untitled)" on the reader's own Fetch
+    click, and a matched row would silently downgrade its ``[N]`` badge
+    back to the positional one.
     """
     store = get_store(request)
     ref = store.fetch_refs_by_ids([ref_id], include_deleted=False).get(ref_id)
@@ -1055,8 +1193,10 @@ async def fetch_ref(
     doi = doi.strip().lower()
     s2_id = s2_id.strip()
     title = title.strip()
+    raw_text = raw_text.strip()
     yr: int | None = int(year) if year.strip().lstrip("-").isdigit() else None
     n_val: int | None = int(n) if n.strip().isdigit() else None
+    marker_val: int | None = int(marker) if marker.strip().isdigit() else None
     if direction not in _REFS_DIRECTIONS:
         direction = "sources"
     if not doi and not s2_id:
@@ -1107,6 +1247,8 @@ async def fetch_ref(
             doi=doi or None,
             title=title or None,
             year=yr,
+            marker=marker_val,
+            raw_text=raw_text or None,
         )
         return templates.TemplateResponse(
             request, "papers/_refs_row.html.j2", {"row": row}

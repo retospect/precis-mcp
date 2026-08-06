@@ -40,8 +40,20 @@ from psycopg_pool import ConnectionPool
 
 from precis.errors import BadInput
 from precis.store._argument_ops import retracted_endpoint
-from precis.store._mappers import _lookup_chunk_id, _row_to_link, _row_to_s2_neighbor
-from precis.store.types import ActorSlug, Link, Relation, S2Direction, S2Neighbor
+from precis.store._mappers import (
+    _lookup_chunk_id,
+    _row_to_bib_entry,
+    _row_to_link,
+    _row_to_s2_neighbor,
+)
+from precis.store.types import (
+    ActorSlug,
+    BibEntry,
+    Link,
+    Relation,
+    S2Direction,
+    S2Neighbor,
+)
 
 
 def _resolve_chunk_id_for_link(
@@ -568,6 +580,24 @@ class LinksMixin:
                 (ref_id, direction),
             ).fetchall()
         return [_row_to_s2_neighbor(r) for r in rows]
+
+    def list_bib_entries(self, ref_id: int) -> list[BibEntry]:
+        """This ref's parsed bibliography (``paper_bib_entries``, migration
+        0108), ordered by ``marker`` — the ``bib_parse`` worker's output,
+        read here for the Sources tab (citation-sources-tab) to join onto
+        ``s2_neighbors``/held ``cites`` rows and replace the positional
+        badge with the real bracket marker. Empty list = the paper hasn't
+        been claimed by ``bib_parse`` yet, or it has no bibliography-shaped
+        chunks — the web layer's signal to fall back to today's
+        positional-index rendering unchanged."""
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT ref_id, marker, raw_text, authors, journal, year, "
+                "       volume, first_page, doi, s2_id, held_ref_id "
+                "FROM paper_bib_entries WHERE ref_id = %s ORDER BY marker",
+                (ref_id,),
+            ).fetchall()
+        return [_row_to_bib_entry(r) for r in rows]
 
     def s2_neighbors_fresh(self, ref_id: int) -> bool:
         """Cheap presence check: has ``ref_id`` ever had its S2 neighbour
