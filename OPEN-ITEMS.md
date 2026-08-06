@@ -1816,8 +1816,8 @@ prompt containing any tagged ref. Pairs with per-surface persona work
 
 Shipped + cut over. Remaining are small/by-design:
 
-- **Left in env by design:** `PRECIS_UNPAYWALL_EMAIL` (a mailto); litellm/openclaw
-  ansible-vault secrets stay until those tools retire (sweep with litellm teardown).
+- **Left in env by design:** `PRECIS_UNPAYWALL_EMAIL` (a mailto). (litellm/openclaw
+  ansible-vault secrets were swept in the 2026-08-06 litellm teardown.)
 - **Deferred by design (ADR 0055):** per-service DB roles + per-name ACL;
   `pg_notify` cache invalidation (currently 60s TTL); out-of-process broker.
 - **Cheap/local-model research tier** *(feature, open).* precis's agent/research
@@ -1835,8 +1835,8 @@ Shipped + cut over. Remaining are small/by-design:
   root-owned `.git` blocking `uv pip install`; chown/clear it.
 - **Orphan sweep from feynman/quest retirement** — installed venvs/npm bits
   (`/opt/mcps/quest`, `/opt/mcps/extract`, `@companion-ai/feynman`), quest's
-  `papers` schema, unused `quest_*`/`feynman` group_vars. Harmless; sweep with
-  the litellm teardown.
+  `papers` schema, unused `quest_*`/`feynman` group_vars. Harmless; still to
+  sweep (the litellm teardown it was batched with completed 2026-08-06).
 
 ## 📧 `email` kind — next steps (slices 1–4 shipped)
 

@@ -15,7 +15,7 @@ already pins `IdentityAgent none` for the cluster hosts (on-disk
 
 | host       | OS / init      | role       | runs |
 |------------|----------------|------------|------|
-| melchior   | macOS / launchd| gateway    | system worker + **agent worker** (plan_tick/reviewers + the `dream_agent`/`anki_sync` scheduler-lease cadences, §A) + web + litellm + asa-bot |
+| melchior   | macOS / launchd| gateway    | system worker + **agent worker** (plan_tick/reviewers + the `dream_agent`/`anki_sync` scheduler-lease cadences, §A) + web + asa-bot |
 | caspar     | macOS / launchd| data (NFS) | system worker + embedder + Postgres (prod DB) + backups |
 | balthazar  | macOS / launchd| scheduler  | system worker + embedder |
 | spark      | Linux / systemd| inference  | system worker + embedder + GPU (relax/AlphaFold) |
@@ -35,7 +35,6 @@ already pins `IdentityAgent none` for the cluster hosts (on-disk
 `retire-thin-timers.yml` — look in `precis-worker.log`/`precis-worker-agent.log`
 instead): `precis-cron-tick.log`, `precis-watch-poll.log`, `precis-dream.log`,
 `precis-anki-sync.log`, `precis-reconcile.log`.
-| litellm: `/opt/homebrew/var/log/litellm.log` + `litellm-error.log` + `litellm-watchdog.log` | melchior | LLM proxy (port 4000). 401s here = Anthropic auth. |
 | asa-bot: `/Users/hermes/.asa/asa-bot.log` (needs `sudo`) | melchior | Discord bridge. Also relays nursery Discord alerts. |
 | Shared crons: `/opt/shared/logs/` (macOS) / `/shared/logs/` (linux) | caspar hosts them | `backup-pg.log`, `backup-b2.log`, `backup-usb.log`, `backup-tests.log`, `daily_briefing/*.log`, `api-credits.log`, `pip-audit/audit.log`, `nginx-*.log`. |
 

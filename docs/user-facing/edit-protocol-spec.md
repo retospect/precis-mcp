@@ -519,8 +519,8 @@ These were considered and rejected:
   not in the executed match.
 - **Cursor / position state across calls.** Stateless puts only.
 - **Cross-file edits.** One `id` per `put`. Use multiple calls for
-  multi-file refactors; sequence them with the existing `quest` or
-  `sortie` machinery.
+  multi-file refactors; sequence them with the existing `quest`
+  machinery.
 
 ## What benchmarks suggest about model size
 
@@ -604,7 +604,7 @@ universal knobs.
   refactors are cross-file). Sequential `put()` calls + `dry_run`
   give better failure observability with no protocol cost.
   Cross-file refactors belong to a different abstraction (e.g.
-  `sortie` campaigns), not single-file batches.
+  `quest` campaigns), not single-file batches.
 - **`expect_lines=N`** — rejected. `dry_run` subsumes the use case
   with strictly more information. Adding the parameter creates
   surface area for an assertion that's rarely meaningful (most

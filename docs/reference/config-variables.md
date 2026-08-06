@@ -33,7 +33,7 @@ default**, its **deployed value per cluster service**, and an
 | Host | OS / runtime | Role | Notable capability |
 |------|--------------|------|--------------------|
 | **melchior** | macOS (Metal), launchd | `gateway` | The only agent/LLM host: agent-worker (also owns the `dream_agent` / `anki_sync` scheduler-lease cadences, §A), web, asa-bot, OA/GP fetch. Runs `hermes` OAuth. |
-| **caspar** | macOS, launchd | `data` | Postgres / pgbouncer / redis / NFS server. The duplicate-reconcile sweep is now the `paper_reconcile` system-worker pass here, not a separate daemon (§A retired the standalone nightly plist as redundant). |
+| **caspar** | macOS, launchd | `data` | Postgres / pgbouncer / NFS server. The duplicate-reconcile sweep is now the `paper_reconcile` system-worker pass here, not a separate daemon (§A retired the standalone nightly plist as redundant). |
 | **balthazar** | macOS (Metal), launchd | `scheduler` | System worker + inbox watcher; an `agent_sandbox_host`. |
 | **spark** | Linux (CUDA GB10), systemd | `inference` | System worker **plus** the GPU/container compute lanes: DFT, chem route, AlphaFold, TTS. |
 
@@ -164,7 +164,7 @@ override if you want per-host divergence).
 
 | Var | Controls | Code default | Deployed | Assessment |
 |-----|----------|--------------|----------|------------|
-| `PRECIS_LLM_BACKEND` | `anthropic` vs OpenAI-compat OSS | `anthropic` | not set ⇒ `anthropic` | ✅ OSS backend ships dark (ADR 0046); byte-identical to `claude -p`. Flip per-host to test OSS. Also gates `SMALL`'s transport (`OPENAI_COMPAT` vs the loopback litellm proxy) — see `llm-openrouter-bypass` below. |
+| `PRECIS_LLM_BACKEND` | `anthropic` vs OpenAI-compat OSS | `anthropic` | not set ⇒ `anthropic` | ✅ OSS backend ships dark (ADR 0046); byte-identical to `claude -p`. Flip per-host to test OSS. Also gates `SMALL`'s transport (`OPENAI_COMPAT` vs the loopback `LOCAL` wire) — see `llm-openrouter-bypass` below. |
 | `PRECIS_LLM_BASE_URL` / `PRECIS_LLM_API_KEY` | OSS endpoint + key (vault) | none | not set | ✅ Only needed when backend flips. For the OpenRouter recipe: `PRECIS_LLM_BASE_URL=https://openrouter.ai/api/v1`; `PRECIS_LLM_API_KEY` is already vaulted (seeded 2026-07-14) — no seeding step needed. |
 | `PRECIS_LLM_FAILOVER` | Wraps an OSS primary in the `FailoverProvider` claude-fallback ladder | `""` | not set | ✅ Built (`router._failover_ladder`/`FailoverProvider`). Also covers a *saturated local slot*: a paused call retries the ladder's hosted rung instead of failing outright, but only when rung 0's transport actually has a hosted mode (`OPENAI_TOOLS`/`OPENAI_COMPAT` — reachable for `BIG`/`MEDIUM`/`FRONTIER` under `PRECIS_LLM_BACKEND=openai`, or for any tier via an operator `llm.chain.<tier>` rung naming one explicitly); a tier with no such rung has no hosted escape and still backs off immediately (`llm-openrouter-bypass` item 3). Off by default — real $ once a backend/base-url is configured. |
 | `PRECIS_MODEL_OPUS` | FRONTIER model id | `claude-opus-4-8` | not set ⇒ default | ✅ Current. |

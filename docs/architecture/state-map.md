@@ -949,7 +949,7 @@ not separate daemons anymore.
   **`claude_inproc`** job_types (melchior — both casts, `card_forge`, and the news
   briefing now compose via the LLM router's `Tier.FRONTIER` (`DispatchClient`,
   ADR 0046) onto `claude_agent` — a `claude -p` subprocess, direct Anthropic OAuth —
-  not the melchior-loopback litellm proxy; litellm now serves only `SMALL`. The two
+  not a melchior-loopback local endpoint. The two
   audio **casts** default to `claude-sonnet-5` within the FRONTIER band — prose
   composition, ~⅕ the subscription-quota draw; `card_forge`/news briefing keep the
   FRONTIER Opus default. That cast default now lives in the per-operation registry
@@ -1210,7 +1210,7 @@ request's `local_url` override cleared, landing on the hosted OSS endpoint
 instead of the busy local hardware, before falling to claude if that also
 errors (`docs/proposals/llm-openrouter-bypass.md` item 3). `select_transport`
 routes `SMALL` to `OPENAI_COMPAT` under `backend=openai` (item 2), vs. the
-loopback litellm proxy it takes under the default `ANTHROPIC`. **SMALL judge
+loopback `LOCAL` transport it takes under the default `ANTHROPIC`. **SMALL judge
 pins reasoning off:** a tool-less `SMALL` call with no explicit `effort`
 merges `reasoning:{enabled:false}` into the `openai_compat` body
 (`router.py::_dispatch_openai_compat`) — a reasoning model on that rung
