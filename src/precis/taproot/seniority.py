@@ -31,11 +31,12 @@ Derivation (taproot.md, locked decision):
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from precis.errors import BadInput
 from precis.taproot.canon import TAPROOT_CLAIM, TAPROOT_NAMESPACE
+from precis.utils import handle_registry
 
 #: The two roles that feed the seniority split (`establishes` is the
 #: already-derived role from a previous call; `corroborates` is the
@@ -74,6 +75,32 @@ class EvidenceEdge:
 
 
 @dataclass(frozen=True)
+class GroundingRef:
+    """One raw evidence edge's grounding-passage pointer — the chunk in a
+    supporter/contradictor paper that grounds the claim.
+
+    Distinct from :class:`EvidenceEdge` (one per paper, for the seniority
+    split): grounding is one per *edge*, so a paper that grounds the claim at
+    two different passages contributes two ``GroundingRef``s — the seniority
+    edge for that paper is still one row. :attr:`source_handle` prefers the
+    edge's ``meta['source_handle']`` (the Phase-3 chase pointer) and falls
+    back to the ``links.src_chunk_id`` the paper→hub edge itself pins (what
+    the ``draft-backfill`` arm records — ``meta.source_handle`` is unset
+    there), formatted as a universal ``pc<id>`` chunk handle.
+
+    :attr:`relation` is the RAW stored edge relation
+    (``establishes``/``corroborates``/``contradicts``) so the web layer
+    attributes the passage to the right role — a paper that both corroborates
+    (at one chunk) and contradicts (at another) the same claim must NOT have
+    its contradicting passage relabeled as support (keying by paper alone
+    would)."""
+
+    paper_ref_id: int
+    source_handle: str
+    relation: str
+
+
+@dataclass(frozen=True)
 class HubEvidence:
     """A claim hub's evidence, split by derived seniority."""
 
@@ -82,6 +109,13 @@ class HubEvidence:
     corroborators: list[EvidenceEdge]
     contradictors: list[EvidenceEdge]
     coverage_note: str | None
+    #: Every grounding-passage pointer across all evidence edges, one per raw
+    #: edge (NOT deduped by paper) — so two corroborates edges from one paper
+    #: pinning different chunks both surface as grounding passages. Read by
+    #: the web layer's "Grounding passages" section; ordering is normalised
+    #: for display in ``claim_render._render_one``, so the derive order here
+    #: only needs to be a stable set, not display order.
+    grounding: list[GroundingRef] = field(default_factory=list)
 
 
 def _is_claim_hub(store: Any, ref_id: int) -> bool:
@@ -156,10 +190,26 @@ def _find_originators(store: Any, supporter_ids: list[int]) -> set[int]:
     return {dst for src, dst in rows if src != dst}
 
 
+def _grounding_handle(src_chunk_id: int | None, meta: dict[str, Any]) -> str | None:
+    """The grounding-passage handle for one evidence edge: the Phase-3 chase
+    pointer ``meta['source_handle']`` when present, else the ``pc<id>`` handle
+    of the ``links.src_chunk_id`` the paper→hub edge pins directly (the
+    ``draft-backfill`` arm's storage — it writes the grounding chunk into the
+    edge's ``src_chunk_id`` column and leaves ``meta.source_handle`` unset).
+    ``None`` when the edge grounds no chunk at all."""
+    stored = meta.get("source_handle")
+    if stored:
+        return str(stored)
+    if src_chunk_id is not None:
+        return handle_registry.try_format("paper", src_chunk_id, chunk=True)
+    return None
+
+
 def _fetch_evidence_rows(
     store: Any, hub_ref_id: int
-) -> list[tuple[int, str, dict[str, Any]]]:
-    """Direct ``paper -> hub`` read: ``(src_ref_id, relation, meta)`` rows.
+) -> list[tuple[int, int | None, str, dict[str, Any]]]:
+    """Direct ``paper -> hub`` read: ``(src_ref_id, src_chunk_id, relation,
+    meta)`` rows.
 
     Bypasses ``store.links_for``'s inverse-relation rewrite on purpose.
     ``contradicts`` has a registered inverse ``contradicted-by``
@@ -179,7 +229,7 @@ def _fetch_evidence_rows(
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
-            SELECT l.src_ref_id, l.relation, l.meta
+            SELECT l.src_ref_id, l.src_chunk_id, l.relation, l.meta
             FROM links l
             JOIN refs p ON p.ref_id = l.src_ref_id
             WHERE l.dst_ref_id = %(hub)s
@@ -189,7 +239,7 @@ def _fetch_evidence_rows(
             """,
             {"hub": hub_ref_id, "roles": list(_ALL_ROLES)},
         ).fetchall()
-    return [(row[0], row[1], row[2] or {}) for row in rows]
+    return [(row[0], row[1], row[2], row[3] or {}) for row in rows]
 
 
 def _fetch_paper_facts(
@@ -393,9 +443,17 @@ def derive_evidence(
 
     support_edges: dict[int, dict[str, Any]] = {}
     contradict_edges: dict[int, dict[str, Any]] = {}
-    for src_ref_id, relation, meta in _fetch_evidence_rows(store, hub_ref_id):
+    grounding: list[GroundingRef] = []
+    seen_grounding: set[tuple[int, str]] = set()
+    for src_ref_id, src_chunk_id, relation, meta in _fetch_evidence_rows(
+        store, hub_ref_id
+    ):
         target = contradict_edges if relation == _CONTRADICTS_ROLE else support_edges
         target.setdefault(src_ref_id, meta)
+        handle = _grounding_handle(src_chunk_id, meta)
+        if handle and (src_ref_id, handle) not in seen_grounding:
+            seen_grounding.add((src_ref_id, handle))
+            grounding.append(GroundingRef(src_ref_id, handle, relation))
 
     supporter_ids = list(support_edges)
     originator_ids = _find_originators(store, supporter_ids) if supporter_ids else set()
@@ -429,6 +487,7 @@ def derive_evidence(
         corroborators=_sort_group(corroborators),
         contradictors=_sort_group(contradictors),
         coverage_note=coverage_note,
+        grounding=grounding,
     )
 
 
@@ -446,18 +505,20 @@ def derive_evidence(
 
 def _fetch_evidence_rows_bulk(
     store: Any, hub_ref_ids: list[int]
-) -> dict[int, list[tuple[int, str, dict[str, Any]]]]:
+) -> dict[int, list[tuple[int, int | None, str, dict[str, Any]]]]:
     """Bulk twin of :func:`_fetch_evidence_rows` — one query for every hub
     in ``hub_ref_ids`` instead of one per hub. Same ``p.kind = 'paper'``
     endpoint-disambiguation guard (see :func:`_fetch_evidence_rows`'s
     docstring for why that matters)."""
-    out: dict[int, list[tuple[int, str, dict[str, Any]]]] = {h: [] for h in hub_ref_ids}
+    out: dict[int, list[tuple[int, int | None, str, dict[str, Any]]]] = {
+        h: [] for h in hub_ref_ids
+    }
     if not hub_ref_ids:
         return out
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
-            SELECT l.dst_ref_id, l.src_ref_id, l.relation, l.meta
+            SELECT l.dst_ref_id, l.src_ref_id, l.src_chunk_id, l.relation, l.meta
             FROM links l
             JOIN refs p ON p.ref_id = l.src_ref_id
             WHERE l.dst_ref_id = ANY(%(hubs)s)
@@ -467,8 +528,10 @@ def _fetch_evidence_rows_bulk(
             """,
             {"hubs": hub_ref_ids, "roles": list(_ALL_ROLES)},
         ).fetchall()
-    for hub_id, src, relation, meta in rows:
-        out.setdefault(int(hub_id), []).append((int(src), str(relation), meta or {}))
+    for hub_id, src, src_chunk_id, relation, meta in rows:
+        out.setdefault(int(hub_id), []).append(
+            (int(src), src_chunk_id, str(relation), meta or {})
+        )
     return out
 
 
@@ -517,18 +580,26 @@ def derive_evidence_bulk(
 
     support_by_hub: dict[int, dict[int, dict[str, Any]]] = {}
     contradict_by_hub: dict[int, dict[int, dict[str, Any]]] = {}
+    grounding_by_hub: dict[int, list[GroundingRef]] = {}
     all_paper_ids: set[int] = set()
     for hub_id in ids:
         support_edges: dict[int, dict[str, Any]] = {}
         contradict_edges: dict[int, dict[str, Any]] = {}
-        for src_ref_id, relation, meta in rows_by_hub.get(hub_id, []):
+        grounding: list[GroundingRef] = []
+        seen_grounding: set[tuple[int, str]] = set()
+        for src_ref_id, src_chunk_id, relation, meta in rows_by_hub.get(hub_id, []):
             target = (
                 contradict_edges if relation == _CONTRADICTS_ROLE else support_edges
             )
             target.setdefault(src_ref_id, meta)
             all_paper_ids.add(src_ref_id)
+            handle = _grounding_handle(src_chunk_id, meta)
+            if handle and (src_ref_id, handle) not in seen_grounding:
+                seen_grounding.add((src_ref_id, handle))
+                grounding.append(GroundingRef(src_ref_id, handle, relation))
         support_by_hub[hub_id] = support_edges
         contradict_by_hub[hub_id] = contradict_edges
+        grounding_by_hub[hub_id] = grounding
 
     originators_by_hub = _find_originators_bulk(
         store, {h: list(s) for h, s in support_by_hub.items()}
@@ -570,6 +641,7 @@ def derive_evidence_bulk(
             corroborators=_sort_group(corroborators),
             contradictors=_sort_group(contradictors),
             coverage_note=coverage_note,
+            grounding=grounding_by_hub[hub_id],
         )
     return out
 
@@ -578,6 +650,7 @@ __all__ = [
     "ClaimLinks",
     "ClaimRef",
     "EvidenceEdge",
+    "GroundingRef",
     "HubEvidence",
     "derive_evidence",
     "derive_evidence_bulk",

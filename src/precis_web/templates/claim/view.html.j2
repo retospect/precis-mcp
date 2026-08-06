@@ -162,5 +162,47 @@
 <p class="mt-6 text-xs text-slate-500 italic">{{ coverage_note }}</p>
 {% endif %}
 
+{# Discussion — the "Ask & think" follow-up affordance the generic finding
+   detail carried before /refs/finding/<hub> began redirecting here (the
+   redirect must not drop functionality). Posts to the SAME
+   /refs/finding/<hub_ref_id>/ask route the finding page used; that route
+   spawns the agentic pass and redirects to the new conv thread
+   (/refs/conv/<id>). The thread then lists under Discussion below on the next
+   load of this claim page (the finding→claim redirect makes both surfaces
+   share one discussion set). `discussions` is a (possibly empty) list on the
+   full page, None on surfaces that don't pass it. #}
+{% if discussions is not none %}
+<section class="mt-6">
+  <h2 class="text-sm font-semibold mb-2 text-slate-700">Discussion</h2>
+  {% if discussions %}
+  <ul class="mb-3 rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
+    {% for d in discussions %}
+    <li class="px-3 py-2 text-sm flex items-center gap-2">
+      <span class="text-slate-400">💬</span>
+      <a href="{{ d.url }}" class="text-sky-700 hover:underline flex-1">{{ d.title }}</a>
+      {% if d.chunk is not none %}
+      <span class="text-xs font-mono text-slate-400">on ~{{ d.chunk }}</span>
+      {% endif %}
+      <span class="text-xs text-slate-400">{{ d.turns }} turn{{ '' if d.turns == 1 else 's' }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  <form method="post" action="/refs/finding/{{ hub_ref_id }}/ask" class="space-y-2">
+    <textarea name="question" rows="2" required
+              placeholder="Ask a follow-up about this claim…"
+              class="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"></textarea>
+    <div class="flex items-center gap-2">
+      <button class="rounded-md bg-sky-600 text-white text-sm px-4 py-2 hover:bg-sky-700">
+        Ask &amp; think
+      </button>
+      <span class="text-xs text-slate-400">
+        runs an agentic pass (can take ~30–60s); the answer lands in a linked thread
+      </span>
+    </div>
+  </form>
+</section>
+{% endif %}
+
 {% endif %}
 {% endblock %}

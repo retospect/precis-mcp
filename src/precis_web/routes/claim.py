@@ -13,8 +13,13 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
-from precis_web.claim_render import claim_citers, render_claim_evidence
+from precis_web.claim_render import (
+    claim_citers,
+    claim_full_sentence,
+    render_claim_evidence,
+)
 from precis_web.deps import get_store, templates
+from precis_web.routes.refs import _followup_discussions
 
 router = APIRouter(tags=["claim"])
 
@@ -28,13 +33,23 @@ async def claim_view(request: Request, head: str) -> HTMLResponse:
     if data is None:
         ctx: dict[str, Any] = {"head": head, "missing": True}
     else:
-        # "Used by" (inbound cites) is a full-page-only section — added here,
-        # not in render_claim_evidence, so the shared evidence shape stays
-        # identical between the singular and bulk (smartdraft rail) paths.
+        hub_ref_id = data["hub_ref_id"]
+        # Full-page-only enrichments — kept OUT of render_claim_evidence so the
+        # shared evidence shape stays identical between the singular and bulk
+        # (smartdraft rail) paths:
+        #   • citers  — the "Used by" inbound-cites section.
+        #   • claim   — the UNtruncated sentence (refs.title is [:200]; the
+        #               whole sentence lives in the finding_body chunk),
+        #               falling back to the truncated title when absent.
+        #   • discussions — the "Ask & think" follow-up threads, the same
+        #               affordance the generic finding detail carried before
+        #               /refs/finding/<hub> started redirecting here.
         ctx = {
             **data,
             "missing": False,
-            "citers": claim_citers(store, data["hub_ref_id"]),
+            "citers": claim_citers(store, hub_ref_id),
+            "claim": claim_full_sentence(store, hub_ref_id) or data["claim"],
+            "discussions": _followup_discussions(store, hub_ref_id),
         }
     return templates.TemplateResponse(request, "claim/view.html.j2", ctx)
 

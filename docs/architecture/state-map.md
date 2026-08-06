@@ -1759,7 +1759,17 @@ overlay on `finding`/`ref_tags`/`links` — no schema of its own).
     (never guess an originator); `HubEvidence.coverage_note` flags the
     gap. The S2-global-citation-count fallback (taproot.md) is deferred to
     Phase 3, not built here. `contradicts` edges form a separate group,
-    never folded into the split. Rendered via `finding`
+    never folded into the split. **Grounding is per-chunk, not per-paper**:
+    the seniority split dedupes by paper, but `HubEvidence.grounding`
+    (`list[GroundingRef]`) carries one entry per RAW edge — its
+    `meta.source_handle`, or a `pc<id>` fallback formatted from the edge's
+    `src_chunk_id` (what the `draft-backfill` arm pins directly, leaving
+    `meta.source_handle` unset), tagged with the raw `relation` so a paper
+    that both corroborates and contradicts the same claim attributes each
+    passage correctly. The `/claim/<head>` "Grounding passages" section
+    renders from this (so two passages of one paper both surface, clickable
+    to `pc<id>`), sorted in `claim_render._render_one` so the singular and
+    bulk (smartdraft-rail) paths stay identical. Rendered via `finding`
     `get(view='evidence')` (`handlers/finding.py::FindingHandler.get`
     overrides the base — deliberately **not** added to `_numeric_ref.py`'s
     `_BASE_VIEWS`, so no other numeric-ref kind picks it up): three

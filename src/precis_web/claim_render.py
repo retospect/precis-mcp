@@ -373,16 +373,12 @@ def _supporter_ref_ids(evidence: HubEvidence) -> set[int]:
 
 
 def _source_handles(evidence: HubEvidence) -> set[str]:
-    """Every distinct grounding ``source_handle`` across all three roles."""
-    return {
-        e.source_handle
-        for e in (
-            *evidence.originators,
-            *evidence.corroborators,
-            *evidence.contradictors,
-        )
-        if e.source_handle
-    }
+    """Every distinct grounding ``source_handle`` across all evidence edges —
+    read from :attr:`HubEvidence.grounding` (one per raw edge, so a paper that
+    grounds the claim at two passages contributes both), not the per-paper
+    seniority edges (which collapse a paper's multiple grounding chunks into
+    one row)."""
+    return {g.source_handle for g in evidence.grounding if g.source_handle}
 
 
 def _render_one(
@@ -430,15 +426,60 @@ def _render_one(
         _edge_row(e, starred=corroborators_print) for e in evidence.corroborators
     ]
     contradictors = [_edge_row(e, starred=False) for e in evidence.contradictors]
-    # Every distinct grounding passage across all three roles, each labeled
-    # with the role(s) it grounds — the "reproduce fi191167, fix the
-    # grouping" ask (slice 1 item 4): a passage cited from more than one
-    # role must show each, not just the paper handle.
-    grounding_rows = (
-        [(r, "originator") for r in originators]
-        + [(r, "corroborator") for r in corroborators]
-        + [(r, "contradictor") for r in contradictors]
-    )
+    # Every distinct grounding passage, each labeled with the role it grounds
+    # — the "reproduce fi191167, fix the grouping" ask (slice 1 item 4). Built
+    # from `evidence.grounding` (one entry per RAW edge) rather than the
+    # per-paper seniority rows, so a paper that grounds the claim at two chunks
+    # surfaces BOTH passages (the corroborates-pc regression: derive dedupes
+    # seniority by paper, but grounding is per-chunk). Attribution is keyed by
+    # the edge's RAW relation, NOT the paper: a `contradicts` grounding is
+    # always a contradictor (★-off), a support grounding takes its paper's
+    # derived originator/corroborator role — so a paper that both corroborates
+    # and contradicts the same claim doesn't get its contradicting passage
+    # relabeled as support. Order is normalised here (role rank → year → paper
+    # handle → grounding handle) so the singular and bulk paths emit identical
+    # `chunks` (the render_claims==render_claim invariant).
+    support_row: dict[int, dict[str, Any]] = {}
+    support_role: dict[int, tuple[str, int]] = {}
+    for rank, (label, group) in (
+        (0, ("originator", originators)),
+        (1, ("corroborator", corroborators)),
+    ):
+        for r in group:
+            support_row.setdefault(r["paper_ref_id"], r)
+            support_role.setdefault(r["paper_ref_id"], (label, rank))
+    contradict_row = {r["paper_ref_id"]: r for r in contradictors}
+    _grounding: list[tuple[tuple[Any, ...], dict[str, Any], str]] = []
+    for g in evidence.grounding:
+        if g.relation == "contradicts":
+            prow = contradict_row.get(g.paper_ref_id)
+            label, rank = "contradictor", 2
+        else:
+            prow = support_row.get(g.paper_ref_id)
+            label, rank = support_role.get(g.paper_ref_id, ("corroborator", 1))
+        if prow is None:
+            continue
+        parsed = handle_registry.parse(g.source_handle) if g.source_handle else None
+        grow = {
+            "handle": prow["handle"],
+            "source_handle": g.source_handle,
+            "source_is_chunk": parsed is not None and parsed[1],
+            "starred": prow["starred"],
+        }
+        year = prow.get("year")
+        # role rank → year asc (NULL last, matching _sort_group) → paper handle
+        # → grounding handle. Sorting here (not in derive) is what keeps the
+        # singular and bulk paths' `chunks` identical regardless of query order.
+        sort_key = (
+            rank,
+            year is None,
+            year or 0,
+            prow["handle"],
+            g.source_handle or "",
+        )
+        _grounding.append((sort_key, grow, label))
+    _grounding.sort(key=lambda t: t[0])
+    grounding_rows = [(grow, label) for _, grow, label in _grounding]
     cite_keys, _notes = hub_cite_keys(store, evidence, cite_key_map=cite_key_map)
     return {
         "head": head,
@@ -507,6 +548,25 @@ def render_claim_evidence(store: Any, head: str) -> dict[str, Any] | None:
         cite_key_map=cite_key_map,
         chunk_cache=chunk_cache,
     )
+
+
+def claim_full_sentence(store: Any, hub_ref_id: int) -> str | None:
+    """The hub's *full* claim sentence — its ``finding_body`` chunk at
+    ``ord=0`` (:func:`~precis.taproot.hub.mint_hub` writes the whole sentence
+    there; ``refs.title`` is only its ``[:200]`` truncation, which shears a
+    long claim mid-word). ``None`` when no body chunk exists (a legacy hub
+    predating the finding_body write) — the caller then falls back to the
+    truncated title.
+
+    Full-page-only (the ``/claim/<head>`` h1 wants the complete sentence),
+    kept OUT of the shared :func:`_render_one` shape for the same reason as
+    :func:`claim_citers`: the compact popover and the smartdraft Claims rail
+    keep the short title, and threading a per-hub body-chunk fetch through the
+    bulk path would re-add a round trip batch B removed."""
+    text = store.chunk_text_at(hub_ref_id, 0)
+    if not text or not text.strip():
+        return None
+    return " ".join(text.split())
 
 
 def claim_citers(store: Any, hub_ref_id: int) -> list[dict[str, Any]]:

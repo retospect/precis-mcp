@@ -464,3 +464,118 @@ def test_claim_view_non_hub_finding_shows_missing(
 
     assert r.status_code == 200
     assert "No claim hub" in r.text
+
+
+def test_claim_view_surfaces_both_src_chunk_grounding(
+    claim_client: TestClient, hub: Hub
+) -> None:
+    """Two backfill-arm corroborates edges from ONE paper — grounding pinned
+    via ``links.src_chunk_id`` (no ``meta.source_handle``) at two different
+    chunks — must BOTH render as clickable grounding passages. The redirect
+    that folded /refs/finding/<hub> into this page must not lose either
+    (the "2 corroborates, we don't want to lose it" regression)."""
+    store = hub.store
+    claim_hub = mint_hub(store, _CLAIM)
+    paper = store.insert_ref(
+        kind="paper", slug="claim-backfill", title="Backfilled supporter", year=2004
+    ).id
+    text0 = "We describe monocrystalline graphitic films a few atoms thick."
+    text1 = "Ballistic transport persists at room temperature in these films."
+    h0 = _insert_chunk(store, ref_id=paper, ord=0, text=text0)
+    h1 = _insert_chunk(store, ref_id=paper, ord=1, text=text1)
+    # Backfill shape: grounding in src_chunk_id, meta.source_handle unset.
+    store.add_link(
+        src_ref_id=paper, dst_ref_id=claim_hub, relation="corroborates", src_pos=0
+    )
+    store.add_link(
+        src_ref_id=paper, dst_ref_id=claim_hub, relation="corroborates", src_pos=1
+    )
+    fi_handle = handle_registry.format_handle("finding", claim_hub)
+
+    r = claim_client.get(f"/claim/{fi_handle}")
+
+    assert r.status_code == 200
+    assert "Grounding passages" in r.text
+    assert text0 in r.text and text1 in r.text
+    assert f"/c/{h0}" in r.text and f"/c/{h1}" in r.text  # both clickable
+
+
+def test_claim_view_shows_full_untruncated_claim_sentence(
+    claim_client: TestClient, hub: Hub
+) -> None:
+    """``refs.title`` is capped ``[:200]`` at mint; the whole sentence lives in
+    the finding_body chunk. The claim page's h1 shows the FULL sentence, so a
+    long claim isn't sheared mid-word ("concentrations up t" regression)."""
+    store = hub.store
+    long_sentence = (
+        "Graphene supports ballistic electron transport at submicron distances "
+    ) * 3 + "and this distinctive SENTINELTAIL closes the claim."
+    assert len(long_sentence) > 200
+    claim_hub = mint_hub(
+        store, CanonicalClaim(sentence=long_sentence, scope={"material": "graphene"})
+    )
+    # The stored title alone is truncated and can't contain the tail.
+    assert "SENTINELTAIL" not in long_sentence[:200]
+    fi_handle = handle_registry.format_handle("finding", claim_hub)
+
+    r = claim_client.get(f"/claim/{fi_handle}")
+
+    assert r.status_code == 200
+    assert "SENTINELTAIL" in r.text  # full sentence, not the [:200] title
+
+
+def test_claim_view_has_ask_and_think_affordance(
+    claim_client: TestClient, hub: Hub
+) -> None:
+    """The claim page carries the "Ask & think" follow-up form the generic
+    finding detail had, posting to the same /refs/finding/<hub>/ask route —
+    the finding→claim redirect must not drop it. (That route redirects to the
+    spawned conv thread; the thread then lists here on the next page load.)"""
+    hub_ref_id, _pub_id = _seed_hub(hub)
+    fi_handle = handle_registry.format_handle("finding", hub_ref_id)
+
+    r = claim_client.get(f"/claim/{fi_handle}")
+
+    assert r.status_code == 200
+    assert "Discussion" in r.text
+    assert "Ask &amp; think" in r.text
+    assert f'action="/refs/finding/{hub_ref_id}/ask"' in r.text
+
+
+def test_claim_view_mixed_paper_labels_contradiction_not_support(
+    claim_client: TestClient, hub: Hub
+) -> None:
+    """A paper that both corroborates and contradicts the same claim (at
+    different chunks): the contradicting passage renders under the
+    contradictor role, not relabeled as support (reviewer finding — grounding
+    attribution keyed by relation, not paper)."""
+    store = hub.store
+    claim_hub = mint_hub(store, _CLAIM)
+    paper = store.insert_ref(
+        kind="paper", slug="mixed-ev", title="Mixed evidence", year=2004
+    ).id
+    sup_text = "This passage supports the claim strongly."
+    con_text = "This other passage contradicts the claim."
+    hs = _insert_chunk(store, ref_id=paper, ord=0, text=sup_text)
+    hc = _insert_chunk(store, ref_id=paper, ord=1, text=con_text)
+    attach_evidence(
+        store,
+        hub_ref_id=claim_hub,
+        paper_ref_id=paper,
+        role="corroborates",
+        meta={"source_handle": hs},
+    )
+    attach_evidence(
+        store,
+        hub_ref_id=claim_hub,
+        paper_ref_id=paper,
+        role="contradicts",
+        meta={"source_handle": hc},
+    )
+    fi_handle = handle_registry.format_handle("finding", claim_hub)
+
+    r = claim_client.get(f"/claim/{fi_handle}")
+
+    assert r.status_code == 200
+    assert sup_text in r.text and con_text in r.text
+    assert "(contradictor)" in r.text  # B attributed to contradictor, not support

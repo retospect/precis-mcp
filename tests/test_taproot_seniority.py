@@ -22,6 +22,7 @@ from precis.store.types import Tag
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import attach_evidence, link_claims, mint_hub
 from precis.taproot.seniority import derive_evidence, derive_refines
+from precis.utils import handle_registry
 from tests.workers._helpers import seed_chunk, seed_ref
 
 _CLAIM = CanonicalClaim(
@@ -416,3 +417,96 @@ def test_derive_refines_drops_a_soft_deleted_neighbour(store: Any) -> None:
 
     # The original no longer surfaces the deleted sharper hub as a neighbour.
     assert derive_refines(store, original).refined_by == []
+
+
+# ── grounding passages: per-chunk, not per-paper (corroborates-pc regression) ──
+
+
+def test_grounding_surfaces_both_chunks_of_one_paper(store: Any) -> None:
+    """A paper grounding a claim at TWO passages yields TWO grounding refs.
+    Seniority still dedupes the paper to one corroborator, but grounding is
+    per-chunk — the old per-paper dedup kept only the first passage's handle,
+    silently dropping the second (the "we don't want to lose the 2
+    corroborates" regression)."""
+    hub = mint_hub(store, _CLAIM)
+    paper = _paper(store, title="Two-passage supporter", year=2004)
+    c0 = seed_chunk(store, ref_id=paper, text="First supporting passage.", ord=0)
+    c1 = seed_chunk(store, ref_id=paper, text="Second supporting passage.", ord=1)
+    pc0 = handle_registry.format_handle("paper", c0, chunk=True)
+    pc1 = handle_registry.format_handle("paper", c1, chunk=True)
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=paper,
+        role="corroborates",
+        meta={"source_handle": pc0},
+    )
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=paper,
+        role="corroborates",
+        meta={"source_handle": pc1},
+    )
+
+    ev = derive_evidence(store, hub)
+
+    assert len(ev.corroborators) == 1  # one paper -> one seniority row
+    assert {g.source_handle for g in ev.grounding} == {pc0, pc1}
+    assert all(g.paper_ref_id == paper for g in ev.grounding)
+
+
+def test_grounding_falls_back_to_src_chunk_id_without_source_handle(
+    store: Any,
+) -> None:
+    """The draft-backfill arm pins the grounding chunk in ``links.src_chunk_id``
+    and leaves ``meta.source_handle`` unset. derive_evidence must still surface
+    the passage — formatting ``src_chunk_id`` as a ``pc<id>`` handle — so a
+    backfill-origin claim isn't left with empty grounding."""
+    hub = mint_hub(store, _CLAIM)
+    paper = _paper(store, title="Backfill supporter", year=2004)
+    c0 = seed_chunk(store, ref_id=paper, text="Ballistic transport passage.", ord=0)
+    pc0 = handle_registry.format_handle("paper", c0, chunk=True)
+    # No meta.source_handle — grounding lives ONLY in the edge's src_chunk_id.
+    store.add_link(src_ref_id=paper, dst_ref_id=hub, relation="corroborates", src_pos=0)
+
+    ev = derive_evidence(store, hub)
+
+    assert [g.source_handle for g in ev.grounding] == [pc0]
+    assert ev.corroborators[0].paper_ref_id == paper
+
+
+def test_grounding_relation_distinguishes_support_from_contradiction(
+    store: Any,
+) -> None:
+    """One paper that BOTH corroborates (at chunk A) and contradicts (at chunk
+    B) the same claim yields two grounding refs carrying their RAW relation —
+    so the web layer attributes B to the contradictor role, not support
+    (keying attribution by paper alone would relabel it)."""
+    hub = mint_hub(store, _CLAIM)
+    paper = _paper(store, title="Mixed-evidence paper", year=2004)
+    c_a = seed_chunk(store, ref_id=paper, text="Supports the claim.", ord=0)
+    c_b = seed_chunk(store, ref_id=paper, text="Contradicts the claim.", ord=1)
+    pc_a = handle_registry.format_handle("paper", c_a, chunk=True)
+    pc_b = handle_registry.format_handle("paper", c_b, chunk=True)
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=paper,
+        role="corroborates",
+        meta={"source_handle": pc_a},
+    )
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=paper,
+        role="contradicts",
+        meta={"source_handle": pc_b},
+    )
+
+    ev = derive_evidence(store, hub)
+
+    assert {g.source_handle: g.relation for g in ev.grounding} == {
+        pc_a: "corroborates",
+        pc_b: "contradicts",
+    }
