@@ -89,6 +89,13 @@ _MULTI_CANDIDATE = "multi_candidate"
 _DERIVED_FROM = "derived-from"
 _AWAITS_EVIDENCE = "awaits-evidence"
 
+# The axis:taproot classifier's idempotency-marker namespace
+# (axis_pass.py mints it as f"{axis_id.upper()}CASCADE"). Its PRESENCE
+# alongside TAPROOT:claim is what distinguishes a classifier-labeled
+# *live* finding from a real mint_hub claim hub: mint_hub writes the
+# claim tag but NEVER this marker (see the claim-query exclusion below).
+_TAPROOT_CASCADE_NS = f"{TAPROOT_NAMESPACE}CASCADE"
+
 # Acquisition-mode give-up reason (finding-acquisition-mode.md §4): a
 # dead_chain transition written when every linked awaits-evidence stub is
 # fetch-exhausted (see :func:`_stub_exhausted`) past the grace window.
@@ -259,16 +266,19 @@ def claim_tracing_findings(
     returns the same ``"waiting"`` outcome), and its accumulated age
     feeds the acquisition-mode grace-window give-up check.
 
-    Excludes ``TAPROOT:claim`` findings (taproot hubs, :func:`~precis.
-    taproot.hub.mint_hub`). A hub now mints with ``STATUS:canonical``, off
-    this ``STATUS:tracing`` claim's own filter, so it no longer matches the
-    query on its own — but the explicit ``TAPROOT:claim`` exclusion stays
-    as a defensive belt-and-suspenders guard so a mis-statused hub can
-    never be chased: without it, a hub that somehow carried
-    ``STATUS:tracing`` would re-enter this same claim query and die as an
-    empty-chain ``dead_chain`` every pass — a wasted claim slot plus
-    telemetry noise (gripe 175806). Hubs are chased by the taproot
-    seniority derivation, not this worker.
+    Excludes a *real* ``mint_hub`` claim hub — ``TAPROOT:claim`` with NO
+    ``TAPROOTCASCADE`` marker. A hub mints ``STATUS:canonical`` (already
+    off this ``STATUS:tracing`` filter), but the tag exclusion stays as a
+    belt-and-suspenders guard for a *mis-statused* hub: one that somehow
+    carried ``STATUS:tracing`` would otherwise re-claim + die as an
+    empty-chain ``dead_chain`` every pass (gripe 175806). Crucially it
+    excludes ONLY the marker-less (mint_hub) claim tag: the
+    ``axis:taproot`` classifier stamps ``TAPROOT:claim`` + a
+    ``TAPROOTCASCADE`` marker onto a *live* tracing finding that owns a
+    real chase chain, and those must stay claimable or they freeze —
+    neither chased nor canonical (OPEN-ITEMS §axis:taproot
+    promote-and-freeze). Real hubs are chased by the taproot seniority
+    derivation, not this worker.
     """
     if limit <= 0:
         raise ValueError("limit must be positive")
@@ -314,15 +324,30 @@ def claim_tracing_findings(
                     AND t.namespace = %(status_ns)s
                     AND t.value = ANY(%(statuses)s)
                )
-           -- A taproot hub is a `finding` too (STATUS:tracing until its
-           -- originators resolve) but isn't a chase-owned chain -- skip
-           -- it here so it doesn't re-claim + die as an empty-chain
-           -- dead_chain every pass (gripe 175806).
-           AND NOT EXISTS (
-                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
-                  WHERE rt.ref_id = r.ref_id
-                    AND t.namespace = %(taproot_ns)s
-                    AND t.value = %(taproot_claim)s
+           -- Skip a REAL mint_hub claim hub (empty chain, not a chase-
+           -- owned chain) so it can't re-claim + die as an empty-chain
+           -- dead_chain every pass (gripe 175806). A real hub carries
+           -- TAPROOT:claim written by mint_hub, which never writes a
+           -- TAPROOTCASCADE marker. The axis:taproot CLASSIFIER, by
+           -- contrast, writes TAPROOT:claim + TAPROOTCASCADE *together*
+           -- onto a live STATUS:tracing finding that DOES own a real
+           -- chase chain — excluding those froze the Malthus-draft
+           -- claims out of the lifecycle (not chased, never canonical;
+           -- OPEN-ITEMS §axis:taproot promote-and-freeze). So exclude
+           -- only TAPROOT:claim that has NO cascade marker (= a mint_hub
+           -- hub); a claim-tag carrying the marker stays claimable.
+           AND NOT (
+                 EXISTS (
+                   SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                    WHERE rt.ref_id = r.ref_id
+                      AND t.namespace = %(taproot_ns)s
+                      AND t.value = %(taproot_claim)s
+                 )
+                 AND NOT EXISTS (
+                   SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                    WHERE rt.ref_id = r.ref_id
+                      AND t.namespace = %(cascade_ns)s
+                 )
                )
            -- Skip only findings whose *most recent* chase outcome is a
            -- ``waiting`` still inside the exponential window. COALESCE
@@ -361,6 +386,7 @@ def claim_tracing_findings(
             "statuses": [_TRACING, _ACQUIRING],
             "taproot_ns": TAPROOT_NAMESPACE,
             "taproot_claim": TAPROOT_CLAIM,
+            "cascade_ns": _TAPROOT_CASCADE_NS,
             "base": float(waiting_backoff_minutes),
             "cap": float(waiting_backoff_max_minutes),
             "limit": limit,

@@ -37,7 +37,7 @@ from unittest.mock import patch
 
 from precis.dispatch import Hub
 from precis.handlers.finding import FindingHandler
-from precis.store.types import BlockInsert
+from precis.store.types import BlockInsert, Tag
 from precis.workers.chase import (
     _fetch_ref,
     _waiting_run_stats,
@@ -210,6 +210,46 @@ def test_claim_skips_recently_waiting_finding(store) -> None:
     _seed_paper(store, cite_key="stub_backoff", blocks=[])
     fid = _seed_finding(store, cite_key="stub_backoff")
     _insert_chase_event(store, fid, "waiting", minutes_ago=5)
+
+    with store.pool.connection() as conn:
+        claimed = claim_tracing_findings(conn, limit=10)
+        conn.commit()
+    assert fid not in [f.ref_id for f in claimed]
+
+
+def _add_tag(store, ref_id: int, namespace: str, value: str) -> None:
+    with store.pool.connection() as conn:
+        store.add_tag(ref_id, Tag.closed(namespace, value), set_by="agent", conn=conn)
+        conn.commit()
+
+
+def test_claim_includes_axis_classified_claim_finding(store) -> None:
+    """The ``axis:taproot`` classifier stamps ``TAPROOT:claim`` +
+    ``TAPROOTCASCADE:1`` onto a live ``STATUS:tracing`` finding. Unlike a
+    real ``mint_hub`` hub, that finding owns a real chase chain and MUST
+    stay claimable — excluding it froze the Malthus-draft claims (neither
+    chased nor canonical; OPEN-ITEMS §axis:taproot promote-and-freeze).
+    The marker's presence is what distinguishes it from a mint_hub hub."""
+    _seed_paper(store, cite_key="axisclaim", blocks=["a sourced statement."])
+    fid = _seed_finding(store, cite_key="axisclaim")
+    _add_tag(store, fid, "TAPROOT", "claim")
+    _add_tag(store, fid, "TAPROOTCASCADE", "1")
+
+    with store.pool.connection() as conn:
+        claimed = claim_tracing_findings(conn, limit=10)
+        conn.commit()
+    assert fid in [f.ref_id for f in claimed]
+
+
+def test_claim_excludes_real_mint_hub_claim(store) -> None:
+    """A real ``mint_hub`` claim hub carries ``TAPROOT:claim`` with NO
+    ``TAPROOTCASCADE`` marker. Even mis-statused ``STATUS:tracing`` (gripe
+    175806) it must stay OUT of the claim so it can't re-claim + die as an
+    empty-chain ``dead_chain`` every pass. Guards the narrowed exclusion
+    from over-correcting."""
+    _seed_paper(store, cite_key="realhub", blocks=["x."])
+    fid = _seed_finding(store, cite_key="realhub")
+    _add_tag(store, fid, "TAPROOT", "claim")  # no TAPROOTCASCADE marker
 
     with store.pool.connection() as conn:
         claimed = claim_tracing_findings(conn, limit=10)
