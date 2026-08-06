@@ -4,9 +4,22 @@
 
 # psql client must exist for the pgpass entries to mean anything. the data node
 # already has the full postgres install; the gateway / the scheduler node / the GPU node
-# only need the client.
-- name: Install libpq client (macOS — psql via brew, force-linked so it's on PATH)
+# only need the client. Probe first: on a host where psql is already on PATH
+# (the data node's postgresql@16), `brew link --force libpq` would clobber the
+# full install's symlinks and fails on the conflict — skip the client install
+# entirely there (broke the first routine-deploy import of this role, gr196677).
+- name: Probe for an existing psql on PATH
   when: os_family == "darwin"
+  ansible.builtin.command: sh -lc 'command -v psql'
+  register: psql_probe
+  changed_when: false
+  failed_when: false
+  become: false
+
+- name: Install libpq client (macOS — psql via brew, force-linked so it's on PATH)
+  when:
+    - os_family == "darwin"
+    - psql_probe.rc != 0
   block:
     - community.general.homebrew:
         name: libpq
