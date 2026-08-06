@@ -1241,12 +1241,12 @@ honoured too. **Cloud throttle (§5):** `live_config.cloud_enabled()`
 (app_settings `llm.cloud_enabled`, default true) +
 `router.py::_apply_cloud_throttle` prune a resolved chain's cloud rungs when
 an operator disables cloud — `_rung_is_cloud` classifies by explicit operator
-`placement` label, else by transport (claude = cloud; litellm = local; OSS =
-cloud iff `PRECIS_LLM_BASE_URL` set). A tier with a local rung keeps flowing
+`placement` label, else by transport (claude = cloud; local-transport = local;
+OSS = cloud iff `PRECIS_LLM_BASE_URL` set). A tier with a local rung keeps flowing
 on it; a tier left with no rung prunes to empty → `dispatch` returns `paused`
 (skip-not-fail, never silently degraded). **Which tiers survive depends on
 their chain:** `FRONTIER` is always cloud-only (pauses); today only `SMALL`
-has a standing local rung (`LITELLM`), so `BIG`/`MEDIUM` also pause under
+has a standing local rung (`LOCAL`), so `BIG`/`MEDIUM` also pause under
 throttle until an operator chain gives them a `placement:"local"` rung (the
 target-state "drop to local" story lands with the Phase-3 roster / chain
 editor). No-op while cloud is on (byte-identical). `/status?tab=services`
@@ -1275,7 +1275,7 @@ alongside the legacy `opus`/`sonnet`/`haiku`/`local` names (`local` now pins
 (semantic) stays `error`. Applies to the OSS transports and, via
 `ClaudeProcessError.timed_out`, to a `claude` wall-clock timeout too — so a
 claude-only rung (`FRONTIER`) waits rather than parking. Every transport
-already carries a wall-clock timeout (claude 600 s, openai_tools / litellm
+already carries a wall-clock timeout (claude 600 s, openai_tools / local
 120 s), so a hang converts to that classified failure.
 
 **Per-operation routing (Phases 1+2 landed, `docs/proposals/llm-operation-routing.md`).**
@@ -2359,7 +2359,7 @@ The master kinds table lives in the `precis-overview` skill.
   infers the `Requirement` (slice 5); the policy stays deterministic + price-aware.
   CLI: `precis llm select`. **Deferred:** wiring the deliberative call sites +
   `plan_tick` through the catalog + the transport-on-card collapse
-  (`LITELLM`+`OPENAI_COMPAT` → one param'd provider) — progressive integration, not
+  (`LOCAL`+`OPENAI_COMPAT` → one param'd provider) — progressive integration, not
   the policy core. **Slice 5 (agent surface) built** (`utils/llm/requirement.py`):
   the **task→requirement judge** — `infer_requirement(task) → Requirement` runs a
   cheap (`MEDIUM`) one-shot judge that infers a *capability requirement*

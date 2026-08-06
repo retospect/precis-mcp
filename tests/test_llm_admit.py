@@ -72,13 +72,13 @@ class TestWindowFor:
 
         meta = {
             "offerings": [
-                {"transport": "litellm", "max_input": 8_000},
+                {"transport": "local", "max_input": 8_000},
                 {"transport": "claude_agent", "max_input": 200_000},
             ],
             "facts_openrouter": {"context_length": 1_000_000},
         }
         # transport-matched offering wins
-        assert window_for(meta, "litellm") == 8_000
+        assert window_for(meta, "local") == 8_000
         assert window_for(meta, "claude_agent") == 200_000
         # unmatched transport → first offering with a max_input
         assert window_for(meta, "openai_tools") == 8_000
@@ -95,7 +95,7 @@ class TestCheckDispatch:
 
         req = LlmRequest(tier=_local_tier(), prompt="x" * 100_000, model="ghost")
         # No card for 'ghost' → None (byte-identical to today).
-        assert check_dispatch(req, model="ghost", transport=Transport.LITELLM) is None
+        assert check_dispatch(req, model="ghost", transport=Transport.LOCAL) is None
 
     def test_refuses_oversized_on_reconciled_window(self, bound_store: Any) -> None:
         from precis import llm_catalog
@@ -107,14 +107,14 @@ class TestCheckDispatch:
             store_of(bound_store),
             model_id="small-window-model",
             text="A tiny local model.",
-            offerings=[{"transport": "litellm", "max_input": 100}],
+            offerings=[{"transport": "local", "max_input": 100}],
         )
         admit.reset_cache()
         req = LlmRequest(
             tier=_local_tier(), prompt="x" * 1000, model="small-window-model"
         )
         reason = check_dispatch(
-            req, model="small-window-model", transport=Transport.LITELLM
+            req, model="small-window-model", transport=Transport.LOCAL
         )
         assert reason is not None and "max input" in reason
 
@@ -128,12 +128,12 @@ class TestCheckDispatch:
             store_of(bound_store),
             model_id="wide-model",
             text="A wide model.",
-            offerings=[{"transport": "litellm", "max_input": 200_000}],
+            offerings=[{"transport": "local", "max_input": 200_000}],
         )
         admit.reset_cache()
         req = LlmRequest(tier=_local_tier(), prompt="hello", model="wide-model")
         assert (
-            check_dispatch(req, model="wide-model", transport=Transport.LITELLM) is None
+            check_dispatch(req, model="wide-model", transport=Transport.LOCAL) is None
         )
 
 
@@ -147,7 +147,7 @@ class TestDispatchIntegration:
             store_of(bound_store),
             model_id="tiny-test-model",
             text="Tiny.",
-            offerings=[{"transport": "litellm", "max_input": 100}],
+            offerings=[{"transport": "local", "max_input": 100}],
         )
         admit.reset_cache()
         # A fixed-model (pinned) call with a durably oversized prompt: dispatch

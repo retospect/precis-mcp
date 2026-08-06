@@ -59,9 +59,6 @@
 - name: "16 — API monitors"
   ansible.builtin.import_playbook: playbooks/16-api-monitors.yml
 
-- name: "22 — Sortie campaign orchestration"
-  ansible.builtin.import_playbook: playbooks/22-sortie.yml
-
 - name: "25 — ALCHEMI Toolkit"
   ansible.builtin.import_playbook: playbooks/25-alchemi.yml
 

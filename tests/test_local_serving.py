@@ -80,7 +80,7 @@ def test_warning_when_host_serves_others_but_not_this_one(store, caplog) -> None
 
 def test_no_warning_for_local_only_alias_mismatch(store, caplog) -> None:
     """The SMALL-tier loopback aliases (``summarizer`` / ``rake-lemma``) are
-    local-only by design — they route through the litellm loopback proxy, not a
+    local-only by design — they route through the loopback local transport, not a
     reserved llama-swap slot — so a served host being asked for one is the
     *intended* path, not a misconfiguration, and must NOT warn (gr178498: the
     false-alarm flood, 3907 hits/48h on melchior, all ``summarizer``)."""
@@ -94,7 +94,7 @@ def test_no_warning_for_local_only_alias_mismatch(store, caplog) -> None:
 
 def test_no_warning_for_cloud_model_mismatch(store, caplog) -> None:
     """A legitimately-cloud model (frontier tier) shares no family with the OSS
-    models a host serves locally, so falling back to litellm/cloud is CORRECT,
+    models a host serves locally, so falling back to local/cloud is CORRECT,
     not a served_by misconfiguration — it must NOT warn (gr178888: the same
     false-alarm class as the summarizer aliases, but for frontier models like
     ``claude-opus-4-8`` observed on melchior)."""

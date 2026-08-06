@@ -3,7 +3,7 @@
 DB-free and network-free: the tier→model table is pure env reads, the
 transport selection is a pure function, and dispatch is exercised by
 monkeypatching the three wrappers so no real ``claude`` subprocess spawns
-and no litellm proxy is hit.
+and no local transport wire is hit.
 
 The resolver assertions double as the **behavior-preservation contract**
 unit 4b relies on: each ``resolve_model(tier)`` must reproduce the default
@@ -86,7 +86,7 @@ def test_tier_from_str_unknown_falls_back_to_default(
         (Tier.FRONTIER, "claude-opus-4-8"),
         (Tier.BIG, "claude-sonnet-5"),
         (Tier.MEDIUM, "claude-haiku-4-5-20251001"),
-        # the litellm summarizer alias (LlmConfig.model default).
+        # the local summarizer alias (LlmConfig.model default).
         (Tier.SMALL, "summarizer"),
     ],
 )
@@ -135,8 +135,8 @@ def test_tier_table_is_total() -> None:
 @pytest.mark.parametrize(
     ("tier", "tools_needed", "expected"),
     [
-        (Tier.SMALL, False, Transport.LITELLM),
-        (Tier.SMALL, True, Transport.LITELLM),  # SMALL is tool-less
+        (Tier.SMALL, False, Transport.LOCAL),
+        (Tier.SMALL, True, Transport.LOCAL),  # SMALL is tool-less
         (Tier.MEDIUM, False, Transport.CLAUDE_P),
         (Tier.MEDIUM, True, Transport.CLAUDE_AGENT),
         (Tier.BIG, False, Transport.CLAUDE_P),
@@ -1179,7 +1179,7 @@ def test_error_result_claude_timeout_is_paused() -> None:
 
 
 def test_dispatch_local_timeout_is_paused(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A request timeout on the local litellm transport is unavailability —
+    """A request timeout on the LOCAL transport is unavailability —
     skip-and-retry, not a hard failure that can park the todo."""
     import precis.workers.llm_summarize as summ
 
@@ -1519,7 +1519,7 @@ def test_dispatch_anthropic_backend_tools_still_uses_claude_agent(
 
 # ── Part 1: transparent hosted-small remap ──────────────────────────────
 # docs/proposals/glm-fleet-flip-safety.md Part 1 — the 395-error class:
-# classify/summarize pin model="summarizer" (a local-only litellm alias),
+# classify/summarize pin model="summarizer" (a local-only alias),
 # which 400s when it reaches a hosted OSS endpoint under the flip.
 
 
@@ -1575,7 +1575,7 @@ def test_dispatch_local_small_no_remap_under_default_anthropic(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Under the default (anthropic) backend SMALL still resolves to
-    Transport.LITELLM — no hosted-OSS transport, so the remap is a hard no-op
+    Transport.LOCAL — no hosted-OSS transport, so the remap is a hard no-op
     and `summarizer` reaches the loopback proxy unchanged (acceptance
     criterion 1 + 5: byte-identical to today)."""
     import precis.workers.llm_summarize as summ
@@ -1603,7 +1603,7 @@ def test_dispatch_local_small_no_remap_when_base_url_unset_even_under_openai(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """backend=openai but PRECIS_LLM_BASE_URL absent → the existing
-    ships-dark demotion already forces ANTHROPIC/LITELLM before the remap
+    ships-dark demotion already forces ANTHROPIC/LOCAL before the remap
     helper ever sees a hosted transport — still `summarizer` unchanged."""
     import precis.workers.llm_summarize as summ
 
@@ -2291,7 +2291,7 @@ def test_rung_is_cloud_classification(monkeypatch: pytest.MonkeyPatch) -> None:
     # transport-intrinsic (no explicit placement)
     assert router._rung_is_cloud(Rung(Transport.CLAUDE_AGENT, label="primary"))
     assert router._rung_is_cloud(Rung(Transport.CLAUDE_P, label="claude-fallback"))
-    assert not router._rung_is_cloud(Rung(Transport.LITELLM, label="primary"))
+    assert not router._rung_is_cloud(Rung(Transport.LOCAL, label="primary"))
     # OSS transports: hosted (cloud) iff a base url is configured
     monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
     assert router._rung_is_cloud(Rung(Transport.OPENAI_TOOLS, label="oss"))
@@ -2305,7 +2305,7 @@ def test_apply_cloud_throttle_noop_when_enabled(
     monkeypatch.setattr("precis.utils.llm.live_config.cloud_enabled", lambda: True)
     chain = [
         Rung(Transport.CLAUDE_AGENT, label="primary"),
-        Rung(Transport.LITELLM, model="q", label="local"),
+        Rung(Transport.LOCAL, model="q", label="local"),
     ]
     assert router._apply_cloud_throttle(chain) == chain
 
@@ -2521,7 +2521,7 @@ def test_dispatch_paused_local_slot_small_default_backend_still_paused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """SMALL under the default (anthropic) backend resolves to
-    Transport.LITELLM, which has no hosted mode — it always reads the local
+    Transport.LOCAL, which has no hosted mode — it always reads the local
     loopback proxy (``LlmConfig.from_env()``), never ``PRECIS_LLM_BASE_URL``.
     A paused slot must NOT retry through it (that would just re-hit the same
     saturated loopback), even with failover on: it should fall straight
@@ -2538,11 +2538,11 @@ def test_dispatch_paused_local_slot_small_default_backend_still_paused(
 
     def _boom(*a: object, **kw: object) -> LlmResult:
         raise AssertionError(
-            "LITELLM transport must not be retried on a paused local slot — "
+            "LOCAL transport must not be retried on a paused local slot — "
             "it has no hosted escape and would just re-hit the busy loopback"
         )
 
-    monkeypatch.setitem(router._PROVIDERS, Transport.LITELLM, _RunFn(_boom))
+    monkeypatch.setitem(router._PROVIDERS, Transport.LOCAL, _RunFn(_boom))
     monkeypatch.setenv("PRECIS_LLM_FAILOVER", "1")
     monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
 

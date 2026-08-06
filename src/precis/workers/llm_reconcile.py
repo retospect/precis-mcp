@@ -66,7 +66,7 @@ _STRUCTURED_PARAMS: frozenset[str] = frozenset(
 
 #: Offering transports that route through the loopback / OpenAI-compatible proxy —
 #: the ones whose served-model set the drift check consults.
-_PROXY_TRANSPORTS: frozenset[str] = frozenset({"litellm", "openai_compat"})
+_PROXY_TRANSPORTS: frozenset[str] = frozenset({"local", "openai_compat"})
 
 
 def _refresh_hours() -> float:
@@ -296,7 +296,7 @@ def run_llm_reconcile_pass(
             # Runs on every locked pass (declared facts, no network) and BEFORE
             # the empty-catalog return so an emptied catalog reaps its stale
             # llm: rows. DARK: nothing reserves these slots until the inline-LLM
-            # passes are capability-gated; litellm routing is untouched.
+            # passes are capability-gated; local-transport routing is untouched.
             served = llm_served_slots_from_cards(cards)
             slots_up, slots_del = store.reconcile_llm_served_slots(served)
 
@@ -367,7 +367,7 @@ def run_llm_reconcile_pass(
                             ),
                             detail=(
                                 f"an offering for {model_id!r} names a "
-                                "litellm/openai-compat transport, but that id is "
+                                "local/openai-compat transport, but that id is "
                                 "absent from the proxy's served set — calls 400. "
                                 "Fix the offering's model id or expose it on the "
                                 "proxy."

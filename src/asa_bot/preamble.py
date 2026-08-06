@@ -86,7 +86,7 @@ async def build(
     )
 
     # tool_hints was a separate file pointing at MCPs; it accumulated
-    # stale "you have gripe/sortie/perplexity-sonar" lines that contradict
+    # stale "you have gripe/perplexity-sonar" lines that contradict
     # SOUL's current "all rolled into precis" framing. SOUL is the source
     # of truth for the tool roster now. Keep the param to avoid changing
     # the caller signature; ignore the value.

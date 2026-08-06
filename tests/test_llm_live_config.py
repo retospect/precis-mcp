@@ -304,7 +304,7 @@ def test_resolve_model_keeps_oss_override_under_openai_backend(
 def test_resolve_model_keeps_small_override_under_anthropic_backend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The coherence drop is CLOUD-tier only. SMALL (→LITELLM/OPENAI_COMPAT)
+    """The coherence drop is CLOUD-tier only. SMALL (→LOCAL/OPENAI_COMPAT)
     never routes to a claude transport, so its (always-non-claude) override
     is legitimate and must be HONORED even under the default ANTHROPIC
     backend — dropping it would silently ignore a live `llm.model.small` row,

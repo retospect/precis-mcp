@@ -4,7 +4,7 @@ choice, and result normalization live (ADR 0046).
 Before this module, model selection was scattered across ~a-dozen
 independent ``os.environ.get(...)`` reads, three different transports
 (``claude_agent`` multi-turn agent, ``claude_p`` one-shot JSON judge,
-the litellm ``LlmClient`` local completion) each with its own result
+the local ``LlmClient`` completion) each with its own result
 shape, and three rogue subprocess sites. This module is the **seam**
 that a follow-up unit (4b) folds those call sites through; it does not
 rewire them itself.
@@ -34,7 +34,7 @@ Four pieces:
 The :class:`Tier` vocabulary aligns with the prompt-assembler
 :class:`~precis.utils.prompt.model.Profile`: a ``HELPER`` (tool-less,
 one-shot, structured) profile rides the ``MEDIUM`` / ``SMALL`` tiers on
-the ``claude_p`` / litellm transports; an ``AGENT`` (tools, multi-turn)
+the ``claude_p`` / local transports; an ``AGENT`` (tools, multi-turn)
 profile rides ``BIG`` / ``FRONTIER`` on the ``claude_agent`` transport
 (and, when the backend routes there, a served OSS model on ``BIG``).
 
@@ -151,13 +151,12 @@ class Transport(StrEnum):
       (multi-turn, MCP tools, stream-json result event).
     * ``CLAUDE_P`` — :func:`precis.utils.claude_p.call_claude_p`
       (one-shot, no tools, last-JSON-block parse).
-    * ``LITELLM`` — the loopback ``LlmClient`` (OpenAI
-      ``/v1/chat/completions``, tool-less local completion). Named for the
-      now-retired central litellm ``:4000`` proxy this used to front; the
-      value is unchanged (still read out of ``app_settings``/
-      ``llm_call_log`` history as ``"litellm"``) but the wire it denotes
-      today is the served_by-direct/loopback OpenAI-compat path, not a
-      proxy.
+    * ``LOCAL`` — the loopback ``LlmClient`` (OpenAI
+      ``/v1/chat/completions``, tool-less local completion). Was named
+      ``LITELLM`` for the now-retired central litellm ``:4000`` proxy this
+      used to front (migration 0107 renamed the enum + backfilled the
+      ``llm_call_log`` history); the wire it denotes is the
+      served_by-direct/loopback OpenAI-compat path, not a proxy.
     * ``OPENAI_COMPAT`` — the same OpenAI ``/v1/chat/completions`` wire
       pointed at a *hosted* OSS backend (OpenRouter / DeepInfra / a
       remote vLLM), authed with a vault-resolved key. Tool-less (the
@@ -173,7 +172,7 @@ class Transport(StrEnum):
 
     CLAUDE_AGENT = "claude_agent"
     CLAUDE_P = "claude_p"
-    LITELLM = "litellm"
+    LOCAL = "local"
     OPENAI_COMPAT = "openai_compat"
     OPENAI_TOOLS = "openai_tools"
 
@@ -214,7 +213,7 @@ _TIER_MODEL: dict[Tier, tuple[str, str]] = {
     Tier.FRONTIER: ("PRECIS_MODEL_OPUS", "claude-opus-4-8"),
     Tier.BIG: ("PRECIS_MODEL_SONNET", "claude-sonnet-5"),
     Tier.MEDIUM: ("PRECIS_MODEL_HAIKU", "claude-haiku-4-5-20251001"),
-    # The litellm ``summarizer`` alias (``LlmConfig.model`` default), read
+    # The local ``summarizer`` alias (``LlmConfig.model`` default), read
     # from ``PRECIS_SUMMARIZE_MODEL`` exactly as ``LlmConfig.from_env``.
     Tier.SMALL: ("PRECIS_SUMMARIZE_MODEL", "summarizer"),
 }
@@ -262,7 +261,7 @@ def resolve_model(tier: Tier, backend: Backend | None = None) -> str:
     override = live_config.model_override(tier)
     # The coherence drop applies ONLY to the cloud tiers: they are the ones
     # that route to a claude transport under ANTHROPIC, so an OSS override
-    # there is incoherent. SMALL (→LITELLM/OPENAI_COMPAT) never touches a
+    # there is incoherent. SMALL (→LOCAL/OPENAI_COMPAT) never touches a
     # claude transport, so its (always-non-claude) override is legitimate and
     # must be honored — dropping it would silently ignore a live
     # `llm.model.small` row (incl. the one Part 1's remap reads).
@@ -379,7 +378,7 @@ def select_transport(
 
     ``SMALL`` is tool-less by construction and routes to the local/hosted-OSS
     split regardless of ``tools_needed``: under ``ANTHROPIC`` (the default) it
-    takes the loopback litellm proxy (:data:`Transport.LITELLM`); under
+    takes the loopback local completion wire (:data:`Transport.LOCAL`); under
     ``OPENAI`` it takes :data:`Transport.OPENAI_COMPAT` (a hosted OSS backend —
     OpenRouter — with no local hardware fallback of its own). This is the
     gap-fill from `docs/proposals/llm-openrouter-bypass.md` item 2.
@@ -395,9 +394,7 @@ def select_transport(
     both stay on the ``claude`` transports.
     """
     if tier is Tier.SMALL:
-        return (
-            Transport.OPENAI_COMPAT if backend is Backend.OPENAI else Transport.LITELLM
-        )
+        return Transport.OPENAI_COMPAT if backend is Backend.OPENAI else Transport.LOCAL
     if tools_needed:
         return (
             Transport.OPENAI_TOOLS
@@ -427,7 +424,7 @@ def transport_for_profile(profile: Profile, tier: Tier) -> Transport:
 
 
 class _HasText(Protocol):
-    """Duck type for the litellm ``LlmClient.complete`` result.
+    """Duck type for the local ``LlmClient.complete`` result.
 
     Matches :class:`precis.workers.llm_summarize.LlmResult` (``.text`` +
     ``.total_tokens``) without importing it — keeps this module free of
@@ -443,10 +440,10 @@ class LlmResult:
 
     * ``text`` — the assistant's final text. For ``claude_p`` this is the
       raw stdout (the JSON block lives inside it); for ``claude_agent``
-      it is the stream-json result text; for litellm it is the OpenAI
-      choice content.
+      it is the stream-json result text; for the local transport it is
+      the OpenAI choice content.
     * ``cost_usd`` — best-effort USD cost (``None`` when the transport
-      doesn't report one, e.g. the local litellm proxy).
+      doesn't report one, e.g. the loopback local transport).
     * ``turns_used`` — agent turn count (``None`` for the one-shot
       transports).
     * ``duration_s`` — agent wall-clock (``None`` for the one-shot /
@@ -558,7 +555,7 @@ def result_from_claude_p(res: ClaudePResult, *, model: str, tier: Tier) -> LlmRe
 
 
 def result_from_openai(res: _HasText, *, model: str, tier: Tier) -> LlmResult:
-    """Normalize a litellm ``LlmClient.complete`` result (OpenAI choices).
+    """Normalize a local ``LlmClient.complete`` result (OpenAI choices).
 
     Cost: prefer a provider-returned dollar figure (``res.cost_usd`` — set from
     OpenRouter's ``usage.cost``); otherwise price the token split via the
@@ -661,7 +658,7 @@ class LlmRequest:
     effort: str | None = None
     #: Direct local-serving base URL (llama-swap's OpenAI endpoint), threaded in
     #: by :func:`dispatch` when a reserved :class:`~precis.utils.llm.local_serving.LocalSlot`
-    #: declares an ``endpoint`` — the LITELLM transport routes here instead of the
+    #: declares an ``endpoint`` — the LOCAL transport routes here instead of the
     #: litellm proxy (the Phase-2 flip). ``None`` ⇒ the ``LlmConfig.from_env`` URL.
     local_url: str | None = None
     #: Caller label ("dream", "review:structural", "chase:verify", ...) — the
@@ -834,8 +831,8 @@ class ClaudePProvider:
         return result_from_claude_p(pres, model=model, tier=req.tier)
 
 
-class LitellmProvider:
-    """Loopback litellm ``LlmClient`` — OpenAI ``/v1/chat/completions``,
+class LocalProvider:
+    """Loopback local ``LlmClient`` — OpenAI ``/v1/chat/completions``,
     tool-less local completion."""
 
     def run(self, req: LlmRequest, *, model: str) -> LlmResult:
@@ -881,7 +878,7 @@ class OpenAIToolsProvider:
 _PROVIDERS: dict[Transport, LlmProvider] = {
     Transport.CLAUDE_AGENT: ClaudeAgentProvider(),
     Transport.CLAUDE_P: ClaudePProvider(),
-    Transport.LITELLM: LitellmProvider(),
+    Transport.LOCAL: LocalProvider(),
     Transport.OPENAI_COMPAT: OpenAICompatProvider(),
     Transport.OPENAI_TOOLS: OpenAIToolsProvider(),
 }
@@ -1112,7 +1109,7 @@ def _rung_is_cloud(rung: Rung) -> bool:
     rung with no ``placement`` → ``"chain"``) is classified by transport:
 
     * ``CLAUDE_AGENT`` / ``CLAUDE_P`` → always Anthropic **cloud**.
-    * ``LITELLM`` → the loopback litellm proxy → **local**.
+    * ``LOCAL`` → the loopback local completion wire → **local**.
     * ``OPENAI_COMPAT`` / ``OPENAI_TOOLS`` → hosted-OSS **cloud** when a hosted
       endpoint is configured (``PRECIS_LLM_BASE_URL`` set), else **local** (a
       ``served_by`` llama-swap slot is the only way these run without a base
@@ -1127,7 +1124,7 @@ def _rung_is_cloud(rung: Rung) -> bool:
         return True
     if rung.transport in (Transport.CLAUDE_AGENT, Transport.CLAUDE_P):
         return True
-    if rung.transport is Transport.LITELLM:
+    if rung.transport is Transport.LOCAL:
         return False
     return bool(os.environ.get("PRECIS_LLM_BASE_URL"))
 
@@ -1147,7 +1144,7 @@ def _apply_cloud_throttle(chain: list[Rung]) -> list[Rung]:
     **Which tiers survive a throttle depends on their chain, not just their
     name.** ``FRONTIER`` is cloud-only by construction (no local mirror), so it
     always pauses. Today (default ``ANTHROPIC`` backend, no operator chain
-    written) only ``SMALL`` has a standing local rung (``LITELLM``, via
+    written) only ``SMALL`` has a standing local rung (``LOCAL``, via
     :func:`select_transport`); ``BIG`` / ``MEDIUM`` resolve to a single cloud
     rung and so *also* pause under throttle **until an operator chain gives
     them a `placement: "local"` rung** (the Phase-3 roster / chain editor). The
@@ -1163,7 +1160,7 @@ def _apply_cloud_throttle(chain: list[Rung]) -> list[Rung]:
 
 
 #: ``SMALL`` (categorizer) model ids that only mean something on the
-#: litellm loopback (the ``summarizer`` alias and the ``rake-lemma`` name it
+#: local loopback (the ``summarizer`` alias and the ``rake-lemma`` name it
 #: resolves to) — POSTing either to a hosted OSS backend (OpenRouter et al.)
 #: 400s, since the hosted side has never heard of them. See
 #: :func:`_hosted_small_remap`. Deliberately scoped to the ``SMALL``-only
@@ -1209,7 +1206,7 @@ def _hosted_small_remap(
     slot (``has_local_slot`` — that slot's own model name is already correct
     for its endpoint), and ``model`` is one of :data:`_LOCAL_ONLY_MODEL_ALIASES`.
     Under the default ``ANTHROPIC`` backend ``SMALL`` resolves to
-    :data:`Transport.LITELLM`, not a hosted-OSS transport, so this is
+    :data:`Transport.LOCAL`, not a hosted-OSS transport, so this is
     byte-identical to today whenever the flip is off.
     """
     if has_local_slot:
@@ -1331,7 +1328,7 @@ def dispatch(req: LlmRequest) -> LlmResult:
     from precis.budget import breaker as _breaker
 
     # Gate on the *resolved* rung, not the tier band: a paid-band tier (BIG /
-    # MEDIUM) that failed over to a free local rung (served_by slot / litellm /
+    # MEDIUM) that failed over to a free local rung (served_by slot / local /
     # a placement:"local" chain rung) spends nothing, so a tripped $ cap must
     # not starve it. ``_rung_is_cloud`` is the authoritative local/cloud
     # classifier (same one the cloud-throttle uses).
@@ -1390,9 +1387,9 @@ def dispatch(req: LlmRequest) -> LlmResult:
         # FailoverProvider here) rather than a new one. But this
         # escape only exists when rung 0's transport is one of the two that
         # read `PRECIS_LLM_BASE_URL` when `local_url` is unset (OPENAI_TOOLS /
-        # OPENAI_COMPAT) — ``Transport.LITELLM`` (e.g. SMALL under the
+        # OPENAI_COMPAT) — ``Transport.LOCAL`` (e.g. SMALL under the
         # default ANTHROPIC backend) has no hosted mode at all and would just
-        # re-hit the same saturated loopback proxy, so that case (like
+        # re-hit the same saturated loopback wire, so that case (like
         # failover-off, or a primary with no fallback rung) stays
         # byte-identical to the old behavior: return the paused result
         # immediately so a pinned pass backs off instead of spinning.
@@ -1435,7 +1432,7 @@ def dispatch(req: LlmRequest) -> LlmResult:
     # local transport there instead of the litellm proxy, using the server-side
     # model name — the Phase-2 litellm-retirement flip. No endpoint ⇒ req + model
     # unchanged (today's behavior). Both local transports read ``local_url``:
-    # LITELLM (tool-less, ``_dispatch_local``) and OPENAI_TOOLS (a served local
+    # LOCAL (tool-less, ``_dispatch_local``) and OPENAI_TOOLS (a served local
     # model backing ``BIG``, tools, ``run_oss_tool_loop``).
     call_req = req
     call_model = model
@@ -1642,7 +1639,7 @@ class DispatchError(RuntimeError):
 @dataclass
 class DispatchClient:
     """A ``.complete(messages)``-shaped adapter that routes a completion
-    through :func:`dispatch` instead of holding its own litellm ``LlmClient``.
+    through :func:`dispatch` instead of holding its own local ``LlmClient``.
 
     Drop-in for the summarize / classify / glossary passes' ``client=`` seam:
     the same ``complete(messages, *, extra_body=None) -> LlmResult`` contract
@@ -1844,17 +1841,17 @@ def _is_unavailability(exc: BaseException) -> bool:
 
 
 #: Local-transport timeout cap for a SMALL-tier judge call. A classify /
-#: summarize / triage judge returns in ~1s against a healthy loopback proxy;
+#: summarize / triage judge returns in ~1s against a healthy loopback wire;
 #: capping far below the 120s ``LlmConfig`` default means a stuck / flapping
-#: ``:4000`` fails FAST so the ``FailoverProvider`` falls over to the hosted rung,
+#: wire fails FAST so the ``FailoverProvider`` falls over to the hosted rung,
 #: instead of a batch (N chunks × 2 calls × 120s) blocking past the worker's
 #: watchdog and stranding the pass with zero progress (the 2026-07-26 classify
-#: stall: a transient litellm flap hung SMALL work → no failover, no tags).
+#: stall: a transient local-wire flap hung SMALL work → no failover, no tags).
 _SMALL_LOCAL_TIMEOUT_S = 30.0
 
 
 def _dispatch_local(req: LlmRequest, model: str) -> LlmResult:
-    """Drive the loopback litellm ``LlmClient`` for a local tier.
+    """Drive the loopback local ``LlmClient`` for a local tier.
 
     Imports the summarizer client lazily so this module stays out of the
     worker/DB import chain (and so DB-free callers/tests never trigger
@@ -1867,9 +1864,9 @@ def _dispatch_local(req: LlmRequest, model: str) -> LlmResult:
 
     cfg = replace(LlmConfig.from_env(), model=model, enabled=True)
     # A local-serving slot may pin a direct endpoint (llama-swap) — route there
-    # instead of the litellm proxy URL (the Phase-2 flip; dark until a card
-    # declares served_by.endpoint). Mirrors the per-call url override the
-    # openai_compat path already uses.
+    # instead of the default loopback URL (the Phase-2 litellm-retirement flip;
+    # dark until a card declares served_by.endpoint). Mirrors the per-call url
+    # override the openai_compat path already uses.
     if req.local_url:
         cfg = replace(cfg, url=req.local_url)
     # A caller-pinned completion cap (paper_glossary=2000, …) wins over the
@@ -1896,10 +1893,10 @@ def _dispatch_local(req: LlmRequest, model: str) -> LlmResult:
     # resolved (SMALL tier default) but deliberately unused here rather than
     # guessed; temperature=0.0 alone is applied. Revisit once the deployed
     # llama-server version's behavior is verified live.
-    # Fail fast on a stuck/flapping loopback proxy so the failover ladder can
+    # Fail fast on a stuck/flapping loopback wire so the failover ladder can
     # fall over to the hosted rung. An explicit ``req.timeout_s`` wins; else a
     # SMALL-tier judge gets the tight cap (see ``_SMALL_LOCAL_TIMEOUT_S``) — a
-    # 120s-per-call default let a transient litellm flap hang whole SMALL
+    # 120s-per-call default let a transient local-wire flap hang whole SMALL
     # batches with no failover (the 2026-07-26 classify stall).
     if req.timeout_s is not None:
         cfg = replace(cfg, timeout=req.timeout_s)

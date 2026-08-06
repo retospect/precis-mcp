@@ -126,13 +126,13 @@ class TestHardFilters:
             clean_catalog,
             "narrow",
             tier_floor="small",
-            offerings=[{"transport": "litellm", "max_input": 1000}],
+            offerings=[{"transport": "local", "max_input": 1000}],
         )
         _card(
             clean_catalog,
             "wide",
             tier_floor="small",
-            offerings=[{"transport": "litellm", "max_input": 200_000}],
+            offerings=[{"transport": "local", "max_input": 200_000}],
         )
         sel = select_offering(
             clean_catalog, _req(tier_floor=Tier.SMALL, max_input=50_000)
@@ -147,7 +147,7 @@ class TestHardFilters:
             clean_catalog,
             "notools",
             tier_floor="small",
-            offerings=[{"transport": "litellm"}],
+            offerings=[{"transport": "local"}],
         )
         clean_catalog.update_ref(
             rid,
@@ -157,7 +157,7 @@ class TestHardFilters:
             clean_catalog,
             "hastools",
             tier_floor="small",
-            offerings=[{"transport": "litellm"}],
+            offerings=[{"transport": "local"}],
         )
         clean_catalog.update_ref(
             rid2,

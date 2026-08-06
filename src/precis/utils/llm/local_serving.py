@@ -65,9 +65,9 @@ class LocalSlot:
     a reserved slot carries it in :attr:`endpoint` plus the server-side model
     name in :attr:`served_model` — the router overrides the local dispatch's URL
     + model with them so the call goes to llama-swap DIRECTLY instead of the
-    litellm proxy (the Phase-2 litellm-retirement flip; §6/§15a). A ``served_by``
-    with NO ``endpoint`` leaves both ``None`` → today's slot-only behavior (the
-    call still goes to whatever ``LlmConfig.from_env`` dials)."""
+    default loopback wire (the Phase-2 litellm-retirement flip; §6/§15a). A
+    ``served_by`` with NO ``endpoint`` leaves both ``None`` → today's slot-only
+    behavior (the call still goes to whatever ``LlmConfig.from_env`` dials)."""
 
     host: str
     resource: str
@@ -165,7 +165,7 @@ def _same_family(a: str, b: str) -> bool:
 def _plausibly_served_here(model: str, served_resources: set[str]) -> bool:
     """Whether ``model`` looks like it *should* have been served on this host —
     it shares a model family (:func:`_same_family`) with some ``llm:`` resource
-    the host actually serves. Only then is a fallback-to-litellm a likely
+    the host actually serves. Only then is a fallback-to-local a likely
     ``served_by`` naming mistake worth a warning; for an unrelated (cloud) model
     the fallback is the intended path, not a misconfiguration (gr178888)."""
     return any(
@@ -184,7 +184,8 @@ def acquire(model: str) -> LocalSlot | None:
     or ``paused=True`` (host serves it but all slots busy — back off). A host
     that serves *other* ``llm:`` resources but not this one logs a rate-limited
     warning (once per cache window) — that combination is a name mismatch, not
-    the ordinary dark case, and would otherwise silently degrade to litellm.
+    the ordinary dark case, and would otherwise silently degrade to the local
+    transport.
     """
     if not model:
         return None
@@ -202,8 +203,8 @@ def acquire(model: str) -> LocalSlot | None:
         # model *plausibly should* be served here. Two false-alarm classes are
         # suppressed:
         #   • SMALL-tier loopback aliases (``summarizer`` / ``rake-lemma``) route
-        #     through the litellm loopback proxy by design, never a reserved
-        #     llama-swap slot, so "falling back to litellm" is intended. The
+        #     through the loopback local transport by design, never a reserved
+        #     llama-swap slot, so "falling back to local" is intended. The
         #     in-process dedup meant this flooded once per short-lived summarize
         #     worker (gr178498: 3907 hits/48h on melchior, all ``summarizer``).
         #   • Legitimately-cloud models (``claude-opus-4-8`` and other frontier
@@ -223,7 +224,7 @@ def acquire(model: str) -> LocalSlot | None:
                 warned.add(resource)
                 log.warning(
                     "local_serving: host %s serves %s locally but dispatch asked "
-                    "for %s — falling back to litellm (check served_by naming)",
+                    "for %s — falling back to local (check served_by naming)",
                     host,
                     sorted(served_resources),
                     resource,
@@ -239,8 +240,8 @@ def acquire(model: str) -> LocalSlot | None:
         log.warning("local_serving: reserve failed for %s", resource, exc_info=True)
         return None
     # Enrich a reserved slot with the card's direct endpoint (if declared), so the
-    # router can route to llama-swap instead of the litellm proxy. Looked up only
-    # once served + reserved — the dark no-op path never touches it.
+    # router can route to llama-swap instead of the default loopback wire. Looked
+    # up only once served + reserved — the dark no-op path never touches it.
     endpoint: str | None = None
     served_model: str | None = None
     if ok:
@@ -266,7 +267,7 @@ def _served_endpoints(store: object, host: str) -> dict[str, _Served]:
     optional server-side ``model`` name (defaults to the card's ``model_id``).
     Read only when a resource is already confirmed served, so the dark path pays
     nothing. Any failure degrades to an empty map (no direct routing → the call
-    falls back to the litellm proxy)."""
+    falls back to the default loopback wire)."""
     global _endpoints, _endpoints_at
     now = time.monotonic()
     if host not in _endpoints or now - _endpoints_at > _CACHE_TTL_S:

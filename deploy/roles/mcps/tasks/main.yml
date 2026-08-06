@@ -2,7 +2,7 @@
 # MCP servers used by Hermes agent profiles.
 #
 # Categories:
-#   1. Upstream pip packages (gripe, health, precis, arxiv, perplexity, sortie, git)
+#   1. Upstream pip packages (gripe, health, precis, arxiv, perplexity, git)
 #   2. Filesystem MCP via npx (@modelcontextprotocol/server-filesystem)
 #   3. Policy wrapper MCPs (git-installable from /shared/git, version-pinned)
 #   4. Code sandbox Podman containers (CPU on the scheduler node, GPU on the GPU node)
@@ -127,7 +127,6 @@
       perplexity-sonar-mcp \
       wolfravant-mcp \
       tubescribe-mcp \
-      sortie-mcp \
       git-mcp \
       'remarkable-mcp @ git+https://github.com/retospect/remarkable-mcp.git@feature/write-support'
   become: true
@@ -136,7 +135,7 @@
 
 - name: Symlink MCP binaries into PATH
   ansible.builtin.shell: |
-    for name in gripe fs-mcp gripe-mcp precis acatome-store acatome-mcp arxiv-mcp-server perplexity-sonar-mcp wolfravant-mcp tubescribe-mcp sortie-mcp sortie-runner git-mcp remarkable-mcp mcp fastmcp; do
+    for name in gripe fs-mcp gripe-mcp precis acatome-store acatome-mcp arxiv-mcp-server perplexity-sonar-mcp wolfravant-mcp tubescribe-mcp git-mcp remarkable-mcp mcp fastmcp; do
       [ -f "/opt/mcps/venv/bin/$name" ] && ln -sf "/opt/mcps/venv/bin/$name" "/opt/mcps/bin/$name"
     done
     true

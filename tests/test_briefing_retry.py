@@ -1,6 +1,6 @@
 """Unit tests for the briefing's transient-LLM-error retry.
 
-Regression guard: a single litellm-proxy blip (a dropped connection, a 5xx)
+Regression guard: a single local-transport blip (a dropped connection, a 5xx)
 used to fail the whole day's briefing job with no retry — the daily cron does
 not backfill a missed tick, so the morning news silently vanished. The retry
 must ride out transient failures but fail fast on a permanent 4xx (e.g. the

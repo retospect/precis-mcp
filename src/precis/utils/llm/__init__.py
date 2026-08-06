@@ -2,7 +2,7 @@
 
 One seam for model selection + transport choice + result normalization,
 consolidating the scattered ``os.environ.get(...)`` model reads and the
-three transports (``claude_agent`` / ``claude_p`` / litellm ``LlmClient``)
+three transports (``claude_agent`` / ``claude_p`` / local ``LlmClient``)
 behind a single :func:`dispatch`. This unit builds the seam; the call
 sites fold through it in a follow-up.
 

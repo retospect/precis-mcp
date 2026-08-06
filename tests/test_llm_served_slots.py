@@ -7,7 +7,7 @@ Proves the three moving parts of 7-code part 1:
 * ``Store.reconcile_llm_served_slots`` — the namespace-scoped full sync
   (upsert declared, reap stale, never touch hardware rows, reservation-safe).
 * ``run_llm_reconcile_pass`` — seeds the slots on a locked pass (dark: nothing
-  reserves them yet, litellm routing untouched).
+  reserves them yet, local-transport routing untouched).
 
 Real-PG (the ``store`` fixture) so the SQL is exercised end to end.
 """

@@ -46,7 +46,7 @@ tcc_profile_binaries:
   - /usr/libexec/autofsd
 
   # Shared /opt/mcps venv (symlink → /opt/homebrew/opt/python@3.14/…).
-  # Used by daily_briefing, sortie runner, quest runner, most cron jobs.
+  # Used by daily_briefing, quest runner, most cron jobs.
   - /opt/mcps/venv/bin/python3
 
   # Dedicated extract-watch venv (symlink → /opt/homebrew/opt/python@3.12/…).

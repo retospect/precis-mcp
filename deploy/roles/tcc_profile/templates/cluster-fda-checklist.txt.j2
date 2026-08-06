@@ -10,7 +10,7 @@ Why this file exists
 macOS 15+ (Sequoia, Tahoe/26) blocks NFS access for every process spawned
 by launchd or cron, regardless of UID. LaunchDaemons on this host
 (com.hermes.agent, com.acatome.extract-watch, …) and cron jobs
-(daily_briefing, quest runner, sortie-runner) cannot touch /opt/shared
+(daily_briefing, quest runner) cannot touch /opt/shared
 until each interpreter has been granted Full Disk Access.
 
 Apple removed the `profiles install` CLI in macOS 26 and now requires

@@ -94,7 +94,7 @@ def test_spend_rollup_groups_and_keeps_units_separate(store: Any) -> None:
     # Two lanes under one tagged source: a billed cloud row + two null-cost OAuth
     # rows (one of which errored).
     route_log.record_call(
-        _rec(source=src, transport="litellm", cost_usd=0.10, duration_ms=1000),
+        _rec(source=src, transport="local", cost_usd=0.10, duration_ms=1000),
         store=store,
     )
     route_log.record_call(
@@ -112,10 +112,10 @@ def test_spend_rollup_groups_and_keeps_units_separate(store: Any) -> None:
         store=store,
     )
     rows = {r.key: r for r in route_log.spend_rollup(store, days=1, source=src)}
-    assert set(rows) == {"litellm", "claude_agent"}
-    assert rows["litellm"].calls == 1
-    assert abs(rows["litellm"].real_usd - 0.10) < 1e-9
-    assert rows["litellm"].wall_ms == 1000
+    assert set(rows) == {"local", "claude_agent"}
+    assert rows["local"].calls == 1
+    assert abs(rows["local"].real_usd - 0.10) < 1e-9
+    assert rows["local"].wall_ms == 1000
     # The OAuth lane: two calls, no real dollars, wall-clock summed, one error.
     assert rows["claude_agent"].calls == 2
     assert rows["claude_agent"].real_usd == 0.0

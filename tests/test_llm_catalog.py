@@ -149,7 +149,7 @@ class TestServedBy:
             text="x",
             offerings=[
                 {
-                    "transport": "litellm",
+                    "transport": "local",
                     "served_by": [
                         {
                             "host": "spark",
@@ -473,8 +473,8 @@ class TestReconcile:
         llm_catalog.upsert_card(
             store,
             model_id="claude-opus-4-8",
-            text="Opus, also served via the loopback litellm proxy.",
-            offerings=[{"transport": "litellm", "endpoint": "http://127.0.0.1:4000"}],
+            text="Opus, also served via the loopback local transport.",
+            offerings=[{"transport": "local", "endpoint": "http://127.0.0.1:4000"}],
         )
         # Proxy serves opus + 4-7, but NOT 4-8 → drift.
         proxy = {_norm_model_key("claude-opus"), _norm_model_key("claude-opus-4-7")}
@@ -495,7 +495,7 @@ class TestReconcile:
             store,
             model_id="claude-opus-4-8",
             text="Opus via proxy.",
-            offerings=[{"transport": "litellm"}],
+            offerings=[{"transport": "local"}],
         )
         # proxy_models=None → we cannot assert absence, so no false alert.
         run_llm_reconcile_pass(store, models={}, proxy_models=None, force=True)

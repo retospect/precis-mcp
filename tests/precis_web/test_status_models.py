@@ -168,7 +168,7 @@ def test_active_routing_ctx_reflects_an_operator_chain(monkeypatch) -> None:
             "model": "z-ai/glm-4.7-flash",
             "transport": "openai_compat",
         },
-        {"placement": "local", "model": "summarizer", "transport": "litellm"},
+        {"placement": "local", "model": "summarizer", "transport": "local"},
     ]
     monkeypatch.setattr(
         live_config,

@@ -637,7 +637,7 @@ _SEED_PROSE: dict[str, str] = {
         "chase-verifier shape) — fast and cheap classification / triage."
     ),
     "small": (
-        "Small tier (the summarizer alias) on the loopback litellm proxy. "
+        "Small tier (the summarizer alias) on the loopback local transport. "
         "The cheapest rung; the per-chunk gloss lives here. Tool-less by "
         "construction."
     ),
