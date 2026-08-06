@@ -568,21 +568,37 @@ def _run_claude_tick(
 _PRECIS_TOOL_PREFIX = "mcp__precis__"
 
 
-def _precis_tools_used(raw_text: str | None) -> bool:
+def _precis_tools_used(result: Any) -> bool:
     """Did this tick actually invoke a precis verb?
 
-    Parses the stream-json properly (``count_tool_use_events``) rather than
-    grepping the blob: only a ``tool_use`` block inside an ``assistant``
-    event counts. A substring search would also match the init event's
-    available-tools list and the agent's own prose — and the prose written
-    when the tools are *missing* names the missing verbs, so the blob test
-    would read a failure report as proof of success.
-    """
-    if not raw_text:
-        return False
-    from precis.utils.claude_agent import count_tool_use_events
+    **Transport-neutral**, because the two agentic wires report tool use
+    differently and only one of them speaks stream-json:
 
-    return count_tool_use_events(raw_text, name_prefix=_PRECIS_TOOL_PREFIX) > 0
+    * ``claude_agent`` — parse ``raw_text`` properly
+      (``count_tool_use_events``) rather than grepping the blob: only a
+      ``tool_use`` block inside an ``assistant`` event counts, narrowed to
+      the ``mcp__precis__`` prefix so the tick's ``Bash``/``Read`` calls
+      don't pass for precis work. A substring search would also match the
+      init event's available-tools list and the agent's own prose — and the
+      prose written when the tools are *missing* names the missing verbs, so
+      the blob test would read a failure report as proof of success.
+    * ``openai_tools`` — the in-process loop drives the precis verbs
+      directly, so there is no stream-json and no ``mcp__`` prefix to find
+      (``raw_text`` is ``None`` for every non-agent transport). Its
+      ``tool_calls`` is the loop's own definitive count, and the only tools
+      it registers *are* the precis verbs, so the count is the answer.
+
+    Reading only the first signal fails every ``openai_tools`` tick however
+    well it ran — and a falsely-failed tick climbs the resume streak until it
+    bubbles a ``child-failed:`` that parks the user's todo for good.
+    """
+    raw_text = getattr(result, "raw_text", None)
+    if raw_text:
+        from precis.utils.claude_agent import count_tool_use_events
+
+        return count_tool_use_events(raw_text, name_prefix=_PRECIS_TOOL_PREFIX) > 0
+    calls = getattr(result, "tool_calls", None)
+    return calls is not None and calls > 0
 
 
 def _claude_exit(result: Any) -> tuple[int, str | None]:
@@ -618,7 +634,7 @@ def _claude_exit(result: Any) -> tuple[int, str | None]:
     if tr is not None and "budget" in tr:
         return 1, "budget"
     if tr is None or tr == "completed":
-        if not _precis_tools_used(getattr(result, "raw_text", None)):
+        if not _precis_tools_used(result):
             return 1, "no-precis-tools"
         return 0, None
     return 1, None

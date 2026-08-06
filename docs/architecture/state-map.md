@@ -114,15 +114,22 @@ for the durable pin of that boundary.
   streak-exhaustion after that bubbles for real as `child-failed:<job_id>`
   (the task needs splitting further than the auto-decompose could manage).
   A tick that exits cleanly having called **no precis verb** is likewise
-  resumable-not-success (`_claude_exit` → `no-precis-tools`): when the precis
-  MCP fails to register, the agent burns a full opus run reasoning from the
-  prompt, strands its findings in a response blob, and exits `completed` — so
-  it looked successful, changed nothing, and got re-minted to repeat. Detected
-  by parsing the stream (`claude_agent.count_tool_use_events(…,
-  name_prefix='mcp__precis__')` — only a `tool_use` block inside an `assistant`
-  event counts), never by grepping the blob: the init event lists every
-  available tool by name, and the prose written when the tools are *missing*
-  names the missing verbs, so a substring test reads both as proof they worked.
+  resumable-not-success (`_claude_exit` → `no-precis-tools`): an agent with no
+  verbs burns a full model run reasoning from the prompt, strands its findings
+  in a response blob, and exits `completed` — so it looked successful, changed
+  nothing, and got re-minted to repeat. `_precis_tools_used` is
+  **transport-neutral**, because only one of the two agentic wires speaks
+  stream-json: with a stream (`claude_agent`) it parses
+  `claude_agent.count_tool_use_events(…, name_prefix='mcp__precis__')` — only a
+  `tool_use` block inside an `assistant` event counts, never a grep of the blob,
+  since the init event lists every available tool by name and the prose written
+  when the tools are *missing* names the missing verbs, so a substring test
+  reads both as proof they worked; without one (`openai_tools`, whose in-process
+  loop has no `mcp__` prefix and leaves `raw_text` `None`) it reads
+  `LlmResult.tool_calls`, the loop's own definitive count of precis-verb calls.
+  Reading only the stream fails every OSS tick however well it ran, and a
+  falsely-failed tick climbs the resume streak until it bubbles a
+  `child-failed:` that parks the user's todo.
   A live child todo only blocks
   re-candidacy unconditionally when it's a genuine in-flight child or
   carries a hard-block tag (`halt`/`halt:`/`child-failed:`); a child

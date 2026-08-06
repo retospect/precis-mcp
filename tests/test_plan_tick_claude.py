@@ -340,6 +340,51 @@ def test_claude_exit_real_tool_use_passes() -> None:
     assert pt._claude_exit(_res(terminal_reason="completed")) == (0, None)
 
 
+# ── the same check on the OSS `openai_tools` wire ──────────────────────
+#
+# `raw_text` is stream-json, and stream-json only exists on `claude_agent`;
+# every other transport leaves it None. The `openai_tools` loop drives the
+# precis verbs in-process, so there is no `mcp__precis__` prefix to find
+# either. Reading only the stream would fail every OSS tick however well it
+# ran — and a falsely-failed tick climbs the resume streak until it bubbles a
+# `child-failed:` that parks the user's todo for good. `llm.chain.big` runs
+# `openai_tools` in prod, so this arm is load-bearing, not hypothetical.
+
+
+def test_claude_exit_oss_loop_tool_calls_count_as_tool_use() -> None:
+    assert pt._claude_exit(_res(terminal_reason=None, raw_text=None, tool_calls=3)) == (
+        0,
+        None,
+    )
+
+
+def test_claude_exit_oss_loop_zero_tool_calls_is_not_success() -> None:
+    """The loop's own count is definitive: zero means it called nothing."""
+    assert pt._claude_exit(
+        _res(terminal_reason="completed", raw_text=None, tool_calls=0)
+    ) == (1, "no-precis-tools")
+
+
+def test_claude_exit_no_signal_at_all_is_not_success() -> None:
+    """A completion wire reports neither signal — and cannot have called a
+    verb, so absence of evidence is the right answer here."""
+    assert pt._claude_exit(
+        _res(terminal_reason="completed", raw_text=None, tool_calls=None)
+    ) == (1, "no-precis-tools")
+
+
+def test_claude_exit_stream_json_wins_over_tool_calls_count() -> None:
+    """On the claude wire ``tool_calls`` counts ``Bash``/``Read`` too, so the
+    prefix-scoped stream parse must stay authoritative when a stream exists."""
+    only_bash = (
+        '{"type":"assistant","message":{"content":'
+        '[{"type":"tool_use","id":"t1","name":"Bash"}]}}'
+    )
+    assert pt._claude_exit(
+        _res(terminal_reason="completed", raw_text=only_bash, tool_calls=7)
+    ) == (1, "no-precis-tools")
+
+
 def test_claude_exit_transport_failure_wins_over_tool_check() -> None:
     """A transport-level reason keeps its own, more specific signal."""
     assert pt._claude_exit(_res(terminal_reason="max_turns", raw_text="")) == (
