@@ -127,13 +127,32 @@ def hub_cite_heads(store: Any, texts: Iterable[str]) -> frozenset[str]:
     return frozenset(h for h, rid in head_ref.items() if hub_flags.get(rid))
 
 
-def _edge_row(edge: EvidenceEdge, *, starred: bool) -> dict[str, Any]:
+def _unacq_map(paper_refs: dict[int, Any] | None) -> dict[int, dict[str, Any]]:
+    """``{paper_ref_id: unacquirable_override}`` for the supporter papers that
+    carry a Meta-tab unacquirable declaration — the per-row twin of the
+    claim-level :func:`~precis.taproot.trust._hub_supporter_override`. Read
+    from the already-batched ``paper_refs`` so no extra fetch. Empty when
+    ``paper_refs`` is ``None`` (a caller that didn't batch them)."""
+    out: dict[int, dict[str, Any]] = {}
+    for pid, r in (paper_refs or {}).items():
+        override = (getattr(r, "meta", None) or {}).get("unacquirable_override")
+        if isinstance(override, dict):
+            out[pid] = override
+    return out
+
+
+def _edge_row(
+    edge: EvidenceEdge, *, starred: bool, unacq: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """One supporter row for the templates. ``starred`` = this paper reaches
     the ``.bib`` on export (the ★ the user asked for); ``source_handle`` is
     the grounding ``pc<id>`` passage, ``None`` until the chase populates it.
     ``source_is_chunk`` = the handle parses as a universal chunk handle, so
     the template may render it as a ``/c/<handle>`` anchor (the legacy
-    ``slug~ord`` form stays plain text)."""
+    ``slug~ord`` form stays plain text). ``unacq`` (this paper's
+    ``unacquirable_override``, else ``None``) names THIS row as the
+    unobtainable source behind a calm-marked hub — the per-supporter twin of
+    the claim-level reflection banner: mode ``abstract`` → Ⓐ, else ✍."""
     parsed = handle_registry.parse(edge.source_handle) if edge.source_handle else None
     return {
         "handle": handle_registry.format_handle("paper", edge.paper_ref_id),
@@ -145,6 +164,13 @@ def _edge_row(edge: EvidenceEdge, *, starred: bool) -> dict[str, Any]:
         "integrity": edge.integrity,
         "role": edge.derived_role,
         "starred": starred,
+        "unacquirable": isinstance(unacq, dict),
+        "unacq_mode": (
+            ("abstract" if unacq.get("mode") == "abstract" else "vouched")
+            if isinstance(unacq, dict)
+            else None
+        ),
+        "unacq_note": unacq.get("note") if isinstance(unacq, dict) else None,
     }
 
 
@@ -421,11 +447,25 @@ def _render_one(
         paper_refs=paper_refs,
     )
     status = trust.label
-    originators = [_edge_row(e, starred=True) for e in evidence.originators]
-    corroborators = [
-        _edge_row(e, starred=corroborators_print) for e in evidence.corroborators
+    # Per-supporter unacquirable marks — which specific paper(s) the
+    # claim-level "grounded on an unacquirable source" banner refers to. Built
+    # from the same batched supporter refs claim_trust reads (mirrors
+    # cite_key_map); empty when a caller didn't batch paper_refs.
+    unacq_by_paper = _unacq_map(paper_refs)
+    originators = [
+        _edge_row(e, starred=True, unacq=unacq_by_paper.get(e.paper_ref_id))
+        for e in evidence.originators
     ]
-    contradictors = [_edge_row(e, starred=False) for e in evidence.contradictors]
+    corroborators = [
+        _edge_row(
+            e, starred=corroborators_print, unacq=unacq_by_paper.get(e.paper_ref_id)
+        )
+        for e in evidence.corroborators
+    ]
+    contradictors = [
+        _edge_row(e, starred=False, unacq=unacq_by_paper.get(e.paper_ref_id))
+        for e in evidence.contradictors
+    ]
     # Every distinct grounding passage, each labeled with the role it grounds
     # — the "reproduce fi191167, fix the grouping" ask (slice 1 item 4). Built
     # from `evidence.grounding` (one entry per RAW edge) rather than the
@@ -536,9 +576,14 @@ def render_claim_evidence(store: Any, head: str) -> dict[str, Any] | None:
     if ref_id is None or not is_claim_hub(store, ref_id):
         return None
     evidence = derive_evidence(store, ref_id, assume_hub=True)
-    cite_key_map = store.ref_cite_keys_bulk(_supporter_ref_ids(evidence))
+    supporter_ids = _supporter_ref_ids(evidence)
+    cite_key_map = store.ref_cite_keys_bulk(supporter_ids)
     chunk_cache = store.universal_chunks(_source_handles(evidence))
     hub_ref = store.fetch_refs_by_ids([ref_id]).get(ref_id)
+    # Supporter-paper refs for the per-row unacquirable marks (and so the
+    # singular path stays byte-identical to render_claims_evidence, which the
+    # test_render_claims_evidence_matches_singular_calls invariant pins).
+    paper_refs = store.fetch_refs_by_ids(list(supporter_ids)) if supporter_ids else {}
     return _render_one(
         store,
         head,
@@ -547,6 +592,7 @@ def render_claim_evidence(store: Any, head: str) -> dict[str, Any] | None:
         hub_ref,
         cite_key_map=cite_key_map,
         chunk_cache=chunk_cache,
+        paper_refs=paper_refs,
     )
 
 

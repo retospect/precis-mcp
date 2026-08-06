@@ -47,6 +47,12 @@
   <span class="text-slate-700">{{ row.title }}</span>
   {% if row.year %}<span class="text-slate-400">({{ row.year }})</span>{% endif %}
   {% if row.source_handle %}<span class="text-slate-400">· grounded at {% if row.source_is_chunk %}{{ ('[' ~ row.source_handle ~ ']') | linkify_refs }}{% else %}<span class="font-mono">{{ row.source_handle }}</span>{% endif %}</span>{% endif %}
+  {% if row.unacquirable %}
+  {# This specific supporter is the unobtainable source the claim-level banner
+     above refers to — Ⓐ abstract-only vs ✍ author-vouched (row.unacq_mode). #}
+  <span class="text-[11px] rounded bg-amber-100 text-amber-700 px-1.5 py-0.5"
+        title="{% if row.unacq_note %}{{ row.unacq_note }}{% else %}source declared unacquirable on its Meta tab{% endif %}">{% if row.unacq_mode == 'abstract' %}Ⓐ abstract-only{% else %}✍ author-vouched{% endif %}</span>
+  {% endif %}
   {% if row.integrity != 'clean' %}
   <span class="text-[11px] rounded bg-rose-100 text-rose-700 px-1.5 py-0.5">⚠ {{ row.integrity }}</span>
   {% endif %}

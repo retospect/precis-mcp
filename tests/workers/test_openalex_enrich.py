@@ -8,6 +8,7 @@ import pytest
 
 from precis.ingest import openalex_meta
 from precis.store import Store
+from precis.workers import openalex_enrich
 from precis.workers.openalex_enrich import _STATE_KEY, run_openalex_enrich_pass
 
 # A trimmed OpenAlex work object carrying a reconstructable abstract.
@@ -40,6 +41,44 @@ def _meta(store: Store, ref_id: int) -> dict[str, Any]:
     ref = store.get_ref(kind="paper", id=ref_id)
     assert ref is not None
     return ref.meta or {}
+
+
+def _card(store: Store, ref_id: int, kind: str, text: str, *, ord_: int = -1) -> int:
+    with store.pool.connection() as conn:
+        with conn.transaction():
+            row = conn.execute(
+                "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+                "VALUES (%s, %s, %s, %s) RETURNING chunk_id",
+                (ref_id, ord_, kind, text),
+            ).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+def _embed(store: Store, chunk_id: int) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO chunk_embeddings (chunk_id, embedder) VALUES (%s, 'bge-m3')",
+            (chunk_id,),
+        )
+        conn.commit()
+
+
+def _chunk_row(store: Store, ref_id: int, kind: str) -> tuple[int, str] | None:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT chunk_id, text FROM chunks WHERE ref_id = %s AND chunk_kind = %s",
+            (ref_id, kind),
+        ).fetchone()
+    return (int(row[0]), str(row[1])) if row else None
+
+
+def _has_embedding(store: Store, chunk_id: int) -> bool:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM chunk_embeddings WHERE chunk_id = %s", (chunk_id,)
+        ).fetchone()
+    return row is not None
 
 
 class TestEnrichRefPromotion:
@@ -140,3 +179,95 @@ class TestThrottle:
         assert r2.claimed == 0
         assert r2.ok == 0
         assert r2.failed == 0
+
+
+class TestCardRebuild:
+    def test_lane_a_promotion_rebuilds_cards_and_mints_missing_abstract_card(
+        self, store: Store
+    ) -> None:
+        rid = _paper(
+            store,
+            slug="p7",
+            title="Sensor Fusion",
+            meta={"openalex": {"abstract": "Highly sensitive sensors"}},
+        )
+        # Simulate an abstract-less ingest: only card_combined exists (no
+        # card_abstract at all — pipeline._build_cards only builds one
+        # ``if abstract``).
+        combined_id = _card(store, rid, "card_combined", "Sensor Fusion")
+        _embed(store, combined_id)
+        store.set_setting(_STATE_KEY, "2000-01-01T00:00:00+00:00")
+
+        result = run_openalex_enrich_pass(store)
+
+        assert result.claimed >= 1
+        assert _meta(store, rid).get("abstract") == "Highly sensitive sensors"
+
+        # card_abstract now exists, carrying the abstract text, NULL embedding.
+        abstract_card = _chunk_row(store, rid, "card_abstract")
+        assert abstract_card is not None
+        abstract_chunk_id, abstract_text = abstract_card
+        assert abstract_text == "Highly sensitive sensors"
+        assert not _has_embedding(store, abstract_chunk_id)
+
+        # card_combined's text now folds in the abstract, and its stale
+        # embedding was dropped so embed:bge-m3 re-claims it.
+        combined = _chunk_row(store, rid, "card_combined")
+        assert combined is not None
+        assert "Highly sensitive sensors" in combined[1]
+        assert not _has_embedding(store, combined_id)
+
+    def test_lane_b_fetch_that_lands_an_abstract_rebuilds_cards(
+        self, monkeypatch: pytest.MonkeyPatch, store: Store
+    ) -> None:
+        monkeypatch.setattr(
+            openalex_meta, "fetch_openalex_work", lambda doi, **k: _WORK
+        )
+        rid = _paper(store, slug="p8", title="Fused Sensors", doi="10.1/f")
+        combined_id = _card(store, rid, "card_combined", "Fused Sensors")
+        _embed(store, combined_id)
+        store.set_setting(_STATE_KEY, "2000-01-01T00:00:00+00:00")
+
+        run_openalex_enrich_pass(store)
+
+        assert _meta(store, rid).get("abstract") == "Highly sensitive sensors"
+        abstract_card = _chunk_row(store, rid, "card_abstract")
+        assert abstract_card is not None
+        assert abstract_card[1] == "Highly sensitive sensors"
+        combined = _chunk_row(store, rid, "card_combined")
+        assert combined is not None
+        assert "Highly sensitive sensors" in combined[1]
+        assert not _has_embedding(store, combined_id)
+
+
+class TestOpenAlexMissStamp:
+    def test_genuine_miss_is_stamped_and_not_reselected(
+        self, monkeypatch: pytest.MonkeyPatch, store: Store
+    ) -> None:
+        monkeypatch.setattr(openalex_meta, "fetch_openalex_work", lambda doi, **k: None)
+        rid = _paper(store, slug="p9", doi="10.1/miss")
+        store.set_setting(_STATE_KEY, "2000-01-01T00:00:00+00:00")
+
+        run_openalex_enrich_pass(store)
+
+        meta = _meta(store, rid)
+        assert meta.get("openalex", {}).get("miss") is True
+        assert "tried_at" in meta.get("openalex", {})
+        # No longer eligible for Lane B's next fetch batch.
+        assert rid not in {r for r, _ in openalex_enrich._fetch_batch(store, limit=50)}
+
+    def test_transient_fetch_error_is_not_stamped_stays_eligible(
+        self, monkeypatch: pytest.MonkeyPatch, store: Store
+    ) -> None:
+        def _boom(doi: str, **k: Any) -> dict[str, Any]:
+            raise RuntimeError("network blip")
+
+        monkeypatch.setattr(openalex_meta, "fetch_openalex_work", _boom)
+        rid = _paper(store, slug="p10", doi="10.1/transient")
+        store.set_setting(_STATE_KEY, "2000-01-01T00:00:00+00:00")
+
+        run_openalex_enrich_pass(store)
+
+        assert _meta(store, rid).get("openalex") is None
+        # Still eligible — a transient error must keep retrying.
+        assert rid in {r for r, _ in openalex_enrich._fetch_batch(store, limit=50)}

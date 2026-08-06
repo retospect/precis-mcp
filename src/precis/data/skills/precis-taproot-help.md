@@ -104,9 +104,22 @@ is LLM-heavy (`extract → block → dedup_judge → place`) and by design runs 
 cluster worker — **never in the MCP process**; the verb only mints the job:
 
 ```python
-put(kind="job", job_type="taproot_backfill", params={"scope": "my-draft-slug"})
-# → mints job jo<id>; poll it:
-get(kind="job", id="jo<id>")  # job_event stream + [pc]→[fi] landing as it runs
+# Canonical: write the intent as a todo; the dispatch worker mints the job.
+put(
+    kind="todo",
+    text="taproot backfill my-draft-slug",
+    meta={
+        "executor": "claude_inproc",
+        "job_type": "taproot_backfill",
+        "params": {"scope": "my-draft-slug"},
+    },
+)
+# → the dispatch worker mints the taproot_backfill job under it (one tick).
+# Ad-hoc submit skips the intent layer — parent on the draft's numeric ref_id
+# (its subject ref, ADR 0044) or a todo's; parent_id is an int, not a slug:
+#   put(kind="job", parent_id=<draft ref_id>, job_type="taproot_backfill",
+#       params={"scope": "my-draft-slug"})
+get(kind="job", id="jo<id>")  # poll: job_event stream + [pc]→[fi] as it runs
 ```
 
 `params.scope` is a draft slug (every body chunk), a `dc<id>` heading (its
@@ -163,9 +176,13 @@ paper is fetched:
 # the [pa] arm rides the same job; ref_level=True promotes a fetched [pa]
 # whole-paper instead of re-grounding it to a [pc] passage
 put(
-    kind="job",
-    job_type="taproot_backfill",
-    params={"scope": "dc1652005", "ref_level": True},
+    kind="todo",
+    text="taproot backfill dc1652005 (ref-level)",
+    meta={
+        "executor": "claude_inproc",
+        "job_type": "taproot_backfill",
+        "params": {"scope": "dc1652005", "ref_level": True},
+    },
 )
 ```
 

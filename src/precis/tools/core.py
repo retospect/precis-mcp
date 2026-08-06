@@ -737,6 +737,13 @@ def put(
     executor: str | None = None,
     params: dict[str, Any] | None = None,
     idem_key: str | None = None,
+    # job parent (see precis-job-help / ADR 0044): the ref this job hangs off
+    # — a parent todo for the canonical intent→compute path, or the subject
+    # artifact (a draft/structure ref) for a derived-compute job. Declared at
+    # the verb level so strict-schema MCP clients don't strip it — without it
+    # the ad-hoc put(kind='job', parent_id=…) submit path is uncallable over
+    # MCP (JobHandler.put requires it, but it never reached the schema).
+    parent_id: int | str | None = None,
     # job retry (see precis-job-help): re-run a failed job —
     # put(kind='job', id=<failed>, mode='retry'[, model='sonnet']). model=
     # swaps the parent todo's meta.llm_tier so the re-minted tick runs on
@@ -879,6 +886,7 @@ def put(
             "executor": executor,
             "params": params,
             "idem_key": idem_key,
+            "parent_id": parent_id,
             "model": model,
             "pos": pos,
             "meta": meta,

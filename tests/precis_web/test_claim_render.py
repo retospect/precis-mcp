@@ -66,7 +66,8 @@ def test_render_claim_evidence_reflects_unacquirable_supporter(hub: Hub) -> None
     """When the hub's sole grounding supporter is declared unacquirable on its
     own Meta tab, ``claim_trust`` softens clean → Ⓐ/✍ and the render exposes
     ``trust_overridden``/``trust_note`` so the claim page can explain the calm
-    badge (gap-1 per-claim reflection)."""
+    badge (gap-1 per-claim reflection) — AND the specific supporter row is
+    itself marked (1-residual: name WHICH paper, not just the mode+note)."""
     store = hub.store
     claim_hub = mint_hub(store, _CLAIM)
     supporter = store.insert_ref(
@@ -94,6 +95,33 @@ def test_render_claim_evidence_reflects_unacquirable_supporter(hub: Hub) -> None
     assert data["status"] == "abstract"
     assert data["trust_overridden"] is True
     assert data["trust_note"] == "paywalled; abstract states the result"
+    # 1-residual: the supporter row that IS the unacquirable source is marked.
+    row = data["corroborators"][0]
+    assert row["paper_ref_id"] == supporter
+    assert row["unacquirable"] is True
+    assert row["unacq_mode"] == "abstract"
+    assert row["unacq_note"] == "paywalled; abstract states the result"
+
+
+def test_render_claim_evidence_acquirable_supporter_row_unmarked(hub: Hub) -> None:
+    """A supporter with no unacquirable declaration renders an unmarked row —
+    the mark is per-paper, not a blanket flag on every supporter."""
+    store = hub.store
+    claim_hub = mint_hub(store, _CLAIM)
+    supporter = store.insert_ref(
+        kind="paper", slug="acquirable-supporter", title="An open paper"
+    ).id
+    attach_evidence(
+        store, hub_ref_id=claim_hub, paper_ref_id=supporter, role="corroborates"
+    )
+    head = handle_registry.format_handle("finding", claim_hub)
+
+    data = render_claim_evidence(store, head)
+
+    assert data is not None
+    row = data["corroborators"][0]
+    assert row["unacquirable"] is False
+    assert row["unacq_mode"] is None
 
 
 # ---------------------------------------------------------------------------

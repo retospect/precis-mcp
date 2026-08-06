@@ -1108,9 +1108,14 @@ not separate daemons anymore.
   `ingest/openalex_meta.py::enrich_ref` (free/keyless OpenAlex, fixed host —
   no SSRF surface), which now also promotes the reconstructed abstract to
   top-level (only when the ref has none — a good existing abstract/byline is
-  never clobbered). Does NOT yet rebuild the `card_abstract` search card for a
-  promoted abstract (embedding-cascade follow-on), and an OpenAlex *miss*
-  isn't stamped so a record-less DOI is re-tried each pass (both in OPEN-ITEMS).
+  never clobbered). When either lane fills a ref's abstract, its derived search
+  cards are rebuilt in the same pass (`ingest/cards.py::rewrite_cards` +
+  `ensure_abstract_card`, which mints the `card_abstract` chunk an abstract-less
+  ingest never got) so `embed:bge-m3` re-embeds and the abstract becomes
+  searchable. A genuine OpenAlex *miss* (`enrich_ref` returns None, not a
+  transient error) stamps `meta.openalex={tried_at, miss}` so `_fetch_batch`
+  stops re-selecting a record-less DOI. Remaining: a Crossref/S2 fallback for
+  DOIs OpenAlex genuinely lacks (OPEN-ITEMS).
 * `fetch` / `chase` backoff — **both exponential**. The OA fetcher's
   retry window arms on any `fetcher:%` event (not just `unpaywall`,
   which is disabled in prod) and doubles per prior attempt
