@@ -85,8 +85,15 @@ fi
 cd "$CLUSTER_DIR"
 
 # ── 1. reachability ─────────────────────────────────────────────────────
-say "checking cluster reachability (ansible ping)"
-ansible all -m ping ${INV_ARGS[@]+"${INV_ARGS[@]}"} >/tmp/precis-deploy-ping.$$ 2>&1 || {
+# Ping only the groups redeploy-precis.yml actually targets, NOT `all` — the
+# inventory can carry bootstrap-only hosts (e.g. castor/pollux: in `linux` for
+# the tailscale bootstrap, deliberately excluded from every service group until
+# their serving role is wired) that have no `deploy` SSH user and would abort a
+# deploy they play no part in (gripe 196641). Keep this pattern in sync with the
+# plays' `hosts:` in redeploy-precis.yml (gateway/scheduler/data/inference).
+PING_TARGETS="gateway:scheduler:data:inference"
+say "checking cluster reachability (ansible ping — ${PING_TARGETS})"
+ansible "$PING_TARGETS" -m ping ${INV_ARGS[@]+"${INV_ARGS[@]}"} >/tmp/precis-deploy-ping.$$ 2>&1 || {
     cat /tmp/precis-deploy-ping.$$ >&2
     rm -f /tmp/precis-deploy-ping.$$
     die "a host is unreachable — aborting (a partial redeploy mixes code versions)."
