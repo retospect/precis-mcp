@@ -242,6 +242,7 @@ _REF_PASS_PRIORITY: dict[str, PassBand] = {
     "_heartbeat_pass": PassBand.HEALTH,
     "_chase_pass": PassBand.BACKGROUND,
     "_bib_parse_pass": PassBand.BACKGROUND,
+    "_bib_retag_pass": PassBand.DEFAULT,
     "_inbound_chase_pass": PassBand.BACKGROUND,
     "_hub_refine_pass": PassBand.BACKGROUND,
     "_chase_trigger_pass": PassBand.BACKGROUND,
@@ -359,6 +360,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "summarize",
             "chunk_keywords",
             "bib_parse",
+            "bib_retag",
             "chase",
             "fetch",
             "gp_fetch",
@@ -721,6 +723,33 @@ def run(args: argparse.Namespace) -> None:
                 )
 
             ref_passes.append(_bib_mark_pass)
+
+        # bib_retag — Layer-2 corpus remediation (gripe 196447). Retypes
+        # mis-typed `chunk_kind='paragraph'` bibliography chunks to
+        # `references` (content-detected via bib_parse's shared detector) and
+        # deletes their stale chunk_embeddings/chunk_summaries so they drop out
+        # of semantic search. MUTATES existing corpus, so DEFAULT-OFF (registry
+        # `enable_env`, no `default_profiles`): registers but is gated off every
+        # cycle absent an explicit service_config row — run it deliberately via
+        # `--only bib_retag`. `PRECIS_BIB_RETAG_DRY_RUN=1` makes it a
+        # non-mutating count. Pure regex, no LLM / external call / embedder.
+        if _register("bib_retag"):
+            # Local import (aliased) — `--only bib_retag` skips the
+            # chunk_keywords block that binds the bare `BatchResult`, so this
+            # block must not depend on it (mirrors `_bib_parse_pass`).
+            from precis.workers.bib_retag import run_bib_retag_pass
+            from precis.workers.runner import BatchResult as _BrBatchResult
+
+            def _bib_retag_pass(batch_size: int) -> _BrBatchResult:
+                r = run_bib_retag_pass(store, batch_size=batch_size)
+                return _BrBatchResult(
+                    handler="bib_retag",
+                    claimed=r["claimed"],
+                    ok=r["ok"],
+                    failed=r["failed"],
+                )
+
+            ref_passes.append(_bib_retag_pass)
 
         # Finding-chase pass — same sibling-worker pattern, but for
         # STATUS:tracing/acquiring findings. Default-off LLM hooks via

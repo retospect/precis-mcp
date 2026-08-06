@@ -1495,13 +1495,13 @@ entries S2 itself may miss.
   tail-walk, gr196447 Layer 1) was fixed to actually catch Marker's
   real one-entry-per-chunk shape and long (50-150+ entry) tail runs,
   but chunks ingested *before* that fix are still `chunk_kind='paragraph'`
-  corpus-wide (Layer 2 — a separate, not-yet-built retroactive
-  remediation pass) — `bib_parse`'s own detector is what keeps working
-  on that backlog regardless. Entries are split on the `[N]` markers and
-  deduped by marker (chunk-overlap duplicates keep the first occurrence).
-  The per-line marker-shape regex (`MARKER_LINE_RE`) is shared with
-  `boilerplate.py` so the two detectors can't drift apart on what a
-  bibliography line looks like structurally.
+  corpus-wide — remediated by the `bib_retag` pass below (gr196447
+  Layer 2), and `bib_parse`'s own content-based detector keeps working
+  on that backlog regardless in the meantime. Entries are split on the
+  `[N]` markers and deduped by marker (chunk-overlap duplicates keep the
+  first occurrence). The per-line marker-shape regex (`MARKER_LINE_RE`)
+  is shared with `boilerplate.py` so the two detectors can't drift apart
+  on what a bibliography line looks like structurally.
 - **Field extraction** — regex fast path for the ACS/Wiley `authors,
   Journal YEAR, vol, page` shape; messy lines fall back to a SMALL-tier
   LLM batch (ADR 0047 cascade philosophy), via the router
@@ -1525,6 +1525,28 @@ entries S2 itself may miss.
   join/ordering rule); **taproot citation-following**
   (`citation-taproot-resolve`, shipped — below) is the other consumer. This
   base slice produces the table both read.
+
+- **`bib_retag` remediation pass** (`workers/bib_retag.py`, gripe 196447
+  Layer 2) — corpus remediation for the mis-typed-bibliography gap above.
+  Per claimed paper it finds `ord >= 0 chunk_kind='paragraph'` chunks that
+  content-detect as bibliography (via `bib_parse`'s **shared** detector,
+  imported so the two never disagree) and re-types them to `'references'`
+  **in place**, then DELETEs their `chunk_embeddings` / `chunk_summaries`
+  so they drop out of semantic search and are never re-embedded (the embed
+  worker skips `chunk_kind='references'`). In-place `chunk_kind` UPDATE is
+  deliberate: it leaves `text` untouched so the append-only body-text
+  trigger (`0068`) never fires, and preserves `chunk_id` so the dependent
+  `chunk_citations`/`links`/`chunk_tags` rows stay attached (DELETE+INSERT
+  would churn `chunk_id` and CASCADE-orphan them). **Manual / DEFAULT-OFF**
+  — it MUTATES existing corpus, so unlike `bib_parse` it has NO
+  `default_profiles` and carries `enable_env=PRECIS_BIB_RETAG_ENABLED`
+  (registers but is gated off every cycle absent a `service_config` row);
+  invoke via `precis worker --only bib_retag`. Converges on
+  `refs.meta.bib_retag_version` (stamped even when zero chunks retyped);
+  `PRECIS_BIB_RETAG_DRY_RUN=1` makes it a non-mutating count for a
+  pre-sweep tally. Conservative by design (same content-ratio threshold as
+  `bib_parse`): a false retype would silently drop real body content from
+  search, worse than leaving a bib chunk mis-typed.
 
 ## Inline citation markers → taproot resolution (`chunk_citations`)
 

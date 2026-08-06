@@ -686,6 +686,26 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-overview",
     ),
     ServiceSpec(
+        # gripe 196447 Layer 2: corpus remediation for bibliography chunks
+        # mis-typed `chunk_kind='paragraph'` (marker/PDF-OCR ingest) — retypes
+        # the content-detected ones to `references` in place and deletes their
+        # stale chunk_embeddings/chunk_summaries so they drop out of semantic
+        # search. MUTATES existing corpus, so DEFAULT-OFF (no `default_profiles`,
+        # `enable_env` gate) — never auto-runs on deploy; invoke via
+        # `--only bib_retag`. Converges on `meta.bib_retag_version`. No LLM, no
+        # external call — pure regex detection (shared with `bib_parse`).
+        name="bib_retag",
+        label="Bibliography retag (Layer-2 remediation)",
+        category="discovery",
+        kind=ServiceKind.PASS,
+        ref_pass=True,
+        enable_env="PRECIS_BIB_RETAG_ENABLED",
+        cost_sources=("bib_retag",),
+        one_line="Retype mis-typed 'paragraph' bibliography chunks to "
+        "'references' + drop their embeddings (gripe 196447, manual).",
+        doc_skill="precis-overview",
+    ),
+    ServiceSpec(
         name="inbound_chase",
         label="Inbound citation chase",
         category="discovery",
