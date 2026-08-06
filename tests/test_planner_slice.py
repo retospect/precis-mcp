@@ -257,22 +257,32 @@ def test_guardrails_halt_on_tick_cap(
     assert rid not in _candidate_parent_ids(store, limit=10)
 
 
+def _log_spend(store: Store, ref_id: int | None, cost: float) -> None:
+    """Record spend in ``llm_call_log`` — the ledger the caps actually read.
+
+    These tests used to hand-write ``meta={'cost_usd': ...}`` onto a job ref
+    instead. That field was never written by any production code path, so the
+    fixture invented the data the assertion then verified: the caps read $0.00
+    in prod and never fired, while the suite stayed green. Seed the real
+    ledger, or the test proves nothing.
+    """
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO llm_call_log (source, transport, model, cost_usd, ref_id) "
+            "VALUES ('plan_tick', 'claude_agent', 'claude-opus-4-8', %s, %s)",
+            (cost, ref_id),
+        )
+        conn.commit()
+
+
 def test_guardrails_halt_on_cost_cap(
     handler: TodoHandler, store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """When sum(child.meta.cost_usd) >= cap, parent gets halt:cost-cap."""
+    """When logged spend for the todo >= cap, parent gets halt:cost-cap."""
     monkeypatch.setenv("PRECIS_MAX_TODO_USD", "1.0")
     r = handler.put(text="expensive parent", meta={"llm_tier": "opus"})
     rid = _id_of(r.body)
-    # Mint a fake job with cost_usd = 1.5 to push over the cap.
-    job = store.insert_ref(
-        kind="job",
-        slug=None,
-        title="dummy",
-        meta={"cost_usd": 1.5},
-        parent_id=rid,
-    )
-    _ = job
+    _log_spend(store, rid, 1.5)
     verdict = planner_guardrails.check_parent(store, parent_ref_id=rid)
     assert verdict.allow is False
     assert verdict.halt_tag == "halt:cost-cap"
@@ -284,21 +294,15 @@ def test_guardrails_skip_on_daily_ceiling(
     """When daily cost >= PRECIS_DAILY_COST_CEILING, dispatch is paused
     (but the parent is NOT individually halted — round-wide pause).
 
-    Setup: keep per-todo cap loose, push global cost via a job under
-    a DIFFERENT parent so the parent-under-test has $0 of its own
+    Setup: keep the per-todo and per-tree caps loose, push global cost
+    against a DIFFERENT parent so the parent-under-test has $0 of its own
     cost and only the daily-ceiling branch fires.
     """
     monkeypatch.setenv("PRECIS_DAILY_COST_CEILING", "5.0")
     monkeypatch.setenv("PRECIS_MAX_TODO_USD", "1000.0")
+    monkeypatch.setenv("PRECIS_MAX_TREE_USD", "1000.0")
     other = handler.put(text="big spender", meta={"llm_tier": "opus"})
-    other_id = _id_of(other.body)
-    store.insert_ref(
-        kind="job",
-        slug=None,
-        title="dummy",
-        meta={"cost_usd": 10.0},
-        parent_id=other_id,
-    )
+    _log_spend(store, _id_of(other.body), 10.0)
     r = handler.put(text="cheap parent", meta={"llm_tier": "sonnet"})
     rid = _id_of(r.body)
     verdict = planner_guardrails.check_parent(store, parent_ref_id=rid)

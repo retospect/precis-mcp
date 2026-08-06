@@ -9,26 +9,48 @@ three caps the dispatcher consults before minting a planner job:
    ``halt:tick-cap`` and yield. The cap means "you're not
    converging; a human needs to look."
 
-2. **Per-todo cost cap** (``meta.cost_usd``). Accumulated from each
-   child plan_tick job. If a todo's lineage cost exceeds
-   ``MAX_TODO_USD`` (default $2), auto-tag ``halt:cost-cap``.
-   Bounds how much one task can cost regardless of depth.
+2. **Per-todo cost cap**. Real recorded spend attributed to the todo
+   in ``llm_call_log`` (``ref_id`` = the parent todo, stamped by
+   ``plan_tick``'s ``LlmRequest``). If it exceeds ``MAX_TODO_USD``
+   (default $2), auto-tag ``halt:cost-cap``. Bounds how much one
+   task can cost regardless of depth.
 
-3. **Global daily cost ceiling** (``PRECIS_DAILY_COST_CEILING``,
-   default $20/day). Sums plan_tick costs across all parents over
-   the last 24h; when the ceiling is hit the dispatcher returns 0
-   candidates until the rolling window clears. Coarse but
-   effective — protects the overall budget envelope.
+3. **Per-tree cost cap** (``PRECIS_MAX_TREE_USD``, default $10).
+   The per-todo cap is per-*todo*, so a wide fan-out multiplies it:
+   258 sibling todos under one project each get their own $2, i.e.
+   $516 of headroom nobody authorised. This cap sums recorded spend
+   across the candidate's whole root subtree and halts the candidate
+   when the project as a whole has spent enough.
+
+4. **Global daily cost ceiling** (``PRECIS_DAILY_COST_CEILING``,
+   default $20/day). Sums *all* recorded LLM spend over the last
+   24h; when the ceiling is hit the dispatcher returns 0 candidates
+   until the rolling window clears. Coarse but effective — protects
+   the overall budget envelope.
+
+**Why ``llm_call_log`` and not ``meta.cost_usd``.** Checks 2 and 3
+originally summed a ``meta.cost_usd`` key on child job refs that
+*nothing in the codebase ever wrote* — so both caps read $0.00 and
+could never fire, however far spend ran (a soft-deleted project tree
+burned $291 over five days against a $20/day ceiling before anyone
+noticed). ``llm_call_log`` is the authoritative per-dispatch ledger
+and needs no cooperation from the runner, so the caps cannot rot the
+same way again. Deliberately **includes** the ``claude_agent`` /
+``claude_p`` OAuth transports that :mod:`precis.budget.meter`
+excludes: the meter tracks real money, while these caps bound the
+planner's *discretionary* burn — subscription quota very much
+included, since that is the path that actually ran away.
 
 This module is read-only on the dispatcher path: it returns ``True``
 ("OK to dispatch") or applies a halt tag and returns ``False``.
 The halt-application path is async to the dispatch loop's tx so it
 doesn't deadlock on the candidate query's read lock.
 
-Tunables (env vars, all $-denominated):
+Tunables (env vars):
 
 * ``PRECIS_MAX_TICKS`` (int, default 10)
 * ``PRECIS_MAX_TODO_USD`` (float, default 2.0)
+* ``PRECIS_MAX_TREE_USD`` (float, default 10.0)
 * ``PRECIS_DAILY_COST_CEILING`` (float, default 20.0)
 """
 
@@ -36,7 +58,7 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -85,16 +107,36 @@ class GuardrailVerdict:
     reason: str | None = None
 
 
-def check_parent(store: Store, *, parent_ref_id: int) -> GuardrailVerdict:
-    """Run the three checks against a planner-candidate parent todo.
+@dataclass
+class RoundContext:
+    """Per-dispatch-round memo for the two broad cost queries.
 
-    Order: tick cap, then cost cap, then daily ceiling. Tick cap is
-    cheapest (no SQL aggregate); daily ceiling is the broadest
-    safety net but the most expensive to compute, so it runs last
-    and benefits from the prior cheap rejections.
+    ``check_parent`` runs once per candidate (up to 50 a round, every
+    minute), but the daily total is identical for every one of them and
+    sibling candidates share a subtree — so without a memo the incident
+    shape (hundreds of siblings under one root) re-runs the same
+    fleet-wide sum and the same tree walk once per sibling. Scoped to a
+    single round so the numbers stay fresh between sweeps.
+    """
+
+    daily_cost: float | None = None
+    tree_cost: dict[int, float] = field(default_factory=dict)
+
+
+def check_parent(
+    store: Store, *, parent_ref_id: int, ctx: RoundContext | None = None
+) -> GuardrailVerdict:
+    """Run the four checks against a planner-candidate parent todo.
+
+    Order: tick cap, per-todo cost, per-tree cost, then daily ceiling.
+    Tick cap is cheapest (single indexed row); the tree walk and the
+    daily aggregate are the broadest safety nets but the most
+    expensive to compute, so they run last and benefit from the prior
+    cheap rejections.
     """
     max_ticks = _env_int("PRECIS_MAX_TICKS", 10)
     max_todo_usd = _env_float("PRECIS_MAX_TODO_USD", 2.0)
+    max_tree_usd = _env_float("PRECIS_MAX_TREE_USD", 10.0)
     daily_ceiling = _env_float("PRECIS_DAILY_COST_CEILING", 20.0)
 
     tick_count = _read_tick_count(store, parent_ref_id)
@@ -115,7 +157,16 @@ def check_parent(store: Store, *, parent_ref_id: int) -> GuardrailVerdict:
             f"per-todo cost cap hit (${cost_usd:.2f} >= ${max_todo_usd:.2f})",
         )
 
-    daily_cost = _read_daily_cost(store)
+    tree_usd = _tree_cost(store, parent_ref_id, ctx)
+    if tree_usd >= max_tree_usd:
+        return _apply_halt(
+            store,
+            parent_ref_id,
+            "halt:tree-cost-cap",
+            f"per-tree cost cap hit (${tree_usd:.2f} >= ${max_tree_usd:.2f})",
+        )
+
+    daily_cost = _daily_cost(store, ctx)
     if daily_cost >= daily_ceiling:
         # Global ceiling — DON'T tag this specific parent; just skip
         # the dispatch wholesale until the window rolls. Other
@@ -150,36 +201,134 @@ def _read_tick_count(store: Store, ref_id: int) -> int:
 
 
 def _read_cost_usd(store: Store, ref_id: int) -> float:
-    """Sum ``cost_usd`` across every child job under ``ref_id``.
+    """Sum recorded spend attributed to ``ref_id`` in ``llm_call_log``.
 
-    Uses each job's ``meta.cost_usd`` (written by the runner from
-    ``claude -p``'s cost output). Robust to missing fields — older
-    jobs lack the meta key and count as 0.
+    ``plan_tick`` stamps ``LlmRequest.ref_id = parent_ref_id``, so every
+    tick's dispatch lands on the parent todo's own ledger rows — the
+    lifetime cost of the task, no runner cooperation required.
+
+    Lifetime, not windowed: this cap answers "how much has this one task
+    cost", so an old expensive todo stays halted. The ledger's own
+    retention GC (``route_log.prune``) is the only thing that ages a
+    row out.
     """
     with store.pool.connection() as conn:
         row = conn.execute(
             """
-            SELECT COALESCE(SUM(COALESCE((meta->>'cost_usd')::float, 0)), 0)
-              FROM refs
-             WHERE parent_id = %s
-               AND kind = 'job'
-               AND deleted_at IS NULL
+            SELECT COALESCE(SUM(cost_usd), 0)::float
+              FROM llm_call_log
+             WHERE ref_id = %s AND cost_usd IS NOT NULL
             """,
             (ref_id,),
         ).fetchone()
     return float(row[0]) if row and row[0] is not None else 0.0
 
 
-def _read_daily_cost(store: Store) -> float:
-    """Sum job costs across all parents over the rolling last 24h."""
+def _tree_cost(store: Store, ref_id: int, ctx: RoundContext | None) -> float:
+    """``_read_tree_cost_usd`` memoised per *root* for this round.
+
+    Keyed on the root, not the candidate, so N siblings under one project
+    share a single walk instead of doing N identical ones.
+    """
+    if ctx is None:
+        return _read_tree_cost_usd(store, ref_id)
+    root = _root_of(store, ref_id)
+    if root not in ctx.tree_cost:
+        ctx.tree_cost[root] = _read_tree_cost_usd(store, ref_id)
+    return ctx.tree_cost[root]
+
+
+def _daily_cost(store: Store, ctx: RoundContext | None) -> float:
+    """``_read_daily_cost`` computed once per round — it has no per-candidate
+    predicate, so every candidate in a round gets the same number."""
+    if ctx is None:
+        return _read_daily_cost(store)
+    if ctx.daily_cost is None:
+        ctx.daily_cost = _read_daily_cost(store)
+    return ctx.daily_cost
+
+
+def _root_of(store: Store, ref_id: int) -> int:
+    """The topmost ancestor of ``ref_id`` (itself when it has no parent)."""
     with store.pool.connection() as conn:
         row = conn.execute(
             """
-            SELECT COALESCE(SUM(COALESCE((meta->>'cost_usd')::float, 0)), 0)
-              FROM refs
-             WHERE kind = 'job'
-               AND deleted_at IS NULL
-               AND created_at >= now() - interval '24 hours'
+            WITH RECURSIVE up (ref_id, parent_id, depth) AS (
+                SELECT r.ref_id, r.parent_id, 0
+                  FROM refs r WHERE r.ref_id = %(id)s
+                UNION ALL
+                SELECT p.ref_id, p.parent_id, u.depth + 1
+                  FROM up u JOIN refs p ON p.ref_id = u.parent_id
+                 WHERE u.depth < %(max_depth)s
+            )
+            SELECT ref_id FROM up ORDER BY depth DESC LIMIT 1
+            """,
+            {"id": ref_id, "max_depth": _MAX_TREE_DEPTH},
+        ).fetchone()
+    return int(row[0]) if row and row[0] is not None else ref_id
+
+
+#: Max ancestor/descendant hops the tree walk will follow. A guard against a
+#: cyclic ``parent_id`` (which would otherwise spin the recursive CTE forever),
+#: not a real depth limit — planner trees are nowhere near this deep.
+_MAX_TREE_DEPTH = 64
+
+
+def _read_tree_cost_usd(store: Store, ref_id: int) -> float:
+    """Sum recorded spend across the whole root subtree containing ``ref_id``.
+
+    Walks up to the root ancestor, then back down over every
+    descendant, and totals their ``llm_call_log`` rows. Soft-deleted
+    refs are **included** on purpose: spend under a deleted parent is
+    still spend, and excluding it would let a delete reset the budget.
+    """
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            WITH RECURSIVE up (ref_id, parent_id, depth) AS (
+                SELECT r.ref_id, r.parent_id, 0
+                  FROM refs r WHERE r.ref_id = %(id)s
+                UNION ALL
+                SELECT p.ref_id, p.parent_id, u.depth + 1
+                  FROM up u JOIN refs p ON p.ref_id = u.parent_id
+                 WHERE u.depth < %(max_depth)s
+            ),
+            root AS (
+                SELECT ref_id FROM up ORDER BY depth DESC LIMIT 1
+            ),
+            down (ref_id, depth) AS (
+                SELECT ref_id, 0 FROM root
+                UNION ALL
+                SELECT c.ref_id, d.depth + 1
+                  FROM down d JOIN refs c ON c.parent_id = d.ref_id
+                 WHERE d.depth < %(max_depth)s
+            )
+            SELECT COALESCE(SUM(l.cost_usd), 0)::float
+              FROM llm_call_log l
+             WHERE l.cost_usd IS NOT NULL
+               AND l.ref_id IN (SELECT ref_id FROM down)
+            """,
+            {"id": ref_id, "max_depth": _MAX_TREE_DEPTH},
+        ).fetchone()
+    return float(row[0]) if row and row[0] is not None else 0.0
+
+
+def _read_daily_cost(store: Store) -> float:
+    """Sum *all* recorded LLM spend over the rolling last 24h.
+
+    Every source, every transport — not just planner ticks. The ceiling
+    gates the planner because that is the expensive discretionary work,
+    but the envelope it protects is the whole day's spend: if the fleet
+    has already burned the day's budget, minting more opus ticks is
+    exactly the wrong move.
+    """
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            SELECT COALESCE(SUM(cost_usd), 0)::float
+              FROM llm_call_log
+             WHERE cost_usd IS NOT NULL
+               AND ts >= now() - interval '24 hours'
             """
         ).fetchone()
     return float(row[0]) if row and row[0] is not None else 0.0

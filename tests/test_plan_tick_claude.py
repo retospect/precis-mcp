@@ -36,6 +36,19 @@ class _FakeWorkspace:
     doc_type = "paper"  # not 'patent' → the claims-digest refresh no-ops
 
 
+#: A stream-json *assistant* event showing the tick actually calling a precis
+#: verb. A real tick always does — it has to record state somehow — so this is
+#: the default everywhere a "clean run" is modelled; the tests about the tools
+#: *missing* pass their own ``raw_text``. Must be a genuine event line: the
+#: check parses the stream rather than grepping it.
+_USED_TOOLS = (
+    '{"type":"assistant","message":{"content":'
+    '[{"type":"tool_use","id":"t1","name":"mcp__precis__put"}]}}'
+)
+
+_CLEAN_STREAM = f"<stream-json>\n{_USED_TOOLS}"
+
+
 def _clean_result() -> LlmResult:
     return LlmResult(
         text="answer",
@@ -43,7 +56,7 @@ def _clean_result() -> LlmResult:
         turns_used=3,
         model="claude-opus-4-8",
         tier=Tier.FRONTIER,
-        raw_text="<stream-json>",
+        raw_text=_CLEAN_STREAM,
         terminal_reason=None,
     )
 
@@ -121,7 +134,7 @@ def test_run_claude_binds_request_and_maps_clean(
     assert req.env_overlay[agentlog.ENV_VAR] == "55"
     # Clean run → exit 0, raw stream-json captured as stdout, no resume.
     assert outcome.exit_code == 0
-    assert outcome.stdout == "<stream-json>"
+    assert outcome.stdout == _CLEAN_STREAM
     assert outcome.resume_reason is None
 
 
@@ -158,7 +171,7 @@ def test_run_claude_terminal_reason_maps_resume(
         turns_used=60,
         model="claude-opus-4-8",
         tier=Tier.FRONTIER,
-        raw_text="<stream>",
+        raw_text=f"<stream>\n{_USED_TOOLS}",
         terminal_reason=terminal_reason,
     )
     outcome, _ = _run_claude(monkeypatch, result=res)
@@ -223,6 +236,7 @@ def test_run_claude_breaker_pause_is_resumable(
 def _res(**kw: Any) -> LlmResult:
     base: dict[str, Any] = {
         "text": "",
+        "raw_text": _USED_TOOLS,
         "cost_usd": None,
         "turns_used": None,
         "model": "m",
@@ -257,6 +271,81 @@ def test_claude_exit_paused_wins_over_error() -> None:
 
 def test_claude_exit_other_error_subtype_fails() -> None:
     assert pt._claude_exit(_res(terminal_reason="error_during_execution")) == (1, None)
+
+
+# ── no-precis-tools: a "clean" tick that changed nothing ───────────────
+
+
+def test_claude_exit_no_tool_calls_is_not_success() -> None:
+    """A tick that called no precis verb cannot have recorded anything.
+
+    This is the MCP-never-registered case: the agent burns a full opus run
+    reasoning from the prompt, exits ``completed``, and leaves its findings
+    stranded in a response blob — then gets re-minted to do it again.
+    """
+    assert pt._claude_exit(_res(terminal_reason="completed", raw_text="")) == (
+        1,
+        "no-precis-tools",
+    )
+
+
+def test_claude_exit_no_tool_calls_ignores_prose_mentions() -> None:
+    """The agent *complaining* about ``mcp__precis__*`` is not tool use.
+
+    The real failure blobs name the missing verbs in prose, so a bare
+    substring check would read the complaint as proof the tools worked and
+    pass the tick as clean — the exact bug.
+    """
+    complaint = (
+        '{"type":"text","text":"The precis MCP server never came online — '
+        'the mcp__precis__* verbs are never exposed, so I cannot file anything."}'
+    )
+    assert pt._claude_exit(_res(terminal_reason=None, raw_text=complaint)) == (
+        1,
+        "no-precis-tools",
+    )
+
+
+def test_claude_exit_init_tool_listing_is_not_tool_use() -> None:
+    """The init event advertising the verbs is not the same as calling one.
+
+    A registered-but-unused MCP surface still means the tick changed
+    nothing, and the init event names every tool — so a blob-level check
+    would pass a tick that never acted.
+    """
+    init = (
+        '{"type":"system","subtype":"init","tools":'
+        '["mcp__precis__get","mcp__precis__put","Bash"]}'
+    )
+    assert pt._claude_exit(_res(terminal_reason="completed", raw_text=init)) == (
+        1,
+        "no-precis-tools",
+    )
+
+
+def test_claude_exit_non_precis_tool_use_is_not_enough() -> None:
+    """Calling only built-ins doesn't record anything in precis."""
+    only_bash = (
+        '{"type":"assistant","message":{"content":'
+        '[{"type":"tool_use","id":"t1","name":"Bash"}]}}'
+    )
+    assert pt._claude_exit(_res(terminal_reason=None, raw_text=only_bash)) == (
+        1,
+        "no-precis-tools",
+    )
+
+
+def test_claude_exit_real_tool_use_passes() -> None:
+    """Control: a genuine precis ``tool_use`` block is recognised."""
+    assert pt._claude_exit(_res(terminal_reason="completed")) == (0, None)
+
+
+def test_claude_exit_transport_failure_wins_over_tool_check() -> None:
+    """A transport-level reason keeps its own, more specific signal."""
+    assert pt._claude_exit(_res(terminal_reason="max_turns", raw_text="")) == (
+        1,
+        "max_turns",
+    )
 
 
 # ── env overlay + draft kind-gate ──────────────────────────────────────

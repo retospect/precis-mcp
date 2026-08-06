@@ -1200,7 +1200,7 @@ def _last_assistant_text(stdout: str) -> str | None:
     return None
 
 
-def _count_tool_use_events(stdout: str) -> int:
+def count_tool_use_events(stdout: str, *, name_prefix: str | None = None) -> int:
     """Count ``tool_use`` blocks across all assistant events in a stream.
 
     Every MCP / built-in tool call the agent makes surfaces as a
@@ -1211,6 +1211,14 @@ def _count_tool_use_events(stdout: str) -> int:
     rather than logging a silent "$0 success". Only meaningful on the
     stream-json path — the caller leaves ``tool_calls`` ``None`` on the
     text/stderr path so a definitive zero is never confused with unknown.
+
+    ``name_prefix`` narrows the count to tools whose name starts with it
+    (e.g. ``"mcp__precis__"`` to ask "did this pass touch precis at all?").
+    Scoping to genuine ``tool_use`` blocks is what makes that question
+    answerable: a bare substring search over the raw stream also matches
+    the *init* event's available-tools list and any prose naming the tool,
+    so a pass that failed **for want of** the tools would look like one
+    that used them.
     """
     import json as _json
 
@@ -1231,9 +1239,18 @@ def _count_tool_use_events(stdout: str) -> int:
             count += sum(
                 1
                 for b in content
-                if isinstance(b, dict) and b.get("type") == "tool_use"
+                if isinstance(b, dict)
+                and b.get("type") == "tool_use"
+                and (
+                    name_prefix is None
+                    or str(b.get("name") or "").startswith(name_prefix)
+                )
             )
     return count
+
+
+#: Back-compat alias — the name was private before it gained a second caller.
+_count_tool_use_events = count_tool_use_events
 
 
 def _last_result_event(stdout: str) -> dict[str, Any] | None:

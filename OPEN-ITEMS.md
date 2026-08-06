@@ -10,6 +10,46 @@ tracked separately in `docs/improvement-plan.md` (same delete-on-ship rule).
 
 ---
 
+## Residuals (2026-08-06 — $291 planner cost-runaway RCA)
+
+Status: open · Severity: critical/feature · Owner: `src/precis/handlers/todo.py`, `src/precis/workers/claim.py`, `src/precis/budget/quota.py` · Test: below.
+
+A soft-deleted project todo (43019) kept dispatching opus planner ticks for
+four days — $291 across 258 orphaned children, against a nominal $20/day
+ceiling that was structurally incapable of firing. Four defects fixed in the
+same session (dead `meta.cost_usd` cost caps → `llm_call_log`; missing
+ancestor `deleted_at` check in dispatch; no tree-wide cap; a "clean" tick that
+called no precis verb counted as success). These are the residuals that fix
+did **not** cover:
+
+- **🚨 Minting a child todo under a soft-deleted parent isn't blocked.** The
+  258 children were *created* 2026-08-02, two days **after** their parent was
+  deleted on 2026-07-31. `_drop_orphaned` now stops the orphaned subtree from
+  *dispatching*, but nothing stops the tree from *growing* in the first place.
+  Owner: the `todo` put path (parent validation). Test: `put(kind='todo',
+  parent=<soft-deleted id>)` must reject.
+- **🔧 Stale job leases are never reaped.** Job ref 195999 ("plan_tick
+  dispatched from todo:186790") sat in `STATUS:running` for 7h+ with a dead
+  worker; an in-flight job blocks its parent's dispatch forever, so one dead
+  lease silently freezes a todo. Needs a lease timeout + reaper (mark
+  `failed` past N× the job's timeout). Test: a `running` job older than the
+  reap threshold is transitioned and its parent becomes dispatchable again.
+- **🔧 `budget/quota.py` `evaluate()` is dark, so OAuth spend has no global
+  gate.** `budget/meter.py` deliberately excludes `OAUTH_TRANSPORTS`
+  (`claude_agent` / `claude_p`) from the dollar meter as *notional* spend,
+  deferring to the quota snapshot — but `quota.evaluate()` returns `None`
+  without a snapshot, and nothing populates one. Net effect: `claude -p`
+  spend is invisible to every breaker except the planner guardrails. Either
+  wire the snapshot or fold OAuth spend into the meter behind its own cap.
+- **Ops: the halt is manual and reversible.** 258 todos under 43019 carry
+  `OPEN:halt:orphan-subtree-cost-runaway` and 85 queued jobs were flipped to
+  `STATUS:cancelled`, both `set_by='user'`, applied by hand on 2026-08-06.
+  Once the dispatch fixes deploy, `_drop_orphaned` covers this case
+  structurally and the manual tag can be dropped (`DELETE` the `ref_tags`
+  rows).
+
+---
+
 ## 🔧 pathway `meta.measures` has no writer — explorer renders it, nothing can set it
 
 Status: open · Severity: feature · Owner: `src/precis_pathway/handler.py` · Test: edit-verb round-trip → measure card renders on `/refs/pathway/{id}`.

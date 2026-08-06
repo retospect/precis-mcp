@@ -238,13 +238,33 @@ def run_dispatch_pass(store: Store, *, limit: int = 50) -> BatchResult:
     n_claimed = 0
     n_ok = 0
     n_failed = 0
+    # One memo for the whole round: the daily total is the same for every
+    # candidate, and siblings share a subtree (see RoundContext).
+    guard_ctx = planner_guardrails.RoundContext()
     for parent_id in candidate_ids:
         # Planner-coroutine guardrails: tick cap, per-todo cost cap,
         # global daily ceiling. The first two halt the parent
         # in-place (tag halt:tick-cap / halt:cost-cap so attention
         # view surfaces it); the third skips the whole dispatch
         # round. See workers/planner_guardrails.py.
-        verdict = planner_guardrails.check_parent(store, parent_ref_id=parent_id)
+        try:
+            verdict = planner_guardrails.check_parent(
+                store, parent_ref_id=parent_id, ctx=guard_ctx
+            )
+        except Exception:
+            # Fail CLOSED. A cost guardrail that errors must not wave the
+            # candidate through — that is the failure mode this whole
+            # change exists to kill. Skipping one candidate also keeps a
+            # single bad row from aborting the round for everyone else,
+            # which an uncaught raise here would do (runner only catches
+            # at the per-pass boundary).
+            log.exception(
+                "dispatch: guardrail check failed for parent todo id=%d; "
+                "skipping (fail-closed)",
+                parent_id,
+            )
+            n_failed += 1
+            continue
         if not verdict.allow:
             if verdict.halt_tag is None:
                 # Global ceiling — stop dispatching anything until
@@ -282,7 +302,10 @@ def _candidate_parent_ids(store: Store, *, limit: int) -> list[int]:
 
     Eligibility (planner-coroutine slice):
 
-    * ``kind='todo'`` and not deleted.
+    * ``kind='todo'`` and not deleted — nor descended from a deleted
+      todo. The SQL below only checks the candidate's own
+      ``deleted_at``; the ancestor walk is ``_drop_orphaned``, applied
+      to the result.
     * Auto-run signal: either a closed-vocab ``meta.llm_tier``
       (opus / sonnet / haiku — runs the LLM planner) OR an
       ``executor:<runner>`` tag (code-path runner) OR — legacy —
@@ -380,7 +403,56 @@ def _candidate_parent_ids(store: Store, *, limit: int) -> list[int]:
             """,
             (sorted(_OPEN_PARENT_STATUSES), limit),
         ).fetchall()
-    return [int(r[0]) for r in rows]
+    return _drop_orphaned(store, [int(r[0]) for r in rows])
+
+
+#: Max ancestor hops the orphan walk follows — a guard against a cyclic
+#: ``parent_id``, not a real depth limit (see ``planner_guardrails``).
+_MAX_ANCESTOR_DEPTH = 64
+
+
+def _drop_orphaned(store: Store, ids: list[int]) -> list[int]:
+    """Filter out candidates with a soft-deleted **ancestor**.
+
+    ``deleted_at`` is not transitive: deleting a project todo leaves
+    every descendant's own ``deleted_at`` NULL, so the candidate query's
+    ``r.deleted_at IS NULL`` says nothing about whether the *tree* the
+    candidate lives in is still alive. Without this walk, deleting a
+    parent doesn't stop its subtree — it only removes the row you'd look
+    at to notice the subtree is still dispatching. (One such orphaned
+    tree ran planner ticks for four days after its parent was deleted,
+    and even minted fresh children two days *post*-delete.)
+
+    Skips silently rather than tagging ``halt:``: an orphan is not
+    something a human needs to triage on the attention view — the
+    delete already said what should happen to it.
+    """
+    if not ids:
+        return ids
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            """
+            WITH RECURSIVE anc (cand_id, parent_id, deleted_at, depth) AS (
+                SELECT r.ref_id, r.parent_id, r.deleted_at, 0
+                  FROM refs r WHERE r.ref_id = ANY(%(ids)s)
+                UNION ALL
+                SELECT a.cand_id, p.parent_id, p.deleted_at, a.depth + 1
+                  FROM anc a JOIN refs p ON p.ref_id = a.parent_id
+                 WHERE a.depth < %(max_depth)s
+            )
+            SELECT DISTINCT cand_id FROM anc
+             WHERE deleted_at IS NOT NULL AND depth > 0
+            """,
+            {"ids": ids, "max_depth": _MAX_ANCESTOR_DEPTH},
+        ).fetchall()
+    orphaned = {int(r[0]) for r in rows}
+    if orphaned:
+        log.info(
+            "dispatch: skipping %d candidate(s) under a deleted ancestor: %s",
+            len(orphaned),
+            sorted(orphaned)[:10],
+        )
+    return [i for i in ids if i not in orphaned]
 
 
 # ── per-parent locked mint ────────────────────────────────────────

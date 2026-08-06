@@ -575,9 +575,9 @@ for novel territory.
 
 ## Constraints
 
-- Children inherit a depth budget (`meta.tick_count`,
-  `meta.cost_usd`); pathological recursion hits the cap and auto-
-  halts. Plan to converge within ~5 ticks per branch.
+- Children inherit a depth budget (`meta.tick_count`, plus recorded
+  spend per todo and per subtree); pathological recursion hits the cap
+  and auto-halts. Plan to converge within ~5 ticks per branch.
 - Owner-only facets (`meta.rotation_root=true`, `meta.worker_mintable
   =false`, `meta.schedule`) reject from worker source; mint children
   with no facet fields set (the default — an ordinary worker-mintable

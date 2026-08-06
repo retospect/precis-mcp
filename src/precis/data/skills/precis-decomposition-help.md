@@ -127,7 +127,8 @@ Halt is a stronger yield: "do not call me again until a human
 intervenes." Use it when:
 
 - You've tried and the work is genuinely stuck (`halt:planner-stuck`).
-- A guardrail tripped (`halt:cost-cap`, `halt:tick-cap`).
+- A guardrail tripped (`halt:cost-cap`, `halt:tree-cost-cap`,
+  `halt:tick-cap`).
 - You can see this task is impossible as specified and needs the
   goal restated.
 

@@ -13,7 +13,7 @@ import pytest
 from precis.dispatch import Hub
 from precis.handlers.todo import TodoHandler
 from precis.store import Store
-from precis.workers.dispatch import run_dispatch_pass
+from precis.workers.dispatch import _candidate_parent_ids, run_dispatch_pass
 from tests.conftest import id_of
 
 
@@ -943,3 +943,53 @@ def test_minted_job_prio_null_when_parent_unset(
     jobs = _child_jobs_under(store, rid)
     assert len(jobs) == 1
     assert _job_prio(store, jobs[0]["id"]) is None
+
+
+# ── orphan subtrees (deleted ancestor) ───────────────────────────
+
+
+def _dispatchable_child(store: Store, title: str, parent_id: int | None) -> int:
+    ref = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title=title,
+        meta={"executor": "claude_inproc", "job_type": "fix_gripe", "params": {}},
+        parent_id=parent_id,
+    )
+    return int(ref.id)
+
+
+def _soft_delete(store: Store, ref_id: int) -> None:
+    with store.pool.connection() as conn:
+        conn.execute("UPDATE refs SET deleted_at = now() WHERE ref_id = %s", (ref_id,))
+        conn.commit()
+
+
+def test_skips_candidate_under_deleted_ancestor(
+    handler: TodoHandler, store: Store
+) -> None:
+    """Deleting a parent must stop its whole subtree dispatching.
+
+    ``deleted_at`` is not transitive, and the candidate query only
+    checks the candidate's *own* flag — so before ``_drop_orphaned``
+    an orphaned subtree kept ticking indefinitely under a parent
+    nobody could see any more.
+    """
+    root = id_of(handler.put(text="project root").body)
+    mid = _dispatchable_child(store, "section", root)
+    leaf = _dispatchable_child(store, "leaf task", mid)
+    _soft_delete(store, root)  # two levels up from the leaf
+
+    assert _candidate_parent_ids(store, limit=50) == []
+    assert run_dispatch_pass(store).ok == 0
+    assert _child_jobs_under(store, leaf) == []
+
+
+def test_dispatches_when_ancestors_are_live(handler: TodoHandler, store: Store) -> None:
+    """Control: the same shape with nothing deleted still dispatches."""
+    root = id_of(handler.put(text="project root").body)
+    leaf = _dispatchable_child(store, "leaf task", root)
+
+    assert leaf in _candidate_parent_ids(store, limit=50)
+    assert run_dispatch_pass(store).ok == 1
+    assert len(_child_jobs_under(store, leaf)) == 1

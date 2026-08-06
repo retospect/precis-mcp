@@ -564,6 +564,27 @@ def _run_claude_tick(
     )
 
 
+#: Tool-name prefix every precis verb shares once the MCP server registers.
+_PRECIS_TOOL_PREFIX = "mcp__precis__"
+
+
+def _precis_tools_used(raw_text: str | None) -> bool:
+    """Did this tick actually invoke a precis verb?
+
+    Parses the stream-json properly (``count_tool_use_events``) rather than
+    grepping the blob: only a ``tool_use`` block inside an ``assistant``
+    event counts. A substring search would also match the init event's
+    available-tools list and the agent's own prose — and the prose written
+    when the tools are *missing* names the missing verbs, so the blob test
+    would read a failure report as proof of success.
+    """
+    if not raw_text:
+        return False
+    from precis.utils.claude_agent import count_tool_use_events
+
+    return count_tool_use_events(raw_text, name_prefix=_PRECIS_TOOL_PREFIX) > 0
+
+
 def _claude_exit(result: Any) -> tuple[int, str | None]:
     """Map a router ``LlmResult`` from the claude tick → ``(exit_code, resume_reason)``.
 
@@ -574,6 +595,16 @@ def _claude_exit(result: Any) -> tuple[int, str | None]:
     ``call_claude_agent`` swallows the recoverable non-zero exit) → the matching
     resumable signal. A clean run (or a ``completed`` terminal reason on a
     process-teardown exit) → clean exit 0. Any other error → a hard failure.
+
+    **Zero precis tool calls is a failure, however cleanly the transport
+    exited.** When the precis MCP server doesn't register, the agent burns a
+    full opus run reasoning from the prompt alone, writes its findings into a
+    response blob nobody reads, and exits ``completed`` — so the tick looked
+    successful, changed nothing, and was re-minted on the next sweep to do it
+    all again. A tick that called no precis verb cannot have recorded state or
+    filed work by construction, so treating it as success is never right.
+    Resumable (the MCP usually comes back), bounded by the same streak cap, and
+    bubbles a real ``child-failed:`` when it doesn't.
     """
     if result.paused:
         return 1, "paused"
@@ -587,6 +618,8 @@ def _claude_exit(result: Any) -> tuple[int, str | None]:
     if tr is not None and "budget" in tr:
         return 1, "budget"
     if tr is None or tr == "completed":
+        if not _precis_tools_used(getattr(result, "raw_text", None)):
+            return 1, "no-precis-tools"
         return 0, None
     return 1, None
 

@@ -113,6 +113,16 @@ for the durable pin of that boundary.
   per-parent `meta.plan_tick_decompose_attempted` flag; a *second*
   streak-exhaustion after that bubbles for real as `child-failed:<job_id>`
   (the task needs splitting further than the auto-decompose could manage).
+  A tick that exits cleanly having called **no precis verb** is likewise
+  resumable-not-success (`_claude_exit` → `no-precis-tools`): when the precis
+  MCP fails to register, the agent burns a full opus run reasoning from the
+  prompt, strands its findings in a response blob, and exits `completed` — so
+  it looked successful, changed nothing, and got re-minted to repeat. Detected
+  by parsing the stream (`claude_agent.count_tool_use_events(…,
+  name_prefix='mcp__precis__')` — only a `tool_use` block inside an `assistant`
+  event counts), never by grepping the blob: the init event lists every
+  available tool by name, and the prose written when the tools are *missing*
+  names the missing verbs, so a substring test reads both as proof they worked.
   A live child todo only blocks
   re-candidacy unconditionally when it's a genuine in-flight child or
   carries a hard-block tag (`halt`/`halt:`/`child-failed:`); a child
@@ -124,6 +134,36 @@ for the durable pin of that boundary.
   re-ticked planner is prompted (`planner_prompt.py`, "Re-ticked while
   a sibling is parked") to propose autonomous next steps or escalate to
   `halt:` if the pending answer has become a genuine hard gate.
+* **Planner cost guardrails** (`workers/planner_guardrails.check_parent`,
+  consulted by `dispatch` before every mint). Four caps, cheapest first:
+  per-todo **tick** cap (`meta.tick_count`, `PRECIS_MAX_TICKS` 10 →
+  `halt:tick-cap`), per-todo **cost** (`PRECIS_MAX_TODO_USD` $2 →
+  `halt:cost-cap`), per-**tree** cost (`PRECIS_MAX_TREE_USD` $10 →
+  `halt:tree-cost-cap`, summed over the candidate's whole root subtree),
+  and a global rolling **daily ceiling** (`PRECIS_DAILY_COST_CEILING` $20)
+  which tags nothing and aborts the whole round. The ceiling sums **all**
+  logged spend, not just planner ticks — if the day's envelope is gone,
+  minting more opus is the wrong move. (Over-blocking risk is small in
+  practice: measured non-planner spend runs ~$1–3/day — 7.5k local/OSS calls
+  totalled $0.97 on 08-06 — against a $20 ceiling. Revisit if the fleet's
+  baseline grows.) All three dollar caps read
+  `llm_call_log.cost_usd` — `plan_tick` stamps `LlmRequest.ref_id =
+  parent_ref_id`, so a todo's ledger rows *are* its lifetime cost.
+  Deliberately **includes** the `claude_agent`/`claude_p` transports that
+  `budget/meter.py` excludes as notional: these caps bound the planner's
+  discretionary burn, subscription quota included. *(2026-08-06: the two
+  dollar caps previously summed a `meta.cost_usd` key nothing ever wrote, so
+  both read $0.00 and never fired — an orphaned tree burned $291 over 5 days
+  under a $20/day ceiling. The tree cap is new: per-*todo* alone gave 258
+  siblings $516 of headroom. `tests/test_planner_guardrails.py` pins each cap
+  against real ledger rows.)*
+* **Orphan subtrees.** `deleted_at` is **not transitive** — deleting a
+  project todo leaves every descendant's own `deleted_at` NULL, and the
+  candidate query only checks the candidate's own flag. `dispatch._drop_orphaned`
+  walks the ancestor chain (depth-guarded against a cyclic `parent_id`) and
+  silently skips any candidate under a deleted todo — no `halt:` tag, since
+  the delete already said what should happen. *Minting* a child under a
+  deleted parent is still unguarded (OPEN-ITEMS).
 * **Views.** `view='tree'` walks `kind IN ('todo','job')` so child
   jobs render with a `⚙` marker; `view='attention'` unions
   `asking-reto` leaves + `child-failed` parents for asa-bot's preamble;
