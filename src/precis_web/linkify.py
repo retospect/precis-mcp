@@ -160,6 +160,16 @@ _CLAIM_SIGIL = "◆"
 #: (a fresh tab per ref).
 _PAPER_WINDOW = "precis-paper"
 
+#: The four reserved ``target`` keywords. A named window (anything NOT in this
+#: set — e.g. ``precis-paper``) must NOT carry ``rel="noopener"``: per the HTML
+#: spec noopener makes the browser treat any custom target name like ``_blank``,
+#: so every click would spawn a fresh tab instead of reusing the one named
+#: window (the whole point of :data:`_PAPER_WINDOW`). Reserved keywords keep
+#: ``noopener`` — a fresh ``_blank`` tab should not get a live ``window.opener``
+#: back into the manuscript. Named reuse is same-origin internal navigation, so
+#: the retained opener is harmless.
+_RESERVED_TARGETS = frozenset({"_blank", "_self", "_parent", "_top"})
+
 #: Inline claim-hub cite grammar — the same heads + pins
 #: :data:`precis.utils.pub_id_lookup.PLACEHOLDER_RE` mines, but with named
 #: groups so :func:`_linkify_prose`'s dispatch stays a group-name check. It
@@ -309,6 +319,9 @@ def _anchor_html(
     )
     pop_id = f"refpop-{uuid.uuid4().hex[:10]}"
     attrs = f" {extra_attrs}" if extra_attrs else ""
+    # See _RESERVED_TARGETS: a named window must not carry noopener or the
+    # browser treats it like _blank and never reuses the one tab.
+    rel = ' rel="noopener"' if target in _RESERVED_TARGETS else ""
     return (
         f'<span x-data="{{hovered: false, hoverTimer: null, closeTimer: null, '
         f"popStyle: ''}}\" "
@@ -317,7 +330,7 @@ def _anchor_html(
         f'@mouseleave="{delayed_close_expr}" '
         f'@click.outside="{immediate_close_expr}">'
         f'<a class="{anchor_cls}"{attrs} '
-        f'href="{href}" target="{target}" rel="noopener" '
+        f'href="{href}" target="{target}"{rel} '
         f'hx-get="{preview_url}" '
         f'hx-trigger="mouseenter once" '
         f'hx-target="#{pop_id}" hx-swap="innerHTML">'

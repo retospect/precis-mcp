@@ -113,8 +113,10 @@ def test_claim_view_originator_handle_and_star(
     assert "★" in r.text
     # The evidence-row paper link targets the shared 'precis-paper' window
     # (B) so clicking a source from the claim window reuses ONE paper window
-    # instead of navigating the claim page away.
-    assert f'href="/r/paper/{originator}" target="precis-paper"' in r.text
+    # instead of navigating the claim page away. It must carry NO rel="noopener"
+    # (which the HTML spec makes the browser treat like _blank, spawning a fresh
+    # tab per click instead of reusing the named window).
+    assert f'<a href="/r/paper/{originator}" target="precis-paper" class=' in r.text
 
 
 def test_claim_view_by_pub_id(claim_client: TestClient, hub: Hub) -> None:

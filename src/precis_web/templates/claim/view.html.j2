@@ -25,8 +25,10 @@
   {# target the shared 'precis-paper' window (same as the grounding-chunk
      [pc…] link below and the smartdraft paper cites) so clicking a source
      from the claim window opens/reuses ONE paper window instead of
-     navigating the claim page away. #}
-  <a href="/r/paper/{{ row.paper_ref_id }}" target="precis-paper" rel="noopener" class="font-mono text-sky-700 underline decoration-dotted">{{ row.handle }}</a>
+     navigating the claim page away. NO rel="noopener": per the HTML spec it
+     makes the browser treat a named target like _blank, so every click would
+     spawn a fresh tab instead of reusing the one 'precis-paper' window. #}
+  <a href="/r/paper/{{ row.paper_ref_id }}" target="precis-paper" class="font-mono text-sky-700 underline decoration-dotted">{{ row.handle }}</a>
   <span class="text-slate-700">{{ row.title }}</span>
   {% if row.year %}<span class="text-slate-400">({{ row.year }})</span>{% endif %}
   {% if row.source_handle %}<span class="text-slate-400">· grounded at {% if row.source_is_chunk %}{{ ('[' ~ row.source_handle ~ ']') | linkify_refs }}{% else %}<span class="font-mono">{{ row.source_handle }}</span>{% endif %}</span>{% endif %}

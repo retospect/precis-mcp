@@ -707,12 +707,17 @@ def test_compact_paper_cite_targets_named_window() -> None:
     out = str(linkify_refs("see [§kong24~2] here", compact=True))
     assert 'target="precis-paper"' in out
     assert "/r/paper/kong24?chunk=2" in out  # href already lands at the passage
+    # A named target must NOT carry rel="noopener": the HTML spec makes the
+    # browser treat noopener'd custom names like _blank, so successive clicks
+    # would spawn fresh tabs instead of reusing the one window.
+    assert "noopener" not in out
 
 
 def test_paper_chunk_handle_targets_named_window() -> None:
     out = str(linkify_refs("supported by [pc10]", compact=True))
     assert 'target="precis-paper"' in out
     assert 'href="/c/pc10"' in out  # /c/ resolves through to ?chunk=<ord>
+    assert "noopener" not in out  # else the named window is never reused
 
 
 def test_non_paper_chunk_handle_keeps_default_target() -> None:
