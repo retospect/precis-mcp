@@ -10,19 +10,8 @@ vault_pg_cluster_pass: "CHANGEME"
 vault_pg_agent_rw_pass: "CHANGEME"
 vault_pg_agent_ro_pass: "CHANGEME"
 vault_pg_pgboss_pass: "CHANGEME"
-vault_pg_litellm_pass: "CHANGEME"
 vault_pg_prometheus_pass: "CHANGEME"
 vault_pg_admin_pass: "CHANGEME"
-
-# Redis (retires with litellm — see design §15a)
-vault_redis_password: "CHANGEME"
-
-# LiteLLM (retires — design §7a)
-vault_litellm_master_key: "CHANGEME"
-vault_litellm_salt_key: "CHANGEME"
-vault_litellm_key_interactive: "sk-interactive-CHANGEME"
-vault_litellm_key_foreground: "sk-foreground-CHANGEME"
-vault_litellm_key_background: "sk-background-CHANGEME"
 
 # Tailscale
 vault_tailscale_authkey: "tskey-auth-CHANGEME"

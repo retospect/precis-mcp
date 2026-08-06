@@ -14,9 +14,6 @@
 - name: "02 — PostgreSQL"
   ansible.builtin.import_playbook: playbooks/02-postgres.yml
 
-- name: "03 — Redis"
-  ansible.builtin.import_playbook: playbooks/03-redis.yml
-
 - name: "04 — Ollama"
   ansible.builtin.import_playbook: playbooks/04-ollama.yml
 

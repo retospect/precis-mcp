@@ -22,10 +22,6 @@ scrape_configs:
     static_configs:
       - targets: ['{{ hostvars[postgres_host]["ansible_host"] }}:9187']
 
-  - job_name: redis
-    static_configs:
-      - targets: ['{{ hostvars[postgres_host]["ansible_host"] }}:9121']
-
   - job_name: pgbouncer
     static_configs:
       - targets: ['{{ hostvars[postgres_host]["ansible_host"] }}:9127']

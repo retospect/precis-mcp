@@ -28,12 +28,8 @@ all:
     # (`hostvars[postgres_host]['ansible_host']`) rather than a literal — the
     # design §15c singleton. Same node as the data/NFS host here.
     postgres_host: node-data
-    redis_host: node-data
-    redis_port: 6379
-    litellm_host: node-gateway
     # The web/MCP gateway host (nginx, precis-web, asa-bot, webhook).
     gateway_host: node-gateway
-    litellm_port: 4000
     ollama_port: 11435
     # precis embedder (`serve-embeddings`) — loopback on EVERY node, one model
     # load per host shared by that node's worker/watch/MCP. Bind is always

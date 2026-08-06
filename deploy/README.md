@@ -151,9 +151,9 @@ Populated so far:
       any worktree via the `git --git-common-dir` fallback in `scripts/deploy`.
 
 Overlay variables the portable roles expect (define these in your local
-`deploy/inventory/`): `postgres_host`, `gateway_host`, `litellm_host`,
-`redis_host`, `nfs_server`, plus `nas_host` / `nas_mount_base` /
-`nas_nfs_export` / `nas_mount_name` and the `precis_capabilities` map. The
-`deploy/inventory.example/` templates show every one.
+`deploy/inventory/`): `postgres_host`, `gateway_host`, `nfs_server`, plus
+`nas_host` / `nas_mount_base` / `nas_nfs_export` / `nas_mount_name` and the
+`precis_capabilities` map. The `deploy/inventory.example/` templates show
+every one.
 
 Never bulk-copy from the private checkout: move one file, run the gate, commit.
