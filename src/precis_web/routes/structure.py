@@ -284,8 +284,11 @@ def _geom_payload(scene: Any, comment: str) -> dict[str, Any]:
     * ``xyz`` — plain Cartesian XYZ for the 3Dmol model (atom order == the
       ``atoms`` list order, so a clicked atom's model index maps straight back).
     * ``atoms`` — per-atom detail (label / element / frac + cart / constraint /
-      magmom / oxidation / hybridization / coordination / colour / ranked
-      ``neighbors`` — see :func:`_atom_neighbors`).
+      magmom / oxidation / hybridization / coordination / colour / covalent
+      radius (``r_cov``, so the client can recompute a bond's length +
+      Pauling strength against any other atom, even one not in this
+      geometry's own bond graph) / ranked ``neighbors`` — see
+      :func:`_atom_neighbors`).
     * ``bonds`` — the **authoritative** graph (declared bonds if any, else the
       inferred covalent bonds), each with its two endpoints in Cartesian Å (in
       the bond's periodic image) so we draw the real edge, not a distance guess.
@@ -308,6 +311,7 @@ def _geom_payload(scene: Any, comment: str) -> dict[str, Any]:
                 "hybridization": a.hybridization,
                 "coordination": coordination(scene, a.label),
                 "color": _element_color(a.element),
+                "r_cov": round(float(covalent_radius(a.element)), 3),
             }
         )
     _atom_neighbors(scene, atoms)

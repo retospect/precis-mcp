@@ -291,6 +291,59 @@
             <span class="font-medium text-slate-700">${v}</span></div>`;
   }
 
+  // The currently selected atom/bond, independent of geometry — re-resolved
+  // against whichever mode (input/relaxed/overlay) is on screen by
+  // refreshDetail(), so the panel never shows a stale-geometry reading.
+  let selDetail = null;
+
+  // minimum-image distance over the 27 neighbour images — client-side mirror of
+  // scene.cell.mic() so a broken bond can still be measured in any geometry.
+  function micDist(L, ca, cb) {
+    let best = null;
+    for (let n1 = -1; n1 <= 1; n1++) for (let n2 = -1; n2 <= 1; n2++) for (let n3 = -1; n3 <= 1; n3++) {
+      const dx = cb[0] + n1*L[0][0] + n2*L[1][0] + n3*L[2][0] - ca[0];
+      const dy = cb[1] + n1*L[0][1] + n2*L[1][1] + n3*L[2][1] - ca[1];
+      const dz = cb[2] + n1*L[0][2] + n2*L[1][2] + n3*L[2][2] - ca[2];
+      const d = Math.sqrt(dx*dx + dy*dy + dz*dz);
+      if (best === null || d < best.d) { best = { d, image: [n1, n2, n3] }; }
+    }
+    return best;
+  }
+
+  // Re-render whatever's selected (atom or bond) against a freshly displayed
+  // geometry — called on every mode switch so the detail panel never lags
+  // behind the 3D view. A bond absent from this geometry's own graph is still
+  // measurable (recomputed client-side via micDist + Pauling strength).
+  function refreshDetail(geom) {
+    if (selDetail == null) { return; }
+    if (selDetail.kind === 'atom') {
+      const found = geom.atoms.find((x) => x.label === selDetail.label);
+      if (found) { showAtom(found); return; }
+      if (detail) {
+        detail.innerHTML = `<span class="text-slate-400 text-xs">atom ${esc(selDetail.label)} is not present in this geometry.</span>`;
+      }
+      return;
+    }
+    const { i, j } = selDetail;
+    const match = geom.bonds.find((b) => (b.i === i && b.j === j) || (b.i === j && b.j === i));
+    if (match) { showBond(match); return; }
+    const ai = geom.atoms.find((x) => x.label === i);
+    const aj = geom.atoms.find((x) => x.label === j);
+    if (!ai || !aj) {
+      if (detail) {
+        detail.innerHTML = `<span class="text-slate-400 text-xs">bond ${esc(i)} — ${esc(j)}: atom(s) not present in this geometry.</span>`;
+      }
+      return;
+    }
+    const m = micDist(geom.lattice, ai.cart, aj.cart);
+    const s = Math.exp((ai.r_cov + aj.r_cov - m.d) / 0.37);
+    showBond({
+      i, j, length: m.d, order: s.toFixed(2), kind: '—',
+      provenance: 'recomputed — below bond threshold in this geometry',
+      image: m.image,
+    });
+  }
+
   // ── per-atom neighbour lists (server-computed MIC + Pauling bond order,
   // ``_atom_neighbors`` in routes/structure.py) — an element-grouped summary
   // row plus a ranked "bonds by strength" list, shared shape with the
@@ -335,6 +388,7 @@
 
   function showAtom(a) {
     if (!a) { return; }
+    selDetail = { kind: 'atom', label: a.label };
     let extra = '';
     if (a.magmom != null) extra += row('magmom', esc(a.magmom));
     if (a.oxidation != null) extra += row('oxidation', esc(a.oxidation));
@@ -359,6 +413,7 @@
   }
 
   function showBond(b) {
+    selDetail = { kind: 'bond', i: b.i, j: b.j };
     detail.innerHTML = `
       <div class="flex items-center gap-2 mb-1.5">
         <span class="font-semibold text-slate-800">${esc(b.i)} — ${esc(b.j)}</span>
@@ -513,6 +568,7 @@
       const solid = (mode === 'relaxed' || mode === 'overlay') && V.relaxed ? V.relaxed : V.initial;
       currentPos = {};
       solid.atoms.forEach((a) => { currentPos[a.label] = a.cart; });
+      refreshDetail(solid);
       hlShapes = [];
       drawMarkers();
       if (!zoomed) {

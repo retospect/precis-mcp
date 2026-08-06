@@ -90,7 +90,10 @@ Ea labels, ±1σ bands, low-confidence marked — plus a per-state 3D cell
 viewer stepping through the linked `structure` refs in the same path order.
 Clicking an atom lists its element-grouped relationships and bonds ranked
 by Pauling bond order `s = exp((R0−d)/0.37)` (MIC distances; same panel on
-`/structure/{slug}`). When
+`/structure/{slug}`). The selection follows the active state: stepping or
+clicking to another state re-reads the same atom/bond against that state's
+geometry — a bond broken there is recomputed (length + `s`) rather than
+dropped. When
 the pathway carries `refs.meta.measures` (`[{name, op, atoms, element?}]`),
 each state's measures overlay: `min_distance` (a labeled atom → nearest atom
 of an `element`) is identity-safe across states by construction; a plain

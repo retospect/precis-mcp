@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -547,6 +548,54 @@ def test_pathway_diagram_and_geom_payloads_carry_expected_keys(client, runtime) 
     assert resp.status_code == 200
     assert '"paths"' in resp.text
     assert '"neighbors"' in resp.text
+
+
+def test_pathway_detail_state_tracking_and_detail_refresh_js_present(
+    client, runtime
+) -> None:
+    """Browser-feedback fix: the States list tracks the active state
+    (scroll-into-view) and the atom/bond detail panel re-renders against the
+    newly displayed geometry on every state switch (untestable without a
+    browser — this asserts the JS + payload field are actually shipped)."""
+    _seed_pathway(
+        runtime.store,
+        meta={"graph": _GRAPH3, "structure_refs": _GRAPH3_STRUCTURE_REFS},
+        body_text=None,
+    )
+    _seed_explorer_scenes(runtime.store)
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    assert "refreshDetail(" in resp.text
+    assert "scrollIntoView" in resp.text
+    assert '"r_cov"' in resp.text
+
+
+def test_structure_detail_template_ships_refresh_detail_js() -> None:
+    """Same fix on ``/refs/structure/{id}`` — the structure detail template
+    isn't rendered from this module's fixtures, so read its source directly
+    to confirm the copy-pasted ``refreshDetail``/``r_cov`` client logic
+    shipped there too (mirror, not shared-JS, per this repo's convention)."""
+    tpl = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "precis_web"
+        / "templates"
+        / "structure"
+        / "detail.html.j2"
+    ).read_text()
+    assert "refreshDetail(" in tpl
+    assert "r_cov" in tpl
+
+
+def test_geom_payload_atoms_carry_covalent_radius() -> None:
+    """Every atom dict carries ``r_cov`` — the covalent radius the client
+    needs to recompute a bond's length + Pauling strength for a pair not in
+    this geometry's own bond graph (a "broken" bond after a state switch)."""
+    scene = _pd_n_scene((0.5, 0.5, 0.15))
+    payload = _geom_payload(scene, "test")
+    assert payload["atoms"]
+    for a in payload["atoms"]:
+        assert a["r_cov"] == round(covalent_radius(a["element"]), 3)
 
 
 def test_geom_payload_neighbors_mic_across_periodic_boundary() -> None:

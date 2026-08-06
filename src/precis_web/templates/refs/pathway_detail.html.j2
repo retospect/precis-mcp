@@ -509,6 +509,9 @@
       const on = row.getAttribute('data-state') === id;
       row.classList.toggle('bg-sky-100', on);
       row.classList.toggle('border-sky-300', on);
+      row.classList.toggle('ring-1', on);
+      row.classList.toggle('ring-sky-400', on);
+      if (on) { row.scrollIntoView({ block: 'nearest' }); }
     });
     document.querySelectorAll('.pw-svg-node').forEach((n) => {
       n.setAttribute('stroke', n.getAttribute('data-state') === id ? '#0284c7' : 'none');
@@ -534,6 +537,10 @@
   // the input/relaxed/overlay + clip-plane machinery (out of scope here). ──
   let molViewer = null;
   const detailEl = document.getElementById('pw-detail');
+  // The currently selected atom/bond, independent of geometry — re-resolved
+  // against whichever state is on screen (state click / prev-next stepper)
+  // by refreshDetail(), so the panel never shows a stale-geometry reading.
+  let selDetail = null;
 
   function row(k, v) {
     return `<div class="flex gap-2"><span class="text-slate-400 w-28 shrink-0">${k}</span>`
@@ -582,8 +589,23 @@
       </div>`;
   }
 
+  // minimum-image distance over the 27 neighbour images — client-side mirror of
+  // scene.cell.mic() so a broken bond can still be measured in any state.
+  function micDist(L, ca, cb) {
+    let best = null;
+    for (let n1 = -1; n1 <= 1; n1++) for (let n2 = -1; n2 <= 1; n2++) for (let n3 = -1; n3 <= 1; n3++) {
+      const dx = cb[0] + n1*L[0][0] + n2*L[1][0] + n3*L[2][0] - ca[0];
+      const dy = cb[1] + n1*L[0][1] + n2*L[1][1] + n3*L[2][1] - ca[1];
+      const dz = cb[2] + n1*L[0][2] + n2*L[1][2] + n3*L[2][2] - ca[2];
+      const d = Math.sqrt(dx*dx + dy*dy + dz*dz);
+      if (best === null || d < best.d) { best = { d, image: [n1, n2, n3] }; }
+    }
+    return best;
+  }
+
   function showAtomDetail(a) {
     if (!a || !detailEl) { return; }
+    selDetail = { kind: 'atom', label: a.label };
     let extra = '';
     if (a.magmom != null) extra += row('magmom', esc(a.magmom));
     if (a.oxidation != null) extra += row('oxidation', esc(a.oxidation));
@@ -609,6 +631,7 @@
 
   function showBondDetail(b) {
     if (!detailEl) { return; }
+    selDetail = { kind: 'bond', i: b.i, j: b.j };
     detailEl.innerHTML = `
       <div class="flex items-center gap-2 mb-1.5">
         <span class="font-semibold text-slate-800">${esc(b.i)} — ${esc(b.j)}</span>
@@ -620,6 +643,39 @@
         ${row('kind', esc(b.kind))}
         ${row('provenance', esc(b.provenance))}
       </div>`;
+  }
+
+  // Re-render whatever's selected (atom or bond) against a freshly displayed
+  // geometry — called on every state switch so the detail panel never lags
+  // behind the 3D view. A bond absent from this geometry's own graph is still
+  // measurable (recomputed client-side via micDist + Pauling strength).
+  function refreshDetail(geom) {
+    if (selDetail == null) { return; }
+    if (selDetail.kind === 'atom') {
+      const found = geom.atoms.find((x) => x.label === selDetail.label);
+      if (found) { showAtomDetail(found); return; }
+      if (detailEl) {
+        detailEl.innerHTML = `<span class="text-slate-400 text-xs">atom ${esc(selDetail.label)} is not present in this state.</span>`;
+      }
+      return;
+    }
+    const { i, j } = selDetail;
+    const match = geom.bonds.find((b) => (b.i === i && b.j === j) || (b.i === j && b.j === i));
+    if (match) { showBondDetail(match); return; }
+    const ai = geom.atoms.find((x) => x.label === i);
+    const aj = geom.atoms.find((x) => x.label === j);
+    if (!ai || !aj) {
+      if (detailEl) {
+        detailEl.innerHTML = `<span class="text-slate-400 text-xs">bond ${esc(i)} — ${esc(j)}: atom(s) not present in this state.</span>`;
+      }
+      return;
+    }
+    const m = micDist(geom.lattice, ai.cart, aj.cart);
+    const s = Math.exp((ai.r_cov + aj.r_cov - m.d) / 0.37);
+    showBondDetail({
+      i, j, length: m.d, order: s.toFixed(2), kind: '—',
+      provenance: 'recomputed — below bond threshold in this state',
+    });
   }
 
   function drawCell(viewer, L) {
@@ -676,6 +732,7 @@
     });
     drawCell(molViewer, geom.lattice);
     molViewer.zoomTo();
+    refreshDetail(geom);
     molViewer.render();
   }
 
