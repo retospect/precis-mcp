@@ -49,6 +49,8 @@ from typing import Any
 
 from psycopg.types.json import Jsonb
 
+from precis.utils.boilerplate import MARKER_LINE_RE as _MARKER_LINE_RE
+
 log = logging.getLogger(__name__)
 
 #: Bumping this re-parses (and re-matches, since a fresh row starts with
@@ -73,7 +75,12 @@ _META_VERSION_KEY = "bib_parse_version"
 #: match here, so the line folds into the preceding entry's continuation
 #: text instead of overflowing int4 at INSERT and failing that paper
 #: every cycle without ever converging.
-_MARKER_LINE_RE = re.compile(r"^\s*-?\s*\[(?P<marker>\d{1,4})\]\s+(?P<rest>\S.*)$")
+#:
+#: Imported from :mod:`precis.utils.boilerplate` (aliased back to the
+#: original private name) rather than redefined here — the ingest-time
+#: classifier's citation-density check uses the identical pattern to
+#: recognize this same per-entry chunk shape, and importing one shared
+#: compiled regex means the two detectors can't silently drift apart.
 
 #: A chunk "qualifies" as bibliography when at least half of its
 #: non-empty lines match the marker shape (``>=``, not ``>``: a 2-line

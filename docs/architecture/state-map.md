@@ -1465,11 +1465,20 @@ entries S2 itself may miss.
   the fast-path burst backfill.
 - **Detection is content-based, not `chunk_kind`** — a chunk qualifies
   when most of its non-empty lines look like `- [N] ...`
-  (`chunk_kind='references'` chunks always qualify); bibliography text
-  commonly lands as `chunk_kind='paragraph'` despite the ingest retag
-  pass (a pre-existing heuristic-miss gap, observed here, not fixed
-  here). Entries are split on the `[N]` markers and deduped by marker
-  (chunk-overlap duplicates keep the first occurrence).
+  (`chunk_kind='references'` chunks always qualify); this is
+  deliberate defense-in-depth, not a workaround for a live gap — the
+  marker/PDF-OCR ingest classifier's own `- [N] ...` retag
+  (`boilerplate.py`'s `_is_references_chunk` + `classify_chunks`
+  tail-walk, gr196447 Layer 1) was fixed to actually catch Marker's
+  real one-entry-per-chunk shape and long (50-150+ entry) tail runs,
+  but chunks ingested *before* that fix are still `chunk_kind='paragraph'`
+  corpus-wide (Layer 2 — a separate, not-yet-built retroactive
+  remediation pass) — `bib_parse`'s own detector is what keeps working
+  on that backlog regardless. Entries are split on the `[N]` markers and
+  deduped by marker (chunk-overlap duplicates keep the first occurrence).
+  The per-line marker-shape regex (`MARKER_LINE_RE`) is shared with
+  `boilerplate.py` so the two detectors can't drift apart on what a
+  bibliography line looks like structurally.
 - **Field extraction** — regex fast path for the ACS/Wiley `authors,
   Journal YEAR, vol, page` shape; messy lines fall back to a SMALL-tier
   LLM batch (ADR 0047 cascade philosophy), via the router

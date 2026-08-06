@@ -126,6 +126,219 @@ class TestReferences:
         result = classify_chunks(["b1", "b2", "b3", chunk])
         assert result.classes[3] == ChunkClass.BODY
 
+    def test_inline_bracket_citation_in_prose_stays_body(self) -> None:
+        # A single-line body chunk with a mid-sentence bracketed citation
+        # (not at line start) must not flip — regression guard for the
+        # gr196447 fix that lowered the per-chunk match floor.
+        chunk = (
+            "This approach improves yield significantly, consistent with "
+            "prior work [3] and later confirmed independently."
+        )
+        result = classify_chunks(["b1", "b2", "b3", chunk])
+        assert result.classes[3] == ChunkClass.BODY
+
+    def test_single_marker_line_entry_is_references(self) -> None:
+        # gr196447 bug 1: Marker's block splitter commonly emits ONE
+        # bibliography entry per chunk (1-2 lines). The old absolute
+        # floor (matches >= 3) made a real single-entry chunk like this
+        # unreachable — matches=1, ratio=1.0, but 1 < 3.
+        chunk = "- [15] Smith, J. A.; Doe, K. B. Journal of Materials 2015, 25, 115."
+        result = classify_chunks(["b1", "b2", "b3", chunk])
+        assert result.classes[3] == ChunkClass.REFERENCES
+
+    def test_two_line_entry_with_continuation_is_references(self) -> None:
+        chunk = (
+            "- [7] Johnson, A. & Lee, B. Cu-MOF synthesis and\n"
+            "characterization for CO2 capture applications."
+        )
+        result = classify_chunks(["b1", "b2", "b3", chunk])
+        assert result.classes[3] == ChunkClass.REFERENCES
+
+    def test_marker_shaped_bullet_list_in_body_not_over_matched(self) -> None:
+        # An ordinary bracketed-footnote body bullet has the same "- [N]"
+        # structural shape as a bibliography entry but no citation
+        # content (no author/comma/initial). It must not flip — the
+        # reason boilerplate's marker-citation pattern requires the
+        # author-shaped content on top of the bare marker shape that
+        # bib_parse's (looser, majority-vote-protected) detector uses.
+        chunk = "- [1] See supporting information for experimental details."
+        result = classify_chunks(["b1", "b2", "b3", chunk])
+        assert result.classes[3] == ChunkClass.BODY
+
+
+class TestReferencesRealWorldShape:
+    """The actual Marker/marker-splitter shape: a long body, a
+    ``# References`` heading, then one bibliography entry PER CHUNK.
+    The old single-blob fixture in this file (and in
+    ``tests/ingest/test_pipeline.py``) masked both gr196447 bugs —
+    these pin the real failure shape.
+    """
+
+    @staticmethod
+    def _entry(n: int) -> str:
+        # Surname must not have a digit glued onto it (Smith%d) — the
+        # citation-shape regex only accepts letters/apostrophe/hyphen
+        # in the surname, matching real bibliography formatting where
+        # the entry number lives inside the leading "[N]" marker, not
+        # appended to the author's name.
+        return f"- [{n}] Smith, J. {n}.; Doe, K. Journal of Materials {2000 + n}, {n}, {n * 10}."
+
+    def test_15_entry_bibliography_fully_retagged(self) -> None:
+        body = [
+            f"Paragraph {i} discusses synthesis, characterization, and "
+            f"electrochemical performance of the candidate material in detail."
+            for i in range(85)
+        ]
+        heading = ["# References"]
+        entries = [self._entry(n) for n in range(1, 16)]
+        chunks_text = body + heading + entries
+
+        result = classify_chunks(chunks_text)
+
+        heading_idx = len(body)
+        assert result.classes[heading_idx] == ChunkClass.REFERENCES
+        entry_classes = result.classes[heading_idx + 1 :]
+        assert len(entry_classes) == 15
+        assert all(c == ChunkClass.REFERENCES for c in entry_classes), (
+            f"expected all 15 entries retagged, got {list(entry_classes)}"
+        )
+        # Body chunks (excluding the position-0 head liberal-accept)
+        # must be untouched.
+        assert all(c == ChunkClass.BODY for c in result.classes[1:85])
+
+    def test_100_entry_bibliography_fully_retagged(self) -> None:
+        # Pins the tail_cap fix independently of the per-chunk-line-count
+        # fix: with the old tail_cap=8, only the last 8 of 100 entries
+        # (plus the heading, unreached) would retag.
+        body = [
+            f"Paragraph {i} discusses synthesis, characterization, and "
+            f"electrochemical performance of the candidate material in detail."
+            for i in range(85)
+        ]
+        heading = ["# References"]
+        entries = [self._entry(n) for n in range(1, 101)]
+        chunks_text = body + heading + entries
+
+        result = classify_chunks(chunks_text)
+
+        heading_idx = len(body)
+        assert result.classes[heading_idx] == ChunkClass.REFERENCES
+        entry_classes = result.classes[heading_idx + 1 :]
+        assert len(entry_classes) == 100
+        assert all(c == ChunkClass.REFERENCES for c in entry_classes), (
+            "expected all 100 entries retagged; "
+            f"got {sum(1 for c in entry_classes if c == ChunkClass.REFERENCES)}/100"
+        )
+        assert all(c == ChunkClass.BODY for c in result.classes[1:85])
+
+
+class TestLoosePatternsStayGatedByFloor:
+    """Regression guard: the gr196447 fix that let short chunks qualify
+    via density alone must NOT extend to the *loose* citation patterns
+    (only ``_MARKER_CITATION_LINE_RE`` — marker shape AND author-comma-
+    initial content — is safe on a short chunk). A reviewer caught that
+    the first pass over-applied the relaxed floor: these loose patterns
+    (``"[N] Capitalized..."``, ``"N. Capitalized, Capitalized..."``)
+    fire on ordinary short structural lines that have nothing to do
+    with citations — a heading, a cross-reference, a figure caption.
+    Each of these must FAIL against a floorless implementation and
+    PASS once loose patterns are re-gated behind ``matches >= 3``.
+    """
+
+    def test_bracket_heading_not_references(self) -> None:
+        # "[1] Introduction" — a numbered section heading, not a citation.
+        result = classify_chunks(["b1", "b2", "b3", "[1] Introduction"])
+        assert result.classes[3] == ChunkClass.BODY
+
+    def test_bracket_cross_reference_not_references(self) -> None:
+        chunk = "[3] See Section 2 for details."
+        result = classify_chunks(["b1", "b2", "b3", chunk])
+        assert result.classes[3] == ChunkClass.BODY
+
+    def test_numbered_methods_line_not_references(self) -> None:
+        chunk = "1. Materials, Synthesis conditions were as follows."
+        result = classify_chunks(["b1", "b2", "b3", chunk])
+        assert result.classes[3] == ChunkClass.BODY
+
+    def test_bracket_figure_caption_not_references(self) -> None:
+        chunk = (
+            "[12] Figure showing the XRD pattern of the sample after "
+            "annealing at high temperature."
+        )
+        result = classify_chunks(["b1", "b2", "b3", chunk])
+        assert result.classes[3] == ChunkClass.BODY
+
+    def test_trailing_numbered_notes_list_not_references(self) -> None:
+        # The reviewer's real-shape scenario: a body of many paragraphs,
+        # a "## Notes" heading, then a short numbered list that is NOT
+        # a bibliography (methods/notes-style, "N. Word, Word ...").
+        # None of the trailing lines — including the heading — must
+        # flip to REFERENCES.
+        body = [
+            f"Paragraph {i} discussing synthesis and characterization "
+            f"results in detail here."
+            for i in range(20)
+        ]
+        notes_heading = ["## Notes"]
+        trailing_notes = [
+            "1. Materials, Synthesis conditions were as follows.",
+            "2. Methods, Sample preparation followed standard procedures.",
+            "3. Discussion, Results were consistent across trials.",
+        ]
+        chunks_text = body + notes_heading + trailing_notes
+
+        result = classify_chunks(chunks_text)
+
+        tail = result.classes[len(body) :]
+        assert all(c == ChunkClass.BODY for c in tail), (
+            f"trailing notes list must not flip to references, got {list(tail)}"
+        )
+
+    def test_strict_marker_pattern_still_qualifies_short_chunk(self) -> None:
+        # Sanity check that the scoped fix didn't overcorrect: a real
+        # single-entry Marker-shaped bibliography chunk (marker shape
+        # AND author-comma-initial content) still qualifies.
+        chunk = "- [15] Smith, J. A.; Doe, K. B. Journal of Materials 2015, 25, 115."
+        result = classify_chunks(["b1", "b2", "b3", chunk])
+        assert result.classes[3] == ChunkClass.REFERENCES
+
+    def test_mixed_tail_only_true_reference_run_flips(self) -> None:
+        # A numbered (non-citation) body list immediately precedes the
+        # real, heading-marked bibliography. tail_cap=500 makes the walk
+        # effectively unbounded, so this pins that only the contiguous
+        # reference run at the very end flips — the walk correctly stops
+        # at the numbered list once it no longer sees references/ack/
+        # contact-shaped content.
+        body = [
+            f"Paragraph {i} discussing synthesis and characterization "
+            f"results in detail here."
+            for i in range(20)
+        ]
+        numbered_list = [
+            "1. First step of the synthesis procedure.",
+            "2. Second step, heating to 150 degrees.",
+            "3. Third step, cooling and filtration.",
+        ]
+        heading = ["# References"]
+
+        def entry(n: int) -> str:
+            return f"- [{n}] Smith, J. {n}.; Doe, K. Journal of Materials {2000 + n}, {n}, {n * 10}."
+
+        refs = [entry(n) for n in range(1, 11)]
+        chunks_text = body + numbered_list + heading + refs
+
+        result = classify_chunks(chunks_text)
+
+        list_start = len(body)
+        assert all(
+            c == ChunkClass.BODY for c in result.classes[list_start : list_start + 3]
+        ), "numbered pre-bibliography body list must not flip"
+        heading_idx = list_start + 3
+        assert result.classes[heading_idx] == ChunkClass.REFERENCES
+        assert all(
+            c == ChunkClass.REFERENCES for c in result.classes[heading_idx + 1 :]
+        )
+
 
 # ── acknowledgements detection ──────────────────────────────────────
 

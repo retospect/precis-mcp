@@ -133,11 +133,11 @@ class TestRetagReferences:
     """
 
     def _bibliography(self) -> list[str]:
-        # Real bibliographies usually land as one chunk with many
-        # citation lines — boilerplate's density heuristic
-        # (matches >= 3 AND matches/lines >= 0.3) requires multi-line
-        # input. We test the realistic shape: one heading chunk plus
-        # one big multi-citation chunk.
+        # A multi-line-per-chunk bibliography shape (one big blob with
+        # several citation lines) — the *other* real shape besides
+        # Marker's one-entry-per-chunk splitter (see
+        # ``_marker_entry``/``test_15_entry_marker_shaped_bibliography_
+        # all_retagged`` below, gr196447).
         return [
             "# References",
             (
@@ -238,6 +238,99 @@ class TestRetagReferences:
         # Boilerplate classifier returns BODY for tiny papers; no
         # retag happens. This is by design — see classify_chunks.
         assert out[0].chunk_kind == "paragraph"
+
+    # -- real Marker shape (gr196447): one bibliography entry PER CHUNK,
+    # not one big multi-line blob. The ``_bibliography()`` fixture above
+    # masked both classifier bugs this pins: (1) a single-entry chunk
+    # (1-2 citation-shaped lines) failed the old ``matches >= 3`` floor,
+    # and (2) the tail walk was capped at 8 trailing chunks, so a
+    # bibliography longer than 8 entries only got its tail retagged.
+
+    @staticmethod
+    def _marker_entry(n: int) -> str:
+        return f"- [{n}] Smith, J. {n}.; Doe, K. Journal of Materials {2000 + n}, {n}, {n * 10}."
+
+    def test_15_entry_marker_shaped_bibliography_all_retagged(self):
+        body = self._body_paragraph()
+        chunks = [
+            ChunkToWrite(ord=i, chunk_kind="paragraph", text=body) for i in range(85)
+        ]
+        heading_ord = len(chunks)
+        chunks.append(
+            ChunkToWrite(ord=heading_ord, chunk_kind="heading", text="# References")
+        )
+        entry_start = len(chunks)
+        for n in range(1, 16):
+            chunks.append(
+                ChunkToWrite(
+                    ord=entry_start + n - 1,
+                    chunk_kind="paragraph",
+                    text=self._marker_entry(n),
+                )
+            )
+
+        out = _retag_references(chunks)
+
+        assert out[heading_ord].chunk_kind == "references", (
+            "references heading should be retagged; "
+            f"got chunk_kind={out[heading_ord].chunk_kind!r}"
+        )
+        entry_kinds = [c.chunk_kind for c in out[entry_start:]]
+        assert entry_kinds == ["references"] * 15, (
+            f"expected all 15 single-entry chunks retagged, got {entry_kinds}"
+        )
+        # Body chunks (aside from position 0, which the head heuristic
+        # liberally accepts) stay untouched.
+        assert all(c.chunk_kind == "paragraph" for c in out[1:85])
+
+    def test_100_entry_marker_shaped_bibliography_all_retagged(self):
+        # Pins the tail_cap fix independently of the per-chunk-line-count
+        # fix: with the old tail_cap=8, only the last 8 of 100 entries
+        # would have retagged.
+        body = self._body_paragraph()
+        chunks = [
+            ChunkToWrite(ord=i, chunk_kind="paragraph", text=body) for i in range(85)
+        ]
+        heading_ord = len(chunks)
+        chunks.append(
+            ChunkToWrite(ord=heading_ord, chunk_kind="heading", text="# References")
+        )
+        entry_start = len(chunks)
+        for n in range(1, 101):
+            chunks.append(
+                ChunkToWrite(
+                    ord=entry_start + n - 1,
+                    chunk_kind="paragraph",
+                    text=self._marker_entry(n),
+                )
+            )
+
+        out = _retag_references(chunks)
+
+        assert out[heading_ord].chunk_kind == "references"
+        entry_kinds = [c.chunk_kind for c in out[entry_start:]]
+        assert entry_kinds == ["references"] * 100, (
+            "expected all 100 single-entry chunks retagged; "
+            f"got {sum(1 for k in entry_kinds if k == 'references')}/100"
+        )
+        assert all(c.chunk_kind == "paragraph" for c in out[1:85])
+
+    def test_prose_with_inline_bracket_citation_not_flipped(self):
+        # Negative case: ordinary body prose with an occasional inline
+        # ``[3]``-style citation must not be mis-flipped to references
+        # — regression guard for the lowered per-chunk match floor.
+        prose = (
+            "This approach improves yield significantly, consistent with "
+            "prior work [3] and later confirmed independently by others."
+        )
+        chunks = [
+            ChunkToWrite(ord=0, chunk_kind="paragraph", text=self._body_paragraph()),
+            ChunkToWrite(ord=1, chunk_kind="paragraph", text=self._body_paragraph()),
+            ChunkToWrite(ord=2, chunk_kind="paragraph", text=self._body_paragraph()),
+            ChunkToWrite(ord=3, chunk_kind="paragraph", text=prose),
+        ]
+        out = _retag_references(chunks)
+        assert out[3].chunk_kind == "paragraph"
 
 
 # ---------------------------------------------------------------------------
