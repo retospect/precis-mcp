@@ -204,26 +204,13 @@ to a §L regression **plus** an independent, more serious spark worker deadlock.
   a failed barrier eval feeding the §C ladder, or a nursery detector on aged
   undispatchable `T_agg` trees.
 
-- **spark autocatpath_seed durable submit/poll migration (wedge + completion RESOLVED)**
-  · Status: only the durable end-state remains · Severity:
-  critical → low · gripe **191351**. **Wedge FIXED (7497c30d, deployed +
-  live-verified):** spark's `system` worker was running `autocatpath_seed`'s MACE
-  compute *in-process* via the blocking `ssh_node` dispatch (`job_ssh_node` is a
-  `_SYS` pass; jobs pinned to spark via `target_node`), and loading MACE/CUDA
-  (torch 2.13+cu130) in the long-lived worker deadlocked (main thread in
-  `libcuda.so`), the 2h lease shielding it from reclaim, starving every system
-  pass incl. `cast_audio` into a SIGKILL loop. `_dispatch` now runs the compute
-  out-of-process (`runner.run_seed_partial_subprocess`, killable, bounded by
-  `resources.wall_seconds`). Verified on spark post-deploy: worker stable (same
-  PID 35+ min, main thread in `ppoll` not CUDA), a killed seed child recorded a
-  clean failure without wedging, passes rotating. **Seed completion CONFIRMED (2026-08-04): worker stable 22h-plus; ref 190130 (00:31 UTC) COMPLETED in-subprocess (seed=0 mace:medium, 16 states, meta.partial populated).**
-  The SIGTERM'd seeds seen since (rc=-15) trace to worker restarts from
-  concurrent sibling-deploy bounces (`signal 15 received` at ~20:35 UTC →
-  restart), which the out-of-process subprocess path survives cleanly — no
-  wedge, the fix working as designed. Remaining (low): port the still-blocking
-  `_dispatch` to the ssh_node `submit`/`poll` protocol (`seed_job.py` +
-  `runner.py`, cross-ref the poison-guard item below) so the pass never blocks
-  even for the bounded in-subprocess window. Closeable: gripe **191351**.
+- **spark autocatpath_seed: port `_dispatch` to the ssh_node submit/poll
+  protocol** · Status: open · Severity: low · gripe **191351** closeable.
+  The wedge fix (`7497c30d`, deployed + live-verified; forensics in git log +
+  gripe 191351) runs seed compute out-of-process, but `_dispatch` still blocks
+  the system pass for the bounded in-subprocess window — port it to the
+  ssh_node `submit`/`poll` protocol (`seed_job.py` + `runner.py`, cross-ref
+  the poison-guard item below) so the pass never blocks at all.
 
 - **Docker Hub egress on spark (gripe 189697) — deferred; needed only for the
   1.5s pause** · Status: blocked · Severity: polish. TLS handshake to Docker

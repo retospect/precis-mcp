@@ -84,8 +84,13 @@ for one candidate's whole landscape.
 ## See the reaction — the interactive web explorer
 
 `/refs/pathway/{id}` (web, not an MCP verb) renders a clickable energy
-diagram (TS humps, Ea labels, ±1σ bands, low-confidence marked) plus a
-per-state 3D cell viewer stepping through the linked `structure` refs. When
+diagram — one coloured profile per root→leaf path, target path first,
+shared prefixes aligned (mirrors catpath's `viz.draw_profile`), TS humps,
+Ea labels, ±1σ bands, low-confidence marked — plus a per-state 3D cell
+viewer stepping through the linked `structure` refs in the same path order.
+Clicking an atom lists its element-grouped relationships and bonds ranked
+by Pauling bond order `s = exp((R0−d)/0.37)` (MIC distances; same panel on
+`/structure/{slug}`). When
 the pathway carries `refs.meta.measures` (`[{name, op, atoms, element?}]`),
 each state's measures overlay: `min_distance` (a labeled atom → nearest atom
 of an `element`) is identity-safe across states by construction; a plain

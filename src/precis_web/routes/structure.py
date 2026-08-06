@@ -42,6 +42,7 @@ from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.handlers.structure import paper_provenance_rows
 from precis.structure import evaluate_measure
 from precis.structure.cache import apply_geometry
+from precis.structure.elements import covalent_radius
 from precis.structure.probe import coordination, detect_bonds
 from precis.structure.scene import FIX_X, FIX_Y, FIX_Z
 from precis_web.deps import await_dispatch, get_runtime, get_store, templates
@@ -213,13 +214,78 @@ def _run_rows(store: Any, ref_id: int) -> list[dict[str, Any]]:
     return out
 
 
+#: Pauling bond-order decay constant (Å) — ``s = exp((R0-d)/0.37)`` reads
+#: s≈1 at the sum-of-covalent-radii ideal single-bond distance, decaying
+#: smoothly as the pair stretches past it.
+_BOND_ORDER_DECAY = 0.37
+
+#: Drop a neighbour pair once its bond order decays below this — anything
+#: weaker isn't a meaningful interaction to list.
+_NEIGHBOR_MIN_S = 0.10
+
+#: Cap the ranked neighbour list per atom — a click panel, not a full
+#: distance matrix.
+_NEIGHBOR_CAP = 8
+
+#: Skip the O(n²) neighbour pass entirely above this atom count — a pathway
+#: page runs it per state (up to ~16 scenes/render), so an outsized supercell
+#: must degrade to empty lists, not stall the server.
+_NEIGHBOR_MAX_ATOMS = 500
+
+
+def _atom_neighbors(scene: Any, atoms: list[dict[str, Any]]) -> None:
+    """Populate each atom dict's ``neighbors``: every OTHER atom in the scene,
+    MIC distance + Pauling bond-order strength ``s = exp((R0-d)/0.37)`` (R0 =
+    sum of covalent radii; s≈1 = ideal single bond), kept at ``s >= 0.10``,
+    sorted strongest-first, capped at 8. Plain O(n²) pairwise loop, guarded by
+    ``_NEIGHBOR_MAX_ATOMS``. Each unordered pair is computed once and appended
+    to both sides."""
+    by_label = {a["label"]: a for a in atoms}
+    labels = list(by_label)
+    for a in atoms:
+        a["neighbors"] = []
+    if len(labels) > _NEIGHBOR_MAX_ATOMS:
+        return
+    for ai in range(len(labels)):
+        li = labels[ai]
+        ei = by_label[li]["element"]
+        for bj in range(ai + 1, len(labels)):
+            lj = labels[bj]
+            ej = by_label[lj]["element"]
+            d, _img = scene.cell.mic(scene.atoms[li].frac, scene.atoms[lj].frac)
+            r0 = covalent_radius(ei) + covalent_radius(ej)
+            s = math.exp((r0 - d) / _BOND_ORDER_DECAY)
+            if s < _NEIGHBOR_MIN_S:
+                continue
+            by_label[li]["neighbors"].append(
+                {
+                    "label": lj,
+                    "element": ej,
+                    "d": round(float(d), 3),
+                    "s": round(float(s), 2),
+                }
+            )
+            by_label[lj]["neighbors"].append(
+                {
+                    "label": li,
+                    "element": ei,
+                    "d": round(float(d), 3),
+                    "s": round(float(s), 2),
+                }
+            )
+    for a in atoms:
+        a["neighbors"].sort(key=lambda nb: nb["s"], reverse=True)
+        del a["neighbors"][_NEIGHBOR_CAP:]
+
+
 def _geom_payload(scene: Any, comment: str) -> dict[str, Any]:
     """One geometry → everything the client needs to draw + interrogate it:
 
     * ``xyz`` — plain Cartesian XYZ for the 3Dmol model (atom order == the
       ``atoms`` list order, so a clicked atom's model index maps straight back).
     * ``atoms`` — per-atom detail (label / element / frac + cart / constraint /
-      magmom / oxidation / hybridization / coordination / colour).
+      magmom / oxidation / hybridization / coordination / colour / ranked
+      ``neighbors`` — see :func:`_atom_neighbors`).
     * ``bonds`` — the **authoritative** graph (declared bonds if any, else the
       inferred covalent bonds), each with its two endpoints in Cartesian Å (in
       the bond's periodic image) so we draw the real edge, not a distance guess.
@@ -244,6 +310,7 @@ def _geom_payload(scene: Any, comment: str) -> dict[str, Any]:
                 "color": _element_color(a.element),
             }
         )
+    _atom_neighbors(scene, atoms)
 
     # Authoritative graph: prefer declared bonds; fall back to auto-detected so
     # a raw cell still shows (and can be clicked) — marked by ``provenance``.

@@ -708,6 +708,26 @@ def _pathway_struct_row(
     }
 
 
+def _pathway_ordered_structures(
+    structs: dict[int, Any], structure_refs: dict[str, Any], state_ids: list[str]
+) -> list[dict[str, Any]]:
+    """Linked-structure rows in reaction order, mirroring the state list: a
+    ``structure_refs`` label that's also a graph node comes first, in
+    ``state_ids`` order (target path first, per ``_pathway_state_ids``); any
+    label with no matching state (e.g. a slab/candidate-adjacent structure
+    the graph never names) follows after, sorted alphabetically."""
+    state_rank = {sid: i for i, sid in enumerate(state_ids)}
+    in_state = sorted(
+        (label for label in structure_refs if label in state_rank),
+        key=lambda label: state_rank[label],
+    )
+    out_of_state = sorted(label for label in structure_refs if label not in state_rank)
+    return [
+        _pathway_struct_row(structs, label, structure_refs[label])
+        for label in (*in_state, *out_of_state)
+    ]
+
+
 #: ``Measure.kind`` values the pathway-measures parser accepts — the ``op``
 #: field on a ``meta.measures`` entry passes straight through as ``kind``
 #: (per the proposal's "evaluator reuse layer" decision). Anything else is
@@ -718,12 +738,86 @@ _PATHWAY_MEASURE_OPS = frozenset(
 )
 
 
-def _pathway_graph_payload(graph: dict[str, Any] | None) -> dict[str, Any] | None:
+#: Stop the root->leaf DFS after this many paths — a legibility bound as much
+#: as a DoS one (the diagram overlays one profile per path; dozens are
+#: unreadable anyway) applied before the priority sort, so on truncation the
+#: target path is found only if enumerated within the bound.
+_PATHWAY_MAX_PATHS = 64
+
+
+def _pathway_paths(
+    node_ids: list[str], links: list[dict[str, Any]], target: str | None
+) -> list[list[str]]:
+    """Every root->leaf simple path over ``links`` (adjacency across ALL edge
+    kinds — reaction + supply), server-ordered so the client can draw one
+    coloured profile per path instead of squashing every branch onto one
+    shared x-axis (mirrors catpath's own ``viz.draw_profile``). A per-path
+    ``visited`` set makes the DFS cycle-safe, and enumeration stops at
+    ``_PATHWAY_MAX_PATHS`` — real catpath graphs are tree-shaped (~16 nodes,
+    a handful of paths), but a dense agent-authored DAG can go combinatorial
+    even at that size; states on un-enumerated paths still reach the state
+    list via the off-path append in ``_pathway_detail``.
+
+    Order: the path whose leaf id matches ``target`` (exact string match)
+    first, then the remainder by length descending, then lexicographically
+    by leaf id — the target's own pathway reads first, longest/most-complete
+    alternatives next. Falls back to one path over every node in array order
+    when the graph has no roots or no path reaches a leaf (cyclic/degenerate
+    — shouldn't happen for a reaction network, but never silently render
+    nothing)."""
+    node_id_set = set(node_ids)
+    adjacency: dict[str, list[str]] = {nid: [] for nid in node_ids}
+    indeg: dict[str, int] = dict.fromkeys(node_ids, 0)
+    outdeg: dict[str, int] = dict.fromkeys(node_ids, 0)
+    for e in links:
+        src, tgt = e["source"], e["target"]
+        if src not in node_id_set or tgt not in node_id_set:
+            continue
+        adjacency[src].append(tgt)
+        indeg[tgt] += 1
+        outdeg[src] += 1
+
+    roots = [nid for nid in node_ids if indeg[nid] == 0]
+    leaves = {nid for nid in node_ids if outdeg[nid] == 0}
+
+    paths: list[list[str]] = []
+
+    def _dfs(node: str, path: list[str], visited: set[str]) -> None:
+        if len(paths) >= _PATHWAY_MAX_PATHS:
+            return
+        if node in leaves:
+            paths.append(list(path))
+        for nxt in adjacency.get(node, []):
+            if nxt in visited:
+                continue
+            visited.add(nxt)
+            path.append(nxt)
+            _dfs(nxt, path, visited)
+            path.pop()
+            visited.discard(nxt)
+
+    for r in roots:
+        _dfs(r, [r], {r})
+
+    if not roots or not paths:
+        return [list(node_ids)]
+
+    def _sort_key(p: list[str]) -> tuple[int, int, str]:
+        leaf = p[-1]
+        is_target = 0 if (target is not None and leaf == target) else 1
+        return (is_target, -len(p), leaf)
+
+    paths.sort(key=_sort_key)
+    return paths
+
+
+def _pathway_graph_payload(
+    graph: dict[str, Any] | None, target: str | None = None
+) -> dict[str, Any] | None:
     """Trim ``meta.graph`` (a networkx ``node_link_data`` dict) to exactly what
-    the client-side energy diagram needs. Per the proposal's layout-ownership
-    decision, precis recomputes the diagram's topological x-order + hump
-    curves in JS from this raw graph — catpath emits no pixel anchor, so this
-    is intentionally *not* pre-laid-out server-side. Returns ``None`` when
+    the client-side energy diagram needs, plus the server-enumerated root->leaf
+    ``paths`` (``_pathway_paths``) the diagram now draws one profile per,
+    instead of a single shared topological x-axis. Returns ``None`` when
     there's no graph to draw (an early/sparse pathway — AC4-adjacent)."""
     if not graph or not graph.get("nodes"):
         return None
@@ -752,7 +846,9 @@ def _pathway_graph_payload(graph: dict[str, Any] | None) -> dict[str, Any] | Non
         for e in graph.get("links", [])
         if e.get("source") is not None and e.get("target") is not None
     ]
-    return {"nodes": nodes, "links": links}
+    node_ids = [n["id"] for n in nodes]
+    paths = _pathway_paths(node_ids, links, str(target) if target is not None else None)
+    return {"nodes": nodes, "links": links, "paths": paths}
 
 
 def _pathway_measures(raw: Any) -> tuple[list[Measure], list[str]]:
@@ -785,17 +881,32 @@ def _pathway_measures(raw: Any) -> tuple[list[Measure], list[str]]:
 
 
 def _pathway_state_ids(
-    graph: dict[str, Any] | None, structure_refs: dict[str, Any]
+    diagram: dict[str, Any] | None,
+    graph: dict[str, Any] | None,
+    structure_refs: dict[str, Any],
 ) -> list[str]:
-    """The state universe for the sidebar/stepper. Every graph node id when a
-    graph is recorded — so a state with no linked geometry still appears
-    (AC4: "no geometry linked"), not silently dropped — else the linked-
-    structure keys alone (a graph-less, structures-only pathway). This is
-    just the list's *enumeration* order; the diagram's own x-layout is
-    recomputed independently in JS off the raw graph (see
-    ``_pathway_graph_payload``) — a small, accepted duplication."""
+    """The state universe for the sidebar/stepper, reaction-ordered rather
+    than raw JSON order: ``diagram["paths"]`` flattened in server order
+    (target path first) with dupes dropped on first occurrence, then any
+    remaining graph node id (on no path at all) appended in node-array
+    order — so a state with no linked geometry, or no path membership,
+    still appears (AC4: "no geometry linked"), never silently dropped. Falls
+    back to the linked-structure keys alone for a graph-less, structures-only
+    pathway."""
     if graph and graph.get("nodes"):
-        return [str(n["id"]) for n in graph["nodes"] if n.get("id") is not None]
+        node_ids = [str(n["id"]) for n in graph["nodes"] if n.get("id") is not None]
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for path in (diagram or {}).get("paths") or []:
+            for nid in path:
+                if nid not in seen:
+                    seen.add(nid)
+                    ordered.append(nid)
+        for nid in node_ids:
+            if nid not in seen:
+                seen.add(nid)
+                ordered.append(nid)
+        return ordered
     return sorted(str(k) for k in structure_refs)
 
 
@@ -919,10 +1030,6 @@ async def _pathway_detail(request: Request, store: Any, ref: Any) -> HTMLRespons
         if candidate_ref_id is not None
         else None
     )
-    structures = [
-        _pathway_struct_row(structs, label, sid)
-        for label, sid in sorted(structure_refs.items())
-    ]
 
     # Energetics summary — defensive reads off ``meta['results']`` (the
     # computed network); every field is optional.
@@ -949,9 +1056,10 @@ async def _pathway_detail(request: Request, store: Any, ref: Any) -> HTMLRespons
     # -> no diagram; no/partial structure_refs -> per-state "no geometry
     # linked" (AC4); an unrecognised measure op -> skipped with a note.
     graph = meta.get("graph")
-    diagram = _pathway_graph_payload(graph)
+    diagram = _pathway_graph_payload(graph, target=results.get("target"))
     measure_defs, measure_notes = _pathway_measures(meta.get("measures"))
-    state_ids = _pathway_state_ids(graph, structure_refs)
+    state_ids = _pathway_state_ids(diagram, graph, structure_refs)
+    structures = _pathway_ordered_structures(structs, structure_refs, state_ids)
     state_geoms, measures_summary = _pathway_state_geoms_and_measures(
         store, state_ids, structure_refs, measure_defs
     )

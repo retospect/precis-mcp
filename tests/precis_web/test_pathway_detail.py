@@ -12,15 +12,19 @@ the route really is read-only-off-storage for this kind. Modeled on
 from __future__ import annotations
 
 import json
+import math
 import re
 from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
+import pytest
 
 from precis.structure import apply_ops
 from precis.structure.cell import Cell
+from precis.structure.elements import covalent_radius
 from precis.structure.scene import Scene
+from precis_web.routes.structure import _geom_payload
 
 from .conftest import make_ref
 
@@ -351,6 +355,286 @@ def _extract_json_array(html: str, marker: str) -> Any:
                 end = i + 1
                 break
     return json.loads(html[start:end])
+
+
+def _extract_json_object(html: str, marker: str) -> Any:
+    """Like :func:`_extract_json_array`, but for a top-level ``{...}`` blob
+    (e.g. ``"diagram: "``) — balances whichever bracket char immediately
+    follows ``marker`` (``{``/``}`` here) rather than assuming an array."""
+    start = html.index(marker) + len(marker)
+    open_ch = html[start]
+    close_ch = "}" if open_ch == "{" else "]"
+    depth = 0
+    end = start
+    for i in range(start, len(html)):
+        ch = html[i]
+        if ch == open_ch:
+            depth += 1
+        elif ch == close_ch:
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    return json.loads(html[start:end])
+
+
+def _branching_graph(
+    extra_nodes: list[str] | None = None,
+    extra_links: list[tuple[str, str]] | None = None,
+) -> dict[str, Any]:
+    """The explorer's worked branching-tree fixture: a main chain
+    A->B->C->T plus a B->X->Y branch — mirrors real pathway 175949 (a tree
+    rooted at one state with multiple outgoing branches). ``extra_nodes``/
+    ``extra_links`` bolt on additional, disconnected structure (e.g. a
+    2-cycle unreachable from the root) for the off-path-node case."""
+    ids = ["A", "B", "C", "T", "X", "Y", *(extra_nodes or [])]
+    nodes = [
+        {
+            "id": nid,
+            "energy": -1.0,
+            "energy_std": 0.0,
+            "rel_energy": 0.1,
+            "low_confidence": False,
+        }
+        for nid in ids
+    ]
+    edges = [
+        ("A", "B"),
+        ("B", "C"),
+        ("C", "T"),
+        ("B", "X"),
+        ("X", "Y"),
+        *(extra_links or []),
+    ]
+    links = [
+        {
+            "source": u,
+            "target": v,
+            "kind": "reaction",
+            "barrier": 0.1,
+            "barrier_std": 0.0,
+            "delta_e": 0.0,
+            "delta_e_std": 0.0,
+            "low_confidence": False,
+        }
+        for u, v in edges
+    ]
+    return {"nodes": nodes, "links": links}
+
+
+def test_pathway_state_ids_follow_target_path_then_branch(client, runtime) -> None:
+    """Item 1 (state ordering): the target's own path (A->B->C->T) comes
+    first and contiguous; the sibling branch (X->Y off of B) follows after
+    — not the graph's raw JSON node-array order."""
+    _seed_pathway(
+        runtime.store,
+        meta={"graph": _branching_graph(), "results": {"target": "T"}},
+        body_text=None,
+    )
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    state_ids = _extract_json_array(resp.text, "stateIds: ")
+    assert state_ids == ["A", "B", "C", "T", "X", "Y"]
+
+
+def test_pathway_diagram_paths_target_first_and_offpath_node_still_listed(
+    client, runtime
+) -> None:
+    """Item 2: ``diagram["paths"]`` puts the target's leaf-matching path
+    first; a node that's unreachable from any root (here a 2-cycle W<->V,
+    disconnected from the main tree — neither has indegree 0, so the DFS
+    never visits them) still lands in ``state_ids``, appended after every
+    path-covered state."""
+    graph = _branching_graph(
+        extra_nodes=["W", "V"], extra_links=[("W", "V"), ("V", "W")]
+    )
+    _seed_pathway(
+        runtime.store,
+        meta={"graph": graph, "results": {"target": "T"}},
+        body_text=None,
+    )
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    diagram = _extract_json_object(resp.text, "diagram: ")
+    assert diagram["paths"][0] == ["A", "B", "C", "T"]
+    assert diagram["paths"][1] == ["A", "B", "X", "Y"]
+    state_ids = _extract_json_array(resp.text, "stateIds: ")
+    assert state_ids == ["A", "B", "C", "T", "X", "Y", "W", "V"]
+
+
+def test_pathway_diagram_paths_no_target_longest_first(client, runtime) -> None:
+    """Item 3: with no ``results.target`` at all, path order is deterministic
+    off length alone — the longer branch (R->P1->P2->P3) sorts before the
+    shorter one (R->Q1)."""
+    graph = {
+        "nodes": [
+            {
+                "id": nid,
+                "energy": -1.0,
+                "energy_std": 0.0,
+                "rel_energy": 0.1,
+                "low_confidence": False,
+            }
+            for nid in ("R", "P1", "P2", "P3", "Q1")
+        ],
+        "links": [
+            {
+                "source": u,
+                "target": v,
+                "kind": "reaction",
+                "barrier": 0.1,
+                "barrier_std": 0.0,
+                "delta_e": 0.0,
+                "delta_e_std": 0.0,
+                "low_confidence": False,
+            }
+            for u, v in [("R", "P1"), ("P1", "P2"), ("P2", "P3"), ("R", "Q1")]
+        ],
+    }
+    _seed_pathway(runtime.store, meta={"graph": graph}, body_text=None)
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    diagram = _extract_json_object(resp.text, "diagram: ")
+    assert diagram["paths"][0] == ["R", "P1", "P2", "P3"]
+    assert diagram["paths"][1] == ["R", "Q1"]
+
+
+def test_pathway_linked_structures_follow_state_order_not_alphabetical(
+    client, runtime
+) -> None:
+    """Scope addition: the "Linked structures" list follows the same
+    reaction order as the state list/stepper (``state_ids``), not a plain
+    alphabetical sort of the ``structure_refs`` labels — including for a
+    label that isn't a graph node at all (out-of-state, appended last no
+    matter where it'd alphabetically sort). Targets the branch leaf ``Y``
+    (rather than ``T``) specifically so the expected order diverges from
+    alphabetical order — a regression a naive ``sorted()`` would pass by
+    accident against the letter-for-letter A..T..X..Y fixture."""
+    graph = _branching_graph()
+    structure_refs = {"C": 900201, "X": 900202, "T": 900203, "0extra": 900204}
+    _seed_pathway(
+        runtime.store,
+        meta={
+            "graph": graph,
+            "results": {"target": "Y"},
+            "structure_refs": structure_refs,
+        },
+        body_text=None,
+    )
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    state_ids = _extract_json_array(resp.text, "stateIds: ")
+    assert state_ids == ["A", "B", "X", "Y", "C", "T"]
+    struct_section = resp.text[resp.text.index("Linked structures") :]
+    idx = {
+        label: struct_section.index(f">{label}</span>")
+        for label in ("C", "X", "T", "0extra")
+    }
+    assert idx["X"] < idx["C"] < idx["T"] < idx["0extra"]
+
+
+def test_pathway_diagram_and_geom_payloads_carry_expected_keys(client, runtime) -> None:
+    """Template smoke (item 5): the rendered page embeds the per-path
+    ``diagram.paths`` JSON and every state geometry payload's ranked
+    ``neighbors`` list."""
+    _seed_pathway(
+        runtime.store,
+        meta={"graph": _GRAPH3, "structure_refs": _GRAPH3_STRUCTURE_REFS},
+        body_text=None,
+    )
+    _seed_explorer_scenes(runtime.store)
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    assert '"paths"' in resp.text
+    assert '"neighbors"' in resp.text
+
+
+def test_geom_payload_neighbors_mic_across_periodic_boundary() -> None:
+    """Item 4: ``_geom_payload``'s per-atom ``neighbors`` uses the MIC
+    distance, not the raw Cartesian gap — two Pd atoms placed 9.6 Å apart
+    directly are actually 0.4 Å apart THROUGH the periodic boundary, and
+    that's the pair (and distance) that must show up, ranked strongest-first
+    against a weaker, non-wrapping third neighbour."""
+    scene = Scene(cell=Cell(np.eye(3) * 10.0, (True, True, True)))
+    apply_ops(
+        scene,
+        [
+            {
+                "op": "add_atom",
+                "element": "Pd",
+                "frac": [0.03, 0.0, 0.0],
+                "label": "PdA",
+            },
+            {
+                "op": "add_atom",
+                "element": "Pd",
+                "frac": [0.99, 0.0, 0.0],
+                "label": "PdB",
+            },
+            {
+                "op": "add_atom",
+                "element": "Pd",
+                "frac": [0.38, 0.0, 0.0],
+                "label": "PdC",
+            },
+        ],
+    )
+    payload = _geom_payload(scene, "test")
+    by_label = {a["label"]: a for a in payload["atoms"]}
+    neighbors = by_label["PdA"]["neighbors"]
+    assert [nb["label"] for nb in neighbors] == ["PdB", "PdC"]
+    pd_b = neighbors[0]
+    assert pd_b["d"] == pytest.approx(0.4, abs=1e-6)
+    r0 = covalent_radius("Pd") + covalent_radius("Pd")
+    expected_s = math.exp((r0 - pd_b["d"]) / 0.37)
+    assert pd_b["s"] == pytest.approx(round(expected_s, 2), abs=0.05)
+    # Sorted strongest-first: the 0.4 Å wrap-around pair beats the 3.5 Å
+    # direct one.
+    assert neighbors[0]["s"] > neighbors[1]["s"]
+
+
+def test_atom_neighbors_skipped_above_atom_cap() -> None:
+    """The O(n²) neighbour pass degrades to empty lists (not a server stall)
+    above ``_NEIGHBOR_MAX_ATOMS`` — a pathway page runs it per state, so an
+    outsized supercell must short-circuit."""
+    from precis_web.routes.structure import _NEIGHBOR_MAX_ATOMS, _atom_neighbors
+
+    scene = Scene(cell=Cell(np.eye(3) * 50.0, (True, True, True)))
+    n = _NEIGHBOR_MAX_ATOMS + 1
+    ops = [
+        {
+            "op": "add_atom",
+            "element": "Pd",
+            "frac": [(i % 10) / 10.0, ((i // 10) % 10) / 10.0, (i // 100) / 10.0],
+            "label": f"Pd{i}",
+        }
+        for i in range(n)
+    ]
+    apply_ops(scene, ops)
+    atoms = [{"label": f"Pd{i}", "element": "Pd"} for i in range(n)]
+    _atom_neighbors(scene, atoms)
+    assert all(a["neighbors"] == [] for a in atoms)
+
+
+def test_pathway_paths_dense_dag_enumeration_is_bounded() -> None:
+    """A dense (non-tree) DAG — 7 chained diamonds, 2^7 = 128 root→leaf
+    paths — must stop at ``_PATHWAY_MAX_PATHS``, not enumerate them all."""
+    from precis_web.routes.refs import _PATHWAY_MAX_PATHS, _pathway_paths
+
+    node_ids: list[str] = ["M0"]
+    links: list[dict[str, Any]] = []
+    for i in range(1, 8):
+        prev, mid = f"M{i - 1}", f"M{i}"
+        node_ids += [f"A{i}", f"B{i}", mid]
+        links += [
+            {"source": prev, "target": f"A{i}"},
+            {"source": prev, "target": f"B{i}"},
+            {"source": f"A{i}", "target": mid},
+            {"source": f"B{i}", "target": mid},
+        ]
+    paths = _pathway_paths(node_ids, links, target=None)
+    assert len(paths) == _PATHWAY_MAX_PATHS
+    assert all(p[0] == "M0" and p[-1] == "M7" for p in paths)
 
 
 def test_pathway_detail_duplicate_measure_names_dont_collide(client, runtime) -> None:

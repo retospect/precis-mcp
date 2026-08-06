@@ -273,34 +273,6 @@
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   const num = (x, d = 3) => (x == null ? '—' : Number(x).toFixed(d));
 
-  // ── topological x-order — precis owns the diagram layout; catpath emits
-  // no pixel anchor (proposal decision). Kahn's algorithm over ALL edges
-  // (reaction + supply/branch) so every node lands somewhere; a cycle
-  // (shouldn't happen for a reaction network) falls back to node array
-  // order, mirroring catpath's own ``draw_graph`` fallback. ──
-  function topoOrder(nodes, links) {
-    const ids = nodes.map((n) => n.id);
-    const indeg = {}; ids.forEach((id) => { indeg[id] = 0; });
-    const adj = {}; ids.forEach((id) => { adj[id] = []; });
-    links.forEach((e) => {
-      if (adj[e.source] && indeg[e.target] != null) {
-        adj[e.source].push(e.target);
-        indeg[e.target] += 1;
-      }
-    });
-    const q = ids.filter((id) => indeg[id] === 0);
-    const order = [];
-    while (q.length) {
-      const n = q.shift();
-      order.push(n);
-      (adj[n] || []).forEach((m) => {
-        indeg[m] -= 1;
-        if (indeg[m] === 0) { q.push(m); }
-      });
-    }
-    return order.length === ids.length ? order : ids;
-  }
-
   // ── smooth cosine hump — (x0,y0) up to (xm,yPeak) down to (x1,y1) — the
   // same curve as catpath ``viz._hump``, so the shape reads like the PNG
   // export even though precis draws its own SVG. Operates in whatever
@@ -324,20 +296,41 @@
 
   const TRACE_COLORS = ['#7c3aed', '#0891b2', '#c026d3', '#059669'];
 
+  // ── per-path palette — mirrors catpath's own ``viz.draw_profile``: every
+  // root->leaf simple path is its own coloured profile so branches overlay
+  // instead of stretching across one shared x-axis. Path 0 (server-ordered
+  // so the ``results.target`` leaf's path comes first) keeps the diagram's
+  // traditional blue. ──
+  const PATH_COLORS = ['#4a90d9', '#f97316', '#16a34a', '#9333ea', '#0d9488', '#db2777'];
+
   function renderDiagram() {
     const g = V.diagram;
     const el = document.getElementById('pw-diagram');
     if (!g || !el || !g.nodes.length) { return; }
 
-    const order = topoOrder(g.nodes, g.links);
-    const xOf = {}; order.forEach((id, i) => { xOf[id] = i; });
+    const paths = (g.paths && g.paths.length) ? g.paths : [g.nodes.map((n) => n.id)];
     const byId = {}; g.nodes.forEach((n) => { byId[n.id] = n; });
 
-    const W = Math.max(360, 130 * order.length + 60);
+    // ── x-position: the FIRST path that contains a node fixes its x = that
+    // path's own step index — shared prefixes land at the same x, and a
+    // node only reachable via a later branch is indexed from that branch's
+    // own divergence point, not the whole node count. A node on no path at
+    // all (shouldn't happen outside a degenerate graph) is simply never
+    // drawn, same as catpath's own ``draw_profile``. ──
+    const xOf = {};
+    const ownerPath = {};
+    paths.forEach((path, pi) => {
+      path.forEach((id, i) => {
+        if (xOf[id] == null) { xOf[id] = i; ownerPath[id] = pi; }
+      });
+    });
+    const maxLen = Math.max(1, ...paths.map((p) => p.length));
+
+    const W = Math.max(360, 130 * maxLen + 60);
     const H = 300;
     const padL = 44, padR = 20, padT = 26, padB = 10;
     const plotW = W - padL - padR, plotH = H - padT - padB;
-    const n = Math.max(order.length, 1);
+    const n = Math.max(maxLen, 1);
     const xScale = (idx) => padL + ((idx + 0.5) / n) * plotW;
     const half = Math.min(0.34 * (plotW / n), 42);
 
@@ -347,13 +340,13 @@
     // null to 0 (which would misleadingly plot it at the origin).
     let yMin = Infinity, yMax = -Infinity;
     g.nodes.forEach((nd) => {
-      if (nd.rel_energy == null) { return; }
+      if (xOf[nd.id] == null || nd.rel_energy == null) { return; }
       const sd = nd.energy_std || 0;
       yMin = Math.min(yMin, nd.rel_energy - sd);
       yMax = Math.max(yMax, nd.rel_energy + sd);
     });
     g.links.forEach((e) => {
-      if (e.kind === 'supply') { return; }
+      if (e.kind === 'supply' || xOf[e.source] == null || xOf[e.target] == null) { return; }
       const src = byId[e.source];
       if (!src || src.rel_energy == null) { return; }
       const peak = src.rel_energy + Math.max(e.barrier || 0, 0);
@@ -376,42 +369,60 @@
       parts.push(`<text x="${padL - 6}" y="${yy + 3}" font-size="8" fill="#94a3b8" text-anchor="end">${y.toFixed(2)}</text>`);
     }
 
-    // edges — reaction (solid hump + Ea label) vs supply/branch (dashed, secondary)
-    g.links.forEach((e) => {
-      const src = byId[e.source], tgt = byId[e.target];
-      if (!src || !tgt || xOf[e.source] == null || xOf[e.target] == null) { return; }
-      // No energy on one end — nothing to plot a hump/line between.
-      if (src.rel_energy == null || tgt.rel_energy == null) { return; }
-      const x0 = xOf[e.source] + half, x1 = xOf[e.target] - half;
-      if (e.kind === 'supply') {
-        parts.push(`<line x1="${xScale(x0)}" y1="${py(src.rel_energy)}" x2="${xScale(x1)}" y2="${py(tgt.rel_energy)}" `
-          + `stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="4 3"/>`);
-        return;
-      }
-      const peakY = src.rel_energy + Math.max(e.barrier || 0, 0);
-      const curve = humpPoints(x0, src.rel_energy, x1, tgt.rel_energy, peakY)
-        .map(([x, y]) => `${xScale(x)},${py(y)}`).join(' ');
-      const color = e.low_confidence ? '#d9534f' : '#4a90d9';
-      parts.push(`<polyline points="${curve}" fill="none" stroke="${color}" stroke-width="2"/>`);
-      if ((e.barrier || 0) > 1e-3) {
-        const xm = xScale((x0 + x1) / 2);
-        const bsd = e.barrier_std || 0;
-        if (bsd > 1e-6) {
-          parts.push(`<line x1="${xm}" y1="${py(peakY - bsd)}" x2="${xm}" y2="${py(peakY + bsd)}" stroke="${color}" stroke-width="1"/>`);
+    // edges — walked per path, in server order (target path first); an
+    // edge already drawn by an earlier (higher-priority) path is skipped so
+    // a shared prefix draws once, not once per overlapping branch. Reaction
+    // (solid hump + Ea label) vs supply/branch (dashed, secondary), in the
+    // owning path's colour.
+    const linkByPair = {};
+    g.links.forEach((e) => { linkByPair[e.source + '\u0001' + e.target] = e; });
+    const drawnEdges = new Set();
+    paths.forEach((path, pi) => {
+      const color = PATH_COLORS[pi % PATH_COLORS.length];
+      for (let i = 0; i < path.length - 1; i++) {
+        const key = path[i] + '\u0001' + path[i + 1];
+        if (drawnEdges.has(key)) { continue; }
+        const e = linkByPair[key];
+        if (!e) { continue; }
+        drawnEdges.add(key);
+        const src = byId[e.source], tgt = byId[e.target];
+        if (!src || !tgt || xOf[e.source] == null || xOf[e.target] == null) { continue; }
+        // No energy on one end — nothing to plot a hump/line between.
+        if (src.rel_energy == null || tgt.rel_energy == null) { continue; }
+        const x0 = xOf[e.source] + half, x1 = xOf[e.target] - half;
+        if (e.kind === 'supply') {
+          parts.push(`<line x1="${xScale(x0)}" y1="${py(src.rel_energy)}" x2="${xScale(x1)}" y2="${py(tgt.rel_energy)}" `
+            + `stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="4 3"/>`);
+          continue;
         }
-        const lab = bsd > 1e-6 ? `Ea=${e.barrier.toFixed(2)}±${bsd.toFixed(2)}` : `Ea=${e.barrier.toFixed(2)}`;
-        parts.push(`<text x="${xm}" y="${py(peakY + bsd) - 4}" font-size="7.5" fill="${color}" text-anchor="middle">${esc(lab)}</text>`);
+        const peakY = src.rel_energy + Math.max(e.barrier || 0, 0);
+        const curve = humpPoints(x0, src.rel_energy, x1, tgt.rel_energy, peakY)
+          .map(([x, y]) => `${xScale(x)},${py(y)}`).join(' ');
+        parts.push(`<polyline points="${curve}" fill="none" stroke="${color}" stroke-width="2"/>`);
+        if ((e.barrier || 0) > 1e-3) {
+          const xm = xScale((x0 + x1) / 2);
+          const bsd = e.barrier_std || 0;
+          if (bsd > 1e-6) {
+            parts.push(`<line x1="${xm}" y1="${py(peakY - bsd)}" x2="${xm}" y2="${py(peakY + bsd)}" stroke="${color}" stroke-width="1"/>`);
+          }
+          const lab = bsd > 1e-6 ? `Ea=${e.barrier.toFixed(2)}±${bsd.toFixed(2)}` : `Ea=${e.barrier.toFixed(2)}`;
+          parts.push(`<text x="${xm}" y="${py(peakY + bsd) - 4}" font-size="7.5" fill="${color}" text-anchor="middle">${esc(lab)}</text>`);
+        }
       }
     });
 
-    // levels — ±1σ band, the level line, the label, low-confidence marked.
+    // levels — ±1σ band, the level line, the label — each drawn ONCE at its
+    // fixed x, coloured by the first (highest-priority) path that owns it;
+    // low_confidence still overrides to red regardless of the owning path.
     // A node with rel_energy == null never reaches the arithmetic/.toFixed
     // below (that's the AC (b) guard) — it gets a dashed grey "no energy
     // yet" placeholder at the plot floor instead, and keeps its click
     // target so the state remains selectable from the diagram too.
-    order.forEach((id) => {
-      const nd = byId[id];
+    g.nodes.forEach((nd) => {
+      const id = nd.id;
+      if (xOf[id] == null) { return; }
       const x0 = xScale(xOf[id] - half), x1 = xScale(xOf[id] + half);
+      const ownerColor = PATH_COLORS[(ownerPath[id] || 0) % PATH_COLORS.length];
       if (nd.rel_energy == null) {
         const yFloor = padT + plotH - 4;
         parts.push(`<line x1="${x0}" y1="${yFloor}" x2="${x1}" y2="${yFloor}" stroke="#cbd5e1" stroke-width="4" stroke-linecap="round" stroke-dasharray="2 4"/>`);
@@ -421,7 +432,7 @@
         return;
       }
       const y = py(nd.rel_energy);
-      const color = nd.low_confidence ? '#d9534f' : '#4a90d9';
+      const color = nd.low_confidence ? '#d9534f' : ownerColor;
       const sd = nd.energy_std || 0;
       if (sd > 1e-6) {
         parts.push(`<rect x="${x0}" y="${py(nd.rel_energy + sd)}" width="${x1 - x0}" height="${py(nd.rel_energy - sd) - py(nd.rel_energy + sd)}" `
@@ -436,13 +447,27 @@
         + `fill="transparent" stroke="none" style="cursor:pointer"/>`);
     });
 
+    // legend — one line per path, top-right, in its colour: "-> <leaf id>".
+    paths.forEach((path, pi) => {
+      const leaf = path[path.length - 1];
+      const color = PATH_COLORS[pi % PATH_COLORS.length];
+      parts.push(`<text x="${W - padR}" y="${padT + 8 + pi * 10}" font-size="7.5" fill="${color}" text-anchor="end">&rarr; ${esc(leaf)}</text>`);
+    });
+
     // measure traces — a value/twin scale per measure, dashed when its
     // identity guard failed anywhere (AC3: never render an unverified
     // trace as trusted), solid when every anchor was a scene singleton.
+    // x comes off the new per-path xOf map; iterated in state_ids order
+    // (V.stateIds) — the states section's own reaction-ordered enumeration.
+    // Legend starts below the path legend so the two never overlap.
     let colorIdx = 0;
+    const measureLegendY0 = padT + 8 + paths.length * 10;
     (V.measures || []).forEach((m) => {
       if (!m.trace_ok) { return; }
-      const vals = order.map((id) => (m.per_state[id] || {}).value).filter((v) => v != null);
+      const vals = V.stateIds
+        .filter((id) => xOf[id] != null)
+        .map((id) => (m.per_state[id] || {}).value)
+        .filter((v) => v != null);
       if (vals.length < 2) { return; }
       let vMin = Math.min(...vals), vMax = Math.max(...vals);
       if (vMax - vMin < 1e-9) { vMax = vMin + 1; }
@@ -450,20 +475,22 @@
       vMin -= vPad; vMax += vPad;
       const vy = (v) => padT + plotH - ((v - vMin) / (vMax - vMin)) * plotH;
       const color = TRACE_COLORS[colorIdx % TRACE_COLORS.length];
-      const pts = order
+      const pts = V.stateIds
         .map((id) => {
+          if (xOf[id] == null) { return null; }
           const cell = m.per_state[id];
           return (cell && cell.value != null) ? `${xScale(xOf[id])},${vy(cell.value)}` : null;
         })
         .filter(Boolean).join(' ');
       const dash = m.verified ? '' : ' stroke-dasharray="5 4"';
       parts.push(`<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2"${dash} opacity="0.85"/>`);
-      order.forEach((id) => {
+      V.stateIds.forEach((id) => {
+        if (xOf[id] == null) { return; }
         const cell = m.per_state[id];
         if (!cell || cell.value == null) { return; }
         parts.push(`<circle cx="${xScale(xOf[id])}" cy="${vy(cell.value)}" r="2.5" fill="${color}"/>`);
       });
-      parts.push(`<text x="${W - padR}" y="${padT + 8 + colorIdx * 10}" font-size="7.5" fill="${color}" text-anchor="end">`
+      parts.push(`<text x="${W - padR}" y="${measureLegendY0 + colorIdx * 10}" font-size="7.5" fill="${color}" text-anchor="end">`
         + `${esc(m.name)}${m.verified ? '' : ' (unverified)'}</text>`);
       colorIdx += 1;
     });
@@ -513,12 +540,55 @@
       + `<span class="font-medium text-slate-700">${v}</span></div>`;
   }
 
+  // ── per-atom neighbour lists (server-computed MIC + Pauling bond order,
+  // ``_atom_neighbors`` in routes/structure.py) — an element-grouped summary
+  // row plus a ranked "bonds by strength" list, shared shape with the
+  // structure detail page's own atom panel. ──
+  function neighborSummary(neighbors) {
+    const strong = (neighbors || []).filter((nb) => nb.s >= 0.3);
+    if (!strong.length) { return ''; }
+    const groups = {};
+    strong.forEach((nb) => { (groups[nb.element] = groups[nb.element] || []).push(nb.d); });
+    return Object.keys(groups).sort().map((el) => {
+      const ds = groups[el];
+      const lo = Math.min(...ds), hi = Math.max(...ds);
+      const range = ds.length > 1 ? `${lo.toFixed(2)}–${hi.toFixed(2)}` : lo.toFixed(2);
+      return `${ds.length}× ${esc(el)} ${range} Å`;
+    }).join(' · ');
+  }
+
+  function bondsByStrength(neighbors) {
+    const all = neighbors || [];
+    if (!all.length) { return []; }
+    const strong = all.filter((nb) => nb.s >= 0.5);
+    const minCount = Math.min(3, all.length);
+    const rows = strong.length >= minCount ? strong : all.slice(0, minCount);
+    return rows.slice(0, 8);
+  }
+
+  function bondRowsHtml(a) {
+    const rows = bondsByStrength(a.neighbors);
+    if (!rows.length) { return ''; }
+    const list = rows.map((nb) => `<div class="flex gap-2 text-[11px]">`
+      + `<span class="font-mono text-slate-600 w-16 shrink-0">${esc(nb.label)}</span>`
+      + `<span class="text-slate-500 w-8 shrink-0">${esc(nb.element)}</span>`
+      + `<span class="text-slate-700 w-16 shrink-0">${nb.d.toFixed(3)} Å</span>`
+      + `<span class="text-slate-500">s ${nb.s.toFixed(2)}</span>`
+      + `</div>`).join('');
+    return `<div class="mt-2">
+        <div class="text-[10px] uppercase tracking-wide text-slate-400 mb-0.5">bonds by strength</div>
+        ${list}
+        <p class="mt-1 text-[10px] text-slate-400">s = exp((R0&minus;d)/0.37) &mdash; Pauling bond order; 1 &asymp; ideal single bond, &lt;0.5 = weak/stretched</p>
+      </div>`;
+  }
+
   function showAtomDetail(a) {
     if (!a || !detailEl) { return; }
     let extra = '';
     if (a.magmom != null) extra += row('magmom', esc(a.magmom));
     if (a.oxidation != null) extra += row('oxidation', esc(a.oxidation));
     if (a.hybridization) extra += row('hybridization', esc(a.hybridization));
+    const relationships = neighborSummary(a.neighbors);
     detailEl.innerHTML = `
       <div class="flex items-center gap-2 mb-1.5">
         <span class="inline-block w-3.5 h-3.5 rounded-full border border-slate-300" style="background:${esc(a.color)};"></span>
@@ -531,8 +601,10 @@
         ${row('cartesian Å', a.cart.map((x) => x.toFixed(3)).join(', '))}
         ${row('coordination', esc(a.coordination))}
         ${row('constraint', esc(a.fixed))}
+        ${relationships ? row('relationships', relationships) : ''}
         ${extra}
-      </div>`;
+      </div>
+      ${bondRowsHtml(a)}`;
   }
 
   function showBondDetail(b) {

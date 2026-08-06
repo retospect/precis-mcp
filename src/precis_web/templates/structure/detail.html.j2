@@ -291,12 +291,55 @@
             <span class="font-medium text-slate-700">${v}</span></div>`;
   }
 
+  // ── per-atom neighbour lists (server-computed MIC + Pauling bond order,
+  // ``_atom_neighbors`` in routes/structure.py) — an element-grouped summary
+  // row plus a ranked "bonds by strength" list, shared shape with the
+  // pathway explorer's own atom panel. ──
+  function neighborSummary(neighbors) {
+    const strong = (neighbors || []).filter((nb) => nb.s >= 0.3);
+    if (!strong.length) { return ''; }
+    const groups = {};
+    strong.forEach((nb) => { (groups[nb.element] = groups[nb.element] || []).push(nb.d); });
+    return Object.keys(groups).sort().map((el) => {
+      const ds = groups[el];
+      const lo = Math.min(...ds), hi = Math.max(...ds);
+      const range = ds.length > 1 ? `${lo.toFixed(2)}–${hi.toFixed(2)}` : lo.toFixed(2);
+      return `${ds.length}× ${esc(el)} ${range} Å`;
+    }).join(' · ');
+  }
+
+  function bondsByStrength(neighbors) {
+    const all = neighbors || [];
+    if (!all.length) { return []; }
+    const strong = all.filter((nb) => nb.s >= 0.5);
+    const minCount = Math.min(3, all.length);
+    const rows = strong.length >= minCount ? strong : all.slice(0, minCount);
+    return rows.slice(0, 8);
+  }
+
+  function bondRowsHtml(a) {
+    const rows = bondsByStrength(a.neighbors);
+    if (!rows.length) { return ''; }
+    const list = rows.map((nb) => `<div class="flex gap-2 text-[11px]">`
+      + `<span class="font-mono text-slate-600 w-16 shrink-0">${esc(nb.label)}</span>`
+      + `<span class="text-slate-500 w-8 shrink-0">${esc(nb.element)}</span>`
+      + `<span class="text-slate-700 w-16 shrink-0">${nb.d.toFixed(3)} Å</span>`
+      + `<span class="text-slate-500">s ${nb.s.toFixed(2)}</span>`
+      + `</div>`).join('');
+    return `<div class="mt-2">
+        <div class="text-[10px] uppercase tracking-wide text-slate-400 mb-0.5">bonds by strength</div>
+        ${list}
+        <p class="mt-1 text-[10px] text-slate-400">s = exp((R0&minus;d)/0.37) &mdash; Pauling bond order; 1 &asymp; ideal single bond, &lt;0.5 = weak/stretched</p>
+      </div>`;
+  }
+
   function showAtom(a) {
     if (!a) { return; }
     let extra = '';
     if (a.magmom != null) extra += row('magmom', esc(a.magmom));
     if (a.oxidation != null) extra += row('oxidation', esc(a.oxidation));
     if (a.hybridization) extra += row('hybridization', esc(a.hybridization));
+    const relationships = neighborSummary(a.neighbors);
     detail.innerHTML = `
       <div class="flex items-center gap-2 mb-1.5">
         <span class="inline-block w-3.5 h-3.5 rounded-full border border-slate-300" style="background:${esc(a.color)};"></span>
@@ -309,8 +352,10 @@
         ${row('cartesian Å', a.cart.map((x) => x.toFixed(3)).join(', '))}
         ${row('coordination', esc(a.coordination))}
         ${row('constraint', esc(a.fixed))}
+        ${relationships ? row('relationships', relationships) : ''}
         ${extra}
-      </div>`;
+      </div>
+      ${bondRowsHtml(a)}`;
   }
 
   function showBond(b) {
