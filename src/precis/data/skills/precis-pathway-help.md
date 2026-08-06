@@ -88,6 +88,17 @@ diagram — one coloured profile per root→leaf path, target path first,
 shared prefixes aligned (mirrors catpath's `viz.draw_profile`), TS humps,
 Ea labels, ±1σ bands, low-confidence marked — plus a per-state 3D cell
 viewer stepping through the linked `structure` refs in the same path order.
+The states panel is grouped by branch (one section per path, tinted like
+its profile; branch sections say where they diverge), and supply-edge rows
+annotate reservoir traffic — `+H* from reservoir`, and where a dissociation
+byproduct goes: `O* parked — continues in → H2O`. A preflight warning that
+names a state (`INFEASIBLE`, `wrong-site`, `detached` = red; `RESEATED ok`
+= amber) badges that state's row and reddens its diagram level, so a
+quarantined number is visible where you'd read it. A provenance strip links
+the candidate structure, owning quest, dossier, and logbook; a candidate
+stepper walks sibling pathways for the same substrate→target reaction
+(ranked by `rate_Ea`), carrying the selected state across so you can park
+on one step and compare candidates.
 Clicking an atom lists its element-grouped relationships and bonds ranked
 by Pauling bond order `s = exp((R0−d)/0.37)` (MIC distances; same panel on
 `/structure/{slug}`). The selection follows the active state: stepping or

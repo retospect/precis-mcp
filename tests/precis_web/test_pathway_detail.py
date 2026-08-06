@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -787,3 +788,288 @@ def test_pathway_detail_null_rel_energy_state_still_boots_viewer(
     # rel_energy: null round-trips into the embedded diagram JSON as JS
     # null, never coerced to 0.
     assert re.search(r'"id":\s*"s2"[^}]*"rel_energy":\s*null', resp.text) is not None
+
+
+# ── Feedback round 3 (item A-E) ──────────────────────────────────────────
+
+
+def test_pathway_state_warnings_maps_by_exact_state_prefix() -> None:
+    """Item B: a warning's state prefix (the text before ``" seed="``) must
+    EXACTLY match a known state id to be attached to a row; INFEASIBLE /
+    wrong-site / detached mark ``"bad"`` (red), everything else (e.g.
+    "RESEATED ok") is ``"info"`` (amber). A prefix matching nothing on this
+    graph, or a warning with no ``" seed="`` marker at all, maps nowhere —
+    it stays general-only (still shown in the unchanged Energetics list)."""
+    from precis_web.routes.refs import _pathway_state_warnings
+
+    state_ids = ["NO@top", "NH3"]
+    warnings = [
+        "NO@top seed=0 INFEASIBLE: site swap onto a Cu bridge",
+        "NH3 seed=0 RESEATED ok: reseated after relax",
+        "unowned-state seed=2 INFEASIBLE: matches nothing on this graph",
+        "a general note carrying no seed= marker at all",
+    ]
+    out = _pathway_state_warnings(warnings, state_ids)
+    assert out["NO@top"] == [
+        {
+            "text": "NO@top seed=0 INFEASIBLE: site swap onto a Cu bridge",
+            "severity": "bad",
+        }
+    ]
+    assert out["NH3"] == [
+        {"text": "NH3 seed=0 RESEATED ok: reseated after relax", "severity": "info"}
+    ]
+    assert "unowned-state" not in out
+    assert len(out) == 2
+
+
+def test_pathway_fragment_diff_and_supply_sibling_leaf_resolution() -> None:
+    """Item C's pure helpers: ``N+O -> N+H`` adds ``H`` (from the reservoir)
+    and drops ``O``; given the worked branching-tree fixture (a target path
+    through ``N+H`` and a sibling branch through ``O+H`` -> ``H2O``) plus the
+    ``N+O -> O+H`` supply edge, the dropped ``O`` resolves to the ``H2O``
+    branch's leaf — the sibling supply edge whose own target's fragments
+    cover the dropped one. No sibling supply edge at all falls back to
+    ``None`` (the caller's bare "parked in reservoir" wording)."""
+    from precis_web.routes.refs import (
+        _pathway_fragment_diff,
+        _pathway_owner_of,
+        _pathway_supply_sibling_leaf,
+    )
+
+    added, dropped = _pathway_fragment_diff("N+O", "N+H")
+    assert added == frozenset({"H"})
+    assert dropped == frozenset({"O"})
+
+    paths = [
+        ["NO", "N+O", "N+H", "NH", "NH+H", "NH2", "NH2+H", "NH3"],
+        ["NO", "N+O", "O+H", "OH", "OH+H", "H2O"],
+    ]
+    links = [
+        {"source": "N+O", "target": "N+H", "kind": "supply"},
+        {"source": "N+O", "target": "O+H", "kind": "supply"},
+    ]
+    owner_of = _pathway_owner_of(paths)
+    assert (
+        _pathway_supply_sibling_leaf("N+O", dropped, "N+H", links, owner_of, paths)
+        == "H2O"
+    )
+    # No sibling at all -> no resolution, not a crash.
+    assert (
+        _pathway_supply_sibling_leaf("N+O", dropped, "N+H", [], owner_of, paths) is None
+    )
+
+
+def test_pathway_diagram_template_uses_pixel_space_half_not_index_space() -> None:
+    """Item A regression guard: ``half`` is a PIXEL margin
+    (``Math.min(0.34 * (plotW / n), 42)``) — it must be applied AFTER
+    ``xScale``, never mixed into step-index space before scaling (the old
+    ``xScale(xOf[id] - half)`` / ``xScale(xOf[e.source] + half)`` forms put
+    every level bar and hump endpoint thousands of px off-canvas for any
+    real ``plotW``)."""
+    tpl = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "precis_web"
+        / "templates"
+        / "refs"
+        / "pathway_detail.html.j2"
+    ).read_text()
+    assert "xScale(xOf[id] - half)" not in tpl
+    assert "xScale(xOf[id] + half)" not in tpl
+    assert "xScale(xOf[e.source] + half)" not in tpl
+    assert "xScale(xOf[e.target] - half)" not in tpl
+    # The fixed pixel-space forms — half applied to the already-scaled x.
+    assert "const cx = xScale(xOf[id]);" in tpl
+    assert "const x0 = cx - half, x1 = cx + half;" in tpl
+    assert (
+        "const x0 = xScale(xOf[e.source]) + half, x1 = xScale(xOf[e.target]) - half;"
+        in tpl
+    )
+
+
+#: The branching-tree fixture item C's docstrings are worked over: a target
+#: path NO->N+O->N+H->NH->NH+H->NH2->NH2+H->NH3 plus a branch off N+O via a
+#: supply edge to O+H->OH->OH+H->H2O — the N+O->N+H supply edge drops O,
+#: which the N+O->O+H sibling supply edge resolves to the H2O branch.
+def _pathway_c_node(nid: str) -> dict[str, Any]:
+    return {
+        "id": nid,
+        "energy": -1.0,
+        "energy_std": 0.0,
+        "rel_energy": 0.1,
+        "low_confidence": False,
+    }
+
+
+def _pathway_c_edge(
+    src: str, tgt: str, kind: str, barrier: float | None = None
+) -> dict[str, Any]:
+    return {
+        "source": src,
+        "target": tgt,
+        "kind": kind,
+        "barrier": barrier,
+        "barrier_std": 0.0,
+        "delta_e": 0.0,
+        "delta_e_std": 0.0,
+        "low_confidence": False,
+    }
+
+
+_PATHWAY_C_NODE_IDS: tuple[str, ...] = (
+    "NO",
+    "N+O",
+    "N+H",
+    "NH",
+    "NH+H",
+    "NH2",
+    "NH2+H",
+    "NH3",
+    "O+H",
+    "OH",
+    "OH+H",
+    "H2O",
+)
+
+_PATHWAY_C_GRAPH: dict[str, Any] = {
+    "nodes": [_pathway_c_node(nid) for nid in _PATHWAY_C_NODE_IDS],
+    "links": [
+        _pathway_c_edge("NO", "N+O", "reaction", 0.1),
+        _pathway_c_edge("N+O", "N+H", "supply"),
+        _pathway_c_edge("N+H", "NH", "reaction", 0.2),
+        _pathway_c_edge("NH", "NH+H", "supply"),
+        _pathway_c_edge("NH+H", "NH2", "reaction", 0.3),
+        _pathway_c_edge("NH2", "NH2+H", "supply"),
+        _pathway_c_edge("NH2+H", "NH3", "reaction", 0.4),
+        _pathway_c_edge("N+O", "O+H", "supply"),
+        _pathway_c_edge("O+H", "OH", "reaction", 0.15),
+        _pathway_c_edge("OH", "OH+H", "supply"),
+        _pathway_c_edge("OH+H", "H2O", "reaction", 0.25),
+    ],
+}
+
+
+def test_pathway_detail_provenance_strip_branch_sections_and_annotations(
+    client, runtime
+) -> None:
+    """Items C + D together: the provenance strip resolves the candidate
+    (from ``candidate_ref``) + the owning quest (recovered from this
+    pathway's own ``q1cand-…`` slug, ``_seed_pathway``'s fixture) + its
+    logbook; the state list groups into the target path's own section
+    first (``&rarr; NH3``) then the ``O+H``/``H2O`` branch section (tagged
+    "branches from N+O" — the last state the branch shares with the target
+    path); and the ``N+O -> N+H`` supply edge's dropped ``O`` resolves to
+    "continues in &rarr; H2O" via the sibling ``N+O -> O+H`` supply edge."""
+    _seed_pathway(
+        runtime.store,
+        meta={
+            "candidate_ref": 166700,
+            "graph": _PATHWAY_C_GRAPH,
+            "results": {"substrate": "NO", "target": "NH3"},
+        },
+        body_text=None,
+    )
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    full = resp.text
+
+    # Provenance strip — candidate + quest (from the "q1cand-…" pathway
+    # slug the fixture seeds) + logbook. No dossier seeded -> omitted.
+    assert "/refs/structure/166700" in full
+    assert "/refs/quest/1" in full
+    assert "/refs/quest/1/logbook" in full
+
+    # Branch-grouped sections: target path's section (leaf NH3) precedes
+    # the branch section (leaf H2O), which carries the branch subtitle.
+    idx_nh3 = full.index("&rarr; NH3")
+    idx_h2o = full.index("&rarr; H2O")
+    assert idx_nh3 < idx_h2o
+    assert "branches from N+O" in full
+
+    # Supply-edge annotation: the dropped O off N+O -> N+H resolves via its
+    # sibling supply edge (N+O -> O+H) to the H2O branch.
+    assert "+H* from reservoir" in full
+    assert "continues in → H2O" in full
+
+    # Stepper JS ships unconditionally (no siblings seeded here -> no
+    # rendered stepper control, but the ?state= carry-forward JS is
+    # present regardless).
+    assert "Candidates (rank #" not in full
+    assert "URLSearchParams" in full
+    assert "get('state')" in full
+
+
+class _SiblingConn:
+    """Answers ONLY the pathway-siblings SELECT (``_pathway_candidate_
+    stepper``) with canned rows; every other query degrades the same as the
+    base ``FakeStore``'s ``_FakeConn`` (empty). Mirrors ``test_drafts.py``'s
+    ``_WSConn`` pattern for a single-query pool override."""
+
+    def __init__(self, rows: list[tuple[Any, ...]]) -> None:
+        self._rows = rows
+
+    def execute(self, sql: str, params: Any = None) -> Any:
+        if "FROM refs" in sql and "kind = 'pathway'" in sql:
+            rows = list(self._rows)
+        else:
+            rows = []
+        return SimpleNamespace(
+            fetchall=lambda: rows, fetchone=lambda: rows[0] if rows else None
+        )
+
+    def commit(self) -> None:
+        return None
+
+    def rollback(self) -> None:
+        return None
+
+
+class _SiblingPool:
+    def __init__(self, rows: list[tuple[Any, ...]]) -> None:
+        self._rows = rows
+
+    @contextmanager
+    def connection(self):  # type: ignore[no-untyped-def]
+        yield _SiblingConn(self._rows)
+
+
+def test_pathway_detail_candidate_stepper_present_with_siblings(
+    client, runtime
+) -> None:
+    """Item E: three pathway candidates share this reaction's substrate/
+    target, ranked by ``rate_Ea`` ascending — the stepper renders the
+    rank/N control plus prev/next links to the neighbouring candidates."""
+    _seed_pathway(
+        runtime.store,
+        meta={"results": {"substrate": "NO", "target": "NH3"}},
+        body_text=None,
+    )
+    runtime.store.pool = _SiblingPool(
+        [
+            (171690, "0.10", "1.0"),
+            (171696, "0.50", "2.0"),
+            (171700, "0.90", "3.0"),
+        ]
+    )
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    assert "Candidates (rank #2 of 3)" in resp.text
+    assert "/refs/pathway/171690" in resp.text
+    assert "/refs/pathway/171700" in resp.text
+
+
+def test_pathway_detail_candidate_stepper_absent_without_siblings(
+    client, runtime
+) -> None:
+    """Item E's flip side: the FakeStore's default pool cursor never parses
+    SQL (always empty rows), so with no siblings seeded the stepper must be
+    silently omitted rather than rendering a broken "rank #1 of 0"."""
+    _seed_pathway(
+        runtime.store,
+        meta={"results": {"substrate": "NO", "target": "NH3"}},
+        body_text=None,
+    )
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    assert "Candidates (rank #" not in resp.text

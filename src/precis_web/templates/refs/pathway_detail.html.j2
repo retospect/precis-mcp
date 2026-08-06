@@ -25,6 +25,28 @@
     {% if autocatpath_version %}<span class="text-slate-400">·</span><span>autocatpath {{ autocatpath_version }}</span>{% endif %}
     {% if ref.updated %}<span class="text-slate-400">·</span><span>updated {{ ref.updated }}</span>{% endif %}
   </p>
+  {# ── provenance strip (item D) — candidate structure / owning quest /
+     dossier / logbook, each independently optional (``_pathway_provenance``
+     resolves whatever it can off the candidate-slug naming convention). #}
+  {% if provenance and (provenance.candidate or provenance.quest_id is not none) %}
+  <p class="mt-1 text-xs text-slate-500 flex flex-wrap items-center gap-x-1.5">
+    {% if provenance.candidate %}
+    <span>candidate <a href="{{ provenance.candidate.url }}" class="text-sky-700 hover:underline">{{ provenance.candidate.title }}</a></span>
+    {% endif %}
+    {% if provenance.quest_id is not none %}
+    {% if provenance.candidate %}<span class="text-slate-300">&middot;</span>{% endif %}
+    <span>quest <a href="{{ provenance.quest_url }}" class="text-sky-700 hover:underline">#{{ provenance.quest_id }}</a></span>
+    {% endif %}
+    {% if provenance.dossier_url %}
+    <span class="text-slate-300">&middot;</span>
+    <a href="{{ provenance.dossier_url }}" class="text-sky-700 hover:underline">dossier</a>
+    {% endif %}
+    {% if provenance.logbook_url %}
+    <span class="text-slate-300">&middot;</span>
+    <a href="{{ provenance.logbook_url }}" class="text-sky-700 hover:underline">logbook</a>
+    {% endif %}
+  </p>
+  {% endif %}
 </div>
 
 {# ── Interactive explorer ─────────────────────────────────────────────
@@ -36,6 +58,28 @@
    unrecognised measure op -> skipped with a note (``measure_notes``). #}
 <section class="mb-6 rounded-lg border border-slate-200 bg-white p-4">
   <h2 class="text-sm font-semibold text-slate-700 mb-2">Reaction explorer</h2>
+
+  {# ── candidate stepper (item E) — other pathway candidates on the same
+     substrate→target reaction, ranked by rate_Ea; only rendered when
+     ``_pathway_candidate_stepper`` actually found >=1 sibling. Every href/
+     onchange target carries the CURRENTLY selected state (JS, below) so
+     switching candidates doesn't lose the operator's place in the network. #}
+  {% if stepper %}
+  <div id="pw-cand-stepper" class="flex items-center gap-2 mb-2 text-xs text-slate-600 flex-wrap">
+    <span class="font-semibold text-slate-700">Candidates (rank #{{ stepper.rank }} of {{ stepper.total }})</span>
+    <a id="pw-cand-prev" href="{% if stepper.prev_ref_id %}/refs/pathway/{{ stepper.prev_ref_id }}{% else %}#{% endif %}"
+       class="rounded border border-slate-300 px-2 py-0.5 hover:bg-slate-100{% if not stepper.prev_ref_id %} opacity-40 pointer-events-none{% endif %}">&larr; prev</a>
+    <select id="pw-cand-select" class="rounded border border-slate-300 px-1 py-0.5 text-[11px]">
+      {% for s in stepper.siblings %}
+      <option value="/refs/pathway/{{ s.ref_id }}"{% if s.ref_id == ref.id %} selected{% endif %}>
+        #{{ loop.index }} &middot; pw {{ s.ref_id }} &middot; Ea={{ '%.3f'|format(s.rate_ea) if s.rate_ea is not none else '—' }} &middot; span={{ '%.3f'|format(s.span) if s.span is not none else '—' }}
+      </option>
+      {% endfor %}
+    </select>
+    <a id="pw-cand-next" href="{% if stepper.next_ref_id %}/refs/pathway/{{ stepper.next_ref_id }}{% else %}#{% endif %}"
+       class="rounded border border-slate-300 px-2 py-0.5 hover:bg-slate-100{% if not stepper.next_ref_id %} opacity-40 pointer-events-none{% endif %}">next &rarr;</a>
+  </div>
+  {% endif %}
 
   {% if diagram %}
   <div id="pw-diagram" class="w-full overflow-x-auto rounded border border-slate-100 bg-slate-50 p-1"></div>
@@ -59,21 +103,48 @@
           <button type="button" id="pw-next" class="rounded border border-slate-300 px-2 py-0.5 text-[11px] hover:bg-slate-100">next &rarr;</button>
         </div>
       </div>
-      <div id="pw-state-list" class="space-y-0.5 max-h-64 overflow-y-auto">
-        {% for sid in state_ids %}
-        <div class="pw-state-node flex items-center gap-2 text-xs rounded px-2 py-1 border border-slate-200 bg-white cursor-pointer hover:bg-sky-50"
-             data-state="{{ sid }}" role="button" tabindex="0">
-          <span class="font-mono text-slate-700">{{ sid }}</span>
-          {# distinct from "no geometry linked" — this state HAS a graph node
-             but its rel_energy hasn't been computed yet; still clickable. #}
-          {% if sid in states_missing_energy %}
-          <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-600 border border-amber-200" title="no computed energy yet for this state — excluded from the diagram">no energy yet</span>
+      {# ── branch-grouped state list (item C) — one section per owner path
+         (target's own path first, then each branch), tinted to match the
+         diagram's per-path colour; a branch section carries a "branches
+         from <state>" subtitle. Selection/click/scroll behavior is
+         unchanged — every row is still a plain ``.pw-state-node`` with
+         ``data-state``, so ``highlightState``/showState work identically
+         across section boundaries. ── #}
+      <div id="pw-state-list" class="space-y-2 max-h-64 overflow-y-auto">
+        {% for sect in state_sections %}
+        <div>
+          {% if sect.leaf %}
+          <div class="text-[10px] font-semibold uppercase tracking-wide mb-0.5" style="color: {{ sect.color }}">
+            &rarr; {{ sect.leaf }}
+            {% if sect.subtitle %}<span class="ml-1 font-normal normal-case text-slate-400">({{ sect.subtitle }})</span>{% endif %}
+          </div>
           {% endif %}
-          {% if state_geoms.get(sid) %}
-          <span class="ml-auto text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800">geometry</span>
-          {% else %}
-          <span class="ml-auto text-[10px] px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-500">no geometry linked</span>
-          {% endif %}
+          <div class="space-y-0.5">
+            {% for row in sect.rows %}
+            {% set sid = row.id %}
+            <div class="pw-state-node flex items-center gap-2 text-xs rounded px-2 py-1 border border-slate-200 bg-white cursor-pointer hover:bg-sky-50"
+                 data-state="{{ sid }}" role="button" tabindex="0">
+              <span class="font-mono text-slate-700">{{ sid }}</span>
+              {% if row.annotation %}
+              <span class="text-slate-400 italic">{{ row.annotation }}</span>
+              {% endif %}
+              {# distinct from "no geometry linked" — this state HAS a graph node
+                 but its rel_energy hasn't been computed yet; still clickable. #}
+              {% if sid in states_missing_energy %}
+              <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-600 border border-amber-200" title="no computed energy yet for this state — excluded from the diagram">no energy yet</span>
+              {% endif %}
+              {% if state_warnings.get(sid) %}
+              <span class="text-[10px] px-1.5 py-0.5 rounded-full border {% if state_warnings[sid] | selectattr('severity', 'equalto', 'bad') | list %}bg-rose-100 text-rose-700 border-rose-200{% else %}bg-amber-50 text-amber-700 border-amber-200{% endif %}"
+                    title="{{ state_warnings[sid] | map(attribute='text') | join('; ') }}">&#9888;</span>
+              {% endif %}
+              {% if state_geoms.get(sid) %}
+              <span class="ml-auto text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800">geometry</span>
+              {% else %}
+              <span class="ml-auto text-[10px] px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-500">no geometry linked</span>
+              {% endif %}
+            </div>
+            {% endfor %}
+          </div>
         </div>
         {% endfor %}
       </div>
@@ -261,7 +332,16 @@
     stateIds: {{ state_ids | tojson }},
     stateGeoms: {{ state_geoms | tojson }},
     measures: {{ measures | tojson }},
+    // Per-state warning badges (item B) — {id: [{text, severity}, …]},
+    // server-computed (``_pathway_state_warnings``). ``isBadState`` below
+    // folds this to the diagram's red/⚠ treatment, mirroring low_confidence.
+    stateWarnings: {{ state_warnings | tojson }},
   };
+
+  function isBadState(id) {
+    const warns = V.stateWarnings[id];
+    return !!(warns && warns.some((w) => w.severity === 'bad'));
+  }
 
   // Escapes quotes too — node ids/labels come straight off agent-written
   // meta.graph and are interpolated into a quoted attribute
@@ -389,18 +469,25 @@
         if (!src || !tgt || xOf[e.source] == null || xOf[e.target] == null) { continue; }
         // No energy on one end — nothing to plot a hump/line between.
         if (src.rel_energy == null || tgt.rel_energy == null) { continue; }
-        const x0 = xOf[e.source] + half, x1 = xOf[e.target] - half;
+        // ``half`` is a PIXEL margin (see its definition above) — apply it
+        // AFTER scaling the step index to pixel space, not before. Mixing
+        // the two (index-space +/- a pixel count, then scaling the sum)
+        // put humps/edges thousands of px off-canvas.
+        const x0 = xScale(xOf[e.source]) + half, x1 = xScale(xOf[e.target]) - half;
         if (e.kind === 'supply') {
-          parts.push(`<line x1="${xScale(x0)}" y1="${py(src.rel_energy)}" x2="${xScale(x1)}" y2="${py(tgt.rel_energy)}" `
+          parts.push(`<line x1="${x0}" y1="${py(src.rel_energy)}" x2="${x1}" y2="${py(tgt.rel_energy)}" `
             + `stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="4 3"/>`);
           continue;
         }
         const peakY = src.rel_energy + Math.max(e.barrier || 0, 0);
+        // humpPoints now runs entirely in pixel-x/energy-y space (x0/x1 are
+        // already scaled above) — map ONLY y through py() when emitting
+        // points; re-scaling x here would double-apply xScale.
         const curve = humpPoints(x0, src.rel_energy, x1, tgt.rel_energy, peakY)
-          .map(([x, y]) => `${xScale(x)},${py(y)}`).join(' ');
+          .map(([x, y]) => `${x},${py(y)}`).join(' ');
         parts.push(`<polyline points="${curve}" fill="none" stroke="${color}" stroke-width="2"/>`);
         if ((e.barrier || 0) > 1e-3) {
-          const xm = xScale((x0 + x1) / 2);
+          const xm = (x0 + x1) / 2;
           const bsd = e.barrier_std || 0;
           if (bsd > 1e-6) {
             parts.push(`<line x1="${xm}" y1="${py(peakY - bsd)}" x2="${xm}" y2="${py(peakY + bsd)}" stroke="${color}" stroke-width="1"/>`);
@@ -421,7 +508,12 @@
     g.nodes.forEach((nd) => {
       const id = nd.id;
       if (xOf[id] == null) { return; }
-      const x0 = xScale(xOf[id] - half), x1 = xScale(xOf[id] + half);
+      // Pixel-space margin applied AFTER scaling — see the edges block
+      // above for the same fix; this was the other index/pixel mixup that
+      // put the level bar's ends thousands of px off-canvas for any real
+      // plotW when the margin was mixed into step-index space pre-scale.
+      const cx = xScale(xOf[id]);
+      const x0 = cx - half, x1 = cx + half;
       const ownerColor = PATH_COLORS[(ownerPath[id] || 0) % PATH_COLORS.length];
       if (nd.rel_energy == null) {
         const yFloor = padT + plotH - 4;
@@ -432,7 +524,10 @@
         return;
       }
       const y = py(nd.rel_energy);
-      const color = nd.low_confidence ? '#d9534f' : ownerColor;
+      // Bad per-state warning (item B) gets the same red treatment as
+      // low_confidence — either one flags the level as untrustworthy.
+      const badWarn = isBadState(id);
+      const color = (nd.low_confidence || badWarn) ? '#d9534f' : ownerColor;
       const sd = nd.energy_std || 0;
       if (sd > 1e-6) {
         parts.push(`<rect x="${x0}" y="${py(nd.rel_energy + sd)}" width="${x1 - x0}" height="${py(nd.rel_energy - sd) - py(nd.rel_energy + sd)}" `
@@ -440,7 +535,7 @@
       }
       parts.push(`<line x1="${x0}" y1="${y}" x2="${x1}" y2="${y}" stroke="${color}" stroke-width="4" stroke-linecap="round"/>`);
       const lab = sd > 1e-6 ? `${nd.id} (${nd.rel_energy >= 0 ? '+' : ''}${nd.rel_energy.toFixed(2)}±${sd.toFixed(2)})` : `${nd.id}`;
-      parts.push(`<text x="${(x0 + x1) / 2}" y="${y - 8}" font-size="8" font-weight="bold" fill="${color}" text-anchor="middle">${esc(lab)}${nd.low_confidence ? ' ⚠' : ''}</text>`);
+      parts.push(`<text x="${(x0 + x1) / 2}" y="${y - 8}" font-size="8" font-weight="bold" fill="${color}" text-anchor="middle">${esc(lab)}${(nd.low_confidence || badWarn) ? ' ⚠' : ''}</text>`);
       // click target — the whole plot-height column above this level, a
       // per-node clickable target (AC1: "every state node is a click target")
       parts.push(`<rect class="pw-svg-node" data-state="${esc(id)}" x="${x0}" y="${padT}" width="${x1 - x0}" height="${plotH}" `
@@ -745,12 +840,24 @@
     showState(ids[i]);
   }
 
+  // Candidate stepper (item E) — a page load carrying ``?state=<id>``
+  // (stamped by the stepper's own prev/next/select navigation below) opens
+  // on that state instead of the default first one, so switching candidates
+  // never loses the operator's place in the network.
+  function initialStateId() {
+    try {
+      const qs = new URLSearchParams(window.location.search).get('state');
+      if (qs && V.stateIds.includes(qs)) { return qs; }
+    } catch (err) { /* malformed query string — fall through to default */ }
+    return V.stateIds[0];
+  }
+
   function bootMol() {
     if (typeof $3Dmol === 'undefined') { return setTimeout(bootMol, 60); }
     const el = document.getElementById('pw-mol');
     if (!el || !V.stateIds.length) { return; }
     molViewer = $3Dmol.createViewer(el, { backgroundColor: 'white' });
-    showState(V.stateIds[0]);
+    showState(initialStateId());
   }
 
   document.addEventListener('click', (ev) => {
@@ -761,6 +868,30 @@
   const nextBtn = document.getElementById('pw-next');
   if (prevBtn) prevBtn.addEventListener('click', () => stepState(-1));
   if (nextBtn) nextBtn.addEventListener('click', () => stepState(1));
+
+  // Candidate stepper navigation — every link/select carries the currently
+  // selected state forward via ``?state=`` so the new candidate's page opens
+  // on the same state (``initialStateId`` above reads it back).
+  function withStateParam(url) {
+    if (!url || url === '#') { return null; }
+    const id = selected || (V.stateIds && V.stateIds[0]);
+    return id ? `${url}?state=${encodeURIComponent(id)}` : url;
+  }
+  function navigateStepper(ev, url) {
+    const dest = withStateParam(url);
+    if (!dest) { ev.preventDefault(); return; }
+    ev.preventDefault();
+    window.location.href = dest;
+  }
+  const candPrev = document.getElementById('pw-cand-prev');
+  const candNext = document.getElementById('pw-cand-next');
+  const candSelect = document.getElementById('pw-cand-select');
+  if (candPrev) candPrev.addEventListener('click', (ev) => navigateStepper(ev, candPrev.getAttribute('href')));
+  if (candNext) candNext.addEventListener('click', (ev) => navigateStepper(ev, candNext.getAttribute('href')));
+  if (candSelect) candSelect.addEventListener('change', () => {
+    const dest = withStateParam(candSelect.value);
+    if (dest) { window.location.href = dest; }
+  });
 
   // A diagram-render failure (e.g. a still-unanticipated bad graph shape)
   // must never abort the whole IIFE — the stepper + 3D viewer boot below

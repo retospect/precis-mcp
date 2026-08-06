@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlencode
@@ -911,6 +912,230 @@ def _pathway_state_ids(
     return sorted(str(k) for k in structure_refs)
 
 
+#: Diagram per-path palette, mirrored 1:1 from the client's own
+#: ``PATH_COLORS`` in ``pathway_detail.html.j2`` (``renderDiagram``) — the
+#: state-list section headers (item C) tint by the same index so a branch's
+#: header and its diagram profile read as the same colour.
+_PATH_COLORS: tuple[str, ...] = (
+    "#4a90d9",
+    "#f97316",
+    "#16a34a",
+    "#9333ea",
+    "#0d9488",
+    "#db2777",
+)
+
+#: A warning names its state as the text before this literal marker (e.g.
+#: ``"NO@top seed=0 INFEASIBLE: site swap"``) — the split point
+#: ``_pathway_state_warnings`` keys on.
+_PATHWAY_WARNING_STATE_SEP = " seed="
+
+#: Substrings that mark a per-state warning as a hard problem (drawn red,
+#: mirroring ``low_confidence``) rather than merely informational (amber) —
+#: item B.
+_PATHWAY_BAD_WARNING_MARKERS: tuple[str, ...] = ("INFEASIBLE", "wrong-site", "detached")
+
+
+def _pathway_state_warnings(
+    warnings: list[str], state_ids: list[str]
+) -> dict[str, list[dict[str, str]]]:
+    """Per-state warning badges (item B): a warning names its own state as
+    the text before ``" seed="`` (``"NO@top seed=0 INFEASIBLE: …"`` ->
+    ``"NO@top"``); it's only mapped onto that state when the prefix is an
+    EXACT match against a known state id — a warning with no ``" seed="``
+    marker, or whose prefix names nothing on this graph, stays general-only
+    (still shown in the unchanged Energetics warnings list, just not
+    attached to a row). Severity is ``"bad"`` (INFEASIBLE / wrong-site /
+    detached — a hard problem) or ``"info"`` (e.g. "RESEATED ok") otherwise.
+    """
+    state_id_set = set(state_ids)
+    out: dict[str, list[dict[str, str]]] = {}
+    for w in warnings:
+        text = str(w)
+        if _PATHWAY_WARNING_STATE_SEP not in text:
+            continue
+        prefix = text.split(_PATHWAY_WARNING_STATE_SEP, 1)[0]
+        if prefix not in state_id_set:
+            continue
+        severity = (
+            "bad"
+            if any(marker in text for marker in _PATHWAY_BAD_WARNING_MARKERS)
+            else "info"
+        )
+        out.setdefault(prefix, []).append({"text": text, "severity": severity})
+    return out
+
+
+def _pathway_owner_of(paths: list[list[str]]) -> dict[str, int]:
+    """First-path-wins owner index per state id, mirroring the client's own
+    ``xOf``/``ownerPath`` assignment in ``renderDiagram``: the earliest
+    (highest-priority, target-first — ``_pathway_paths``'s own order) path
+    naming a state owns it, so a shared prefix belongs to the target path
+    and a branch only "starts" where it actually diverges."""
+    owner: dict[str, int] = {}
+    for pi, path in enumerate(paths):
+        for nid in path:
+            owner.setdefault(nid, pi)
+    return owner
+
+
+def _pathway_fragments(node_id: str) -> frozenset[str]:
+    """A state id's constituent species, split on ``+`` — ``"N+O"`` ->
+    ``{"N", "O"}``; a bare id like ``"NO@top"`` is its own one-fragment set.
+    The vocabulary a supply edge's added/dropped diff (below) is computed
+    over."""
+    return frozenset(node_id.split("+"))
+
+
+def _pathway_fragment_diff(
+    src_id: str, tgt_id: str
+) -> tuple[frozenset[str], frozenset[str]]:
+    """``(added, dropped)`` fragments crossing a supply edge ``src -> tgt``
+    (item C's transition annotation): a fragment named on the target but not
+    the source came FROM the reservoir; one named on the source but not the
+    target was PARKED back into it. ``"N+O" -> "N+H"``: added ``{"H"}``,
+    dropped ``{"O"}``."""
+    src_frags, tgt_frags = _pathway_fragments(src_id), _pathway_fragments(tgt_id)
+    return tgt_frags - src_frags, src_frags - tgt_frags
+
+
+def _pathway_supply_sibling_leaf(
+    src_id: str,
+    dropped: frozenset[str],
+    exclude_tgt: str,
+    links: list[dict[str, Any]],
+    owner_of: dict[str, int],
+    paths: list[list[str]],
+) -> str | None:
+    """Where a dropped fragment "continues": the leaf of the owner path of
+    another supply edge out of the SAME source whose own target's fragments
+    cover every dropped one (``"N+O" -> "O+H"`` covers a dropped ``{"O"}``
+    off ``"N+O" -> "N+H"`` -> the ``"O+H"`` branch's leaf, e.g. ``"H2O"``).
+    ``None`` when no such sibling resolves — the caller falls back to the
+    bare "parked in reservoir" wording rather than a broken link."""
+    if not dropped:
+        return None
+    for e in links:
+        if e.get("kind") != "supply" or e.get("source") != src_id:
+            continue
+        tgt = e.get("target")
+        if tgt is None or tgt == exclude_tgt:
+            continue
+        if not dropped <= _pathway_fragments(str(tgt)):
+            continue
+        pi = owner_of.get(str(tgt))
+        if pi is None or pi >= len(paths) or not paths[pi]:
+            continue
+        return paths[pi][-1]
+    return None
+
+
+def _pathway_transition_annotation(
+    edge: dict[str, Any] | None,
+    links: list[dict[str, Any]],
+    owner_of: dict[str, int],
+    paths: list[list[str]],
+) -> str | None:
+    """The small transition note under a state-list row, for the edge INTO
+    that state within its owner path (item C): a reaction edge's barrier
+    (``"Ea=… eV"``), or a supply edge's fragment traffic — what was added
+    from the reservoir, and (when fragments were dropped) either the
+    sibling branch they continue in or the bare "parked in reservoir"
+    fallback. ``None`` for a root state (no incoming edge) or a
+    barrier-less reaction edge — nothing worth annotating."""
+    if not edge:
+        return None
+    if (edge.get("kind") or "reaction") == "supply":
+        src_id, tgt_id = str(edge["source"]), str(edge["target"])
+        added, dropped = _pathway_fragment_diff(src_id, tgt_id)
+        parts: list[str] = []
+        if added:
+            parts.append(f"+{'+'.join(sorted(added))}* from reservoir")
+        if dropped:
+            label = "+".join(sorted(dropped))
+            leaf = _pathway_supply_sibling_leaf(
+                src_id, dropped, tgt_id, links, owner_of, paths
+            )
+            parts.append(
+                f"{label}* parked — continues in → {leaf}"
+                if leaf
+                else f"{label}* parked in reservoir"
+            )
+        return " · ".join(parts) if parts else None
+    barrier = edge.get("barrier")
+    if barrier is None:
+        return None
+    return f"Ea={round(float(barrier), 3)} eV"
+
+
+def _pathway_state_sections(
+    diagram: dict[str, Any] | None, state_ids: list[str]
+) -> list[dict[str, Any]]:
+    """Group ``state_ids`` into per-owner-path sections for the states panel
+    (item C), replacing the old flat list: section 0 is the target's own
+    path (server-ordered first, ``_pathway_paths``); each later section is a
+    branch, tinted with the diagram's own per-path colour (``_PATH_COLORS``
+    — same index the client's ``PATH_COLORS`` uses) and carries a "branches
+    from <state>" subtitle naming the last state it shares with an earlier
+    section. Each row carries the transition annotation for the edge
+    feeding it within this owner path (``_pathway_transition_annotation``).
+    States that own no diagram path at all (``_pathway_state_ids``'s
+    off-path append) land in one trailing, colourless, subtitle-less
+    section rather than being dropped."""
+    paths = (diagram or {}).get("paths") or []
+    links = (diagram or {}).get("links") or []
+    owner_of = _pathway_owner_of(paths)
+    link_by_pair = {(e["source"], e["target"]): e for e in links}
+
+    sections: list[dict[str, Any]] = []
+    for pi, path in enumerate(paths):
+        branch_from = None
+        for nid in path:
+            owner = owner_of.get(nid)
+            if owner is not None and owner < pi:
+                branch_from = nid
+        rows: list[dict[str, Any]] = []
+        for idx, nid in enumerate(path):
+            if owner_of.get(nid) != pi:
+                continue
+            edge = link_by_pair.get((path[idx - 1], nid)) if idx > 0 else None
+            rows.append(
+                {
+                    "id": nid,
+                    "annotation": _pathway_transition_annotation(
+                        edge, links, owner_of, paths
+                    ),
+                }
+            )
+        if not rows:
+            continue
+        sections.append(
+            {
+                "leaf": path[-1],
+                "color": _PATH_COLORS[pi % len(_PATH_COLORS)],
+                "subtitle": (
+                    f"branches from {branch_from}"
+                    if pi > 0 and branch_from is not None
+                    else None
+                ),
+                "rows": rows,
+            }
+        )
+
+    covered = {row["id"] for sect in sections for row in sect["rows"]}
+    leftover = [sid for sid in state_ids if sid not in covered]
+    if leftover:
+        sections.append(
+            {
+                "leaf": None,
+                "color": None,
+                "subtitle": None,
+                "rows": [{"id": sid, "annotation": None} for sid in leftover],
+            }
+        )
+    return sections
+
+
 def _pathway_state_geoms_and_measures(
     store: Any,
     state_ids: list[str],
@@ -988,6 +1213,129 @@ def _pathway_state_geoms_and_measures(
     return geoms, measures_out
 
 
+#: The candidate-structure / pathway slug naming convention
+#: (``precis.quest.compute._candidate_slug`` -> ``q<quest_id>cand-<digest>``,
+#: and ``dispatch_autocatpath``'s own ``pslug = f"{candidate.slug}-rx-{key}"``)
+#: is the only place a pathway's owning quest is recoverable from — neither
+#: the candidate structure nor the pathway carries an explicit quest-id tag
+#: or link. Item D's provenance strip recovers it from either slug.
+_QUEST_CAND_SLUG_RE = re.compile(r"^q(\d+)cand-")
+
+
+def _pathway_quest_id(ref: Any, candidate_struct: Any | None) -> int | None:
+    """The owning quest's id, recovered from the ``q<id>cand-<digest>``
+    slug convention — checked on this pathway's OWN slug first (it inherits
+    the candidate's prefix, ``dispatch_autocatpath``), then the candidate
+    structure's own slug (covers a pathway whose slug predates the
+    convention or was hand-authored). ``None`` when neither matches — a
+    pathway with no recoverable quest (ad-hoc / manually created)."""
+    for slug in (
+        getattr(ref, "slug", None),
+        getattr(candidate_struct, "slug", None) if candidate_struct else None,
+    ):
+        if not slug:
+            continue
+        m = _QUEST_CAND_SLUG_RE.match(slug)
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def _pathway_provenance(
+    store: Any,
+    ref: Any,
+    candidate: dict[str, Any] | None,
+    candidate_struct: Any | None,
+) -> dict[str, Any] | None:
+    """Context for the provenance strip (item D): the candidate structure
+    link (already resolved elsewhere on the page — reused here), the owning
+    quest (``_pathway_quest_id``), its dossier draft (``dossier-of`` edge,
+    ``precis.quest.dossier``), and the full logbook page. Every piece is
+    independently optional — a candidate-less/quest-less pathway (ad-hoc or
+    hand-authored) still renders the strip with whatever resolves, never a
+    500; ``None`` only when NOTHING resolves at all (nothing to show)."""
+    qid = _pathway_quest_id(ref, candidate_struct)
+    dossier_url = None
+    if qid is not None:
+        try:
+            from precis.quest import dossier as dossier_mod
+
+            did = dossier_mod.dossier_ref_id(store, qid)
+            if did is not None:
+                dossier_url = _quest_draft_url(store, did)
+        except Exception:
+            log.warning(
+                "pathway %s: dossier lookup failed for quest %s",
+                ref.id,
+                qid,
+                exc_info=True,
+            )
+    if candidate is None and qid is None:
+        return None
+    return {
+        "candidate": candidate,
+        "quest_id": qid,
+        "quest_url": f"/refs/quest/{qid}" if qid is not None else None,
+        "logbook_url": f"/refs/quest/{qid}/logbook" if qid is not None else None,
+        "dossier_url": dossier_url,
+    }
+
+
+def _pathway_candidate_stepper(
+    store: Any, ref_id: int, substrate: Any, target: Any
+) -> dict[str, Any] | None:
+    """Sibling-candidate rank/N context for the stepper (item E): every
+    OTHER ``pathway`` ref sharing this one's ``results.substrate`` +
+    ``results.target``, ranked by ``rate_Ea`` ascending (nulls last),
+    capped at 100. There's no store-level "pathways for this reaction"
+    query yet, so this reads raw SQL off ``store.pool`` (the same seam
+    ``precis.quest.dossier``/``_quest_last_agentlog_id`` already use) —
+    guarded broadly so a store that can't run it (or a fake whose cursor
+    never parses SQL, ``tests/precis_web/conftest.py``) degrades to no
+    stepper, exactly like a real store with no sibling candidates. Returns
+    ``None`` unless this ref itself is among the results AND at least one
+    sibling exists (a lone result is nothing to step through)."""
+    if not substrate or not target:
+        return None
+    try:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT ref_id, meta->>'rate_Ea', meta->>'span' FROM refs "
+                "WHERE kind = 'pathway' AND deleted_at IS NULL "
+                "AND meta->'results'->>'substrate' = %s "
+                "AND meta->'results'->>'target' = %s "
+                "ORDER BY (meta->>'rate_Ea')::float ASC NULLS LAST, ref_id "
+                "LIMIT 100",
+                (substrate, target),
+            ).fetchall()
+    except Exception:
+        log.warning(
+            "pathway %s: sibling-candidates query failed", ref_id, exc_info=True
+        )
+        return None
+    if len(rows) < 2:
+        return None
+    siblings = [
+        {
+            "ref_id": int(r[0]),
+            "rate_ea": float(r[1]) if r[1] is not None else None,
+            "span": float(r[2]) if r[2] is not None else None,
+        }
+        for r in rows
+    ]
+    rank = next((i for i, s in enumerate(siblings) if s["ref_id"] == ref_id), None)
+    if rank is None:
+        return None
+    rank += 1
+    return {
+        "rank": rank,
+        "total": len(siblings),
+        "siblings": siblings,
+        "prev_ref_id": siblings[rank - 2]["ref_id"] if rank > 1 else None,
+        "next_ref_id": siblings[rank]["ref_id"] if rank < len(siblings) else None,
+    }
+
+
 async def _pathway_detail(request: Request, store: Any, ref: Any) -> HTMLResponse:
     """Detail page for ``kind='pathway'`` — a autocatpath reaction-energetics
     network (candidate structure → adsorbate/intermediate structures →
@@ -1040,6 +1388,7 @@ async def _pathway_detail(request: Request, store: Any, ref: Any) -> HTMLRespons
         warnings_raw = [warnings_raw]
     nodes = results.get("nodes")
     edges = results.get("edges")
+    warnings_list: list[str] = [str(w) for w in warnings_raw]
     results_summary = {
         "substrate": results.get("substrate"),
         "target": results.get("target"),
@@ -1048,7 +1397,7 @@ async def _pathway_detail(request: Request, store: Any, ref: Any) -> HTMLRespons
         "relaxed_lattice_A": results.get("relaxed_lattice_A"),
         "n_nodes": len(nodes) if isinstance(nodes, (list, dict)) else None,
         "n_edges": len(edges) if isinstance(edges, (list, dict)) else None,
-        "warnings": [str(w) for w in warnings_raw],
+        "warnings": warnings_list,
     }
 
     # Interactive explorer (docs/proposals/reaction-pathway-explorer.md) — the
@@ -1075,6 +1424,23 @@ async def _pathway_detail(request: Request, store: Any, ref: Any) -> HTMLRespons
         for n in (diagram["nodes"] if diagram else [])
         if n.get("rel_energy") is None
     }
+    # Branch-grouped state list (item C) + per-state warning badges (item B)
+    # — both replace/extend the old flat state list purely additively; the
+    # underlying ``state_ids`` order (stepper prev/next, JS payload) is
+    # unchanged.
+    state_sections = _pathway_state_sections(diagram, state_ids)
+    state_warnings = _pathway_state_warnings(warnings_list, state_ids)
+
+    # Provenance strip (item D) + candidate stepper (item E) — both
+    # optional, both degrade to "omit" rather than a 500 on a candidate-
+    # less/quest-less/sibling-less pathway.
+    candidate_struct = (
+        structs.get(candidate_ref_id) if candidate_ref_id is not None else None
+    )
+    provenance = _pathway_provenance(store, ref, candidate, candidate_struct)
+    stepper = _pathway_candidate_stepper(
+        store, ref.id, results.get("substrate"), results.get("target")
+    )
 
     return templates.TemplateResponse(
         request,
@@ -1098,11 +1464,15 @@ async def _pathway_detail(request: Request, store: Any, ref: Any) -> HTMLRespons
             "results_summary": results_summary,
             "diagram": diagram,
             "state_ids": state_ids,
+            "state_sections": state_sections,
             "state_geoms": state_geoms,
+            "state_warnings": state_warnings,
             "n_states_with_geom": n_states_with_geom,
             "states_missing_energy": states_missing_energy,
             "measures": measures_summary,
             "measure_notes": measure_notes,
+            "provenance": provenance,
+            "stepper": stepper,
         },
     )
 
