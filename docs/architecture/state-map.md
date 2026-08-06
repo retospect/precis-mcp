@@ -1071,6 +1071,19 @@ not separate daemons anymore.
   cadence — since this pass already covers the identical dedup sweep with
   its own throttle + advisory lock; migrating ITS `app_state` throttle onto
   the scheduler lease is §E, not done here.
+* `openalex_enrich` — self-healing fill for the **top-level `meta.abstract`**
+  the paper page reads (`_abstract_full`). Two lanes under the same
+  throttle + advisory-lock guards as `paper_reconcile` (`openalex_enrich:
+  last_run`, `PRECIS_OPENALEX_ENRICH_REFRESH_HOURS` default 6): **Lane A** a
+  set-based `UPDATE` promoting an already-fetched `meta.openalex.abstract` up
+  to top-level (no network); **Lane B** a small newest-first drip (≤50/pass)
+  of DOI'd papers with no `meta.openalex` block yet, enriched via
+  `ingest/openalex_meta.py::enrich_ref` (free/keyless OpenAlex, fixed host —
+  no SSRF surface), which now also promotes the reconstructed abstract to
+  top-level (only when the ref has none — a good existing abstract/byline is
+  never clobbered). Does NOT yet rebuild the `card_abstract` search card for a
+  promoted abstract (embedding-cascade follow-on), and an OpenAlex *miss*
+  isn't stamped so a record-less DOI is re-tried each pass (both in OPEN-ITEMS).
 * `fetch` / `chase` backoff — **both exponential**. The OA fetcher's
   retry window arms on any `fetcher:%` event (not just `unpaywall`,
   which is disabled in prod) and doubles per prior attempt

@@ -63,6 +63,7 @@ _EXPECTED_SYSTEM = frozenset(
         "clusterize",
         "corpus_reconcile",
         "paper_reconcile",
+        "openalex_enrich",
         "disk_check",
     }
 )

@@ -116,8 +116,9 @@ class TestNormalize:
 
 
 class _FakeConn:
-    def __init__(self, current_authors: Any) -> None:
+    def __init__(self, current_authors: Any, current_meta: Any) -> None:
         self._authors = current_authors
+        self._meta = current_meta
 
     def __enter__(self) -> _FakeConn:
         return self
@@ -128,21 +129,22 @@ class _FakeConn:
     def execute(self, sql: str, params: Any) -> _FakeConn:
         return self
 
-    def fetchone(self) -> tuple[Any]:
-        return (self._authors,)
+    def fetchone(self) -> tuple[Any, Any]:
+        return (self._authors, self._meta)
 
 
 class _FakePool:
-    def __init__(self, current_authors: Any) -> None:
+    def __init__(self, current_authors: Any, current_meta: Any) -> None:
         self._authors = current_authors
+        self._meta = current_meta
 
     def connection(self) -> _FakeConn:
-        return _FakeConn(self._authors)
+        return _FakeConn(self._authors, self._meta)
 
 
 class _FakeStore:
-    def __init__(self, current_authors: Any) -> None:
-        self.pool = _FakePool(current_authors)
+    def __init__(self, current_authors: Any, current_meta: Any = None) -> None:
+        self.pool = _FakePool(current_authors, current_meta)
         self.updates: list[dict[str, Any]] = []
         self.identifiers: list[tuple[int, str, str]] = []
 
@@ -165,7 +167,11 @@ class TestEnrichRef:
         assert enr is not None
         assert store.identifiers == [(42, "openalex", "W4386410574")]
         upd = store.updates[0]
-        assert upd["meta_patch"] == {"openalex": enr.meta}
+        # ref had no top-level abstract → promoted alongside the openalex block
+        assert upd["meta_patch"] == {
+            "openalex": enr.meta,
+            "abstract": enr.meta["abstract"],
+        }
         # ref had no authors → byline filled from OpenAlex
         assert upd["authors"] and upd["authors"][0]["name"] == "Jinglin Fu"
 
@@ -183,3 +189,25 @@ class TestEnrichRef:
         store = _FakeStore(current_authors=None)
         assert enrich_ref(store, 42, doi="10.3390/x") is None
         assert store.updates == []
+
+    def test_promotes_abstract_when_absent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            openalex_meta, "fetch_openalex_work", lambda doi, **k: _WORK
+        )
+        store = _FakeStore(current_authors=None, current_meta={})
+        enrich_ref(store, 42, doi="10.3390/x")
+        assert store.updates[0]["meta_patch"]["abstract"] == "Highly sensitive sensors"
+
+    def test_does_not_overwrite_existing_abstract(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            openalex_meta, "fetch_openalex_work", lambda doi, **k: _WORK
+        )
+        store = _FakeStore(
+            current_authors=None, current_meta={"abstract": "Existing abstract."}
+        )
+        enrich_ref(store, 42, doi="10.3390/x")
+        assert "abstract" not in store.updates[0]["meta_patch"]

@@ -2026,6 +2026,21 @@ def run(args: argparse.Namespace) -> None:
 
             ref_passes.append(_paper_reconcile_pass)
 
+        # OpenAlex abstract/metadata enrich — self-healing fill for
+        # top-level abstracts (what the paper page reads). Promotes
+        # already-fetched OpenAlex abstracts (no network) and drips a
+        # small DOI-fetch batch each due pass. Same throttle + advisory-lock
+        # guards as paper_reconcile, cadence via
+        # PRECIS_OPENALEX_ENRICH_REFRESH_HOURS (default 6).
+        if _register("openalex_enrich"):
+            from precis.workers.openalex_enrich import run_openalex_enrich_pass
+            from precis.workers.runner import BatchResult as _BatchResult
+
+            def _openalex_enrich_pass(batch_size: int) -> _BatchResult:
+                return run_openalex_enrich_pass(store, limit=None)
+
+            ref_passes.append(_openalex_enrich_pass)
+
         # Quota-check pass — refresh the Claude.ai OAuth utilisation
         # snapshot via one 1-token `claude -p "quota" --output-format
         # json` call. Agent profile only: hermes's OAuth state lives

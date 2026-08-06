@@ -467,6 +467,18 @@ SERVICES: tuple[ServiceSpec, ...] = (
         one_line="Fold duplicate paper refs + deterministic hygiene heals.",
         doc_skill="precis-overview",
     ),
+    ServiceSpec(
+        name="openalex_enrich",
+        label="OpenAlex abstract/metadata enrich",
+        category="acquisition",
+        kind=ServiceKind.PASS,
+        default_profiles=_SYS,
+        ref_pass=True,
+        uses_external=("openalex",),
+        one_line="Fill missing top-level abstracts + OpenAlex metadata on a "
+        "cadence (self-healing).",
+        doc_skill="precis-overview",
+    ),
     # ── Agent-worker passes (melchior / OAuth) ──────────────────────
     ServiceSpec(
         # gr192752: cadence-fired via the `structural` scheduler lease

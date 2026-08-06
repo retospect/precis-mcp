@@ -221,28 +221,36 @@ def enrich_ref(
 
     Returns the enrichment (for reporting) or ``None`` when OpenAlex has no
     record for the DOI. Fills the ``authors`` byline column only when the ref
-    currently has none, so a good existing byline is preserved.
+    currently has none, so a good existing byline is preserved. Likewise
+    promotes a reconstructed abstract to top-level ``meta['abstract']``
+    (what the paper page reads) only when the ref has none yet — a good
+    existing abstract is never clobbered.
     """
     work = fetch_openalex_work(doi, email=email)
     if work is None:
         return None
     enr = normalize(work)
 
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT authors, meta FROM refs WHERE ref_id = %s", (ref_id,)
+        ).fetchone()
+    current_authors = row[0] if row else None
+    current_meta = (row[1] if row else None) or {}
+
     # Overwrite the byline only when the ref has no authors today.
     authors: list[dict[str, str]] | None = None
-    if enr.byline_authors:
-        with store.pool.connection() as conn:
-            row = conn.execute(
-                "SELECT authors FROM refs WHERE ref_id = %s", (ref_id,)
-            ).fetchone()
-        current = row[0] if row else None
-        if not current:  # None or empty list
-            authors = enr.byline_authors
+    if enr.byline_authors and not current_authors:  # None or empty list
+        authors = enr.byline_authors
+
+    meta_patch: dict[str, Any] = {"openalex": enr.meta}
+    if enr.meta.get("abstract") and not current_meta.get("abstract"):
+        meta_patch["abstract"] = enr.meta["abstract"]
 
     store.update_paper_fields(
         ref_id,
         authors=authors,
-        meta_patch={"openalex": enr.meta},
+        meta_patch=meta_patch,
         source=source,
     )
     if enr.openalex_id:
