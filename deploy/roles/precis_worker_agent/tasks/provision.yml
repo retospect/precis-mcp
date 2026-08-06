@@ -51,7 +51,47 @@
     owner: deploy
     group: admin
     mode: "0600"
+  vars:
+    claude_mcp_pgpass_file: /Users/deploy/.pgpass
   become: true
+
+# gr196677: the mcp.json DSN is password-free (§L gr171431) — every plan_tick
+# spawn stands or falls on ~deploy/.pgpass, which the routine deploy now
+# re-asserts (19-pgpass.yml imported in redeploy-precis.yml). Verify it here
+# so a drifted/missing file fails the ship loudly instead of surfacing as an
+# intermittent fe_sendauth plan_tick dead-end days later.
+- name: Verify ~deploy/.pgpass exists with 0600 (plan_tick DB credential)
+  when: os_family == "darwin"
+  ansible.builtin.stat:
+    path: /Users/deploy/.pgpass
+  register: deploy_pgpass_stat
+  become: true
+
+- name: Assert ~deploy/.pgpass is present, deploy-owned, mode 0600
+  when: os_family == "darwin"
+  ansible.builtin.assert:
+    that:
+      - deploy_pgpass_stat.stat.exists
+      - deploy_pgpass_stat.stat.pw_name == 'deploy'
+      - deploy_pgpass_stat.stat.mode == '0600'
+    fail_msg: >-
+      ~deploy/.pgpass missing or wrong owner/mode — plan_tick's `precis serve`
+      cannot authenticate (gr196677). Run playbooks/19-pgpass.yml (imported by
+      redeploy-precis.yml; needs the vault) and re-deploy.
+
+- name: Assert ~deploy/.pgpass covers the mcp.json DSN host:port
+  when: os_family == "darwin"
+  ansible.builtin.command:
+    argv:
+      - grep
+      - -q
+      - "^{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}:"
+      - /Users/deploy/.pgpass
+  register: deploy_pgpass_entry
+  changed_when: false
+  no_log: true
+  become: true
+  failed_when: deploy_pgpass_entry.rc != 0
 
 # Factory Phase-2 slice 2B3: keep deploy's colima VM alive (reboot + crash
 # persistence) so the §13 container executor always has a docker socket.

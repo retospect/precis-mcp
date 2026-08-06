@@ -389,14 +389,23 @@ def _assign_all(
     read_conn = store.pool.getconn()
     write_conn = store.pool.getconn()
     try:
-        with (
-            write_conn.cursor() as wcur,
-            wcur.copy(
-                "COPY cluster_assignments (run_id, chunk_id, ref_id, leaf_path) "
-                "FROM STDIN"
-            ) as copy,
-        ):
-            with read_conn.cursor(name="clusterize_stream") as rcur:
+        with write_conn.cursor() as wcur:
+            # The agent_rw role has a defensive 120s statement_timeout
+            # (deploy/roles/postgres/tasks/main.yml). This single COPY
+            # streams every candidate chunk for the scope (~1.88M rows for
+            # scope=paper, growing) and its duration scales with corpus
+            # size, so it deliberately overrides the role default here.
+            # SET LOCAL scopes the override to this transaction only —
+            # it expires when the transaction ends, leaving the 120s
+            # default intact for everything else on this role.
+            wcur.execute("SET LOCAL statement_timeout = '30min'")
+            with (
+                wcur.copy(
+                    "COPY cluster_assignments (run_id, chunk_id, ref_id, leaf_path) "
+                    "FROM STDIN"
+                ) as copy,
+                read_conn.cursor(name="clusterize_stream") as rcur,
+            ):
                 rcur.itersize = _VECTOR_BATCH
                 rcur.execute(
                     "SELECT c.chunk_id, c.ref_id, ce.vector::text " + _CANDIDATE_WHERE,

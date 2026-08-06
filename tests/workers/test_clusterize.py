@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 import numpy as np
+import psycopg
 import pytest
 
 from precis.store import Store
@@ -158,6 +159,46 @@ def test_warm_start_keeps_addresses_across_runs(seeded: Store, monkeypatch) -> N
     # Each theme keeps its tile address across the rebuild.
     for axis in (0, 1, 2):
         assert _theme_path(store, run2, axis) == addr1[axis]
+
+
+def test_assign_all_overrides_statement_timeout_before_copy(
+    seeded: Store, monkeypatch
+) -> None:
+    """gripe 196678: the agent_rw role has a defensive 120s
+    statement_timeout, but the assignment COPY streams every candidate
+    chunk in one statement and can run longer as the corpus grows. The
+    write cursor must SET LOCAL a bigger timeout before the COPY opens,
+    so the override is scoped to that one transaction.
+    """
+    calls: list[str] = []
+    orig_execute = psycopg.Cursor.execute
+    orig_copy = psycopg.Cursor.copy
+
+    def spy_execute(self, query, *args, **kwargs):  # type: ignore[no-untyped-def]
+        sql = query if isinstance(query, str) else str(query)
+        calls.append(sql)
+        return orig_execute(self, query, *args, **kwargs)
+
+    def spy_copy(self, statement, *args, **kwargs):  # type: ignore[no-untyped-def]
+        sql = statement if isinstance(statement, str) else str(statement)
+        calls.append(sql)
+        return orig_copy(self, statement, *args, **kwargs)
+
+    monkeypatch.setattr(psycopg.Cursor, "execute", spy_execute)
+    monkeypatch.setattr(psycopg.Cursor, "copy", spy_copy)
+
+    result = run_clusterize_pass(seeded)
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+
+    set_local_idxs = [
+        i for i, sql in enumerate(calls) if "SET LOCAL statement_timeout" in sql
+    ]
+    copy_idxs = [i for i, sql in enumerate(calls) if "COPY cluster_assignments" in sql]
+    assert set_local_idxs, "expected a SET LOCAL statement_timeout on the write cursor"
+    assert copy_idxs, "expected the COPY cluster_assignments statement to run"
+    assert set_local_idxs[0] < copy_idxs[0], (
+        "SET LOCAL statement_timeout must run before the COPY opens"
+    )
 
 
 def test_time_gate_blocks_immediate_rebuild(seeded: Store) -> None:

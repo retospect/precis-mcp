@@ -189,6 +189,14 @@
 - name: "Refresh /opt/precis/embedder-venv (embedder) — FIRST, dependents need it"
   ansible.builtin.import_playbook: playbooks/19a-precis-embedder.yml
 
+# gr196677: re-assert ~deploy/.pgpass (+ hermes's) every deploy — the mcp.json
+# DSN is password-free (§L gr171431), so every plan_tick spawn stands or falls
+# on this file; provisioned only by the standalone 19-pgpass.yml it silently
+# drifted. Idempotent; the template module writes atomically (tmp + rename).
+# Must precede 20b: the collapsed worker's provision step now asserts the file.
+- name: "Re-assert ~/.pgpass on all nodes  (plan_tick / asa DB credential)"
+  ansible.builtin.import_playbook: playbooks/19-pgpass.yml
+
 # §L-b (2026-08-04): the COLLAPSED worker playbook replaced
 # 20-precis-worker.yml here — one `precis worker --profile all` unit per
 # host (same com.precis.worker / precis-worker.service label, rendered via

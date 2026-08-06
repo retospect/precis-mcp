@@ -15,6 +15,11 @@
            hermes (asa_bot) and deploy (precis_worker_agent's in-proc
            planner), and the pgpass role now drops a .pgpass for both. #}
         "PRECIS_DATABASE_URL": "postgresql://agent_rw@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod",
+        {# gr196677: pin libpq's password file explicitly — the spawned
+           `precis serve` sees ONLY this env block (no HOME), so ~-resolution
+           of .pgpass is ambiguous per spawn. Each render site sets
+           claude_mcp_pgpass_file to its run-as user's .pgpass. #}
+        "PGPASSFILE": "{{ claude_mcp_pgpass_file }}",
         "UNPAYWALL_EMAIL": "{{ vault_unpaywall_email | default('') }}",
         "CROSSREF_MAILTO": "{{ vault_unpaywall_email | default('') }}",
         "PRECIS_PATENT_RAW_ROOT": "{{ precis_patent_raw_root | default('') }}",

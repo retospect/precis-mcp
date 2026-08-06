@@ -152,6 +152,8 @@
     owner: hermes
     group: staff
     mode: "0600"
+  vars:
+    claude_mcp_pgpass_file: /Users/hermes/.pgpass
   become: true
   notify: restart asa-bot
 
