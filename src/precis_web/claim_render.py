@@ -356,6 +356,7 @@ def _render_one(
     *,
     cite_key_map: dict[int, list[str]] | None = None,
     chunk_cache: dict[str, dict[str, Any]] | None = None,
+    paper_refs: dict[int, Any] | None = None,
 ) -> dict[str, Any]:
     """Shape one already-resolved hub's evidence for the web — the shared
     tail both :func:`render_claim_evidence` (singular) and
@@ -377,9 +378,15 @@ def _render_one(
     # Threading `evidence` (+ `cite_key_map`/`ref`) here is what stops
     # `claim_trust` from re-deriving this SAME hub's evidence a second time
     # (the "derives each hub twice" defect, OPEN-ITEMS.md batch C).
-    status = claim_trust(
-        store, ref_id, evidence=evidence, cite_key_map=cite_key_map, ref=hub_ref
-    ).label
+    trust = claim_trust(
+        store,
+        ref_id,
+        evidence=evidence,
+        cite_key_map=cite_key_map,
+        ref=hub_ref,
+        paper_refs=paper_refs,
+    )
+    status = trust.label
     originators = [_edge_row(e, starred=True) for e in evidence.originators]
     corroborators = [
         _edge_row(e, starred=corroborators_print) for e in evidence.corroborators
@@ -400,6 +407,11 @@ def _render_one(
         "hub_ref_id": ref_id,
         "claim": claim,
         "status": status,
+        # Reflection of a supporter paper's Meta-tab unacquirable declaration
+        # (claim_trust softened clean → Ⓐ/✍): the claim page explains WHY the
+        # badge is calm-marked rather than clean. `None` unless overridden.
+        "trust_overridden": trust.overridden,
+        "trust_note": trust.note if trust.overridden else None,
         "originators": originators,
         "corroborators": corroborators,
         "contradictors": contradictors,
@@ -483,6 +495,9 @@ def render_claims_evidence(store: Any, heads: Iterable[str]) -> list[dict[str, A
     cite_key_map = store.ref_cite_keys_bulk(supporter_ids)
     chunk_cache = store.universal_chunks(source_handles)
     hub_refs = store.fetch_refs_by_ids(hub_ref_ids)
+    # Supporter-paper refs for the hub-clean unacquirable-override check, batched
+    # once (mirrors cite_key_map) so claim_trust never re-fetches per hub.
+    paper_refs = store.fetch_refs_by_ids(list(supporter_ids)) if supporter_ids else {}
 
     out: list[dict[str, Any]] = []
     for head, ref_id in head_ref.items():
@@ -498,6 +513,7 @@ def render_claims_evidence(store: Any, heads: Iterable[str]) -> list[dict[str, A
                 hub_refs.get(ref_id),
                 cite_key_map=cite_key_map,
                 chunk_cache=chunk_cache,
+                paper_refs=paper_refs,
             )
         )
     return out

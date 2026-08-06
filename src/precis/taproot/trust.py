@@ -172,6 +172,7 @@ def claim_trust(
     evidence: HubEvidence | None = None,
     cite_key_map: dict[int, list[str]] | None = None,
     ref: Any = None,
+    paper_refs: dict[int, Any] | None = None,
 ) -> TrustState:
     """Derive a finding's trust label — the ONE mapping every trust
     surface (export marking, the smartdraft badge) reads.
@@ -190,37 +191,60 @@ def claim_trust(
     ref IS a hub, so the ``is_claim_hub`` re-check is skipped too).
     ``ref`` lets a caller that already fetched the finding's ``Ref``
     (e.g. for its title) skip this function's own ``fetch_refs_by_ids``
-    call. All three default to the old single-hub, no-cache behaviour.
+    call. ``paper_refs`` is the bulk twin for the supporter-paper meta the
+    hub-clean override check reads (mirrors ``cite_key_map``). All four
+    default to the old single-hub, no-cache behaviour.
     """
     if ref is None:
         ref = store.fetch_refs_by_ids([finding_ref_id]).get(finding_ref_id)
     meta = (ref.meta or {}) if ref is not None else {}
 
+    hub_evidence: HubEvidence | None = None
     if evidence is not None or is_claim_hub(store, finding_ref_id):
+        # Resolve the hub's evidence once (thread the caller's when given) so
+        # both the label AND the supporter-override check below read the same
+        # derivation — no second derive.
+        if evidence is None:
+            evidence = finding_cite_keys(
+                store, finding_ref_id, assume_hub=True, cite_key_map=cite_key_map
+            ).evidence
+        hub_evidence = evidence
         label, note, status = _hub_trust(
             store, finding_ref_id, evidence=evidence, cite_key_map=cite_key_map
         )
     else:
         label, note, status = _lifecycle_trust(store, finding_ref_id, meta)
 
+    # An author's unacquirable declaration softens an otherwise-unverified
+    # claim (lifecycle: its own override or its blocking source paper's), and
+    # softens an otherwise-**clean** hub whose every print-visible grounding
+    # supporter is declared unacquirable (the claim rests only on sources no
+    # one read in full — 'clean' would overstate it). Never softens
+    # 'unsupported' (a negative terminal verification outranks any override:
+    # the paper WAS read; "trust me" doesn't unread it).
+    override: dict[str, Any] | None = None
     if label == "unverified":
         override = meta.get("unacquirable_override") or _source_paper_override(
             store, meta
         )
-        if override:
-            # Mode picks the softer state: 'abstract' → Ⓐ (the abstract on
-            # file backs it), anything else (incl. a legacy override with no
-            # mode) → ✍ vouched (author asserts; source unobtainable). Never
-            # all the way to clean — no one read the full text.
-            soft: TrustLabel = (
-                "abstract" if override.get("mode") == "abstract" else "vouched"
-            )
-            return TrustState(
-                label=soft,
-                note=override.get("note") or note,
-                overridden=True,
-                status=status,
-            )
+    elif hub_evidence is not None and label == "clean":
+        override = _hub_supporter_override(
+            store, hub_evidence, cite_key_map, paper_refs
+        )
+    if override:
+        # Mode picks the softer state: 'abstract' → Ⓐ (the abstract on file
+        # backs it), anything else (incl. a legacy override with no mode) → ✍
+        # vouched (author asserts; source unobtainable). Never all the way to
+        # clean — no one read the full text.
+        soft: TrustLabel = (
+            "abstract" if override.get("mode") == "abstract" else "vouched"
+        )
+        return TrustState(
+            label=soft,
+            note=override.get("note") or note,
+            overridden=True,
+            status=status,
+        )
     return TrustState(label=label, note=note, overridden=False, status=status)
 
 
@@ -245,6 +269,67 @@ def _source_paper_override(store: Any, meta: dict[str, Any]) -> dict[str, Any] |
     pmeta = (getattr(ref, "meta", None) or {}) if ref is not None else {}
     override = pmeta.get("unacquirable_override")
     return override if isinstance(override, dict) else None
+
+
+def _has_cite_key(
+    store: Any, paper_ref_id: int, cite_key_map: dict[int, list[str]] | None
+) -> bool:
+    """Whether a supporter paper is *print-visible* — has a resolvable
+    cite_key. Mirrors :func:`~precis.taproot.cite._cite_keys_for_group`'s
+    per-edge lookup (bulk map when threaded, else the per-paper query)."""
+    aliases = (
+        cite_key_map.get(paper_ref_id, [])
+        if cite_key_map is not None
+        else store.ref_cite_keys(paper_ref_id)
+    )
+    return bool(aliases)
+
+
+def _hub_supporter_override(
+    store: Any,
+    evidence: HubEvidence,
+    cite_key_map: dict[int, list[str]] | None,
+    paper_refs: dict[int, Any] | None = None,
+) -> dict[str, Any] | None:
+    """The read-through that lets a paper's own Meta-tab unacquirable
+    declaration soften a **hub** claim resting on it — the hub twin of
+    :func:`_source_paper_override` (which only follows a *lifecycle* finding's
+    chain frontier, a no-op for hubs).
+
+    A clean hub grounds on its print-visible supporter papers. When EVERY
+    paper in the grounding group is declared unacquirable, 'clean' overstates
+    the claim — no one read any of those sources in full — so return the
+    softest such override (Ⓐ if any is abstract-mode, else ✍) for
+    :func:`claim_trust` to downgrade clean → Ⓐ/✍. Return ``None`` when at
+    least one grounding paper is genuinely acquirable (a real read-grounding
+    remains) or none carries a declaration — the hub stays clean.
+
+    The grounding group mirrors :func:`~precis.taproot.cite.hub_cite_keys`:
+    originators (those with a cite_key) when any exist, else corroborators —
+    exactly the papers that reach the print citation."""
+    for group in (evidence.originators, evidence.corroborators):
+        grounding = [
+            e.paper_ref_id
+            for e in group
+            if _has_cite_key(store, e.paper_ref_id, cite_key_map)
+        ]
+        if grounding:
+            break
+    else:
+        return None  # inflight — no print-visible supporter (not a clean hub)
+    # ``paper_refs`` — a bulk caller's pre-fetched supporter-paper refs (mirrors
+    # ``cite_key_map``); ``None`` falls back to the per-call fetch.
+    refs = paper_refs if paper_refs is not None else store.fetch_refs_by_ids(grounding)
+    overrides: list[dict[str, Any]] = []
+    for pid in grounding:
+        r = refs.get(pid)
+        override = (getattr(r, "meta", None) or {}).get("unacquirable_override")
+        if not isinstance(override, dict):
+            return None  # this grounding paper IS acquirable → hub stays clean
+        overrides.append(override)
+    # All grounding papers unacquirable → softest (Ⓐ, the quieter/better
+    # grounding, wins over ✍ when any supporter's abstract backs the claim).
+    return next((o for o in overrides if o.get("mode") == "abstract"), overrides[0])
 
 
 def claim_trust_bulk(
@@ -287,6 +372,11 @@ def claim_trust_bulk(
         }
         cite_key_map = store.ref_cite_keys_bulk(supporter_ids) if supporter_ids else {}
         refs = store.fetch_refs_by_ids(hub_ids)
+        # Supporter-paper refs for the hub-clean unacquirable-override check,
+        # batched once (mirrors cite_key_map) rather than per-hub in claim_trust.
+        paper_refs = (
+            store.fetch_refs_by_ids(list(supporter_ids)) if supporter_ids else {}
+        )
         for rid in hub_ids:
             out[rid] = claim_trust(
                 store,
@@ -294,6 +384,7 @@ def claim_trust_bulk(
                 evidence=evidence_by_hub[rid],
                 cite_key_map=cite_key_map,
                 ref=refs.get(rid),
+                paper_refs=paper_refs,
             )
     for rid in lifecycle_ids:
         out[rid] = claim_trust(store, rid)

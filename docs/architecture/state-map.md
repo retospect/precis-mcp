@@ -1109,10 +1109,16 @@ not separate daemons anymore.
   paths: per-finding `edit(kind='finding', unacquirable_note=…)` and the
   **paper-level** `meta.unacquirable_override {mode,note,by,at}` set from
   the paper Meta tab (`POST /papers/{id}/unacquirable`, `web:owner`) which
-  `claim_trust` **reads through** from a lifecycle finding to its chain-
-  frontier paper — mark a source unobtainable once, every claim on it
+  `claim_trust` **reads through** to the declaring paper from BOTH claim
+  shapes: a lifecycle finding via its chain-frontier paper
+  (`_source_paper_override`), and a **hub** via its print-visible grounding
+  supporters (`_hub_supporter_override`) — when a clean hub's every grounding
+  supporter is declared unacquirable, clean softens to Ⓐ/✍ (the hub twin that
+  closed the earlier no-op; the `/claim/<head>` page echoes it as a calm
+  reflection line). Mark a source unobtainable once, every claim on it
   softens. `mode` picks Ⓐ (abstract backs it) vs ✍ (author vouches); an
-  override never softens `unsupported`. Stage (b) — the smartdraft editor
+  override never softens `unsupported`, and a hub keeps clean if any grounding
+  supporter is genuinely acquirable. Stage (b) — the smartdraft editor
   badge — **built**: `smartdraft.py::review_payloads_for` computes a
   `claim_trust` field per block (worst-of across its cite heads, sharing
   one per-render cache like the `integrity_ok` scan) via `claim_render.

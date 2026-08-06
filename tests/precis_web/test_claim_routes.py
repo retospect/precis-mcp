@@ -79,6 +79,39 @@ def test_claim_view_by_fi_handle(claim_client: TestClient, hub: Hub) -> None:
     assert "★" in r.text
 
 
+def test_claim_view_reflects_unacquirable_supporter(
+    claim_client: TestClient, hub: Hub
+) -> None:
+    """A hub grounded only on an unacquirable supporter renders the calm
+    reflection line (gap-1), not a bare clean badge."""
+    store = hub.store
+    claim_hub = mint_hub(store, _CLAIM)
+    supporter = store.insert_ref(
+        kind="paper", slug="unacq-route", title="A paywalled paper"
+    ).id
+    attach_evidence(
+        store, hub_ref_id=claim_hub, paper_ref_id=supporter, role="corroborates"
+    )
+    store.update_ref(
+        supporter,
+        meta_patch={
+            "unacquirable_override": {
+                "mode": "abstract",
+                "by": "web:owner",
+                "at": "2026-08-06T00:00:00+00:00",
+                "note": "paywalled; abstract states the result",
+            }
+        },
+    )
+    fi_handle = handle_registry.format_handle("finding", claim_hub)
+
+    r = claim_client.get(f"/claim/{fi_handle}")
+
+    assert r.status_code == 200
+    assert "abstract-only" in r.text
+    assert "paywalled; abstract states the result" in r.text
+
+
 def test_claim_view_originator_handle_and_star(
     claim_client: TestClient, hub: Hub
 ) -> None:

@@ -427,6 +427,106 @@ def test_override_absent_leaves_unverified(store: Any) -> None:
     assert result.overridden is False
 
 
+# ── hub supporter override — a supporter paper's own Meta-tab unacquirable
+#    declaration softens a clean hub resting on it (the hub twin of the
+#    lifecycle frontier read-through). `_paper` creates no inter-paper cites,
+#    so every attached supporter is a corroborator → one grounding group. ──
+
+
+def _unacq(*, mode: str | None = None, note: str = "paywalled") -> dict[str, Any]:
+    ov: dict[str, Any] = {
+        "by": "web:owner",
+        "at": "2026-08-04T00:00:00+00:00",
+        "note": note,
+    }
+    if mode is not None:
+        ov["mode"] = mode
+    return ov
+
+
+def test_hub_sole_supporter_unacquirable_folds_clean_to_vouched(store: Any) -> None:
+    """A clean hub whose only print-visible supporter is declared unacquirable
+    (legacy, no mode) reads ✍ vouched, not clean — the printed citation rests
+    on a source no one read in full."""
+    hub = mint_hub(store, _CLAIM)
+    origin = _paper(store, cite_key="ftco01a")
+    attach_evidence(store, hub_ref_id=hub, paper_ref_id=origin, role="corroborates")
+    store.update_ref(
+        origin,
+        meta_patch={"unacquirable_override": _unacq(note="print-only monograph")},
+    )
+
+    result = claim_trust(store, hub)
+
+    assert result.label == "vouched"
+    assert result.overridden is True
+    assert result.note == "print-only monograph"
+    assert result.status == "hub"
+
+
+def test_hub_supporter_unacquirable_abstract_mode_folds_to_abstract(store: Any) -> None:
+    hub = mint_hub(store, _CLAIM)
+    origin = _paper(store, cite_key="ftco02a")
+    attach_evidence(store, hub_ref_id=hub, paper_ref_id=origin, role="corroborates")
+    store.update_ref(
+        origin,
+        meta_patch={
+            "unacquirable_override": _unacq(mode="abstract", note="abstract backs it")
+        },
+    )
+
+    result = claim_trust(store, hub)
+
+    assert result.label == "abstract"
+    assert result.overridden is True
+
+
+def test_hub_stays_clean_when_one_supporter_is_acquirable(store: Any) -> None:
+    """Only when EVERY grounding supporter is unacquirable does the hub soften.
+    A readable supporter keeps a real read-grounding → clean."""
+    hub = mint_hub(store, _CLAIM)
+    unacq = _paper(store, cite_key="una01a")
+    readable = _paper(store, cite_key="rd01a")
+    attach_evidence(store, hub_ref_id=hub, paper_ref_id=unacq, role="corroborates")
+    attach_evidence(store, hub_ref_id=hub, paper_ref_id=readable, role="corroborates")
+    store.update_ref(unacq, meta_patch={"unacquirable_override": _unacq()})
+
+    result = claim_trust(store, hub)
+
+    assert result.label == "clean"
+    assert result.overridden is False
+
+
+def test_hub_all_supporters_unacquirable_abstract_wins_over_vouched(store: Any) -> None:
+    """Softest override wins: Ⓐ (abstract backs it) is better grounding than a
+    bare ✍ vouch, so one abstract-mode supporter makes the whole claim Ⓐ."""
+    hub = mint_hub(store, _CLAIM)
+    a = _paper(store, cite_key="aa01a")
+    b = _paper(store, cite_key="bb01a")
+    attach_evidence(store, hub_ref_id=hub, paper_ref_id=a, role="corroborates")
+    attach_evidence(store, hub_ref_id=hub, paper_ref_id=b, role="corroborates")
+    store.update_ref(a, meta_patch={"unacquirable_override": _unacq(note="vouch")})
+    store.update_ref(
+        b, meta_patch={"unacquirable_override": _unacq(mode="abstract", note="abs")}
+    )
+
+    result = claim_trust(store, hub)
+
+    assert result.label == "abstract"
+    assert result.overridden is True
+
+
+def test_hub_inflight_ignores_supporter_override_path(store: Any) -> None:
+    """An inflight hub (no print-visible supporter) stays unverified — there's
+    no grounding group to read a paper override through."""
+    hub = mint_hub(store, _CLAIM)
+
+    result = claim_trust(store, hub)
+
+    assert result.label == "unverified"
+    assert result.overridden is False
+
+
 # ── worst-of ordering (block badge / CSS precedence) ──────────────────
 
 
