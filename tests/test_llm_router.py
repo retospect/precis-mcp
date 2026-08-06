@@ -2206,6 +2206,120 @@ def test_resolve_chain_empty_override_falls_back_to_default(
     assert chain == default
 
 
+# ── resolve_chain: a tool-using call never lands on a completion wire ────
+#
+# The regression this pins ran in prod for days. `llm.chain.medium` was set
+# to a single `openai_compat` rung, which is a *completion* wire: it accepts
+# a tools_needed=True request without complaint and returns prose. Every
+# MEDIUM-tier planner tick therefore ran with zero precis verbs, wrote the
+# calls it would have made as text, and exited clean — so the job was marked
+# succeeded, nothing it was supposed to record got recorded, and dispatch
+# re-minted it on the next sweep to do it again. Roughly a third of all
+# planner ticks, at a full model run each.
+
+
+def test_resolve_chain_tool_less_rung_dropped_for_tool_using_call(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The prod shape: the only rung is a completion wire."""
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda _tier: [
+            {
+                "placement": "cloud",
+                "model": "z-ai/glm-4.7",
+                "transport": "openai_compat",
+            }
+        ],
+    )
+    monkeypatch.delenv("PRECIS_MODEL_HAIKU", raising=False)
+
+    with caplog.at_level("WARNING"):
+        chain = router.resolve_chain(
+            Tier.MEDIUM, tools_needed=True, backend=Backend.ANTHROPIC
+        )
+
+    assert chain == router._default_chain(
+        Tier.MEDIUM, tools_needed=True, backend=Backend.ANTHROPIC
+    )
+    assert all(r.transport.carries_tools for r in chain)
+    assert any("tool-less rung" in rec.message for rec in caplog.records)
+
+
+def test_resolve_chain_tool_less_rung_kept_for_completion_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same chain is *correct* for a tool-less call, so the filter must be
+    per-call — not a write-time rejection of the operator's row."""
+    override = [
+        {"placement": "cloud", "model": "z-ai/glm-4.7", "transport": "openai_compat"}
+    ]
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override", lambda _tier: override
+    )
+
+    chain = router.resolve_chain(
+        Tier.MEDIUM, tools_needed=False, backend=Backend.ANTHROPIC
+    )
+
+    assert chain == [Rung(Transport.OPENAI_COMPAT, model="z-ai/glm-4.7", label="cloud")]
+
+
+def test_resolve_chain_mixed_override_keeps_only_tool_carrying_rungs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A partly-usable chain is filtered, not discarded — the operator's
+    surviving rungs keep their order and their pinned models."""
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda _tier: [
+            {"placement": "local", "model": "qwen3", "transport": "local"},
+            {
+                "placement": "cloud",
+                "model": "z-ai/glm-5.2",
+                "transport": "openai_tools",
+            },
+            {"placement": "cloud", "model": "sonnet", "transport": "claude_p"},
+            {
+                "placement": "cloud",
+                "model": "claude-opus-4-8",
+                "transport": "claude_agent",
+            },
+        ],
+    )
+
+    chain = router.resolve_chain(
+        Tier.FRONTIER, tools_needed=True, backend=Backend.OPENAI
+    )
+
+    assert chain == [
+        Rung(Transport.OPENAI_TOOLS, model="z-ai/glm-5.2", label="cloud"),
+        Rung(Transport.CLAUDE_AGENT, model="claude-opus-4-8", label="cloud"),
+    ]
+
+
+@pytest.mark.parametrize("transport", list(Transport))
+def test_carries_tools_matches_the_two_agentic_wires(transport: Transport) -> None:
+    assert transport.carries_tools is (
+        transport in (Transport.CLAUDE_AGENT, Transport.OPENAI_TOOLS)
+    )
+
+
+@pytest.mark.parametrize("tier", list(Tier))
+@pytest.mark.parametrize("backend", list(Backend))
+def test_select_transport_and_carries_tools_agree(tier: Tier, backend: Backend) -> None:
+    """``carries_tools`` is the invariant ``select_transport`` was written
+    around; pinning them together stops the two drifting apart.
+
+    ``SMALL`` is the documented exception — tool-less by construction, it
+    routes to a completion wire whatever ``tools_needed`` says, so a
+    tool-using call on that tier is a caller error rather than a routing one.
+    """
+    chosen = router.select_transport(tier, tools_needed=True, backend=backend)
+    assert chosen.carries_tools is (tier is not Tier.SMALL)
+
+
 def test_dispatch_chain_override_honored_flag_off(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

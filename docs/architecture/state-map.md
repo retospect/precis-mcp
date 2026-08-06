@@ -1316,7 +1316,18 @@ a single primary rung by default (byte-for-byte the non-failover path), or
 `_failover_ladder` when the flag is on. `dispatch` wraps in `FailoverProvider`
 iff `_failover_enabled() or len(chain) > 1 or chain[0].model is not None` —
 so an operator single-rung chain (every parsed override rung pins a model) is
-honoured too. **Cloud throttle (§5):** `live_config.cloud_enabled()`
+honoured too. **A tool-using call skips rungs whose transport can't carry
+tools** (`Transport.carries_tools` — true only for `CLAUDE_AGENT` /
+`OPENAI_TOOLS`): a chain is written per *tier*, but a tier serves both agentic
+and completion traffic, so a completion rung is legitimate in the chain and
+wrong only for that call — a per-call filter, not a write-time rejection. If
+the filter empties the chain, `_default_chain` (whose `select_transport` is
+correct by construction) takes over, logged. Unfiltered this is silent: an
+agentic call on a completion wire gets no verbs, writes the calls it *would*
+have made as prose, and exits clean, so it bills in full and looks successful.
+Prod ran `llm.chain.medium = [openai_compat/glm-4.7]` for days — every
+MEDIUM-tier planner tick was tool-less and re-minted forever. **Cloud throttle
+(§5):** `live_config.cloud_enabled()`
 (app_settings `llm.cloud_enabled`, default true) +
 `router.py::_apply_cloud_throttle` prune a resolved chain's cloud rungs when
 an operator disables cloud — `_rung_is_cloud` classifies by explicit operator

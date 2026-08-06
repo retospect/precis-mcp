@@ -22,24 +22,22 @@ ancestor `deleted_at` check in dispatch; no tree-wide cap; a "clean" tick that
 called no precis verb counted as success). These are the residuals that fix
 did **not** cover:
 
-- **🚨 One third of every planner tick since 2026-08-02 ran with no tools at
-  all.** The ticks that drove todo 166542 to 62 ticks and 162719 to 50 were
-  not long, and not confused — the precis MCP server never finished
-  connecting, so the agent had *zero* precis verbs, burned a full opus run
-  writing "I am blocked" into a summary nobody reads, exited `completed`, and
-  was re-minted on the next sweep to do it again. Rate by day, from
-  `job_summary` chunks: 07-30 **0%**, 08-01 **0%**, then 08-02 **24.7%**,
-  08-03 **62.7%**, 08-04 **12.5%**, 08-05 **26.7%**, 08-06 **35.0%**. The
-  *loop* is closed (891a2d81 made a zero-precis-verb tick a resumable failure
-  instead of a success), but the **connect failure itself is unexplained and
-  still live** — it is pure waste at ~$0.10-0.70 a tick. Note 08-02 is also
-  the day the 258 orphans were minted; the obvious hypothesis is that the
-  extra dispatch candidates raised concurrency until MCP subprocess startup
-  began timing out on melchior (cf. jetsam pressure), which today's two fixes
-  attack from both ends — but that is a hypothesis, not a diagnosis. Owner:
-  `plan_tick` MCP spawn path + `PRECIS_INPROC_CONCURRENCY`. Test: a tick whose
-  MCP fails to register is observable as such (today you can only infer it
-  from prose in the summary).
+- **⚙️ Ops: `llm.chain.medium` still points MEDIUM at a completion wire.**
+  *(The tool-less-tick root cause is fixed in code — see below — this is the
+  config half, and it is the operator's call.)* Prod `app_settings` holds
+  `llm.chain.medium = [{placement:cloud, model:z-ai/glm-4.7,
+  transport:openai_compat}]` (set 2026-07-25 by the all-remote/OpenRouter
+  cutover — see the "Live chains" note further down). `openai_compat` is a
+  *completion* wire — it cannot call a tool. That is why ~30% of planner ticks
+  ran with zero precis verbs: not an MCP connect failure (the agents' prose
+  blamed one, but `llm_call_log` shows the transport), just a tier routed onto
+  a wire with no tools. With the `resolve_chain` filter shipped, those calls
+  now fall back to `_default_chain` → `claude_agent`/opus: **correct, and more
+  expensive than the operator intended**. To keep OSS on agentic MEDIUM work,
+  change the rung to `transport: openai_tools` (`llm.chain.big` already runs
+  `openai_tools`/glm-5.2 in prod, so the combination is proven) — the chain
+  editor is `/status?tab=services`. Leaving it as-is is also fine: tool-less
+  MEDIUM calls still use glm-4.7; only agentic ones escalate.
 - **🔧 `budget/quota.py` `evaluate()` is dark, so OAuth spend has no global
   gate.** `budget/meter.py` deliberately excludes `OAUTH_TRANSPORTS`
   (`claude_agent` / `claude_p`) from the dollar meter as *notional* spend,

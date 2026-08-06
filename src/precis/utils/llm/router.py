@@ -176,6 +176,21 @@ class Transport(StrEnum):
     OPENAI_COMPAT = "openai_compat"
     OPENAI_TOOLS = "openai_tools"
 
+    @property
+    def carries_tools(self) -> bool:
+        """Can a call on this wire actually invoke a precis verb?
+
+        Only two transports advertise tools: ``CLAUDE_AGENT`` (MCP over
+        ``claude -p --mcp-config``) and ``OPENAI_TOOLS`` (the in-process
+        ``tools=`` loop). The other three are completion wires — they accept
+        a ``tools_needed=True`` request without complaint and return prose.
+
+        This is the invariant :func:`select_transport` is written around,
+        named so the operator-override path (:func:`resolve_chain`) can
+        enforce the same thing instead of re-deriving it.
+        """
+        return self in (Transport.CLAUDE_AGENT, Transport.OPENAI_TOOLS)
+
 
 class Backend(StrEnum):
     """Which vendor family a cloud request is routed to — the switch that
@@ -1060,6 +1075,24 @@ def resolve_chain(tier: Tier, *, tools_needed: bool, backend: Backend) -> list[R
     chain back to :func:`_default_chain` (never a partial or best-effort
     chain), logged once so a typo'd override is visible without darking the
     tier.
+
+    **A tool-using call skips rungs whose transport can't carry tools.** A
+    chain is written per *tier*, but a tier serves both agentic and
+    completion traffic, so a completion rung (``openai_compat`` / ``local`` /
+    ``claude_p``) is legitimate in the chain and wrong only for *this* call —
+    which makes it a per-call filter, not a write-time rejection. Unfiltered
+    it is silent and expensive: an agentic call on a completion wire gets no
+    verbs, reasons from the prompt alone, writes what it *would* have called
+    as prose, and exits clean, so the run bills in full and looks successful
+    while changing nothing. Prod ran that way for days —
+    ``llm.chain.medium = [openai_compat/glm-4.7]`` sent every MEDIUM-tier
+    planner tick to a wire with no tools, and the ticks re-minted forever
+    because nothing they were supposed to record ever got recorded. If the
+    filter empties the chain we fall back to :func:`_default_chain`, whose
+    :func:`select_transport` is correct by construction — louder and pricier
+    than the operator asked for, but a tool-using call that cannot use tools
+    is pure waste. An operator who wants OSS on agentic work says so with an
+    explicit ``openai_tools`` rung.
     """
     from precis.utils.llm import live_config
 
@@ -1095,6 +1128,22 @@ def resolve_chain(tier: Tier, *, tools_needed: bool, backend: Backend) -> list[R
         rungs.append(
             Rung(transport, model=model, label=placement if placement else "chain")
         )
+
+    if tools_needed:
+        keep = [r for r in rungs if r.transport.carries_tools]
+        if len(keep) != len(rungs):
+            log.warning(
+                "llm-chain: %s drops %d tool-less rung(s) (%s) for a tool-using "
+                "call — a completion wire returns prose, not verb calls%s",
+                live_config.chain_key(tier),
+                len(rungs) - len(keep),
+                ", ".join(
+                    r.transport.value for r in rungs if not r.transport.carries_tools
+                ),
+                "" if keep else "; falling back to the default chain",
+            )
+        return keep or _default_chain(tier, tools_needed=True, backend=backend)
+
     return rungs
 
 
