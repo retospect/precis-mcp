@@ -31,7 +31,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from precis.errors import NotFound
 from precis.structure import Measure, anchor_identity_verified, evaluate_measure
-from precis.utils import mentions
+from precis.taproot.seniority import is_claim_hub
+from precis.utils import handle_registry, mentions
 from precis.utils.authors import author_names
 from precis.utils.claude_agent import ClaudeAgentError
 from precis_web import ask
@@ -1549,6 +1550,19 @@ async def detail(
     # the generic handler-card render is just ASCII. Send humans to the viewer.
     if kind == "structure" and ref.slug:
         return RedirectResponse(url=f"/structure/{ref.slug}", status_code=303)
+
+    # A finding that is a live TAPROOT:claim hub has ONE canonical view — the
+    # rich /claim/<head> evidence page (originators/corroborators/grounding/
+    # "Used by"). The generic handler-card render here is the legacy duplicate;
+    # redirect so every /refs/finding/<id> link (item_view rows, chunk-
+    # connection tables, bare [fi<id>] anchors outside the claims-reader) lands
+    # on the same page as the smartdraft ◆ diamond — one view, not two. The
+    # ~12% of findings that AREN'T hubs (citation-pending markers, quality
+    # checks) have no claim page and keep the generic detail below. Temporary
+    # (307), never cached: a finding's hub status can change (tag/untag).
+    if kind == "finding" and is_claim_hub(store, ref.id):
+        head = handle_registry.format_handle("finding", ref.id)
+        return RedirectResponse(url=f"/claim/{head}", status_code=307)
 
     # Conversations render as a human-readable chat transcript (one
     # turn per body chunk) rather than the handler's agent-facing

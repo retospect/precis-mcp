@@ -231,6 +231,40 @@ def test_claim_view_no_used_by_without_citers(
     assert "Used by" not in r.text
 
 
+def test_refs_finding_redirects_hub_to_claim_page(
+    claim_client: TestClient, hub: Hub
+) -> None:
+    """A finding that IS a claim hub has one canonical view: ``/refs/finding/<id>``
+    redirects (307) to ``/claim/fi<id>`` so the links-table finding link and the
+    smartdraft ◆ diamond land on the SAME page — no legacy duplicate view."""
+    hub_ref_id, _pub_id = _seed_hub(hub)
+
+    r = claim_client.get(f"/refs/finding/{hub_ref_id}", follow_redirects=False)
+
+    assert r.status_code == 307
+    fi_handle = handle_registry.format_handle("finding", hub_ref_id)
+    assert r.headers["location"] == f"/claim/{fi_handle}"
+
+
+def test_refs_finding_non_hub_keeps_generic_detail(
+    claim_client: TestClient, hub: Hub
+) -> None:
+    """An ordinary (non-hub) finding — the ~12% that are citation-pending
+    markers / quality checks — has no claim page, so it must NOT redirect to
+    ``/claim`` and keeps the generic finding detail."""
+    store = hub.store
+    plain = store.insert_ref(
+        kind="finding", slug=None, title="[citation pending] check"
+    ).id
+
+    r = claim_client.get(f"/refs/finding/{plain}", follow_redirects=False)
+
+    # Whatever the generic detail returns, it must not be the claim redirect.
+    assert not (
+        r.status_code == 307 and r.headers.get("location", "").startswith("/claim/")
+    )
+
+
 def test_claim_view_by_pub_id(claim_client: TestClient, hub: Hub) -> None:
     hub_ref_id, pub_id = _seed_hub(hub)
 
