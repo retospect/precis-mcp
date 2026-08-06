@@ -228,6 +228,34 @@ def handler(hub: Hub) -> PaperHandler:
     return PaperHandler(hub=hub)
 
 
+def test_cited_chunk_returns_universal_handle(store: Store) -> None:
+    """``_cited_chunk`` (the reader's ``?chunk=`` / Jump / TOC resolver) returns
+    the chunk's ``pc<chunk_id>`` universal handle alongside ord/text/page, so
+    the Jump card can show the durable pointer, not just "chunk N".
+
+    Real-PG regression: the raw SQL selects ``chunk_id`` (the PK column is
+    ``chunk_id``, not ``id``) — the FakeStore route tests never execute this
+    SQL, so a wrong column name would pass CI there and 500 in production.
+    """
+    from precis_web.routes.papers import _cited_chunk
+
+    ref_id = _seed_paper(
+        store,
+        slug="carbonx",
+        blocks=["Introduction.", "Table 1 summarizes properties.", "Methods."],
+    )
+    cited = _cited_chunk(store, ref_id, "1")
+    assert cited is not None
+    assert cited["ord"] == 1
+    assert cited["text"].startswith("Table 1")
+    assert cited["handle"] == chunk_handle(store, "carbonx", ord=1)
+    assert cited["handle"].startswith("pc")
+    # The compound handle the TOC displays resolves for THIS paper …
+    assert _cited_chunk(store, ref_id, f"pa{ref_id}~1") is not None
+    # … but a compound handle naming a different paper never resolves here.
+    assert _cited_chunk(store, ref_id, "pa999999~1") is None
+
+
 # ---------------------------------------------------------------------------
 # Overview
 # ---------------------------------------------------------------------------

@@ -76,6 +76,16 @@
   <form x-show="editing" x-cloak method="post" action="/papers/{{ paper.id }}/edit"
         class="mt-2 space-y-2" x-data="{ slug: '{{ slug_default }}' }">
     <p class="text-slate-500">Leave a field blank to keep its current value. Authors: one per line.</p>
+    {# Fill only the *empty* fields from Semantic Scholar (title/DOI/arXiv →
+       exact record, else title search). Client-side prefill — nothing is
+       saved until you press Save; fields you've already filled are left alone. #}
+    <div class="flex flex-wrap items-center gap-2">
+      <button type="button" onclick="__paperFillBlanks(this)" data-paper-id="{{ paper.id }}"
+              class="rounded border border-sky-300 bg-sky-50 px-2 py-1 text-sky-800 hover:bg-sky-100">
+        ⟲ Fill blanks from Semantic Scholar
+      </button>
+      <span class="fill-msg text-[10px] text-slate-500"></span>
+    </div>
     <label class="block">
       <span class="text-slate-500">Title</span>
       <input name="title" value="{{ prefill.title if prefill else paper.title }}"
@@ -126,3 +136,47 @@
     </button>
   </form>
 </div>
+
+{# Prefill-empty-fields helper for the "⟲ Fill blanks from Semantic Scholar"
+   button above. Defined once (guarded); reads the paper id off the button,
+   fetches the read-only GET /papers/<id>/s2-prefill JSON, and fills only the
+   inputs/textarea that are currently blank — never clobbering a value the
+   operator already typed. Persistence is still the normal Save (POST /edit). #}
+<script>
+if (!window.__paperFillBlanks) {
+  window.__paperFillBlanks = async function (btn) {
+    const form = btn.closest('form');
+    const msg = btn.parentElement.querySelector('.fill-msg');
+    const pid = btn.getAttribute('data-paper-id');
+    if (!form || !pid) return;
+    btn.disabled = true;
+    if (msg) { msg.textContent = 'Looking up…'; msg.classList.remove('text-rose-600'); }
+    try {
+      const r = await fetch('/papers/' + pid + '/s2-prefill', { cache: 'no-store' });
+      const d = await r.json();
+      if (!d.ok) {
+        if (msg) { msg.textContent = d.message || 'No match.'; msg.classList.add('text-rose-600'); }
+        btn.disabled = false;
+        return;
+      }
+      let filled = 0;
+      const setIfEmpty = (name, val) => {
+        const el = form.querySelector('[name="' + name + '"]');
+        if (el && val && !el.value.trim()) { el.value = val; filled++; }
+      };
+      setIfEmpty('title', d.title);
+      setIfEmpty('year', d.year);
+      setIfEmpty('doi', d.doi);
+      setIfEmpty('arxiv', d.arxiv);
+      setIfEmpty('authors', d.authors);
+      setIfEmpty('abstract', d.abstract);
+      if (msg) msg.textContent = filled
+        ? ('Filled ' + filled + ' blank field(s) — review and Save.')
+        : 'Nothing to fill — all fields already set.';
+    } catch (e) {
+      if (msg) { msg.textContent = 'Lookup failed.'; msg.classList.add('text-rose-600'); }
+    }
+    btn.disabled = false;
+  };
+}
+</script>

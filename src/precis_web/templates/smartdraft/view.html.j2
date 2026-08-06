@@ -1024,6 +1024,12 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
   // counterpart element into view. One delegated listener pair (mouseover/
   // mouseout, which bubble — mouseenter/leave don't) on #sd-content, not one
   // per anchor, matching the rest of this reader's event-delegation idiom.
+  // A *separate* claim window Reto has popped out (via the docked pane's
+  // "open full page ↗"). While it's open, a ◆/rail-chip click retargets IT
+  // instead of the in-page pane; once it's closed we fall back to the pane.
+  // Page-scope (survives htmx #sd-content swaps; a full browser reload drops
+  // it — re-pop-out to reconnect the same named window). See the delegate.
+  let sdClaimWin = null;
   function claimHeadEls(head) {
     return document.querySelectorAll('[data-claim-head="' + CSS.escape(head) + '"]');
   }
@@ -1099,6 +1105,21 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
       claimPaneClose();
       return;
     }
+    // Docked pane's "open full page ↗" — graduate the pane to a *reusable*
+    // separate window (named 'precis-claim') and remember its handle, so from
+    // now on ◆/rail-chip clicks retarget THAT window instead of the pane.
+    // Reusing the name means a browser reload's re-pop-out re-links the same
+    // physical window rather than spawning a duplicate.
+    const popOut = e.target.closest && e.target.closest('#claim-pane-open');
+    if (popOut) {
+      e.preventDefault();
+      const head = (popOut.getAttribute('href') || '').replace('/claim/', '');
+      if (head) {
+        sdClaimWin = window.open('/claim/' + head, 'precis-claim');
+        if (sdClaimWin) sdClaimWin.focus();
+      }
+      return;
+    }
     // A plain (unmodified — metaKey/ctrlKey already returned above; a
     // middle-click never reaches 'click' at all) left-click on a prose ◆ or
     // a Claims-rail chip feeds the docked pane instead of opening a new tab
@@ -1109,7 +1130,14 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
     if (claimEl && claimEl.closest('#sd-content')) {
       e.preventDefault();
       const head = claimEl.getAttribute('data-claim-head');
-      claimPaneOpen(head);
+      // Conditional (Reto 2026-08-06): if a popped-out claim window is open,
+      // change IT to the new claim; otherwise just update the in-page pane.
+      if (sdClaimWin && !sdClaimWin.closed) {
+        sdClaimWin.location.href = '/claim/' + head;
+        sdClaimWin.focus();
+      } else {
+        claimPaneOpen(head);
+      }
       claimFlashCounterpart(head, claimEl);
       return;
     }

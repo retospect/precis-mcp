@@ -1026,6 +1026,24 @@ def test_smartdraft_reader_claim_delegate_script_present(
     assert "mouseover" in body and "mouseout" in body
 
 
+def test_smartdraft_claim_click_reuses_popped_out_window(
+    smartdraft_client: TestClient,
+) -> None:
+    """Conditional claim target (Reto 2026-08-06): a ◆/rail-chip click
+    retargets a *popped-out* claim window if one is open (retained handle,
+    named 'precis-claim'), else falls back to the in-page docked pane. The
+    pane's "open full page ↗" is what graduates the pane to that window."""
+    r = smartdraft_client.get("/smartdraft/sdt")
+    assert r.status_code == 200
+    body = r.text
+    # A retained handle for the popped-out window, opened under a stable name.
+    assert "sdClaimWin" in body
+    assert "'precis-claim'" in body
+    # The conditional: retarget the open window, else the docked pane.
+    assert "sdClaimWin && !sdClaimWin.closed" in body
+    assert "claimPaneOpen(head)" in body  # the fallback branch survives
+
+
 def test_smartdraft_claims_rail_chip_carries_data_claim_head(
     smartdraft_client: TestClient,
 ) -> None:

@@ -44,8 +44,8 @@
 
   <div class="flex min-h-0 flex-1 gap-3">
     {# ── sidebar ───────────────────────────────────────────────── #}
-    <aside x-show="sidebarOpen"
-           class="flex w-[22rem] shrink-0 flex-col overflow-hidden rounded-lg border border-slate-200 bg-white">
+    <aside x-show="sidebarOpen" :style="'width:' + sidebarW + 'px'"
+           class="flex shrink-0 flex-col overflow-hidden rounded-lg border border-slate-200 bg-white">
       {# tab strip — Sources/Cited are paper-only (see doc.show_refs_tabs
          note at the top of this file). #}
       {% set _tabs = ['Navigate', 'Jump'] + (['Sources', 'Cited'] if doc.show_refs_tabs else []) + ['Meta'] %}
@@ -211,7 +211,7 @@
             </div>
           </form>
           <div x-show="jumpChunk" x-cloak class="rounded border-l-4 border-amber-400 bg-amber-50 p-2">
-            <div class="font-mono text-[10px] text-amber-700">chunk <span x-text="jumpChunk && jumpChunk.ord"></span><template x-if="jumpChunk && jumpChunk.page"> · p<span x-text="jumpChunk && jumpChunk.page"></span></template></div>
+            <div class="font-mono text-[10px] text-amber-700"><template x-if="jumpChunk && jumpChunk.handle"><span x-text="jumpChunk.handle" class="text-amber-800"></span></template> · chunk <span x-text="jumpChunk && jumpChunk.ord"></span><template x-if="jumpChunk && jumpChunk.page"> · p<span x-text="jumpChunk && jumpChunk.page"></span></template></div>
             <p class="mt-1 text-xs leading-snug text-slate-700" x-text="jumpChunk && jumpChunk.text"></p>
           </div>
         </div>
@@ -236,10 +236,18 @@
       </div>
     </aside>
 
+    {# ── drag handle: resize the sidebar / PDF split (persists to
+       localStorage; the iframe's pointer-events are killed mid-drag so the
+       PDF viewer doesn't swallow the mousemove). ── #}
+    <div x-show="sidebarOpen" @mousedown.prevent="startResize($event)"
+         title="drag to resize"
+         class="w-1.5 shrink-0 cursor-col-resize rounded bg-slate-200 hover:bg-emerald-400"
+         :class="{ 'bg-emerald-400': resizing }"></div>
+
     {# ── main: PDF.js reader ─────────────────────────────────────── #}
     <section class="min-w-0 flex-1 overflow-hidden rounded-lg border border-slate-200 bg-white">
       {% if doc.pdf_on_disk %}
-        <iframe id="pdf-frame" class="h-full w-full"
+        <iframe id="pdf-frame" class="h-full w-full" :class="{ 'pointer-events-none': resizing }"
                 src="/static/pdfjs/web/viewer.html?file={{ doc.pdf_url | urlencode }}"></iframe>
       {% elif not doc.has_pdf %}
         <div class="m-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">

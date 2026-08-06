@@ -34,6 +34,10 @@ function paperDoc(paperId, citedOrd, hasPdf, initialTab) {
     paperId,
     hasPdf,
     sidebarOpen: true,
+    // Sidebar/PDF split width (px), drag-resizable via the divider handle
+    // and persisted to localStorage. 352px = the old fixed 22rem default.
+    sidebarW: 352,
+    resizing: false,
     tab: initialTab || 'Navigate',
     // search state
     mode: 'semantic',
@@ -76,6 +80,17 @@ function paperDoc(paperId, citedOrd, hasPdf, initialTab) {
     citedLoaded: false,
 
     init() {
+      // Restore a saved sidebar/PDF split width (clamped, in case the window
+      // is narrower now than when it was saved).
+      try {
+        const w = parseInt(localStorage.getItem('precis-reader-sidebar-w') || '', 10);
+        // Clamp to the CURRENT viewport (same bound startResize uses) — a
+        // width saved on a wide monitor mustn't squeeze the PDF pane to zero
+        // when reopened on a narrower window.
+        if (w >= 220) {
+          this.sidebarW = Math.min(w, Math.max(300, window.innerWidth - 380));
+        }
+      } catch (e) { /* localStorage unavailable — keep the default */ }
       // A ?chunk=N citation deep link: land on that chunk (text shown in
       // the Jump panel, highlighted in the PDF) instead of an inline card.
       if (citedOrd >= 0) {
@@ -88,6 +103,31 @@ function paperDoc(paperId, citedOrd, hasPdf, initialTab) {
       // A ?tab=Sources/Cited deep link opens straight onto one of the
       // htmx-fragment tabs — same lazy-load setTab() does on click.
       this._loadRefsIfNeeded(this.tab);
+    },
+
+    // ── sidebar/PDF split resize ─────────────────────────────────────
+    // Drag the divider handle to rebalance the sidebar vs the PDF pane.
+    // Document-level listeners (not on the handle) so the drag keeps
+    // tracking even as the cursor leaves the 1.5px bar; the iframe's
+    // pointer-events are disabled mid-drag (see reader.html.j2) so the PDF
+    // viewer doesn't eat the mousemove. Result persists to localStorage.
+    startResize(ev) {
+      this.resizing = true;
+      const startX = ev.clientX;
+      const startW = this.sidebarW;
+      const maxW = Math.max(300, window.innerWidth - 380); // leave room for the PDF
+      const onMove = (e) => {
+        this.sidebarW = Math.max(220, Math.min(maxW, startW + (e.clientX - startX)));
+      };
+      const onUp = () => {
+        this.resizing = false;
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        try { localStorage.setItem('precis-reader-sidebar-w', String(this.sidebarW)); }
+        catch (e) { /* localStorage unavailable — width just won't persist */ }
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
     },
 
     // ── tab switch + Sources/Cited lazy fragment load ────────────────
@@ -220,29 +260,51 @@ function paperDoc(paperId, citedOrd, hasPdf, initialTab) {
     },
     _phrase(text) {
       // pdf.js find matches the PDF's *rendered* text layer and needs the
-      // whole query to match contiguously. Marker chunk text carries
-      // markup the rendered page doesn't have ($d_k$, [3], \alpha), so a
-      // naive first-N-words phrase fails the moment it hits one. Pick the
-      // first contiguous run of plain alphabetic words (skipping any token
-      // with math / citation / symbol chars) — that run exists verbatim on
-      // the page. Fall back to the first few raw words if none is found.
-      const norm = (text || '').replace(/\s+/g, ' ').trim();
-      if (!norm) return '';
-      const toks = norm.split(' ');
-      const isClean = (t) => /^[A-Za-z][A-Za-z'-]*[.,;:]?$/.test(t) && t.length > 1;
-      let best = [], cur = [];
-      for (const t of toks) {
-        if (isClean(t)) {
-          cur.push(t.replace(/[.,;:]$/, ''));
-          if (cur.length >= 8) { best = cur; break; }
-        } else {
-          if (cur.length > best.length) best = cur;
-          cur = [];
+      // whole query to appear contiguously. Chunk text diverges from the page
+      // in two ways that break a naive first-N-words phrase:
+      //   1. leading/inline markup the page doesn't render — a citation
+      //      superscript (`<sup>[5–8]</sup>`), inline refs (`[9]`, `[10-15]`),
+      //      image markdown, `$d_k$` math;
+      //   2. sentence boundaries — the PDF keeps the period, so a run that
+      //      crosses `... carbon nanomaterials. In the ...` never matches
+      //      once the "." is dropped (the old bug: chunk 3 of carbon20 landed
+      //      on 0 matches, then a wrong-page fallback).
+      // So: strip the markup/citation noise, then take the first solid run of
+      // words WITHIN a single sentence — keeping ordinary interior numbers
+      // ("Table 1") — which exists verbatim on the page.
+      const s = (text || '')
+        .replace(/<[^>]*>/g, ' ') // HTML tags (<sup>…</sup>, <span id=…>)
+        .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ') // image markdown ![](…)
+        .replace(/\[[0-9]+(?:\s*[-–,]\s*[0-9]+)*\]/g, ' ') // cites [5–8] [9] [10-15]
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (!s) return '';
+      // A phrase must not cross a hard stop (`.;:!?`) — the PDF preserves it.
+      const segments = s.split(/(?<=[.;:!?])\s+/);
+      // "renderable" token: has a letter/number, carries no math/markup char,
+      // and doesn't open with a bracket/paren (a stray "(2007)" / "[a]").
+      const isWord = (t) =>
+        /[A-Za-z0-9]/.test(t) && !/[$\\^_{}<>|]/.test(t) && !/^[[(]/.test(t);
+      for (const seg of segments) {
+        const toks = seg.split(' ').filter(Boolean);
+        let run = [];
+        for (const t of toks) {
+          if (isWord(t)) {
+            run.push(t);
+            if (run.length >= 8) break;
+          } else if (run.length >= 4) {
+            break; // enough of a run already — stop at the noise
+          } else {
+            run = []; // leading fragment wasn't solid — restart after the noise
+          }
+        }
+        const alpha = run.filter((t) => /[A-Za-z]/.test(t)).length;
+        if (run.length >= 3 && alpha >= 2) {
+          return run.join(' ').replace(/[.,;:!?]+$/, '');
         }
       }
-      if (cur.length > best.length) best = cur;
-      const run = best.slice(0, 8);
-      return run.length >= 3 ? run.join(' ') : toks.slice(0, 6).join(' ');
+      // Nothing clean anywhere — first few words of the scrubbed text.
+      return s.split(' ').slice(0, 6).join(' ').replace(/[.,;:!?]+$/, '');
     },
 
     // ── navigate: search + rapid-nav list + toc ─────────────────────

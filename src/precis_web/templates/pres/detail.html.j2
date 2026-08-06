@@ -1,5 +1,7 @@
 {% extends "base.html.j2" %}
 {% block title %}{{ ref.title }}{% endblock %}
+{# Full-bleed reader — see papers/detail.html.j2 (same max-width override). #}
+{% block main_class %}px-4 py-6{% endblock %}
 {% block content %}
 {# Slide-deck editor. Reuses the shared two-pane reader (Navigate/Jump/PDF
    + jump-to-page) from _reader/reader.html.j2 — pres joined _DOC_FAMILY so

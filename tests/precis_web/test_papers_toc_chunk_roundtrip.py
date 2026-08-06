@@ -28,9 +28,10 @@ from precis_web.routes.papers import _cited_chunk
 class _Store:
     """Backs both ``list_blocks_for_ref`` (TOC clustering) and
     ``pool.connection`` (``_cited_chunk``'s raw chunk lookup) off the same
-    seeded ``{pos: (text, page)}`` rows."""
+    seeded ``{pos: (chunk_id, text, page)}`` rows — the 3-column shape
+    ``_cited_chunk`` now selects (``chunk_id`` drives the ``pc<id>`` handle)."""
 
-    def __init__(self, rows: dict[int, tuple[str, int]]) -> None:
+    def __init__(self, rows: dict[int, tuple[int, str, int]]) -> None:
         self._rows = rows
 
         @contextmanager
@@ -68,7 +69,7 @@ class _Store:
 
 def test_every_toc_segment_lo_resolves_to_a_chunk() -> None:
     n = _BUCKETING_THRESHOLD + 30
-    rows = {i: (f"chunk {i} body text", (i // 10) + 1) for i in range(n)}
+    rows = {i: (1000 + i, f"chunk {i} body text", (i // 10) + 1) for i in range(n)}
     store = _Store(rows)
     segs = build_toc_segments(store=store, ref_id=10, handle="pa10")
     assert 1 < len(segs) < n  # clustering actually produced ranged rows
@@ -77,6 +78,8 @@ def test_every_toc_segment_lo_resolves_to_a_chunk() -> None:
         cited = _cited_chunk(store, 10, str(seg["lo"]))
         assert cited is not None, f"segment lo={seg['lo']} did not resolve"
         assert cited["ord"] == seg["lo"]
+        # The 3-column row feeds the pc<chunk_id> handle onto the Jump card.
+        assert cited["handle"] == f"pc{1000 + seg['lo']}"
         # The segment's own compound handle (what the TOC row displays,
         # e.g. "pa10~13..15") resolves identically.
         assert _cited_chunk(store, 10, seg["handle"]) == cited

@@ -140,7 +140,10 @@
         </nav>
       </div>
     </header>
-    <main class="mx-auto max-w-6xl px-4 py-6">
+    {# Most pages read best centred at a comfortable measure; the two-pane
+       document reader (papers/pres detail) overrides ``main_class`` to go
+       full-bleed so the PDF pane grows with the viewport (no max-width cap). #}
+    <main class="{% block main_class %}mx-auto max-w-6xl px-4 py-6{% endblock %}">
       {% block content %}{% endblock %}
     </main>
   </div>

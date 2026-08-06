@@ -428,12 +428,20 @@ def _cited_chunk(store: Any, ref_id: int, chunk: str | None) -> dict[str, Any] |
     ord_ = int(lo)
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT text, page_first FROM chunks WHERE ref_id = %s AND ord = %s",
+            "SELECT chunk_id, text, page_first FROM chunks WHERE ref_id = %s AND ord = %s",
             (ref_id, ord_),
         ).fetchone()
-    if row is None or not row[0]:
+    if row is None or not row[1]:
         return None
-    return {"ord": ord_, "text": row[0], "page": row[1]}
+    # ``pc<chunk_id>`` — the universal chunk handle (ADR 0036), so the Jump
+    # card can show the durable pointer alongside the per-paper ``ord`` (a
+    # citation / short-code the reader can copy, not just "chunk N").
+    return {
+        "ord": ord_,
+        "text": row[1],
+        "page": row[2],
+        "handle": format_handle("paper", row[0], chunk=True),
+    }
 
 
 #: The document family that shares the two-pane reader (ADR: proposal
@@ -1076,6 +1084,76 @@ async def triage_lookup(
         prefill=prefill,
         triage_msg=f"Found on Semantic Scholar: {result['title']!r} — "
         "review and Save to apply (clears needs-triage).",
+    )
+
+
+@router.get("/{ref_id}/s2-prefill", response_model=None)
+async def s2_prefill(request: Request, ref_id: int) -> JSONResponse:
+    """Fetch bibliographic metadata for this paper so the Meta edit form can
+    **fill only its empty fields** (client-side; nothing is persisted until
+    the operator Saves). Read-only — never writes.
+
+    Looks the paper up by its most reliable identifier first: a held DOI or
+    arXiv id resolves an exact Semantic Scholar record; otherwise fall back to
+    a title search (same path as ``triage-lookup``). Authors come back in
+    ``Family, Given`` order to match the editor's one-per-line convention
+    (``_author_edit_lines``)."""
+    store = get_store(request)
+    ref = store.fetch_refs_by_ids([ref_id], include_deleted=False).get(ref_id)
+    if ref is None or ref.kind not in _DOC_FAMILY:
+        raise NotFound(f"document id={ref_id} not found")
+
+    from precis.ingest.lookup import lookup_title
+    from precis.ingest.semantic_scholar import get_paper_by_id
+    from precis.secrets import get_secret
+
+    s2_key = get_secret("SEMANTIC_SCHOLAR_API_KEY") or ""
+    ids = store.identifiers_for_refs([ref_id]).get(ref_id, {})
+    doi = (ids.get("doi") or "").strip()
+    arxiv = (ids.get("arxiv") or "").strip()
+    title = (ref.title or "").strip()
+
+    result: dict[str, Any] | None = None
+    try:
+        if doi:
+            result = get_paper_by_id(f"DOI:{doi}", api_key=s2_key)
+        if not result and arxiv:
+            result = get_paper_by_id(f"ARXIV:{arxiv}", api_key=s2_key)
+        if not result and title:
+            # ``lookup_title`` (unlike ``get_paper_by_id``) re-raises after its
+            # retry budget, so a down / rate-limited S2 would 500 this endpoint
+            # rather than degrade — catch it and return the same JSON-error shape
+            # the client (__paperFillBlanks) already handles.
+            result = lookup_title(title, s2_key=s2_key)
+    except Exception:
+        return JSONResponse(
+            {"ok": False, "message": "Semantic Scholar lookup failed — try again."}
+        )
+
+    if not result or not result.get("title"):
+        hint = title or doi or arxiv
+        return JSONResponse(
+            {
+                "ok": False,
+                "message": (
+                    f"No Semantic Scholar match for {hint!r}."
+                    if hint
+                    else "Nothing to look up — add a title, DOI, or arXiv id first."
+                ),
+            }
+        )
+
+    names = author_names(result.get("authors") or [], order="sortable")
+    return JSONResponse(
+        {
+            "ok": True,
+            "title": result.get("title") or "",
+            "year": str(result.get("year") or ""),
+            "doi": result.get("doi") or "",
+            "arxiv": result.get("arxiv_id") or "",
+            "abstract": result.get("abstract") or "",
+            "authors": "\n".join(names),
+        }
     )
 
 

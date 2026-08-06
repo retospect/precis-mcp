@@ -2615,7 +2615,10 @@ The master kinds table lives in the `precis-overview` skill.
   Two-pane paper reader (`routes/papers.py` + vendored pdf.js). Chunk
   anchoring is **phrase-first, page-fallback**
   (`static/paper-viewer.js::findInPdf`/`_findAndCount`): dispatches the
-  PDF.js text find and lets `updatefindmatchescount` position the
+  PDF.js text find over a phrase from `_phrase` (scrubs `<sup>`/citation-
+  bracket markup, then takes a within-one-sentence verbatim run keeping
+  interior numbers — so a chunk opening on a citation superscript still
+  locates) and lets `updatefindmatchescount` position the
   viewport, only jumping to `page_first` (still an ingest-time,
   substring-matched TOC-carry-forward guess — `marker.py::_assign_pages`;
   true per-block pages/bbox deferred,
@@ -2624,7 +2627,11 @@ The master kinds table lives in the `precis-overview` skill.
   `GET /papers/{ref_id}/chunk/{sel}`, `?chunk=`, and the Jump box — takes
   a bare ord, an `lo..hi` range, or the ADR-0032 compound handle the TOC
   itself displays (`pa<ref_id>~lo..hi`), all through one resolver
-  (`_cited_chunk`). Reader tabs: Navigate/Jump/**Sources**/**Cited**/Meta
+  (`_cited_chunk`, which also returns the chunk's `pc<id>` universal handle
+  for the Jump card). The reader shell is full-bleed (papers/pres detail
+  override base's `max-w-6xl` via the `main_class` block) with a
+  drag-resizable sidebar/PDF split (`paperDoc.startResize`, persisted to
+  localStorage). Reader tabs: Navigate/Jump/**Sources**/**Cited**/Meta
   — Sources (outgoing bibliography) and Cited (incoming) render from the
   new `s2_neighbors` table (migration `0106`; `ref_id, direction
   cites|cited_by, ord, s2_id, doi, title, year, held_ref_id, fetched_at`),
@@ -2640,7 +2647,11 @@ The master kinds table lives in the `precis-overview` skill.
   **reviewed** toggle (`POST /papers/{ref_id}/reviewed`) — the first
   writer of `refs.human_verified_at/by` for papers
   (`store.set_human_verified`/`clear_human_verified`); a metadata edit
-  clears the stamp, setting it clears `needs-triage`. The **sole draft
+  clears the stamp, setting it clears `needs-triage`. The Meta edit form
+  also has a **Fill blanks from Semantic Scholar** button
+  (`GET /papers/{ref_id}/s2-prefill`, read-only) that prefills only the
+  *empty* edit-form fields from S2 (DOI/arXiv exact record → title search),
+  client-side — nothing persists until Save. The **sole draft
   reader is `/smartdraft`** (`routes/smartdraft.py` + `smartdraft.py`) — the
   three-pane fisheye reader (left TOC · middle focus+neighbourhood · right
   collaborate). The classic virtual-scroll reader (`GET /drafts/{ident}`) was

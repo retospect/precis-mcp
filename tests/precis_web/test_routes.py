@@ -1423,6 +1423,30 @@ def test_paper_detail_renders(client) -> None:
     assert "smith2024" in resp.text
 
 
+def test_paper_detail_meta_form_has_s2_fill_button(client) -> None:
+    """The Meta edit form carries the "Fill blanks from Semantic Scholar"
+    button + its prefill helper wired to the GET s2-prefill endpoint (E:
+    auto-populate empty metadata like authors)."""
+    resp = client.get("/papers/10")
+    assert resp.status_code == 200
+    assert "Fill blanks from Semantic Scholar" in resp.text
+    assert "__paperFillBlanks" in resp.text
+    assert "/s2-prefill" in resp.text
+
+
+def test_paper_reader_full_width_and_resizable(client) -> None:
+    """The reader page goes full-bleed (overrides base's ``max-w-6xl`` via the
+    ``main_class`` block, F) and carries the drag-to-resize splitter between
+    the sidebar and the PDF pane (G)."""
+    resp = client.get("/papers/10")
+    assert resp.status_code == 200
+    # Full-bleed: the reader's <main> drops the centered max-width cap.
+    assert '<main class="px-4 py-6">' in resp.text
+    # Splitter handle + its resize hook.
+    assert "startResize($event)" in resp.text
+    assert "cursor-col-resize" in resp.text
+
+
 def test_paper_detail_shows_ingest_timestamps(client) -> None:
     """The detail page surfaces the three-stage ingest timeline (ref /
     PDF / first chunk) as relative time with the absolute UTC on hover."""
@@ -2089,6 +2113,53 @@ def test_triage_lookup_miss_shows_message(client) -> None:
         resp = client.post("/papers/10/triage-lookup", data={"title": "nonsense xyz"})
     assert resp.status_code == 200
     assert "No Semantic Scholar match" in resp.text
+
+
+def test_s2_prefill_returns_metadata_json(client) -> None:
+    """The Meta edit form's "Fill blanks from Semantic Scholar" button hits
+    this read-only JSON endpoint; it returns the S2 record so the client can
+    fill only the empty fields. Authors come back one-per-line in sortable
+    ``Family, Given`` order (matching the editor's convention)."""
+    pytest.importorskip("habanero")  # [paper] extra — see triage tests above
+    from unittest.mock import patch
+
+    hit = {
+        "title": "Ballistic carbon nanotube field-effect transistors",
+        "authors": [{"name": "Javey, Ali"}, {"name": "Guo, Jing"}],
+        "year": 2003,
+        "doi": "10.1038/nature01797",
+        "arxiv_id": "",
+        "abstract": "We report ballistic transport.",
+    }
+    # Force the title-search fallback (DOI/arXiv exact lookup → None) so the
+    # test is independent of what identifiers the fake paper #10 carries.
+    with (
+        patch("precis.ingest.semantic_scholar.get_paper_by_id", return_value=None),
+        patch("precis.ingest.lookup.lookup_title", return_value=hit),
+    ):
+        resp = client.get("/papers/10/s2-prefill")
+    assert resp.status_code == 200
+    d = resp.json()
+    assert d["ok"] is True
+    assert d["title"] == hit["title"]
+    assert d["doi"] == "10.1038/nature01797"
+    assert d["year"] == "2003"
+    assert d["authors"].splitlines() == ["Javey, Ali", "Guo, Jing"]
+
+
+def test_s2_prefill_miss_returns_not_ok(client) -> None:
+    pytest.importorskip("habanero")
+    from unittest.mock import patch
+
+    with (
+        patch("precis.ingest.semantic_scholar.get_paper_by_id", return_value=None),
+        patch("precis.ingest.lookup.lookup_title", return_value=None),
+    ):
+        resp = client.get("/papers/10/s2-prefill")
+    assert resp.status_code == 200
+    d = resp.json()
+    assert d["ok"] is False
+    assert d.get("message")
 
 
 def test_edit_clears_needs_triage_tag(client, runtime) -> None:

@@ -1,5 +1,8 @@
 {% extends "base.html.j2" %}
 {% block title %}{{ paper.title }}{% endblock %}
+{# Full-bleed: the two-pane reader owns the whole width so the PDF pane can
+   grow with the window (base.html.j2's default max-w-6xl would cap it). #}
+{% block main_class %}px-4 py-6{% endblock %}
 {% block content %}
 {# The two-pane reader (header + Navigate/Jump tabs + PDF pane) is shared
    with the pres slide-deck editor via _reader/reader.html.j2. This page
