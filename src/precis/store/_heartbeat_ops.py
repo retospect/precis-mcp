@@ -6,14 +6,19 @@ average, last-seen). Migration ``0017_host_heartbeat.sql`` defines
 the table as latest-snapshot-per-host (``host`` primary key); the
 reporter (``precis heartbeat``) UPSERTs.
 
-Two helpers:
+Helpers:
 
-- :meth:`record_heartbeat` — UPSERT one host's snapshot. The
-  reporter's only write.
+- :meth:`record_heartbeat` — UPSERT one host's snapshot into
+  ``host_heartbeat``.
 - :meth:`recent_heartbeats` — read all snapshots, ordered by host.
   Used by db-backed tests and any future ``precis status`` CLI; the
   web layer reads the same table via raw SQL so its fake-store tests
   need no method.
+- :meth:`record_heartbeat_history` / :meth:`heartbeat_history` — the
+  append-only time-series companion (``host_heartbeat_log``, migration
+  0113): one narrow row per beat, pruned to a retention window in the
+  same transaction, read back as hourly per-host rollups by
+  ``precis stats --utilization``.
 """
 
 from __future__ import annotations
@@ -125,6 +130,72 @@ class HeartbeatMixin:
         with self.pool.connection() as conn:
             rows = conn.execute(sql).fetchall()
         return [_row_to_heartbeat(r) for r in rows]
+
+    def record_heartbeat_history(
+        self,
+        host: str,
+        *,
+        temp_c: float | None = None,
+        load1: float | None = None,
+        load5: float | None = None,
+        load15: float | None = None,
+        retention_days: float = 14.0,
+    ) -> None:
+        """Append one beat to ``host_heartbeat_log`` and prune the window.
+
+        The INSERT + retention DELETE share one transaction so the table
+        stays self-maintaining without a separate prune pass — at one beat
+        per host per minute the DELETE (index on ``ts``) is trivially
+        cheap. ``retention_days <= 0`` disables history entirely (no row
+        written, nothing pruned).
+        """
+        if retention_days <= 0:
+            return
+        with self.pool.connection() as conn:
+            with conn.transaction():
+                conn.execute(
+                    "INSERT INTO host_heartbeat_log "
+                    "(host, ts, temp_c, load1, load5, load15) "
+                    "VALUES (%s, now(), %s, %s, %s, %s)",
+                    (host, temp_c, load1, load5, load15),
+                )
+                conn.execute(
+                    "DELETE FROM host_heartbeat_log "
+                    "WHERE ts < now() - (%s || ' days')::interval",
+                    (str(retention_days),),
+                )
+
+    def heartbeat_history(self, *, hours: float = 24.0) -> list[dict[str, Any]]:
+        """Hourly per-host rollup of ``host_heartbeat_log``.
+
+        One dict per (hour, host) in the trailing ``hours`` window:
+        ``{"hr", "host", "beats", "load1_avg", "load1_max", "temp_max"}``,
+        ordered by hour then host — the CPU half of
+        ``precis stats --utilization``.
+        """
+        sql = (
+            "SELECT date_trunc('hour', ts) AS hr, host, "
+            "       count(*)::int AS beats, "
+            "       avg(load1) AS load1_avg, "
+            "       max(load1) AS load1_max, "
+            "       max(temp_c) AS temp_max "
+            "FROM host_heartbeat_log "
+            "WHERE ts > now() - (%s || ' hours')::interval "
+            "GROUP BY 1, 2 ORDER BY 1, 2"
+        )
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, (str(hours),)).fetchall()
+        return [
+            {
+                "hr": r[0],
+                "host": r[1],
+                "beats": int(r[2]),
+                "load1_avg": float(r[3]) if r[3] is not None else None,
+                "load1_max": float(r[4]) if r[4] is not None else None,
+                "temp_max": float(r[5]) if r[5] is not None else None,
+            }
+            for r in rows
+        ]
 
 
 __all__ = ["HeartbeatMixin", "HostHeartbeat"]

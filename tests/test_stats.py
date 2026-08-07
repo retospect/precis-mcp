@@ -16,7 +16,10 @@ from precis.cli.stats import (
     _query_argument_caveats,
     _query_argument_contradictions,
     _query_argument_stale,
+    _query_cpu_utilization,
     _query_findings,
+    _query_llm_gaps,
+    _query_llm_utilization,
     _query_stubs,
 )
 from precis.dispatch import Hub
@@ -247,6 +250,56 @@ class TestQueryArgumentContradictions:
         assert _query_argument_contradictions(store) == []
 
 
+# ── utilization report (docs/design/utilization-log.md) ────────────
+
+
+def _seed_llm_call(store, *, minutes_ago: float, duration_ms: int = 60000) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO llm_call_log (ts, model, duration_ms, cost_usd) "
+            "VALUES (now() - (%s || ' minutes')::interval, 'test-model', %s, 0.01)",
+            (str(minutes_ago), duration_ms),
+        )
+
+
+class TestQueryUtilization:
+    def test_cpu_rollup_reads_heartbeat_history(self, store) -> None:
+        store.record_heartbeat_history("util-host", temp_c=55.0, load1=2.0)
+        rows = _query_cpu_utilization(store, 24.0)
+        mine = [r for r in rows if r["host"] == "util-host"]
+        assert len(mine) == 1
+        assert mine[0]["beats"] == 1
+        assert mine[0]["load1_avg"] == 2.0
+        assert mine[0]["temp_max"] == 55.0
+
+    def test_llm_hourly_duty_cycle(self, store) -> None:
+        # Two 60s calls in the current hour → busy_pct sums both.
+        _seed_llm_call(store, minutes_ago=1.0)
+        _seed_llm_call(store, minutes_ago=2.0)
+        rows = _query_llm_utilization(store, 1.0)
+        assert len(rows) >= 1
+        total_calls = sum(r["calls"] for r in rows)
+        assert total_calls == 2
+        # busy_pct is rounded to one decimal per row.
+        assert sum(r["busy_pct"] for r in rows) == pytest.approx(
+            2 * 60000 / 36000.0, abs=0.1
+        )
+
+    def test_llm_gaps_surface_only_long_silences(self, store) -> None:
+        # 20-minute silence between two calls → one gap row; the
+        # adjacent 1-minute spacing stays below the 5-minute floor.
+        _seed_llm_call(store, minutes_ago=22.0)
+        _seed_llm_call(store, minutes_ago=2.0)
+        _seed_llm_call(store, minutes_ago=1.0)
+        rows = _query_llm_gaps(store, 24.0)
+        assert len(rows) == 1
+        assert rows[0]["gap_minutes"] == pytest.approx(20.0, abs=0.5)
+
+    def test_empty_windows_return_empty(self, store) -> None:
+        assert _query_llm_utilization(store, 0.001) == []
+        assert _query_llm_gaps(store, 0.001) == []
+
+
 # ── integration: CLI dispatch ───────────────────────────────────────
 
 
@@ -320,6 +373,30 @@ class TestCli:
         assert "from X, Y" in out
         assert "# argument-unaddressed-caveats" in out
         assert "# argument-open-contradictions" in out
+        assert "# findings" not in out
+        assert "# stubs" not in out
+
+    def test_utilization_flag_isolates_section(
+        self, store, monkeypatch: pytest.MonkeyPatch, capsys
+    ) -> None:
+        """``--utilization`` shows only the three utilization sections."""
+        import sys
+
+        from precis.cli.main import main as cli_main
+
+        store.record_heartbeat_history("util-cli-host", temp_c=48.0, load1=1.5)
+        _seed_llm_call(store, minutes_ago=1.0)
+
+        dsn = store.pool.conninfo
+        monkeypatch.setattr(
+            sys, "argv", ["precis", "stats", "--utilization", "--database-url", dsn]
+        )
+        cli_main()
+        out = capsys.readouterr().out
+        assert "# cpu-utilization-by-hour" in out
+        assert "util-cli-host" in out
+        assert "# llm-utilization-by-hour" in out
+        assert "# llm-gaps" in out
         assert "# findings" not in out
         assert "# stubs" not in out
 

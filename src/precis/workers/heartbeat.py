@@ -496,8 +496,34 @@ def _collect_and_upsert(
         load15=load15,
         meta=meta,
     )
+    # Append-only utilization history (host_heartbeat_log, migration 0113)
+    # — the time-series behind ``precis stats --utilization``. Best-effort:
+    # a history hiccup must never fail the liveness UPSERT above.
+    try:
+        store.record_heartbeat_history(
+            host,
+            temp_c=temp_c,
+            load1=load1,
+            load5=load5,
+            load15=load15,
+            retention_days=_history_retention_days(),
+        )
+    except Exception:
+        log.warning("heartbeat: history append failed", exc_info=True)
     slots = _report_resource_slots(store, host)
     return temp_c, load1, slots
+
+
+def _history_retention_days() -> float:
+    """``PRECIS_HEARTBEAT_HISTORY_DAYS`` (default 14; <= 0 disables the
+    ``host_heartbeat_log`` time-series entirely)."""
+    raw = os.environ.get("PRECIS_HEARTBEAT_HISTORY_DAYS")
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            pass
+    return 14.0
 
 
 def collect_and_report(store: Any, host: str | None = None) -> str:

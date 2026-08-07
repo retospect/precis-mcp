@@ -117,3 +117,56 @@ def test_boot_ids_survive_a_beat_that_omits_them(store: Store) -> None:
     hb = _by_host(store.recent_heartbeats(), "melchior-boot-3")[0]
     assert hb.meta["boot_ids"] == {"precis-worker": "gen-1"}
     assert hb.meta["platform"] == "Darwin"
+
+
+# ── host_heartbeat_log time-series (migration 0113) ──────────────────────
+
+
+def _history_for(store: Store, host: str, hours: float = 24.0):
+    return [r for r in store.heartbeat_history(hours=hours) if r["host"] == host]
+
+
+def test_record_heartbeat_history_appends(store: Store) -> None:
+    store.record_heartbeat_history("caspar-hist", temp_c=50.0, load1=1.0)
+    store.record_heartbeat_history("caspar-hist", temp_c=60.0, load1=3.0)
+    rows = _history_for(store, "caspar-hist")
+    # Both beats land in the same hour bucket, so one rollup row.
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["beats"] == 2
+    assert r["load1_avg"] == 2.0
+    assert r["load1_max"] == 3.0
+    assert r["temp_max"] == 60.0
+
+
+def test_record_heartbeat_history_prunes_old_rows(store: Store) -> None:
+    # Plant a row well outside the retention window, then beat once —
+    # the write's own prune must sweep it.
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO host_heartbeat_log (host, ts, load1) "
+            "VALUES ('spark-hist', now() - interval '30 days', 9.9)"
+        )
+        conn.commit()
+    store.record_heartbeat_history("spark-hist", load1=1.0, retention_days=14.0)
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM host_heartbeat_log WHERE host = 'spark-hist'"
+        ).fetchone()
+    assert row is not None
+    assert row[0] == 1  # the fresh beat; the 30-day-old row is gone
+
+
+def test_record_heartbeat_history_disabled_by_nonpositive_retention(
+    store: Store,
+) -> None:
+    store.record_heartbeat_history("balthazar-hist", load1=1.0, retention_days=0)
+    assert _history_for(store, "balthazar-hist") == []
+
+
+def test_heartbeat_history_nullable_sensors(store: Store) -> None:
+    store.record_heartbeat_history("melchior-hist", temp_c=None, load1=None)
+    rows = _history_for(store, "melchior-hist")
+    assert len(rows) == 1
+    assert rows[0]["load1_avg"] is None
+    assert rows[0]["temp_max"] is None

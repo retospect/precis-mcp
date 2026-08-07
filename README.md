@@ -307,6 +307,9 @@ precis draft ...                   # Manage / export draft-kind documents.
 precis stats | logs | stubs | verify
                                    # Corpus stats, event logs, stub triage,
                                    #   integrity checks.
+precis stats --utilization [--hours N]
+                                   # Hourly CPU (host_heartbeat_log) + LLM
+                                   #   (llm_call_log) utilization + idle gaps.
 precis cron | heartbeat            # Scheduler tick / liveness ping.
 
 # One-shot jobs

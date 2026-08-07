@@ -216,6 +216,20 @@ def test_temp_from_macos_smc_returns_none_when_binary_missing(monkeypatch) -> No
     assert heartbeat._temp_from_macos_smc() is None
 
 
+# ── host_heartbeat_log retention knob (migration 0113) ───────────────────
+
+
+def test_history_retention_days_default_and_env(monkeypatch) -> None:
+    monkeypatch.delenv("PRECIS_HEARTBEAT_HISTORY_DAYS", raising=False)
+    assert heartbeat._history_retention_days() == 14.0
+    monkeypatch.setenv("PRECIS_HEARTBEAT_HISTORY_DAYS", "7")
+    assert heartbeat._history_retention_days() == 7.0
+    monkeypatch.setenv("PRECIS_HEARTBEAT_HISTORY_DAYS", "0")
+    assert heartbeat._history_retention_days() == 0.0  # disables history
+    monkeypatch.setenv("PRECIS_HEARTBEAT_HISTORY_DAYS", "not-a-number")
+    assert heartbeat._history_retention_days() == 14.0  # junk → default
+
+
 # ── NAS launchd-context probe ─────────────────────────────────────────────
 
 

@@ -1009,7 +1009,13 @@ not separate daemons anymore.
   same module-global throttle) so the rotation's strict seriality — one long
   handler/ref_pass starving this pass for its whole duration — can no longer
   flap a false host-dark nursery alert; the in-rotation pass above stays as
-  an idempotent backstop.
+  an idempotent backstop. Each beat ALSO appends a narrow row to the
+  append-only `host_heartbeat_log` time-series (migration 0113; self-pruned
+  to `PRECIS_HEARTBEAT_HISTORY_DAYS`, default 14, `0` disables) — the CPU
+  half of `precis stats --utilization [--hours N]`, which rolls it up hourly
+  per host alongside the `llm_call_log` duty cycle (busy % of wall-clock;
+  >100 = concurrent calls) and any LLM silence over five minutes
+  (docs/design/utilization-log.md).
 
 **Notable passes:**
 

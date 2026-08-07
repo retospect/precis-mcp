@@ -18,6 +18,11 @@ Summaries, picked via flags:
   argument-graph nodes. Exhaustive by construction (a SQL walk over
   ``links``/``ref_tags``, not an LLM scan) — see
   ``docs/decisions/0054-argument-graph-lemmas-inferences-reasoning-shadow.md``.
+* ``--utilization`` — "was the cluster always hot?" over the trailing
+  ``--hours`` window (default 24): per-host hourly CPU load/temp from
+  ``host_heartbeat_log`` (migration 0113), per-hour LLM duty cycle from
+  ``llm_call_log`` (busy % of wall-clock; >100 means concurrent
+  calls), and any LLM silence longer than five minutes.
 
 Flags can be combined to print several sections; default (no flags)
 prints all of them.
@@ -52,6 +57,19 @@ _STUBS_SCHEMA: list[str] = ["state", "count"]
 _ARGUMENT_STALE_SCHEMA: list[str] = ["id", "title"]
 _ARGUMENT_CAVEATS_SCHEMA: list[str] = ["id", "title"]
 _ARGUMENT_CONTRADICTIONS_SCHEMA: list[str] = ["a_id", "a_title", "b_id", "b_title"]
+_CPU_UTILIZATION_SCHEMA: list[str] = [
+    "hr",
+    "host",
+    "beats",
+    "load1_avg",
+    "load1_max",
+    "temp_max",
+]
+_LLM_UTILIZATION_SCHEMA: list[str] = ["hr", "calls", "busy_pct", "cost_usd", "errors"]
+_LLM_GAPS_SCHEMA: list[str] = ["gap_ended_at", "gap_minutes"]
+
+#: An LLM silence shorter than this is normal scheduling jitter, not idleness.
+_LLM_GAP_MINUTES = 5.0
 
 
 def add_parser(sub: argparse._SubParsersAction) -> None:
@@ -85,6 +103,18 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         help="Show the argument-graph corpus report (ADR 0054).",
     )
     p.add_argument(
+        "--utilization",
+        action="store_true",
+        help="Show hourly CPU (host_heartbeat_log) + LLM (llm_call_log) "
+        "utilization and LLM idle gaps.",
+    )
+    p.add_argument(
+        "--hours",
+        type=float,
+        default=24.0,
+        help="Trailing window for --utilization (default 24).",
+    )
+    p.add_argument(
         "--database-url",
         default=None,
         help="Override PRECIS_DATABASE_URL.",
@@ -96,10 +126,11 @@ def run(args: argparse.Namespace) -> None:
     # No flags = print everything. A flag toggles inclusion of just
     # that section so the operator can pipe one summary to a
     # downstream filter without the others muddying it up.
-    any_flag = args.findings or args.stubs or args.argument
+    any_flag = args.findings or args.stubs or args.argument or args.utilization
     show_findings = args.findings or not any_flag
     show_stubs = args.stubs or not any_flag
     show_argument = args.argument or not any_flag
+    show_utilization = args.utilization or not any_flag
 
     dsn = resolve_dsn(args.database_url)
     fmt = resolve_format(args)
@@ -132,6 +163,24 @@ def run(args: argparse.Namespace) -> None:
                     _ARGUMENT_CONTRADICTIONS_SCHEMA,
                     _query_argument_contradictions(store),
                 )
+            )
+        if show_utilization:
+            sections.append(
+                (
+                    "cpu-utilization-by-hour",
+                    _CPU_UTILIZATION_SCHEMA,
+                    _query_cpu_utilization(store, args.hours),
+                )
+            )
+            sections.append(
+                (
+                    "llm-utilization-by-hour",
+                    _LLM_UTILIZATION_SCHEMA,
+                    _query_llm_utilization(store, args.hours),
+                )
+            )
+            sections.append(
+                ("llm-gaps", _LLM_GAPS_SCHEMA, _query_llm_gaps(store, args.hours))
             )
     finally:
         store.close()
@@ -285,6 +334,92 @@ def _query_argument_caveats(store: Store) -> list[dict[str, Any]]:
     with store.pool.connection() as conn:
         rows = conn.execute(sql).fetchall()
     return [{"id": int(r[0]), "title": r[1] or ""} for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Utilization (docs/design/utilization-log.md)
+# ---------------------------------------------------------------------------
+
+
+def _query_cpu_utilization(store: Store, hours: float) -> list[dict[str, Any]]:
+    """Per-host hourly load/temp rollup from ``host_heartbeat_log``.
+
+    Empty until the fleet's heartbeat pass has run with migration 0113
+    applied — the table fills at one row per host per minute from then on.
+    """
+    rows = store.heartbeat_history(hours=hours)
+    return [
+        {
+            "hr": r["hr"].isoformat(sep=" ", timespec="minutes"),
+            "host": r["host"],
+            "beats": r["beats"],
+            "load1_avg": round(r["load1_avg"], 2)
+            if r["load1_avg"] is not None
+            else None,
+            "load1_max": round(r["load1_max"], 2)
+            if r["load1_max"] is not None
+            else None,
+            "temp_max": round(r["temp_max"], 1) if r["temp_max"] is not None else None,
+        }
+        for r in rows
+    ]
+
+
+def _query_llm_utilization(store: Store, hours: float) -> list[dict[str, Any]]:
+    """Per-hour LLM duty cycle from ``llm_call_log``.
+
+    ``busy_pct`` is summed ``duration_ms`` as a percentage of the hour's
+    wall-clock — values over 100 mean concurrent calls (the fleet runs
+    several models in parallel), which is exactly the "how hot" signal.
+    """
+    sql = (
+        "SELECT date_trunc('hour', ts) AS hr, "
+        "       count(*)::int AS calls, "
+        "       sum(duration_ms) / 36000.0 AS busy_pct, "
+        "       sum(cost_usd) AS cost_usd, "
+        "       count(*) FILTER (WHERE errored)::int AS errors "
+        "FROM llm_call_log "
+        "WHERE ts > now() - (%s || ' hours')::interval "
+        "GROUP BY 1 ORDER BY 1"
+    )
+    with store.pool.connection() as conn:
+        rows = conn.execute(sql, (str(hours),)).fetchall()
+    return [
+        {
+            "hr": r[0].isoformat(sep=" ", timespec="minutes"),
+            "calls": int(r[1]),
+            "busy_pct": round(float(r[2]), 1) if r[2] is not None else None,
+            "cost_usd": round(float(r[3]), 3) if r[3] is not None else None,
+            "errors": int(r[4]),
+        }
+        for r in rows
+    ]
+
+
+def _query_llm_gaps(store: Store, hours: float) -> list[dict[str, Any]]:
+    """LLM silences longer than :data:`_LLM_GAP_MINUTES` in the window —
+    the direct "how was the cluster not always hot" evidence (empty means
+    the LLM lane never went cold)."""
+    sql = (
+        "WITH gaps AS ( "
+        "  SELECT ts, ts - lag(ts) OVER (ORDER BY ts) AS gap "
+        "  FROM llm_call_log "
+        "  WHERE ts > now() - (%s || ' hours')::interval "
+        ") "
+        "SELECT ts, EXTRACT(EPOCH FROM gap) / 60.0 AS gap_minutes "
+        "FROM gaps "
+        "WHERE gap > (%s || ' minutes')::interval "
+        "ORDER BY gap DESC LIMIT 20"
+    )
+    with store.pool.connection() as conn:
+        rows = conn.execute(sql, (str(hours), str(_LLM_GAP_MINUTES))).fetchall()
+    return [
+        {
+            "gap_ended_at": r[0].isoformat(sep=" ", timespec="seconds"),
+            "gap_minutes": round(float(r[1]), 1),
+        }
+        for r in rows
+    ]
 
 
 def _query_argument_contradictions(store: Store) -> list[dict[str, Any]]:
