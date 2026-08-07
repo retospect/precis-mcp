@@ -165,13 +165,31 @@ def _load_skill_verbatim(skill_id: str, store: Store | None = None) -> str:
 
 
 def _build_skill_index(store: Store | None = None) -> str:
-    """One-line entry per active skill, derived from ``summary:`` front-matter.
+    """A compact **slug list** of the active skills — names only, no summaries.
 
-    Reads every shipped skill via :func:`SkillHandler._load_skills_map`
-    (the importlib.resources path that works from a wheel) and emits
-    a sorted list ``- slug — summary``. Skills missing ``summary:``
-    are skipped (with a debug log) rather than emitting a noisy
-    ``(no summary)`` placeholder.
+    This block used to emit ``- slug — summary`` per skill. Measured against a
+    real prod tick (2026-08-07): the assembled system prompt was 53,610 chars
+    against a 727-char task body — 98.6% scaffolding — and this menu alone was
+    **22,409 of them (42%)**, 141 entries deep, on *every* tick. 88% of planner
+    todos finish in one tick, so that was paid once per todo to be read
+    essentially never.
+
+    It was also redundant twice over. The block's own header tells the model to
+    ``search(kind='skill', q=...)`` to discover by topic, and the
+    ``precis-tasks-help`` body already carries a curated ``## See also`` naming
+    the nine skills a planner actually needs, ending with "if none of the above
+    fit". A full catalogue between two working discovery paths buys nothing.
+
+    Slugs stay because they are the cheap half: they advertise that a namespace
+    exists and are self-describing enough to `get` on a hunch
+    (``sci-introduction``, ``precis-tags``) — ~2.8 KB instead of 22.4 KB, for
+    the same reachability. Summaries are one ``get`` away, which is the
+    contract the header already states.
+
+    Reads every shipped skill via :func:`SkillHandler._load_skills_map` (the
+    importlib.resources path that works from a wheel). Skills with no
+    ``summary:`` are still skipped — an entry nobody documented is not one to
+    advertise.
     """
     from precis.handlers.skill import _load_skills_map
 
@@ -196,13 +214,23 @@ def _build_skill_index(store: Store | None = None) -> str:
     entries.sort(key=lambda e: e[0])
     if len(entries) > _SKILL_INDEX_MAX:
         entries = entries[:_SKILL_INDEX_MAX]
-    lines = [
-        "Available skills (call get(kind='skill', id=<slug>) for full "
-        "content; search(kind='skill', q='...') to discover by topic):"
-    ]
-    for slug, summary in entries:
-        lines.append(f"- {slug} — {summary}")
-    return "\n".join(lines)
+    import textwrap
+
+    # break_on_hyphens=False is load-bearing: every slug is hyphenated
+    # (`precis-argument-help`), and textwrap's default would wrap *inside* one,
+    # emitting a name that doesn't resolve if the model copies it back.
+    body = textwrap.fill(
+        ", ".join(slug for slug, _ in entries),
+        width=88,
+        break_long_words=False,
+        break_on_hyphens=False,
+    )
+    return (
+        "Available skills — names only. `get(kind='skill', id=<slug>)` for the "
+        "full text of one; `search(kind='skill', q='<goal>')` to find one by "
+        "topic. Do NOT guess at a skill's content from its name; fetch it.\n"
+        f"{body}"
+    )
 
 
 #: The planner's operational contract. Stable text — lives in the

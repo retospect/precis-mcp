@@ -341,7 +341,7 @@ all users, all hosts):
 | melchior | `/Users/hermes/.claude_oauth_token` | hermes | 2026-07-12 | purged |
 | melchior | `/Users/hermes/.claude/.credentials.json` | hermes | 2026-07-12 | purged |
 | melchior | `/Users/reto/.claude/.credentials.json` | reto | 2026-08-07 | **left** — human login |
-| melchior | `/var/root/.claude.json` | root | 2026-06-11 | **left** — see below |
+| melchior | `/var/root/.claude.json` | root | 2026-06-11 | **not a credential** — see below |
 | **spark** | **`/home/atomsim/.claude/.credentials.json`** | atomsim | 2026-07-13 | purged |
 
 caspar and balthazar are genuinely clean. Lesson for the next sweep: grep for
@@ -355,11 +355,24 @@ value was verified byte-identical (sha1 `f7a44eaef175…`, 108 chars) to the
 token melchior's agent worker was authenticating with, so the cutover changed
 the credential's *source*, not the credential.
 
-Still open, both needing Reto's call rather than a deploy:
+**`/var/root/.claude.json` was a false positive — it holds no credential.**
+Opened 2026-08-07: 332 bytes of install state (`autoUpdates`, `firstStartTime`,
+`installMethod`, `migrationVersion`, `seenNotifications`, `userID` — an
+anonymous install id — and two migration flags). No `sk-ant` pattern, no
+token/key/secret/auth keys. It was listed above on the strength of its filename,
+which is exactly the inference this whole section exists to warn against: the
+credential store is `.credentials.json`, and `.claude.json` is its config
+sibling.
 
-- **`/var/root/.claude.json`** (melchior, root, 2026-06-11) — a Claude Code
-  *config* file, not purely a credential, and root-owned; deleting it also
-  discards settings. Out of the automated purge on purpose.
+What it actually marks is a **dead root install of Claude Code**
+(`/var/root/.local/bin/claude` → 2.1.173, 2026-06-11, plus
+`/var/root/.claude/{backups,downloads}`); no root process runs claude.
+Housekeeping, not security — `roles/claude_code/tasks/main.yml` already detects
+it and prints the manual cleanup (`sudo rm -rf /var/root/.local/bin/claude
+/var/root/.claude`), deliberately not automated.
+
+Still open, needing Reto's call rather than a deploy:
+
 - **Rotation.** Purging copies is not rotating. The token in the vault is the
   same one that has been on disk in five places since July; treat it as
   exposed and rotate it (`docs/runbooks/rotate-agent-rw-credential.md` — now

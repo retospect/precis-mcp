@@ -141,15 +141,28 @@ def test_system_prompt_contains_pinned_skill_and_index() -> None:
     assert "Planner contract" in out
 
 
-def test_skill_index_lists_active_skills_with_summaries() -> None:
-    """The boot index lists `slug — summary` lines for active skills."""
+def test_skill_index_lists_active_skill_slugs() -> None:
+    """The boot index lists active skill **slugs**, not their summaries.
+
+    It used to emit `slug — summary` per skill: 22,409 chars, 42% of a system
+    prompt that was itself 98.6% of the tick payload. Summaries moved behind
+    `get(kind='skill', id=...)`, which the index header already pointed at.
+    Budget + shape are pinned in tests/test_planner_prompt_budget.py.
+    """
     out = _build_skill_index(store=None)  # type: ignore[arg-type]
-    assert "precis-tasks-help —" in out
-    assert "precis-decomposition-help —" in out
-    # Sanity: no skill without a summary leaks in.
-    for line in out.splitlines():
-        if line.startswith("- "):
-            assert " — " in line, f"skill index entry missing summary: {line!r}"
+    assert "precis-tasks-help" in out
+    assert "precis-decomposition-help" in out
+    # A skill with no `summary:` front-matter is still not advertised.
+    from precis.handlers._skill_common import parse_frontmatter
+    from precis.handlers.skill import _load_skills_map
+
+    undocumented = [
+        slug
+        for slug, raw in _load_skills_map().items()
+        if not (parse_frontmatter(raw).summary or "").strip()
+    ]
+    for slug in undocumented:
+        assert slug not in out, f"undocumented skill leaked into the index: {slug}"
 
 
 def test_ancestry_toon_renders_chain() -> None:
