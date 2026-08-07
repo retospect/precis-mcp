@@ -2356,13 +2356,29 @@ class DispatchClient:
         return res
 
 
-def _route_features(req: LlmRequest) -> dict[str, Any]:
+def _route_features(req: LlmRequest, result: LlmResult | None = None) -> dict[str, Any]:
     """Cheap, deterministic code features for the route-log (the categorizer's
-    first layer). No model call — just what's readable off the request."""
+    first layer). No model call — just what's readable off the request, plus how
+    the call *terminated* when a result is available.
+
+    **Why termination belongs here.** A tool loop that answers and a tool loop
+    that hits its turn ceiling both land in ``llm_call_log`` with
+    ``errored = false`` — ``max_turns`` is a *resumable* exhaustion, not a
+    failure, which is right for the executor but leaves the ledger unable to
+    tell "did 60 turns of work" from "spun 60 times and produced nothing".
+    Prod ran 5 such ticks in 3h on 2026-08-07 (``turns_used = 60``,
+    ``response_chars`` 0–3, 256–618s each), one todo exhausting twice, and
+    nothing anywhere objected. The only tell was ``turns_used >= 60 AND
+    response_chars < 10``, which is a heuristic nobody alerts on.
+
+    ``exhausted`` is the derived flag worth querying: it folds the OSS loop's
+    ``stop_reason`` and the claude lane's ``terminal_reason`` into one boolean
+    so a watchdog doesn't need to know which transport ran.
+    """
     prompt_chars = len(req.prompt or "")
     if req.messages:
         prompt_chars += sum(len(str(m.get("content", ""))) for m in req.messages)
-    return {
+    feats: dict[str, Any] = {
         "prompt_chars": prompt_chars,
         "tier": req.tier.value,
         "tools_needed": req.tools_needed,
@@ -2370,6 +2386,20 @@ def _route_features(req: LlmRequest) -> dict[str, Any]:
         "has_system": bool(req.system_prompt),
         "has_mcp": bool(req.mcp_config),
     }
+    if result is not None:
+        stop = result.stop_reason
+        terminal = result.terminal_reason
+        feats["stop_reason"] = stop
+        feats["terminal_reason"] = terminal
+        # A turn-ceiling stop on either lane. Deliberately a stored boolean, not
+        # a query-time expression: the two lanes spell it differently and a
+        # consumer that has to remember both spellings gets it wrong once.
+        feats["exhausted"] = stop == "max_turns" or terminal == "max_turns"
+        # Empty output on an exhausted run is the pathological shape — the run
+        # burned the ceiling and recorded nothing. Cheap to stamp, and it is
+        # what an alert should actually fire on.
+        feats["empty_output"] = len((result.text or "").strip()) < 10
+    return feats
 
 
 def _serialize_request(req: LlmRequest) -> str:
@@ -2428,7 +2458,7 @@ def _record_dispatch(
                 data_parsed=result.data is not None,
                 ref_id=req.ref_id,
                 store_blobs=req.log_blobs,
-                features=_route_features(req),
+                features=_route_features(req, result),
             )
         )
     except Exception:

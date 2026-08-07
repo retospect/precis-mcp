@@ -256,6 +256,49 @@ planning consume?) is **provisionally settled as "a few percent"** at ~4
 ticks/hour — down from the ~20% estimated at 169s/tick. That estimate also rests
 on the n=1 number, so it moves if the re-measure does.
 
+## 🎯 Pre-render source CONTENT for draft-bound planner ticks (the turn-exhaustion root cause)
+
+Status: open · Severity: high · Owner: `workers/planner_prompt.py` (`_render_seeds` / `bound_draft` / `_render_draft_identity`) · Test: a "research and cite" tick completes without fetching sources itself.
+
+**The 60-turn exhaustions are not thinking, they are fetching.** Evidence, from
+the actual request blob of an exhausted tick (ref 197294, "Research and cite
+primary sources for the mechanical cartridge design"):
+
+    user prompt: 5,350 chars
+    sections:    Ancestry · Project context · Seed material to read first ·
+                 Draft · Glossary · Body · Children
+    occurrences of "citation": 0
+
+A task whose whole job is *cite primary sources* is handed **zero citations and
+no source text** — just pointers (`## Seed material to read first`) and a draft
+stub. So the agent spends its turn budget fetching, hits the ceiling, and never
+reaches the writing step.
+
+**The turn cap is NOT the lever — do not touch it.** `_DEFAULT_MAX_TURNS`'s own
+comment records that 30 was tried and reverted for this exact symptom ("the
+agent front-loaded research and hit the wall before writing"), which is why it
+is 60. Raising it did not change the behaviour, it doubled the cost of each
+failure. Lowering it reproduces a known regression. Anyone arriving at "just
+lower max_turns" should read that comment first — this session proposed it and
+withdrew it for that reason.
+
+The fix is to make the fetching unnecessary: for a draft-bound todo, render the
+**content** the task needs rather than a pointer to it — the draft's current
+relevant text, its existing citations, and candidate corpus sources. The prep
+layer already exists and already fires (the sections above are its output); it
+renders identity and pointers where this class of task needs substance.
+
+Scope carefully — this changes what *every* planner tick receives, so it wants
+its own session:
+
+1. Measure first: how many chars would the content-rendered form add, against
+   the ~36 KB post-`57837fa4` system prompt? Trading 60 fetch-turns for a few KB
+   is obviously right; trading it for 40 KB is not.
+2. Gate it on the todo actually being draft-bound (`bound_draft`), so ordinary
+   todos don't inherit a document payload.
+3. Watch `features.exhausted` (shipped in the route-log) before/after — that is
+   now the direct measure of whether it worked.
+
 ## 🔁 20% of local `plan_tick`s burn the 60-turn ceiling, emit nothing, and log as success
 
 Status: open · Severity: high · Owner: `workers/job_types/plan_tick.py` `_run_oss_tick` + `_oss_exit` · Test: a turn-exhausted tick with empty output is distinguishable from a clean one in `llm_call_log`.
