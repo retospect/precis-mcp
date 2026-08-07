@@ -444,6 +444,47 @@ def _gc_worker_logs(store: Store) -> int:
         return cur.rowcount or 0
 
 
+#: Fleet-wide single-flight key for the vault.events pruner (ascii ``"vegc"``).
+_VAULT_EVENTS_GC_LOCK = 0x76656763
+
+
+def _vault_events_retention_days() -> int:
+    """Days to keep ``vault.events`` rows. Deliberately long (180) — the point
+    of a secret-access log is to still be there when you finally go looking,
+    and unlike ``worker_logs`` each row is tiny. ``PRECIS_VAULT_EVENT_RETENTION_DAYS``."""
+    raw = os.environ.get("PRECIS_VAULT_EVENT_RETENTION_DAYS")
+    if not raw:
+        return 180
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 180
+
+
+def _gc_vault_events(store: Store) -> int:
+    """Prune ``vault.events`` past the retention window. Returns rows deleted.
+
+    Same fleet-wide single-flight guard as the other log pruners — the sweeper
+    runs on every host. Best-effort: a DB without migration 0111 has no
+    ``vault.gc_events``, and an audit-retention sweep must never fail a pass
+    that also does real work.
+    """
+    days = _vault_events_retention_days()
+    try:
+        with store.pool.connection() as conn:
+            got = conn.execute(
+                "SELECT pg_try_advisory_xact_lock(%s)", (_VAULT_EVENTS_GC_LOCK,)
+            ).fetchone()
+            if not got or not got[0]:
+                return 0  # another host is already pruning
+            row = conn.execute("SELECT vault.gc_events(%s)", (days,)).fetchone()
+            conn.commit()
+            return int(row[0]) if row and row[0] is not None else 0
+    except Exception:
+        log.debug("sweeper: vault.events GC unavailable", exc_info=True)
+        return 0
+
+
 #: app_state marker + refresh window for the heading-intent prune piggy-back
 #: (source-backfill slice 8b.4). Throttled to once per this window; between runs
 #: the sweeper does one cheap ``app_state`` read.
@@ -585,6 +626,9 @@ def run_sweeper_pass(store: Store, *, limit: int = 50) -> BatchResult:
     pruned_worker_logs = _gc_worker_logs(store)
     if pruned_worker_logs:
         log.info("sweeper: GC'd %d stale worker_logs row(s)", pruned_worker_logs)
+    pruned_vault_events = _gc_vault_events(store)
+    if pruned_vault_events:
+        log.info("sweeper: GC'd %d stale vault.events row(s)", pruned_vault_events)
     reopen_limit = _reopen_limit()
     reopened = _reopen_transient_failed_embeds(store, limit=reopen_limit)
     if reopened:

@@ -24,8 +24,11 @@ incrementally.
 
 from __future__ import annotations
 
+import getpass
 import logging
 import os
+import socket
+import sys
 import threading
 import time
 from pathlib import Path
@@ -56,6 +59,10 @@ _cache_lock = threading.Lock()
 #: Warn-once guard so a persistently-misconfigured vault (no key, no schema)
 #: doesn't spam the log on every resolve.
 _warned: set[str] = set()
+
+#: Cached ``(host, os_user, pid, ppid, process)`` for the audit row. Fixed for
+#: the process's lifetime, so it is computed once — see :func:`_client_identity`.
+_IDENTITY: tuple[str, str, int, int, str] | None = None
 
 
 def bind_store(store: Store | None) -> None:
@@ -114,12 +121,96 @@ def _from_file(name: str) -> str | None:
     return text or None
 
 
+def _client_identity() -> tuple[str, str, int, int, str]:
+    """Who we are, for the ``vault.events`` audit row (migration 0111).
+
+    Computed once per process and cached: the values are fixed for a process's
+    lifetime, and a reveal must not pay for a ``ps``-style lookup.
+
+    ``process`` is a compact argv summary, not ``argv[0]`` alone — every daemon
+    here is some flavour of ``python3.13``, and the subcommand ("worker
+    --profile agent") is the part that actually names which one. Truncated,
+    and only the first few tokens, so a secret or a path can't ride into the
+    audit log through a command line.
+    """
+    global _IDENTITY
+    if _IDENTITY is None:
+        try:
+            user = getpass.getuser()
+        except Exception:
+            # getuser() raises when no passwd entry matches the uid — happens
+            # in slim containers. The numeric uid still identifies the caller.
+            user = f"uid:{os.getuid()}"
+        argv = " ".join(
+            os.path.basename(a) if i == 0 else _scrub_argv(a)
+            for i, a in enumerate(sys.argv[:4])
+        )
+        _IDENTITY = (
+            socket.gethostname(),
+            user,
+            os.getpid(),
+            os.getppid(),
+            argv[:200],
+        )
+    return _IDENTITY
+
+
+#: Flag names whose *value* must never reach the audit log. Nothing in precis
+#: passes a secret on a command line today (every call site uses env or the
+#: vault), so this guards a surface that does not yet leak — cheap insurance,
+#: because 0111 is the first thing to persist argv into the DB at all and an
+#: audit row is exactly the wrong place to discover a token later.
+_SECRETY = ("token", "key", "secret", "password", "passwd", "pw", "cred", "dsn")
+
+
+def _scrub_argv(tok: str) -> str:
+    """Redact anything in an argv token that could be a credential."""
+    head, sep, _ = tok.partition("=")
+    if sep and any(s in head.lower() for s in _SECRETY):
+        return f"{head}=<redacted>"
+    # A bare high-entropy-looking blob (an inline token, a DSN) — keep the
+    # shape for legibility, drop the content.
+    if len(tok) > 48 and not tok.startswith("-"):
+        return f"<redacted:{len(tok)}>"
+    return tok
+
+
 def _reveal(store: Store, name: str) -> str | None:
     """One ``vault.reveal`` call. Returns None on any vault error (schema
-    absent, key unset, DB down) so callers fall through rather than crash."""
+    absent, key unset, DB down) so callers fall through rather than crash.
+
+    Passes this process's identity so the audit row says *which process* asked,
+    not just that the shared ``agent_rw`` role did (migration 0111). Falls back
+    to the 1-arg overload against a DB that hasn't taken 0111 yet — a rolling
+    deploy runs both for a while, and a secret resolving is far more important
+    than its audit row being complete.
+    """
+    import psycopg
+
+    ident = _client_identity()
     try:
         with store.pool.connection() as conn:
-            row = conn.execute("SELECT vault.reveal(%s)", (name,)).fetchone()
+            try:
+                row = conn.execute(
+                    "SELECT vault.reveal(%s, %s, %s, %s, %s, %s)", (name, *ident)
+                ).fetchone()
+            except psycopg.errors.UndefinedFunction:
+                # Narrow on purpose. A blanket ``except Exception`` here would
+                # also swallow a genuine bug in this path (a bad param type, a
+                # NUL byte in ``process`` that psycopg rejects client-side) —
+                # the retry would then succeed, so the outer handler never
+                # fires and the process silently writes NULL-identity rows
+                # forever, indistinguishable from a genuinely un-migrated DB.
+                # That failure mode defeats the whole point of 0111, quietly.
+                # Anything that isn't "the 6-arg function doesn't exist" must
+                # reach the outer ``_warn_once``.
+                #
+                # The failed statement aborts the transaction, so roll back
+                # before the retry or the 1-arg call dies with
+                # InFailedSqlTransaction — turning an audit-detail gap into a
+                # secret that won't resolve at all.
+                conn.rollback()
+                row = conn.execute("SELECT vault.reveal(%s)", (name,)).fetchone()
     except Exception as exc:
         _warn_once(
             f"reveal:{type(exc).__name__}",
