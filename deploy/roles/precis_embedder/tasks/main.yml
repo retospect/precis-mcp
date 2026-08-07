@@ -66,6 +66,7 @@
   ansible.builtin.shell: |
     {{ precis_embedder_uv_bin }} pip install {{ '-v' if (precis_embedder_trace | default(false) | bool) else '' }} --python {{ precis_embedder_venv }}/bin/python --upgrade \
       --refresh-package precis-mcp \
+      --constraints /opt/precis/constraints.txt \
       'precis-mcp[embed] @ git+https://github.com/retospect/precis-mcp@{{ precis_embedder_git_ref }}'
   become: true
   register: precis_embedder_install

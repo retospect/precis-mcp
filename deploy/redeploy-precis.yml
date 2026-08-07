@@ -18,7 +18,7 @@
 #     /opt/mcps/venv            ← 38-precis-web       (web, worker-agent, watch-poll, cron-tick)
 #     /opt/precis/embedder-venv ← 19a-precis-embedder (embedder)
 #
-# This playbook does six things:
+# This playbook does seven things:
 #   0. Pin the target: resolve the deploy ref (default `main`) to ONE commit
 #      sha *once* at play start and freeze every install/compare against it.
 #      Without this the install, the pre-flight, and the convergence assert
@@ -30,6 +30,13 @@
 #      gate the restart in step 2 — a redundant same-sha redeploy skips the
 #      bounce entirely (gr51351: stops the worker-restart storm from a burst
 #      of /go deploys, and coalesces overlapping runs).
+#   0c. Export the local checkout's uv.lock as a `--constraints` file and copy
+#      it to every host, BEFORE any install runs. Every `precis-mcp … @ git+…`
+#      install (below and in every venv role) is a fresh dependency resolve —
+#      without a constraints file it can silently pick a newer, untested dep
+#      version than what the ship gate locked (2026-07-30: `mcp 2.0.0` broke
+#      `precis serve` cluster-wide on an all-green gate week). See
+#      playbooks/03-precis-constraints.yml for the full rationale.
 #   1. Re-runs those three install plays → the PINNED commit lands in every venv.
 #   2. Restarts every com.precis.* LaunchDaemon (macOS) and the precis-*
 #      units (Linux/the GPU node) — including daemons that share a venv and saw no
@@ -177,6 +184,12 @@
         msg: >-
           {{ inventory_hostname }}: deploy_changed={{ precis_deploy_changed }}
           ({{ precis_preflight.results | map(attribute='stdout') | map('trim') | list }})
+
+# ── 0c. Export uv.lock as a constraints file, land it on every host ──
+# Must run before ANY of the install plays below — every one of them passes
+# `--constraints /opt/precis/constraints.txt` to its `uv pip install`.
+- name: "Export uv.lock -> constraints file, copy to every host (gate against fresh-resolve drift)"
+  ansible.builtin.import_playbook: playbooks/03-precis-constraints.yml
 
 # ── 1. Reinstall from GitHub HEAD ──
 # Order matters: the embedder goes FIRST. The system worker calls the

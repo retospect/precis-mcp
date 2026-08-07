@@ -1,0 +1,101 @@
+---
+# 03-precis-constraints.yml — Export the LOCAL checkout's uv.lock as an
+# install-time constraints file and land it on every managed host, BEFORE
+# any role runs `uv pip install … precis-mcp … @ git+…`.
+#
+# WHY: every one of those installs is a FRESH RESOLVE — uv picks whatever's
+# newest in each package's version range right now, not what dev/CI tested.
+# The ship gate and every dev venv install from `uv.lock` (locked,
+# reproducible); the cluster install did not, so a dep whose newest
+# in-range version diverged from the lock could break prod while the gate
+# stayed green (2026-07-30: `mcp 2.0.0` broke `precis serve` cluster-wide
+# while every ship that week was green). git log carries the postmortem.
+#
+# FIX (constrain, don't sync): `uv export` the checkout's `uv.lock` into a
+# plain `--constraints` requirements file (no hashes — a hash-mode
+# constraints file rejects any package that isn't ALSO hash-pinned, which
+# the ad-hoc git deps below aren't) and copy it to a well-known path on
+# every host. Every `precis-mcp … @ git+…` install task then passes
+# `--constraints <that path>` — uv still resolves the graph (a constraints
+# file only narrows the allowed range, it doesn't skip resolution), but it
+# can no longer land something newer than what the repo's own lockfile
+# already pinned and the gate already tested.
+#
+# `scripts/deploy`'s freshness guard already refuses to run from a checkout
+# behind origin/<ref> or with uncommitted deploy/ changes, so exporting
+# from the local checkout here is exporting exactly what was shipped.
+#
+# ACCEPTED CAVEAT — no per-run scoping: the constraints file lives at ONE
+# fixed path per host (/opt/precis/constraints.txt), not a per-deploy/
+# per-sha path. Two overlapping deploys (a sibling /go racing this one) can
+# clobber each other's copy mid-install — same family as the pre-existing
+# precis_target_sha `git ls-remote` race this playbook's sibling step (0)
+# already accepts. Worst case here is a loud, unsatisfiable-constraint
+# resolution error (uv refuses and the play fails), never a silent wrong
+# version — so it degrades to a re-run, not a repeat of the 2026-07-30
+# incident this exists to prevent. Not fixed here; revisit if it's ever
+# observed in practice.
+#
+# ACCEPTED SCOPE — no post-deploy verification either: this playbook does
+# NOT assert that each venv's installed dep set actually matches uv.lock
+# after the fact (the fix direction OPEN-ITEMS.md once floated). Layering
+# `--constraints` on the install is enough: it turns "silently drifts from
+# the lock" into "uv errors out resolving," which is the same fail-loud
+# shape the rest of this playbook already uses (see the convergence assert
+# in redeploy-precis.yml step 4) — a separate installed-set audit would be
+# redundant, not a gap.
+- name: "Export uv.lock as an install-time constraints file and land it on every host"
+  hosts:
+    - gateway
+    - scheduler
+    - data
+    - inference
+  become: false
+  tasks:
+    - name: Allocate a controller-local scratch path for the export
+      ansible.builtin.tempfile:
+        state: file
+        suffix: precis-constraints.txt
+      delegate_to: localhost
+      run_once: true
+      register: precis_constraints_tmp
+
+    - name: Export uv.lock -> a hash-free constraints file (controller-local, once)
+      # --frozen: never re-resolve/touch the lockfile, export exactly what's
+      #   committed. --all-extras: every extra any role installs draws from
+      #   this ONE constraints file, so no role needs its own narrower export.
+      # --no-emit-project: excludes precis-mcp itself — every install line
+      #   below already pins the ref explicitly (git+…@<sha/branch>);
+      #   constraining that too would fight the git source.
+      # --no-hashes: this is a --constraints file, not a -r requirements
+      #   file — uv's hash mode requires EVERY resolved package hash-pinned,
+      #   which the ad-hoc git deps (autocatpath, remarkable-mcp) aren't.
+      ansible.builtin.command:
+        cmd: >-
+          uv export --frozen --all-extras --no-emit-project --no-hashes
+          -o {{ precis_constraints_tmp.path }}
+        chdir: "{{ playbook_dir }}/.."
+      delegate_to: localhost
+      run_once: true
+      changed_when: false
+
+    - name: Ensure /opt/precis exists (shared by every precis-mcp install role)
+      ansible.builtin.file:
+        path: /opt/precis
+        state: directory
+        mode: "0755"
+      become: true
+
+    - name: Copy the constraints file to this host's well-known path
+      ansible.builtin.copy:
+        src: "{{ precis_constraints_tmp.path }}"
+        dest: /opt/precis/constraints.txt
+        mode: "0644"
+      become: true
+
+    - name: Clean up the controller-local scratch file
+      ansible.builtin.file:
+        path: "{{ precis_constraints_tmp.path }}"
+        state: absent
+      delegate_to: localhost
+      run_once: true

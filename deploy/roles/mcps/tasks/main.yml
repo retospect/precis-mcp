@@ -119,6 +119,7 @@
   ansible.builtin.shell: |
     {{ uv_bin }} pip install --python /opt/mcps/venv/bin/python --upgrade \
       --refresh-package precis-mcp \
+      --constraints /opt/precis/constraints.txt \
       'precis-mcp[patent,mermaid,calc] @ git+https://github.com/retospect/precis-mcp@main' \
       acatome-meta \
       'acatome-store[embeddings]' \

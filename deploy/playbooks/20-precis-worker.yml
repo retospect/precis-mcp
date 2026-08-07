@@ -7,6 +7,14 @@
 #
 # Run order: requires postgres (02), ssh_tunnels (17) — workers connect
 # via the local pgbouncer tunnel — and the mcps role's deploy user.
+#
+# Documented standalone entry point (the redeploy-precis.yml rollback path —
+# see that playbook's step-1 comment), and roles/precis_worker's install
+# task passes `--constraints /opt/precis/constraints.txt` — self-import the
+# export/copy play here so a fresh/rollback run doesn't hard-fail on a
+# missing constraints file.
+- name: "Export uv.lock -> constraints file, copy to every host (standalone-safe self-import)"
+  ansible.builtin.import_playbook: 03-precis-constraints.yml
 
 - name: Deploy precis-mcp workers on all cluster nodes
   hosts:

@@ -44,6 +44,7 @@
   ansible.builtin.shell: |
     {{ uv_bin }} pip install --python {{ precis_web_venv }}/bin/python --upgrade \
       --refresh-package precis-mcp \
+      --constraints /opt/precis/constraints.txt \
       'precis-mcp[web,docx,pcb,external,mermaid,calc] @ git+https://github.com/retospect/precis-mcp@{{ precis_web_git_ref }}'
   become: true
   register: precis_web_install
@@ -80,6 +81,7 @@
   ansible.builtin.shell: |
     {{ uv_bin }} pip install --python {{ precis_web_venv }}/bin/python --upgrade \
       --refresh-package autocatpath \
+      --constraints /opt/precis/constraints.txt \
       'precis-mcp[catalyst] @ git+https://github.com/retospect/precis-mcp@{{ precis_web_git_ref }}'
   become: true
   register: precis_web_autocatpath

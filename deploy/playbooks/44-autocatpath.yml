@@ -20,6 +20,13 @@
 # macOS gateway needs only the KIND SURFACE (precis-mcp[catalyst] → pure
 # autocatpath in the web venv + PRECIS_AUTOCATPATH_ENABLED, via roles/precis_web)
 # — see roles/autocatpath/README.md and ADR 0069.
+#
+# Documented standalone entry point (run explicitly, not part of site.yml),
+# and the autocatpath role's install task passes
+# `--constraints /opt/precis/constraints.txt` — self-import the export/copy
+# play here so a fresh host doesn't hard-fail on a missing constraints file.
+- name: "Export uv.lock -> constraints file, copy to every host (standalone-safe self-import)"
+  ansible.builtin.import_playbook: 03-precis-constraints.yml
 
 - name: Configure autocatpath reaction-pathway compute (topology-driven)
   hosts: all

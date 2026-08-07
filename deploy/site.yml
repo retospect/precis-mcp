@@ -47,6 +47,9 @@
 - name: "13 — Ansible callback"
   ansible.builtin.import_playbook: playbooks/13-ansible-callback.yml
 
+- name: "13a — precis-mcp constraints file (fresh-resolve guard, before any precis-mcp install)"
+  ansible.builtin.import_playbook: playbooks/03-precis-constraints.yml
+
 - name: "14 — MCPs"
   ansible.builtin.import_playbook: playbooks/14-mcps.yml
 

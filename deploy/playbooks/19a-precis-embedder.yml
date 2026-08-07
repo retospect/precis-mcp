@@ -18,6 +18,15 @@
 # worker threading (`precis worker --embedder remote --embedder-url`) and
 # `precis serve-embeddings`. Push those to the ref in
 # precis_embedder_git_ref / precis_worker_git_ref before deploying.
+#
+# This is a documented standalone entry point (run directly, not only via
+# redeploy-precis.yml), and roles/precis_embedder's install task passes
+# `--constraints /opt/precis/constraints.txt` — self-import the export/copy
+# play here so a fresh host doesn't hard-fail on a missing constraints file.
+# Idempotent + cheap; a harmless re-run when this file is imported a second
+# time from inside redeploy-precis.yml itself.
+- name: "Export uv.lock -> constraints file, copy to every host (standalone-safe self-import)"
+  ansible.builtin.import_playbook: 03-precis-constraints.yml
 
 - name: Deploy precis-mcp embedding service on all cluster nodes
   hosts:

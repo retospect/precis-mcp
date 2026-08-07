@@ -71,6 +71,7 @@
   ansible.builtin.shell: |
     {{ precis_uv_bin }} pip install --python {{ precis_worker_venv }}/bin/python --upgrade \
       --refresh-package precis-mcp \
+      --constraints /opt/precis/constraints.txt \
       'precis-mcp[paper,patent,external,mermaid] @ git+https://github.com/retospect/precis-mcp@{{ precis_worker_git_ref }}'
   become: true
   register: precis_install
