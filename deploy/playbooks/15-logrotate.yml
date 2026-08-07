@@ -1,7 +1,18 @@
 ---
-# 15-logrotate.yml — /shared/logs rotation
+# 15-logrotate.yml — /shared/logs + /var/log/precis-*.log rotation
+# Explicit service-group list (mirrors 19-pgpass.yml), NOT `hosts: all`: this
+# playbook is imported into redeploy-precis.yml (gr191008 — so the worker-log
+# rotator is re-asserted every deploy, not just on a full site.yml run), and
+# scripts/deploy only pings gateway/scheduler/data/inference. `all` would pull
+# in bootstrap-only castor/pollux (no `deploy` user) and abort the deploy
+# (gripe 196641). Those hosts run no precis daemons, so they have no
+# /var/log/precis-*.log to rotate anyway.
 - name: Configure log rotation
-  hosts: all
+  hosts:
+    - gateway
+    - scheduler
+    - data
+    - inference
   become: true
   roles:
     - logrotate

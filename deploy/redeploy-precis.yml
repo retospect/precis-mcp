@@ -262,6 +262,17 @@
 - name: "Re-assert ~/.pgpass on all nodes  (plan_tick / asa DB credential)"
   ansible.builtin.import_playbook: playbooks/19-pgpass.yml
 
+# gr191008: re-assert worker-log rotation every deploy. The copy-truncate
+# rotator (script + root cron) + /shared/logs newsyslog config were provisioned
+# ONLY by the standalone 15-logrotate.yml under site.yml — which hadn't run
+# since the fix shipped (fcb38c57, 2026-08-04), so the rotator was never
+# installed on any node and /var/log/precis-worker.log grew unbounded (~1 GB on
+# the data node, ~600 MB on an agent node, observed 2026-08-07). Same
+# silent-drift class as 19-pgpass above; idempotent, so re-asserting here is
+# free on a converged node.
+- name: "Re-assert worker-log rotation      (gr191008 — copy-truncate cron)"
+  ansible.builtin.import_playbook: playbooks/15-logrotate.yml
+
 # §L-b (2026-08-04): the COLLAPSED worker playbook replaced
 # 20-precis-worker.yml here — one `precis worker --profile all` unit per
 # host (same com.precis.worker / precis-worker.service label, rendered via
