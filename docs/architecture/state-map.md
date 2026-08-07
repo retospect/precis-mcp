@@ -839,6 +839,13 @@ deadlocked on spark (torch+cu130 — main thread spinning in `libcuda.so`,
 starved); a fresh process loads it in ~10 s and a hang is bounded rather
 than wedging the pass for the lease horizon. (Still blocks the pass for
 that bounded window — the full submit/poll port is the durable end-state.)
+The detached poll's terminal-branch child reap
+(`runner._reap_zombie`) is a **bounded** `WNOHANG` spin (`_TERMINAL_REAP_WAIT_S`),
+not a plain `waitpid`: the child writes its envelope before it exits, so a
+one-shot `WNOHANG` almost always observes it pre-zombie and leaks a
+`<defunct>` per succeeding job — but an unbounded block would re-open the
+same libcuda-teardown hang inside the single-threaded poll loop, so on
+timeout it gives up (one rare leaked zombie ≫ a frozen pass).
 
 **`wake_runner` child-deadlock deadline (§H piece 5, built).** A
 `children_done` `Yield` gets `meta.wake_deadline` stamped at park time

@@ -1,4 +1,5 @@
 {% extends "base.html.j2" %}
+{% import "_paper_head.html.j2" as ph %}
 {% block title %}{{ ref.title }}{% endblock %}
 {% block content %}
 <a href="/refs/{{ kind }}" class="text-sm text-slate-500 underline">&larr; {{ kind_label }}</a>
@@ -309,9 +310,15 @@
         {% elif r.status == 'deleted' %}
         <span class="text-slate-400 italic line-through">{{ r.title }}</span>
         {% elif r.status == 'stub' %}
-        <span class="text-amber-700 break-words">{{ r.title }} <span class="text-slate-400">(stub — awaiting fetch)</span></span>
+        {# A paper stub gets the shared header (amber, "not held") + the note;
+           other kinds keep the plain title. #}
+        {% if r.head %}<span class="break-words">{{ ph.paper_head(r.head, compact=true) }} <span class="text-slate-400">(stub — awaiting fetch)</span></span>
+        {% else %}<span class="text-amber-700 break-words">{{ r.title }} <span class="text-slate-400">(stub — awaiting fetch)</span></span>{% endif %}
         {% else %}
-        <span class="text-slate-700 break-words">{{ r.title }}</span>
+        {# Paper refs render through the shared identity header (year · title ·
+           venue · first … last); every other kind keeps the plain title. #}
+        {% if r.head %}{{ ph.paper_head(r.head, compact=true) }}
+        {% else %}<span class="text-slate-700 break-words">{{ r.title }}</span>{% endif %}
         {% endif %}
         <span class="ml-auto text-slate-400 shrink-0">{{ r.kind }}</span>
       </div>

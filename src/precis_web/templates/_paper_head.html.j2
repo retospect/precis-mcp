@@ -1,0 +1,42 @@
+{# Shared paper/chunk identity header — the single "which paper is this?"
+   block behind every preview card & evidence row. Fed by a PaperHead
+   (precis_web/paper_ident.py). Two lines:
+
+       <year> <title>
+       <journal> · <first> … <last>
+
+   Colour follows the held-vs-external cite language: sky when the corpus
+   holds the paper, amber when it's a stub / external reference — the same
+   language the inline §/↗ cite markers use. Class strings are written as
+   literal ternaries (not `text-{{accent}}-700`) so Tailwind's source
+   scanner sees them.
+
+   `compact=true` collapses to a single line for dense list rows (the
+   claim-page evidence rows) where a two-line block per item would be too
+   tall; `show_handle=true` appends the mono handle (list rows that don't
+   already anchor on it). #}
+{% macro paper_head(h, show_handle=false, compact=false) %}
+{% if compact %}
+<span class="break-words">
+  {% if h.year %}<span class="font-semibold {{ 'text-sky-700' if h.held else 'text-amber-700' }}">{{ h.year }}</span> {% endif %}
+  <span class="text-slate-700">{{ h.title }}</span>
+  {% if h.journal %}<span class="italic text-slate-400"> · {{ h.journal }}</span>{% endif %}
+  {% if h.first_author %}<span class="text-slate-400"> · {{ h.first_author }}{% if h.multi_author %} … {{ h.last_author }}{% endif %}</span>{% endif %}
+  {% if show_handle and h.handle %}<span class="ml-1 font-mono text-[10px] text-slate-400">{{ h.handle }}</span>{% endif %}
+</span>
+{% else %}
+<div class="min-w-0">
+  <p class="text-sm leading-snug break-words">
+    {% if h.year %}<span class="font-semibold {{ 'text-sky-700' if h.held else 'text-amber-700' }}">{{ h.year }}</span> {% endif %}
+    <span class="font-medium text-slate-800">{{ h.title }}</span>
+    {% if show_handle and h.handle %}<span class="ml-1 font-mono text-[10px] text-slate-400">{{ h.handle }}</span>{% endif %}
+  </p>
+  {% if h.journal or h.first_author %}
+  <p class="text-[11px] text-slate-500 truncate">
+    {% if h.journal %}<span class="italic {{ 'text-sky-600' if h.held else 'text-amber-600' }}">{{ h.journal }}</span>{% if h.first_author %} · {% endif %}{% endif %}
+    {% if h.first_author %}{{ h.first_author }}{% if h.multi_author %} … {{ h.last_author }}{% endif %}{% endif %}
+  </p>
+  {% endif %}
+</div>
+{% endif %}
+{% endmacro %}

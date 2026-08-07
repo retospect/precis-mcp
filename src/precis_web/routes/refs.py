@@ -45,6 +45,7 @@ from precis_web.deps import (
     templates,
 )
 from precis_web.item_view import display_title
+from precis_web.paper_ident import PAPER_IDENT_KINDS, paper_head
 from precis_web.routes.structure import _geom_payload
 
 router = APIRouter(prefix="/refs", tags=["refs"])
@@ -1732,6 +1733,17 @@ def _expand_handle(
             "url": (f"https://doi.org/{doi}" if doi else None),
         }
 
+    # The shared paper identity header (year · title / venue · first … last),
+    # so a paper handle in a memory/finding body reads the same here as it
+    # does on hover. ``held`` = has body chunks → sky, else amber (stub).
+    # ``.as_dict()`` keeps the row JSON-serialisable — the References panel
+    # dumps ``references | tojson`` for its copy button, which a dataclass
+    # would break.
+    head = (
+        paper_head(ref, held=has_chunks).as_dict()
+        if kind in PAPER_IDENT_KINDS
+        else None
+    )
     return {
         "handle": raw_handle,
         "url": url,
@@ -1741,6 +1753,7 @@ def _expand_handle(
         "kind": kind,
         "slug": getattr(ref, "slug", None) or "",
         "citation": citation,
+        "head": head,
     }
 
 

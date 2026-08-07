@@ -103,7 +103,6 @@ from precis.taproot.canon import merge_confirm as _backfill_merge_confirm
 from precis.utils import draft_markup, handle_registry, mentions
 from precis.utils.authors import (
     author_display,
-    author_names,
     to_author_dicts,
 )
 
@@ -122,6 +121,7 @@ from precis_web.deps import (
     templates,
 )
 from precis_web.linkify import popover_chip
+from precis_web.paper_ident import PAPER_IDENT_KINDS, paper_head
 
 router = APIRouter(tags=["drafts"])
 
@@ -811,24 +811,6 @@ def _slugify(title: str) -> str:
 def _parse_id(body: str) -> int | None:
     m = re.search(r"id=(\d+)", body or "")
     return int(m.group(1)) if m else None
-
-
-#: Chunk-handle source kinds whose hover preview leads with the source
-#: title + byline (a [pc…]/patent/cfp chunk points at a real document).
-_PAPER_PREVIEW_KINDS = frozenset({"paper", "cfp", "patent"})
-
-
-def _short_byline(authors: Any) -> str:
-    """A compact one-line byline for a chunk-hover preview: first author
-    for a single/pair, else ``First … Last``. Truncated so it stays one
-    line. Empty when there are no authors."""
-    names = author_names(authors)
-    if not names:
-        return ""
-    byline = names[0] if len(names) == 1 else f"{names[0]} … {names[-1]}"
-    if len(byline) > 80:
-        byline = byline[:79].rstrip() + "…"
-    return byline
 
 
 def _parse_tags(raw: str) -> list[str]:
@@ -2557,16 +2539,17 @@ async def preview_chunk(request: Request, handle: str) -> HTMLResponse:
             )
         src_kind, text, ref_id = uc["kind"], uc["text"], uc["ref_id"]
 
-    # For a paper-family chunk ([pc…]), lead with the source it points
-    # at: the paper title (one truncated line) + a first…last byline,
-    # instead of the machine handle. The chunk text follows as the quote.
-    title = ""
-    byline = ""
-    if src_kind in _PAPER_PREVIEW_KINDS:
+    # For a paper-family chunk ([pc…]), lead with the shared identity header
+    # of the source it points at (year · title / venue · first … last) — the
+    # same ``_paper_head`` block every other preview surface uses — instead of
+    # the machine handle. The chunk text follows as the quote. A chunk we can
+    # quote is by definition held, so the header reads sky. Non-paper chunks
+    # (a draft ¶) carry no ``head`` and fall back to the plain quote card.
+    head = None
+    if src_kind in PAPER_IDENT_KINDS:
         ref = store.fetch_refs_by_ids([ref_id]).get(ref_id)
         if ref is not None:
-            title = (ref.title or "").strip()
-            byline = _short_byline(getattr(ref, "authors", None))
+            head = paper_head(ref, held=True)
 
     # Show the chunk's verbatim text (≤ ~20 lines) as the quote — the
     # "what does <handle> actually say?" a hover should answer.
@@ -2589,8 +2572,7 @@ async def preview_chunk(request: Request, handle: str) -> HTMLResponse:
             "kind": src_kind,
             "label": handle,
             "ref_id": "",  # drop the "#pc…" machine line for chunk hovers
-            "title": title,
-            "byline": byline,
+            "head": head,
             "quote": quote.strip() or "(empty)",
             "chunk_label": "",
             "body_preview": "",

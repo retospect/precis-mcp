@@ -55,6 +55,7 @@ from precis_web.deps import (
     templates,
 )
 from precis_web.item_view import _OPEN_URL_OVERRIDES
+from precis_web.paper_ident import paper_abstract
 from precis_web.paper_links import doi_url, scholar_title_url
 
 router = APIRouter(prefix="/papers", tags=["papers"])
@@ -71,7 +72,6 @@ _TRIAGE_PRESET = f"/drive?tag={_TRIAGE_TAG}&k=paper&submitted=1"
 #: Cap on the abstract length shown in the hover card (chars).
 _ABSTRACT_PREVIEW = 900
 
-_TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
 
 #: Matches the cross-ref identifier-uniqueness error raised by
@@ -156,27 +156,18 @@ def _author_edit_lines(ref: Any) -> list[str]:
 
 
 def _abstract_str(ref: Any) -> str:
-    """Plain-text abstract preview for the hover card.
-
-    The publisher abstract in ``refs.meta['abstract']`` is often
-    JATS/HTML-wrapped; strip tags and collapse whitespace, then cap to
-    a preview length so the tooltip stays bounded.
-    """
-    text = _abstract_full(ref)
-    if len(text) > _ABSTRACT_PREVIEW:
-        text = text[:_ABSTRACT_PREVIEW].rstrip() + "…"
-    return text
+    """Plain-text abstract preview for the hover card, capped to a preview
+    length so the card stays bounded. Tag-stripping is single-sourced in
+    :func:`precis_web.paper_ident.paper_abstract` — the same strip the
+    unified preview hover uses."""
+    return paper_abstract(ref, max_chars=_ABSTRACT_PREVIEW)
 
 
 def _abstract_full(ref: Any) -> str:
     """Full publisher abstract (tag-stripped, NOT truncated) for the
-    editable form. Distinct from :func:`_abstract_str` — feeding the
-    editor the preview would persist the truncation on save."""
-    meta = getattr(ref, "meta", None) or {}
-    raw = meta.get("abstract")
-    if not raw:
-        return ""
-    return _WS_RE.sub(" ", _TAG_RE.sub(" ", str(raw))).strip()
+    editable form. Distinct from :func:`_abstract_str` — feeding the editor
+    the preview would persist the truncation on save."""
+    return paper_abstract(ref)
 
 
 def _links_from_ids(ids: dict[str, str]) -> dict[str, str]:

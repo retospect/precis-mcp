@@ -27,6 +27,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from precis_web.deps import get_store, templates
+from precis_web.paper_ident import PAPER_IDENT_KINDS, paper_abstract, paper_head
 
 router = APIRouter(tags=["preview"])
 
@@ -135,6 +136,10 @@ def _chunk_to_page(store: Any, ref_id: int, ord_pos: int) -> int | None:
 _QUOTE_MAX_LINES = 20
 _QUOTE_MAX_CHARS = 1600
 
+#: Abstract clamp for a *bare* paper hover (no cited chunk) — the popover is
+#: a small card, so the publisher abstract is previewed, not dumped whole.
+_ABSTRACT_PREVIEW_CHARS = 600
+
 
 def _clip_quote(text: str) -> str:
     """The cited chunk's text, capped to ~20 lines / ~1600 chars."""
@@ -214,6 +219,19 @@ async def preview(
         else:
             flat = " ".join(body_row[0].split())
             body_preview = flat[:200] + ("…" if len(flat) > 200 else "")
+    # Paper-family hover: lead with the shared identity header (year · title /
+    # venue · first … last) and, for a *bare* paper cite (no ~chunk quote),
+    # its abstract as the body — the single ``_paper_head`` treatment every
+    # other preview surface now shares. ``held`` (any body chunk present)
+    # colours it sky vs amber, matching the inline §/↗ cite language.
+    head = None
+    abstract = ""
+    if kind in PAPER_IDENT_KINDS:
+        ref = store.fetch_refs_by_ids([numeric_id]).get(numeric_id)
+        if ref is not None:
+            held = bool(body_row and body_row[0])
+            head = paper_head(ref, held=held)
+            abstract = paper_abstract(ref, max_chars=_ABSTRACT_PREVIEW_CHARS)
     return templates.TemplateResponse(
         request,
         "preview/popover.html.j2",
@@ -222,6 +240,8 @@ async def preview(
             "label": f"{kind}:{ref_id}",
             "ref_id": numeric_id,
             "title": title or "(untitled)",
+            "head": head,
+            "abstract": abstract,
             "body_preview": body_preview,
             "quote": quote,
             "chunk_label": chunk_label,

@@ -1,4 +1,5 @@
 {% extends "base.html.j2" %}
+{% import "_paper_head.html.j2" as ph %}
 {% block title %}{% if missing %}Claim {{ head }}{% else %}{{ claim }}{% endif %}{% endblock %}
 {% block content %}
 {% if missing %}
@@ -44,8 +45,8 @@
      makes the browser treat a named target like _blank, so every click would
      spawn a fresh tab instead of reusing the one 'precis-paper' window. #}
   <a href="/r/paper/{{ row.paper_ref_id }}" target="precis-paper" class="font-mono text-sky-700 underline decoration-dotted">{{ row.handle }}</a>
-  <span class="text-slate-700">{{ row.title }}</span>
-  {% if row.year %}<span class="text-slate-400">({{ row.year }})</span>{% endif %}
+  {# Shared identity header (compact one line): year · title · venue · first … last. #}
+  {{ ph.paper_head(row.head, compact=true) }}
   {% if row.source_handle %}<span class="text-slate-400">· grounded at {% if row.source_is_chunk %}{{ ('[' ~ row.source_handle ~ ']') | linkify_refs }}{% else %}<span class="font-mono">{{ row.source_handle }}</span>{% endif %}</span>{% endif %}
   {% if row.unacquirable %}
   {# This specific supporter is the unobtainable source the claim-level banner

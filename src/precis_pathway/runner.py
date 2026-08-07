@@ -520,8 +520,14 @@ def _cleanup_detached(scratch_dir: str) -> None:
     shutil.rmtree(scratch_dir, ignore_errors=True)
 
 
-def _reap_zombie(pid: int) -> bool:
-    """Best-effort ``os.waitpid(pid, os.WNOHANG)`` reap.
+# How long a terminal-branch reap will spin WNOHANG for a proven-done child to
+# become reapable before giving up (see _reap_zombie). Short: it only has to
+# cover normal exit/teardown, never a pathological libcuda hang.
+_TERMINAL_REAP_WAIT_S = 1.0
+
+
+def _reap_zombie(pid: int, *, wait_s: float = 0.0) -> bool:
+    """``os.waitpid(pid, WNOHANG)`` reap, optionally spun up to ``wait_s``.
 
     :func:`submit_seed_partial_detached` discards its ``Popen`` object right
     after spawning (the whole point of "detached" — nothing keeps tracking
@@ -532,19 +538,54 @@ def _reap_zombie(pid: int) -> bool:
     runs, not a rare failure case, so this is called on EVERY terminal
     branch of :func:`poll_seed_partial_detached`, not just the crash one.
 
-    Returns ``True`` if THIS call reaped an already-exited child,
-    ``False`` otherwise (still running, or ``ChildProcessError``/ECHILD —
-    not our child, e.g. this poll runs in a worker generation that
-    restarted since submit, or it was already reaped by an earlier call —
-    silently ignored either way: an orphaned zombie is reparented to
-    init/a subreaper and reaped there instead)."""
-    import os
+    ``wait_s`` bounds a short retry spin — never an unbounded block:
 
-    try:
-        reaped_pid, _status = os.waitpid(pid, os.WNOHANG)
-    except ChildProcessError:
-        return False
-    return reaped_pid == pid
+    * The **liveness** probe (:func:`_process_alive`) uses the ``0.0``
+      default: a single ``WNOHANG`` probe that must never stall on a
+      still-running child, so a not-yet-a-zombie reads as "not reaped" and
+      falls through to the ``kill(pid, 0)`` probe.
+    * The **terminal** branch of :func:`poll_seed_partial_detached` passes a
+      small ``wait_s``. There a fully-parsed ``result.json`` envelope proves
+      the child has finished its work and is exiting — it writes the envelope
+      (``os.replace``) as its LAST act before ``return``
+      (:func:`_subprocess_main`). A plain ``WNOHANG`` reap loses the race
+      whenever the poll observes the freshly-written envelope before the
+      child has become a reapable zombie, no-ops, and leaks the very
+      ``<defunct>`` the reap exists to prevent (the common succeeding-job
+      case, since the envelope is visible first). Spinning ``WNOHANG`` for a
+      bounded ``wait_s`` reaps it deterministically in the normal case.
+
+    ``wait_s`` is deliberately a SHORT cap, not a full ``os.waitpid(pid, 0)``:
+    a MACE/CUDA child can pathologically hang in driver/interpreter teardown
+    AFTER writing its envelope (the gr191351 "spins in ``libcuda`` for hours"
+    class, cf. :func:`run_seed_partial_subprocess`), and this runs inside the
+    single-threaded ``run_ssh_node_pass`` poll loop whose own wall-clock
+    deadline check fires BEFORE ``poll()`` — so an unbounded wait here would
+    freeze that worker generation un-killably. On timeout we give up and
+    leave the zombie: one leaked ``<defunct>`` in the rare hang case (reaped
+    when the worker recycles) is strictly better than a frozen loop, and the
+    common case no longer leaks at all.
+
+    Returns ``True`` if THIS call reaped an already-exited child,
+    ``False`` otherwise (still running when the spin gave up, or
+    ``ChildProcessError``/ECHILD — not our child, e.g. this poll runs in a
+    worker generation that restarted since submit, or it was already reaped
+    by an earlier call — silently ignored either way: an orphaned zombie is
+    reparented to init/a subreaper and reaped there instead)."""
+    import os
+    import time
+
+    deadline = time.monotonic() + wait_s
+    while True:
+        try:
+            reaped_pid, _status = os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            return False
+        if reaped_pid == pid:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.01)
 
 
 def _process_alive(pid: int) -> bool:
@@ -701,8 +742,12 @@ def poll_seed_partial_detached(handle: dict[str, Any]) -> dict[str, Any]:
             _cleanup_detached(scratch)
             return result
         # Envelope parsed cleanly -> the child is done one way or another;
-        # reap now, on the SUCCEEDING branch too, or it never happens.
-        _reap_zombie(pid)
+        # reap now, on the SUCCEEDING branch too, or it never happens. A bare
+        # WNOHANG would usually observe the envelope (the child's last act)
+        # pre-zombie, no-op, and leak the <defunct>; a short bounded spin
+        # reaps it deterministically without risking an unbounded block on a
+        # slow-teardown child in the poll loop (see _reap_zombie).
+        _reap_zombie(pid, wait_s=_TERMINAL_REAP_WAIT_S)
         if payload.get("ok"):
             # Grab the tail BEFORE cleanup wipes the scratch dir — the
             # success path otherwise discards the child's stdout/stderr

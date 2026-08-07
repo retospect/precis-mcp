@@ -1,6 +1,13 @@
 {# Compact popover fragment for the inline kind:ref hover preview.
    Loaded via htmx into a sibling span; see linkify.py for the wrapping
-   anchor + popover slot markup. #}
+   anchor + popover slot markup.
+
+   A paper-family ref (paper/cfp/patent) is passed a ``head`` PaperHead
+   (precis_web/paper_ident.py) and rendered through the shared
+   ``_paper_head`` macro — one identity header (year · title / venue ·
+   first … last) across every preview surface. Non-paper kinds keep the
+   plain title/byline fallback below. #}
+{% import "_paper_head.html.j2" as ph %}
 <div class="space-y-1">
   <div class="flex items-center gap-2 text-xs">
     <span class="font-mono px-1.5 py-0.5 rounded bg-slate-100 text-slate-700">{{ kind }}</span>
@@ -10,12 +17,21 @@
     {% if not missing and deleted %}
     <span class="text-rose-500">deleted</span>
     {% endif %}
+    {% if not missing and head is defined and head and not head.held %}
+    {# Not held in the corpus — a stub / external reference (amber, matching
+       the ↗ inline-cite marker). The abstract below is all we have. #}
+    <span class="text-[10px] text-amber-600">not held</span>
+    {% endif %}
   </div>
   {% if missing %}
   <p class="text-xs text-slate-500 italic">no such {{ label }}</p>
   {% else %}
+  {% if head is defined and head %}
+  {{ ph.paper_head(head) }}
+  {% else %}
   {% if title %}<p class="text-sm font-medium text-slate-800 truncate">{{ title }}</p>{% endif %}
   {% if byline %}<p class="text-[11px] text-slate-500 truncate">{{ byline }}</p>{% endif %}
+  {% endif %}
   {% if quote %}
   {# The cited chunk's verbatim quote (≤ ~20 lines) — the "what does it
      actually say?" answer for a citation hover. #}
@@ -26,6 +42,12 @@
      skips <pre>/<code>/<textarea>, so math inside a <pre> stays literal
      ($2^4$ never renders). whitespace-pre-wrap keeps the verbatim quote. #}
   <div class="text-xs text-slate-700 whitespace-pre-wrap break-words font-sans">{{ quote | render_markdown }}</div>
+  {% elif abstract is defined and abstract %}
+  {# Bare paper cite (no cited chunk): its abstract is the body. Through
+     render_markdown so any inline $…$ / sub-sup renders (KaTeX after swap);
+     a <div> for the same ignoredTags reason as the quote above. #}
+  <p class="text-[10px] uppercase tracking-wide text-slate-400">Abstract</p>
+  <div class="text-xs text-slate-600 break-words">{{ abstract | render_markdown }}</div>
   {% elif body_preview %}
   <p class="text-xs text-slate-600 break-words">{{ body_preview }}</p>
   {% endif %}

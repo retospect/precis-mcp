@@ -1,6 +1,7 @@
 {# Compact popover fragment for the inline claim-hub hover preview. Loaded via
    htmx into a sibling span; mirrors preview/popover.html.j2's outer wrapper so
    it renders correctly inside the teleported ref-popover. #}
+{% import "_paper_head.html.j2" as ph %}
 <div class="space-y-1">
   <div class="flex items-center gap-2 text-xs">
     <span class="font-mono px-1.5 py-0.5 rounded bg-slate-100 text-slate-700">claim</span>
@@ -22,7 +23,7 @@
     {% for row in print_rows %}
     <li class="text-xs text-slate-600 truncate">
       <span class="text-amber-500">★</span>
-      <span class="font-mono">{{ row.handle }}</span> {{ row.title }}
+      <span class="font-mono">{{ row.handle }}</span> {{ ph.paper_head(row.head, compact=true) }}
     </li>
     {% endfor %}
   </ul>

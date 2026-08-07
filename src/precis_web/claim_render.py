@@ -49,6 +49,7 @@ from precis.utils.mentions import strip_page_anchor_links
 from precis.utils.pub_id_lookup import lookup_pub_id_finding
 from precis.utils.table_data import parse_markdown_table
 from precis_web.linkify import render_markdown
+from precis_web.paper_ident import paper_head, paper_head_from_facts
 
 #: A hub-cite head in prose: a ``[fi<id>]`` finding handle or a 6-char
 #: ``[<pub_id>]``, optionally pinned (`>`/`+` + handle list — ignored for
@@ -142,23 +143,46 @@ def _unacq_map(paper_refs: dict[int, Any] | None) -> dict[int, dict[str, Any]]:
 
 
 def _edge_row(
-    edge: EvidenceEdge, *, starred: bool, unacq: dict[str, Any] | None = None
+    edge: EvidenceEdge,
+    *,
+    starred: bool,
+    paper_ref: Any = None,
+    unacq: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """One supporter row for the templates. ``starred`` = this paper reaches
     the ``.bib`` on export (the ★ the user asked for); ``source_handle`` is
     the grounding ``pc<id>`` passage, ``None`` until the chase populates it.
     ``source_is_chunk`` = the handle parses as a universal chunk handle, so
     the template may render it as a ``/c/<handle>`` anchor (the legacy
-    ``slug~ord`` form stays plain text). ``unacq`` (this paper's
-    ``unacquirable_override``, else ``None``) names THIS row as the
-    unobtainable source behind a calm-marked hub — the per-supporter twin of
-    the claim-level reflection banner: mode ``abstract`` → Ⓐ, else ✍."""
+    ``slug~ord`` form stays plain text).
+
+    ``head`` is the shared identity header (year · title / venue · first …
+    last) rendered via ``_paper_head`` — the same block the hovers use.
+    When ``paper_ref`` (the full row) is supplied it carries venue/authors;
+    otherwise it degrades to the edge's title+year. An evidence supporter is
+    a paper we hold, so ``held=True`` (sky). Callers pass ``paper_ref`` ONLY
+    for originators/corroborators (this hub's supporter set) so the singular
+    and bulk paths enrich the identical id set — a contradictor is always
+    facts-only, keeping ``render_claims_evidence`` == per-head equality.
+
+    ``unacq`` (this paper's ``unacquirable_override``, else ``None``) names
+    THIS row as the unobtainable source behind a calm-marked hub — the
+    per-supporter twin of the claim-level reflection banner: mode
+    ``abstract`` → Ⓐ, else ✍."""
     parsed = handle_registry.parse(edge.source_handle) if edge.source_handle else None
+    handle = handle_registry.format_handle("paper", edge.paper_ref_id)
+    if paper_ref is not None:
+        head = paper_head(paper_ref, held=True, handle=handle)
+    else:
+        head = paper_head_from_facts(
+            ref_id=edge.paper_ref_id, title=edge.title, year=edge.year, handle=handle
+        )
     return {
-        "handle": handle_registry.format_handle("paper", edge.paper_ref_id),
+        "handle": handle,
         "paper_ref_id": edge.paper_ref_id,
         "title": edge.title,
         "year": edge.year,
+        "head": head,
         "source_handle": edge.source_handle,
         "source_is_chunk": parsed is not None and parsed[1],
         "integrity": edge.integrity,
@@ -447,18 +471,31 @@ def _render_one(
         paper_refs=paper_refs,
     )
     status = trust.label
-    # Per-supporter unacquirable marks — which specific paper(s) the
-    # claim-level "grounded on an unacquirable source" banner refers to. Built
-    # from the same batched supporter refs claim_trust reads (mirrors
-    # cite_key_map); empty when a caller didn't batch paper_refs.
+    # ``paper_refs`` (all supporter rows, batched once by both the singular and
+    # bulk callers over the same id set) does double duty: it enriches the
+    # identity header with venue + authors, and — via ``_unacq_map`` — supplies
+    # the per-supporter unacquirable marks the claim-level "grounded on an
+    # unacquirable source" banner refers to. ``paper_ref`` is passed ONLY for
+    # originators/corroborators (see ``_edge_row`` — a contradictor stays
+    # facts-only so the singular/bulk paths stay byte-identical); ``unacq`` is
+    # looked up for every role from that same batch.
+    refs_map = paper_refs or {}
     unacq_by_paper = _unacq_map(paper_refs)
     originators = [
-        _edge_row(e, starred=True, unacq=unacq_by_paper.get(e.paper_ref_id))
+        _edge_row(
+            e,
+            starred=True,
+            paper_ref=refs_map.get(e.paper_ref_id),
+            unacq=unacq_by_paper.get(e.paper_ref_id),
+        )
         for e in evidence.originators
     ]
     corroborators = [
         _edge_row(
-            e, starred=corroborators_print, unacq=unacq_by_paper.get(e.paper_ref_id)
+            e,
+            starred=corroborators_print,
+            paper_ref=refs_map.get(e.paper_ref_id),
+            unacq=unacq_by_paper.get(e.paper_ref_id),
         )
         for e in evidence.corroborators
     ]
@@ -580,9 +617,12 @@ def render_claim_evidence(store: Any, head: str) -> dict[str, Any] | None:
     cite_key_map = store.ref_cite_keys_bulk(supporter_ids)
     chunk_cache = store.universal_chunks(_source_handles(evidence))
     hub_ref = store.fetch_refs_by_ids([ref_id]).get(ref_id)
-    # Supporter-paper refs for the per-row unacquirable marks (and so the
-    # singular path stays byte-identical to render_claims_evidence, which the
-    # test_render_claims_evidence_matches_singular_calls invariant pins).
+    # Supporter paper rows do double duty: enrich the identity header (venue +
+    # authors) and carry the per-row unacquirable marks — and spare
+    # ``claim_trust`` a re-fetch. The same batch the bulk path makes, over the
+    # same id set, so both produce byte-identical rows (the
+    # ``render_claims_evidence`` == per-head invariant that
+    # test_render_claims_evidence_matches_singular_calls pins).
     paper_refs = store.fetch_refs_by_ids(list(supporter_ids)) if supporter_ids else {}
     return _render_one(
         store,
