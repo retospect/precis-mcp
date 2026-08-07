@@ -65,6 +65,27 @@
   → `src/precis/quest/reweight.py`
 - **frontier** — the Pareto split of a quest's candidate structures over its
   objective axes. → `src/precis/quest/frontier.py`
+- **tier ladder** — a quest candidate's progressive-fidelity autocatpath
+  ladder, screening → neb → verify; code-driven, capped promotion, no LLM
+  surface. → `src/precis/quest/compute.py` (`promote_tiers`)
+- **screening tier** — the ladder's cheapest rung: relax-only, catpath emits
+  no barrier scalar, ranks on thermodynamics alone.
+  → `src/precis/quest/compute.py::_apply_tier_config`
+- **verify tier / coadsorbed template** — the ladder's highest-fidelity
+  rung: a full NEB over catpath's `template="coadsorbed"` network, which
+  drops the parking approximation (below). Verify-gates graduation on a
+  ladder-on quest. → `src/precis/quest/graduate.py`
+- **parking approximation** — the `neb`-tier network's simplifying
+  assumption (a dissociated fragment "parks" in a reservoir rather than
+  staying co-adsorbed); the `verify` tier removes it.
+  → `catpath` `network.py::build_coadsorbed_ammonia_network`
+- **CHE / potential lever** — the computational hydrogen electrode
+  formalism: an applied potential U (vs RHE) shifts each node's energy by
+  `n_H·eU`, closed-form (no extra compute) — `U_L`/`U_opt`/`span_at_U*`/
+  `P_side` are its derived scalars. → `docs/proposals/pathway-potential-lever.md`
+- **frontier tree** — a quest's candidate lineage (`derived-from` parents)
+  rendered as an indented markdown tree, code-regenerated into a pinned
+  dossier chunk every tick. → `src/precis/quest/frontier.py::render_frontier_tree`
 - **cast** — a daily audio episode (morning `reading` brief; evening `nidra`
   meditation) on the produce→narrate→publish spine.
   → `src/precis/reading/cast_common.py` · skill `precis-audio-help`

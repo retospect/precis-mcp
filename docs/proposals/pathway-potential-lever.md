@@ -1,5 +1,5 @@
 ---
-status: ready
+status: implemented (slices 1-3 shipped — catpath 04012e1/ff15ea0, precis 8c25c61e; slice 4 parked, slice 5 deferred)
 title: Pathway potential lever — CHE electrochemistry, closed-form optimal U, selectivity in the quest cost function
 model: opus
 ---
@@ -94,16 +94,37 @@ the guards above, T shown explicitly) live on the same surface.
 
 ## Slices
 
-1. **catpath**: CHE post-processing — `n_H` per node, G(U), `U_L`,
-   span-vs-U minimizer; config `electrochemistry: {U_vs_RHE | 'optimal'}`;
-   tests on the ammonia template.
-2. **precis**: persist `n_H` into `meta.graph` nodes and `U_L`/`span_at_U*`
-   into `meta.results`; quest rubric reads the composite objective.
-3. **explorer**: U slider + pH field (RHE/SHE dual display) +
-   fork-probability display (guarded).
-4. **network**: HER edge in the ammonia template (small).
-5. **later**: β-corrected electrochemical barriers; N–N coupling states;
-   decoupled-proton steps (activates the dormant pH shift above).
+1. **catpath — BUILT** (`04012e1`/`ff15ea0`): CHE post-processing — `n_H`
+   per node, G(U), `U_L`, exact span-vs-U minimizer, RHE/SHE + pH
+   machinery; DAG semantics (full-DAG `U_L`, worst-of-required-leaves
+   span) for non-convex candidates. Sibling engine work landed alongside
+   (not scoped to this proposal but feeding the same `meta.results`
+   contract): relax-only screening mode (`07a2df4`, no NEB — barriers
+   absent end-to-end, CHE thermodynamic spans only), a coadsorbed ammonia
+   template (`b4e33ba`, drops the fragment-parking approximation — the
+   `verify` tier), and a mid-NEB detachment guard + one-shot auto-retry
+   (`23bc87e`).
+2. **precis — BUILT** (this session): `n_H` rides `meta.graph` nodes
+   verbatim (`_pathway_graph_payload`); `U_L`/`U_opt`/`span_at_UL`/
+   `span_at_Uopt`/`P_side` harvest onto candidate measures
+   (`_AUTOCATPATH_ELECTRO_KEYS`), gated by the same barrier-trust check as
+   `barrier`; the quest rubric's declared composite objective
+   (`meta.rubric_composite`, human-set) reads them. Rides the new
+   screening/verify tier ladder (`docs/architecture/state-map.md`, quest
+   section) rather than a flat single-fidelity run.
+3. **explorer — BUILT** (`8c25c61e`): U slider + pH field (RHE/SHE dual
+   display), `U_L`/`U_opt` snap buttons, guarded fork-probability display.
+4. **network — PARKED, needs a design pass.** HER (H* + H* → H₂, the
+   dominant NOx-electroreduction parasitic channel) isn't a bare template
+   edge as originally scoped: scoring its **selectivity** against the main
+   pathway needs Heyrovsky-step competition, which requires the β-corrected
+   electrochemical-barrier slice (item 5) — a thermodynamic-only U_L/span
+   read on HER alone is not yet honest; a Tafel-mechanism read additionally
+   needs a genuine H+H co-adsorbed state (a *second* adsorbate template
+   variant, not what slice 1's coadsorbed template models). Scope HER once
+   the barrier-correction design is settled, not before.
+5. **later — deferred**: β-corrected electrochemical barriers; N–N coupling
+   states; decoupled-proton steps (activates the dormant pH shift above).
 
 ## Decisions (Reto, 2026-08-07)
 

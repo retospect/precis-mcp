@@ -24,7 +24,7 @@ options list. Link verb mechanics and target grammar live in
 | `supports` | `supported-by` | B is evidence for A. |
 | `contradicts` | `contradicted-by` | A disagrees with B. |
 | `derived-from` | `derived-into` | A was produced from B (summary, distillation, chase result). |
-| `refines` | (none) | A is a higher-fidelity treatment of the same object as B — no inverse (advisory only). Two independent uses: a sharper/reworded taproot claim hub → the coarser claim hub it refines; a verify-tier (coadsorbed) reaction `pathway` → its screening-tier (parked) sibling on the same catalyst candidate. |
+| `refines` | (none) | A is a higher-fidelity treatment of the same object as B — no inverse (advisory only). Two independent uses: a sharper/reworded taproot claim hub → the coarser claim hub it refines; a verify-tier (coadsorbed) reaction `pathway` → its neb-tier (parked) sibling on the same catalyst candidate. |
 | `generalises` | `specialises` | A is the broader abstraction of B. |
 | `blocks` | `blocked-by` | A workflow item must finish before B can. |
 | `see-also` | (none) | One-way "for context" pointer with no reverse semantic. |

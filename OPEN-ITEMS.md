@@ -353,6 +353,26 @@ measure; the only writer today is a test seed / raw SQL. Follow-up: a small
 `meta.measures`. Until then the explorer's measures panel is dark on prod
 pathways. Sibling motion work: `docs/proposals/pathway-frame-capture.md` (draft).
 
+---
+
+## 🔧 Quest tier-ladder residuals (2026-08-07 — `docs/architecture/state-map.md`, quest section)
+
+Status: open · Severity: polish · Owner: `src/precis/quest/compute.py` (`redispatch_candidates`) · `src/precis_pathway` (catpath-side).
+
+- **`redispatch_candidates` always redispatches at the `neb` tier** — a
+  deployed-engine re-score (its original purpose) ignores a candidate's own
+  tier-ladder rung: a candidate whose canonical barrier already came from
+  `verify` gets re-scored one rung down instead of at its own tier. Decide
+  the semantics before the ladder + engine-bump paths interact again — read
+  the candidate's own `barrier_tier`/`tier`, or its highest completed rung,
+  and dispatch at that.
+- **catpath desorption links carry a zero-energy supply convention** —
+  bookkept the same way as H-reservoir supply edges (ΔE = 0), but a
+  desorption is a real gas-phase-referenced ΔE, not free. Needs a typed link
+  kind on the catpath side (not a precis fix) so the harvest/CHE math can
+  distinguish "supply, bookkeeping only" from "desorption, a real energetic
+  cost" instead of silently treating both as zero.
+
 ## ✨ Trust-taxonomy follow-ons (5-state Ⓐ/✍ shipped)
 
 Status: open · Severity: feature/polish · Owner: `src/precis/taproot/trust.py`, `src/precis/workers/chase.py`, exporters · Test: below.

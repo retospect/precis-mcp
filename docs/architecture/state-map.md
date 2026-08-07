@@ -2621,7 +2621,74 @@ The master kinds table lives in the `precis-overview` skill.
   site, coverage, co-adsorbate) — `catalyst_seed.py::PARAM_SPACE` is now
   coverage-count + the fcc111-buildable fact only, not a chemistry menu;
   graduation (`graduate.py`) stays a per-candidate milestone (a
-  `needs-experiment` deed) and never halts the search. **Web-surfaced**:
+  `needs-experiment` deed) and never halts the search.
+  **Tier ladder** (catpath's `search.screening`/`template` bridge,
+  code-driven, no LLM surface). A ladder-opted quest (`meta.tier_ladder`,
+  human-set at seed time — `catalyst_seed.py::seed_catalyst_quest`) runs a
+  candidate through progressively higher-fidelity `dispatch_autocatpath`
+  rungs (`compute.py`): **screening** (`_apply_tier_config` sets
+  `search.screening=True` + `template="parked"` — relax-only thermodynamic
+  ranking, catpath emits no barrier scalar at all) → **neb** (today's
+  default, unchanged) → **verify** (`template="coadsorbed"`, drops the
+  fragment-parking approximation). The tier folds into the content-addressed
+  idem key, so a promotion is just another `dispatch_autocatpath` call
+  landing on its own job/pathway. `promote_tiers` (called at the end of
+  every `run_compute_step`) is the sole promoter — capped, human-set caps
+  (`meta.tier_promote_neb`/`tier_promote_verify`, default 2/1), best-first
+  on the quest's rubric (`_promotion_sort_key`, preferring a declared
+  composite — below — over the primary objective): screening→neb promotes
+  non-ruled-out candidates on their screening thermo measures; neb→verify
+  promotes only frontier (Pareto) candidates with a trusted parked barrier.
+  The ranked `barrier`/`span` always reflect the highest-fidelity pathway
+  (`_canonicalize_barrier`): a fresh verify barrier supersedes an existing
+  neb one, and the superseded parked value is kept — never discarded — as
+  `barrier_screen` (the screen→verify calibration delta); `barrier_tier`
+  tracks which tier the canonical `barrier` came from. A landing verify
+  pathway `refines`-links its now-superseded parked sibling
+  (`_link_refines`, the general-purpose `refines` relation —
+  `data/skills/precis-relations.md`). `graduate.py::graduate_frontier` is
+  verify-gated on a ladder-on quest: a candidate whose canonical barrier
+  isn't `barrier_tier == 'verify'` + trusted logs a "pending verify" note
+  instead of graduating.
+  **Candidate lineage + dedup** (Slice 4c). A proposal may carry an
+  optional `parent` field (the slug/handle of a candidate it varies — the
+  tick prompt documents it, `tick.py`); `_link_parent_if_present` wires it
+  as a `derived-from` child→parent link (the same relation
+  `StructureHandler.derive` uses), and a repeat proposal that content-hashes
+  onto an already-existing candidate now logs a `duplicate proposal`
+  logbook observation (`_note_duplicate_proposal`) instead of silently
+  returning the cache hit — so the proposer sees the miss next tick. Every
+  new candidate is stamped `meta.geom_hash` (species + rounded fractional
+  positions, `sha256[:12]`, `_geom_hash`); `frontier.py::_flag_geom_duplicates`
+  flags — never excludes — a later candidate sharing an earlier one's hash,
+  a proposer re-discovering the same material under a new name.
+  `frontier.render_frontier_tree` renders the candidate lineage as an
+  indented markdown tree (name/handle, headline measure, trust/ruled-out/dup
+  markers — plus, tier-ladder UX, a `"screen X → verified Y"` headline once
+  a candidate's canonical barrier has a kept `barrier_screen`);
+  `dossier.update_frontier_tree` regenerates it, code-only, into a second
+  pinned dossier chunk (`meta.pinned='frontier-tree'`, sibling of the
+  ledger — both now excluded from the model-rewritable narrative and from
+  `rewrite_dossier`'s clobber) at the end of every `run_quest_tick`.
+  **Composite rubric objective** (human-set, `meta.rubric_composite`). A
+  quest may declare a weighted-sum objective — `{"key": "score", "weights":
+  {"barrier": 1.0, "U_L_abs": 0.5, ...}}`, written only by
+  `seed_catalyst_quest` at seed time, never by the tick/LLM loop
+  (`docs/proposals/pathway-potential-lever.md`: "the agent may not tune its
+  own objective"). `frontier.py::_apply_rubric_composite` stamps the
+  computed `key` onto every candidate that has ALL weighted components (no
+  partial sums — a candidate missing one ranks `unevaluated`, same as any
+  other missing objective). Feeds off catpath's CHE electrochemistry
+  pass-through: `precis_pathway/_dispatch_common.py::summarize` lifts
+  `U_L`/`U_opt`/`span_at_UL`/`span_at_Uopt`/`P_side` verbatim off
+  `results.json` onto the job's own meta (`_ELECTRO_KEYS`; `T`/
+  `span_target_at_Uopt` stay diagnostics-only, never promoted);
+  `compute.py::_autocatpath_measures_from_job` harvests them onto the
+  candidate (`_AUTOCATPATH_ELECTRO_KEYS`) alongside — and gated by the same
+  barrier-trust check as — the barrier itself (an untrusted pathway
+  excludes all five electro scalars from ranking too), deriving `U_L_abs`
+  (the rubric minimizes `|U_L|`, not its sign) at harvest time.
+  **Web-surfaced**:
   `/refs/quest/<id>` is a dedicated hub dashboard (`precis_web/routes/refs.py`'s
   `detail()`, `refs/quest_detail.html.j2`), not the generic ref-detail render —
   header (status/prio/momentum/tote), hub links (dossier, paper draft when a
@@ -2654,8 +2721,40 @@ The master kinds table lives in the `precis-overview` skill.
   stable across `scene_from_ase`'s per-state ASE ordering) renders dashed
   with "label-order identity — unverified across states." Degrades cleanly
   without `meta.structure_refs` (diagram still renders; viewer shows "no
-  geometry linked"). Motion/animation (frame playback, true cross-state atom
-  tracking) is the unbuilt sibling `docs/proposals/pathway-frame-capture.md`.
+  geometry linked"). Round-4 polish on the same client-side renderer:
+  greedy label-dodge collision avoidance, warning tooltips, per-level click
+  bands, zero-ref renormalization (a legacy graph's first state can open
+  non-zero — every node's `rel_energy` is shifted so it reads 0.00), and a
+  unified selected-state highlight. Motion/animation (frame playback, true
+  cross-state atom tracking) is the unbuilt sibling
+  `docs/proposals/pathway-frame-capture.md`.
+  **Potential-lever surface** (`docs/proposals/pathway-potential-lever.md`
+  slice 3, precis_web-only). When the graph payload carries per-node `n_H`
+  (reservoir H atoms absorbed, root=0 — `_pathway_graph_payload`'s
+  `has_n_h` gate; absent on any legacy graph, zero visual change), the
+  explorer renders a U slider (V vs RHE, −1.5..0.5) + pH field: every
+  re-render on slider input is client-side (node levels shift by `n_H·eU`)
+  — no server round-trip. The readout shows both RHE and SHE scales
+  (`U_SHE = U_RHE − (ln10·kT/e)·pH`, SHE hidden at pH=0) and `U_L`/`U_opt`/
+  `span_at_U*`/`P_side` snap buttons when catpath computed them
+  (`results_electro`, `refs.py::_pathway_detail`). Fork-probability labels
+  (`computeForkProbabilities`) annotate any state with ≥2 competing
+  chemical (non-supply) edges of equal `n_H` — branch fraction ∝
+  exp(−ΔEa/kT), guarded: scored only when every competing barrier is
+  numeric and neither endpoint is low-confidence/warned-bad, else no
+  label (never a fabricated ratio); computed once off the stored graph
+  (chemical barriers don't shift with U), never per slider move.
+  **Tier-ladder UX** (screening→neb→verify, precis_web-only). The
+  leaderboard (`QuestHandler._render_leaderboard`) gains a `tier` glyph
+  column (`frontier.TIER_GLYPH`: ○ screening / ◐ neb / ● verify, off
+  `Candidate.flags['tier']`) with the legend printed once in the header.
+  The pathway detail page adds a tier chip + a cross-tier toggle
+  (`refs.py::_pathway_tier_toggle`, ordered low→high fidelity) to the
+  other-tier pathway for the same candidate — found via the `refines` link
+  when present, else the latest sibling pathway sharing
+  `meta.candidate_ref` (`_pathway_tier_sibling`) — showing a verify−screen
+  barrier delta when both sides carry one, plus (verify pathways only) a
+  dashed ghost overlay of the parked sibling's own energy profile.
 - **`llm`** — the model catalog (design-of-record `docs/proposals/llm-catalog.md`;
   slice 1 **live, read-only, ships dark**). Turns model choice from hardcoded
   constants (`router._TIER_MODEL` + `meta.llm_tier=opus|sonnet|haiku|local`) into a
