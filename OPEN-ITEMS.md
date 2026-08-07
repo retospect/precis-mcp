@@ -10,6 +10,35 @@ tracked separately in `docs/improvement-plan.md` (same delete-on-ship rule).
 
 ---
 
+## 📅 2026-08-08 — read the first unbuffered `autocatpath_seed` failures
+
+Status: open · Severity: critical · **Start: 2026-08-08** (not before — the
+evidence has to accumulate first) · Owner: `src/precis_pathway/runner.py`
+diagnostics, shipped `80e562a6` · Test: n/a, this is a diagnosis pass.
+
+Until `80e562a6` deployed on 2026-08-07 the seed child ran block-buffered, so
+every killed run discarded its progress and 85 failures reported nothing but
+their two `torch` import warnings. Failures created **after** that deploy are
+the first that can say what actually happens. Read them before choosing any
+fix — the three open remedies below assume a cause nobody has yet named.
+
+The pass: pull `chunks.text` where `chunk_kind='job_event'` for `kind='job'`
+refs with `meta->>'job_type'='autocatpath_seed'` and `created_at` after the
+deploy, and read the `--- stdout.log ---` section that will now be populated.
+The question it has to answer is **the 59** — the runs dying at arbitrary
+times (21 s → 8061 s) with `child process exited without writing result.json`,
+whose cause is explicitly unresolved. The 26 clean ~3 h wall-clock overruns
+are already understood and need no further evidence.
+
+Two things worth doing FIRST, both needing Reto: set
+`PRECIS_PATHWAY_KEEP_FAILED_SCRATCH=1` on spark so full logs survive beyond
+the 4000-char tail (default-off by design; remember to unset it), and settle
+whether spark's nightly `nightly-reboot.timer` and its enabled
+`apt-daily*.timer`s stay — a node that reboots under a 3-hour job may itself
+be the answer, in which case no amount of log-reading finds it in the logs.
+
+---
+
 ## 🔧 `autocatpath_seed` — failed children permanently park their `auto_check` parent (wall budget root cause)
 
 Status: open · Severity: critical · Owner: `src/precis/workers/auto_check_evaluators/child_job_succeeded.py`, `src/precis/handlers/_job_bubble.py` · Test: regression on `child_job_succeeded` evaluation with a *failed* child. See also **gr192371** (same symptom filed earlier, counts 18 parked todos against this investigation's 102 — reconcile the scopes before either is closed).
