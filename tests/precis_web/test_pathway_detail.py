@@ -1318,3 +1318,272 @@ def test_pathway_fork_probability_js_and_lever_js_shipped(client, runtime) -> No
     for node in diagram["nodes"]:
         assert "n_H" in node
         assert "low_confidence" in node
+
+
+# ── tier-ladder UX (screening -> neb -> verify) ─────────────────────────
+
+
+def _seed_tier_sibling(runtime: Any, sibling_ref: Any, *, refines_from: int) -> None:
+    """Wire a second ``pathway`` ref into the fake store as ``refines_from``'s
+    outgoing ``refines`` target (mirrors ``precis.quest.compute._link_refines``
+    — a verify pathway's own outgoing edge names its parked sibling), by
+    layering onto ``fetch_refs_by_ids`` (same pattern as ``_seed_pathway``)
+    and monkeypatching ``links_for`` directly (the fake's default answers
+    only ``cites``)."""
+    orig_fetch = runtime.store.fetch_refs_by_ids
+
+    def fetch(ids: Any, **kw: Any) -> dict[int, Any]:
+        out = dict(orig_fetch(ids, **kw))
+        if sibling_ref.id in ids:
+            out[sibling_ref.id] = sibling_ref
+        return out
+
+    runtime.store.fetch_refs_by_ids = fetch  # type: ignore[method-assign]
+
+    def links_for(
+        ref_id: Any, *, direction: str = "both", relation: Any = None
+    ) -> list[Any]:
+        if ref_id == refines_from and direction == "out" and relation == "refines":
+            return [SimpleNamespace(src_ref_id=refines_from, dst_ref_id=sibling_ref.id)]
+        return []
+
+    runtime.store.links_for = links_for  # type: ignore[method-assign]
+
+
+def test_pathway_tier_chip_explicit_meta_tier(client, runtime) -> None:
+    """Item 1: an explicit ``meta.tier`` renders verbatim as the chip text."""
+    _seed_pathway(runtime.store, meta={"tier": "verify"}, body_text=None)
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    assert re.search(r">\s*verify\s*</span>", resp.text)
+
+
+def test_pathway_tier_chip_inferred_screening(client, runtime) -> None:
+    """Item 1: no ``meta.tier`` but ``results.screening is True`` infers
+    ``screening`` (so a legacy pathway still labels sensibly)."""
+    _seed_pathway(runtime.store, meta={"results": {"screening": True}}, body_text=None)
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    assert re.search(r">\s*screening\s*</span>", resp.text)
+
+
+def test_pathway_tier_chip_inferred_verify_via_coadsorbed_template(
+    client, runtime
+) -> None:
+    """Item 1: ``results.template == 'coadsorbed'`` infers ``verify``."""
+    _seed_pathway(
+        runtime.store, meta={"results": {"template": "coadsorbed"}}, body_text=None
+    )
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    assert re.search(r">\s*verify\s*</span>", resp.text)
+
+
+def test_pathway_tier_chip_inferred_neb_default(client, runtime) -> None:
+    """Item 1: neither signal at all falls back to ``neb`` — today's
+    straight-to-NEB shape, unchanged."""
+    _seed_pathway(runtime.store, meta={}, body_text=None)
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    assert re.search(r">\s*neb\s*</span>", resp.text)
+
+
+def test_pathway_tier_toggle_and_delta_via_refines_link(client, runtime) -> None:
+    """Item 2: a verify pathway's own outgoing ``refines`` edge names its
+    parked sibling — the toggle renders low->high fidelity ("screen" before
+    "verified"), the sibling side links out, and (both sides carrying a
+    barrier figure) a "verify − screen" delta line renders too."""
+    _seed_pathway(
+        runtime.store,
+        meta={"tier": "verify", "rate_Ea": 0.96},
+        body_text=None,
+    )
+    sibling_ref = make_ref(
+        id=171700,
+        kind="pathway",
+        title="parked sibling",
+        meta={"tier": "neb", "rate_Ea": 0.84},
+    )
+    _seed_tier_sibling(runtime, sibling_ref, refines_from=171696)
+
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    assert '<span class="font-semibold text-slate-500">view:</span>' in resp.text
+    assert "screen" in resp.text
+    assert "verified" in resp.text
+    assert "/refs/pathway/171700" in resp.text
+    assert "verify − screen: +0.12 eV" in resp.text
+
+
+def test_pathway_tier_toggle_absent_without_sibling(client, runtime) -> None:
+    """Item 2's flip side: no ``refines`` link either way and no other-tier
+    pathway shares this one's (absent) candidate — the toggle is omitted
+    entirely, not rendered broken."""
+    _seed_pathway(runtime.store, meta={"tier": "verify"}, body_text=None)
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    assert '<span class="font-semibold text-slate-500">view:</span>' not in resp.text
+
+
+def test_pathway_parked_maps_to_coadsorbed_multiset_join() -> None:
+    """Item 3's pure join: an exact id match, or the coadsorbed id's
+    '+'-split multiset equal to the parked id's multiset plus EXACTLY one
+    extra (spectator) fragment — never a non-superset, never a two-or-more
+    fragment gap."""
+    from precis_web.routes.refs import _pathway_parked_maps_to_coadsorbed
+
+    assert _pathway_parked_maps_to_coadsorbed("NH", "NH") is True
+    assert _pathway_parked_maps_to_coadsorbed("NH", "NH+O") is True  # drop O
+    assert _pathway_parked_maps_to_coadsorbed("N+H", "N+H+O") is True
+    assert _pathway_parked_maps_to_coadsorbed("H", "H+H") is True  # multiset, +1 H
+    assert _pathway_parked_maps_to_coadsorbed("NH", "NH2") is False  # not a superset
+    assert _pathway_parked_maps_to_coadsorbed("NH", "NH+O+H") is False  # 2 extras
+
+
+def test_pathway_ghost_overlay_payload_maps_parked_sibling_via_state_id_join(
+    client, runtime
+) -> None:
+    """Item 3: on a VERIFY pathway, the parked(neb) sibling's own energy
+    profile is mapped onto THIS pathway's own coadsorbed state ids — passed
+    through verbatim (no interpolation, no fabrication)."""
+    coadsorbed_graph = {
+        "nodes": [
+            {
+                "id": "NH+O",
+                "rel_energy": 0.0,
+                "n_H": 0,
+                "energy_std": 0.0,
+                "low_confidence": False,
+            },
+            {
+                "id": "NH2+O",
+                "rel_energy": 0.3,
+                "n_H": 1,
+                "energy_std": 0.0,
+                "low_confidence": False,
+            },
+        ],
+        "links": [
+            {
+                "source": "NH+O",
+                "target": "NH2+O",
+                "kind": "reaction",
+                "barrier": 0.1,
+                "barrier_std": 0.0,
+                "delta_e": 0.0,
+                "delta_e_std": 0.0,
+                "low_confidence": False,
+            },
+        ],
+    }
+    _seed_pathway(
+        runtime.store,
+        meta={"tier": "verify", "graph": coadsorbed_graph},
+        body_text=None,
+    )
+    parked_graph = {
+        "nodes": [
+            {"id": "NH", "rel_energy": -0.05, "n_H": 0},
+            {"id": "NH2", "rel_energy": 0.25, "n_H": 1},
+        ],
+        "links": [],
+    }
+    sibling_ref = make_ref(
+        id=171700,
+        kind="pathway",
+        title="parked",
+        meta={"tier": "neb", "graph": parked_graph},
+    )
+    _seed_tier_sibling(runtime, sibling_ref, refines_from=171696)
+
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    ghost = _extract_json_array(resp.text, "ghost: ")
+    assert {p["state_id"] for p in ghost} == {"NH+O", "NH2+O"}
+    by_state = {p["state_id"]: p for p in ghost}
+    assert by_state["NH+O"]["rel_energy"] == -0.05
+    assert by_state["NH+O"]["n_H"] == 0
+    assert by_state["NH2+O"]["rel_energy"] == 0.25
+    assert by_state["NH2+O"]["n_H"] == 1
+
+
+def test_pathway_ghost_overlay_skipped_when_fewer_than_two_states_map(
+    client, runtime
+) -> None:
+    """Item 3's floor: fewer than 2 mapped states skips the ghost entirely
+    (``ghost: null``) rather than drawing a single, meaningless dot."""
+    coadsorbed_graph = {
+        "nodes": [
+            {
+                "id": "NH+O",
+                "rel_energy": 0.0,
+                "n_H": 0,
+                "energy_std": 0.0,
+                "low_confidence": False,
+            },
+            {
+                "id": "totally-unmapped",
+                "rel_energy": 0.3,
+                "n_H": 1,
+                "energy_std": 0.0,
+                "low_confidence": False,
+            },
+        ],
+        "links": [
+            {
+                "source": "NH+O",
+                "target": "totally-unmapped",
+                "kind": "reaction",
+                "barrier": 0.1,
+                "barrier_std": 0.0,
+                "delta_e": 0.0,
+                "delta_e_std": 0.0,
+                "low_confidence": False,
+            },
+        ],
+    }
+    _seed_pathway(
+        runtime.store,
+        meta={"tier": "verify", "graph": coadsorbed_graph},
+        body_text=None,
+    )
+    parked_graph = {"nodes": [{"id": "NH", "rel_energy": -0.05, "n_H": 0}], "links": []}
+    sibling_ref = make_ref(
+        id=171700,
+        kind="pathway",
+        title="parked",
+        meta={"tier": "neb", "graph": parked_graph},
+    )
+    _seed_tier_sibling(runtime, sibling_ref, refines_from=171696)
+
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    assert "ghost: null" in resp.text
+
+
+def test_pathway_ghost_overlay_absent_on_non_verify_pathway(client, runtime) -> None:
+    """The ghost is a verify-pathway-only affordance — a neb pathway (even
+    with a resolvable sibling) never carries one."""
+    graph = {
+        "nodes": [
+            {
+                "id": "NH",
+                "rel_energy": 0.0,
+                "n_H": 0,
+                "energy_std": 0.0,
+                "low_confidence": False,
+            },
+            {
+                "id": "NH2",
+                "rel_energy": 0.3,
+                "n_H": 1,
+                "energy_std": 0.0,
+                "low_confidence": False,
+            },
+        ],
+        "links": [],
+    }
+    _seed_pathway(runtime.store, meta={"tier": "neb", "graph": graph}, body_text=None)
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    assert "ghost: null" in resp.text

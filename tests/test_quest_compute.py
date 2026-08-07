@@ -1012,6 +1012,7 @@ class TestLeaderboard:
         assert schema == [
             "design",
             "name",
+            "tier",
             "barrier",
             "energy",
             "band",
@@ -1069,6 +1070,27 @@ class TestLeaderboard:
         assert rows[0]["barrier"] == "0.648 (excluded)"
         assert rows[0]["quality"] == "⚠ non-converged"
 
+    def test_tier_glyph_column_reads_candidate_flag(self) -> None:
+        """Tier-ladder UX item 4: the glyph column is ``TIER_GLYPH[flags['tier']]``
+        — one char per rung, blank (not a fabricated glyph) for a candidate
+        that never stamped a tier at all (pre-ladder / opted-out quest)."""
+        from precis.quest.frontier import FrontierResult, leaderboard
+
+        screening = Candidate(1, "st1", "A", {}, False, flags={"tier": "screening"})
+        neb = Candidate(2, "st2", "B", {}, False, flags={"tier": "neb"})
+        verify = Candidate(3, "st3", "C", {}, False, flags={"tier": "verify"})
+        untiered = Candidate(4, "st4", "D", {}, False)
+        fr = FrontierResult(
+            objectives=[("energy", "min")],
+            frontier=[],
+            dominated=[],
+            unevaluated=[screening, neb, verify, untiered],
+        )
+        rows, schema = leaderboard(fr)
+        assert "tier" in schema
+        by_design = {r["design"]: r["tier"] for r in rows}
+        assert by_design == {"st1": "○", "st2": "◐", "st3": "●", "st4": ""}
+
     def test_view_leaderboard_renders_toon_table(self, store: Any) -> None:
         qid = _mk_quest(store, "Lowest-barrier Pd catalyst")
         sid = compute_mod.ensure_candidate(
@@ -1094,6 +1116,11 @@ class TestLeaderboard:
         assert "barrier" in body and "band" in body  # TOON header columns
         assert "0.42" in body  # the measure cell
         assert "frontier" in body  # the Pareto band cell
+        # Tier-glyph legend — a TOON cell has no title-attribute equivalent
+        # for the glyph's own word, so it's spelled out once in the header.
+        assert "○ screening" in body
+        assert "◐ neb" in body
+        assert "● verify" in body
 
     def test_view_leaderboard_empty_quest(self, store: Any) -> None:
         qid = _mk_quest(store, "A striving with no candidates yet")
@@ -2970,6 +2997,27 @@ class TestFrontierTreeDossierChunk:
         text = render_frontier_tree(store, qid)
         assert "ruled-out:relax-failed" in text
         assert "dup-of" in text
+
+    def test_screen_to_verify_delta_line_when_barrier_superseded(
+        self, store: Any
+    ) -> None:
+        """Tier-ladder UX item 4: once a candidate's canonical ``barrier``
+        was superseded by a verify-tier run (``barrier_tier == 'verify'`` +
+        a kept ``barrier_screen`` — :func:`compute._canonicalize_barrier`'s
+        own contract), the frontier-tree line shows the delta itself
+        (``"screen 0.84 → verified 0.96"``) rather than a single figure."""
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd-ladder", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.stamp_ref_meta(
+            sid,
+            {"barrier": 0.96, "barrier_screen": 0.84, "barrier_tier": "verify"},
+        )
+        text = render_frontier_tree(store, qid)
+        line = next(ln for ln in text.splitlines() if "Pd-ladder" in ln)
+        assert "screen 0.84 → verified 0.96" in line
 
     def test_survives_narrative_rewrite(self, store: Any) -> None:
         from precis.quest import dossier as dossier_mod

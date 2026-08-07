@@ -538,7 +538,16 @@ class QuestHandler(NumericRefHandler):
         }
         rows, schema = frontier_mod.leaderboard(fr, graduated=graduated)
         body = toon.dump(rows, schema=schema)
-        return f"# leaderboard — quest {ref.id}: {head}\nobjective: {objs}\n\n{body}"
+        # A TOON cell has no title-attribute equivalent for the glyph's own
+        # word, so the legend is printed once here rather than repeated
+        # per row.
+        tier_legend = " · ".join(
+            f"{glyph} {tier}" for tier, glyph in frontier_mod.TIER_GLYPH.items()
+        )
+        return (
+            f"# leaderboard — quest {ref.id}: {head}\nobjective: {objs}\n"
+            f"tier: {tier_legend}\n\n{body}"
+        )
 
     def _render_dossier(self, ref: Ref) -> str:
         """`view='dossier'` — the quest's living research synthesis (slice 4)."""

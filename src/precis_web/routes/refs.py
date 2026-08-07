@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections import Counter
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlencode
@@ -1326,6 +1327,268 @@ def _pathway_provenance(
     }
 
 
+# ── tier-ladder UX (screening -> neb -> verify) ───────────────────────────
+#
+# The catpath tier ladder (docs, ``precis.quest.catalyst_seed``): a candidate
+# is (optionally) run through progressively higher-fidelity passes —
+# ``screening`` (thermodynamics only, no barrier), ``neb`` (a parked-reference
+# barrier), ``verify`` (a coadsorbed-reference barrier that supersedes the
+# parked one). A pathway ref stamps its own rung onto ``meta.tier``; when a
+# verify pathway lands it ``refines``-links its now-superseded parked
+# sibling (``precis.quest.compute._link_refines``). This section renders
+# that ladder on the pathway detail page: a tier chip (item 1), a cross-tier
+# toggle + barrier delta (item 2), and — on a verify pathway specifically —
+# a ghost overlay of the parked sibling's own profile (item 3).
+
+#: Ladder rank, low->high fidelity — the sort key the toggle orders its two
+#: entries by (so a lower-fidelity tier always renders first, left of a
+#: higher one, regardless of which one this page happens to be).
+_TIER_RANK: dict[str, int] = {"screening": 0, "neb": 1, "verify": 2}
+
+#: The tier a pathway with neither of these to key on falls to; also
+#: :func:`precis.quest.compute._pathway_tier`'s own default (today's
+#: straight-to-NEB shape — the ladder-off behaviour this must not regress).
+_TIER_DEFAULT = "neb"
+
+#: Toggle-control word per tier (item 2's own worked example, "view: screen |
+#: verified") — every non-verify rung reads as "screen" (both ``screening``
+#: and the parked ``neb`` pass are, informally, "the screen"; only ``verify``
+#: gets its own word).
+_TIER_TOGGLE_WORD: dict[str, str] = {"verify": "verified"}
+
+#: Preference order when the fallback (no ``refines`` link either way) has
+#: to pick ONE sibling out of possibly several other-tier pathways for the
+#: same candidate — the highest-fidelity one is the most informative
+#: comparison, so it wins.
+_PATHWAY_TIER_SIBLING_PREFERENCE: tuple[str, ...] = ("verify", "neb", "screening")
+
+
+def _pathway_tier(meta: dict[str, Any]) -> str:
+    """The tier-ladder rung a pathway belongs to (item 1) — ``meta.tier``
+    when the dispatcher stamped it, else inferred from catpath's own
+    verbatim ``meta.results`` (``results.screening`` / ``results.template``)
+    for a pathway dispatched before the stamp existed. Mirrors
+    :func:`precis.quest.compute._pathway_tier`'s own contract without
+    importing that (heavier, compute-side) module into the web route; a
+    legacy pathway with neither signal defaults to ``"neb"``, unchanged."""
+    tier = meta.get("tier")
+    if tier in _TIER_RANK:
+        return str(tier)
+    results = meta.get("results")
+    results = results if isinstance(results, dict) else {}
+    if results.get("screening") is True:
+        return "screening"
+    if results.get("template") == "coadsorbed":
+        return "verify"
+    return _TIER_DEFAULT
+
+
+#: Job-meta / pathway-meta spellings that carry the rate-limiting barrier —
+#: mirrors :data:`precis.quest.compute._AUTOCATPATH_BARRIER_KEYS` (the
+#: pathway's own top-level ``rate_Ea`` first, then any of these under
+#: ``meta.results`` for a shape that stashed it there instead).
+_PATHWAY_BARRIER_KEYS: tuple[str, ...] = ("barrier", "rate_Ea", "rate_ea", "ea")
+
+
+def _pathway_barrier_figure(meta: dict[str, Any]) -> float | None:
+    """This pathway's own rate-limiting barrier (eV), or ``None`` — the
+    delta header's (item 2) input on each side of the toggle."""
+    v = meta.get("rate_Ea")
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return float(v)
+    results = meta.get("results")
+    if isinstance(results, dict):
+        for k in _PATHWAY_BARRIER_KEYS:
+            rv = results.get(k)
+            if isinstance(rv, (int, float)) and not isinstance(rv, bool):
+                return float(rv)
+    return None
+
+
+def _pathway_tier_sibling(
+    store: Any, ref: Any, this_tier: str, candidate_ref_id: int | None
+) -> dict[str, Any] | None:
+    """The other-tier pathway for the SAME candidate (item 2): the linked
+    ``refines`` sibling in either direction when one exists (a verify
+    pathway's own outgoing edge names its parked sibling; a parked
+    pathway's incoming edge names the verify pathway that supersedes it —
+    ``precis.quest.compute._link_refines``), else the LATEST pathway of
+    each other tier sharing this one's ``meta.candidate_ref``, preferring
+    verify > neb > screening when more than one is available (the
+    highest-fidelity comparison is the most informative one). Returns
+    ``{"ref_id", "tier", "meta"}`` or ``None`` — no candidate, no store
+    support for the fallback query, or truly no sibling at any tier."""
+
+    def _resolve(other_id: int) -> dict[str, Any] | None:
+        if other_id == ref.id:
+            return None
+        other = store.fetch_refs_by_ids([other_id]).get(other_id)
+        if other is None:
+            return None
+        other_meta = other.meta or {}
+        return {
+            "ref_id": other_id,
+            "tier": _pathway_tier(other_meta),
+            "meta": other_meta,
+        }
+
+    try:
+        out_links = store.links_for(ref.id, direction="out", relation="refines")
+    except Exception:
+        out_links = []
+    for lnk in out_links:
+        dst = getattr(lnk, "dst_ref_id", None)
+        if dst is None:
+            continue
+        found = _resolve(int(dst))
+        if found is not None:
+            return found
+
+    try:
+        in_links = store.links_for(ref.id, direction="in", relation="refines")
+    except Exception:
+        in_links = []
+    for lnk in in_links:
+        src = getattr(lnk, "src_ref_id", None)
+        if src is None:
+            continue
+        found = _resolve(int(src))
+        if found is not None:
+            return found
+
+    if candidate_ref_id is None:
+        return None
+    try:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT ref_id, meta->>'tier' FROM refs "
+                "WHERE kind = 'pathway' AND deleted_at IS NULL "
+                "AND meta->>'candidate_ref' = %s AND ref_id != %s "
+                "ORDER BY ref_id DESC",
+                (str(candidate_ref_id), ref.id),
+            ).fetchall()
+    except Exception:
+        log.warning("pathway %s: tier-sibling query failed", ref.id, exc_info=True)
+        return None
+    latest_by_tier: dict[str, int] = {}
+    for r in rows:
+        t = r[1] if r[1] in _TIER_RANK else _TIER_DEFAULT
+        latest_by_tier.setdefault(t, int(r[0]))  # rows are ref_id DESC -> latest first
+    for pref in _PATHWAY_TIER_SIBLING_PREFERENCE:
+        if pref != this_tier and pref in latest_by_tier:
+            return _resolve(latest_by_tier[pref])
+    return None
+
+
+def _pathway_tier_toggle(
+    ref_id: int,
+    this_tier: str,
+    sibling: dict[str, Any] | None,
+    this_meta: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Cross-tier toggle + delta context (item 2): a "view: screen |
+    verified"-style control (ordered low->high fidelity, ``_TIER_RANK`) with
+    the currently-viewed tier as plain text and the sibling as a link to its
+    page — plus, only when exactly one side is verify-tier and BOTH carry a
+    barrier figure, a one-line "verify − screen: +0.12 eV" delta.
+    ``None`` when there's no sibling at all (``_pathway_tier_sibling``)."""
+    if sibling is None:
+        return None
+    entries = sorted(
+        (
+            {"tier": this_tier, "ref_id": ref_id, "current": True},
+            {"tier": sibling["tier"], "ref_id": sibling["ref_id"], "current": False},
+        ),
+        key=lambda e: _TIER_RANK.get(str(e["tier"]), 1),
+    )
+    for e in entries:
+        tier = str(e["tier"])
+        e["label"] = _TIER_TOGGLE_WORD.get(tier, "screen")
+        e["url"] = None if e["current"] else f"/refs/pathway/{e['ref_id']}"
+
+    delta_text = None
+    tiers = {this_tier, sibling["tier"]}
+    if "verify" in tiers and len(tiers) == 2:
+        this_barrier = _pathway_barrier_figure(this_meta)
+        sib_barrier = _pathway_barrier_figure(sibling["meta"] or {})
+        if this_barrier is not None and sib_barrier is not None:
+            verify_barrier = this_barrier if this_tier == "verify" else sib_barrier
+            screen_barrier = sib_barrier if this_tier == "verify" else this_barrier
+            delta = verify_barrier - screen_barrier
+            delta_text = f"verify − screen: {delta:+.2f} eV"
+
+    return {"entries": entries, "delta_text": delta_text}
+
+
+def _pathway_fragment_multiset(node_id: str) -> Counter[str]:
+    """A state id's constituent species as a MULTISET (``"H+H"`` ->
+    ``{"H": 2}``) — the ghost overlay's join (below) needs multiplicity,
+    unlike :func:`_pathway_fragments`'s frozenset (which the supply-edge
+    diff, item C, deliberately dedupes)."""
+    return Counter(node_id.split("+"))
+
+
+def _pathway_parked_maps_to_coadsorbed(parked_id: str, coadsorbed_id: str) -> bool:
+    """True when a parked(neb)-tier state id maps onto a verify(coadsorbed)-
+    tier one (item 3's ghost-overlay join): an exact id match, or the
+    coadsorbed id's multiset is the parked id's multiset plus EXACTLY one
+    extra fragment (the spectator) — e.g. ``"NH+O"`` maps onto ``"NH"``
+    (drop spectator ``"O"``), but not onto ``"NH2"`` (not a superset) nor a
+    coadsorbed id with two-or-more extra fragments (not a single-spectator
+    difference)."""
+    if parked_id == coadsorbed_id:
+        return True
+    parked = _pathway_fragment_multiset(parked_id)
+    coadsorbed = _pathway_fragment_multiset(coadsorbed_id)
+    if sum(coadsorbed.values()) != sum(parked.values()) + 1:
+        return False
+    if sum((parked - coadsorbed).values()) != 0:  # every parked fragment covered
+        return False
+    return sum((coadsorbed - parked).values()) == 1  # exactly one spectator extra
+
+
+def _pathway_ghost_series(
+    diagram: dict[str, Any] | None, tier_sibling: dict[str, Any] | None
+) -> list[dict[str, Any]] | None:
+    """The parked(neb)-tier sibling's own energy profile, mapped onto THIS
+    verify pathway's own state ids (item 3): one point per diagram node that
+    resolves a parked match (``_pathway_parked_maps_to_coadsorbed``),
+    carrying the parked node's OWN ``rel_energy``/``n_H`` verbatim — no
+    interpolation, no fabrication (an unmapped state simply isn't ghosted).
+    ``None`` when there's no NEB sibling specifically (a screening-tier
+    sibling carries no per-state barrier graph worth ghosting), neither side
+    has a graph, or fewer than 2 states map (too little to draw a line)."""
+    if diagram is None or tier_sibling is None or tier_sibling["tier"] != "neb":
+        return None
+    sib_graph = (tier_sibling["meta"] or {}).get("graph")
+    if not sib_graph or not sib_graph.get("nodes"):
+        return None
+    parked_nodes = [n for n in sib_graph["nodes"] if n.get("id") is not None]
+    points: list[dict[str, Any]] = []
+    for node in diagram["nodes"]:
+        coadsorbed_id = node["id"]
+        match = next(
+            (
+                pn
+                for pn in parked_nodes
+                if _pathway_parked_maps_to_coadsorbed(str(pn["id"]), coadsorbed_id)
+            ),
+            None,
+        )
+        if match is None or match.get("rel_energy") is None:
+            continue
+        points.append(
+            {
+                "state_id": coadsorbed_id,
+                "rel_energy": match["rel_energy"],
+                "n_H": match.get("n_H"),
+            }
+        )
+    if len(points) < 2:
+        return None
+    return points
+
+
 def _pathway_candidate_stepper(
     store: Any, ref_id: int, substrate: Any, target: Any
 ) -> dict[str, Any] | None:
@@ -1500,6 +1763,16 @@ async def _pathway_detail(request: Request, store: Any, ref: Any) -> HTMLRespons
         store, ref.id, results.get("substrate"), results.get("target")
     )
 
+    # Tier ladder (screening -> neb -> verify): the chip (item 1), the
+    # cross-tier toggle + barrier delta (item 2), and — verify pathways only
+    # — the parked sibling's ghost overlay (item 3). All optional; a legacy
+    # or ad-hoc pathway (no candidate, no sibling) still renders, just
+    # without them.
+    tier = _pathway_tier(meta)
+    tier_sibling = _pathway_tier_sibling(store, ref, tier, candidate_ref_id)
+    tier_toggle = _pathway_tier_toggle(ref.id, tier, tier_sibling, meta)
+    ghost_series = _pathway_ghost_series(diagram, tier_sibling)
+
     return templates.TemplateResponse(
         request,
         "refs/pathway_detail.html.j2",
@@ -1532,6 +1805,9 @@ async def _pathway_detail(request: Request, store: Any, ref: Any) -> HTMLRespons
             "measure_notes": measure_notes,
             "provenance": provenance,
             "stepper": stepper,
+            "tier": tier,
+            "tier_toggle": tier_toggle,
+            "ghost_series": ghost_series,
         },
     )
 

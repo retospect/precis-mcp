@@ -22,9 +22,43 @@
       Ea = {{ rate_ea }} eV
     </span>
     {% endif %}
+    {# ── tier-ladder chip (item 1) — the pathway's own rung, server-derived
+       (``meta.tier`` when stamped, else inferred off ``results.screening``/
+       ``results.template`` — ``_pathway_tier``) so a legacy pathway still
+       labels sensibly. #}
+    {% if tier %}
+    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium
+      {% if tier == 'verify' %}bg-emerald-100 text-emerald-800
+      {% elif tier == 'neb' %}bg-sky-100 text-sky-800
+      {% else %}bg-slate-100 text-slate-600 border border-slate-300{% endif %}">
+      {{ tier }}
+    </span>
+    {% endif %}
     {% if autocatpath_version %}<span class="text-slate-400">·</span><span>autocatpath {{ autocatpath_version }}</span>{% endif %}
     {% if ref.updated %}<span class="text-slate-400">·</span><span>updated {{ ref.updated }}</span>{% endif %}
   </p>
+  {# ── cross-tier toggle + delta (item 2) — a "view: screen | verified"
+     control linking to this candidate's other-tier pathway (the linked
+     ``refines`` sibling when one exists, else the latest other-tier
+     pathway for the same candidate — ``_pathway_tier_sibling``), plus a
+     one-line barrier delta when both sides carry one. #}
+  {% if tier_toggle %}
+  <p class="mt-1 text-xs text-slate-600 flex flex-wrap items-center gap-x-1.5">
+    <span class="font-semibold text-slate-500">view:</span>
+    {% for e in tier_toggle.entries %}
+    {% if not loop.first %}<span class="text-slate-300">|</span>{% endif %}
+    {% if e.url %}
+    <a href="{{ e.url }}" class="text-sky-700 hover:underline">{{ e.label }}</a>
+    {% else %}
+    <span class="font-semibold text-slate-700">{{ e.label }}</span>
+    {% endif %}
+    {% endfor %}
+    {% if tier_toggle.delta_text %}
+    <span class="text-slate-300">&middot;</span>
+    <span>{{ tier_toggle.delta_text }}</span>
+    {% endif %}
+  </p>
+  {% endif %}
   {# ── provenance strip (item D) — candidate structure / owning quest /
      dossier / logbook / run node / run job(s), each independently optional
      (``_pathway_provenance`` resolves whatever it can off the candidate-
@@ -391,6 +425,14 @@
     // defined either way so the readout/fork-prob code never has to null-
     // check the container).
     results: {{ results_electro | tojson }},
+    // Tier-ladder ghost overlay (item 3) — the parked(neb) sibling's OWN
+    // energy profile, already mapped onto THIS pathway's state ids
+    // server-side (``_pathway_ghost_series``'s state-id join); ``null`` on
+    // a non-verify pathway, a sibling-less one, or when fewer than 2 states
+    // mapped. Each point is ``{state_id, rel_energy, n_H}`` — the SAME
+    // shape as a graph node's own energy/n_H fields, so ``renderDiagram``
+    // re-applies the U-slider lever to it identically.
+    ghost: {{ ghost_series | tojson }},
   };
 
   function isBadState(id) {
@@ -598,6 +640,18 @@
       const peak = src.rel_energy + Math.max(e.barrier || 0, 0);
       yMax = Math.max(yMax, peak + (e.barrier_std || 0));
     });
+    // Ghost overlay (tier-ladder item 3) — the parked sibling's own energy,
+    // re-levered by ITS OWN n_H, folds into the y-scale too so the ghost
+    // line never clips off-canvas. Computed once here (not inside the
+    // parts-building pass below) so both the scale and the draw step read
+    // the exact same value.
+    const ghostY = (gp) => gp.rel_energy + (gp.n_H != null ? gp.n_H : 0) * currentU;
+    (V.ghost || []).forEach((gp) => {
+      if (xOf[gp.state_id] == null) { return; }
+      const y = ghostY(gp);
+      yMin = Math.min(yMin, y);
+      yMax = Math.max(yMax, y);
+    });
     if (!isFinite(yMin) || !isFinite(yMax)) { yMin = 0; yMax = 1; }
     if (yMax - yMin < 1e-6) { yMax = yMin + 1; }
     const yPad = (yMax - yMin) * 0.14;
@@ -606,6 +660,25 @@
 
     const parts = [];
     parts.push(`<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" class="select-none" style="min-width:${W}px">`);
+
+    // ── ghost overlay (tier-ladder item 3) — drawn FIRST (behind
+    // everything, including the column-bg rects right below) so it reads
+    // as background context: a dashed, faint polyline through the parked
+    // sibling's own mapped level midpoints. No humps, no labels, no click
+    // target — purely a visual reference. Skipped outright when fewer than
+    // 2 states resolve an x position (mirrors the server's own <2 guard,
+    // since a mapped state can still fall off THIS diagram's own paths).
+    if (V.ghost && V.ghost.length) {
+      const ghostPts = V.ghost
+        .filter((gp) => xOf[gp.state_id] != null)
+        .map((gp) => ({ x: xScale(xOf[gp.state_id]), y: py(ghostY(gp)) }))
+        .sort((a, b) => a.x - b.x);
+      if (ghostPts.length >= 2) {
+        const pts = ghostPts.map((p) => `${p.x},${p.y}`).join(' ');
+        parts.push(`<polyline points="${pts}" fill="none" stroke="#94a3b8" `
+          + `stroke-width="2.5" stroke-dasharray="6 4" opacity="0.4" pointer-events="none"/>`);
+      }
+    }
 
     // ── selected-state column background (item 5) — one rect per state
     // x-column, drawn first (behind everything else, "fill=none" by

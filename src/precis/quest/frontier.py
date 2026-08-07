@@ -455,6 +455,14 @@ def _candidate_from_structure(store: Store, s: Any) -> Candidate:
     # with no autocatpath barrier harvested yet.
     if "barrier_tier" in meta:
         flags["barrier_tier"] = meta.get("barrier_tier")
+    # The candidate's OWN tier-ladder rung (highest tier with a completed
+    # run, :func:`precis.quest.compute._bump_tier_stamp` — distinct from
+    # ``barrier_tier`` above, which tracks the ranked barrier specifically).
+    # Display-only: the leaderboard's glyph column reads this
+    # (:func:`leaderboard`); never a ranking measure (already excluded from
+    # ``measures`` — ``_META_NON_MEASURE``/``_numeric`` filter the string).
+    if "tier" in meta:
+        flags["tier"] = meta.get("tier")
 
     # An untrusted barrier (its pathway had non-converged NEB edges / desorbed
     # or mis-bound adsorbates) is noise, not a measurement — exclude it (and
@@ -486,6 +494,17 @@ def _candidate_from_structure(store: Store, s: Any) -> Candidate:
     )
 
 
+#: Tier-ladder glyph column (tier-ladder UX item 4) — one character per rung,
+#: read off ``Candidate.flags['tier']`` (the candidate's OWN highest-attained
+#: tier, not ``barrier_tier``). A candidate with no tier stamp at all (a
+#: pre-ladder quest, or one that opted out — ``tier_ladder=False``) gets no
+#: glyph rather than a fabricated one. The word each glyph stands for isn't
+#: repeatable in a plain TOON cell (no title-attribute equivalent), so
+#: ``QuestHandler._render_leaderboard`` prints the legend once in the
+#: header instead of on every row.
+TIER_GLYPH: dict[str, str] = {"screening": "○", "neb": "◐", "verify": "●"}
+
+
 def leaderboard(
     fr: FrontierResult, *, graduated: frozenset[int] | set[int] = frozenset()
 ) -> tuple[list[dict[str, Any]], list[str]]:
@@ -514,7 +533,12 @@ def leaderboard(
     def _rows(cands: list[Candidate], band: str) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
         for c in sorted(cands, key=_sort_key):
-            row: dict[str, Any] = {"design": c.handle, "name": c.name, "band": band}
+            row: dict[str, Any] = {
+                "design": c.handle,
+                "name": c.name,
+                "tier": TIER_GLYPH.get(str(c.flags.get("tier")), ""),
+                "band": band,
+            }
             untrusted_value = c.flags.get("barrier_untrusted_value")
             for key in obj_keys:
                 v = c.measures.get(key)
@@ -543,7 +567,7 @@ def leaderboard(
         + _rows(fr.dominated, "dominated")
         + _rows(fr.unevaluated, "awaiting")
     )
-    schema = ["design", "name", *obj_keys, "band", "graduated", "quality"]
+    schema = ["design", "name", "tier", *obj_keys, "band", "graduated", "quality"]
     return rows, schema
 
 
@@ -596,7 +620,24 @@ def _candidate_lineage_markers(store: Store, c: Candidate) -> list[str]:
 def _candidate_key_measure(c: Candidate) -> str:
     """The candidate's headline measure for the frontier-tree line — the
     quest hub's own axis pick (:data:`PARETO_X_MEASURE`, the barrier) when
-    present, else the default objective (:data:`PARETO_Y_MEASURE`, energy)."""
+    present, else the default objective (:data:`PARETO_Y_MEASURE`, energy).
+
+    Tier-ladder UX item 4: when the candidate's CANONICAL barrier came from a
+    verify-tier pathway that superseded an earlier parked(neb)-tier one
+    (``flags['barrier_tier'] == 'verify'`` + a kept ``barrier_screen`` —
+    :func:`precis.quest.compute._canonicalize_barrier`), show the
+    screen→verify delta itself (``"screen 0.84 → verified 0.96"``) in place
+    of the single barrier figure — the headline calibration signal, not just
+    the latest number.
+    """
+    screen = c.flags.get("barrier_screen")
+    verified = c.measures.get(PARETO_X_MEASURE)
+    if (
+        c.flags.get("barrier_tier") == "verify"
+        and screen is not None
+        and verified is not None
+    ):
+        return f"screen {screen:g} → verified {verified:g}"
     v = c.measures.get(PARETO_X_MEASURE)
     label = PARETO_X_LABEL
     if v is None:
@@ -688,6 +729,7 @@ __all__ = [
     "PARETO_X_MEASURE",
     "PARETO_Y_LABEL",
     "PARETO_Y_MEASURE",
+    "TIER_GLYPH",
     "Candidate",
     "FrontierResult",
     "FrontierScatter",
