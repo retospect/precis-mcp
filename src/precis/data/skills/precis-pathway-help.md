@@ -63,6 +63,47 @@ get(kind="pathway", id="no-nh3-pd", view="analysis")
   high TS. Lower SPAN = better path.
 - the barriers ranked, and selectivity vs competing branches.
 
+## The potential lever (CHE electrochemistry)
+
+NOx reduction is *electro*catalysis: applied potential `U` (V vs **RHE**) is a
+real design lever. Under the computational hydrogen electrode, `U` enters only
+through the `+H*` reservoir (each supplied H is H⁺ + e⁻), so a state's energy
+shifts by `n_H·eU`. All of it is **post-processing over energies already
+computed** — no new relax/NEB, closed-form optima, no search.
+
+- `meta.graph` nodes carry `n_H`; `meta.results` carries flat scalars:
+  `U_L` (limiting potential, over **every** electrochemical step reachable
+  from the root — both branches must turn over), `U_opt` + `span_at_Uopt`
+  (span minimized over U; span = worst over *required* leaves — target **and**
+  each parked branch's sink — of the easiest route to each),
+  `span_at_UL`, `span_target_at_Uopt` (target-path-only diagnostic),
+  `P_side` (probability of leaving the target path at its forks, branch
+  fractions ∝ `exp(−ΔEa/kT)`; `null` = insufficient data — a fork with any
+  missing or untrustworthy competitor barrier is never scored), and `T`
+  (default **298.15 K**).
+- The explorer (`/refs/pathway/{id}`) re-renders the diagram at any `U`
+  client-side (slider, `→ U_L` / `→ U_opt` snaps), shows RHE **and** SHE
+  (`U_SHE = U_RHE − 0.0592·pH` at 298.15 K; PCET steps are pH-independent on
+  RHE), and labels guarded fork percentages.
+- Quest ranking: the scalars (plus derived `U_L_abs`) are harvested onto
+  candidates under the same trust gate as `barrier`. Declare them in
+  `meta.rubric_objectives` (Pareto), or combine via `meta.rubric_composite`
+  (`{key, weights: {measure: weight}}`, e.g. span/|U_L|/P_side). Weights are
+  **human-set per quest** — the agent may not tune its own objective; a
+  candidate missing any weighted component simply isn't scored on the
+  composite.
+
+## Fidelity tiers (screening → neb → verify)
+
+`meta.results` also carries `screening: true` (relax-only run — **no barriers
+by design**, spans are thermodynamic) and `template: parked|coadsorbed`.
+Pathways and candidates carry `meta.tier`; a verify (coadsorbed) pathway
+`refines`-links its parked sibling. A candidate's canonical `barrier` comes
+from the highest-fidelity trusted run; a superseded parked value is kept as
+`barrier_screen` — the screen→verify delta is the parking-approximation
+error, calibration data, never deleted. Graduation requires a trusted
+verify-tier barrier on tier-ladder quests.
+
 ## Compare candidates / rank levers / which surface is best
 
 ```python
