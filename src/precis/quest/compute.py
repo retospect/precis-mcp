@@ -44,6 +44,54 @@ log = logging.getLogger(__name__)
 _DEFAULT_FIDELITY = "ml"
 _CANDIDATE_TAG = "candidate"
 
+#: The tier ladder (docs/proposals — catpath ``search.screening``/``template``
+#: bridge): **screening** (relax-only, ``template=parked``, catpath emits no
+#: barrier scalar — cheap thermodynamic ranking) → **neb** (full NEB over the
+#: parked/fragment-parking template, today's straight-to-NEB default) →
+#: **verify** (full NEB over ``template=coadsorbed``, removing the
+#: fragment-parking approximation). Fidelity is monotonic in this order —
+#: :data:`_TIER_FIDELITY` is the single source of truth other modules
+#: (:mod:`precis.quest.graduate`) compare against.
+_TIER_SCREENING = "screening"
+_TIER_NEB = "neb"
+_TIER_VERIFY = "verify"
+_TIERS: tuple[str, ...] = (_TIER_SCREENING, _TIER_NEB, _TIER_VERIFY)
+_TIER_FIDELITY: dict[str, int] = {_TIER_SCREENING: 0, _TIER_NEB: 1, _TIER_VERIFY: 2}
+
+#: Quest-meta promotion caps (human-set at seed time — see
+#: :func:`precis.quest.catalyst_seed.seed_catalyst_quest` — never written by
+#: the tick/LLM loop, same convention as ``rubric_composite``).
+_DEFAULT_TIER_PROMOTE_NEB = 2
+_DEFAULT_TIER_PROMOTE_VERIFY = 1
+
+
+def _apply_tier_config(config: dict[str, Any], tier: str) -> dict[str, Any]:
+    """Overlay a ladder ``tier`` onto a catpath reaction config.
+
+    * ``screening`` — relax-only ranking: ``search.screening=True`` +
+      ``template="parked"``. catpath's own ``results.json`` then carries no
+      barrier scalar at all (never special-cased here — the harvest side
+      just sees an empty/thermo-only summary and lets that flow, see
+      :func:`_autocatpath_measures_from_job`).
+    * ``neb`` — today's default config, unchanged (identity — same object,
+      not even a copy, so a ladder-off dispatch is byte-identical to before
+      this feature existed).
+    * ``verify`` — the same NEB search, but ``template="coadsorbed"``
+      (drops the fragment-parking approximation).
+
+    The overlay folds into :func:`_autocatpath_content_key` automatically
+    (the changed dict), so each tier of the same candidate+reaction content-
+    addresses onto its own job/pathway — no separate idem-key plumbing
+    needed.
+    """
+    if tier == _TIER_SCREENING:
+        cfg = {**config, "search": {**(config.get("search") or {}), "screening": True}}
+        cfg["template"] = "parked"
+        return cfg
+    if tier == _TIER_VERIFY:
+        return {**config, "template": "coadsorbed"}
+    return config  # neb (or an unrecognized tier) — today's default, unchanged
+
 
 @dataclass(frozen=True)
 class ComputeStep:
@@ -525,8 +573,21 @@ def dispatch_autocatpath(
     *,
     hub: Any | None = None,
     force_backend: str | None = None,
+    tier: str = _TIER_NEB,
 ) -> str:
     """Dispatch a autocatpath barrier evaluation on a candidate structure.
+
+    ``tier`` (default ``"neb"`` — today's straight-to-NEB shape, byte-
+    identical to before the ladder existed) selects which rung of the
+    **screening → neb → verify** ladder this run is:
+    :func:`_apply_tier_config` overlays the tier onto ``config`` BEFORE the
+    device/route logic below, so the tier folds into the content-addressed
+    idem key automatically — a promotion (a fresh tier on an
+    already-dispatched candidate) is just another :func:`dispatch_autocatpath`
+    call, content-addressed onto its own job/pathway rather than clobbering
+    the prior tier's. The pathway ref this call ensures/reuses is stamped
+    ``meta.tier`` at creation (read back by :func:`_find_tier_pathway`, the
+    promotion-eligibility + `refines`-lineage seam).
 
     §B-1 (gr180096, the spark wedge fix): exports the candidate's (relaxed)
     geometry as extxyz, ensures a `pathway` ref for the write-back, then
@@ -588,6 +649,7 @@ def dispatch_autocatpath(
         return (
             f"autocatpath skipped: no reaction config for structure {structure_ref_id}"
         )
+    config = _apply_tier_config(config, tier)
     refs = store.fetch_refs_by_ids({structure_ref_id})
     ref = refs.get(structure_ref_id)
     if ref is None or ref.slug is None:
@@ -686,6 +748,12 @@ def dispatch_autocatpath(
                         "content_key": key,
                         "status": "computing",
                         "candidate_ref": structure_ref_id,
+                        # dispatch-time tier stamp — the promotion-eligibility
+                        # + `refines`-lineage seam (:func:`_find_tier_pathway`)
+                        # reads this even while the pathway is still
+                        # "computing" (before catpath's own results.json is
+                        # available to derive it from).
+                        "tier": tier,
                     },
                     conn=conn,
                 )
@@ -1003,6 +1071,121 @@ def _link_pathway(store: Store, structure_ref_id: int, pathway_ref_id: int) -> N
         pass
 
 
+def _find_tier_pathway(store: Store, structure_ref_id: int, tier: str) -> int | None:
+    """The ref id of the ``tier``-rung `pathway` dispatched for this candidate
+    (in-flight or complete), or ``None`` — the promotion-eligibility +
+    `refines`-lineage seam.
+
+    Reads the dispatch-time ``meta.tier`` stamp (:func:`dispatch_autocatpath`),
+    so this sees an in-flight (``status="computing"``) pathway too, not just a
+    finished one — promotion must not re-spend its budget on a candidate
+    whose next-tier run is already dispatched but not yet harvested. A
+    pathway minted before the ladder existed carries no ``tier`` key and
+    never matches — a legacy candidate's pre-ladder pathways are simply
+    invisible to this query, matching the ladder-off default (no promotion/
+    lineage bookkeeping regresses onto legacy data).
+    """
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT ref_id FROM refs WHERE kind = 'pathway' AND deleted_at IS NULL "
+            "AND meta->>'candidate_ref' = %s AND meta->>'tier' = %s "
+            "ORDER BY ref_id DESC LIMIT 1",
+            (str(structure_ref_id), tier),
+        ).fetchone()
+    return int(row[0]) if row else None
+
+
+def _pathway_tier(pw_meta: dict[str, Any] | None) -> str:
+    """The ladder tier a completed pathway belongs to.
+
+    Prefers the dispatch-time stamp (:func:`dispatch_autocatpath`'s
+    ``meta.tier``, present on every ladder-aware dispatch); falls back to
+    reading catpath's own verbatim ``meta.results`` (``results.screening`` /
+    ``results.template`` — the contract this whole ladder is built on, see
+    the module docstring) for a pathway dispatched before the stamp existed
+    or minted outside precis. A pathway with neither signal (or no pathway
+    at all — ``pw_meta=None``) defaults to ``"neb"``, today's straight-to-
+    NEB shape — the ladder-off behaviour this feature must not regress.
+    """
+    if isinstance(pw_meta, dict):
+        tier = pw_meta.get("tier")
+        if tier in _TIERS:
+            return str(tier)
+        results = pw_meta.get("results")
+        results = results if isinstance(results, dict) else {}
+        if results.get("screening") is True:
+            return _TIER_SCREENING
+        if results.get("template") == "coadsorbed":
+            return _TIER_VERIFY
+    return _TIER_NEB
+
+
+def _canonicalize_barrier(
+    existing_meta: dict[str, Any], measures: dict[str, Any], tier: str
+) -> None:
+    """Mutate ``measures`` (about to be stamped onto the candidate) so the
+    ranked ``barrier``/``span`` reflect the HIGHEST-fidelity pathway
+    (coadsorbed=verify > parked=neb), never silently discarding a superseded
+    value: when a fresh **verify**-tier barrier supersedes an existing
+    **neb**-tier one, the outgoing parked value moves to ``barrier_screen``
+    (kept as calibration data — the screen→verify delta). ``barrier_tier``
+    always tracks which tier the candidate's current ``barrier`` came from
+    (read by :mod:`precis.quest.graduate`'s verify-gate and
+    :mod:`precis.quest.frontier`'s ``Candidate.flags``).
+
+    A screening-tier run never carries a ``barrier`` at all (catpath omits
+    it), so this is a no-op whenever ``measures`` has none — the "screening
+    contributes no barrier" contract flows through untouched rather than
+    being special-cased here.
+    """
+    if "barrier" not in measures:
+        return
+    if (
+        existing_meta.get("barrier_tier") == _TIER_NEB
+        and tier == _TIER_VERIFY
+        and "barrier" in existing_meta
+    ):
+        measures["barrier_screen"] = existing_meta["barrier"]
+    measures["barrier_tier"] = tier
+
+
+def _bump_tier_stamp(
+    existing_meta: dict[str, Any], measures: dict[str, Any], tier: str
+) -> None:
+    """Stamp ``measures['tier']`` = the highest ladder tier with a completed
+    run on this candidate (screening < neb < verify) — independent of
+    ``barrier`` (a screening run completes with thermodynamic measures but no
+    barrier at all, and still earns the stamp)."""
+    current = existing_meta.get("tier")
+    current_rank = _TIER_FIDELITY.get(current, -1) if isinstance(current, str) else -1
+    if _TIER_FIDELITY.get(tier, 0) >= current_rank:
+        measures["tier"] = tier
+
+
+def _link_refines(
+    store: Store, structure_ref_id: int, verify_pathway_ref_id: int
+) -> None:
+    """When a verify(coadsorbed)-tier pathway lands for a candidate that also
+    has a parked(neb)-tier pathway, wire verify → ``refines`` → parked — "a
+    higher-fidelity treatment of the same object" (the closed relation
+    vocab, ``src/precis/data/skills/precis-relations.md``; the slug itself
+    already exists in the DB/``Relation`` literal — minted for taproot claim
+    hubs, migration 0100 — this is a second, unrelated use of the same
+    general-purpose relation). Idempotent (:meth:`Store.add_link`'s own
+    dedup) and defensive: no parked sibling, or any lookup/link failure, is a
+    silent no-op — never a harvest failure.
+    """
+    try:
+        parked_id = _find_tier_pathway(store, structure_ref_id, _TIER_NEB)
+        if parked_id is None or parked_id == verify_pathway_ref_id:
+            return
+        store.add_link(
+            src_ref_id=verify_pathway_ref_id, dst_ref_id=parked_id, relation="refines"
+        )
+    except Exception:
+        pass
+
+
 def _latest_relax_job(
     store: Store, structure_ref_id: int
 ) -> tuple[str, dict[str, Any]] | None:
@@ -1217,12 +1400,20 @@ def harvest_measures(
         cp_upto = int((s.meta or {}).get("quest_autocatpath_harvested_upto", 0) or 0)
         cp_jobs = _fresh_autocatpath_jobs(store, s.id, cp_upto)
         cp_seen = cp_upto
+        # Local running view of the candidate's own meta — updated after each
+        # stamp below so tier canonicalization (:func:`_canonicalize_barrier`
+        # / :func:`_bump_tier_stamp`) sees THIS harvest call's own prior
+        # writes, not just what was on disk when the outer `for s in
+        # structures` loop fetched `s` (multiple completed jobs can land in
+        # one harvest pass).
+        candidate_meta = dict(s.meta or {})
         for job_id, jmeta in cp_jobs:
             measures = _autocatpath_measures_from_job(jmeta)
             if not measures:
                 continue  # still running — do not advance the bookmark, retry next tick
             cp_seen = max(cp_seen, job_id)
             pathway_ref = jmeta.get("pathway_ref")
+            pw_meta: dict[str, Any] | None = None
             if isinstance(pathway_ref, int) and not isinstance(pathway_ref, bool):
                 # Defensive: an unfetchable / meta-less pathway ref stamps no
                 # trust flags at all (treated as unknown by graduate_frontier),
@@ -1235,9 +1426,15 @@ def harvest_measures(
                         measures.update(_pathway_quality(pw_meta))
                 except Exception:
                     pass
+            tier = _pathway_tier(pw_meta)
+            _canonicalize_barrier(candidate_meta, measures, tier)
+            _bump_tier_stamp(candidate_meta, measures, tier)
             store.stamp_ref_meta(s.id, measures)
+            candidate_meta.update(measures)
             if isinstance(pathway_ref, int) and not isinstance(pathway_ref, bool):
                 _link_pathway(store, s.id, pathway_ref)
+                if tier == _TIER_VERIFY:
+                    _link_refines(store, s.id, pathway_ref)
             b = measures.get("barrier")
             b_s = f"barrier={b:g} eV" if isinstance(b, (int, float)) else "measured"
             append_entry(
@@ -1402,6 +1599,19 @@ def _quest_reaction_config(store: Store, quest_id: int) -> dict[str, Any] | None
     return cfg if isinstance(cfg, dict) and cfg else None
 
 
+def _tier_ladder_enabled(store: Store, quest_id: int) -> bool:
+    """``meta.tier_ladder`` — human-set at seed time (default ``True`` for a
+    quest minted via :func:`precis.quest.catalyst_seed.seed_catalyst_quest`,
+    see its own docstring), never written by the tick/LLM loop. Absent (a
+    quest predating the ladder, or one seeded with ``tier_ladder=False``)
+    keeps today's straight-to-NEB behaviour: :func:`run_compute_step`
+    dispatches a new candidate's first autocatpath run at ``tier="neb"`` and
+    :func:`promote_tiers` never fires.
+    """
+    ref = store.get_ref(kind="quest", id=quest_id)
+    return bool((ref.meta or {}).get("tier_ladder")) if ref is not None else False
+
+
 def _candidate_struct_ids(store: Store, quest_id: int) -> list[int]:
     """The `structure` candidates serving a quest — the barrier/relax targets.
 
@@ -1452,6 +1662,126 @@ def redispatch_candidates(
     return f"re-dispatched {n} candidate(s) on the deployed engine"
 
 
+def _promotion_sort_key(store: Store, quest_id: int, c: Any) -> float:
+    """Best-first sort key for a promotion candidate: the quest's declared
+    composite objective when configured, else its primary rubric objective —
+    the same ranking :func:`precis.quest.frontier.leaderboard` sorts each
+    band by. Missing/unmeasured sinks to the bottom (``float('inf')``), same
+    convention as ``leaderboard``'s own ``_sort_key``.
+    """
+    from precis.quest.frontier import _objectives_for, _rubric_composite_for
+
+    composite = _rubric_composite_for(store, quest_id)
+    if composite is not None:
+        v = c.measures.get(composite["key"])
+        return v if isinstance(v, (int, float)) else float("inf")
+    objs = _objectives_for(store, quest_id)
+    if not objs:
+        return float("inf")
+    key, sense = objs[0]
+    v = c.measures.get(key)
+    if v is None:
+        return float("inf")
+    return v if sense == "min" else -v
+
+
+def promote_tiers(
+    store: Store, quest_id: int, *, hub: Any | None = None, by: str = "agent"
+) -> list[str]:
+    """Code-driven tier-ladder promotion — mints the NEXT rung's dispatch for
+    whichever candidates earned it. Never an LLM decision (no proposal, no
+    prompt): purely a function of the harvested measures + human-set caps.
+
+    A no-op unless the quest opted into the ladder (``meta.tier_ladder``,
+    see :func:`_tier_ladder_enabled`) and declares a reaction
+    (``meta.reaction_config``). Two independent promotions, each a fresh
+    :func:`dispatch_autocatpath` call at the next tier — content-addressed
+    (the tier folds into the config, hence the idem key), so a promotion
+    call that lands on an already-in-flight candidate just collapses onto
+    the same job/pathway rather than duplicating it:
+
+    * **screening → neb** — up to ``meta.tier_promote_neb`` (default
+      :data:`_DEFAULT_TIER_PROMOTE_NEB`) live, non-ruled-out candidates
+      whose highest completed run is ``screening`` (``structure.meta.tier``)
+      and that have no neb-tier pathway dispatched yet
+      (:func:`_find_tier_pathway`), ranked best-first
+      (:func:`_promotion_sort_key`) on the screening tier's thermodynamic
+      measures (U_L_abs / span / …).
+    * **neb → verify** — up to ``meta.tier_promote_verify`` (default
+      :data:`_DEFAULT_TIER_PROMOTE_VERIFY`) **frontier** (Pareto
+      non-dominated) candidates with a trusted parked barrier
+      (``barrier_trusted is True`` + a ``barrier`` measure — the neb tier is
+      the only source of a trusted `barrier` before a verify run lands, since
+      screening emits none) and no verify-tier pathway dispatched yet, same
+      ranking.
+
+    Returns one short note per promotion dispatched; never raises (a
+    promotion bug must not cost an already-successful harvest/graduation
+    result — the caller, :func:`run_compute_step`, additionally wraps this
+    in its own try/except, matching the defensive convention the
+    frontier-tree regen in :mod:`precis.quest.tick` uses).
+    """
+    notes: list[str] = []
+    try:
+        if not _tier_ladder_enabled(store, quest_id):
+            return notes
+        reaction = _quest_reaction_config(store, quest_id)
+        if reaction is None:
+            return notes
+        qref = store.get_ref(kind="quest", id=quest_id)
+        qmeta = qref.meta or {} if qref is not None else {}
+        cap_neb = int(qmeta.get("tier_promote_neb", _DEFAULT_TIER_PROMOTE_NEB) or 0)
+        cap_verify = int(
+            qmeta.get("tier_promote_verify", _DEFAULT_TIER_PROMOTE_VERIFY) or 0
+        )
+        hub = hub or _hub_for(store)
+
+        from precis.quest.frontier import _candidate_from_structure, quest_frontier
+        from precis.quest.gaps import _live_servers
+
+        structures = [
+            s for s in _live_servers(store, quest_id) if s.kind == "structure"
+        ]
+
+        # screening → neb
+        if cap_neb > 0:
+            eligible = []
+            for s in structures:
+                if (s.meta or {}).get("tier") != _TIER_SCREENING:
+                    continue
+                if any(str(t).startswith("ruled-out:") for t in store.tags_for(s.id)):
+                    continue
+                if _find_tier_pathway(store, s.id, _TIER_NEB) is not None:
+                    continue
+                eligible.append(_candidate_from_structure(store, s))
+            eligible.sort(key=lambda c: _promotion_sort_key(store, quest_id, c))
+            for c in eligible[:cap_neb]:
+                note = dispatch_autocatpath(
+                    store, c.ref_id, reaction, hub=hub, tier=_TIER_NEB
+                )
+                notes.append(f"promoted {c.handle} screening→neb: {note}")
+
+        # neb → verify (frontier candidates only)
+        if cap_verify > 0:
+            fr = quest_frontier(store, quest_id)
+            eligible_v = [
+                c
+                for c in fr.frontier
+                if c.flags.get("barrier_trusted") is True
+                and c.measures.get("barrier") is not None
+                and _find_tier_pathway(store, c.ref_id, _TIER_VERIFY) is None
+            ]
+            eligible_v.sort(key=lambda c: _promotion_sort_key(store, quest_id, c))
+            for c in eligible_v[:cap_verify]:
+                note = dispatch_autocatpath(
+                    store, c.ref_id, reaction, hub=hub, tier=_TIER_VERIFY
+                )
+                notes.append(f"promoted {c.handle} neb→verify: {note}")
+    except Exception:
+        log.exception("promote_tiers: promotion pass failed for quest %s", quest_id)
+    return notes
+
+
 #: Candidate-meta keys the barrier lane stamps. :func:`reset_compute` nulls them
 #: so a stale (untrusted) barrier stops showing as an `(excluded)` frontier cell
 #: while the deployed engine re-scores — the harvest re-stamps real values.
@@ -1460,6 +1790,12 @@ def redispatch_candidates(
 #: not re-processed — only the fresh redispatch jobs (higher ref ids) are harvested.
 #: Nulling it to 0 would make the next harvest re-read the stale completed job and
 #: re-stamp the very barrier this reset just cleared.
+#: ``barrier_screen`` / ``barrier_tier`` / ``tier`` are the tier-ladder's own
+#: bookkeeping (:func:`_canonicalize_barrier` / :func:`_bump_tier_stamp`) —
+#: cleared alongside the barrier itself so a reset candidate's stale tier
+#: provenance can't mis-canonicalize the FIRST fresh redispatch result (e.g.
+#: reading a stale ``barrier_tier="verify"`` and wrongly refusing to stamp a
+#: fresh neb-tier barrier as canonical).
 _AUTOCATPATH_MEASURE_KEYS: tuple[str, ...] = (
     "barrier",
     "span",
@@ -1468,6 +1804,9 @@ _AUTOCATPATH_MEASURE_KEYS: tuple[str, ...] = (
     "barrier_desorbed",
     "barrier_wrong_site",
     "barrier_low_confidence",
+    "barrier_screen",
+    "barrier_tier",
+    "tier",
 )
 
 
@@ -1561,6 +1900,16 @@ def run_compute_step(
     # (the a/b vectors, c-axis/vacuum pinned) so stability is judged on a
     # *relaxed* slab, not one strained by the bulk-derived lattice constant.
     relax_cell = "inplane" if reaction is not None else None
+    # A new candidate's FIRST autocatpath run defaults to the cheap
+    # screening tier when the quest opted into the ladder (relax-only
+    # thermodynamic ranking before spending a full NEB) — a ladder-off quest
+    # (the default for anything not seeded via seed_catalyst_quest, and every
+    # pre-ladder quest/test) keeps today's straight-to-neb dispatch.
+    initial_tier = (
+        _TIER_SCREENING
+        if reaction is not None and _tier_ladder_enabled(store, quest_id)
+        else _TIER_NEB
+    )
     created = dispatched = duplicates = 0
     notes: list[str] = []
     for p in proposals or []:
@@ -1582,7 +1931,9 @@ def run_compute_step(
             if note.startswith("relax["):
                 dispatched += 1
             if reaction is not None:
-                cnote = dispatch_autocatpath(store, sid, reaction, hub=hub)
+                cnote = dispatch_autocatpath(
+                    store, sid, reaction, hub=hub, tier=initial_tier
+                )
                 notes.append(cnote)
                 if cnote.startswith("autocatpath["):
                     dispatched += 1
@@ -1597,6 +1948,17 @@ def run_compute_step(
     graduated = graduate_frontier(store, quest_id, by=by)
     if graduated:
         notes.append(f"graduated {len(graduated)} candidate(s) → needs-experiment")
+
+    # Tier-ladder promotion (code-driven, no LLM surface) — mint the NEXT
+    # rung's dispatch for whichever candidates earned it. Own try/except (not
+    # just the caller's) so a promotion-pass bug never discards an already-
+    # successful harvest/graduation result computed above.
+    try:
+        promo_notes = promote_tiers(store, quest_id, hub=hub, by=by)
+    except Exception:
+        log.exception("run_compute_step: tier promotion failed for quest %s", quest_id)
+        promo_notes = []
+    notes.extend(promo_notes)
 
     return ComputeStep(
         candidates_created=created,
@@ -1615,6 +1977,7 @@ __all__ = [
     "dispatch_relax",
     "ensure_candidate",
     "harvest_measures",
+    "promote_tiers",
     "redispatch_candidates",
     "reset_compute",
     "run_compute_step",

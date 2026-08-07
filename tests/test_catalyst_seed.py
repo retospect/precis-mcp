@@ -72,3 +72,36 @@ class TestSeedCatalystQuest:
         qid, created = seed_catalyst_quest(store, rubric_composite=composite)
         assert created is True
         assert _meta(store, qid)["rubric_composite"] == composite
+
+
+class TestTierLadderSeed:
+    """A NEW catalyst quest opts into the screening→neb→verify tier ladder by
+    default; ``tier_ladder=False`` keeps today's straight-to-NEB shape. The
+    promotion caps are human-set at seed time (never a tick/LLM write)."""
+
+    def test_tier_ladder_on_by_default(self, store: Any) -> None:
+        from precis.quest.compute import (
+            _DEFAULT_TIER_PROMOTE_NEB,
+            _DEFAULT_TIER_PROMOTE_VERIFY,
+        )
+
+        qid, created = seed_catalyst_quest(store)
+        assert created is True
+        meta = _meta(store, qid)
+        assert meta["tier_ladder"] is True
+        assert meta["tier_promote_neb"] == _DEFAULT_TIER_PROMOTE_NEB
+        assert meta["tier_promote_verify"] == _DEFAULT_TIER_PROMOTE_VERIFY
+
+    def test_tier_ladder_can_be_opted_out(self, store: Any) -> None:
+        qid, created = seed_catalyst_quest(store, tier_ladder=False)
+        assert created is True
+        assert _meta(store, qid)["tier_ladder"] is False
+
+    def test_explicit_promotion_caps_are_written_verbatim(self, store: Any) -> None:
+        qid, created = seed_catalyst_quest(
+            store, tier_promote_neb=4, tier_promote_verify=2
+        )
+        assert created is True
+        meta = _meta(store, qid)
+        assert meta["tier_promote_neb"] == 4
+        assert meta["tier_promote_verify"] == 2

@@ -359,6 +359,10 @@ _RUN_NON_MEASURE: frozenset[str] = frozenset({"id", "ref_id", "on_version"})
 #: diagnostics for :func:`leaderboard`'s quality flag, never a rank measure.
 #: ``adsorption_barrier`` is the tether's reseat barrier: a trust/annotation
 #: signal (activated-adsorption sniff), likewise not a Pareto objective.
+#: ``barrier_screen`` is the tier-ladder's superseded (parked/neb-tier)
+#: barrier once a higher-fidelity (verify/coadsorbed-tier) one lands
+#: (:func:`precis.quest.compute._canonicalize_barrier`) — calibration data
+#: (the screen→verify delta), never a ranking axis.
 _META_NON_MEASURE: frozenset[str] = frozenset(
     {
         "version",
@@ -368,6 +372,7 @@ _META_NON_MEASURE: frozenset[str] = frozenset(
         "barrier_desorbed",
         "barrier_wrong_site",
         "adsorption_barrier",
+        "barrier_screen",
     }
 )
 
@@ -442,6 +447,14 @@ def _candidate_from_structure(store: Store, s: Any) -> Candidate:
         flags["barrier_wrong_site"] = meta.get("barrier_wrong_site")
     if "adsorption_barrier" in meta:
         flags["adsorption_barrier"] = meta.get("adsorption_barrier")
+    if "barrier_screen" in meta:
+        flags["barrier_screen"] = meta.get("barrier_screen")
+    # The tier-ladder rung the candidate's CURRENT canonical `barrier` came
+    # from (:func:`precis.quest.compute._canonicalize_barrier`) — read by
+    # :mod:`precis.quest.graduate`'s verify-only gate; absent on a candidate
+    # with no autocatpath barrier harvested yet.
+    if "barrier_tier" in meta:
+        flags["barrier_tier"] = meta.get("barrier_tier")
 
     # An untrusted barrier (its pathway had non-converged NEB edges / desorbed
     # or mis-bound adsorbates) is noise, not a measurement — exclude it (and

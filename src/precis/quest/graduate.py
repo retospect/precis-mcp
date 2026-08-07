@@ -29,7 +29,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from precis.quest.compute import _AUTOCATPATH_BARRIER_KEYS, _AUTOCATPATH_SPAN_KEYS
+from precis.quest.compute import (
+    _AUTOCATPATH_BARRIER_KEYS,
+    _AUTOCATPATH_SPAN_KEYS,
+    _TIER_VERIFY,
+    _tier_ladder_enabled,
+)
 from precis.quest.logbook import append_entry
 from precis.store import Tag
 
@@ -85,6 +90,7 @@ def graduate_frontier(store: Store, quest_id: int, *, by: str = "agent") -> list
     from precis.quest.frontier import quest_frontier
 
     fr = quest_frontier(store, quest_id)
+    ladder_on = _tier_ladder_enabled(store, quest_id)
     graduated: list[int] = []
     for c in fr.frontier:
         value = c.measures.get(key)
@@ -104,6 +110,34 @@ def graduate_frontier(store: Store, quest_id: int, *, by: str = "agent") -> list
                     f"ceiling but pathway is untrusted ({n} NEB edge(s) "
                     f"failed / {m} adsorbate(s) desorbed / {w} mis-bound); needs "
                     "a re-run before graduation"
+                ),
+                entry_type="note",
+                by=by,
+            )
+            continue
+        # Tier-ladder quests: an in-silico barrier still owes a coadsorbed
+        # (verify-tier) re-run before it earns the real-world-experiment
+        # deed — the parked/neb tier is a fragment-parking approximation.
+        # `barrier_tier` (:func:`precis.quest.compute._canonicalize_barrier`)
+        # tracks which tier the candidate's CURRENT canonical `barrier` came
+        # from; a ladder-off quest (no `meta.tier_ladder`) is exempt —
+        # today's straight-to-NEB behaviour is unaffected.
+        if (
+            ladder_on
+            and key in _AUTOCATPATH_GATED_KEYS
+            and not (
+                c.flags.get("barrier_tier") == _TIER_VERIFY
+                and c.flags.get("barrier_trusted") is True
+            )
+        ):
+            append_entry(
+                store,
+                quest_id,
+                text=(
+                    f"pending verify: {c.handle} ({c.name}) — {key} {value:g} meets "
+                    f"the ceiling on a {c.flags.get('barrier_tier') or 'parked'}-tier "
+                    "barrier, but this quest's tier ladder requires a trusted "
+                    "verify-tier (coadsorbed) run before graduation"
                 ),
                 entry_type="note",
                 by=by,

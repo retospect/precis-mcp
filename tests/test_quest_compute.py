@@ -1533,6 +1533,195 @@ class TestAutocatpathHarvest:
         assert "barrier_neb_failed" not in meta
 
 
+class TestTierLadderHarvest:
+    """The tier-ladder half of harvest: a completed screening run stamps
+    ``tier`` with no barrier at all (catpath omits it — nothing here
+    special-cases the absence); a neb→verify supersession preserves the
+    outgoing parked barrier as ``barrier_screen`` and tracks ``barrier_tier``;
+    a landed verify pathway wires ``refines`` back to its parked sibling."""
+
+    def _candidate(self, store: Any, qid: int) -> int:
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+        return sid
+
+    def _autocatpath_job(self, store: Any, sid: int, meta: dict[str, Any]) -> int:
+        return store.insert_ref(
+            kind="job",
+            slug=None,
+            title="autocatpath_explore",
+            meta={"job_type": "autocatpath_explore", **meta},
+            parent_id=sid,
+        ).id
+
+    def test_screening_completion_stamps_tier_with_no_barrier(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        pw = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="pw-screening",
+            meta={"tier": "screening", "warnings": [], "low_confidence": False},
+            parent_id=sid,
+        ).id
+        # a screening (relax-only) run: no `ea`/`barrier`, but catpath's own
+        # CHE electrochemistry scalars still land (see compute.py's
+        # `_AUTOCATPATH_ELECTRO_KEYS` docstring — computed independent of
+        # any NEB).
+        self._autocatpath_job(store, sid, {"result": {"U_L": -0.6}, "pathway_ref": pw})
+        step = compute_mod.harvest_measures(store, qid)
+        assert step.results_harvested == 1
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert "barrier" not in meta
+        assert meta["tier"] == "screening"
+
+    def test_neb_barrier_stamps_barrier_tier_neb(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        pw = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="pw",
+            meta={"tier": "neb", "warnings": [], "low_confidence": False},
+            parent_id=sid,
+        ).id
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.5}, "pathway_ref": pw}
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier"] == 0.5
+        assert meta["barrier_tier"] == "neb"
+        assert meta["tier"] == "neb"
+        assert "barrier_screen" not in meta
+
+    def test_verify_supersedes_neb_moves_parked_value_to_barrier_screen(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        parked_pw = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="pw-neb",
+            meta={"tier": "neb", "warnings": [], "low_confidence": False},
+            parent_id=sid,
+        ).id
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.5}, "pathway_ref": parked_pw}
+        )
+        compute_mod.harvest_measures(store, qid)  # neb barrier lands first
+
+        verify_pw = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="pw-verify",
+            meta={"tier": "verify", "warnings": [], "low_confidence": False},
+            parent_id=sid,
+        ).id
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.3}, "pathway_ref": verify_pw}
+        )
+        compute_mod.harvest_measures(store, qid)  # verify supersedes
+
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier"] == 0.3  # canonical = highest fidelity
+        assert meta["barrier_screen"] == 0.5  # superseded parked value kept
+        assert meta["barrier_tier"] == "verify"
+        assert meta["tier"] == "verify"
+
+    def test_barrier_screen_excluded_from_ranking_measures(self, store: Any) -> None:
+        """`barrier_screen` is calibration data, never a Pareto objective —
+        mirrors `adsorption_barrier`'s existing treatment."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        store.stamp_ref_meta(
+            sid, {"barrier": 0.3, "barrier_screen": 0.5, "barrier_tier": "verify"}
+        )
+        c = _cand(store, sid)
+        assert "barrier_screen" not in c.measures
+        assert c.flags["barrier_screen"] == 0.5
+        assert c.flags["barrier_tier"] == "verify"
+
+
+class TestTierLadderRefinesLink:
+    """A landed verify(coadsorbed)-tier pathway wires `refines` back to its
+    parked(neb)-tier sibling on the same candidate — a higher-fidelity
+    treatment of the same object."""
+
+    @pytest.fixture(autouse=True)
+    def _pathway_schema(self, store: Any) -> None:
+        """`_find_tier_pathway` queries ``kind='pathway'`` — needs the
+        autocatpath plugin's `pathway` kind registered (its migration, not
+        the ``autocatpath`` compute package itself — precis_pathway is glue
+        code that always ships with this repo)."""
+        from precis.store import Migrator
+        from tests.conftest import MIGRATIONS_DIR, _active_dsn
+
+        Migrator(_active_dsn(), Migrator.discover_sources(MIGRATIONS_DIR)).apply_all()
+
+    def _candidate(self, store: Any, qid: int) -> int:
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+        return sid
+
+    def _pathway(self, store: Any, sid: int, tier: str) -> int:
+        return store.insert_ref(
+            kind="pathway",
+            slug=f"pw-{tier}-{sid}",
+            title=f"pw-{tier}",
+            meta={
+                "candidate_ref": sid,
+                "tier": tier,
+                "warnings": [],
+                "low_confidence": False,
+            },
+            parent_id=sid,
+        ).id
+
+    def _autocatpath_job(self, store: Any, sid: int, meta: dict[str, Any]) -> int:
+        return store.insert_ref(
+            kind="job",
+            slug=None,
+            title="autocatpath_explore",
+            meta={"job_type": "autocatpath_explore", **meta},
+            parent_id=sid,
+        ).id
+
+    def test_verify_links_refines_to_parked_sibling(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        parked_pw = self._pathway(store, sid, "neb")
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.5}, "pathway_ref": parked_pw}
+        )
+        compute_mod.harvest_measures(store, qid)
+
+        verify_pw = self._pathway(store, sid, "verify")
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.3}, "pathway_ref": verify_pw}
+        )
+        compute_mod.harvest_measures(store, qid)
+
+        links = store.links_for(verify_pw, direction="out", relation="refines")
+        assert [ln.dst_ref_id for ln in links] == [parked_pw]
+
+    def test_no_parked_sibling_is_a_silent_noop(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        verify_pw = self._pathway(store, sid, "verify")
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.3}, "pathway_ref": verify_pw}
+        )
+        step = compute_mod.harvest_measures(store, qid)
+        assert step.results_harvested == 1  # harvest still succeeds
+        assert store.links_for(verify_pw, direction="out", relation="refines") == []
+
+
 def _autocatpath_registered() -> bool:
     """The `autocatpath_explore` job_type (and `pathway` kind) come from the autocatpath
     plugin — present in the dev container, absent on the torch-free host."""
@@ -1574,6 +1763,43 @@ class TestAutocatpathContentKey:
         monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "0.4.0")
         new = compute_mod._autocatpath_content_key(self._RX, self._SLAB)
         assert old != new
+
+
+class TestTierConfigMapping:
+    """:func:`compute._apply_tier_config` — the tier→catpath-config overlay
+    (pure, no store): screening = relax-only ranking (``search.screening``
+    + ``template=parked``), verify = the same NEB search over
+    ``template=coadsorbed``, neb = identity (today's default, byte-
+    identical — the ladder-off legacy path)."""
+
+    _CFG = {"substrate": "NO", "target": "NH3", "search": {"seeds": [0, 1, 2]}}
+
+    def test_screening_sets_search_screening_and_parked_template(self) -> None:
+        out = compute_mod._apply_tier_config(self._CFG, compute_mod._TIER_SCREENING)
+        assert out["search"]["screening"] is True
+        assert out["template"] == "parked"
+        # other search keys survive the overlay
+        assert out["search"]["seeds"] == [0, 1, 2]
+        assert out["substrate"] == "NO"
+
+    def test_screening_does_not_mutate_the_caller_dict(self) -> None:
+        cfg = {"search": {"seeds": [0]}}
+        compute_mod._apply_tier_config(cfg, compute_mod._TIER_SCREENING)
+        assert cfg == {"search": {"seeds": [0]}}
+
+    def test_verify_sets_coadsorbed_template_leaves_search_untouched(self) -> None:
+        out = compute_mod._apply_tier_config(self._CFG, compute_mod._TIER_VERIFY)
+        assert out["template"] == "coadsorbed"
+        assert out["search"] == self._CFG["search"]
+
+    def test_neb_tier_is_the_ladder_off_legacy_identity_path(self) -> None:
+        out = compute_mod._apply_tier_config(self._CFG, compute_mod._TIER_NEB)
+        assert out is self._CFG  # same object — no overlay, no copy
+        assert "template" not in out
+
+    def test_unrecognized_tier_falls_back_to_the_neb_identity_path(self) -> None:
+        out = compute_mod._apply_tier_config(self._CFG, "bogus-tier")
+        assert out is self._CFG
 
 
 class TestDispatchAutocatpath:
@@ -1723,6 +1949,60 @@ class TestDispatchAutocatpath:
         # retry skips seeds whose todo already exists — still 3, not 6
         assert len(self._seed_jobs(store, sid)) == 3
         assert len(self._agg_todo_ids(store, sid)) == 1  # one tree, not two
+
+    def test_default_tier_is_neb_config_and_pathway_meta_unchanged(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)  # no tier= given
+        seed_jobs = self._seed_jobs(store, sid)
+        assert seed_jobs
+        for _jid, jmeta in seed_jobs:
+            assert jmeta["params"]["config"] == self._RX  # byte-identical, no overlay
+        (agg_id,) = self._agg_todo_ids(store, sid)
+        agg_params = (store.fetch_refs_by_ids({agg_id})[agg_id].meta or {}).get(
+            "params"
+        ) or {}
+        pw = store.get_ref(kind="pathway", id=agg_params["pathway_slug"])
+        assert pw is not None and pw.meta.get("tier") == "neb"
+
+    def test_screening_tier_overlays_config_and_stamps_the_pathway(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        compute_mod.dispatch_autocatpath(
+            store, sid, self._RX, tier=compute_mod._TIER_SCREENING
+        )
+        seed_jobs = self._seed_jobs(store, sid)
+        assert seed_jobs
+        for _jid, jmeta in seed_jobs:
+            cfg = jmeta["params"]["config"]
+            assert cfg["search"]["screening"] is True
+            assert cfg["template"] == "parked"
+        (agg_id,) = self._agg_todo_ids(store, sid)
+        agg_params = (store.fetch_refs_by_ids({agg_id})[agg_id].meta or {}).get(
+            "params"
+        ) or {}
+        pw = store.get_ref(kind="pathway", id=agg_params["pathway_slug"])
+        assert pw is not None and pw.meta.get("tier") == "screening"
+
+    def test_screening_and_neb_tiers_content_address_onto_distinct_pathways(
+        self, store: Any
+    ) -> None:
+        """The tier overlay folds into the content key, so a promotion (a
+        fresh dispatch at a different tier) mints its OWN job/pathway tree
+        rather than clobbering the prior tier's."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        compute_mod.dispatch_autocatpath(
+            store, sid, self._RX, tier=compute_mod._TIER_SCREENING
+        )
+        compute_mod.dispatch_autocatpath(
+            store, sid, self._RX, tier=compute_mod._TIER_NEB
+        )
+        assert len(self._agg_todo_ids(store, sid)) == 2
 
     def test_engine_bump_forces_fresh_dispatch(
         self, store: Any, monkeypatch: Any
@@ -2057,6 +2337,46 @@ class TestReactionCoDispatch:
         assert autocatpath_calls[0][1] == self._RX
         assert step.sims_dispatched == 2  # relax + autocatpath
 
+    def test_ladder_on_quest_dispatches_screening_tier_first(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """``meta.tier_ladder=True`` steers a NEW candidate's first
+        autocatpath run to the cheap screening rung, not straight to neb."""
+        tier_calls: list[Any] = []
+
+        def _fake_autocatpath(_store: Any, sid: int, cfg: dict, **kw: Any) -> str:
+            tier_calls.append(kw.get("tier"))
+            return f"autocatpath[emt] dispatched for {sid} → pathway p"
+
+        monkeypatch.setattr(
+            compute_mod, "dispatch_relax", lambda *a, **k: "relax[ml] dispatched"
+        )
+        monkeypatch.setattr(compute_mod, "dispatch_autocatpath", _fake_autocatpath)
+        qid = _mk_quest(store, "Lowest-barrier Pd catalyst for NO→NH₃")
+        store.stamp_ref_meta(qid, {"reaction_config": self._RX, "tier_ladder": True})
+        compute_mod.run_compute_step(store, qid, [{"name": "Pd", "structure": _SPEC}])
+        assert tier_calls == [compute_mod._TIER_SCREENING]
+
+    def test_ladder_off_quest_dispatches_neb_tier_by_default(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """No ``meta.tier_ladder`` (the pre-ladder default, and every
+        existing quest/test) keeps today's straight-to-NEB dispatch."""
+        tier_calls: list[Any] = []
+
+        def _fake_autocatpath(_store: Any, sid: int, cfg: dict, **kw: Any) -> str:
+            tier_calls.append(kw.get("tier"))
+            return f"autocatpath[emt] dispatched for {sid} → pathway p"
+
+        monkeypatch.setattr(
+            compute_mod, "dispatch_relax", lambda *a, **k: "relax[ml] dispatched"
+        )
+        monkeypatch.setattr(compute_mod, "dispatch_autocatpath", _fake_autocatpath)
+        qid = _mk_quest(store, "Lowest-barrier Pd catalyst for NO→NH₃")
+        store.stamp_ref_meta(qid, {"reaction_config": self._RX})  # ladder unset
+        compute_mod.run_compute_step(store, qid, [{"name": "Pd", "structure": _SPEC}])
+        assert tier_calls == [compute_mod._TIER_NEB]
+
     def test_plain_quest_dispatches_relax_only(
         self, store: Any, monkeypatch: Any
     ) -> None:
@@ -2114,6 +2434,208 @@ class TestReactionCoDispatch:
         qid = _mk_quest(store, "A striving")  # no reaction_config → no slab
         compute_mod.run_compute_step(store, qid, [{"name": "Fe", "structure": _SPEC}])
         assert seen == [None]
+
+
+class TestTierPromotion:
+    """`promote_tiers` — code-driven, no LLM surface: screening→neb and
+    neb→verify, each capped + ranked by the quest's rubric, skipping a
+    candidate that already has that next-tier pathway dispatched. Real
+    ``dispatch_autocatpath`` is stubbed (mirrors `TestReactionCoDispatch`) —
+    only the *selection* logic is under test here."""
+
+    _RX = {"substrate": "NO", "target": "NH3", "network": "ammonia"}
+
+    @pytest.fixture(autouse=True)
+    def _pathway_schema(self, store: Any) -> None:
+        """The promotion-eligibility filter (`_find_tier_pathway`) queries
+        ``kind='pathway'`` — needs the plugin's `pathway` kind registered
+        (its migration, not the ``autocatpath`` compute package)."""
+        from precis.store import Migrator
+        from tests.conftest import MIGRATIONS_DIR, _active_dsn
+
+        Migrator(_active_dsn(), Migrator.discover_sources(MIGRATIONS_DIR)).apply_all()
+
+    def _quest(self, store: Any, **extra_meta: Any) -> int:
+        qid = _mk_quest(store, "Lowest-barrier Pd catalyst for NO→NH₃")
+        store.stamp_ref_meta(
+            qid, {"reaction_config": self._RX, "tier_ladder": True, **extra_meta}
+        )
+        return qid
+
+    @staticmethod
+    def _spec_for(name: str) -> dict[str, Any]:
+        """A candidate spec content-addressed uniquely per `name` — distinct
+        candidates need distinct specs (:func:`compute._candidate_slug`
+        hashes the spec alone, not the proposal's `name`)."""
+        z = 0.01 * len(name)
+        return {
+            "cell": {"a": 8.4, "b": 8.4, "c": 24.0, "pbc": [True, True, False]},
+            "ops": [{"op": "add_atom", "element": "Fe", "frac": [0.0, 0.0, z]}],
+        }
+
+    def _screening_candidate(
+        self, store: Any, qid: int, name: str, u_l_abs: float
+    ) -> int:
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": name, "structure": self._spec_for(name)}
+        )
+        assert sid is not None
+        store.stamp_ref_meta(sid, {"tier": "screening", "U_L_abs": u_l_abs})
+        return sid
+
+    def _neb_frontier_candidate(
+        self, store: Any, qid: int, name: str, barrier: float, energy: float
+    ) -> int:
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": name, "structure": self._spec_for(name)}
+        )
+        assert sid is not None
+        store.structure_record_run(
+            sid,
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=5,
+            max_disp=0.0,
+            energy=energy,
+        )
+        store.stamp_ref_meta(
+            sid, {"barrier": barrier, "barrier_trusted": True, "barrier_tier": "neb"}
+        )
+        return sid
+
+    def _stub_dispatch(self, monkeypatch: Any) -> list[tuple[int, Any]]:
+        calls: list[tuple[int, Any]] = []
+
+        def _fake(_store: Any, sid: int, _cfg: dict, **kw: Any) -> str:
+            calls.append((sid, kw.get("tier")))
+            return f"autocatpath[emt] dispatched for {sid} → pathway p"
+
+        monkeypatch.setattr(compute_mod, "dispatch_autocatpath", _fake)
+        return calls
+
+    def test_ladder_off_is_a_noop(self, store: Any, monkeypatch: Any) -> None:
+        calls = self._stub_dispatch(monkeypatch)
+        qid = _mk_quest(store, "A striving")
+        store.stamp_ref_meta(qid, {"reaction_config": self._RX})  # no tier_ladder
+        self._screening_candidate(store, qid, "A", 0.5)
+        assert compute_mod.promote_tiers(store, qid) == []
+        assert calls == []
+
+    def test_no_reaction_config_is_a_noop(self, store: Any, monkeypatch: Any) -> None:
+        calls = self._stub_dispatch(monkeypatch)
+        qid = _mk_quest(store, "A striving")
+        store.stamp_ref_meta(qid, {"tier_ladder": True})  # no reaction_config
+        assert compute_mod.promote_tiers(store, qid) == []
+        assert calls == []
+
+    def test_promotes_up_to_cap_ranked_best_first(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        calls = self._stub_dispatch(monkeypatch)
+        qid = self._quest(store, tier_promote_neb=2, tier_promote_verify=0)
+        store.stamp_ref_meta(
+            qid, {"rubric_objectives": [{"key": "U_L_abs", "sense": "min"}]}
+        )
+        sid_best = self._screening_candidate(store, qid, "best", 0.1)
+        sid_mid = self._screening_candidate(store, qid, "mid", 0.5)
+        sid_worst = self._screening_candidate(store, qid, "worst", 0.9)
+        notes = compute_mod.promote_tiers(store, qid)
+        assert len(notes) == 2
+        promoted = {sid for sid, _tier in calls}
+        assert promoted == {sid_best, sid_mid}
+        assert sid_worst not in promoted
+        assert all(tier == compute_mod._TIER_NEB for _sid, tier in calls)
+
+    def test_skips_a_candidate_that_already_has_a_neb_pathway(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        calls = self._stub_dispatch(monkeypatch)
+        qid = self._quest(store, tier_promote_neb=5, tier_promote_verify=0)
+        eligible = self._screening_candidate(store, qid, "eligible", 0.3)
+        already = self._screening_candidate(store, qid, "already", 0.1)
+        store.insert_ref(
+            kind="pathway",
+            slug=f"pw-neb-{already}",
+            title="pw",
+            meta={"candidate_ref": already, "tier": "neb"},
+            parent_id=already,
+        )
+        compute_mod.promote_tiers(store, qid)
+        promoted = {sid for sid, _tier in calls}
+        assert promoted == {eligible}
+        assert already not in promoted
+
+    def test_neb_to_verify_promotes_frontier_candidate_with_trusted_barrier(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        calls = self._stub_dispatch(monkeypatch)
+        qid = self._quest(store, tier_promote_neb=0, tier_promote_verify=1)
+        store.stamp_ref_meta(
+            qid,
+            {
+                "rubric_objectives": [
+                    {"key": "barrier", "sense": "min"},
+                    {"key": "energy", "sense": "min"},
+                ]
+            },
+        )
+        # a genuine tradeoff — both land on the Pareto frontier
+        lower_barrier = self._neb_frontier_candidate(
+            store, qid, "low-barrier", 0.3, -5.0
+        )
+        self._neb_frontier_candidate(store, qid, "low-energy", 0.6, -20.0)
+        notes = compute_mod.promote_tiers(store, qid)
+        assert len(notes) == 1
+        promoted = {sid for sid, _tier in calls}
+        assert promoted == {lower_barrier}  # ranked best-first on `barrier`
+        assert calls[0][1] == compute_mod._TIER_VERIFY
+
+    def test_neb_to_verify_skips_untrusted_barrier(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        calls = self._stub_dispatch(monkeypatch)
+        qid = self._quest(store, tier_promote_neb=0, tier_promote_verify=1)
+        store.stamp_ref_meta(
+            qid, {"rubric_objectives": [{"key": "barrier", "sense": "min"}]}
+        )
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "untrusted", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.structure_record_run(
+            sid,
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=5,
+            max_disp=0.0,
+            energy=-5.0,
+        )
+        store.stamp_ref_meta(
+            sid, {"barrier": 0.2, "barrier_trusted": False, "barrier_tier": "neb"}
+        )
+        assert compute_mod.promote_tiers(store, qid) == []
+        assert calls == []
+
+    def test_skips_a_candidate_that_already_has_a_verify_pathway(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        calls = self._stub_dispatch(monkeypatch)
+        qid = self._quest(store, tier_promote_neb=0, tier_promote_verify=5)
+        store.stamp_ref_meta(
+            qid, {"rubric_objectives": [{"key": "barrier", "sense": "min"}]}
+        )
+        already = self._neb_frontier_candidate(store, qid, "already", 0.2, -5.0)
+        store.insert_ref(
+            kind="pathway",
+            slug=f"pw-verify-{already}",
+            title="pw",
+            meta={"candidate_ref": already, "tier": "verify"},
+            parent_id=already,
+        )
+        compute_mod.promote_tiers(store, qid)
+        assert calls == []
 
 
 # ── tick integration ──────────────────────────────────────────────────

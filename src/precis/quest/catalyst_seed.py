@@ -110,6 +110,9 @@ def seed_catalyst_quest(
     *,
     hub: Any | None = None,
     rubric_composite: dict[str, Any] | None = None,
+    tier_ladder: bool = True,
+    tier_promote_neb: int | None = None,
+    tier_promote_verify: int | None = None,
 ) -> tuple[int, bool]:
     """Mint (or return) the NO→NH₃/Pd catalyst quest.
 
@@ -124,6 +127,22 @@ def seed_catalyst_quest(
     ``meta.rubric_composite`` at seed time only; nothing in the quest tick or
     the LLM loop may write this key later (the agent may not tune its own
     objective).
+
+    ``tier_ladder`` (default ``True``) opts the quest into the
+    **screening → neb → verify** catpath tier ladder
+    (:mod:`precis.quest.compute` — ``run_compute_step``'s initial dispatch +
+    ``promote_tiers``' code-driven promotion both read ``meta.tier_ladder``).
+    A NEW catalyst quest gets it on by default; pass ``tier_ladder=False`` for
+    today's straight-to-NEB behaviour. This default only affects quests
+    minted through THIS seed — a quest built any other way (a bare
+    ``QuestHandler.put`` + manual ``meta.reaction_config`` stamp, as every
+    pre-ladder test does) has no ``meta.tier_ladder`` key at all and stays
+    ladder-off, unaffected. ``tier_promote_neb`` / ``tier_promote_verify``
+    (default :data:`precis.quest.compute._DEFAULT_TIER_PROMOTE_NEB` /
+    :data:`precis.quest.compute._DEFAULT_TIER_PROMOTE_VERIFY` when omitted)
+    are the human-set per-tick promotion caps — written once at seed time,
+    like ``rubric_composite``; no tick/LLM code path may write either key
+    later.
     """
     existing = _existing_seed(store, SEED_KEY)
     if existing is not None:
@@ -131,6 +150,10 @@ def seed_catalyst_quest(
 
     from precis.dispatch import Hub
     from precis.handlers.quest import QuestHandler
+    from precis.quest.compute import (
+        _DEFAULT_TIER_PROMOTE_NEB,
+        _DEFAULT_TIER_PROMOTE_VERIFY,
+    )
 
     hub = hub or Hub(store=store)
     resp = QuestHandler(hub=hub).put(text=STRIVING)
@@ -144,6 +167,17 @@ def seed_catalyst_quest(
         "rubric_objectives": RUBRIC_OBJECTIVES,
         "graduation": GRADUATION,
         "param_space": PARAM_SPACE,
+        "tier_ladder": tier_ladder,
+        "tier_promote_neb": (
+            tier_promote_neb
+            if tier_promote_neb is not None
+            else _DEFAULT_TIER_PROMOTE_NEB
+        ),
+        "tier_promote_verify": (
+            tier_promote_verify
+            if tier_promote_verify is not None
+            else _DEFAULT_TIER_PROMOTE_VERIFY
+        ),
     }
     if rubric_composite is not None:
         meta["rubric_composite"] = rubric_composite
