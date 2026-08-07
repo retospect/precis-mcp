@@ -90,6 +90,45 @@
   </div>
   {% endif %}
 
+  {# ── potential lever (slice 3, docs/proposals/pathway-potential-lever.md)
+     — U slider vs RHE; rendered ONLY when at least one graph node carries
+     ``n_H`` (``diagram.has_n_h``, computed server-side in
+     ``_pathway_graph_payload``) — a legacy pathway catpath never annotated
+     gets ZERO visual change here. The readout mirrors both scales (SHE
+     shown only once pH != 0) and surfaces U_L/U_opt/span/P_side when
+     catpath computed them; every re-render on slider input is client-side
+     (renderDiagram, below) — no server round-trip. #}
+  {% if diagram and diagram.has_n_h %}
+  <div id="pw-u-lever" class="mb-2 rounded border border-sky-100 bg-sky-50/60 px-2 py-1.5 text-xs text-slate-600 flex flex-wrap items-center gap-x-3 gap-y-1">
+    <label class="flex items-center gap-1.5">
+      <span class="font-semibold text-slate-700">U vs RHE</span>
+      <input type="range" id="pw-u-slider" min="-1.5" max="0.5" step="0.01" value="0" class="align-middle w-32">
+    </label>
+    <span id="pw-u-readout" class="font-mono text-slate-700"></span>
+    <label class="flex items-center gap-1">
+      <span>pH</span>
+      <input type="number" id="pw-ph-input" value="0" step="0.1" class="w-14 rounded border border-slate-300 px-1 py-0.5">
+    </label>
+    <span>T = {{ '%.2f'|format(results_electro.T) if results_electro.T is not none else '298.15' }} K</span>
+    {% if results_electro.U_L is not none %}
+    <span>U_L = {{ '%.3f'|format(results_electro.U_L) }} V</span>
+    <button type="button" id="pw-u-snap-ul" class="rounded border border-slate-300 px-1.5 py-0.5 hover:bg-slate-100">&rarr; U_L</button>
+    {% endif %}
+    {% if results_electro.U_opt is not none %}
+    <span>U_opt = {{ '%.3f'|format(results_electro.U_opt) }} V</span>
+    <button type="button" id="pw-u-snap-uopt" class="rounded border border-slate-300 px-1.5 py-0.5 hover:bg-slate-100">&rarr; U_opt</button>
+    {% endif %}
+    {% if results_electro.span_at_Uopt is not none %}
+    <span>span(U_opt) = {{ '%.3f'|format(results_electro.span_at_Uopt) }} eV</span>
+    {% elif results_electro.span_at_UL is not none %}
+    <span>span(U_L) = {{ '%.3f'|format(results_electro.span_at_UL) }} eV</span>
+    {% endif %}
+    {% if results_electro.P_side is not none %}
+    <span>P_side = {{ '%.1f'|format(results_electro.P_side * 100) }}%</span>
+    {% endif %}
+  </div>
+  {% endif %}
+
   {% if diagram %}
   <div id="pw-diagram" class="w-full overflow-x-auto rounded border border-sky-200 bg-slate-50 p-1"></div>
   {% else %}
@@ -345,11 +384,60 @@
     // server-computed (``_pathway_state_warnings``). ``isBadState`` below
     // folds this to the diagram's red/⚠ treatment, mirroring low_confidence.
     stateWarnings: {{ state_warnings | tojson }},
+    // Potential lever (slice 3, pathway-potential-lever.md) — U_L/U_opt/
+    // span_at_U*/P_side/T off ``meta.results`` when catpath computed them;
+    // all null on a legacy pathway (the slider itself is hidden by the
+    // ``diagram.has_n_h`` template guard in that case, but this stays
+    // defined either way so the readout/fork-prob code never has to null-
+    // check the container).
+    results: {{ results_electro | tojson }},
   };
 
   function isBadState(id) {
     const warns = V.stateWarnings[id];
     return !!(warns && warns.some((w) => w.severity === 'bad'));
+  }
+
+  // ── fork-probability guard (slice 3 item 4) — at every state with >=2
+  // outgoing CHEMICAL edges (equal n_H on both endpoints, not a supply/
+  // dashed edge), branch fraction ∝ exp(-Ea/kT). Chemical steps don't
+  // shift with the U lever, so this is computed ONCE off the stored graph,
+  // never re-run on a slider move. A fork is scored only when every
+  // competing edge carries a numeric barrier and neither endpoint is
+  // low_confidence/warned-bad — else no labels at that fork (never
+  // fabricate a ratio from a hole in the data). ──
+  function computeForkProbabilities(g) {
+    const byId = {};
+    g.nodes.forEach((n) => { byId[n.id] = n; });
+    const bySource = {};
+    g.links.forEach((e) => {
+      if (e.kind === 'supply') { return; }
+      const src = byId[e.source], tgt = byId[e.target];
+      if (!src || !tgt) { return; }
+      const srcH = src.n_H != null ? src.n_H : null;
+      const tgtH = tgt.n_H != null ? tgt.n_H : null;
+      if (srcH == null || tgtH == null || srcH !== tgtH) { return; }
+      (bySource[e.source] = bySource[e.source] || []).push(e);
+    });
+    const kT = 8.617333262e-5 * ((V.results && V.results.T) || 298.15);
+    const out = {};
+    Object.keys(bySource).forEach((sid) => {
+      const edges = bySource[sid];
+      if (edges.length < 2) { return; }
+      const src = byId[sid];
+      const guarded = edges.every((e) => {
+        const tgt = byId[e.target];
+        if (typeof e.barrier !== 'number') { return false; }
+        if (src.low_confidence || isBadState(sid)) { return false; }
+        if (!tgt || tgt.low_confidence || isBadState(e.target)) { return false; }
+        return true;
+      });
+      if (!guarded) { return; }
+      const weights = edges.map((e) => Math.exp(-e.barrier / kT));
+      const sum = weights.reduce((a, b) => a + b, 0);
+      edges.forEach((e, i) => { out[e.source + '\u0001' + e.target] = weights[i] / sum; });
+    });
+    return out;
   }
 
   // Escapes quotes too — node ids/labels come straight off agent-written
@@ -421,6 +509,15 @@
   // traditional blue. ──
   const PATH_COLORS = ['#4a90d9', '#f97316', '#16a34a', '#9333ea', '#0d9488', '#db2777'];
 
+  // ── potential lever (slice 3) — the applied U (V vs RHE), moved by the
+  // slider; module-level so renderDiagram picks up the live value on every
+  // re-render without needing it threaded through as an argument. Fork
+  // probabilities are U-independent (chemical steps, by definition, don't
+  // shift with the lever) so computed exactly once here, off the stored
+  // graph — never re-run on a slider move. ──
+  let currentU = 0;
+  const forkProbs = V.diagram ? computeForkProbabilities(V.diagram) : {};
+
   function renderDiagram() {
     const g = V.diagram;
     const el = document.getElementById('pw-diagram');
@@ -428,6 +525,22 @@
 
     const paths = (g.paths && g.paths.length) ? g.paths : [g.nodes.map((n) => n.id)];
     const byId = {}; g.nodes.forEach((n) => { byId[n.id] = n; });
+
+    // ── potential lever (slice 3, docs/proposals/pathway-potential-lever.md)
+    // — CHE: G_node(U) = G_node(0) + n_H(node)·U. Snapshot each node's
+    // originally-stored rel_energy ONCE (repeated re-renders on every
+    // slider move must always start from that same base, never compound
+    // the shift), then recompute rel_energy = base + n_H·U fresh on every
+    // call, BEFORE the zero-ref renormalization below — the root carries
+    // n_H=0, so path 0's first state still opens at 0.00 post-renorm at
+    // any U. A legacy node with no n_H defaults to 0 (no shift, zero
+    // visual change from the pre-lever diagram). ──
+    g.nodes.forEach((nd) => {
+      if (nd._baseRelEnergy === undefined) { nd._baseRelEnergy = nd.rel_energy; }
+      if (nd._baseRelEnergy == null) { nd.rel_energy = null; return; }
+      const nH = nd.n_H != null ? nd.n_H : 0;
+      nd.rel_energy = nd._baseRelEnergy + nH * currentU;
+    });
 
     // ── zero-ref renormalization (item 4) — a legacy graph's rel_energy is
     // stored against a min-energy reference, so path 0 (target/first path)
@@ -564,7 +677,14 @@
           if (bsd > 1e-6) {
             parts.push(`<line x1="${xm}" y1="${py(peakY - bsd)}" x2="${xm}" y2="${py(peakY + bsd)}" stroke="${color}" stroke-width="1"/>`);
           }
-          const lab = bsd > 1e-6 ? `Ea=${e.barrier.toFixed(2)}±${bsd.toFixed(2)}` : `Ea=${e.barrier.toFixed(2)}`;
+          let lab = bsd > 1e-6 ? `Ea=${e.barrier.toFixed(2)}±${bsd.toFixed(2)}` : `Ea=${e.barrier.toFixed(2)}`;
+          // Fork-probability annotation (slice 3 item 4) — only present
+          // when this edge's source cleared the guard in
+          // computeForkProbabilities (numeric barriers, no low_confidence/
+          // warned-bad endpoint); a fork with a hole in the data carries no
+          // percentage at all rather than a fabricated one.
+          const forkPct = forkProbs[e.source + '\u0001' + e.target];
+          if (forkPct != null) { lab += ` (${Math.round(forkPct * 100)}%)`; }
           labelQueue.push({
             x: xm, y: py(peakY + bsd) - 4, anchorX: xm, anchorY: py(peakY),
             text: lab, fontSize: 7.5, color, bold: false, title: null,
@@ -1015,6 +1135,47 @@
     const dest = withStateParam(candSelect.value);
     if (dest) { window.location.href = dest; }
   });
+
+  // ── potential lever readout (slice 3) — RHE<->SHE scale conversion:
+  // U_SHE = U_RHE - (ln10 * kT/e) * pH, -0.0592 V/pH at 298.15 K. SHE is
+  // only shown once pH != 0 (pH=0 -> the two scales coincide, nothing new
+  // to say). ──
+  function sheFromRhe(uRhe, pH, T) {
+    const kB = 8.617333262e-5;
+    return uRhe - (Math.log(10) * kB * T) * pH;
+  }
+  const uSlider = document.getElementById('pw-u-slider');
+  const uReadout = document.getElementById('pw-u-readout');
+  const phInput = document.getElementById('pw-ph-input');
+  function updateUReadout() {
+    if (!uReadout) { return; }
+    const pH = phInput ? (parseFloat(phInput.value) || 0) : 0;
+    const T = (V.results && V.results.T) || 298.15;
+    let text = `U = ${currentU.toFixed(2)} V RHE`;
+    if (pH !== 0) {
+      text += ` (${sheFromRhe(currentU, pH, T).toFixed(2)} V SHE @ pH ${pH})`;
+    }
+    uReadout.textContent = text;
+  }
+  function setU(u) {
+    if (u == null || Number.isNaN(u)) { return; }
+    currentU = Math.max(-1.5, Math.min(0.5, u));
+    if (uSlider) { uSlider.value = String(currentU); }
+    updateUReadout();
+    try {
+      renderDiagram();
+      if (selected) { highlightState(selected); }
+    } catch (err) {
+      console.error('pathway diagram re-render failed', err);
+    }
+  }
+  if (uSlider) { uSlider.addEventListener('input', () => setU(parseFloat(uSlider.value))); }
+  if (phInput) { phInput.addEventListener('input', updateUReadout); }
+  const snapUL = document.getElementById('pw-u-snap-ul');
+  const snapUopt = document.getElementById('pw-u-snap-uopt');
+  if (snapUL) snapUL.addEventListener('click', () => setU(V.results && V.results.U_L));
+  if (snapUopt) snapUopt.addEventListener('click', () => setU(V.results && V.results.U_opt));
+  updateUReadout();
 
   // A diagram-render failure (e.g. a still-unanticipated bad graph shape)
   // must never abort the whole IIFE — the stepper + 3D viewer boot below

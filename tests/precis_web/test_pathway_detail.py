@@ -1165,3 +1165,156 @@ def test_pathway_detail_run_jobs_degrade_cleanly_without_pool_support(
     resp = client.get("/refs/pathway/171696")
     assert resp.status_code == 200
     assert "run job #" not in resp.text
+
+
+# ── potential lever (slice 3, docs/proposals/pathway-potential-lever.md) ──
+
+#: ``_GRAPH3`` with a per-node ``n_H`` (reservoir H atoms absorbed relative
+#: to the root, "R") — s1 is the root, s2/s3 have each absorbed one H.
+_GRAPH3_NH: dict[str, Any] = {
+    "nodes": [dict(n, n_H=(0 if n["id"] == "s1" else 1)) for n in _GRAPH3["nodes"]],
+    "links": _GRAPH3["links"],
+}
+
+_ELECTRO_RESULTS: dict[str, Any] = {
+    "substrate": "Cu(111)",
+    "target": "s3",
+    "U_L": -0.42,
+    "U_opt": -0.30,
+    "span_at_UL": 0.55,
+    "span_at_Uopt": 0.48,
+    "P_side": 0.12,
+    "T": 300.0,
+}
+
+
+def test_pathway_payload_passes_n_h_and_has_n_h_flag_when_present(
+    client, runtime
+) -> None:
+    """Item 1: a node's ``n_H`` (present, possibly 0 on the root) round-trips
+    into the diagram JSON, and ``diagram.has_n_h`` flips true — the signal
+    the U-slider control strip gates on."""
+    _seed_pathway(
+        runtime.store,
+        meta={"graph": _GRAPH3_NH, "results": {"target": "s3"}},
+        body_text=None,
+    )
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    diagram = _extract_json_object(resp.text, "diagram: ")
+    assert diagram["has_n_h"] is True
+    by_id = {n["id"]: n for n in diagram["nodes"]}
+    assert by_id["s1"]["n_H"] == 0
+    assert by_id["s2"]["n_H"] == 1
+    assert by_id["s3"]["n_H"] == 1
+
+
+def test_pathway_payload_omits_n_h_and_has_n_h_false_when_absent(
+    client, runtime
+) -> None:
+    """Legacy graph (no node ever carried ``n_H``): every node's ``n_H``
+    round-trips as JSON ``null`` and ``diagram.has_n_h`` is false."""
+    _seed_pathway(
+        runtime.store,
+        meta={"graph": _GRAPH3, "structure_refs": _GRAPH3_STRUCTURE_REFS},
+        body_text=None,
+    )
+    _seed_explorer_scenes(runtime.store)
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    diagram = _extract_json_object(resp.text, "diagram: ")
+    assert diagram["has_n_h"] is False
+    assert all(n["n_H"] is None for n in diagram["nodes"])
+
+
+def test_pathway_u_slider_rendered_only_when_graph_carries_n_h(client, runtime) -> None:
+    """Item 2: the whole U-lever control strip (slider + readout) is present
+    when ``n_H`` is on the graph, absent (zero visual change) on a legacy
+    graph without it."""
+    _seed_pathway(
+        runtime.store,
+        meta={"graph": _GRAPH3_NH, "results": {"target": "s3"}},
+        body_text=None,
+    )
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    assert 'id="pw-u-slider"' in resp.text
+    assert 'id="pw-u-readout"' in resp.text
+    assert 'id="pw-ph-input"' in resp.text
+
+
+def test_pathway_u_slider_absent_on_legacy_graph(client, runtime) -> None:
+    _seed_pathway(
+        runtime.store,
+        meta={"graph": _GRAPH3, "structure_refs": _GRAPH3_STRUCTURE_REFS},
+        body_text=None,
+    )
+    _seed_explorer_scenes(runtime.store)
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    assert 'id="pw-u-slider"' not in resp.text
+    assert 'id="pw-u-lever"' not in resp.text
+
+
+def test_pathway_u_readout_scalars_rendered_when_present(client, runtime) -> None:
+    """Item 3: U_L / U_opt / span(U_opt) / P_side / T from ``meta.results``
+    all surface in the readout strip, alongside the "-> U_L" / "-> U_opt"
+    snap buttons."""
+    _seed_pathway(
+        runtime.store,
+        meta={"graph": _GRAPH3_NH, "results": _ELECTRO_RESULTS},
+        body_text=None,
+    )
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    assert "U_L = -0.420 V" in resp.text
+    assert "U_opt = -0.300 V" in resp.text
+    assert "span(U_opt) = 0.480 eV" in resp.text
+    assert "P_side = 12.0%" in resp.text
+    assert "T = 300.00 K" in resp.text
+    assert 'id="pw-u-snap-ul"' in resp.text
+    assert 'id="pw-u-snap-uopt"' in resp.text
+
+
+def test_pathway_u_readout_scalars_omitted_when_absent(client, runtime) -> None:
+    """A pathway with ``n_H`` on the graph but no computed electrochemistry
+    results yet (early-slice) shows the slider but no scalar readouts/snap
+    buttons — and defaults T to 298.15 K rather than omitting it."""
+    _seed_pathway(
+        runtime.store,
+        meta={"graph": _GRAPH3_NH, "results": {"target": "s3"}},
+        body_text=None,
+    )
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    assert 'id="pw-u-slider"' in resp.text
+    assert "U_L =" not in resp.text
+    assert "U_opt =" not in resp.text
+    assert "P_side =" not in resp.text
+    assert 'id="pw-u-snap-ul"' not in resp.text
+    assert 'id="pw-u-snap-uopt"' not in resp.text
+    assert "T = 298.15 K" in resp.text
+
+
+def test_pathway_fork_probability_js_and_lever_js_shipped(client, runtime) -> None:
+    """Item 4 (client-computed, untestable without a browser): the guarded
+    fork-probability function and the RHE<->SHE conversion ship on the page,
+    and the payload each depends on (``n_H``, numeric ``barrier``,
+    ``low_confidence``) is present in the embedded diagram JSON."""
+    _seed_pathway(
+        runtime.store,
+        meta={"graph": _GRAPH3_NH, "results": _ELECTRO_RESULTS},
+        body_text=None,
+    )
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    assert "function computeForkProbabilities(g)" in resp.text
+    assert "function sheFromRhe(uRhe, pH, T)" in resp.text
+    assert "_baseRelEnergy" in resp.text
+    diagram = _extract_json_object(resp.text, "diagram: ")
+    for link in diagram["links"]:
+        assert "barrier" in link
+        assert "low_confidence" in link
+    for node in diagram["nodes"]:
+        assert "n_H" in node
+        assert "low_confidence" in node

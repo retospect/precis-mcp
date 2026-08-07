@@ -824,6 +824,7 @@ def _pathway_graph_payload(
     there's no graph to draw (an early/sparse pathway — AC4-adjacent)."""
     if not graph or not graph.get("nodes"):
         return None
+    raw_nodes = graph.get("nodes", [])
     nodes = [
         {
             "id": str(n["id"]),
@@ -831,8 +832,14 @@ def _pathway_graph_payload(
             "rel_energy": n.get("rel_energy"),
             "energy_std": n.get("energy_std"),
             "low_confidence": bool(n.get("low_confidence")),
+            # CHE potential lever (docs/proposals/pathway-potential-lever.md)
+            # — reservoir H atoms this node has absorbed relative to the
+            # root (root = 0); null on a legacy graph catpath never
+            # annotated. Always present (even null) so the client treats a
+            # missing key and an explicit null identically.
+            "n_H": n.get("n_H"),
         }
-        for n in graph.get("nodes", [])
+        for n in raw_nodes
         if n.get("id") is not None
     ]
     links = [
@@ -851,7 +858,11 @@ def _pathway_graph_payload(
     ]
     node_ids = [n["id"] for n in nodes]
     paths = _pathway_paths(node_ids, links, str(target) if target is not None else None)
-    return {"nodes": nodes, "links": links, "paths": paths}
+    # ``has_n_h`` gates the whole U-slider control strip in the template —
+    # a legacy pathway (no node carries n_H at all) renders the diagram
+    # exactly as before, zero visual change.
+    has_n_h = any(n.get("n_H") is not None for n in raw_nodes)
+    return {"nodes": nodes, "links": links, "paths": paths, "has_n_h": has_n_h}
 
 
 def _pathway_measures(raw: Any) -> tuple[list[Measure], list[str]]:
@@ -1434,6 +1445,19 @@ async def _pathway_detail(request: Request, store: Any, ref: Any) -> HTMLRespons
         "warnings": warnings_list,
     }
 
+    # CHE potential lever (docs/proposals/pathway-potential-lever.md) — the
+    # explorer's U-slider readout strip. Every field is optional; on a
+    # legacy pathway all five stay None (the slider itself is hidden by
+    # ``diagram.has_n_h``, computed below, regardless of these).
+    results_electro = {
+        "U_L": results.get("U_L"),
+        "U_opt": results.get("U_opt"),
+        "span_at_UL": results.get("span_at_UL"),
+        "span_at_Uopt": results.get("span_at_Uopt"),
+        "P_side": results.get("P_side"),
+        "T": results.get("T"),
+    }
+
     # Interactive explorer (docs/proposals/reaction-pathway-explorer.md) — the
     # clickable energy diagram (item 1), the per-state 3D cell viewer (item 2),
     # and per-state measures (item 3). All three degrade gracefully: no graph
@@ -1496,6 +1520,7 @@ async def _pathway_detail(request: Request, store: Any, ref: Any) -> HTMLRespons
             "structures": structures,
             "body_text": body_text,
             "results_summary": results_summary,
+            "results_electro": results_electro,
             "diagram": diagram,
             "state_ids": state_ids,
             "state_sections": state_sections,
