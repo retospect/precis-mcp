@@ -281,19 +281,115 @@ def test_tag_meta_rejects_arbitrary_junk_key(handler: TodoHandler) -> None:
 
 
 def test_tag_meta_allowlist_keys_still_promote(handler: TodoHandler) -> None:
-    """The four allowlisted keys still write through under existing gates."""
+    """The five allowlisted keys still write through under existing gates."""
     r = handler.put(text="a leaf")
     rid = _id_of(r.body)
     handler.tag(id=rid, meta={"rotation_root": True})
     handler.tag(id=rid, meta={"worker_mintable": False})
     handler.tag(id=rid, meta={"llm_tier": "sonnet"})
     handler.tag(id=rid, meta={"schedule": {"cron": "0 * * * *"}})
+    handler.tag(id=rid, meta={"llm_select": {"placement": "local"}})
     ref = handler.store.get_ref(kind="todo", id=rid)
     assert ref is not None
     assert ref.meta.get("rotation_root") is True
     assert ref.meta.get("worker_mintable") is False
     assert ref.meta.get("llm_tier") == "sonnet"
     assert ref.meta.get("schedule", {}).get("cron") == "0 * * * *"
+    assert ref.meta.get("llm_select") == {"placement": "local"}
+
+
+# ── meta.llm_select (ADR 0066 structured selection) ─────────────────
+
+
+def test_llm_select_accepts_a_valid_subset(handler: TodoHandler) -> None:
+    r = handler.put(
+        text="planner brief",
+        meta={
+            "llm_tier": "opus",
+            "llm_select": {
+                "placement": "cloud",
+                "thinking": True,
+                "effort": "high",
+                "temperature": 0.7,
+            },
+        },
+    )
+    rid = _id_of(r.body)
+    ref = handler.store.get_ref(kind="todo", id=rid)
+    assert ref is not None
+    assert ref.meta.get("llm_select") == {
+        "placement": "cloud",
+        "thinking": True,
+        "effort": "high",
+        "temperature": 0.7,
+    }
+
+
+def test_llm_select_accepts_a_partial_subset(handler: TodoHandler) -> None:
+    """Every key is independently optional — a single knob is enough."""
+    r = handler.put(
+        text="planner brief",
+        meta={"llm_tier": "opus", "llm_select": {"placement": "local"}},
+    )
+    rid = _id_of(r.body)
+    ref = handler.store.get_ref(kind="todo", id=rid)
+    assert ref is not None
+    assert ref.meta.get("llm_select") == {"placement": "local"}
+
+
+def test_llm_select_rejects_non_dict(handler: TodoHandler) -> None:
+    with pytest.raises(BadInput, match="must be a dict"):
+        handler.put(
+            text="planner brief", meta={"llm_tier": "opus", "llm_select": "local"}
+        )
+
+
+def test_llm_select_rejects_unknown_key(handler: TodoHandler) -> None:
+    with pytest.raises(BadInput, match="unknown"):
+        handler.put(
+            text="planner brief",
+            meta={"llm_tier": "opus", "llm_select": {"bogus": "value"}},
+        )
+
+
+def test_llm_select_rejects_bad_placement(handler: TodoHandler) -> None:
+    with pytest.raises(BadInput, match="unknown placement"):
+        handler.put(
+            text="planner brief",
+            meta={"llm_tier": "opus", "llm_select": {"placement": "moon"}},
+        )
+
+
+def test_llm_select_rejects_bad_effort(handler: TodoHandler) -> None:
+    with pytest.raises(BadInput, match="unknown effort"):
+        handler.put(
+            text="planner brief",
+            meta={"llm_tier": "opus", "llm_select": {"effort": "extreme"}},
+        )
+
+
+def test_llm_select_rejects_non_bool_thinking(handler: TodoHandler) -> None:
+    with pytest.raises(BadInput, match="thinking must be a bool"):
+        handler.put(
+            text="planner brief",
+            meta={"llm_tier": "opus", "llm_select": {"thinking": "yes"}},
+        )
+
+
+def test_llm_select_rejects_out_of_range_temperature(handler: TodoHandler) -> None:
+    with pytest.raises(BadInput, match="out of range"):
+        handler.put(
+            text="planner brief",
+            meta={"llm_tier": "opus", "llm_select": {"temperature": 3.5}},
+        )
+
+
+def test_llm_select_rejects_non_numeric_temperature(handler: TodoHandler) -> None:
+    with pytest.raises(BadInput, match="temperature must be a number"):
+        handler.put(
+            text="planner brief",
+            meta={"llm_tier": "opus", "llm_select": {"temperature": "hot"}},
+        )
 
 
 # ── ancestry walk-on-read ─────────────────────────────────────────

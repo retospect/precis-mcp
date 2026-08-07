@@ -564,16 +564,32 @@ def test_smartdraft_reader_renders_three_panes(
     assert "Collaborate" in body  # right pane header
 
 
-def test_smartdraft_ask_model_picker_uses_shared_planner_models(
+def test_smartdraft_ask_uses_structured_llm_selector(
     smartdraft_client: TestClient,
 ) -> None:
-    """The "Ask the LLM" model picker is no longer a hardcoded 3-option
-    list — it renders from the shared ``planner_models()`` helper, same as
-    the tasks-dashboard / ref-detail pickers. Alpine's ``model: 'opus'``
-    default must still resolve to a real ``<option>``."""
+    """The "Ask the LLM" picker is the shared structured selector
+    (_llm_selector.html.j2): four controls — tier × placement × reasoning ×
+    temperature — bound to its own Alpine scope and fetching the live
+    preview off ``GET /api/llm/resolve``, NOT the old 8-alias
+    ``planner_models()`` dropdown (opus/sonnet/haiku/local + the four
+    canonical tiers)."""
     r = smartdraft_client.get("/smartdraft/sdt")
     assert r.status_code == 200
-    assert '<option value="opus"' in r.text
+    body = r.text
+    assert 'x-data="llmSelectorState(' in body
+    assert 'x-model="tier"' in body
+    assert 'x-model="placement"' in body
+    assert 'x-model="reasoning"' in body
+    assert 'x-model="temperature"' in body
+    assert "/api/llm/resolve" in body
+    # the four canonical tier options are present …
+    assert '<option value="small">small</option>' in body
+    assert '<option value="frontier">frontier</option>' in body
+    # … but the retired 8-alias planner_models() dropdown is gone (no
+    # opus/sonnet/haiku option values anywhere on the page — "local" is
+    # skipped here since it's also a legitimate placement-select value).
+    for legacy in ("opus", "sonnet", "haiku"):
+        assert f'<option value="{legacy}"' not in body
 
 
 def test_smartdraft_full_doc_cited_block_is_div_not_nested_anchor(

@@ -88,6 +88,12 @@ open model, e.g. a Qwen build). This catalog is where you check what
 a tier resolves to today and how it has performed — the field is the
 router's input, a card here is the router's output.
 
+An optional `meta.llm_select` dict rides alongside `llm_tier` for finer
+control: `{placement: 'local'|'cloud', thinking: bool, effort:
+'low'|'medium'|'high', temperature: 0..2}`, every key independently
+optional. `placement` is **strict** — pinning `'local'` and having no local
+rung for the tier fails the call rather than silently falling back to cloud.
+
 ## See also
 
 ```python

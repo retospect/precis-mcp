@@ -111,6 +111,7 @@ from precis.utils.authors import (
 # accepted set — the cloud triad plus the cluster's ``local`` qwen tier — never
 # drifts from ``Tag.parse_strict`` or the ``planner_models()`` dropdown.
 from precis.utils.llm.router import PLANNER_MODEL_ALIASES as _PLANNER_MODELS
+from precis.utils.llm.router import llm_select_from_payload
 from precis.utils.table_data import Scalar
 from precis_web import draft_eyes
 from precis_web.deps import (
@@ -1510,7 +1511,9 @@ async def request_change_ws(request: Request, ident: str) -> JSONResponse:
     ``meta.working_set = {eyes, edit_hint}`` (+ ``meta.anchor`` = first pen). With
     **nothing pinned**, it falls back to anchoring on the caller's current focus
     (``anchor``) so the ask still works on the current para + its fisheye. Body
-    ``{text, model, anchor?}``."""
+    ``{text, model, anchor?, placement?, reasoning?, temperature?}`` — the last
+    three are the optional structured selection (ADR 0066), threaded onto
+    ``meta.llm_select`` alongside the ``model`` alias's ``meta.llm_tier``."""
     try:
         payload = await request.json()
     except Exception:
@@ -1524,8 +1527,8 @@ async def request_change_ws(request: Request, ident: str) -> JSONResponse:
         return JSONResponse({"ok": False, "error": "empty request"}, status_code=422)
     marks = draft_eyes.load_marks(store, ref.id)
     has_marks = bool(marks["pens"] or marks["eyes"])
-    model = str(payload.get("model") or "opus")
-    tier = model if model in _PLANNER_MODELS else "opus"
+    model = str(payload.get("model") or "big")
+    tier = model if model in _PLANNER_MODELS else "big"
     # Anchor at the first pen (else the first draft-chunk eye, else the caller's
     # current focus) — in the base-58 form the classic anchor modules expect.
     anchor_dc = (
@@ -1550,6 +1553,13 @@ async def request_change_ws(request: Request, ident: str) -> JSONResponse:
         meta["working_set"] = draft_eyes.to_working_set_meta(marks)
     if anchor:
         meta["anchor"] = anchor
+    llm_select = llm_select_from_payload(
+        placement=payload.get("placement"),
+        reasoning=payload.get("reasoning"),
+        temperature=payload.get("temperature"),
+    )
+    if llm_select:
+        meta["llm_select"] = llm_select
     args: dict[str, Any] = {
         "kind": "todo",
         "text": text,

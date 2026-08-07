@@ -145,16 +145,19 @@ class JobHandler(NumericRefHandler):
         idem_key: str | None = None,
         parent_id: int | str | None = None,
         model: str | None = None,
+        select: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
         # Retry surface: ``put(kind='job', id=N, mode='retry')`` re-runs a
         # failed job by clearing the parent todo's failure-bubble so the
         # dispatch worker re-mints a fresh attempt. ``model='sonnet'``
         # additionally swaps the parent's ``meta.llm_tier`` first, which
-        # is what the next tick dispatches with. Handled before the
-        # generic ``id is not None`` / ``mode`` rejections below.
+        # is what the next tick dispatches with; ``select={...}`` does the
+        # same for the optional structured ``meta.llm_select`` sibling
+        # (ADR 0066). Handled before the generic ``id is not None`` /
+        # ``mode`` rejections below.
         if mode == "retry":
-            return self._retry_job(id=id, model=model)
+            return self._retry_job(id=id, model=model, select=select)
         if id is not None:
             raise BadInput(
                 f"put on existing job id={id!r} is not supported",
@@ -422,7 +425,13 @@ class JobHandler(NumericRefHandler):
 
     # ── retry: re-run a failed job via the parent todo ─────────────
 
-    def _retry_job(self, *, id: str | int | None, model: str | None) -> Response:
+    def _retry_job(
+        self,
+        *,
+        id: str | int | None,
+        model: str | None,
+        select: dict[str, Any] | None = None,
+    ) -> Response:
         """Re-run a failed job by unblocking its parent todo.
 
         A job failure bubbles a ``child-failed:<job_id>`` open tag onto
@@ -439,6 +448,15 @@ class JobHandler(NumericRefHandler):
         valid on an LLM-planner todo (one that already has
         ``meta.llm_tier`` set); a code-path executor job has no model
         knob.
+
+        ``select`` (optional) is the structured ``meta.llm_select`` sibling
+        (ADR 0066) — placement/thinking/effort/temperature — validated by
+        :func:`~precis.handlers._todo_guards.check_llm_select_meta` and
+        written onto the parent alongside ``llm_tier`` when a ``model``
+        change also lands. When ``model`` is given but ``select`` isn't,
+        the parent's existing ``meta.llm_select`` (if any) is left
+        untouched — a bare tier swap shouldn't silently wipe a prior
+        structured selection.
         """
         if id is None:
             raise BadInput(
@@ -471,32 +489,46 @@ class JobHandler(NumericRefHandler):
             )
 
         new_llm_tier: str | None = None
-        if model is not None:
+        new_llm_select: dict[str, Any] | None = None
+        if model is not None or select is not None:
             parent_ref = self.store.fetch_refs_by_ids({parent_id}).get(parent_id)
             has_llm_tier = bool(
                 parent_ref is not None and (parent_ref.meta or {}).get("llm_tier")
             )
             if not has_llm_tier:
                 raise BadInput(
-                    f"model= only applies to LLM-planner todos; parent todo "
-                    f"#{parent_id} carries no meta.llm_tier",
-                    next="retry without model=, or set the executor's params by hand",
+                    f"model=/select= only apply to LLM-planner todos; parent "
+                    f"todo #{parent_id} carries no meta.llm_tier",
+                    next=(
+                        "retry without model=/select=, or set the executor's "
+                        "params by hand"
+                    ),
                 )
-            new_llm_tier = str(model).strip()
-            # Closed-vocab validation (opus|sonnet|haiku|...).
-            todo_guards.check_llm_tier_meta({"llm_tier": new_llm_tier})
+            if model is not None:
+                new_llm_tier = str(model).strip()
+                # Closed-vocab validation (opus|sonnet|haiku|...).
+                todo_guards.check_llm_tier_meta({"llm_tier": new_llm_tier})
+            if select is not None:
+                # Same validation the write-time guard runs on a direct
+                # put()/tag() — a retry-form knob gets no less scrutiny.
+                todo_guards.check_llm_select_meta({"llm_select": select})
+                new_llm_select = select
 
         bubble = Tag.open(f"child-failed:{job_id}")
         with self.store.tx() as conn:
+            meta_updates: dict[str, Any] = {}
             if new_llm_tier is not None:
-                self.store.stamp_ref_meta(
-                    parent_id, {"llm_tier": new_llm_tier}, conn=conn
-                )
+                meta_updates["llm_tier"] = new_llm_tier
+            if new_llm_select is not None:
+                meta_updates["llm_select"] = new_llm_select
+            if meta_updates:
+                self.store.stamp_ref_meta(parent_id, meta_updates, conn=conn)
             self.store.remove_tag(parent_id, bubble, conn=conn)
 
         model_note = (
             f", swapped model→{str(model).strip()}" if model is not None else ""
         )
+        model_note += ", updated selection" if new_llm_select is not None else ""
         return Response(
             body=(
                 f"retry queued: cleared child-failed:{job_id} on todo "

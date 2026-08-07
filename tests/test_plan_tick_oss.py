@@ -185,6 +185,7 @@ def _run_oss(
     stop_reason: str,
     with_workspace: bool = True,
     draft: tuple[str, str, str] | None = None,
+    params: dict[str, Any] | None = None,
 ) -> tuple[pt.PlanTickOutcome, dict[str, Any]]:
     """Drive ``plan_tick.run`` under the OpenAI backend with the OSS loop
     scripted; returns the outcome plus what the loop observed. ``dispatch`` is
@@ -200,6 +201,8 @@ def _run_oss(
         seen["ctx"] = inproc_context.current()
         seen["model_id"] = kw["model"]
         seen["tool_less"] = kw.get("tool_less")
+        seen["temperature"] = kw.get("temperature")
+        seen["thinking"] = kw.get("thinking")
         return AgentLoopResult(
             final_text="tick output",
             turns_used=2,
@@ -231,7 +234,7 @@ def _run_oss(
         store=object(),
         job_ref_id=1,
         parent_ref_id=2,
-        params={"model": "opus"},
+        params=params or {"model": "opus"},
     )
     return outcome, seen
 
@@ -263,6 +266,42 @@ def test_run_oss_max_turns_maps_resumable(monkeypatch: pytest.MonkeyPatch) -> No
     outcome, _ = _run_oss(monkeypatch, stop_reason="max_turns")
     assert outcome.exit_code == 1
     assert outcome.resume_reason == "max_turns"
+
+
+def test_run_oss_threads_select_temperature_and_thinking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``params['select']`` (ADR 0066) rides through ``LlmRequest`` and the
+    real ``dispatch`` onto the OSS loop's ``temperature``/``thinking``
+    kwargs."""
+    _outcome, seen = _run_oss(
+        monkeypatch,
+        stop_reason="stop",
+        params={
+            "model": "opus",
+            "select": {"thinking": False, "temperature": 0.9},
+        },
+    )
+    assert seen["thinking"] is False
+    assert seen["temperature"] == 0.9
+
+
+@pytest.mark.parametrize("junk_select", ["not-a-dict", 42, ["a", "list"]])
+def test_run_oss_corrupt_select_does_not_crash_the_tick(
+    monkeypatch: pytest.MonkeyPatch, junk_select: Any
+) -> None:
+    """A corrupt ``meta.llm_select`` degrades to no override — the tick
+    still completes cleanly, falling through to the tier's own generation
+    defaults (``dispatch``'s ``_tier_gen_defaults``: FRONTIER = thinking on,
+    temperature unset) exactly as it would with no ``select`` at all."""
+    outcome, seen = _run_oss(
+        monkeypatch,
+        stop_reason="stop",
+        params={"model": "opus", "select": junk_select},
+    )
+    assert outcome.exit_code == 0
+    assert seen["thinking"] is True
+    assert seen["temperature"] is None
 
 
 def test_run_oss_no_workspace_leaves_ctx_workspace_none(

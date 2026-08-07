@@ -459,6 +459,7 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool]:
                    r.meta->'params' AS params,
                    r.meta ? 'auto_check' AS has_auto_check,
                    r.meta->>'llm_tier' AS llm_tier,
+                   r.meta->'llm_select' AS llm_select,
                    (SELECT t.value FROM ref_tags rt
                       JOIN tags t ON t.tag_id = rt.tag_id
                      WHERE rt.ref_id = r.ref_id
@@ -534,13 +535,14 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool]:
         params = dict(row[3] or {})
         has_auto_check = bool(row[4])
         llm_tier = row[5]
-        executor_tag = row[6]
+        llm_select = row[6]
+        executor_tag = row[7]
         # The parent todo's prio flows down the DAG onto the minted job so
         # the claim ordering (slice 6a, 0014 direction: lower = more urgent)
         # can favour it — quests/urgent projects get their compute claimed
         # first. NULL stays NULL → the claim's COALESCE default (byte-
         # identical to FIFO for unset work).
-        parent_prio = int(row[7]) if row[7] is not None else None
+        parent_prio = int(row[8]) if row[8] is not None else None
 
         # Planner-coroutine path: when a todo carries ``meta.llm_tier``
         # but lacks ``meta.executor``, synthesize the dispatch parameters
@@ -571,6 +573,12 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool]:
         # else plan_tick crashes on a missing params['model'].
         if llm_tier and job_type == "plan_tick":
             params.setdefault("model", str(llm_tier))
+            # ``meta.llm_select`` (ADR 0066 structured selection, optional
+            # sibling of ``llm_tier``) rides along as ``params['select']`` —
+            # plan_tick reads it defensively (a corrupt/malformed dict can't
+            # crash a tick), so a plain dict is threaded through as-is.
+            if isinstance(llm_select, dict):
+                params.setdefault("select", llm_select)
 
         # Validate executor + job_type at dispatch time. The TodoHandler
         # doesn't validate ``meta.executor`` / ``meta.job_type`` on

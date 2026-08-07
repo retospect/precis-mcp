@@ -101,6 +101,7 @@ def create_app(
         flags,
         gripes,
         items,
+        llm,
         mermaid,
         needs_you,
         papers,
@@ -128,6 +129,7 @@ def create_app(
     app.include_router(podcast.router)
     app.include_router(flags.router)
     app.include_router(items.router)
+    app.include_router(llm.router)
     app.include_router(drafts.router)
     app.include_router(smartdraft.router)
     app.include_router(drive.router)

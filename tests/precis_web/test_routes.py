@@ -44,6 +44,57 @@ def test_healthz(client) -> None:
     assert client.get("/healthz").json() == {"status": "ok"}
 
 
+# ── /api/llm/resolve — the structured-selector preview endpoint ──────────
+
+
+def test_llm_resolve_happy_call_returns_the_selection_shape(client) -> None:
+    """A plain ``?model=<tier>`` call 200s with the full
+    :func:`~precis.utils.llm.router.resolve_selection` shape, JSON-safe
+    (``tier``/``transport`` are plain strings, not the ``StrEnum`` objects)."""
+    resp = client.get(
+        "/api/llm/resolve?model=big&placement=local&reasoning=high&temperature=0.7"
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    for key in (
+        "alias",
+        "tier",
+        "model",
+        "transport",
+        "placement_effective",
+        "fallbacks",
+        "knobs",
+        "size",
+        "context",
+        "warnings",
+        "error",
+    ):
+        assert key in data
+    assert data["alias"] == "big"
+    if data["tier"] is not None:
+        assert isinstance(data["tier"], str)
+    if data["transport"] is not None:
+        assert isinstance(data["transport"], str)
+
+
+def test_llm_resolve_junk_temperature_still_200s(client) -> None:
+    """An unparsable ``temperature`` degrades to unset rather than 400ing —
+    the widget must never break on a stray non-numeric value."""
+    resp = client.get("/api/llm/resolve?model=big&temperature=not-a-number")
+    assert resp.status_code == 200
+    assert resp.json()["alias"] == "big"
+
+
+def test_llm_resolve_unknown_model_returns_error_field(client) -> None:
+    """An unknown alias still 200s — the widget renders ``error`` inline
+    rather than special-casing an HTTP failure."""
+    resp = client.get("/api/llm/resolve?model=not-a-real-tier")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["error"] is not None
+    assert data["alias"] == "not-a-real-tier"
+
+
 def test_drive_new_dropdown_offers_draft_doctype(client) -> None:
     """The Drive '+ New' dropdown lets you pick the draft genre (patent /
     proposal / …), fed from the same ``_DOC_TYPES`` source ``/drafts/new``
@@ -1397,6 +1448,51 @@ def test_move_empty_parent_detaches_to_root(client, runtime) -> None:
     assert args == {"kind": "todo", "id": 2, "rel": "parent", "mode": "remove"}
 
 
+def test_retry_bare_dispatches_put_retry(client, runtime) -> None:
+    client.post("/tasks/2/retry", data={}, follow_redirects=False)
+    verb, args = runtime.calls[-1]
+    assert verb == "put"
+    assert args == {"kind": "job", "id": 2, "mode": "retry"}
+
+
+def test_retry_with_model_passes_model(client, runtime) -> None:
+    client.post("/tasks/2/retry", data={"model": "sonnet"}, follow_redirects=False)
+    verb, args = runtime.calls[-1]
+    assert args["model"] == "sonnet"
+    assert "select" not in args
+
+
+def test_retry_with_reasoning_builds_llm_select(client, runtime) -> None:
+    """``reasoning=`` (ADR 0066) builds the same structured ``select`` dict
+    the smartdraft ask does — split into thinking/effort."""
+    client.post("/tasks/2/retry", data={"reasoning": "high"}, follow_redirects=False)
+    verb, args = runtime.calls[-1]
+    assert verb == "put"
+    assert args["select"] == {"thinking": True, "effort": "high"}
+
+
+def test_retry_with_placement_and_temperature(client, runtime) -> None:
+    client.post(
+        "/tasks/2/retry",
+        data={"placement": "local", "temperature": "0.5"},
+        follow_redirects=False,
+    )
+    _verb, args = runtime.calls[-1]
+    assert args["select"] == {"placement": "local", "temperature": 0.5}
+
+
+def test_retry_junk_knobs_omit_select(client, runtime) -> None:
+    """A junk placement/reasoning/temperature degrades to no select= at
+    all rather than 500ing the form post."""
+    client.post(
+        "/tasks/2/retry",
+        data={"placement": "moon", "reasoning": "extreme", "temperature": "hot"},
+        follow_redirects=False,
+    )
+    _verb, args = runtime.calls[-1]
+    assert "select" not in args
+
+
 # ── papers → list folded into Drive's kind=paper facet (WS1b) ──────
 # The keyword/semantic mode toggle and has_pdf/has_chunks list filters
 # this route used to own don't have a Drive equivalent and are dropped
@@ -2430,9 +2526,14 @@ def test_job_detail_shows_actions_not_ask_think(client, runtime) -> None:
     # The retry form posts to the existing tasks retry route.
     assert 'action="/tasks/80/retry"' in resp.text
     assert "Retry job" in resp.text
-    # LLM-planner parent → the model-swap dropdown is offered.
+    # LLM-planner parent → the model-swap dropdown is offered, scoped to the
+    # 4 canonical tiers (opus/sonnet/haiku/local aliases retired from this
+    # picker — the structured selector widget owns the rest of the vocab).
     assert 'name="model"' in resp.text
-    assert "retry on sonnet" in resp.text
+    assert "retry on big" in resp.text
+    assert "retry on sonnet" not in resp.text
+    for tier in ("small", "medium", "big", "frontier"):
+        assert f"retry on {tier} ·" in resp.text
     # Transcript + parent affordances.
     assert "/tasks/80/transcript" in resp.text
     assert "/tasks?focus=81" in resp.text
@@ -4195,12 +4296,18 @@ def test_dashboard_child_failed_shows_reason_and_retry(client, runtime) -> None:
         # …with a ▶ restart form posting to the *job* retry endpoint…
         assert 'action="/tasks/99/retry"' in resp.text
         assert "▶" in resp.text
-        # …and a model picker sourced from the router's planner tiers — the
-        # cloud triad plus the cluster's local qwen (each labelled with the
-        # model it resolves to).
+        # …and a model picker sourced from the router's 4 canonical
+        # capability tiers (each labelled with the model it resolves to) —
+        # the legacy opus/sonnet/haiku/local aliases are retired from this
+        # plain retry picker.
         assert 'name="model"' in resp.text
-        assert 'value="opus"' in resp.text
-        assert 'value="local"' in resp.text
+        assert 'value="frontier"' in resp.text
+        assert 'value="big"' in resp.text
+        assert 'value="opus"' not in resp.text
+        assert 'value="local"' not in resp.text
+        # Exactly the 4 canonical tiers, no more.
+        for tier in ("small", "medium", "big", "frontier"):
+            assert resp.text.count(f'value="{tier}"') == 1
         # The bare chip is not also rendered as a plain removable tag.
         assert ">child-failed:99<" not in resp.text
     finally:

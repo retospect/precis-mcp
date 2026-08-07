@@ -1032,6 +1032,58 @@ def test_request_ws_files_todo_carrying_the_working_set(tmp_path) -> None:
     assert args["parent_id"] == 1  # the draft-of project
     assert args["meta"]["working_set"]["edit_hint"] == ["dc2"]  # the pen hint
     assert args["meta"]["anchor"] == "BBBBBB"  # dc2 → its base-58 anchor
+    assert "llm_select" not in args["meta"]  # no structured knob → no dict
+
+
+def test_request_ws_defaults_to_big_tier_when_model_omitted(tmp_path) -> None:
+    """Product decision: default is 'big' (local-first), not the legacy
+    'opus'."""
+    rt, client = _ws_client(tmp_path)
+    r = client.post("/drafts/nt/request-ws", json={"text": "tighten", "anchor": "dc2"})
+    assert r.status_code == 200 and r.json()["ok"]
+    _verb, args = rt.calls[-1]
+    assert args["meta"]["llm_tier"] == "big"
+
+
+def test_request_ws_threads_structured_selection_onto_llm_select(tmp_path) -> None:
+    rt, client = _ws_client(tmp_path)
+    r = client.post(
+        "/drafts/nt/request-ws",
+        json={
+            "text": "tighten",
+            "anchor": "dc2",
+            "placement": "local",
+            "reasoning": "high",
+            "temperature": 0.4,
+        },
+    )
+    assert r.status_code == 200 and r.json()["ok"]
+    _verb, args = rt.calls[-1]
+    assert args["meta"]["llm_select"] == {
+        "placement": "local",
+        "thinking": True,
+        "effort": "high",
+        "temperature": 0.4,
+    }
+
+
+def test_request_ws_junk_knobs_leave_llm_select_absent(tmp_path) -> None:
+    """A websocket ask must not 500 on a junk knob — it just degrades to no
+    ``llm_select`` at all."""
+    rt, client = _ws_client(tmp_path)
+    r = client.post(
+        "/drafts/nt/request-ws",
+        json={
+            "text": "tighten",
+            "anchor": "dc2",
+            "placement": "moon",
+            "reasoning": "extreme",
+            "temperature": "hot",
+        },
+    )
+    assert r.status_code == 200 and r.json()["ok"]
+    _verb, args = rt.calls[-1]
+    assert "llm_select" not in args["meta"]
 
 
 # ── human sign-off checkbox (migration 0086 review ledger) ──────────

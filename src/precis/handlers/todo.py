@@ -439,6 +439,7 @@ class TodoHandler(NumericRefHandler):
             parent_int = None
         guards.check_facets_on_create(meta)
         guards.check_llm_tier_meta(meta)
+        guards.check_llm_select_meta(meta)
         guards.check_executor_tag(tags)
         # Workspace inheritance: if the parent carries meta.workspace
         # and this child doesn't specify its own, copy the parent's
@@ -811,6 +812,7 @@ class TodoHandler(NumericRefHandler):
         guards.check_meta_keys_promotable(meta)
         guards.check_facets_on_tag(meta)
         guards.check_llm_tier_meta(meta)
+        guards.check_llm_select_meta(meta)
         guards.check_halt_remove(remove=remove)
         # No STATUS:done from a worker without artifact evidence.
         # Prevents the cheating mode where the LLM marks itself done

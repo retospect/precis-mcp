@@ -32,6 +32,7 @@ from fastapi import APIRouter, Form, Query, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 from precis.errors import NotFound
+from precis.utils.llm.router import llm_select_from_payload
 from precis.utils.rake import keyword_summary
 from precis.utils.slug import slug_from_text
 from precis.utils.workspace import Workspace
@@ -1214,6 +1215,9 @@ async def retry_job(
     request: Request,
     ref_id: int,
     model: str = Form(default=""),
+    placement: str = Form(default=""),
+    reasoning: str = Form(default=""),
+    temperature: str = Form(default=""),
     require: list[str] = Form(default=[]),
     exclude: list[str] = Form(default=[]),
     focus: int | None = Form(default=None),
@@ -1225,12 +1229,22 @@ async def retry_job(
     parent todo's ``child-failed:`` bubble so the dispatch worker
     re-mints a fresh attempt. A non-empty ``model`` (opus/sonnet/haiku)
     swaps the parent's ``meta.llm_tier`` first so the retry runs on a
-    different tier. The handler validates terminal-state + closed-vocab
-    model and surfaces its own error message on rejection.
+    different tier; ``placement``/``reasoning``/``temperature`` (all
+    optional) build the same structured ``meta.llm_select`` sibling the
+    smartdraft ask does (:func:`~precis.utils.llm.router.llm_select_from_payload`).
+    The handler validates terminal-state + closed-vocab model and surfaces
+    its own error message on rejection.
     """
     args: dict[str, Any] = {"kind": "job", "id": ref_id, "mode": "retry"}
     if model.strip():
         args["model"] = model.strip()
+    llm_select = llm_select_from_payload(
+        placement=placement or None,
+        reasoning=reasoning or None,
+        temperature=temperature or None,
+    )
+    if llm_select:
+        args["select"] = llm_select
     return await redirect_or_error(
         request,
         "put",

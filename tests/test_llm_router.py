@@ -3402,3 +3402,324 @@ def test_planner_model_choices_catalog_card_populates_size_and_context(
 
     assert rows["sonnet"]["size"] == "235B"
     assert rows["sonnet"]["context"] == 131072
+
+
+# ── structured LLM selection: _apply_placement / rung_knobs /
+# reasoning_to_knobs / resolve_selection (the router half of the structured-
+# selection design) ─────────────────────────────────────────────────────
+
+
+def test_apply_placement_local_keeps_only_local_rungs() -> None:
+    chain = [
+        Rung(Transport.CLAUDE_AGENT, label="primary"),
+        Rung(Transport.OPENAI_TOOLS, model="qwen-heavy", label="local"),
+    ]
+    assert router._apply_placement(chain, "local") == [chain[1]]
+
+
+def test_apply_placement_cloud_keeps_only_cloud_rungs() -> None:
+    chain = [
+        Rung(Transport.CLAUDE_AGENT, label="primary"),
+        Rung(Transport.OPENAI_TOOLS, model="qwen-heavy", label="local"),
+    ]
+    assert router._apply_placement(chain, "cloud") == [chain[0]]
+
+
+def test_apply_placement_none_is_noop() -> None:
+    chain = [
+        Rung(Transport.CLAUDE_AGENT, label="primary"),
+        Rung(Transport.OPENAI_TOOLS, model="qwen-heavy", label="local"),
+    ]
+    assert router._apply_placement(chain, None) == chain
+
+
+def test_apply_placement_unknown_value_is_noop() -> None:
+    chain = [
+        Rung(Transport.CLAUDE_AGENT, label="primary"),
+        Rung(Transport.OPENAI_TOOLS, model="qwen-heavy", label="local"),
+    ]
+    assert router._apply_placement(chain, "somewhere-else") == chain
+
+
+def test_dispatch_placement_local_on_cloud_only_chain_is_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A tier whose (default, single-primary) chain is cloud-only, dispatched
+    with ``placement='local'``, gets an *error* result — not paused — and the
+    provider is never called."""
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override", lambda _tier: None
+    )
+    monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
+    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
+    called = _FakeProv(_ok("should not run"))
+    monkeypatch.setitem(router._PROVIDERS, Transport.CLAUDE_AGENT, called)
+
+    out = dispatch(
+        LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True, placement="local")
+    )
+
+    assert out.paused is False
+    assert out.error is not None
+    assert "local" in out.error
+    assert called.calls == 0
+
+
+def test_dispatch_placement_local_blocks_saturated_slot_hosted_escape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``placement='local'`` pin must NOT take the saturated-slot escape to
+    the hosted endpoint: an operator rung labeled ``local`` (kept by the
+    placement filter even with PRECIS_LLM_BASE_URL set) whose serving slot is
+    busy gets the paused backoff, never a cloud retry."""
+    from precis.utils.llm import local_serving as ls
+
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda _tier: [
+            {
+                "placement": "local",
+                "model": "qwen3-235b-a22b-2507",
+                "transport": "openai_tools",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        ls,
+        "acquire",
+        lambda model: ls.LocalSlot(
+            host="h", resource=f"llm:{model}", reserved=False, paused=True
+        ),
+    )
+    called = _FakeProv(_ok("should not run"))
+    monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_TOOLS, called)
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+
+    out = dispatch(
+        LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True, placement="local")
+    )
+
+    assert out.paused is True
+    assert out.error is not None and "busy" in out.error
+    assert called.calls == 0
+
+
+def test_rung_knobs_claude_transports_have_no_knobs() -> None:
+    for transport in (Transport.CLAUDE_AGENT, Transport.CLAUDE_P):
+        assert router.rung_knobs(Rung(transport)) == {
+            "temperature": False,
+            "temp_max": None,
+            "thinking": False,
+            "effort": False,
+        }
+
+
+def test_rung_knobs_local_supports_temperature_only() -> None:
+    assert router.rung_knobs(Rung(Transport.LOCAL)) == {
+        "temperature": True,
+        "temp_max": 2.0,
+        "thinking": False,
+        "effort": False,
+    }
+
+
+def test_rung_knobs_openai_compat_supports_everything() -> None:
+    assert router.rung_knobs(Rung(Transport.OPENAI_COMPAT)) == {
+        "temperature": True,
+        "temp_max": 2.0,
+        "thinking": True,
+        "effort": True,
+    }
+
+
+def test_rung_knobs_openai_tools_thinking_only_when_hosted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+    assert router.rung_knobs(Rung(Transport.OPENAI_TOOLS)) == {
+        "temperature": True,
+        "temp_max": 2.0,
+        "thinking": True,
+        "effort": False,
+    }
+
+    monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
+    assert router.rung_knobs(Rung(Transport.OPENAI_TOOLS)) == {
+        "temperature": True,
+        "temp_max": 2.0,
+        "thinking": False,
+        "effort": False,
+    }
+
+
+@pytest.mark.parametrize(
+    ("reasoning", "expected"),
+    [
+        (None, (None, None)),
+        ("default", (None, None)),
+        ("off", (False, None)),
+        ("low", (True, "low")),
+        ("medium", (True, "medium")),
+        ("high", (True, "high")),
+        ("bogus", (None, None)),
+    ],
+)
+def test_reasoning_to_knobs(
+    reasoning: str | None, expected: tuple[bool | None, str | None]
+) -> None:
+    assert router.reasoning_to_knobs(reasoning) == expected
+
+
+def test_resolve_selection_unknown_alias_returns_error() -> None:
+    row = router.resolve_selection("not-a-real-alias")
+
+    assert row["error"] == "unknown tier/alias 'not-a-real-alias'"
+    assert row["model"] is None
+
+
+def test_resolve_selection_happy_path_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+    router._card_cache.clear()
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override", lambda _tier: None
+    )
+    monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
+    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
+    monkeypatch.setattr("precis.budget.meter.active_store", lambda: None)
+
+    row = router.resolve_selection("sonnet")
+
+    for key in (
+        "alias",
+        "tier",
+        "model",
+        "transport",
+        "placement_effective",
+        "fallbacks",
+        "knobs",
+        "size",
+        "context",
+        "warnings",
+        "error",
+    ):
+        assert key in row
+    assert row["error"] is None
+    assert row["alias"] == "sonnet"
+    assert row["tier"] == Tier.BIG.value
+    assert row["transport"] == Transport.CLAUDE_AGENT.value
+    assert row["placement_effective"] == "cloud"
+    assert row["knobs"] == router.rung_knobs(Rung(Transport.CLAUDE_AGENT))
+
+
+def test_resolve_selection_strict_local_empty_is_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override", lambda _tier: None
+    )
+    monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
+    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
+
+    row = router.resolve_selection("sonnet", placement="local")
+
+    assert row["error"] == f"no local rung for tier {Tier.BIG.value}"
+    assert row["model"] is None
+
+
+def test_resolve_selection_temperature_warning_on_claude_rung(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    router._card_cache.clear()
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override", lambda _tier: None
+    )
+    monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
+    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
+    monkeypatch.setattr("precis.budget.meter.active_store", lambda: None)
+
+    row = router.resolve_selection("sonnet", temperature=0.7)
+
+    assert "temperature is ignored on this route" in row["warnings"]
+
+
+def test_resolve_selection_reasoning_ignored_warning_on_claude_rung(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A claude rung supports neither ``thinking`` nor ``effort`` — any
+    non-default reasoning selection warns it's ignored outright."""
+    router._card_cache.clear()
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override", lambda _tier: None
+    )
+    monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
+    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
+    monkeypatch.setattr("precis.budget.meter.active_store", lambda: None)
+
+    row = router.resolve_selection("sonnet", reasoning="off")
+
+    assert "reasoning setting is ignored on this route" in row["warnings"]
+
+
+def test_resolve_selection_reasoning_level_not_supported_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hosted ``OPENAI_TOOLS`` rung supports on/off (``thinking``) but not
+    graded ``effort`` — a "low"/"medium"/"high" pick warns it degrades to
+    on/off rather than being silently dropped."""
+    router._card_cache.clear()
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override", lambda _tier: None
+    )
+    monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
+    monkeypatch.setenv("PRECIS_LLM_BACKEND", "openai")
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.setattr("precis.budget.meter.active_store", lambda: None)
+
+    row = router.resolve_selection("sonnet", reasoning="high")
+
+    assert row["transport"] == Transport.OPENAI_TOOLS.value
+    assert (
+        "reasoning levels are not supported on this route — on/off only"
+        in row["warnings"]
+    )
+
+
+def test_dispatch_async_placement_parity_with_sync_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``dispatch_async`` applies the same strict placement filter as sync
+    ``dispatch`` before ever deciding whether to stream — a placement that
+    empties the (cloud-only) chain errors out without touching the async
+    agent path."""
+    import asyncio
+
+    from precis.utils.llm.router import dispatch_async
+
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override", lambda _tier: None
+    )
+    monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
+    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
+
+    async def fake_agent_async(prompt: str, **kwargs: object) -> AgentResult:
+        raise AssertionError("should not be called — placement filter must fire first")
+
+    monkeypatch.setattr(router, "call_claude_agent_async", fake_agent_async)
+
+    async def on_event(evt: dict) -> None:
+        pass
+
+    out = asyncio.run(
+        dispatch_async(
+            LlmRequest(
+                tier=Tier.BIG,
+                prompt="hi",
+                tools_needed=True,
+                on_event=on_event,
+                placement="local",
+            )
+        )
+    )
+
+    assert out.paused is False
+    assert out.error is not None
+    assert "local" in out.error

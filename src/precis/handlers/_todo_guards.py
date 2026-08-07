@@ -162,6 +162,88 @@ def check_llm_tier_meta(meta: dict[str, Any] | None) -> None:
         )
 
 
+#: Allowed keys under ``meta.llm_select`` — an OPTIONAL sibling of
+#: ``meta.llm_tier`` (the alias string) carrying a finer-grained
+#: (placement, thinking, effort, temperature) selection that threads onto
+#: the dispatcher's :class:`~precis.utils.llm.router.LlmRequest`. Every key
+#: is optional; absence of the whole dict means "auto / chain-default",
+#: same as today.
+_LLM_SELECT_ALLOWED_KEYS: frozenset[str] = frozenset(
+    {"placement", "thinking", "effort", "temperature"}
+)
+#: ``meta.llm_select.placement`` closed vocab — mirrors
+#: :class:`~precis.utils.llm.router.LlmRequest.placement`'s strict
+#: local/cloud rung filter.
+_LLM_SELECT_PLACEMENT_VALUES: frozenset[str] = frozenset({"local", "cloud"})
+#: ``meta.llm_select.effort`` closed vocab — mirrors
+#: :func:`~precis.utils.llm.router.reasoning_to_knobs`'s reasoning levels.
+_LLM_SELECT_EFFORT_VALUES: frozenset[str] = frozenset({"low", "medium", "high"})
+
+
+def check_llm_select_meta(meta: dict[str, Any] | None) -> None:
+    """Reject ``meta.llm_select`` when it isn't a valid structured selection.
+
+    Unlike ``meta.llm_tier``'s single closed-vocab string, ``llm_select`` is
+    a dict of independently-optional knobs — validate the dict shape, reject
+    any key outside the allowlist, and validate each present key against its
+    own closed vocab / range. A typo'd knob is rejected outright here rather
+    than silently dropped, so a caller never believes a write landed that
+    didn't (mirrors :func:`check_meta_keys_promotable`'s reject-the-whole-
+    call stance).
+    """
+    if not meta or "llm_select" not in meta:
+        return
+    value = meta.get("llm_select")
+    if not isinstance(value, dict):
+        raise BadInput(
+            f"meta.llm_select must be a dict, got {type(value).__name__}",
+            next="meta={'llm_select': {'placement': 'local', 'effort': 'high'}}",
+        )
+    extra = set(value) - _LLM_SELECT_ALLOWED_KEYS
+    if extra:
+        sorted_allowed = ", ".join(sorted(_LLM_SELECT_ALLOWED_KEYS))
+        raise BadInput(
+            f"meta.llm_select key(s) {sorted(extra)} are unknown; "
+            f"allowed keys are [{sorted_allowed}]",
+            next=f"use only [{sorted_allowed}] under meta.llm_select",
+        )
+    if "placement" in value and value["placement"] not in _LLM_SELECT_PLACEMENT_VALUES:
+        sorted_allowed = ", ".join(sorted(_LLM_SELECT_PLACEMENT_VALUES))
+        raise BadInput(
+            f"meta.llm_select.placement={value['placement']!r}: unknown "
+            f"placement; allowed values are [{sorted_allowed}]",
+            next=(
+                f"use one of [{sorted_allowed}] or omit placement for "
+                "auto/chain-default"
+            ),
+        )
+    if "thinking" in value and not isinstance(value["thinking"], bool):
+        raise BadInput(
+            f"meta.llm_select.thinking must be a bool, got {value['thinking']!r}",
+            next="meta.llm_select.thinking=True or False",
+        )
+    if "effort" in value and value["effort"] not in _LLM_SELECT_EFFORT_VALUES:
+        sorted_allowed = ", ".join(sorted(_LLM_SELECT_EFFORT_VALUES))
+        raise BadInput(
+            f"meta.llm_select.effort={value['effort']!r}: unknown effort; "
+            f"allowed values are [{sorted_allowed}]",
+            next=f"use one of [{sorted_allowed}]",
+        )
+    if "temperature" in value:
+        temperature = value["temperature"]
+        if isinstance(temperature, bool) or not isinstance(temperature, (int, float)):
+            raise BadInput(
+                f"meta.llm_select.temperature must be a number, got {temperature!r}",
+                next="meta.llm_select.temperature=<0..2>",
+            )
+        if not (0 <= temperature <= 2):
+            raise BadInput(
+                f"meta.llm_select.temperature={temperature!r} out of "
+                "range; must be 0 <= t <= 2",
+                next="pick a temperature between 0 and 2",
+            )
+
+
 def check_executor_tag(tags: list[str] | None) -> None:
     """Reject ``executor:<value>`` where value is not a registered runner."""
     _check_namespaced_tag(tags, prefix="executor:", allowed=_EXECUTOR_TAG_VALUES)
@@ -576,7 +658,7 @@ def check_facets_on_tag(meta: dict[str, Any] | None) -> None:
 #: Reject the whole call rather than silently dropping an unpromotable
 #: key, so a caller never believes a write landed that didn't.
 TAG_META_ALLOWED_KEYS: frozenset[str] = frozenset(
-    {META_ROTATION_ROOT, META_WORKER_MINTABLE, "schedule", "llm_tier"}
+    {META_ROTATION_ROOT, META_WORKER_MINTABLE, "schedule", "llm_tier", "llm_select"}
 )
 
 
@@ -915,6 +997,7 @@ __all__ = [
     "check_facets_on_create",
     "check_facets_on_tag",
     "check_halt_remove",
+    "check_llm_select_meta",
     "check_llm_tier_meta",
     "check_meta_keys_promotable",
     "check_no_cycle",

@@ -1382,13 +1382,54 @@ alongside the legacy `opus`/`sonnet`/`haiku`/`local` names (`local` now pins
 (`{alias, tier, model, placement, fallbacks, size, context}`) resolved through
 the LIVE `resolve_chain` (rung 0 = what dispatch tries first; catalog-card
 `size`/`context` best-effort, 15s TTL) — the single `planner_models` Jinja
-global behind every web picker (task retry ×2, job retry, smartdraft ask; the
-last was the final hardcoded opus/sonnet/haiku list). The alias *vocab* is
-likewise single-sourced: `plan_tick.validate_submit`,
+global behind the dashboard/refs-detail retry pickers (deduped to the 4
+capability-tier aliases, dropping the legacy opus/sonnet/haiku hardcode). The
+alias *vocab* is likewise single-sourced: `plan_tick.validate_submit`,
 `workspace.current_model_from_env`, and asa_bot's `/model` +
 `LLMConfig` default all read `PLANNER_MODEL_ALIASES`/`resolve_model` (asa's
 private stale vendor-id map is gone); `AgentIntrospect.tier_default` lets the
 `/env` inspector display live-resolved tier defaults.
+**Structured selection.** `LlmRequest.placement` (`'local'`/`'cloud'`/`None`)
+is a *strict* per-request rung filter — `router.py::_apply_placement`, run in
+both `dispatch`/`dispatch_async` before the cloud throttle. Unlike the throttle
+(which degrades an emptied chain to `paused`), a placement filter that empties
+an otherwise-nonempty chain is an **error** result: the caller asked for a
+rung the tier's chain doesn't have. `placement='local'` also gates off the
+saturated-local-slot hosted escape (the retry that would otherwise send a busy
+local call to the hosted OSS endpoint) — a strict-local pin takes the paused
+backoff instead of silently leaving local hardware. `router.py::rung_knobs` is
+a static per-transport honesty table (`temperature`/`thinking`/`effort`
+booleans + `temp_max`) — which gen-param knobs a rung's transport actually
+forwards, vs. accepting-and-ignoring; the claude transports forward none of
+the three. `router.py::reasoning_to_knobs` maps the UI's combined
+`off/low/medium/high` selector onto `(thinking, effort)`.
+`router.py::resolve_selection(alias, placement=, reasoning=, temperature=)` is
+the never-raising preview resolver — mirrors `planner_model_choices` +
+`_apply_placement`, returns `{tier, model, transport, placement_effective,
+fallbacks, knobs, size, context, warnings, error}` plus advisory `warnings`
+(e.g. a `temperature` given to a route that ignores it). `GET /api/llm/resolve`
+(`precis_web/routes/llm.py`) exposes it read-only over HTTP; the shared Alpine
+widget (`templates/_llm_selector.html.j2`, `llm_selector()` macro — tier ×
+placement × reasoning × temperature controls + a live "→ model · placement"
+preview line, knob-honesty greying) fetches it on every control change and
+`$dispatch`es an `llm-select` event for the host page to read. Smartdraft's
+ask toolbar uses it (default tier now `big`, was `opus`); its ws payload and
+the `/tasks/{id}/retry` form both accept `placement`/`reasoning`/`temperature`,
+mapped via `router.py::llm_select_from_payload` (junk/unrecognized values drop
+silently rather than 500ing).
+**`meta.llm_select` contract** — an optional todo-meta sibling of
+`meta.llm_tier`: `{placement?: 'local'|'cloud', thinking?: bool, effort?:
+'low'|'medium'|'high', temperature?: 0..2}`, every key independently optional.
+Guarded by `_todo_guards.py::check_llm_select_meta` (dict-shape + per-key
+closed-vocab/range validation, reject-the-whole-call on any unknown key —
+mirrors `check_meta_keys_promotable`'s stance) on both `create`/`put` and the
+`tag(meta=...)` promotion path (`TAG_META_ALLOWED_KEYS` now carries
+`llm_select` alongside `llm_tier`). Flow: the dispatch worker's per-parent
+claim query (`dispatch.py::_claim_and_dispatch`) reads `meta->'llm_select'`
+alongside `llm_tier` and threads it onto the minted `plan_tick` job as
+`params['select']`; `job_types/plan_tick.py::_select_knobs` unpacks it
+defensively (a malformed dict can't crash a tick) into the `LlmRequest`
+constructed for the tick's own call.
 **Failure semantics (§5a):** a transport exception is classified
 (`router.py::_is_unavailability`) — timeout / connection / HTTP 5xx / 429 →
 `paused` (skip-not-fail, the todo retries next cycle, never parks); HTTP 4xx

@@ -13,6 +13,9 @@
 {# Shared full-document reading-block macro (also used by the /blocks lazy
    hydrate endpoint) so an on-scroll-hydrated block matches the initial render. #}
 {% import "smartdraft/_block.html.j2" as sd_block %}
+{# Structured LLM selector (tier × placement × reasoning × temperature) +
+   live preview — the ask toolbar's model picker. #}
+{% import "_llm_selector.html.j2" as llm_selector %}
 {# One URL builder for the whole panel — every control overrides one param.
    Params are to_* so they don't shadow the render-context globals they
    default to (a macro can't see template-level {% set %} vars). #}
@@ -470,7 +473,8 @@
       <div id="claim-pane-body" class="max-h-72 overflow-y-auto p-2 text-xs tex-scope"></div>
     </div>
 
-  <div class="rounded border border-slate-200 bg-white" x-data="smartAsk('{{ ident }}', '{{ focus_dc }}')">
+  <div class="rounded border border-slate-200 bg-white" x-data="smartAsk('{{ ident }}', '{{ focus_dc }}')"
+       @llm-select="handleLlmSelect($event.detail)">
     <div class="border-b border-slate-100 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Collaborate</div>
     <div class="space-y-2 p-2 text-xs">
       {% if needs %}
@@ -618,13 +622,8 @@
 
       <textarea x-model="text" rows="3" placeholder="Ask the LLM (works on the pinned context, or the current para if nothing is pinned)…"
                 class="w-full rounded border border-slate-200 px-2 py-1"></textarea>
-      <div class="flex items-center gap-2">
-        <select x-model="model" class="rounded border border-slate-200 px-1 py-0.5 text-slate-600">
-          {% for m in planner_models() %}
-          <option value="{{ m.alias }}"
-                  {% if m.size or m.context or m.fallbacks %}title="{{ [m.size and 'size ' ~ m.size, m.context and 'ctx ' ~ m.context, m.fallbacks and 'fallback: ' ~ (m.fallbacks | join(', '))] | select | join(' · ') }}"{% endif %}>{{ m.alias }} · {{ m.model }}{% if m.placement == 'local' %} (local){% endif %}</option>
-          {% endfor %}
-        </select>
+      <div class="flex flex-wrap items-center gap-2">
+        {{ llm_selector.llm_selector(default_tier='big') }}
         <span class="text-slate-400" x-show="msg" x-text="msg"></span>
         <button @click="send()" :disabled="!text.trim()" class="ml-auto rounded bg-slate-800 px-2 py-1 text-white disabled:opacity-40">Send ▸</button>
       </div>
@@ -1571,7 +1570,12 @@ function smartTagInput(dc) {
 
 function smartAsk(ident, focus) {
   return {
-    ident, focus, text: '', model: 'opus', msg: '',
+    ident, focus, text: '', msg: '',
+    // Structured selection from the shared llm-selector widget
+    // (_llm_selector.html.j2), threaded up via its bubbling `llm-select`
+    // event — the two Alpine scopes don't otherwise share state.
+    llmSelect: { tier: 'big', placement: '', reasoning: '', temperature: '' },
+    handleLlmSelect(sel) { this.llmSelect = sel; },
     async send() {
       if (!this.text.trim()) return;
       this.msg = 'sending…';
@@ -1580,7 +1584,11 @@ function smartAsk(ident, focus) {
         // works on the current para + its fisheye (server falls back to it).
         const r = await fetch(`/drafts/${this.ident}/request-ws`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: this.text, model: this.model, anchor: this.focus }),
+          body: JSON.stringify({
+            text: this.text, model: this.llmSelect.tier, anchor: this.focus,
+            placement: this.llmSelect.placement, reasoning: this.llmSelect.reasoning,
+            temperature: this.llmSelect.temperature,
+          }),
         });
         const d = await r.json();
         this.msg = d.ok ? 'sent ✓' : ('error: ' + (d.error || ''));

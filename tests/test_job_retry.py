@@ -98,6 +98,71 @@ def test_retry_with_model_swaps_llm_tag(
     assert fresh[0]["meta"]["params"]["model"] == "sonnet"
 
 
+def test_retry_with_select_writes_llm_select(
+    todos: TodoHandler, jobs: JobHandler, store: Store
+) -> None:
+    """select= (ADR 0066 structured selection) writes meta.llm_select
+    alongside the child-failed bubble clear."""
+    rid = id_of(todos.put(text="planner brief", meta={"llm_tier": "opus"}).body)
+    job_id = _fail_first_job(store, jobs, rid)
+
+    select = {"placement": "local", "effort": "high"}
+    jobs.put(id=job_id, mode="retry", select=select)
+    ref = store.get_ref(kind="todo", id=rid)
+    assert ref is not None
+    assert ref.meta.get("llm_select") == select
+    # llm_tier is untouched (no model= passed).
+    assert ref.meta.get("llm_tier") == "opus"
+
+
+def test_retry_model_change_preserves_existing_select(
+    todos: TodoHandler, jobs: JobHandler, store: Store
+) -> None:
+    """A model= swap with no select= leaves the parent's existing
+    meta.llm_select untouched — a bare tier change shouldn't silently wipe
+    a prior structured selection."""
+    rid = id_of(
+        todos.put(
+            text="planner brief",
+            meta={"llm_tier": "opus", "llm_select": {"placement": "cloud"}},
+        ).body
+    )
+    job_id = _fail_first_job(store, jobs, rid)
+
+    jobs.put(id=job_id, mode="retry", model="sonnet")
+    ref = store.get_ref(kind="todo", id=rid)
+    assert ref is not None
+    assert ref.meta.get("llm_tier") == "sonnet"
+    assert ref.meta.get("llm_select") == {"placement": "cloud"}
+
+
+def test_retry_select_requires_llm_parent(
+    todos: TodoHandler, jobs: JobHandler, store: Store
+) -> None:
+    """select= is rejected the same way model= is on a non-planner todo."""
+    rid = id_of(todos.put(text="plain todo").body)
+    job = store.insert_ref(
+        kind="job", slug=None, title="manual", meta={}, parent_id=rid
+    )
+    jobs.tag(id=job.id, add=["STATUS:failed"])
+    with pytest.raises(BadInput, match="no meta.llm_tier"):
+        jobs.put(id=job.id, mode="retry", select={"placement": "local"})
+
+
+def test_retry_rejects_bad_select(
+    todos: TodoHandler, jobs: JobHandler, store: Store
+) -> None:
+    """An invalid select shape is rejected via the write-time guard."""
+    rid = id_of(todos.put(text="planner brief", meta={"llm_tier": "opus"}).body)
+    job_id = _fail_first_job(store, jobs, rid)
+    with pytest.raises(BadInput, match="unknown placement"):
+        jobs.put(id=job_id, mode="retry", select={"placement": "moon"})
+    # Failed retry left the bubble + meta intact — no partial write.
+    ref = store.get_ref(kind="todo", id=rid)
+    assert ref is not None and "llm_select" not in ref.meta
+    assert f"child-failed:{job_id}" in _parent_tags(store, rid)
+
+
 def test_retry_rejects_non_terminal_job(
     todos: TodoHandler, jobs: JobHandler, store: Store
 ) -> None:

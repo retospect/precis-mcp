@@ -493,6 +493,277 @@ def planner_model_choices() -> list[dict[str, Any]]:
     return rows
 
 
+def rung_knobs(rung: Rung) -> dict[str, Any]:
+    """Static per-transport honesty table for the structured-selection UI's
+    knob greying — which gen-param controls (`temperature` / `thinking` /
+    `effort`) a rung's transport actually forwards to the wire, mirroring what
+    each provider adapter genuinely does with :class:`LlmRequest`'s fields
+    rather than accepting-and-ignoring one silently.
+
+    Returns ``{"temperature": bool, "temp_max": float | None, "thinking":
+    bool, "effort": bool}``. Per transport:
+
+    * ``CLAUDE_AGENT`` / ``CLAUDE_P`` — none of the three: the claude
+      transports have no such knobs at all (see :attr:`LlmRequest.thinking`'s
+      docstring — Anthropic's extended-thinking budget is a separate, unrelated
+      knob these fields do not touch).
+    * ``LOCAL`` — ``temperature`` (max ``2.0``, the OpenAI-compat wire's
+      range); ``thinking`` is deliberately **not** forwarded (see the NOTE in
+      :func:`_dispatch_local` — no confirmed backend-specific key for the
+      deployed llama.cpp/llama-swap build); ``effort`` unsupported (no
+      OpenRouter-style ``reasoning.effort`` on a bare local completion call).
+    * ``OPENAI_COMPAT`` — ``temperature`` (max ``2.0``), ``thinking`` (the
+      ADR 0066 toggle, honored via :func:`openrouter_routing`'s
+      ``reasoning.enabled``), ``effort`` (``reasoning.effort``, same
+      function) — the OpenRouter-fronted completion wire honors all three.
+    * ``OPENAI_TOOLS`` — ``temperature`` (max ``2.0``); ``thinking`` only when
+      ``PRECIS_LLM_BASE_URL`` is set — :func:`run_oss_tool_loop` applies the
+      no-thinking directive only for a genuinely *hosted* call, never a
+      direct local llama-swap endpoint (no confirmed key there either, same
+      caveat as ``LOCAL``); ``effort`` is never forwarded on this transport
+      (:func:`run_oss_tool_loop` takes no ``effort`` parameter).
+    """
+    if rung.transport in (Transport.CLAUDE_AGENT, Transport.CLAUDE_P):
+        return {
+            "temperature": False,
+            "temp_max": None,
+            "thinking": False,
+            "effort": False,
+        }
+    if rung.transport is Transport.LOCAL:
+        return {
+            "temperature": True,
+            "temp_max": 2.0,
+            "thinking": False,
+            "effort": False,
+        }
+    if rung.transport is Transport.OPENAI_COMPAT:
+        return {
+            "temperature": True,
+            "temp_max": 2.0,
+            "thinking": True,
+            "effort": True,
+        }
+    # Transport.OPENAI_TOOLS
+    return {
+        "temperature": True,
+        "temp_max": 2.0,
+        "thinking": bool(os.environ.get("PRECIS_LLM_BASE_URL")),
+        "effort": False,
+    }
+
+
+#: The UI-level combined reasoning selector → the ``(thinking, effort)`` pair
+#: :func:`resolve_selection` / a future dispatch caller thread onto
+#: :attr:`LlmRequest.thinking` / :attr:`.effort`.
+_REASONING_TO_KNOBS: dict[str, tuple[bool | None, str | None]] = {
+    "off": (False, None),
+    "low": (True, "low"),
+    "medium": (True, "medium"),
+    "high": (True, "high"),
+}
+
+
+def reasoning_to_knobs(reasoning: str | None) -> tuple[bool | None, str | None]:
+    """Map the UI's combined reasoning selector to the
+    ``(thinking, effort)`` pair :class:`LlmRequest` actually carries.
+
+    ``None`` or ``"default"`` → ``(None, None)`` — let :func:`dispatch`
+    resolve the tier's own default (:func:`_tier_gen_defaults`), the same as
+    a caller that never touched the selector. ``"off"`` → ``(False, None)`` —
+    thinking off, no effort level. ``"low"``/``"medium"``/``"high"`` →
+    ``(True, <value>)`` — thinking on, at that effort. Any other (unknown)
+    string degrades to the same ``(None, None)`` "resolve the default" pair
+    as ``None``, never raising.
+    """
+    if reasoning is None or reasoning == "default":
+        return (None, None)
+    return _REASONING_TO_KNOBS.get(reasoning, (None, None))
+
+
+def resolve_selection(
+    alias: str,
+    *,
+    placement: str | None = None,
+    reasoning: str | None = None,
+    temperature: float | None = None,
+) -> dict[str, Any]:
+    """Preview what :func:`dispatch` **would** pick for a structured
+    ``(alias, placement, reasoning, temperature)`` selection, without making a
+    call — the ``/factory`` picker's live preview row. Never raises; every
+    failure degrades to an ``error``-carrying row of the same shape.
+
+    Resolution mirrors :func:`planner_model_choices` (alias → tier →
+    :func:`resolve_chain`) with :func:`_apply_placement` layered in, same as
+    :func:`dispatch`. Return keys are always present:
+    ``alias, tier, model, transport, placement_effective, fallbacks, knobs,
+    size, context, warnings, error`` — ``error`` is ``None`` on success.
+
+    ``warnings`` are honesty notes computed against the resolved rung's
+    :func:`rung_knobs` — e.g. a ``temperature`` given to a route that ignores
+    it, or a ``reasoning`` level set where the route only supports on/off (or
+    ignores the setting altogether). These are advisory only; resolution
+    itself never fails because of them.
+    """
+    degraded: dict[str, Any] = {
+        "alias": alias,
+        "tier": None,
+        "model": None,
+        "transport": None,
+        "placement_effective": None,
+        "fallbacks": [],
+        "knobs": None,
+        "size": None,
+        "context": None,
+        "warnings": [],
+        "error": None,
+    }
+
+    tier = PLANNER_TIER_BY_ALIAS.get(alias.lower())
+    if tier is None:
+        degraded["error"] = f"unknown tier/alias {alias!r}"
+        return degraded
+
+    degraded["tier"] = tier.value
+
+    try:
+        backend = resolve_backend()
+    except Exception:
+        backend = Backend.ANTHROPIC
+
+    tools_needed = tier is not Tier.SMALL
+    try:
+        chain = resolve_chain(tier, tools_needed=tools_needed, backend=backend)
+    except Exception:
+        log.warning(
+            "router: resolve_selection failed resolving chain for alias %r",
+            alias,
+            exc_info=True,
+        )
+        degraded["error"] = f"failed to resolve the chain for tier {tier.value}"
+        return degraded
+
+    placed = _apply_placement(chain, placement)
+    if chain and not placed:
+        degraded["error"] = f"no {placement} rung for tier {tier.value}"
+        return degraded
+
+    try:
+        default_model = resolve_model(tier)
+    except Exception:
+        default_model = alias
+
+    if not placed:
+        degraded["model"] = default_model
+        degraded["error"] = f"no rung resolved for tier {tier.value}"
+        return degraded
+
+    rung0 = placed[0]
+    model = rung0.model or default_model
+    placement_effective = "cloud" if _rung_is_cloud(rung0) else "local"
+
+    seen = {model}
+    fallbacks: list[str] = []
+    for r in placed[1:]:
+        # A rung with model=None inherits the tier's resolved primary (same
+        # de-dup rule as planner_model_choices), NOT rung 0's model.
+        fb = r.model or default_model
+        if fb not in seen:
+            fallbacks.append(fb)
+            seen.add(fb)
+
+    knobs = rung_knobs(rung0)
+
+    card = _catalog_card_meta(model)
+    size: Any = None
+    context: Any = None
+    if card:
+        params = card.get("params")
+        if isinstance(params, dict):
+            size = params.get("size")
+        capability = card.get("capability")
+        if isinstance(capability, dict):
+            context = capability.get("max_input")
+
+    warnings: list[str] = []
+    if temperature is not None and not knobs["temperature"]:
+        warnings.append("temperature is ignored on this route")
+    if reasoning in ("low", "medium", "high"):
+        if not knobs["effort"] and knobs["thinking"]:
+            warnings.append(
+                "reasoning levels are not supported on this route — on/off only"
+            )
+        elif not knobs["thinking"] and not knobs["effort"]:
+            warnings.append("reasoning setting is ignored on this route")
+    elif reasoning is not None and reasoning != "default":
+        if not knobs["thinking"] and not knobs["effort"]:
+            warnings.append("reasoning setting is ignored on this route")
+
+    return {
+        "alias": alias,
+        "tier": tier.value,
+        "model": model,
+        "transport": rung0.transport.value,
+        "placement_effective": placement_effective,
+        "fallbacks": fallbacks,
+        "knobs": knobs,
+        "size": size,
+        "context": context,
+        "warnings": warnings,
+        "error": None,
+    }
+
+
+#: Web-payload keys :func:`llm_select_from_payload` accepts for ``placement``.
+_SELECT_PLACEMENT_VALUES: frozenset[str] = frozenset({"local", "cloud"})
+
+
+def llm_select_from_payload(
+    *,
+    placement: str | None = None,
+    reasoning: str | None = None,
+    temperature: str | float | int | None = None,
+) -> dict[str, Any]:
+    """Build a ``meta.llm_select`` dict from raw web-form/JSON knobs.
+
+    The single shared mapping behind every write path that lets a caller
+    thread a structured selection (placement / reasoning / temperature) onto
+    a todo (the smartdraft ask, the retry form) — one source so the two
+    routes can't drift on what counts as a valid knob.
+
+    Degrades a junk value to *absent* rather than raising: an unrecognised
+    ``placement``, an unmapped ``reasoning`` string, or an unparsable/
+    out-of-range ``temperature`` is silently dropped from the result — the
+    caller (a websocket ask, a retry form post) must not 500 on a typo'd
+    knob. Returns ``{}`` when nothing valid was supplied, so callers can
+    test truthiness to decide whether to set ``meta['llm_select']`` at all.
+    """
+    select: dict[str, Any] = {}
+    # Guard against a non-str web knob (e.g. a stray list/dict in the JSON
+    # body) *before* it reaches a frozenset/dict membership test below —
+    # those raise TypeError on an unhashable key, which would turn a junk
+    # knob into a 500 instead of the required silent degrade.
+    if not isinstance(placement, str):
+        placement = None
+    if not isinstance(reasoning, str):
+        reasoning = None
+    if placement in _SELECT_PLACEMENT_VALUES:
+        select["placement"] = placement
+    thinking, effort = reasoning_to_knobs(reasoning)
+    if thinking is not None:
+        select["thinking"] = thinking
+    if effort is not None:
+        select["effort"] = effort
+    if temperature is not None:
+        try:
+            t = float(temperature)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            t = None
+        if t is not None and 0 <= t <= 2:
+            select["temperature"] = t
+    return select
+
+
 # ── transport selection ────────────────────────────────────────────────
 
 
@@ -802,6 +1073,14 @@ class LlmRequest:
     #: A ``select_offering`` caller threads ``Selection.endpoint`` here.
     endpoint: dict[str, Any] | None = None
     effort: str | None = None
+    #: Strict rung filter on the resolved chain — ``'local'`` / ``'cloud'`` keep
+    #: only the matching rungs (classified by :func:`_rung_is_cloud`); any other
+    #: value (unknown string or ``None``) leaves the chain unchanged, walked as
+    #: configured. This is **strict**, unlike :func:`_apply_cloud_throttle`'s
+    #: fallback-to-paused behavior: a placement filter that empties an
+    #: otherwise-nonempty chain is an *error* result (the caller asked for a
+    #: rung that doesn't exist), not a silent degrade.
+    placement: str | None = None
     #: Direct local-serving base URL (llama-swap's OpenAI endpoint), threaded in
     #: by :func:`dispatch` when a reserved :class:`~precis.utils.llm.local_serving.LocalSlot`
     #: declares an ``endpoint`` — the LOCAL transport routes here instead of the
@@ -1339,6 +1618,28 @@ def _apply_cloud_throttle(chain: list[Rung]) -> list[Rung]:
     return [rung for rung in chain if not _rung_is_cloud(rung)]
 
 
+def _apply_placement(chain: list[Rung], placement: str | None) -> list[Rung]:
+    """Strict local/cloud rung filter for :attr:`LlmRequest.placement` (the
+    structured-selection UI's "run this here" pin) — classified by
+    :func:`_rung_is_cloud`, the same local/cloud call the cloud throttle above
+    uses.
+
+    ``None`` or any value other than ``"local"``/``"cloud"`` is a no-op,
+    returning ``chain`` unchanged (walked as configured — today's behavior for
+    every caller that doesn't set ``placement``). Unlike
+    :func:`_apply_cloud_throttle`, an emptied-by-this-filter chain is **not**
+    handled here — it is the caller's job (:func:`dispatch` /
+    :func:`dispatch_async`) to turn that into an explicit error result rather
+    than a silent paused/degrade, since the caller asked for a specific rung
+    that the chain doesn't have.
+    """
+    if placement == "local":
+        return [rung for rung in chain if not _rung_is_cloud(rung)]
+    if placement == "cloud":
+        return [rung for rung in chain if _rung_is_cloud(rung)]
+    return chain
+
+
 #: ``SMALL`` (categorizer) model ids that only mean something on the
 #: local loopback (the ``summarizer`` alias and the ``rake-lemma`` name it
 #: resolves to) — POSTing either to a hosted OSS backend (OpenRouter et al.)
@@ -1471,6 +1772,25 @@ def dispatch(req: LlmRequest) -> LlmResult:
     # override this collapses to today's path (single primary rung, or the
     # built-in auto-failover ladder when the flag is on — see _default_chain).
     ladder = resolve_chain(req.tier, tools_needed=req.tools_needed, backend=backend)
+    # Structured placement filter (strict — unlike the cloud throttle below,
+    # an emptied nonempty chain here is an *error* result, not a silent
+    # paused/degrade: the caller asked for a rung the chain doesn't have).
+    # No-op when req.placement is None or not a recognized value.
+    _placed_ladder = _apply_placement(ladder, req.placement)
+    if ladder and not _placed_ladder:
+        return LlmResult(
+            text="",
+            cost_usd=None,
+            turns_used=None,
+            model=model,
+            tier=req.tier,
+            error=(
+                f"placement={req.placement!r} requested but the {req.tier.value} "
+                f"chain has no {req.placement} rung"
+            ),
+            paused=False,
+        )
+    ladder = _placed_ladder
     # Cloud-throttle (ADR 0066 §5): with cloud disabled, prune the chain's
     # cloud rungs → local. A cloud-only tier (FRONTIER) prunes to empty and
     # pauses (skip-not-fail), never silently degrading to a local model. No-op
@@ -1573,9 +1893,18 @@ def dispatch(req: LlmRequest) -> LlmResult:
         # failover-off, or a primary with no fallback rung) stays
         # byte-identical to the old behavior: return the paused result
         # immediately so a pinned pass backs off instead of spinning.
-        if isinstance(provider, FailoverProvider) and transport in (
-            Transport.OPENAI_TOOLS,
-            Transport.OPENAI_COMPAT,
+        # A strict `placement='local'` pin forbids this escape entirely: the
+        # hosted retry IS a cloud endpoint, so a placement-pinned call must
+        # take the paused backoff below instead of silently leaving local
+        # hardware.
+        if (
+            req.placement != "local"
+            and isinstance(provider, FailoverProvider)
+            and transport
+            in (
+                Transport.OPENAI_TOOLS,
+                Transport.OPENAI_COMPAT,
+            )
         ):
             log.debug(
                 "llm-failover: local slot for %s is saturated — trying the "
@@ -1717,6 +2046,24 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
     # Resolve the primary transport through the always-on chain (ADR 0066
     # Phase B), same as sync dispatch — the streaming decision keys on rung 0.
     ladder = resolve_chain(req.tier, tools_needed=req.tools_needed, backend=backend)
+    # Structured placement filter — strict parity with sync dispatch: an
+    # emptied nonempty chain is an explicit error result, not a silent
+    # paused/degrade. No-op when req.placement is None/unrecognized.
+    _placed_ladder = _apply_placement(ladder, req.placement)
+    if ladder and not _placed_ladder:
+        return LlmResult(
+            text="",
+            cost_usd=None,
+            turns_used=None,
+            model=model,
+            tier=req.tier,
+            error=(
+                f"placement={req.placement!r} requested but the {req.tier.value} "
+                f"chain has no {req.placement} rung"
+            ),
+            paused=False,
+        )
+    ladder = _placed_ladder
     # Cloud-throttle parity with sync dispatch: prune cloud rungs when disabled.
     # An empty result (a cloud-only tier under throttle) is delegated to the
     # sync dispatch below, which returns the paused result — so the streaming

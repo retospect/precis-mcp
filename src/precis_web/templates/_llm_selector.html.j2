@@ -1,0 +1,100 @@
+{# Structured LLM selector — the shared four-control widget (tier ×
+   placement × reasoning × temperature) + a live "→ model · placement"
+   preview line, backed by ``GET /api/llm/resolve``
+   (routes/llm.py → :func:`precis.utils.llm.router.resolve_selection`).
+
+   Self-contained: the macro's root ``<div>`` owns its own Alpine
+   ``x-data="llmSelectorState(...)"`` scope (the ``llmSelectorState``
+   factory ships in a guarded ``<script>`` block emitted alongside the
+   markup on every call — safe to call the macro more than once on a
+   page). A change on any control
+   debounces (~250ms) a fetch to the preview endpoint and re-renders the
+   preview line; a fetch failure just keeps the last preview rather than
+   clearing it.
+
+   A caller that needs the picked selection (smartdraft's ask toolbar) does
+   NOT read this scope directly — Alpine child scopes don't merge into the
+   parent's. Instead the widget ``$dispatch``es a bubbling ``llm-select``
+   custom event (``detail: {tier, placement, reasoning, temperature}``) on
+   every change; listen for it on an ancestor element:
+   ``<div x-data="..." @llm-select="mySelection = $event.detail">``. #}
+
+{% macro llm_selector(default_tier='big') %}
+<div class="flex flex-wrap items-center gap-1.5"
+     x-data="llmSelectorState('{{ default_tier }}')" x-init="fetchPreview()">
+  <select x-model="tier" @change="fetchPreview(); emit()"
+          title="Capability tier — which model chain handles the request. small = cheap classifier · frontier = most capable."
+          class="rounded border border-slate-200 px-1 py-0.5 text-slate-600">
+    <option value="small">small</option>
+    <option value="medium">medium</option>
+    <option value="big">big</option>
+    <option value="frontier">frontier</option>
+  </select>
+  <select x-model="placement" @change="fetchPreview(); emit()"
+          title="auto = configured chain (local-first with cloud failover) · local = local hardware only, fails rather than falling back to cloud · cloud = cloud rungs only."
+          class="rounded border border-slate-200 px-1 py-0.5 text-slate-600">
+    <option value="">auto</option>
+    <option value="local">local</option>
+    <option value="cloud">cloud</option>
+  </select>
+  <select x-model="reasoning" @change="fetchPreview(); emit()"
+          :disabled="preview && preview.knobs && !preview.knobs.thinking && !preview.knobs.effort"
+          title="default = tier default · off = no extended thinking · low/medium/high = reasoning effort (levels honored only on routes that support them)."
+          class="rounded border border-slate-200 px-1 py-0.5 text-slate-600 disabled:opacity-40">
+    <option value="">default</option>
+    <option value="off">off</option>
+    <option value="low">low</option>
+    <option value="medium">medium</option>
+    <option value="high">high</option>
+  </select>
+  <input type="number" step="0.1" min="0" x-model="temperature"
+         :max="preview && preview.knobs && preview.knobs.temp_max != null ? preview.knobs.temp_max : 2"
+         :disabled="preview && preview.knobs && !preview.knobs.temperature"
+         @change="fetchPreview(); emit()"
+         placeholder="temp"
+         title="Sampling temperature (0 = deterministic). Empty = route default. Ignored on routes that don't support it."
+         class="w-14 rounded border border-slate-200 px-1 py-0.5 text-slate-600 disabled:opacity-40" />
+  <span class="text-slate-500" x-show="preview && !preview.error">→
+    <span x-text="preview && preview.model"></span> ·
+    <span x-text="preview && preview.placement_effective"></span><template
+      x-if="preview && preview.fallbacks && preview.fallbacks.length"><span> · fallback:
+      <span x-text="preview.fallbacks.join(', ')"></span></span></template></span>
+  <span class="text-amber-600" x-show="preview && preview.error" x-text="preview && preview.error"></span>
+  <template x-for="w in (preview && preview.warnings) || []" :key="w">
+    <span class="text-amber-600" x-text="'⚠ ' + w"></span>
+  </template>
+</div>
+{# Factory guarded against redefinition — ``{% import %}`` only pulls in
+   macros, not module-level markup, so the script has to ship from inside
+   the macro's own output to render at every call site; the guard keeps a
+   page with >1 call site from redeclaring it more than once. #}
+<script>
+if (typeof window.llmSelectorState === 'undefined') {
+  window.llmSelectorState = function (defaultTier) {
+    return {
+      tier: defaultTier || 'big', placement: '', reasoning: '', temperature: '',
+      preview: null, _debounce: null,
+      emit() {
+        this.$dispatch('llm-select', {
+          tier: this.tier, placement: this.placement,
+          reasoning: this.reasoning, temperature: this.temperature,
+        });
+      },
+      fetchPreview() {
+        clearTimeout(this._debounce);
+        this._debounce = setTimeout(async () => {
+          const qs = new URLSearchParams({ model: this.tier });
+          if (this.placement) qs.set('placement', this.placement);
+          if (this.reasoning) qs.set('reasoning', this.reasoning);
+          if (this.temperature !== '' && this.temperature !== null) qs.set('temperature', this.temperature);
+          try {
+            const r = await fetch('/api/llm/resolve?' + qs.toString());
+            if (r.ok) this.preview = await r.json();
+          } catch (e) { /* keep the last preview — never break the form */ }
+        }, 250);
+      },
+    };
+  };
+}
+</script>
+{% endmacro %}

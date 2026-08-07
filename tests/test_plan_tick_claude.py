@@ -67,6 +67,7 @@ def _run_claude(
     result: LlmResult,
     with_workspace: bool = True,
     mcp_config: str | None = "mcp.json",
+    params: dict[str, Any] | None = None,
 ) -> tuple[pt.PlanTickOutcome, dict[str, Any]]:
     """Drive ``plan_tick.run`` on the ANTHROPIC backend with ``dispatch``
     scripted; returns the outcome plus the captured ``LlmRequest``."""
@@ -101,7 +102,7 @@ def _run_claude(
         store=object(),
         job_ref_id=1,
         parent_ref_id=2,
-        params={"model": "opus"},
+        params=params or {"model": "opus"},
     )
     return outcome, seen
 
@@ -136,6 +137,87 @@ def test_run_claude_binds_request_and_maps_clean(
     assert outcome.exit_code == 0
     assert outcome.stdout == _CLEAN_STREAM
     assert outcome.resume_reason is None
+
+
+def test_run_claude_threads_select_knobs_onto_the_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``params['select']`` (ADR 0066, threaded by dispatch from
+    ``meta.llm_select``) lands on the ``LlmRequest``'s placement/thinking/
+    temperature/effort fields."""
+    _, seen = _run_claude(
+        monkeypatch,
+        result=_clean_result(),
+        params={
+            "model": "opus",
+            "select": {
+                "placement": "cloud",
+                "thinking": True,
+                "effort": "high",
+                "temperature": 0.3,
+            },
+        },
+    )
+    req = seen["req"]
+    assert req.placement == "cloud"
+    assert req.thinking is True
+    assert req.effort == "high"
+    assert req.temperature == 0.3
+
+
+def test_run_claude_no_select_leaves_knobs_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, seen = _run_claude(monkeypatch, result=_clean_result())
+    req = seen["req"]
+    assert req.placement is None
+    assert req.thinking is None
+    assert req.effort is None
+    assert req.temperature is None
+
+
+@pytest.mark.parametrize("junk_select", ["not-a-dict", 42, ["a", "list"]])
+def test_run_claude_corrupt_select_degrades_to_none_without_crashing(
+    monkeypatch: pytest.MonkeyPatch, junk_select: Any
+) -> None:
+    """A corrupt ``meta.llm_select`` (string / int / wrong shape) must not
+    crash the tick — every knob just degrades to ``None``."""
+    _, seen = _run_claude(
+        monkeypatch,
+        result=_clean_result(),
+        params={"model": "opus", "select": junk_select},
+    )
+    req = seen["req"]
+    assert req.placement is None
+    assert req.thinking is None
+    assert req.effort is None
+    assert req.temperature is None
+
+
+def test_run_claude_select_with_wrong_value_types_degrades_field_by_field(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dict-shaped select with bad per-field types (unknown placement,
+    non-bool thinking, non-numeric temperature, unknown effort) degrades
+    each field independently rather than raising."""
+    _, seen = _run_claude(
+        monkeypatch,
+        result=_clean_result(),
+        params={
+            "model": "opus",
+            "select": {
+                "placement": "moon",
+                "thinking": "yes",
+                "effort": "extreme",
+                "temperature": "hot",
+            },
+        },
+    )
+    req = seen["req"]
+    assert req.placement is None
+    assert req.thinking is None
+    assert req.effort is None
+    assert req.temperature is None
 
 
 def test_run_claude_no_workspace_omits_workspace_env(

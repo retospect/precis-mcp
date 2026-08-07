@@ -125,6 +125,14 @@ PARAMS_SCHEMA: dict[str, Any] = {
             "stalled leaf into 2-5 subtasks instead of attempting it. Set only "
             "by the executor's streak-exhaustion guardrail, never by a caller.",
         },
+        "select": {
+            "type": "object",
+            "description": "Optional structured selection (ADR 0066), threaded "
+            "from the parent's meta.llm_select at dispatch time — placement "
+            "('local'/'cloud'), thinking (bool), effort "
+            "('low'/'medium'/'high'), temperature (0..2). Read defensively: a "
+            "malformed dict degrades to no override rather than failing the tick.",
+        },
     },
     "required": ["model"],
     "additionalProperties": False,
@@ -196,6 +204,42 @@ def _apply_decompose_mode(prompts: Any, params: dict[str, Any]) -> Any:
     )
 
 
+#: ``params.select`` knob names, in the fixed order :func:`_select_knobs`
+#: returns them (placement, thinking, temperature, effort).
+_SELECT_PLACEMENT_VALUES: frozenset[str] = frozenset({"local", "cloud"})
+_SELECT_EFFORT_VALUES: frozenset[str] = frozenset({"low", "medium", "high"})
+
+
+def _select_knobs(
+    sel: Any,
+) -> tuple[str | None, bool | None, float | None, str | None]:
+    """Defensively pull ``(placement, thinking, temperature, effort)`` out of
+    ``params['select']`` (``meta.llm_select``, threaded through by dispatch).
+
+    Every field independently degrades to ``None`` on a wrong type / bad
+    value rather than raising — corrupt or hand-edited meta must not crash a
+    tick; ``None`` on a field just means "let dispatch resolve the tier
+    default", the same as a caller that never set the knob at all.
+    """
+    if not isinstance(sel, dict):
+        return None, None, None, None
+    placement = sel.get("placement")
+    if placement not in _SELECT_PLACEMENT_VALUES:
+        placement = None
+    thinking = sel.get("thinking")
+    if not isinstance(thinking, bool):
+        thinking = None
+    temperature = sel.get("temperature")
+    if isinstance(temperature, bool) or not isinstance(temperature, (int, float)):
+        temperature = None
+    else:
+        temperature = float(temperature)
+    effort = sel.get("effort")
+    if effort not in _SELECT_EFFORT_VALUES:
+        effort = None
+    return placement, thinking, temperature, effort
+
+
 def run(
     *,
     store: Any,
@@ -219,6 +263,9 @@ def run(
     from precis.workers.planner_prompt import build_planner_prompts
 
     model = params["model"]
+    sel = params.get("select")
+    if not isinstance(sel, dict):
+        sel = {}
     timeout_s = int(params.get("timeout_s", 1800))
     started = time.monotonic()
 
@@ -282,6 +329,7 @@ def run(
             store=store,
             prompts=prompts,
             model=model,
+            sel=sel,
             parent_ref_id=parent_ref_id,
             agentlog_id=agentlog_id,
             workspace=workspace,
@@ -295,6 +343,7 @@ def run(
             store=store,
             prompts=prompts,
             model=model,
+            sel=sel,
             parent_ref_id=parent_ref_id,
             agentlog_id=agentlog_id,
             workspace=workspace,
@@ -312,6 +361,7 @@ def _run_oss_tick(
     store: Any,
     prompts: Any,
     model: str,
+    sel: dict[str, Any],
     parent_ref_id: int,
     agentlog_id: int | None,
     workspace: Any,
@@ -381,6 +431,7 @@ def _run_oss_tick(
                 "user_chars": len(prompts.user),
             },
         )
+    placement, thinking, temperature, effort = _select_knobs(sel)
     try:
         with tick_context(ctx):
             result = dispatch(
@@ -394,6 +445,10 @@ def _run_oss_tick(
                     timeout_s=timeout_s,
                     source="plan_tick",
                     ref_id=parent_ref_id,
+                    placement=placement,
+                    thinking=thinking,
+                    temperature=temperature,
+                    effort=effort,
                 )
             )
     except (RuntimeError, OSError) as exc:
@@ -458,6 +513,7 @@ def _run_claude_tick(
     store: Any,
     prompts: Any,
     model: str,
+    sel: dict[str, Any],
     parent_ref_id: int,
     agentlog_id: int | None,
     workspace: Any,
@@ -529,6 +585,7 @@ def _run_claude_tick(
                 "ambient_claude_md": ambient,
             },
         )
+    placement, thinking, temperature, effort = _select_knobs(sel)
     result = dispatch(
         LlmRequest(
             tier=tier,
@@ -549,6 +606,10 @@ def _run_claude_tick(
             cwd=cwd,
             source="plan_tick",
             ref_id=parent_ref_id,
+            placement=placement,
+            thinking=thinking,
+            temperature=temperature,
+            effort=effort,
         )
     )
     duration = time.monotonic() - started

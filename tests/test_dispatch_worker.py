@@ -261,6 +261,39 @@ def test_plan_tick_synthesizes_model_with_explicit_executor(
     assert children[0]["meta"]["params"]["model"] == "sonnet"
 
 
+def test_plan_tick_threads_llm_select_into_job_params(
+    handler: TodoHandler, store: Store
+) -> None:
+    """``meta.llm_select`` (ADR 0066 structured selection, an optional
+    sibling of ``llm_tier``) rides along onto the minted job's
+    ``params['select']`` unchanged."""
+    select = {"placement": "local", "thinking": True, "effort": "high"}
+    r = handler.put(
+        text="planner brief with structured selection",
+        meta={"llm_tier": "sonnet", "llm_select": select},
+    )
+    rid = id_of(r.body)
+    run_dispatch_pass(store)
+    children = _child_jobs_under(store, rid)
+    assert len(children) == 1
+    assert children[0]["meta"]["params"]["model"] == "sonnet"
+    assert children[0]["meta"]["params"]["select"] == select
+
+
+def test_plan_tick_no_llm_select_omits_select_param(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A planner todo with no ``meta.llm_select`` mints a job with no
+    ``params['select']`` at all — untouched, byte-identical to before this
+    knob existed."""
+    r = handler.put(text="planner brief, no selection", meta={"llm_tier": "sonnet"})
+    rid = id_of(r.body)
+    run_dispatch_pass(store)
+    children = _child_jobs_under(store, rid)
+    assert len(children) == 1
+    assert "select" not in children[0]["meta"]["params"]
+
+
 def test_succeeded_child_job_does_not_block_redispatch(
     handler: TodoHandler, store: Store
 ) -> None:
