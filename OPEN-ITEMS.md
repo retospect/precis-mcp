@@ -150,6 +150,34 @@ drop it"). That was wrong — the two sum different things — and is corrected
 there. Still pairs with the dark `quota.py evaluate()`: OAuth *quota*, as
 distinct from dollars, has no global gate.
 
+## 🖥️ Run the local-model jobs on a spark worker, not melchior
+
+Status: open · Severity: medium · Owner: `deploy/` host profiles + `workers/registry.py` · Test: a `plan_tick` / `briefing` job is claimed and completed by a spark-node worker with no OAuth credential present.
+
+`claude_inproc` jobs (`plan_tick`, `briefing`, `card_forge`, `quest_tick`, …)
+are pinned to **melchior's** agent-profile worker, because that is where the
+Claude Code binary and the OAuth credential live. A hang there stalls the lane
+cluster-wide (memory `agent_worker_inproc_topology`).
+
+That pin is now **obsolete for the operations steered onto the BIG chain**
+(2026-08-07): they run the in-process `openai_tools` loop against the local
+endpoint, so they need no `claude` binary, no OAuth token, and no `~/.claude`
+state — only a DB connection and HTTP reach to `192.168.6.197:8080`. Reto's
+call: make one of the serving sparks (castor/pollux) a precis worker so it
+*pulls* these jobs, co-located with the model it will call.
+
+Three things to work out:
+
+- **Which node.** Co-locating the worker with a llama.cpp RPC peer competes for
+  the same cores; the existing nice-all-jobs deploy reserves cores 0-1
+  (memory `spark_ssh_and_compute_niceness`), which is the lever.
+- **Eligibility, not affinity.** The gate should be "can reach the local
+  endpoint", not a hard-coded hostname — otherwise this trades melchior's SPOF
+  for a new one. The scheduler's `eligible` callable is the existing pattern.
+- **The residual claude lane.** Anything still on `claude_agent` (a reverted
+  operation, `fix_gripe`) must keep landing on melchior, so this is a *second*
+  eligible host for one lane, not a migration of the whole profile.
+
 ## 🔧 Agentic work is claimed by hosts with no `claude` binary — fails, doesn't re-route
 
 Status: open · Severity: medium · Owner: `workers/dispatch.py` claim path + `capability_probe.py` · Test: a host without the `claude` binary is never handed a `claude_p` / `claude_agent` job.

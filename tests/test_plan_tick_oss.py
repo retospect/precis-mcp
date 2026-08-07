@@ -248,8 +248,17 @@ def test_run_oss_binds_context_and_maps_clean(monkeypatch: pytest.MonkeyPatch) -
     assert ctx.model == "opus"
     assert ctx.workspace == "projects/demo"
     assert ctx.agentlog_id == 55
-    # Resolved OSS model id (frontier default) fed to the loop.
-    assert seen["model_id"] == "claude-opus-4-8"
+    # Resolved OSS model id fed to the loop. This is the BIG-tier default, NOT
+    # the `params={"model": "opus"}` alias's FRONTIER default: since 2026-08-07
+    # `plan_tick` is a registered operation, so the operator's tier
+    # (LLM_OPERATIONS / `llm.op.plan_tick`) owns the placement and the per-todo
+    # `meta.llm_tier` alias becomes advisory. In prod this id is itself
+    # superseded by rung 0 of `llm.chain.big` (local qwen3-235b), which pins its
+    # own model; it only surfaces here because no chain override is configured.
+    assert seen["model_id"] == "claude-sonnet-5"
+    # The alias still reaches the tick's *context* — it is what the planner
+    # prompt sees and what `ctx.model` records — it just no longer picks placement.
+    assert ctx.model == "opus"
     # PRECIS_MCP_CONFIG set → precis tools advertised (not a bare completion).
     assert seen["tool_less"] is False
     # No draft bound → no per-tick kind prohibition.

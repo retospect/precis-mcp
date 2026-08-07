@@ -1,17 +1,24 @@
 """``plan_tick`` job_type — one LLM tick of the planner coroutine.
 
 The dispatcher mints a ``plan_tick`` job under every ``meta.llm_tier``-set
-todo that has no live job and no live open children. The transport is
-the router's decision (``select_transport`` + ``resolve_backend``):
+todo that has no live job and no live open children. The harness is rung 0
+of the effective tier's placement chain (:func:`_tick_transport`):
 
-* under the default **ANTHROPIC** backend the tick runs as a real
-  ``claude -p`` agent (MCP tools, OAuth Max subscription) *through the
-  router* (the ``CLAUDE_AGENT`` transport, :func:`_run_claude_tick`) —
-  ``bypassPermissions`` + env-back-door context;
-* under a tools-capable OSS backend (``PRECIS_LLM_BACKEND=openai``) it
-  drives the precis verbs in-process over the OSS ``tools=`` loop (the
-  ``OPENAI_TOOLS`` transport, :func:`_run_oss_tick`, ADR 0024/0046),
-  binding context in a ContextVar.
+* a ``claude_agent`` rung runs the tick as a real ``claude -p`` agent (MCP
+  tools, OAuth Max subscription) *through the router*
+  (:func:`_run_claude_tick`) — ``bypassPermissions`` + env-back-door context;
+* an ``openai_tools`` rung drives the precis verbs in-process over the OSS
+  ``tools=`` loop (:func:`_run_oss_tick`, ADR 0024/0046), binding context in
+  a ContextVar. ``llm.chain.big`` is such a chain (local qwen3-235b → OSS
+  cloud), so steering this operation to BIG moves both the model *and* the
+  harness onto local hardware.
+
+The effective tier comes from the operations registry
+(:mod:`precis.utils.llm.operations`), so an ``llm.op.plan_tick`` override
+retunes it live. Before 2026-08-07 the harness was chosen by
+``select_transport`` alone, which under the default ANTHROPIC backend always
+answered ``CLAUDE_AGENT`` — the global backend flip was the only lever, and
+it moved every call site at once.
 
 What the planner does during the tick is its own call (mint
 children, yield to user, halt, or finish). The runner doesn't
@@ -46,6 +53,7 @@ from precis.utils.llm.router import (
     Tier,
     Transport,
     resolve_backend,
+    resolve_chain,
     select_transport,
 )
 from precis.utils.llm.router import (
@@ -319,11 +327,7 @@ def run(
         except Exception:
             log.warning("plan_tick: failed to finalize agentlog", exc_info=True)
 
-    transport = select_transport(
-        _TIER_BY_ALIAS.get(model, Tier.FRONTIER),
-        tools_needed=True,
-        backend=resolve_backend(),
-    )
+    transport = _tick_transport(model)
     if transport is Transport.CLAUDE_AGENT:
         outcome = _run_claude_tick(
             store=store,
@@ -887,6 +891,47 @@ def _load_parent_workspace(store: Any, parent_ref_id: int):
     if row is None:
         return None
     return Workspace.from_meta(row[0])
+
+
+def _tick_transport(model: str) -> Transport:
+    """Which harness runs this tick: the Claude Code agent, or the OSS tools loop.
+
+    This used to be ``select_transport(tier, tools_needed=True, backend)``, which
+    under the default ``ANTHROPIC`` backend *always* answers ``CLAUDE_AGENT``. So
+    the only lever that could move a tick off the Max subscription was the
+    **global** backend flip — which moves every call site at once. That left
+    ``plan_tick``, the fleet's single largest LLM line item, effectively
+    unsteerable: an ``llm.op.plan_tick`` tier override reached ``dispatch()`` but
+    not this branch, so the tick still took the claude harness.
+
+    Now the branch is read off rung 0 of the *resolved placement chain* for the
+    effective tier (the operations-registry tier, i.e. the same rung
+    ``dispatch()`` applies). ``llm.chain.big``'s first rung is ``openai_tools``
+    (local qwen3-235b → OSS cloud), so a BIG-tier tick selects
+    :func:`_run_oss_tick`, and reverting is one ``app_settings`` row rather than
+    a deploy.
+
+    Deriving the branch from the same chain ``dispatch()`` walks is what keeps
+    the two in agreement. Choosing the harness from ``select_transport`` while
+    ``dispatch()`` resolved the chain could land ``_run_claude_tick`` on a tier
+    whose rung 0 is ``openai_tools`` — a claude subprocess handed an OSS model
+    id, the ``dream`` ``api_error`` class.
+
+    With no ``llm.chain.<tier>`` override configured, :func:`resolve_chain`
+    returns the default single rung built from :func:`select_transport`, so an
+    unconfigured fleet routes byte-for-byte as it did before.
+    """
+    from precis.utils.llm import operations
+
+    tier = _TIER_BY_ALIAS.get(model, Tier.FRONTIER)
+    op = operations.resolve_op("plan_tick")
+    if op is not None:
+        tier = op[0]
+    backend = resolve_backend()
+    ladder = resolve_chain(tier, tools_needed=True, backend=backend)
+    if not ladder:  # pragma: no cover — resolve_chain never returns empty
+        return select_transport(tier, tools_needed=True, backend=backend)
+    return ladder[0].transport
 
 
 def _resolve_oss_tier(model: str) -> Tier:

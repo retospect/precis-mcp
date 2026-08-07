@@ -1053,17 +1053,23 @@ not separate daemons anymore.
   `reading_brief`/`meditation`
   **`claude_inproc`** job_types (melchior — both casts, `card_forge`, and the news
   briefing now compose via the LLM router (`DispatchClient`,
-  ADR 0046); `card_forge`/news briefing keep the
-  `Tier.FRONTIER` Opus default on `claude_agent` — a `claude -p` subprocess,
-  direct Anthropic OAuth. The two audio **casts** are the exception: they sit on
-  **`Tier.BIG`** with no model pin (local-first chain, cloud fallback). They were
-  FRONTIER + a `claude-sonnet-5` pin until 2026-08-07, which put an unattended
-  daily deliverable on the OAuth **quota** lane — and that lane fails *closed*,
-  so an exhausted seven-day window didn't slow a cast down, it dropped it (and
-  for nidra, the failed job's `child-failed` tag then blocked every later tick
-  via collision-skip, costing days). These defaults live in the per-operation registry
-  (`utils/llm/operations.py`, runtime-tunable via `llm.op.reading_brief`/`meditation`),
-  not a call-site `model=` arg — see the per-operation routing note in the LLM-router
+  ADR 0046); `card_forge` keeps the `Tier.FRONTIER` Opus default on
+  `claude_agent` — a `claude -p` subprocess, direct Anthropic OAuth. The two
+  audio **casts**, the news **briefing**, and **`plan_tick`** sit on
+  **`Tier.BIG`** with no model pin (local-first chain, cloud fallback). The
+  casts were FRONTIER + a `claude-sonnet-5` pin until 2026-08-07, which put an
+  unattended daily deliverable on the OAuth **quota** lane — and that lane fails
+  *closed*, so an exhausted seven-day window didn't slow a cast down, it dropped
+  it (and for nidra, the failed job's `child-failed` tag then blocked every later
+  tick via collision-skip, costing days). `briefing` and `plan_tick` moved the
+  same day for **cost**: they were the fleet's two largest LLM line items, and
+  `plan_tick` additionally picks its *harness* (Claude Code + MCP vs the
+  in-process tools loop) from the resolved chain's rung 0, so BIG moves the
+  harness onto local hardware too — at the cost of a todo's per-item
+  `meta.llm_tier` no longer picking placement. These defaults live in the
+  per-operation registry (`utils/llm/operations.py`, runtime-tunable via
+  `llm.op.<source>`), not a call-site `model=` arg — see the per-operation
+  routing note in the LLM-router
   section)
   on daily recurring (`meta.schedule` set) watches; **TTS is the separate downstream spark pass**, so the
   nice-model compose and the container narration never block each other. CLI:

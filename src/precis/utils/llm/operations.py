@@ -120,6 +120,45 @@ LLM_OPERATIONS: dict[str, OpDefault] = {
             "days of meditations rather than one."
         ),
     ),
+    "briefing": OpDefault(
+        tier=Tier.BIG,
+        model=None,
+        label="Morning briefing",
+        description=(
+            "The daily situational-awareness prose briefing (news kind), "
+            "distinct from the `reading_brief` cast. Free-text composition "
+            "with no tools advertised."
+        ),
+        env="PRECIS_BRIEFING_MODEL",
+        note=(
+            "Was FRONTIER/Opus at the call site. Its true cost was invisible "
+            "until the 2026-08-07 metering fix — 723 of 724 calls in the "
+            "preceding week logged no cost at all. Prose with no tool use is "
+            "the easiest thing to serve locally."
+        ),
+    ),
+    "plan_tick": OpDefault(
+        tier=Tier.BIG,
+        model=None,
+        label="Planner tick",
+        description=(
+            "One LLM tick of the planner coroutine — the single largest LLM "
+            "line item on the fleet. Agentic: mints children, yields, halts."
+        ),
+        env="PRECIS_PLAN_TICK_MODEL",
+        note=(
+            "The one entry here whose tier ALSO steers a harness switch: "
+            "plan_tick picks `_run_claude_tick` (Claude Code + MCP) vs "
+            "`_run_oss_tick` (in-process tools loop) from the resolved "
+            "chain's rung 0, so a BIG chain moves both the model and the "
+            "harness. Revert with an `llm.op.plan_tick` tier override — one "
+            "row, no deploy — if the local endpoint can't hold the ~100 "
+            "ticks/day. Note the tradeoff registering this makes: a todo's "
+            "per-item `meta.llm_tier` (opus|sonnet|haiku) no longer picks the "
+            "placement, only the prompt's self-description — an operator cost "
+            "control deliberately outranks a per-todo preference."
+        ),
+    ),
 }
 
 #: Observed operations deliberately NOT steerable, with why. The override layer

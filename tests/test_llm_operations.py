@@ -305,6 +305,27 @@ def test_meditation_registry_carries_default_and_env_hatch() -> None:
     assert default.env == "PRECIS_MEDITATION_MODEL"
 
 
+def test_local_bound_operations_carry_no_claude_model_pin() -> None:
+    """Every operation steered onto the BIG chain must leave ``model`` unset.
+
+    A claude model id on a BIG entry would be handed to an ``openai_tools``
+    rung — the incoherent-pin failure the router's ``resolve_model`` guard
+    calls the ``dream`` api_error class. The tier picks the chain; the chain
+    picks the model.
+    """
+    for name, default in LLM_OPERATIONS.items():
+        if default.tier is Tier.BIG:
+            assert default.model is None, f"{name} pins a model on the BIG chain"
+
+
+def test_the_big_spenders_are_steerable() -> None:
+    """The registry is an allow-list, so an unregistered source is invisible to
+    the Models tab. These four were ~99% of fleet LLM spend on 2026-08-06 and
+    were all unsteerable; keep them registered."""
+    for source in ("plan_tick", "briefing", "meditation", "reading_brief"):
+        assert source in LLM_OPERATIONS
+
+
 def test_casts_are_not_on_the_subscription_quota_lane() -> None:
     """POLICY, stated once for both casts: a scheduled, unattended daily
     deliverable must not sit on the Claude OAuth lane, because that lane fails
