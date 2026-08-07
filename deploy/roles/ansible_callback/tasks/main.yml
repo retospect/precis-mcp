@@ -1,6 +1,11 @@
 ---
 # Ansible callback plugin to send alerts to cluster webhook
 
+# Both delegate_to: localhost tasks override ansible.cfg's remote_tmp
+# (/tmp/.ansible/tmp): on the controller that path can be owned mode-700 by
+# a different user (e.g. a prior run as `deploy`), which fails module
+# staging. ~ keeps controller tmp per-user. (Same override as
+# playbooks/03-precis-constraints.yml.)
 - name: Ensure callback plugin directory
   ansible.builtin.file:
     path: "{{ playbook_dir }}/callback_plugins"
@@ -9,6 +14,8 @@
   delegate_to: localhost
   become: false
   run_once: true
+  vars:
+    ansible_remote_tmp: "~/.ansible/tmp"
 
 - name: Deploy cluster webhook callback plugin
   ansible.builtin.template:
@@ -18,3 +25,5 @@
   delegate_to: localhost
   become: false
   run_once: true
+  vars:
+    ansible_remote_tmp: "~/.ansible/tmp"

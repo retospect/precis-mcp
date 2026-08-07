@@ -68,7 +68,7 @@ log = logging.getLogger(__name__)
 
 #: Bump to force a lazy re-sweep of the whole corpus (every chunk re-probed
 #: against the current claim-embedding index).
-CHASETRIG_VERSION = "1"
+CHASETRIG_VERSION = "2"
 _CHASETRIG_NS = "CHASETRIG"
 
 #: A due claim hub carries this closed ref tag until ``hub_refine`` pops it
