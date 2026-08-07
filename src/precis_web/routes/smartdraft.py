@@ -558,10 +558,6 @@ _REL_PRIORITY: dict[str, int] = {
     "derived-from": 3,
 }
 
-#: Chips shown per relation before collapsing to "+N more" — `cites` runs to
-#: hundreds on a real draft and would otherwise be the whole panel.
-_REL_CHIP_CAP = 12
-
 
 def _flatten_meta(meta: dict[str, Any]) -> list[tuple[str, Any]]:
     """``meta`` as ``(key, value)`` pairs, ``workspace`` flattened one level
@@ -629,8 +625,14 @@ def _ref_tag_labels(store: Any, ref_id: int) -> list[str]:
 
 
 def _ref_connection_groups(store: Any, ref_id: int) -> list[dict[str, Any]]:
-    """Whole-document edges grouped by (relation, direction), concerns first,
-    each group's chips capped at ``_REL_CHIP_CAP`` with an overflow count."""
+    """Whole-document edges grouped by (relation, direction), concerns first.
+
+    **Every** edge is rendered — the group is bounded by a scrolling box in the
+    template, not by a chip quota here. An earlier cap kept the first dozen and
+    reduced the rest to a "+N more" count, which made a briefing's bibliography
+    half-unreachable; and any cap tuned to today's corpus is tuned to a
+    coincidence of what the briefing cast happens to write, not to a property
+    of drafts. Bounding height in CSS holds at any N without discarding."""
     groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for conn in store.ref_connections(ref_id):
         groups.setdefault((conn["relation"], conn["direction"]), []).append(conn)
@@ -641,8 +643,7 @@ def _ref_connection_groups(store: Any, ref_id: int) -> list[dict[str, Any]]:
                 "relation": relation,
                 "direction": direction,
                 "total": len(conns),
-                "chips": _connection_chips(conns[:_REL_CHIP_CAP]),
-                "more": max(0, len(conns) - _REL_CHIP_CAP),
+                "chips": _connection_chips(conns),
             }
         )
     out.sort(

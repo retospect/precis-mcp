@@ -126,13 +126,15 @@ def test_concerns_lead_the_connection_list() -> None:
     ]
 
 
-def test_a_long_relation_is_capped_with_an_overflow_count() -> None:
-    # A real draft cites hundreds of papers; uncapped that IS the panel.
+def test_no_edge_is_dropped_however_many_a_relation_has() -> None:
+    # An earlier cap kept the first dozen chips and reduced the rest to a "+N
+    # more" count, which put half a briefing's bibliography out of reach. The
+    # panel bounds its height with a scrolling box now, so the assembly has to
+    # hand over every edge — a cap here would silently truncate again.
     store = _ConnStore([_conn("cites", ident=f"p{i}") for i in range(30)])
     (group,) = _ref_connection_groups(store, 1)
     assert group["total"] == 30
-    assert len(group["chips"]) == 12
-    assert group["more"] == 18
+    assert len(group["chips"]) == 30
 
 
 # ── rename: refs.title and the title heading, together ───────────────

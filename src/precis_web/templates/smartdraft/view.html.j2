@@ -311,9 +311,14 @@
           <div class="{% if g.relation == 'raises-concern-about' %}rounded bg-amber-50 p-1{% endif %}">
             <span class="text-slate-500">{{ '←' if g.direction == 'in' else '→' }} {{ g.relation }}</span>
             <span class="text-slate-400">({{ g.total }})</span>
-            <div class="mt-0.5 flex flex-wrap gap-1">
+            {# Every edge is here; height is bounded by the box, so a briefing's
+               24-paper bibliography scrolls instead of being truncated to a
+               count. The odd max-height clips the last row mid-chip on purpose
+               — a region that ends flush reads as ended. `tabindex` so it's
+               scrollable without a mouse. #}
+            <div class="mt-0.5 flex max-h-[4.5rem] flex-wrap gap-1 overflow-y-auto"
+                 tabindex="0">
               {% for chip in g.chips %}{{ chip }}{% endfor %}
-              {% if g.more %}<span class="text-slate-400">+{{ g.more }} more</span>{% endif %}
             </div>
           </div>
           {% endfor %}

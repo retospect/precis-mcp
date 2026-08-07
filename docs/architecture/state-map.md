@@ -3179,7 +3179,9 @@ The master kinds table lives in the `precis-overview` skill.
   survives the no-reload focus swap): small by default — title + genre + a `⚑ N`
   concerns chip + last-touched — and **big** on ▸, dropping a panel with the
   ref's identity, its whole-document edges (`store::ref_connections`, ref-level
-  links only; concerns lead, each relation's chips capped at `_REL_CHIP_CAP`),
+  links only — body citations are chunk-anchored and stay with their paragraph;
+  concerns lead, and every edge renders inside a fixed-height scrolling box, so
+  a briefing's 24-paper bibliography is bounded without being truncated),
   and **all** of its `meta` (`routes/smartdraft.py::_doc_meta`). `_META_LABELS`
   is a label table, **not** a whitelist — an unlabelled key still renders under
   its raw name, so a worker stamping a new one is never invisible (the

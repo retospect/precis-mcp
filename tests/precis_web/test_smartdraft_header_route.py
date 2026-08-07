@@ -111,6 +111,38 @@ def test_header_shows_document_edges_and_flags_concerns(
     assert "⚑ 1" in html  # the collapsed strip's concern chip
 
 
+def test_a_long_relation_reaches_the_html_in_full(tmp_path) -> None:
+    """A briefing's bibliography must be *reachable*, not summarised into a
+    count. The assembly hands over every edge (unit-tested next door); this
+    pins that the template renders them all and bounds height by scrolling
+    instead of re-truncating."""
+
+    class ManyConnStore(MetaFakeStore):
+        def ref_connections(self, ref_id):
+            return [
+                {
+                    "relation": "cites",
+                    "direction": "out",
+                    "kind": "paper",
+                    "ident": f"p{i}",
+                    "title": f"Paper {i}",
+                }
+                for i in range(30)
+            ]
+
+    client = TestClient(
+        create_app(
+            runtime=FakeRuntime(ManyConnStore()),
+            web_config=WebConfig(corpus_dir=tmp_path),
+        )
+    )
+    html = client.get("/smartdraft/sdt").text
+    for i in range(30):
+        assert f"paper:p{i}" in html, f"chip {i} never reached the page"
+    assert "more</span>" not in html  # no overflow stub left behind
+    assert "overflow-y-auto" in html  # …because the box scrolls instead
+
+
 def test_header_offers_a_rename(meta_client: TestClient) -> None:
     html = meta_client.get("/smartdraft/sdt").text
     assert 'id="sd-title"' in html
