@@ -22,38 +22,46 @@
 {% macro llm_selector(default_tier='big') %}
 <div class="flex flex-wrap items-center gap-1.5"
      x-data="llmSelectorState('{{ default_tier }}')" x-init="fetchPreview()">
-  <select x-model="tier" @change="fetchPreview(); emit()"
-          title="Capability tier — which model chain handles the request. small = cheap classifier · frontier = most capable."
-          class="rounded border border-slate-200 px-1 py-0.5 text-slate-600">
-    <option value="small">small</option>
-    <option value="medium">medium</option>
-    <option value="big">big</option>
-    <option value="frontier">frontier</option>
-  </select>
-  <select x-model="placement" @change="fetchPreview(); emit()"
-          title="auto = configured chain (local-first with cloud failover) · local = local hardware only, fails rather than falling back to cloud · cloud = cloud rungs only."
-          class="rounded border border-slate-200 px-1 py-0.5 text-slate-600">
-    <option value="">auto</option>
-    <option value="local">local</option>
-    <option value="cloud">cloud</option>
-  </select>
-  <select x-model="reasoning" @change="fetchPreview(); emit()"
-          :disabled="preview && preview.knobs && !preview.knobs.thinking && !preview.knobs.effort"
-          title="default = tier default · off = no extended thinking · low/medium/high = reasoning effort (levels honored only on routes that support them)."
-          class="rounded border border-slate-200 px-1 py-0.5 text-slate-600 disabled:opacity-40">
-    <option value="">default</option>
-    <option value="off">off</option>
-    <option value="low">low</option>
-    <option value="medium">medium</option>
-    <option value="high">high</option>
-  </select>
-  <input type="number" step="0.1" min="0" x-model="temperature"
-         :max="preview && preview.knobs && preview.knobs.temp_max != null ? preview.knobs.temp_max : 2"
-         :disabled="preview && preview.knobs && !preview.knobs.temperature"
-         @change="fetchPreview(); emit()"
-         placeholder="temp"
-         title="Sampling temperature (0 = deterministic). Empty = route default. Ignored on routes that don't support it."
-         class="w-14 rounded border border-slate-200 px-1 py-0.5 text-slate-600 disabled:opacity-40" />
+  <span class="llm-tip">
+    <select x-model="tier" @change="fetchPreview(); emit()"
+            class="rounded border border-slate-200 px-1 py-0.5 text-slate-600">
+      <option value="small">small</option>
+      <option value="medium">medium</option>
+      <option value="big">big</option>
+      <option value="frontier">frontier</option>
+    </select>
+    <span class="llm-tip-body"><strong>Capability tier</strong><br>which model chain handles the request<br>small — cheap classifier<br>medium — mid-weight<br>big — heavy default<br>frontier — most capable</span>
+  </span>
+  <span class="llm-tip">
+    <select x-model="placement" @change="fetchPreview(); emit()"
+            class="rounded border border-slate-200 px-1 py-0.5 text-slate-600">
+      <option value="">auto</option>
+      <option value="local">local</option>
+      <option value="cloud">cloud</option>
+    </select>
+    <span class="llm-tip-body"><strong>Placement</strong><br>auto — configured chain (local-first with cloud failover)<br>local — local hardware only; fails rather than falling back to cloud<br>cloud — cloud rungs only</span>
+  </span>
+  <span class="llm-tip">
+    <select x-model="reasoning" @change="fetchPreview(); emit()"
+            :disabled="preview && preview.knobs && !preview.knobs.thinking && !preview.knobs.effort"
+            class="rounded border border-slate-200 px-1 py-0.5 text-slate-600 disabled:opacity-40">
+      <option value="">default</option>
+      <option value="off">off</option>
+      <option value="low">low</option>
+      <option value="medium">medium</option>
+      <option value="high">high</option>
+    </select>
+    <span class="llm-tip-body"><strong>Reasoning</strong><br>default — tier default<br>off — no extended thinking<br>low / medium / high — reasoning effort (levels honored only on routes that support them)</span>
+  </span>
+  <span class="llm-tip">
+    <input type="number" step="0.1" min="0" x-model="temperature"
+           :max="preview && preview.knobs && preview.knobs.temp_max != null ? preview.knobs.temp_max : 2"
+           :disabled="preview && preview.knobs && !preview.knobs.temperature"
+           @change="fetchPreview(); emit()"
+           :placeholder="preview && preview.temp_default != null ? String(preview.temp_default) : 'temp'"
+           class="w-14 rounded border border-slate-200 px-1 py-0.5 text-slate-600 disabled:opacity-40" />
+    <span class="llm-tip-body"><strong>Temperature</strong><br>sampling randomness; 0 = deterministic<br>empty — model default (shown greyed in the field when known)<br>ignored on routes that don't support it</span>
+  </span>
   <span class="text-slate-500" x-show="preview && !preview.error">→
     <span x-text="preview && preview.model"></span> ·
     <span x-text="preview && preview.placement_effective"></span><template
@@ -64,6 +72,22 @@
     <span class="text-amber-600" x-text="'⚠ ' + w"></span>
   </template>
 </div>
+{# CSS hover tooltips replace plain `title=` (which can't render bold/line
+   breaks) for the four controls above. Emitted from inside the macro for
+   the same reason the script below is — a duplicate `<style>` block on a
+   page with two call sites is harmless (identical rules, last one wins). #}
+<style>
+.llm-tip { position: relative; display: inline-flex; }
+.llm-tip .llm-tip-body {
+  display: none; position: absolute; top: 100%; left: 0; margin-top: 4px;
+  z-index: 50; width: max-content; max-width: 20rem;
+  background: #1e293b; color: #f1f5f9; font-size: 0.75rem; line-height: 1.4;
+  padding: 6px 9px; border-radius: 6px;
+  box-shadow: 0 4px 12px rgb(0 0 0 / 0.25);
+  pointer-events: none; white-space: normal;
+}
+.llm-tip:hover .llm-tip-body { display: block; }
+</style>
 {# Factory guarded against redefinition — ``{% import %}`` only pulls in
    macros, not module-level markup, so the script has to ship from inside
    the macro's own output to render at every call site; the guard keeps a

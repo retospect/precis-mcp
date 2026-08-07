@@ -597,7 +597,13 @@ def resolve_selection(
     :func:`resolve_chain`) with :func:`_apply_placement` layered in, same as
     :func:`dispatch`. Return keys are always present:
     ``alias, tier, model, transport, placement_effective, fallbacks, knobs,
-    size, context, warnings, error`` — ``error`` is ``None`` on success.
+    size, context, warnings, error, temp_default`` — ``error`` is ``None`` on
+    success. ``temp_default`` is the sampling temperature :func:`dispatch`
+    would apply when the caller leaves ``temperature`` unset: ``None`` when
+    the resolved rung ignores temperature (:func:`rung_knobs`) or the
+    provider's own default otherwise applies; else the catalog card's
+    ``gen_defaults.temperature`` override when present and in ``[0, 2]``;
+    else the tier's :func:`_tier_gen_defaults` temperature.
 
     ``warnings`` are honesty notes computed against the resolved rung's
     :func:`rung_knobs` — e.g. a ``temperature`` given to a route that ignores
@@ -617,6 +623,7 @@ def resolve_selection(
         "context": None,
         "warnings": [],
         "error": None,
+        "temp_default": None,
     }
 
     tier = PLANNER_TIER_BY_ALIAS.get(alias.lower())
@@ -699,6 +706,22 @@ def resolve_selection(
         if not knobs["thinking"] and not knobs["effort"]:
             warnings.append("reasoning setting is ignored on this route")
 
+    temp_default: float | None = None
+    if knobs["temperature"]:
+        card_temp = None
+        if card:
+            gen_defaults = card.get("gen_defaults")
+            if isinstance(gen_defaults, dict):
+                candidate = gen_defaults.get("temperature")
+                if isinstance(candidate, (int, float)) and not isinstance(
+                    candidate, bool
+                ):
+                    if 0 <= candidate <= 2:
+                        card_temp = float(candidate)
+        temp_default = (
+            card_temp if card_temp is not None else _tier_gen_defaults(tier)[1]
+        )
+
     return {
         "alias": alias,
         "tier": tier.value,
@@ -711,6 +734,7 @@ def resolve_selection(
         "context": context,
         "warnings": warnings,
         "error": None,
+        "temp_default": temp_default,
     }
 
 

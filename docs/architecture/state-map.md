@@ -1406,8 +1406,13 @@ the three. `router.py::reasoning_to_knobs` maps the UI's combined
 `router.py::resolve_selection(alias, placement=, reasoning=, temperature=)` is
 the never-raising preview resolver — mirrors `planner_model_choices` +
 `_apply_placement`, returns `{tier, model, transport, placement_effective,
-fallbacks, knobs, size, context, warnings, error}` plus advisory `warnings`
-(e.g. a `temperature` given to a route that ignores it). `GET /api/llm/resolve`
+fallbacks, knobs, size, context, warnings, error, temp_default}` plus advisory
+`warnings` (e.g. a `temperature` given to a route that ignores it).
+`temp_default` is the sampling temperature applied when the caller leaves
+`temperature` unset: the tier table (`small`→`0.0`, others→`None` = provider
+default), overridable per-model via an `llm` card's `gen_defaults.temperature`,
+and `None` when the resolved route ignores temperature entirely (see
+`rung_knobs`). `GET /api/llm/resolve`
 (`precis_web/routes/llm.py`) exposes it read-only over HTTP; the shared Alpine
 widget (`templates/_llm_selector.html.j2`, `llm_selector()` macro — tier ×
 placement × reasoning × temperature controls + a live "→ model · placement"

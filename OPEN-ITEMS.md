@@ -1294,41 +1294,20 @@ passes now. Remaining:
   runs for them, and an OSS slug can still land on a claude transport under a
   half-applied flip. Reviewer finding #2, deferred from the Phase-1
   flip-safety landing (2026-07-25).
-- **ADR 0066 capability-tiers — Phase B surfaces + Phase C sweep remain**
-  *(feature, in progress — owner [`docs/decisions/0066-capability-tiers-and-placement-chains.md`](docs/decisions/0066-capability-tiers-and-placement-chains.md)).*
-  **Done + deployed (2026-07-25):** Phase A (additive 4 tiers + chain resolver,
-  dark) and Phase B steps 1 (`resolve_chain` always-on — operator chains read
-  regardless of `PRECIS_LLM_FAILOVER`, main `2d7b304d`) + 3a (`llm.cloud_enabled`
-  throttle prunes cloud rungs; FRONTIER/no-local-rung tiers pause, main
-  `0a2fc576`). Plus Phase B step 2 (**operator chain editor + cloud-throttle
-  toggle** on `/status?tab=services` — per-tier JSON textarea `POST
-  /factory/llm/chain` + `POST /factory/llm/cloud`; `status.py::_llm_chain_ctx`).
-  All ship **dark** (no operator chain written, throttle defaults on) so zero
-  live routing change yet. **UX decided:** JSON textarea (v1), server-validated
-  list-only — a structured add/remove/reorder form is a fast-follow if wanted.
-  **Remaining Phase B → folded into Phase C** (both deferred for concrete code
-  reasons, not oversight):
-  (3b) the **`tier_floor` forward migration** (relabel `llm` card meta
-  `cloud-super→frontier` etc.) — **clobbered by `llm_catalog.seed_default_cards`**
-  (`for tier in Tier` first-wins patches `tier_floor` back to legacy values
-  every reconcile tick), so it must ride with the Phase-C catalog reseed
-  (`_SEED_PROSE` keys + `TIER_FLOOR_MODELS` → 4 tiers) + the
-  `is_cloud`-derives-from-placement renderer change, never land alone;
-  (2-residual) the **caller-picker→4-rungs split** (migrate the `LLM:` dropdown
-  vocab, `_TIER_RANK`, `is_cloud`) — entangled with the planner-tag-vocab open q
-  below. **Phase C (GATED):** the
-  call-site sweep collapsing `LLM:local`→`BIG` must NOT ship until the
-  content-sensitivity/local-only constraint exists
-  ([`docs/proposals/content-sensitivity-placement.md`](docs/proposals/content-sensitivity-placement.md),
-  Rollout gate) — design that first. Also resolve the planner-tag-vocab note
-  (ADR §"Still genuinely open": `LLM:small`/`medium` no-op via fallback since
-  `plan_tick` always `tools_needed=True`).
-  **PARKED by decision (Reto, 2026-07-25):** the content-sensitivity proposal
-  is deferred, so all of Phase C (call-site sweep + catalog reseed + `tier_floor`
-  migration + caller-picker) stays on hold — **not the immediate next step**.
-  Resume by writing the proposal when the local-only constraint becomes a
-  priority; until then the shipped router (steps 1/3a) + operator chain editor
-  (step 2) are the usable surface, dark until an operator writes a chain.
+- **ADR 0066 capability-tiers — caller-picker/tag-vocab residue** *(feature,
+  open — owner [`docs/decisions/0066-capability-tiers-and-placement-chains.md`](docs/decisions/0066-capability-tiers-and-placement-chains.md)).*
+  Two sub-items outlived the Phase C tier sweep (`9140f7a2`, 2026-07-26 —
+  legacy-tier retirement + catalog reseed; see "LLM routing: all tiers remote
+  via OpenRouter" below):
+  1. **Caller-picker still 3-rung.** `status.py::_TIER_RANK` is
+     `{"frontier": 0, "big": 1, "medium": 2}` — no `small` — and
+     `status.py::_llm_card_view`'s `is_cloud` is still a model-id string-sniff
+     (`"/" in model_id or model_id.startswith("claude")`), not
+     placement-derived.
+  2. **Planner-tag-vocab question** (ADR §"Still genuinely open"):
+     `plan_tick` always passes `tools_needed=True`, so `LLM:small`/
+     `LLM:medium` todo tags no-op through the existing local-fallback path
+     instead of routing distinctively — decide the `LLM:` tag vocab's scope.
 
 ---
 

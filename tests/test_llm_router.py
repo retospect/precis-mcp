@@ -3600,6 +3600,7 @@ def test_resolve_selection_happy_path_shape(monkeypatch: pytest.MonkeyPatch) -> 
         "context",
         "warnings",
         "error",
+        "temp_default",
     ):
         assert key in row
     assert row["error"] is None
@@ -3657,6 +3658,87 @@ def test_resolve_selection_reasoning_ignored_warning_on_claude_rung(
     row = router.resolve_selection("sonnet", reasoning="off")
 
     assert "reasoning setting is ignored on this route" in row["warnings"]
+
+
+def test_resolve_selection_temp_default_small_is_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``small`` resolves (default config, ANTHROPIC backend) to the local
+    transport, which honors temperature — so ``temp_default`` falls through
+    to the tier default (:data:`_TIER_GEN_DEFAULTS`'s ``0.0`` for SMALL)."""
+    router._card_cache.clear()
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override", lambda _tier: None
+    )
+    monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
+    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
+    monkeypatch.setattr("precis.budget.meter.active_store", lambda: None)
+
+    row = router.resolve_selection("small")
+
+    assert row["transport"] == Transport.LOCAL.value
+    assert row["knobs"]["temperature"] is True
+    assert row["temp_default"] == 0.0
+
+
+def test_resolve_selection_temp_default_none_on_claude_rung(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A claude transport ignores temperature outright — ``temp_default`` is
+    ``None`` regardless of the tier's own gen-default."""
+    router._card_cache.clear()
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override", lambda _tier: None
+    )
+    monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
+    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
+    monkeypatch.setattr("precis.budget.meter.active_store", lambda: None)
+
+    row = router.resolve_selection("sonnet")
+
+    assert row["transport"] == Transport.CLAUDE_AGENT.value
+    assert row["knobs"]["temperature"] is False
+    assert row["temp_default"] is None
+
+
+def test_resolve_selection_temp_default_card_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A catalog card's ``gen_defaults.temperature`` (an operator hook — no
+    card carries it today) wins over the tier default when in ``[0, 2]``."""
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override", lambda _tier: None
+    )
+    monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
+    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
+    monkeypatch.setattr(
+        router,
+        "_catalog_card_meta",
+        lambda model: {"gen_defaults": {"temperature": 0.7}},
+    )
+
+    row = router.resolve_selection("small")
+
+    assert row["temp_default"] == 0.7
+
+
+def test_resolve_selection_temp_default_card_override_out_of_range_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An out-of-range card override (outside ``[0, 2]``) is ignored — falls
+    back to the tier default rather than propagating a nonsensical value."""
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override", lambda _tier: None
+    )
+    monkeypatch.delenv("PRECIS_LLM_FAILOVER", raising=False)
+    monkeypatch.delenv("PRECIS_LLM_BACKEND", raising=False)
+    monkeypatch.setattr(
+        router, "_catalog_card_meta", lambda model: {"gen_defaults": {"temperature": 5}}
+    )
+
+    row = router.resolve_selection("small")
+
+    assert row["temp_default"] == 0.0
 
 
 def test_resolve_selection_reasoning_level_not_supported_warning(

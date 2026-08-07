@@ -68,6 +68,7 @@ def test_llm_resolve_happy_call_returns_the_selection_shape(client) -> None:
         "context",
         "warnings",
         "error",
+        "temp_default",
     ):
         assert key in data
     assert data["alias"] == "big"
