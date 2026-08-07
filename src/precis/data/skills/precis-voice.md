@@ -1,7 +1,7 @@
 ---
 id: precis-voice
 title: precis — authoring drafts for the ear (audio narration)
-summary: how to write a draft that narrates well as spoken audio — describe relationships not formulas, avoid slashes and backslashes, spell out and round numbers, keep prose clean and lexicon the hard words; plus the morning-brief and evening-meditation (nidra) voice profiles
+summary: how to write a draft that narrates well as spoken audio — describe relationships not formulas, avoid slashes and backslashes, keep numerals but round them (the narrator spells them out), keep prose clean and lexicon the hard words; plus the morning-brief and evening-meditation (nidra) voice profiles
 applies-to: draft narration (render_narration / export_audio, kind='draft')
 status: active
 ---
@@ -82,33 +82,36 @@ respelling`), applied out of band: names, acronyms, and jargon like `precis`,
 `arXiv`, `pgvector` get a respelling there while the prose stays clean. Spell out
 an acronym in words the first time only if the ear needs it.
 
-### 6. Numbers: spell them out, and round them
+### 6. Numbers: keep the numerals, round them, and let the narrator speak them
 
-Kokoro's digit-to-speech is unreliable — mispronounces long numbers, decimals,
-and dashes — so never hand it raw digits. Write the words you want spoken:
+Numerals are **fine in the draft — preferred, even.** `500,000` reads better on
+the page than "five hundred thousand", and `2026-07-22` is more scannable than
+"the twenty-second of July". You no longer have to hand-spell numbers for the
+ear: `render_narration` runs every number-bearing span through
+`precis.draft.verbalize.verbalize_numbers` right before synth, which
+deterministically converts dates, times, ranges, currency, percentages,
+ordinals, decimals, years, and thousands-separated or plain integers into
+spoken words — `2-4` → "two to four", `14:30` → "two thirty", `$1.2M` → "one
+point two million dollars", `1,000` → "one thousand". Kokoro/espeak never sees
+the raw digits. Code owns *pronunciation* now; you keep owning two things:
 
-- **Spell it out, no digits**: `500,000` → "five hundred thousand", `2.3` →
-  "two point three", `12` → "twelve". Never leave commas, decimal points, or
-  bare digit strings for the synth to guess at.
 - **Cap it at two significant figures.** More precision than that just reads
-  as noise — round before you speak it: `2.347` → "two point three",
-  `1,482` → "about one thousand five hundred", `3.14159` → "about three
-  point one". Always use the scale-word form (thousand / million / …), not a
-  colloquial variant like "fifteen hundred" — one consistent shape for the
-  ear. If the exact figure matters (a spec, a citation), give the rounded
-  spoken form and let the reader tap through to the number on the page.
-- **Ranges read as "to"**: `2-4` → "two to four", `10–20 nm` → "ten to twenty
-  nanometers" — a dash left in the text reads as "minus" or trips the synth,
-  never as a range.
-- **Units attach as words**: `12 mV` → "twelve millivolts", `500 °C` → "five
-  hundred degrees Celsius", `45%` → "forty-five percent".
-- **Scientific notation**: `1.2×10^19` → "about one point two times ten to
-  the nineteenth" — spell out the exponent, don't read the caret or the "e"
-  notation.
-- **Oxidation states / Roman numerals** in a formula are a number, not
-  letters: `Fe(III)` → "iron three", not "iron eye eye eye".
-- **Dates and times**: `2026-07-22` → "the twenty-second of July", `14:30` →
-  "two thirty" or "half past two" — never read the ISO or 24-hour digits raw.
+  as noise, and the verbalizer does **not** round — round before you write the
+  numeral: `2.347` → write `2.3`, `1,482` → write `about 1,500`, `3.14159` →
+  write `about 3.1`. If the exact figure matters (a spec, a citation), give
+  the rounded number in prose and let the reader tap through to the precise
+  one on the page.
+- **What the verbalizer explicitly does *not* handle** — for these, still
+  write the words yourself:
+  - **Scientific notation**: `1.2×10^19` — spell it out instead, "about one
+    point two times ten to the nineteenth".
+  - **Oxidation states / Roman numerals** in a formula: `Fe(III)` is a number,
+    not letters — write "iron three", not "iron eye eye eye" (or leave the
+    digit-free `Fe(III)` and it'll pass through unconverted, which espeak
+    reads as letters — write the words if you want it spoken as a number).
+  - **Units that need expanding**: `12 mV` → the verbalizer speaks "twelve"
+    but leaves `mV` alone; write "twelve millivolts" (or "500 °C" → "five
+    hundred degrees Celsius") so the unit itself is pronounceable.
 
 ### 7. Pace with sentence length and structure
 

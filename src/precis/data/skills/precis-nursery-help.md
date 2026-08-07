@@ -38,7 +38,7 @@ Alerts dedup per *condition* instead.
 | `plan-tick-spin` | a planner parent mints >threshold `plan_tick` jobs in 24 h without converging | 16 / 24 h |
 | `quest-loop-failing` | a quest's `quest_tick` loop rests `STATUS:failed` >threshold times in 24 h (RC1 backoff throttles but can't fix a persistent break) | 3 / 24 h |
 | `worker-restart` | a `(host, process)` emits >threshold `worker: started` boot rows in 1 h (restart storm) | 8 / 1 h · **critical** |
-| `dead-worker` | a continuous daemon (`precis-worker` / `precis-worker-agent`) silent >threshold while its host is alive | 10 min · **critical** |
+| `dead-worker` | the continuous daemon (`precis-worker` — one per host since the 2026-08-04 `--profile all` consolidation) silent >threshold while its host is alive | 10 min · **critical** |
 | `dispatch-stall` | `claude_inproc` jobs `STATUS:queued` >threshold with **zero** live-lease jobs running (executor stopped claiming) | 15 min · **critical** |
 | `nas-denied` | a fresh `host_heartbeat` reports the NAS unreadable (EPERM) from the heartbeat's own launchd context — every launchd/cron daemon on that host is locked out of `/opt/nas` (usually a Full Disk Access grant broken by a `brew upgrade python` cdhash change) | <5 min · **critical** |
 | `host-dark` | a host's own `host_heartbeat` row is stale, bounded to hosts with recent `worker_logs` activity (gr186752 — the complement of `dead-worker`'s `host_alive` gate: a dead single-writer host takes its own heartbeat down with it, so `dead-worker` self-suppresses for it; `host-dark` is the one alert that case still needs) | 10 min · **critical** |

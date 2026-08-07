@@ -3834,7 +3834,14 @@ def test_status_services_tab_renders_llm_operations_panel(client) -> None:
     # Registered, steerable operations show their label + registry default.
     assert "Morning brief" in resp.text
     assert "Evening meditation" in resp.text
-    assert "frontier / claude-sonnet-5" in resp.text
+    # Derived from the registry rather than spelled out: this asserts the panel
+    # *renders a default*, and has no opinion on which default currently ships
+    # — it used to hardcode "frontier / claude-sonnet-5" and so broke when the
+    # casts moved off the quota-gated claude pin on 2026-08-07.
+    from precis.utils.llm.operations import LLM_OPERATIONS
+
+    brief = LLM_OPERATIONS["reading_brief"]
+    assert f"{brief.tier.value} / {brief.model or '—'}" in resp.text
 
     # An excluded operation renders read-only with its reason, no form control
     # scoped to it — assert via the surrounding row rather than a global

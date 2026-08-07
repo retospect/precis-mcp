@@ -359,6 +359,28 @@ def test_markdown_segments_splits_mixed_block_natively():
     assert ("ねこ", "jf_alpha", "ja") in langs
 
 
+def test_render_narration_verbalizes_numbers_in_english_segments():
+    # A draft chunk keeps the numeral on the page; the narrated segment
+    # spells it out (the Kokoro/espeak mispronunciation fix).
+    store = _Store([_Chunk("paragraph", "It shipped 1,000 units.")])
+    segs = render_narration(
+        store, _Ref(), default_voice="af_heart", default_lang="en-us"
+    )
+    assert segs[0].text == "It shipped one thousand units."
+
+
+def test_render_narration_leaves_japanese_segment_digits_alone():
+    # A Japanese span must not be run through English number words — the
+    # verbalize step is applied per-segment, after the language is known
+    # (here via an explicit per-chunk lang override, mirroring
+    # test_per_chunk_voice_and_lang_win_over_defaults above).
+    store = _Store([_Chunk("paragraph", "1,000", {"voice": "jf_alpha", "lang": "ja"})])
+    segs = render_narration(
+        store, _Ref(), default_voice="af_heart", default_lang="en-us"
+    )
+    assert (segs[0].text, segs[0].voice, segs[0].lang) == ("1,000", "jf_alpha", "ja")
+
+
 def test_render_narration_splits_mixed_chunk_and_respects_meta_cjk():
     store = _Store(
         [

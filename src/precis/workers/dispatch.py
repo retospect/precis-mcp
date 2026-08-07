@@ -242,6 +242,9 @@ def run_dispatch_pass(store: Store, *, limit: int = 50) -> BatchResult:
     # One memo for the whole round: the daily total is the same for every
     # candidate, and siblings share a subtree (see RoundContext).
     guard_ctx = planner_guardrails.RoundContext()
+    # Resolved lazily, and only if the daily ceiling actually trips — the common
+    # round never pays for this query.
+    cadence_ids: set[int] | None = None
     for parent_id in candidate_ids:
         # Planner-coroutine guardrails: tick cap, per-todo cost cap,
         # global daily ceiling. The first two halt the parent
@@ -267,17 +270,31 @@ def run_dispatch_pass(store: Store, *, limit: int = 50) -> BatchResult:
             n_failed += 1
             continue
         if not verdict.allow:
-            if verdict.halt_tag is None:
-                # Global ceiling — stop dispatching anything until
-                # the rolling window clears. Other candidates would
-                # hit the same gate.
+            if verdict.halt_tag is not None:
+                # Per-todo halt — counted as a skip, not a failure.
+                continue
+            # Global daily ceiling. This used to `break` the whole round, which
+            # applied a guardrail built for *open-ended planner coroutines* to
+            # every candidate — including the committed daily cadences. On
+            # 2026-08-07 a runaway planner parent held the fleet over the
+            # ceiling from 07:00 UTC, so the morning brief's tick sat six hours
+            # with no job minted; the cast finally composed at 13:27 for about
+            # $0.05. Cadence work is exempt: it is scheduled, bounded (one job
+            # per watch per fire), and the *user's actual deliverable*, so a
+            # discretionary loop burning the envelope must not take it down.
+            # Discretionary candidates still stop dead. Cadence work is not
+            # un-capped — the per-todo and per-tree caps are checked ahead of
+            # the ceiling and still halt it.
+            if cadence_ids is None:
+                cadence_ids = _cadence_parent_ids(store, candidate_ids)
                 log.info(
-                    "dispatch: aborting round, daily ceiling: %s",
+                    "dispatch: daily ceiling (%s) — discretionary dispatch "
+                    "paused; %d cadence candidate(s) still eligible",
                     verdict.reason,
+                    len(cadence_ids),
                 )
-                break
-            # Per-todo halt — counted as a skip, not a failure.
-            continue
+            if parent_id not in cadence_ids:
+                continue
         try:
             claimed, minted = _claim_and_dispatch(store, parent_id)
         except Exception:
@@ -296,6 +313,30 @@ def run_dispatch_pass(store: Store, *, limit: int = 50) -> BatchResult:
 
 
 # ── candidate enumeration (unlocked) ──────────────────────────────
+
+
+def _cadence_parent_ids(store: Store, parent_ids: list[int]) -> set[int]:
+    """Of ``parent_ids``, the ones that are *cadence* work — a tick spawned by a
+    recurring watch, i.e. whose parent carries ``meta.schedule``.
+
+    This is the exemption predicate for the global daily ceiling. Membership is
+    read off the tree rather than a marker on the tick itself, because the
+    recurring spawner deliberately does **not** copy ``meta.schedule`` down to
+    the child (a tick isn't itself recurring) — the watch above it is the only
+    place the cadence is recorded.
+    """
+    if not parent_ids:
+        return set()
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT r.ref_id FROM refs r "
+            "JOIN refs w ON w.ref_id = r.parent_id "
+            "WHERE r.ref_id = ANY(%s) "
+            "AND w.deleted_at IS NULL "
+            "AND w.meta ? 'schedule'",
+            (parent_ids,),
+        ).fetchall()
+    return {int(r[0]) for r in rows}
 
 
 def _candidate_parent_ids(store: Store, *, limit: int) -> list[int]:

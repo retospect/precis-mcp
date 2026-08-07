@@ -848,14 +848,19 @@ def build_reading_briefing(
     # subscription quota lasts far longer under a crunch — the 07-24→30
     # outage's original trigger) AND forces claude_agent regardless of the
     # live llm.chain / backend, so a fleet llm.backend flip can't silently
-    # hijack this cast onto an OpenRouter OSS model (gripe 171782). Tier stays
-    # FRONTIER so the subscription-quota breaker still gates it.
+    # hijack this cast onto an OpenRouter OSS model (gripe 171782).
+    #
+    # The tier below is the *request* tier; `resolve_op("reading_brief")` remaps
+    # it from the registry before dispatch reads it, so the registry is what
+    # actually decides. It is spelled BIG here anyway so the two layers agree —
+    # left at FRONTIER, de-registering the op would silently drop this cast back
+    # onto the OAuth quota lane, which is the failure this moved off of.
     # max_tokens restores the pre-migration litellm cap (compose_max_tokens, the
     # profile's word budget in token terms) — best-effort post-hoc truncation on
     # claude_agent (no native completion-length flag there), not a real
     # generation-time stop, but it keeps the cast bounded to its target length.
     llm = client or DispatchClient(
-        tier=Tier.FRONTIER,
+        tier=Tier.BIG,
         tools_needed=True,
         max_tokens=compose_max_tokens(profile),
         source="reading_brief",

@@ -377,20 +377,21 @@ def build_meditation(
         # tool-less ``claude_p`` judge shape, which would drop the nidra system
         # prompt and demand a parseable JSON block this prose script never has.
         #
-        # Model default (Sonnet 5, not Opus 4.8, the FRONTIER default) + the
-        # PRECIS_MEDITATION_MODEL env hatch now live in the operation registry
-        # (utils/llm/operations.py, source "meditation") — dispatch() resolves
-        # them via source, and an operator can retune live with no redeploy via
-        # `llm.op.meditation` (docs/proposals/llm-operation-routing.md). The
-        # rationale: a nidra is prose composition — Sonnet 5 is amply capable —
-        # and pinning an explicit claude id both cuts consumption ~⅕ (so the
-        # *unified* subscription quota lasts far longer under a crunch — the
-        # 07-24→30 outage's original trigger) AND forces ``claude_agent``
-        # regardless of the live ``llm.chain`` / backend, so a fleet
-        # ``llm.backend`` flip can't silently hijack this cast onto an
-        # OpenRouter OSS model (gripe 171782). Tier stays FRONTIER so the
-        # subscription-quota breaker still gates it (it *is* a subscription
-        # call).
+        # Placement (BIG chain, no model pin) + the PRECIS_MEDITATION_MODEL env
+        # hatch live in the operation registry (utils/llm/operations.py, source
+        # "meditation") — dispatch() resolves them via source, and an operator
+        # can retune live with no redeploy via `llm.op.meditation`
+        # (docs/proposals/llm-operation-routing.md).
+        #
+        # This used to pin claude-sonnet-5 inside FRONTIER: a nidra is prose
+        # composition (Sonnet is amply capable), the explicit claude id cut
+        # unified-subscription consumption ~⅕, and it forced ``claude_agent`` so
+        # a fleet ``llm.backend`` flip couldn't hijack the cast onto an OSS
+        # model (gripe 171782). What that reasoning missed is that the OAuth
+        # lane fails *closed*: on 2026-08-05 an exhausted quota window didn't
+        # make the meditation cheaper, it made the job fail — and the resulting
+        # `child-failed` tag then blocked every later nidra tick via
+        # collision-skip. Cheap-but-absent is worse than a fallback rung.
         from precis.utils.llm.router import DispatchClient, Tier
 
         # max_tokens restores the pre-migration litellm cap (compose_max_tokens,
@@ -400,8 +401,12 @@ def build_meditation(
         # overshooting the target spoken duration with no stop at all (a
         # segmented long walk's per-call asks are each well under this ceiling,
         # so it only bites a genuinely runaway single call).
+        # BIG, not FRONTIER: the request tier is only a fallback (the registry's
+        # `resolve_op("meditation")` remaps it before dispatch), but the two
+        # should agree — a FRONTIER literal would quietly put this cast back on
+        # the OAuth quota lane if the op were ever de-registered.
         client = DispatchClient(
-            tier=Tier.FRONTIER,
+            tier=Tier.BIG,
             tools_needed=True,
             max_tokens=compose_max_tokens(profile, target_minutes=target),
             source="meditation",

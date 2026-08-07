@@ -14,7 +14,8 @@ podcast feed.
 Idempotent + self-throttling exactly like ``briefing_audio``: the episode id is
 stamped as ``meta.audio_episode_id`` (a marked draft is skipped, so a re-tick or a
 second host can't double-publish), and a render failure stamps
-``meta.audio_failed_at`` (an hourly backoff). Gated default-OFF
+``meta.audio_failed_at`` + ``meta.audio_fail_count`` (an exponential backoff
+from ~2 minutes up to an hour). Gated default-OFF
 (``PRECIS_CAST_AUDIO_ENABLED`` + ``PRECIS_TTS_IMAGE``) so it merges dark.
 """
 
@@ -38,13 +39,56 @@ log = logging.getLogger(__name__)
 #: same-day artifact; if the pass was off for days, don't suddenly dump a backlog
 #: of stale episodes — publish only the fresh one, let the old ones lapse.
 _MAX_AGE_HOURS = 48
-#: After a render fails, back off this long before retrying the same draft so a
-#: bad image / dead synth can't spin a container every worker tick.
+#: Ceiling on the retry backoff after a render failure, so a genuinely broken
+#: image / dead synth can't spin a container every worker tick.
+#:
+#: The backoff is **exponential from a short first step** (2, 4, 8, 16, 32, then
+#: this ceiling), not a flat hour, because the failure this actually sees in prod
+#: is not a broken render — it's a *killed* one. The container runs inside the
+#: worker's own systemd cgroup, so any worker restart (a deploy, a jetsam cull, a
+#: manual bounce) SIGTERMs it mid-render and ``docker run`` exits 143. A flat
+#: 60-minute penalty then charged that seconds-long restart the entire morning
+#: episode: 2026-08-06 composed 14:35 UTC, was killed at 14:44, and didn't
+#: publish until 16:32 — which is the "brief comes out at 17:00" symptom. Two
+#: minutes is long enough for the restarting worker to come back and short
+#: enough that a collateral kill costs nothing, while a render that keeps
+#: failing still converges on the same hourly cooldown.
 _FAIL_BACKOFF_MINUTES = 60
+#: Cap on the exponent, so a long-dead draft can't overflow the shift.
+_FAIL_BACKOFF_MAX_STEPS = 8
 #: The trailing silence stamped on each news lead-in segment (Workstream C) — a
 #: wider ~1.5s beat between wire stories/sections, vs. the container's gentler
 #: 0.45s default the personal brief's own segments keep (``gap_after=None``).
 _NEWS_LEAD_IN_PAUSE_S = 1.5
+
+
+#: The selection predicate — a draft that is a cast, un-narrated, fresh enough,
+#: and out of its render-failure backoff. Exported as a constant (rather than
+#: inlined) because the tests need to ask it about *one* ref under a shared test
+#: DB; a hand-copied mirror of it there would keep passing against a rule the
+#: code no longer applies. Placeholders, in order: the max-age cutoff, the
+#: backoff ceiling in minutes, the max backoff exponent, and ``now``.
+_SELECTABLE_SQL = (
+    "kind = 'draft' AND deleted_at IS NULL "
+    "AND meta ? 'cast' "
+    "AND NOT (meta ? 'audio_episode_id') "
+    "AND created_at >= %s "
+    "AND (meta->>'audio_failed_at' IS NULL "
+    "     OR (meta->>'audio_failed_at')::timestamptz "
+    "        + make_interval(mins => LEAST(%s, (2 ^ LEAST(GREATEST("
+    "            COALESCE((meta->>'audio_fail_count')::int, 1), 1"
+    "          ), %s))::int)) <= %s)"
+)
+
+
+def selection_params(now: datetime, max_age_hours: int) -> tuple[Any, ...]:
+    """Bind values for :data:`_SELECTABLE_SQL`, in placeholder order."""
+    return (
+        now - timedelta(hours=max_age_hours),
+        _FAIL_BACKOFF_MINUTES,
+        _FAIL_BACKOFF_MAX_STEPS,
+        now,
+    )
 
 
 def _latest_unnarrated_cast(store: Any, *, max_age_hours: int, now: datetime):
@@ -58,22 +102,19 @@ def _latest_unnarrated_cast(store: Any, *, max_age_hours: int, now: datetime):
     ``updated_at`` window and be re-selected forever. ``created_at`` doesn't
     move, so a repeatedly-failing draft can't refresh itself back into
     contention this way; the separate ``audio_failed_at`` backoff clause
-    below still applies its own 60-minute cooldown.
+    below still applies its own cooldown.
+
+    That cooldown is per-row, not a constant: the wait is ``2 **
+    audio_fail_count`` minutes capped at :data:`_FAIL_BACKOFF_MINUTES`, so a
+    first failure retries in ~2 minutes and only a persistently failing draft
+    earns the full hour. A draft that failed before the counter existed reads as
+    one failure (the ``COALESCE``) and gets the same short first retry.
     """
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT ref_id FROM refs "
-            "WHERE kind = 'draft' AND deleted_at IS NULL "
-            "AND meta ? 'cast' "
-            "AND NOT (meta ? 'audio_episode_id') "
-            "AND created_at >= %s "
-            "AND (meta->>'audio_failed_at' IS NULL "
-            "     OR (meta->>'audio_failed_at')::timestamptz < %s) "
+            f"SELECT ref_id FROM refs WHERE {_SELECTABLE_SQL} "
             "ORDER BY created_at DESC LIMIT 1",
-            (
-                now - timedelta(hours=max_age_hours),
-                now - timedelta(minutes=_FAIL_BACKOFF_MINUTES),
-            ),
+            selection_params(now, max_age_hours),
         ).fetchone()
     if not row:
         return None
@@ -90,6 +131,27 @@ def has_pending_cast(
     now = now or datetime.now(UTC)
     return (
         _latest_unnarrated_cast(store, max_age_hours=max_age_hours, now=now) is not None
+    )
+
+
+def _stamp_failure(store: Any, ref: Any, now: datetime) -> None:
+    """Record a render failure on ``ref`` and bump the attempt counter that
+    chooses the next backoff step (see :func:`_latest_unnarrated_cast`).
+
+    Tolerant of a missing/garbled counter — this runs on the failure path, and a
+    bad meta value must not turn a recoverable render failure into a crashed
+    worker tick.
+    """
+    try:
+        prior = int((ref.meta or {}).get("audio_fail_count") or 0)
+    except (TypeError, ValueError):
+        prior = 0
+    store.update_ref(
+        ref.id,
+        meta_patch={
+            "audio_failed_at": now.isoformat(),
+            "audio_fail_count": prior + 1,
+        },
     )
 
 
@@ -217,7 +279,7 @@ def narrate_cast_ref(
         )
     if not segments:
         # Nothing speakable — back off so we don't reselect this draft every tick.
-        store.update_ref(ref.id, meta_patch={"audio_failed_at": now.isoformat()})
+        _stamp_failure(store, ref, now)
         return _empty("empty-cast", ref.id)
 
     do_publish = publish and podcast_dir is not None
@@ -245,7 +307,7 @@ def narrate_cast_ref(
             )
         except Exception as exc:  # a bad image / dead synth mustn't crash the tick
             log.warning("cast_audio: render failed for ref %s (%s)", ref.id, exc)
-            store.update_ref(ref.id, meta_patch={"audio_failed_at": now.isoformat()})
+            _stamp_failure(store, ref, now)
             return _empty(f"render-failed: {exc}", ref.id)
 
         seg_n = int(result.get("segments", len(segments)))

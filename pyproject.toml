@@ -126,6 +126,16 @@ dependencies = [
     # Same reasoning as ``pysbd`` above: a top-of-module import on an
     # always-on path is a core dep, not an extra.
     "tenacity>=8.0",
+    # Deterministic number verbalization for the narration (TTS) path
+    # (``precis.draft.verbalize``) — Kokoro/espeak mispronounces raw digits
+    # ("1,000" splits into "one zero zero zero" on the comma), so the
+    # narrator spells numbers out before synth instead of leaning on a
+    # prompt rule. Pure-Python, no transitive deps; covers cardinals/
+    # ordinals/years correctly across the voice catalogue's languages
+    # (only English is wired up in v1 — see ``verbalize.py``). Imported at
+    # module top by ``draft/narrate.py``, which every audio-export path
+    # goes through, so it's core rather than the ``tts`` extra.
+    "num2words>=0.5.13",
 ]
 
 [project.urls]

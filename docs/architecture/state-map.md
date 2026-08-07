@@ -148,7 +148,8 @@ for the durable pin of that boundary.
   `halt:cost-cap`), per-**tree** cost (`PRECIS_MAX_TREE_USD` $10 →
   `halt:tree-cost-cap`, summed over the candidate's whole root subtree),
   and a global rolling **daily ceiling** (`PRECIS_DAILY_COST_CEILING` $20
-  code / $50 deployed) which tags nothing and aborts the whole round. The
+  code / $50 deployed) which tags nothing and pauses **discretionary**
+  dispatch for the rest of the round. The
   ceiling sums **all** logged spend, not just planner ticks — if the day's
   envelope is gone, minting more opus is the wrong move. Exposed as
   `planner_guardrails.daily_budget` because the dispatcher is **not** the only
@@ -159,7 +160,14 @@ for the durable pin of that boundary.
   warnings) while the expensive opus cadences kept billing. **The over-blocking
   risk is no longer small:** a normal day now totals ~$50 against a $50
   deployed cap, so the cap needs raising deliberately
-  (`docs/reference/config-variables.md` §3). All three dollar caps read
+  (`docs/reference/config-variables.md` §3) — and because a tripped ceiling is
+  now the *routine* state rather than the exception, **cadence work is exempt**
+  from this cap alone (`dispatch._cadence_parent_ids` — a tick whose parent
+  watch carries `meta.schedule`). The ceiling exists to bound open-ended
+  coroutines; it used to abort the round outright, so a runaway planner starved
+  the daily casts of dispatch entirely — on 2026-08-07 the 07:00 brief tick sat
+  six hours unminted for want of ~$0.05. Cadence work is still bound by the
+  three caps above, which are checked first. All three dollar caps read
   `llm_call_log.cost_usd` — `plan_tick` stamps `LlmRequest.ref_id =
   parent_ref_id`, so a todo's ledger rows *are* its lifetime cost.
   Deliberately **includes** the `claude_agent`/`claude_p` transports that
@@ -1017,6 +1025,20 @@ not separate daemons anymore.
   any un-narrated cast draft via `render_narration` → `render_episode` →
   `publish_episode(source=profile.source)` — a **distinct** producer tag per cast
   (`brief` / `meditation`, so a shared feed can subfilter), idempotent on `meta.audio_episode_id`.
+  A failed render backs off **exponentially** (`meta.audio_fail_count` → 2, 4, 8,
+  16, 32, then a 60-min ceiling), not a flat hour: the container runs inside the
+  worker's own systemd cgroup, so any worker restart SIGTERMs it mid-render
+  (`docker run` exit 143) and the flat hour charged that seconds-long restart a
+  whole episode — 2026-08-06's brief composed 14:35 UTC, was killed at 14:44,
+  and only published at 16:32.
+  `render_narration`/`markdown_segments` (`draft/narrate.py`) also run every
+  span through `draft/verbalize.py`'s `verbalize_numbers` once
+  `split_by_script` has settled its language — English numerals ("1,000",
+  "2026-07-22", "$1.2M") are spelled out deterministically before
+  Kokoro/espeak ever sees a raw digit; a CJK span is left untouched. Replaces
+  the old prompt-only "spell numbers out" rule — the draft keeps numerals on
+  the page, the code owns pronunciation, the compose prompt (`precis-voice`
+  rule 6) still owns rounding to two significant figures.
   For `reading`, narration first prepends the day's full `briefing-<date>` news
   wire (`_news_lead_in`, read in the brief's own voice `bm_george`) ahead of the
   personal brief, so the two ship as **one combined** `morning_brief_<date>`
@@ -1030,12 +1052,16 @@ not separate daemons anymore.
   row surfaces the published mp3 + compiled PDF as download links. Compose is the
   `reading_brief`/`meditation`
   **`claude_inproc`** job_types (melchior — both casts, `card_forge`, and the news
-  briefing now compose via the LLM router's `Tier.FRONTIER` (`DispatchClient`,
-  ADR 0046) onto `claude_agent` — a `claude -p` subprocess, direct Anthropic OAuth —
-  not a melchior-loopback local endpoint. The two
-  audio **casts** default to `claude-sonnet-5` within the FRONTIER band — prose
-  composition, ~⅕ the subscription-quota draw; `card_forge`/news briefing keep the
-  FRONTIER Opus default. That cast default now lives in the per-operation registry
+  briefing now compose via the LLM router (`DispatchClient`,
+  ADR 0046); `card_forge`/news briefing keep the
+  `Tier.FRONTIER` Opus default on `claude_agent` — a `claude -p` subprocess,
+  direct Anthropic OAuth. The two audio **casts** are the exception: they sit on
+  **`Tier.BIG`** with no model pin (local-first chain, cloud fallback). They were
+  FRONTIER + a `claude-sonnet-5` pin until 2026-08-07, which put an unattended
+  daily deliverable on the OAuth **quota** lane — and that lane fails *closed*,
+  so an exhausted seven-day window didn't slow a cast down, it dropped it (and
+  for nidra, the failed job's `child-failed` tag then blocked every later tick
+  via collision-skip, costing days). These defaults live in the per-operation registry
   (`utils/llm/operations.py`, runtime-tunable via `llm.op.reading_brief`/`meditation`),
   not a call-site `model=` arg — see the per-operation routing note in the LLM-router
   section)

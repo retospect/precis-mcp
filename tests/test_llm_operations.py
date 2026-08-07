@@ -82,30 +82,45 @@ def _set_op_override(monkeypatch: pytest.MonkeyPatch, source: str, value: dict) 
     _bind(monkeypatch, {live_config.op_key(source): json.dumps(value)})
 
 
+#: The shipping registry entry for the operation these tests drive as their
+#: vehicle. Read from the registry rather than spelled out, because almost every
+#: test below exercises the *precedence ladder* (env hatch vs DB override vs
+#: literal), not the policy value — and hardcoding the literal meant that a
+#: legitimate policy change (both casts moving off the quota-gated claude pin,
+#: 2026-08-07) broke a dozen assertions that had no opinion about it. The
+#: handful of tests that genuinely assert the shipped default state it inline
+#: and say so; those are the ones that *should* fail when the policy moves.
+_BRIEF = LLM_OPERATIONS["reading_brief"]
+
+
 # ── AC1: ships dark ────────────────────────────────────────────────────
 
 
 def test_reading_brief_default_with_no_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """No `llm.op.reading_brief` row → the exact (tier, model) the call site
-    pinned before migration."""
+    """POLICY: no `llm.op.reading_brief` row → the BIG chain, no model pin.
+
+    Deliberately spelled out rather than read off the registry: this is the one
+    assertion that should break loudly if the morning brief is ever put back on
+    a quota-gated lane. It was FRONTIER + `claude-sonnet-5` until 2026-08-07,
+    when an exhausted subscription window repeatedly failed the compose and the
+    episode landed hours late (or, for nidra, not for days)."""
     _bind(monkeypatch, {})
-    assert operations.resolve_op("reading_brief") == (Tier.FRONTIER, "claude-sonnet-5")
+    assert operations.resolve_op("reading_brief") == (Tier.BIG, None)
 
 
 def test_meditation_default_with_no_override(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No `llm.op.meditation` row → the exact (tier, model) the call site
-    pinned before migration."""
+    """POLICY: same as the morning brief — off the quota lane, onto BIG."""
     _bind(monkeypatch, {})
-    assert operations.resolve_op("meditation") == (Tier.FRONTIER, "claude-sonnet-5")
+    assert operations.resolve_op("meditation") == (Tier.BIG, None)
 
 
 def test_dark_without_store(monkeypatch: pytest.MonkeyPatch) -> None:
     """No store bound at all (DB-free) still resolves the registry default —
     op_override degrades to None, never raises."""
     _bind(monkeypatch, None)
-    assert operations.resolve_op("reading_brief") == (Tier.FRONTIER, "claude-sonnet-5")
+    assert operations.resolve_op("reading_brief") == (_BRIEF.tier, _BRIEF.model)
 
 
 @pytest.mark.parametrize("source", ["dream", "classify", "figure", None, ""])
@@ -122,18 +137,18 @@ def test_unregistered_source_returns_none(
 
 def test_model_pin_via_override(monkeypatch: pytest.MonkeyPatch) -> None:
     _set_op_override(monkeypatch, "reading_brief", {"model": "claude-opus-4-8"})
-    assert operations.resolve_op("reading_brief") == (Tier.FRONTIER, "claude-opus-4-8")
+    assert operations.resolve_op("reading_brief") == (_BRIEF.tier, "claude-opus-4-8")
 
 
 def test_model_pin_cleared_reverts_to_default(monkeypatch: pytest.MonkeyPatch) -> None:
     _set_op_override(monkeypatch, "reading_brief", {"model": "claude-opus-4-8"})
-    assert operations.resolve_op("reading_brief") == (Tier.FRONTIER, "claude-opus-4-8")
+    assert operations.resolve_op("reading_brief") == (_BRIEF.tier, "claude-opus-4-8")
 
     # Clear the row and bust the cache — the next read re-queries and finds
     # nothing, so the resolver falls back to the registry default.
     _bind(monkeypatch, {})
     live_config.bust_cache()
-    assert operations.resolve_op("reading_brief") == (Tier.FRONTIER, "claude-sonnet-5")
+    assert operations.resolve_op("reading_brief") == (_BRIEF.tier, _BRIEF.model)
 
 
 # ── AC3: tier remap via override ───────────────────────────────────────
@@ -141,9 +156,13 @@ def test_model_pin_cleared_reverts_to_default(monkeypatch: pytest.MonkeyPatch) -
 
 def test_tier_remap_keeps_registry_model(monkeypatch: pytest.MonkeyPatch) -> None:
     """A `{"tier": ...}` override with no `model` remaps the tier but keeps
-    the registry's default model."""
-    _set_op_override(monkeypatch, "reading_brief", {"tier": "big"})
-    assert operations.resolve_op("reading_brief") == (Tier.BIG, "claude-sonnet-5")
+    the registry's default model.
+
+    Remaps to MEDIUM specifically because it differs from the registry default
+    — a remap to the tier the registry already ships would pass whether or not
+    the override was read at all."""
+    _set_op_override(monkeypatch, "reading_brief", {"tier": "medium"})
+    assert operations.resolve_op("reading_brief") == (Tier.MEDIUM, _BRIEF.model)
 
 
 def test_tier_remap_with_model_override(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -161,7 +180,7 @@ def test_env_hatch_beats_registry_literal(monkeypatch: pytest.MonkeyPatch) -> No
     the registry literal."""
     _bind(monkeypatch, {})
     monkeypatch.setenv("PRECIS_READING_BRIEF_MODEL", "some-env-model")
-    assert operations.resolve_op("reading_brief") == (Tier.FRONTIER, "some-env-model")
+    assert operations.resolve_op("reading_brief") == (_BRIEF.tier, "some-env-model")
 
 
 def test_db_override_beats_env_hatch(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -169,7 +188,7 @@ def test_db_override_beats_env_hatch(monkeypatch: pytest.MonkeyPatch) -> None:
     ladder in one test."""
     monkeypatch.setenv("PRECIS_READING_BRIEF_MODEL", "some-env-model")
     _set_op_override(monkeypatch, "reading_brief", {"model": "db-model"})
-    assert operations.resolve_op("reading_brief") == (Tier.FRONTIER, "db-model")
+    assert operations.resolve_op("reading_brief") == (_BRIEF.tier, "db-model")
 
 
 # ── AC4/AC8: classify-not-clobbered ─────────────────────────────────────
@@ -221,19 +240,19 @@ def test_bad_tier_string_is_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
     """An invalid tier value in the override is logged + ignored, not raised
     — the resolver keeps the default tier."""
     _set_op_override(monkeypatch, "reading_brief", {"tier": "nonsense-tier"})
-    assert operations.resolve_op("reading_brief") == (Tier.FRONTIER, "claude-sonnet-5")
+    assert operations.resolve_op("reading_brief") == (_BRIEF.tier, _BRIEF.model)
 
 
 def test_empty_override_dict_keeps_default(monkeypatch: pytest.MonkeyPatch) -> None:
     _set_op_override(monkeypatch, "reading_brief", {})
-    assert operations.resolve_op("reading_brief") == (Tier.FRONTIER, "claude-sonnet-5")
+    assert operations.resolve_op("reading_brief") == (_BRIEF.tier, _BRIEF.model)
 
 
 def test_blank_model_override_does_not_clobber_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _set_op_override(monkeypatch, "reading_brief", {"model": ""})
-    assert operations.resolve_op("reading_brief") == (Tier.FRONTIER, "claude-sonnet-5")
+    assert operations.resolve_op("reading_brief") == (_BRIEF.tier, _BRIEF.model)
 
 
 # ── AC6: registry well-formedness / drift guard ─────────────────────────
@@ -271,20 +290,37 @@ def test_is_steerable_agrees_with_registry_membership() -> None:
 
 
 def test_reading_brief_registry_carries_default_and_env_hatch() -> None:
-    """The migrated call site's former `model=` literal and its
-    `PRECIS_READING_BRIEF_MODEL` env hatch now live in the registry, not at
-    the `briefing_cast.py` call site."""
+    """The migrated call site's placement and its `PRECIS_READING_BRIEF_MODEL`
+    env hatch live in the registry, not at the `briefing_cast.py` call site."""
     default = LLM_OPERATIONS["reading_brief"]
-    assert default.model == "claude-sonnet-5"
-    assert default.tier is Tier.FRONTIER
+    assert default.model is None  # no pin — the BIG chain picks the rung
+    assert default.tier is Tier.BIG
     assert default.env == "PRECIS_READING_BRIEF_MODEL"
 
 
 def test_meditation_registry_carries_default_and_env_hatch() -> None:
     default = LLM_OPERATIONS["meditation"]
-    assert default.model == "claude-sonnet-5"
-    assert default.tier is Tier.FRONTIER
+    assert default.model is None
+    assert default.tier is Tier.BIG
     assert default.env == "PRECIS_MEDITATION_MODEL"
+
+
+def test_casts_are_not_on_the_subscription_quota_lane() -> None:
+    """POLICY, stated once for both casts: a scheduled, unattended daily
+    deliverable must not sit on the Claude OAuth lane, because that lane fails
+    *closed* when the seven-day subscription window is spent — and a cast that
+    fails closed is a missed episode, not a slower one.
+
+    FRONTIER is the proxy asserted here because its default model is a claude
+    id, which forces the `claude_agent` transport (a `claude -p` subprocess on
+    direct OAuth). The refusal doesn't come from our own breaker — with no
+    quota snapshot populated, `budget.quota.evaluate()` returns None and
+    `_gate_quota` waves the call through — it comes from upstream, as a failed
+    job. Which is worse than a pause: on 2026-08-05 the failed nidra job tagged
+    its tick `child-failed`, and collision-skip then blocked every later
+    meditation tick until someone cleared it by hand."""
+    for source in ("reading_brief", "meditation"):
+        assert LLM_OPERATIONS[source].tier is not Tier.FRONTIER, source
 
 
 def test_briefing_cast_call_site_has_no_hardcoded_model_kwarg() -> None:
@@ -333,10 +369,17 @@ def test_meditation_call_site_has_no_hardcoded_model_kwarg() -> None:
 def test_dispatch_op_tier_remap_reaches_breaker_and_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`llm.op.reading_brief = {"tier": "big"}` remaps a FRONTIER call site
-    request to BIG — and the remap must land before the breaker gate and the
-    final result are built, or this would observe the stale FRONTIER tier."""
-    _set_op_override(monkeypatch, "reading_brief", {"tier": "big"})
+    """`llm.op.reading_brief = {"tier": "medium"}` remaps a FRONTIER call site
+    request to MEDIUM — and the remap must land before the breaker gate and the
+    final result are built, or this would observe the stale FRONTIER tier.
+
+    MEDIUM, not BIG: BIG is what the registry now ships as the default, so a
+    BIG remap would be indistinguishable from the override being ignored
+    entirely. The model is pinned in the same override so the result assertion
+    doesn't depend on whatever the tier's chain happens to resolve to."""
+    _set_op_override(
+        monkeypatch, "reading_brief", {"tier": "medium", "model": "claude-sonnet-5"}
+    )
 
     def fake_agent(prompt: str, **kwargs: object) -> AgentResult:
         return AgentResult(
@@ -364,9 +407,9 @@ def test_dispatch_op_tier_remap_reaches_breaker_and_result(
 
     # The tier that actually reached the breaker gate — proves the remap
     # landed before gate_tier(req.tier) read it, not after.
-    assert breaker_tiers == [Tier.BIG]
+    assert breaker_tiers == [Tier.MEDIUM]
     # The tier stamped into the final result is the remapped one too.
-    assert out.tier is Tier.BIG
+    assert out.tier is Tier.MEDIUM
     assert out.model == "claude-sonnet-5"
     assert out.text == "brief text"
 

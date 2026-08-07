@@ -77,39 +77,47 @@ class ExcludedOp:
 
 
 #: The steerable allow-list — one entry per operation whose model the operator
-#: may retune at runtime. Phase 1 seeds the two daily casts (their former
-#: ``model="claude-sonnet-5"`` call-site literals migrate here, so the default
+#: may retune at runtime. Phase 1 seeded the two daily casts (their former
+#: ``model="claude-sonnet-5"`` call-site literals migrated here, so the default
 #: lives in one place); more routed, pin-free operations join as they're vetted.
+#: Both casts have since moved off that claude pin to the BIG chain — see each
+#: entry's ``note`` for the incident that forced it.
 LLM_OPERATIONS: dict[str, OpDefault] = {
     "reading_brief": OpDefault(
-        tier=Tier.FRONTIER,
-        model="claude-sonnet-5",
+        tier=Tier.BIG,
+        model=None,
         label="Morning brief",
         description=(
             "The daily situational-awareness cast compose (voice bm_george). "
-            "Prose composition — Sonnet 5 is amply capable; pinned in the "
-            "FRONTIER band so the subscription-quota breaker still gates it."
+            "Prose composition, on the BIG chain (local-first, cloud fallback) "
+            "so an unattended daily deliverable never waits on the Claude "
+            "subscription quota."
         ),
         env="PRECIS_READING_BRIEF_MODEL",
         note=(
-            "Default is Sonnet 5, not the FRONTIER-tier Opus default: pinning "
-            "an explicit claude id cuts unified-subscription draw ~⅕ and forces "
-            "claude_agent regardless of a fleet backend flip (gripe 171782)."
+            "Was FRONTIER + an explicit claude-sonnet-5 pin, which put a "
+            "scheduled cast on the OAuth quota lane: when the seven-day window "
+            "was spent the compose simply failed, and the morning episode "
+            "landed hours late or not at all (2026-08-05/06/07). BIG has no "
+            "quota gate and its chain starts local, so the cast composes for "
+            "~$0 and degrades to a cloud rung instead of to nothing."
         ),
     ),
     "meditation": OpDefault(
-        tier=Tier.FRONTIER,
-        model="claude-sonnet-5",
+        tier=Tier.BIG,
+        model=None,
         label="Evening meditation",
         description=(
             "The nightly concept-graph nidra cast compose (voice af_nicole), a "
-            "segmented long-form walk. Same FRONTIER-band Sonnet 5 pin as the "
-            "morning brief."
+            "segmented long-form walk. Same BIG chain as the morning brief."
         ),
         env="PRECIS_MEDITATION_MODEL",
         note=(
-            "Sonnet 5 (not Opus): quota-resilient prose composition; FRONTIER "
-            "band keeps the subscription breaker in force."
+            "Off the quota lane for the same reason as the morning brief — a "
+            "quota-killed compose on 2026-08-05 failed its job, which tagged "
+            "the tick child-failed and left collision-skip blocking every "
+            "later nidra tick, so one exhausted quota window silently cost "
+            "days of meditations rather than one."
         ),
     ),
 }

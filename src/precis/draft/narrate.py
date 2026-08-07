@@ -9,7 +9,11 @@ layer reads three things off a draft and never writes back:
   is metadata, no new kind and no migration.
 - **the words** — the chunk prose, made *speakable*: inline handles
   (``[pc12]`` / ``[[dc4]]``), math, code fences and markdown emphasis are
-  stripped/spoken so the ear gets clean text, never raw markup.
+  stripped/spoken so the ear gets clean text, never raw markup. Once
+  :func:`split_by_script` has settled a span's language, its numerals are
+  spelled out deterministically (:func:`precis.draft.verbalize.verbalize_numbers`)
+  so the draft can keep "1,000" on the page while the synth hears "one
+  thousand" — Kokoro/espeak mispronounces raw digit strings otherwise.
 - **how special words sound** — an optional pronunciation **lexicon**
   (``surface → respelling``), the abbrev-class feature: keep the prose clean
   and fix "precis", arXiv, names, jargon out-of-band.
@@ -25,6 +29,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from typing import Any
+
+from precis.draft.verbalize import verbalize_numbers
 
 # Chunk kinds skipped for the ear (v1): structural containers, and
 # figures/tables/code/glossary that don't read aloud as prose.
@@ -296,6 +302,7 @@ def markdown_segments(
             cjk_lang=cjk_lang,
             kana_voice=kana_voice,
         ):
+            seg_text = verbalize_numbers(seg_text, lang=seg_lang)
             segments.append(
                 NarrationSegment(
                     text=seg_text, voice=seg_voice, lang=seg_lang, kind=kind
@@ -385,6 +392,7 @@ def render_narration(
             cjk_lang=meta.get("cjk_lang"),
             kana_voice=meta.get("kana_voice"),
         ):
+            seg_text = verbalize_numbers(seg_text, lang=seg_lang)
             segments.append(
                 NarrationSegment(
                     text=seg_text,

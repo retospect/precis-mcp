@@ -24,21 +24,14 @@ def _make_cast_draft(store: Any, cast: str = "reading") -> Any:
 
 
 def _selectable(store: Any, ref_id: int, now: datetime) -> bool:
-    """Replicate cast_audio's selection predicate, scoped to one ref — locks the
-    marker + backoff exclusion behaviour deterministically under a shared DB."""
+    """Ask cast_audio's *own* selection predicate about one ref — scoping it to
+    a single id keeps the marker + backoff assertions deterministic under the
+    shared test DB, without hand-copying the SQL (a copy would keep passing
+    against a rule the code had since changed)."""
     with store.pool.connection() as conn:
         row = conn.execute(
-            "SELECT 1 FROM refs WHERE ref_id = %s AND kind='draft' "
-            "AND deleted_at IS NULL AND meta ? 'cast' "
-            "AND NOT (meta ? 'audio_episode_id') "
-            "AND created_at >= %s "
-            "AND (meta->>'audio_failed_at' IS NULL "
-            "     OR (meta->>'audio_failed_at')::timestamptz < %s)",
-            (
-                ref_id,
-                now - timedelta(hours=cast_audio._MAX_AGE_HOURS),
-                now - timedelta(minutes=cast_audio._FAIL_BACKOFF_MINUTES),
-            ),
+            f"SELECT 1 FROM refs WHERE ref_id = %s AND {cast_audio._SELECTABLE_SQL}",
+            (ref_id, *cast_audio.selection_params(now, cast_audio._MAX_AGE_HOURS)),
         ).fetchone()
     return row is not None
 
@@ -64,6 +57,68 @@ class TestSelection:
         ).isoformat()
         store.update_ref(ref.id, meta_patch={"audio_failed_at": old})
         assert _selectable(store, ref.id, now) is True
+
+    def test_first_failure_retries_in_minutes_not_an_hour(self, store: Any) -> None:
+        """The backoff is exponential from a short first step.
+
+        The failure this sees in prod is a *killed* render, not a broken one:
+        the TTS container lives in the worker's own systemd cgroup, so a deploy
+        or a jetsam cull SIGTERMs it mid-render (exit 143). Charging that a flat
+        hour is what turned a seconds-long restart into the 2026-08-06 morning
+        episode landing at 16:32 UTC instead of ~07:10.
+        """
+        now = datetime.now(UTC)
+        ref = _make_cast_draft(store)
+        failed = (now - timedelta(minutes=3)).isoformat()
+
+        # First failure: 2-minute step, so a 3-minute-old failure is eligible.
+        store.update_ref(
+            ref.id, meta_patch={"audio_failed_at": failed, "audio_fail_count": 1}
+        )
+        assert _selectable(store, ref.id, now) is True
+
+        # A draft that keeps failing earns a longer wait — 2**5 = 32 minutes.
+        store.update_ref(ref.id, meta_patch={"audio_fail_count": 5})
+        assert _selectable(store, ref.id, now) is False
+
+        # ...and converges on the ceiling rather than growing without bound.
+        store.update_ref(
+            ref.id,
+            meta_patch={
+                "audio_fail_count": 99,
+                "audio_failed_at": (
+                    now - timedelta(minutes=cast_audio._FAIL_BACKOFF_MINUTES + 1)
+                ).isoformat(),
+            },
+        )
+        assert _selectable(store, ref.id, now) is True
+
+    def test_failure_stamp_bumps_the_attempt_counter(self, store: Any) -> None:
+        """``_stamp_failure`` is what makes the curve advance — without the
+        counter every retry would sit on the 2-minute first step forever."""
+        now = datetime.now(UTC)
+        ref = _make_cast_draft(store)
+        cast_audio._stamp_failure(store, ref, now)
+        after_one = store.get_ref(kind="draft", id=ref.id)
+        assert after_one is not None
+        assert after_one.meta["audio_fail_count"] == 1
+        assert after_one.meta["audio_failed_at"] == now.isoformat()
+
+        cast_audio._stamp_failure(store, after_one, now)
+        after_two = store.get_ref(kind="draft", id=ref.id)
+        assert after_two is not None
+        assert after_two.meta["audio_fail_count"] == 2
+
+    def test_failure_stamp_survives_a_garbled_counter(self, store: Any) -> None:
+        """Runs on the failure path — a bad meta value must not escalate a
+        recoverable render failure into a crashed worker tick."""
+        now = datetime.now(UTC)
+        ref = _make_cast_draft(store)
+        store.update_ref(ref.id, meta_patch={"audio_fail_count": "not-a-number"})
+        cast_audio._stamp_failure(store, store.get_ref(kind="draft", id=ref.id), now)
+        healed = store.get_ref(kind="draft", id=ref.id)
+        assert healed is not None
+        assert healed.meta["audio_fail_count"] == 1
 
     def test_selection_immune_to_updated_at_churn(self, store: Any) -> None:
         """Regression: every failed render stamps ``meta.audio_failed_at``

@@ -229,6 +229,23 @@ def _cmd_schedule(store: Store, args: argparse.Namespace) -> None:
 
 def run(args: argparse.Namespace) -> None:
     store = Store.connect(resolve_dsn(args.database_url))
+    # Bind the process store the way ``cli/worker.py`` and ``runtime/factory.py``
+    # do at boot. Without it ``budget.meter.active_store()`` is None, and every
+    # override ``live_config`` reads through it — ``llm.backend``,
+    # ``llm.chain.<tier>``, ``llm.op.<source>`` — degrades to "no override"
+    # *silently*, because that layer is deliberately failure-tolerant (a missing
+    # table must not dark a tier). A manual ``precis cast run`` therefore ignored
+    # the operator's live routing entirely and composed on the registry default,
+    # while the scheduled worker path — same producer, same code — honoured it:
+    # the one context an operator uses to *test* a routing change was the one
+    # context that couldn't see it. Binding route_log too restores the
+    # ``llm_call_log`` row, without which a manual run leaves no evidence of
+    # which model actually served it.
+    from precis import route_log as _route_log
+    from precis.budget import bind_store as _bind_budget_store
+
+    _route_log.bind_store(store)
+    _bind_budget_store(store)
     if args.cast_cmd == "run":
         _cmd_run(store, args)
     elif args.cast_cmd == "schedule":

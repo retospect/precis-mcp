@@ -10,6 +10,50 @@ tracked separately in `docs/improvement-plan.md` (same delete-on-ship rule).
 
 ---
 
+## Residuals (2026-08-07 — casts landing hours late / not at all)
+
+Status: open · Severity: feature/polish · Owner: below · Test: below.
+
+Three fixes shipped for the "morning brief arrives ~17:00, evening meditation
+stopped composing" report: cadence work exempted from the global daily-cost
+ceiling (`workers/dispatch.py`), exponential render-retry backoff
+(`workers/cast_audio.py`), and both casts moved off the quota-gated FRONTIER
+claude pin onto the BIG chain (`utils/llm/operations.py`). Residuals:
+
+- **🔒 `PRECIS_ANKI_PASSWORD` is cleartext in melchior's worker plist.**
+  `/Library/LaunchDaemons/com.precis.worker.plist` carries it in the clear,
+  the same class of exposure as the `agent_rw`/`OPENROUTER` credentials being
+  rotated in `docs/runbooks/`. Not rotated here because it belongs with that
+  work (one pass over the render sites, one cluster pause), not bolted onto a
+  cast fix. Owner: `deploy/` + the credential-rotation runbook.
+- **🔧 A long render is collateral damage of any worker restart.** The TTS
+  container runs inside `precis-worker.service`'s own cgroup, so a deploy or a
+  jetsam cull SIGTERMs it mid-render (exit 143). The exponential backoff makes
+  that cheap (retry in ~2 min) but doesn't make it *not happen*: a ~10-minute
+  episode has a real chance of straddling any restart. If this keeps costing
+  episodes, detach the render (`systemd-run --scope`, or a `docker run -d` +
+  poll) so it survives its parent. Deliberately not done now — the backoff fix
+  removes the pain without adding a supervision path to get wrong.
+  Owner: `src/precis/tts/render.py`.
+- **🌏 Local BIG (Qwen3-235B on castor+pollux) is unreachable from melchior,**
+  where every cast composes — so the BIG chain silently lands on its cloud
+  fallback (`z-ai/glm-5.2`, ~80–103s) rather than the free local rung.
+  `local_serving.acquire()` is host-scoped through `resource_slots`, and the
+  heartbeat probe reconciles that table from what each host actually *serves*,
+  so registering melchior by hand is reverted within a minute (tried, reverted
+  — prod left honest). Root cause: `served_by` conflates "this host serves the
+  model" with "this host may route to it"; caspar's own row is already that
+  fiction (castor/pollux do the serving). Needs a routing-vs-serving split, not
+  a config edit. Owner: `src/precis/utils/llm/local_serving.py`.
+- **🐛 `precis cast run` was the only context that couldn't see live routing**
+  — fixed here (it never bound the process store, so every `live_config`
+  override read as "no override", silently, because that layer is
+  failure-tolerant by design). The *class* is unfixed: any CLI entrypoint that
+  resolves models without `bind_store` degrades the same silent way. Worth an
+  audit of `src/precis/cli/` for the same gap. Owner: `src/precis/cli/`.
+
+---
+
 ## Residuals (2026-08-06 — $291 planner cost-runaway RCA)
 
 Status: open · Severity: critical/feature · Owner: `src/precis/workers/job_types/plan_tick.py`, `src/precis/budget/quota.py` · Test: below.

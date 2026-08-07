@@ -41,6 +41,7 @@ from precis.workers.nursery import (
     SPIN_LOOP_EVENTS_24H,
     STALE_CLAIM_HOURS,
     STUCK_DOABLE_HOURS,
+    WORKER_CONTINUOUS_PROCESSES,
     WORKER_RESTART_STORM_1H,
     _dead_worker_detail,
     _detect_child_failed_parked,
@@ -61,6 +62,15 @@ from precis.workers.nursery import (
     _restart_storm_detail,
     run_nursery_pass,
 )
+
+#: A daemon the dead-worker detector actually watches. Taken from the live
+#: constant rather than spelled out: these tests previously hardcoded
+#: ``precis-worker-agent``, which went silently vacuous the day that daemon was
+#: retired (2026-08-04 single-worker consolidation) — the seeded process was no
+#: longer in :data:`WORKER_CONTINUOUS_PROCESSES`, so the detector correctly
+#: found nothing and the assertions failed. Binding to the constant keeps them
+#: testing the *behaviour* across any future rename.
+_CONTINUOUS_DAEMON = WORKER_CONTINUOUS_PROCESSES[0]
 
 
 @pytest.fixture
@@ -1022,12 +1032,12 @@ def test_dead_worker_flags_silent_daemon_on_live_host(store: Store) -> None:
     """A continuous daemon silent > threshold while its host is alive fires."""
     host = _host()
     _seed_worker_log(
-        store, host, "precis-worker-agent", minutes_ago=DEAD_WORKER_SILENCE_MIN + 5
+        store, host, _CONTINUOUS_DAEMON, minutes_ago=DEAD_WORKER_SILENCE_MIN + 5
     )
     _seed_heartbeat(store, host, minutes_ago=0)  # host is up
 
     findings = _detect_dead_workers(store)
-    key = f"dead-worker:{host}:precis-worker-agent"
+    key = f"dead-worker:{host}:{_CONTINUOUS_DAEMON}"
     hits = [f for f in findings if f.fingerprint_key == key]
     assert len(hits) == 1
     assert hits[0].category == "dead-worker"
@@ -1037,12 +1047,13 @@ def test_dead_worker_flags_silent_daemon_on_live_host(store: Store) -> None:
 def test_dead_worker_ignores_live_daemon(store: Store) -> None:
     """A daemon that logged recently is not dead."""
     host = _host()
-    _seed_worker_log(store, host, "precis-worker-agent", minutes_ago=1)
+    _seed_worker_log(store, host, _CONTINUOUS_DAEMON, minutes_ago=1)
     _seed_heartbeat(store, host, minutes_ago=0)
 
     findings = _detect_dead_workers(store)
     assert not any(
-        f.fingerprint_key == f"dead-worker:{host}:precis-worker-agent" for f in findings
+        f.fingerprint_key == f"dead-worker:{host}:{_CONTINUOUS_DAEMON}"
+        for f in findings
     )
 
 
@@ -1051,13 +1062,14 @@ def test_dead_worker_ignores_when_whole_host_down(store: Store) -> None:
     per-daemon dead-worker (don't fan one failure into N alerts)."""
     host = _host()
     _seed_worker_log(
-        store, host, "precis-worker-agent", minutes_ago=DEAD_WORKER_SILENCE_MIN + 5
+        store, host, _CONTINUOUS_DAEMON, minutes_ago=DEAD_WORKER_SILENCE_MIN + 5
     )
     # no fresh log, no heartbeat → host not "alive"
 
     findings = _detect_dead_workers(store)
     assert not any(
-        f.fingerprint_key == f"dead-worker:{host}:precis-worker-agent" for f in findings
+        f.fingerprint_key == f"dead-worker:{host}:{_CONTINUOUS_DAEMON}"
+        for f in findings
     )
 
 
@@ -1080,7 +1092,7 @@ def test_host_dark_fires_while_dead_worker_self_suppresses(store: Store) -> None
     N-fold noise per daemon the dead host ran)."""
     host = _host()
     _seed_worker_log(
-        store, host, "precis-worker-agent", minutes_ago=DEAD_WORKER_SILENCE_MIN + 5
+        store, host, _CONTINUOUS_DAEMON, minutes_ago=DEAD_WORKER_SILENCE_MIN + 5
     )
     _seed_heartbeat(store, host, minutes_ago=HOST_DARK_SILENCE_MIN + 5)  # stale too
 
@@ -1094,7 +1106,7 @@ def test_host_dark_fires_while_dead_worker_self_suppresses(store: Store) -> None
 
     dead_worker = _detect_dead_workers(store)
     assert not any(
-        f.fingerprint_key == f"dead-worker:{host}:precis-worker-agent"
+        f.fingerprint_key == f"dead-worker:{host}:{_CONTINUOUS_DAEMON}"
         for f in dead_worker
     )
 
@@ -1139,14 +1151,14 @@ def test_dead_worker_message_tailors_command_to_linux(store: Store) -> None:
     row's sys.platform) drives it."""
     host = _host()
     _seed_worker_log(
-        store, host, "precis-worker-agent", minutes_ago=DEAD_WORKER_SILENCE_MIN + 5
+        store, host, _CONTINUOUS_DAEMON, minutes_ago=DEAD_WORKER_SILENCE_MIN + 5
     )
     _seed_heartbeat(store, host, minutes_ago=0, meta={"platform": "Linux"})
 
     finding = next(
         f
         for f in _detect_dead_workers(store)
-        if f.fingerprint_key == f"dead-worker:{host}:precis-worker-agent"
+        if f.fingerprint_key == f"dead-worker:{host}:{_CONTINUOUS_DAEMON}"
     )
     assert "systemctl" in finding.detail
     assert "launchctl" not in finding.detail
@@ -1156,14 +1168,14 @@ def test_dead_worker_message_tailors_command_to_macos(store: Store) -> None:
     """A dead worker on a macOS/launchd host keeps the launchctl advice."""
     host = _host()
     _seed_worker_log(
-        store, host, "precis-worker-agent", minutes_ago=DEAD_WORKER_SILENCE_MIN + 5
+        store, host, _CONTINUOUS_DAEMON, minutes_ago=DEAD_WORKER_SILENCE_MIN + 5
     )
     _seed_heartbeat(store, host, minutes_ago=0, meta={"platform": "Darwin"})
 
     finding = next(
         f
         for f in _detect_dead_workers(store)
-        if f.fingerprint_key == f"dead-worker:{host}:precis-worker-agent"
+        if f.fingerprint_key == f"dead-worker:{host}:{_CONTINUOUS_DAEMON}"
     )
     assert "launchctl" in finding.detail
     assert "systemctl" not in finding.detail
@@ -1174,14 +1186,14 @@ def test_dead_worker_message_neutral_without_platform(store: Store) -> None:
     than guessing."""
     host = _host()
     _seed_worker_log(
-        store, host, "precis-worker-agent", minutes_ago=DEAD_WORKER_SILENCE_MIN + 5
+        store, host, _CONTINUOUS_DAEMON, minutes_ago=DEAD_WORKER_SILENCE_MIN + 5
     )
     _seed_heartbeat(store, host, minutes_ago=0)  # no meta
 
     finding = next(
         f
         for f in _detect_dead_workers(store)
-        if f.fingerprint_key == f"dead-worker:{host}:precis-worker-agent"
+        if f.fingerprint_key == f"dead-worker:{host}:{_CONTINUOUS_DAEMON}"
     )
     assert "systemctl" in finding.detail and "launchctl" in finding.detail
 
@@ -1194,11 +1206,11 @@ def test_dead_worker_still_flags_after_multi_day_silence(store: Store) -> None:
     floor a worker silent 4 days on a live host still fires."""
     host = _host()
     four_days_min = 4 * 24 * 60  # > 24h (old floor), < 30d (retention)
-    _seed_worker_log(store, host, "precis-worker-agent", minutes_ago=four_days_min)
+    _seed_worker_log(store, host, _CONTINUOUS_DAEMON, minutes_ago=four_days_min)
     _seed_heartbeat(store, host, minutes_ago=0)  # host alive (heartbeat daemon up)
 
     findings = _detect_dead_workers(store)
-    key = f"dead-worker:{host}:precis-worker-agent"
+    key = f"dead-worker:{host}:{_CONTINUOUS_DAEMON}"
     hits = [f for f in findings if f.fingerprint_key == key]
     assert len(hits) == 1
     assert hits[0].category == "dead-worker"
@@ -1211,12 +1223,13 @@ def test_dead_worker_ignores_daemon_gone_past_retention(store: Store) -> None:
     is what drops it."""
     host = _host()
     past_retention_min = (DEAD_WORKER_LOOKBACK_DAYS + 1) * 24 * 60
-    _seed_worker_log(store, host, "precis-worker-agent", minutes_ago=past_retention_min)
+    _seed_worker_log(store, host, _CONTINUOUS_DAEMON, minutes_ago=past_retention_min)
     _seed_heartbeat(store, host, minutes_ago=0)
 
     findings = _detect_dead_workers(store)
     assert not any(
-        f.fingerprint_key == f"dead-worker:{host}:precis-worker-agent" for f in findings
+        f.fingerprint_key == f"dead-worker:{host}:{_CONTINUOUS_DAEMON}"
+        for f in findings
     )
 
 
@@ -1226,7 +1239,7 @@ def test_run_nursery_pass_raises_critical_for_dead_worker(store: Store) -> None:
     is a no-op with no webhook configured)."""
     host = _host()
     _seed_worker_log(
-        store, host, "precis-worker-agent", minutes_ago=DEAD_WORKER_SILENCE_MIN + 5
+        store, host, _CONTINUOUS_DAEMON, minutes_ago=DEAD_WORKER_SILENCE_MIN + 5
     )
     _seed_heartbeat(store, host, minutes_ago=0)
 

@@ -198,7 +198,16 @@ DEAD_WORKER_SILENCE_MIN = 10
 #: The ``worker_logs.process`` values that run as long-lived loops and so must
 #: never fall silent while their host is up. Periodic one-shots (cron-tick,
 #: dream) are excluded — their silence between runs is normal, not a fault.
-WORKER_CONTINUOUS_PROCESSES = ("precis-worker", "precis-worker-agent")
+#:
+#: ``precis-worker-agent`` was retired 2026-08-04 when the fleet consolidated
+#: onto a single ``--profile all`` worker per host (the agent profile folded
+#: into ``precis-worker``, and ``com.precis.worker-agent.plist`` was removed).
+#: It must NOT stay listed: a decommissioned daemon can never log again, so it
+#: matched the dead-worker predicate forever and pinned two false *critical*
+#: alerts (melchior + spark) for the full
+#: :data:`DEAD_WORKER_LOOKBACK_DAYS` window — noise that buried the real
+#: cast/recurring stalls underneath it.
+WORKER_CONTINUOUS_PROCESSES = ("precis-worker",)
 
 #: How far back ``dead-worker`` will still consider a (host, process) it once
 #: saw. It exists only to stop a *decommissioned* daemon alarming forever — but

@@ -1026,3 +1026,63 @@ def test_dispatches_when_ancestors_are_live(handler: TodoHandler, store: Store) 
     assert leaf in _candidate_parent_ids(store, limit=50)
     assert run_dispatch_pass(store).ok == 1
     assert len(_child_jobs_under(store, leaf)) == 1
+
+
+# ── daily cost ceiling: cadence work is exempt ───────────────────
+
+
+def _cadence_tick(store: Store, title: str) -> int:
+    """A watch carrying ``meta.schedule`` plus the dispatchable tick under it —
+    the shape the recurring spawner produces (the cadence lives on the watch,
+    never copied down onto the tick)."""
+    watch = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title=f"{title} (watch)",
+        meta={
+            "schedule": {"cron": "0 7 * * *", "backfill_missed": False},
+            "executor": "claude_inproc",
+            "job_type": "fix_gripe",
+        },
+        parent_id=None,
+    )
+    return _dispatchable_child(store, title, int(watch.id))
+
+
+def test_daily_ceiling_still_dispatches_cadence_work(
+    handler: TodoHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A tripped global ceiling pauses discretionary dispatch but NOT the
+    scheduled cadences.
+
+    The regression: the ceiling used to ``break`` the round outright, applying a
+    guardrail built for open-ended planner coroutines to every candidate. On
+    2026-08-07 that held the fleet over the ceiling from 07:00 UTC and the
+    morning brief's tick sat six hours with no job minted — for a cast that
+    costs about $0.05. A ceiling of 0 trips unconditionally (spend >= 0).
+    """
+    monkeypatch.setenv("PRECIS_DAILY_COST_CEILING", "0")
+    tick = _cadence_tick(store, "cast watch: reading 2026-08-07")
+    discretionary = _dispatchable_child(store, "exploratory work", None)
+
+    run_dispatch_pass(store)
+
+    assert len(_child_jobs_under(store, tick)) == 1, "cadence tick must dispatch"
+    assert _child_jobs_under(store, discretionary) == [], (
+        "discretionary work must still be paused by the ceiling"
+    )
+
+
+def test_daily_ceiling_exemption_is_off_when_the_ceiling_is_clear(
+    handler: TodoHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Control: with headroom, both lanes dispatch — the exemption is not a
+    reordering, it only decides who survives a *tripped* ceiling."""
+    monkeypatch.setenv("PRECIS_DAILY_COST_CEILING", "1000000")
+    tick = _cadence_tick(store, "cast watch: nidra 2026-08-07")
+    discretionary = _dispatchable_child(store, "exploratory work", None)
+
+    run_dispatch_pass(store)
+
+    assert len(_child_jobs_under(store, tick)) == 1
+    assert len(_child_jobs_under(store, discretionary)) == 1
