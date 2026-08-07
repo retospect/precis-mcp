@@ -628,6 +628,87 @@ def test_dispatch_local_slot_without_endpoint_keeps_proxy(
     assert seen["model"] == "summarizer"
 
 
+def test_dispatch_acquires_slot_under_chain_rung_model_not_tier_alias(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """capacity-valve blocker 2: the local slot must be acquired under the model
+    rung 0 will *actually* serve (the chain rung's ``qwen3.5-9b-q4_k_m``), not the
+    pre-chain tier/source alias (``summarizer``). ``resource_slots``/``served_by``
+    are keyed on the served id, so acquiring under the alias always missed the
+    slot → no endpoint → the local rung hit the default loopback wire and failed
+    over to cloud, so SMALL never served local despite a resident 9B. Before the
+    fix ``acquire`` saw ``"summarizer"`` and this slot lookup missed; now it sees
+    the rung's served id and the call lands local."""
+    import precis.workers.llm_summarize as summ
+    from precis.utils.llm import local_serving as ls
+
+    # SMALL chain: local 9B first (its served id ≠ the tier default "summarizer"),
+    # cloud glm second — the shape prod runs.
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda tier: (
+            [
+                {
+                    "placement": "local",
+                    "model": "qwen3.5-9b-q4_k_m",
+                    "transport": "local",
+                },
+                {
+                    "placement": "cloud",
+                    "model": "z-ai/glm-4.7-flash",
+                    "transport": "openai_compat",
+                },
+            ]
+            if tier is Tier.SMALL
+            else None
+        ),
+    )
+    monkeypatch.delenv(
+        "PRECIS_SUMMARIZE_MODEL", raising=False
+    )  # tier default = summarizer
+
+    acquired: list[str] = []
+
+    def fake_acquire(model: str) -> ls.LocalSlot:
+        acquired.append(model)
+        # Serve only the rung's real id — the alias must never reach here.
+        return ls.LocalSlot(
+            host="melchior",
+            resource=f"llm:{model}",
+            reserved=True,
+            paused=False,
+            endpoint="http://127.0.0.1:11445/v1",
+            served_model="qwen3.5-9b-q4_k_m",
+        )
+
+    monkeypatch.setattr(ls, "acquire", fake_acquire)
+    monkeypatch.setattr(ls, "release", lambda slot: None)
+
+    seen: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, config: object) -> None:
+            seen["url"] = getattr(config, "url", None)
+            seen["model"] = getattr(config, "model", None)
+
+        def complete(self, messages: list[dict[str, str]]) -> _FakeOpenAI:
+            return _FakeOpenAI(text="local judged it", total_tokens=9)
+
+    monkeypatch.setattr(summ, "LlmClient", FakeClient)
+
+    out = dispatch(LlmRequest(tier=Tier.SMALL, prompt="classify me"))
+
+    # THE regression: the slot was looked up under the rung's served id, not the
+    # pre-chain "summarizer" alias.
+    assert acquired == ["qwen3.5-9b-q4_k_m"]
+    # …and so the call landed on the local llama-swap endpoint, not the cloud rung.
+    assert out.text == "local judged it"
+    assert out.error is None
+    assert out.placement == "local"
+    assert seen["url"] == "http://127.0.0.1:11445/v1"
+    assert seen["model"] == "qwen3.5-9b-q4_k_m"
+
+
 def test_dispatch_big_tools_routes_to_tools_loop_under_openai_backend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

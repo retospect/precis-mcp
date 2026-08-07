@@ -1945,7 +1945,20 @@ def dispatch(req: LlmRequest) -> LlmResult:
     # paused-result shape as the breaker, so a pinned pass backs off, not spins.
     from precis.utils.llm import local_serving as _local
 
-    slot = _local.acquire(model)
+    # Acquire the slot under the model rung 0 will *actually* dispatch — the
+    # chain rung's pinned served id (the capacity-valve `qwen3.5-9b-q4_k_m`),
+    # NOT the pre-chain tier/source model (`summarizer`). ``FailoverProvider``
+    # runs rung 0 as ``rung.model or model`` (see its ``run``), so the served
+    # model, not the alias, is what hits the wire — but ``resource_slots`` /
+    # ``served_by`` are keyed on that served id, so acquiring under the tier
+    # alias always missed the slot (capacity-valve blocker 2) → no endpoint →
+    # ``_dispatch_local`` fell to the default loopback wire and failed over to
+    # cloud, so SMALL never served local despite a resident 9B. ``ladder[0]``
+    # is the effective rung 0 after the placement/throttle filters above. Falls
+    # back to ``model`` when the rung pins nothing (no operator chain, a bare
+    # auto-failover ladder rung), so the dark path stays byte-identical.
+    serve_model = ladder[0].model or model
+    slot = _local.acquire(serve_model)
     if slot is not None and slot.paused:
         # Local capacity is saturated, not down — a different case from a
         # transport error, and the FailoverProvider ladder built above already
@@ -2192,7 +2205,12 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
 
     from precis.utils.llm import local_serving as _local
 
-    slot = _local.acquire(model)
+    # Parity with sync dispatch: acquire under the rung-0 served model, not the
+    # pre-chain alias (see the comment there). Reached only for CLAUDE_AGENT
+    # (always cloud), so this is a de-facto no-op today — kept identical so the
+    # two paths can't drift if a local-served model ever streams.
+    serve_model = ladder[0].model or model
+    slot = _local.acquire(serve_model)
     if slot is not None and slot.paused:
         return LlmResult(
             text="",

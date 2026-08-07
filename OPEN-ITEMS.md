@@ -10,6 +10,20 @@ tracked separately in `docs/improvement-plan.md` (same delete-on-ship rule).
 
 ---
 
+## 🔧 SMALL-tier saturation spill to cloud is dark — `openai_compat` ignores the local endpoint (capacity-valve item 3)
+
+Status: open · Severity: feature (the saturation→cloud "spillover" half of the local-first valve; the local-serving half shipped 2026-08-07) · Owner: `src/precis/utils/llm/router.py::_dispatch_openai_compat`; ref `docs/proposals/local-first-capacity-valve.md` item 3 · Test: an `openai_compat` dispatch with `req.local_url` set hits that endpoint (dummy bearer, no `openrouter_routing` extra_body), not `PRECIS_LLM_BASE_URL`.
+
+**The local-serving half is FIXED (shipped 2026-08-07, capacity-valve item 2).** `dispatch` now acquires the slot under the chain rung's served model (`serve_model = ladder[0].model or model`), not the pre-chain tier/source alias (`summarizer`) — so on melchior SMALL reserves the `llm:qwen3.5-9b-q4_k_m` slot, gets the `:11445` endpoint, and `_dispatch_local` serves it locally. Combined with the config flip below, `llm.chain.small` rung 0 now lands `placement=local` on melchior. Regression: `tests/test_llm_router.py::test_dispatch_acquires_slot_under_chain_rung_model_not_tier_alias`. (Original defect, for the record: `acquire(model)` used the pre-chain name, so `acquire("summarizer")` missed the served slot → no endpoint → cloud failover; SMALL had run 100% on OpenRouter `z-ai/glm-4.7-flash`, zero `placement=local`, until this fix.)
+
+**Config change (still in place):** `llm.chain.small` local rung `transport: openai_compat → local` in prod `app_settings` (2026-08-07). Correct prerequisite — only `local`/`openai_tools` honor the slot endpoint. Rollback value recorded this session's transcript if ever needed.
+
+**Remaining open — the spillover feature.** With `transport: local`, a *saturated* local slot (all 6 melchior slots busy) returns `paused` and the pinned pass backs off; it does **not** spill to cloud, because the saturation-escape only fires for `openai_tools`/`openai_compat` rungs (the two that read a hosted base URL), and `_dispatch_openai_compat` unconditionally uses `PRECIS_LLM_BASE_URL`, never `req.local_url`. To get Reto's "run local first, spin out to the net on demand": make `_dispatch_openai_compat` honor `req.local_url` when set (falling to `PRECIS_LLM_BASE_URL` only when `None` — the escape clears it), then flip the local rung to `openai_compat` so a saturated slot retries the *same* rung against the cloud base URL. Two gotchas: (1) a local llama-swap wants the dummy bearer, not the vault OpenRouter key (`_provider_api_key(local_url)`); (2) the `openrouter_routing` `extra_body` (provider/quant/reasoning pins) must NOT be sent to a local llama-swap. Same-model constraint (proposal blocker 1): today's cloud rung is `glm-4.7-flash` ≠ the local 9B, so a spill changes model quality — pick an open-weight `M` served both sides if transparent overflow matters. Verification blind spot: only **melchior** serves the 9B — SMALL on other hosts has no local slot and correctly goes cloud; `llm_call_log` has no host column, so confirming "melchior's own SMALL is local" needs an on-host check. Related: the "Local BIG unreachable from melchior" residual below is the *cross-host* face of the same served-vs-routing conflation.
+
+- **Same family:** the "tool-less BIG-tier LLM calls" item below (chain-override transport awareness) and the "PRECIS_SUMMARIZE_MODEL vs served resource_slots" post-deploy assertion — all silent-cloud-detour drift a deploy-time or dispatch-time check would catch.
+
+---
+
 ## 📅 2026-08-08 — read the first unbuffered `autocatpath_seed` failures
 
 Status: open · Severity: critical · **Start: 2026-08-08** (not before — the
