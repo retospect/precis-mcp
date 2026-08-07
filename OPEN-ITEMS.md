@@ -84,6 +84,36 @@ drop it"). That was wrong — the two sum different things — and is corrected
 there. Still pairs with the dark `quota.py evaluate()`: OAuth *quota*, as
 distinct from dollars, has no global gate.
 
+## 🔧 Agentic work is claimed by hosts with no `claude` binary — fails, doesn't re-route
+
+Status: open · Severity: medium · Owner: `workers/dispatch.py` claim path + `capability_probe.py` · Test: a host without the `claude` binary is never handed a `claude_p` / `claude_agent` job.
+
+`llm_call_log` errors matching `binary not found` over 14 days:
+
+| Day | Source | Count |
+|---|---|---|
+| 08-04 | `plan_tick` | **177** |
+| 08-04 | `briefing` | 9 |
+| 08-05 | `briefing` / `reading_brief` | 3 / 3 |
+| 08-07 | `quest_tick_commit` | 1 |
+
+`claude binary not found ('claude'); set PRECIS_CLAUDE_BIN or install Claude
+Code` — the work was claimed by a host that structurally cannot run it, so the
+call fails rather than being left for a capable claimant. The volume has
+tapered (177 → 1), which suggests a deploy incidentally fixed most of it, but
+08-07 proves the hole is still open, and a taper is not a fix.
+
+Two things to establish, in order: **which host** (the error row doesn't say —
+correlate `worker_logs.host` on the same timestamps, or add the host to the
+`llm_call_log` row), and then whether the right fix is a capability gate at
+claim time (the `eligible`/`host_affinity` pattern the scheduler already uses
+for `dream_agent`) or simply installing the binary fleet-wide. Prefer the gate:
+"this host can't do this work" should be a claim-time fact, not a runtime
+failure, or the same class of bug returns with the next capability.
+
+Not caused by the 2026-08-07 vault-only OAuth cutover — this is a missing
+*binary*, not a missing credential, and every occurrence predates that deploy.
+
 ## 🔎 `OPENROUTER_API_KEY` is revealed ~22k times a day — the 60s cache isn't holding
 
 Status: open · Severity: medium · Owner: `src/precis/secrets.py` cache · Test: a hot `get_secret` loop over one name issues ≤1 `vault.reveal` per TTL per process.
