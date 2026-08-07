@@ -159,12 +159,14 @@ def classify_chunks(
     as BODY regardless of content (too short for the front-matter
     heuristic to fire).
 
-    Known limitation (not fixed here — the tail walk starts at the
-    last chunk and stops at the first non-matching one): a document
-    laid out as body → references → appendix/SI puts non-citation-
-    shaped appendix content at the tail, which blocks the walk before
-    it ever reaches the real references section above it. This
-    heuristic assumes references are the document's tail.
+    The tail walk (below) assumes references are the document's tail,
+    which breaks on a body → references → appendix/SI layout: the
+    non-citation-shaped appendix chunk at the end stops the walk
+    before it reaches the real references section above it. A second,
+    heading-anchored pass handles that case: it scans forward for a
+    References/Bibliography heading and classifies the contiguous run
+    of citation-shaped chunks that follows, independent of where that
+    run sits in the document.
     """
     n = len(chunks_text)
     if n == 0:
@@ -208,6 +210,52 @@ def classify_chunks(
         else:
             # Stop the tail walk at the first body chunk.
             break
+
+    # Heading-anchored references pass: handles body → references →
+    # appendix/SI layouts where the tail walk above stopped at the
+    # non-citation-shaped appendix content before ever reaching the
+    # real references section. Anchor on an actual References /
+    # Bibliography heading (not citation density) so this doesn't
+    # mislabel a numbered Methods/Notes list that merely resembles a
+    # citation list. If references are already at the tail, the tail
+    # walk above already reclassified them out of BODY, so the anchor
+    # search below finds nothing (idempotent no-op).
+    #
+    # A heading match alone is NOT sufficient: a review article or
+    # thesis often carries a table-of-contents / outline line
+    # ("References ..... 45") far above the real bibliography, and
+    # ``_REFERENCES_HEADING_RE`` matches that just as readily. A false
+    # anchor like that is followed by no citation-shaped chunks, so we
+    # require a non-empty contiguous run of reference entries *after*
+    # the heading before committing; an empty run means "keep scanning
+    # for the true heading later in the document". (Known residual: a
+    # references section rendered as a single heading+entries chunk that
+    # is NOT at the tail — no separate entry chunks follow — is not
+    # caught here; the dominant Marker ingest splits one entry per chunk,
+    # so entries do follow.)
+    for i in range(n):
+        if classes[i] != ChunkClass.BODY:
+            continue
+        if not _REFERENCES_HEADING_RE.search(chunks_text[i][:400]):
+            continue
+        # Candidate anchor. Gather the contiguous run of citation-shaped
+        # BODY chunks that follows (the appendix/SI or an already-
+        # classified region ends it).
+        run: list[int] = []
+        for j in range(i + 1, n):
+            if classes[j] != ChunkClass.BODY:
+                break  # already-classified region — don't cross into it
+            if not _is_references_chunk(chunks_text[j]):
+                break  # first non-reference chunk — appendix/SI boundary
+            run.append(j)
+        if not run:
+            # False anchor (e.g. a ToC/outline line): no reference
+            # entries follow. Leave it BODY and keep looking.
+            continue
+        classes[i] = ChunkClass.REFERENCES
+        for j in run:
+            classes[j] = ChunkClass.REFERENCES
+        break  # a paper has one bibliography section
 
     body_indices = tuple(i for i, c in enumerate(classes) if c == ChunkClass.BODY)
     return ClassifiedChunks(classes=tuple(classes), body_indices=body_indices)

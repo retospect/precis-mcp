@@ -447,3 +447,61 @@ class TestRunChunkKeywordsPass:
         # No chunks seeded at all.
         result = run_chunk_keywords_pass(store, make_mock_bge_m3(), batch_size=10)
         assert result == {"claimed": 0, "ok": 0, "failed": 0}
+
+    def test_db_level_failure_on_one_chunk_does_not_cascade(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        """A per-chunk savepoint isolates a genuine DB-statement abort.
+
+        Before the per-chunk ``with conn.transaction():`` savepoint, a
+        chunk that aborted the shared transaction (e.g. a failed SQL
+        execute) poisoned the connection for every *subsequent* chunk in
+        the batch — each of those then died with
+        ``InFailedSqlTransaction`` even though nothing was wrong with
+        them. The claim query orders by ``c.chunk_id`` ascending, so
+        seeding the poison chunk first (lowest chunk_id) reproduces the
+        worst case: it's processed before the two good chunks.
+        """
+        import precis.workers.chunk_keywords as chunk_keywords_mod
+
+        ref_id = seed_ref(store)
+        # Seeded first => lowest chunk_id => claimed/processed first.
+        poison_id = _seed_long_chunk(store, ref_id=ref_id, ord=0, text=_BODY_TEXT_1)
+        good_id_1 = _seed_long_chunk(store, ref_id=ref_id, ord=1, text=_BODY_TEXT_2)
+        good_id_2 = _seed_long_chunk(store, ref_id=ref_id, ord=2, text=_BODY_TEXT_1)
+
+        real_write_chunk_keywords = chunk_keywords_mod.write_chunk_keywords
+
+        def _poisoning_write_chunk_keywords(
+            conn: Any, chunk_id: int, *, keywords: Any, embedder_name: str
+        ) -> None:
+            if chunk_id == poison_id:
+                # A genuine DB-level statement error (division by zero at
+                # the SQL level) aborts the current transaction — unlike a
+                # plain Python raise, this is what actually poisons a
+                # shared connection/transaction pre-fix.
+                conn.execute("SELECT 1 / 0")
+            else:
+                real_write_chunk_keywords(
+                    conn, chunk_id, keywords=keywords, embedder_name=embedder_name
+                )
+
+        monkeypatch.setattr(
+            chunk_keywords_mod,
+            "write_chunk_keywords",
+            _poisoning_write_chunk_keywords,
+        )
+
+        result = run_chunk_keywords_pass(store, make_mock_bge_m3(), batch_size=10)
+        assert result == {"claimed": 3, "ok": 2, "failed": 1}
+
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT chunk_id, keywords_meta->>'version' "
+                "FROM chunks WHERE chunk_id IN (%s, %s, %s)",
+                (poison_id, good_id_1, good_id_2),
+            ).fetchall()
+        versions: dict[int, str | None] = dict(rows)
+        assert versions[good_id_1] == KEYWORDS_VERSION
+        assert versions[good_id_2] == KEYWORDS_VERSION
+        assert versions[poison_id] is None

@@ -217,3 +217,54 @@ class TestEmbedHandlerReferencesSkip:
         # references skip. Removing it would silently re-pollute
         # search with bibliography embeddings.
         assert "references" in EmbedHandler.skip_chunk_kinds
+
+    def test_write_ok_skips_chunk_retagged_to_references(self, store):
+        # gr196720 TOCTOU regression: a chunk claimed while still
+        # 'paragraph' gets retagged to 'references' (mimicking a
+        # concurrent bib_retag pass) *before* the stale write_ok
+        # lands. write_ok must re-check the current chunk_kind and
+        # refuse to persist an embedding for it.
+        from tests.workers._helpers import seed_chunk, seed_ref
+
+        ref_id = seed_ref(store)
+        chunk_id = seed_chunk(
+            store, ref_id=ref_id, ord=0, chunk_kind="paragraph", text="[1] Smith 2020"
+        )
+        h = EmbedHandler(make_mock_bge_m3())
+        vec = h.process(ChunkRow(chunk_id=chunk_id, text="[1] Smith 2020"))
+
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE chunks SET chunk_kind = 'references' WHERE chunk_id = %s",
+                (chunk_id,),
+            )
+            conn.commit()
+
+            h.write_ok(conn, chunk_id, vec)
+            conn.commit()
+
+            row = conn.execute(
+                "SELECT 1 FROM chunk_embeddings WHERE chunk_id = %s", (chunk_id,)
+            ).fetchone()
+        assert row is None, (
+            "write_ok must not persist an embedding for a chunk retagged "
+            "to a skip_chunk_kinds kind between claim and write"
+        )
+
+    def test_write_ok_still_writes_normal_paragraph_chunk(self, store):
+        # Positive-case confirmation: the TOCTOU guard must not affect
+        # the common path — a chunk still tagged 'paragraph' at write
+        # time still gets its embedding written.
+        _ref_id, [chunk_id] = seed_chunks(store, ["ordinary body text"])
+        h = EmbedHandler(make_mock_bge_m3())
+        vec = h.process(ChunkRow(chunk_id=chunk_id, text="ordinary body text"))
+        with store.pool.connection() as conn:
+            h.write_ok(conn, chunk_id, vec)
+            conn.commit()
+
+            row = conn.execute(
+                "SELECT status, vector IS NOT NULL FROM chunk_embeddings "
+                "WHERE chunk_id = %s",
+                (chunk_id,),
+            ).fetchone()
+        assert row == ("ok", True)

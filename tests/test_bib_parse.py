@@ -352,6 +352,60 @@ class TestPassParse:
         assert _meta_version(store, ref_id) == BIB_PARSE_VERSION
 
 
+class TestNoConnectionHeldDuringLlmCall:
+    def test_llm_parse_runs_with_no_db_connection_checked_out(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # gr: the LLM parse call must not run inside an open transaction --
+        # holding a connection idle across it trips Postgres's
+        # idle_in_transaction_session_timeout and fails the paper (see
+        # docs/proposals/citation-bib-parse.md). Prove it by having the
+        # fake client's `complete`, while it runs, successfully acquire and
+        # use a *fresh* connection from the same pool -- if the pass were
+        # still holding one open (e.g. pool exhaustion, or blocked on
+        # itself for a single-connection pool), this would hang or fail.
+        monkeypatch.setattr(bib_parse_mod, "_crossref_query", lambda *a, **k: [])
+
+        class _ConnCheckingClient:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def complete(self, messages: list[dict[str, str]]) -> Any:
+                self.calls += 1
+                with store.pool.connection() as conn:
+                    row = conn.execute("SELECT 1").fetchone()
+                assert row == (1,)
+                return SimpleNamespace(
+                    text='{"entries":[{"marker":1,"authors":null,'
+                    '"journal":"Foo","year":2019,"volume":"3",'
+                    '"first_page":"9"}]}',
+                    total_tokens=7,
+                )
+
+        ref_id = seed_ref(store, title="a messy paper")
+        seed_chunk(
+            store,
+            ref_id=ref_id,
+            ord=0,
+            chunk_kind="paragraph",
+            text="- [1] See the supplementary information for further detail.",
+        )
+        client = _ConnCheckingClient()
+
+        result = run_bib_parse_pass(
+            store, client=client, batch_size=10, ref_ids=[ref_id]
+        )
+        assert result == {"claimed": 1, "ok": 1, "failed": 0}
+        assert client.calls == 1
+
+        rows = _bib_rows(store, ref_id)
+        assert len(rows) == 1
+        marker, _authors, journal, year, *_rest = rows[0]
+        assert marker == 1
+        assert journal == "Foo"
+        assert year == 2019
+
+
 class TestConvergence:
     def test_no_bibliography_paper_stamped_and_not_reclaimed(
         self, store: Any, monkeypatch: pytest.MonkeyPatch

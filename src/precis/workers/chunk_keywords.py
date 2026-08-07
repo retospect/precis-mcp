@@ -366,28 +366,35 @@ def run_chunk_keywords_pass(
         claimed = len(rows)
         for chunk_id, ref_id, text, vec_text in rows:
             try:
-                if vec_text is None:
-                    raise RuntimeError(
-                        "chunk has no bge-m3 embedding yet — run `precis worker --only embed` first"
+                # Savepoint per chunk: a single chunk's failure (a bad
+                # write, a malformed vector) otherwise aborts the shared
+                # batch transaction, so every *subsequent* chunk in the
+                # batch dies with InFailedSqlTransaction — one real error
+                # cascades into a whole-batch outage. Rolling back to the
+                # savepoint keeps the connection usable for the next chunk.
+                with conn.transaction():
+                    if vec_text is None:
+                        raise RuntimeError(
+                            "chunk has no bge-m3 embedding yet — run `precis worker --only embed` first"
+                        )
+                    # pgvector returns the vector as a string of the form
+                    # "[0.1, 0.2, ...]" when cast to text; parse it.
+                    chunk_vec = _parse_pgvector_text(vec_text)
+                    if ref_id not in abbrev_cache:
+                        abbrev_cache[ref_id] = ensure_paper_abbrevs(conn, ref_id)
+                    abbrevs = abbrev_cache[ref_id]
+                    keywords = extract_chunk_keywords(
+                        chunk_text=text,
+                        chunk_embedding=chunk_vec,
+                        abbrevs=abbrevs,
+                        embedder=embedder,
                     )
-                # pgvector returns the vector as a string of the form
-                # "[0.1, 0.2, ...]" when cast to text; parse it.
-                chunk_vec = _parse_pgvector_text(vec_text)
-                if ref_id not in abbrev_cache:
-                    abbrev_cache[ref_id] = ensure_paper_abbrevs(conn, ref_id)
-                abbrevs = abbrev_cache[ref_id]
-                keywords = extract_chunk_keywords(
-                    chunk_text=text,
-                    chunk_embedding=chunk_vec,
-                    abbrevs=abbrevs,
-                    embedder=embedder,
-                )
-                write_chunk_keywords(
-                    conn,
-                    chunk_id,
-                    keywords=keywords,
-                    embedder_name=embedder.model,
-                )
+                    write_chunk_keywords(
+                        conn,
+                        chunk_id,
+                        keywords=keywords,
+                        embedder_name=embedder.model,
+                    )
                 ok += 1
             except EmbedderUnavailable as exc:
                 # The embedder is transiently down/busy — and it embeds a

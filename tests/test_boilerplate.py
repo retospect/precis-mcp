@@ -340,6 +340,138 @@ class TestLoosePatternsStayGatedByFloor:
         )
 
 
+class TestReferencesFollowedByAppendix:
+    """gr196690: body → references → appendix/SI layouts. The tail
+    walk starts at the last chunk and stops at the first non-matching
+    one, so a non-citation-shaped appendix/SI chunk after the
+    bibliography blocks it from ever reaching the real references
+    section above. The heading-anchored forward pass handles this
+    independently of the tail walk.
+    """
+
+    def test_references_before_appendix_are_retagged(self) -> None:
+        # The appendix chunk deliberately has no citation shape and no
+        # References/Bibliography heading, so it must stay BODY while
+        # the heading + the two real entries above it flip.
+        appendix = (
+            "## Supporting Information\nAdditional experimental details, "
+            "extended figures, and raw data tables are provided below for "
+            "completeness and reproducibility."
+        )
+        entry1 = "- [1] Smith, J. A.; Doe, K. B. Journal of Materials 2015, 25, 115."
+        entry2 = "- [2] Johnson, A.; Lee, B. Chem. Soc. Rev. 2016, 12, 200."
+        # Position 0 is liberally accepted as HEAD by _is_head_chunk
+        # (short title-page heuristic); use a real title-page chunk
+        # there and put substantive body content in positions 1-2 so
+        # the BODY assertions below are meaningful.
+        chunks_text = [
+            "Title page",
+            "Body 1 with substantive prose discussing the study in detail.",
+            "Body 2 continuing the discussion with more content here.",
+            "# References",
+            entry1,
+            entry2,
+            appendix,
+        ]
+
+        result = classify_chunks(chunks_text)
+
+        assert result.classes[0] == ChunkClass.HEAD
+        assert result.classes[1] == ChunkClass.BODY
+        assert result.classes[2] == ChunkClass.BODY
+        assert result.classes[3] == ChunkClass.REFERENCES  # heading
+        assert result.classes[4] == ChunkClass.REFERENCES  # entry 1
+        assert result.classes[5] == ChunkClass.REFERENCES  # entry 2
+        assert result.classes[6] == ChunkClass.BODY  # appendix, untouched
+
+    def test_references_at_tail_still_classified_no_appendix(self) -> None:
+        # Idempotence: when references genuinely are the document tail
+        # (no appendix after them), the pre-existing tail walk already
+        # tags them REFERENCES, so the new anchor pass must be a no-op
+        # here — not double-apply or otherwise change the result.
+        entry1 = "- [1] Smith, J. A.; Doe, K. B. Journal of Materials 2015, 25, 115."
+        entry2 = "- [2] Johnson, A.; Lee, B. Chem. Soc. Rev. 2016, 12, 200."
+        chunks_text = [
+            "Title page",
+            "Body 1 with substantive prose discussing the study in detail.",
+            "Body 2 continuing the discussion with more content here.",
+            "# References",
+            entry1,
+            entry2,
+        ]
+
+        result = classify_chunks(chunks_text)
+
+        assert result.classes[0] == ChunkClass.HEAD
+        assert result.classes[1] == ChunkClass.BODY
+        assert result.classes[2] == ChunkClass.BODY
+        assert result.classes[3] == ChunkClass.REFERENCES
+        assert result.classes[4] == ChunkClass.REFERENCES
+        assert result.classes[5] == ChunkClass.REFERENCES
+
+    def test_toc_heading_before_real_bibliography_does_not_block_it(self) -> None:
+        # A review/thesis table-of-contents line ("References ..... 45")
+        # matches _REFERENCES_HEADING_RE just like the real heading, but
+        # has no citation-shaped entries after it. The anchor pass must
+        # NOT commit on that false match and stop — it must skip it and
+        # keep scanning to the true bibliography further down, else the
+        # gr196690 fix is defeated for exactly this class of paper.
+        entry1 = "- [1] Smith, J. A.; Doe, K. B. Journal of Materials 2015, 25, 115."
+        entry2 = "- [2] Johnson, A.; Lee, B. Chem. Soc. Rev. 2016, 12, 200."
+        appendix = (
+            "## Supporting Information\nAdditional experimental details and "
+            "extended figures are provided below for completeness."
+        )
+        chunks_text = [
+            "Title page",
+            "References ..... 45",  # ToC/outline line — a FALSE anchor
+            "Body prose discussing the study in substantive detail here.",
+            "More body content continuing the discussion at length here.",
+            "# References",  # the REAL bibliography heading
+            entry1,
+            entry2,
+            appendix,
+        ]
+
+        result = classify_chunks(chunks_text)
+
+        # The ToC line stays BODY; the real heading + entries flip; the
+        # appendix stays BODY.
+        assert result.classes[1] == ChunkClass.BODY  # ToC line, not tagged
+        assert result.classes[2] == ChunkClass.BODY
+        assert result.classes[3] == ChunkClass.BODY
+        assert result.classes[4] == ChunkClass.REFERENCES  # real heading
+        assert result.classes[5] == ChunkClass.REFERENCES  # entry 1
+        assert result.classes[6] == ChunkClass.REFERENCES  # entry 2
+        assert result.classes[7] == ChunkClass.BODY  # appendix
+
+    def test_numbered_notes_list_without_heading_not_mistaken_for_references(
+        self,
+    ) -> None:
+        # Guard: a numbered Methods/Notes list with NO References/
+        # Bibliography heading anywhere must not be picked up by the
+        # new anchor pass (which requires the heading, not just
+        # citation density) even when it's followed by other content.
+        body = [
+            f"Paragraph {i} discussing synthesis and characterization "
+            f"results in detail here."
+            for i in range(10)
+        ]
+        notes = [
+            "1. Materials, Synthesis conditions were as follows.",
+            "2. Methods, Sample preparation followed standard procedures.",
+            "3. Discussion, Results were consistent across trials.",
+        ]
+        trailing_body = [
+            "Further discussion continues here with additional prose content."
+        ]
+        chunks_text = body + notes + trailing_body
+
+        result = classify_chunks(chunks_text)
+
+        assert all(c == ChunkClass.BODY for c in result.classes[1:])
+
+
 # ── acknowledgements detection ──────────────────────────────────────
 
 

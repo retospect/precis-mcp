@@ -173,11 +173,33 @@ class EmbedHandler(WorkerHandler):
         in place rather than failing — this lets the operator
         re-run by ``DELETE``-ing failed rows and immediately
         re-claiming, without first scrubbing any partial inserts.
+
+        TOCTOU guard (gr196720): the chunk may have been claimed while
+        it was still ``chunk_kind='paragraph'`` and then retagged to a
+        ``skip_chunk_kinds`` kind (e.g. ``'references'``, by
+        ``bib_retag``) by a concurrent pass *after* the claim but
+        *before* this stale write lands. The claim query only filters
+        ``skip_chunk_kinds`` at claim time, so without re-checking here
+        a late write would silently re-create an embedding for a chunk
+        that's supposed to be permanently skipped — and since the
+        paper is already stamped, nothing revisits it, leaving that
+        embedding to pollute semantic search forever. So re-read the
+        chunk's CURRENT ``chunk_kind`` in this same connection right
+        before the INSERT and bail out if it now matches a skip kind.
+        A ``None`` row (chunk deleted) is not itself a skip match and
+        falls through to the existing INSERT, whose sub-select then
+        yields a NULL ``content_sha``.
         """
         if not isinstance(payload, list):  # pragma: no cover — defensive
             raise TypeError(
                 f"EmbedHandler.write_ok expected list[float], got {type(payload).__name__}"
             )
+        if self.skip_chunk_kinds:
+            row = conn.execute(
+                "SELECT chunk_kind FROM chunks WHERE chunk_id = %s", (chunk_id,)
+            ).fetchone()
+            if row is not None and row[0] in self.skip_chunk_kinds:
+                return
         conn.execute(
             """
             INSERT INTO chunk_embeddings

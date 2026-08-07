@@ -726,8 +726,16 @@ def run_bib_parse_pass(
         try:
             with store.pool.connection() as conn:
                 chunk_rows = _paper_chunks(conn, ref_id)
-                entries = _collect_paper_entries(chunk_rows)
-                parsed = _parse_paper_entries(client, entries)
+            entries = _collect_paper_entries(chunk_rows)
+            # The LLM parse below can take a long time (hundreds of
+            # entries per paper). It must run with NO connection checked
+            # out — holding one open across the call leaves it idle in an
+            # open transaction, which Postgres's
+            # idle_in_transaction_session_timeout then kills, failing the
+            # paper outright. Read above, parse here, write in a fresh
+            # connection below.
+            parsed = _parse_paper_entries(client, entries)
+            with store.pool.connection() as conn:
                 _delete_stale_entries(conn, ref_id)
                 for parsed_row in parsed:
                     _write_parsed_entry(conn, ref_id, parsed_row)
