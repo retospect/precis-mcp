@@ -54,6 +54,36 @@ did **not** cover:
 
 ---
 
+## 🔐 Rotate `agent_rw` + `OPENROUTER_API_KEY` — needs a cluster pause
+
+Status: open · Severity: critical · Owner: `deploy/inventory` vault (`vault_pg_agent_rw_pass`) · Test: `scripts/prod-psql "SELECT current_user"` succeeds after rotation and pgbouncer logs show no auth loop.
+
+Both credentials are live and both have leaked into agent transcripts — the
+`agent_rw` password twice (it sat in cleartext in the rendered
+`~/.claude/mcp.json` on the scheduler node; that render site is fixed as of
+`6778e6be`, but the *value* is unchanged and a transcript can't be un-leaked).
+`OPENROUTER_API_KEY` reached a shell history on the scheduler node
+(2026-07-26). Neither is a "later" item — they are open doors, and the fix is
+mechanical.
+
+**Why it isn't done yet: `agent_rw` needs a deliberate cluster pause.**
+pgbouncer runs `auth_type = md5` against a *static* `userlist.txt`, so the
+password lives in both the Postgres role and the pooler's file and they must
+move together — every `:6432` connection fails in between. Postgres roles hold
+exactly one password, so there is no overlap window to hide in. Expect a 1–2
+minute auth gap while `02-postgres.yml` → `19-pgpass.yml` → `scripts/deploy`
+converge, and pick a slot when the planner is parked (over
+`PRECIS_DAILY_COST_CEILING` ⇒ dispatch is already frozen ⇒ free window).
+
+Full ordered procedure, all nine render sites, and the verification queries:
+**`docs/runbooks/rotate-agent-rw-credential.md`**.
+
+`OPENROUTER_API_KEY` is *not* blocked on the pause and should not wait for it —
+the old key stays valid until manually revoked, so new-key → vault → deploy →
+confirm traffic → revoke is a zero-outage sequence. Do it independently.
+
+---
+
 ## 🔧 pathway `meta.measures` has no writer — explorer renders it, nothing can set it
 
 Status: open · Severity: feature · Owner: `src/precis_pathway/handler.py` · Test: edit-verb round-trip → measure card renders on `/refs/pathway/{id}`.
