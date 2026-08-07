@@ -97,10 +97,32 @@ def test_tier_anchor_without_served_by_is_local_with_no_hosts() -> None:
     assert v["hosts"] == []
 
 
+def test_served_by_hosts_dominate_a_provider_slugged_model_id() -> None:
+    # A fleet-served model whose model_id happens to be provider-slugged must
+    # still land in the Local grid — served_by (where it's sourced) wins over
+    # the id-sniff, which is only the fallback classifier for un-served cards.
+    ref = _ref(
+        165999,
+        "some-org/some-model",
+        tier_floor="big",
+        served_by=[
+            {
+                "host": "spark",
+                "endpoint": "http://127.0.0.1:8080/v1",
+                "max_parallel": 2,
+                "model": "some-org/some-model",
+            }
+        ],
+    )
+    v = _llm_card_view(ref)
+    assert v["is_cloud"] is False
+    assert [h["host"] for h in v["hosts"]] == ["spark"]
+
+
 def test_models_ctx_groups_sorts_and_lists_serving_hosts() -> None:
     refs = [
         _ref(
-            "small",
+            "medium",
             "z-ai/glm-4.7-flash",
             tier_floor="medium",
             offerings=[{"price_in": 0.1}],
@@ -117,15 +139,32 @@ def test_models_ctx_groups_sorts_and_lists_serving_hosts() -> None:
             tier_floor="big",
             offerings=[{"price_in": 0.5}],
         ),
+        # SMALL is a cloud-routed tier post-Phase-C — must sort after MEDIUM,
+        # not fall into the unranked bucket alongside "unknown".
+        _ref(
+            "small",
+            "z-ai/glm-4.7-flash-mini",
+            tier_floor="small",
+            offerings=[{"price_in": 0.05}],
+        ),
+        _ref(
+            "unranked",
+            "z-ai/glm-mystery",
+            tier_floor="unknown",
+            offerings=[{"price_in": 0.02}],
+        ),
         _ref("anchor", "qwen-heavy", tier_floor="big"),
         _ref("served", "qwen3.6-35b", served_by=[{"host": "spark", "max_parallel": 1}]),
     ]
     ctx = _models_ctx(_FakeStore(refs))
-    # Cloud sorted strongest tier first.
+    # Cloud sorted strongest tier first; small after medium; unknown-tier
+    # (unranked, .get(..., 9) fallback) last.
     assert [c["tier"] for c in ctx["cloud_cards"]] == [
         "frontier",
         "big",
         "medium",
+        "small",
+        "unknown",
     ]
     # Local: host-backed models before the abstract tier anchors.
     assert [c["model_id"] for c in ctx["local_cards"]] == ["qwen3.6-35b", "qwen-heavy"]

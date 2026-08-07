@@ -1297,8 +1297,10 @@ def _active_routing_ctx(store: Any) -> dict[str, Any]:
 
 #: Cloud tiers, strongest first — the sort order for the Models sub-tab's
 #: cloud grid (local cards sort served-first, then by model_id). ADR 0066
-#: capability tiers; SMALL is a local tier, so it's absent from the cloud grid.
-_TIER_RANK: dict[str, int] = {"frontier": 0, "big": 1, "medium": 2}
+#: capability tiers; SMALL routes to a cloud model too (post-Phase-C), so it
+#: ranks after MEDIUM rather than falling into the unranked ``.get(..., 9)``
+#: bucket.
+_TIER_RANK: dict[str, int] = {"frontier": 0, "big": 1, "medium": 2, "small": 3}
 
 
 def _llm_card_view(ref: Any) -> dict[str, Any]:
@@ -1348,11 +1350,14 @@ def _llm_card_view(ref: Any) -> dict[str, Any]:
         "id": ref.id,
         "model_id": model_id,
         "tier": tier,
-        # ADR 0066: tier_floor is now capability, not location — derive
-        # cloud-vs-local from the MODEL id. Cloud models are `claude-*` or
-        # provider-slugged (`z-ai/glm-4.7`); bare local aliases (`summarizer`,
-        # `qwen-heavy`, `rake-lemma`) have neither → local.
-        "is_cloud": "/" in model_id or model_id.startswith("claude"),
+        # ADR 0066: tier_floor is now capability, not location — the grid
+        # split is "where a model is sourced" (per _models_ctx's docstring).
+        # A card with `served_by` hosts is fleet-served, so it's ALWAYS
+        # local regardless of what its model_id looks like. The MODEL-id
+        # sniff (`claude-*` / provider-slugged, e.g. `z-ai/glm-4.7`) is only
+        # the fallback classifier for un-served cards — bare local aliases
+        # (`summarizer`, `qwen-heavy`, `rake-lemma`) have neither → local.
+        "is_cloud": not hosts and ("/" in model_id or model_id.startswith("claude")),
         "provider": provider,
         "price_in": off.get("price_in"),
         "price_out": off.get("price_out"),

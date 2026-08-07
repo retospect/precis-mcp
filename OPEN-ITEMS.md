@@ -1255,20 +1255,15 @@ passes now. Remaining:
   runs for them, and an OSS slug can still land on a claude transport under a
   half-applied flip. Reviewer finding #2, deferred from the Phase-1
   flip-safety landing (2026-07-25).
-- **ADR 0066 capability-tiers — caller-picker/tag-vocab residue** *(feature,
+- **ADR 0066 capability-tiers — tag-vocab residue** *(feature,
   open — owner [`docs/decisions/0066-capability-tiers-and-placement-chains.md`](docs/decisions/0066-capability-tiers-and-placement-chains.md)).*
-  Two sub-items outlived the Phase C tier sweep (`9140f7a2`, 2026-07-26 —
-  legacy-tier retirement + catalog reseed; see "LLM routing: all tiers remote
-  via OpenRouter" below):
-  1. **Caller-picker still 3-rung.** `status.py::_TIER_RANK` is
-     `{"frontier": 0, "big": 1, "medium": 2}` — no `small` — and
-     `status.py::_llm_card_view`'s `is_cloud` is still a model-id string-sniff
-     (`"/" in model_id or model_id.startswith("claude")`), not
-     placement-derived.
-  2. **Planner-tag-vocab question** (ADR §"Still genuinely open"):
-     `plan_tick` always passes `tools_needed=True`, so `LLM:small`/
-     `LLM:medium` todo tags no-op through the existing local-fallback path
-     instead of routing distinctively — decide the `LLM:` tag vocab's scope.
+  Outlived the Phase C tier sweep (`9140f7a2`, 2026-07-26 — legacy-tier
+  retirement + catalog reseed; see "LLM routing: all tiers remote via
+  OpenRouter" below):
+  **Planner-tag-vocab question** (ADR §"Still genuinely open"):
+  `plan_tick` always passes `tools_needed=True`, so `LLM:small`/
+  `LLM:medium` todo tags no-op through the existing local-fallback path
+  instead of routing distinctively — decide the `LLM:` tag vocab's scope.
 
 ---
 
