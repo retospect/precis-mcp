@@ -65,7 +65,7 @@
    ``measures``. Degrades per AC4: no graph -> no diagram (below); no/
    partial ``structure_refs`` -> "no geometry linked" per state; an
    unrecognised measure op -> skipped with a note (``measure_notes``). #}
-<section class="mb-6 rounded-lg border border-slate-200 bg-white p-4">
+<section class="mb-6 rounded-lg border border-sky-200 bg-white p-4">
   <h2 class="text-sm font-semibold text-slate-700 mb-2">Reaction explorer</h2>
 
   {# ── candidate stepper (item E) — other pathway candidates on the same
@@ -91,7 +91,7 @@
   {% endif %}
 
   {% if diagram %}
-  <div id="pw-diagram" class="w-full overflow-x-auto rounded border border-slate-100 bg-slate-50 p-1"></div>
+  <div id="pw-diagram" class="w-full overflow-x-auto rounded border border-sky-200 bg-slate-50 p-1"></div>
   {% else %}
   <p class="text-sm text-slate-400 italic">no energetics graph recorded for this pathway yet.</p>
   {% endif %}
@@ -383,6 +383,35 @@
     return pts;
   }
 
+  // ── greedy label-dodge (item 1) — approximates text width as
+  // chars*fontSize*0.6 (no DOM measurement available before the SVG is
+  // attached); sorts by x, then for each label in turn nudges it away from
+  // every already-placed label — first trying up in small steps, falling
+  // back to down (from its own original position) if up alone never clears
+  // — capping at ``maxSteps`` either way so a genuinely packed cluster just
+  // ends up with its best (not necessarily zero-collision) placement rather
+  // than an unbounded loop. Mutates each label's ``y`` in place. ──
+  function dodgeLabels(labels) {
+    const stepPx = 5, maxSteps = 20, vGap = 9;
+    const placed = [];
+    labels.slice().sort((a, b) => a.x - b.x).forEach((lab) => {
+      const collides = () => placed.some((p) => {
+        const halfW = (lab.width || lab.text.length * lab.fontSize * 0.6) / 2
+          + (p.width || p.text.length * p.fontSize * 0.6) / 2 + 2;
+        return Math.abs(lab.x - p.x) < halfW && Math.abs(lab.y - p.y) < vGap;
+      });
+      const baseY = lab.y;
+      let steps = 0;
+      while (collides() && steps < maxSteps) { lab.y -= stepPx; steps += 1; }
+      if (collides()) {
+        lab.y = baseY;
+        steps = 0;
+        while (collides() && steps < maxSteps) { lab.y += stepPx; steps += 1; }
+      }
+      placed.push(lab);
+    });
+  }
+
   const TRACE_COLORS = ['#7c3aed', '#0891b2', '#c026d3', '#059669'];
 
   // ── per-path palette — mirrors catpath's own ``viz.draw_profile``: every
@@ -399,6 +428,21 @@
 
     const paths = (g.paths && g.paths.length) ? g.paths : [g.nodes.map((n) => n.id)];
     const byId = {}; g.nodes.forEach((n) => { byId[n.id] = n; });
+
+    // ── zero-ref renormalization (item 4) — a legacy graph's rel_energy is
+    // stored against a min-energy reference, so path 0 (target/first path)
+    // can open on a non-zero first state; shift EVERY node's rel_energy by
+    // that first state's own value so path 0's first state always reads
+    // 0.00. Mutating nd.rel_energy in place (rather than shifting at every
+    // read site) means the y-scale, level lines, hump endpoints, and labels
+    // below all pick up the shift for free. ──
+    if (paths.length && paths[0].length) {
+      const first = byId[paths[0][0]];
+      if (first && first.rel_energy != null && first.rel_energy !== 0) {
+        const shift = first.rel_energy;
+        g.nodes.forEach((nd) => { if (nd.rel_energy != null) { nd.rel_energy -= shift; } });
+      }
+    }
 
     // ── x-position: the FIRST path that contains a node fixes its x = that
     // path's own step index — shared prefixes land at the same x, and a
@@ -450,6 +494,19 @@
     const parts = [];
     parts.push(`<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" class="select-none" style="min-width:${W}px">`);
 
+    // ── selected-state column background (item 5) — one rect per state
+    // x-column, drawn first (behind everything else, "fill=none" by
+    // default) — highlightState() below flips the selected state's own
+    // rect to a sky-50 fill + sky-200 border on click, unifying with the
+    // States-list row's own selected-row tokens.
+    g.nodes.forEach((nd) => {
+      const id = nd.id;
+      if (xOf[id] == null) { return; }
+      const cx = xScale(xOf[id]);
+      const x0 = cx - half, x1 = cx + half;
+      parts.push(`<rect class="pw-svg-colbg" data-state="${esc(id)}" x="${x0}" y="${padT}" width="${x1 - x0}" height="${plotH}" fill="none" stroke="none"/>`);
+    });
+
     // y-axis gridlines + rel-energy ticks
     for (let t = 0; t <= 4; t++) {
       const y = yMin + (yMax - yMin) * (t / 4);
@@ -457,6 +514,12 @@
       parts.push(`<line x1="${padL}" y1="${yy}" x2="${W - padR}" y2="${yy}" stroke="#eef1f5" stroke-width="1"/>`);
       parts.push(`<text x="${padL - 6}" y="${yy + 3}" font-size="8" fill="#94a3b8" text-anchor="end">${y.toFixed(2)}</text>`);
     }
+
+    // ── deferred label queue (item 1) — level labels and Ea labels are
+    // collected here instead of emitted immediately; a greedy dodge pass
+    // (dodgeLabels, below, after both loops) nudges away collisions before
+    // anything actually becomes SVG text. ──
+    const labelQueue = [];
 
     // edges — walked per path, in server order (target path first); an
     // edge already drawn by an earlier (higher-priority) path is skipped so
@@ -502,7 +565,10 @@
             parts.push(`<line x1="${xm}" y1="${py(peakY - bsd)}" x2="${xm}" y2="${py(peakY + bsd)}" stroke="${color}" stroke-width="1"/>`);
           }
           const lab = bsd > 1e-6 ? `Ea=${e.barrier.toFixed(2)}±${bsd.toFixed(2)}` : `Ea=${e.barrier.toFixed(2)}`;
-          parts.push(`<text x="${xm}" y="${py(peakY + bsd) - 4}" font-size="7.5" fill="${color}" text-anchor="middle">${esc(lab)}</text>`);
+          labelQueue.push({
+            x: xm, y: py(peakY + bsd) - 4, anchorX: xm, anchorY: py(peakY),
+            text: lab, fontSize: 7.5, color, bold: false, title: null,
+          });
         }
       }
     });
@@ -528,7 +594,12 @@
         const yFloor = padT + plotH - 4;
         parts.push(`<line x1="${x0}" y1="${yFloor}" x2="${x1}" y2="${yFloor}" stroke="#cbd5e1" stroke-width="4" stroke-linecap="round" stroke-dasharray="2 4"/>`);
         parts.push(`<text x="${(x0 + x1) / 2}" y="${yFloor - 8}" font-size="8" fill="#94a3b8" text-anchor="middle">${esc(nd.id)} (no energy yet)</text>`);
-        parts.push(`<rect class="pw-svg-node" data-state="${esc(id)}" x="${x0}" y="${padT}" width="${x1 - x0}" height="${plotH}" `
+        // click band (item 3) — a fixed-height band centered on THIS
+        // state's own placeholder line, not the whole plot height (see the
+        // matching comment below — two states sharing an x-column used to
+        // get identical full-height rects where only the last-drawn one
+        // was actually clickable).
+        parts.push(`<rect class="pw-svg-node" data-state="${esc(id)}" x="${x0}" y="${yFloor - 14}" width="${x1 - x0}" height="28" `
           + `fill="transparent" stroke="none" style="cursor:pointer"/>`);
         return;
       }
@@ -543,12 +614,44 @@
           + `fill="${color}" opacity="0.15"/>`);
       }
       parts.push(`<line x1="${x0}" y1="${y}" x2="${x1}" y2="${y}" stroke="${color}" stroke-width="4" stroke-linecap="round"/>`);
+      const warned = !!(nd.low_confidence || badWarn);
       const lab = sd > 1e-6 ? `${nd.id} (${nd.rel_energy >= 0 ? '+' : ''}${nd.rel_energy.toFixed(2)}±${sd.toFixed(2)})` : `${nd.id}`;
-      parts.push(`<text x="${(x0 + x1) / 2}" y="${y - 8}" font-size="8" font-weight="bold" fill="${color}" text-anchor="middle">${esc(lab)}${(nd.low_confidence || badWarn) ? ' ⚠' : ''}</text>`);
-      // click target — the whole plot-height column above this level, a
-      // per-node clickable target (AC1: "every state node is a click target")
-      parts.push(`<rect class="pw-svg-node" data-state="${esc(id)}" x="${x0}" y="${padT}" width="${x1 - x0}" height="${plotH}" `
+      // Tooltip (item 2) — the same joined warning text the States-list
+      // row's own title="..." already carries (V.stateWarnings); a
+      // low_confidence node with no per-state warning entry falls back to a
+      // generic note rather than an empty <title>.
+      let title = null;
+      if (warned) {
+        const texts = (V.stateWarnings[id] || []).map((w) => w.text);
+        title = texts.length ? texts.join('; ') : 'low confidence';
+      }
+      labelQueue.push({
+        x: (x0 + x1) / 2, y: y - 8, anchorX: (x0 + x1) / 2, anchorY: y,
+        text: lab + (warned ? ' ⚠' : ''), fontSize: 8, color, bold: true, title,
+      });
+      // click band (item 3) — a fixed-height band centered on THIS state's
+      // own energy level, not the whole plot-height column: two states
+      // sharing an x-column (same step index, different branch) used to get
+      // identical overlapping full-height rects, so only the last-drawn one
+      // was actually clickable.
+      const bandHalf = 14;
+      parts.push(`<rect class="pw-svg-node" data-state="${esc(id)}" x="${x0}" y="${y - bandHalf}" width="${x1 - x0}" height="${bandHalf * 2}" `
         + `fill="transparent" stroke="none" style="cursor:pointer"/>`);
+    });
+
+    // ── label dodge (item 1) — greedy: sort by x, push a colliding label
+    // up (then down if up still collides) in small steps until clear of
+    // every earlier-placed label; a label nudged >~14px from its own
+    // anchor draws a thin leader line back to it. ──
+    dodgeLabels(labelQueue);
+    labelQueue.forEach((lab) => {
+      const weightAttr = lab.bold ? ' font-weight="bold"' : '';
+      const titleEl = lab.title ? `<title>${esc(lab.title)}</title>` : '';
+      parts.push(`<text x="${lab.x}" y="${lab.y}" font-size="${lab.fontSize}"${weightAttr} fill="${lab.color}" text-anchor="middle">${esc(lab.text)}${titleEl}</text>`);
+      if (Math.abs(lab.y - lab.anchorY) > 14) {
+        const ly = lab.y + (lab.y < lab.anchorY ? 3 : -3);
+        parts.push(`<line x1="${lab.x}" y1="${ly}" x2="${lab.anchorX}" y2="${lab.anchorY}" stroke="#94a3b8" stroke-width="0.5"/>`);
+      }
     });
 
     // legend — one line per path, top-right, in its colour: "-> <leaf id>".
@@ -611,11 +714,22 @@
   function highlightState(id) {
     document.querySelectorAll('.pw-state-node').forEach((row) => {
       const on = row.getAttribute('data-state') === id;
-      row.classList.toggle('bg-sky-100', on);
-      row.classList.toggle('border-sky-300', on);
+      // Unified highlight tokens (item 5) — same light-blue family as the
+      // diagram's own selected-column background below.
+      row.classList.toggle('bg-sky-50', on);
+      row.classList.toggle('border-sky-200', on);
       row.classList.toggle('ring-1', on);
-      row.classList.toggle('ring-sky-400', on);
+      row.classList.toggle('ring-sky-200', on);
       if (on) { row.scrollIntoView({ block: 'nearest' }); }
+    });
+    // Selected-state column background (item 5) — the full-plot-height
+    // rect drawn behind everything (see renderDiagram's colbg pre-pass),
+    // in the same sky-50/sky-200 tokens as the list row above.
+    document.querySelectorAll('.pw-svg-colbg').forEach((r) => {
+      const on = r.getAttribute('data-state') === id;
+      r.setAttribute('fill', on ? '#f0f9ff' : 'none');
+      r.setAttribute('stroke', on ? '#bae6fd' : 'none');
+      r.setAttribute('stroke-width', on ? '1' : '0');
     });
     document.querySelectorAll('.pw-svg-node').forEach((n) => {
       n.setAttribute('stroke', n.getAttribute('data-state') === id ? '#0284c7' : 'none');
