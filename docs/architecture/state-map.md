@@ -1378,6 +1378,17 @@ first-wins clobber over five tiers), and the four capability `meta.llm_tier`
 aliases (`frontier`/`big`/`medium`/`small`) are live in `PLANNER_TIER_BY_ALIAS`
 alongside the legacy `opus`/`sonnet`/`haiku`/`local` names (`local` now pins
 `BIG` directly). The legacy GLM-preset panel (`_llm_override_ctx`) is gone.
+**Model-picker source:** `router.py::planner_model_choices` returns rich rows
+(`{alias, tier, model, placement, fallbacks, size, context}`) resolved through
+the LIVE `resolve_chain` (rung 0 = what dispatch tries first; catalog-card
+`size`/`context` best-effort, 15s TTL) — the single `planner_models` Jinja
+global behind every web picker (task retry ×2, job retry, smartdraft ask; the
+last was the final hardcoded opus/sonnet/haiku list). The alias *vocab* is
+likewise single-sourced: `plan_tick.validate_submit`,
+`workspace.current_model_from_env`, and asa_bot's `/model` +
+`LLMConfig` default all read `PLANNER_MODEL_ALIASES`/`resolve_model` (asa's
+private stale vendor-id map is gone); `AgentIntrospect.tier_default` lets the
+`/env` inspector display live-resolved tier defaults.
 **Failure semantics (§5a):** a transport exception is classified
 (`router.py::_is_unavailability`) — timeout / connection / HTTP 5xx / 429 →
 `paused` (skip-not-fail, the todo retries next cycle, never parks); HTTP 4xx

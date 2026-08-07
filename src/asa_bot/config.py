@@ -17,24 +17,31 @@ from typing import Any
 
 import yaml
 
+from precis.utils.llm.router import Tier, resolve_model
+
+
+def _default_llm_command() -> list[str]:
+    """The default argv, resolving ``--model`` through the router at
+    construction time (:func:`resolve_model`) rather than a literal baked
+    into this module — so it can't drift from the router's FRONTIER tier."""
+    return [
+        "claude",  # resolved on PATH; override in config for a pinned binary
+        "-p",
+        "--max-turns",
+        "100",
+        "--model",
+        resolve_model(Tier.FRONTIER),
+        "--output-format",
+        "stream-json",
+        "--include-partial-messages",
+    ]
+
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class LLMConfig:
     """How to launch the LLM subprocess per turn."""
 
-    command: list[str] = dataclasses.field(
-        default_factory=lambda: [
-            "claude",  # resolved on PATH; override in config for a pinned binary
-            "-p",
-            "--max-turns",
-            "100",
-            "--model",
-            "claude-opus-4-8",
-            "--output-format",
-            "stream-json",
-            "--include-partial-messages",
-        ]
-    )
+    command: list[str] = dataclasses.field(default_factory=_default_llm_command)
     system_prompt_flag: str = "--append-system-prompt"
     mcp_config_flag: str = "--mcp-config"
     mcp_config_path: str = dataclasses.field(

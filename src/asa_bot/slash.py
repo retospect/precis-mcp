@@ -29,6 +29,7 @@ from asa_bot import preamble as preamble_mod
 from asa_bot.config import Config
 from asa_bot.conv_slug import compute_slug
 from asa_bot.precis_client import PrecisClient
+from precis.utils.llm.router import PLANNER_TIER_BY_ALIAS, resolve_model
 
 log = logging.getLogger(__name__)
 
@@ -36,13 +37,16 @@ log = logging.getLogger(__name__)
 SlashHandler = Callable[["SlashContext"], Awaitable[None]]
 
 
-# Short-name → canonical model id. Anything not in this map is passed
-# through verbatim so a one-off custom model id still works.
-MODEL_ALIASES: dict[str, str] = {
-    "opus": "claude-opus-4-7",
-    "sonnet": "claude-sonnet-4-6",
-    "haiku": "claude-haiku-4-5-20251001",
-}
+def _resolve_model_alias(target: str) -> str:
+    """Short capability-tier name → the router's live model id for that tier
+    (:data:`PLANNER_TIER_BY_ALIAS` + :func:`resolve_model`), resolved fresh
+    at command time so ``/model opus`` always names *today's* FRONTIER
+    model rather than a vendor id pinned in this file. The alias match is
+    case-insensitive; anything not an alias is passed through with its
+    ORIGINAL casing — some OpenAI-compatible endpoints are case-sensitive,
+    so a one-off custom model id must survive verbatim."""
+    tier = PLANNER_TIER_BY_ALIAS.get(target.lower())
+    return resolve_model(tier) if tier is not None else target
 
 
 @dataclasses.dataclass(slots=True)
@@ -183,14 +187,14 @@ async def cmd_model(ctx: SlashContext) -> None:
     if not ctx.positional:
         active = current_model(ctx.config, ctx.runtime)
         source = "override" if ctx.runtime.model_override else "config default"
-        aliases = ", ".join(f"`{k}`" for k in MODEL_ALIASES)
+        aliases = ", ".join(f"`{k}`" for k in PLANNER_TIER_BY_ALIAS)
         await ctx.send(
             f"**current model**: `{active}` ({source})\n"
             f"change with: `/model <id>` — aliases: {aliases}"
         )
         return
-    target = ctx.positional[0].lower()
-    resolved = MODEL_ALIASES.get(target, ctx.positional[0])
+    target = ctx.positional[0]
+    resolved = _resolve_model_alias(target)
     ctx.runtime.model_override = resolved
     log.info("model override set: %s (from %r)", resolved, target)
     await ctx.send(f"model → `{resolved}` (active for next turn)")

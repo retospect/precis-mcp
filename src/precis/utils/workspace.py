@@ -270,7 +270,9 @@ def current_model_from_env() -> str | None:
     if not raw:
         return None
     raw = raw.strip().lower()
-    if raw not in ("opus", "sonnet", "haiku"):
+    from precis.utils.llm.router import PLANNER_MODEL_ALIASES
+
+    if raw not in PLANNER_MODEL_ALIASES:
         return None
     return raw
 

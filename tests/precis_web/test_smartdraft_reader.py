@@ -564,6 +564,18 @@ def test_smartdraft_reader_renders_three_panes(
     assert "Collaborate" in body  # right pane header
 
 
+def test_smartdraft_ask_model_picker_uses_shared_planner_models(
+    smartdraft_client: TestClient,
+) -> None:
+    """The "Ask the LLM" model picker is no longer a hardcoded 3-option
+    list — it renders from the shared ``planner_models()`` helper, same as
+    the tasks-dashboard / ref-detail pickers. Alpine's ``model: 'opus'``
+    default must still resolve to a real ``<option>``."""
+    r = smartdraft_client.get("/smartdraft/sdt")
+    assert r.status_code == 200
+    assert '<option value="opus"' in r.text
+
+
 def test_smartdraft_full_doc_cited_block_is_div_not_nested_anchor(
     smartdraft_client: TestClient,
 ) -> None:

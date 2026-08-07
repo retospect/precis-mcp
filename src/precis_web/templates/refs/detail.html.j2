@@ -126,8 +126,9 @@
         <select name="model"
                 class="text-xs px-2 py-1.5 rounded border border-slate-300 text-slate-700">
           <option value="">same model</option>
-          {% for alias, label in planner_models() %}
-          <option value="{{ alias }}">retry on {{ alias }} · {{ label }}</option>
+          {% for m in planner_models() %}
+          <option value="{{ m.alias }}"
+                  {% if m.size or m.context or m.fallbacks %}title="{{ [m.size and 'size ' ~ m.size, m.context and 'ctx ' ~ m.context, m.fallbacks and 'fallback: ' ~ (m.fallbacks | join(', '))] | select | join(' · ') }}"{% endif %}>retry on {{ m.alias }} · {{ m.model }}{% if m.placement == 'local' %} (local){% endif %}</option>
           {% endfor %}
         </select>
         {% endif %}

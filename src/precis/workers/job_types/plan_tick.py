@@ -171,10 +171,10 @@ def validate_submit(
     """
     del gripe_id
     model = params.get("model")
-    if model not in {"opus", "sonnet", "haiku"}:
+    if model not in PLANNER_MODEL_ALIASES:
         return (
             f"plan_tick: params.model must be one of "
-            f"[opus, sonnet, haiku], got {model!r}"
+            f"{list(PLANNER_MODEL_ALIASES)}, got {model!r}"
         )
     return None
 

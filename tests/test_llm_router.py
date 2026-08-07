@@ -15,6 +15,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from email.message import Message
+from types import SimpleNamespace
 from urllib.error import HTTPError, URLError
 
 import pytest
@@ -3279,3 +3280,125 @@ def test_llm_tag_big_passes_todo_guards_vocab() -> None:
     assert "small" in _LLM_TIER_VALUES
     # legacy vocab still present alongside the new names.
     assert {"opus", "sonnet", "haiku", "local"} <= _LLM_TIER_VALUES
+
+
+# ── planner_model_choices: the picker source (live chain + catalog meta) ──
+#
+# Every web model-picker dropdown renders these rows, so ``model`` must be
+# the rung dispatch actually tries first (:func:`resolve_chain`'s rung 0),
+# not the bare :func:`resolve_model` tier default — else an operator
+# ``llm.chain.<tier>`` override (e.g. routing BIG to a local model first)
+# would silently lie to the picker.
+
+_ROW_SHAPE = {"alias", "tier", "model", "placement", "fallbacks", "size", "context"}
+
+
+def test_planner_model_choices_no_overrides_matches_resolve_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no chain override and no store bound, every alias's row carries
+    the full picker shape and reports the plain :func:`resolve_model`
+    default (a single-rung default chain)."""
+    router._card_cache.clear()
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override", lambda _tier: None
+    )
+    monkeypatch.setattr("precis.budget.meter.active_store", lambda: None)
+
+    rows = router.planner_model_choices()
+
+    assert {r["alias"] for r in rows} == set(router.PLANNER_MODEL_ALIASES)
+    for row in rows:
+        assert set(row) == _ROW_SHAPE
+        tier = router.PLANNER_TIER_BY_ALIAS[row["alias"]]
+        assert row["tier"] == tier.value
+        assert row["model"] == resolve_model(tier)
+        assert row["size"] is None
+        assert row["context"] is None
+
+
+def test_planner_model_choices_chain_override_reports_local_and_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``llm.chain.big`` override pinning a local rung first shows up on
+    every BIG-tier alias (sonnet/big/local) as the live model + placement,
+    with the cloud rung carried in ``fallbacks`` — not the stale
+    ``resolve_model`` default a picker showed before this change."""
+    router._card_cache.clear()
+    monkeypatch.setattr("precis.budget.meter.active_store", lambda: None)
+
+    def _chain_override(tier: Tier) -> list[dict] | None:
+        if tier is Tier.BIG:
+            return [
+                {
+                    "placement": "local",
+                    "model": "qwen-heavy",
+                    "transport": "openai_tools",
+                },
+                {
+                    "placement": "cloud",
+                    "model": "z-ai/glm-5.2",
+                    "transport": "openai_tools",
+                },
+            ]
+        return None
+
+    monkeypatch.setattr("precis.utils.llm.live_config.chain_override", _chain_override)
+
+    rows = {r["alias"]: r for r in router.planner_model_choices()}
+
+    for alias in ("sonnet", "big", "local"):
+        row = rows[alias]
+        assert row["model"] == "qwen-heavy"
+        assert row["placement"] == "local"
+        assert row["fallbacks"] == ["z-ai/glm-5.2"]
+
+    # a non-BIG alias is untouched by the override.
+    assert rows["haiku"]["model"] == resolve_model(Tier.MEDIUM)
+
+
+def test_planner_model_choices_no_store_bound_leaves_catalog_fields_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No store bound → ``size``/``context`` degrade to ``None`` on every
+    row, and nothing raises."""
+    router._card_cache.clear()
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override", lambda _tier: None
+    )
+    monkeypatch.setattr("precis.budget.meter.active_store", lambda: None)
+
+    rows = router.planner_model_choices()
+
+    assert rows
+    for row in rows:
+        assert row["size"] is None
+        assert row["context"] is None
+
+
+def test_planner_model_choices_catalog_card_populates_size_and_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A matching ``llm`` catalog card decorates the row with its
+    ``params.size`` / ``capability.max_input``."""
+    router._card_cache.clear()
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override", lambda _tier: None
+    )
+
+    card = SimpleNamespace(
+        meta={"params": {"size": "235B"}, "capability": {"max_input": 131072}}
+    )
+
+    class _FakeStore:
+        def find_ref_by_meta(self, *, kind: str, key: str, value: str) -> object:
+            assert kind == "llm"
+            assert key == "model_id"
+            return card
+
+    monkeypatch.setattr("precis.budget.meter.active_store", lambda: _FakeStore())
+
+    rows = {r["alias"]: r for r in router.planner_model_choices()}
+
+    assert rows["sonnet"]["size"] == "235B"
+    assert rows["sonnet"]["context"] == 131072

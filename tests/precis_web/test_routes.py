@@ -2707,6 +2707,7 @@ def test_env_select_dream_renders_detail(client, monkeypatch) -> None:
     scheduler cadence inside com.precis.worker, the §L-b collapsed unit)
     and renders the system + directive prompt inline. The web process's own
     env is irrelevant here — we stub the plist read."""
+    from precis.utils.llm.router import Tier, resolve_model
     from precis_web.routes import env as env_mod
 
     monkeypatch.setattr(
@@ -2720,8 +2721,10 @@ def test_env_select_dream_renders_detail(client, monkeypatch) -> None:
     )
     resp = client.get("/env?agent=dream_agent")
     assert resp.status_code == 200
-    # Model fallback to the default when the model env is unset.
-    assert "claude-opus-4-8" in resp.text
+    # Model fallback to the router's live FRONTIER resolution (dream_agent's
+    # AgentIntrospect carries tier_default=Tier.FRONTIER, not a baked
+    # literal) when the model env is unset.
+    assert resolve_model(Tier.FRONTIER) in resp.text
     # Env-var snapshot shows the gating flag as present.
     assert "PRECIS_DREAM_AGENT" in resp.text
     # Plist breadcrumb so the operator knows where the env came from —

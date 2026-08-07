@@ -380,3 +380,30 @@ def test_invoke_parses_model_and_max_turns_from_command(
     # docstring). No error either way: the call "succeeded".
     assert result.text == ""
     assert result.error is None
+
+
+def test_invoke_falls_back_to_router_frontier_when_no_model_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No ``--model`` flag in ``cfg.command`` (gr193672-adjacent
+    model-vocabulary-drift fix): the fallback resolves through the router's
+    FRONTIER tier at call time, not a literal pinned in claude_invoke.py."""
+    from precis.utils.llm.router import Tier, resolve_model
+
+    seen: dict[str, Any] = {}
+
+    async def fake_call_claude_agent_async(prompt: str, **kwargs: Any) -> Any:
+        seen["model"] = kwargs.get("model")
+        from precis.utils.claude_agent import AgentResult
+
+        return AgentResult(final_text="ok", cost_usd=0.01, duration_s=0.1, turns_used=1)
+
+    monkeypatch.setattr(
+        "precis.utils.llm.router.call_claude_agent_async",
+        fake_call_claude_agent_async,
+    )
+
+    cfg = _cfg(command=["claude", "-p", "--max-turns", "100"])
+    asyncio.run(invoke(cfg, "sys", "hi", conv_slug="conv-8"))
+
+    assert seen["model"] == resolve_model(Tier.FRONTIER)

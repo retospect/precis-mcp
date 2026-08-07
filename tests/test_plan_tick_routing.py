@@ -84,3 +84,24 @@ def test_max_turns_override(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_max_turns_malformed_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PRECIS_PLAN_TICK_MAX_TURNS", "not-an-int")
     assert pt._max_turns() == pt._DEFAULT_MAX_TURNS
+
+
+# ── validate_submit: model must be a live PLANNER_MODEL_ALIASES member ─
+
+
+def test_validate_submit_accepts_local_alias() -> None:
+    """``local`` is one of PLANNER_MODEL_ALIASES (gr193672-adjacent live bug):
+    a todo with meta.llm_tier='local' must clear the submit-time gate, not
+    just the closed-vocab PARAMS_SCHEMA it already satisfied."""
+    assert pt.validate_submit(None, params={"model": "local"}) is None
+
+
+@pytest.mark.parametrize("alias", list(pt.PLANNER_MODEL_ALIASES))
+def test_validate_submit_accepts_every_planner_alias(alias: str) -> None:
+    assert pt.validate_submit(None, params={"model": alias}) is None
+
+
+def test_validate_submit_rejects_unknown_model() -> None:
+    err = pt.validate_submit(None, params={"model": "gpt-9"})
+    assert err is not None
+    assert "gpt-9" in err

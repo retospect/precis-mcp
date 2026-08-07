@@ -620,7 +620,10 @@
                 class="w-full rounded border border-slate-200 px-2 py-1"></textarea>
       <div class="flex items-center gap-2">
         <select x-model="model" class="rounded border border-slate-200 px-1 py-0.5 text-slate-600">
-          <option>opus</option><option>sonnet</option><option>haiku</option>
+          {% for m in planner_models() %}
+          <option value="{{ m.alias }}"
+                  {% if m.size or m.context or m.fallbacks %}title="{{ [m.size and 'size ' ~ m.size, m.context and 'ctx ' ~ m.context, m.fallbacks and 'fallback: ' ~ (m.fallbacks | join(', '))] | select | join(' · ') }}"{% endif %}>{{ m.alias }} · {{ m.model }}{% if m.placement == 'local' %} (local){% endif %}</option>
+          {% endfor %}
         </select>
         <span class="text-slate-400" x-show="msg" x-text="msg"></span>
         <button @click="send()" :disabled="!text.trim()" class="ml-auto rounded bg-slate-800 px-2 py-1 text-white disabled:opacity-40">Send ▸</button>

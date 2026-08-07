@@ -36,7 +36,13 @@ from typing import Any
 
 from asa_bot.config import LLMConfig
 from asa_bot.oauth import ensure_oauth_token
-from precis.utils.llm.router import LlmRequest, LlmResult, Tier, dispatch_async
+from precis.utils.llm.router import (
+    LlmRequest,
+    LlmResult,
+    Tier,
+    dispatch_async,
+    resolve_model,
+)
 
 log = logging.getLogger(__name__)
 
@@ -147,7 +153,7 @@ async def invoke(
     subprocess path: bot.py's per-turn queue consumer has no fallback reply
     if this raised rather than returning a gracefully-errored result.
     """
-    model = _flag_value(cfg.command, "--model", "claude-opus-4-8")
+    model = _flag_value(cfg.command, "--model", resolve_model(Tier.FRONTIER))
     max_turns_str = _flag_value(cfg.command, "--max-turns", "100")
     try:
         max_turns = int(max_turns_str)

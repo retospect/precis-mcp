@@ -50,6 +50,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import threading
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -350,16 +351,146 @@ PLANNER_TIER_BY_ALIAS: dict[str, Tier] = {
 PLANNER_MODEL_ALIASES: tuple[str, ...] = tuple(PLANNER_TIER_BY_ALIAS)
 
 
-def planner_model_choices() -> list[tuple[str, str]]:
-    """``(alias, resolved-model)`` for each planner tier — the picker source.
+#: TTL (seconds) for the per-model catalog-card cache backing
+#: :func:`planner_model_choices` — mirrors :data:`live_config._TTL_S` so a
+#: page rendering several pickers doesn't re-query the ``llm`` catalog per
+#: dropdown, while a ``params``/``capability`` edit still surfaces within one
+#: cache window instead of needing a process restart.
+_CARD_TTL_S = 15.0
+_card_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
+# Same check-then-set guard live_config._cache carries — keeps concurrent web
+# renders from racing duplicate catalog queries for the same model id.
+_card_lock = threading.Lock()
 
-    The label is the model the tier *currently* resolves to (env +
-    ``app_settings`` live overrides), so the web dropdown shows the model each
-    tier actually runs on this cluster rather than a hardcoded vendor name.
+
+def _catalog_card_meta(model: str) -> dict[str, Any] | None:
+    """Best-effort ``llm`` catalog-card ``meta`` for ``model`` — the ``size``/
+    ``context`` decoration on the picker. Reads through
+    :func:`precis.budget.meter.active_store` (the same channel
+    :mod:`live_config` reads through); no store bound, no matching card, or
+    any lookup failure all degrade to ``None`` rather than raising — this must
+    never break :func:`planner_model_choices`. TTL-cached per model id
+    (:data:`_CARD_TTL_S`).
     """
-    return [
-        (alias, resolve_model(tier)) for alias, tier in PLANNER_TIER_BY_ALIAS.items()
-    ]
+    with _card_lock:
+        now = time.monotonic()
+        cached = _card_cache.get(model)
+        if cached is not None and cached[0] > now:
+            return cached[1]
+        meta: dict[str, Any] | None = None
+        try:
+            from precis.budget import meter
+
+            store = meter.active_store()
+            if store is not None:
+                ref = store.find_ref_by_meta(kind="llm", key="model_id", value=model)
+                if ref is not None:
+                    meta = ref.meta
+        except Exception:
+            meta = None
+        _card_cache[model] = (now + _CARD_TTL_S, meta)
+        return meta
+
+
+def planner_model_choices() -> list[dict[str, Any]]:
+    """THE model-picker source — one row per ``(alias, tier)`` in
+    :data:`PLANNER_TIER_BY_ALIAS`, reflecting what the tier *actually* routes
+    to right now.
+
+    ``model`` is rung 0 of the LIVE placement chain (:func:`resolve_chain`) —
+    the same resolver :func:`dispatch` walks — not the bare
+    :func:`resolve_model` tier default, so an operator ``llm.chain.<tier>``
+    override (e.g. ADR 0066's BIG-routes-local-first chain) shows up here
+    instead of a stale cloud label. ``tools_needed`` is ``True`` for every
+    tier but ``SMALL``: FRONTIER/BIG/MEDIUM feed planner ticks (tool-using
+    agentic dispatch), so the picker must mirror the chain a tool-needing call
+    walks, not the tool-less one. ``placement`` (``"local"``/``"cloud"``) and
+    ``fallbacks`` (the ordered, de-duped rest of the chain) describe that same
+    chain; ``size``/``context`` are best-effort ``llm`` catalog-card meta
+    (:func:`_catalog_card_meta`) — ``None`` when no card exists or no store is
+    bound, never a hard failure.
+
+    A per-alias resolution error degrades that row to a bare
+    ``{alias, tier, model, placement: None, fallbacks: [], size: None,
+    context: None}`` shape rather than raising, so one bad tier can't blank
+    the whole dropdown.
+    """
+    try:
+        backend = resolve_backend()
+    except Exception:
+        backend = Backend.ANTHROPIC
+
+    rows: list[dict[str, Any]] = []
+    for alias, tier in PLANNER_TIER_BY_ALIAS.items():
+        try:
+            tools_needed = tier is not Tier.SMALL
+            chain = resolve_chain(tier, tools_needed=tools_needed, backend=backend)
+            default_model = resolve_model(tier)
+            if chain:
+                rung0 = chain[0]
+                model = rung0.model or default_model
+                placement = "cloud" if _rung_is_cloud(rung0) else "local"
+                seen = {model}
+                fallbacks: list[str] = []
+                for r in chain[1:]:
+                    # A rung with ``model=None`` inherits the tier's resolved
+                    # primary (same rule dispatch applies), NOT rung 0's model.
+                    fb = r.model or default_model
+                    if fb not in seen:
+                        fallbacks.append(fb)
+                        seen.add(fb)
+            else:
+                model = default_model
+                placement = "cloud"
+                fallbacks = []
+
+            card = _catalog_card_meta(model)
+            size: Any = None
+            context: Any = None
+            if card:
+                params = card.get("params")
+                if isinstance(params, dict):
+                    size = params.get("size")
+                capability = card.get("capability")
+                if isinstance(capability, dict):
+                    context = capability.get("max_input")
+
+            rows.append(
+                {
+                    "alias": alias,
+                    "tier": tier.value,
+                    "model": model,
+                    "placement": placement,
+                    "fallbacks": fallbacks,
+                    "size": size,
+                    "context": context,
+                }
+            )
+        except Exception:
+            log.warning(
+                "router: planner_model_choices failed for alias %r",
+                alias,
+                exc_info=True,
+            )
+            # ``resolve_model`` may be the very call that failed above —
+            # degrade to the alias itself rather than raise out of the
+            # degrade path and blank the whole dropdown.
+            try:
+                fallback_model = resolve_model(tier) or alias
+            except Exception:
+                fallback_model = alias
+            rows.append(
+                {
+                    "alias": alias,
+                    "tier": tier.value,
+                    "model": fallback_model,
+                    "placement": None,
+                    "fallbacks": [],
+                    "size": None,
+                    "context": None,
+                }
+            )
+    return rows
 
 
 # ── transport selection ────────────────────────────────────────────────

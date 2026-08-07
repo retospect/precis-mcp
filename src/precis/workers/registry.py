@@ -30,6 +30,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+from precis.utils.llm.router import Tier
+
 
 class ServiceKind(StrEnum):
     """What sort of runnable a :class:`ServiceSpec` describes."""
@@ -58,8 +60,21 @@ class AgentIntrospect:
     """
 
     launchd_label: str
+    #: Fallback display string when ``model_env`` isn't set in the agent's
+    #: effective env — either a free-form description (e.g.
+    #: ``job_claude_inproc``'s ``"(per parent meta.llm_tier)"``) or, for a
+    #: row that always resolves through one fixed router tier, left ``""``
+    #: in favor of ``tier_default`` below.
     model_default: str
     model_env: str
+    #: The router :class:`~precis.utils.llm.router.Tier` this agent's model
+    #: resolves through when unset in its effective env — the ``/env``
+    #: inspector calls :func:`~precis.utils.llm.router.resolve_model` on it
+    #: at render time (rather than baking a model id in here) so the page
+    #: reflects a live ``app_settings`` override too, not just the compiled
+    #: default. ``None`` ⇒ use ``model_default`` verbatim (a row with no
+    #: single fixed tier, e.g. ``job_claude_inproc``).
+    tier_default: Tier | None = None
     system_prompt_env: str = ""
     directive_prompt_env: str = ""
     mcp_config_env: str = "PRECIS_MCP_CONFIG"
@@ -503,7 +518,8 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-tasks-help",
         introspect=AgentIntrospect(
             launchd_label="com.precis.worker",
-            model_default="claude-opus-4-8",
+            model_default="",
+            tier_default=Tier.FRONTIER,
             model_env="PRECIS_STRUCTURAL_MODEL",
             disallowed_tools=("WebFetch", "WebSearch"),
             max_turns=30,
@@ -539,7 +555,8 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-tasks-help",
         introspect=AgentIntrospect(
             launchd_label="com.precis.worker",
-            model_default="claude-opus-4-8",
+            model_default="",
+            tier_default=Tier.FRONTIER,
             model_env="PRECIS_DEEP_REVIEW_MODEL",
             disallowed_tools=("WebFetch", "WebSearch"),
             max_turns=60,
@@ -916,7 +933,8 @@ SERVICES: tuple[ServiceSpec, ...] = (
             # scheduler cadence, running inside com.precis.worker (post-§L-b
             # collapsed unit; the old com.precis.worker-agent label is stale).
             launchd_label="com.precis.worker",
-            model_default="claude-opus-4-8",
+            model_default="",
+            tier_default=Tier.FRONTIER,
             model_env="PRECIS_DREAM_AGENT_MODEL",
             system_prompt_env="PRECIS_DREAM_SOUL_PATH",
             directive_prompt_env="PRECIS_DREAM_PROMPT_PATH",

@@ -72,6 +72,20 @@ def test_env_fallback_when_no_ctx(monkeypatch: pytest.MonkeyPatch) -> None:
     assert workspace.current_from_env() is None
 
 
+def test_current_model_from_env_accepts_local_alias(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``local`` is a live PLANNER_MODEL_ALIASES member (gr193672-adjacent):
+    it must round-trip instead of being dropped by a stale hardcoded set."""
+    monkeypatch.setenv("PRECIS_CURRENT_MODEL", "local")
+    assert workspace.current_model_from_env() == "local"
+
+
+def test_current_model_from_env_rejects_junk(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PRECIS_CURRENT_MODEL", "gpt-9")
+    assert workspace.current_model_from_env() is None
+
+
 def test_partial_ctx_leaves_unset_fields_to_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

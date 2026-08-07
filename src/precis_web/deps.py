@@ -87,22 +87,49 @@ def _make_jinja_env() -> jinja2.Environment:
     env.filters["ago"] = ago
     env.filters["abs_ts"] = abs_ts
 
-    # ``planner_models()`` → the ordered ``(alias, resolved-model)`` list the
-    # router understands for ``meta.llm_tier``. Registered as a
-    # Jinja global so every model-picker dropdown (task retry, draft
-    # change-request, review) renders the SAME options — the capability tiers
+    # ``planner_models()`` → the ordered list of picker rows
+    # (``{alias, tier, model, placement, fallbacks, size, context}``) the
+    # router understands for ``meta.llm_tier``. Registered as a Jinja global
+    # so every model-picker dropdown (task retry, draft change-request,
+    # review, smartdraft ask) renders the SAME options — the capability tiers
     # available on this cluster (opus/sonnet/haiku + the local qwen), labelled
-    # with the model each currently resolves to — from one source instead of a
-    # hardcoded opus/sonnet/haiku list per template.
-    def _planner_models() -> list[tuple[str, str]]:
+    # with the model each currently *routes to* (the live placement chain,
+    # not a hardcoded vendor name) — from one source instead of a
+    # per-template hardcoded list.
+    # Short-TTL memo: the dashboard calls this inside per-row loops (retry
+    # pickers on every failed job), and the underlying chain/catalog reads —
+    # while themselves 15s-TTL-cached — still add up to 8 aliases × N rows of
+    # resolver passes per render. 5s staleness is well under the 15s the
+    # source reads already tolerate.
+    _memo: dict[str, Any] = {"until": 0.0, "rows": None}
+
+    def _planner_models() -> list[dict[str, Any]]:
+        import time as _time
+
         from precis.utils.llm.router import planner_model_choices
 
+        now = _time.monotonic()
+        if _memo["rows"] is not None and _memo["until"] > now:
+            return _memo["rows"]
         try:
-            return planner_model_choices()
+            rows = planner_model_choices()
+            _memo.update(until=now + 5.0, rows=rows)
+            return rows
         except Exception:  # pragma: no cover - a resolver hiccup must not 500 a page
             from precis.utils.llm.router import PLANNER_MODEL_ALIASES
 
-            return [(a, a) for a in PLANNER_MODEL_ALIASES]
+            return [
+                {
+                    "alias": a,
+                    "tier": None,
+                    "model": a,
+                    "placement": None,
+                    "fallbacks": [],
+                    "size": None,
+                    "context": None,
+                }
+                for a in PLANNER_MODEL_ALIASES
+            ]
 
     env.globals["planner_models"] = _planner_models
     return env

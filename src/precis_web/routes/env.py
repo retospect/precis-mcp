@@ -42,6 +42,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
+from precis.utils.llm.router import resolve_model
 from precis.workers.registry import ServiceSpec, agent_specs
 from precis_web import env_context
 from precis_web.deps import get_store, templates
@@ -353,9 +354,14 @@ async def index(
         system_prompt = _read_file(effective_env.get(intro.system_prompt_env))
         directive_prompt = _read_file(effective_env.get(intro.directive_prompt_env))
         mcp = _parse_mcp_config(effective_env.get(intro.mcp_config_env))
+        fallback_model = (
+            resolve_model(intro.tier_default)
+            if intro.tier_default is not None
+            else intro.model_default
+        )
         detail = {
             "spec": spec,
-            "model": effective_env.get(intro.model_env) or intro.model_default,
+            "model": effective_env.get(intro.model_env) or fallback_model,
             "system_prompt": system_prompt,
             "directive_prompt": directive_prompt,
             "mcp": mcp,

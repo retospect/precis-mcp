@@ -364,8 +364,9 @@
             <select name="model" class="rounded border-slate-300 text-xs border px-1 py-0.5"
                     title="model for the retry (blank = keep the parent's current LLM tier)">
               <option value="">↻ same model</option>
-              {% for alias, label in planner_models() %}
-              <option value="{{ alias }}">{{ alias }} · {{ label }}</option>
+              {% for m in planner_models() %}
+              <option value="{{ m.alias }}"
+                      {% if m.size or m.context or m.fallbacks %}title="{{ [m.size and 'size ' ~ m.size, m.context and 'ctx ' ~ m.context, m.fallbacks and 'fallback: ' ~ (m.fallbacks | join(', '))] | select | join(' · ') }}"{% endif %}>{{ m.alias }} · {{ m.model }}{% if m.placement == 'local' %} (local){% endif %}</option>
               {% endfor %}
             </select>
             <button class="rounded bg-amber-600 text-white text-xs px-2 py-0.5"
@@ -436,8 +437,9 @@
               <select name="model" class="rounded border-rose-300 text-xs border px-1 py-0.5 bg-white"
                       title="model to retry on (blank = keep the current LLM tier)">
                 <option value="">↻ same model</option>
-                {% for alias, label in planner_models() %}
-                <option value="{{ alias }}">{{ alias }} · {{ label }}</option>
+                {% for m in planner_models() %}
+                <option value="{{ m.alias }}"
+                        {% if m.size or m.context or m.fallbacks %}title="{{ [m.size and 'size ' ~ m.size, m.context and 'ctx ' ~ m.context, m.fallbacks and 'fallback: ' ~ (m.fallbacks | join(', '))] | select | join(' · ') }}"{% endif %}>{{ m.alias }} · {{ m.model }}{% if m.placement == 'local' %} (local){% endif %}</option>
                 {% endfor %}
               </select>
               <button class="leading-none text-emerald-600 hover:text-emerald-800"

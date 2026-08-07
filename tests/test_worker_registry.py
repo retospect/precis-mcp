@@ -234,6 +234,22 @@ def test_agent_specs_launchd_label_is_the_collapsed_worker_unit() -> None:
         assert s.introspect.launchd_label == "com.precis.worker", s.name
 
 
+def test_frontier_agents_resolve_model_default_through_the_router() -> None:
+    """``structural``/``deep_review``/``dream_agent`` used to hardcode
+    ``model_default="claude-opus-4-8"`` (model-vocabulary-drift audit) — a
+    display-only literal that could silently diverge from the router's
+    FRONTIER default. They now carry ``tier_default=Tier.FRONTIER`` and
+    leave ``model_default`` empty; the consumer (``/env``) resolves the
+    live model at render time."""
+    from precis.utils.llm.router import Tier
+
+    for name in ("structural", "deep_review", "dream_agent"):
+        intro = SERVICES_BY_NAME[name].introspect
+        assert intro is not None, name
+        assert intro.tier_default is Tier.FRONTIER, name
+        assert intro.model_default == "", name
+
+
 def test_structural_and_deep_review_introspect_timeouts_match_the_driver() -> None:
     """Kill-the-drift-class pin: the registry's ``introspect.timeout_s`` /
     ``max_turns`` for the two reviewers must equal the real driver config
