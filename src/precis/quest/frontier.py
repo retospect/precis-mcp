@@ -440,9 +440,15 @@ def leaderboard(
                 else:
                     row[key] = f"{v:g}" if isinstance(v, (int, float)) else "—"
             row["graduated"] = "★" if c.ref_id in graduated else ""
-            row["quality"] = (
+            quality = (
                 "⚠ non-converged" if c.flags.get("barrier_trusted") is False else ""
             )
+            # A geometry that duplicates an earlier candidate (:func:`_flag_geom_duplicates`)
+            # — flagged only, not excluded, so it still ranks; the leaderboard just
+            # marks it "dup" alongside any other quality note.
+            if c.flags.get("duplicate_of"):
+                quality = f"{quality} dup".strip()
+            row["quality"] = quality
             out.append(row)
         return out
 
@@ -453,6 +459,121 @@ def leaderboard(
     )
     schema = ["design", "name", *obj_keys, "band", "graduated", "quality"]
     return rows, schema
+
+
+def _flag_geom_duplicates(
+    candidates: Sequence[Candidate], structures: Sequence[Any]
+) -> None:
+    """Flag a later-created candidate that shares its ``geom_hash`` (stamped
+    at candidate-creation time — :func:`precis.quest.compute._geom_hash`) with
+    an earlier one — a proposer re-discovering the same material under a new
+    name. **Non-exclusionary**: ``flags['duplicate_of']`` is display-only (the
+    earlier candidate's handle); the flagged candidate still ranks normally.
+    Mutates ``candidates`` in place (``Candidate.flags`` is a plain dict, so
+    this is safe on an otherwise-frozen dataclass).
+    """
+    by_id = {c.ref_id: c for c in candidates}
+    seen: dict[str, str] = {}  # geom_hash -> first-seen handle
+    for s in sorted(structures, key=lambda s: s.id):
+        gh = (getattr(s, "meta", None) or {}).get("geom_hash")
+        if not isinstance(gh, str) or not gh:
+            continue
+        c = by_id.get(s.id)
+        if c is None:
+            continue
+        first = seen.get(gh)
+        if first is None:
+            seen[gh] = c.handle
+        else:
+            c.flags["duplicate_of"] = first
+
+
+def _candidate_lineage_markers(store: Store, c: Candidate) -> list[str]:
+    """Trust/ruled-out/dup markers for one candidate's frontier-tree line."""
+    markers: list[str] = []
+    ruled = next(
+        (str(t) for t in store.tags_for(c.ref_id) if str(t).startswith("ruled-out:")),
+        None,
+    )
+    if ruled is not None:
+        markers.append(ruled)
+    if c.flags.get("barrier_trusted") is False:
+        markers.append("untrusted")
+    dup_of = c.flags.get("duplicate_of")
+    if dup_of:
+        markers.append(f"dup-of {dup_of}")
+    if not c.converged and not ruled:
+        markers.append("unconverged")
+    return markers
+
+
+def _candidate_key_measure(c: Candidate) -> str:
+    """The candidate's headline measure for the frontier-tree line — the
+    quest hub's own axis pick (:data:`PARETO_X_MEASURE`, the barrier) when
+    present, else the default objective (:data:`PARETO_Y_MEASURE`, energy)."""
+    v = c.measures.get(PARETO_X_MEASURE)
+    label = PARETO_X_LABEL
+    if v is None:
+        v = c.measures.get(PARETO_Y_MEASURE)
+        label = PARETO_Y_LABEL
+    if v is None:
+        return "no measure yet"
+    return f"{label}={v:g}"
+
+
+def render_frontier_tree(store: Store, quest_id: int) -> str:
+    """Render the quest's candidate lineage as an indented markdown tree —
+    the CODE-regenerated ``meta.pinned='frontier-tree'`` dossier chunk
+    (:func:`precis.quest.dossier.update_frontier_tree`).
+
+    Roots are candidates with no resolved ``derived-from`` parent among this
+    quest's own candidate set (a link to something outside it — e.g. an
+    ancestor design from a prior quest — does not count as in-tree lineage);
+    each child nests one level under its parent. One line per candidate:
+    name/handle, its key measure (:func:`_candidate_key_measure`), and any
+    trust/ruled-out/dup markers (:func:`_candidate_lineage_markers`). Pure
+    read over data :func:`quest_frontier` already loads — no new query shape,
+    just a different assembly (a tree instead of a Pareto split).
+    """
+    from precis.quest.gaps import _live_servers
+
+    structures = [s for s in _live_servers(store, quest_id) if s.kind == "structure"]
+    if not structures:
+        return "_(No candidates yet.)_\n"
+
+    candidates = {s.id: _candidate_from_structure(store, s) for s in structures}
+    _flag_geom_duplicates(list(candidates.values()), structures)
+
+    # child ref_id -> parent ref_id, restricted to this quest's own candidates
+    # (`derived-from` is child -> parent, the same relation
+    # StructureHandler.derive uses).
+    parent_of: dict[int, int] = {}
+    for sid in candidates:
+        for link in store.links_for(sid, direction="out", relation="derived-from"):
+            if link.dst_ref_id in candidates:
+                parent_of[sid] = int(link.dst_ref_id)
+                break
+    children: dict[int, list[int]] = {}
+    for child, parent in parent_of.items():
+        children.setdefault(parent, []).append(child)
+    roots = sorted(sid for sid in candidates if sid not in parent_of)
+
+    lines: list[str] = []
+
+    def _render(sid: int, depth: int) -> None:
+        c = candidates[sid]
+        markers = _candidate_lineage_markers(store, c)
+        marker_s = f" [{', '.join(markers)}]" if markers else ""
+        lines.append(
+            f"{'  ' * depth}- {c.name} ({c.handle}): "
+            f"{_candidate_key_measure(c)}{marker_s}"
+        )
+        for child_id in sorted(children.get(sid, [])):
+            _render(child_id, depth + 1)
+
+    for rid in roots:
+        _render(rid, 0)
+    return "\n".join(lines) + "\n"
 
 
 def quest_frontier(
@@ -467,6 +588,7 @@ def quest_frontier(
     objs = objectives or _objectives_for(store, quest_id)
     structures = [s for s in _live_servers(store, quest_id) if s.kind == "structure"]
     candidates = [_candidate_from_structure(store, s) for s in structures]
+    _flag_geom_duplicates(candidates, structures)
     return pareto_split(candidates, objs)
 
 
@@ -483,4 +605,5 @@ __all__ = [
     "leaderboard",
     "pareto_split",
     "quest_frontier",
+    "render_frontier_tree",
 ]

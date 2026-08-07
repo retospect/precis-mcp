@@ -683,6 +683,8 @@ single candidate material>"}}
   ],
   "proposals": [
     {{"name": "<candidate material>", "rationale": "<why test it>",
+      "parent": "<optional: slug of the candidate this varies, when you are \
+refining an existing one>",
       "structure": {{"cell": {{"a": 8.4, "b": 8.4, "c": 24.0, \
 "pbc": [true, true, false]}},
         "ops": [{{"op": "add_atom", "element": "Fe", "frac": [0.0, 0.0, 0.5]}}]}}}}
@@ -700,6 +702,11 @@ state, a `result` or `dead-end` that *closes* an open hypothesis, or a \
 rules above if this is a catalyst quest). Only propose a candidate you can \
 express as a concrete structure and that is NOT already ruled out; omit \
 `structure` if you cannot, and it will be recorded as a lead but not simulated. \
+`parent`: the slug of the candidate this one varies, when you are refining an \
+existing one rather than starting a fresh direction — enables the frontier \
+tree (skip it for a genuinely new direction). A re-proposed spec you've \
+already tried gets you a `duplicate proposal` note in the log, not a fresh \
+simulation — check the frontier table / recent log before re-proposing. \
 Propose nothing if the next step is analysis, not a new material."""
 
 
@@ -1308,6 +1315,20 @@ def run_quest_tick(
                         )
                         added += 1
         store.stamp_ref_meta(quest_id, {"ticks_since_experiment": stall})
+
+        # Regenerate the pinned frontier-tree dossier chunk (Slice 4c-4) now
+        # that harvest (above) has landed this tick's measures — a code-only
+        # rewrite, never surfaced to the model as something to author.
+        # Defensive: a render bug must not crash the tick (mirrors the
+        # commit-ladder / compute-step try/except convention above).
+        try:
+            from precis.quest.dossier import update_frontier_tree
+
+            update_frontier_tree(store, quest_id)
+        except Exception:
+            log.exception(
+                "run_quest_tick: frontier-tree regen failed for quest %s", quest_id
+            )
 
     # Advance the cascade counters + recompute `promise` (rung 4d reads it).
     cascade_mod.update_cascade_state(store, quest_id, reviewed=is_review)

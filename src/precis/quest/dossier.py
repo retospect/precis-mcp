@@ -111,6 +111,13 @@ def _render_ledger(sections: dict[str, list[str]]) -> str:
 
 _LEDGER_SEED = _render_ledger({k: [] for k in _SECTION_ORDER})
 
+#: The second pinned chunk (Slice 4c-4): the candidate lineage tree. Unlike
+#: the ledger (model-authored, additive), this one is entirely CODE-
+#: regenerated in place every tick via :func:`update_frontier_tree` — see
+#: that function's docstring.
+_FRONTIER_TREE_PINNED = "frontier-tree"
+_FRONTIER_TREE_SEED = "_(No candidates yet.)_\n"
+
 
 def dossier_ref_id(store: Store, owner_id: int) -> int | None:
     """The ref id of the owner's dossier draft, or ``None`` if it has none.
@@ -174,9 +181,12 @@ def _owner_title(store: Store, owner_id: int) -> str:
     return str(row[0]) if row and row[0] else f"ref {owner_id}"
 
 
-def _find_ledger_chunk(chunks: list[Any]) -> Any | None:
+def _find_pinned_chunk(chunks: list[Any], pinned: str) -> Any | None:
+    """The non-heading chunk whose ``meta.pinned == pinned`` — shared by the
+    ledger (``"ledger"``) and the frontier tree (``"frontier-tree"``, Slice
+    4c-4); each pinned value picks out one distinct chunk."""
     for c in chunks:
-        if c.chunk_kind != "heading" and (c.meta or {}).get("pinned") == "ledger":
+        if c.chunk_kind != "heading" and (c.meta or {}).get("pinned") == pinned:
             return c
     return None
 
@@ -189,7 +199,7 @@ def _ensure_ledger_chunk_for_ref(store: Store, dossier_id: int) -> str:
     narrative rather than going back through the public entry point).
     """
     chunks = store.reading_order(dossier_id)
-    found = _find_ledger_chunk(chunks)
+    found = _find_pinned_chunk(chunks, "ledger")
     if found is not None:
         return str(found.handle)
     created = store.add_chunks(
@@ -197,6 +207,50 @@ def _ensure_ledger_chunk_for_ref(store: Store, dossier_id: int) -> str:
     )
     handle = str(created[0].handle)
     store.patch_chunk_meta(handle, {"pinned": "ledger"})
+    return handle
+
+
+def _ensure_frontier_tree_chunk_for_ref(store: Store, dossier_id: int) -> str:
+    """The frontier-tree sibling of :func:`_ensure_ledger_chunk_for_ref` —
+    creates the ``meta.pinned='frontier-tree'`` chunk (seeded empty) if
+    absent, else returns its existing handle. Internal — see
+    :func:`update_frontier_tree` for the public, code-regenerating entry
+    point."""
+    chunks = store.reading_order(dossier_id)
+    found = _find_pinned_chunk(chunks, _FRONTIER_TREE_PINNED)
+    if found is not None:
+        return str(found.handle)
+    created = store.add_chunks(
+        ref_id=dossier_id,
+        chunk_kind="paragraph",
+        text=_FRONTIER_TREE_SEED,
+        split=False,
+    )
+    handle = str(created[0].handle)
+    store.patch_chunk_meta(handle, {"pinned": _FRONTIER_TREE_PINNED})
+    return handle
+
+
+def update_frontier_tree(store: Store, owner_id: int) -> str:
+    """Regenerate the owner's pinned frontier-tree chunk from the current
+    candidate lineage (:func:`precis.quest.frontier.render_frontier_tree`).
+
+    Called at the end of each quest tick, **after harvest**, so the tree
+    reflects freshly-measured barriers/energies (:mod:`precis.quest.tick`).
+    Unlike the ledger (model-authored, additive across ticks), this chunk is
+    entirely **code**-regenerated — whole-rewritten in place on every call,
+    never touched by the model, and excluded from the narrative rewrite the
+    same way the ledger is (:func:`rewrite_dossier`, :func:`read_narrative`
+    — both filter on ANY ``meta.pinned`` value now, not just ``"ledger"``).
+    Creates the dossier (and the chunk) if the owner has none yet. Returns
+    the chunk's handle.
+    """
+    from precis.quest.frontier import render_frontier_tree
+
+    did = ensure_dossier(store, owner_id)
+    handle = _ensure_frontier_tree_chunk_for_ref(store, did)
+    markdown = render_frontier_tree(store, owner_id)
+    store.edit_text(handle, markdown, source={"reason": "quest-frontier-tree"})
     return handle
 
 
@@ -260,11 +314,15 @@ def read_dossier(store: Store, owner_id: int) -> tuple[int | None, str | None, s
 
 
 def read_narrative(store: Store, owner_id: int) -> str:
-    """The model-rewritten narrative only (no pinned ledger, no heading).
+    """The model-rewritten narrative only (no pinned chunk, no heading).
 
     Feeds the tick prompt's ``{dossier}`` slot — the ledger is surfaced
-    separately (:func:`read_ledger`) as an explicit constraint, not folded
-    into the rewritable prose. Returns ``""`` when the owner has no dossier.
+    separately (:func:`read_ledger`) as an explicit constraint, and the
+    frontier tree is a code-rendered artifact, neither folded into the
+    rewritable prose. Excludes ANY pinned chunk (``meta.pinned`` truthy —
+    ``"ledger"`` or ``"frontier-tree"``), not just the ledger, so a future
+    pinned chunk needs no code change here. Returns ``""`` when the owner
+    has no dossier.
     """
     did = dossier_ref_id(store, owner_id)
     if did is None:
@@ -273,7 +331,7 @@ def read_narrative(store: Store, owner_id: int) -> str:
     body = [
         c
         for c in chunks
-        if c.chunk_kind != "heading" and (c.meta or {}).get("pinned") != "ledger"
+        if c.chunk_kind != "heading" and not (c.meta or {}).get("pinned")
     ]
     return "\n\n".join(c.text for c in body)
 
@@ -326,17 +384,17 @@ def rewrite_dossier(store: Store, owner_id: int, markdown: str) -> int:
     ref id.
 
     Ensures the dossier exists, then edits the narrative body chunk in place
-    (``edit_text`` logs ``prev_text``) — the pinned ledger chunk
-    (``meta.pinned == 'ledger'``) is explicitly excluded, so it survives
-    every rewrite byte-identical (ADR 0064 §A). If somehow there is no
-    narrative chunk yet, one is added.
+    (``edit_text`` logs ``prev_text``) — ANY pinned chunk (``meta.pinned``
+    truthy: the ledger, and the code-regenerated frontier tree — Slice 4c-4)
+    is explicitly excluded, so each survives every rewrite byte-identical
+    (ADR 0064 §A). If somehow there is no narrative chunk yet, one is added.
     """
     did = ensure_dossier(store, owner_id)
     chunks = store.reading_order(did)
     body = [
         c
         for c in chunks
-        if c.chunk_kind != "heading" and (c.meta or {}).get("pinned") != "ledger"
+        if c.chunk_kind != "heading" and not (c.meta or {}).get("pinned")
     ]
     if body:
         # edit_text keys on the legacy ``.handle`` (the ``¶`` anchor), not the
@@ -357,4 +415,5 @@ __all__ = [
     "read_ledger",
     "read_narrative",
     "rewrite_dossier",
+    "update_frontier_tree",
 ]

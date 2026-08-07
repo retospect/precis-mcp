@@ -53,6 +53,12 @@ class ComputeStep:
     ruled_out: int
     notes: list[str]
     graduated: int = 0
+    #: How many of this step's proposals hashed onto an ALREADY-EXISTING
+    #: candidate (content-addressed dedup) — see :func:`_ensure_candidate_detail`.
+    #: Each dup also gets a one-line ``observation`` in the quest logbook (so
+    #: the proposer sees the miss next tick via :func:`precis.quest.tick._logbook_tail`)
+    #: in addition to this count.
+    duplicate_proposals: int = 0
 
 
 def _canonical_spec(spec: dict[str, Any]) -> str:
@@ -71,18 +77,148 @@ def _hub_for(store: Store) -> Any:
     return Hub(store=store)
 
 
-def ensure_candidate(
-    store: Store, quest_id: int, proposal: dict[str, Any], *, hub: Any | None = None
-) -> int | None:
-    """Create (or reuse) the `structure` server for a proposal's spec.
+def _geom_hash(scene: Any) -> str:
+    """Canonical geometry hash — species + rounded scaled (fractional)
+    positions, sorted, ``sha256[:12]`` (Slice 4c, candidate dedup). Two
+    candidates that resolve to the same atoms in the same positions hash
+    identically regardless of proposal name/spec-formatting, so
+    :func:`precis.quest.frontier._flag_geom_duplicates` can flag a proposer
+    re-discovering an existing material under a new name.
 
-    Returns the structure ref id, or ``None`` when the proposal carries no
-    usable structure spec (nothing to simulate). Content-addressed: a repeat
-    proposal of the same material returns the existing structure.
+    Reads the precis-native :class:`~precis.structure.scene.Scene` (already
+    loaded via ``store.structure_load`` at candidate-creation time) rather than
+    materialising ASE ``Atoms`` — the candidate spec is built into a ``Scene``
+    by :class:`~precis.handlers.structure.StructureHandler`'s own ``put`` (via
+    ``precis.structure.ops.apply_ops``), so this needs no extra dependency and
+    no second materialisation.
+    """
+    rows = sorted(
+        (a.element, tuple(round(float(x), 3) for x in a.frac))
+        for a in scene.atoms.values()
+    )
+    payload = json.dumps(rows, separators=(",", ":"))
+    return hashlib.sha256(payload.encode()).hexdigest()[:12]
+
+
+def _dup_status_summary(store: Store, existing: Any) -> str:
+    """One-line status for a duplicate-proposal note: a ``ruled-out:*`` tag,
+    else an already-harvested barrier, else ``pending`` (no verdict yet)."""
+    ruled = next(
+        (
+            str(t)
+            for t in store.tags_for(existing.id)
+            if str(t).startswith("ruled-out:")
+        ),
+        None,
+    )
+    if ruled is not None:
+        return ruled
+    meta = existing.meta or {}
+    barrier = meta.get("barrier")
+    if isinstance(barrier, (int, float)) and not isinstance(barrier, bool):
+        return f"evaluated barrier={barrier:g}"
+    return "pending"
+
+
+def _note_duplicate_proposal(
+    store: Store, quest_id: int, proposal: dict[str, Any], slug: str, existing: Any
+) -> None:
+    """Log a `duplicate proposal` observation so the proposer sees the miss
+    next tick (:func:`precis.quest.tick._logbook_tail` feeds the tick prompt) —
+    today's silent cache-hit gives the model no signal that it re-proposed
+    something already tried."""
+    name = str(proposal.get("name") or slug)
+    status = _dup_status_summary(store, existing)
+    append_entry(
+        store,
+        quest_id,
+        text=f"duplicate proposal: {name} is already candidate {slug} (status: {status})",
+        entry_type="observation",
+        by=MEASURED_BY,
+    )
+
+
+def _resolve_parent_structure(
+    store: Store, quest_id: int, parent_ref: Any
+) -> Any | None:
+    """Resolve a proposal's optional ``parent`` field to a live candidate
+    `structure` ref of THIS quest, or ``None`` when unresolvable.
+
+    ``parent_ref`` is normally the parent candidate's own content-addressed
+    slug (``q<quest_id>cand-<digest>``, what :func:`_candidate_slug` mints —
+    the same string the proposer sees echoed back in prior ticks), but a bare
+    ref id or a universal handle (e.g. ``st5``) also resolves. A structure
+    outside this quest's own candidate set does not count as lineage.
+    """
+    ident = str(parent_ref or "").strip()
+    if not ident:
+        return None
+    ref = None
+    if ident.lstrip("-").isdigit():
+        ref = store.get_ref(kind="structure", id=int(ident))
+    if ref is None:
+        ref = store.get_ref(kind="structure", id=ident)
+    if ref is None:
+        from precis.utils.mentions import resolve_handle_target
+
+        target = resolve_handle_target(store, ident)
+        if target is not None:
+            cand = store.fetch_refs_by_ids({target.dst_ref_id}).get(target.dst_ref_id)
+            if cand is not None and cand.kind == "structure":
+                ref = cand
+    if ref is None or ref.kind != "structure":
+        return None
+    servers = store.links_for(quest_id, direction="in", relation="serves")
+    if ref.id not in {ln.src_ref_id for ln in servers}:
+        return None
+    return ref
+
+
+def _link_parent_if_present(
+    store: Store, quest_id: int, proposal: dict[str, Any], child_ref_id: int
+) -> str | None:
+    """Wire the optional ``parent`` field (a proposal that *varies* an
+    existing candidate) as a ``derived-from`` link, child → parent — the same
+    relation :meth:`precis.handlers.structure.StructureHandler.derive` uses,
+    so the frontier tree (:func:`precis.quest.frontier.render_frontier_tree`)
+    reads one lineage vocabulary regardless of how the edge was made.
+
+    Returns a one-line note when ``parent`` is present but unresolvable (never
+    raises, never fails the proposal — a lineage miss is just weaker context
+    for the frontier tree); ``None`` otherwise (absent, self-referential, or
+    successfully linked).
+    """
+    parent_ref = proposal.get("parent")
+    if not parent_ref:
+        return None
+    parent = _resolve_parent_structure(store, quest_id, parent_ref)
+    if parent is None:
+        return (
+            f"lineage skipped: parent {parent_ref!r} does not resolve to a live "
+            "candidate of this quest"
+        )
+    if int(parent.id) == int(child_ref_id):
+        return None  # self-reference — silently skip, not an error
+    try:
+        store.add_link(
+            src_ref_id=child_ref_id, dst_ref_id=parent.id, relation="derived-from"
+        )
+    except Exception as e:
+        return f"lineage link failed for parent {parent_ref!r}: {e}"
+    return None
+
+
+def _ensure_candidate_detail(
+    store: Store, quest_id: int, proposal: dict[str, Any], *, hub: Any | None = None
+) -> tuple[int | None, bool, str | None]:
+    """:func:`ensure_candidate`'s full internals — ``(ref_id, was_duplicate,
+    note)``. Split out so :func:`run_compute_step` can count dups + surface
+    lineage notes without changing :func:`ensure_candidate`'s public
+    ``int | None`` contract (existing direct callers/tests rely on it).
     """
     spec = proposal.get("structure")
     if not isinstance(spec, dict):
-        return None
+        return None, False, None
     # A candidate needs a cell — either given directly, or established by a bulk
     # template op (`slab`) / a `set_cell` op (a Pd(111) slab is 30+ atoms; the
     # proposer emits the compact `slab` op, not a hand-enumerated cell).
@@ -94,11 +230,13 @@ def ensure_candidate(
         )
     )
     if not has_cell:
-        return None
+        return None, False, None
     slug = _candidate_slug(quest_id, spec)
     existing = store.get_ref(kind="structure", id=slug)
     if existing is not None:
-        return int(existing.id)
+        _note_duplicate_proposal(store, quest_id, proposal, slug, existing)
+        note = _link_parent_if_present(store, quest_id, proposal, int(existing.id))
+        return int(existing.id), True, note
 
     hub = hub or _hub_for(store)
     from precis.handlers.structure import StructureHandler
@@ -107,16 +245,41 @@ def ensure_candidate(
     try:
         StructureHandler(hub=hub).put(id=slug, text=json.dumps(spec), title=name)
     except Exception:
-        return None
+        return None, False, None
     ref = store.get_ref(kind="structure", id=slug)
     if ref is None:  # pragma: no cover - put just created it
-        return None
+        return None, False, None
     with store.tx() as conn:
         store.add_link(
             src_ref_id=ref.id, dst_ref_id=quest_id, relation="serves", conn=conn
         )
         store.add_tag(ref.id, Tag.open(_CANDIDATE_TAG), set_by="system", conn=conn)
-    return int(ref.id)
+    try:
+        scene, _handles = store.structure_load(ref.id)
+        store.stamp_ref_meta(ref.id, {"geom_hash": _geom_hash(scene)})
+    except Exception:
+        log.debug(
+            "ensure_candidate: geom_hash stamp failed for %s", slug, exc_info=True
+        )
+    note = _link_parent_if_present(store, quest_id, proposal, int(ref.id))
+    return int(ref.id), False, note
+
+
+def ensure_candidate(
+    store: Store, quest_id: int, proposal: dict[str, Any], *, hub: Any | None = None
+) -> int | None:
+    """Create (or reuse) the `structure` server for a proposal's spec.
+
+    Returns the structure ref id, or ``None`` when the proposal carries no
+    usable structure spec (nothing to simulate). Content-addressed: a repeat
+    proposal of the same material returns the existing structure (and logs a
+    `duplicate proposal` observation — :func:`_note_duplicate_proposal`). An
+    optional ``proposal['parent']`` (the slug/handle of a candidate this one
+    varies) is wired as a ``derived-from`` lineage link
+    (:func:`_link_parent_if_present`). See :func:`_ensure_candidate_detail`
+    for the dup-count / lineage-note detail this wrapper discards.
+    """
+    return _ensure_candidate_detail(store, quest_id, proposal, hub=hub)[0]
 
 
 def dispatch_relax(
@@ -1377,15 +1540,21 @@ def run_compute_step(
     # (the a/b vectors, c-axis/vacuum pinned) so stability is judged on a
     # *relaxed* slab, not one strained by the bulk-derived lattice constant.
     relax_cell = "inplane" if reaction is not None else None
-    created = dispatched = 0
+    created = dispatched = duplicates = 0
     notes: list[str] = []
     for p in proposals or []:
         if not isinstance(p, dict):
             continue
-        sid = ensure_candidate(store, quest_id, p, hub=hub)
+        sid, was_dup, lineage_note = _ensure_candidate_detail(
+            store, quest_id, p, hub=hub
+        )
         if sid is None:
             continue
         created += 1
+        if was_dup:
+            duplicates += 1
+        if lineage_note is not None:
+            notes.append(lineage_note)
         if dispatch:
             note = dispatch_relax(store, sid, hub=hub, cell=relax_cell)
             notes.append(note)
@@ -1415,6 +1584,7 @@ def run_compute_step(
         ruled_out=harvest.ruled_out,
         notes=notes,
         graduated=len(graduated),
+        duplicate_proposals=duplicates,
     )
 
 

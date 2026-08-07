@@ -25,6 +25,7 @@ from precis.quest.frontier import (
     build_frontier_scatter,
     pareto_split,
     quest_frontier,
+    render_frontier_tree,
 )
 from precis.quest.tick import run_quest_tick
 from precis.structure import preflight as preflight_mod
@@ -1977,3 +1978,312 @@ class TestTickProposals:
         assert out.candidates_created == 0
         # the misconfig stayed loud in the logs (not silently swallowed)
         assert any("compute step raised" in r.getMessage() for r in caplog.records)
+
+
+# ── candidate lineage — `parent` field → `derived-from` link (Slice 4c-1) ──
+
+_CHILD_SPEC = {
+    "cell": {"a": 8.4, "b": 8.4, "c": 24.0, "pbc": [True, True, False]},
+    "ops": [{"op": "add_atom", "element": "Co", "frac": [0.0, 0.0, 0.5]}],
+}
+
+
+class TestCandidateLineage:
+    def test_parent_field_creates_derived_from_link(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        parent_id = compute_mod.ensure_candidate(
+            store, qid, {"name": "parent", "structure": _SPEC}
+        )
+        assert parent_id is not None
+        parent_ref = store.fetch_refs_by_ids({parent_id})[parent_id]
+        child_id = compute_mod.ensure_candidate(
+            store,
+            qid,
+            {"name": "child", "structure": _CHILD_SPEC, "parent": parent_ref.slug},
+        )
+        assert child_id is not None
+        links = store.links_for(child_id, direction="out", relation="derived-from")
+        assert parent_id in {ln.dst_ref_id for ln in links}
+
+    def test_unresolvable_parent_is_tolerated_not_failed(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid, was_dup, note = compute_mod._ensure_candidate_detail(
+            store, qid, {"name": "x", "structure": _SPEC, "parent": "not-a-real-slug"}
+        )
+        assert sid is not None  # never fails the proposal
+        assert was_dup is False
+        assert note is not None and "lineage skipped" in note
+        assert (
+            store.fetch_refs_by_ids({sid})[sid].kind == "structure"
+        )  # candidate still created
+        # no derived-from link was written for the unresolvable parent
+        links = store.links_for(sid, direction="out", relation="derived-from")
+        assert links == []
+
+    def test_self_referential_parent_is_a_silent_noop(self, store: Any) -> None:
+        # A proposal's own (not-yet-existing) slug can't be its own parent in
+        # practice, but a proposer echoing its own candidate back must not
+        # explode or self-link.
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "x", "structure": _SPEC}
+        )
+        assert sid is not None
+        slug = store.fetch_refs_by_ids({sid})[sid].slug
+        note = compute_mod._link_parent_if_present(store, qid, {"parent": slug}, sid)
+        assert note is None
+        assert store.links_for(sid, direction="out", relation="derived-from") == []
+
+
+# ── duplicate-proposal feedback (Slice 4c-2) ────────────────────────────
+
+
+class TestDuplicateProposalFeedback:
+    def test_duplicate_spec_logs_observation_with_pending_status(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store, "A striving")
+        slug_first = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert slug_first is not None
+        sid2, was_dup, _note = compute_mod._ensure_candidate_detail(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert sid2 == slug_first
+        assert was_dup is True
+        logs = [
+            b for b in store.list_blocks_for_ref(qid) if b.chunk_kind == "quest_log"
+        ]
+        dup_logs = [b for b in logs if "duplicate proposal" in b.text]
+        assert dup_logs, logs
+        assert "status: pending" in dup_logs[0].text
+        assert (dup_logs[0].meta or {}).get("by") == "system"
+
+    def test_duplicate_spec_status_reflects_ruled_out_tag(self, store: Any) -> None:
+        from precis.store import Tag
+
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.add_tag(sid, Tag.open("ruled-out:relax-failed"), set_by="system")
+        _sid2, was_dup, _note = compute_mod._ensure_candidate_detail(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert was_dup is True
+        logs = [
+            b for b in store.list_blocks_for_ref(qid) if b.chunk_kind == "quest_log"
+        ]
+        dup_logs = [b for b in logs if "duplicate proposal" in b.text]
+        assert dup_logs and "status: ruled-out:relax-failed" in dup_logs[-1].text
+
+    def test_run_compute_step_counts_and_surfaces_duplicates(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        proposals = [{"name": "Fe", "rationale": "x", "structure": _SPEC}]
+        step1 = compute_mod.run_compute_step(store, qid, proposals, dispatch=False)
+        assert step1.candidates_created == 1
+        assert step1.duplicate_proposals == 0
+        step2 = compute_mod.run_compute_step(store, qid, proposals, dispatch=False)
+        assert step2.candidates_created == 1
+        assert step2.duplicate_proposals == 1
+
+    def test_run_compute_step_surfaces_unresolvable_parent_note(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store, "A striving")
+        proposals = [
+            {
+                "name": "Fe",
+                "rationale": "x",
+                "structure": _SPEC,
+                "parent": "not-a-real-slug",
+            }
+        ]
+        step = compute_mod.run_compute_step(store, qid, proposals, dispatch=False)
+        assert any("lineage skipped" in n for n in step.notes)
+
+
+# ── geometry hash + frontier dup flag (Slice 4c-3) ──────────────────────
+
+_GEOM_A = {
+    "cell": {"a": 8.4, "b": 8.4, "c": 24.0, "pbc": [True, True, False]},
+    "ops": [{"op": "add_atom", "element": "Fe", "frac": [0.0, 0.0, 0.5]}],
+}
+_GEOM_B = {
+    # A different cell (not part of the geometry hash — only species + frac
+    # positions are) so this is a distinct content-addressed candidate that
+    # happens to relax the SAME atoms.
+    "cell": {"a": 8.4, "b": 8.4, "c": 25.0, "pbc": [True, True, False]},
+    "ops": [{"op": "add_atom", "element": "Fe", "frac": [0.0, 0.0, 0.5]}],
+}
+
+
+class TestGeomHash:
+    def test_geom_hash_stamped_at_creation(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert sid is not None
+        ref = store.fetch_refs_by_ids({sid})[sid]
+        gh = (ref.meta or {}).get("geom_hash")
+        assert isinstance(gh, str) and len(gh) == 12
+
+    def test_identical_geometry_different_spec_shares_geom_hash(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid_a = compute_mod.ensure_candidate(
+            store, qid, {"name": "a", "structure": _GEOM_A}
+        )
+        sid_b = compute_mod.ensure_candidate(
+            store, qid, {"name": "b", "structure": _GEOM_B}
+        )
+        assert sid_a is not None and sid_b is not None and sid_a != sid_b
+        refs = store.fetch_refs_by_ids({sid_a, sid_b})
+        assert refs[sid_a].meta["geom_hash"] == refs[sid_b].meta["geom_hash"]
+
+
+class TestFrontierGeomDuplicateFlag:
+    def test_later_candidate_flagged_duplicate_of_earlier(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid_a = compute_mod.ensure_candidate(
+            store, qid, {"name": "a", "structure": _GEOM_A}
+        )
+        sid_b = compute_mod.ensure_candidate(
+            store, qid, {"name": "b", "structure": _GEOM_B}
+        )
+        assert sid_a is not None and sid_b is not None
+        fr = quest_frontier(store, qid)
+        by_id = {c.ref_id: c for c in (fr.frontier + fr.dominated + fr.unevaluated)}
+        assert "duplicate_of" not in by_id[sid_a].flags
+        assert by_id[sid_b].flags.get("duplicate_of") == by_id[sid_a].handle
+        # flagged, not excluded — the dup still ranks (both unconverged here,
+        # so both land in `unevaluated`, neither dropped).
+        assert sid_b in by_id
+
+
+# ── frontier-tree pinned dossier chunk (Slice 4c-4) ─────────────────────
+
+
+class TestFrontierTreeDossierChunk:
+    def test_creates_pinned_chunk_with_lineage_and_measure(self, store: Any) -> None:
+        from precis.quest import dossier as dossier_mod
+
+        qid = _mk_quest(store, "A striving")
+        parent_id = compute_mod.ensure_candidate(
+            store, qid, {"name": "parent-mat", "structure": _SPEC}
+        )
+        assert parent_id is not None
+        parent_ref = store.fetch_refs_by_ids({parent_id})[parent_id]
+        child_id = compute_mod.ensure_candidate(
+            store,
+            qid,
+            {
+                "name": "child-mat",
+                "structure": _CHILD_SPEC,
+                "parent": parent_ref.slug,
+            },
+        )
+        assert child_id is not None
+        store.structure_record_run(
+            parent_id,
+            fidelity="ml",
+            on_version=1,
+            converged=True,
+            n_steps=10,
+            max_disp=0.0,
+            energy=-12.5,
+        )
+
+        handle1 = dossier_mod.update_frontier_tree(store, qid)
+        did, _h, _text = dossier_mod.read_dossier(store, qid)
+        assert did is not None
+        chunks = store.reading_order(did)
+        tree_chunk = next(
+            c for c in chunks if (c.meta or {}).get("pinned") == "frontier-tree"
+        )
+        assert tree_chunk.handle == handle1
+        assert "parent-mat" in tree_chunk.text
+        assert "child-mat" in tree_chunk.text
+        lines = [ln for ln in tree_chunk.text.splitlines() if ln.strip()]
+        parent_line = next(ln for ln in lines if "parent-mat" in ln)
+        child_line = next(ln for ln in lines if "child-mat" in ln)
+        assert not parent_line.startswith(" ")  # root: no indent
+        assert child_line.startswith(" ")  # nested under its parent
+
+        # regenerating (e.g. a second tick) rewrites the SAME chunk in place.
+        handle2 = dossier_mod.update_frontier_tree(store, qid)
+        assert handle2 == handle1
+
+    def test_ruled_out_and_dup_markers_render(self, store: Any) -> None:
+        from precis.store import Tag
+
+        qid = _mk_quest(store, "A striving")
+        sid_a = compute_mod.ensure_candidate(
+            store, qid, {"name": "a", "structure": _GEOM_A}
+        )
+        sid_b = compute_mod.ensure_candidate(
+            store, qid, {"name": "b", "structure": _GEOM_B}
+        )
+        assert sid_a is not None and sid_b is not None
+        store.add_tag(sid_a, Tag.open("ruled-out:relax-failed"), set_by="system")
+
+        text = render_frontier_tree(store, qid)
+        assert "ruled-out:relax-failed" in text
+        assert "dup-of" in text
+
+    def test_survives_narrative_rewrite(self, store: Any) -> None:
+        from precis.quest import dossier as dossier_mod
+
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert sid is not None
+        dossier_mod.update_frontier_tree(store, qid)
+        did, _h, _text = dossier_mod.read_dossier(store, qid)
+        assert did is not None
+        before = next(
+            c
+            for c in store.reading_order(did)
+            if (c.meta or {}).get("pinned") == "frontier-tree"
+        ).text
+
+        dossier_mod.rewrite_dossier(store, qid, "# fresh narrative\n\nsomething new")
+
+        after_tree = next(
+            c
+            for c in store.reading_order(did)
+            if (c.meta or {}).get("pinned") == "frontier-tree"
+        ).text
+        assert after_tree == before  # untouched by the whole-rewrite
+        # the narrative itself carries only the model's rewrite — no pinned
+        # chunk (ledger or frontier-tree) leaks into it.
+        assert dossier_mod.read_narrative(store, qid) == (
+            "# fresh narrative\n\nsomething new"
+        )
+
+    def test_regenerated_at_end_of_tick_after_harvest(self, store: Any) -> None:
+        from precis.quest import dossier as dossier_mod
+
+        qid = _mk_quest(store, "A striving")
+        payload = {
+            "logbook": [],
+            "dossier_markdown": "",
+            "proposals": [{"name": "Fe", "rationale": "x", "structure": _SPEC}],
+        }
+        out = run_quest_tick(
+            store, qid, dispatch_fn=_fake_dispatch(payload), compute=True
+        )
+        assert out.candidates_created == 1
+        did, _h, _text = dossier_mod.read_dossier(store, qid)
+        assert did is not None
+        tree_chunk = next(
+            c
+            for c in store.reading_order(did)
+            if (c.meta or {}).get("pinned") == "frontier-tree"
+        )
+        assert "Fe" in tree_chunk.text
