@@ -274,14 +274,6 @@ to a §L regression **plus** an independent, more serious spark worker deadlock.
   a failed barrier eval feeding the §C ladder, or a nursery detector on aged
   undispatchable `T_agg` trees.
 
-- **spark autocatpath_seed: port `_dispatch` to the ssh_node submit/poll
-  protocol** · Status: open · Severity: low · gripe **191351** closeable.
-  The wedge fix (`7497c30d`, deployed + live-verified; forensics in git log +
-  gripe 191351) runs seed compute out-of-process, but `_dispatch` still blocks
-  the system pass for the bounded in-subprocess window — port it to the
-  ssh_node `submit`/`poll` protocol (`seed_job.py` + `runner.py`, cross-ref
-  the poison-guard item below) so the pass never blocks at all.
-
 - **Docker Hub egress on spark (gripe 189697) — deferred; needed only for the
   1.5s pause** · Status: blocked · Severity: polish. TLS handshake to Docker
   Hub/ECR (AWS-hosted) stalls from spark; ghcr.io/Cloudflare work. Plus
@@ -468,14 +460,6 @@ Status: open · Severity: polish · Owner: `src/precis/taproot/backfill.py` · T
   single-instance, live-toggle) per the runbook — never the shared role env.
   Defence-in-depth (make the memo write conflict-safe) is a non-blocking
   follow-up.
-
-- **Give `_evidence_edge_exists` an optional `conn=`** · Status: open ·
-  Severity: efficiency. `taproot/authoring.py::_evidence_edge_exists` opens its
-  own pool connection per call; `seed_claim_hub` (mint) still calls it once per
-  supporter in its loop. (hub-refine no longer uses it — it dedups at the
-  **paper** level via a single `_attached_paper_ids` query per hub, which also
-  fixes a convergence bug the chunk-scoped edge model introduced.) Thread the
-  caller's `conn` through for the mint path.
 
 ## Residuals (2026-07-31 — citation-edge chunk-grounding: grounded)
 
