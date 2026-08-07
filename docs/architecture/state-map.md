@@ -1558,7 +1558,13 @@ entries S2 itself may miss.
   (`boilerplate.py`'s `_is_references_chunk` + `classify_chunks`
   tail-walk, gr196447 Layer 1) was fixed to actually catch Marker's
   real one-entry-per-chunk shape and long (50-150+ entry) tail runs,
-  but chunks ingested *before* that fix are still `chunk_kind='paragraph'`
+  and (gr196690) to anchor on a detected References/Bibliography
+  *heading* chunk and classify the citation-shaped run after it
+  wherever it sits — not just at the document's tail — so a trailing
+  appendix/SI/footnotes section can't block detection of the real
+  bibliography above it; the plain tail walk remains the fallback when
+  no heading is found. Chunks ingested *before* those fixes are still
+  `chunk_kind='paragraph'`
   corpus-wide — remediated by the `bib_retag` pass below (gr196447
   Layer 2), and `bib_parse`'s own content-based detector keeps working
   on that backlog regardless in the meantime. Entries are split on the
@@ -1597,7 +1603,12 @@ entries S2 itself may miss.
   imported so the two never disagree) and re-types them to `'references'`
   **in place**, then DELETEs their `chunk_embeddings` / `chunk_summaries`
   so they drop out of semantic search and are never re-embedded (the embed
-  worker skips `chunk_kind='references'`). In-place `chunk_kind` UPDATE is
+  worker skips `chunk_kind='references'`). A late in-flight embed write
+  racing this retype can't resurrect a stale embedding either (gr196720):
+  `EmbedHandler.write_ok` re-checks the chunk's *current* `chunk_kind`
+  against `skip_chunk_kinds` inside the same `INSERT ... SELECT ... WHERE`
+  statement as the write, atomically — the write is a no-op if the chunk
+  was retyped between claim and write. In-place `chunk_kind` UPDATE is
   deliberate: it leaves `text` untouched so the append-only body-text
   trigger (`0068`) never fires, and preserves `chunk_id` so the dependent
   `chunk_citations`/`links`/`chunk_tags` rows stay attached (DELETE+INSERT

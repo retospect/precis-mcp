@@ -174,38 +174,30 @@ class EmbedHandler(WorkerHandler):
         re-run by ``DELETE``-ing failed rows and immediately
         re-claiming, without first scrubbing any partial inserts.
 
-        TOCTOU guard (gr196720): the chunk may have been claimed while
-        it was still ``chunk_kind='paragraph'`` and then retagged to a
-        ``skip_chunk_kinds`` kind (e.g. ``'references'``, by
-        ``bib_retag``) by a concurrent pass *after* the claim but
-        *before* this stale write lands. The claim query only filters
-        ``skip_chunk_kinds`` at claim time, so without re-checking here
-        a late write would silently re-create an embedding for a chunk
-        that's supposed to be permanently skipped — and since the
-        paper is already stamped, nothing revisits it, leaving that
-        embedding to pollute semantic search forever. So re-read the
-        chunk's CURRENT ``chunk_kind`` in this same connection right
-        before the INSERT and bail out if it now matches a skip kind.
-        A ``None`` row (chunk deleted) is not itself a skip match and
-        falls through to the existing INSERT, whose sub-select then
-        yields a NULL ``content_sha``.
+        TOCTOU guard (gr196720): a chunk can be retyped into a skip-kind
+        (e.g. ``bib_retag`` promoting a paragraph to ``'references'``,
+        which deletes its embedding) *between* this handler's claim and
+        this write — the claim query filtered on ``chunk_kind`` at claim
+        time, not now. Re-checking here, inside the same INSERT (an
+        ``INSERT ... SELECT ... WHERE`` instead of ``INSERT ... VALUES``)
+        rather than a separate SELECT beforehand, keeps the check and the
+        write atomic: no window where a concurrent retag lands between
+        "checked OK" and "wrote anyway". A skip-kind chunk's row is
+        simply not selected, so the INSERT (and any ``ON CONFLICT``
+        update) affects zero rows and no embedding is (re)created for it.
         """
         if not isinstance(payload, list):  # pragma: no cover — defensive
             raise TypeError(
                 f"EmbedHandler.write_ok expected list[float], got {type(payload).__name__}"
             )
-        if self.skip_chunk_kinds:
-            row = conn.execute(
-                "SELECT chunk_kind FROM chunks WHERE chunk_id = %s", (chunk_id,)
-            ).fetchone()
-            if row is not None and row[0] in self.skip_chunk_kinds:
-                return
         conn.execute(
             """
             INSERT INTO chunk_embeddings
                 (chunk_id, embedder, vector, status, content_sha)
-            VALUES (%s, %s, %s, 'ok',
-                    (SELECT content_sha FROM chunks WHERE chunk_id = %s))
+            SELECT c.chunk_id, %(embedder)s, %(vector)s, 'ok', c.content_sha
+              FROM chunks c
+             WHERE c.chunk_id = %(chunk_id)s
+               AND c.chunk_kind <> ALL(%(skip_kinds)s)
             ON CONFLICT (chunk_id, embedder) DO UPDATE
                SET vector = EXCLUDED.vector,
                    status = 'ok',
@@ -213,7 +205,12 @@ class EmbedHandler(WorkerHandler):
                    content_sha = EXCLUDED.content_sha,
                    attempts = chunk_embeddings.attempts + 1
             """,
-            (chunk_id, self.model_name, payload, chunk_id),
+            {
+                "chunk_id": chunk_id,
+                "embedder": self.model_name,
+                "vector": payload,
+                "skip_kinds": list(self.skip_chunk_kinds),
+            },
         )
 
 

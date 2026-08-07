@@ -218,53 +218,74 @@ class TestEmbedHandlerReferencesSkip:
         # search with bibliography embeddings.
         assert "references" in EmbedHandler.skip_chunk_kinds
 
-    def test_write_ok_skips_chunk_retagged_to_references(self, store):
-        # gr196720 TOCTOU regression: a chunk claimed while still
-        # 'paragraph' gets retagged to 'references' (mimicking a
-        # concurrent bib_retag pass) *before* the stale write_ok
-        # lands. write_ok must re-check the current chunk_kind and
-        # refuse to persist an embedding for it.
+    def test_write_ok_toctou_guard_skips_retyped_chunk(self, store):
+        # gr196720: a chunk can be retyped into a skip-kind (e.g. the
+        # bib_retag pass promoting a paragraph to 'references') AFTER
+        # this handler claimed it but BEFORE write_ok runs. write_ok
+        # must re-check the chunk's CURRENT chunk_kind, in the same
+        # statement as the INSERT, and write nothing for a chunk that's
+        # now on the skip list.
         from tests.workers._helpers import seed_chunk, seed_ref
 
         ref_id = seed_ref(store)
         chunk_id = seed_chunk(
-            store, ref_id=ref_id, ord=0, chunk_kind="paragraph", text="[1] Smith 2020"
+            store, ref_id=ref_id, ord=0, chunk_kind="paragraph", text="body text"
         )
         h = EmbedHandler(make_mock_bge_m3())
-        vec = h.process(ChunkRow(chunk_id=chunk_id, text="[1] Smith 2020"))
+        vec = h.process(ChunkRow(chunk_id=chunk_id, text="body text"))
 
         with store.pool.connection() as conn:
+            # Simulate the race: another pass retags the chunk between
+            # claim and this write.
             conn.execute(
                 "UPDATE chunks SET chunk_kind = 'references' WHERE chunk_id = %s",
                 (chunk_id,),
             )
-            conn.commit()
-
             h.write_ok(conn, chunk_id, vec)
             conn.commit()
 
             row = conn.execute(
-                "SELECT 1 FROM chunk_embeddings WHERE chunk_id = %s", (chunk_id,)
+                "SELECT count(*) FROM chunk_embeddings WHERE chunk_id = %s",
+                (chunk_id,),
             ).fetchone()
-        assert row is None, (
-            "write_ok must not persist an embedding for a chunk retagged "
-            "to a skip_chunk_kinds kind between claim and write"
-        )
+        assert row == (0,), "no embedding row should exist for a skip-kind chunk"
 
-    def test_write_ok_still_writes_normal_paragraph_chunk(self, store):
-        # Positive-case confirmation: the TOCTOU guard must not affect
-        # the common path — a chunk still tagged 'paragraph' at write
-        # time still gets its embedding written.
-        _ref_id, [chunk_id] = seed_chunks(store, ["ordinary body text"])
+    def test_write_ok_toctou_guard_removes_stale_embedding_before_retype(self, store):
+        # Same race, but an embedding already exists from before the
+        # retype (the ordinary case: bib_retag deletes the stale
+        # embedding when it retypes the chunk). The late write_ok must
+        # not resurrect it.
+        from tests.workers._helpers import seed_chunk, seed_ref
+
+        ref_id = seed_ref(store)
+        chunk_id = seed_chunk(
+            store, ref_id=ref_id, ord=0, chunk_kind="paragraph", text="body text"
+        )
         h = EmbedHandler(make_mock_bge_m3())
-        vec = h.process(ChunkRow(chunk_id=chunk_id, text="ordinary body text"))
+        vec = h.process(ChunkRow(chunk_id=chunk_id, text="body text"))
+
         with store.pool.connection() as conn:
             h.write_ok(conn, chunk_id, vec)
             conn.commit()
 
+        with store.pool.connection() as conn:
+            # bib_retag: retype + delete the stale embedding.
+            conn.execute(
+                "UPDATE chunks SET chunk_kind = 'references' WHERE chunk_id = %s",
+                (chunk_id,),
+            )
+            conn.execute(
+                "DELETE FROM chunk_embeddings WHERE chunk_id = %s", (chunk_id,)
+            )
+            conn.commit()
+
+        with store.pool.connection() as conn:
+            # The late embed write for the pre-retype claim lands after.
+            h.write_ok(conn, chunk_id, vec)
+            conn.commit()
+
             row = conn.execute(
-                "SELECT status, vector IS NOT NULL FROM chunk_embeddings "
-                "WHERE chunk_id = %s",
+                "SELECT count(*) FROM chunk_embeddings WHERE chunk_id = %s",
                 (chunk_id,),
             ).fetchone()
-        assert row == ("ok", True)
+        assert row == (0,), "the late write must not recreate the deleted embedding"
