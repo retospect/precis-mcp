@@ -10,7 +10,7 @@ tracked separately in `docs/improvement-plan.md` (same delete-on-ship rule).
 
 ---
 
-## 🔧 auto_check backlog: 169 open leaves, most of which never resolve
+## 🔧 auto_check backlog: 110 open leaves, most of which never resolve
 
 Status: `open` · Severity: `feature` · Owner: `src/precis/workers/auto_check.py`
 · Test: `test_resolvable_leaf_behind_the_batch_limit_is_not_starved`.
@@ -20,8 +20,10 @@ blocked by the ones ahead of it) — but the *population* that made it bite is
 still there and still growing. On 2026-08-07 prod held **169** open
 `auto_check` leaves against a pass limit of 50, and the pass resolved zero on
 every run: the leaves that accumulate are the ones that evaluate "pending"
-forever (a parent whose job failed, or that still has a live child todo). Now
-that sampling is fair, each leaf is looked at roughly every `169/50` ≈ 3
+forever (a parent whose job failed, or that still has a live child todo). The
+fix drained 59 of them within minutes of deploying — those had been resolvable
+all along and simply never reached — leaving **110** genuinely stuck. Now that
+sampling is fair, each leaf is looked at roughly every `110/50` ≈ 2
 passes, which is fine — but at 500 leaves it's every 10, and the same class of
 outage returns as latency rather than starvation. The pass logs a WARNING when
 the candidate set is at the limit. Needs a triage sweep of what's actually in
