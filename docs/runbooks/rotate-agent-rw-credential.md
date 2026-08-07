@@ -138,6 +138,41 @@ revoke it:
 
 Because step 5 is last, this rotation has no outage — do it whenever.
 
+## `CLAUDE_CODE_OAUTH_TOKEN`
+
+**One store, one edit.** Since 2026-08-07 `ensure_oauth_token` (both mirrors,
+`utils/claude_oauth.py` + `asa_bot/oauth.py`) resolves env → vault →
+`~/.secrets/pw/CLAUDE_CODE_OAUTH_TOKEN`. The per-user `~/.claude_oauth_token`
+files are retired and redeploy step **0a2** re-purges the service-account paths
+every deploy. Before that change this rotation was unreliable in a way that
+gave no signal: the file was read *first*, so a rotated vault value was
+silently ignored on every host that still had a stale copy.
+
+1. Mint a fresh long-lived token: `claude setup-token` as yourself.
+2. `precis secret set CLAUDE_CODE_OAUTH_TOKEN` against prod (or the web
+   secrets editor). No deploy needed — daemons pick it up within the 60s
+   `secrets._CACHE_TTL_SECONDS`.
+3. Confirm: `llm_call_log` gains `transport='claude_agent'` rows with no auth
+   errors, and `vault.events` shows reveals from the expected `host`/`process`
+   (migration 0111 records both).
+
+Two credential locations are deliberately **outside** the automated purge and
+must be handled by hand if you are rotating because of exposure:
+
+- `/var/root/.claude.json` on melchior — Claude Code *config*, root-owned;
+  deleting it discards settings, so it is a judgement call, not a sweep.
+- any human's `~/.claude/.credentials.json` — an interactive login. Rotating
+  the service token does not touch it; re-run `claude` to re-auth if you
+  revoke the underlying grant.
+
+To re-verify the fleet is clean (the 2026-08-07 sweep missed spark on the
+first pass by grepping only for `.claude_oauth_token`):
+
+    for h in melchior caspar balthazar spark; do
+      ssh $h 'sudo find /Users /home /var/root -maxdepth 3 \
+        \( -name ".claude_oauth_token" -o -name ".credentials.json" \) 2>/dev/null'
+    done
+
 ## Related
 
 - `docs/conventions/container-ops.md` — `scripts/prod-psql` / `scripts/db`

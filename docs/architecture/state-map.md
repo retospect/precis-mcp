@@ -147,13 +147,19 @@ for the durable pin of that boundary.
   `halt:tick-cap`), per-todo **cost** (`PRECIS_MAX_TODO_USD` $2 →
   `halt:cost-cap`), per-**tree** cost (`PRECIS_MAX_TREE_USD` $10 →
   `halt:tree-cost-cap`, summed over the candidate's whole root subtree),
-  and a global rolling **daily ceiling** (`PRECIS_DAILY_COST_CEILING` $20)
-  which tags nothing and aborts the whole round. The ceiling sums **all**
-  logged spend, not just planner ticks — if the day's envelope is gone,
-  minting more opus is the wrong move. (Over-blocking risk is small in
-  practice: measured non-planner spend runs ~$1–3/day — 7.5k local/OSS calls
-  totalled $0.97 on 08-06 — against a $20 ceiling. Revisit if the fleet's
-  baseline grows.) All three dollar caps read
+  and a global rolling **daily ceiling** (`PRECIS_DAILY_COST_CEILING` $20
+  code / $50 deployed) which tags nothing and aborts the whole round. The
+  ceiling sums **all** logged spend, not just planner ticks — if the day's
+  envelope is gone, minting more opus is the wrong move. Exposed as
+  `planner_guardrails.daily_budget` because the dispatcher is **not** the only
+  spender: the scheduler's `spends=True` cadences (`dream_agent` /
+  `structural` / `deep_review`) gate on the same number at fire time. Before
+  that they spent straight through a tripped ceiling, inverting the gate —
+  prod froze the cheap dispatcher lane for 18h from 2026-08-06 19:02 (542
+  warnings) while the expensive opus cadences kept billing. **The over-blocking
+  risk is no longer small:** a normal day now totals ~$50 against a $50
+  deployed cap, so the cap needs raising deliberately
+  (`docs/reference/config-variables.md` §3). All three dollar caps read
   `llm_call_log.cost_usd` — `plan_tick` stamps `LlmRequest.ref_id =
   parent_ref_id`, so a todo's ledger rows *are* its lifetime cost.
   Deliberately **includes** the `claude_agent`/`claude_p` transports that
@@ -570,15 +576,18 @@ via the vault) + the `epo_ops` dep probe — the honest "Kinds unavailable"
 set shrinks to the physical/real. (`python` stays gated: exposing local
 filesystem roots is a deliberate scoping choice, not incidental.)
 
-**OAuth materializer → vault (slice 0, code).** Both `ensure_oauth_token`
-mirrors (`utils/claude_oauth.py` + `asa_bot/oauth.py`) source the
-long-lived `CLAUDE_CODE_OAUTH_TOKEN` from the DB secrets vault when no
-`~/.claude_oauth_token` file is present (asa over its existing
-`PRECIS_DATABASE_URL`), so agentic daemons can run as `deploy` with no
-`~/.claude` state — de-pinning agentic work from the hermes principal.
-Ships safe (vault is a *fallback*). The live cutover — seed the vault,
-verify, flip run-as to `deploy`, scope vault read, retire hermes — is an
-ordered ops sequence (docs/design/factory-console-and-scheduling.md §12).
+**OAuth → vault only (slice 0 complete).** Both `ensure_oauth_token` mirrors
+(`utils/claude_oauth.py` + `asa_bot/oauth.py`) resolve the long-lived
+`CLAUDE_CODE_OAUTH_TOKEN` env → **vault** → `~/.secrets/pw/<NAME>`, so agentic
+daemons run as `deploy` with no `~/.claude` state — de-pinning agentic work
+from the hermes principal. The per-user `~/.claude_oauth_token` file the
+mirrors used to read *first* is **retired** (2026-08-07): it scattered a live
+credential in plaintext across service-account homes (five copies, two
+machines) and, sitting ahead of the vault, silently shadowed rotation. Redeploy
+step **0a2** purges the known service-account paths on every deploy, so the
+fleet can't drift back to two stores; a human's own `~/.claude/.credentials.json`
+is deliberately out of scope. Verified byte-identical to the vaulted value
+before the file leg was cut.
 
 **Resource substrate — `resource_slots` (slice 6b, dark).** `resource_slots
 (host, resource, capacity, free, kind)` (migration 0073) is the per-host

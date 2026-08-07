@@ -31,18 +31,25 @@ def _write_env_dump_stub(path: Path, dump_path: Path) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
 
 
+def _vault(monkeypatch, value: str | None) -> None:
+    """Seed the token in the vault — the only store since 2026-08-07, when the
+    per-user ``~/.claude_oauth_token`` leg was retired."""
+    monkeypatch.setattr(
+        "precis.secrets.get_secret", lambda name, **kw: value, raising=True
+    )
+
+
 def test_bootstrap_oauth_false_keeps_isolated_env_free_of_real_token(
     tmp_path: Path, monkeypatch
 ) -> None:
     """An isolated-env caller (fix_gripe's ``env_base``, §H cycle a) passes
     ``bootstrap_oauth=False`` precisely so the worker's REAL OAuth token
     never leaks into a sandboxed run that's meant to auth some other way
-    (``ANTHROPIC_API_KEY``). Must hold even when ``~/.claude_oauth_token``
-    exists on disk — the bootstrap must not even be consulted."""
+    (``ANTHROPIC_API_KEY``). Must hold even when the vault WOULD hand one over
+    — the bootstrap must not even be consulted."""
     home = tmp_path / "home"
     home.mkdir()
-    (home / ".claude_oauth_token").write_text("sk-ant-oat01-REAL-WORKER-TOKEN\n")
-    monkeypatch.setattr(Path, "home", lambda: home)
+    _vault(monkeypatch, "sk-ant-oat01-REAL-WORKER-TOKEN")
 
     stub = tmp_path / "claude_stub.sh"
     dump = tmp_path / "env.out"
@@ -72,16 +79,15 @@ def test_bootstrap_oauth_false_keeps_isolated_env_free_of_real_token(
     assert ENV_VAR not in isolated_env
 
 
-def test_bootstrap_oauth_default_true_injects_token_from_file(
+def test_bootstrap_oauth_default_true_injects_token_from_vault(
     tmp_path: Path, monkeypatch
 ) -> None:
     """Contrast case: a caller that does NOT ask for isolation
     (``bootstrap_oauth`` left at its default True) still gets the
-    ~/.claude_oauth_token bootstrap — today's behavior, unchanged."""
+    vault bootstrap — today's behavior, unchanged."""
     home = tmp_path / "home"
     home.mkdir()
-    (home / ".claude_oauth_token").write_text("sk-ant-oat01-FROM-FILE\n")
-    monkeypatch.setattr(Path, "home", lambda: home)
+    _vault(monkeypatch, "sk-ant-oat01-FROM-VAULT")
 
     stub = tmp_path / "claude_stub.sh"
     dump = tmp_path / "env.out"
@@ -99,7 +105,7 @@ def test_bootstrap_oauth_default_true_injects_token_from_file(
     )
 
     dumped = dump.read_text()
-    assert f"{ENV_VAR}=sk-ant-oat01-FROM-FILE" in dumped
+    assert f"{ENV_VAR}=sk-ant-oat01-FROM-VAULT" in dumped
     # Still never mutates the caller's dict — only the internal copy that
     # was actually handed to the subprocess gains the token.
     assert ENV_VAR not in caller_env
@@ -113,8 +119,7 @@ def test_run_claude_env_none_does_not_touch_process_environ(
     subprocess's copy should gain it."""
     home = tmp_path / "home"
     home.mkdir()
-    (home / ".claude_oauth_token").write_text("sk-ant-oat01-FROM-FILE-2\n")
-    monkeypatch.setattr(Path, "home", lambda: home)
+    _vault(monkeypatch, "sk-ant-oat01-FROM-VAULT-2")
     monkeypatch.delenv(ENV_VAR, raising=False)
 
     stub = tmp_path / "claude_stub.sh"
@@ -131,5 +136,5 @@ def test_run_claude_env_none_does_not_touch_process_environ(
     )
 
     dumped = dump.read_text()
-    assert f"{ENV_VAR}=sk-ant-oat01-FROM-FILE-2" in dumped
+    assert f"{ENV_VAR}=sk-ant-oat01-FROM-VAULT-2" in dumped
     assert ENV_VAR not in os.environ

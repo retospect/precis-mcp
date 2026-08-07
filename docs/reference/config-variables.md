@@ -137,8 +137,8 @@ everywhere; only `python` stays hidden (no `PRECIS_PYTHON_ROOTS`).
 |-----|----------|--------------|----------|------------|
 | `PRECIS_MAX_TICKS` | Planner max ticks | `10` | `10000` (all worker plists) | ✅ Correct — `10` is a test-scale default; prod deliberately raises it. |
 | `PRECIS_MAX_TODO_USD` | Planner per-todo USD cap | `2.0` | `5.0` (worker plists) | ✅ Prod override, reasonable. |
-| `PRECIS_DAILY_COST_CEILING` | Planner daily cost ceiling (dispatch-time, planner todos only) | `20.0` | `50.0` (worker plists) | 🔶 **Effectively dead** — the global breaker (`PRECIS_BUDGET_DAILY_USD` $20) trips first, so this $50 is never reached. Drop it, or raise the breaker above it if you want this as the real ceiling. |
-| `PRECIS_BUDGET_DAILY_USD` | Global 24h spend cap — call-site circuit breaker (`budget.breaker.gate_tier`, router.py) | `20.0` | **not set** ⇒ `20.0` | 🔶 **This is now the binding global ceiling** — the breaker gates *all* paid router LLM + fetches at the call site, and its $20 default trips *before* the planner's $50 daily ceiling is ever reached (so `PRECIS_DAILY_COST_CEILING` below is effectively dead). Set this explicitly to the real intended number and treat it as authoritative; keep the planner caps only for tick-cap + per-todo cap. |
+| `PRECIS_DAILY_COST_CEILING` | Daily cost ceiling over *all* recorded LLM spend — gates the dispatcher at mint AND the scheduler's `spends=True` cadences at fire | `20.0` | `50.0` (worker plists) | ⚠️ **The binding ceiling in practice, and it is set too low.** The earlier "effectively dead" note here was wrong: it assumed the `PRECIS_BUDGET_DAILY_USD` breaker trips first, but that breaker sums *real money only* (it excludes the notional `claude_agent`/`claude_p` OAuth dollars, which are ~93% of the total) and gates only the `expensive` band, so it does not fire. This one does — 542 times over 18h from 2026-08-06 19:02, freezing the dispatcher on a $50.23 24h total against the $50 cap. Observed normal-day spend sits right at the cap, so pick a deliberate number above it. |
+| `PRECIS_BUDGET_DAILY_USD` | Global 24h **real-money** spend cap — call-site circuit breaker (`budget.breaker.gate_tier`, router.py) | `20.0` | **not set** ⇒ `20.0` | 🔶 Complementary, not competing: `budget.meter` deliberately excludes the OAuth transports (subscription quota, not a metered balance), so this cap sees only the ~$4/day of openai_compat + paid fetches and never trips at $20. Set it explicitly to the real intended dollar number; it is the *money* cap, while `PRECIS_DAILY_COST_CEILING` above is the *discretionary-burn* cap that includes subscription quota. |
 | `PRECIS_BUDGET_HOURLY_USD` | Global hourly cap (same breaker) | `5.0` | not set ⇒ `5.0` | 🔶 Set explicitly alongside the daily cap. |
 | `PRECIS_BUDGET_CHEAP_MAX_USD` | Cheap/expensive band boundary | `0.02` | not set ⇒ `0.02` | ✅ Default fine. |
 | `PRECIS_LOAD_CEILING` | Load-average gate for heavy passes | none (`cpu*1.5`) | unset ⇒ default | ✅ Leave at default. It gates on *load-average* (CPU); melchior's jetsam is *RAM*-driven, so this is the wrong lever — the real fix (ProcessType=Interactive + sweeper lease-honoring) already shipped. |
@@ -331,12 +331,13 @@ placement for Anki/OA/GP fetch, LLM passes pinned to the agent host,
 compute lanes on spark, observe-first autonomy defaults, ship-dark
 gates off). Items worth a decision, ranked:
 
-1. **Consolidate the budget ceiling.** The global breaker
-   (`PRECIS_BUDGET_DAILY_USD`, $20 default) is the binding constraint and
-   trips before the planner's $50 `PRECIS_DAILY_COST_CEILING` ever
-   matters. Set the breaker caps explicitly to your real numbers and drop
-   (or deliberately out-scale) the planner daily ceiling. Keep the
-   planner tick-cap + per-todo cap.
+1. **Raise `PRECIS_DAILY_COST_CEILING` off $50, deliberately.** It is the
+   binding constraint (not the breaker — see the table), it counts notional
+   subscription dollars alongside real money, and observed normal-day spend
+   ($50.23 on 2026-08-06) sits *at* the cap. That froze the dispatcher for 18h.
+   Now that the scheduler's LLM cadences honour the same number, a cap set at
+   the noise floor stops the reviewers too. Pick a figure with headroom over a
+   busy day, and set `PRECIS_BUDGET_DAILY_USD` separately as the real-money cap.
 2. **Turn on the last-48h features you want live** (table above) — each
    needs a **deploy** first, then its flag/schedule step. The audio casts
    + `card_forge` are the closest to ready.

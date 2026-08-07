@@ -76,7 +76,10 @@ class Cadence:
     fire (drop-no-fire, not a stolen one). ``resolve_interval`` (§A), when
     set, resolves the live interval (seconds) from ``store`` at claim time —
     e.g. a DB-overridable knob — instead of the static ``interval_s``
-    (``interval_s`` stays as the cadence's documented/default value)."""
+    (``interval_s`` stays as the cadence's documented/default value).
+
+    ``spends`` marks a cadence whose work bills an LLM, so it is gated on the
+    global daily ceiling — see :func:`_over_daily_budget`."""
 
     name: str
     interval_s: int
@@ -84,6 +87,7 @@ class Cadence:
     host_affinity: str | None = None
     eligible: Callable[[], bool] | None = None
     resolve_interval: Callable[[Any], int] | None = None
+    spends: bool = False
 
 
 def _run_cron_tick(store: Any, batch_size: int) -> None:
@@ -269,6 +273,56 @@ def _dream_resolve_interval(store: Any) -> int:
     return int(dream_throttle.resolve_min_interval_minutes(store) * 60)
 
 
+def _over_daily_budget(store: Any, cadence: str) -> bool:
+    """True when a ``spends=True`` cadence must skip this fire — the fleet has
+    already burned ``PRECIS_DAILY_COST_CEILING`` over the trailing 24h.
+
+    Same number the dispatcher gates on
+    (:func:`precis.workers.planner_guardrails.daily_budget`), deliberately:
+    before this check the ceiling gated *only* the planner, so a tripped
+    envelope froze the cheap user-facing lane while the three expensive opus
+    cadences here spent right through it. Prod ran exactly that inversion for
+    18h from 2026-08-06 19:02 — 542 "daily ceiling hit" warnings from the
+    dispatcher while ``dream_agent`` kept billing ~$0.40/h.
+
+    **Checked after the lease is won, not before.** The other pre-claim gates
+    (``host_affinity`` / ``eligible``) exist so a host that *can't* do the work
+    leaves the fire for one that can. Budget is fleet-global — no other host
+    would pass either — so there is nothing to leave, and consuming the lease
+    is what keeps ``next_fire_at`` advancing. Skipping the claim instead would
+    park the lease in the past for the whole freeze and trip §D's
+    cadence-staleness alarm on all three cadences, reporting a stall whose real
+    cause is the budget. It also means the query runs once per actual fire
+    (≈5/h fleet-wide) rather than once per worker cycle.
+
+    Fails **closed**, like the dispatcher's guardrail call: a cost gate that
+    errors must not wave the spend through. The cost of that choice here is one
+    skipped tick on a cadence with its own internal dedup window, which the
+    next interval recovers.
+    """
+    from precis.workers import planner_guardrails
+
+    try:
+        budget = planner_guardrails.daily_budget(store)
+    except Exception:
+        log.exception(
+            "scheduler: budget check failed for cadence %s; skipping this fire "
+            "(fail-closed)",
+            cadence,
+        )
+        return True
+    if not budget.over:
+        return False
+    log.warning(
+        "scheduler: skipping cadence %s — daily cost ceiling hit (%s). "
+        "This fire is dropped, not deferred; the next one lands after the "
+        "rolling 24h window clears.",
+        cadence,
+        budget,
+    )
+    return True
+
+
 #: The folded cadences. ``cron_tick``/``watch_poll`` intervals mirror the
 #: launchd timers they retire (``precis-cron-tick`` 60s, ``precis-watch-poll``
 #: 3600s) — host-agnostic, no affinity/eligibility needed. ``dream_agent`` /
@@ -285,6 +339,14 @@ def _dream_resolve_interval(store: Any) -> int:
 #: Migrating ``paper_reconcile``'s own throttle onto the lease is §E, not §A.
 #: ``news_poll`` folds identically once it exposes a store-taking callable —
 #: a one-line addition here.
+#:
+#: ``spends=True`` marks the three cadences that bill an LLM, so they honour
+#: the same daily ceiling the dispatcher does (:func:`_over_daily_budget`).
+#: The rest are deliberately unmarked: ``watch_poll``/``anki_sync`` are network
+#: polls, ``health_digest`` is SQL, ``materialize`` is local embeddings, and
+#: ``cron_tick`` only *spawns child todos* — those become dispatch candidates
+#: and are gated there, at mint, so marking this cadence too would double-gate
+#: the same spend.
 CADENCES: tuple[Cadence, ...] = (
     Cadence(name="cron_tick", interval_s=60, run=_run_cron_tick),
     Cadence(name="watch_poll", interval_s=3600, run=_run_watch_poll),
@@ -321,12 +383,14 @@ CADENCES: tuple[Cadence, ...] = (
         interval_s=3600,
         run=_run_structural,
         eligible=_structural_eligible,
+        spends=True,
     ),
     Cadence(
         name="deep_review",
         interval_s=6 * 3600,
         run=_run_deep_review,
         eligible=_deep_review_eligible,
+        spends=True,
     ),
     Cadence(
         name="dream_agent",
@@ -335,6 +399,7 @@ CADENCES: tuple[Cadence, ...] = (
         host_affinity="melchior",
         eligible=_dream_agent_eligible,
         resolve_interval=_dream_resolve_interval,
+        spends=True,
     ),
     Cadence(
         name="anki_sync",
@@ -360,7 +425,9 @@ def run_scheduler_pass(
     A cadence with an unmet ``host_affinity`` or a failing ``eligible`` gate
     is skipped *before* the claim attempt (see the module docstring) — it
     counts toward neither ``claimed`` nor ``failed``, same as an undue
-    cadence.
+    cadence. A ``spends`` cadence over the daily cost ceiling is skipped
+    *after* the claim (:func:`_over_daily_budget` explains why) and so counts
+    as ``claimed`` with neither ``ok`` nor ``failed``.
 
     ``claimed`` = cadences this worker won this cycle (0 when nothing is due, so
     the loop still idle-sleeps); ``ok`` = cadences that ran clean; ``failed`` =
@@ -403,6 +470,11 @@ def run_scheduler_pass(
         if not won:
             continue
         claimed += 1
+        if cad.spends and _over_daily_budget(store, cad.name):
+            # Won the lease, spent nothing: counted as claimed but neither ok
+            # nor failed, since the work never ran. _over_daily_budget logs the
+            # reason — that WARNING is the only signal a fire was dropped.
+            continue
         log.info(
             "scheduler: fired cadence %s (every %ds) on %s",
             cad.name,

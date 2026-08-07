@@ -28,6 +28,16 @@ three caps the dispatcher consults before minting a planner job:
    until the rolling window clears. Coarse but effective — protects
    the overall budget envelope.
 
+   Cap 4 is the only one that isn't planner-specific, and it is
+   re-exported as :func:`daily_budget` because the dispatcher is not
+   the only lane that spends: the **scheduler's** LLM cadences
+   (``dream_agent`` / ``structural`` / ``deep_review``,
+   :mod:`precis.workers.scheduler`) run on their own leases and used
+   to spend straight through a tripped ceiling. That inverted the
+   gate — prod froze the dispatcher for 18h from 2026-08-06 19:02
+   while the *more* expensive opus cadences kept firing. Both lanes
+   now read this one number.
+
 **Why ``llm_call_log`` and not ``meta.cost_usd``.** Checks 2 and 3
 originally summed a ``meta.cost_usd`` key on child job refs that
 *nothing in the codebase ever wrote* — so both caps read $0.00 and
@@ -123,6 +133,40 @@ class RoundContext:
     tree_cost: dict[int, float] = field(default_factory=dict)
 
 
+@dataclass(frozen=True, slots=True)
+class DailyBudget:
+    """The global 24h envelope: what the fleet has recorded vs the ceiling.
+
+    Exposed (rather than left private to :func:`check_parent`) so the
+    scheduler's spending cadences gate on the *same* number the dispatcher
+    does. Two independent notions of "the day's spend" is precisely how the
+    original ``meta.cost_usd`` caps rotted into never firing — one definition,
+    one env var, or the caps drift apart again.
+    """
+
+    spent: float
+    ceiling: float
+
+    @property
+    def over(self) -> bool:
+        return self.spent >= self.ceiling
+
+    def __str__(self) -> str:
+        return f"${self.spent:.2f} >= ${self.ceiling:.2f}"
+
+
+def daily_budget(store: Store, *, ctx: RoundContext | None = None) -> DailyBudget:
+    """Recorded fleet-wide LLM spend over the trailing 24h, vs the ceiling.
+
+    ``ctx`` memoises the (broad) aggregate across one dispatch round; callers
+    outside the dispatcher pass none and get a fresh read.
+    """
+    return DailyBudget(
+        spent=_daily_cost(store, ctx),
+        ceiling=_env_float("PRECIS_DAILY_COST_CEILING", 20.0),
+    )
+
+
 def check_parent(
     store: Store, *, parent_ref_id: int, ctx: RoundContext | None = None
 ) -> GuardrailVerdict:
@@ -137,7 +181,6 @@ def check_parent(
     max_ticks = _env_int("PRECIS_MAX_TICKS", 10)
     max_todo_usd = _env_float("PRECIS_MAX_TODO_USD", 2.0)
     max_tree_usd = _env_float("PRECIS_MAX_TREE_USD", 10.0)
-    daily_ceiling = _env_float("PRECIS_DAILY_COST_CEILING", 20.0)
 
     tick_count = _read_tick_count(store, parent_ref_id)
     if tick_count >= max_ticks:
@@ -166,23 +209,22 @@ def check_parent(
             f"per-tree cost cap hit (${tree_usd:.2f} >= ${max_tree_usd:.2f})",
         )
 
-    daily_cost = _daily_cost(store, ctx)
-    if daily_cost >= daily_ceiling:
+    budget = daily_budget(store, ctx=ctx)
+    if budget.over:
         # Global ceiling — DON'T tag this specific parent; just skip
         # the dispatch wholesale until the window rolls. Other
         # parents on the candidate list will hit the same gate and
         # also skip.
         log.warning(
-            "planner_guardrails: daily ceiling hit ($%.2f >= $%.2f); "
-            "dispatcher skipping parent #%d",
-            daily_cost,
-            daily_ceiling,
+            "planner_guardrails: daily ceiling hit (%s); dispatcher skipping "
+            "parent #%d",
+            budget,
             parent_ref_id,
         )
         return GuardrailVerdict(
             allow=False,
             halt_tag=None,
-            reason=f"daily ceiling ${daily_cost:.2f} >= ${daily_ceiling:.2f}",
+            reason=f"daily ceiling {budget}",
         )
 
     return GuardrailVerdict(allow=True)
@@ -384,7 +426,9 @@ def bump_tick_count(store: Store, ref_id: int) -> int:
 
 
 __all__ = [
+    "DailyBudget",
     "GuardrailVerdict",
     "bump_tick_count",
     "check_parent",
+    "daily_budget",
 ]

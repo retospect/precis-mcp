@@ -112,6 +112,58 @@
         msg: "deploy target pinned to {{ precis_target_sha }}"
       run_once: true
 
+# ── 0a2. Purge retired Claude credential files (the vault is the only store) ──
+# `utils/claude_oauth.ensure_oauth_token` used to read a per-user
+# ~/.claude_oauth_token BEFORE the vault. That put a live, long-lived
+# credential in plaintext under every service account's home on every node —
+# a 2026-08-07 sweep found five copies across two machines, one of them on a
+# host that runs no agent at all — and, sitting ahead of the vault, it silently
+# shadowed rotation: rotate the vault and every host with a stale file kept
+# presenting the old token until someone deleted it by hand.
+#
+# The code now resolves env → vault → ~/.secrets/pw/<NAME>, so these files are
+# dead weight. Sweeping them on EVERY deploy (not once, by hand) is the point:
+# a file re-created by a well-meaning debugging session is gone again next
+# deploy, so the fleet cannot silently drift back to two stores.
+#
+# Scope is a hard-coded list of SERVICE-account paths, deliberately not a
+# find(1) over all homes: a human's own ~/.claude/.credentials.json is their
+# interactive login and is none of this playbook's business. Paths for both
+# /Users (darwin) and /home (linux) are listed unconditionally — `state:
+# absent` on a nonexistent path is a clean no-op, which is cheaper and far
+# less brittle than branching on os_family.
+- name: "Purge retired per-user Claude credential files"
+  hosts:
+    - gateway
+    - scheduler
+    - data
+    - inference
+  become: true
+  tags: [credentials, purge-claude-creds]
+  vars:
+    precis_retired_credential_paths:
+      - /Users/deploy/.claude_oauth_token
+      - /Users/hermes/.claude_oauth_token
+      - /Users/hermes/.claude/.credentials.json
+      - /home/deploy/.claude_oauth_token
+      - /home/hermes/.claude_oauth_token
+      - /home/atomsim/.claude/.credentials.json
+  tasks:
+    - name: Remove retired token files + dead service-account keychains
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop: "{{ precis_retired_credential_paths }}"
+      register: precis_cred_purge
+
+    - name: Report anything that was still lying around
+      when: precis_cred_purge.changed
+      ansible.builtin.debug:
+        msg: >-
+          purged retired Claude credentials:
+          {{ precis_cred_purge.results
+             | selectattr('changed') | map(attribute='item') | list | join(', ') }}
+
 # ── 0b. Decide whether this deploy actually changes anything (gate the bounce) ──
 # gr51351: the bounce play (step 2) used to restart EVERY precis daemon on
 # EVERY run — even a redundant same-sha redeploy — so a burst of back-to-back

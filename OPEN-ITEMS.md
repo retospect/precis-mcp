@@ -54,17 +54,35 @@ did **not** cover:
 
 ---
 
-## 💸 Scheduler-cadence passes ignore `PRECIS_DAILY_COST_CEILING`
+## 💸 `PRECIS_DAILY_COST_CEILING` is set at the noise floor — pick a real number
 
-Status: open · Severity: high · Owner: `budget/quota.py` + `workers/scheduler.py` · Test: with the 24h window over ceiling, a `dream_agent` cadence tick declines to dispatch.
+Status: open · Severity: high · Owner: Reto (a deploy var, not a code change) · Test: a normal day's recorded 24h spend sits comfortably under the deployed cap.
 
-Surfaced by the tier audit below. The ceiling returns zero **dispatch
-candidates** — it gates the job queue. `dream`, `structural` and `deep_review`
-fire off the *scheduler cadence*, never consult it, and so billed straight
-through the entire 13-hour planner freeze on 2026-08-06/07. Moving them to
-`Tier.BIG` (below) removes the sting but not the hole: any future FRONTIER
-cadence pass has the same free pass. Pairs with the dark `quota.py evaluate()`
-— OAuth spend still has no global gate at all.
+The *structural* half is fixed: the scheduler's `spends=True` cadences
+(`dream_agent` / `structural` / `deep_review`) now gate on the same
+`planner_guardrails.daily_budget` the dispatcher does, so a tripped envelope no
+longer freezes the cheap user-facing lane while the expensive opus cadences
+bill through it. That inversion ran in prod for 18h from 2026-08-06 19:02 —
+542 "daily ceiling hit" warnings from the dispatcher while `dream_agent` kept
+spending ~$0.40/h.
+
+What is left is a **tuning decision, and it now bites harder**, because the
+gate finally covers everything: the deployed cap is $50 and the observed 24h
+total on 2026-08-06 was **$50.23** ($46.51 `claude_agent` + $2.38
+`openai_compat` + $1.34 `openai_tools`). A cap sitting at the noise floor means
+an ordinary day parks the planner *and*, from now on, the reviewers. Two knobs,
+deliberately different currencies:
+
+- `PRECIS_DAILY_COST_CEILING` — discretionary burn, **includes** notional OAuth
+  subscription dollars (~93% of the total). Raise it with real headroom.
+- `PRECIS_BUDGET_DAILY_USD` — real money only, excludes the OAuth transports;
+  it sees ~$4/day and so never trips at its $20 default. Set it explicitly.
+
+Note `docs/reference/config-variables.md` previously asserted the reverse (that
+the breaker binds first and `PRECIS_DAILY_COST_CEILING` is "effectively dead,
+drop it"). That was wrong — the two sum different things — and is corrected
+there. Still pairs with the dark `quota.py evaluate()`: OAuth *quota*, as
+distinct from dollars, has no global gate.
 
 ## 🔎 `OPENROUTER_API_KEY` is revealed ~22k times a day — the 60s cache isn't holding
 
@@ -92,20 +110,35 @@ only melchior and concluded "one machine", which was wrong. Claude Code's real
 credential store is `.claude/.credentials.json`. Widening the net (2026-08-07,
 all users, all hosts):
 
-| Host | Path | Owner | mtime |
-|---|---|---|---|
-| melchior | `/Users/deploy/.claude_oauth_token` | deploy | 2026-07-12 |
-| melchior | `/Users/hermes/.claude_oauth_token` | hermes | 2026-07-12 |
-| melchior | `/Users/hermes/.claude/.credentials.json` | hermes | 2026-07-12 |
-| melchior | `/Users/reto/.claude/.credentials.json` | reto | 2026-08-07 |
-| melchior | `/var/root/.claude.json` | root | 2026-06-11 |
-| **spark** | **`/home/atomsim/.claude/.credentials.json`** | atomsim | 2026-07-13 |
+| Host | Path | Owner | mtime | Now |
+|---|---|---|---|---|
+| melchior | `/Users/deploy/.claude_oauth_token` | deploy | 2026-07-12 | purged |
+| melchior | `/Users/hermes/.claude_oauth_token` | hermes | 2026-07-12 | purged |
+| melchior | `/Users/hermes/.claude/.credentials.json` | hermes | 2026-07-12 | purged |
+| melchior | `/Users/reto/.claude/.credentials.json` | reto | 2026-08-07 | **left** — human login |
+| melchior | `/var/root/.claude.json` | root | 2026-06-11 | **left** — see below |
+| **spark** | **`/home/atomsim/.claude/.credentials.json`** | atomsim | 2026-07-13 | purged |
 
-caspar and balthazar are genuinely clean. **spark is not** — it holds a full
-509-byte credential blob, dormant (no atomsim processes, no claude systemd
-unit, no cron) but live and unrotated. Rotate or remove it, and fold both it
-and `/var/root/.claude.json` into the rotation runbook. Lesson for the next
-sweep: grep for `.credentials.json`, not just `.claude_oauth_token`.
+caspar and balthazar are genuinely clean. Lesson for the next sweep: grep for
+`.credentials.json`, not just `.claude_oauth_token`.
+
+`ensure_oauth_token` (both mirrors) now resolves env → **vault** → the guarded
+`~/.secrets/pw/<NAME>` bootstrap file; the per-user `~/.claude_oauth_token` leg
+is gone from the code, and redeploy step **0a2** re-purges the service-account
+paths on every deploy so the fleet can't drift back to two stores. The vaulted
+value was verified byte-identical (sha1 `f7a44eaef175…`, 108 chars) to the
+token melchior's agent worker was authenticating with, so the cutover changed
+the credential's *source*, not the credential.
+
+Still open, both needing Reto's call rather than a deploy:
+
+- **`/var/root/.claude.json`** (melchior, root, 2026-06-11) — a Claude Code
+  *config* file, not purely a credential, and root-owned; deleting it also
+  discards settings. Out of the automated purge on purpose.
+- **Rotation.** Purging copies is not rotating. The token in the vault is the
+  same one that has been on disk in five places since July; treat it as
+  exposed and rotate it (`docs/runbooks/rotate-agent-rw-credential.md` — now
+  the single rotation point, which is the whole benefit of vault-only).
 
 The only launchd unit on melchior referencing a Claude credential is
 `com.litellm.plist.retired-2026-07-26`, which is renamed out of launchd's path

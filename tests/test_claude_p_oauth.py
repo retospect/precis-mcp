@@ -11,8 +11,8 @@ stale keychain creds. This pins that ``call_claude_p`` runs
 
 from __future__ import annotations
 
-from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import precis.utils.claude_p as claude_p
 from precis.utils.claude_oauth import ENV_VAR
@@ -26,9 +26,15 @@ def _capture_run_claude(captured: dict) -> object:
     return _fake
 
 
-def test_call_claude_p_injects_oauth_token_from_file(tmp_path, monkeypatch):
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    (tmp_path / ".claude_oauth_token").write_text("sk-ant-oat01-FIGURE\n")
+def _vault(monkeypatch: Any, value: str | None) -> None:
+    """Seed the token in the vault — the only store since 2026-08-07."""
+    monkeypatch.setattr(
+        "precis.secrets.get_secret", lambda name, **kw: value, raising=True
+    )
+
+
+def test_call_claude_p_injects_oauth_token_from_vault(monkeypatch):
+    _vault(monkeypatch, "sk-ant-oat01-FIGURE")
     # A shell-less daemon has no token in its own env.
     monkeypatch.delenv(ENV_VAR, raising=False)
     monkeypatch.setenv("PRECIS_CLAUDE_BIN", "claude")
@@ -39,14 +45,13 @@ def test_call_claude_p_injects_oauth_token_from_file(tmp_path, monkeypatch):
     res = claude_p.call_claude_p("draw something. reply JSON {}")
 
     assert res.data == {"ok": True}
-    # The subprocess env carried the token loaded from the file.
+    # The subprocess env carried the token revealed from the vault.
     assert captured["env"] is not None
     assert captured["env"][ENV_VAR] == "sk-ant-oat01-FIGURE"
 
 
-def test_call_claude_p_does_not_clobber_existing_env_token(tmp_path, monkeypatch):
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    (tmp_path / ".claude_oauth_token").write_text("sk-ant-oat01-FROMFILE")
+def test_call_claude_p_does_not_clobber_existing_env_token(monkeypatch):
+    _vault(monkeypatch, "sk-ant-oat01-FROMVAULT")
     # A plist/interactive-shell token in the process env must win.
     monkeypatch.setenv(ENV_VAR, "sk-ant-oat01-FROMENV")
     monkeypatch.setenv("PRECIS_CLAUDE_BIN", "claude")

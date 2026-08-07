@@ -17,8 +17,9 @@
 
   {# Factory Phase-2 slice 2B: runs as `deploy` (was hermes). deploy owns
      the colima docker socket (0600) the §13 container executor needs, plus
-     its own OAuth (~deploy/.claude_oauth_token, bootstrapped into
-     CLAUDE_CODE_OAUTH_TOKEN by ensure_oauth_token) and its own
+     its own OAuth (CLAUDE_CODE_OAUTH_TOKEN, revealed from the DB vault
+     by ensure_oauth_token — the ~deploy/.claude_oauth_token file this
+     used to read is retired and purged by redeploy step 0a2) and its own
      ~/.claude/mcp.json (this role renders it from the shared asa_bot
      template). plan_tick uses --permission-mode bypassPermissions so no
      ~/.claude/settings.json dependency. §A: dream is no longer its own
