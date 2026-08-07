@@ -45,6 +45,10 @@
     <string>{{ precis_worker_dsn }}</string>
     <key>HF_HOME</key>
     <string>{{ precis_worker_hf_home }}</string>
+    {# Tier-0 structure preflight gate (structure/preflight.py) — flipped ON
+       cluster-wide 2026-08-07 after landing dark. #}
+    <key>PRECIS_STRUCTURE_PREFLIGHT</key>
+    <string>1</string>
     {# PRECIS_PROCESS tags every row written to worker_logs so
        `precis logs --process precis-worker` filters cleanly across
        the cluster. PRECIS_SOURCE serves the existing audit role

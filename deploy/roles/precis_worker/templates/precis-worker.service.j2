@@ -27,6 +27,7 @@ Environment=PRECIS_DATABASE_URL={{ precis_worker_dsn }}
 Environment=HF_HOME={{ precis_worker_hf_home }}
 Environment=PRECIS_PROCESS=precis-worker
 Environment=PRECIS_SOURCE=precis-worker
+Environment=PRECIS_STRUCTURE_PREFLIGHT=1
 # §F cycle b: the ExecStart --embedder/--embedder-url flags below only
 # reach cli/worker.py's OWN embedder resolution (the standing `embed`
 # pass, now manual-only). capability_probe._probe_embedder and
