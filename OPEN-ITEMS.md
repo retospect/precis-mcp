@@ -36,6 +36,47 @@ chunks and was not root-caused.
 
 **Open follow-up, unresolved:** `autocatpath_aggregate` still uses the deprecated legacy blocking `dispatch` (gr187627); `autocatpath_seed` itself correctly takes the detached submit/poll path.
 
+### Residuals after the 2026-08-07 visibility ship (`80e562a6`)
+
+That ship was **visibility only** — the child now runs unbuffered, tails are
+budgeted per stream, and the dashboard shows a real reason. None of the
+below moved; all four are still open.
+
+1. **Failure semantics — decided, unbuilt.** Reto's call: when retries are
+   exhausted a failed child must park its parent in a **visible non-success
+   terminal state**, not close it and not wait forever ("so we know and it
+   can be addressed"). Implies (a) `child_job_succeeded::evaluate` gains a
+   third verdict instead of today's bool, (b) `auto_check` gains a terminal
+   status beside `done`/`auto-timeout` that surfaces in the attention view,
+   and (c) **retries first** — `swept:wall-timeout` joins the retry-eligible
+   classes with a bounded count, because making failure terminal without
+   retries lets one transient kill bury a leaf permanently. Ordering matters;
+   terminal is the backstop *after* retries, never instead of them.
+2. **The 26 genuine overruns.** Measured, not estimated: 26 failures cluster
+   at the runner's ~3 h deadline (9027–13321 s). The 5400 s *compute* budget
+   fired exactly once in 108 jobs, so it is NOT the binding constraint. Levers
+   in preference order: `pose_count` 6 → 3–4 (dominant cost multiplier),
+   incremental checkpointing so a kill degrades instead of annihilating, then
+   sharding per-intermediate/edge. **Do not tighten `fmax`** — at 0.1 eV/Å
+   (`neb_fmax` 0.15) it is already 2× looser than the ASE/OC20 norm; loosening
+   further buys speed by making the barriers not worth computing.
+3. **The other 59 are not timeouts and the cause is UNRESOLVED.** Runtimes
+   21 s → 8061 s with no clustering — not a deadline signature. Sibling
+   failures report `rc=-15` (SIGTERM). A reboot-correlation pass was run and
+   its "strong correlation" verdict does **not** hold up: deaths land in
+   twelve different hours against two reboots, and detached poll latency means
+   the recorded time is when the poller noticed, not when the child died. Two
+   hard facts did come out of it, both untouched: spark reboots nightly at
+   04:00 IST via an intentional `nightly-reboot.timer` (gripe 50907), and
+   `apt-daily.timer`/`apt-daily-upgrade.timer` are **enabled** there, against
+   `dgx_spark_node_bringup`'s "disable on serving nodes". Re-diagnose from the
+   unbuffered logs the ship just enabled rather than from these timestamps.
+4. **Retention flag has no TTL or cap.** `PRECIS_PATHWAY_KEEP_FAILED_SCRATCH=1`
+   accumulates dirs in `/tmp` for as long as it is left on — accepted as a v1
+   operator-discipline trade-off (default off), but a count/age sweep would
+   close it. Also unexplained: job ref_id 187387 (2026-08-02) has zero chunks
+   where every sibling has diagnostics; not root-caused.
+
 ---
 
 ## 🔧 auto_check backlog: 110 open leaves, most of which never resolve
