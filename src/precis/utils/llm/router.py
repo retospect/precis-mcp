@@ -982,11 +982,21 @@ def result_from_agent(res: AgentResult, *, model: str, tier: Tier) -> LlmResult:
 def result_from_claude_p(res: ClaudePResult, *, model: str, tier: Tier) -> LlmResult:
     """Normalize a :class:`~precis.utils.claude_p.ClaudePResult`.
 
-    ``text`` is the raw stdout; ``data`` carries the parsed JSON dict so a
-    judge caller reads ``LlmResult.data`` exactly as it read ``ClaudePResult.data``.
+    ``text`` is the assistant's reply with the metering envelope stripped;
+    ``data`` carries the parsed JSON dict so a judge caller reads
+    ``LlmResult.data`` exactly as it read ``ClaudePResult.data``.
+
+    The ``or res.raw_stdout`` fallback is what keeps this identical to the
+    pre-metering behaviour for a legacy 3-field ``ClaudePResult`` (test fakes)
+    and for any stdout that wasn't an envelope. Without it, turning on
+    ``--output-format json`` would have quietly redefined ``LlmResult.text``
+    as the metadata envelope for every ``claude_p`` caller — including the
+    ``res.data or _parse_json_object(res.text)`` fallbacks in
+    :mod:`precis.taproot.canon` and :mod:`precis.utils.llm.requirement`, which
+    would then parse the envelope's own keys as if they were the judge's answer.
     """
     return LlmResult(
-        text=res.raw_stdout,
+        text=res.text or res.raw_stdout,
         cost_usd=res.cost_usd,
         turns_used=None,
         model=model,
@@ -1134,7 +1144,23 @@ class LlmRequest:
     system_prompt: str | Path | None = None
     mcp_config: str | Path | None = None
     max_turns: int = 20
-    output_format: str = "text"
+    #: ``stream-json``, not ``text`` — this is where ``cost_usd`` comes from.
+    #: ``claude -p`` reports ``total_cost_usd`` / ``num_turns`` / ``usage`` only
+    #: in the trailing stream-json ``result`` event; on the text path
+    #: ``AgentResult`` falls back to a stderr regex for ``Cost: $N.NN`` that
+    #: modern Claude Code no longer prints, so cost lands ``NULL``. That was a
+    #: silent per-call-site opt-in: the passes that happened to pass
+    #: ``output_format="stream-json"`` (dream, review, plan_tick) billed
+    #: visibly, and the ones that didn't (briefing 815 calls, meditation,
+    #: card_forge, reading_brief) logged >1000 Claude calls at NULL cost —
+    #: invisible to ``PRECIS_DAILY_COST_CEILING``, which sums this column.
+    #: Defaulting it here makes cost the default and text the opt-out.
+    #: Safe for the other transports (they ignore it, per the comment above)
+    #: and for callers reading ``LlmResult.text``: the stream-json path lifts
+    #: the result event's ``result`` field into ``final_text``, so ``text``
+    #: stays the assistant's answer and only ``raw_text`` (the audit blob)
+    #: changes shape.
+    output_format: str = "stream-json"
     disallowed_tools: tuple[str, ...] = field(default_factory=tuple)
     #: ``(store, ref_id, source)`` for a ``ref_events`` audit row on success
     #: (the CAD / structure / follow-up paths use it). ``store`` is typed

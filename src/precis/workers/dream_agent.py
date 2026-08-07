@@ -98,13 +98,19 @@ _DEFAULT_QUEST_ANGLE = 0.5
 log = logging.getLogger(__name__)
 
 
-# Default model: the router's FRONTIER tier (opus-4.8). The dream
-# pass moved onto the consolidated cloud reasoning tier (ADR 0046 unit
-# 4b) — "if it's worth thinking about, think well": opus-4.8 is where
-# the speculative-connection work earns the stronger model, at the same
-# price as 4-7. Override with PRECIS_DREAM_AGENT_MODEL for a per-pass pin.
+# Default model: the router's BIG tier — local-first (qwen3-235b on the
+# spark pair) with an OSS cloud fallback, per ``llm.chain.big``.
+#
+# This was FRONTIER (opus-4.8) on the "if it's worth thinking about, think
+# well" argument. The bill retired that argument: 30 days of hourly dreaming
+# cost $1,313.77 — over 4x the plan_tick runaway we treated as an incident —
+# because FRONTIER has no ``llm.chain.frontier`` row and falls through to the
+# compiled opus default. A speculative-association pass is exactly the work
+# that can wait for local hardware: nothing downstream blocks on a dream, so
+# latency is free and the tokens are not. Override with
+# PRECIS_DREAM_AGENT_MODEL for a per-pass pin.
 def _default_model() -> str:
-    return resolve_model(Tier.FRONTIER)
+    return resolve_model(Tier.BIG)
 
 
 # Same turn cap as the bash script's --max-turns 20.
@@ -215,13 +221,13 @@ def run_dream_pass(store: Store) -> BatchResult:
     except Exception:
         log.warning("dream_agent: failed to mark last-real-run", exc_info=True)
 
-    # Routed through the LLM seam (ADR 0046 unit 4b): FRONTIER + tools,
-    # so ``PRECIS_LLM_BACKEND`` can move the whole dream pass onto an OSS
-    # model. ``model=`` keeps the per-pass ``PRECIS_DREAM_AGENT_MODEL`` pin
-    # (None ⇒ the tier default). Errors fold into ``res.error``.
+    # Routed through the LLM seam (ADR 0046 unit 4b): BIG + tools, so the
+    # operator-authored ``llm.chain.big`` (local qwen3-235b → OSS cloud)
+    # carries it. ``model=`` keeps the per-pass ``PRECIS_DREAM_AGENT_MODEL``
+    # pin (None ⇒ the tier default). Errors fold into ``res.error``.
     res = dispatch(
         LlmRequest(
-            tier=Tier.FRONTIER,
+            tier=Tier.BIG,
             source="dream",
             prompt=prompt,
             tools_needed=True,

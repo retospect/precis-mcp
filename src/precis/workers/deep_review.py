@@ -218,10 +218,16 @@ DEEP_REVIEW = Reviewer(
     tier_tag="tier:deep",
     gate_env="PRECIS_DEEP_REVIEW",
     meta_prefix="deep_review_",
-    # Cloud reasoning tier (opus-4.8) via the router; a per-pass
+    # BIG tier via the router — local-first (``llm.chain.big``). This is the
+    # live dispatch tier (``run_review_pass`` reads ``reviewer.tier``), not
+    # decoration, so it has to move in lockstep with the ``tier_default`` in
+    # ``workers/registry.py``. Was FRONTIER, which has no ``llm.chain.frontier``
+    # row and so fell through to the compiled opus default — the same
+    # by-omission cost pattern that made ``dream`` the priciest pass we run.
+    # A deep review is a 6h-cadence pass with nothing waiting on it. A per-pass
     # ``PRECIS_DEEP_REVIEW_MODEL`` pin still wins in ``run_review_pass``.
-    tier=Tier.FRONTIER,
-    model=resolve_model(Tier.FRONTIER),
+    tier=Tier.BIG,
+    model=resolve_model(Tier.BIG),
     max_turns=60,
     timeout_s=1800,
     min_interval_hours=MIN_INTERVAL_HOURS,

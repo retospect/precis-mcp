@@ -200,10 +200,12 @@ STRUCTURAL = Reviewer(
     tier_tag="tier:structural",
     gate_env="PRECIS_STRUCTURAL_REVIEW",
     meta_prefix="structural_",
-    # Cloud reasoning tier (opus-4.8) via the router; a per-pass
-    # ``PRECIS_STRUCTURAL_MODEL`` pin still wins in ``run_review_pass``.
-    tier=Tier.FRONTIER,
-    model=resolve_model(Tier.FRONTIER),
+    # BIG tier via the router — local-first (``llm.chain.big``). A tree-shape
+    # review runs on a 6h cadence with nothing waiting on it, so it buys
+    # nothing from opus latency-or-price; a per-pass ``PRECIS_STRUCTURAL_MODEL``
+    # pin still wins in ``run_review_pass``.
+    tier=Tier.BIG,
+    model=resolve_model(Tier.BIG),
     max_turns=30,
     timeout_s=900,
     min_interval_hours=MIN_INTERVAL_HOURS,

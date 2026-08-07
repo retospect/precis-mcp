@@ -85,13 +85,59 @@ def _blob_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+#: Transports that spend real money on a metered account. A ``NULL`` cost on
+#: one of these is a **metering bug**, not a free call — unlike the local /
+#: OSS lanes, where ``None`` legitimately means "cost nothing to report".
+#: These are ``Transport`` *values* (what ``LlmCallRecord.transport`` carries),
+#: deliberately not the ``Backend`` names — spelling a backend here would be a
+#: silently-never-matching entry. Compared as strings so this module stays
+#: import-free of the router (it is imported *by* it).
+BILLED_TRANSPORTS = frozenset({"claude_agent", "claude_p"})
+
+
+def _warn_if_unmetered(rec: LlmCallRecord) -> None:
+    """Make a missing ``cost_usd`` on a billed transport loud.
+
+    Cost is not reported by the provider unless the call site asks for it —
+    ``--output-format`` on both claude lanes. That made metering a silent
+    per-call-site opt-in: the sites that happened to ask billed visibly, the
+    ones that didn't logged >1000 Claude calls at ``NULL`` cost, invisible to
+    ``PRECIS_DAILY_COST_CEILING`` (which sums this column). Both defaults are
+    fixed now, but a *default* only protects the call sites that exist today —
+    the next transport, or a caller that overrides ``output_format`` back to
+    ``text``, would reopen the hole just as quietly.
+
+    So this is the standing detector, at the one chokepoint every dispatch
+    passes through: a billed transport that reports no cost gets a WARNING
+    naming the source, which is enough to catch it in the worker log without
+    failing the call. Deliberately not an exception — a metering gap must never
+    break the LLM call it is measuring (the module's dark-by-construction rule).
+    Errored calls are exempt: a transport that blew up legitimately has no cost.
+    """
+    if rec.errored or rec.cost_usd is not None:
+        return
+    if rec.transport not in BILLED_TRANSPORTS:
+        return
+    log.warning(
+        "route_log: %s call on billed transport %r reported no cost_usd — "
+        "this call is invisible to the daily cost ceiling. Check the call "
+        "site's output_format.",
+        rec.source or "unknown-source",
+        rec.transport,
+    )
+
+
 def record_call(rec: LlmCallRecord, *, store: Store | None = None) -> None:
     """Write one call record — best-effort, never raises.
 
     No-op when no store is bound (and none passed). Dedups the request/response
     text into ``llm_blob`` (content-addressed), then inserts the metadata row.
     A store may be passed explicitly (tests); otherwise the bound one is used.
+
+    Also warns on an unmetered billed call (:func:`_warn_if_unmetered`) — that
+    check runs before the store guard, so it fires in DB-free callers too.
     """
+    _warn_if_unmetered(rec)
     st = store if store is not None else _STORE
     if st is None:
         return

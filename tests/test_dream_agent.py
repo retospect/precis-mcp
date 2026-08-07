@@ -166,17 +166,21 @@ def test_packaged_prompt_carries_thread_directive(
     assert "Never mint a ``kind='todo'``" in prompt
 
 
-def test_dream_default_model_is_frontier(
+def test_dream_default_model_is_big_not_frontier(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The dream pass consolidated onto the router's FRONTIER tier
-    # (opus-4.8); an explicit PRECIS_DREAM_AGENT_MODEL pin still wins.
+    # The dream pass runs on the router's BIG tier, which resolves through
+    # the operator-authored ``llm.chain.big`` (local-first). It was FRONTIER
+    # until the bill made the case: FRONTIER has no ``llm.chain.frontier``
+    # row, so it fell through to the compiled opus default and cost $1,313
+    # over 30 days for an hourly speculative-association pass that nothing
+    # downstream waits on. An explicit PRECIS_DREAM_AGENT_MODEL pin still wins.
     from precis.utils.llm.router import Tier, resolve_model
     from precis.workers.dream_agent import _default_model
 
-    monkeypatch.delenv("PRECIS_MODEL_OPUS", raising=False)
-    assert _default_model() == resolve_model(Tier.FRONTIER)
-    assert _default_model() == "claude-opus-4-8"
+    monkeypatch.delenv("PRECIS_MODEL_SONNET", raising=False)
+    assert _default_model() == resolve_model(Tier.BIG)
+    assert _default_model() != resolve_model(Tier.FRONTIER)
 
 
 def test_override_prompt_wins_over_packaged(

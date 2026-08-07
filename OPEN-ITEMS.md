@@ -54,6 +54,146 @@ did **not** cover:
 
 ---
 
+## 💸 Scheduler-cadence passes ignore `PRECIS_DAILY_COST_CEILING`
+
+Status: open · Severity: high · Owner: `budget/quota.py` + `workers/scheduler.py` · Test: with the 24h window over ceiling, a `dream_agent` cadence tick declines to dispatch.
+
+Surfaced by the tier audit below. The ceiling returns zero **dispatch
+candidates** — it gates the job queue. `dream`, `structural` and `deep_review`
+fire off the *scheduler cadence*, never consult it, and so billed straight
+through the entire 13-hour planner freeze on 2026-08-06/07. Moving them to
+`Tier.BIG` (below) removes the sting but not the hole: any future FRONTIER
+cadence pass has the same free pass. Pairs with the dark `quota.py evaluate()`
+— OAuth spend still has no global gate at all.
+
+## ✅ FIXED HERE (unshipped) — `dream` on Opus + NULL-cost Claude calls
+
+Both root-caused and fixed in this worktree; delete this block on ship.
+
+**`dream` cost $1,313.77/30d** (1,636 calls — 4x the `plan_tick` runaway we
+treated as an incident). Not a runaway: `dream_agent` dispatched at
+`Tier.FRONTIER`, and `app_settings` has `llm.chain.small/.medium/.big` but
+**no `llm.chain.frontier`** — so it fell through to the compiled default
+`PRECIS_MODEL_OPUS=claude-opus-4-8` on `claude_agent`, hourly, forever. The
+tiers with operator-authored chains were the cheap ones; the expensive tier was
+the one nobody wrote a row for. Moved `dream_agent`, `structural`,
+`deep_review` and `card_forge` to `Tier.BIG` (local-first via `llm.chain.big`)
+— they are background cadence passes with nothing waiting on them, so latency
+is free and the tokens are not. Verified no `PRECIS_*_MODEL` env pin exists in
+any template or live plist that would override the tier.
+
+`deep_review` needed the move in **two** places and the pre-ship review caught
+the second: `registry.py`'s `tier_default` is the cosmetic `/env` inspector
+snapshot, while `deep_review.py`'s `Reviewer.tier` is the live dispatch tier
+(`run_review_pass` reads `reviewer.tier`). Moving only the former would have
+left the pass on opus while the UI and the tests both reported BIG — the
+failure mode being *worse* than not moving it at all. Any future tier move has
+to touch the dispatch site, not just the introspection row.
+
+Deliberately left on FRONTIER: `reading_brief` / `briefing_cast` (the pin is
+gripe 171782's fix — FRONTIER forces `claude_agent` so a backend flip can't
+hijack the daily voice cast, and the quota breaker gates it), `meditation`
+(same cast family, pinned sonnet), `quest/tick.py` (a designed one-step
+escalation to the senior tier — collapsing it would make escalation a no-op),
+and `diagram`/`figure` (rare, interactive).
+
+**>1,000 Claude calls logged `cost_usd = NULL`** — and they were not ancient.
+`call_claude_agent` reports cost only from the trailing stream-json `result`
+event; on the default `output_format="text"` path it falls back to a stderr
+regex for `Cost: $N.NN` that modern Claude Code no longer prints, so cost lands
+NULL. That made cost a silent **per-call-site opt-in**: the sites that happened
+to pass `output_format="stream-json"` (dream, review, plan_tick) bill visibly —
+and their NULL rows stop dead on the date each was migrated (2026-08-02 /
+08-04) — while the sites that never passed it are 100% NULL for their whole
+history (`briefing` 815/815, `meditation` 54/54, `card_forge` 20/20,
+`reading_brief` 14/14, plus the whole `claude_p` lane: `quest_tick` 159/159,
+`figure` 3/3).
+
+Fixed at all three layers, because a per-call-site opt-in needs a default *and*
+a detector:
+
+1. **`claude_agent` lane** — `LlmRequest.output_format` now defaults to
+   `stream-json`; cost becomes the default and text the opt-out. Safe: the
+   other transports document-ignore the field, and the stream-json path lifts
+   the result event's `result` into `final_text`, so `LlmResult.text` is
+   unchanged and only `raw_text` (the audit blob) changes shape. This is what
+   meters `briefing`, `meditation`, `card_forge` and `reading_brief`.
+2. **`claude_p` lane** — passed no `--output-format` at all, so it was
+   structurally 100% unmetered, forever, by construction. Now asks for the
+   `json` envelope and reads `total_cost_usd` off it; `_unwrap_envelope` hands
+   the `result` payload to the unchanged last-balanced-block parser. Anything
+   that isn't a recognizable envelope (test stubs, an older CLI) passes through
+   untouched and falls back to the stderr regex.
+3. **The chokepoint gets loud** — `route_log.record_call` now WARNs when a
+   billed transport (`claude_agent` / `claude_p` / `anthropic`) reports no
+   cost on a non-errored call. A default only protects the call sites that
+   exist today; this catches the next one. Deliberately a warning, not an
+   exception — a metering gap must never break the call it measures — and
+   never papered over with a `0`, which would corrupt the ceiling the other way.
+
+Consequence worth stating: every spend figure we quoted this week is a
+**lower bound**, and `briefing` — 815 uncosted calls, still on a daily cadence —
+is the largest unmeasured lane. Expect the reported daily total to *rise* after
+this deploys; that is the meter working, not new spend.
+
+## 🔎 No audit trail for vault secret reads — "who requested the key" is unanswerable
+
+Status: open · Severity: medium · Owner: `src/precis/secrets.py::_reveal` · Test: a `get_secret` call leaves a row naming the secret, caller and timestamp.
+
+`_reveal` reads from `vault` and returns; nothing is recorded. `vault.list()`
+gives name / hint / `updated_at` (last *write*), so there is no way to ask which
+process requested `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`, or when.
+Today the question is only answerable structurally — see the audit below — which
+works because the credential surface happens to be tiny. A read-audit (name +
+caller + timestamp, never the value) would make it answerable directly, and
+would have made this whole sweep a single query.
+
+## 🔧 `claude -p` call sites that bypass `router.dispatch` (audit 2026-08-07)
+
+Status: open · Severity: low · Owner: various · Test: `grep -rn --include='*.py' 'claude_bin' src/` returns only the router providers.
+
+**The credential surface bounds this, and it is one machine.** A Claude call
+needs a token, so enumerating tokens enumerates callers. Only melchior holds
+any: `/Users/deploy/.claude_oauth_token` and `/Users/hermes/.claude_oauth_token`
+(plus `~/.claude` for deploy / hermes / reto). caspar and balthazar have
+**nothing**; spark has only `/home/atomsim/.claude` and no token. So old code
+on those three *cannot* call Claude even if invoked — it would 401, not bill.
+The only launchd unit on melchior referencing a Claude credential is
+`com.litellm.plist.retired-2026-07-26`, which is renamed out of launchd's path
+and confirmed not loaded; the 8 live daemons (`precis.{watch,embedder,web,
+worker,colima,embedder-watchdog}`, `asa.{bot,slack}`) are all accounted for.
+The vault holds exactly two Claude credentials, `CLAUDE_CODE_OAUTH_TOKEN` and
+`ANTHROPIC_API_KEY`. Re-run this check by enumerating tokens, not by grepping.
+
+Full fleet sweep found **no stale or orphan `claude -p` processes** on
+melchior / caspar / balthazar / spark, and no cron anywhere. The migration
+tracked in memory `backlog_agentic_executors_via_router` is **substantially
+done**: `call_claude_agent` and `call_claude_p` each have exactly one
+production caller, both `router.py` providers (`ClaudeAgentProvider.run`,
+`ClaudePProvider.run`), and every spawn funnels through the
+`_claude_subprocess.run_claude` chokepoint. `asa_bot` was migrated too
+(`asa_bot/claude_invoke.py` → router, `source="asa_bot"`; zero rows in 30 days
+means the bot is idle, not that it's unlogged).
+
+What still spawns Claude outside the router:
+
+- **`workers/quota_check.py` → `claude_quota.refresh_snapshot`** — raw
+  `subprocess.run([claude, -p, "quota", "--max-turns", "0"])`. Live worker
+  pass, unlogged, but `--max-turns 0` ⇒ no generation, and it exists to
+  *measure* the OAuth quota — routing it would be circular. Correct as-is;
+  documented here so the next audit doesn't re-flag it.
+- **`fixer/tick.py:197`** — raw spawn of `cfg.claude_bin -p`, sonnet-5,
+  30-minute timeout. **Not deployed**: no launchd/systemd unit, no ansible
+  role, no cron on any host. Laptop-only autonomous fixer; unlogged whenever
+  it's run by hand.
+- **`utils/tex_llm_fix.py::attempt_llm_fix`** — spawns `claude -p`, and has
+  **zero callers**. Dead code holding a Claude spawn. Delete it.
+- **Operator shell harnesses**, none scheduled: `scripts/exercise-mcp/run.sh`,
+  `scripts/review-paper/run.sh`, `scripts/context-audit/run.sh`, and
+  `scripts/classify/_llm.py`'s `cli:` model prefix.
+
+---
+
 ## 🔐 Rotate `agent_rw` + `OPENROUTER_API_KEY` — needs a cluster pause
 
 Status: open · Severity: critical · Owner: `deploy/inventory` vault (`vault_pg_agent_rw_pass`) · Test: `scripts/prod-psql "SELECT current_user"` succeeds after rotation and pgbouncer logs show no auth loop.

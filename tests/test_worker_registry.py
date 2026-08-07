@@ -234,19 +234,26 @@ def test_agent_specs_launchd_label_is_the_collapsed_worker_unit() -> None:
         assert s.introspect.launchd_label == "com.precis.worker", s.name
 
 
-def test_frontier_agents_resolve_model_default_through_the_router() -> None:
+def test_background_agents_resolve_model_default_through_the_router() -> None:
     """``structural``/``deep_review``/``dream_agent`` used to hardcode
     ``model_default="claude-opus-4-8"`` (model-vocabulary-drift audit) — a
     display-only literal that could silently diverge from the router's
-    FRONTIER default. They now carry ``tier_default=Tier.FRONTIER`` and
-    leave ``model_default`` empty; the consumer (``/env``) resolves the
-    live model at render time."""
+    default. They carry a ``tier_default`` and leave ``model_default``
+    empty; the consumer (``/env``) resolves the live model at render time.
+
+    The tier is ``BIG``, not ``FRONTIER``: all three are background cadence
+    passes with nothing waiting on their output, and FRONTIER (no
+    ``llm.chain.frontier`` row ⇒ compiled opus default) billed $1,313 in 30
+    days for dreaming alone. BIG resolves through the operator-authored
+    ``llm.chain.big`` — local-first — so they wait on local hardware instead
+    of spending. Pinning the tier here is what keeps that decision from
+    silently reverting."""
     from precis.utils.llm.router import Tier
 
     for name in ("structural", "deep_review", "dream_agent"):
         intro = SERVICES_BY_NAME[name].introspect
         assert intro is not None, name
-        assert intro.tier_default is Tier.FRONTIER, name
+        assert intro.tier_default is Tier.BIG, name
         assert intro.model_default == "", name
 
 

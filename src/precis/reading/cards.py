@@ -560,9 +560,11 @@ def _env_int(name: str, default: int) -> int:
 
 def _default_client() -> Any:
     """The production compose client — folds through the router (ADR 0046)
-    onto the ``FRONTIER`` reasoning tier (``claude_agent``, direct Anthropic
-    OAuth) instead of holding a raw litellm client, so this cast-authoring pass
-    gets the budget breaker + the route-log. ``tools_needed=True`` lands on
+    onto the ``BIG`` reasoning tier (local-first via ``llm.chain.big``) instead
+    of holding a raw litellm client, so this cast-authoring pass gets the budget
+    breaker + the route-log. This was ``FRONTIER``; card_forge is a background
+    cadence pass with nothing waiting on it, so it buys nothing from opus
+    latency-or-price. ``tools_needed=True`` lands on
     ``claude_agent`` (free-text/JSON final answer, no tools advertised) rather
     than the tool-less ``claude_p`` judge shape, which drops the system prompt
     these cloze/rework prompts rely on. A ``PRECIS_CARD_FORGE_MODEL`` override
@@ -579,7 +581,7 @@ def _default_client() -> Any:
     from precis.utils.llm.router import DispatchClient, Tier
 
     return DispatchClient(
-        tier=Tier.FRONTIER,
+        tier=Tier.BIG,
         model=os.environ.get("PRECIS_CARD_FORGE_MODEL") or None,
         tools_needed=True,
         max_tokens=1500,

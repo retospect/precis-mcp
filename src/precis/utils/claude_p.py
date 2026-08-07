@@ -88,14 +88,25 @@ class ClaudePResult:
     """Parsed result of a successful :func:`call_claude_p` invocation.
 
     ``data`` is the parsed JSON dict from stdout. ``raw_stdout`` is
-    retained for audit / debug logging. ``cost_usd`` is best-effort
-    (parsed from claude's stderr accounting line when present;
-    ``None`` if the line wasn't found).
+    retained for audit / debug logging — the **full envelope**, not the
+    unwrapped payload. ``cost_usd`` comes from the ``--output-format
+    json`` envelope's ``total_cost_usd``, falling back to the legacy
+    stderr accounting line; ``None`` only when neither is present.
+
+    ``text`` is the assistant's own answer with the envelope stripped —
+    what a caller means by "the model's reply". Keep these two apart:
+    ``raw_stdout`` gained a JSON wrapper when metering was turned on, so
+    anything user-facing (or anything re-parsing the reply, e.g.
+    ``taproot.canon``'s ``res.data or _parse_json_object(res.text)``
+    fallback) must read ``text`` or it will get the metadata envelope
+    instead of the answer. Defaults to ``""`` for the legacy 3-field
+    construction; readers should fall back to ``raw_stdout``.
     """
 
     data: dict[str, Any]
     raw_stdout: str
     cost_usd: float | None
+    text: str = ""
 
 
 def call_claude_p(
@@ -145,6 +156,17 @@ def call_claude_p(
         model,
         "--max-budget-usd",
         str(max_usd),
+        # Metering, not formatting. Without this, ``claude -p`` prints bare
+        # text and the only cost signal is a stderr ``Cost: $N.NN`` line that
+        # modern Claude Code no longer emits — so ``cost_usd`` came back
+        # ``None`` on *every* call this helper has ever made, and the whole
+        # claude_p lane (quest_tick, figure) was invisible to
+        # ``PRECIS_DAILY_COST_CEILING``, which sums ``llm_call_log.cost_usd``.
+        # The ``json`` envelope carries ``total_cost_usd`` alongside the
+        # assistant text. Sibling of ``LlmRequest.output_format`` defaulting to
+        # ``stream-json`` on the claude_agent lane — same bug, same fix.
+        "--output-format",
+        "json",
         # No persistent session per call — worker passes are stateless.
         "--no-session-persistence",
         # Bypass interactive permission prompts; the worker has no TTY.
@@ -187,7 +209,8 @@ def call_claude_p(
         env=proc_env,
     )
 
-    data = _parse_last_json_block(res.stdout)
+    payload, cost = _unwrap_envelope(res.stdout or "")
+    data = _parse_last_json_block(payload)
     if data is None:
         raise ClaudePError(
             "claude -p returned no parseable JSON block",
@@ -195,8 +218,46 @@ def call_claude_p(
             stderr=res.stderr,
         )
 
-    cost = extract_cost_usd(res.stderr or "")
-    return ClaudePResult(data=data, raw_stdout=res.stdout, cost_usd=cost)
+    if cost is None:
+        # Legacy path: a stub binary (tests) or an older CLI that ignored
+        # ``--output-format json`` and printed bare text. Fall back to the
+        # stderr accounting line rather than losing the call entirely.
+        cost = extract_cost_usd(res.stderr or "")
+    return ClaudePResult(data=data, raw_stdout=res.stdout, cost_usd=cost, text=payload)
+
+
+def _unwrap_envelope(stdout: str) -> tuple[str, float | None]:
+    """Split ``--output-format json`` stdout into (assistant text, cost).
+
+    ``claude -p --output-format json`` wraps the answer in a metadata envelope
+    whose ``result`` field holds the assistant text and whose
+    ``total_cost_usd`` is the only place the real dollar figure appears.
+
+    Tolerant by design: test stubs (``PRECIS_CLAUDE_BIN``) and any CLI that
+    ignores the flag emit the model's JSON directly, so anything that isn't a
+    recognizable envelope is handed back unchanged with no cost — the caller
+    then falls back to the stderr regex. That keeps the parse contract ("last
+    balanced ``{ … }`` block") identical on both shapes.
+    """
+    text = stdout.strip()
+    if not text.startswith("{"):
+        return stdout, None
+    try:
+        env = json.loads(text)
+    except json.JSONDecodeError:
+        return stdout, None
+    # Discriminate on ``type == "result"`` *and* a string ``result`` — the CLI
+    # envelope's own self-identification. A string ``result`` alone is too
+    # weak: no judge prompt in the tree currently defines a top-level string
+    # field named ``result``, but one plausibly could, and the misread would
+    # surface as "no parseable JSON block" pointing nowhere near the cause.
+    if not isinstance(env, dict):
+        return stdout, None
+    if env.get("type") != "result" or not isinstance(env.get("result"), str):
+        return stdout, None
+    raw_cost = env.get("total_cost_usd")
+    cost = float(raw_cost) if isinstance(raw_cost, int | float) else None
+    return env["result"], cost
 
 
 def _parse_last_json_block(text: str) -> dict[str, Any] | None:
