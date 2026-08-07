@@ -3035,7 +3035,22 @@ The master kinds table lives in the `precis-overview` skill.
   from the focus onward at a WPM rate, decorating each word in place (green box +
   red ORP pivot) and auto-scrolling, growing its stream as full-doc placeholders
   hydrate ahead (R pause/resume · Esc exit · +/- speed · ↑↓ ¶ · ←→ sentence ·
-  Space next ¶). `precis_web` is a sibling package over the handlers (ADR 0026).
+  Space next ¶). **Document header** (`view.html.j2`, above `#sd-content` so it
+  survives the no-reload focus swap): small by default — title + genre + a `⚑ N`
+  concerns chip + last-touched — and **big** on ▸, dropping a panel with the
+  ref's identity, its whole-document edges (`store::ref_connections`, ref-level
+  links only; concerns lead, each relation's chips capped at `_REL_CHIP_CAP`),
+  and **all** of its `meta` (`routes/smartdraft.py::_doc_meta`). `_META_LABELS`
+  is a label table, **not** a whitelist — an unlabelled key still renders under
+  its raw name, so a worker stamping a new one is never invisible (the
+  `audio_failed_at` that sat unseen on every failed-narration brief). Open/closed
+  persists in `localStorage`. The header also **renames** the draft
+  (`store::set_draft_title` ← `edit(kind='draft', title=…)` /
+  `POST /drafts/{id}/title`), writing `refs.title` **and** the title heading
+  chunk in one transaction: the heading was always editable while `refs.title`
+  had no write path at all, so the two could drift — the reader showing one name
+  and every search hit another. Renaming converges them.
+  `precis_web` is a sibling package over the handlers (ADR 0026).
   **Export can bundle the cited sources** (`export/sources.py`,
   `collect_cited_sources`/`build_sources_zip`): the reader's `+ sources`
   checkbox appends every cited paper/datasheet PDF the host holds to the PDF as

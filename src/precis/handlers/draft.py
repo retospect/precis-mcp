@@ -336,9 +336,10 @@ class DraftHandler(Handler):
             "lists / outlines / reads a chunk window dc<id>-B+A; search "
             "(q=, mode=lexical|semantic|hybrid|regex, scope=slug|dc<id>, "
             "headings_only=) over prose — mode=regex is a literal grep; edit "
-            "changes text, moves (move=), sets a heading's section style "
-            "(style=<skill>), or regex-substitutes across a draft/section "
-            "(sub={find,replace}, dry-run unless apply=True); "
+            "changes text, moves (move=), renames the document "
+            "(title=, syncs refs.title + the title heading), sets a heading's "
+            "section style (style=<skill>), or regex-substitutes across a "
+            "draft/section (sub={find,replace}, dry-run unless apply=True); "
             "delete soft-retires (mode=cascade|promote). Chunks "
             "addressed by dc<chunk_id> (legacy ¶handle still resolves). "
             "See precis-draft-help."
@@ -1373,6 +1374,7 @@ class DraftHandler(Handler):
         *,
         id: str | int | None = None,
         text: str | None = None,
+        title: str | None = None,
         find: str | None = None,
         move: dict[str, Any] | None = None,
         style: str | None = None,
@@ -1433,6 +1435,22 @@ class DraftHandler(Handler):
                     "text='…', dry_run=True)",
                 )
 
+        # ``title`` is a draft-level op (rename the document) — id is the slug
+        # (or any handle in the draft), not a single chunk. Writes BOTH
+        # ``refs.title`` and the title heading chunk (``store.set_draft_title``):
+        # the heading was always editable while the ref title had no write path
+        # at all, so the two could diverge — the reader showing one name and
+        # every search hit / list row / link chip another.
+        if title is not None:
+            _reject_dry_run("title")
+            ref = self._resolve_draft_any(id)
+            old, synced = self.store.set_draft_title(
+                ref.id, title, source={"reason": "draft-title", "actor": "draft-edit"}
+            )
+            note = "" if synced else " (no title heading — ref renamed only)"
+            return Response(
+                body=f"renamed {ref.slug or ref.id}: {old!r} → {title.strip()!r}{note}"
+            )
         # ``authors`` is a draft-level op (set the byline + affiliations) —
         # id is the slug (or any handle in the draft), not a single chunk.
         # Stored on the draft ref's first-class ``authors`` column, so the

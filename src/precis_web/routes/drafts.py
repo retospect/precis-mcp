@@ -82,7 +82,7 @@ from precis.draft.scaffolds import DOC_TYPE_BRIEF as _DOC_TYPE_BRIEF
 from precis.draft.scaffolds import DOC_TYPES as _DOC_TYPES  # noqa: F401
 from precis.draft.scaffolds import SCAFFOLDS as _SCAFFOLDS
 from precis.draft.scaffolds import SECTION_STYLES as _SECTION_STYLES
-from precis.errors import BadInput
+from precis.errors import BadInput, NotFound
 from precis.quest.review_fanout import ALL_LENSES, DOC_LENSES, mint_review_fanout
 from precis.store._draft_ops import content_sha
 
@@ -2330,6 +2330,45 @@ async def set_authors(
     entries = to_author_dicts(_parse_author_lines(authors))
     store.update_paper_fields(ref.id, authors=entries, source="web-edit")
     return RedirectResponse(url=back, status_code=303)
+
+
+@router.post("/drafts/{ident}/title")
+async def set_title(
+    request: Request,
+    ident: str,
+    title: str = Form(...),
+) -> JSONResponse:
+    """Rename the draft from the reader header — the web twin of
+    ``edit(kind='draft', title=…)``. Writes ``refs.title`` AND the title
+    heading chunk in one transaction (``store.set_draft_title``) so the name
+    in search results can't drift from the one in the document.
+
+    Speaks JSON (not the 303-redirect the older meta forms use): the header
+    lives OUTSIDE ``#sd-content``, so smartdraft's in-place refresh doesn't
+    repaint it — the caller patches the ``<h1>`` from this response instead.
+    A blank title is a 422 (``BadInput``), not a silent no-op."""
+    store = get_store(request)
+    ref = _draft_ref(store, ident)
+    if ref is None:
+        return JSONResponse({"ok": False, "error": "draft not found"}, status_code=404)
+    try:
+        old, synced = store.set_draft_title(ref.id, title, source={"actor": "web-edit"})
+    except BadInput as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=422)
+    except NotFound as exc:
+        # The lookup above is not in the write transaction, so a concurrent
+        # delete between the two lands here — 404 like the miss above, not 500.
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=404)
+    # The heading is edited IN PLACE, so smartdraft's base-node cache token
+    # (chunk count + max chunk_id) doesn't move — without this the renamed
+    # heading would keep rendering stale until the 45s TTL backstop fired.
+    # Lazy import: `precis_web.smartdraft` reaches back into this module.
+    from precis_web import smartdraft as _smartdraft
+
+    _smartdraft.invalidate(ref.id)
+    return JSONResponse(
+        {"ok": True, "title": title.strip(), "old": old, "heading_synced": synced}
+    )
 
 
 @router.post("/drafts/{ident}/figure")

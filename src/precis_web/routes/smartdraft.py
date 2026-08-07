@@ -16,6 +16,7 @@ around the focus and lazily hydrates distant chunks on scroll.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -235,6 +236,10 @@ async def reader(
     hub_stats = _hub_and_citation_stats(request, store, rendered_nodes)
     shape_stats = _document_shape_stats(store, ref.id)
 
+    # Document-level edges for the header panel — one query, whole-ref
+    # (chunk-anchored edges are the right rail's job, per focus block).
+    ref_conns = _ref_connection_groups(store, ref.id)
+
     return templates.TemplateResponse(
         request,
         "smartdraft/view.html.j2",
@@ -276,6 +281,13 @@ async def reader(
             "checker_counts": checker_counts,
             "hub_stats": hub_stats,
             "shape_stats": shape_stats,
+            # ── Header meta panel (▸ collapsed / ▾ expanded) ──
+            "doc_meta": _doc_meta(ref),
+            "ref_conns": ref_conns,
+            "ref_tags": _ref_tag_labels(store, ref.id),
+            "concern_count": sum(
+                g["total"] for g in ref_conns if g["relation"] == "raises-concern-about"
+            ),
         },
     )
 
@@ -487,7 +499,156 @@ def _needs_items(store: Any, ref_id: int) -> list[dict[str, Any]]:
 
 
 def _ref_view(ref: Any) -> dict[str, Any]:
-    return {"id": ref.id, "title": getattr(ref, "title", None) or f"draft {ref.id}"}
+    """The ref row the header strip renders. Deliberately more than
+    ``{id, title}`` (all this used to pass): the document's own metadata —
+    when it was made, what it belongs to, what a worker stamped on it — had
+    no surface in the reader at all, so e.g. an ``audio_failed_at`` sat
+    invisible on every morning brief whose narration had failed."""
+    return {
+        "id": ref.id,
+        "kind": getattr(ref, "kind", "draft"),
+        "slug": getattr(ref, "slug", None),
+        "title": getattr(ref, "title", None) or f"draft {ref.id}",
+        "created_at": getattr(ref, "created_at", None),
+        "updated_at": getattr(ref, "updated_at", None),
+    }
+
+
+#: Draft ``meta`` keys the header panel renders with a human label, in
+#: display order. Nested ``workspace`` is flattened to ``workspace.<key>``.
+#:
+#: This is a LABEL table, not a filter: a key that isn't here still renders
+#: (under its raw name, see ``_doc_meta``). That fallthrough is the point —
+#: a whitelist means the next worker to stamp a new key is invisible until
+#: someone remembers to edit this dict.
+_META_LABELS: dict[str, str] = {
+    "workspace.doc_type": "genre",
+    "workspace.brief": "project brief",
+    "workspace.path": "workspace",
+    "workspace.format": "format",
+    "workspace.seeds": "seed material",
+    "authoring_enabled": "auto-author",
+    "llm_tier": "llm tier",
+    "imported_from": "imported from",
+    "cohort": "cohort",
+    "dossier_of_quest": "dossier of quest",
+    "dossier_of_owner": "dossier owner",
+    "cast": "audio cast",
+    "date": "brief date",
+    "voice": "TTS voice",
+    "audio_episode_id": "audio episode",
+    "audio_failed_at": "audio failed",
+    "abbrev_ignore": "not-abbrevs",
+    "reader_working_set": "reader working set",
+}
+
+#: Keys rendered as "N <noun>" rather than dumped — a registry whose size is
+#: the signal and whose contents would swamp the panel.
+_META_COUNTS: dict[str, str] = {"abbrevs": "abbreviations"}
+
+#: Keys whose mere presence is a fault worth colouring amber.
+_META_WARN: frozenset[str] = frozenset({"audio_failed_at"})
+
+#: Relations that lead the connections list — a finding filed against the
+#: document outranks its bibliography.
+_REL_PRIORITY: dict[str, int] = {
+    "raises-concern-about": 0,
+    "draft-of": 1,
+    "dossier-of": 2,
+    "derived-from": 3,
+}
+
+#: Chips shown per relation before collapsing to "+N more" — `cites` runs to
+#: hundreds on a real draft and would otherwise be the whole panel.
+_REL_CHIP_CAP = 12
+
+
+def _flatten_meta(meta: dict[str, Any]) -> list[tuple[str, Any]]:
+    """``meta`` as ``(key, value)`` pairs, ``workspace`` flattened one level
+    to ``workspace.<key>``. Empty containers drop out — a `{}` abbrevs
+    registry is noise, not information."""
+    out: list[tuple[str, Any]] = []
+    for key, value in (meta or {}).items():
+        if value is None or value == "" or value == [] or value == {}:
+            continue
+        if key == "workspace" and isinstance(value, dict):
+            out.extend(
+                (f"workspace.{k}", v)
+                for k, v in value.items()
+                if v is not None and v != "" and v != [] and v != {}
+            )
+        else:
+            out.append((key, value))
+    return out
+
+
+def _meta_value(key: str, value: Any) -> str:
+    """One meta value as display text. Counts collapse to "N noun"; lists
+    join; anything structured falls back to compact JSON rather than a
+    Python repr."""
+    if key in _META_COUNTS:
+        n = len(value) if hasattr(value, "__len__") else 0
+        return f"{n} {_META_COUNTS[key]}"
+    if isinstance(value, bool):
+        return "on" if value else "off"
+    if isinstance(value, str | int | float):
+        return str(value)
+    if isinstance(value, list) and all(isinstance(v, str | int | float) for v in value):
+        return ", ".join(str(v) for v in value)
+    return json.dumps(value, ensure_ascii=False, default=str)
+
+
+def _doc_meta(ref: Any) -> list[dict[str, Any]]:
+    """The draft's ``meta`` as labelled rows for the header panel — known keys
+    first in ``_META_LABELS`` order, then everything else alphabetically under
+    its raw name (``raw=True``, rendered monospace so it reads as "we don't
+    have a nice name for this yet" rather than as a typo)."""
+    pairs = _flatten_meta(getattr(ref, "meta", None) or {})
+    order = list(_META_LABELS)
+    known = [(k, v) for k, v in pairs if k in _META_LABELS or k in _META_COUNTS]
+    known.sort(key=lambda kv: order.index(kv[0]) if kv[0] in order else len(order))
+    unknown = sorted((kv for kv in pairs if kv not in known), key=lambda kv: kv[0])
+    return [
+        {
+            "key": key,
+            "label": _META_LABELS.get(key, key),
+            "value": _meta_value(key, value),
+            "warn": key in _META_WARN,
+            "raw": key not in _META_LABELS and key not in _META_COUNTS,
+        }
+        for key, value in [*known, *unknown]
+    ]
+
+
+def _ref_tag_labels(store: Any, ref_id: int) -> list[str]:
+    """Ref-level tags as ``ns:value`` labels (bare value in the default
+    namespace). Empty for every draft today — nothing tags them — so the
+    panel's tag row renders only when something starts to."""
+    tags = store.ref_tags_bulk([ref_id]).get(ref_id, [])
+    return [f"{ns}:{value}" if ns and ns != "tag" else value for ns, value in tags]
+
+
+def _ref_connection_groups(store: Any, ref_id: int) -> list[dict[str, Any]]:
+    """Whole-document edges grouped by (relation, direction), concerns first,
+    each group's chips capped at ``_REL_CHIP_CAP`` with an overflow count."""
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for conn in store.ref_connections(ref_id):
+        groups.setdefault((conn["relation"], conn["direction"]), []).append(conn)
+    out: list[dict[str, Any]] = []
+    for (relation, direction), conns in groups.items():
+        out.append(
+            {
+                "relation": relation,
+                "direction": direction,
+                "total": len(conns),
+                "chips": _connection_chips(conns[:_REL_CHIP_CAP]),
+                "more": max(0, len(conns) - _REL_CHIP_CAP),
+            }
+        )
+    out.sort(
+        key=lambda g: (_REL_PRIORITY.get(str(g["relation"]), 9), str(g["relation"]))
+    )
+    return out
 
 
 def _chunk_tags(store: Any, chunk_id: int) -> list[str]:

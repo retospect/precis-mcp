@@ -694,6 +694,54 @@ class DraftMixin:
             )
         return out
 
+    def ref_connections(self, ref_id: int) -> list[dict[str, Any]]:
+        """Whole-ref graph connections — the other end of every ``links`` row
+        anchored at the REF rather than a chunk (both endpoints NULL), in the
+        same ``{relation, direction, kind, ident, title}`` shape
+        :meth:`chunk_connections` returns, so both feed one chip renderer.
+
+        This is the document-level edge set the reader had no surface for: a
+        draft's owning project (``draft-of``), what it ``cites``, and — the
+        one that matters most — the inbound ``raises-concern-about`` edges,
+        i.e. findings filed *against* the document. Deduped per (other-ref,
+        relation, direction); newest last, as stored."""
+        sql = """
+            SELECT l.relation,
+                   CASE WHEN l.src_ref_id = %(rid)s THEN 'out' ELSE 'in' END AS dir,
+                   o.ref_id, o.kind,
+                   (SELECT ri.id_value FROM ref_identifiers ri
+                     WHERE ri.ref_id = o.ref_id AND ri.id_kind = 'cite_key'
+                     LIMIT 1) AS slug,
+                   o.title
+              FROM links l
+              JOIN refs o
+                ON o.ref_id = CASE WHEN l.src_ref_id = %(rid)s
+                                   THEN l.dst_ref_id ELSE l.src_ref_id END
+             WHERE (l.src_ref_id = %(rid)s OR l.dst_ref_id = %(rid)s)
+               AND l.src_chunk_id IS NULL AND l.dst_chunk_id IS NULL
+               AND o.deleted_at IS NULL AND o.ref_id <> %(rid)s
+             ORDER BY l.created_at
+        """
+        out: list[dict[str, Any]] = []
+        seen: set[tuple[int, str, str]] = set()
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, {"rid": ref_id}).fetchall()
+        for relation, direction, oid, kind, slug, title in rows:
+            key = (int(oid), relation, direction)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(
+                {
+                    "relation": relation,
+                    "direction": direction,
+                    "kind": kind,
+                    "ident": slug or str(oid),
+                    "title": (title or "").split("\n", 1)[0][:80],
+                }
+            )
+        return out
+
     def anchored_todos(self, handles: list[str]) -> dict[str, list[dict[str, Any]]]:
         """ALL change-request todos anchored at each chunk (``meta.anchor =
         '¶<handle>'`` or the newer bare ``dc<id>``), grouped by (bare)
@@ -1468,6 +1516,95 @@ class DraftMixin:
                 conn=conn,
             )
         return ref, title_chunk
+
+    def draft_title_chunk_id(
+        self, conn: psycopg.Connection, ref_id: int
+    ) -> tuple[int, str] | None:
+        """The ``(chunk_id, text)`` of a draft's title heading — the live root
+        heading first in reading order, i.e. the chunk ``create_draft`` laid
+        down. ``None`` for a draft that has none (an imported one whose first
+        block isn't a root heading), which is not an error: the caller then
+        renames the ref alone."""
+        row = conn.execute(
+            """SELECT chunk_id, text FROM chunks
+                WHERE ref_id = %s AND chunk_kind = 'heading'
+                  AND parent_chunk_id IS NULL
+                  AND pos IS NOT NULL AND retired_at IS NULL
+                ORDER BY pos ASC LIMIT 1""",
+            (ref_id,),
+        ).fetchone()
+        return (int(row[0]), row[1] or "") if row is not None else None
+
+    def set_draft_title(
+        self, ref_id: int, title: str, *, source: dict[str, Any] | None = None
+    ) -> tuple[str, bool]:
+        """Rename a draft: ``refs.title`` **and** its title heading chunk, in
+        one transaction. Returns ``(old_title, heading_synced)``.
+
+        The two have always been separately writable — the heading is an
+        ordinary editable chunk while ``refs.title`` had no write path at all
+        — so a draft could show one title in its own reader and another in
+        every search result, list, and link chip that reads the ref. Renaming
+        writes both so they converge, including from an already-diverged
+        state; that convergence is the point, so a heading whose text no
+        longer matches ``refs.title`` is still overwritten rather than
+        preserved.
+
+        The heading is edited in place (``chunk_id``/``handle`` survive, per
+        :meth:`edit_text`), so inbound anchors to it stay live and only the
+        derived data re-derives off the new ``content_sha``."""
+        clean = (title or "").strip()
+        if not clean:
+            raise BadInput(
+                "a draft title can't be blank",
+                next="edit(kind='draft', id='<slug>', title='…')",
+            )
+        with self.tx() as conn:
+            row = conn.execute(
+                "SELECT title FROM refs WHERE ref_id = %s AND deleted_at IS NULL",
+                (ref_id,),
+            ).fetchone()
+            if row is None:
+                raise NotFound(f"no draft ref {ref_id}")
+            old = row[0] or ""
+            # A rename to the name it already has touches neither ``refs`` nor
+            # the event log — ``updated_at`` feeds "last touched" (the reader
+            # header renders it), so a no-op save must not make the document
+            # look freshly edited. The heading sync below still runs: converging
+            # an already-drifted heading is exactly the case where the ref title
+            # is unchanged.
+            if clean != old:
+                conn.execute(
+                    "UPDATE refs SET title = %s, updated_at = now() WHERE ref_id = %s",
+                    (clean, ref_id),
+                )
+                conn.execute(
+                    """INSERT INTO ref_events (ref_id, source, event, payload)
+                       VALUES (%s, %s, 'title_changed', %s::jsonb)""",
+                    (
+                        ref_id,
+                        (source or {}).get("actor") or "draft-edit",
+                        Jsonb({"old_title": old, "new_title": clean}),
+                    ),
+                )
+            head = self.draft_title_chunk_id(conn, ref_id)
+            if head is None:
+                return old, False
+            chunk_id, prev = head
+            if prev == clean:
+                return old, True
+            sha = content_sha(clean)
+            conn.execute(
+                "UPDATE chunks SET text = %s, content_sha = %s WHERE chunk_id = %s",
+                (clean, sha, chunk_id),
+            )
+            conn.execute(
+                """INSERT INTO chunk_events
+                       (chunk_id, event_kind, content_sha, prev_text, source)
+                   VALUES (%s, 'edited', %s, %s, %s)""",
+                (chunk_id, sha, prev, Jsonb(source or {"reason": "draft-title"})),
+            )
+        return old, True
 
     def _insert_forked_chunk(
         self,

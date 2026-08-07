@@ -212,14 +212,184 @@
    #sd-content is replaced + re-initialized via Alpine.initTree. #}
 {% include "drafts/_editors.html.j2" %}
 
-<div class="mb-2 flex items-center justify-between">
-  <h1 class="truncate text-base font-semibold">{{ ref.title }}</h1>
-  <div class="flex items-center gap-3 text-[11px] text-slate-500">
-    <span title="paragraph grounding: 🟢 sourced (cites a corpus paper/patent) · 🟡 pending (cites a finding — source still being chased) · 🔴 unsourced (no citation)">🟢 sourced · 🟡 pending · 🔴 unsourced</span>
-    {{ sd_review_badge(ident, rollup, checker_counts, hub_stats, shape_stats) }}
-    <a href="{{ slink(to_debug=(not debug)) }}" class="{% if debug %}text-sky-700{% else %}hover:text-slate-800{% endif %}" title="show chunk ids (debug)">ids</a>
+{# ── Document header — small by default, big on demand ──────────────────
+     SMALL (default): the title plus a chip row of the few facts worth
+     having while reading — genre, ⚑ concerns filed against the document,
+     last-touched. Same one-line footprint the bare <h1> had.
+
+     BIG (`open`): drops the full metadata panel — identity, every
+     document-level edge, and the whole of the ref's `meta` — over the
+     content. None of that had a surface here before: `_ref_view` used to
+     flatten the ref to {id, title} and drop the rest, so e.g. an
+     `audio_failed_at` sat invisible on every brief whose narration failed.
+
+     Lives OUTSIDE `#sd-content` (like the h1 it replaces) because it is
+     document-level and must survive the no-reload focus swap that repaints
+     the panes. That also means the shared submit-intercept — which only
+     watches `#sd-content` — does not see the rename form, so it is wired by
+     hand in `sdHeader()` below. `open` persists in localStorage: some focus
+     navigations are full page loads, and a panel that slammed shut on each
+     one would be good for a single glance and nothing else. #}
+<div class="mb-2" x-data="sdHeader()">
+
+  <div class="flex items-center gap-2">
+    <button @click="toggle()" class="shrink-0 text-slate-400 hover:text-slate-700"
+            :title="open ? 'hide document metadata' : 'show document metadata'"
+            x-text="open ? '▾' : '▸'">▸</button>
+
+    {# Title — ✎ or double-click to rename in place. The box is seeded from
+       the CURRENT h1 text, not the server-rendered value, so a second
+       rename in the same session edits what's on screen. #}
+    <h1 x-show="!editing" id="sd-title" class="min-w-0 truncate text-base font-semibold"
+        @dblclick="startEdit()">{{ ref.title }}</h1>
+    <button x-show="!editing" @click="startEdit()"
+            class="shrink-0 text-[11px] text-slate-300 hover:text-sky-700"
+            title="rename this draft (writes both the ref title and the document's title heading)">✎</button>
+    <form x-show="editing" x-cloak @submit.prevent="save()" class="flex min-w-0 flex-1 items-center gap-1">
+      <input x-ref="titleBox" x-model="draftTitle" @keydown.escape="editing = false"
+             class="min-w-0 flex-1 rounded border border-sky-400 px-2 py-0.5 text-base font-semibold focus:outline-none">
+      <button type="submit" class="shrink-0 rounded bg-sky-600 px-2 py-0.5 text-[11px] font-semibold text-white">save</button>
+      <button type="button" @click="editing = false"
+              class="shrink-0 text-[11px] text-slate-400 hover:text-slate-700">cancel</button>
+    </form>
+    <span x-show="err" x-cloak x-text="err" class="shrink-0 text-[11px] text-rose-600"></span>
+
+    {# Only what's actually set — a bare draft still reads as one clean line. #}
+    <div class="ml-1 flex shrink-0 items-center gap-2 text-[11px] text-slate-500">
+      {% if cur_doctype %}<span class="rounded bg-slate-100 px-1.5 py-0.5">{{ cur_doctype }}</span>{% endif %}
+      {% if concern_count %}
+      <button @click="openTo()" class="rounded bg-amber-100 px-1.5 py-0.5 font-semibold text-amber-800 hover:bg-amber-200"
+              title="findings filed against this document — open the metadata panel">⚑ {{ concern_count }}</button>
+      {% endif %}
+      {% if ref.updated_at %}
+      <span title="last changed {{ ref.updated_at | abs_ts }}">{{ ref.updated_at | ago }}</span>
+      {% endif %}
+    </div>
+
+    <div class="ml-auto flex shrink-0 items-center gap-3 text-[11px] text-slate-500">
+      <span title="paragraph grounding: 🟢 sourced (cites a corpus paper/patent) · 🟡 pending (cites a finding — source still being chased) · 🔴 unsourced (no citation)">🟢 sourced · 🟡 pending · 🔴 unsourced</span>
+      {{ sd_review_badge(ident, rollup, checker_counts, hub_stats, shape_stats) }}
+      <a href="{{ slink(to_debug=(not debug)) }}" class="{% if debug %}text-sky-700{% else %}hover:text-slate-800{% endif %}" title="show chunk ids (debug)">ids</a>
+    </div>
+  </div>
+
+  <div x-show="open" x-cloak class="mt-2 rounded border border-slate-200 bg-white p-3 text-xs">
+    <div class="grid grid-cols-1 gap-x-6 gap-y-3 md:grid-cols-3">
+
+      <div>
+        <div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Identity</div>
+        <table class="w-full">
+          <tr><td class="pr-2 align-top text-slate-500">handle</td>
+              <td class="font-mono text-slate-700">{{ ref.slug or ref.id }}</td></tr>
+          <tr><td class="pr-2 align-top text-slate-500">ref</td>
+              <td class="font-mono text-slate-700">{{ ref.kind }}:{{ ref.id }}</td></tr>
+          {% if ref.created_at %}
+          <tr><td class="pr-2 align-top text-slate-500">created</td>
+              <td class="text-slate-700" title="{{ ref.created_at | abs_ts }}">{{ ref.created_at | ago }}</td></tr>
+          {% endif %}
+          {% if ref.updated_at %}
+          <tr><td class="pr-2 align-top text-slate-500">updated</td>
+              <td class="text-slate-700" title="{{ ref.updated_at | abs_ts }}">{{ ref.updated_at | ago }}</td></tr>
+          {% endif %}
+        </table>
+        {% if ref_tags %}
+        <div class="mt-1 flex flex-wrap gap-1">
+          {% for t in ref_tags %}
+          <span class="rounded bg-slate-100 px-1 py-0.5 font-mono text-[10px] text-slate-600">{{ t }}</span>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </div>
+
+      {# Whole-document edges. Concerns lead (see `_REL_PRIORITY`) — a
+         finding filed against the document is the one you'd act on. #}
+      <div>
+        <div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Connections</div>
+        {% if ref_conns %}
+        <div class="space-y-1">
+          {% for g in ref_conns %}
+          <div class="{% if g.relation == 'raises-concern-about' %}rounded bg-amber-50 p-1{% endif %}">
+            <span class="text-slate-500">{{ '←' if g.direction == 'in' else '→' }} {{ g.relation }}</span>
+            <span class="text-slate-400">({{ g.total }})</span>
+            <div class="mt-0.5 flex flex-wrap gap-1">
+              {% for chip in g.chips %}{{ chip }}{% endfor %}
+              {% if g.more %}<span class="text-slate-400">+{{ g.more }} more</span>{% endif %}
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+        {% else %}
+        <div class="text-slate-400">No document-level links.</div>
+        {% endif %}
+      </div>
+
+      {# Every key on the ref. An unknown key renders under its raw name
+         (monospace) rather than being dropped — see `_doc_meta`. #}
+      <div>
+        <div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Meta</div>
+        {% if doc_meta %}
+        <table class="w-full">
+          {% for m in doc_meta %}
+          <tr class="{% if m.warn %}text-amber-700{% endif %}">
+            <td class="w-1/3 pr-2 align-top {% if m.raw %}font-mono text-[10px] {% endif %}text-slate-500">{{ m.label }}</td>
+            <td class="align-top break-words {% if m.warn %}font-semibold{% else %}text-slate-700{% endif %}"
+                title="{{ m.value }}">{{ m.value | truncate(160) }}</td>
+          </tr>
+          {% endfor %}
+        </table>
+        {% else %}
+        <div class="text-slate-400">No metadata stamped.</div>
+        {% endif %}
+      </div>
+    </div>
   </div>
 </div>
+
+<script>
+  function sdHeader() {
+    return {
+      // Persisted — the panel must not slam shut on every focus navigation.
+      open: localStorage.getItem('sd:meta:open') === '1',
+      editing: false,
+      draftTitle: '',
+      err: '',
+      toggle() {
+        this.open = !this.open;
+        localStorage.setItem('sd:meta:open', this.open ? '1' : '0');
+      },
+      openTo() {
+        if (!this.open) this.toggle();
+      },
+      startEdit() {
+        this.err = '';
+        this.draftTitle = (document.getElementById('sd-title') || {}).textContent || '';
+        this.editing = true;
+        this.$nextTick(() => this.$refs.titleBox && this.$refs.titleBox.select());
+      },
+      save() {
+        const next = (this.draftTitle || '').trim();
+        if (!next) { this.err = 'title required'; return; }
+        const body = new FormData();
+        body.append('title', next);
+        fetch(`/drafts/${IDENT}/title`, { method: 'POST', body })
+          .then((r) => r.json().then((j) => ({ ok: r.ok, j })))
+          .then(({ ok, j }) => {
+            if (!ok || !j.ok) { this.err = j.error || 'rename failed'; return; }
+            // Patch the h1 here — the header sits outside #sd-content, so
+            // __sdRefresh will not repaint it. The title HEADING chunk did
+            // change server-side, though, so the panes still need refreshing.
+            const h1 = document.getElementById('sd-title');
+            if (h1) h1.textContent = j.title;
+            document.title = j.title;
+            this.editing = false;
+            this.err = '';
+            if (window.__sdRefresh) window.__sdRefresh();
+          })
+          .catch(() => { this.err = 'network error'; });
+      },
+    };
+  }
+</script>
 
 <div id="sd-content" class="grid grid-cols-1 items-start gap-3 lg:grid-cols-[28%_44%_28%]">
 

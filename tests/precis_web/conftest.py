@@ -1090,6 +1090,16 @@ class FakeStore(_FakeStoreBase):
         }
         return {rid: canned[rid] for rid in ref_ids if rid in canned}
 
+    def ref_connections(self, ref_id):
+        """Whole-ref graph edges for smartdraft's header meta panel. Empty by
+        default; a test that cares overrides this."""
+        return []
+
+    def set_draft_title(self, ref_id, title, *, source=None):
+        """Rename from the reader header. The fake reports a successful
+        write; a test asserting on what was written substitutes its own."""
+        return "", True
+
     def paper_identifiers(self, ref_ids):
         """Canned identifiers for the /items UoL/Scholar links — paper #10
         carries a DOI so its find: links render."""

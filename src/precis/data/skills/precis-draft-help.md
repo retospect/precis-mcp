@@ -235,6 +235,23 @@ to the owning draft, like `authors=`). Scaffolding never overwrites or
 reorders existing sections — it only appends; re-scaffolding a draft that
 already has sections adds a second copy, so scaffold once, early.
 
+## Rename the document — `title=`
+
+```python
+edit(kind="draft", id="nanotrans", title="Nanoparticle transport in packed beds")
+```
+
+A draft carries its name in two places: `refs.title` (what search hits,
+lists, and link chips show) and the title `heading` chunk at the top of the
+document (what the reader and every export show). `title=` writes **both**,
+in one transaction, so they can't drift — including from an already-drifted
+state, so this is also the repair for a draft whose heading you edited
+directly. The heading is edited in place, so anchors into it stay live.
+
+`id` may be the draft slug or any `dc<id>`/`¶handle` inside it (resolves to
+the owning draft, like `authors=`). A blank title raises `BadInput`. A draft
+with no root heading (an import) renames the ref alone and says so.
+
 ## Byline — authors & affiliations
 
 A draft carries a **document-level byline** (authors are a property of the

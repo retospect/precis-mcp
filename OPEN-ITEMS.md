@@ -10,6 +10,30 @@ tracked separately in `docs/improvement-plan.md` (same delete-on-ship rule).
 
 ---
 
+## 🔧 smartdraft base-node cache misses in-place text edits — stale for ≤45s
+
+Status: `open` · Severity: `polish` · Owner: `src/precis_web/smartdraft.py::_cache_version`
+· Test: none yet (would assert `build_nodes` rebuilds after `store.edit_text`).
+
+`_cache_version` is `chunk-count : max(chunk_id) : tag-count`, and both it and
+`_NODE_CACHE`'s comment assert that "body edits DELETE+INSERT (a new chunk_id)
+so the first two change on any text edit". They don't: the live edit path
+(`handlers/draft.py` → `store.edit_text`) is an **in-place** `UPDATE chunks SET
+text, content_sha` — same `chunk_id`, same count. So none of the three token
+components move on a text edit and the reader serves cached nodes until the
+`_NODE_TTL = 45.0` backstop. `test_content_edit_invalidates_the_node_cache`
+doesn't catch it: it *adds* a chunk (which does move `max(chunk_id)`) rather
+than editing one.
+
+Probably unnoticed because the inline editor patches its own block in the DOM,
+so the staleness only shows on someone else's view or a reload inside the
+window. Surfaced while building the header rename, which hits exactly this path
+— that endpoint calls `smartdraft.invalidate()` explicitly as a local fix
+(`routes/drafts.py::set_title`), but every other in-place edit still relies on
+the TTL. Real fix: fold a content token into the version (e.g.
+`md5(string_agg(content_sha))` or `max(chunk_events.event_id)`) — one more
+subquery in a query that already does three.
+
 ## Residuals (2026-08-06 — $291 planner cost-runaway RCA)
 
 Status: open · Severity: critical/feature · Owner: `src/precis/workers/job_types/plan_tick.py`, `src/precis/budget/quota.py` · Test: below.
