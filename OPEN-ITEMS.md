@@ -221,6 +221,77 @@ did **not** cover:
 
 ---
 
+## 📏 Re-measure `plan_tick` after the prompt cut — the win is n=1 so far
+
+Status: open · Severity: low (measurement, not a defect) · Owner: whoever looks next · Test: ≥20 post-`57837fa4` local ticks, compared to the pre-cut baseline below.
+
+`57837fa4` (2026-08-07, deployed) dropped the per-tick skill menu from 22,409 to
+3,155 chars by emitting slugs instead of `slug — summary`. **Confirmed in prod:**
+`request_chars` fell 60,400 → 36,395 on the first post-cut tick, a 40% cut.
+
+The *performance* claim is not established. Exactly **one** post-cut tick exists:
+
+| | req_chars | turns | secs | resp_chars |
+|---|---|---|---|---|
+| pre-cut, healthy (n=8) | ~58,000 | 8.9 | ~55 | ~580 |
+| pre-cut, exhausted (n=2) | ~60,400 | 60 | 256 / 618 | 0 / 2 |
+| **post-cut (n=1)** | 36,395 | 6 | 25.6 | 1,134 |
+
+That single row is the best on every axis — fastest, fewest turns, most output —
+which is suggestive and nothing more. Re-run the comparison once ~20 local ticks
+have accumulated.
+
+Two traps for whoever does it, both of which already bit once here:
+
+- **Don't average over the exhausted runs.** The pre-cut "169s / 20.3 turns"
+  figure quoted earlier in this session was an artifact of two 60-turn
+  zero-output runs dragging an n=12 mean; healthy ticks were ~55s / 8.9 turns.
+  Report the distribution, or at least the median.
+- **Don't read a 45-minute window as post-cut.** It straddles the deploy — 10 of
+  the 11 rows above are pre-cut. Filter on `ts` past the deploy, or on
+  `request_chars < 45000`, which is an unambiguous marker of the new prompt.
+
+The capacity question this was raised to answer (how much of the spark pair does
+planning consume?) is **provisionally settled as "a few percent"** at ~4
+ticks/hour — down from the ~20% estimated at 169s/tick. That estimate also rests
+on the n=1 number, so it moves if the re-measure does.
+
+## 🔁 20% of local `plan_tick`s burn the 60-turn ceiling, emit nothing, and log as success
+
+Status: open · Severity: high · Owner: `workers/job_types/plan_tick.py` `_run_oss_tick` + `_oss_exit` · Test: a turn-exhausted tick with empty output is distinguishable from a clean one in `llm_call_log`.
+
+Two of ten local ticks observed on 2026-08-07 (21:07, 21:22) hit
+`turns_used = 60` — the `PRECIS_PLAN_TICK_MAX_TURNS` ceiling — and returned **2
+and 0 response chars**, after 618s and 256s. Fourteen minutes of GPU between
+them, for nothing.
+
+Both are recorded with **`errored = false`**. `_oss_exit` maps `max_turns` onto a
+*resumable exhaustion* (exit 1 + `resume_reason`) rather than a failure, which is
+right for the executor — the tick genuinely can be retried — but it means the
+route-log cannot tell "did 60 turns of work" from "spun 60 times and produced
+nothing". So the todo re-ticks, and a task can consume the ceiling repeatedly
+while looking healthy in every aggregate.
+
+This is the real cost driver, not prompt size: trimming another 5 KB off a 36 KB
+prompt is a rounding error next to a fifth of ticks burning the full ceiling.
+Worth establishing, in order:
+
+1. **Make it visible.** A zero-output turn-exhaustion should be distinguishable
+   in `llm_call_log` (a feature flag on the row, or `errored` semantics that
+   separate "failed" from "exhausted"). Today the only tell is
+   `turns_used = 60 AND response_chars < 10`, which nothing alerts on.
+2. **Find the shape.** Is it a specific todo kind, a tool-call loop the model
+   can't exit, or an instruction it can't satisfy? The `llm_blob` request text is
+   retained for both runs — read them rather than guess.
+3. **Then pre-mediate.** Reto's framing: most ticks should be a cheap
+   deterministic no-op, not a 60-turn agentic loop. A pre-check that answers "is
+   there anything to decide here" before spending a tick would stop these before
+   they start. See also the ideas in the spark-worker item below.
+
+Whether this is qwen-specific is **unknown** — all 10 samples are local. Check
+whether the claude lane shows the same tail before concluding it is a
+local-model problem.
+
 ## 💸 `PRECIS_DAILY_COST_CEILING` is set at the noise floor — pick a real number
 
 Status: open · Severity: high · Owner: Reto (a deploy var, not a code change) · Test: a normal day's recorded 24h spend sits comfortably under the deployed cap.
