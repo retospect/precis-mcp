@@ -70,11 +70,28 @@ Set `vault_pg_agent_rw_pass` to the new value. If `postgres_roles` names a
 different `password_var` for `agent_rw`, update that var instead — the userlist
 resolves through it.
 
-**3 — Change the role in Postgres.** Direct to the data node on **5432**, not
-through pgbouncer (you are about to invalidate the pooler's copy):
+**3 — Change the role in Postgres.** Connect to the data node on the **direct**
+Postgres port (`postgres_port`, 5432), not pgbouncer's 6432 — you are about to
+invalidate the pooler's copy, and you need a session that doesn't depend on it:
 
-    ssh caspar "psql -h 127.0.0.1 -p 5432 -U admin -d precis_prod \
-      -c \"ALTER ROLE agent_rw PASSWORD '<new>';\""
+    ssh caspar
+    psql -h 127.0.0.1 -p 5432 -U admin -d precis_prod
+
+Then, at the `psql` prompt:
+
+    \password agent_rw
+
+**Use `\password`, not `ALTER ROLE … PASSWORD '<literal>'`.** The meta-command
+prompts twice with no echo, hashes client-side per the server's
+`password_encryption`, and sends only the hash — so the cleartext never lands in
+shell history, in `ps` output, in `~/.psql_history`, or on the wire. Typing the
+`ALTER ROLE` form by hand puts the new password in at least two of those
+immediately, which is how the credential you are rotating got exposed in the
+first place.
+
+Paste the value generated in step 1 (you need that exact cleartext again for the
+vault and the pooler's userlist, so it must already be in your password manager
+— `\password` must not be the only place it exists).
 
 From here until step 4 finishes, connections through `:6432` fail. Expected.
 
