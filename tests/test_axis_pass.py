@@ -425,7 +425,14 @@ def test_applies_when_tags_any_chunk_level_gates_on_role3(store: Any) -> None:
     )  # un-role3'd -> skipped
 
 
-def test_unparseable_output_is_failed_and_stays_claimable(store: Any) -> None:
+def test_unparseable_output_is_failed_and_braked_from_immediate_reclaim(
+    store: Any,
+) -> None:
+    """A call/parse failure on a ref-level axis leaves no value/marker tag
+    (as before) but must NOT be immediately re-claimable — the claim-time
+    attempt lease (``ref_lease``) brakes it for a cooldown window instead of
+    re-billing the LLM every sweep (OPEN-ITEMS "Unbraked LLM-pass
+    cluster")."""
     ref_id = seed_ref(store, title="A study of Pd catalysts")
     seed_chunk(store, ref_id=ref_id, text=_LONG_PARA, ord=0)
 
@@ -440,8 +447,28 @@ def test_unparseable_output_is_failed_and_stays_claimable(store: Any) -> None:
     assert _ref_tag(store, ref_id, "DOMAIN") is None
     assert _ref_tag(store, ref_id, "DOMAINCASCADE") is None
 
-    # Untagged -> still claimable on retry.
+    # An immediately-following sweep must NOT re-claim (and thus not
+    # re-bill the LLM) — the attempt lease is still live.
     retry_client = _FakeClient("chemistry")
+    not_reclaimed = run_axis_pass(
+        store,
+        dispatch=retry_client,
+        axis_id="domain",
+        batch_size=10,
+        ref_ids=[ref_id],
+    )
+    assert not_reclaimed == {"claimed": 0, "ok": 0, "failed": 0}
+    assert retry_client.calls == []
+
+    # Once the lease has expired (simulated here rather than waiting out
+    # the real cooldown), the ref is claimable again.
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE ref_tags SET expires_at = now() - interval '1 minute' "
+            "WHERE ref_id = %s",
+            (ref_id,),
+        )
+        conn.commit()
     retried = run_axis_pass(
         store,
         dispatch=retry_client,
@@ -450,6 +477,35 @@ def test_unparseable_output_is_failed_and_stays_claimable(store: Any) -> None:
         ref_ids=[ref_id],
     )
     assert retried == {"claimed": 1, "ok": 1, "failed": 0, "dist": {"chemistry": 1}}
+
+
+def test_dispatch_raise_on_ref_level_axis_is_not_reclaimed_next_sweep(
+    store: Any,
+) -> None:
+    """A dispatch-level raise (breaker refusal, dead endpoint) — not just an
+    unparseable reply — must also brake the ref from immediate re-claim."""
+    ref_id = seed_ref(store, title="A study of Pd catalysts")
+    seed_chunk(store, ref_id=ref_id, text=_LONG_PARA, ord=0)
+
+    class _BoomClient:
+        def complete(self, messages: list[dict[str, str]]) -> Any:
+            raise RuntimeError("breaker refused")
+
+    result = run_axis_pass(
+        store, dispatch=_BoomClient(), axis_id="domain", batch_size=10, ref_ids=[ref_id]
+    )
+    assert result == {"claimed": 1, "ok": 0, "failed": 1, "dist": {}}
+
+    retry_client = _FakeClient("chemistry")
+    second = run_axis_pass(
+        store,
+        dispatch=retry_client,
+        axis_id="domain",
+        batch_size=10,
+        ref_ids=[ref_id],
+    )
+    assert second == {"claimed": 0, "ok": 0, "failed": 0}
+    assert retry_client.calls == []
 
 
 # ── prompt_preview (no DB — pure YAML + prompt-builder) ─────────────────

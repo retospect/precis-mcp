@@ -52,14 +52,17 @@ ref_tags for a ref-level axis). Bumping the axis YAML's ``version`` (or
 passing an explicit ``version=`` override) changes the marker VALUE the
 claim excludes on, so already-tagged items become claimable again —
 lazy, no backfill script needed. A call/parse failure writes neither the
-value tag nor the marker. For a **ref-level** axis (no lease table) the
-item is therefore immediately re-claimable on the next cycle (mirrors
-``classify_topics``'s failed-case contract). For a **chunk-level** axis
-the ``chunk_claims`` lease taken at claim time persists on failure, so a
-failed chunk is NOT retried until the axis ``version`` is bumped — the
-same failure-lease behaviour as the ``classify`` cascade. A per-axis
-failed-lease reaper is a prerequisite before any chunk-level axis is
-swept corpus-wide (tracked in OPEN-ITEMS).
+value tag nor the marker. For a **ref-level** axis (no lease table) a
+claim-time attempt lease (:mod:`precis.workers.ref_lease`, mirroring
+``classify_topics``'s own fix) is written just before the LLM call and
+survives a failure, braking the item from re-claim for a cooldown window
+instead of every sweep — cleared again on the next successful classify, so
+a version bump still reclaims promptly (OPEN-ITEMS "Unbraked LLM-pass
+cluster"). For a **chunk-level** axis the ``chunk_claims`` lease taken at
+claim time persists on failure, so a failed chunk is NOT retried until the
+axis ``version`` is bumped — the same failure-lease behaviour as the
+``classify`` cascade. A per-axis failed-lease reaper is a prerequisite
+before any chunk-level axis is swept corpus-wide (tracked in OPEN-ITEMS).
 
 Default-OFF: each axis registers under its own ``service_config`` service
 name ``axis:<id>`` (``cli/worker.py``'s per-axis wiring), off unless a
@@ -78,6 +81,7 @@ from typing import Any
 import yaml
 
 from precis.store.types import Tag
+from precis.workers import ref_lease
 
 _AXES_DIR = Path(__file__).resolve().parent.parent / "data" / "axes"
 _ABSTRACT_CHARS = 2000
@@ -485,6 +489,7 @@ def _claim_ref(
             SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
             WHERE rt.ref_id = r.ref_id AND t.namespace = %(marker_ns)s AND t.value = %(version)s
           )
+          {ref_lease.exclude_clause("r.ref_id", "attempt_ns")}
           -- An axis pass backfills unclassified refs — it must never claim
           -- a ref that already carries a tag in its OWN output namespace
           -- written by someone else (no cascade marker at all, any
@@ -515,6 +520,7 @@ def _claim_ref(
         "ns": ns,
         "marker_ns": marker_ns,
         "version": version,
+        "attempt_ns": ref_lease.attempt_ns(marker_ns),
         "limit": limit,
         **applies_params,
         **prereq_params,
@@ -602,6 +608,18 @@ def run_axis_pass(
             if level == "chunk"
             else _build_ref_prompt(axis, row)
         )
+        if level != "chunk":
+            # Ref-level claim-time attempt lease, committed BEFORE the LLM
+            # call — chunk-level rows are already braked via the
+            # chunk_claims lease taken at claim time (see module docstring);
+            # a ref-level row has no such table, so a dispatch failure here
+            # would otherwise re-claim + re-bill it every sweep (OPEN-ITEMS
+            # "Unbraked LLM-pass cluster").
+            with store.pool.connection() as lease_conn:
+                ref_lease.stamp_attempt(
+                    store, row["ref_id"], marker_ns, conn=lease_conn
+                )
+                lease_conn.commit()
         raw = _classify_one(dispatch, axis, prompt)
         if raw is None:
             failed += 1
@@ -630,6 +648,11 @@ def run_axis_pass(
                 replace_prefix=True,
                 conn=conn,
             )
+            if level != "chunk":
+                # Success — clear the attempt lease so an unrelated
+                # re-trigger (e.g. an explicit version= override) is never
+                # blocked by a stale lease from an earlier successful run.
+                ref_lease.clear_attempt(store, row["ref_id"], marker_ns, conn=conn)
             conn.commit()
         ok += 1
     return {"claimed": len(rows), "ok": ok, "failed": failed, "dist": dict(dist)}

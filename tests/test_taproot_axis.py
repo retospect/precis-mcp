@@ -128,7 +128,8 @@ def test_taproot_idempotent_same_version_skipped(store: Any) -> None:
 
 def test_taproot_unparseable_output_stays_claimable(store: Any) -> None:
     """Fail-open: `taproot.yaml` omits `default_unknown`, so an unparseable /
-    out-of-vocab read is `failed` (no tag, re-claimable), never a mis-tag."""
+    out-of-vocab read is `failed` (no tag, re-claimable once the attempt-lease
+    cooldown lapses), never a mis-tag."""
     ref_id = _seed_finding(store, title="An ambiguous finding", body=_CLAIM_BODY)
 
     class _JunkClient:
@@ -145,6 +146,17 @@ def test_taproot_unparseable_output_stays_claimable(store: Any) -> None:
     assert result == {"claimed": 1, "ok": 0, "failed": 1, "dist": {}}
     assert _ref_tag(store, ref_id, "TAPROOT") is None
     assert _ref_tag(store, ref_id, "TAPROOTCASCADE") is None
+
+    # The failed attempt leaves a claim-time attempt lease braking an
+    # immediate re-claim; expire it (rather than waiting out the cooldown)
+    # to assert the row is claimable again — not permanently lost.
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE ref_tags SET expires_at = now() - interval '1 minute' "
+            "WHERE ref_id = %s",
+            (ref_id,),
+        )
+        conn.commit()
 
     retried = run_axis_pass(
         store,

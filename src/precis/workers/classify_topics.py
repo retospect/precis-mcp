@@ -48,6 +48,7 @@ from typing import Any
 import yaml
 
 from precis.store.types import Tag
+from precis.workers import ref_lease
 
 log = logging.getLogger(__name__)
 
@@ -230,8 +231,11 @@ def _claim(
     the 'done' marker (no separate lease table, mirroring
     ``paper_glossary``); idempotent + re-claimable by changing the marker
     (a version bump, or — ADR 0068 — a change to the enabled-topic set).
-    ``ref_ids`` optionally restricts the sweep to specific refs (targeted
-    backfill / tests)."""
+    Also excludes a ref currently under an unexpired claim-time attempt
+    lease (:mod:`precis.workers.ref_lease`, gr172740/173317 — a
+    persistently-failing ref must not be re-fetched and re-LLM'd every
+    sweep). ``ref_ids`` optionally restricts the sweep to specific refs
+    (targeted backfill / tests)."""
     ref_filter = "AND r.ref_id = ANY(%(ref_ids)s)" if ref_ids else ""
     sql = f"""
         SELECT r.ref_id, r.title
@@ -246,6 +250,7 @@ def _claim(
             SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
             WHERE rt.ref_id = r.ref_id AND t.namespace = %(ns)s AND t.value = %(marker_value)s
           )
+          {ref_lease.exclude_clause("r.ref_id", "attempt_ns")}
         ORDER BY r.ref_id
         LIMIT %(limit)s
     """
@@ -253,6 +258,7 @@ def _claim(
         "kinds": ["paper", "patent"],
         "ns": MARKER_NAMESPACE,
         "marker_value": marker_value,
+        "attempt_ns": ref_lease.attempt_ns(MARKER_NAMESPACE),
         "limit": limit,
     }
     if ref_ids:
@@ -335,6 +341,16 @@ def run_classify_topics_pass(
         if not candidates:
             confirmed: list[str] = []
         else:
+            # Claim-time attempt lease, committed BEFORE the LLM call — a
+            # dispatch failure or unparseable reply leaves it in place,
+            # braking this ref from re-claim for a cooldown window instead
+            # of every sweep (OPEN-ITEMS "Unbraked LLM-pass cluster",
+            # gr172740/173317).
+            with store.pool.connection() as lease_conn:
+                ref_lease.stamp_attempt(
+                    store, ref_id, MARKER_NAMESPACE, conn=lease_conn
+                )
+                lease_conn.commit()
             classified = _classify_one(client, effective, candidates, title, context)
             if classified is None:
                 failed += 1
@@ -354,6 +370,10 @@ def run_classify_topics_pass(
                 replace_prefix=True,
                 conn=conn,
             )
+            # Success — clear the attempt lease so an unrelated re-trigger
+            # (a version bump, a toggled enabled-topic set) is never
+            # blocked by a stale lease from an earlier successful run.
+            ref_lease.clear_attempt(store, ref_id, MARKER_NAMESPACE, conn=conn)
             conn.commit()
         ok += 1
     return {"claimed": len(rows), "ok": ok, "failed": failed, "dist": dict(dist)}

@@ -144,10 +144,72 @@ def test_unparseable_model_leaves_row_pending(store) -> None:
 
     r = run_inject_scan_pass(store, client=_Bad(), fetch_body=_fetch({9: _msg(9)}))
     assert r["failed"] == 1 and r["ok"] == 0
-    # Still tier-0, still pending for a retry — never silently downgraded.
+    # Still tier-0 (never silently downgraded) but braked from immediate
+    # re-claim by the claim-time attempt cooldown (migration 0110) — the
+    # ``pending_email_scans`` set it's fed from is a DIFFERENT thing from
+    # "logically pending" (see the dedicated cooldown test below).
     row = store.get_email_scan("rs@x.test", folder="INBOX", uidvalidity=1, uid=9)
     assert row is not None and row.tier == 0
-    assert {s.uid for s in store.pending_email_scans(limit=10)} == {9}
+
+
+def test_unparseable_model_is_not_reclaimed_by_an_immediately_following_sweep(
+    store,
+) -> None:
+    """OPEN-ITEMS "Unbraked LLM-pass cluster": a message the local scorer
+    can't parse must NOT be re-fetched from IMAP and re-scored every sweep —
+    the claim-time attempt cooldown (migration 0110) brakes it."""
+    _seed(store)
+    _flag(store, uid=10, verdict="suspect")
+
+    class _Bad:
+        def complete(self, messages):
+            return _Out("i refuse to answer in json")
+
+    fetch = _fetch({10: _msg(10)})
+    first = run_inject_scan_pass(store, client=_Bad(), fetch_body=fetch)
+    assert first["failed"] == 1 and first["ok"] == 0
+    assert {s.uid for s in store.pending_email_scans(limit=10)} == set()
+
+    # Immediately-following sweep: not reclaimed, not re-fetched, not
+    # re-scored.
+    good_client = _Client("clean")
+    second = run_inject_scan_pass(store, client=good_client, fetch_body=fetch)
+    assert second == {"claimed": 0, "ok": 0, "failed": 0}
+    assert good_client.calls == 0
+
+    # Cooldown elapsed (simulated) -> claimable and scorable again.
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE email_scan SET next_attempt_at = now() - interval '1 minute' "
+            "WHERE account = %s AND uid = %s",
+            ("rs@x.test", 10),
+        )
+        conn.commit()
+    third = run_inject_scan_pass(store, client=good_client, fetch_body=fetch)
+    assert third["ok"] == 1 and third["failed"] == 0
+    assert good_client.calls == 1
+
+
+def test_dispatch_raise_is_not_reclaimed_by_an_immediately_following_sweep(
+    store,
+) -> None:
+    """A dispatch-level raise (breaker refusal, dead endpoint) — not just an
+    unparseable reply — must also brake the row from immediate re-claim."""
+    _seed(store)
+    _flag(store, uid=14, verdict="suspect")
+
+    class _Boom:
+        def complete(self, messages):
+            raise RuntimeError("breaker refused")
+
+    fetch = _fetch({14: _msg(14)})
+    first = run_inject_scan_pass(store, client=_Boom(), fetch_body=fetch)
+    assert first["failed"] == 1 and first["ok"] == 0
+
+    good_client = _Client("clean")
+    second = run_inject_scan_pass(store, client=good_client, fetch_body=fetch)
+    assert second == {"claimed": 0, "ok": 0, "failed": 0}
+    assert good_client.calls == 0
 
 
 def test_imap_error_leaves_row_pending(store) -> None:

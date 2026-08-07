@@ -171,9 +171,27 @@ _UPGRADE_SCAN = (
 # The slice-4 lease target: messages a deeper (tier >= 1) scan hasn't reached
 # (the email_scan_pending_idx partial index). Oldest-scanned first so a backlog
 # drains in arrival order. No FOR UPDATE — the CAS in _UPGRADE_SCAN is the
-# race-guard, so this stays a cheap lock-free read.
+# race-guard, so this stays a cheap lock-free read. ``next_attempt_at`` (migration
+# 0110) is the claim-time cooldown a prior model-call failure leaves behind
+# (``record_email_scan_attempt``) — excluded while it's still in the future,
+# so a persistently-unparseable message isn't re-fetched + re-scored every
+# sweep (OPEN-ITEMS "Unbraked LLM-pass cluster").
 _PENDING_SCANS = (
-    f"SELECT {_SCAN_COLS} FROM email_scan WHERE tier < 1 ORDER BY scanned_at LIMIT %s"
+    f"SELECT {_SCAN_COLS} FROM email_scan "
+    "WHERE tier < 1 AND (next_attempt_at IS NULL OR next_attempt_at <= now()) "
+    "ORDER BY scanned_at LIMIT %s"
+)
+
+# Claim-time attempt stamp — called BEFORE the model call (mirrors
+# ``chunk_claims``' claim-before-call ordering) so a raise, or an unparseable
+# reply, still leaves the row braked for ``cooldown_min`` regardless of
+# outcome. Deliberately NOT used for a bare IMAP fetch failure (an
+# intentional "retry every tick" transient-network path, unchanged).
+_STAMP_ATTEMPT = (
+    "UPDATE email_scan SET attempts = attempts + 1, "
+    "next_attempt_at = now() + (%(cooldown_min)s * interval '1 minute') "
+    "WHERE account = %(account)s AND folder = %(folder)s "
+    "AND uidvalidity = %(uidvalidity)s AND uid = %(uid)s"
 )
 
 # Verdicts for a set of UIDs in one folder (browse-handler badges). Keyed on
@@ -286,10 +304,40 @@ class EmailAccountMixin:
         return None if row is None else _row_to_scan(row)
 
     def pending_email_scans(self, *, limit: int) -> list[EmailScan]:
-        """Tier-0 verdicts a deeper ``inject_scan`` hasn't reached (slice 4)."""
+        """Tier-0 verdicts a deeper ``inject_scan`` hasn't reached (slice 4).
+
+        Excludes a row still under a claim-time attempt cooldown
+        (``record_email_scan_attempt`` — migration 0110)."""
         with self.pool.connection() as conn:
             rows = conn.execute(_PENDING_SCANS, (int(limit),)).fetchall()
         return [_row_to_scan(r) for r in rows]
+
+    def record_email_scan_attempt(
+        self,
+        account: str,
+        *,
+        folder: str,
+        uidvalidity: int,
+        uid: int,
+        cooldown_min: float,
+    ) -> None:
+        """Claim-time attempt stamp — call BEFORE the model call so a raise,
+        or an unparseable reply, still leaves the row braked from
+        ``pending_email_scans`` for ``cooldown_min`` regardless of outcome
+        (OPEN-ITEMS "Unbraked LLM-pass cluster"). A subsequent successful
+        ``upgrade_email_scan`` naturally drops the row out of the pending
+        set (its ``tier`` advances past 0) without needing to clear this."""
+        with self.pool.connection() as conn:
+            conn.execute(
+                _STAMP_ATTEMPT,
+                {
+                    "account": account,
+                    "folder": folder,
+                    "uidvalidity": uidvalidity,
+                    "uid": uid,
+                    "cooldown_min": cooldown_min,
+                },
+            )
 
     def upgrade_email_scan(
         self,

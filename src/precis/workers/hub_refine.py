@@ -61,6 +61,20 @@ a blind periodic rescan (the incremental-trigger design,
    rejection memo *before* discovery: the claim itself changed, so an old
    ``supports=no`` verdict on the previous wording may no longer hold.
 
+A raise anywhere in steps 2-5 (a per-candidate verify-LLM failure, a DB
+error in ``attach_evidence``, ...) means step 6 never runs and the whole
+per-hub transaction rolls back — so, absent a separate signal, the SAME due
+reason (most often "never refined") would hold forever and the hub
+re-verifies every candidate against the LLM again next sweep, unbounded
+(OPEN-ITEMS "Unbraked LLM-pass cluster"). :func:`_claim_hubs_due_for_refine`
+closes this: it writes a claim-time ``TAPROOT_REFINE_ATTEMPT`` lease
+(:data:`_ATTEMPT_NS`, TTL'd via ``ref_tags.expires_at``) for every locked
+hub in the SAME already-committed transaction as the ``TAPROOT_DUE`` pop —
+so the lease survives a later raise and brakes the hub from re-claim for
+:data:`ATTEMPT_COOLDOWN_MIN`. Step 6 clears the lease again on every
+completed run (success or a clean no-op), so a genuine re-trigger is never
+blocked by a stale lease left over from an earlier finished pass.
+
 Never a periodic full re-scan: idempotent attach + pre-verify existence
 check + rejection memo + due-set claim query together bound the per-run LLM
 spend to (at most) ``HUBS_PER_PASS x (TOPK + grounded-cite count)`` calls —
@@ -134,6 +148,27 @@ _META_UNRESOLVED = "unresolved_citations"
 #: Popped here at claim time (see :func:`_claim_hubs_due_for_refine`).
 _DUE_NS = "TAPROOT_DUE"
 _DUE_VALUE = "1"
+
+#: Claim-time attempt lease (OPEN-ITEMS "Unbraked LLM-pass cluster"): a
+#: ``TAPROOT_DUE``/``never-refined``/sha-reopen/backstop due-hub whose
+#: discover+verify loop raises never reaches ``_refine_one_hub``'s own
+#: unconditional final ``last_refined_at`` stamp — the whole per-hub
+#: transaction rolls back, so (unlike a completed pass) NOTHING records
+#: that this hub was even attempted. Without a separate signal the same
+#: due reason (most commonly "never refined") holds forever, and the hub
+#: re-verifies every candidate against the LLM again next sweep,
+#: unbounded. Fix: a ``ref_tags`` TTL'd lease
+#: (``expires_at`` — migration 0010), written for every locked hub in the
+#: SAME already-committed transaction as the ``TAPROOT_DUE`` pop (so it
+#: survives a later raise), and excluded from candidacy while unexpired.
+#: Cleared again by :func:`_refine_one_hub` on every completed run (success
+#: or a clean "nothing to do") so a genuine re-trigger (a fresh
+#: ``TAPROOT_DUE`` tag, a sha-reopen) is never blocked by a stale lease
+#: left over from an earlier completed pass — only an in-flight crash
+#: leaves it standing, and only until it cools down.
+_ATTEMPT_NS = "TAPROOT_REFINE_ATTEMPT"
+_ATTEMPT_VALUE = "1"
+ATTEMPT_COOLDOWN_MIN = 30
 
 
 def hub_refine_enabled() -> bool:
@@ -236,7 +271,9 @@ def _claim_hubs_due_for_refine(
 
     Pops each claimed hub's ``TAPROOT_DUE`` tag in this same call (the
     work-queue pop) — if a new chunk re-marks the hub mid-processing, it
-    simply re-triggers next pass.
+    simply re-triggers next pass. Also writes each locked hub's
+    :data:`_ATTEMPT_NS` claim-time lease here, in the same commit — see
+    that constant's docstring for why.
     """
     rows = conn.execute(
         """
@@ -246,7 +283,13 @@ def _claim_hubs_due_for_refine(
                   WHERE rt.ref_id = r.ref_id
                     AND t.namespace = %(due_ns)s
                     AND t.value = %(due_value)s
-               ) AS is_due_tagged
+               ) AS is_due_tagged,
+               EXISTS (
+                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                  WHERE rt.ref_id = r.ref_id
+                    AND t.namespace = %(attempt_ns)s
+                    AND (rt.expires_at IS NULL OR rt.expires_at > now())
+               ) AS has_attempt_lease
           FROM refs r
          WHERE r.kind = 'finding'
            AND r.deleted_at IS NULL
@@ -266,6 +309,7 @@ def _claim_hubs_due_for_refine(
         {
             "due_ns": _DUE_NS,
             "due_value": _DUE_VALUE,
+            "attempt_ns": _ATTEMPT_NS,
             "taproot_ns": TAPROOT_NAMESPACE,
             "taproot_claim": TAPROOT_CLAIM,
             "status_ns": _STATUS_NAMESPACE,
@@ -274,7 +318,12 @@ def _claim_hubs_due_for_refine(
     ).fetchall()
 
     candidates: list[tuple[int, str | None]] = []
-    for ref_id, title, meta, is_due_tagged in rows:
+    for ref_id, title, meta, is_due_tagged, has_attempt_lease in rows:
+        if has_attempt_lease:
+            # A prior attempt raised mid-loop and left its lease standing —
+            # brake this hub from re-claim until it cools down, regardless
+            # of which due reason would otherwise fire.
+            continue
         meta = dict(meta or {})
         last_refined_at = meta.get(_META_LAST_REFINED_AT)
         last_refined_sha = meta.get(_META_LAST_REFINED_SHA)
@@ -302,6 +351,13 @@ def _claim_hubs_due_for_refine(
     locked_ids = sorted((int(r[0]) for r in locked_rows), key=lambda rid: priority[rid])
 
     for ref_id in locked_ids:
+        store.add_tag(
+            ref_id,
+            Tag.closed(_ATTEMPT_NS, _ATTEMPT_VALUE),
+            set_by="system",
+            expires_at=datetime.now(UTC) + timedelta(minutes=ATTEMPT_COOLDOWN_MIN),
+            conn=conn,
+        )
         store.remove_tag(ref_id, Tag.closed(_DUE_NS, _DUE_VALUE), conn=conn)
 
     return locked_ids
@@ -498,7 +554,10 @@ def _refine_one_hub(
     """
     info = _fetch_hub_info(conn, hub_ref_id)
     if info is None:
-        # Ref vanished between claim and processing — nothing to stamp.
+        # Ref vanished between claim and processing — nothing to stamp,
+        # but this IS a completed run: clear the claim-time attempt lease
+        # like the normal exit below does.
+        store.remove_tag(hub_ref_id, Tag.closed(_ATTEMPT_NS, _ATTEMPT_VALUE), conn=conn)
         return
     title, meta = info
     claim_sentence = title.strip()
@@ -655,6 +714,10 @@ def _refine_one_hub(
     if unresolved_deduped or reopened:
         meta_patch[_META_UNRESOLVED] = unresolved_deduped
     store.update_ref(hub_ref_id, meta_patch=meta_patch, conn=conn)
+    # This point is only reached on a completed run (a raise anywhere above
+    # propagates out and this line never runs) -- clear the claim-time
+    # attempt lease so a genuine re-trigger is never blocked by a stale one.
+    store.remove_tag(hub_ref_id, Tag.closed(_ATTEMPT_NS, _ATTEMPT_VALUE), conn=conn)
 
 
 # ── runner ─────────────────────────────────────────────────────────

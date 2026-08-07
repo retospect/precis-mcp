@@ -462,6 +462,44 @@ def test_verify_dispatch_error_skips_the_candidate_without_failing_the_hub(
     assert _hub_meta(store, hub).get("last_refined_at") is not None
 
 
+# ── claim-time attempt lease braking a mid-loop raise (OPEN-ITEMS
+# "Unbraked LLM-pass cluster") ────────────────────────────────────────
+
+
+def test_raise_in_verify_loop_is_not_reclaimed_by_an_immediately_following_sweep(
+    store: Any,
+) -> None:
+    """A raise inside the discover/verify loop (a DB error in
+    ``attach_evidence``, here) rolls back the whole per-hub transaction, so
+    ``last_refined_at`` never advances -- but the claim-time attempt lease
+    written at claim time (BEFORE the loop ran, already committed) must
+    still brake the hub from an immediately-following sweep, rather than
+    re-verifying every candidate against the LLM again next tick."""
+    embedder = make_mock_bge_m3()
+    hub = _seed_hub(store, sentence="A mid-loop-raise attempt-lease probe.")
+    _seed_paper_chunk(
+        store, embedder, cite_key="midraise", text="A direct measurement statement."
+    )
+
+    def _boom(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("db error attaching evidence")
+
+    with (
+        patch(_VERIFY_PATH, return_value=_VERIFY_YES),
+        patch("precis.workers.hub_refine.attach_evidence", side_effect=_boom),
+    ):
+        result = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    assert result == {"claimed": 1, "ok": 0, "failed": 1}
+    # The transaction rolled back -- no stamp landed.
+    assert _hub_meta(store, hub).get("last_refined_at") is None
+
+    # Immediately-following sweep: NOT re-claimed, NOT re-verified.
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify2:
+        second = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    assert second == {"claimed": 0, "ok": 0, "failed": 0}
+    assert mock_verify2.call_count == 0
+
+
 # ── HUBS_PER_PASS / limit is honoured ─────────────────────────────────
 
 

@@ -226,6 +226,36 @@ class TestPass:
         # No glossary chunk written → the ref stays claimable for a retry.
         assert _glossary_chunk(store, ref_id) is None
 
+    def test_llm_raise_is_not_reclaimed_by_an_immediately_following_sweep(
+        self, store: Any
+    ) -> None:
+        """A dispatch-level raise (breaker refusal, dead endpoint) — not just
+        an unparseable reply — must brake the paper from immediate re-claim,
+        else it's re-fetched and re-LLM'd every sweep, unbounded (OPEN-ITEMS
+        "Unbraked LLM-pass cluster")."""
+        ref_id = _seed_paper(
+            store,
+            "Study of DFT devices",
+            "We used Density Functional Theory (DFT) here.",
+        )
+
+        class _BoomClient:
+            def complete(self, messages: list[dict[str, str]]) -> Any:
+                raise RuntimeError("breaker refused")
+
+        result = run_paper_glossary_pass(
+            store, client=_BoomClient(), batch_size=10, ref_ids=[ref_id]
+        )
+        assert result == {"claimed": 1, "ok": 0, "failed": 1}
+        assert _glossary_chunk(store, ref_id) is None
+
+        retry_client = _FakeClient(_GLOSSARY_JSON)
+        second = run_paper_glossary_pass(
+            store, client=retry_client, batch_size=10, ref_ids=[ref_id]
+        )
+        assert second == {"claimed": 0, "ok": 0, "failed": 0}
+        assert retry_client.calls == []
+
     def test_all_terms_filtered_writes_marker_not_retry(self, store: Any) -> None:
         # gripe 186183 regression: a parseable extraction whose every term is a
         # non-concept must converge (write an empty marker), NOT be treated as a

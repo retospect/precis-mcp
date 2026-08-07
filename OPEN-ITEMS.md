@@ -334,36 +334,6 @@ Status: fix shipped, pending one-morning-cycle prod verification · Owner:
 - REJECTED: the old plan's "reorder news/brief crons" would MASK not fix — it
   narrows the race window but leaves the runaway; unneeded now the runaway's gone.
 
-## Unbraked LLM-pass cluster — persistently-failing rows re-LLM'd every sweep
-
-Status: open · Severity: correctness (token/$ leak) · Found: 2026-08-05 Opus
-leak-hunt alongside gr192606 · Owner: `workers/{classify_topics,axis_pass,
-inject_scan,paper_glossary,hub_refine}.py`
-
-Shared shape (identical to gr192606's): a candidate query excludes rows only on a
-SUCCESS-written done-marker; the failure/exception branch skips the marker and
-there is no claim-time lease / attempt-cap / cooldown — so a persistently-failing
-row (dead endpoint, breaker refusal, unparseable JSON) is re-fetched and re-LLM'd
-every sweep, unbounded. Fix pattern already in-tree: `classify.py` and chunk-level
-`axis_pass` take a claim-time `chunk_claims` lease BEFORE the LLM call, braking the
-row regardless of outcome. Apply the same (a lease row, or a `failed_at`/attempt
-column written AT claim) to each site.
-
-Sites (severity order; several default-OFF, but real when enabled):
-1. `classify_topics.run_classify_topics_pass` — HAS PROD HISTORY (gr172740/173317,
-   "5570 failed, no rows"); routes to paid OpenRouter. Marker = `TOPICCASCADE=`
-   ref tag, success-only; `_classify_one`→None on any failure re-loops. ADR 0068
-   per-topic enable.
-2. `axis_pass.run_axis_pass` **ref-level** path — no lease (the chunk-level path
-   IS leased, not a leak); its own docstring already defers a "failed-lease
-   reaper". Default-OFF.
-3. `inject_scan.run_inject_scan_pass` — email lane; re-does IMAP fetch + model
-   each sweep for `tier<1` rows the model can't parse.
-4. `paper_glossary.run_paper_glossary_pass` — `data is None`/bare-except write no
-   marker (the converged-empty branches DO — those are fine). Default-OFF.
-5. `hub_refine.run_hub_refine_pass` — mechanism confirmed, occurrence plausible
-   (a raise after the per-candidate verify-LLM loop rolls back the refresh
-   stamp). Default-OFF.
 
 ---
 

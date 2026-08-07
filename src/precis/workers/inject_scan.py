@@ -21,6 +21,14 @@ The model call is injected as ``client`` (a ``DispatchClient``); ``fetch_body``
 is injectable so tests exercise the pass without a live IMAP server. Nothing is
 ever deleted: a ``high`` message stays intact in the mailbox and its listing;
 the verdict only escalates *handling*, never removes mail (design §ladder).
+
+A model call the local scorer can't parse (``verdict is None``) writes no CAS
+row, so without a separate signal the row would be re-fetched from IMAP and
+re-scored every sweep, unbounded (OPEN-ITEMS "Unbraked LLM-pass cluster").
+``store.record_email_scan_attempt`` (migration 0110) stamps a claim-time
+cooldown just BEFORE the model call, so a raise or an unparseable reply still
+leaves the row braked; a bare IMAP fetch failure is deliberately NOT
+stamped — that stays the existing "retry every tick" transient-network path.
 """
 
 from __future__ import annotations
@@ -47,6 +55,14 @@ log = logging.getLogger(__name__)
 
 #: ``(account, *, store, folder, uid) -> Message | None``.
 FetchBodyFn = Callable[..., Message | None]
+
+#: How long a claim-time attempt stamp (migration 0110) brakes a row whose
+#: model call the local scorer couldn't parse — bounded retries instead of
+#: every sweep (OPEN-ITEMS "Unbraked LLM-pass cluster"). Deliberately NOT
+#: applied to a bare IMAP fetch failure, which stays an intentional
+#: "retry every tick" transient-network path (see ``_retire``/the fetch
+#: try/except below).
+ATTEMPT_COOLDOWN_MIN = 30
 
 
 def run_inject_scan_pass(
@@ -98,6 +114,17 @@ def run_inject_scan_pass(
             ok += 1
             continue
 
+        # Claim-time attempt stamp, committed BEFORE the model call — an
+        # unparseable reply or a dispatch raise below still leaves this row
+        # braked from `pending_email_scans` for a cooldown instead of every
+        # sweep (OPEN-ITEMS "Unbraked LLM-pass cluster").
+        store.record_email_scan_attempt(
+            scan.account,
+            folder=scan.folder,
+            uidvalidity=scan.uidvalidity,
+            uid=scan.uid,
+            cooldown_min=ATTEMPT_COOLDOWN_MIN,
+        )
         verdict, tier, evidence = _scan_one(client, escalate_client, scan, msg)
         if verdict is None:  # model unparseable / errored — leave pending
             failed += 1

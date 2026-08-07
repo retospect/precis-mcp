@@ -23,6 +23,12 @@ re-derive the corpus lazily. **No AnkiWeb / account writes.** Default-OFF
 (``PRECIS_PAPER_GLOSSARY_ENABLED=1`` or ``--only paper_glossary``) — a corpus-wide
 backfill is a deliberate, node-targeted batch, like ``classify``. Full design:
 docs/design/reading-prep-loop.md (slice 1).
+
+A ``data is None``/exception failure writes no marker — but a claim-time
+attempt lease (:mod:`precis.workers.ref_lease`), stamped just before the LLM
+call and cleared again by :func:`_write` on every converged outcome, brakes
+the paper from re-claim for a cooldown window instead of every sweep
+(OPEN-ITEMS "Unbraked LLM-pass cluster").
 """
 
 from __future__ import annotations
@@ -35,12 +41,19 @@ from psycopg.types.json import Jsonb
 
 from precis.reading.term_quality import non_concept_reason
 from precis.utils.abbreviations import find_acronyms
+from precis.workers import ref_lease
 
 log = logging.getLogger(__name__)
 
 GLOSSARY_VERSION = "1"
 CHUNK_KIND = "card_glossary"
 GLOSSARY_ORD = -1000
+
+#: :mod:`precis.workers.ref_lease` marker namespace for this pass's
+#: claim-time attempt lease. There's no ref-tag "done" marker here (the
+#: done-check is a ``card_glossary`` chunk, not a tag), but the lease
+#: mechanism just needs a stable namespace of its own.
+_ATTEMPT_MARKER_NS = "PAPERGLOSSARY"
 
 _MAX_KEYWORDS = 30  # top KeyBERT terms handed to the model
 _MAX_ABBREVS = 40  # cap defined/undefined lists so the prompt stays bounded
@@ -171,8 +184,12 @@ def _claim(
 ) -> list[tuple[int, str]]:
     """Papers with body content but no current-version glossary. Existence of a
     fresh ``card_glossary`` chunk is the 'done' marker (no separate lease table);
-    idempotent + version-bumpable. ``ref_ids`` optionally restricts the sweep to
-    specific papers (targeted backfill / tests)."""
+    idempotent + version-bumpable. Also excludes a paper currently under an
+    unexpired claim-time attempt lease (:mod:`precis.workers.ref_lease`) — a
+    ``data is None``/exception failure otherwise re-fetches + re-LLM's the
+    same paper every sweep (OPEN-ITEMS "Unbraked LLM-pass cluster").
+    ``ref_ids`` optionally restricts the sweep to specific papers (targeted
+    backfill / tests)."""
     ref_filter = "AND r.ref_id = ANY(%(ref_ids)s)" if ref_ids else ""
     sql = f"""
         SELECT r.ref_id, r.title
@@ -188,12 +205,14 @@ def _claim(
             WHERE g.ref_id = r.ref_id AND g.chunk_kind = %(kind)s
               AND g.meta->>'glossary_version' = %(ver)s
           )
+          {ref_lease.exclude_clause("r.ref_id", "attempt_ns")}
         ORDER BY r.ref_id
         LIMIT %(limit)s
     """
     params: dict[str, Any] = {
         "kind": CHUNK_KIND,
         "ver": GLOSSARY_VERSION,
+        "attempt_ns": ref_lease.attempt_ns(_ATTEMPT_MARKER_NS),
         "limit": limit,
     }
     if ref_ids:
@@ -253,6 +272,11 @@ def _write(
             "VALUES (%s, 'agent', %s, %s, %s, %s)",
             (ref_id, GLOSSARY_ORD, CHUNK_KIND, text, Jsonb(meta)),
         )
+        # Converged (whether real terms or an empty-marker write) — clear
+        # any attempt lease so a later legitimate re-trigger (a
+        # GLOSSARY_VERSION bump) is never blocked by a stale lease left
+        # over from an earlier successful run.
+        ref_lease.clear_attempt(store, ref_id, _ATTEMPT_MARKER_NS, conn=conn)
         conn.commit()
 
 
@@ -284,6 +308,15 @@ def run_paper_glossary_pass(
                 ok += 1
                 continue
             prompt = _build_prompt(title, abstract, defined, undefined, keywords)
+            # Claim-time attempt lease, committed BEFORE the LLM call — a
+            # ``data is None``/exception failure below leaves it in place,
+            # braking this paper from re-claim for a cooldown window instead
+            # of every sweep (OPEN-ITEMS "Unbraked LLM-pass cluster").
+            with store.pool.connection() as lease_conn:
+                ref_lease.stamp_attempt(
+                    store, ref_id, _ATTEMPT_MARKER_NS, conn=lease_conn
+                )
+                lease_conn.commit()
             out = client.complete(
                 [
                     {"role": "system", "content": _SYS},
@@ -293,7 +326,7 @@ def run_paper_glossary_pass(
             data = _extract_json(getattr(out, "text", "") or "")
             if data is None:
                 # Model produced nothing PARSEABLE — a real failure; leave
-                # unclaimed for a retry.
+                # unclaimed for a retry (braked by the lease above).
                 failed += 1
                 continue
             clusters = _clean_clusters(data)
