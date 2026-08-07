@@ -31,6 +31,7 @@ def _mk_job(
     job_type: str = "fake_relax",
     params: dict[str, Any] | None = None,
     parent_id: int | None = None,
+    prio: int | None = None,
 ) -> int:
     ref = store.insert_ref(
         kind="job",
@@ -38,6 +39,7 @@ def _mk_job(
         title="fake relax job",
         meta={"executor": executor, "job_type": job_type, "params": params or {}},
         parent_id=parent_id,
+        prio=prio,
     )
     store.add_tag(ref.id, Tag.parse_strict("STATUS:queued"), set_by="agent")
     return int(ref.id)
@@ -636,6 +638,63 @@ def test_interleaved_epoch_reclaims_never_advance_attempts(
     meta = _meta(store, rid)
     assert meta["attempts"] == 1  # STILL unchanged — two epoch reclaims, zero bumps
     assert [r["why"] for r in meta["reclaims"][-2:]] == ["epoch", "epoch"]
+
+
+# ── Starvation-bound reclaim pre-pass (gr191124/gr192372/gr191125) ──
+
+
+def test_stale_running_reclaimed_despite_higher_prio_fresh_flood(
+    store: Store,
+) -> None:
+    """Regression for the prod incident this fix root-caused: ``plan_tick``
+    job 188721 sat ``STATUS:running`` 35h before reclaim. ONE default-prio
+    stale-running row with an expired lease, plus MORE fresh
+    ``STATUS:queued`` rows at a higher priority (lower prio number) than
+    the per-cycle claim ``limit``, used to starve the stale row out of
+    EVERY claim cycle — it never ranked inside the shared prio/age
+    selection window. A single ``claim_executor_jobs(...,
+    reclaim_stale_running=True)`` call must reclaim the stale row
+    regardless of fresh-work pressure. Pre-fix this assertion is red."""
+    stale_rid = _mk_running_job(store, lease_offset_s=-60, attempts=1)
+    # limit=2 below; seed MORE than 2 higher-priority (prio=2) fresh jobs
+    # so the stale row (default prio 5, unset) never makes the prio/age
+    # cut on its own — the exact starvation shape from the incident.
+    for _ in range(4):
+        _mk_job(store, params={"resources": {"wall_seconds": 60}}, prio=2)
+
+    with store.pool.connection() as conn:
+        claimed = claim_executor_jobs(
+            conn, executor="ssh_node", limit=2, reclaim_stale_running=True
+        )
+        conn.commit()
+
+    claimed_ids = {ref_id for ref_id, _title, _meta in claimed}
+    assert stale_rid in claimed_ids
+
+
+def test_fresh_work_still_respects_prio_and_limit_alongside_reclaim(
+    store: Store,
+) -> None:
+    """Same starvation seed as above: the fresh-work half of the SAME call
+    still claims exactly ``limit`` fresh rows, still prio/age-ordered —
+    the reclaim pre-pass is additive to the fresh-work budget, not a
+    substitute that eats into it."""
+    _mk_running_job(store, lease_offset_s=-60, attempts=1)
+    fresh_ids = [
+        _mk_job(store, params={"resources": {"wall_seconds": 60}}, prio=2)
+        for _ in range(4)
+    ]
+
+    with store.pool.connection() as conn:
+        claimed = claim_executor_jobs(
+            conn, executor="ssh_node", limit=2, reclaim_stale_running=True
+        )
+        conn.commit()
+
+    fresh_claimed = [ref_id for ref_id, _t, _m in claimed if ref_id in fresh_ids]
+    # prio-ordered, oldest-first tiebreak within the prio=2 band — the two
+    # lowest ref_ids among the four fresh rows, and no more than ``limit``.
+    assert fresh_claimed == sorted(fresh_ids)[:2]
 
 
 # ── §H piece 4: detached submit/poll protocol (gr187627) ───────────

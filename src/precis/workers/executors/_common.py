@@ -406,6 +406,29 @@ def claim_executor_jobs(
     ``meta.reserved`` slots are refunded here before it re-reserves, so a
     crash can't leak resource slots.
 
+    **Starvation-bound reclaim pre-pass** (prod incident: ``plan_tick`` job
+    188721 sat ``STATUS:running`` 35h before reclaim; gr191124/gr192372/
+    gr191125). The two arms above are correct but, before this fix,
+    competed with fresh ``STATUS:queued`` work inside ONE prio/age-ordered
+    selection window (see "Claim ordering" below) — a continuously
+    re-minted stream of higher-priority (lower prio-number) cron work
+    could out-rank a default-prio stale-running row on EVERY cycle, so it
+    was never selected at all: starvation, not a lease defect. Every call
+    with ``reclaim_stale_running=True`` now runs a small bounded
+    reclaim-only pre-pass FIRST — up to ``K = min(2, limit)`` stale-running
+    candidates matching either arm above, locked ``FOR UPDATE SKIP LOCKED``
+    exactly like the fresh-work query, but ordered oldest-``ref_id``-first
+    (prio-blind — a stale row's priority is irrelevant to how long it's
+    been dead) — and reclaims them exactly as today (same reservation
+    refund, lease-identity stamp, attempts/epoch bookkeeping — shared with
+    the fresh-work pass via ``_finish_claim``/``_stamp_lease_identity``).
+    The fresh-work query below then claims up to the FULL ``limit`` of
+    ``STATUS:queued`` work only, unchanged ordering/semantics. The
+    pre-pass reclaims are ADDITIVE to ``limit`` — no caller slices the
+    return to ``limit``, each just iterates the full list — so fresh-work
+    throughput is exactly unchanged and a stale row is reclaimed within
+    one or two claim cycles no matter how much fresh work is queued.
+
     **Lease-identity stamp.** Every successful claim (fresh-queued OR
     reclaimed) through this function stamps ``meta.lease_boot_id`` /
     ``meta.lease_process`` / ``meta.lease_host`` with THIS worker's own
@@ -520,120 +543,14 @@ def claim_executor_jobs(
                     AND {_doable_exclusion_clause()}
                )"""
 
-    # Status/lease predicate. Fresh queued work (``put`` sets no lease) is
-    # always claimable; with ``reclaim_stale_running`` an expired-lease
-    # ``STATUS:running`` row is too (crash recovery — see the docstring). A
-    # live-lease running row is excluded either way.
-    status_lease_sql = """
-           AND (
-             (
-               EXISTS (
-                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
-                  WHERE rt.ref_id = r.ref_id
-                    AND t.namespace = %s AND t.value = %s
-               )
-               AND (
-                    (r.meta->>'lease_until') IS NULL
-                 OR (r.meta->>'lease_until')::timestamptz < now()
-               )
-             )"""
-    status_params: list[Any] = [STATUS_NAMESPACE, QUEUED]
-    if reclaim_stale_running:
-        status_lease_sql += """
-             OR (
-               EXISTS (
-                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
-                  WHERE rt.ref_id = r.ref_id
-                    AND t.namespace = %s AND t.value = %s
-               )
-               AND (r.meta->>'lease_until') IS NOT NULL
-               AND (r.meta->>'lease_until')::timestamptz < now()
-             )"""
-        status_params += [STATUS_NAMESPACE, RUNNING]
-        # Epoch arm (§H): a running row whose claiming process has been
-        # replaced is claimable NOW, even while lease_until is still in the
-        # future — see the docstring. ``lease_boot_id`` non-null gates it
-        # (a null-boot_id row falls through to the expiry arm above only).
-        # The sentinel makes "no live advertisement at all" (host_heartbeat
-        # missing the host, or missing that process's entry) compare
-        # UNEQUAL too — same "provably gone" signal as an explicit mismatch.
-        status_lease_sql += """
-             OR (
-               EXISTS (
-                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
-                  WHERE rt.ref_id = r.ref_id
-                    AND t.namespace = %s AND t.value = %s
-               )
-               AND (r.meta->>'lease_boot_id') IS NOT NULL
-               AND (r.meta->>'lease_boot_id') <> COALESCE(
-                     (SELECT hh.meta #>> ARRAY['boot_ids', r.meta->>'lease_process']
-                        FROM host_heartbeat hh
-                       WHERE hh.host = r.meta->>'lease_host'),
-                     %s
-                   )
-             )"""
-        status_params += [STATUS_NAMESPACE, RUNNING, _NO_ADVERTISED_BOOT_ID]
-    status_lease_sql += """
-           )"""
-
-    rows = conn.execute(
-        f"""
-        SELECT r.ref_id, r.title, r.meta, r.prio,
-               (SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id)
-                 WHERE rt.ref_id = r.ref_id AND t.namespace = %s LIMIT 1)
-          FROM refs r
-         WHERE r.kind = 'job'
-           AND r.deleted_at IS NULL
-           AND r.meta->>'executor' = %s
-           AND (
-                (r.meta->'params'->>'target_node') IS NULL
-             OR (r.meta->'params'->>'target_node') = %s
-           ){status_lease_sql}
-           AND NOT EXISTS (
-                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
-                  WHERE rt.ref_id = r.ref_id
-                    AND t.namespace = %s
-                    AND t.value = ANY(%s)
-               ){exclusion_sql}{parent_sql}
-         ORDER BY COALESCE(r.prio, %s) ASC, r.ref_id ASC
-         LIMIT %s
-           FOR UPDATE OF r SKIP LOCKED
-        """,
-        (
-            STATUS_NAMESPACE,
-            executor,
-            node,
-            *status_params,
-            STATUS_NAMESPACE,
-            list(TERMINAL),
-            _DEFAULT_JOB_PRIO,
-            limit * _CLAIM_OVERFETCH,
-        ),
-    ).fetchall()
-
+    # ── Shared per-row bookkeeping (reservation + lease-identity stamp) ──
+    # Computed once; used by BOTH the reclaim-only pre-pass and the
+    # fresh-work pass below, so a reclaimed row and a freshly-queued row go
+    # through the exact same reservation/stamp path (§ starvation-bound
+    # reclaim pre-pass, docstring).
     default_host = reserve_host_id or reserve_host()
     advertised = _advertised_by_host(conn)
-
-    # Scarcity re-rank (6d-deferred, §5.3): capability-rarity is the FIRST
-    # claim-order key, then prio (0014 direction — LOWER is more urgent), then
-    # age. ``host_count[res]`` = how many hosts advertise ``res`` (rarer →
-    # higher scarcity). The SQL already returned rows in prio/age order and
-    # stably; re-sorting by (-scarcity, prio, ref_id) keeps that order within a
-    # scarcity tier — so a queue with no ``requires`` (scarcity 0 everywhere)
-    # is byte-identical to the pre-6d prio/age claim.
-    host_count: dict[str, int] = {}
-    for _h, res_set in advertised.items():
-        for res in res_set:
-            host_count[res] = host_count.get(res, 0) + 1
-
-    def _order_key(r: Any) -> tuple[float, int, int]:
-        prio = int(r[3]) if r[3] is not None else _DEFAULT_JOB_PRIO
-        scarcity = _scarcity(effective_requires(dict(r[2] or {})), host_count)
-        return (-scarcity, prio, int(r[0]))
-
-    ranked = sorted(rows, key=_order_key)
     pressured = _mem_pressured_hosts(conn)
-
     lease_boot_id, lease_process, lease_host = _this_worker_lease_identity()
     # Only fetched when needed — a caller that never reclaims running rows
     # (``coordinator``) never re-claims, so there's nothing to classify.
@@ -702,12 +619,17 @@ def claim_executor_jobs(
         meta["lease_process"] = lease_process
         meta["lease_host"] = lease_host
 
-    claimed: list[tuple[int, str, dict[str, Any]]] = []
-    for r in ranked:
-        if len(claimed) >= limit:
-            break  # scarcity-ranked top ``limit`` reserved; leave the rest locked-free
-        ref_id, title, meta = int(r[0]), str(r[1]), dict(r[2] or {})
-        status_value = r[4] if len(r) > 4 else None
+    def _finish_claim(
+        ref_id: int, title: str, meta: dict[str, Any], status_value: str | None
+    ) -> tuple[int, str, dict[str, Any]] | None:
+        """Reserve resources (if any) + stamp lease identity for one row
+        already locked by the caller's ``FOR UPDATE`` select. Returns the
+        claimable tuple, or ``None`` if a live resource slot is full / the
+        reservation host is memory-pressured (the row's lock frees at
+        commit either way, so it's retried next cycle). Shared by both the
+        reclaim-only pre-pass and the fresh-work pass below — a reclaimed
+        row and a freshly-queued row go through identical bookkeeping.
+        """
         if reclaim_stale_running and meta.get("reserved"):
             # A stolen (crash-recovered) job still carries the dead worker's
             # reservation — refund it before this claim re-reserves, so slots
@@ -717,8 +639,7 @@ def claim_executor_jobs(
         requires = effective_requires(meta)
         if not requires:
             _stamp_lease_identity(ref_id, meta, status_value)
-            claimed.append((ref_id, title, meta))
-            continue
+            return (ref_id, title, meta)
         # The resource lives where the job runs: its target_node (an
         # ssh_node GPU job reserves on the GPU box, not the claimer), else
         # this host. Self-gate to what that host actually advertises — an
@@ -731,7 +652,7 @@ def claim_executor_jobs(
         # commit; it retries once pressure clears). Dark until a ``mem`` row
         # with free=0 exists.
         if res_host in pressured:
-            continue
+            return None
         reservable = {
             res: units
             for res, units in requires.items()
@@ -740,7 +661,7 @@ def claim_executor_jobs(
         if reservable and not reserve_resource_slots(conn, res_host, reservable):
             # A live slot is full → drop it; the lock frees at commit and
             # the job waits for capacity on that host.
-            continue
+            return None
         if reservable:
             reserved = {"host": res_host, "slots": reservable}
             conn.execute(
@@ -750,7 +671,152 @@ def claim_executor_jobs(
             )
             meta["reserved"] = reserved
         _stamp_lease_identity(ref_id, meta, status_value)
-        claimed.append((ref_id, title, meta))
+        return (ref_id, title, meta)
+
+    claimed: list[tuple[int, str, dict[str, Any]]] = []
+
+    # ── Reclaim-only pre-pass (starvation fix — see the docstring's
+    # "Starvation-bound reclaim pre-pass") ──────────────────────────────
+    # Runs BEFORE the fresh-work query below, prio-blind (a stale row's
+    # priority doesn't matter to how long it's been dead), bounded to a
+    # small K so it can never itself starve fresh-work throughput. Additive
+    # to ``limit`` — the fresh-work pass below still gets the FULL ``limit``
+    # regardless of how many rows this reclaims.
+    if reclaim_stale_running:
+        reclaim_limit = min(2, limit)
+        reclaim_rows = conn.execute(
+            f"""
+            SELECT r.ref_id, r.title, r.meta
+              FROM refs r
+             WHERE r.kind = 'job'
+               AND r.deleted_at IS NULL
+               AND r.meta->>'executor' = %s
+               AND (
+                    (r.meta->'params'->>'target_node') IS NULL
+                 OR (r.meta->'params'->>'target_node') = %s
+               )
+               AND EXISTS (
+                     SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                      WHERE rt.ref_id = r.ref_id
+                        AND t.namespace = %s AND t.value = %s
+                   )
+               AND (
+                    (
+                         (r.meta->>'lease_until') IS NOT NULL
+                     AND (r.meta->>'lease_until')::timestamptz < now()
+                    )
+                 OR (
+                         (r.meta->>'lease_boot_id') IS NOT NULL
+                     AND (r.meta->>'lease_boot_id') <> COALESCE(
+                           (SELECT hh.meta #>> ARRAY['boot_ids', r.meta->>'lease_process']
+                              FROM host_heartbeat hh
+                             WHERE hh.host = r.meta->>'lease_host'),
+                           %s
+                         )
+                    )
+               )
+               AND NOT EXISTS (
+                     SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                      WHERE rt.ref_id = r.ref_id
+                        AND t.namespace = %s
+                        AND t.value = ANY(%s)
+                   ){exclusion_sql}{parent_sql}
+             ORDER BY r.ref_id ASC
+             LIMIT %s
+               FOR UPDATE OF r SKIP LOCKED
+            """,
+            (
+                executor,
+                node,
+                STATUS_NAMESPACE,
+                RUNNING,
+                _NO_ADVERTISED_BOOT_ID,
+                STATUS_NAMESPACE,
+                list(TERMINAL),
+                reclaim_limit,
+            ),
+        ).fetchall()
+        for rr_ref_id, rr_title, rr_meta in reclaim_rows:
+            claim = _finish_claim(
+                int(rr_ref_id), str(rr_title), dict(rr_meta or {}), RUNNING
+            )
+            if claim is not None:
+                claimed.append(claim)
+
+    # ── Fresh-work pass (unchanged ordering/semantics) ──────────────────
+    # ``STATUS:queued`` only — the reclaim pre-pass above already handled
+    # this cycle's bounded slice of stale-running candidates, so this query
+    # no longer carries the running-row OR-arms (moved above).
+    rows = conn.execute(
+        f"""
+        SELECT r.ref_id, r.title, r.meta, r.prio
+          FROM refs r
+         WHERE r.kind = 'job'
+           AND r.deleted_at IS NULL
+           AND r.meta->>'executor' = %s
+           AND (
+                (r.meta->'params'->>'target_node') IS NULL
+             OR (r.meta->'params'->>'target_node') = %s
+           )
+           AND EXISTS (
+                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                  WHERE rt.ref_id = r.ref_id
+                    AND t.namespace = %s AND t.value = %s
+               )
+           AND (
+                (r.meta->>'lease_until') IS NULL
+             OR (r.meta->>'lease_until')::timestamptz < now()
+           )
+           AND NOT EXISTS (
+                 SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                  WHERE rt.ref_id = r.ref_id
+                    AND t.namespace = %s
+                    AND t.value = ANY(%s)
+               ){exclusion_sql}{parent_sql}
+         ORDER BY COALESCE(r.prio, %s) ASC, r.ref_id ASC
+         LIMIT %s
+           FOR UPDATE OF r SKIP LOCKED
+        """,
+        (
+            executor,
+            node,
+            STATUS_NAMESPACE,
+            QUEUED,
+            STATUS_NAMESPACE,
+            list(TERMINAL),
+            _DEFAULT_JOB_PRIO,
+            limit * _CLAIM_OVERFETCH,
+        ),
+    ).fetchall()
+
+    # Scarcity re-rank (6d-deferred, §5.3): capability-rarity is the FIRST
+    # claim-order key, then prio (0014 direction — LOWER is more urgent), then
+    # age. ``host_count[res]`` = how many hosts advertise ``res`` (rarer →
+    # higher scarcity). The SQL already returned rows in prio/age order and
+    # stably; re-sorting by (-scarcity, prio, ref_id) keeps that order within a
+    # scarcity tier — so a queue with no ``requires`` (scarcity 0 everywhere)
+    # is byte-identical to the pre-6d prio/age claim.
+    host_count: dict[str, int] = {}
+    for _h, res_set in advertised.items():
+        for res in res_set:
+            host_count[res] = host_count.get(res, 0) + 1
+
+    def _order_key(r: Any) -> tuple[float, int, int]:
+        prio = int(r[3]) if r[3] is not None else _DEFAULT_JOB_PRIO
+        scarcity = _scarcity(effective_requires(dict(r[2] or {})), host_count)
+        return (-scarcity, prio, int(r[0]))
+
+    ranked = sorted(rows, key=_order_key)
+
+    fresh_claimed = 0
+    for r in ranked:
+        if fresh_claimed >= limit:
+            break  # scarcity-ranked top ``limit`` reserved; leave the rest locked-free
+        ref_id, title, meta = int(r[0]), str(r[1]), dict(r[2] or {})
+        claim = _finish_claim(ref_id, title, meta, QUEUED)
+        if claim is not None:
+            claimed.append(claim)
+            fresh_claimed += 1
     return claimed
 
 
