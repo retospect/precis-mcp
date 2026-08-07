@@ -89,9 +89,22 @@ def run_auto_check_pass(store: Store, *, limit: int = 50) -> BatchResult:
 def _fetch_candidates(store: Store, *, limit: int) -> list[tuple[int, dict[str, Any]]]:
     """Find todos with non-null ``meta.auto_check`` and an open status.
 
-    One round-trip; small queries because the auto-check population
-    stays bounded (asks + paper-waits are leaf counts, not chunk
-    counts).
+    One round-trip. **Sampled at random, not ordered by ref_id.** The
+    population was assumed to stay small ("asks + paper-waits are leaf counts"),
+    and while it did, `ORDER BY ref_id LIMIT n` was harmless. It stopped being
+    small — and a stable ascending order over an oversized set is a
+    head-of-line starvation trap, because the leaves that pile up at the head
+    are exactly the ones that *never resolve* (a parent whose job failed, or
+    that still has a live child todo, evaluates "pending" forever and never
+    leaves the set). On 2026-08-07 prod held 169 open auto_check leaves against
+    a limit of 50: the pass re-evaluated the same lowest-ranked leaves every
+    time, resolving nothing, and everything past the cutoff was never looked at
+    once. The morning-brief tick sat at rank 161 with a succeeded job under it,
+    so it never flipped to ``STATUS:done`` — and a recurring watch won't spawn
+    its next tick while the last one is open, which silently killed both daily
+    casts. Random sampling gives every leaf the same chance each pass, so no
+    leaf can be starved by the ones in front of it, whatever the population
+    does next.
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
@@ -109,12 +122,47 @@ def _fetch_candidates(store: Store, *, limit: int) -> list[tuple[int, dict[str, 
                        LIMIT 1),
                      'open'
                    ) = ANY(%s)
-             ORDER BY r.ref_id
+             ORDER BY random()
              LIMIT %s
             """,
             (sorted(_OPEN_STATUSES), limit),
         ).fetchall()
+    if len(rows) >= limit:
+        # Sampling removes the starvation, but not the latency: at N leaves and
+        # a limit of L, a given leaf waits ~N/L passes to be looked at. Say so,
+        # so a population that has quietly grown is visible before it becomes a
+        # cadence outage again rather than after.
+        log.warning(
+            "auto_check: candidate set is at the %d-leaf pass limit — each leaf "
+            "is now sampled roughly every %d passes; if this persists, the "
+            "backlog of never-resolving leaves needs triage",
+            limit,
+            max(1, _open_auto_check_total(store) // limit),
+        )
     return [(int(r[0]), dict(r[1] or {})) for r in rows]
+
+
+def _open_auto_check_total(store: Store) -> int:
+    """Total open auto_check leaves — for the saturation warning only."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            """
+            SELECT count(*) FROM refs r
+             WHERE r.kind = 'todo'
+               AND r.deleted_at IS NULL
+               AND r.meta ? 'auto_check'
+               AND COALESCE(
+                     (SELECT t.value FROM ref_tags rt
+                        JOIN tags t ON t.tag_id = rt.tag_id
+                       WHERE rt.ref_id = r.ref_id
+                         AND t.namespace = 'STATUS'
+                       LIMIT 1),
+                     'open'
+                   ) = ANY(%s)
+            """,
+            (sorted(_OPEN_STATUSES),),
+        ).fetchone()
+    return int(row[0]) if row else 0
 
 
 def _process_one(store: Store, ref_id: int, spec: dict[str, Any]) -> str:

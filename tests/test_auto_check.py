@@ -19,6 +19,7 @@ from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.todo import TodoHandler
 from precis.store import Store
+from precis.workers import auto_check
 from precis.workers.auto_check import run_auto_check_pass
 from precis.workers.auto_check_evaluators import (
     REGISTRY,
@@ -665,4 +666,85 @@ def test_all_child_findings_resolved_true_when_all_terminal(
             store, {"type": "all_child_findings_resolved"}, ref_id=rid
         )
         is True
+    )
+
+
+# ── candidate sampling: no leaf may be starved by the ones ahead of it ──
+
+
+def _stuck_leaf(store: Store, title: str) -> int:
+    """An open todo carrying `child_job_succeeded` with NO succeeded child job
+    — it evaluates "pending" on every pass and so never leaves the candidate
+    set. This is the shape that piled up at the head of the old ref_id
+    ordering."""
+    from precis.store.types import Tag
+
+    r = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title=title,
+        meta={"auto_check": {"type": "child_job_succeeded"}},
+    )
+    store.add_tag(r.id, Tag.closed("STATUS", "open"), set_by="system")
+    return int(r.id)
+
+
+def _resolvable_leaf(store: Store, title: str) -> int:
+    """An open todo whose child job has already succeeded — the pass MUST
+    resolve it once it actually looks at it."""
+    from precis.store.types import Tag
+
+    todo = _stuck_leaf(store, title)
+    job = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="done work",
+        meta={"job_type": "fix_gripe"},
+        parent_id=todo,
+    )
+    store.add_tag(
+        job.id, Tag.parse_strict("STATUS:succeeded", kind="job"), set_by="agent"
+    )
+    return todo
+
+
+def test_resolvable_leaf_behind_the_batch_limit_is_not_starved(
+    store: Store,
+) -> None:
+    """Regression (2026-08-07): the candidate query was `ORDER BY ref_id LIMIT
+    n`, so an oversized population meant the pass re-read the same lowest-ranked
+    leaves forever and never looked past the cutoff. The leaves that pile up at
+    the head are precisely the ones that never resolve, so the block was
+    permanent: prod had 169 open leaves against a limit of 50, with the
+    morning-brief tick stranded at rank 161 — its job had succeeded, but the
+    tick never flipped to STATUS:done, and a recurring watch won't spawn its
+    next tick while the last one is open. Both daily casts silently stopped.
+
+    Here: many never-resolving leaves are created FIRST (so they hold every low
+    ref_id), then one resolvable leaf last. Under the old ordering it sat
+    outside every batch and could never resolve; with random sampling the pass
+    reaches it.
+    """
+    for i in range(12):
+        _stuck_leaf(store, f"never resolves {i}")
+    target = _resolvable_leaf(store, "has a succeeded job")
+
+    # A limit smaller than the stuck population — under ref_id ordering the
+    # target is unreachable no matter how many passes run. The pass budget is
+    # sized off the LIVE population rather than a constant: this suite shares
+    # one DB, so sibling tests add auto_check leaves and lengthen the odds of
+    # any single sampled batch containing the target. At `limit` of N drawn
+    # from a population of P, each pass hits it with probability N/P, so
+    # 40 * P/N passes makes a false red vanishingly unlikely while a genuine
+    # regression (target unreachable, probability 0) still fails every time.
+    limit = 4
+    population = auto_check._open_auto_check_total(store)
+    for _ in range(40 * max(1, -(-population // limit))):
+        run_auto_check_pass(store, limit=limit)
+        tags = {str(t) for t in store.tags_for(target)}
+        if "STATUS:done" in tags:
+            break
+
+    assert "STATUS:done" in {str(t) for t in store.tags_for(target)}, (
+        "a resolvable leaf behind the batch cutoff must still get evaluated"
     )
