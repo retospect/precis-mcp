@@ -210,6 +210,48 @@ def test_seed_fanout_matches_monolith_run() -> None:
     assert summarize(fanout) == summarize(monolith)
 
 
+def test_summarize_passes_through_che_electro_scalars() -> None:
+    """`summarize()` (`_dispatch_common`, the seam
+    `_dispatch_common.finish` unpacks straight onto the JOB's own meta) picks
+    up catpath's CHE electrochemistry scalars from ``results_json`` verbatim
+    — a null ``P_side`` ("insufficient data", the guarded-fork case) is
+    skipped, not fabricated as 0.0, and the two diagnostics that stay in
+    ``meta.results`` only (``span_target_at_Uopt``, ``T``) are never
+    promoted onto the scalar summary / job meta."""
+    from precis_pathway._dispatch_common import summarize
+
+    art = runner.run_pathway_from_yaml(SMOKE)
+    art = {
+        **art,
+        "results_json": {
+            **art["results_json"],
+            "U_L": -0.9,
+            "U_opt": -0.7,
+            "span_at_UL": 1.3,
+            "span_at_Uopt": 1.1,
+            "span_target_at_Uopt": 1.05,
+            "P_side": None,
+            "T": 298.15,
+        },
+    }
+    out = summarize(art)
+    assert out["U_L"] == -0.9
+    assert out["U_opt"] == -0.7
+    assert out["span_at_UL"] == 1.3
+    assert out["span_at_Uopt"] == 1.1
+    assert "P_side" not in out  # null -> skipped, not stamped as 0.0
+    assert "span_target_at_Uopt" not in out  # diagnostic-only, stays in meta.results
+    assert "T" not in out  # diagnostic-only, stays in meta.results
+
+
+def test_summarize_stamps_a_non_null_p_side() -> None:
+    from precis_pathway._dispatch_common import summarize
+
+    art = runner.run_pathway_from_yaml(SMOKE)
+    art = {**art, "results_json": {**art["results_json"], "P_side": 0.12}}
+    assert summarize(art)["P_side"] == 0.12
+
+
 def test_aggregate_seed_partials_retry_skips_nothing_extra() -> None:
     """A retry that re-supplies the SAME partials (e.g. a re-run aggregate
     after a transient failure) is a pure function of its inputs — same

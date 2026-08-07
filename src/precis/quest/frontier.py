@@ -12,6 +12,14 @@ The objective vector (which measures, minimise or maximise) is the machine
 reading of the quest's prose rubric — an open question (docs, slice-4 Q3). For
 now it defaults to **minimise energy** and can be overridden per quest via
 ``meta.rubric_objectives = [{"key": "energy", "sense": "min"}, …]``.
+
+A quest may additionally declare a **composite** objective — a weighted sum of
+other measures, human-set at seed time (docs/proposals/pathway-potential-
+lever.md): ``meta.rubric_composite = {"key": "score", "weights": {"barrier":
+1.0, "U_L_abs": 0.5}}``. :func:`_apply_rubric_composite` computes it onto each
+candidate at frontier-assembly time (only when every weighted component is
+present — no partial sums) so ``rubric_objectives`` can reference the
+composite's ``key`` like any other measure.
 """
 
 from __future__ import annotations
@@ -275,6 +283,64 @@ def _objectives_for(store: Store, quest_id: int) -> list[tuple[str, str]]:
     return out or list(DEFAULT_OBJECTIVES)
 
 
+def _rubric_composite_for(store: Store, quest_id: int) -> dict[str, Any] | None:
+    """The quest's declared composite objective, or ``None`` (feature off).
+
+    ``meta.rubric_composite = {"key": "<name>", "weights": {"<measure>":
+    <float>, ...}}`` — a **human-set rubric field** (docs/proposals/pathway-
+    potential-lever.md "Decisions": "the agent may not tune its own
+    objective"). Written only by :func:`precis.quest.catalyst_seed.
+    seed_catalyst_quest` at seed time; no quest-tick or LLM code path writes
+    or modifies it (verified: the tick's only quest-meta writes are
+    ``ticks_since_experiment`` and the weave-body marker — neither touches
+    this key). Malformed/empty shapes (no ``key``, no usable numeric
+    weights) are treated as absent rather than raising, matching
+    :func:`_objectives_for`'s defensive parse.
+    """
+    ref = store.get_ref(kind="quest", id=quest_id)
+    raw = (ref.meta or {}).get("rubric_composite") if ref else None
+    if not isinstance(raw, dict):
+        return None
+    key = str(raw.get("key") or "").strip()
+    raw_weights = raw.get("weights")
+    if not key or not isinstance(raw_weights, dict):
+        return None
+    weights = {k: v for k, v in ((k, _numeric(v)) for k, v in raw_weights.items())}
+    weights = {k: v for k, v in weights.items() if v is not None}
+    if not weights:
+        return None
+    return {"key": key, "weights": weights}
+
+
+def _apply_rubric_composite(
+    candidates: Sequence[Candidate], composite: dict[str, Any] | None
+) -> None:
+    """Stamp the quest's declared composite measure onto each candidate that
+    has EVERY weighted component — in place, mutating ``Candidate.measures``
+    (a plain dict field on an otherwise frozen dataclass) so the composite is
+    referenceable from ``rubric_objectives`` like any other measure.
+
+    A candidate missing any one component gets no partial sum and no
+    fabricated value — it simply has no ``key`` measure, so it ranks
+    ``unevaluated`` on any objective that names it, exactly like a missing
+    measure today (:func:`pareto_split`'s existing "missing a declared
+    objective" path).
+    """
+    if not composite:
+        return
+    key = composite["key"]
+    weights: dict[str, float] = composite["weights"]
+    for c in candidates:
+        total = 0.0
+        for mkey, w in weights.items():
+            v = c.measures.get(mkey)
+            if v is None:
+                break
+            total += w * v
+        else:
+            c.measures[key] = total
+
+
 #: struct_runs columns that are bookkeeping, not measures — never rank on these
 #: (``converged`` is a bool and ``status``/``fidelity``/``model``/``created_at``
 #: are non-numeric, so ``_numeric`` already filters them; these are the numeric
@@ -378,16 +444,23 @@ def _candidate_from_structure(store: Store, s: Any) -> Candidate:
         flags["adsorption_barrier"] = meta.get("adsorption_barrier")
 
     # An untrusted barrier (its pathway had non-converged NEB edges / desorbed
-    # or mis-bound adsorbates) is noise, not a measurement — exclude it (and span, measured
-    # over the same pathway) from ranking entirely so it can neither dominate
-    # nor be dominated; it falls to `unevaluated` via the existing "missing a
-    # declared objective" path. The raw value survives in `flags` so the
-    # leaderboard can still show what was measured, just marked excluded.
+    # or mis-bound adsorbates) is noise, not a measurement — exclude it (and
+    # span, plus the CHE electro scalars U_L/U_L_abs/U_opt/span_at_Uopt/
+    # P_side — all measured over the SAME pathway, see
+    # compute._AUTOCATPATH_ELECTRO_KEYS) from ranking entirely so none of
+    # them can dominate or be dominated; each falls to `unevaluated` via the
+    # existing "missing a declared objective" path. The raw values survive in
+    # `flags` so the leaderboard can still show what was measured, just
+    # marked excluded.
     if flags.get("barrier_trusted") is False:
         excluded_barrier = measures.pop("barrier", None)
         measures.pop("span", None)
         if excluded_barrier is not None:
             flags["barrier_untrusted_value"] = excluded_barrier
+        for k in ("U_L", "U_L_abs", "U_opt", "span_at_Uopt", "P_side"):
+            excluded = measures.pop(k, None)
+            if excluded is not None:
+                flags[f"{k}_untrusted_value"] = excluded
 
     return Candidate(
         ref_id=s.id,
@@ -543,6 +616,9 @@ def render_frontier_tree(store: Store, quest_id: int) -> str:
 
     candidates = {s.id: _candidate_from_structure(store, s) for s in structures}
     _flag_geom_duplicates(list(candidates.values()), structures)
+    _apply_rubric_composite(
+        list(candidates.values()), _rubric_composite_for(store, quest_id)
+    )
 
     # child ref_id -> parent ref_id, restricted to this quest's own candidates
     # (`derived-from` is child -> parent, the same relation
@@ -589,6 +665,7 @@ def quest_frontier(
     structures = [s for s in _live_servers(store, quest_id) if s.kind == "structure"]
     candidates = [_candidate_from_structure(store, s) for s in structures]
     _flag_geom_duplicates(candidates, structures)
+    _apply_rubric_composite(candidates, _rubric_composite_for(store, quest_id))
     return pareto_split(candidates, objs)
 
 

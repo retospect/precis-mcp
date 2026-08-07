@@ -21,7 +21,9 @@ from precis.handlers.quest import QuestHandler
 from precis.quest import compute as compute_mod
 from precis.quest.frontier import (
     Candidate,
+    _apply_rubric_composite,
     _candidate_from_structure,
+    _rubric_composite_for,
     build_frontier_scatter,
     pareto_split,
     quest_frontier,
@@ -1099,6 +1101,132 @@ class TestLeaderboard:
         assert "no candidate structures serve this quest yet" in body
 
 
+# ── composite rubric objective (pathway-potential-lever proposal, slice 2) ─
+
+
+class TestRubricComposite:
+    """``meta.rubric_composite`` = a human-set weighted-sum objective, computed
+    at frontier-assembly time onto each candidate that has every weighted
+    component present — referenceable from ``rubric_objectives`` like any
+    other measure."""
+
+    def test_composite_computed_when_all_components_present(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        store.stamp_ref_meta(
+            qid,
+            {
+                "rubric_composite": {
+                    "key": "score",
+                    "weights": {"barrier": 1.0, "U_L_abs": 0.5},
+                }
+            },
+        )
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.stamp_ref_meta(sid, {"barrier": 0.4, "U_L_abs": 0.6})
+        fr = quest_frontier(store, qid)
+        c = next(
+            x for x in fr.frontier + fr.dominated + fr.unevaluated if x.ref_id == sid
+        )
+        assert c.measures["score"] == pytest.approx(0.4 * 1.0 + 0.6 * 0.5)
+
+    def test_composite_absent_when_a_component_is_missing(self, store: Any) -> None:
+        """No partial sum, no fabrication: a candidate missing one weighted
+        component gets no composite measure at all."""
+        qid = _mk_quest(store, "A striving")
+        store.stamp_ref_meta(
+            qid,
+            {
+                "rubric_composite": {
+                    "key": "score",
+                    "weights": {"barrier": 1.0, "U_L_abs": 0.5},
+                }
+            },
+        )
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.stamp_ref_meta(sid, {"barrier": 0.4})  # no U_L_abs
+        fr = quest_frontier(store, qid)
+        c = next(
+            x for x in fr.frontier + fr.dominated + fr.unevaluated if x.ref_id == sid
+        )
+        assert "score" not in c.measures
+
+    def test_composite_referenceable_from_rubric_objectives_and_ranked(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store, "A striving")
+        store.stamp_ref_meta(
+            qid,
+            {
+                "rubric_composite": {"key": "score", "weights": {"barrier": 1.0}},
+                "rubric_objectives": [{"key": "score", "sense": "min"}],
+            },
+        )
+        sid_lo = compute_mod.ensure_candidate(
+            store, qid, {"name": "lo", "structure": _SPEC}
+        )
+        sid_hi = compute_mod.ensure_candidate(
+            store, qid, {"name": "hi", "structure": _SPEC}
+        )
+        assert sid_lo is not None and sid_hi is not None
+        # a converged relax is what makes a candidate "evaluated" for pareto_split
+        for sid in (sid_lo, sid_hi):
+            store.structure_record_run(
+                sid,
+                fidelity="ml",
+                on_version=1,
+                converged=True,
+                n_steps=5,
+                max_disp=0.0,
+                energy=-10.0,
+            )
+        store.stamp_ref_meta(sid_lo, {"barrier": 0.2})
+        store.stamp_ref_meta(sid_hi, {"barrier": 0.9})
+        fr = quest_frontier(store, qid)
+        assert [c.ref_id for c in fr.frontier] == [sid_lo]  # minimises the composite
+
+    def test_no_composite_declared_is_a_no_op(self, store: Any) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.stamp_ref_meta(sid, {"barrier": 0.4})
+        fr = quest_frontier(store, qid)
+        c = next(
+            x for x in fr.frontier + fr.dominated + fr.unevaluated if x.ref_id == sid
+        )
+        assert "score" not in c.measures
+
+    def test_render_frontier_tree_call_site_also_applies_composite(
+        self, store: Any
+    ) -> None:
+        """The composite rides both frontier-assembly call sites. Verified
+        via the private assembly helpers directly, since
+        ``render_frontier_tree``'s printed line only ever shows the
+        barrier/energy headline measure, never the composite key by name."""
+        qid = _mk_quest(store, "A striving")
+        store.stamp_ref_meta(
+            qid,
+            {"rubric_composite": {"key": "score", "weights": {"barrier": 2.0}}},
+        )
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.stamp_ref_meta(sid, {"barrier": 0.3})
+        render_frontier_tree(store, qid)  # exercises the call site, must not raise
+
+        c = _cand(store, sid)
+        _apply_rubric_composite([c], _rubric_composite_for(store, qid))
+        assert c.measures["score"] == pytest.approx(0.6)
+
+
 # ── autocatpath harvest: barrier → candidate meta → frontier (Slice 3) ────
 
 
@@ -1304,6 +1432,92 @@ class TestAutocatpathHarvest:
         meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
         assert meta["adsorption_barrier"] == 0.22
         assert meta["barrier"] == 0.4  # still the ranked measure
+
+    def test_che_electro_scalars_harvested_onto_candidate_meta(
+        self, store: Any
+    ) -> None:
+        """The four CHE electro scalars (U_L, U_opt, span_at_Uopt, P_side)
+        ride the same job-meta -> candidate-meta harvest path as barrier/
+        span, plus a derived U_L_abs; span_at_UL is NOT lifted (job-meta-only
+        diagnostic)."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        self._autocatpath_job(
+            store,
+            sid,
+            {
+                "result": {
+                    "barrier": 0.4,
+                    "U_L": -0.9,
+                    "U_opt": -0.7,
+                    "span_at_UL": 1.3,
+                    "span_at_Uopt": 1.1,
+                    "P_side": 0.05,
+                }
+            },
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["U_L"] == -0.9
+        assert meta["U_L_abs"] == 0.9
+        assert meta["U_opt"] == -0.7
+        assert meta["span_at_Uopt"] == 1.1
+        assert meta["P_side"] == 0.05
+        assert "span_at_UL" not in meta
+
+    def test_untrusted_pathway_excludes_electro_scalars_from_ranking(
+        self, store: Any
+    ) -> None:
+        """The SAME trust gate that excludes an untrusted barrier from
+        ranking also excludes U_L/U_L_abs/U_opt/span_at_Uopt/P_side — raw
+        values preserved on the candidate's flags, never on `measures`."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        target = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="pw",
+            meta={
+                "warnings": ["NO->N+O seed=0 NEB not converged"],
+                "low_confidence": False,
+            },
+            parent_id=sid,
+        ).id
+        self._autocatpath_job(
+            store,
+            sid,
+            {
+                "result": {
+                    "barrier": 0.4,
+                    "U_L": -0.9,
+                    "U_opt": -0.7,
+                    "span_at_Uopt": 1.1,
+                    "P_side": 0.05,
+                },
+                "pathway_ref": target,
+            },
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        # still stamped onto the candidate's raw meta (harvest is unconditional)
+        assert meta["U_L"] == -0.9 and meta["barrier_trusted"] is False
+
+        c = _cand(store, sid)
+        for k in (
+            "barrier",
+            "span",
+            "U_L",
+            "U_L_abs",
+            "U_opt",
+            "span_at_Uopt",
+            "P_side",
+        ):
+            assert k not in c.measures
+        assert c.flags["barrier_untrusted_value"] == 0.4
+        assert c.flags["U_L_untrusted_value"] == -0.9
+        assert c.flags["U_opt_untrusted_value"] == -0.7
+        assert c.flags["span_at_Uopt_untrusted_value"] == 1.1
+        assert c.flags["P_side_untrusted_value"] == 0.05
 
     def test_missing_pathway_ref_stamps_no_trust_flags(self, store: Any) -> None:
         qid = _mk_quest(store, "A striving")

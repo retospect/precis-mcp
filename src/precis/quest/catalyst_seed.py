@@ -105,11 +105,25 @@ def _existing_seed(store: Store, seed_key: str) -> int | None:
     return int(row[0]) if row else None
 
 
-def seed_catalyst_quest(store: Store, *, hub: Any | None = None) -> tuple[int, bool]:
+def seed_catalyst_quest(
+    store: Store,
+    *,
+    hub: Any | None = None,
+    rubric_composite: dict[str, Any] | None = None,
+) -> tuple[int, bool]:
     """Mint (or return) the NO→NH₃/Pd catalyst quest.
 
     Returns ``(quest_ref_id, created)`` — ``created=False`` when an existing
     seeded quest was reused. Idempotent by ``meta.seed_key``.
+
+    ``rubric_composite`` (default ``None`` = feature off) is the optional
+    weighted-sum objective the caller has already decided on
+    (``{"key": "score", "weights": {"barrier": 1.0, "U_L_abs": 0.5, ...}}``,
+    see :mod:`precis.quest.frontier`) — the human-set electrochemistry rubric
+    from docs/proposals/pathway-potential-lever.md. Written verbatim onto
+    ``meta.rubric_composite`` at seed time only; nothing in the quest tick or
+    the LLM loop may write this key later (the agent may not tune its own
+    objective).
     """
     existing = _existing_seed(store, SEED_KEY)
     if existing is not None:
@@ -124,16 +138,16 @@ def seed_catalyst_quest(store: Store, *, hub: Any | None = None) -> tuple[int, b
     if m is None:  # pragma: no cover - put always echoes the handle
         raise RuntimeError(f"could not parse quest id from: {resp.body!r}")
     qid = int(m.group(1))
-    store.stamp_ref_meta(
-        qid,
-        {
-            "seed_key": SEED_KEY,
-            "reaction_config": REACTION_CONFIG,
-            "rubric_objectives": RUBRIC_OBJECTIVES,
-            "graduation": GRADUATION,
-            "param_space": PARAM_SPACE,
-        },
-    )
+    meta: dict[str, Any] = {
+        "seed_key": SEED_KEY,
+        "reaction_config": REACTION_CONFIG,
+        "rubric_objectives": RUBRIC_OBJECTIVES,
+        "graduation": GRADUATION,
+        "param_space": PARAM_SPACE,
+    }
+    if rubric_composite is not None:
+        meta["rubric_composite"] = rubric_composite
+    store.stamp_ref_meta(qid, meta)
     return qid, True
 
 

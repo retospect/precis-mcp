@@ -19,15 +19,41 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 
+def _finite_num(v: Any) -> float | None:
+    """A finite float, or ``None`` (``bool`` is an ``int`` subclass but never
+    a measure; a ``null`` scalar — e.g. an ungated ``P_side`` — is likewise
+    ``None``, not a fabricated 0.0)."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    return float(v) if math.isfinite(v) else None
+
+
+#: Electrochemistry (CHE) scalars catpath's ``_apply_electrochemistry`` already
+#: computes onto ``results_json`` top level (docs/proposals/pathway-potential-
+#: lever.md, precis slice 2) — a straight pass-through, no recompute here.
+#: ``span_target_at_Uopt``/``T`` are deliberately excluded: diagnostics that
+#: stay in ``meta.results`` (the verbatim artifact), never promoted to the
+#: job-meta scalar summary.
+_ELECTRO_KEYS: tuple[str, ...] = (
+    "U_L",
+    "U_opt",
+    "span_at_UL",
+    "span_at_Uopt",
+    "P_side",
+)
+
+
 def summarize(artifact: dict[str, Any]) -> dict[str, Any]:
     """Reduce a run artifact to the scalar summary a caller ranks on.
 
     Computes the rate-limiting **barrier** (eV), the energetic **span**, and
     the **low_confidence** flag from the reaction graph (``analysis.
-    summarize`` — pure graph math, no ML). This is the seam the precis quest
-    harvests: it lifts the barrier onto the candidate structure's meta and
-    ranks the design on it. Empty on any failure — a missing summary must
-    never fail the run/persist.
+    summarize`` — pure graph math, no ML), plus a pass-through of catpath's
+    CHE electrochemistry scalars (:data:`_ELECTRO_KEYS`) already sitting on
+    ``results_json``. This is the seam the precis quest harvests: it lifts
+    the barrier (and now the electro scalars) onto the candidate structure's
+    meta and ranks the design on it. Empty on any failure — a missing
+    summary must never fail the run/persist.
     """
     try:
         from precis_pathway import analysis
@@ -53,6 +79,10 @@ def summarize(artifact: dict[str, Any]) -> dict[str, Any]:
             out["span"] = float(span)
         if "low_confidence" in summ:
             out["low_confidence"] = bool(summ["low_confidence"])
+        for k in _ELECTRO_KEYS:
+            v = _finite_num(results.get(k))
+            if v is not None:
+                out[k] = v
         return out
     except Exception:  # pragma: no cover - defensive
         log.warning("autocatpath: summary failed", exc_info=True)
@@ -100,8 +130,8 @@ def finish(
 
     r = artifact["results_json"]
     # Emit the scalar summary + the pathway ref onto the JOB meta — the
-    # contract the precis quest harvest reads (barrier -> candidate meta ->
-    # frontier).
+    # contract the precis quest harvest reads (barrier/span/U_L/U_opt/
+    # span_at_UL/span_at_Uopt/P_side -> candidate meta -> frontier).
     ctx.set_meta(
         content_key=artifact["content_key"],
         n_states=len(r["nodes"]),

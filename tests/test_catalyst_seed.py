@@ -58,3 +58,17 @@ class TestSeedCatalystQuest:
         assert REACTION_CONFIG["target"] == "NH3"
         assert REACTION_CONFIG["network"] == "ammonia"
         assert REACTION_CONFIG["slab"]["element"] == "Pd"
+
+    def test_default_seed_has_no_rubric_composite(self, store: Any) -> None:
+        # feature off by default — no rubric_composite key at all
+        qid, _ = seed_catalyst_quest(store)
+        assert "rubric_composite" not in _meta(store, qid)
+
+    def test_rubric_composite_written_verbatim_at_seed_time(self, store: Any) -> None:
+        composite = {
+            "key": "score",
+            "weights": {"barrier": 1.0, "U_L_abs": 0.5, "P_side": 2.0},
+        }
+        qid, created = seed_catalyst_quest(store, rubric_composite=composite)
+        assert created is True
+        assert _meta(store, qid)["rubric_composite"] == composite

@@ -839,6 +839,15 @@ def _stamp_preflight_dead_end(
 _AUTOCATPATH_BARRIER_KEYS: tuple[str, ...] = ("barrier", "rate_Ea", "rate_ea", "ea")
 _AUTOCATPATH_SPAN_KEYS: tuple[str, ...] = ("span",)
 
+#: CHE electrochemistry scalars (docs/proposals/pathway-potential-lever.md,
+#: precis slice 2) that ride the SAME harvest path — and the SAME trust gate —
+#: as the barrier: ``_dispatch_common.finish`` already stamps these verbatim
+#: onto the job's own meta (a straight pass-through of catpath's
+#: ``results_json``), so lifting them here is the same "read the job meta"
+#: move as the barrier/span above. ``span_at_UL`` is deliberately NOT lifted
+#: onto the candidate — it stays a job-meta-only diagnostic.
+_AUTOCATPATH_ELECTRO_KEYS: tuple[str, ...] = ("U_L", "U_opt", "span_at_Uopt", "P_side")
+
 
 def _num_measure(v: Any) -> float | None:
     """A numeric measure, or None (``bool`` is an ``int`` but never a measure)."""
@@ -875,6 +884,18 @@ def _autocatpath_measures_from_job(meta: dict[str, Any]) -> dict[str, float]:
     v = _num_measure(src.get("adsorption_barrier"))
     if v is not None:
         out["adsorption_barrier"] = v
+    # CHE electro scalars (U_L, U_opt, span_at_Uopt, P_side — see
+    # _AUTOCATPATH_ELECTRO_KEYS) ride the same harvest + trust gate as the
+    # barrier (frontier._candidate_from_structure pops all of them together
+    # when the pathway is untrusted). U_L_abs is derived here (the rubric
+    # minimizes |U_L|, not U_L's sign) so it lands alongside U_L with no
+    # separate harvest step.
+    for k in _AUTOCATPATH_ELECTRO_KEYS:
+        v = _num_measure(src.get(k))
+        if v is not None:
+            out[k] = v
+    if "U_L" in out:
+        out["U_L_abs"] = abs(out["U_L"])
     return out
 
 
