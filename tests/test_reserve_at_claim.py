@@ -10,6 +10,10 @@ job opts in, so this is dark in prod until slice 6d wires real requires.
 
 from __future__ import annotations
 
+from typing import Any
+
+import pytest
+
 from precis.store import Store
 from precis.store._resource_slots_ops import (
     release_resource_slots,
@@ -21,6 +25,21 @@ from precis.workers.executors._common import (
     release_job_reservation,
     set_status,
 )
+
+
+@pytest.fixture
+def _autocatpath_seed_registered(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Inject ``autocatpath_seed`` into the job_types registry for the test —
+    same pattern as ``test_quest_compute.py``'s ``_autocatpath_seed_job_types``:
+    the dev container's installed ``entry_points.txt`` is a build-time
+    snapshot, so a pyproject entry-point isn't live without a reinstall.
+    ``monkeypatch.setitem`` auto-reverts, so this doesn't leak into other
+    test modules."""
+    pytest.importorskip("autocatpath")
+    from precis.workers import job_types as jt
+    from precis_pathway import seed_job
+
+    monkeypatch.setitem(jt._REGISTRY, "autocatpath_seed", seed_job.SPEC)
 
 
 def _queue_job(
@@ -420,6 +439,107 @@ def test_self_gating_falls_back_when_capability_unadvertised(store: Store) -> No
     rows = _claim(store, "ex_d2", "melchior_e", node="spark_e")
     assert [r[0] for r in rows] == [jid]  # claimed via the pin — no stall
     assert "reserved" not in rows[0][2]  # nothing reserved (self-gated off)
+
+
+# ── gr192371/gr197264: autocatpath_seed gpu reservation ───────────────────
+
+
+def test_autocatpath_seed_serializes_on_single_gpu_slot(
+    store: Store, hub: Any, _autocatpath_seed_registered: None
+) -> None:
+    """The load-bearing regression test: an ``autocatpath_seed`` job minted
+    through the real ``JobHandler.put(..., requires={"gpu": 1})`` (not
+    ``store.insert_ref`` — a future regression in ``put()``'s signature/
+    wiring must be caught here too) reserves the target node's counted
+    ``gpu`` slot at claim, so two seeds pinned to a single-GPU host
+    serialize one-at-a-time instead of running concurrently."""
+    from precis.handlers.job import JobHandler
+    from precis.handlers.todo import TodoHandler
+
+    store.sync_host_resource_slots("spark", {"gpu": 1})
+    todo_out = TodoHandler(hub=hub).put(text="autocatpath aggregate")
+    todo_id = todo_out.ref_id
+    assert todo_id is not None
+
+    def _mint(seed: int) -> int:
+        out = JobHandler(hub=hub).put(
+            job_type="autocatpath_seed",
+            executor="ssh_node",
+            parent_id=todo_id,
+            idem_key=f"autocatpath_seed:test:{seed}",
+            requires={"gpu": 1},
+            params={
+                "config": {"name": "demo"},
+                "seed": seed,
+                "model_index": 0,
+                "content_key": f"ck{seed}",
+                "target_node": "spark",
+            },
+        )
+        assert out.ref_id is not None
+        return int(out.ref_id)
+
+    seed_a = _mint(1)
+    seed_b = _mint(2)
+
+    # First claim pass: exactly one seed claims the single gpu slot.
+    rows1 = _claim(store, "ssh_node", "spark", node="spark")
+    assert [r[0] for r in rows1] == [seed_a]
+    assert rows1[0][2]["reserved"] == {"host": "spark", "slots": {"gpu": 1}}
+    assert _free(store, "spark", "gpu") == 0
+
+    # Second claim pass: seed_b cannot claim while seed_a holds the slot.
+    rows2 = _claim(store, "ssh_node", "spark", node="spark")
+    assert rows2 == []
+
+    # Free the slot by driving seed_a to a terminal status.
+    set_status(store, seed_a, "succeeded")
+    assert _free(store, "spark", "gpu") == 1
+
+    # Third claim pass: seed_b now claims the freed slot.
+    rows3 = _claim(store, "ssh_node", "spark", node="spark")
+    assert [r[0] for r in rows3] == [seed_b]
+    assert _free(store, "spark", "gpu") == 0
+
+
+def test_autocatpath_seed_on_gpu_less_host_claims_unthrottled(
+    store: Store, hub: Any, _autocatpath_seed_registered: None
+) -> None:
+    """Companion negative test pinning the self-gating fallback (root-cause
+    #4, ``_common.py``'s ``reservable`` fall-through): a seed minted with
+    ``requires={"gpu": 1}`` but pinned to a host that has NO ``gpu`` row in
+    ``resource_slots`` still claims (doesn't stall forever) and runs with
+    ``meta.reserved`` absent — so nobody later "fixes" this fall-through
+    into a stall."""
+    from precis.handlers.job import JobHandler
+    from precis.handlers.todo import TodoHandler
+
+    # NOTE: no store.sync_host_resource_slots(...) for "spark_nogpu" — the
+    # host has never advertised a gpu row.
+    todo_out = TodoHandler(hub=hub).put(text="autocatpath aggregate (no gpu host)")
+    todo_id = todo_out.ref_id
+    assert todo_id is not None
+
+    out = JobHandler(hub=hub).put(
+        job_type="autocatpath_seed",
+        executor="ssh_node",
+        parent_id=todo_id,
+        idem_key="autocatpath_seed:test:nogpu",
+        requires={"gpu": 1},
+        params={
+            "config": {"name": "demo"},
+            "seed": 1,
+            "model_index": 0,
+            "content_key": "ck_nogpu",
+            "target_node": "spark_nogpu",
+        },
+    )
+    seed_id = out.ref_id
+    assert seed_id is not None
+
+    rows = _claim(store, "ssh_node", "spark_nogpu", node="spark_nogpu")
+    assert [r[0] for r in rows] == [seed_id]  # claimed via the pin, no stall
+    assert "reserved" not in rows[0][2]
 
 
 def test_explicit_requires_overrides_job_type_derivation(store: Store) -> None:

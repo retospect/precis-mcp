@@ -820,6 +820,9 @@ def dispatch_autocatpath(
                     executor="ssh_node",
                     parent_id=seed_todo_id,
                     idem_key=f"autocatpath_seed:{skey}",
+                    # gpu slot: serialize seeds one-at-a-time per GPU
+                    # (gr192371) — meta.requires, not SPEC.requires.
+                    requires={"gpu": 1},
                     params={
                         "config": run_config,
                         "slab_extxyz": slab_extxyz,

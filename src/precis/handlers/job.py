@@ -143,6 +143,7 @@ class JobHandler(NumericRefHandler):
         executor: str | None = None,
         params: dict[str, Any] | None = None,
         idem_key: str | None = None,
+        requires: dict[str, int] | None = None,
         parent_id: int | str | None = None,
         model: str | None = None,
         select: dict[str, Any] | None = None,
@@ -344,6 +345,13 @@ class JobHandler(NumericRefHandler):
         }
         if resolved_idem is not None:
             meta["idem_key"] = resolved_idem
+        if requires:
+            # Explicit resource_slots reservation tokens (e.g. {"gpu": 1}),
+            # stamped onto meta.requires; the worker holds them from claim
+            # to terminal (see effective_requires() /
+            # workers/executors/_common.py). Distinct from spec.requires,
+            # which gates executor *capability*, not counted resources.
+            meta["requires"] = {str(k): int(v) for k, v in dict(requires).items()}
 
         parsed_tags: list[Tag] = [Tag.parse_strict("STATUS:queued", kind=self.kind)]
         if tags is not None:
