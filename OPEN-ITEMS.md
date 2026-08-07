@@ -329,8 +329,8 @@ Status: fix shipped, pending one-morning-cycle prod verification · Owner:
 - SUPERSEDED sub-finding: gr192606 also flagged tick-cap "didn't halt at 10" for
   the single-ref briefing instance (unexplained — the monotonic per-ref counter
   *should* have). Moot now: the new brake stops re-mint at #1, long before 10.
-  The confirmed planner-guardrail COST-cap hole found alongside is filed in the
-  next item.
+  The planner-guardrail COST-cap hole found alongside was fixed in `891a2d81`
+  (see the 2026-08-06 $291 cost-runaway RCA residuals above).
 - REJECTED: the old plan's "reorder news/brief crons" would MASK not fix — it
   narrows the race window but leaves the runaway; unneeded now the runaway's gone.
 
@@ -338,7 +338,7 @@ Status: fix shipped, pending one-morning-cycle prod verification · Owner:
 
 Status: open · Severity: correctness (token/$ leak) · Found: 2026-08-05 Opus
 leak-hunt alongside gr192606 · Owner: `workers/{classify_topics,axis_pass,
-inject_scan,paper_glossary,hub_refine}.py` + `planner_guardrails.py`
+inject_scan,paper_glossary,hub_refine}.py`
 
 Shared shape (identical to gr192606's): a candidate query excludes rows only on a
 SUCCESS-written done-marker; the failure/exception branch skips the marker and
@@ -364,15 +364,6 @@ Sites (severity order; several default-OFF, but real when enabled):
 5. `hub_refine.run_hub_refine_pass` — mechanism confirmed, occurrence plausible
    (a raise after the per-candidate verify-LLM loop rolls back the refresh
    stamp). Default-OFF.
-
-Plus — planner-guardrail COST backstops are INERT (confirmed): `_read_cost_usd`
-(per-todo $2 cap) and `_read_daily_cost` (global $20/day ceiling) sum
-`job.meta->>'cost_usd'`, but NOTHING writes `cost_usd` onto a job ref's meta (real
-cost lands on the subject ref's `ref_events`). Both read $0 forever — the daily
-ceiling could never have caught gr192606 or any leak; the per-ref tick cap
-(default 10, monotonic, and it DOES apply to deterministic parents) is the only
-live planner backstop. Fix: stamp `meta.cost_usd` on the job at completion, or
-re-point the two reads at the `ref_events` cost column.
 
 ---
 
