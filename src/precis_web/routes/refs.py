@@ -1241,6 +1241,33 @@ def _pathway_quest_id(ref: Any, candidate_struct: Any | None) -> int | None:
     return None
 
 
+def _pathway_run_jobs(store: Any, ref_id: int) -> list[dict[str, Any]]:
+    """The (up to 10, most-recent-first) ``kind='job'`` refs that produced
+    this pathway — the explore/aggregate tail (``precis_pathway.
+    _dispatch_common.finish``) and each seed job (``seed_job.
+    _provenance_meta``) stamp their OWN meta with ``pathway_ref`` (an int)
+    on completion; the seed jobs are where the ``run_log`` chunks live. Raw
+    SQL off ``store.pool`` (same seam ``_pathway_candidate_stepper`` uses),
+    guarded broadly so a store that can't run it (or a fake whose cursor
+    never parses SQL) degrades to no run-job links, not a 500."""
+    try:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT ref_id, meta->>'job_type' FROM refs "
+                "WHERE kind = 'job' AND deleted_at IS NULL "
+                "AND meta->>'pathway_ref' = %s "
+                "ORDER BY ref_id DESC LIMIT 10",
+                (str(ref_id),),
+            ).fetchall()
+    except Exception:
+        log.warning("pathway %s: run-jobs query failed", ref_id, exc_info=True)
+        return []
+    return [
+        {"id": int(r[0]), "label": r[1] or "job", "url": f"/refs/job/{int(r[0])}"}
+        for r in rows
+    ]
+
+
 def _pathway_provenance(
     store: Any,
     ref: Any,
@@ -1250,10 +1277,12 @@ def _pathway_provenance(
     """Context for the provenance strip (item D): the candidate structure
     link (already resolved elsewhere on the page — reused here), the owning
     quest (``_pathway_quest_id``), its dossier draft (``dossier-of`` edge,
-    ``precis.quest.dossier``), and the full logbook page. Every piece is
-    independently optional — a candidate-less/quest-less pathway (ad-hoc or
-    hand-authored) still renders the strip with whatever resolves, never a
-    500; ``None`` only when NOTHING resolves at all (nothing to show)."""
+    ``precis.quest.dossier``), the full logbook page, the node the compute
+    ran on (``meta.ran_on``), and the job(s) that produced it
+    (``_pathway_run_jobs``). Every piece is independently optional — a
+    candidate-less/quest-less pathway (ad-hoc or hand-authored) still
+    renders the strip with whatever resolves, never a 500; ``None`` only
+    when NOTHING resolves at all (nothing to show)."""
     qid = _pathway_quest_id(ref, candidate_struct)
     dossier_url = None
     if qid is not None:
@@ -1270,7 +1299,9 @@ def _pathway_provenance(
                 qid,
                 exc_info=True,
             )
-    if candidate is None and qid is None:
+    ran_on = (ref.meta or {}).get("ran_on")
+    run_jobs = _pathway_run_jobs(store, ref.id)
+    if candidate is None and qid is None and not ran_on and not run_jobs:
         return None
     return {
         "candidate": candidate,
@@ -1278,6 +1309,8 @@ def _pathway_provenance(
         "quest_url": f"/refs/quest/{qid}" if qid is not None else None,
         "logbook_url": f"/refs/quest/{qid}/logbook" if qid is not None else None,
         "dossier_url": dossier_url,
+        "ran_on": ran_on,
+        "run_jobs": run_jobs,
     }
 
 

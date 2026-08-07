@@ -799,6 +799,29 @@ sys.stderr.write("boom stub failure\\n")
 sys.exit(3)
 """
 
+# Same as _STUB_GATED_OK but prints to stdout first — exercises the success
+# path's tail capture (gr193672-adjacent: the success branch used to discard
+# the child's captured output entirely).
+_STUB_GATED_OK_WITH_LOG = """\
+import json, os, sys, time
+req_path, out_path = sys.argv[1], sys.argv[2]
+with open(req_path, encoding="utf-8") as fh:
+    req = json.load(fh)
+print("hello from stub stdout")
+go_path = os.path.join(os.path.dirname(out_path), "go")
+while not os.path.exists(go_path):
+    time.sleep(0.02)
+result = {
+    "seed": req["seed"],
+    "model": "stub",
+    "model_index": req["model_index"],
+    "partial": {"states": {"s0": {}}, "warnings": []},
+    "lattice": {},
+}
+with open(out_path, "w", encoding="utf-8") as fh:
+    json.dump({"ok": True, "result": result}, fh)
+"""
+
 _STUB_SLEEPS = """\
 import time
 time.sleep(30)
@@ -895,7 +918,29 @@ def test_poll_seed_partial_detached_running_then_done(
     assert status["result"]["seed"] == 7
     assert status["result"]["model_index"] == 1
     assert status["result"]["partial"]["states"]
+    assert status["tail"] == ""  # the stub prints nothing
     assert not os.path.exists(handle["dir"])  # terminal states clean up
+
+
+def test_poll_seed_partial_detached_done_captures_stdout_tail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The success branch used to discard the child's stdout/stderr
+    entirely (only the failure branches captured a tail) — now it grabs
+    the scratch dir's log content BEFORE cleanup wipes it."""
+    import os
+
+    script = _write_stub(tmp_path, _STUB_GATED_OK_WITH_LOG)
+    _patch_child_cmd(monkeypatch, script)
+    handle = runner.submit_seed_partial_detached({}, 7, 1)
+
+    assert runner.poll_seed_partial_detached(handle) == {"state": "running"}
+
+    open(os.path.join(handle["dir"], "go"), "w").close()
+    status = _poll_until_terminal(handle)
+
+    assert status["state"] == "done"
+    assert "hello from stub stdout" in status["tail"]
 
 
 def test_poll_seed_partial_detached_done_reaps_the_child(
@@ -1145,6 +1190,74 @@ def test_seed_job_poll_done_sets_meta_and_succeeds(
     assert ctx.meta_updates["partial"] == result["partial"]
     assert ctx.meta_updates["lattice"] == {"emt": 3.9}
     assert any(kind == "job_summary" for kind, _text in ctx.chunks)
+    assert not any(kind == "run_log" for kind, _text in ctx.chunks)  # no tail given
+
+
+def test_seed_job_poll_done_appends_run_log_when_tail_present(
+    pathway_store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-empty ``tail`` on the "done" status becomes a ``run_log`` chunk,
+    written BEFORE ``job_summary`` — the run's diagnostic breadcrumb, not
+    just the terminal success line."""
+    from precis_pathway import seed_job
+
+    result = {
+        "seed": 1,
+        "model": "emt",
+        "model_index": 0,
+        "partial": {"states": {"s0": {}}, "warnings": []},
+        "lattice": {},
+    }
+    monkeypatch.setattr(
+        runner,
+        "poll_seed_partial_detached",
+        lambda handle: {"state": "done", "result": result, "tail": "run output here"},
+    )
+    ctx = _FakeCtx(
+        store=pathway_store,
+        params={"config": _yaml_dict(FANOUT), "seed": 1, "model_index": 0},
+    )
+
+    terminal = seed_job._poll(ctx, {"pid": 1, "dir": "/tmp/nope"})
+
+    assert terminal is True
+    kinds = [kind for kind, _text in ctx.chunks]
+    assert kinds.index("run_log") < kinds.index("job_summary")
+    run_log_text = next(text for kind, text in ctx.chunks if kind == "run_log")
+    assert "run output here" in run_log_text
+    assert "seed=1, model#0" in run_log_text
+
+
+def test_seed_job_poll_done_caps_run_log_at_4000_chars(
+    pathway_store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A huge tail is trimmed to its LAST 4000 chars — the most recent
+    output is the diagnostically useful end, not the start."""
+    from precis_pathway import seed_job
+
+    result = {
+        "seed": 0,
+        "model": "emt",
+        "model_index": 0,
+        "partial": {"states": {}, "warnings": []},
+        "lattice": {},
+    }
+    huge_tail = "x" * 3000 + "END_MARKER" + "y" * 4000
+    monkeypatch.setattr(
+        runner,
+        "poll_seed_partial_detached",
+        lambda handle: {"state": "done", "result": result, "tail": huge_tail},
+    )
+    ctx = _FakeCtx(
+        store=pathway_store,
+        params={"config": _yaml_dict(FANOUT), "seed": 0, "model_index": 0},
+    )
+
+    seed_job._poll(ctx, {"pid": 1, "dir": "/tmp/nope"})
+
+    run_log_text = next(text for kind, text in ctx.chunks if kind == "run_log")
+    assert "END_MARKER" not in run_log_text  # trimmed off the LAST-4000 window
+    assert run_log_text.endswith("y" * 4000)
 
 
 def test_seed_job_poll_failed_records_failure(

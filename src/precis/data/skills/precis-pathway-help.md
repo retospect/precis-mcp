@@ -95,7 +95,10 @@ byproduct goes: `O* parked — continues in → H2O`. A preflight warning that
 names a state (`INFEASIBLE`, `wrong-site`, `detached` = red; `RESEATED ok`
 = amber) badges that state's row and reddens its diagram level, so a
 quarantined number is visible where you'd read it. A provenance strip links
-the candidate structure, owning quest, dossier, and logbook; a candidate
+the candidate structure, owning quest, dossier, logbook, and the run jobs
+that produced the pathway (the per-seed jobs carry a `run_log` chunk — the
+compute's captured stdout/stderr tail — and the strip notes which node it
+`ran on`); a candidate
 stepper walks sibling pathways for the same substrate→target reaction
 (ranked by `rate_Ea`), carrying the selected state across so you can park
 on one step and compare candidates.

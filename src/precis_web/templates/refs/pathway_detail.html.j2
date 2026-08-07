@@ -26,9 +26,10 @@
     {% if ref.updated %}<span class="text-slate-400">·</span><span>updated {{ ref.updated }}</span>{% endif %}
   </p>
   {# ── provenance strip (item D) — candidate structure / owning quest /
-     dossier / logbook, each independently optional (``_pathway_provenance``
-     resolves whatever it can off the candidate-slug naming convention). #}
-  {% if provenance and (provenance.candidate or provenance.quest_id is not none) %}
+     dossier / logbook / run node / run job(s), each independently optional
+     (``_pathway_provenance`` resolves whatever it can off the candidate-
+     slug naming convention). #}
+  {% if provenance and (provenance.candidate or provenance.quest_id is not none or provenance.ran_on or provenance.run_jobs) %}
   <p class="mt-1 text-xs text-slate-500 flex flex-wrap items-center gap-x-1.5">
     {% if provenance.candidate %}
     <span>candidate <a href="{{ provenance.candidate.url }}" class="text-sky-700 hover:underline">{{ provenance.candidate.title }}</a></span>
@@ -44,6 +45,14 @@
     {% if provenance.logbook_url %}
     <span class="text-slate-300">&middot;</span>
     <a href="{{ provenance.logbook_url }}" class="text-sky-700 hover:underline">logbook</a>
+    {% endif %}
+    {% for job in provenance.run_jobs %}
+    <span class="text-slate-300">&middot;</span>
+    <a href="{{ job.url }}" class="text-sky-700 hover:underline">run job #{{ job.id }} ({{ job.label }})</a>
+    {% endfor %}
+    {% if provenance.ran_on %}
+    <span class="text-slate-300">&middot;</span>
+    <span>ran on {{ provenance.ran_on }}</span>
     {% endif %}
   </p>
   {% endif %}

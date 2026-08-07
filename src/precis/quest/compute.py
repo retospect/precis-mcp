@@ -597,6 +597,11 @@ def dispatch_autocatpath(
                         "force_backend": force,
                         "content_key": skey,
                         "target_node": node,
+                        # Provenance only: lets the seed job stamp its own
+                        # meta.pathway_ref so the pathway page's run-job links
+                        # reach the per-seed run_log chunks, not just the
+                        # aggregate's transcript.
+                        "pathway_ref_id": pathway_ref_id,
                         # Per-seed lease margin — minutes-scale in practice
                         # (one model, one seed), but sized the same as
                         # before: cheap insurance, and the wedge fix is the

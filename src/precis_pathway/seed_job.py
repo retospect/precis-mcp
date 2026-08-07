@@ -64,6 +64,10 @@ _PARAMS_SCHEMA: dict[str, Any] = {
         "seed": {"type": "integer"},
         # Which cfg.mlip.specs() entry this unit runs.
         "model_index": {"type": "integer"},
+        # Provenance: the pathway ref this seed feeds (stamped onto the job's
+        # own meta as ``pathway_ref`` so the pathway page can link the per-seed
+        # run_log). Absent on pre-existing queued rows.
+        "pathway_ref_id": {"type": ["integer", "null"]},
         # Backend override; null -> run the config's own mlip.backend.
         "force_backend": {"type": ["string", "null"]},
         # Content address (matches dispatch_autocatpath's per-seed key).
@@ -86,11 +90,25 @@ DESCRIPTION = (
 )
 
 
+def _provenance_meta(params: dict[str, Any]) -> dict[str, Any]:
+    """``{"pathway_ref": <int>}`` when the mint carried ``pathway_ref_id``,
+    else empty — pre-existing queued rows (minted before the param existed)
+    stamp nothing rather than a null."""
+    pref = params.get("pathway_ref_id")
+    return {"pathway_ref": pref} if isinstance(pref, int) else {}
+
+
 def _dispatch(ctx: Any, spec: Any) -> None:
     """Plugin dispatcher invoked by ``ssh_node`` for a claimed job. Runs one
     ``run_one_seed`` unit and writes the partial onto this job's OWN meta —
     the aggregate job reads it back via the seed-todo tree, not a shared
-    file."""
+    file.
+
+    Only the detached submit/poll protocol (``_poll`` below) persists a
+    ``run_log`` chunk from the child's captured output — this blocking
+    fallback runs in-process (``run_seed_partial_subprocess``) and doesn't
+    go through :func:`~precis_pathway.runner.poll_seed_partial_detached`'s
+    scratch-dir tail capture."""
     params = (ctx.meta or {}).get("params") or {}
     try:
         config = dict(params["config"])
@@ -146,6 +164,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         model=result["model"],
         partial=partial,
         lattice=result.get("lattice") or {},
+        **_provenance_meta(params),
     )
     n_states = len(partial.get("states") or {})
     n_warnings = len(partial.get("warnings") or [])
@@ -244,7 +263,14 @@ def _poll(ctx: Any, handle: Any) -> bool:
         model=result["model"],
         partial=partial,
         lattice=result.get("lattice") or {},
+        **_provenance_meta(params),
     )
+    tail = (status.get("tail") or "")[-4000:]
+    if tail:
+        ctx.append_chunk(
+            "run_log",
+            f"run log (seed={seed}, model#{model_index}, last {len(tail)} chars):\n{tail}",
+        )
     n_states = len(partial.get("states") or {})
     n_warnings = len(partial.get("warnings") or [])
     ctx.append_chunk(

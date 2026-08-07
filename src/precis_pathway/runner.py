@@ -672,8 +672,8 @@ def poll_seed_partial_detached(handle: dict[str, Any]) -> dict[str, Any]:
     over enough jobs.
 
     Returns one of ``{"state": "running"}``,
-    ``{"state": "done", "result": <run_seed_partial output>}``, or
-    ``{"state": "failed", "error": ..., "tail": ...}``. Terminal states
+    ``{"state": "done", "result": <run_seed_partial output>, "tail": ...}``,
+    or ``{"state": "failed", "error": ..., "tail": ...}``. Terminal states
     remove the scratch dir (best-effort) after extracting what they need.
     """
     import json as _json
@@ -704,7 +704,16 @@ def poll_seed_partial_detached(handle: dict[str, Any]) -> dict[str, Any]:
         # reap now, on the SUCCEEDING branch too, or it never happens.
         _reap_zombie(pid)
         if payload.get("ok"):
-            result = {"state": "done", "result": payload["result"]}
+            # Grab the tail BEFORE cleanup wipes the scratch dir — the
+            # success path otherwise discards the child's stdout/stderr
+            # entirely, unlike the failure branches below. 4000 chars to
+            # match the run_log chunk budget (seed_job caps there too);
+            # the failure branches keep the terser default.
+            result = {
+                "state": "done",
+                "result": payload["result"],
+                "tail": _tail_logs(scratch, limit=4000),
+            }
             _cleanup_detached(scratch)
             return result
         result = {

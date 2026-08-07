@@ -1073,3 +1073,95 @@ def test_pathway_detail_candidate_stepper_absent_without_siblings(
     resp = client.get("/refs/pathway/171696")
     assert resp.status_code == 200
     assert "Candidates (rank #" not in resp.text
+
+
+class _RunJobsConn:
+    """Answers ONLY the run-jobs SELECT (``_pathway_run_jobs``) with canned
+    rows; every other query degrades the same as the base ``FakeStore``'s
+    ``_FakeConn`` (empty). Mirrors ``_SiblingConn`` for a single-query pool
+    override."""
+
+    def __init__(self, rows: list[tuple[Any, ...]]) -> None:
+        self._rows = rows
+
+    def execute(self, sql: str, params: Any = None) -> Any:
+        if "FROM refs" in sql and "kind = 'job'" in sql:
+            rows = list(self._rows)
+        else:
+            rows = []
+        return SimpleNamespace(
+            fetchall=lambda: rows, fetchone=lambda: rows[0] if rows else None
+        )
+
+    def commit(self) -> None:
+        return None
+
+    def rollback(self) -> None:
+        return None
+
+
+class _RunJobsPool:
+    def __init__(self, rows: list[tuple[Any, ...]]) -> None:
+        self._rows = rows
+
+    @contextmanager
+    def connection(self):  # type: ignore[no-untyped-def]
+        yield _RunJobsConn(self._rows)
+
+
+def test_pathway_detail_ran_on_shown_when_set(client, runtime) -> None:
+    """``meta.ran_on`` renders as plain "ran on <node>" text in the
+    provenance strip — not a link, just where the compute happened."""
+    _seed_pathway(
+        runtime.store,
+        meta={"results": {"substrate": "NO", "target": "NH3"}, "ran_on": "spark"},
+        body_text=None,
+    )
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    assert "ran on spark" in resp.text
+
+
+def test_pathway_detail_ran_on_omitted_when_unset(client, runtime) -> None:
+    _seed_pathway(
+        runtime.store,
+        meta={"results": {"substrate": "NO", "target": "NH3"}},
+        body_text=None,
+    )
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    assert "ran on" not in resp.text
+
+
+def test_pathway_detail_run_job_links_render_from_query_rows(client, runtime) -> None:
+    """``_pathway_run_jobs`` resolves the job(s) whose meta.pathway_ref
+    names this pathway into "run job #N (label)" links in the strip."""
+    _seed_pathway(
+        runtime.store,
+        meta={"results": {"substrate": "NO", "target": "NH3"}},
+        body_text=None,
+    )
+    runtime.store.pool = _RunJobsPool(
+        [(190001, "autocatpath_seed"), (190000, "autocatpath_aggregate")]
+    )
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    assert "run job #190001 (autocatpath_seed)" in resp.text
+    assert "/refs/job/190001" in resp.text
+    assert "run job #190000 (autocatpath_aggregate)" in resp.text
+
+
+def test_pathway_detail_run_jobs_degrade_cleanly_without_pool_support(
+    client, runtime
+) -> None:
+    """The FakeStore's default pool cursor never parses SQL (always empty
+    rows) -> no run-job links, no crash — same degrade as the sibling
+    stepper (item E)."""
+    _seed_pathway(
+        runtime.store,
+        meta={"results": {"substrate": "NO", "target": "NH3"}},
+        body_text=None,
+    )
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    assert "run job #" not in resp.text
