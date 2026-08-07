@@ -76,8 +76,21 @@
         ]
       },
       {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/guard-secret-read.py\""
+          }
+        ]
+      },
+      {
         "matcher": "Bash",
         "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/guard-secret-read.py\""
+          },
           {
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/guard-commit-on-main.py\""

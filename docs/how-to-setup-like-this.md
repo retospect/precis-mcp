@@ -101,6 +101,14 @@ Small, single-purpose, never-block-unless-guarding:
   main/master. The drift-onto-main backstop.
 - **`guard-worktree-path`** — catch edits whose absolute path points at MAIN
   instead of the current worktree.
+- **`guard-secret-read`** (PreToolUse, Read + Bash) — the one hook that *denies*
+  rather than warns. A wholesale read (`cat`/`head`/`xxd`/Read) of a
+  secret-by-convention path (`.claude/mcp.json`, `.vault-pass`, `.pgpass`,
+  `~/.secrets/`, `.env*`, private keys) is refused; redacting readers
+  (`sed`/`jq`/`grep`) pass. Rationale: a secret read into an agent context can't
+  be un-read — it persists in the transcript, its summaries, and any subagent
+  inheriting them — so a post-hoc warning protects nothing.
+  `ALLOW_SECRET_READ=1` for a deliberate rotation.
 - **`map-staleness-reminder`** (PostToolUse, Write) — on a Write to a
   handler/migration/other-usually-drifts path, print a one-line nudge to update
   the maps. Silent otherwise.

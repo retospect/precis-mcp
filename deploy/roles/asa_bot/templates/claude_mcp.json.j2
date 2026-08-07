@@ -6,14 +6,18 @@
       "command": "/opt/asa/venv/bin/precis",
       "args": ["serve"],
       "env": {
-        "ACATOME_PG_HOST": "{{ hostvars[postgres_host]['ansible_host'] }}",
-        "ACATOME_PG_PORT": "{{ postgres_port }}",
-        "ACATOME_PG_DATABASE": "precis_prod",
-        "ACATOME_PG_USER": "agent_rw",
-        "ACATOME_PG_PASSWORD": "{{ vault_pg_agent_rw_pass }}",
         {# §L (gr171431 §1): password-free — this file is rendered for both
            hermes (asa_bot) and deploy (precis_worker_agent's in-proc
-           planner), and the pgpass role now drops a .pgpass for both. #}
+           planner), and the pgpass role now drops a .pgpass for both.
+
+           The legacy ACATOME_PG_* block that used to sit here is GONE (2026-08-07):
+           it carried `vault_pg_agent_rw_pass` in cleartext, and nothing in precis
+           ever read those vars (`git log -S` over `src/` finds no reader, ever) —
+           acatome-meta's own config.py is the only consumer, and it is configured
+           by the asa_slack / extract_watch roles, not this file. So the rendered
+           ~/.claude/mcp.json on every agent host now contains NO credential at
+           all: `serve` authenticates as agent_rw via ~/.pgpass (0600). Don't
+           reintroduce an inline password here — put the secret in .pgpass. #}
         "PRECIS_DATABASE_URL": "postgresql://agent_rw@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod",
         {# gr196677: pin libpq's password file explicitly — the spawned
            `precis serve` sees ONLY this env block (no HOME), so ~-resolution
