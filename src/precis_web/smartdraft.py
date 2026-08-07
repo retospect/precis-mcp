@@ -215,7 +215,7 @@ def _trunc_tail(text: str, cap: int) -> str:
 # *identical* across navigations within the same draft (only the focus, a query
 # param, changes). So cache the base nodes (pins/locks NOT baked in — those are
 # a cheap per-request overlay) keyed by ref_id, invalidated by a cheap content
-# version (chunk count + max id, which changes on any DELETE+INSERT body edit)
+# version (a digest over each live chunk's identity, position and content_sha)
 # with a TTL backstop for out-of-band drift (worker re-summarize/keyword). This
 # is what makes click-around instant: the first focus pays the build, the rest
 # read the cache + re-run only the ~7ms assemble_view.
@@ -228,28 +228,41 @@ _NODE_TTL = 45.0
 
 
 def _cache_version(store: Any, ref_id: int) -> str | None:
-    """A cheap content token for a draft — ``chunks:max(chunk_id):tags`` over its
-    live chunks. Body edits DELETE+INSERT (a new chunk_id) so the first two
-    change on any text edit; the ``chunk_tags`` count changes on any tag add /
-    remove — so the token self-invalidates for tag writes from *any* source (the
-    smartdraft route, the MCP ``tag`` verb, a worker), not just the route that
-    calls :func:`invalidate`. One round-trip. Returns ``None`` if the store can't
-    answer (a FakeStore in tests, a pool-less handle) — the caller then skips the
-    cache entirely, preserving the pre-cache always-rebuild behaviour exactly."""
+    """A cheap content token for a draft — ``digest:tags`` over its live chunks.
+
+    The digest folds in every input :func:`_build_nodes_uncached` reads off the
+    chunk row itself: ``chunk_id`` (add / retire), ``pos`` and
+    ``parent_chunk_id`` (move, re-parent), and ``content_sha`` (text). Hashing
+    the *content* rather than counting rows is load-bearing — the live edit path
+    (``store.edit_text``) UPDATEs a chunk **in place**, so a token built from
+    ``count(*) + max(chunk_id)`` never moved on an edit and the reader served
+    stale text until the TTL fired. The ``chunk_tags`` count covers tag add /
+    remove.
+
+    That makes the token self-invalidating for writes from *any* source (the
+    smartdraft route, the MCP ``edit``/``tag`` verbs, a worker), not just the
+    routes that call :func:`invalidate`. Derived data a worker rewrites without
+    touching the chunk row (summaries, keywords) is still the TTL's job.
+
+    One round-trip. Returns ``None`` if the store can't answer (a FakeStore in
+    tests, a pool-less handle) — the caller then skips the cache entirely,
+    preserving the pre-cache always-rebuild behaviour exactly."""
     try:
         with store.pool.connection() as conn:
             row = conn.execute(
                 "SELECT "
-                " (SELECT count(*) FROM chunks WHERE ref_id = %s AND retired_at IS NULL), "
-                " (SELECT coalesce(max(chunk_id), 0) FROM chunks "
-                "    WHERE ref_id = %s AND retired_at IS NULL), "
+                " (SELECT coalesce(md5(string_agg("
+                "      chunk_id || ':' || coalesce(pos::text, '')"
+                "      || ':' || coalesce(parent_chunk_id::text, '')"
+                "      || ':' || coalesce(content_sha, ''), ',' ORDER BY chunk_id"
+                "    )), '') FROM chunks WHERE ref_id = %s AND retired_at IS NULL), "
                 " (SELECT count(*) FROM chunk_tags ct JOIN chunks c "
                 "    ON c.chunk_id = ct.chunk_id WHERE c.ref_id = %s)",
-                (ref_id, ref_id, ref_id),
+                (ref_id, ref_id),
             ).fetchone()
     except Exception:
         return None
-    return f"{row[0]}:{row[1]}:{row[2]}" if row else None
+    return f"{row[0]}:{row[1]}" if row else None
 
 
 def invalidate(ref_id: int) -> None:

@@ -2359,9 +2359,9 @@ async def set_title(
         # The lookup above is not in the write transaction, so a concurrent
         # delete between the two lands here — 404 like the miss above, not 500.
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=404)
-    # The heading is edited IN PLACE, so smartdraft's base-node cache token
-    # (chunk count + max chunk_id) doesn't move — without this the renamed
-    # heading would keep rendering stale until the 45s TTL backstop fired.
+    # Belt-and-braces, matching the other smartdraft write route: the heading is
+    # edited IN PLACE, which `_cache_version`'s content digest now covers, so
+    # this only saves the losing side of a race with a concurrent render.
     # Lazy import: `precis_web.smartdraft` reaches back into this module.
     from precis_web import smartdraft as _smartdraft
 

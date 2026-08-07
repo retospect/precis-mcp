@@ -414,9 +414,8 @@ def test_base_nodes_are_cached_but_marks_are_a_fresh_overlay(hub) -> None:
     assert not any(n.pinned for n in cleared)
 
 
-def test_content_edit_invalidates_the_node_cache(hub) -> None:
-    # A body edit mints a new chunk_id, so the content version changes and the
-    # cache rebuilds — the reader never serves stale text.
+def test_a_new_chunk_invalidates_the_node_cache(hub) -> None:
+    # Adding a chunk changes the content version, so the cache rebuilds.
     from precis_web import smartdraft as sd
 
     store = hub.store
@@ -431,3 +430,23 @@ def test_content_edit_invalidates_the_node_cache(hub) -> None:
     second = sd.build_nodes(store, ref_id)
     assert second is not first  # version changed → rebuilt
     assert any("wholly new chunk" in (n.text or "") for n in second)
+
+
+def test_an_in_place_text_edit_invalidates_the_node_cache(hub) -> None:
+    """The live edit path (``store.edit_text``) UPDATEs the chunk in place, so
+    neither the chunk count nor ``max(chunk_id)`` moves. The version token has
+    to fold in the *content* — hashing content_sha — or the reader serves the
+    pre-edit text until the 45s TTL backstop fires. The add case above passes
+    either way, which is exactly why this one is separate."""
+    from precis_web import smartdraft as sd
+
+    store = hub.store
+    ref_id = _seed_draft(store, regimes=[["alpha"], ["beta"]])
+    first = sd.build_nodes(store, ref_id)
+    body = next(c for c in store.reading_order(ref_id) if c.chunk_kind != "heading")
+
+    store.edit_text(body.handle, "text the reader must not miss")
+
+    second = sd.build_nodes(store, ref_id)
+    assert second is not first  # version changed → rebuilt
+    assert any("must not miss" in (n.text or "") for n in second)
