@@ -51,6 +51,24 @@ excludes: the meter tracks real money, while these caps bound the
 planner's *discretionary* burn — subscription quota very much
 included, since that is the path that actually ran away.
 
+**And deliberately EXCLUDES ``placement='local'`` (migration 0112).**
+The cluster's own GPUs are a sunk cost, so a local row's ``cost_usd``
+is a *priced* estimate from :mod:`precis.budget.pricing`, not money
+that left an account. Counting it made the caps fill up at ~$0.35 a
+planner tick as passes moved onto local hardware — and a tripped cap
+then stopped the local work too, idling machines we want busy. That
+is a gate doing harm rather than nothing. The ADR 0066 §5 breaker
+already drew this line (``_rung_is_cloud`` keeps a tripped $ cap from
+starving a local rung); these caps just never learned it. Same
+classifier, one definition: ``router._placement_of``.
+
+A NULL ``placement`` (every pre-0112 row) counts as cloud —
+fail-closed, since an unclassified row is likelier an old billed call
+than a free one. Utilisation is still fully recorded: ``model`` +
+``duration_ms`` + the priced ``cost_usd`` all survive on the row, so
+"how busy were the GPUs" stays answerable. What changed is only what
+the *caps* count.
+
 This module is read-only on the dispatcher path: it returns ``True``
 ("OK to dispatch") or applies a halt tag and returns ``False``.
 The halt-application path is async to the dispatch loop's tx so it
@@ -260,6 +278,7 @@ def _read_cost_usd(store: Store, ref_id: int) -> float:
             SELECT COALESCE(SUM(cost_usd), 0)::float
               FROM llm_call_log
              WHERE ref_id = %s AND cost_usd IS NOT NULL
+               AND placement IS DISTINCT FROM 'local'
             """,
             (ref_id,),
         ).fetchone()
@@ -348,6 +367,7 @@ def _read_tree_cost_usd(store: Store, ref_id: int) -> float:
             SELECT COALESCE(SUM(l.cost_usd), 0)::float
               FROM llm_call_log l
              WHERE l.cost_usd IS NOT NULL
+               AND l.placement IS DISTINCT FROM 'local'
                AND l.ref_id IN (SELECT ref_id FROM down)
             """,
             {"id": ref_id, "max_depth": _MAX_TREE_DEPTH},
@@ -370,6 +390,7 @@ def _read_daily_cost(store: Store) -> float:
             SELECT COALESCE(SUM(cost_usd), 0)::float
               FROM llm_call_log
              WHERE cost_usd IS NOT NULL
+               AND placement IS DISTINCT FROM 'local'
                AND ts >= now() - interval '24 hours'
             """
         ).fetchone()

@@ -54,6 +54,7 @@ import threading
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from dataclasses import replace as _replace
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
@@ -958,6 +959,12 @@ class LlmResult:
     output_tokens: int | None = None
     cache_read_tokens: int | None = None
     cache_creation_tokens: int | None = None
+    #: ``'local'`` / ``'cloud'`` for the rung that ACTUALLY ran, classified by
+    #: :func:`_rung_is_cloud`. Stamped from the *winning* rung, not rung 0 —
+    #: a local primary that fell back to a cloud rung really did spend money,
+    #: and recording it as local would hide that from the cost caps. ``None``
+    #: only when no rung was resolved (an early error return).
+    placement: str | None = None
 
 
 def result_from_agent(res: AgentResult, *, model: str, tier: Tier) -> LlmResult:
@@ -1281,7 +1288,6 @@ class ClaudeAgentProvider:
             # LlmRequest.max_tokens) — truncate post-hoc so a caller that
             # pinned a budget (a duration-targeted cast) still gets output
             # that fits it, even though the full (costly) generation ran.
-            from dataclasses import replace as _replace
 
             result = _replace(
                 result, text=_truncate_to_max_tokens(result.text, req.max_tokens)
@@ -1420,6 +1426,10 @@ class FailoverProvider:
         last: LlmResult | None = None
         for i, rung in enumerate(self._rungs):
             last = provider_for(rung.transport).run(req, model=rung.model or model)
+            # Stamp the rung that actually ran. Done per-iteration (not once at
+            # the end) so a fall-through to a cloud rung is recorded as cloud —
+            # the accounting must follow the money, not the operator's intent.
+            last = _replace(last, placement=_placement_of(rung))
             accepted = last.error is None and (
                 self._accept is None or self._accept(last)
             )
@@ -1607,6 +1617,18 @@ def resolve_chain(tier: Tier, *, tools_needed: bool, backend: Backend) -> list[R
     return rungs
 
 
+def _placement_of(rung: Rung) -> str:
+    """``'cloud'`` / ``'local'`` for one rung — the string form of
+    :func:`_rung_is_cloud`, recorded on :attr:`LlmResult.placement` and
+    ``llm_call_log.placement`` so the cost caps can tell spend from utilisation.
+
+    One classifier, two consumers: the ADR 0066 §5 cloud-throttle prunes on
+    ``_rung_is_cloud`` and the planner's dollar caps exclude on this. A second,
+    independent notion of "is this local" is exactly how the caps drifted before.
+    """
+    return "cloud" if _rung_is_cloud(rung) else "local"
+
+
 def _rung_is_cloud(rung: Rung) -> bool:
     """Classify a chain rung as cloud (hits a cloud API) vs local, for the
     ADR 0066 §5 throttle's cloud-rung pruning.
@@ -1777,7 +1799,6 @@ def dispatch(req: LlmRequest) -> LlmResult:
     rung 0 against the hosted OSS endpoint (skipping the busy local hardware)
     before falling to the next rung.
     """
-    from dataclasses import replace as _replace
 
     backend = resolve_backend()
     if backend is Backend.OPENAI and not os.environ.get("PRECIS_LLM_BASE_URL"):
@@ -2009,6 +2030,19 @@ def dispatch(req: LlmRequest) -> LlmResult:
         result = provider.run(call_req, model=call_model)
     finally:
         _local.release(slot)
+    # The direct (non-FailoverProvider) path has exactly one rung, so nothing
+    # stamped placement above. A reserved `served_by` slot is local by
+    # definition regardless of how the rung classifies — that IS the local
+    # hardware — so it wins over the rung's own label.
+    if result.placement is None:
+        result = _replace(
+            result,
+            placement=(
+                "local"
+                if (slot is not None and slot.reserved and slot.endpoint)
+                else _placement_of(ladder[0])
+            ),
+        )
     _record_dispatch(
         req,
         result,
@@ -2048,8 +2082,6 @@ async def _dispatch_claude_agent_async(req: LlmRequest, model: str) -> LlmResult
         return _error_result(exc, model=model, tier=req.tier)
     result = result_from_agent(res, model=model, tier=req.tier)
     if req.max_tokens is not None and result.error is None:
-        from dataclasses import replace as _replace
-
         result = _replace(
             result, text=_truncate_to_max_tokens(result.text, req.max_tokens)
         )
@@ -2174,8 +2206,6 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
     call_req = req
     call_model = model
     if slot is not None and slot.reserved and slot.endpoint:
-        from dataclasses import replace as _replace
-
         call_req = _replace(req, local_url=slot.endpoint)
         call_model = slot.served_model or model
 
@@ -2184,6 +2214,19 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
         result = await _dispatch_claude_agent_async(call_req, model=call_model)
     finally:
         _local.release(slot)
+    # The direct (non-FailoverProvider) path has exactly one rung, so nothing
+    # stamped placement above. A reserved `served_by` slot is local by
+    # definition regardless of how the rung classifies — that IS the local
+    # hardware — so it wins over the rung's own label.
+    if result.placement is None:
+        result = _replace(
+            result,
+            placement=(
+                "local"
+                if (slot is not None and slot.reserved and slot.endpoint)
+                else _placement_of(ladder[0])
+            ),
+        )
     _record_dispatch(
         req,
         result,
@@ -2377,6 +2420,7 @@ def _record_dispatch(
                 request_text=_serialize_request(req),
                 response_text=result.text or "",
                 cost_usd=result.cost_usd,
+                placement=result.placement,
                 turns_used=result.turns_used,
                 duration_ms=duration_ms,
                 errored=result.error is not None,

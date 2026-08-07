@@ -190,3 +190,57 @@
 # launchd hits EX_CONFIG (78) when StandardOutPath can't be created. /var/log
 # on modern macOS only allows root writes, so a deploy-owned daemon can't
 # create the file itself — pre-create with deploy ownership.
+
+# ── anki_sync cadence deps (ported from the retired precis_worker_agent role) ──
+#
+# `anki` is NOT a precis-mcp extra — it's a standalone pylib installed straight
+# into a venv, so it is bound to whichever interpreter the install names.
+#
+# That is the whole bug, and it is subtler than a missing task. 20b DOES import
+# precis_worker_agent's provisioning half, and that half's anki task DID keep
+# running — but it installs into `precis_worker_agent_venv` (/opt/mcps/venv),
+# the RETIRED agent daemon's venv. Since the gateway collapsed onto this role's
+# `--profile all` worker (com.precis.worker-agent.plist.bak-20260723), the live
+# process runs from `precis_worker_venv` (/opt/precis/venv). Verified on
+# the gateway 2026-08-07: anki importable in /opt/mcps/venv, absent in
+# /opt/precis/venv. The pylib was on the box the entire time, just never on the
+# path the running interpreter searched.
+#
+# And the failure is silent by construction: `_anki_sync_eligible()`
+# (workers/scheduler.py) gates on PRECIS_ANKI_ENABLED **and**
+# `find_spec("anki")`, and an ineligible host short-circuits BEFORE
+# `claim_scheduler_lease` — nothing errors, nothing logs, the lease just stops
+# advancing. PRECIS_ANKI_ENABLED=1 stayed set throughout, which is exactly what
+# made the host look configured. anki_sync last fired 2026-08-04; the watchdog
+# did raise `[cadence] anki_sync stale` and auto-file gripe 193428, and it still
+# sat ~3 days.
+#
+# Installing from THIS half binds the pylib to the venv the collapsed worker
+# actually runs, and survives the agent role being deleted outright.
+- name: Install the anki pylib into the worker venv (anki_sync cadence)
+  when:
+    - os_family == "darwin"
+    - inventory_hostname in groups.get('precis_anki_sync', [])
+  vars:
+    uv_bin: "{{ '/opt/homebrew/bin/uv' if os_family == 'darwin' else '/root/.local/bin/uv' }}"
+  ansible.builtin.command: >
+    {{ uv_bin }} pip install --python {{ precis_worker_venv }}/bin/python --upgrade anki
+  become: true
+  register: anki_pip
+  changed_when: "'Installed' in anki_pip.stdout or 'Downloaded' in anki_pip.stdout"
+
+# Recursive ownership self-heal: a stray root-owned mirror.anki2 from a manual
+# run crash-looped the old daemon for 8 days (gripe-documented in the retired
+# precis_anki_sync role). Keep the recurse.
+- name: Ensure the .anki2 mirror directory (deploy-owned, stable)
+  when:
+    - os_family == "darwin"
+    - inventory_hostname in groups.get('precis_anki_sync', [])
+  ansible.builtin.file:
+    path: "{{ anki_mirror_dir | default('/opt/mcps/anki-mirror') }}"
+    state: directory
+    owner: deploy
+    group: staff
+    mode: "0700"
+    recurse: true
+  become: true

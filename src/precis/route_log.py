@@ -79,6 +79,19 @@ class LlmCallRecord:
     #: recorded). Corpus batch passes set this ``False`` — cheap + mineable, no
     #: per-call blob. See :attr:`precis.utils.llm.router.LlmRequest.log_blobs`.
     store_blobs: bool = True
+    #: ``'local'`` / ``'cloud'`` for the rung that actually ran (``None`` from a
+    #: caller that doesn't classify — pre-0112 rows and test fakes).
+    #:
+    #: Local hardware is a **sunk cost**: its ``cost_usd`` is a *priced* figure
+    #: from :mod:`precis.budget.pricing`, not money that left an account. So the
+    #: planner's dollar caps exclude ``'local'`` rows and read this column to do
+    #: it. Keeping the priced number rather than nulling it is deliberate — with
+    #: ``model`` + ``duration_ms`` it is the per-call utilisation signal, and an
+    #: idle local box is the waste we are trying to avoid, not a saving.
+    #:
+    #: ``None`` is treated as cloud by the caps (fail-closed): an unclassified
+    #: row is far more likely to be an old billed call than a free one.
+    placement: str | None = None
 
 
 def _blob_hash(text: str) -> str:
@@ -173,12 +186,12 @@ def _write(store: Store, rec: LlmCallRecord) -> None:
                 source, tier, transport, model, tools_needed,
                 request_hash, response_hash, request_chars, response_chars,
                 cost_usd, turns_used, duration_ms, errored, error, data_parsed,
-                ref_id, features
+                ref_id, features, placement
             ) VALUES (
                 %s, %s, %s, %s, %s,
                 %s, %s, %s, %s,
                 %s, %s, %s, %s, %s, %s,
-                %s, %s
+                %s, %s, %s
             )
             """,
             (
@@ -199,6 +212,7 @@ def _write(store: Store, rec: LlmCallRecord) -> None:
                 rec.data_parsed,
                 rec.ref_id,
                 json.dumps(rec.features),
+                rec.placement,
             ),
         )
         conn.commit()
