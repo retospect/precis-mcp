@@ -63,6 +63,34 @@ get(kind="pathway", id="no-nh3-pd", view="analysis")
   high TS. Lower SPAN = better path.
 - the barriers ranked, and selectivity vs competing branches.
 
+## Apply a potential / the electrochemistry lever (CHE)
+
+NOx reduction is electrocatalysis: an applied potential `U` (vs **RHE**) is a
+real design lever. Under the computational hydrogen electrode (Nørskov CHE),
+`U` enters *only* through the reservoir that stages each `+H*` — every supplied
+H is H⁺ + e⁻ — so a node's energy shifts by `n_H · eU`, where `n_H` = reservoir
+H atoms it has absorbed. This is **post-processing over energies already
+computed — no new relax/NEB**, and the optima are **closed-form** (no binary
+search, no LLM):
+
+- Every `pathway` ref carries per-node `n_H` in `meta.graph` and, in
+  `meta.results`, an `electro` block: `U_L` (limiting potential — the max
+  over electrochemical steps of −ΔG_step(0)), `span_at_UL` / `span_at_Uopt`
+  (the closed-form span minimum over U), `P_side` (selectivity penalty = the
+  probability of leaving the target path at a fork), and per-fork branch
+  fractions ∝ `exp(−ΔEa/kT)` at **298.15 K** default.
+- The web explorer (`/refs/pathway/{id}`) has a **U slider + T + pH inputs**:
+  the energy diagram re-renders at any potential client-side (levels shift by
+  `n_H·eU`), shows RHE **and** SHE (`U_SHE = U_RHE − 0.0592·pH` at 298.15 K —
+  PCET steps are pH-independent under RHE), and labels each fork with its
+  branch %.
+- A quest rubric can rank on these: declare them in `meta.rubric_objectives`
+  (Pareto), or a **composite** scalar in `meta.rubric_composite`
+  (`{sense, terms:[{key, weight, abs?}]}`, e.g. `α·span + β·|U_L| + γ·P_side`).
+  Weights are **human-set per quest** — the agent may not tune its own
+  objective. A fork with any missing barrier or untrustworthy state reports
+  *insufficient data*, never a fabricated ratio.
+
 ## Compare candidates / rank levers / which surface is best
 
 ```python

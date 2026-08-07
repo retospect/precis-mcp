@@ -275,6 +275,49 @@ def _objectives_for(store: Store, quest_id: int) -> list[tuple[str, str]]:
     return out or list(DEFAULT_OBJECTIVES)
 
 
+def composite_score(measures: dict[str, float], spec: dict[str, Any]) -> float | None:
+    """A single declared composite objective, e.g. ``α·span(U*) + β·|U_L| +
+    γ·P_side`` — the quest's cost function as one scalar.
+
+    ``spec['terms']`` is a list of ``{key, weight, abs?}``; the score is
+    ``Σ weight · (|measure| if abs else measure)``. Returns ``None`` if any term's
+    measure is missing (a partially-measured candidate cannot be composite-scored
+    — it falls to ``unevaluated``, never ranked on a fabricated total). The
+    per-quest weights are human-set rubric fields (the agent may not tune its own
+    objective — Reto, 2026-08-07)."""
+    terms = spec.get("terms")
+    if not isinstance(terms, list) or not terms:
+        return None
+    total = 0.0
+    for term in terms:
+        if not isinstance(term, dict):
+            return None
+        key = str(term.get("key") or "").strip()
+        v = measures.get(key)
+        if v is None:
+            return None
+        w = _numeric(term.get("weight"))
+        if w is None:
+            w = 1.0
+        total += w * (abs(v) if term.get("abs") else v)
+    return total
+
+
+def _composite_spec_for(store: Store, quest_id: int) -> dict[str, Any] | None:
+    """The quest's declared composite objective (``meta.rubric_composite``), or
+    ``None``. Overrides the Pareto ``rubric_objectives`` when present."""
+    ref = store.get_ref(kind="quest", id=quest_id)
+    raw = (ref.meta or {}).get("rubric_composite") if ref else None
+    if not isinstance(raw, dict):
+        return None
+    sense = str(raw.get("sense") or "min").strip().lower()
+    if sense not in _VALID_SENSES:
+        sense = "min"
+    if not isinstance(raw.get("terms"), list) or not raw["terms"]:
+        return None
+    return {"sense": sense, "terms": raw["terms"]}
+
+
 #: struct_runs columns that are bookkeeping, not measures — never rank on these
 #: (``converged`` is a bool and ``status``/``fidelity``/``model``/``created_at``
 #: are non-numeric, so ``_numeric`` already filters them; these are the numeric
@@ -386,6 +429,10 @@ def _candidate_from_structure(store: Store, s: Any) -> Candidate:
     if flags.get("barrier_trusted") is False:
         excluded_barrier = measures.pop("barrier", None)
         measures.pop("span", None)
+        # The CHE potential-lever scalars are post-processing over the SAME
+        # (untrusted) pathway energies, so they are noise too — exclude them.
+        for k in ("span_at_Uopt", "U_L", "P_side"):
+            measures.pop(k, None)
         if excluded_barrier is not None:
             flags["barrier_untrusted_value"] = excluded_barrier
 
@@ -467,6 +514,18 @@ def quest_frontier(
     objs = objectives or _objectives_for(store, quest_id)
     structures = [s for s in _live_servers(store, quest_id) if s.kind == "structure"]
     candidates = [_candidate_from_structure(store, s) for s in structures]
+    # A declared composite objective (α·span + β·|U_L| + γ·P_side, …) collapses
+    # the rubric to one scalar `composite` measure per candidate and ranks on it,
+    # overriding the Pareto objective vector. Only when the caller didn't pass
+    # explicit objectives (tests / internal callers keep their override).
+    if not objectives:
+        comp = _composite_spec_for(store, quest_id)
+        if comp is not None:
+            for c in candidates:
+                score = composite_score(c.measures, comp)
+                if score is not None:
+                    c.measures["composite"] = score
+            objs = [("composite", comp["sense"])]
     return pareto_split(candidates, objs)
 
 
@@ -480,6 +539,7 @@ __all__ = [
     "FrontierResult",
     "FrontierScatter",
     "build_frontier_scatter",
+    "composite_score",
     "leaderboard",
     "pareto_split",
     "quest_frontier",

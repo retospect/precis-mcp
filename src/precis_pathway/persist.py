@@ -34,18 +34,61 @@ def _json_finite(obj: Any) -> Any:
     return obj
 
 
+def _with_electrochemistry(
+    graph: dict[str, Any], results: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Stamp the CHE potential lever onto (graph, results) — post-processing over
+    energies already computed, no new relax/NEB (see :mod:`precis_pathway.che`).
+
+    * each graph node gains ``n_H`` (reservoir H absorbed) so the explorer can
+      re-render the energy diagram at any applied potential U client-side —
+      levels shift by ``n_H·eU``, one slider, zero server calls;
+    * ``results`` gains an ``electro`` block (``U_L``, ``span_at_UL``,
+      ``U_opt``/``span_at_Uopt``, ``P_side``, per-fork branch fractions) plus the
+      three headline scalars lifted to the top level, where the quest frontier
+      harvest reads them as ranking measures.
+
+    Best-effort: a malformed graph must never block persisting the pathway, so a
+    failure returns the inputs untouched (the lever is additive).
+    """
+    try:
+        from . import che
+
+        nh = che.n_h_per_node(graph, results)
+        nodes = [{**n, "n_H": nh.get(n.get("id"), 0)} for n in graph.get("nodes", [])]
+        graph = {**graph, "nodes": nodes}
+        electro = che.che_summary(graph, results)
+        results = {
+            **results,
+            "electro": electro,
+            "U_L": electro.get("U_L"),
+            "span_at_UL": electro.get("span_at_UL"),
+            "span_at_Uopt": electro.get("span_at_Uopt"),
+            "P_side": electro.get("P_side"),
+        }
+    except Exception:
+        pass
+    return graph, results
+
+
 def pathway_meta(
     artifact: dict[str, Any], *, extra: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     """The `refs.meta` payload for a pathway ref: the authoritative config +
-    snapshot, the reaction graph, the pooled-uncertainty results, warnings."""
+    snapshot, the reaction graph, the pooled-uncertainty results, warnings.
+
+    The graph carries per-node ``n_H`` and the results an ``electro`` block —
+    the CHE applied-potential lever (:func:`_with_electrochemistry`)."""
+    graph, results = _with_electrochemistry(
+        artifact["graph_json"], artifact["results_json"]
+    )
     meta: dict[str, Any] = {
         "content_key": artifact["content_key"],
         "autocatpath_version": artifact["autocatpath_version"],
         "config": artifact["config"],
         "config_snapshot_yaml": artifact["config_snapshot_yaml"],
-        "results": artifact["results_json"],
-        "graph": artifact["graph_json"],
+        "results": results,
+        "graph": graph,
         "warnings": artifact["warnings"],
         "n_structures": len(artifact["structures_extxyz"]),
         "status": "ready",

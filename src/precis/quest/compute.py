@@ -728,6 +728,28 @@ _ADSORBATE_DETACHED = "detached"
 _WRONG_BINDING_SITE = "wrong-site"
 
 
+#: CHE potential-lever scalars persisted onto a pathway's ``meta['results']``
+#: (see :func:`precis_pathway.persist._with_electrochemistry`). Lifted onto the
+#: candidate as ranking measures so a quest rubric can minimise operating
+#: potential / span / side-selectivity, not just one thermal barrier. ``P_side``
+#: is ``None`` when the fork data is insufficient — never a fabricated ratio —
+#: and a ``None`` scalar is simply not stamped.
+_PATHWAY_ELECTRO_KEYS: tuple[str, ...] = ("U_L", "span_at_Uopt", "P_side")
+
+
+def _pathway_electro(meta: dict[str, Any]) -> dict[str, float]:
+    """Lift the CHE electrochemistry scalars from a pathway ref's meta."""
+    results = meta.get("results")
+    if not isinstance(results, dict):
+        return {}
+    out: dict[str, float] = {}
+    for k in _PATHWAY_ELECTRO_KEYS:
+        v = _num_measure(results.get(k))
+        if v is not None:
+            out[k] = v
+    return out
+
+
 def _pathway_quality(meta: dict[str, Any]) -> dict[str, Any]:
     """Derive the trust verdict on a harvested barrier from its pathway's meta.
 
@@ -1049,6 +1071,7 @@ def harvest_measures(
                     pw_meta = pw_ref.meta if pw_ref is not None else None
                     if isinstance(pw_meta, dict):
                         measures.update(_pathway_quality(pw_meta))
+                        measures.update(_pathway_electro(pw_meta))
                 except Exception:
                     pass
             store.stamp_ref_meta(s.id, measures)

@@ -571,6 +571,47 @@ def test_pathway_detail_state_tracking_and_detail_refresh_js_present(
     assert '"r_cov"' in resp.text
 
 
+def test_pathway_graph_payload_carries_n_h() -> None:
+    """The client payload carries per-node ``n_H`` (the CHE lever). It is
+    derived from the label for legacy pathways and preferred from the node when
+    persist stamped it."""
+    from precis_web.routes.refs import _pathway_graph_payload
+
+    graph = {
+        "nodes": [
+            {"id": "NO", "rel_energy": 0.0},
+            {"id": "NO+H", "rel_energy": 0.3},  # derived: 1 reservoir H
+            {"id": "NH3", "rel_energy": -0.2, "n_H": 5},  # persisted value wins
+        ],
+        "links": [
+            {"source": "NO", "target": "NO+H", "kind": "supply"},
+        ],
+    }
+    payload = _pathway_graph_payload(graph, target="NH3")
+    assert payload is not None
+    nh = {n["id"]: n["n_H"] for n in payload["nodes"]}
+    assert nh["NO"] == 0
+    assert nh["NO+H"] == 1  # derived
+    assert nh["NH3"] == 5  # stored value preferred over the derived 3
+
+
+def test_pathway_detail_ships_che_potential_controls(client, runtime) -> None:
+    """The rendered page ships the CHE potential-lever controls (U slider, pH/T
+    inputs) and the client-side shift + SHE-conversion logic — untestable in a
+    browser here, so assert the markup + JS shipped."""
+    _seed_pathway(
+        runtime.store,
+        meta={"graph": _GRAPH3, "structure_refs": _GRAPH3_STRUCTURE_REFS},
+        body_text=None,
+    )
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    assert 'id="pw-u"' in resp.text  # the U slider
+    assert "shifted(" in resp.text  # client-side n_H·U shift
+    assert "V vs SHE" in resp.text  # RHE→SHE display conversion
+    assert '"n_H"' in resp.text  # payload carries the per-node count
+
+
 def test_structure_detail_template_ships_refresh_detail_js() -> None:
     """Same fix on ``/refs/structure/{id}`` — the structure detail template
     isn't rendered from this module's fixtures, so read its source directly

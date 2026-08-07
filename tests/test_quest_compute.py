@@ -10,6 +10,7 @@ against real PG (the ``store`` fixture).
 
 from __future__ import annotations
 
+import math
 import re
 from types import SimpleNamespace
 from typing import Any
@@ -23,6 +24,7 @@ from precis.quest.frontier import (
     Candidate,
     _candidate_from_structure,
     build_frontier_scatter,
+    composite_score,
     pareto_split,
     quest_frontier,
 )
@@ -48,6 +50,35 @@ _SPEC = {
     "cell": {"a": 8.4, "b": 8.4, "c": 24.0, "pbc": [True, True, False]},
     "ops": [{"op": "add_atom", "element": "Fe", "frac": [0.0, 0.0, 0.5]}],
 }
+
+
+# ── composite objective (CHE potential-lever rubric) ──────────────────
+
+
+class TestCompositeScore:
+    _SPEC = {
+        "sense": "min",
+        "terms": [
+            {"key": "span_at_Uopt", "weight": 1.0},
+            {"key": "U_L", "weight": 0.5, "abs": True},
+            {"key": "P_side", "weight": 2.0},
+        ],
+    }
+
+    def test_weighted_sum_with_abs(self) -> None:
+        # 1.0·0.8 + 0.5·|−0.45| + 2.0·0.1 = 0.8 + 0.225 + 0.2 = 1.225
+        m = {"span_at_Uopt": 0.8, "U_L": -0.45, "P_side": 0.1}
+        assert composite_score(m, self._SPEC) == 1.225
+
+    def test_missing_term_yields_none(self) -> None:
+        # A partially-measured candidate cannot be composite-scored (no fabricated
+        # total) — it falls to `unevaluated` rather than ranking on a guess.
+        assert composite_score({"span_at_Uopt": 0.8, "U_L": -0.45}, self._SPEC) is None
+
+    def test_default_weight_is_one(self) -> None:
+        spec = {"terms": [{"key": "span_at_Uopt"}, {"key": "P_side"}]}
+        score = composite_score({"span_at_Uopt": 0.4, "P_side": 0.2}, spec)
+        assert score is not None and math.isclose(score, 0.6)
 
 
 # ── pure Pareto ───────────────────────────────────────────────────────

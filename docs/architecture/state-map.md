@@ -2553,6 +2553,25 @@ The master kinds table lives in the `precis-overview` skill.
   without `meta.structure_refs` (diagram still renders; viewer shows "no
   geometry linked"). Motion/animation (frame playback, true cross-state atom
   tracking) is the unbuilt sibling `docs/proposals/pathway-frame-capture.md`.
+  **CHE potential lever** (`docs/proposals/pathway-potential-lever.md`,
+  slices 1–3 built): `precis_pathway/che.py` is a pure, autocatpath-free
+  post-processing pass over the stored graph — per-node `n_H` (reservoir H,
+  parsed from the label), the applied-potential shift `G(U)=G(0)+n_H·eU`, the
+  closed-form limiting potential `U_L` and span-vs-U minimizer, RHE→SHE
+  conversion, and equal-prefactor fork fractions `∝exp(−ΔEa/kT)` (298.15 K
+  default, guarded — insufficient data over a missing/untrusted barrier, never a
+  fabricated ratio). `persist._with_electrochemistry` stamps `n_H` into
+  `meta.graph` nodes and an `electro` block (+ headline `U_L`/`span_at_UL`/
+  `span_at_Uopt`/`P_side`) into `meta.results`; the explorer adds a client-side
+  **U slider + T + pH** control (levels re-render at any U, RHE/SHE dual readout,
+  fork-% labels). The quest frontier lifts `U_L`/`span_at_Uopt`/`P_side` as
+  ranking measures (`compute._pathway_electro`) and supports a declared
+  **composite** scalar objective `meta.rubric_composite` = `{sense, terms:[{key,
+  weight, abs?}]}` (`frontier.composite_score`, e.g. `α·span+β·|U_L|+γ·P_side`;
+  weights human-set — the agent may not tune its own objective). Untrusted-barrier
+  candidates drop the electro measures too (same noise-exclusion as `barrier`/
+  `span`). Remaining: HER template edge (slice 4, catpath) + β-corrected barriers
+  / N–N coupling / decoupled-proton pH shift (slice 5).
 - **`llm`** — the model catalog (design-of-record `docs/proposals/llm-catalog.md`;
   slice 1 **live, read-only, ships dark**). Turns model choice from hardcoded
   constants (`router._TIER_MODEL` + `meta.llm_tier=opus|sonnet|haiku|local`) into a

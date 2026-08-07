@@ -91,6 +91,28 @@
   {% endif %}
 
   {% if diagram %}
+  {# ── CHE potential lever (docs/proposals/pathway-potential-lever.md): one
+     slider shifts every level by n_H·eU client-side — no server call. T + pH
+     inputs ride alongside; pH only converts the RHE readout to SHE (PCET steps
+     are pH-independent under RHE). ── #}
+  <div id="pw-che" class="mb-2 flex flex-wrap items-center gap-x-4 gap-y-2 rounded border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
+    <label class="flex items-center gap-2">
+      <span class="font-medium text-slate-700">U</span>
+      <input id="pw-u" type="range" min="-2" max="2" step="0.01" value="0" class="w-40 align-middle">
+      <span id="pw-u-val" class="font-mono w-28 tabular-nums">0.00 V vs RHE</span>
+    </label>
+    <span id="pw-u-she" class="font-mono text-slate-400 tabular-nums">(0.00 V vs SHE)</span>
+    <label class="flex items-center gap-1">
+      <span class="text-slate-500">pH</span>
+      <input id="pw-ph" type="number" min="0" max="14" step="0.1" value="7" class="w-14 rounded border border-slate-300 px-1 py-0.5">
+    </label>
+    <label class="flex items-center gap-1">
+      <span class="text-slate-500">T</span>
+      <input id="pw-t" type="number" min="1" step="1" value="298.15" class="w-20 rounded border border-slate-300 px-1 py-0.5">
+      <span class="text-slate-400">K</span>
+    </label>
+    <span id="pw-che-summary" class="text-slate-400"></span>
+  </div>
   <div id="pw-diagram" class="w-full overflow-x-auto rounded border border-slate-100 bg-slate-50 p-1"></div>
   {% else %}
   <p class="text-sm text-slate-400 italic">no energetics graph recorded for this pathway yet.</p>
@@ -352,6 +374,20 @@
     return !!(warns && warns.some((w) => w.severity === 'bad'));
   }
 
+  // ── CHE potential lever state (client-side; no server call). ``uPotential``
+  // is V vs RHE; every node level shifts by ``n_H·eU`` at render. ``temperatureK``
+  // feeds the equal-prefactor fork fractions exp(−ΔEa/kT). ──
+  const K_B = 8.617333262e-5;  // eV/K
+  let uPotential = 0.0;
+  let temperatureK = 298.15;
+  let phValue = 7.0;
+  // Applied-potential shift of a node's level: rel_energy(U) = rel_energy(0) +
+  // n_H·U (eV/V units → e = 1). Null (no computed energy) stays null.
+  function shifted(nd) {
+    const e0 = (nd._e0 === undefined) ? nd.rel_energy : nd._e0;
+    return (e0 == null) ? null : e0 + (nd.n_H || 0) * uPotential;
+  }
+
   // Escapes quotes too — node ids/labels come straight off agent-written
   // meta.graph and are interpolated into a quoted attribute
   // (data-state="${esc(id)}") inside an innerHTML string below; a bare
@@ -396,6 +432,14 @@
     const g = V.diagram;
     const el = document.getElementById('pw-diagram');
     if (!g || !el || !g.nodes.length) { return; }
+
+    // Apply the CHE potential shift: stash the U=0 baseline once, then set each
+    // node's plotted rel_energy to its level at the current U. Every downstream
+    // read (y-scale, humps, labels) sees the shifted value — no other edits.
+    g.nodes.forEach((nd) => {
+      if (nd._e0 === undefined) { nd._e0 = nd.rel_energy; }
+      nd.rel_energy = shifted(nd);
+    });
 
     const paths = (g.paths && g.paths.length) ? g.paths : [g.nodes.map((n) => n.id)];
     const byId = {}; g.nodes.forEach((n) => { byId[n.id] = n; });
@@ -556,6 +600,38 @@
       const leaf = path[path.length - 1];
       const color = PATH_COLORS[pi % PATH_COLORS.length];
       parts.push(`<text x="${W - padR}" y="${padT + 8 + pi * 10}" font-size="7.5" fill="${color}" text-anchor="end">&rarr; ${esc(leaf)}</text>`);
+    });
+
+    // ── fork-probability annotations: at a state with ≥2 competing REACTION
+    // edges, branch fraction ∝ exp(−ΔEa/kT) (equal prefactors; supply edges
+    // excluded — bookkeeping, not kinetics). Guarded — a fork with any missing
+    // barrier or bad/low-confidence state is skipped, never a fabricated ratio.
+    // T is shown in the controls bar. ──
+    const kT = K_B * temperatureK;
+    const forks = {};
+    g.links.forEach((e) => {
+      if (e.kind === 'supply' || xOf[e.source] == null || xOf[e.target] == null) { return; }
+      (forks[e.source] = forks[e.source] || []).push(e);
+    });
+    Object.keys(forks).forEach((src) => {
+      const edges = forks[src];
+      if (edges.length < 2) { return; }
+      const bad = isBadState(src) || edges.some((e) => e.barrier == null
+        || isBadState(e.target) || (byId[e.target] && byId[e.target].low_confidence));
+      if (bad) { return; }
+      const eMin = Math.min(...edges.map((e) => e.barrier));
+      const w = edges.map((e) => Math.exp(-(e.barrier - eMin) / kT));
+      const z = w.reduce((a, b) => a + b, 0);
+      edges.forEach((e, i) => {
+        const frac = w[i] / z;
+        const srcNd = byId[src];
+        if (!srcNd || srcNd.rel_energy == null) { return; }
+        const peakY = srcNd.rel_energy + Math.max(e.barrier || 0, 0);
+        const xm = (xScale(xOf[src]) + xScale(xOf[e.target])) / 2;
+        const color = PATH_COLORS[(ownerPath[e.target] || 0) % PATH_COLORS.length];
+        const pct = frac >= 0.995 ? '>99%' : (frac <= 0.005 ? '<1%' : (frac * 100).toFixed(0) + '%');
+        parts.push(`<text x="${xm}" y="${py(peakY) - 3}" font-size="7.5" fill="${color}" text-anchor="middle" opacity="0.85">${pct}</text>`);
+      });
     });
 
     // measure traces — a value/twin scale per measure, dashed when its
@@ -901,6 +977,34 @@
     const dest = withStateParam(candSelect.value);
     if (dest) { window.location.href = dest; }
   });
+
+  // ── CHE lever controls: U slider + pH + T. U shifts levels client-side; pH
+  // only converts the RHE readout to SHE (−ln10·kT/e per pH — PCET steps are
+  // pH-independent under RHE); T rescales the fork fractions. Every change is a
+  // re-render, zero server calls. ──
+  function updateCheReadout() {
+    const uEl = document.getElementById('pw-u-val');
+    const sheEl = document.getElementById('pw-u-she');
+    const sumEl = document.getElementById('pw-che-summary');
+    if (uEl) { uEl.textContent = `${uPotential.toFixed(2)} V vs RHE`; }
+    if (sheEl) {
+      // U_SHE = U_RHE − (ln10·kT/e)·pH.
+      const uShe = uPotential - Math.log(10) * K_B * temperatureK * phValue;
+      sheEl.textContent = `(${uShe.toFixed(2)} V vs SHE @ pH ${phValue})`;
+    }
+    if (sumEl) { sumEl.textContent = `T = ${temperatureK} K`; }
+  }
+  function reRenderChe() {
+    updateCheReadout();
+    try { renderDiagram(); } catch (err) { console.error('pathway diagram render failed', err); }
+  }
+  const uInput = document.getElementById('pw-u');
+  const phInput = document.getElementById('pw-ph');
+  const tInput = document.getElementById('pw-t');
+  if (uInput) { uInput.addEventListener('input', () => { uPotential = parseFloat(uInput.value) || 0; reRenderChe(); }); }
+  if (phInput) { phInput.addEventListener('input', () => { phValue = parseFloat(phInput.value); if (!isFinite(phValue)) { phValue = 0; } updateCheReadout(); }); }
+  if (tInput) { tInput.addEventListener('input', () => { const t = parseFloat(tInput.value); if (isFinite(t) && t > 0) { temperatureK = t; } reRenderChe(); }); }
+  updateCheReadout();
 
   // A diagram-render failure (e.g. a still-unanticipated bad graph shape)
   // must never abort the whole IIFE — the stepper + 3D viewer boot below

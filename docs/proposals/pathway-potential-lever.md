@@ -1,8 +1,17 @@
 ---
-status: ready
+status: built
 title: Pathway potential lever — CHE electrochemistry, closed-form optimal U, selectivity in the quest cost function
 model: opus
 ---
+
+> **Built (slices 1–3), 2026-08-07.** `precis_pathway/che.py` (n_H, G(U), U_L,
+> span-vs-U minimizer, SHE conversion, guarded fork fractions);
+> `persist._with_electrochemistry` stamps `n_H` + an `electro` block;
+> `quest.compute._pathway_electro` + `quest.frontier.composite_score` wire the
+> composite rubric; the explorer (`pathway_detail.html.j2`) gains a client-side
+> U/T/pH control with RHE/SHE dual readout and fork-% labels. **Remaining:**
+> slice 4 (HER template edge — catpath repo) and slice 5 (β-corrected
+> electrochemical barriers, N–N coupling, decoupled-proton pH shift).
 
 # Pathway potential lever — CHE electrochemistry, closed-form optimal U, selectivity in the quest cost function
 

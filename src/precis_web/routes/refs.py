@@ -824,6 +824,18 @@ def _pathway_graph_payload(
     there's no graph to draw (an early/sparse pathway — AC4-adjacent)."""
     if not graph or not graph.get("nodes"):
         return None
+    # Reservoir-H count per node — the CHE potential lever: the client shifts
+    # each level by ``n_H·eU`` to re-render the diagram at any applied potential,
+    # zero server calls (docs/proposals/pathway-potential-lever.md). Prefer the
+    # value persisted onto the node (persist._with_electrochemistry); fall back
+    # to deriving it for legacy pathways stamped before the lever shipped.
+    nh_fallback: dict[str, int] = {}
+    try:
+        from precis_pathway import che
+
+        nh_fallback = che.n_h_per_node(graph, {"target": target})
+    except Exception:
+        nh_fallback = {}
     nodes = [
         {
             "id": str(n["id"]),
@@ -831,6 +843,11 @@ def _pathway_graph_payload(
             "rel_energy": n.get("rel_energy"),
             "energy_std": n.get("energy_std"),
             "low_confidence": bool(n.get("low_confidence")),
+            "n_H": int(
+                n["n_H"]
+                if isinstance(n.get("n_H"), int)
+                else nh_fallback.get(str(n["id"]), 0)
+            ),
         }
         for n in graph.get("nodes", [])
         if n.get("id") is not None
