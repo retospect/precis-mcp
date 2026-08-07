@@ -1,5 +1,5 @@
 ---
-status: draft
+status: ready
 title: Pathway potential lever — CHE electrochemistry, closed-form optimal U, selectivity in the quest cost function
 model: opus
 ---
@@ -63,6 +63,27 @@ NOx electroreduction) and no N–N coupling (N₂O / N₂). Adding HER is one
 template edge + one NEB; N–N coupling needs two-adsorbate steps (bigger
 lift, later slice).
 
+## pH input (rides the same machinery)
+
+With U referenced to **RHE**, every proton-coupled electron transfer (PCET)
+step — which is *all* current H-supply steps under CHE — is pH-independent;
+that's the point of the RHE choice. pH therefore enters as:
+
+- **Scale conversion for display/literature comparison**:
+  `U_SHE = U_RHE − (ln10·kT/e)·pH` (−0.0592 V/pH at 298.15 K). Explorer
+  shows both scales given a pH.
+- **A real per-step shift only for *decoupled* proton or hydroxide steps**
+  (∓(ln10·kT)·pH per H⁺/OH⁻ transferred without an electron). The ammonia
+  template has none today, so this branch is dormant until such a step is
+  added — but the arithmetic stays affine, so `U_L`/span optimizers are
+  unchanged.
+- **Out of scope, stated honestly**: solvation, surface charging, and
+  coverage-vs-pH effects are outside the vacuum-slab ML envelope; the pH
+  lever must never imply they're modeled.
+
+A quest rubric may declare an operating (U, pH) window; the closed-form
+optimum is computed within it.
+
 ## Explorer surface
 
 The graph payload carries `n_H` per node → the energy diagram re-renders at
@@ -78,15 +99,20 @@ the guards above, T shown explicitly) live on the same surface.
    tests on the ammonia template.
 2. **precis**: persist `n_H` into `meta.graph` nodes and `U_L`/`span_at_U*`
    into `meta.results`; quest rubric reads the composite objective.
-3. **explorer**: U slider + fork-probability display (guarded).
+3. **explorer**: U slider + pH field (RHE/SHE dual display) +
+   fork-probability display (guarded).
 4. **network**: HER edge in the ammonia template (small).
 5. **later**: β-corrected electrochemical barriers; N–N coupling states;
-   pH via RHE→SHE conversion if ever needed.
+   decoupled-proton steps (activates the dormant pH shift above).
 
-## Open questions (need Reto)
+## Decisions (Reto, 2026-08-07)
 
-- Reference convention: U vs **RHE** assumed (pH-independent with CHE) — ok?
-- Operating temperature for fork ratios: fixed 300 K, or a small T input
-  next to the U slider?
-- Composite-score weights (α, β, γ): fixed defaults, or per-quest rubric
-  fields the agent may tune?
+- **Reference convention: RHE.** pH-independent for PCET steps under CHE;
+  SHE shown as a derived display scale.
+- **Temperature: 298.15 K default** (25 °C — standard ambient, the T
+  electrochemical reference states are tabulated at; NOT 300 K, which is
+  just the computational round-number convention — kT differs by 0.6%,
+  immaterial, but the default should match the standard) **+ a small T
+  input** next to the U slider.
+- **Composite-score weights (α, β, γ): per-quest, human-set rubric
+  fields.** The agent may not tune its own objective.
