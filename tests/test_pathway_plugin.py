@@ -1503,3 +1503,109 @@ def test_aggregate_job_dispatch_requires_dispatched_from_todo(
     aggregate_job._dispatch(ctx, aggregate_job.SPEC)
     assert ctx.status == "failed"
     assert ctx.failure and "dispatched_from_todo" in ctx.failure
+
+
+def test_child_cmd_unbuffered_so_a_killed_child_still_has_its_log(
+    tmp_path: Path,
+) -> None:
+    """A child killed mid-run must still leave its progress on disk.
+
+    ``_subprocess_main`` reports progress with ``print()`` and both launch
+    protocols redirect that stdout into a *file*, where Python block-buffers
+    at ~8 KB. Without ``-u`` the buffer is discarded unflushed when the
+    process is signalled — so a child that exits cleanly has a complete log
+    while one killed by the wall-clock deadline, a worker restart, or a node
+    reboot leaves an EMPTY ``stdout.log``, inverting the diagnostic exactly
+    where it's needed. Prod carried 85 such failures, every one reporting
+    nothing but its two import-time ``torch`` warnings (stderr is
+    line-buffered, so only it survived).
+
+    Pins the behaviour, not just the flag: the assertion is that output
+    written *before* a kill is readable *after* it. Buffered, the file stays
+    empty for the child's whole life and this times out.
+    """
+    import subprocess
+    import sys
+    import time
+
+    assert "-u" in runner._child_cmd("req.json", "out.json")
+
+    script = tmp_path / "chatty_child.py"
+    script.write_text("import time\nprint('progress: step 1')\ntime.sleep(60)\n")
+    log_path = tmp_path / "stdout.log"
+    with open(log_path, "wb") as out_fh:
+        proc = subprocess.Popen(
+            [sys.executable, "-u", str(script)],
+            stdout=out_fh,
+            start_new_session=True,
+        )
+    try:
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline and not log_path.read_bytes():
+            time.sleep(0.05)
+        # Killed WITHOUT ever exiting cleanly — no atexit flush can help here.
+        proc.kill()
+        proc.wait(timeout=10)
+    finally:
+        if proc.poll() is None:  # pragma: no cover - defensive
+            proc.kill()
+    assert "progress: step 1" in log_path.read_text()
+
+
+def test_tail_logs_keeps_stderr_even_when_stdout_is_huge(tmp_path: Path) -> None:
+    """The traceback must survive a large progress log.
+
+    ``_tail_logs`` used to concatenate stderr+stdout and take one trailing
+    window over the pair. That was indistinguishable from correct while
+    stdout was always empty (the child ran buffered, so a killed run flushed
+    nothing) — but once the child is unbuffered, hours of ``print()``
+    progress push the stderr traceback clean out of the window, losing
+    exactly the line that says why the run died. Budget is per stream.
+    """
+    (tmp_path / "stderr.log").write_text("ValueError: the real reason it died\n")
+    (tmp_path / "stdout.log").write_text("progress\n" * 5000)
+
+    tail = runner._tail_logs(str(tmp_path), limit=1000)
+
+    assert "ValueError: the real reason it died" in tail
+    assert "progress" in tail
+    assert "stderr.log" in tail and "stdout.log" in tail
+
+
+def test_tail_logs_gives_a_lone_stream_the_whole_budget(tmp_path: Path) -> None:
+    """One empty stream must not cost the other half its window."""
+    (tmp_path / "stderr.log").write_text("")
+    (tmp_path / "stdout.log").write_text("x" * 900)
+
+    tail = runner._tail_logs(str(tmp_path), limit=800)
+
+    assert tail.count("x") == 800
+
+
+def test_cleanup_detached_retains_failed_scratch_only_when_opted_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Retention is opt-in: on by flag for failures, never for successes.
+
+    Unconditional retention would turn a job type that fails ~100×/week into
+    a ``/tmp``-filling failure mode on the compute node — one silent outage
+    traded for another.
+    """
+    monkeypatch.delenv("PRECIS_PATHWAY_KEEP_FAILED_SCRATCH", raising=False)
+
+    d = tmp_path / "off_failed"
+    d.mkdir()
+    runner._cleanup_detached(str(d), failed=True)
+    assert not d.exists(), "removed by default even on failure"
+
+    monkeypatch.setenv("PRECIS_PATHWAY_KEEP_FAILED_SCRATCH", "1")
+
+    d = tmp_path / "on_failed"
+    d.mkdir()
+    runner._cleanup_detached(str(d), failed=True)
+    assert d.exists(), "retained for forensics when opted in"
+
+    d = tmp_path / "on_succeeded"
+    d.mkdir()
+    runner._cleanup_detached(str(d), failed=False)
+    assert not d.exists(), "a success is never retained — nothing to diagnose"

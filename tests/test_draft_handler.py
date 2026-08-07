@@ -915,6 +915,54 @@ def test_requests_by_handle_surfaces_question_and_fail_reason(
     assert "Usage Policy" in fail_req["fail_reason"]
 
 
+def test_requests_by_handle_fail_reason_falls_back_to_job_event(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """When the failed child job has no ``job_summary`` chunk (the common
+    case — ``record_failure`` writes only a ``job_event``; most executors
+    write ``job_summary`` only on their SUCCESS tail), ``fail_reason``
+    still surfaces something instead of blank: the first line of the
+    latest ``job_event`` chunk."""
+    from precis.store.types import BlockInsert, Tag
+    from precis_web.routes.drafts import _requests_by_handle
+
+    store = hub.store
+    proj = _proj(hub)
+    draft.put(id="nt2", title="T", project=proj)
+    para_h = _order(hub, "nt2")[0].handle
+
+    failing = store.insert_ref(kind="todo", slug=None, title="add citations")
+    store.stamp_ref_meta(failing.id, {"anchor": f"¶{para_h}"})
+    job = store.insert_ref(
+        kind="job", slug=None, title="plan_tick", parent_id=failing.id, meta={}
+    )
+    store.add_tag(
+        job.id, Tag.closed("STATUS", "failed"), set_by="system", replace_prefix=True
+    )
+    store.insert_blocks(
+        job.id,
+        [
+            BlockInsert(
+                pos=0,
+                text=(
+                    "runner: killed at wall-clock deadline (handle {...})\n"
+                    "--- tail ---\nraw subprocess output, not for the UI"
+                ),
+                meta={"chunk_kind": "job_event"},
+            )
+        ],
+    )
+    store.add_tag(failing.id, Tag.open(f"child-failed:{job.id}"))
+
+    reqs = _requests_by_handle(store, [para_h]).get(para_h, [])
+    fail_req = next(r for r in reqs if r["ref_id"] == failing.id)
+    assert fail_req["failed"] is True
+    assert fail_req["fail_reason"] == (
+        "runner: killed at wall-clock deadline (handle {...})"
+    )
+    assert "raw subprocess output" not in fail_req["fail_reason"]
+
+
 def test_chunk_connections_and_edit_stats(draft: DraftHandler, hub: Hub) -> None:
     """chunk_connections returns refs linked to a chunk (the dream/
     provenance surface); chunk_edit_stats counts edits."""

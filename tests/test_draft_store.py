@@ -663,3 +663,87 @@ def test_move_relative_to_retired_anchor_recovers(store: Store) -> None:
         ("heading", "A"),
         ("heading", "C"),
     ]
+
+
+def test_job_fail_reason_falls_back_to_job_event(store: Store) -> None:
+    """A job with only a ``job_event`` chunk (the common case — most
+    plugin dispatchers write ``job_summary`` only on their SUCCESS tail,
+    so a failed run never gets one) now yields a reason instead of
+    ``None``: the first line of the latest ``job_event`` chunk. The
+    event's multi-line ``--- tail ---`` block of raw subprocess output
+    must be dropped, not surfaced in the UI reason."""
+    from precis.store.types import BlockInsert
+
+    job = store.insert_ref(kind="job", slug=None, title="attempt", meta={})
+    store.insert_blocks(
+        job.id,
+        [
+            BlockInsert(
+                pos=0,
+                text=(
+                    "autocatpath_seed: run failed: child process exited "
+                    "without writing result.json\n"
+                    "--- tail ---\n"
+                    "Traceback (most recent call last):\n"
+                    "  ...lots of raw subprocess output..."
+                ),
+                meta={"chunk_kind": "job_event"},
+            )
+        ],
+    )
+    reason = store.job_fail_reason(job.id)
+    assert reason == (
+        "autocatpath_seed: run failed: child process exited without writing result.json"
+    )
+    assert "tail" not in reason
+    assert "Traceback" not in reason
+
+
+def test_job_fail_reason_prefers_job_summary_over_job_event(store: Store) -> None:
+    """A ``job_summary`` chunk still wins when both exist — ``job_event``
+    is only a fallback for a job that never got a summary."""
+    from precis.store.types import BlockInsert
+
+    job = store.insert_ref(kind="job", slug=None, title="attempt", meta={})
+    store.insert_blocks(
+        job.id,
+        [
+            BlockInsert(
+                pos=0,
+                text="runner: killed at wall-clock deadline",
+                meta={"chunk_kind": "job_event"},
+            ),
+            BlockInsert(
+                pos=1,
+                text="API Error: unable to respond",
+                meta={"chunk_kind": "job_summary"},
+            ),
+        ],
+    )
+    assert store.job_fail_reason(job.id) == "API Error: unable to respond"
+
+
+def test_job_fail_reason_picks_latest_job_event(store: Store) -> None:
+    """With several ``job_event`` chunks and no ``job_summary``, the
+    LATEST one (highest ``ord``) is used, not the first."""
+    from precis.store.types import BlockInsert
+
+    job = store.insert_ref(kind="job", slug=None, title="attempt", meta={})
+    store.insert_blocks(
+        job.id,
+        [
+            BlockInsert(
+                pos=0, text="first attempt died", meta={"chunk_kind": "job_event"}
+            ),
+            BlockInsert(
+                pos=1, text="second attempt died", meta={"chunk_kind": "job_event"}
+            ),
+        ],
+    )
+    assert store.job_fail_reason(job.id) == "second attempt died"
+
+
+def test_job_fail_reason_none_when_no_chunks(store: Store) -> None:
+    """No job_summary and no job_event chunk → still None, not an error."""
+    job = store.insert_ref(kind="job", slug=None, title="attempt", meta={})
+    assert store.job_fail_reason(job.id) is None

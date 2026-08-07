@@ -1453,20 +1453,52 @@ class DraftMixin:
         return text
 
     def job_fail_reason(self, job_ref_id: int, *, limit: int = 240) -> str | None:
-        """First line of a failed job's ``job_summary`` chunk — *why* it
-        died (API error, timeout, …), so the draft view can say so instead
-        of a bare "failed". Whitespace-collapsed and capped. Returns ``None``
-        when the job has no summary chunk yet."""
+        """First line of a failed job's reason — *why* it died (API error,
+        timeout, …), so the draft view can say so instead of a bare
+        "failed". Prefers the ``job_summary`` chunk (captured stdout,
+        whitespace-collapsed); most plugin dispatchers only write that on
+        their SUCCESS tail, so a failed job usually has none — falls back
+        to the first line of the latest ``job_event`` chunk (the
+        ``record_failure`` diagnostic) in that case. Either way the result
+        is capped at ``limit`` chars. Returns ``None`` when the job has
+        neither chunk yet.
+
+        Mirrors (but doesn't import — this module is ``precis.store``,
+        which ``precis.handlers`` imports at module scope, so importing
+        back would be circular) the latest-``job_event`` query shape of
+        ``handlers._todo_views._latest_job_event_reasons``.
+
+        Both chunk kinds are resolved in ONE round-trip, ordered so a
+        ``job_summary`` outranks any ``job_event``. Asking for the summary
+        and then falling back to a second query would double the query
+        count for the *common* case rather than a rare one — a failed job
+        almost never has a summary — and this runs per failed job inside
+        ``precis_web.routes.drafts._work_items``' loop, so the doubling
+        lands on a page-render hot path."""
         with self.pool.connection() as conn:
             row = conn.execute(
-                "SELECT text FROM chunks "
-                "WHERE ref_id = %s AND chunk_kind = 'job_summary' "
-                "ORDER BY ord LIMIT 1",
+                # The CASE keeps each kind's ORIGINAL tie-break when a job
+                # has several of one: FIRST job_summary (ord ASC), LATEST
+                # job_event (ord DESC, via the negation). Collapsing both to
+                # one direction would be a silent behaviour change.
+                "SELECT chunk_kind, text FROM chunks "
+                "WHERE ref_id = %s AND chunk_kind IN ('job_summary', 'job_event') "
+                "ORDER BY (chunk_kind = 'job_summary') DESC, "
+                "         CASE WHEN chunk_kind = 'job_summary' "
+                "              THEN ord ELSE -ord END ASC "
+                "LIMIT 1",
                 (int(job_ref_id),),
             ).fetchone()
-        if not row or not row[0]:
+        if not row or not row[1]:
             return None
-        text = " ".join(str(row[0]).split())
+        kind, raw = str(row[0]), str(row[1])
+        if kind == "job_summary":
+            # Captured stdout: whitespace-collapsed whole, as before.
+            text = " ".join(raw.split())
+        else:
+            # ``job_event`` is a message line followed by a ``--- tail ---``
+            # block of raw subprocess output — the UI wants the message.
+            text = raw.split("\n", 1)[0].strip()
         return text[:limit].rstrip() + ("…" if len(text) > limit else "")
 
     def create_draft(

@@ -4339,6 +4339,152 @@ def test_reason_from_summary_flattens_and_caps() -> None:
     assert out.endswith("…") and len(out) == 201
 
 
+def test_dashboard_child_failed_prefers_job_summary_over_job_event(
+    client, runtime
+) -> None:
+    """When a ``child-failed:<job>`` job has BOTH a ``job_summary`` and a
+    ``job_event`` chunk, the dashboard reason still comes from the
+    summary — ``job_event`` is only a fallback for when there's no
+    summary at all."""
+    from tests.precis_web.conftest import make_ref
+
+    runtime.store.todos = [make_ref(id=1, kind="todo", title="parent todo")]
+    import precis_web.routes.tasks as tasks_mod
+
+    original = {
+        "child": tasks_mod._child_jobs,
+        "tags": tasks_mod._load_tags,
+        "free": tasks_mod._load_freeform_tags,
+        "notes": tasks_mod._job_notes,
+    }
+
+    def child_jobs(store, todo_ids):
+        return (
+            [{"id": 99, "parent_id": 1, "title": "attempt", "lease_until": None}]
+            if 1 in todo_ids
+            else []
+        )
+
+    def load_tags(store, ref_ids):
+        out = {rid: {"status": "open", "level": ""} for rid in ref_ids}
+        if 99 in out:
+            out[99] = {"status": "failed", "level": ""}
+        return out
+
+    def load_freeform(store, ref_ids):
+        return {1: ["child-failed:99"]}
+
+    def job_notes(store, job_ids):
+        return {
+            99: {
+                "result": "",
+                "events": ["runner: killed at wall-clock deadline"],
+                "summary": "API Error: Claude Code is unable to respond",
+            }
+        }
+
+    tasks_mod._child_jobs = child_jobs  # type: ignore[assignment]
+    tasks_mod._load_tags = load_tags  # type: ignore[assignment]
+    tasks_mod._load_freeform_tags = load_freeform  # type: ignore[assignment]
+    tasks_mod._job_notes = job_notes  # type: ignore[assignment]
+    try:
+        resp = client.get("/tasks")
+        assert resp.status_code == 200
+        assert "API Error: Claude Code is unable to respond" in resp.text
+        assert "runner: killed at wall-clock deadline" not in resp.text
+    finally:
+        tasks_mod._child_jobs = original["child"]  # type: ignore[assignment]
+        tasks_mod._load_tags = original["tags"]  # type: ignore[assignment]
+        tasks_mod._load_freeform_tags = original["free"]  # type: ignore[assignment]
+        tasks_mod._job_notes = original["notes"]  # type: ignore[assignment]
+
+
+def test_reason_from_event_takes_first_line_only_and_caps() -> None:
+    """``_reason_from_event`` (the ``job_event`` fallback) keeps only the
+    message first line — a ``--- tail ---`` block of raw subprocess
+    output must not leak into the UI reason — and caps length like
+    ``_reason_from_summary``."""
+    from precis_web.routes.tasks import _reason_from_event
+
+    assert _reason_from_event("") == ""
+    assert (
+        _reason_from_event(
+            "runner: killed at wall-clock deadline (handle {...})\n"
+            "--- tail ---\nraw subprocess output line 1\nline 2"
+        )
+        == "runner: killed at wall-clock deadline (handle {...})"
+    )
+    long = "x" * 500
+    out = _reason_from_event(long, limit=200)
+    assert out.endswith("…") and len(out) == 201
+
+
+def test_dashboard_child_failed_falls_back_to_job_event_reason(client, runtime) -> None:
+    """A ``child-failed:<job>`` job with only a ``job_event`` chunk (no
+    ``job_summary`` — the common case: ``record_failure`` writes only a
+    job_event, and ``job_summary`` is written on most dispatchers' SUCCESS
+    tail) still shows a reason on the dashboard, taken from the event's
+    first line."""
+    from tests.precis_web.conftest import make_ref
+
+    runtime.store.todos = [make_ref(id=1, kind="todo", title="parent todo")]
+    import precis_web.routes.tasks as tasks_mod
+
+    original = {
+        "child": tasks_mod._child_jobs,
+        "tags": tasks_mod._load_tags,
+        "free": tasks_mod._load_freeform_tags,
+        "notes": tasks_mod._job_notes,
+    }
+
+    def child_jobs(store, todo_ids):
+        return (
+            [{"id": 99, "parent_id": 1, "title": "attempt", "lease_until": None}]
+            if 1 in todo_ids
+            else []
+        )
+
+    def load_tags(store, ref_ids):
+        out = {rid: {"status": "open", "level": ""} for rid in ref_ids}
+        if 99 in out:
+            out[99] = {"status": "failed", "level": ""}
+        return out
+
+    def load_freeform(store, ref_ids):
+        return {1: ["child-failed:99"]}
+
+    def job_notes(store, job_ids):
+        return {
+            99: {
+                "result": "",
+                "events": [
+                    "autocatpath_seed: run failed: child process exited "
+                    "without writing result.json\n"
+                    "--- tail ---\nraw subprocess output"
+                ],
+                "summary": "",  # no job_summary — the SUCCESS-tail-only case
+            }
+        }
+
+    tasks_mod._child_jobs = child_jobs  # type: ignore[assignment]
+    tasks_mod._load_tags = load_tags  # type: ignore[assignment]
+    tasks_mod._load_freeform_tags = load_freeform  # type: ignore[assignment]
+    tasks_mod._job_notes = job_notes  # type: ignore[assignment]
+    try:
+        resp = client.get("/tasks")
+        assert resp.status_code == 200
+        assert (
+            "autocatpath_seed: run failed: child process exited without "
+            "writing result.json" in resp.text
+        )
+        assert "raw subprocess output" not in resp.text
+    finally:
+        tasks_mod._child_jobs = original["child"]  # type: ignore[assignment]
+        tasks_mod._load_tags = original["tags"]  # type: ignore[assignment]
+        tasks_mod._load_freeform_tags = original["free"]  # type: ignore[assignment]
+        tasks_mod._job_notes = original["notes"]  # type: ignore[assignment]
+
+
 def test_dashboard_status_badge_is_clickable_filter(client) -> None:
     """STATUS / level badges render as ``<a>`` links that filter on click."""
     resp = client.get("/tasks")

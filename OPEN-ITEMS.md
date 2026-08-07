@@ -10,6 +10,34 @@ tracked separately in `docs/improvement-plan.md` (same delete-on-ship rule).
 
 ---
 
+## 🔧 `autocatpath_seed` — failed children permanently park their `auto_check` parent (wall budget root cause)
+
+Status: open · Severity: critical · Owner: `src/precis/workers/auto_check_evaluators/child_job_succeeded.py`, `src/precis/handlers/_job_bubble.py` · Test: regression on `child_job_succeeded` auto_check evaluation logic + job_event chunk visibility in web UI.
+
+**Of 108 `autocatpath_seed` jobs dispatched since 2026-08-02: 99 failed, 9 succeeded.** Every failure is the same computation—pathway `no_to_nh3_pd`, `seed=0`, `model#0`—but each carries a distinct `idem_key`, so dedup does not collapse them; the same doomed calculation is re-minted ~99 times.
+
+Failure taxonomy from `chunks` rows (`chunk_kind='job_event'`): **59** × `run failed: child process exited without writing result.json`; **26** × `runner: killed at wall-clock deadline` (each a distinct pid/tmpdir, matching the 26 `swept:wall-timeout` tags); **5** × `subprocess failed (rc=-15 …)` (rc=-15 = SIGTERM); **1** × `exceeded its 5400s wall budget and was killed`; **3** × `runner: exceeded 3 run attempts (crash-loop guard)`; **2** × `reclaim-churn cap 10 reached … epoch-reclaim-only crash-loop`. Net: the MACE MLIP relaxation does not fit its 5400 s wall budget.
+
+**Structural defect:** `src/precis/workers/auto_check_evaluators/child_job_succeeded.py::evaluate` resolves True only on a *succeeded* child and has no notion of a *failed* one—a failure evaluates "pending" forever. The sole automatic escape, `src/precis/handlers/_job_bubble.py::bubble_job_failure`'s bounded infra-retry, fires only for `INFRA_FAILURE_TAGS = {"swept:claim-orphaned"}`, and **zero** of the 99 failures carry that tag (26 `swept:wall-timeout`, 73 untagged). So every failure latches `child-failed:<job_id>` permanently on the first attempt, by design. This—not missing error text—is what produces the stuck-leaf pile. Un-parking is a manual tag removal.
+
+**Masking risk, explicit:** merely surfacing the error text would leave both the park-forever behaviour and the no-retry logic live, while making a permanently-parked leaf *look* explained. Do not "fix" this at the visibility layer alone.
+
+**Separate real visibility bug:** `src/precis_web/routes/tasks.py::_reason_from_summary` and `src/precis/store/_draft_ops.py::job_fail_reason` read only `job_summary` chunks, but the failure path (`src/precis/workers/executors/_common.py::record_failure`) writes only `job_event` chunks—so the web Tasks dashboard renders a blank reason. The agent-facing `get(kind='todo', view='attention')` path (`src/precis/handlers/_todo_views.py::_latest_job_event_reasons`) reads `job_event` correctly, so this is dashboard-only blindness. Same gap affects several `claude_inproc` plugin dispatchers that call `ctx.record_failure` without writing a compensating `job_summary`.
+
+**Blast radius:** precis-dft's out-of-tree `gpaw_relax` rides the identical `ssh_node` + `ctx.record_failure` contract. Any todo with a `child_job_succeeded` auto_check whose job can fail shares the park-forever defect regardless of executor.
+
+**Two non-defects, recorded so they aren't re-investigated:** a failed job having no
+`ref_events` row is *architecture*, not a gap — no executor writes `ref_events` on
+failure, `claude_inproc` included; the diagnostics live in `chunks`
+(`chunk_kind='job_event'`). And spark's `/var/log/precis-worker.log` *does* rotate
+(60 MB gz at 18:20 on 2026-08-07, covered by the `shared_logs` logrotate config).
+Exactly one job (ref_id 187387, 2026-08-02, oldest in the window) has genuinely zero
+chunks and was not root-caused.
+
+**Open follow-up, unresolved:** `autocatpath_aggregate` still uses the deprecated legacy blocking `dispatch` (gr187627); `autocatpath_seed` itself correctly takes the detached submit/poll path.
+
+---
+
 ## 🔧 auto_check backlog: 110 open leaves, most of which never resolve
 
 Status: `open` · Severity: `feature` · Owner: `src/precis/workers/auto_check.py`
@@ -29,6 +57,11 @@ outage returns as latency rather than starvation. The pass logs a WARNING when
 the candidate set is at the limit. Needs a triage sweep of what's actually in
 there, and probably a terminal state for leaves whose parent job has failed
 (today they wait forever on a job that will never succeed).
+
+That last guess is now confirmed and quantified — **102 of the 110 are parked
+behind failed `autocatpath_seed` jobs**, and the park is by design rather than
+accidental. See the `autocatpath_seed` section above for the mechanism; a fix
+there is what drains most of this backlog.
 
 ---
 

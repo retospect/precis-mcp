@@ -396,10 +396,27 @@ def _child_cmd(req_path: str, out_path: str) -> list[str]:
     detached (:func:`submit_seed_partial_detached`) protocols spawn — the
     same ``python -m precis_pathway.runner req out`` child entrypoint
     (:func:`_subprocess_main`). Factored out so a test can stub the whole
-    launch by monkeypatching this one function."""
+    launch by monkeypatching this one function.
+
+    ``-u`` is load-bearing, not tidiness. The child reports progress with
+    ``print()`` (:func:`_subprocess_main` passes
+    ``log=lambda *a, **k: print(*a, **k)`` into :func:`run_seed_partial`),
+    and both launch protocols redirect that stdout into a *file* — a pipe
+    for the blocking sibling, ``stdout.log`` for the detached one. Python
+    block-buffers stdout at ~8 KB when it isn't a tty, so without ``-u``
+    the progress sits in the child's buffer and is **discarded unflushed**
+    when the process is signalled. That inverts the diagnostic exactly
+    where it matters: a child that exits cleanly flushes at exit and its
+    log is complete, while a child killed by the wall-clock deadline, a
+    worker restart, or a node reboot leaves an EMPTY ``stdout.log`` — so
+    the failures we most need to explain are the only ones that explain
+    nothing. Observed in prod: 85 failed ``autocatpath_seed`` jobs, some
+    after 2-3 hours of compute, every one of them carrying an identical
+    748-char tail containing nothing but the two import-time ``torch``
+    warnings (stderr is line-buffered, so only *it* survived)."""
     import sys
 
-    return [sys.executable, "-m", "precis_pathway.runner", req_path, out_path]
+    return [sys.executable, "-u", "-m", "precis_pathway.runner", req_path, out_path]
 
 
 def run_seed_partial_subprocess(
@@ -492,31 +509,71 @@ def run_seed_partial_subprocess(
     return payload["result"]
 
 
-def _tail_logs(scratch_dir: str, limit: int = 2000) -> str:
-    """Last ``limit`` chars of the detached child's captured stderr+stdout —
-    the diagnosis a blocking run gets for free from ``subprocess.run``'s
-    ``capture_output`` (:func:`run_seed_partial_subprocess`), reconstructed
-    here from the files :func:`submit_seed_partial_detached` redirected the
-    child into (a detached ``Popen`` can't be waited on for output)."""
+def _tail_logs(scratch_dir: str, limit: int = 4000) -> str:
+    """Tail of the detached child's captured streams — the diagnosis a
+    blocking run gets for free from ``subprocess.run``'s ``capture_output``
+    (:func:`run_seed_partial_subprocess`), reconstructed here from the files
+    :func:`submit_seed_partial_detached` redirected the child into (a
+    detached ``Popen`` can't be waited on for output).
+
+    The budget is split PER STREAM and each is labelled, rather than tailing
+    one concatenation of both. Concatenating and slicing once looks
+    equivalent and isn't: stderr carries the traceback and the import
+    warnings, stdout carries hours of ``print()`` progress, and a single
+    trailing window over ``stderr + stdout`` returns the end of *stdout*
+    only — silently dropping the very traceback that says why the run died.
+    That was latent while stdout was always empty (``_child_cmd`` ran the
+    child buffered, so nothing survived a kill); making the child unbuffered
+    is exactly what would have armed it.
+
+    ``limit`` bounds the log CONTENT, not the returned string: each stream's
+    label adds a few dozen chars on top. Callers that re-truncate to a hard
+    chunk budget may therefore clip a leading label — cosmetic, since every
+    stream was already sliced to its own share before the labels went on.
+    """
     import os
 
-    chunks = []
+    streams: list[tuple[str, str]] = []
     for name in ("stderr.log", "stdout.log"):
         path = os.path.join(scratch_dir, name)
         try:
             with open(path, encoding="utf-8", errors="replace") as fh:
-                chunks.append(fh.read())
+                text = fh.read()
         except OSError:
             continue
-    return "".join(chunks)[-limit:]
+        if text.strip():
+            streams.append((name, text))
+    if not streams:
+        return ""
+    per = max(1, limit // len(streams))
+    return "\n".join(
+        f"--- {name} (last {per} chars) ---\n{text[-per:]}" for name, text in streams
+    )
 
 
-def _cleanup_detached(scratch_dir: str) -> None:
+def _cleanup_detached(scratch_dir: str, *, failed: bool = False) -> None:
     """Best-effort scratch-dir removal — a detached submit's dir is a bare
     ``tempfile.mkdtemp`` (not context-managed, unlike the blocking sibling's
-    ``TemporaryDirectory``), so nothing else reclaims it."""
+    ``TemporaryDirectory``), so nothing else reclaims it.
+
+    Set ``PRECIS_PATHWAY_KEEP_FAILED_SCRATCH=1`` to RETAIN the dir of a run
+    that failed, so its full ``stdout.log`` / ``stderr.log`` outlive the
+    terse tail lifted into the job event. Off by default deliberately: these
+    dirs live in ``/tmp`` on a compute node, and a job type that can fail
+    ~100 times a week would turn unconditional retention into a disk-filling
+    failure mode of its own — trading one silent outage for another. Turn it
+    on while actively diagnosing, off the rest of the time.
+    """
+    import os
     import shutil
 
+    if failed and os.environ.get("PRECIS_PATHWAY_KEEP_FAILED_SCRATCH") == "1":
+        log.warning(
+            "autocatpath_seed: retaining failed scratch dir %s "
+            "(PRECIS_PATHWAY_KEEP_FAILED_SCRATCH=1)",
+            scratch_dir,
+        )
+        return
     shutil.rmtree(scratch_dir, ignore_errors=True)
 
 
@@ -739,7 +796,7 @@ def poll_seed_partial_detached(handle: dict[str, Any]) -> dict[str, Any]:
                 "error": f"result.json unreadable: {exc}",
                 "tail": _tail_logs(scratch),
             }
-            _cleanup_detached(scratch)
+            _cleanup_detached(scratch, failed=True)
             return result
         # Envelope parsed cleanly -> the child is done one way or another;
         # reap now, on the SUCCEEDING branch too, or it never happens. A bare
@@ -751,13 +808,14 @@ def poll_seed_partial_detached(handle: dict[str, Any]) -> dict[str, Any]:
         if payload.get("ok"):
             # Grab the tail BEFORE cleanup wipes the scratch dir — the
             # success path otherwise discards the child's stdout/stderr
-            # entirely, unlike the failure branches below. 4000 chars to
-            # match the run_log chunk budget (seed_job caps there too);
-            # the failure branches keep the terser default.
+            # entirely. The 4000-char budget (the run_log chunk budget
+            # seed_job caps at) is now the shared default: the failure
+            # branches used to take a terser one, which had it backwards —
+            # a successful run's log is the one nobody reads.
             result = {
                 "state": "done",
                 "result": payload["result"],
-                "tail": _tail_logs(scratch, limit=4000),
+                "tail": _tail_logs(scratch),
             }
             _cleanup_detached(scratch)
             return result
@@ -766,7 +824,7 @@ def poll_seed_partial_detached(handle: dict[str, Any]) -> dict[str, Any]:
             "error": str(payload.get("error")),
             "tail": _tail_logs(scratch),
         }
-        _cleanup_detached(scratch)
+        _cleanup_detached(scratch, failed=True)
         return result
 
     if _process_alive(pid):
@@ -779,7 +837,7 @@ def poll_seed_partial_detached(handle: dict[str, Any]) -> dict[str, Any]:
         "error": "child process exited without writing result.json",
         "tail": _tail_logs(scratch),
     }
-    _cleanup_detached(scratch)
+    _cleanup_detached(scratch, failed=True)
     return result
 
 
@@ -814,7 +872,22 @@ def kill_seed_partial_detached(handle: dict[str, Any]) -> None:
             pass
     scratch = handle.get("dir")
     if scratch:
-        _cleanup_detached(scratch)
+        # Log the tail before wiping: this path returns ``None`` (the
+        # executor terminalizes from its own side), so unlike the poll
+        # branches there is no channel to hand the child's output back on —
+        # and it deleted the dir without ever reading it. Every wall-clock
+        # kill therefore explained itself with nothing but the handle dict.
+        # SIGKILL leaves no in-process buffer to flush, but with an
+        # unbuffered child (:func:`_child_cmd`) the progress is already ON
+        # DISK, so there is now something real to capture here.
+        tail = _tail_logs(scratch)
+        if tail:
+            log.warning(
+                "autocatpath_seed: wall-clock kill of pid=%s — child output:\n%s",
+                handle.get("pid"),
+                tail,
+            )
+        _cleanup_detached(scratch, failed=True)
 
 
 def aggregate_seed_partials(

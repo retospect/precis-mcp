@@ -842,11 +842,15 @@ and every subsequent `ssh_node` pass polls all this-host in-flight
 handles (`poll(ctx, handle) -> bool`) — a cheap status check + lease
 renewal, never a multi-hour block. A plugin with only the legacy
 blocking `spec.dispatch` still works (backward compat — precis-dft's
-`gpaw_relax` lives out-of-tree and `autocatpath_seed`, IN-tree at
-`src/precis_pathway/seed_job.py`, haven't migrated to submit/poll yet),
+`gpaw_relax` lives out-of-tree; IN-tree, `autocatpath_aggregate`
+(`src/precis_pathway/aggregate_job.py`) is the one still dispatch-only),
 but `ssh_node` logs a deprecation warning (once per job_type per process)
 naming gr187627 — the live incident where the blocking call starved the
 claiming worker's whole pass rotation long enough to trip host-dark.
+`autocatpath_seed` (`src/precis_pathway/seed_job.py`) declares submit/poll
+AND a legacy `dispatch`; `_run_one` tests submit/poll FIRST, so it takes
+the detached path and the deprecation warning seen in prod is
+`autocatpath_aggregate`'s, not its.
 **`autocatpath_seed` runs its MACE compute OUT of the worker process**
 (gr191351): `_dispatch` → `runner.run_seed_partial_subprocess` spawns a
 fresh `python -m precis_pathway.runner` child, killable at the job's
@@ -863,6 +867,16 @@ one-shot `WNOHANG` almost always observes it pre-zombie and leaks a
 `<defunct>` per succeeding job — but an unbounded block would re-open the
 same libcuda-teardown hang inside the single-threaded poll loop, so on
 timeout it gives up (one rare leaked zombie ≫ a frozen pass).
+**Child diagnostics (2026-08-07).** The child is spawned `-u`
+(`runner._child_cmd`): it reports progress with `print()` into a *file*, and
+block-buffered stdout was discarded unflushed on every kill — so the runs
+that needed explaining (wall-clock kill, worker restart, node reboot) were
+the only ones that explained nothing (99 failed seeds, 85 carrying an
+identical 748-char tail of just the stderr import warnings). `_tail_logs`
+budgets 4000 chars PER STREAM and labels each — one window over
+`stderr + stdout` returns the end of stdout only, dropping the traceback.
+`PRECIS_PATHWAY_KEEP_FAILED_SCRATCH=1` retains a FAILED run's scratch dir
+for forensics; default off, since these live in `/tmp` on the compute node.
 
 **`wake_runner` child-deadlock deadline (§H piece 5, built).** A
 `children_done` `Yield` gets `meta.wake_deadline` stamped at park time

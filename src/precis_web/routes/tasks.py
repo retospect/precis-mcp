@@ -704,6 +704,26 @@ def _reason_from_summary(summary: str, *, limit: int = 200) -> str:
     return text[:limit].rstrip() + ("…" if len(text) > limit else "")
 
 
+def _reason_from_event(event_text: str, *, limit: int = 200) -> str:
+    """First line of a job's latest ``job_event`` chunk, capped.
+
+    Most plugin dispatchers write ``job_summary`` only on their SUCCESS
+    tail (``record_failure`` writes a ``job_event`` instead) — so for a
+    failed job ``job_summary`` is empty by construction and
+    :func:`_reason_from_summary` returns ``''``. This is the fallback:
+    ``job_event`` text is a message first line, then often a
+    ``--- tail ---`` block of raw subprocess output — we want only the
+    first line, NOT the whole multi-line diagnostic, in a UI reason
+    field. Mirrors the first-line behaviour of
+    ``handlers._todo_views._latest_job_event_reasons`` (the agent-facing
+    ``view='attention'`` equivalent). ``''`` when there's no event
+    text."""
+    if not event_text:
+        return ""
+    first_line = event_text.split("\n", 1)[0].strip()
+    return first_line[:limit].rstrip() + ("…" if len(first_line) > limit else "")
+
+
 def _lease_active(lease_until: str | None) -> bool:
     """True when ``lease_until`` parses and lies in the future."""
     if not lease_until:
@@ -827,9 +847,12 @@ def _build_rows(store: Any, *, precis_root: Path | None = None) -> list[dict[str
         attention_icons = _attention_icons(row_tags)
         # A ``child-failed:<job>`` bubble parks the parent behind a failed
         # attempt. Resolve each to ``{job_id, reason}`` (the reason from the
-        # job's ``job_summary`` chunk, already bulk-fetched into job_notes) so
-        # the row can show *why* it failed + a ▶ restart button, not a bare
-        # chip. The generic tag strip skips these — they render richly.
+        # job's ``job_summary`` chunk, already bulk-fetched into job_notes,
+        # falling back to the latest ``job_event`` chunk — most dispatchers
+        # only write ``job_summary`` on the SUCCESS tail, so a failed job
+        # usually has an event but no summary) so the row can show *why* it
+        # failed + a ▶ restart button, not a bare chip. The generic tag strip
+        # skips these — they render richly.
         child_failures: list[dict[str, Any]] = []
         for t in row_tags:
             if not t.startswith("child-failed:"):
@@ -838,7 +861,14 @@ def _build_rows(store: Any, *, precis_root: Path | None = None) -> list[dict[str
             if not rest.isdigit():
                 continue
             jid = int(rest)
-            reason = _reason_from_summary(job_notes.get(jid, {}).get("summary", ""))
+            jn = job_notes.get(jid, {})
+            reason = _reason_from_summary(jn.get("summary", ""))
+            if not reason:
+                # ``events`` is bulk-fetched ordered by ``ord`` ascending
+                # (see ``_job_notes``), so the last entry is the latest.
+                events = jn.get("events") or []
+                if events:
+                    reason = _reason_from_event(events[-1])
             child_failures.append({"job_id": jid, "reason": reason})
         # Compiled-PDF affordance: when this todo's workspace has a PDF on
         # disk, link to it. Memoised per workspace path so a project
