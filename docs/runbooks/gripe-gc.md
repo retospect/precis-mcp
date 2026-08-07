@@ -57,3 +57,13 @@ best-effort count of currently-open shipped-marked gripes (`title ILIKE
   `scripts/gripe-gc-review`). Baseline: ~64 open gripes in prod, ~11
   already shipped-marked but unclosed — first real pass deferred to the
   first DUE firing.
+- **2026-08-07** — full sweep (issue-closer agent) over 68 open. Closed 4
+  total this session: gr196678 (clusterize COPY timeout, verified via
+  cluster_runs 415), gr193963 (frozen taproot hubs, all 8 advanced),
+  gr196736 (pgpass brew-link conflict, b0c7d74d), plus dup gr194401 found
+  already closed by a prior pass alongside gr196635/gr192606. Verified-
+  still-unfixed and left open: gr191673, gr194088, gr196720, gr192372;
+  partial-fix noted on gr196447. All four watchdog gripes re-checked live
+  and still stale (taproot_edges 59.8h, anki_sync ~2.5d overdue,
+  briefing_audio 111h silent, embed backlog 99 undrained) — real prod
+  stalls, not closeable. 67 remain.
