@@ -84,6 +84,66 @@ confirm traffic → revoke is a zero-outage sequence. Do it independently.
 
 ---
 
+## 🔧 token-review 2026-08-07 — bash-reflex-nudge misses the real traffic shape; compact-thrash re-reads in marathon sessions
+
+Status: open · Severity: polish · Owner: `scripts/hooks/bash-reflex-nudge.py`, `scripts/hooks/precompact-persist.sh` · Test: hook unit tests on the new patterns.
+
+Transcript sample (6 largest sessions, 2026-07-30→08-05, all post-`873f7ce2`
+hook ship) shows the 07-29 nudges aren't moving behavior:
+
+- **Rule A coverage gap.** Sessions ran 24–75 manual `grep -rn`/`find`
+  code-exploration calls each vs 0–4 `navigator`/`search_code` uses — and the
+  nudge stayed silent because `is_symbol_candidate` only matches a *bare
+  identifier*, while the observed traffic is multi-pattern/phrase greps
+  (`grep -rn "class Cadence|catch_up|host_affinity" src/…`). Fix: add a rule
+  for exploratory tree-wide grep (a `-r` over `src/`/`deploy/` whose pattern
+  is NOT a bare symbol) nudging toward `search_code`/`navigator`, rate-limited
+  per session (state file keyed on the hook payload's `session_id`) so it
+  doesn't get tuned out.
+- **Rule B fires but doesn't escalate.** One session ran 55 inline
+  `ssh`/`prod-psql` calls (vs 7 cluster-ops/admin spawns) — each got the
+  per-call nudge and proceeded anyway. Fix: count per session in the same
+  state file; after ~5 hits, escalate the message ("Nth inline call this
+  session — delegate the remaining sequence"). Also: the same DSN-extraction
+  boilerplate (plutil→python env parse of the worker plist) was retyped 10×
+  in one session — wrap it as a helper (`scripts/agent-dsn`?) the nudge can
+  name. Host list check: `_SSH_RE` covers melchior|caspar|balthazar only —
+  spark/castor/pollux ssh is invisible to it.
+- **Compact-thrash re-grounding.** 5/6 sessions spanned multiple days with
+  5–7 auto-compacts each; in the clearest case each compact was followed
+  within minutes by a full offset-less re-Read of the same governing design
+  doc (`docs/proposals/cluster-scheduling.md`, 4× in 2h). The PreCompact
+  persist hook already nudges "persist a resume pointer" — extend its text to
+  explicitly ask for a *state-so-far note naming the governing doc + the few
+  line ranges that matter*, so post-compact re-grounding reads the note, not
+  the whole doc again. (rtk itself is working: large residual payloads are
+  whole-file Reads, not un-filtered Bash.)
+
+---
+
+## 🔧 dead-index candidates on prod — 4 secondary indexes, ~127 MB, zero lifetime scans (db-thrash 2026-08-07)
+
+Status: open · Severity: polish · Owner: new forward migration under `src/precis/migrations/` · Test: migration applies; the queries each index was meant to serve still plan sanely (`EXPLAIN`).
+
+The 2026-08-07 db-thrash pass (prod stats never reset, so `idx_scan=0` =
+never used in the DB's lifetime) surfaced four non-PK/non-unique secondary
+indexes with zero scans: `llm_call_log_request_hash_idx` (54 MB),
+`vault_events_name_at_idx` (31 MB — the whole `events` table shows
+`idx_scan=0` / `seq_scan=2`, it's essentially unqueried),
+`chunks_section_path_idx` (28 MB), `chunks_numerics_idx` (14 MB). Pure
+write/space tax if genuinely dead. **Verify before dropping** (runbook rule):
+for each, find every query touching its column(s) — a planner-unusable
+predicate explains live-but-unused; `llm_call_log_request_hash_idx` in
+particular smells like a dedup/cache lookup whose read path may have moved to
+`llm_blob` (migs 0077/0078 era). Drop the confirmed-dead ones in one forward
+migration. Deliberately NOT candidates (kept per the 2026-07-19 pass):
+`chunks_keywords_gin` (backs `mode='verbatim'`) and
+`tag_embeddings_vector_hnsw` (below ANN planner threshold). PK indexes with
+`idx_scan=0` (`llm_call_log_pkey` 107 MB) are excluded — they enforce the
+constraint.
+
+---
+
 ## 🔧 pathway `meta.measures` has no writer — explorer renders it, nothing can set it
 
 Status: open · Severity: feature · Owner: `src/precis_pathway/handler.py` · Test: edit-verb round-trip → measure card renders on `/refs/pathway/{id}`.

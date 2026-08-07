@@ -89,6 +89,15 @@ FROM pg_stat_user_tables WHERE n_dead_tup>500 ORDER BY n_dead_tup DESC LIMIT 12;
 
 Newest first. One line per completed pass — `**YYYY-MM-DD**` + a terse verdict.
 
+- **2026-08-07** — Healthy. No active long-runners (two samples, both empty).
+  Last pass's fixes verified holding: `worker_logs` oldest row = 30d, 0 rows
+  past 31d (sweeper GC working; 7.1 GB is just retention volume), no bloat
+  anywhere (max dead_pct 5.1%; the "never autovacuumed" tables are simply
+  below the 20% threshold). One filing: 4 non-PK secondary indexes with
+  lifetime `idx_scan=0` (~127 MB: `llm_call_log_request_hash_idx`,
+  `vault_events_name_at_idx`, `chunks_section_path_idx`,
+  `chunks_numerics_idx`) → OPEN-ITEMS entry, verify-before-drop via forward
+  migration. Kept (again): `chunks_keywords_gin`, `tag_embeddings_vector_hnsw`.
 - **2026-07-19** — Baseline pass (the review that motivated this runbook).
   Found + fixed: `llm_blob` GC saturating caspar (unindexed hash anti-join, no
   single-flight) → migs 0077 (hash indexes) + `route_log.gc` guards. Dropped ~193

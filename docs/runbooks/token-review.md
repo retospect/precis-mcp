@@ -22,7 +22,7 @@ Run the pass when DUE, then append a dated line (below) — that resets the cloc
 Read a handful of recent, large local session transcripts and look for the
 **repeated** waste patterns — one-off inefficiency isn't worth a finding. The
 transcripts live under
-`~/.claude/projects/-Users-reto-work-projects-code-precis-mcp*/*.jsonl` (one
+`~/.claude/projects/-Users-reto-precis-mcp*/*.jsonl` (one
 dir per worktree; newest/biggest first).
 
 What "waste" means here, in rough priority:
@@ -53,6 +53,17 @@ first, so the script reads the top:
 
 ## Log
 
+- **2026-08-07** — sampled the 6 largest 07-30–08-05 sessions (7–18 MB;
+  transcripts live under `~/.claude/projects/-Users-reto-precis-mcp*/` —
+  the stale path in "The pass" above corrected this pass). Verdict: the 07-29
+  `bash-reflex-nudge` hook is NOT moving behavior — Rule A never fires on the
+  dominant multi-pattern exploratory greps (24–75/session vs 0–4 navigator
+  uses) and Rule B nudges per-call with no escalation (55 inline ssh/psql in
+  one session, nudged every time, proceeded every time). Plus a new pattern:
+  marathon multi-day sessions compact-thrash (5–7 auto-compacts) and re-Read
+  the same governing design doc in full after each compact. Both filed as one
+  OPEN-ITEMS entry (hook coverage/escalation + PreCompact state-note nudge).
+  rtk confirmed working; no skill-friction correction loops found.
 - **2026-07-29** — first real pass (sampled 6 large 07-26–07-29 sessions across
   worktrees). Two token-waste patterns found, **both fixed same session** by the
   `bash-reflex-nudge` PreToolUse hook (`873f7ce2`): (1) `coderef-nudge` was
