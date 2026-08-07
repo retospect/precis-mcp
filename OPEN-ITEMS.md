@@ -12,7 +12,7 @@ tracked separately in `docs/improvement-plan.md` (same delete-on-ship rule).
 
 ## 🔧 `autocatpath_seed` — failed children permanently park their `auto_check` parent (wall budget root cause)
 
-Status: open · Severity: critical · Owner: `src/precis/workers/auto_check_evaluators/child_job_succeeded.py`, `src/precis/handlers/_job_bubble.py` · Test: regression on `child_job_succeeded` auto_check evaluation logic + job_event chunk visibility in web UI.
+Status: open · Severity: critical · Owner: `src/precis/workers/auto_check_evaluators/child_job_succeeded.py`, `src/precis/handlers/_job_bubble.py` · Test: regression on `child_job_succeeded` evaluation with a *failed* child. See also **gr192371** (same symptom filed earlier, counts 18 parked todos against this investigation's 102 — reconcile the scopes before either is closed).
 
 **Of 108 `autocatpath_seed` jobs dispatched since 2026-08-02: 99 failed, 9 succeeded.** Every failure is the same computation—pathway `no_to_nh3_pd`, `seed=0`, `model#0`—but each carries a distinct `idem_key`, so dedup does not collapse them; the same doomed calculation is re-minted ~99 times.
 
@@ -21,8 +21,6 @@ Failure taxonomy from `chunks` rows (`chunk_kind='job_event'`): **59** × `run f
 **Structural defect:** `src/precis/workers/auto_check_evaluators/child_job_succeeded.py::evaluate` resolves True only on a *succeeded* child and has no notion of a *failed* one—a failure evaluates "pending" forever. The sole automatic escape, `src/precis/handlers/_job_bubble.py::bubble_job_failure`'s bounded infra-retry, fires only for `INFRA_FAILURE_TAGS = {"swept:claim-orphaned"}`, and **zero** of the 99 failures carry that tag (26 `swept:wall-timeout`, 73 untagged). So every failure latches `child-failed:<job_id>` permanently on the first attempt, by design. This—not missing error text—is what produces the stuck-leaf pile. Un-parking is a manual tag removal.
 
 **Masking risk, explicit:** merely surfacing the error text would leave both the park-forever behaviour and the no-retry logic live, while making a permanently-parked leaf *look* explained. Do not "fix" this at the visibility layer alone.
-
-**Separate real visibility bug:** `src/precis_web/routes/tasks.py::_reason_from_summary` and `src/precis/store/_draft_ops.py::job_fail_reason` read only `job_summary` chunks, but the failure path (`src/precis/workers/executors/_common.py::record_failure`) writes only `job_event` chunks—so the web Tasks dashboard renders a blank reason. The agent-facing `get(kind='todo', view='attention')` path (`src/precis/handlers/_todo_views.py::_latest_job_event_reasons`) reads `job_event` correctly, so this is dashboard-only blindness. Same gap affects several `claude_inproc` plugin dispatchers that call `ctx.record_failure` without writing a compensating `job_summary`.
 
 **Blast radius:** precis-dft's out-of-tree `gpaw_relax` rides the identical `ssh_node` + `ctx.record_failure` contract. Any todo with a `child_job_succeeded` auto_check whose job can fail shares the park-forever defect regardless of executor.
 
