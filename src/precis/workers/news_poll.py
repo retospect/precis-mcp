@@ -47,6 +47,7 @@ from typing import Any
 from precis.handlers._link_tag_ops import apply_tag_ops
 from precis.handlers.news import article_blocks, canonical_url
 from precis.store import Store
+from precis.utils.inject_scan import inject_meta, scan_tier0
 from precis.utils.slug import slug_from_text
 
 log = logging.getLogger(__name__)
@@ -328,6 +329,11 @@ def run_news_pass(
             # put_cache_entry's (kind, slug) replace. The article's handle
             # (ADR 0036) is its identity; URL/guid are metadata.
             slug = slug_from_text(key or guid_id or title, max_len=72) or "news-article"
+            # Tier-0 injection scan at the gate: feed bodies (soon Mastodon /
+            # Reddit RSS too) are attacker-writable text headed for LLM
+            # readers. The verdict rides cache meta so NewsHandler._render
+            # gates on it; content is never dropped.
+            scan = scan_tier0(title, "\n\n".join(b.text for b in body_blocks))
             ref, _cache = store.put_cache_entry(
                 kind="news",
                 slug=slug,
@@ -341,7 +347,11 @@ def run_news_pass(
                     "guid": guid or None,
                     "source": src["source_slug"],
                 },
-                cache_meta={**extra_meta, "source": src["source_slug"]},
+                cache_meta={
+                    **extra_meta,
+                    "source": src["source_slug"],
+                    "inject": inject_meta(scan),
+                },
             )
             # Record the source-scoped guid so a later poll dedups on it even
             # if the article's URL changes (the case the URL hash misses).

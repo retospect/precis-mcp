@@ -2329,8 +2329,10 @@ The master kinds table lives in the `precis-overview` skill.
   = `account` (typed view over `email_account` row + JSONB config, provider
   presets, pluggable `password`/`xoauth2` auth) · `imap` (stdlib connect +
   probe) · `message` (list/fetch; `BODY.PEEK` + readonly SELECT ⇒ browsing
-  never marks `\Seen`) · `inject` (`scan_tier0` — regex tier-0 injection scan,
-  `clean`|`suspect` + named signals). `get(kind='email')` overview ·
+  never marks `\Seen`) · `inject` (re-exports the tier-0 regex scan — the
+  core now lives source-agnostic in `utils/inject_scan.py`, see the
+  untrusted-input bullet below — plus the email-worded tier-1 prompt/parse
+  helpers). `get(kind='email')` overview ·
   `id='INBOX'` folder · `id='INBOX/<uid>'` message · `account=` disambiguates.
   `mail_poll` (`workers/mail_poll.py`, **dark** behind `PRECIS_MAIL_POLL_ENABLED`)
   = per-account IMAP poll (cadence + backoff, watermark-adopt on first poll /
@@ -2349,6 +2351,24 @@ The master kinds table lives in the `precis-overview` skill.
   design `docs/design/email-kind.md`. **Slices 1–4 (config + browse +
   poll/tier-0 + inject_scan/quarantine) live (3 & 4 dark behind their flags);
   promotion + brief (slice 5) and send are later — v1 is read-only.**
+- **Untrusted-input injection scan (source-agnostic)** — the email kind's
+  tier-0 regex scan generalized to every external input
+  (`docs/proposals/untrusted-input-injection-scan.md`). Core:
+  `utils/inject_scan.py` (pure; `scan_tier0` → `clean`|`suspect` + named
+  signals, `inject_meta` = the shared `meta['inject']`
+  `{verdict, signals, version, tier}` stamp; `precis.mail.inject`
+  re-exports). Gates (slice 1, live): `CacheBackedHandler` scans title+body
+  on every fresh fetch / in-place refetch (covers web, news, youtube,
+  perplexity, wolfram, edgar, …) stamping `cache_state.meta['inject']`;
+  `news_poll` stamps poller-minted articles (will cover the planned
+  Mastodon/Reddit RSS sources for free). Response ladder in
+  `CacheBackedHandler._render`: `high` → body **withheld** (metadata only;
+  alert raised by the verdict's producer) · `suspect` → body under an
+  untrusted-data banner · `clean` → unchanged; nothing is ever deleted —
+  verdicts gate rendering, never storage. Tier-0 only emits `suspect`, so
+  withholding activates when the corpus-wide model-rung worker lands
+  (slice 2); papers + search-hit gating are slice 3; prompt-seam fencing
+  (briefing/card_forge/dossier) slice 4 — all still open.
 - **`plan`** — a thread's reasoning outline (ADR 0051 §2b, slice A1): a
   hierarchical todo-list + notes on the `draft` chunk-tree substrate
   (`handlers/plan.py`, reusing the kind-parameterized `DraftMixin`), but a
