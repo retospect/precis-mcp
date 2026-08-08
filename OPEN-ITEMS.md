@@ -3236,3 +3236,37 @@ Precisely root-caused; not yet fixed. See memory `context_quality_eval_build`.
   (classifier gap — no pass tags a quest's domain) is already tracked by open gripe
   **gr170252**; not re-filed. The round-1 `precis-overview`/registry drift class
   appears already fixed (`skill-overview` footer matches the live kind roster).
+
+---
+
+## 🚀 Compute worker lane (bc22693c) — DEPLOYED + draining; two residuals
+
+(Kept at file end deliberately — the top-of-file hot-spot conflicted with three
+concurrent sibling ships in a row.)
+
+- **Status:** open · Severity: feature · Owner: `deploy/playbooks/43-precis-worker-compute.yml`
+- **Shipped + DEPLOYED 2026-08-08 (bc22693c):** a dedicated GPU/compute worker
+  lane — a second tiny worker on the inference node (`precis-worker-compute.service`,
+  `--only job_ssh_node`, polls ~5s) so node-pinned detached GPU jobs
+  (autocatpath_seed, dft gpaw_relax) drain at compute-completion speed instead
+  of once per the collapsed worker's serial `run_loop` rotation. Added optional
+  `service_unit_env_files` to `service_unit`. Verified live on spark: unit
+  active, env correct (`PRECIS_NODE=spark`, `PRECIS_AUTOCATPATH_ENABLED=1`,
+  `PRECIS_PROCESS=precis-worker-compute` sourced from the drop-ins), claiming.
+- **Drain in progress:** at deploy time the `autocatpath_seed` backlog was
+  118 queued / 1 running / 9 failed. **Close gr192371 once queued → 0** (drain
+  observed). The lane pulls one seed per freed gpu slot (~5s poll).
+- **Residual 1 — deploy-ordering crash-loop (gr199339):** the unit crash-looped
+  ~45× (exit 2, argparse `invalid choice: 'job_ssh_node'`) from 14:17–14:21 UTC
+  because it was started while spark's venv still predated `job_ssh_node`;
+  self-healed at 14:41 on convergence. Can trip the nursery worker-restart alert.
+  Fix directions in gr199339 (gate unit start on venv readiness / skip initial
+  start and let the redeploy bounce start it / soften the restart limit).
+- **Residual 2 — 9 failed `autocatpath_seed` jobs:** pre-existing (predate this
+  lane), unread. Tracked separately by the OPEN-ITEMS "read the first unbuffered
+  `autocatpath_seed` failures" entry above; investigate there.
+- **Accepted-by-design (not a bug):** two pollers on the GPU node (collapsed
+  worker + this lane) both run the unlocked in-flight `job_ssh_node` poll; worst
+  case a duplicate cosmetic `run_log`/`job_summary` chunk in the narrow window
+  both catch the same "done" tick. No double GPU launch (submit is claim-path
+  only, row-locked). Documented in ssh_node.py flow + state-map.md.
