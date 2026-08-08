@@ -44,6 +44,16 @@ if ! command -v pg_dump >/dev/null 2>&1; then
 fi
 
 echo "bump: setting version to $VERSION"
+# uv owns pyproject.toml + uv.lock (and reinstalls the editable package so
+# importlib.metadata — the runtime source of truth for __version__ — sees
+# the new version immediately).
+uv version "$VERSION"
+
+# src/precis/__init__.py derives __version__ from dist metadata; only its
+# uninstalled-source-tree FALLBACK literal (indented, inside the except
+# block) needs to track the release. Match with leading whitespace allowed —
+# the old `^__version__` anchor stopped matching when the fallback moved
+# inside try/except and silently broke every bump (fixed 2026-08).
 uv run python - "$VERSION" <<'PY'
 import pathlib
 import re
@@ -51,23 +61,16 @@ import sys
 
 version = sys.argv[1]
 
-pp = pathlib.Path("pyproject.toml")
-new, n = re.subn(
-    r'(?m)^version = "[^"]+"', f'version = "{version}"', pp.read_text(), count=1
-)
-assert n == 1, "could not find `version = \"...\"` in pyproject.toml"
-pp.write_text(new)
-
 ip = pathlib.Path("src/precis/__init__.py")
 inew, n = re.subn(
-    r'(?m)^__version__ = "[^"]+"',
-    f'__version__ = "{version}"',
+    r'(?m)^(\s*)__version__ = "[^"]+"',
+    rf'\1__version__ = "{version}"',
     ip.read_text(),
     count=1,
 )
 assert n == 1, "could not find `__version__ = \"...\"` in src/precis/__init__.py"
 ip.write_text(inew)
-print(f"  pyproject.toml + src/precis/__init__.py -> {version}")
+print(f"  src/precis/__init__.py fallback -> {version}")
 PY
 
 echo "bump: regenerating baseline snapshot (precis db dump-schema)"
