@@ -42,6 +42,10 @@
         set -o pipefail
         curl -LsSf https://astral.sh/uv/install.sh | sh
       args:
+        # `set -o pipefail` needs bash — fresh serving nodes (e.g. the DGX
+        # twins castor/pollux) default /bin/sh to dash, which errors
+        # "Illegal option -o pipefail" and aborts the whole fleet deploy.
+        executable: /bin/bash
         creates: /root/.local/bin/uv
         executable: /bin/bash
 
