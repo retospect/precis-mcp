@@ -31,11 +31,18 @@ six nodes 2026-08-08; two residuals:
   deliberate chown/chgrp-then-renumber pass — decide first whether our 803/804
   identities and the package's are meant to be the same principal, since
   `monitoring` is caspar-only and these may simply not belong on spark.
-- **Already-written files keep their old group.** The pin only governs new
-  files. On caspar's export: `gguf` 806:20, `workspace` 813:20, `media`
-  806:812 (gid 812 exists on no node — an orphan from a deleted group). Until
-  chgrp'd, a Linux client reads those as group `dialout`(20). Also the
+- **On macOS the chgrp IS the fix, not cleanup — BSD group inheritance.**
+  Verified 2026-08-08: macOS gives a new file the group of its **parent
+  directory**, not the creating process's primary group (and new subdirs
+  inherit downward too). Linux uses the process egid instead. So pinning the
+  primary group fixes new writes from the *Linux* nodes but does **nothing**
+  for the Macs — a file `deploy` creates under a group-20 directory is still
+  group 20. The export tree therefore has to be chgrp'd for parity to actually
+  hold: on the NFS server `gguf` 806:20, `workspace` 813:20, `media` 806:812
+  (gid 812 exists on no node — an orphan from a deleted group), plus the
   deploy-owned trees on the three Macs (`find -user deploy -group staff`).
+  Until then a Linux client reads those as group `dialout`(20). Cheap and
+  low-risk (group-only, perms unchanged), just not yet done.
 
 ---
 
