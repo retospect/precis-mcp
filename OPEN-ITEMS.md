@@ -3079,6 +3079,31 @@ The framework exists (`news_sources` registry + `news_poll` worker,
 `.rss` feeds → ingestible **with no credentials**, just `news_sources` rows.
 A bespoke API client (a few accounts + summaries) is unbuilt and *would* need
 API credentials — only build that if the RSS path proves insufficient.
+Feed-borne content inherits the shipped tier-0 injection-scan gate in
+`news_poll` automatically (see the untrusted-input item below).
+
+## 🛡️ Untrusted-input injection scan — slices 2–4 *(security, open)*
+
+Spec: `docs/proposals/untrusted-input-injection-scan.md`. Slice 1 shipped
+(tier-0 regex gate at every cache-backed fetch + `news_poll`, verdict in
+`cache_state.meta['inject']`, suspect-banner / high-withhold ladder in
+`CacheBackedHandler._render`). Open:
+
+1. **Slice 2 — corpus-wide tier-1/2 model worker**: generalize
+   `workers/inject_scan.py` (email-only today) into a pass over chunks of
+   untrusted-source refs; per-chunk `chunks.meta['inject']` verdicts,
+   claim-on-version-mismatch (`KEYWORDS_VERSION` discipline), braked
+   retries, ref-rollup refresh, `raise_alert` on `high`. Until this lands,
+   the `high`-withhold branch in `_render` is dormant (tier-0 only emits
+   `suspect`).
+2. **Slice 3 — papers + search-path enforcement**: tier-0 per-chunk at the
+   Marker/markup db-writer (PDF hidden-text layers are the target);
+   `kind='paper'` in the worker scope; gate search-hit snippets + paper
+   renders on chunk verdict so search can't bypass the quarantine.
+3. **Slice 4 — prompt-seam fencing**: shared `fence_untrusted(text, source)`
+   delimiter applied wherever corpus text is composed into prompts
+   (briefing, card_forge, dossier/planner ticks, chase/citation) —
+   boundary-first, applied regardless of verdict.
 
 ## 🕸️ Graph-locality architecture — held *(design, needs a framing pass)*
 
