@@ -15,7 +15,9 @@ Group={{ service_unit_run_as }}
 
 WorkingDirectory={{ service_unit_working_dir }}
 
-{% for env_key, env_val in service_unit_env.items() %}
+{# TZ=UTC fleet-wide (00a-timezone.yml is the host-level pin; this keeps the
+   daemon UTC even if the host zone drifts). A caller-supplied TZ wins. #}
+{% for env_key, env_val in ({'TZ': 'UTC'} | combine(service_unit_env)).items() %}
 Environment={{ env_key }}={{ env_val }}
 {% endfor %}
 {% for env_file in service_unit_env_files %}

@@ -14,6 +14,8 @@ User=root
 Group=root
 WorkingDirectory=/tmp
 
+# UTC logging fleet-wide — see 00a-timezone.yml.
+Environment=TZ=UTC
 Environment=PRECIS_EMBEDDER_WATCHDOG_URL=http://{{ precis_embedder_watchdog_host }}:{{ precis_embedder_watchdog_port }}/readyz
 Environment=PRECIS_EMBEDDER_WATCHDOG_FAIL_THRESHOLD={{ precis_embedder_watchdog_fail_threshold }}
 Environment=PRECIS_EMBEDDER_WATCHDOG_STATEFILE={{ precis_embedder_watchdog_statefile }}

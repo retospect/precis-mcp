@@ -1,0 +1,37 @@
+---
+# 00a-timezone.yml — pin every node's system timezone to UTC.
+#
+# The fleet's log files were written in whatever zone each host happened to
+# boot with, which makes cross-host log forensics (worker outages, deploy
+# races) needlessly painful. One zone everywhere, and it's UTC:
+#   - macOS: community.general.timezone drives `systemsetup -settimezone`;
+#     the list has no "UTC" entry, so we set "GMT" (fixed zero offset, no
+#     DST — identical to UTC for timestamps).
+#   - Linux: same module drives `timedatectl set-timezone` with "UTC".
+#
+# Belt-and-braces siblings: deploy-rendered daemon units also export TZ=UTC
+# (roles/service_unit templates + the standalone plist/service templates), and
+# precis' own Python logging pins %(asctime)s to UTC via
+# precis.utils.utc_logging — so a host whose zone later drifts still writes
+# UTC logs. Postgres was already pinned (timezone/log_timezone in
+# roles/postgres/templates/postgresql.conf.j2).
+#
+# NOTE: already-running daemons keep their old zone until restarted; the next
+# deploy/reboot picks it up. The nightly reboot (42) covers the GPU node.
+
+- name: Timezone — UTC fleet-wide
+  hosts: all
+  become: true
+  tags: [timezone]
+  tasks:
+    - name: Set system timezone to UTC (Linux)
+      community.general.timezone:
+        name: UTC
+      when: os_family == "linux"
+
+    # macOS's `systemsetup -listtimezones` has no UTC/Etc/UTC entry; GMT is
+    # its fixed zero-offset zone (no DST), functionally identical to UTC.
+    - name: Set system timezone to GMT (macOS has no UTC entry)
+      community.general.timezone:
+        name: GMT
+      when: os_family == "darwin"

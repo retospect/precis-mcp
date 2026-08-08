@@ -20,6 +20,8 @@ Group=deploy
 
 WorkingDirectory=/tmp
 
+# UTC logging fleet-wide — see 00a-timezone.yml.
+Environment=TZ=UTC
 Environment=PATH={{ precis_embedder_venv }}/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/var/lib/precis
 Environment=HF_HOME={{ precis_embedder_hf_home }}

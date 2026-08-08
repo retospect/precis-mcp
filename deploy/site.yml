@@ -8,6 +8,9 @@
 - name: "00 — System users"
   ansible.builtin.import_playbook: playbooks/00-users.yml
 
+- name: "00a — Timezone (UTC fleet-wide)"
+  ansible.builtin.import_playbook: playbooks/00a-timezone.yml
+
 - name: "01 — NFS"
   ansible.builtin.import_playbook: playbooks/01-nfs.yml
 

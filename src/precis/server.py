@@ -621,8 +621,10 @@ def main(
     a live corpus-read hole.
     """
     from precis.config import load_config
+    from precis.utils.utc_logging import force_utc_timestamps
 
     config = load_config()
+    force_utc_timestamps()
     logging.basicConfig(
         level=config.log_level,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",

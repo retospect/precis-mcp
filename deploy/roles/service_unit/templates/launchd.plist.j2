@@ -25,7 +25,9 @@
 
   <key>EnvironmentVariables</key>
   <dict>
-{% for env_key, env_val in service_unit_env.items() %}
+{# TZ=UTC fleet-wide (00a-timezone.yml is the host-level pin; this keeps the
+   daemon UTC even if the host zone drifts). A caller-supplied TZ wins. #}
+{% for env_key, env_val in ({'TZ': 'UTC'} | combine(service_unit_env)).items() %}
     <key>{{ env_key }}</key>
     <string>{{ env_val }}</string>
 {% endfor %}

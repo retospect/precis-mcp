@@ -68,6 +68,7 @@ from precis.cli import (
     web,
     worker,
 )
+from precis.utils.utc_logging import force_utc_timestamps
 
 log = logging.getLogger(__name__)
 
@@ -83,6 +84,7 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
+    force_utc_timestamps()
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
