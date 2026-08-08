@@ -148,7 +148,7 @@
 - [`torch-extras-conflict`](./torch-extras-conflict.md) **idea** — Both extras target spark; uv universal resolution resolves all extras
 - [`trust-taxonomy-followons`](./trust-taxonomy-followons.md) **idea** — Deferred pieces of the taproot trust ladder.
 - [`turbo-fieldflare-eval`](./turbo-fieldflare-eval.md) **idea** — Reto want (youtube:189018): serves a 26B MoE in ~2 GB RAM at ~23 tok/s by
-- [`uid-gid-parity`](./uid-gid-parity.md) **idea** — `system_users[]` pins gid == uid (sole exception `deploy: 1001`); the role
+- [`uid-gid-parity`](./uid-gid-parity.md) **idea** — `system_users[]` pins **gid == uid with no exceptions**; the role never
 - [`universal-short-codes`](./universal-short-codes.md) **idea** — ADR 0032's base-62 chunk_id encoding is manuscript-only; the verdict was
 - [`untrusted-input-injection-scan`](./untrusted-input-injection-scan.md) **idea** — Slice 1 shipped (tier-0 regex gate at every cache-backed fetch + news_poll;
 - [`vault-reveal-cache`](./vault-reveal-cache.md) **idea** — vault.events shows ~15 reveals/minute against a `_CACHE_TTL_SECONDS = 60`
