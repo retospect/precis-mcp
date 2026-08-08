@@ -10,23 +10,16 @@ tracked separately in `docs/improvement-plan.md` (same delete-on-ship rule).
 
 ---
 
-## 🔧 Dispatch-review residuals not covered by `fair-dispatch-two-currencies.md` (2026-08-08 review)
+## 🔧 Dispatch-review residual not covered by `fair-dispatch-two-currencies.md` (2026-08-08 review)
 
-Status: open · Severity: polish · Owner: below · Test: below.
+Status: open · Severity: polish · Owner: `src/precis/workers/nursery.py` · Test: below.
 
-The fairness/streamlining core — plus the `executor:` tag-branch
-retirement and the `schedule`/`scheduler` disambiguation (items 6–7) —
-is specced in `docs/proposals/fair-dispatch-two-currencies.md` (draft).
-Two review findings fall outside it:
+Everything else from the review — fairness core, `executor:` tag-branch
+retirement, `schedule`/`scheduler` disambiguation, and the unified
+blocked-state registry (items 6–8) — is specced in
+`docs/proposals/fair-dispatch-two-currencies.md` (draft). One finding
+falls outside it:
 
-- **Blocked-state predicate spread across four mechanisms** — STATUS tags,
-  the `_DOABLE_EXCLUSION_TAGS` registry, child-liveness
-  (`dispatch._parked_child_still_blocks_sql`), and job-status blocking
-  (`_job_blocks_dispatch_sql`). The proposal's eligibility builder
-  consolidates dispatch's own copies; the cross-surface step — one "why is
-  this todo not dispatchable" module the nursery/attention views also
-  report from — is a follow-on design. Test: nursery stuck-doable reason
-  strings come from the shared module.
 - **Nursery digest pages are `ORDER BY r.ref_id LIMIT 50`**
   (`workers/nursery.py`, most check queries) — past 50 stuck items the tail
   never surfaces in the digest; same head-of-line family as the dispatch

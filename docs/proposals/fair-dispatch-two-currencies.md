@@ -104,6 +104,18 @@ problem, with its own policy —
    Rename `workers/scheduler.py` → `workers/cadence.py` (or
    `workers/schedule/` → `workers/recurring/` — pick one at build time)
    so the two subsystems stop colliding on grep.
+8. **Unified blocked-state module.** One registry of block reasons —
+   each entry = reason id + SQL fragment + human label — covering the
+   four mechanisms that today live apart: STATUS gating, the
+   `_DOABLE_EXCLUSION_TAGS` open-tag registry, child-liveness
+   (`_parked_child_still_blocks_sql`, incl. the parked-bypass/hard-block
+   split), and job-status blocking (`_job_blocks_dispatch_sql`). The
+   item-1 eligibility builder composes its predicate from this registry
+   (NOT the other way round — the registry is the single source); the
+   doable view, nursery stuck-doable check, and attention view render
+   their "why is this blocked" strings from the same entries. Extends
+   the pattern `_DOABLE_EXCLUSION_TAGS` already proved ("adding a new
+   exclusion form means appending to the registry, no SQL edits").
 
 ## Explicitly NOT in scope
 
@@ -119,10 +131,10 @@ problem, with its own policy —
   not throughput).
 - Dropping `meta.executor` *writes/reads* entirely (item 6 keeps the
   key as back-compat; a full migration of legacy writers is a follow-on).
-- The cross-surface blocked-state module (one "why is this todo not
-  dispatchable" predicate shared with nursery/attention views) and the
-  nursery digest's own `ORDER BY ref_id` pages — OPEN-ITEMS
-  "Dispatch-review residuals" entry.
+- The nursery digest's own `ORDER BY ref_id LIMIT 50` pagination
+  (visibility, not execution — item 8 gives nursery the shared reason
+  vocabulary, not new pagination) — OPEN-ITEMS "Dispatch-review
+  residuals" entry.
 
 ## Acceptance criteria
 
@@ -145,6 +157,12 @@ problem, with its own policy —
   `executor:%` in `dispatch.py` returns nothing.
 - Exactly one caller of `run_schedule_pass` outside tests; no module
   named both `schedule*` and `scheduler*` under `workers/`.
+- Block-reason registry is the only definition site: grep finds
+  `_parked_child_still_blocks_sql` / `_job_blocks_dispatch_sql` logic
+  only inside the registry module; nursery stuck-doable and the
+  attention view render reason labels from registry entries (test:
+  adding a registry entry surfaces in dispatch SQL, doable exclusion,
+  and nursery reason string without further edits).
 
 ## Target + blast radius
 
@@ -160,6 +178,9 @@ problem, with its own policy —
   lane awareness; `daily_budget` contract unchanged).
 - New: user-activity signal write path (MCP/asa touchpoint or manual
   toggle) + small helper module for the picker.
+- New: block-reason registry module (item 8) —
+  `handlers/_todo_views.py` (doable exclusion + attention view),
+  `workers/nursery.py` (stuck-doable reasons) become consumers.
 - Docs: `state-map.md` todo-tree/guardrails sections;
   `cluster-scheduling.md` cross-reference (this is its law-3/law-1
   refinement for the dispatch lane).
