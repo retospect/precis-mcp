@@ -121,9 +121,8 @@ reads `refs` directly (a kind-agnostic `_owner_title`, replacing the
 `dossier_of_owner`, with resolution via the owner-agnostic `dossier-of` edge so
 legacy `dossier_of_quest` dossiers resolve with no backfill. A non-quest
 living-review process can now own — and therefore export — a dossier. See
-`docs/proposals/dossier-owner-generalization.md` (its own proposal;
-`ready`-gated 2026-07-24, blockers resolved in-body) +
-`src/precis/quest/dossier.py`.
+`src/precis/quest/dossier.py` (build proposal shipped 2026-07-24 and
+deleted per the graduate-or-die lifecycle; git history holds it).
 
 ### C — Sim-level infra failures must not read as "dry" (follow-on)
 

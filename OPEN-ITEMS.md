@@ -10,6 +10,32 @@ tracked separately in `docs/improvement-plan.md` (same delete-on-ship rule).
 
 ---
 
+## 🔧 Dispatch-review residuals not covered by `fair-dispatch-two-currencies.md` (2026-08-08 review)
+
+Status: open · Severity: polish · Owner: below · Test: below.
+
+The fairness/streamlining core — plus the `executor:` tag-branch
+retirement and the `schedule`/`scheduler` disambiguation (items 6–7) —
+is specced in `docs/proposals/fair-dispatch-two-currencies.md` (draft).
+Two review findings fall outside it:
+
+- **Blocked-state predicate spread across four mechanisms** — STATUS tags,
+  the `_DOABLE_EXCLUSION_TAGS` registry, child-liveness
+  (`dispatch._parked_child_still_blocks_sql`), and job-status blocking
+  (`_job_blocks_dispatch_sql`). The proposal's eligibility builder
+  consolidates dispatch's own copies; the cross-surface step — one "why is
+  this todo not dispatchable" module the nursery/attention views also
+  report from — is a follow-on design. Test: nursery stuck-doable reason
+  strings come from the shared module.
+- **Nursery digest pages are `ORDER BY r.ref_id LIMIT 50`**
+  (`workers/nursery.py`, most check queries) — past 50 stuck items the tail
+  never surfaces in the digest; same head-of-line family as the dispatch
+  finding but for *visibility*, not execution. Random-sample or
+  oldest-first-by-staleness per check. Test: item #51 appears within k
+  digests.
+
+---
+
 ## 🔧 SMALL-tier saturation spill to cloud is dark — `openai_compat` ignores the local endpoint (capacity-valve item 3)
 
 Status: open · Severity: feature (the saturation→cloud "spillover" half of the local-first valve; the local-serving half shipped 2026-08-07) · Owner: `src/precis/utils/llm/router.py::_dispatch_openai_compat`; ref `docs/proposals/local-first-capacity-valve.md` item 3 · Test: an `openai_compat` dispatch with `req.local_url` set hits that endpoint (dummy bearer, no `openrouter_routing` extra_body), not `PRECIS_LLM_BASE_URL`.

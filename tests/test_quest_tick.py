@@ -206,9 +206,9 @@ class TestDossierLedger:
 
 
 class TestDossierOwnerGeneralization:
-    """The dossier owner is any process, not just a quest (ADR 0064 §B —
-    docs/proposals/dossier-owner-generalization.md). The coupling was Python
-    only; the ``dossier-of`` edge is already owner-agnostic."""
+    """The dossier owner is any process, not just a quest (ADR 0064 §B).
+    The coupling was Python only; the ``dossier-of`` edge is already
+    owner-agnostic."""
 
     def test_non_quest_owner_full_round_trip(self, store: Any) -> None:
         # A non-quest process (a `memory` ref stands in for any living-review

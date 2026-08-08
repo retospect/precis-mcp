@@ -1,7 +1,7 @@
 """Dossier — the living research synthesis a *process* owns.
 
 Slice 4a of the quest layer (docs/proposals/quest-layer.md §Two memories),
-generalized per ADR 0064 §B (docs/proposals/dossier-owner-generalization.md):
+generalized per ADR 0064 §B:
 a dossier belongs to a **process, never an artifact**. A quest is the process
 that owns one today, but the owner is now **any ref** (``owner_id``) — a
 standing topic review or a paper-writing pipeline can own a dossier by the same

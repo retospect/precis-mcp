@@ -1,8 +1,13 @@
 ---
-status: ready
+status: shipped
 title: Interactive reaction-pathway explorer — clickable energy diagram + per-state atomic cell + measures
 model: opus
 ---
+
+> **Shipped 2026-08-06** (`fix/reaction-pathway-explorer` merged). Kept —
+> not deleted — while `pathway-frame-capture.md` (draft) still delegates
+> its motion follow-on to this spec, and the `meta.measures` writer
+> residual in `OPEN-ITEMS.md` cites it. Delete once both resolve.
 
 # Interactive reaction-pathway explorer — clickable energy diagram + per-state atomic cell + measures
 
