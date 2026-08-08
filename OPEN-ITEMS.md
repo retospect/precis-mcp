@@ -156,6 +156,18 @@ below moved; all four are still open.
    sharding per-intermediate/edge. **Do not tighten `fmax`** — at 0.1 eV/Å
    (`neb_fmax` 0.15) it is already 2× looser than the ASE/OC20 norm; loosening
    further buys speed by making the barriers not worth computing.
+   **NEW compute-efficiency lever (2026-08-08, live spark probe of the post-gr192371
+   re-seed batch): MACE runs its SLOW path on spark.** The running seed's own stdout
+   banner: `cuequivariance or cuequivariance_torch is not available. Cuequivariance
+   acceleration will be disabled.` + `Using float64 … slower but more accurate`. So
+   every equivariant tensor-product runs unaccelerated *and* in float64 on the GB10 —
+   confirmed GPU-bound (nvidia-smi SM 92–96%, ~934 MiB), not hung, just slow. Installing
+   `cuequivariance-torch` (+ cu12 ops) into spark's autocatpath venv **wired into the
+   deploy role** (classic `deploy-extras-gap` — an optional accel dep silently absent in
+   prod) and running relaxation in float32 attacks per-eval cost, complementary to the
+   `pose_count` cut. **Caveat:** needs an aarch64/Blackwell (Grace-Blackwell GB10) wheel-
+   compat check — not assumed drop-in. This is why the "minutes-scale (one seed)" design
+   assumption in `seed_job.py` became 2.5–3.7 h in practice.
 3. **The other 59 are not timeouts and the cause is UNRESOLVED.** Runtimes
    21 s → 8061 s with no clustering — not a deadline signature. Sibling
    failures report `rc=-15` (SIGTERM). A reboot-correlation pass was run and
