@@ -366,6 +366,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "gp_fetch",
             "tag_embeddings",
             "job_claude_inproc",
+            "job_ssh_node",
             "dream_agent",
             "auto_check",
             "schedule",

@@ -60,6 +60,20 @@ class TestParser:
         assert args.only == "watch_poll"
         assert args.once is True
 
+    def test_only_accepts_job_ssh_node(self, monkeypatch):
+        """``job_ssh_node`` must be a valid ``--only`` choice. It is
+        registered in worker.py via ``_register("job_ssh_node")`` and the
+        dedicated GPU compute-worker lane (deploy/playbooks/
+        43-precis-worker-compute.yml) invokes it as ``precis worker --only
+        job_ssh_node``. Omitting it from argparse ``choices`` makes that unit
+        exit 2 (INVALIDARGUMENT) on every start — a silent crash-loop that
+        only surfaces post-deploy. Regression for that drift (2026-08-08)."""
+        monkeypatch.delenv("PRECIS_EMBEDDER", raising=False)
+        parser = _build_parser()
+        args = parser.parse_args(["worker", "--only", "job_ssh_node", "--once"])
+        assert args.only == "job_ssh_node"
+        assert args.once is True
+
     def test_worker_embedder_reads_env(self, monkeypatch):
         monkeypatch.setenv("PRECIS_EMBEDDER", "remote")
         parser = _build_parser()
