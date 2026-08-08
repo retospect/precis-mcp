@@ -43,6 +43,7 @@
         curl -LsSf https://astral.sh/uv/install.sh | sh
       args:
         creates: /root/.local/bin/uv
+        executable: /bin/bash
 
     # The unit's HOME. provision only creates the hf-cache child (deploy-
     # owned) — created via `file` its parent would be root-owned, and a
