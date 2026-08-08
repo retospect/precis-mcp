@@ -199,6 +199,42 @@ def _job_blocks_dispatch_sql(parent_alias: str, child_alias: str) -> str:
        )"""
 
 
+def _served_model_requirement(
+    conn: Any, job_type: str, params: dict[str, Any]
+) -> dict[str, int] | None:
+    """A ``{"llm:<model>": 1}`` requirement that gates a planner tick onto a host
+    serving its rung-0 OSS model, or ``None`` when the tick isn't a served-OSS
+    planner tick.
+
+    Narrow by design (the "run agents where the model is served" affinity): only
+    ``plan_tick`` jobs, whose ``params['model']`` is the tier picker, resolve a
+    concrete rung-0 model (:func:`precis.utils.llm.router.planner_rung0_model`).
+    The requirement is stamped *only* when that model is actually advertised as
+    an ``llm:`` slot on some host; otherwise the job stays host-agnostic
+    (byte-identical to before), so a cloud tick or a model served nowhere never
+    gets an unsatisfiable gate. The claim-side ``llm:`` hard veto
+    (``executors/_common._finish_claim``) then restricts the claim to a serving
+    host, auto-following wherever the slot lives.
+    """
+    if job_type != "plan_tick":
+        return None
+    model_alias = params.get("model")
+    if not isinstance(model_alias, str):
+        return None
+    from precis.utils.llm.router import planner_rung0_model
+
+    served_model = planner_rung0_model(model_alias, job_type)
+    if not served_model:
+        return None
+    resource = f"llm:{served_model}"
+    row = conn.execute(
+        "SELECT 1 FROM resource_slots WHERE resource = %s LIMIT 1", (resource,)
+    ).fetchone()
+    if row is None:
+        return None
+    return {resource: 1}
+
+
 def _halt_bad_dispatch(
     store: Store, conn: Any, ref_id: int, detail: str
 ) -> tuple[int, bool]:
@@ -704,6 +740,15 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool]:
             "params": params,
             "dispatched_from_todo": ref_id,
         }
+        # Serving affinity (narrow: planner ticks that drive a served-OSS model).
+        # When the tick's rung-0 model is advertised as an ``llm:`` slot on some
+        # host, stamp ``meta.requires`` so the ``_finish_claim`` ``llm:`` hard veto
+        # gates the job onto a serving host — the agent runs where the model lives
+        # (using the local slot) instead of falling to hosted cloud. A claude/cloud
+        # tick, or a model served nowhere, gets no requirement → host-agnostic.
+        served_requires = _served_model_requirement(conn, job_type, params)
+        if served_requires is not None:
+            child_meta["requires"] = served_requires
         title = f"{job_type} (dispatched from todo:{ref_id})"
         child = store.insert_ref(
             kind="job",

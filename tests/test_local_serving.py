@@ -180,6 +180,26 @@ def test_only_this_host_slots_count(store) -> None:
     assert local_serving.acquire("remote") is None
 
 
+# ── served_locally: read-only membership test (no reservation) ─────────────
+
+
+def test_served_locally_true_when_host_serves_the_model(store) -> None:
+    meter.bind_store(store)
+    _serve(store, "testnode", "qwen", 2)
+    assert local_serving.served_locally("qwen") is True
+
+
+def test_served_locally_false_for_a_different_model(store) -> None:
+    meter.bind_store(store)
+    _serve(store, "testnode", "qwen", 2)
+    assert local_serving.served_locally("summarizer") is False
+
+
+def test_served_locally_false_without_store() -> None:
+    meter.bind_store(None)
+    assert local_serving.served_locally("qwen") is False
+
+
 # ── endpoint enrichment (the Phase-2 litellm-retire flip) ──────────────────
 
 

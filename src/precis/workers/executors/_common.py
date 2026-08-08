@@ -653,10 +653,34 @@ def claim_executor_jobs(
         # with free=0 exists.
         if res_host in pressured:
             return None
+        advertised_here = advertised.get(res_host, set())
+        # An ``llm:``-prefixed requirement is a HARD host gate, not a soft
+        # counted reservation: the job drives that served model and cannot run
+        # where the model isn't served. If ``res_host`` doesn't advertise the
+        # slot, skip the claim entirely — the row's lock frees at commit, and it
+        # retries until a host that serves the model picks it up, auto-following
+        # wherever the ``llm:`` slot lives (no hard-coded ``target_node``).
+        # Non-``llm:`` requires (e.g. ``gpu``) keep the soft self-gate below
+        # (unadvertised → dropped, job proceeds). No job carried an ``llm:``
+        # requirement before this gate existed, so nothing regresses; a job
+        # whose model is served *nowhere* waits un-claimed (correct "can't run
+        # without the model" behaviour), the debug line making that visible.
+        unserved_llm = sorted(
+            res
+            for res in requires
+            if res.startswith("llm:") and res not in advertised_here
+        )
+        if unserved_llm:
+            log.debug(
+                "claim: skip job %s on %s — required served model(s) %s not "
+                "advertised there (awaiting the serving host)",
+                ref_id,
+                res_host,
+                unserved_llm,
+            )
+            return None
         reservable = {
-            res: units
-            for res, units in requires.items()
-            if res in advertised.get(res_host, set())
+            res: units for res, units in requires.items() if res in advertised_here
         }
         if reservable and not reserve_resource_slots(conn, res_host, reservable):
             # A live slot is full → drop it; the lock frees at commit and

@@ -651,6 +651,19 @@ capability with no pin (`_alert_unschedulable_jobs` → `scheduler` alert
 source). Deferred: capability-rarity ordering + soft memory signals.
 `target_node` stays (node gate + cache-affinity hint), not retired.
 
+**Serving affinity for planner ticks — `llm:` hard veto.** One exception to
+6d's soft self-gate above: `executors/_common.py::_finish_claim` treats an
+`llm:`-prefixed `meta.requires` resource as a HARD claim veto, not a soft
+drop — a host may claim the job only if it advertises that `llm:<model>`
+slot, auto-following wherever the model is served (no hard-coded
+`target_node`); every other requirement (e.g. `gpu`) keeps the existing
+soft-drop fallback. `dispatch.py::_served_model_requirement` stamps
+`meta.requires={"llm:<model>": 1}` on a minted `plan_tick` child when its
+rung-0 model (`router.planner_rung0_model`) is an OSS model actually
+advertised as an `llm:` slot somewhere; a cloud/claude tick, or a model
+served nowhere, gets no requirement and stays host-agnostic as before. Net:
+"run agents on the machines that serve the models they need."
+
 **`embedder` resource slot (§F cycle a, additive).** `capability_probe.py`
 advertises an `embedder` `resource_slots` row when the host's configured
 embedder answers `/readyz` (capacity `PRECIS_EMBEDDER_SLOTS`, default 1) —
@@ -1458,6 +1471,17 @@ carries the operator placement-chain editor (a per-tier JSON textarea `POST
 /factory/llm/chain` writing `llm.chain.<tier>`, server-validated list-only,
 blank = revert) plus a cloud-throttle toggle (`POST /factory/llm/cloud`
 writing `llm.cloud_enabled`) — `status.py::_llm_chain_ctx`, degrade-safe.
+**Serving-aware local-rung skip.** `dispatch()`/`dispatch_async()` call
+`router.py::_skip_unserved_local_rung(chain, model)` right after the cloud
+throttle: when rung 0 is a loopback `Transport.LOCAL` rung, the model isn't
+served on this host (`local_serving.served_locally`), and no
+`PRECIS_SUMMARIZE_LLM_URL` override is set, the rung is pruned and dispatch
+advances straight to the fallback rung. Before this, such a rung always
+dispatched into the retired litellm default `http://127.0.0.1:4000/v1` →
+`ECONNREFUSED` → failed over anyway, logging `llm-failover: rung 0 … failed`
+on every `SMALL` call on every non-serving host (~8000 WARN/24h on
+caspar/balthazar). A serving host (melchior) is unaffected — its reserved
+`served_by` slot pins a live llama-swap endpoint there.
 **Phase C (landed) retired the five location-coupled tier members** —
 `router.py::Tier` now has *only* `FRONTIER`/`BIG`/`MEDIUM`/`SMALL`; every call
 site routes on capability, never location (a served OSS model backs `BIG`

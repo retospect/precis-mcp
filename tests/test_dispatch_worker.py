@@ -294,6 +294,101 @@ def test_plan_tick_no_llm_select_omits_select_param(
     assert "select" not in children[0]["meta"]["params"]
 
 
+# ── served-model affinity: llm: requires stamped on a served-OSS plan_tick ──
+#
+# `_served_model_requirement` gates a minted `plan_tick` child onto a host
+# serving its rung-0 OSS model — but only when that model is actually
+# advertised as an `llm:` resource_slots row somewhere. A cloud/claude
+# rung-0, or a model served nowhere, must mint host-agnostic (no requires).
+
+
+def test_plan_tick_served_model_stamps_llm_requires(
+    handler: TodoHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis.utils.llm import router
+
+    monkeypatch.setattr(
+        router, "planner_rung0_model", lambda alias, job_type=None: "qwen-served-x"
+    )
+    store.sync_host_resource_slots("melchior", {"llm:qwen-served-x": 1})
+
+    r = handler.put(text="planner brief, served model", meta={"llm_tier": "local"})
+    rid = id_of(r.body)
+    run_dispatch_pass(store)
+
+    children = _child_jobs_under(store, rid)
+    assert len(children) == 1
+    assert children[0]["meta"]["requires"] == {"llm:qwen-served-x": 1}
+
+
+def test_plan_tick_cloud_model_gets_no_requires(
+    handler: TodoHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """rung-0 resolves to a claude/cloud model → planner_rung0_model returns
+    None → no requires key at all (host-agnostic, byte-identical to before
+    this affinity gate existed)."""
+    from precis.utils.llm import router
+
+    monkeypatch.setattr(
+        router, "planner_rung0_model", lambda alias, job_type=None: None
+    )
+
+    r = handler.put(text="planner brief, cloud model", meta={"llm_tier": "opus"})
+    rid = id_of(r.body)
+    run_dispatch_pass(store)
+
+    children = _child_jobs_under(store, rid)
+    assert len(children) == 1
+    assert "requires" not in children[0]["meta"]
+
+
+def test_plan_tick_served_model_absent_from_resource_slots_gets_no_requires(
+    handler: TodoHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The resolved model isn't advertised as an ``llm:`` slot anywhere (not
+    seeded on any host) — gate stays dark rather than stamping an
+    unsatisfiable requirement that would strand the job unclaimed forever."""
+    from precis.utils.llm import router
+
+    monkeypatch.setattr(
+        router, "planner_rung0_model", lambda alias, job_type=None: "qwen-nowhere"
+    )
+    # deliberately no store.sync_host_resource_slots(...) for llm:qwen-nowhere
+
+    r = handler.put(text="planner brief, unserved model", meta={"llm_tier": "local"})
+    rid = id_of(r.body)
+    run_dispatch_pass(store)
+
+    children = _child_jobs_under(store, rid)
+    assert len(children) == 1
+    assert "requires" not in children[0]["meta"]
+
+
+def test_non_plan_tick_job_never_gets_served_model_requires(
+    handler: TodoHandler, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The narrow gate is plan_tick-only — even if the resolver would happily
+    return a served model, a non-plan_tick job_type is never touched."""
+    from precis.utils.llm import router
+
+    monkeypatch.setattr(
+        router, "planner_rung0_model", lambda alias, job_type=None: "qwen-served-x"
+    )
+    store.sync_host_resource_slots("melchior", {"llm:qwen-served-x": 1})
+
+    r = handler.put(
+        text="a fix_gripe job, not a planner tick",
+        meta={"executor": "claude_inproc", "job_type": "fix_gripe", "params": {}},
+    )
+    rid = id_of(r.body)
+    run_dispatch_pass(store)
+
+    children = _child_jobs_under(store, rid)
+    assert len(children) == 1
+    assert children[0]["meta"]["job_type"] == "fix_gripe"
+    assert "requires" not in children[0]["meta"]
+
+
 def test_succeeded_child_job_does_not_block_redispatch(
     handler: TodoHandler, store: Store
 ) -> None:

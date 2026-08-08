@@ -441,6 +441,90 @@ def test_self_gating_falls_back_when_capability_unadvertised(store: Store) -> No
     assert "reserved" not in rows[0][2]  # nothing reserved (self-gated off)
 
 
+# ── llm:-requirement is a HARD claim veto (unlike the gpu soft-drop above) ──
+#
+# Non-``llm:`` requires (``gpu`` etc.) keep the soft self-gate:
+# ``test_self_gating_falls_back_when_capability_unadvertised`` and
+# ``test_autocatpath_seed_on_gpu_less_host_claims_unthrottled`` already pin
+# that an unadvertised non-``llm:`` requirement is dropped and the job still
+# claims. An ``llm:`` requirement is the opposite: the job drives a specific
+# served model, so an unadvertised ``llm:`` slot skips the claim entirely
+# (the row stays queued, retried until a host that serves the model claims
+# it) rather than proceeding unreserved.
+
+
+def test_llm_requirement_claimed_on_host_that_advertises_it(store: Store) -> None:
+    store.sync_host_resource_slots("host_llm_a", {"llm:qwen-x": 1})
+    jid = _queue_job(store, executor="ex_llm_a", requires={"llm:qwen-x": 1})
+    rows = _claim(store, "ex_llm_a", "host_llm_a")
+    assert [r[0] for r in rows] == [jid]
+    assert rows[0][2]["reserved"] == {"host": "host_llm_a", "slots": {"llm:qwen-x": 1}}
+    assert _free(store, "host_llm_a", "llm:qwen-x") == 0
+
+
+def test_llm_requirement_not_claimed_on_host_that_does_not_advertise_it(
+    store: Store,
+) -> None:
+    """No ``llm:qwen-x`` row on this host at all — the claim is skipped
+    (hard veto), unlike an unadvertised ``gpu`` requirement which would
+    still claim, unreserved."""
+    jid = _queue_job(store, executor="ex_llm_b", requires={"llm:qwen-x": 1})
+    rows = _claim(store, "ex_llm_b", "host_llm_b_no_advert")
+    assert rows == []  # not claimed — stays queued
+    with store.pool.connection() as conn:
+        meta_row = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s", (jid,)
+        ).fetchone()
+    assert meta_row is not None
+    assert "reserved" not in meta_row[0]
+    # confirm it's genuinely still queued (claimable), not silently dropped —
+    # a second claim pass after advertising the resource picks it up.
+    store.sync_host_resource_slots("host_llm_b_no_advert", {"llm:qwen-x": 1})
+    rows2 = _claim(store, "ex_llm_b", "host_llm_b_no_advert")
+    assert [r[0] for r in rows2] == [jid]
+
+
+def test_llm_requirement_target_node_claimable_when_node_advertises(
+    store: Store,
+) -> None:
+    """target_node=H + requires llm:X, H advertises llm:X → claimable on H
+    (reservation lands on the target_node, not the claiming host identity)."""
+    store.sync_host_resource_slots("spark_llm", {"llm:qwen-x": 1})
+    jid = _queue_typed_job(
+        store,
+        executor="ex_llm_c",
+        job_type="demo",
+        target_node="spark_llm",
+        requires={"llm:qwen-x": 1},
+    )
+    rows = _claim(store, "ex_llm_c", "melchior_llm", node="spark_llm")
+    assert [r[0] for r in rows] == [jid]
+    assert rows[0][2]["reserved"] == {"host": "spark_llm", "slots": {"llm:qwen-x": 1}}
+    assert _free(store, "spark_llm", "llm:qwen-x") == 0
+
+
+def test_llm_requirement_target_node_skipped_when_node_does_not_advertise(
+    store: Store,
+) -> None:
+    """target_node=H + requires llm:X, H does NOT advertise llm:X → skipped,
+    not claimed unreserved."""
+    jid = _queue_typed_job(
+        store,
+        executor="ex_llm_d",
+        job_type="demo",
+        target_node="spark_llm_bare",
+        requires={"llm:qwen-x": 1},
+    )
+    rows = _claim(store, "ex_llm_d", "melchior_llm_d", node="spark_llm_bare")
+    assert rows == []
+    with store.pool.connection() as conn:
+        meta_row = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s", (jid,)
+        ).fetchone()
+    assert meta_row is not None
+    assert "reserved" not in meta_row[0]
+
+
 # ── gr192371/gr197264: autocatpath_seed gpu reservation ───────────────────
 
 

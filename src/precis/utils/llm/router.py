@@ -1617,6 +1617,36 @@ def resolve_chain(tier: Tier, *, tools_needed: bool, backend: Backend) -> list[R
     return rungs
 
 
+def planner_rung0_model(model_alias: str, job_type: str | None = None) -> str | None:
+    """The concrete model id a planner tick for ``model_alias`` will drive on
+    rung 0, when that rung is an OSS model-carrying transport — else ``None``.
+
+    Mirrors ``plan_tick._select_planner_transport``'s resolution (tier alias →
+    operations override → resolved placement chain → rung 0) so the affinity
+    decision agrees with the harness the tick will actually run. Returns
+    ``rung0.model`` only for a ``LOCAL`` / ``OPENAI_TOOLS`` rung that pins a
+    concrete model (the served-OSS case, a candidate ``llm:<model>`` slot); a
+    ``claude`` cloud rung (no local serving) or a model-less rung yields
+    ``None``. The caller decides whether that model is actually *served* (an
+    advertised slot) before gating a job on it — this function only says which
+    model the tick would use, not where it lives.
+    """
+    from precis.utils.llm import operations
+
+    tier = PLANNER_TIER_BY_ALIAS.get(model_alias, Tier.FRONTIER)
+    op = operations.resolve_op(job_type) if job_type else None
+    if op is not None:
+        tier = op[0]
+    backend = resolve_backend()
+    ladder = resolve_chain(tier, tools_needed=True, backend=backend)
+    if not ladder:
+        return None
+    rung0 = ladder[0]
+    if rung0.model and rung0.transport in (Transport.LOCAL, Transport.OPENAI_TOOLS):
+        return rung0.model
+    return None
+
+
 def _placement_of(rung: Rung) -> str:
     """``'cloud'`` / ``'local'`` for one rung — the string form of
     :func:`_rung_is_cloud`, recorded on :attr:`LlmResult.placement` and
@@ -1688,6 +1718,51 @@ def _apply_cloud_throttle(chain: list[Rung]) -> list[Rung]:
     if live_config.cloud_enabled():
         return chain
     return [rung for rung in chain if not _rung_is_cloud(rung)]
+
+
+def _skip_unserved_local_rung(chain: list[Rung], model: str) -> list[Rung]:
+    """Drop a leading loopback ``LOCAL`` rung that has no live endpoint on this
+    host, returning the tail so :func:`dispatch` advances straight to the
+    fallback instead of dispatching a guaranteed ``ECONNREFUSED``.
+
+    A ``Transport.LOCAL`` rung 0 routes through ``_dispatch_local`` → the
+    ``PRECIS_SUMMARIZE_LLM_URL`` default ``http://127.0.0.1:4000/v1`` (the
+    retired litellm proxy) *unless* a reserved ``served_by`` slot pins a real
+    llama-swap endpoint. On a host that doesn't serve the model, no slot is
+    reserved, so the call hits the dead ``:4000`` and fails over — logging a WARN
+    every time (the non-serving-host failover storm). Detect that up front with a
+    read-only served-set test and prune the rung.
+
+    Left **unchanged** (returns ``chain``) when any guard fails, so the pruning
+    can only ever skip a rung that was certain to fail:
+      * fewer than 2 rungs — a rung-0-only chain must surface its own error (and
+        a strict ``placement='local'`` pin that filtered down to one local rung
+        must not silently escape to cloud);
+      * rung 0 isn't ``Transport.LOCAL`` (a cloud/tools rung has its own wire);
+      * ``PRECIS_SUMMARIZE_LLM_URL`` is set — an operator pointed the loopback at
+        a real endpoint, so it isn't the dead default;
+      * the model *is* served on this host — its reserved slot will pin a live
+        endpoint (the melchior path), so the rung works.
+    """
+    if len(chain) < 2:
+        return chain
+    rung0 = chain[0]
+    if rung0.transport is not Transport.LOCAL:
+        return chain
+    if os.environ.get("PRECIS_SUMMARIZE_LLM_URL"):
+        return chain
+    from precis.utils.llm import local_serving as _local
+
+    served_model = rung0.model or model
+    if _local.served_locally(served_model):
+        return chain
+    log.debug(
+        "llm-failover: skipping unserved local rung 0 (model=%s) — not served on "
+        "this host and no PRECIS_SUMMARIZE_LLM_URL override, advancing to the "
+        "fallback rung instead of dispatching into the dead loopback wire",
+        served_model,
+    )
+    return chain[1:]
 
 
 def _apply_placement(chain: list[Rung], placement: str | None) -> list[Rung]:
@@ -1880,6 +1955,15 @@ def dispatch(req: LlmRequest) -> LlmResult:
             ),
             paused=True,
         )
+    # Serving-aware prune: a loopback ``LOCAL`` rung 0 on a host that does NOT
+    # serve the model would fall to the retired ``:4000`` default and ECONNREFUSE
+    # on every call (the ~8000 WARN/24h "llm-failover: rung 0 … failed" storm on
+    # non-serving hosts), then fail over to the next rung anyway. Drop it up front
+    # — before the breaker/transport gates below, so they see the rung that will
+    # actually run — and advance straight to the fallback. A served host keeps its
+    # rung 0 (``acquire`` pins a live llama-swap endpoint later); a real
+    # ``PRECIS_SUMMARIZE_LLM_URL`` override or a rung-0-only chain is left alone.
+    ladder = _skip_unserved_local_rung(ladder, model)
     transport = ladder[0].transport
     # Wrap in the FailoverProvider only when there's genuinely a ladder to walk:
     # the failover flag is on (preserves the pre-Phase-B flag-on wrapping

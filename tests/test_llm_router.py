@@ -683,6 +683,13 @@ def test_dispatch_acquires_slot_under_chain_rung_model_not_tier_alias(
 
     monkeypatch.setattr(ls, "acquire", fake_acquire)
     monkeypatch.setattr(ls, "release", lambda slot: None)
+    # This host serves the rung's local model — model the serving side completely
+    # so the serving-aware prune (`_skip_unserved_local_rung`, which consults
+    # `served_locally`) keeps rung 0 rather than dropping it to cloud. In prod
+    # `served_locally` and `acquire` share the same cached served-set, so a faked
+    # serving `acquire` implies a True `served_locally`; without this the prune
+    # reads the ambient (unseeded) store and non-deterministically drops the rung.
+    monkeypatch.setattr(ls, "served_locally", lambda model: True)
 
     seen: dict[str, object] = {}
 
@@ -2526,6 +2533,94 @@ def test_apply_cloud_throttle_empties_cloud_only_tier(
     assert router._apply_cloud_throttle(chain) == []
 
 
+# ── _skip_unserved_local_rung: drop a dead loopback LOCAL rung 0 ─────────
+#
+# On a host that doesn't locally serve a model, a leading LOCAL rung has no
+# live endpoint — it dials the retired ``:4000`` litellm proxy and ECONNREFUSEs
+# every time. This prunes that guaranteed-dead rung so dispatch advances
+# straight to the fallback instead of a failover-storm WARN per call.
+
+
+def test_skip_unserved_local_rung_drops_unserved_local_rung_0(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "precis.utils.llm.local_serving.served_locally", lambda model: False
+    )
+    monkeypatch.delenv("PRECIS_SUMMARIZE_LLM_URL", raising=False)
+    chain = [
+        Rung(Transport.LOCAL, model="summarizer", label="primary"),
+        Rung(Transport.CLAUDE_P, label="claude-fallback"),
+    ]
+
+    out = router._skip_unserved_local_rung(chain, "summarizer")
+
+    assert out == chain[1:]
+
+
+def test_skip_unserved_local_rung_kept_when_served_locally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The melchior case: this host DOES serve the model → the rung stays."""
+    monkeypatch.setattr(
+        "precis.utils.llm.local_serving.served_locally", lambda model: True
+    )
+    monkeypatch.delenv("PRECIS_SUMMARIZE_LLM_URL", raising=False)
+    chain = [
+        Rung(Transport.LOCAL, model="summarizer", label="primary"),
+        Rung(Transport.CLAUDE_P, label="claude-fallback"),
+    ]
+
+    assert router._skip_unserved_local_rung(chain, "summarizer") == chain
+
+
+def test_skip_unserved_local_rung_kept_when_operator_url_override_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PRECIS_SUMMARIZE_LLM_URL set → an operator pointed the loopback at a
+    real endpoint, so the rung isn't dialing the dead default — keep it."""
+    monkeypatch.setattr(
+        "precis.utils.llm.local_serving.served_locally", lambda model: False
+    )
+    monkeypatch.setenv("PRECIS_SUMMARIZE_LLM_URL", "http://10.0.0.5:8080/v1")
+    chain = [
+        Rung(Transport.LOCAL, model="summarizer", label="primary"),
+        Rung(Transport.CLAUDE_P, label="claude-fallback"),
+    ]
+
+    assert router._skip_unserved_local_rung(chain, "summarizer") == chain
+
+
+def test_skip_unserved_local_rung_single_rung_chain_left_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rung-0-only chain (len < 2) must surface its own error rather than
+    be pruned to an empty chain."""
+    monkeypatch.setattr(
+        "precis.utils.llm.local_serving.served_locally", lambda model: False
+    )
+    monkeypatch.delenv("PRECIS_SUMMARIZE_LLM_URL", raising=False)
+    chain = [Rung(Transport.LOCAL, model="summarizer", label="primary")]
+
+    assert router._skip_unserved_local_rung(chain, "summarizer") == chain
+
+
+def test_skip_unserved_local_rung_noop_when_rung_0_not_local(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rung 0 isn't LOCAL (a cloud/tools rung has its own wire) → unchanged."""
+    monkeypatch.setattr(
+        "precis.utils.llm.local_serving.served_locally", lambda model: False
+    )
+    monkeypatch.delenv("PRECIS_SUMMARIZE_LLM_URL", raising=False)
+    chain = [
+        Rung(Transport.OPENAI_TOOLS, model="glm", label="oss"),
+        Rung(Transport.CLAUDE_AGENT, label="claude-fallback"),
+    ]
+
+    assert router._skip_unserved_local_rung(chain, "glm") == chain
+
+
 def test_dispatch_cloud_throttle_pauses_cloud_only_tier(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3532,6 +3627,112 @@ def test_planner_model_choices_catalog_card_populates_size_and_context(
 
     assert rows["sonnet"]["size"] == "235B"
     assert rows["sonnet"]["context"] == 131072
+
+
+# ── planner_rung0_model: the concrete OSS model id an affinity gate keys on ──
+#
+# ``dispatch.py``'s ``_served_model_requirement`` stamps ``meta.requires =
+# {"llm:<model>": 1}`` on a minted ``plan_tick`` only when this resolves a
+# concrete served-OSS model id — never for a claude/cloud rung 0.
+
+
+def test_planner_rung0_model_returns_model_for_local_transport_rung(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        router,
+        "resolve_chain",
+        lambda tier, **kw: [Rung(Transport.LOCAL, model="qwen-x")],
+    )
+
+    assert router.planner_rung0_model("local") == "qwen-x"
+
+
+def test_planner_rung0_model_returns_model_for_openai_tools_rung(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        router,
+        "resolve_chain",
+        lambda tier, **kw: [Rung(Transport.OPENAI_TOOLS, model="qwen3-235b-a22b-2507")],
+    )
+
+    assert router.planner_rung0_model("sonnet") == "qwen3-235b-a22b-2507"
+
+
+def test_planner_rung0_model_none_for_claude_rung0(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cloud/claude rung 0 (no local serving) → None — nothing to gate on."""
+    monkeypatch.setattr(
+        router,
+        "resolve_chain",
+        lambda tier, **kw: [Rung(Transport.CLAUDE_AGENT, model="claude-opus-4-8")],
+    )
+
+    assert router.planner_rung0_model("opus") is None
+
+
+def test_planner_rung0_model_none_when_rung0_has_no_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An OSS-transport rung with no pinned model (inherits the tier default,
+    not a concrete served-model id) doesn't resolve to a gate-able model."""
+    monkeypatch.setattr(
+        router, "resolve_chain", lambda tier, **kw: [Rung(Transport.OPENAI_TOOLS)]
+    )
+
+    assert router.planner_rung0_model("local") is None
+
+
+def test_planner_rung0_model_none_for_empty_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(router, "resolve_chain", lambda tier, **kw: [])
+
+    assert router.planner_rung0_model("opus") is None
+
+
+def test_planner_rung0_model_job_type_registry_overrides_alias_tier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A registered ``llm.op.<job_type>`` tier override wins over the alias's
+    own tier — mirrors ``plan_tick``'s ``_select_planner_transport`` reading
+    the same registry, so the affinity gate agrees with the harness the tick
+    will actually run under."""
+    seen: list[Tier] = []
+
+    def _capture(tier: Tier, **kw: object) -> list[Rung]:
+        seen.append(tier)
+        return [Rung(Transport.OPENAI_TOOLS, model="qwen-registry")]
+
+    monkeypatch.setattr(router, "resolve_chain", _capture)
+    monkeypatch.setattr(
+        "precis.utils.llm.operations.resolve_op",
+        lambda source: (Tier.BIG, None),
+    )
+
+    # "opus" alone maps to FRONTIER, but the job_type registry says BIG.
+    result = router.planner_rung0_model("opus", "plan_tick")
+
+    assert result == "qwen-registry"
+    assert seen == [Tier.BIG]
+
+
+def test_planner_rung0_model_no_job_type_uses_alias_tier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[Tier] = []
+
+    def _capture(tier: Tier, **kw: object) -> list[Rung]:
+        seen.append(tier)
+        return [Rung(Transport.OPENAI_TOOLS, model="qwen-x")]
+
+    monkeypatch.setattr(router, "resolve_chain", _capture)
+
+    router.planner_rung0_model("opus")
+
+    assert seen == [Tier.FRONTIER]
 
 
 # ── structured LLM selection: _apply_placement / rung_knobs /

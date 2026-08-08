@@ -434,6 +434,29 @@ drop it"). That was wrong — the two sum different things — and is corrected
 there. Still pairs with the dark `quota.py evaluate()`: OAuth *quota*, as
 distinct from dollars, has no global gate.
 
+## 🔀 A stamped `llm:<model>` requirement can strand a `plan_tick` job invisibly
+
+Status: open · Severity: low · Owner: `workers/nursery.py` dispatch-stall check + `executors/_common.py::_finish_claim` · Test: a queued `plan_tick` whose `meta.requires={"llm:<model>"}` names a model no host advertises surfaces an alert (or a bounded degrade), not silent indefinite queueing.
+
+The serving-affinity gate stamps `meta.requires={"llm:<model>":1}` on a `plan_tick`
+child when the model is advertised *at mint time*, and `_finish_claim` hard-vetoes
+any host not advertising the slot. If the serving host later loses that `served_by`
+slot (decommission, reconcile, rename), the job sits `STATUS:queued` forever with
+only a `log.debug` line — no `attempts` bump, no poison guard. The nursery
+`dispatch-stall` check only fires when `n_running == 0` fleet-wide, so a single stuck
+job stays invisible while other `claude_inproc` work runs. Need per-job visibility (a
+queued-with-unsatisfiable-requirement alert) or a bounded fallback that degrades a
+long-unclaimable served-OSS tick to cloud after N cycles. (Introduced with the
+serving-affinity gate; before it no job carried an `llm:` requirement.)
+
+Also parked here (pre-existing, low-likelihood): the `_local.acquire(model)` calls in
+`router.py::dispatch`/`dispatch_async` key the slot reservation on the top-level
+resolved `model`, while `_skip_unserved_local_rung` keys its serving check on
+`rung0.model or model`. Harmless under current config (`llm.chain.small`'s `LOCAL`
+rung model coincides with `resolve_model(SMALL)`), but an operator override pinning a
+`LOCAL` rung to a different model would make the prune-check and the reservation
+disagree on the `llm:` resource name. Key both on the rung model.
+
 ## 🖥️ Run the local-model jobs on a spark worker, not melchior
 
 Status: open · Severity: medium · Owner: `deploy/` host profiles + `workers/registry.py` · Test: a `plan_tick` / `briefing` job is claimed and completed by a spark-node worker with no OAuth credential present.
@@ -455,9 +478,14 @@ Three things to work out:
 - **Which node.** Co-locating the worker with a llama.cpp RPC peer competes for
   the same cores; the existing nice-all-jobs deploy reserves cores 0-1
   (memory `spark_ssh_and_compute_niceness`), which is the lever.
-- **Eligibility, not affinity.** The gate should be "can reach the local
-  endpoint", not a hard-coded hostname — otherwise this trades melchior's SPOF
-  for a new one. The scheduler's `eligible` callable is the existing pattern.
+- **Eligibility, not affinity.** *Mechanism now exists* — an `llm:<model>`
+  entry in `meta.requires` is a hard claim veto (`executors/_common.py::
+  _finish_claim`): only a host advertising that served-model slot may claim the
+  job, auto-following wherever the model is served, no hard-coded hostname.
+  `dispatch.py::_served_model_requirement` stamps it on `plan_tick` children
+  whose rung-0 model resolves to a served OSS model. **Remaining:** extend the
+  stamp to the other `claude_inproc` OSS job types (`briefing`, `card_forge`,
+  `quest_tick`) and prove a non-melchior serving host actually pulls one.
 - **The residual claude lane.** Anything still on `claude_agent` (a reverted
   operation, `fix_gripe`) must keep landing on melchior, so this is a *second*
   eligible host for one lane, not a migration of the whole profile.

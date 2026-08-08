@@ -174,6 +174,28 @@ def _plausibly_served_here(model: str, served_resources: set[str]) -> bool:
     )
 
 
+def served_locally(model: str) -> bool:
+    """Whether THIS host advertises ``llm:<model>`` — a read-only membership test
+    with no slot reservation.
+
+    For a caller that must decide, *before* dispatching, whether the local
+    loopback wire has a live endpoint for ``model`` (a served host pins a real
+    llama-swap endpoint via :func:`acquire`; a non-serving host would otherwise
+    fall to the retired ``:4000`` default and ECONNREFUSE). Returns ``False``
+    when there is no process store — can't tell, so assume not served, matching
+    :func:`acquire`'s dark-path default. Reuses the same host-scoped served-set
+    (and its cache) as :func:`acquire`, so it costs at most one cached set test.
+    """
+    if not model:
+        return False
+    from precis.budget import meter
+
+    store = meter.active_store()
+    if store is None:
+        return False
+    return f"llm:{model}" in _served_resources(store, _local_host())
+
+
 def acquire(model: str) -> LocalSlot | None:
     """Reserve a local serving slot for ``model`` if this host serves it.
 
@@ -316,4 +338,4 @@ def release(slot: LocalSlot | None) -> None:
         )
 
 
-__all__ = ["LocalSlot", "acquire", "release", "reset_cache"]
+__all__ = ["LocalSlot", "acquire", "release", "reset_cache", "served_locally"]
