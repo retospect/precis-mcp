@@ -30,4 +30,15 @@ Package-level invariants (each enforced where named):
 - **Engine deploys re-score.** The autocatpath content key folds an
   engine-version token so new engine results never dedupe onto stale jobs;
   ``compute.redispatch_candidates`` / ``reset_compute`` are the CLIs.
+- **One proposal in flight (WIP=1).** ``tick.max_proposals_per_tick``
+  (``PRECIS_QUEST_MAX_PROPOSALS``, default 1) caps materialise/dispatch per
+  tick; the coordinator's per-quest backpressure holds the next tick until
+  that proposal's sims land. Extra proposals stay ``hypothesis`` leads.
+- **The bad energies are part of the score** (catpath >= 0.5.2):
+  ``side_span_margin`` (max), ``poison_margin`` (max), ``trap_depth``
+  (harvested diagnostic) ride the barrier's harvest + trust gate
+  (``compute._AUTOCATPATH_SELECTIVITY_KEYS``); the default rubric ranks on
+  barrier/energy/side_span_margin/poison_margin, and ``reaction_config.
+  poisons`` must screen at least one species or ``poison_margin`` is an
+  objective nothing produces (empty-frontier trap).
 """

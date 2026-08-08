@@ -315,7 +315,7 @@ wheels = [
 
 [[package]]
 name = "autocatpath"
-version = "0.4.0"
+version = "0.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "ase" },
@@ -326,9 +326,9 @@ dependencies = [
     { name = "rdkit" },
     { name = "scipy" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/89/21/a7fd196aa32370a9fd2f0b0d135f01743e619cf9b6f1dd0c6a755a1b22ba/autocatpath-0.4.0.tar.gz", hash = "sha256:f5b3262424b5890e176d1907414f8fdfea668de655705ae6eb00f4f73881521d", size = 2649721, upload-time = "2026-07-28T15:51:00.803Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/7c/b3/7875e62e42b2a2dcda90332dca4216ab82eaaf458928f19b332dd21d150b/autocatpath-0.6.0.tar.gz", hash = "sha256:57dd155806aac2b9c8549402592418c83eced54839ff0e5b9d9e0fb36d7bb68a", size = 2537914, upload-time = "2026-08-08T21:41:35.351Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5e/2f/e9d723d794f05431526dbc2c79a72552ff4f88ee8bae2429c99cb442f0a4/autocatpath-0.4.0-py3-none-any.whl", hash = "sha256:7cf0c1a8cc2124017e8009689b885fa6d201cd69ab96aebd3b0ddd825c333175", size = 81929, upload-time = "2026-07-28T15:50:57.86Z" },
+    { url = "https://files.pythonhosted.org/packages/81/15/9b6519048c08b9e3bc71df58e46acc8bb335cf5224a202d67e22e12d1cfd/autocatpath-0.6.0-py3-none-any.whl", hash = "sha256:ea920ac435bf9432e906768519fbe9d24d67ce353d42b5e831efd7cbcbcacf4a", size = 122511, upload-time = "2026-08-08T21:41:31.924Z" },
 ]
 
 [package.optional-dependencies]
@@ -879,6 +879,34 @@ nvrtc = [
 ]
 nvtx = [
     { name = "nvidia-nvtx", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
+]
+
+[[package]]
+name = "cuequivariance"
+version = "0.11.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "networkx" },
+    { name = "numpy" },
+    { name = "opt-einsum" },
+    { name = "scipy" },
+    { name = "sympy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/dd/98/be6b9d839c351deacfae5ee2b5e2b66836253131d34a543d575b883bf995/cuequivariance-0.11.1.tar.gz", hash = "sha256:86c754cfc301227945a3e33a56bc2dc4ecc96328dc5246d91bda4b087cb86278", size = 219501, upload-time = "2026-08-07T07:27:24.573Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e7/a8/7f99cfa83f61d2d8cb29f31e1f90a6233873a6038b4cdfb30179ef90e5a6/cuequivariance-0.11.1-py3-none-any.whl", hash = "sha256:b570d4dc6f798a06c7333283a4b36e580272985abcb65843339984a84544395c", size = 250800, upload-time = "2026-08-07T07:27:23.293Z" },
+]
+
+[[package]]
+name = "cuequivariance-torch"
+version = "0.11.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cuequivariance" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/bb/1b/3f77dc82eee478b701ecc2ef18e8d63aad62073bef1440879947a4451b1b/cuequivariance_torch-0.11.1.tar.gz", hash = "sha256:8f9f7485bee768ab5f6c004a0110b0f951d1a73cb0d6dd66b8f1ccd818367727", size = 170094, upload-time = "2026-08-07T07:27:30.73Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4e/d0/4b9da3d9c5749bf2c93f2818af4dc306f3b3ccc671f68f6820635fd53b74/cuequivariance_torch-0.11.1-py3-none-any.whl", hash = "sha256:7a649eb59e623ef90f4862d84972a9aa12142892814f7a00dd652a1206628391", size = 184379, upload-time = "2026-08-07T07:27:29.597Z" },
 ]
 
 [[package]]
@@ -3249,6 +3277,7 @@ catalyst = [
 ]
 catalyst-gpu = [
     { name = "autocatpath", extra = ["mace"] },
+    { name = "cuequivariance-torch", marker = "sys_platform == 'linux'" },
 ]
 chem = [
     { name = "rdkit" },
@@ -3338,9 +3367,10 @@ requires-dist = [
     { name = "ase", marker = "extra == 'dft'", specifier = ">=3.22" },
     { name = "ase", marker = "extra == 'dft-ml'", specifier = ">=3.22" },
     { name = "ase", marker = "extra == 'import'", specifier = ">=3.22" },
-    { name = "autocatpath", marker = "extra == 'catalyst'", specifier = ">=0.4" },
-    { name = "autocatpath", extras = ["mace"], marker = "extra == 'catalyst-gpu'", specifier = ">=0.4" },
+    { name = "autocatpath", marker = "extra == 'catalyst'", specifier = ">=0.6.0" },
+    { name = "autocatpath", extras = ["mace"], marker = "extra == 'catalyst-gpu'", specifier = ">=0.6.0" },
     { name = "cadquery-ocp-novtk", marker = "extra == 'cad-step'", specifier = ">=7.8" },
+    { name = "cuequivariance-torch", marker = "sys_platform == 'linux' and extra == 'catalyst-gpu'" },
     { name = "discord-py", marker = "extra == 'asa'", specifier = ">=2.4" },
     { name = "easyeda2kicad", marker = "extra == 'pcb'", specifier = ">=0.8" },
     { name = "fastapi", marker = "extra == 'web'", specifier = ">=0.110" },

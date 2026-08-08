@@ -6,11 +6,18 @@ a `quest` whose meta wires the whole loop:
 * ``meta.reaction_config`` — autocatpath's worked NO→NH₃/Pd example
   (`examples/no_to_nh3_pd.yaml`). :func:`precis.quest.compute.run_compute_step`
   reads it and co-dispatches a autocatpath barrier eval with every candidate's relax.
-* ``meta.rubric_objectives`` — the two measured axes that actually land **today**:
-  the autocatpath ``barrier`` (min) and the relax ``energy`` (min, the stability
-  proxy). ``formation_e`` is a future refinement — declaring an objective nothing
-  produces would leave every candidate *unevaluated* (an empty frontier), so we
-  rank on ``energy`` until formation energy is computed.
+* ``meta.rubric_objectives`` — the measured axes that actually land **today**:
+  the autocatpath ``barrier`` (min), the relax ``energy`` (min, the stability
+  proxy), and — catpath >= 0.5.2 — the selectivity/poisoning pair
+  ``side_span_margin`` (max: best side-product route's span minus the best
+  product route's — the "relative barrier for the side product") and
+  ``poison_margin`` (max: worst screened poison's ``delta_vs_substrate`` —
+  extrinsic poisoning resistance; needs ``reaction_config.poisons``).
+  ``trap_depth`` (min, intrinsic self-poisoning) is harvested + displayed
+  but deliberately NOT a default Pareto axis — five axes make domination
+  too weak; opt in per quest via ``rubric_objectives``. ``formation_e`` is a
+  future refinement — declaring an objective nothing produces would leave
+  every candidate *unevaluated* (an empty frontier).
 * ``meta.graduation`` — the in-silico ceiling that promotes a good design to a
   ``needs-experiment`` deed (:mod:`precis.quest.graduate`). A starting bar to tune.
 * ``meta.param_space`` — non-chemistry scaffolding (coverage count, buildable
@@ -52,8 +59,16 @@ REACTION_CONFIG: dict[str, Any] = {
     "substrate": "NO",
     "target": "NH3",
     "network": "ammonia",
+    # CO is THE classic NO-reduction site-blocker (three-way-catalyst
+    # chemistry) — screened so the default `poison_margin` objective always
+    # lands a measure (an objective nothing produces = empty-frontier trap).
+    "poisons": ["CO"],
     "slab": {"element": "Pd", "size": [3, 3, 4], "vacuum": 10.0, "fix_layers": 2},
-    "mlip": {"backend": "mace", "model": "medium", "device": "cuda"},
+    # dtype "mixed" (engine >= 0.6.0): relaxations descend in float32 and
+    # finish in float64; NEB always runs float64 — near-float64 accuracy at
+    # roughly float32 speed. cueq defaults to "auto" (cuEquivariance kernels
+    # when installed — the catalyst-gpu extra ships them; silent fallback).
+    "mlip": {"backend": "mace", "model": "medium", "device": "cuda", "dtype": "mixed"},
     "search": {
         "neb_images": 7,
         "fmax": 0.05,
@@ -66,10 +81,14 @@ REACTION_CONFIG: dict[str, Any] = {
     },
 }
 
-#: Rank on the two axes measured today: autocatpath barrier + relax energy (both min).
+#: Rank on the four measured axes: barrier + relax energy (min) and the
+#: catpath >= 0.5.2 selectivity/poisoning pair (max) — see the module
+#: docstring for why trap_depth is deliberately not a fifth axis.
 RUBRIC_OBJECTIVES: list[dict[str, str]] = [
     {"key": "barrier", "sense": "min"},
     {"key": "energy", "sense": "min"},
+    {"key": "side_span_margin", "sense": "max"},
+    {"key": "poison_margin", "sense": "max"},
 ]
 
 #: In-silico ceiling — a candidate whose rate-limiting barrier drops below this

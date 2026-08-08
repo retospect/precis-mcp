@@ -967,6 +967,64 @@ class TestGeneralizedFrontier:
         assert untrusted.flags["barrier_untrusted_value"] == 0.1
         assert untrusted.flags["barrier_trusted"] is False
 
+    def test_untrusted_barrier_also_excludes_selectivity_scalars_from_ranking(
+        self, store: Any
+    ) -> None:
+        """The barrier's untrusted-value preservation (``flags[f"{k}_
+        untrusted_value"]``) extends to the three selectivity/poisoning
+        scalars — measured over the SAME untrusted pathway as the barrier, so
+        `side_span_margin`/`trap_depth`/`poison_margin` are popped out of
+        `measures` and their raw value preserved as a flag, exactly like
+        `barrier`."""
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.stamp_ref_meta(
+            sid,
+            {
+                "barrier": 0.4,
+                "barrier_trusted": False,
+                "side_span_margin": 0.35,
+                "trap_depth": 0.7,
+                "poison_margin": -0.42,
+            },
+        )
+        c = _cand(store, sid)
+        for k in ("side_span_margin", "trap_depth", "poison_margin"):
+            assert k not in c.measures
+        assert c.flags["side_span_margin_untrusted_value"] == 0.35
+        assert c.flags["trap_depth_untrusted_value"] == 0.7
+        assert c.flags["poison_margin_untrusted_value"] == -0.42
+
+    def test_selectivity_naming_context_is_flags_only_never_a_measure(
+        self, store: Any
+    ) -> None:
+        """``side_worst``/``trap_worst``/``poison_verdicts`` are naming
+        context (a string or dict), never a ranking measure — they land in
+        `Candidate.flags` and are excluded from `measures` by the `_numeric`
+        filter, independent of the pathway's trust state."""
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.stamp_ref_meta(
+            sid,
+            {
+                "side_worst": "N2O*",
+                "trap_worst": "O*",
+                "poison_verdicts": {"CO": "blocks", "H2O": "weak"},
+            },
+        )
+        c = _cand(store, sid)
+        assert c.flags["side_worst"] == "N2O*"
+        assert c.flags["trap_worst"] == "O*"
+        assert c.flags["poison_verdicts"] == {"CO": "blocks", "H2O": "weak"}
+        for k in ("side_worst", "trap_worst", "poison_verdicts"):
+            assert k not in c.measures
+
     def test_all_untrusted_leaves_frontier_empty(self, store: Any) -> None:
         qid, ids = self._two_candidates(store)
         store.stamp_ref_meta(
@@ -1252,6 +1310,39 @@ class TestRubricComposite:
         c = _cand(store, sid)
         _apply_rubric_composite([c], _rubric_composite_for(store, qid))
         assert c.measures["score"] == pytest.approx(0.6)
+
+
+def test_measures_from_job_lifts_selectivity_scalars_and_context_uncoerced() -> None:
+    """`_autocatpath_measures_from_job` (the pure job-meta -> measures step
+    `harvest_measures` calls) lifts the three selectivity/poisoning ranking
+    scalars (numeric) alongside barrier, PLUS their naming context
+    (side_worst/trap_worst/poison_verdicts) verbatim — strings/dicts, never
+    coerced to a number."""
+    meta = {
+        "result": {
+            "barrier": 0.4,
+            "side_span_margin": 0.35,
+            "trap_depth": 0.7,
+            "poison_margin": -0.42,
+            "side_worst": "N2O*",
+            "trap_worst": "O*",
+            "poison_verdicts": {"CO": "blocks", "H2O": "weak"},
+            "limiting_factor": "poison",
+            "worst_problem": "CO binds within -0.42 eV of the substrate",
+        }
+    }
+    out = compute_mod._autocatpath_measures_from_job(meta)
+    assert out["barrier"] == 0.4
+    assert out["side_span_margin"] == 0.35
+    assert out["trap_depth"] == 0.7
+    assert out["poison_margin"] == -0.42
+    assert out["side_worst"] == "N2O*"
+    assert isinstance(out["side_worst"], str)
+    assert out["trap_worst"] == "O*"
+    assert out["poison_verdicts"] == {"CO": "blocks", "H2O": "weak"}
+    assert isinstance(out["poison_verdicts"], dict)
+    assert out["limiting_factor"] == "poison"
+    assert out["worst_problem"].startswith("CO binds")
 
 
 # ── autocatpath harvest: barrier → candidate meta → frontier (Slice 3) ────

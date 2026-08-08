@@ -249,14 +249,19 @@ dft-ml = ["ase>=3.22", "mace-torch>=0.3"]
 # compute extra below (mirrors dft/dft-ml) so a gateway venv can serve
 # get(kind='pathway') without pulling torch. Kept out of `all` (heavy,
 # host-specific like the other dft-ml/cad/pcb extras).
-catalyst = ["autocatpath>=0.4"]
+catalyst = ["autocatpath>=0.6.0"]
 # Catalyst reaction-pathway COMPUTE: pulls autocatpath's `mace` extra (torch +
 # MACE-MP) for in-process NEB/relax on the pinned GPU node (bio's shape, not
 # chem's container). Kept out of `all` — see wrinkle 2 in
 # docs/proposals/bundle-pathway-in-tree-plugin.md (mutually-exclusive ML
 # backends + this repo's own dormant `dft-ml` torch extra targeting the same
-# GPU node).
-catalyst-gpu = ["autocatpath[mace]>=0.4"]
+# GPU node). `cuequivariance-torch` makes the engine's `mlip.cueq: auto`
+# actually engage (same math, faster CUDA kernels) — upstream keeps its
+# `mace` extra lean, so the dep rides here; Linux-only (no macOS wheels).
+catalyst-gpu = [
+    "autocatpath[mace]>=0.6.0",
+    "cuequivariance-torch; sys_platform == 'linux'",
+]
 # Declarative matplotlib plot renderer.
 plot = ["matplotlib>=3.7", "pydantic>=2.0"]
 # Paid web tools (perplexity / wolfram / youtube transcripts).

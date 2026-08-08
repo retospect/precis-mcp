@@ -81,6 +81,19 @@ computed** — no new relax/NEB, closed-form optima, no search.
   fractions ∝ `exp(−ΔEa/kT)`; `null` = insufficient data — a fork with any
   missing or untrustworthy competitor barrier is never scored), and `T`
   (default **298.15 K**).
+- engine >= 0.5.2 also carries `meta.results.selectivity` (best
+  side-product route's span vs the best product route's —
+  `side_span_margin_eV` > 0 means every side product is harder to reach),
+  `results.traps` (per-state cheapest escape vs the best route's span;
+  `trap: true` = a self-poisoning resting state), and `results.poisons`
+  (per-species clean-slab `E_ads` vs the substrate's; verdict
+  `blocks`/`competitive`/`weak` — the site-competition screen, config
+  `poisons: ["CO"]`).
+- engine >= 0.6.0 adds `results.score` — the four-axis scorecard
+  (activity span + worst-case selectivity/poison/trap margins, each with
+  its ranked breakdown); its `limiting_factor` + one-line `worst_problem`
+  ride onto quest candidates as naming context ("what do I fix first"),
+  never as measures.
 - The explorer (`/refs/pathway/{id}`) re-renders the diagram at any `U`
   client-side (slider, `→ U_L` / `→ U_opt` snaps), shows RHE **and** SHE
   (`U_SHE = U_RHE − 0.0592·pH` at 298.15 K; PCET steps are pH-independent on

@@ -42,6 +42,7 @@ from precis.quest import gaps as gaps_mod
 from precis.quest.logbook import (
     ENTRY_TYPES,
     LOG_KIND,
+    MEASURED_BY,
     append_entry,
     clamp_entry_type,
 )
@@ -59,6 +60,24 @@ _LOGBOOK_TAIL = 8
 #: A frontier review steps back over accumulated history — a deeper tail than
 #: a cheap local tick.
 _LOGBOOK_TAIL_REVIEW = 20
+
+
+def max_proposals_per_tick() -> int:
+    """Materialise/dispatch at most this many proposals per tick (WIP cap).
+
+    Operator decision (2026-08-08): **one proposal at a time** — combined
+    with the coordinator's per-quest backpressure (no new tick while this
+    quest's sims are in flight, ``workers/job_types/quest_tick.py``), a cap
+    of 1 serializes the whole loop to a single proposal's fan-out in flight.
+    Extra proposals still land as `hypothesis` logbook entries (leads), just
+    not as sims — the next tick can re-propose the best of them against the
+    fresh frontier. Env ``PRECIS_QUEST_MAX_PROPOSALS`` overrides.
+    """
+    try:
+        n = int(os.environ.get("PRECIS_QUEST_MAX_PROPOSALS", "1"))
+    except ValueError:
+        return 1
+    return max(1, min(10, n))
 
 
 def quest_loop_enabled() -> bool:
@@ -525,6 +544,40 @@ def _reaction_context(store: Store, quest: Ref, *, fr: Any | None = None) -> str
         "repeat a composition already tried.\n"
     )
     creed = _explorers_creed(store, quest.id, fr=fr)
+    poisons = rc.get("poisons") or []
+    poisons_s = ", ".join(str(p) for p in poisons) if poisons else "none screened"
+    side_eg = " (e.g. NH2OH*, N2O*, N2)" if net == "ammonia" else ""
+    selectivity = (
+        "\n### Selectivity & poisoning — the bad energies are part of the "
+        "score\n"
+        "Each evaluation also measures, on YOUR slab:\n"
+        f"- `side_span_margin` (eV, **maximize**): the best side-product "
+        f"route's energetic span minus the best {tgt} route's. Positive = "
+        f"every side product{side_eg} is harder to reach than "
+        f"{tgt}; negative = the surface prefers a side product. The most "
+        "competitive side product is named per candidate (`side_worst`).\n"
+        "- `trap_depth` (eV, minimize): the deepest kinetic trap — a state "
+        "the mechanism reaches but cannot usefully leave (self-poisoning, "
+        "an over-stabilised resting state); the trapped state is named "
+        "(`trap_worst`).\n"
+        f"- `poison_margin` (eV, **maximize**): site competition vs screened "
+        f"poisons ({poisons_s}) — negative means the poison outcompetes "
+        f"{sub} for vacant sites (verdicts per species in "
+        "`poison_verdicts`).\n"
+        "Each evaluated candidate also carries the engine's verdict on "
+        "which axis limits it (`limiting_factor`: activity / selectivity / "
+        "poison / trap) and a one-line `worst_problem` — read these first "
+        "when deciding what the NEXT candidate should fix.\n"
+        "**Literature duty:** the dossier must answer, from the literature, "
+        f"(a) what is the most UNDESIRED side product of {sub} → {tgt} on "
+        "this class of surface, and (b) what is the most LIKELY poison in "
+        "realistic feeds. If it doesn't yet, emit `searches` for exactly "
+        "those questions. When the computed `side_worst`/`trap_worst`/"
+        "`poison_verdicts` name a species, say in the dossier whether the "
+        "literature considers it relevant for this chemistry — and if the "
+        "literature names a poison we do NOT screen yet, record that as a "
+        "gap (`ledger_add`, section `open`).\n"
+    )
     return (
         "\n## Reaction R — this is a catalyst-barrier quest\n"
         f"Every candidate is a **catalyst slab**. autocatpath places the reactants "
@@ -532,7 +585,8 @@ def _reaction_context(store: Store, quest: Ref, *, fr: Any | None = None) -> str
         f"the rate-limiting **barrier** (eV, an ML-potential NEB); a relax measures "
         f"the slab's **stability** (`energy`). You design the **surface**, NOT the "
         f"adsorbate — {knobs}. Minimise the barrier — beat the current best; "
-        f"there is no fixed floor, only a better catalyst.\n\n"
+        f"there is no fixed floor, only a better catalyst.\n"
+        f"{selectivity}\n"
         f"Build the slab with the compact `slab` op (do NOT hand-enumerate the {el} "
         f"atoms — the op builds the fcc(111) geometry ASE-exact so autocatpath can "
         f"inject it), then edit composition. Omit the top-level `cell` (the `slab` "
@@ -610,6 +664,7 @@ def build_tick_prompt(store: Store, quest: Ref, *, review: bool = False) -> str:
         literature=literature,
         reaction_context=_reaction_context(store, quest, fr=fr),
         entry_types=", ".join(sorted(ENTRY_TYPES)),
+        proposal_cap=max_proposals_per_tick(),
     )
 
 
@@ -696,7 +751,10 @@ Give 1–4 logbook entries. A `hypothesis` you'd test, an `observation` from the
 state, a `result` or `dead-end` that *closes* an open hypothesis, or a \
 `decision` on direction are the most useful. Keep the dossier tight.
 
-`proposals` (0–3) are candidate materials to simulate — each an atomistic \
+`proposals` (0–{proposal_cap} — the loop dispatches at most {proposal_cap} \
+per tick and waits for its sims before the next tick, so pick your best next \
+experiment rather than a spread) are candidate \
+materials to simulate — each an atomistic \
 `structure` (a periodic `cell` + `add_atom` ops with fractional coords, or a \
 `slab` bulk-template op that builds a metal surface for you — see the reaction \
 rules above if this is a catalyst quest). Only propose a candidate you can \
@@ -947,6 +1005,7 @@ def _commit_reprompt_ladder(
         ]
         if not proposals:
             continue
+        proposals = proposals[: max_proposals_per_tick()]  # WIP cap (one at a time)
         step = run_compute_step(store, quest_id, proposals, by=by)
         names = [str(p.get("name") or "?") for p in proposals]
         return (step, names), any_error
@@ -1194,8 +1253,23 @@ def run_quest_tick(
         # checkpoint. Log it loudly (the misconfig stays visible) and degrade to
         # a zero-dispatch outcome — the stall counter then advances and the
         # escalation ladder handles the persistent failure.
+        # WIP cap — dispatch at most max_proposals_per_tick() (default 1);
+        # the rest were already logged as `hypothesis` leads above.
+        capped = proposals[: max_proposals_per_tick()]
+        if len(proposals) > len(capped):
+            append_entry(
+                store,
+                quest_id,
+                text=(
+                    f"WIP cap: dispatching {len(capped)} of {len(proposals)} "
+                    "proposals this tick — the rest stay leads; re-propose "
+                    "the best against the fresh frontier next tick"
+                ),
+                entry_type="observation",
+                by=MEASURED_BY,
+            )
         try:
-            step = run_compute_step(store, quest_id, proposals, by=by)
+            step = run_compute_step(store, quest_id, capped, by=by)
         except Exception:
             log.exception(
                 "run_quest_tick: compute step raised for quest %s — degrading "

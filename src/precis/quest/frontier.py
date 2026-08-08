@@ -449,6 +449,22 @@ def _candidate_from_structure(store: Store, s: Any) -> Candidate:
         flags["adsorption_barrier"] = meta.get("adsorption_barrier")
     if "barrier_screen" in meta:
         flags["barrier_screen"] = meta.get("barrier_screen")
+    # Selectivity/poisoning naming context (catpath >= 0.5.2 harvests —
+    # compute._AUTOCATPATH_SELECTIVITY_CONTEXT_KEYS): the most competitive
+    # side product, the deepest kinetic-trap state, per-species poison
+    # verdicts, and (>= 0.6.0) the scorecard's limiting axis + one-line
+    # worst-problem statement. Strings/dicts, so the `_numeric` filter
+    # already keeps them out of `measures`; surfaced as flags for the
+    # leaderboard + tick prompt.
+    for k in (
+        "side_worst",
+        "trap_worst",
+        "poison_verdicts",
+        "limiting_factor",
+        "worst_problem",
+    ):
+        if k in meta:
+            flags[k] = meta.get(k)
     # The tier-ladder rung the candidate's CURRENT canonical `barrier` came
     # from (:func:`precis.quest.compute._canonicalize_barrier`) — read by
     # :mod:`precis.quest.graduate`'s verify-only gate; absent on a candidate
@@ -478,7 +494,18 @@ def _candidate_from_structure(store: Store, s: Any) -> Candidate:
         measures.pop("span", None)
         if excluded_barrier is not None:
             flags["barrier_untrusted_value"] = excluded_barrier
-        for k in ("U_L", "U_L_abs", "U_opt", "span_at_Uopt", "P_side"):
+        for k in (
+            "U_L",
+            "U_L_abs",
+            "U_opt",
+            "span_at_Uopt",
+            "P_side",
+            # selectivity/poisoning scalars — measured over the same
+            # untrusted pathway, so they are excluded with it
+            "side_span_margin",
+            "trap_depth",
+            "poison_margin",
+        ):
             excluded = measures.pop(k, None)
             if excluded is not None:
                 flags[f"{k}_untrusted_value"] = excluded

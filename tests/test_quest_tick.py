@@ -772,7 +772,14 @@ class TestReactionContext:
             store, qid, {"name": "Champion candidate", "structure": _tick_spec("Fe")}
         )
         assert candidate is not None
-        store.stamp_ref_meta(candidate, {"barrier": 0.42})
+        # The default rubric now declares side_span_margin/poison_margin too
+        # (catalyst_seed.RUBRIC_OBJECTIVES) — a candidate missing a declared
+        # objective is `unevaluated` and can never be the champion, so stamp
+        # the full objective vector.
+        store.stamp_ref_meta(
+            candidate,
+            {"barrier": 0.42, "side_span_margin": 0.3, "poison_margin": 0.15},
+        )
         store.structure_record_run(
             candidate,
             fidelity="ml",
@@ -1252,3 +1259,134 @@ class TestCommitReRepromptLadder:
             "commit re-prompt ladder errored" in (b.text or "")
             for b in self._logs(store, qid)
         )
+
+
+class TestWipCap:
+    """WIP cap (operator decision 2026-08-08, `max_proposals_per_tick`):
+    materialise/dispatch at most this many proposals per tick — default 1,
+    ``PRECIS_QUEST_MAX_PROPOSALS`` overrides. Extra proposals from the SAME
+    LLM turn still land as `hypothesis` logbook leads above (already
+    exercised by ``TestDossier``/``TestCommitReRepromptLadder``); this class
+    covers only the cap's own slicing + its logbook note."""
+
+    @staticmethod
+    def _proposals(n: int) -> dict[str, Any]:
+        return {
+            "logbook": [],
+            "dossier_markdown": "",
+            "proposals": [
+                {"name": f"cand-{i}", "rationale": "x", "structure": _tick_spec("Fe")}
+                for i in range(n)
+            ],
+        }
+
+    def _logs(self, store: Any, qid: int) -> list[Any]:
+        return [
+            b for b in store.list_blocks_for_ref(qid) if b.chunk_kind == "quest_log"
+        ]
+
+    def _stub_run_compute_step(self, monkeypatch: Any) -> list[list[dict[str, Any]]]:
+        """Same fake as ``TestCommitReRepromptLadder._stub_run_compute_step``
+        (records the proposals list each call actually received) —
+        duplicated locally so this class has no cross-class dependency."""
+        calls: list[list[dict[str, Any]]] = []
+
+        def _fake(
+            _store: Any,
+            _quest_id: int,
+            proposals: list[dict[str, Any]],
+            *,
+            hub: Any = None,
+            dispatch: bool = True,
+            by: str = "agent",
+        ) -> Any:
+            proposals = list(proposals or [])
+            calls.append(proposals)
+            n = 1 if proposals else 0
+            return compute_mod.ComputeStep(
+                candidates_created=n,
+                sims_dispatched=n,
+                results_harvested=0,
+                ruled_out=0,
+                notes=[],
+                graduated=0,
+            )
+
+        monkeypatch.setattr(compute_mod, "run_compute_step", _fake)
+        return calls
+
+    def test_default_cap_dispatches_only_one_of_three_proposals(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """Default cap is 1 — a single-turn payload proposing 3 candidates
+        must reach `run_compute_step` with exactly one of them."""
+        monkeypatch.delenv("PRECIS_QUEST_MAX_PROPOSALS", raising=False)
+        calls = self._stub_run_compute_step(monkeypatch)
+        qid = _mk_quest(store, "A striving")
+        out = run_quest_tick(
+            store, qid, dispatch_fn=_fake_dispatch(self._proposals(3)), compute=True
+        )
+        assert len(calls) == 1
+        assert len(calls[0]) == 1
+        assert out.sims_dispatched == 1
+
+    def test_default_cap_logs_a_wip_cap_observation(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """The 2 proposals left uncapped get an "observation" logbook entry
+        naming the WIP cap — so the next tick's prompt (`_logbook_tail`)
+        shows the miss instead of silently dropping them."""
+        monkeypatch.delenv("PRECIS_QUEST_MAX_PROPOSALS", raising=False)
+        self._stub_run_compute_step(monkeypatch)
+        qid = _mk_quest(store, "A striving")
+        run_quest_tick(
+            store, qid, dispatch_fn=_fake_dispatch(self._proposals(3)), compute=True
+        )
+        assert any("WIP cap" in (b.text or "") for b in self._logs(store, qid))
+
+    def test_env_override_raises_the_cap(self, store: Any, monkeypatch: Any) -> None:
+        """``PRECIS_QUEST_MAX_PROPOSALS`` overrides the default-1 cap."""
+        monkeypatch.setenv("PRECIS_QUEST_MAX_PROPOSALS", "2")
+        calls = self._stub_run_compute_step(monkeypatch)
+        qid = _mk_quest(store, "A striving")
+        run_quest_tick(
+            store, qid, dispatch_fn=_fake_dispatch(self._proposals(3)), compute=True
+        )
+        assert len(calls[0]) == 2
+
+    def test_within_cap_dispatches_all_and_logs_no_wip_cap_note(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """A payload proposing no more than the cap dispatches all of them,
+        and the WIP-cap note (specifically about proposals left OUT) never
+        fires — there's nothing left out."""
+        monkeypatch.delenv("PRECIS_QUEST_MAX_PROPOSALS", raising=False)
+        calls = self._stub_run_compute_step(monkeypatch)
+        qid = _mk_quest(store, "A striving")
+        run_quest_tick(
+            store, qid, dispatch_fn=_fake_dispatch(self._proposals(1)), compute=True
+        )
+        assert len(calls[0]) == 1
+        assert not any("WIP cap" in (b.text or "") for b in self._logs(store, qid))
+
+    def test_commit_ladder_reprompt_also_slices_to_the_cap(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """The commit-ladder's re-prompt success path (tick.py, `proposals =
+        proposals[: max_proposals_per_tick()]` ~line 1002) hits the SAME
+        cap: a re-prompt that comes back with 3 proposals still only
+        dispatches 1 (default cap) — the ladder is not a back door around
+        the WIP cap."""
+        monkeypatch.delenv("PRECIS_QUEST_MAX_PROPOSALS", raising=False)
+        calls = self._stub_run_compute_step(monkeypatch)
+        qid = _mk_quest(store, "A striving")
+        empty = {"logbook": [], "dossier_markdown": "", "proposals": []}
+        disp, reqs = _sequenced_dispatch([empty, empty, self._proposals(3)])
+        run_quest_tick(store, qid, dispatch_fn=disp, compute=True)  # tick 1: dry
+        out = run_quest_tick(
+            store, qid, dispatch_fn=disp, compute=True
+        )  # tick 2: ladder
+        assert out.status == "succeeded"
+        assert len(calls) == 3  # 2 dry primary passes + 1 ladder dispatch
+        assert len(calls[-1]) == 1  # capped even though the model proposed 3
+        assert out.sims_dispatched == 1

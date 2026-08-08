@@ -38,8 +38,14 @@ class TestSeedCatalystQuest:
 
     def test_objectives_and_graduation_are_wired(self, store: Any) -> None:
         qid, _ = seed_catalyst_quest(store)
-        # the frontier ranks on the two axes that actually land today
-        assert _objectives_for(store, qid) == [("barrier", "min"), ("energy", "min")]
+        # the frontier ranks on the four axes the engine lands today:
+        # activity (barrier/energy) + selectivity + poisoning resistance
+        assert _objectives_for(store, qid) == [
+            ("barrier", "min"),
+            ("energy", "min"),
+            ("side_span_margin", "max"),
+            ("poison_margin", "max"),
+        ]
         # the ceiling promotes a low-barrier design to needs-experiment
         rule = graduation_rule(store, qid)
         assert rule is not None

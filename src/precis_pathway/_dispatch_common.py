@@ -43,6 +43,77 @@ _ELECTRO_KEYS: tuple[str, ...] = (
 )
 
 
+def _selectivity_scalars(results: dict[str, Any]) -> dict[str, Any]:
+    """Selectivity / poisoning scalars off catpath >=0.5.2's ``results_json``.
+
+    Three ranking scalars plus their naming context — each section absent on
+    an older engine's artifact, so every lift is conditional:
+
+    * ``side_span_margin`` (eV, maximize) — ``selectivity.side_span_margin_eV``:
+      best side-product route's energetic span minus the best product route's;
+      positive = every side product is harder to reach than the product.
+    * ``trap_depth`` (eV, minimize, >= 0) — deepest flagged kinetic trap's
+      escape climb beyond the best route's span (``results.traps``); 0.0 when
+      the report ran and flagged nothing (an honest "no self-poisoning").
+    * ``poison_margin`` (eV, maximize) — worst screened poison's
+      ``delta_vs_substrate`` (``results.poisons``); negative = that poison
+      outcompetes the substrate for vacant sites.
+
+    Plus, from the engine's four-axis scorecard (``results.score``, >= 0.6.0):
+    ``limiting_factor`` (which axis has the smallest margin) and
+    ``worst_problem`` (its one-line statement) — pure naming context for the
+    tick prompt / literature step, never measures.
+    """
+    out: dict[str, Any] = {}
+    sel = results.get("selectivity")
+    if isinstance(sel, dict):
+        v = _finite_num(sel.get("side_span_margin_eV"))
+        if v is not None:
+            out["side_span_margin"] = v
+        worst = sel.get("most_competitive_side_product")
+        if isinstance(worst, str) and worst:
+            out["side_worst"] = worst
+    traps = results.get("traps")
+    if isinstance(traps, dict):
+        span_ref = _finite_num(traps.get("span_best_path_eV"))
+        rows = traps.get("states")
+        if span_ref is not None and isinstance(rows, list):
+            depth, worst_state = 0.0, None
+            for r in rows:
+                if not (isinstance(r, dict) and r.get("trap")):
+                    continue
+                esc = _finite_num(r.get("escape_eV"))
+                if esc is not None and esc - span_ref > depth:
+                    depth, worst_state = esc - span_ref, r.get("state")
+            out["trap_depth"] = round(depth, 4)
+            if isinstance(worst_state, str) and worst_state:
+                out["trap_worst"] = worst_state
+    poisons = results.get("poisons")
+    if isinstance(poisons, dict) and isinstance(poisons.get("species"), dict):
+        margin: float | None = None
+        verdicts: dict[str, str] = {}
+        for sp, d in poisons["species"].items():
+            if not isinstance(d, dict):
+                continue
+            delta = d.get("delta_vs_substrate")
+            v = _finite_num(delta.get("mean")) if isinstance(delta, dict) else None
+            if v is not None and (margin is None or v < margin):
+                margin = v
+            if isinstance(d.get("verdict"), str):
+                verdicts[str(sp)] = d["verdict"]
+        if margin is not None:
+            out["poison_margin"] = round(margin, 4)
+        if verdicts:
+            out["poison_verdicts"] = verdicts
+    score = results.get("score")
+    if isinstance(score, dict):
+        for k in ("limiting_factor", "worst_problem"):
+            v2 = score.get(k)
+            if isinstance(v2, str) and v2:
+                out[k] = v2
+    return out
+
+
 def summarize(artifact: dict[str, Any]) -> dict[str, Any]:
     """Reduce a run artifact to the scalar summary a caller ranks on.
 
@@ -83,6 +154,7 @@ def summarize(artifact: dict[str, Any]) -> dict[str, Any]:
             v = _finite_num(results.get(k))
             if v is not None:
                 out[k] = v
+        out.update(_selectivity_scalars(results))
         return out
     except Exception:  # pragma: no cover - defensive
         log.warning("autocatpath: summary failed", exc_info=True)

@@ -252,6 +252,141 @@ def test_summarize_stamps_a_non_null_p_side() -> None:
     assert summarize(art)["P_side"] == 0.12
 
 
+def test_selectivity_scalars_lifts_side_margin_and_worst_product() -> None:
+    """`_selectivity_scalars` (the piece `summarize` folds in) reads catpath
+    >=0.5.2's ``results.selectivity`` section: the side-span margin (eV,
+    maximize) plus the naming context of the most competitive side product."""
+    from precis_pathway._dispatch_common import _selectivity_scalars
+
+    out = _selectivity_scalars(
+        {
+            "selectivity": {
+                "side_span_margin_eV": 0.35,
+                "most_competitive_side_product": "N2O*",
+            }
+        }
+    )
+    assert out["side_span_margin"] == 0.35
+    assert out["side_worst"] == "N2O*"
+
+
+def test_selectivity_scalars_absent_margin_is_skipped_not_fabricated() -> None:
+    """A `None`/missing ``side_span_margin_eV`` never stamps a fabricated
+    0.0 — the key is simply absent, same convention as `summarize`'s
+    null-``P_side`` handling."""
+    from precis_pathway._dispatch_common import _selectivity_scalars
+
+    out = _selectivity_scalars(
+        {
+            "selectivity": {
+                "side_span_margin_eV": None,
+                "most_competitive_side_product": "N2O*",
+            }
+        }
+    )
+    assert "side_span_margin" not in out
+    assert out["side_worst"] == "N2O*"
+
+
+def test_selectivity_scalars_trap_depth_is_the_deepest_flagged_trap() -> None:
+    """`results.traps` — ``trap_depth`` is the deepest FLAGGED (``trap: true``)
+    state's escape climb beyond the best route's span; an unflagged state
+    (however deep) is ignored, and the worst flagged state's name rides
+    along as ``trap_worst``."""
+    from precis_pathway._dispatch_common import _selectivity_scalars
+
+    out = _selectivity_scalars(
+        {
+            "traps": {
+                "span_best_path_eV": 1.2,
+                "states": [
+                    {"state": "O*", "escape_eV": 1.9, "via": "x", "trap": True},
+                    {"state": "N*", "escape_eV": 1.0, "via": "y", "trap": False},
+                ],
+            }
+        }
+    )
+    assert out["trap_depth"] == 0.7
+    assert out["trap_worst"] == "O*"
+
+
+def test_selectivity_scalars_no_flagged_traps_is_an_honest_zero() -> None:
+    """All states `trap: false` — the report ran and flagged nothing, so
+    `trap_depth` is an honest 0.0 (not absent), and `trap_worst` is absent
+    (no state to name)."""
+    from precis_pathway._dispatch_common import _selectivity_scalars
+
+    out = _selectivity_scalars(
+        {
+            "traps": {
+                "span_best_path_eV": 1.2,
+                "states": [
+                    {"state": "O*", "escape_eV": 1.9, "via": "x", "trap": False},
+                    {"state": "N*", "escape_eV": 1.0, "via": "y", "trap": False},
+                ],
+            }
+        }
+    )
+    assert out["trap_depth"] == 0.0
+    assert "trap_worst" not in out
+
+
+def test_selectivity_scalars_poison_margin_is_the_worst_screened_species() -> None:
+    """`results.poisons` — ``poison_margin`` is the most-negative
+    ``delta_vs_substrate.mean`` across screened species (worst = outcompetes
+    the substrate hardest), and ``poison_verdicts`` carries every species'
+    verdict string, not just the worst one's."""
+    from precis_pathway._dispatch_common import _selectivity_scalars
+
+    out = _selectivity_scalars(
+        {
+            "poisons": {
+                "species": {
+                    "CO": {
+                        "e_ads": {},
+                        "delta_vs_substrate": {"mean": -0.42},
+                        "verdict": "blocks",
+                    },
+                    "H2O": {"delta_vs_substrate": {"mean": 0.3}, "verdict": "weak"},
+                }
+            }
+        }
+    )
+    assert out["poison_margin"] == -0.42
+    assert out["poison_verdicts"] == {"CO": "blocks", "H2O": "weak"}
+
+
+def test_selectivity_scalars_old_engine_artifact_yields_nothing() -> None:
+    """An artifact off a pre-0.5.2 engine has none of the three sections —
+    `_selectivity_scalars` must return an empty dict, not raise or fabricate
+    keys, so `summarize` stays a no-op addition for old artifacts."""
+    from precis_pathway._dispatch_common import _selectivity_scalars
+
+    assert _selectivity_scalars({"nodes": [], "edges": []}) == {}
+
+
+def test_selectivity_scalars_lifts_score_context_strings() -> None:
+    """The 0.6.0 scorecard's `limiting_factor` + `worst_problem` ride out as
+    naming context — strings only; the score section's numeric axes are NOT
+    lifted (the ranking scalars stay the span-based 0.5.2 lifts)."""
+    from precis_pathway._dispatch_common import _selectivity_scalars
+
+    out = _selectivity_scalars(
+        {
+            "score": {
+                "limiting_factor": "trap",
+                "worst_problem": "NH3+O needs 2.45 eV to escape vs span 1.81 eV",
+                "trap": {"margin_eV": -0.64},
+            }
+        }
+    )
+    assert out["limiting_factor"] == "trap"
+    assert out["worst_problem"].startswith("NH3+O needs")
+    assert "trap" not in out  # numeric axes never lifted from score
+    # a malformed score section (non-string fields) lifts nothing
+    assert _selectivity_scalars({"score": {"limiting_factor": 3}}) == {}
+
+
 def test_aggregate_seed_partials_retry_skips_nothing_extra() -> None:
     """A retry that re-supplies the SAME partials (e.g. a re-run aggregate
     after a transient failure) is a pure function of its inputs — same

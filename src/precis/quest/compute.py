@@ -404,13 +404,16 @@ def _autocatpath_wall_seconds() -> int:
 #: never exercises new engine code — the qu164903 "empty frontier" trap: all 21
 #: candidates were pinned on autocatpath 0.1.1's desorption false-positives (102
 #: phantom "detached" warnings → barrier_trusted=false) and never re-scored on
-#: 0.4.0, which relaxes the same geometries cleanly (0 detached, trusted). The
-#: ansible ``autocatpath`` role exports ``PRECIS_AUTOCATPATH_VERSION`` with the
-#: installed version/git-sha; absent that, ``_AUTOCATPATH_CACHE_EPOCH`` is the
-#: manual bump lever — changing it re-keys every candidate, forcing a clean
-#: re-dispatch on the deployed engine.
+#: 0.4.0, which relaxes the same geometries cleanly (0 detached, trusted).
+#: NOTE (verified 2026-08-08): no deploy role actually exports
+#: ``PRECIS_AUTOCATPATH_VERSION`` — the env override exists for ops, but in
+#: practice ``_AUTOCATPATH_CACHE_EPOCH`` is THE lever: bump it in the same
+#: commit that bumps the ``autocatpath`` pin, and every candidate re-keys so
+#: the new engine re-evaluates instead of deduping onto stale jobs (see
+#: docs/backlog/autocatpath-060-selectivity-objectives.md for the wiring
+#: residual).
 _AUTOCATPATH_VERSION_ENV = "PRECIS_AUTOCATPATH_VERSION"
-_AUTOCATPATH_CACHE_EPOCH = "0.4.0"
+_AUTOCATPATH_CACHE_EPOCH = "0.6.0"
 
 
 def _autocatpath_engine_token() -> str:
@@ -919,6 +922,33 @@ _AUTOCATPATH_SPAN_KEYS: tuple[str, ...] = ("span",)
 #: onto the candidate — it stays a job-meta-only diagnostic.
 _AUTOCATPATH_ELECTRO_KEYS: tuple[str, ...] = ("U_L", "U_opt", "span_at_Uopt", "P_side")
 
+#: Selectivity / poisoning scalars (catpath >= 0.5.2 artifacts;
+#: ``precis_pathway._dispatch_common._selectivity_scalars`` derives them onto
+#: the job meta). Ranking measures like the barrier: ``side_span_margin``
+#: (eV, maximize — best side-product route's span minus the best product
+#: route's), ``trap_depth`` (eV, minimize — deepest flagged kinetic trap's
+#: escape climb beyond the best route's span; 0.0 = report ran, no traps),
+#: ``poison_margin`` (eV, maximize — worst screened poison's
+#: ``delta_vs_substrate``).
+_AUTOCATPATH_SELECTIVITY_KEYS: tuple[str, ...] = (
+    "side_span_margin",
+    "trap_depth",
+    "poison_margin",
+)
+#: Naming context riding alongside the scalars — never measures (strings /
+#: dicts; ``frontier._META_NON_MEASURE`` excludes them): the most competitive
+#: side product, the deepest trap state, the per-species poison verdicts,
+#: and (engine >= 0.6.0 scorecard) which axis limits this candidate plus its
+#: one-line ``worst_problem`` statement.
+#: The tick prompt surfaces these to the discovery agent / literature step.
+_AUTOCATPATH_SELECTIVITY_CONTEXT_KEYS: tuple[str, ...] = (
+    "side_worst",
+    "trap_worst",
+    "poison_verdicts",
+    "limiting_factor",
+    "worst_problem",
+)
+
 
 def _num_measure(v: Any) -> float | None:
     """A numeric measure, or None (``bool`` is an ``int`` but never a measure)."""
@@ -929,7 +959,7 @@ def _num_measure(v: Any) -> float | None:
     return None
 
 
-def _autocatpath_measures_from_job(meta: dict[str, Any]) -> dict[str, float]:
+def _autocatpath_measures_from_job(meta: dict[str, Any]) -> dict[str, Any]:
     """Lift the scalar barrier/span from a completed `autocatpath_explore` job's meta.
 
     Reads a ``result`` sub-dict if present (the bridge's summary), else the meta
@@ -938,7 +968,7 @@ def _autocatpath_measures_from_job(meta: dict[str, Any]) -> dict[str, float]:
     """
     result = meta.get("result")
     src = result if isinstance(result, dict) else meta
-    out: dict[str, float] = {}
+    out: dict[str, Any] = {}
     for k in _AUTOCATPATH_BARRIER_KEYS:
         v = _num_measure(src.get(k))
         if v is not None:
@@ -967,6 +997,18 @@ def _autocatpath_measures_from_job(meta: dict[str, Any]) -> dict[str, float]:
             out[k] = v
     if "U_L" in out:
         out["U_L_abs"] = abs(out["U_L"])
+    # Selectivity/poisoning: the three ranking scalars plus their non-numeric
+    # naming context (side/trap state names, poison verdicts) — the context
+    # rides onto the candidate meta for display + the tick prompt, and
+    # frontier's non-measure filter keeps it out of the objective vector.
+    for k in _AUTOCATPATH_SELECTIVITY_KEYS:
+        v = _num_measure(src.get(k))
+        if v is not None:
+            out[k] = v
+    for k in _AUTOCATPATH_SELECTIVITY_CONTEXT_KEYS:
+        ctx = src.get(k)
+        if isinstance(ctx, (str, dict)) and ctx:
+            out[k] = ctx
     return out
 
 
@@ -1810,6 +1852,9 @@ _AUTOCATPATH_MEASURE_KEYS: tuple[str, ...] = (
     "barrier_screen",
     "barrier_tier",
     "tier",
+    # selectivity/poisoning scalars + context — same engine, same staleness
+    *_AUTOCATPATH_SELECTIVITY_KEYS,
+    *_AUTOCATPATH_SELECTIVITY_CONTEXT_KEYS,
 )
 
 

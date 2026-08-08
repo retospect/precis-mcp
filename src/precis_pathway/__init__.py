@@ -15,6 +15,13 @@ structure-ingest bridge. It imports the **pure** ``autocatpath`` engine
 ``[catalyst-gpu]`` extras) and precis's own types directly — same tree, no
 cross-repo seam.
 
+The artifact's ``results_json``/``graph_json`` come from
+``autocatpath.pipeline.analyze`` (>= 0.5.2) — catpath's own analysis,
+verbatim (traps / poisons / selectivity / CHE included), not a local
+mirror; ``_dispatch_common`` then reduces it to the scalar summary the
+quest harvests (barrier/span + ``side_span_margin``/``trap_depth``/
+``poison_margin`` and their naming context).
+
 It ships **dark** behind ``PRECIS_AUTOCATPATH_ENABLED`` (mirrors
 ``PRECIS_BIO_ENABLED`` / ``PRECIS_SANDBOX_ENABLED``), so the merge — and an
 ``autocatpath``-less venv with neither ``[catalyst]`` extra — is inert: the

@@ -35,8 +35,7 @@ from typing import Any
 
 from autocatpath import __version__, provenance
 from autocatpath.config import Config
-from autocatpath.graph import build_graph
-from autocatpath.pipeline import Results, g_has_edge, run
+from autocatpath.pipeline import Results, run
 
 log = logging.getLogger(__name__)
 
@@ -121,59 +120,39 @@ def content_key(config: dict[str, Any]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _summary(cfg: Config, results: Results) -> dict[str, Any]:
-    """The ``results.json`` payload, byte-for-concept identical to
-    :func:`autocatpath.pipeline.write_outputs`."""
-    from autocatpath.calculators import resolve_backend
+def _analysis_payloads(
+    cfg: Config, results: Results
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """``(results_json, graph_json)`` — catpath's own analysis, verbatim.
 
-    return {
-        "name": cfg.name,
-        "substrate": cfg.substrate,
-        "target": cfg.target,
-        "backend": resolve_backend(cfg.mlip.backend),
-        "models": results.models,
-        "seeds": cfg.search.seeds,
-        "n_samples": max(1, len(results.models)) * len(cfg.search.seeds),
-        "relaxed_lattice_A": results.lattice,
-        "energy_reference": f"relative to substrate state '{results.pathway[0]}'",
-        "pathway": results.pathway,
-        "nodes": {k: v.as_dict() for k, v in results.node_energies.items()},
-        "edges": [
-            {
-                "name": e["name"],
-                "reactant": e["reactant"],
-                "product": e["product"],
-                "barrier": e["barrier"].as_dict(),
-                "delta_e": e["delta_e"].as_dict(),
-            }
-            for e in results.edges
-        ],
-        # adsorption barrier the dissolving tether had to overcome to reseat a
-        # desorbing fragment (per state, plus the pathway max as a single trust /
-        # annotation signal precis can harvest). 0 => barrierless (spurious
-        # desorption legitimately rescued); large => genuine activated adsorption.
-        "adsorption_barriers": dict(results.ads_barriers),
-        "adsorption_barrier": (
-            max(results.ads_barriers.values()) if results.ads_barriers else 0.0
-        ),
-        "warnings": results.warnings,
-    }
+    Delegates to ``autocatpath.pipeline.analyze`` (>= 0.5.2, the pure
+    extraction of ``write_outputs``'s analysis half) so the precis artifact
+    carries the SAME summary catpath writes standalone — including the
+    ``traps`` / ``poisons`` / ``selectivity`` sections and the CHE scalars —
+    and the same graph (supply edges with stamped delta_e, gas-ledger
+    labels, CHE n_H stamps). This replaces a hand-mirrored summary dict
+    that had already drifted (it silently lacked the CHE keys
+    ``_dispatch_common`` reads — a dead pass-through this delegation
+    retires) and a local graph rebuild.
 
-
-def _graph_json(results: Results) -> dict[str, Any]:
-    """The reaction DAG as node-link JSON (mirrors ``graph.to_json``),
-    including the dashed 'supply' edges ``write_outputs`` adds."""
+    Augments the summary with the precis-only adsorption-barrier trust
+    signal (the tether's reseat climb — not part of catpath's own summary).
+    """
     import networkx as nx
+    from autocatpath.pipeline import analyze
 
-    ref = results.node_energies[results.pathway[0]].mean
-    edges = list(results.edges)
-    for a, b in results.links:
-        if not g_has_edge(results.edges, a, b):
-            edges.append(
-                {"name": f"{a}->{b}", "reactant": a, "product": b, "kind": "supply"}
-            )
-    g = build_graph(results.node_energies, edges, energy_ref=ref)
-    return nx.node_link_data(g, edges="links")
+    an = analyze(cfg, results, log=lambda *a, **k: None)
+    summary = dict(an.summary)
+    # adsorption barrier the dissolving tether had to overcome to reseat a
+    # desorbing fragment (per state, plus the pathway max as a single trust /
+    # annotation signal precis can harvest). 0 => barrierless (spurious
+    # desorption legitimately rescued); large => genuine activated adsorption.
+    summary.setdefault("adsorption_barriers", dict(results.ads_barriers))
+    summary.setdefault(
+        "adsorption_barrier",
+        max(results.ads_barriers.values()) if results.ads_barriers else 0.0,
+    )
+    return summary, nx.node_link_data(an.graph, edges="links")
 
 
 def _structures_extxyz(results: Results) -> dict[str, str]:
@@ -246,13 +225,14 @@ def run_pathway(
         cfg._prebuilt_slab = _hydrate_slab(slab_extxyz)  # type: ignore[attr-defined]
     results = run(cfg, log=log)
 
+    results_json, graph_json = _analysis_payloads(cfg, results)
     return {
         "content_key": content_key(effective),
         "autocatpath_version": __version__,
         "config": effective,
         "config_snapshot_yaml": _snapshot_yaml(cfg),
-        "results_json": _summary(cfg, results),
-        "graph_json": _graph_json(results),
+        "results_json": results_json,
+        "graph_json": graph_json,
         "methods_md": provenance.methods_text(cfg, results),
         "structures_extxyz": _structures_extxyz(results),
         "warnings": list(results.warnings),
@@ -919,13 +899,14 @@ def aggregate_seed_partials(
     results.lattice = lattice
     results.structures = {}
 
+    results_json, graph_json = _analysis_payloads(cfg, results)
     return {
         "content_key": content_key(effective),
         "autocatpath_version": __version__,
         "config": effective,
         "config_snapshot_yaml": _snapshot_yaml(cfg),
-        "results_json": _summary(cfg, results),
-        "graph_json": _graph_json(results),
+        "results_json": results_json,
+        "graph_json": graph_json,
         "methods_md": provenance.methods_text(cfg, results),
         "structures_extxyz": {},
         "warnings": list(results.warnings),

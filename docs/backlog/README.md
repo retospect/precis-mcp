@@ -11,6 +11,7 @@
 - [`asa-oauth-cutover`](./asa-oauth-cutover.md) **idea** — asa_bot's vault fallback shipped (mirrors precis's `utils/claude_oauth`); the
 - [`asa-outbound-durability`](./asa-outbound-durability.md) **idea** — Two asa incident residuals: stranded outbound queue rows and dark conv capture.
 - [`asa-slack-smoke`](./asa-slack-smoke.md) **idea** — Code shipped + deployed + connected (`com.asa.slack` on melchior); remaining
+- [`autocatpath-060-selectivity-objectives`](./autocatpath-060-selectivity-objectives.md) **idea** — Supersedes `quest-backpressure-sim-types.md` (code fix shipped b0eb2c03;
 - [`autocatpath-dead-seed-escalation`](./autocatpath-dead-seed-escalation.md) **idea** — A seed job that exhausts its attempt cap leaves its seed todo's
 - [`autocatpath-lease-churn`](./autocatpath-lease-churn.md) **idea** — PRECIS_AUTOCATPATH_WALL_SECONDS wiring is confirmed correct end-to-end
 - [`autocatpath-seed-failure-diagnosis`](./autocatpath-seed-failure-diagnosis.md) **idea** — Diagnosis pass; evidence exists only since the `80e562a6` deploy (unbuffered
@@ -109,8 +110,6 @@
 - [`plan-tick-spin-autopause`](./plan-tick-spin-autopause.md) **idea** — Auto-pausing (an open tag the doable view excludes) would stop the burn but
 - [`prod-dead-index-drop`](./prod-dead-index-drop.md) **idea** — `llm_call_log_request_hash_idx` (54 MB), `vault_events_name_at_idx` (31 MB),
 - [`quest-artifacts-in-dossier`](./quest-artifacts-in-dossier.md) **idea** — The converter document should show the pareto front, the specific energy
-- [`quest-backpressure-sim-types`](./quest-backpressure-sim-types.md) **idea** — **Root cause (fixed, branch `feat/quest-backpressure-simtypes`).** The discovery
-- [`quest-job-sequencing`](./quest-job-sequencing.md) **idea** — The natural state is many pending jobs per quest, followed up when resources
 - [`quest-loop-activation`](./quest-loop-activation.md) **idea** — All slices shipped; the loop is dormant (quests paused 2026-07-16). Do:
 - [`quest-redispatch-tier`](./quest-redispatch-tier.md) **idea** — A deployed-engine re-score ignores a candidate's own tier-ladder rung: a
 - [`reaper-liveness-race`](./reaper-liveness-race.md) **idea** — A sibling SessionStart backstop reaped a live session's worktree right after
