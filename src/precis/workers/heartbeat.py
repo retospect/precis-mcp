@@ -51,7 +51,7 @@ import subprocess
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -270,6 +270,23 @@ def _temp_from_linux_thermal() -> float | None:
     return max(readings) if readings else None
 
 
+def _pick_hottest_real_sensor(
+    readings: Sequence[tuple[str | None, float]],
+) -> float | None:
+    """Max °C over *thermometer* readings, dropping calibration references.
+
+    The AppleVendor temperature HID page includes ``PMU tcal`` /
+    ``PMU2 tcal`` services — calibration constants pinned at ~51.8°C,
+    not thermometers. Including them in the max pins the reported
+    "CPU temp" at 51.8 whenever every real die sensor idles below it
+    (real idle is ~37-41°C), hiding the whole idle-to-warm band. Filter
+    by service name; a service whose name could not be read stays in
+    (back-compat: better a possibly-bogus reading than a silent drop).
+    """
+    real = [v for name, v in readings if not (name and "tcal" in name.lower())]
+    return max(real) if real else None
+
+
 def _temp_from_macos_iokit() -> float | None:
     """Read the Apple Silicon SoC temp via IOKit's HID event system.
 
@@ -278,7 +295,9 @@ def _temp_from_macos_iokit() -> float | None:
     can read (no sudo, no install — ``osx-cpu-temp`` reads Intel-only
     SMC keys and returns 0.0 here). We match HID services on the
     Apple-vendor temperature usage page and copy a temperature event
-    from each, returning the hottest reading in °C.
+    from each, returning the hottest *real* reading in °C — the
+    ``tcal`` calibration references on the same usage page are
+    excluded (see :func:`_pick_hottest_real_sensor`).
 
     Pure ``ctypes`` against system frameworks; any failure (missing
     framework, API shape change, no matching sensors) degrades to
@@ -335,8 +354,20 @@ def _temp_from_macos_iokit() -> float | None:
             ctypes.c_int32,
             ctypes.c_int64,
         ]
+        iokit.IOHIDServiceClientCopyProperty.restype = ctypes.c_void_p
+        iokit.IOHIDServiceClientCopyProperty.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+        ]
         iokit.IOHIDEventGetFloatValue.restype = ctypes.c_double
         iokit.IOHIDEventGetFloatValue.argtypes = [ctypes.c_void_p, ctypes.c_int32]
+        cf.CFStringGetCString.restype = ctypes.c_bool
+        cf.CFStringGetCString.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.c_long,
+            ctypes.c_uint32,
+        ]
 
         def _cfstr(s: str) -> ctypes.c_void_p:
             return cf.CFStringCreateWithCString(None, s.encode(), kCFStringEncodingUTF8)
@@ -357,7 +388,18 @@ def _temp_from_macos_iokit() -> float | None:
         if not services:
             return None
 
-        readings: list[float] = []
+        product_key = _cfstr("Product")
+        name_buf = ctypes.create_string_buffer(256)
+
+        def _svc_name(svc: ctypes.c_void_p) -> str | None:
+            prop = iokit.IOHIDServiceClientCopyProperty(svc, product_key)
+            if prop and cf.CFStringGetCString(
+                prop, name_buf, len(name_buf), kCFStringEncodingUTF8
+            ):
+                return name_buf.value.decode(errors="replace")
+            return None
+
+        readings: list[tuple[str | None, float]] = []
         for i in range(cf.CFArrayGetCount(services)):
             svc = cf.CFArrayGetValueAtIndex(services, i)
             event = iokit.IOHIDServiceClientCopyEvent(
@@ -367,11 +409,11 @@ def _temp_from_macos_iokit() -> float | None:
                 continue
             val = iokit.IOHIDEventGetFloatValue(event, temperature_field)
             if val and val > 0:
-                readings.append(val)
+                readings.append((_svc_name(svc), val))
     except (OSError, AttributeError, ValueError):
         log.warning("heartbeat: IOKit temperature read failed", exc_info=True)
         return None
-    return max(readings) if readings else None
+    return _pick_hottest_real_sensor(readings)
 
 
 def _temp_from_macos_smc() -> float | None:
