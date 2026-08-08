@@ -47,7 +47,6 @@
         # "Illegal option -o pipefail" and aborts the whole fleet deploy.
         executable: /bin/bash
         creates: /root/.local/bin/uv
-        executable: /bin/bash
 
     # The unit's HOME. provision only creates the hf-cache child (deploy-
     # owned) — created via `file` its parent would be root-owned, and a
