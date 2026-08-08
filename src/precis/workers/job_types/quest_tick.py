@@ -55,7 +55,23 @@ log = logging.getLogger(__name__)
 
 #: Sim job_types this quest's compute lane mints (barrier + stability). Their
 #: non-terminal count is the loop's wait set + backpressure signal.
-_SIM_JOB_TYPES = ("autocatpath_explore", "struct_relax")
+#:
+#: The barrier lane fans out into ``autocatpath_seed`` (one job per model×seed)
+#: plus an ``autocatpath_aggregate`` rollup — both landed with 47332ad3,
+#: retiring the flat ``autocatpath_explore`` job. That new pair was never added
+#: here, so once the fan-out shipped this wait set saw only the (fast)
+#: ``struct_relax`` lane and went empty the instant the relax finished — blind
+#: to a deep queue of still-running barrier seeds. The loop then proposed a new
+#: batch every slice regardless of how many seeds were queued: the per-quest
+#: backpressure and cross-quest starvation gate were both disconnected, which is
+#: how one catalyst quest piled up 238 seeds. ``autocatpath_explore`` is kept so
+#: any lingering non-terminal legacy job still registers.
+_SIM_JOB_TYPES = (
+    "autocatpath_explore",  # legacy flat barrier job (retired by the fan-out)
+    "autocatpath_seed",  # barrier lane — per-(model, seed) compute (the fan-out)
+    "autocatpath_aggregate",  # barrier lane — the rollup that closes the eval
+    "struct_relax",  # stability lane
+)
 
 
 def _env_int(name: str, default: int, *, lo: int = 1, hi: int = 100_000) -> int:
@@ -158,24 +174,43 @@ DESCRIPTION = (
 
 
 def _pending_sim_ids(store: Any, quest_id: int) -> list[int]:
-    """Non-terminal sim jobs under this quest's candidate structures.
+    """Non-terminal sim jobs anywhere under this quest's candidate structures.
 
-    A sim (``autocatpath_explore`` / ``struct_relax``) is parented on its *candidate
-    structure*, which ``serves`` the quest. This is the in-flight set the loop
-    waits on and the per-quest backpressure signal (empty ⇒ safe to propose the
-    next batch).
+    A sim hangs off a *candidate structure* that ``serves`` the quest — but at
+    **different depths** per lane. A ``struct_relax`` (and the retired flat
+    ``autocatpath_explore``) is parented directly on the candidate; the barrier
+    fan-out sits deeper — ``autocatpath_seed`` is three levels down
+    (seed_job → seed_todo → agg_todo → candidate) and ``autocatpath_aggregate``
+    two. So we walk the whole parent-tree under each serving candidate rather
+    than joining a single hop: the pre-fan-out query only reached the 1-hop
+    shape, which silently zeroed the barrier-lane backpressure once the seed/
+    aggregate fan-out landed (the 238-seed runaway — see ``_SIM_JOB_TYPES``).
+
+    This is the in-flight set the loop waits on and the per-quest backpressure
+    signal (empty ⇒ safe to propose the next batch).
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
             """
+            WITH RECURSIVE roots AS (
+                SELECT l.src_ref_id AS ref_id
+                  FROM links l
+                 WHERE l.dst_ref_id = %s AND l.relation = 'serves'
+            ),
+            subtree AS (
+                SELECT ref_id FROM roots
+                UNION
+                SELECT r.ref_id
+                  FROM refs r
+                  JOIN subtree s ON r.parent_id = s.ref_id
+                 WHERE r.deleted_at IS NULL
+            )
             SELECT j.ref_id
               FROM refs j
-              JOIN links l ON l.src_ref_id = j.parent_id
+              JOIN subtree s ON s.ref_id = j.ref_id
              WHERE j.kind = 'job'
                AND j.deleted_at IS NULL
                AND (j.meta->>'job_type') = ANY(%s)
-               AND l.dst_ref_id = %s
-               AND l.relation = 'serves'
                AND COALESCE(
                      (SELECT t.value FROM ref_tags rt
                         JOIN tags t ON t.tag_id = rt.tag_id
@@ -184,7 +219,7 @@ def _pending_sim_ids(store: Any, quest_id: int) -> list[int]:
                      'queued'
                    ) NOT IN ('succeeded', 'failed', 'cancelled')
             """,
-            (list(_SIM_JOB_TYPES), quest_id),
+            (quest_id, list(_SIM_JOB_TYPES)),
         ).fetchall()
     return [int(r[0]) for r in rows]
 

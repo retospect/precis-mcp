@@ -640,3 +640,92 @@ class TestRegistration:
         assert spec.dispatch is not None
         with pytest.raises(NotImplementedError):
             spec.run()
+
+
+class TestSimWaitSetReachesBarrierFanout:
+    """Regression (the 238-seed runaway): the barrier fan-out parents
+    ``autocatpath_seed`` three levels below the candidate
+    (seed_job → seed_todo → agg_todo → candidate), so the per-quest
+    backpressure query must walk the whole subtree, not a single hop — and the
+    job type must be in the wait set at all. Before the fix the wait set listed
+    only ``autocatpath_explore``/``struct_relax`` and joined a single parent
+    hop, so it was blind to the queued seeds and the loop proposed a fresh batch
+    every slice.
+
+    Unlike the phase-machine tests above (which STUB ``_pending_sim_ids`` /
+    ``_queued_sim_count`` — the very reason this disconnect slipped through),
+    these exercise the REAL SQL helpers against the ``store`` fixture.
+    """
+
+    def _serving_candidate(self, store: Any) -> tuple[int, int]:
+        """A quest and a candidate ``structure`` that ``serves`` it."""
+        q = store.insert_ref(kind="quest", slug=None, title="cat quest", meta={})
+        cand = store.insert_ref(
+            kind="structure", slug=f"cand-{q.id}", title="cand", meta={}
+        )
+        store.add_link(src_ref_id=cand.id, dst_ref_id=q.id, relation="serves")
+        return int(q.id), int(cand.id)
+
+    def _nested_seed_job(
+        self, store: Any, cand_id: int, *, status: str | None = None
+    ) -> int:
+        """The real 3-hop shape ``dispatch_autocatpath`` mints:
+        candidate → agg_todo → seed_todo → ``autocatpath_seed`` job. An untagged
+        job COALESCEs to ``queued`` (non-terminal)."""
+        agg = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title="autocatpath aggregate",
+            meta={"executor": "ssh_node", "job_type": "autocatpath_aggregate"},
+            parent_id=cand_id,
+        )
+        seed_todo = store.insert_ref(
+            kind="todo",
+            slug=None,
+            title="autocatpath seed",
+            meta={"auto_check": {"type": "child_job_succeeded"}},
+            parent_id=agg.id,
+        )
+        job = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="autocatpath_seed",
+            meta={"job_type": "autocatpath_seed"},
+            parent_id=seed_todo.id,
+        )
+        if status is not None:
+            from precis.store import Tag
+
+            store.add_tag(job.id, Tag.closed("STATUS", status), set_by="system")
+        return int(job.id)
+
+    def test_queued_nested_seed_is_in_wait_set(self, store: Any) -> None:
+        qid, cand = self._serving_candidate(store)
+        seed = self._nested_seed_job(store, cand)  # untagged → queued
+        assert seed in qt._pending_sim_ids(store, qid)
+
+    def test_directly_parented_relax_still_counted(self, store: Any) -> None:
+        """The 1-hop stability-lane shape must keep registering after the
+        subtree rewrite (no regression for ``struct_relax``)."""
+        qid, cand = self._serving_candidate(store)
+        relax = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="struct_relax",
+            meta={"job_type": "struct_relax"},
+            parent_id=cand,
+        )
+        assert int(relax.id) in qt._pending_sim_ids(store, qid)
+
+    def test_terminal_seed_clears_backpressure(self, store: Any) -> None:
+        qid, cand = self._serving_candidate(store)
+        cancelled = self._nested_seed_job(store, cand, status="cancelled")
+        succeeded = self._nested_seed_job(store, cand, status="succeeded")
+        pending = qt._pending_sim_ids(store, qid)
+        assert cancelled not in pending
+        assert succeeded not in pending
+
+    def test_seed_counts_toward_global_starvation_gate(self, store: Any) -> None:
+        _qid, cand = self._serving_candidate(store)
+        self._nested_seed_job(store, cand)  # non-terminal
+        assert qt._queued_sim_count(store) >= 1

@@ -109,6 +109,7 @@
 - [`plan-tick-spin-autopause`](./plan-tick-spin-autopause.md) **idea** — Auto-pausing (an open tag the doable view excludes) would stop the burn but
 - [`prod-dead-index-drop`](./prod-dead-index-drop.md) **idea** — `llm_call_log_request_hash_idx` (54 MB), `vault_events_name_at_idx` (31 MB),
 - [`quest-artifacts-in-dossier`](./quest-artifacts-in-dossier.md) **idea** — The converter document should show the pareto front, the specific energy
+- [`quest-backpressure-sim-types`](./quest-backpressure-sim-types.md) **idea** — **Root cause (fixed, branch `feat/quest-backpressure-simtypes`).** The discovery
 - [`quest-job-sequencing`](./quest-job-sequencing.md) **idea** — The natural state is many pending jobs per quest, followed up when resources
 - [`quest-loop-activation`](./quest-loop-activation.md) **idea** — All slices shipped; the loop is dormant (quests paused 2026-07-16). Do:
 - [`quest-redispatch-tier`](./quest-redispatch-tier.md) **idea** — A deployed-engine re-score ignores a candidate's own tier-ladder rung: a
