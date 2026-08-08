@@ -1,0 +1,94 @@
+---
+# 20c-precis-heartbeat-serving.yml — heartbeat-ONLY precis worker for the
+# `serving` group (the paired GB10 DGX Sparks serving the distributed
+# llama.cpp endpoint). Those nodes are deliberately NOT in the service
+# groups (inference/nfs_clients/llamacpp_hosts) until their serving role is
+# wired — but the web /status tab is `host_heartbeat`-driven, so a node
+# that never beats is invisible. This play makes them visible without
+# making them workers:
+#
+#   * provisions the STANDARD worker venv (precis_worker/provision — the
+#     same install every other node gets, so a later promotion to a full
+#     worker is a group move, not a re-provision), and
+#   * renders the same collapsed `worker` service_unit as 20b with ONE
+#     difference: the exec is `precis worker --only heartbeat`, which
+#     forces exactly that one pass — liveness + load + temp UPSERTs into
+#     `host_heartbeat` and the capability/resource-slot advertisement, but
+#     NO queue claims (nothing else is in the rotation).
+#
+# Same-name clobber is deliberate (mirrors 20b): the unit is
+# `precis-worker.service`, so promoting a serving node into 20b's host set
+# later re-renders the same unit rather than stacking a second daemon.
+#
+# Once a node beats, nursery's `host-dark` watch covers it — a powered-off
+# serving node raises a critical alert, which is the desired posture for a
+# box serving production LLM traffic.
+#
+# Prereqs (site.yml order): 00-users (`deploy` user, hosts: all),
+# 03-precis-constraints + 19-pgpass (both target `serving` too — the venv
+# install needs /opt/precis/constraints.txt, the password-free agent_rw DSN
+# needs ~deploy/.pgpass).
+
+- name: Deploy the heartbeat-only precis worker (serving hosts)
+  hosts:
+    - serving
+  become: true
+  tasks:
+    # precis_worker/provision assumes uv at /root/.local/bin/uv on Linux
+    # (the GPU node got it out-of-band; make it explicit for fresh serving
+    # nodes).
+    - name: Ensure uv is installed (Linux, root)
+      ansible.builtin.shell: |
+        set -o pipefail
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+      args:
+        creates: /root/.local/bin/uv
+
+    # The unit's HOME. provision only creates the hf-cache child (deploy-
+    # owned) — created via `file` its parent would be root-owned, and a
+    # deploy-run daemon can't write its own $HOME (.cache, …).
+    - name: Ensure /var/lib/precis exists and is deploy-writable
+      ansible.builtin.file:
+        path: /var/lib/precis
+        state: directory
+        owner: deploy
+        group: deploy
+        mode: "0755"
+
+    # tasks: + import_role, NOT a `roles:` list — in a `roles:` entry,
+    # `tasks_from:` silently becomes a role VAR and the full main.yml runs,
+    # rendering the split `--profile system` unit too (the exact 20b bug).
+    - name: precis_worker provisioning only (venv + deps + service_config seed)
+      ansible.builtin.import_role:
+        name: precis_worker
+        tasks_from: provision
+
+    - name: render + load the heartbeat-only worker unit
+      ansible.builtin.import_role:
+        name: service_unit
+      vars:
+        service_unit_name: worker
+        service_unit_run_as: deploy
+        service_unit_working_dir: /tmp
+        service_unit_schedule:
+          mode: keepalive
+        # --only heartbeat forces exactly one pass regardless of profile
+        # (cli/worker.py). --idle-seconds 60 matches the pass's own
+        # PRECIS_HEARTBEAT_INTERVAL_SECONDS default, so the loop wakes
+        # once a minute and the throttle decides whether to beat.
+        service_unit_exec: >-
+          {{ precis_worker_venv }}/bin/precis worker --only heartbeat
+          --idle-seconds 60
+        # Deliberately MINIMAL env (not precis_shared_env / 20b's union):
+        # only what the heartbeat pass + DB log handler need. No embedder
+        # vars → capability_probe advertises no embedder slot here, which
+        # is true.
+        service_unit_env:
+          HOME: /var/lib/precis
+          PATH: "{{ precis_worker_venv }}/bin:/usr/local/bin:/usr/bin:/bin"
+          PRECIS_DATABASE_URL: "{{ precis_worker_dsn }}"
+          PGPASSFILE: /home/deploy/.pgpass
+          PRECIS_PROCESS: precis-worker
+          PRECIS_SOURCE: precis-worker
+          HF_HOME: "{{ precis_worker_hf_home }}"
+  tags: [precis-heartbeat-serving, precis]

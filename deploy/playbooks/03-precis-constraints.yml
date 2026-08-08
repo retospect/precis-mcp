@@ -50,6 +50,7 @@
     - scheduler
     - data
     - inference
+    - serving
   become: false
   tasks:
     # The three delegate_to: localhost tasks override ansible.cfg's

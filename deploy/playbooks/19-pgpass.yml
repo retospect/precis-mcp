@@ -8,6 +8,7 @@
     - scheduler
     - data
     - inference
+    - serving
   become: true
   roles:
     - pgpass

@@ -25,6 +25,10 @@ precis_capabilities:
   embedder:        [node-gateway, node-worker, node-data, node-gpu]
   # precis worker --profile=system: chunk-level + SQL ref-level passes.
   worker_system:   [node-gateway, node-worker, node-data, node-gpu]
+  # heartbeat-ONLY worker (`--only heartbeat`, playbook 20c) on LLM-serving
+  # nodes: /status visibility, no queue claims. Gated by the `serving`
+  # inventory group; recorded here so the what-runs-where table stays whole.
+  # worker_heartbeat: [node-serve-a, node-serve-b]
 
   # --- singletons (gateway host) -------------------------------------------
   # The MCP / web host: serves the tool surface and runs DB migrations on deploy.

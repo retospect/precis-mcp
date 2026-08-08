@@ -98,6 +98,9 @@
 - name: "20b — precis worker (collapsed, --profile all, every host)"
   ansible.builtin.import_playbook: playbooks/20b-precis-worker-collapsed.yml
 
+- name: "20c — heartbeat-only worker (serving hosts — /status visibility, no queue claims)"
+  ansible.builtin.import_playbook: playbooks/20c-precis-heartbeat-serving.yml
+
 # Dedicated GPU/compute worker lane (inference group) — a second tiny worker
 # running `--only job_ssh_node` so node-pinned detached GPU jobs (autocatpath
 # seeds, dft gpaw_relax) aren't starved behind the collapsed worker's serial

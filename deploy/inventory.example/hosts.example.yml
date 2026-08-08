@@ -73,6 +73,16 @@ all:
         os_family: linux
         shared_mount: "/shared"
 
+    # LLM-serving-only nodes (playbook 20c): they run a heartbeat-only
+    # `precis worker --only heartbeat` unit — visible on the web /status tab
+    # (liveness/load/temp) without claiming any queue work. Add such nodes
+    # under `linux:` above AND here; deliberately keep them OUT of the
+    # capability groups below until they take on real worker duties.
+    # serving:
+    #   hosts:
+    #     node-serve-a:
+    #     node-serve-b:
+
     # ── Capability-bearing groups (membership is the placement knob) ────────
     llamacpp_hosts:
       hosts:
