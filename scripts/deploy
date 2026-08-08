@@ -86,12 +86,12 @@ cd "$CLUSTER_DIR"
 
 # ── 1. reachability ─────────────────────────────────────────────────────
 # Ping only the groups redeploy-precis.yml actually targets, NOT `all` — the
-# inventory can carry bootstrap-only hosts (e.g. castor/pollux: in `linux` for
-# the tailscale bootstrap, deliberately excluded from every service group until
-# their serving role is wired) that have no `deploy` SSH user and would abort a
-# deploy they play no part in (gripe 196641). Keep this pattern in sync with the
-# plays' `hosts:` in redeploy-precis.yml (gateway/scheduler/data/inference).
-PING_TARGETS="gateway:scheduler:data:inference"
+# inventory can carry bootstrap-only hosts with no `deploy` SSH user that would
+# abort a deploy they play no part in (gripe 196641). `serving` (castor/pollux)
+# IS a redeploy target now — 20c provisions the heartbeat-only unit there — so
+# it must be pinged too: a twin down mid-deploy should abort, not half-
+# provision. Keep this in sync with the plays' `hosts:` in redeploy-precis.yml.
+PING_TARGETS="gateway:scheduler:data:inference:serving"
 say "checking cluster reachability (ansible ping — ${PING_TARGETS})"
 ansible "$PING_TARGETS" -m ping ${INV_ARGS[@]+"${INV_ARGS[@]}"} >/tmp/precis-deploy-ping.$$ 2>&1 || {
     cat /tmp/precis-deploy-ping.$$ >&2
