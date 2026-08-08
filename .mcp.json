@@ -4,10 +4,11 @@
       "command": "npx",
       "args": ["-y", "@zilliz/claude-context-mcp@latest"],
       "env": {
-        "EMBEDDING_PROVIDER": "Ollama",
-        "EMBEDDING_MODEL": "nomic-embed-text",
-        "OLLAMA_HOST": "http://127.0.0.1:11434",
-        "EMBEDDING_DIMENSION": "768",
+        "EMBEDDING_PROVIDER": "OpenAI",
+        "EMBEDDING_MODEL": "bge-m3",
+        "OPENAI_BASE_URL": "http://127.0.0.1:8182/v1",
+        "OPENAI_API_KEY": "unused-bge-m3-is-authless",
+        "EMBEDDING_DIMENSION": "1024",
         "MILVUS_ADDRESS": "127.0.0.1:19530",
         "MILVUS_TOKEN": "root:Milvus"
       }

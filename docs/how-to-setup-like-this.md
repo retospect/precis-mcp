@@ -166,7 +166,7 @@ Name the *need*; the tool is an example, not a mandate.
 |---|---|
 | Compress noisy cmd output → signal (token saver) | **`rtk`** — CLI proxy: `rtk git/psql/rg …`, `rtk err -- <cmd>`; shows a filtered digest, tees the full log to disk |
 | Compact tabular output for an LLM reader | **TOON** — token-lean table serialization, far terser than JSON rows (header once, values aligned); the format a verb *returns* |
-| Semantic code search over the repo | a **`claude-context`**-style MCP over a local vector store (**Milvus** + **Ollama** embeddings) — one shared MAIN index, repo-relative hits |
+| Semantic code search over the repo | a **`claude-context`**-style MCP over a local vector store (**Milvus** + any OpenAI-compatible embedder — here bge-m3 reused via a thin shim) — one shared MAIN index, repo-relative hits |
 | Reproducible env / package mgr | **`uv`** (forbid bare `pip`/`pytest`/`mypy` — not reproducible) |
 | Containerized dev + ops | **Docker** + **Compose** |
 | Lint + format (auto-fixed inside the gate) | **`ruff`** |
