@@ -39,14 +39,13 @@ from precis.utils.llm.router import LlmRequest, Tier, dispatch
 
 log = logging.getLogger(__name__)
 
-# ── the closed TAPROOT namespace (see taproot.md open #11) ─────────────────
+# ── the closed TAPROOT namespace ────────────────────────────────────────────
 #
-# Registered here (mirrors ROLE3, ``workers/classify.py``) even though the
-# Phase-1-predecessor classifier that *writes* these tags isn't built yet
-# (out of scope, see the build ticket's "Explicitly NOT in Phase 1"). `block`
-# reads it so the query is correct the day the classifier lands; until then
-# it simply finds no tagged hubs and returns empty (brand-new claim), which
-# is the correct degrade.
+# Registered here (mirrors ROLE3, ``workers/classify.py``). The axis
+# classifier that writes these tags is built (``data/axes/taproot.yaml`` via
+# ``workers/axis_pass.py``); `block` reads it, and on an untagged corpus it
+# finds no tagged hubs and returns empty (brand-new claim) — the correct
+# degrade.
 TAPROOT_NAMESPACE = "TAPROOT"
 TAPROOT_CLAIM = "claim"
 TAPROOT_REVIEW = "review"

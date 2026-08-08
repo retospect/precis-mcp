@@ -24,6 +24,64 @@ Roles reference **inventory variables and capability groups**, never a literal
 hostname or IP — so the recipes are the same everywhere and only the overlay
 differs.
 
+## Runtime topology (what runs where)
+
+- **One collapsed worker per host.** Every host runs a single
+  `precis worker --profile all` unit (union of the historical `system` +
+  `agent` rotations), rendered by `playbooks/20b-precis-worker-collapsed.yml`
+  through the `service_unit` role (one abstract spec → launchd plist or
+  systemd unit; imported by `site.yml` + `redeploy-precis.yml`). The split
+  system/agent units are retired (`retire-split-agents.yml`); the legacy
+  playbooks `20-precis-worker.yml` / `37-precis-worker-agent.yml` stay on
+  disk as per-host rollback, no longer imported. Profile is pass
+  *ownership* only — the live on/off switch is the `service_config` row,
+  not a plist env flag (see below).
+- **Compute-lane exception (GPU node).** The `inference` group host runs one
+  extra tiny worker alongside its collapsed unit:
+  `precis-worker-compute.service`, `--only job_ssh_node`, polling every few
+  seconds (`playbooks/43-precis-worker-compute.yml`). The collapsed worker's
+  `run_loop` is a strictly-serial round-robin, so a slow pass starves
+  `job_ssh_node` — the submit/poll executor driving every node-pinned
+  detached GPU job — down to ~1 claim per multi-minute rotation. Safe
+  alongside the collapsed worker: claims are `FOR UPDATE SKIP LOCKED` and
+  the capacity-1 `gpu` resource slot still serializes GPU compute; distinct
+  `PRECIS_PROCESS=precis-worker-compute` identity in `worker_logs`.
+- **Agent-lane placement.** `job_claude_inproc` / `quota_check` claim only
+  where OAuth + `PRECIS_MCP_CONFIG` exist (the gateway); minting is
+  cluster-wide. The opus reviewers fire via fleet-wide scheduler leases,
+  with eligibility (`PRECIS_STRUCTURAL_REVIEW` / `PRECIS_DEEP_REVIEW`)
+  scoped by the collapsed-unit template to the gateway + inference hosts;
+  `dream_agent` / `anki_sync` are host-pinned cadences on the gateway.
+- **No standalone thin timers.** The old heartbeat/cron/watch/dream/anki
+  launchd+systemd timers are retired (`retire-thin-timers.yml`); recurring
+  work rides the worker's own `scheduler` pass, and the per-host heartbeat
+  is a worker pass + dedicated thread (`src/precis/workers/heartbeat.py`).
+- **Enable-flag lifecycle.** Live run control is `service_config`
+  (`precis service prio|model|seed|clear|list`). Worker roles run
+  `precis service seed` (INSERT-if-absent) before stripping a retiring
+  `PRECIS_*_ENABLED` plist flag, so a cutover is behaviour-preserving and a
+  console override set after first-seed survives every later redeploy.
+- **Secrets discipline.** Deploy-run daemons render password-free
+  `postgresql://…` DSNs; libpq resolves the password from `~/.pgpass` (the
+  `pgpass` role). Documented in-template exceptions: env vars a third-party
+  tool reads directly as a raw password (not a libpq DSN). Agentic daemons
+  resolve `CLAUDE_CODE_OAUTH_TOKEN` env → vault → `~/.secrets/pw/` — no
+  per-user token files (redeploy purges the known service-account paths).
+- **Bounce discipline.** Roles use the idempotent `launchctl load -w`
+  (no-op when loaded); a real reload-with-new-env fires only via each
+  role's `notify` handler through the shared `tasks/reload_launchd.yml`.
+  `scripts/restart-worker-and-watch` picks `launchctl kickstart -k` vs
+  `systemctl restart` per host OS.
+- **CPU fencing.** Spawned job containers splice `container_limit_flags()`
+  (`PRECIS_JOB_CPUSET` / `PRECIS_JOB_CPU_SHARES`; a container doesn't
+  inherit the worker's `nice`); systemd inference units carry matching
+  `Nice`/`CPUAffinity`, macOS plists `Nice`/`LowPriorityIO` (worker plists
+  stay `ProcessType=Interactive` for jetsam).
+- **Deploy cadence.** A fix only helps once deployed — a spin-loop /
+  ref_events alert spike on prod usually means "redeploy" (check the
+  deployed sha under the deploy user's `~/.cache/uv/git-v0/checkouts/`),
+  not a new bug.
+
 ## The secret boundary (read before you commit)
 
 precis-mcp is a **public** repository. A commit that leaks the real cluster's

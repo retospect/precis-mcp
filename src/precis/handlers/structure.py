@@ -13,8 +13,22 @@ the seven-verb surface:
   'rings'|'fragments'|'diff'|'pov'``), or an export — all with ``args=``.
 - ``delete`` — soft-retire a whole design.
 
-The relaxer/DFT and file export (CIF/POSCAR/XYZ) are rented backends added in
-later increments. See ``precis-structure-help``.
+The relaxer/DFT and file export (CIF/POSCAR/XYZ) are rented backends
+(:mod:`precis.structure.relax`). A relax that would dispatch to the GPU
+first runs ``validate()`` as a **hard-reject** (overlap / over-valence /
+impossibly-long declared bond mints no job), then a local ``clean`` (or
+opt-in ``preflight='emt'``) pre-relax and a ``cache_key`` re-check — cloud
+is last-resort; a plain local ``clean``/``emt`` edit is never gated.
+``put``/``edit`` also run the tier-0 MLIP preflight
+(:mod:`precis.structure.preflight`, dark by default) and reject + undo a
+failing edit before the version commits.
+
+``view='literature'`` assembles a deterministic paper query from the design
+(description + host metals / adsorbate / facet from ``scene.composition()``)
+and runs the shared paper search; paper-provenance links + a rationale note
+(``link(..., note=…)`` → ``links.meta``) show *why* a design was made.
+
+See ``precis-structure-help``.
 """
 
 from __future__ import annotations

@@ -9,19 +9,25 @@ through this module. A raw ``INSERT`` / ``store.add_link`` for these
 relations elsewhere bypasses the vocabulary + ``TAPROOT:claim`` guards below
 and is a defect — the exact silent-junk-edge error taproot exists to prevent.
 
-Three functions:
+Four functions:
 
 1. :func:`mint_hub` — create a ``TAPROOT:claim`` ``finding`` hub for a
    paper-grounded claim (open #15: only paper-sourced claims become hubs).
 2. :func:`attach_evidence` — write one ``paper --role--> hub`` edge, ``role``
-   in :data:`HUB_ROLES`, guarding the target is actually a claim hub.
+   in :data:`HUB_ROLES`, guarding the target is actually a claim hub and the
+   source is a paper/patent ref (:data:`_EVIDENCE_SRC_KINDS` backstop).
 3. :func:`apply_placement` — bridge a :class:`~precis.taproot.canon.Placement`
    (the canonicalizer's verdict) to the writes above; a ``needs_review``
    placement files a ``kind='todo'`` (via an injected ``todo_fn``) and never
    auto-attaches (open #16).
+4. :func:`link_claims` — the claim->claim advisory ``refines`` edge
+   (:data:`CLAIM_LINK_RELATIONS`, migration 0100): link-don't-merge, carries
+   no evidence flow.
 
-Phase 2 defines + unit-tests these; the edges are *populated at scale* by the
-forward ``chase`` wiring in Phase 3, which supplies the verdict ``meta``.
+Callers that populate the edges: ``workers/chase.py::_taproot_bridge`` (the
+forward bridge, supplies the verdict ``meta``), ``workers/hub_refine.py``,
+and the authoring/backfill doors (:mod:`precis.taproot.authoring` /
+:mod:`precis.taproot.backfill`).
 """
 
 from __future__ import annotations
@@ -96,7 +102,8 @@ def _grounding_chunk_ord(
 
     Two ``source_handle`` forms are recognised — the ``pc<chunk_id>``
     universal handle (the authoring / mint spec form) and the ``slug~ord``
-    pointer the chase writes per hop (:func:`~precis.workers.chase._evidence_edge_meta`).
+    pointer the chase writes per hop
+    (:func:`~precis.workers.chase._evidence_edge_meta`).
 
     Best-effort and defensive: a missing / unresolvable ``source_handle``,
     one that isn't a chunk, one whose chunk belongs to a *different* paper

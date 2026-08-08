@@ -39,6 +39,13 @@ The filter validates ``kind`` lazily — every match is rendered as an
 anchor regardless of whether the kind is registered. Unknown kinds 404
 on the preview / redirect route; the popover then renders an "unknown
 kind" stub. Cheap, no per-render dependency on the live ``Hub``.
+
+Claim rendering (R2): a caller may pass a ``claims`` side-channel — the
+frozenset of Taproot hub-cite heads in the render window — and a bracket
+cite whose head is in it renders as a violet claim anchor
+(:func:`_render_claim_hub`): click → ``/claim/<head>``, hover →
+``/preview/claim/<head>``. ``claims`` defaults to ``None`` (off) outside
+the smartdraft/paper readers, so every other surface renders unchanged.
 """
 
 from __future__ import annotations

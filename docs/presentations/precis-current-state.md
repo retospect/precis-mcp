@@ -272,7 +272,7 @@ The dev side has the same tiered routing as the product — the **cheapest tier 
 - **Dogfooding, honestly stated.** The dev session's `precis` MCP writes to PROD read-only. The team files `gripe`s, runs `quest`s, and stores `memory` in precis while building precis.
 - **Persistent memory.** File-based memory + a `MEMORY.md` index + a reconsolidation cadence — the agent carries context across sessions.
 - **Skills are runtime docs.** The same `get(kind='skill')` surface serves the product's agents AND documents the dev workflow — one channel, two audiences.
-- **Orientation tooling.** Semantic code search (Milvus) + `coderef` (exact who-calls) + a docs ladder (`codebase.md` → `state-map` → `glossary` → ADRs).
+- **Orientation tooling.** Semantic code search (Milvus) + `coderef` (exact who-calls) + a docs ladder (`codebase.md` → package docstrings → `glossary`).
 - `rtk` transparently compresses noisy command output; self-healing hooks inject the in-flight worktree table, auto-reap merged worktrees, and heal the primary branch.
 
 > ◆ The elegant part — skills-as-runtime-docs means one artifact runs the product and teaches the team.

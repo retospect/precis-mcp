@@ -41,18 +41,32 @@ back to docker instead of throwing ``FileNotFoundError`` on every boot
 reconcile.
 
 Slice 1 (``docs/proposals/sandbox-run-substrate.md``) stages
-``/work/PROMPT.md`` and drove the launch/poll/reap spine. Slice 2 (this
-module's ``_terminate``, design §"Harvest -> DB + NAS") harvests a clean
-exit's ``/work/out`` — folder + plaintext projection + content-addressed
-tarball + (``mode:build``) ``RUN.json`` recipe — via
-:mod:`precis.workers.executors._sandbox_harvest` before the scratch
-workdir is deleted; every other terminal path (non-zero exit, timeout,
-vanished container) still discards ``out/`` unchanged. Slice 3
-(``_launch_run`` / ``build_rerun_argv``, design §"Re-run +
-operationalize") re-runs a prior build: stages the harvested tarball
-into ``/work``, launches ``sh -c 'cd /work && uv sync && <RUN.json.cmd>'``
-with **no** claude / OAuth / API-key env at all, and harvest links the
-result folder back to the build folder it re-ran.
+``/work/PROMPT.md`` and drove the launch/poll/reap spine. Slices 2-4
+(design ``docs/design/sandbox-run.md``):
+
+* **Harvest** (slice 2, this module's ``_terminate`` → ``_sandbox_harvest``)
+  — a clean exit's ``/work/out`` mints a ``kind='folder'`` ref
+  (``derived-from`` the job, ``supersedes``-chained to the same todo's
+  prior build) with each file projected as a disk-backed ``plaintext``
+  ref + the whole tree as a content-addressed tarball; ``RUN.json``
+  becomes the ``mode:run`` recipe on folder + job meta. Every other
+  terminal path (non-zero exit, timeout, vanished container) still
+  discards ``out/`` unchanged.
+* **Re-run** (slice 3, ``_launch_run`` / ``build_rerun_argv``) —
+  ``mode:run`` stages a prior build's tarball into ``/work``
+  (sha256-verified; reconstructable from the plaintext refs'
+  ``meta.harvest_orig_path`` on a store miss) and launches
+  ``sh -c 'cd /work && uv sync && <RUN.json.cmd>'`` with **no** claude /
+  OAuth / API-key env at all.
+* **Read dial** (``precis_access:read``, ``_sandbox_read_mcp``) — a
+  ``mode:build`` job may get a per-run ``precis serve --transport
+  streamable-http`` child (``agent_ro`` DSN, loopback-bound, fresh
+  per-run token; only the PID persists in job meta — never token/port).
+  Fail-closed on ``PRECIS_SANDBOX_READ_MCP``; teardown is wired into
+  every terminal path (``_terminate`` + boot ``reconcile_orphans``).
+* **Image provenance** — the image that ran a job is recorded on
+  ``job.meta.image``, echoed on every terminal ``job_summary`` line, and
+  stamped onto the harvested folder's meta.
 """
 
 from __future__ import annotations

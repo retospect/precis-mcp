@@ -1,23 +1,32 @@
 """The ``figure`` kind — an interactive SVG canvas you draw *with* the model.
 
 A figure is a chunk-tree ref on the ``draft`` substrate (migration 0057),
-holding two model-owned documents: the SVG **source** (a ``figure_node``
-chunk) and the shared **vocabulary** (a ``figure_vocab`` chunk — the
-negotiated ground truth, "green circles are foos"). Chat turns persist as
+never exported (``corpus_role='none'``), holding three model-owned
+documents: the SVG **source** (a ``figure_node`` chunk, ``meta.no_index``
+so raw markup never embeds), the shared **vocabulary** (``figure_vocab``,
+embedded — the negotiated ground truth, "green circles are foos"), and the
+model's private **implementation notes** (``figure_notes``, ``no_index``;
+migration 0058). Vocab/notes are born empty — the "what this doc is for"
+seed lives in the prompt / ``precis-figure-svg`` skill (prepended to every
+turn prompt), never stored as content. Chat turns persist as
 ``figure_turn`` chunks so a session is resumable.
 
-The heavy lifting is split so each piece is testable in isolation:
+Since ADR 0057 ``figure`` is the **SVG instance** of the shared diagram
+core (:mod:`precis.diagram` — the ``DiagramLang`` port + the generic turn
+loop / context assembler); elements bind to the chunks they depict via
+chunk-level ``depicts`` links.
 
 - :mod:`precis.figure.svg` — pure functions: sanitize (XSS/SSRF strip),
-  compile-check (parse), out-of-bounds lint (shape bbox vs the viewBox).
-  No DB, no network, no model.
-- :mod:`precis.figure.turn` — one interactive turn: build the prompt
-  (pinned skills + vocab + current source + lint + user message), call the
-  model, sanitize + lint the reply, bounded auto-heal, persist.
+  compile-check (parse), out-of-bounds lint (shape bbox vs the viewBox);
+  defines ``SVG_LANG``. No DB, no network, no model.
+- :mod:`precis.figure.turn` / :mod:`precis.figure.context` — thin shims
+  binding ``SVG_LANG`` to the generic core in :mod:`precis.diagram`.
 
 The handler (:mod:`precis.handlers.figure`) is the MCP surface (get/put/
-edit/delete); the web editor (:mod:`precis_web.routes.figure`) is the
-3-pane canvas + chat that drives :func:`precis.figure.turn.run_turn`.
+edit/delete/link); the web editor (:mod:`precis_web.routes.figure`) is the
+3-pane canvas + chat that drives the turn loop (SVG rendered as a
+script-safe ``<img>``). Slice 1 is SVG 2D, browser-rendered; raster/3D
+export and per-node chunk split are deferred.
 """
 
 from __future__ import annotations

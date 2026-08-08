@@ -15,7 +15,10 @@ Agent surface (v1):
     get(kind='email', account='rs@…', …)    — pick an account (optional when
                                               exactly one is configured)
 
-Send (SMTP), search, and injection-scan gating land in later slices.
+Injection-scan gating is built (slice 4): listings badge scanned messages
+(🚫/⚠ from ``email_scan``), a ``suspect`` body renders under an
+untrusted-data banner, and a ``high`` verdict withholds the body entirely
+(metadata only). Send (SMTP) and search land in later slices.
 """
 
 from __future__ import annotations

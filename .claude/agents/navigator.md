@@ -27,7 +27,7 @@ Ignore them for your job. Your tools are code search + file reading.
 
 1. **Orient first.** Read `docs/codebase.md` (the shape: data model, lifecycle,
    subsystem table, seams). For a named subsystem, read the matching section of
-   `docs/architecture/state-map.md`. For an overloaded term (tier, card, tote,
+   the owning package's `__init__.py` docstring. For an overloaded term (tier, card, tote,
    bubble, …) consult `docs/architecture/glossary.md`. For *why* a design is
    the way it is, `docs/decisions/` (ADRs, index in its README).
 2. **Search semantically.** Prefer `search_code` (the claude-context index) for

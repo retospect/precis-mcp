@@ -10,17 +10,39 @@ For each claimed paper body chunk it runs the **cascade**:
      citation-grounding needs,
   3. (optional) escalate ``own`` chunks to a stronger model.
 
+Tier 0 is free and structural: the claim query only admits body
+``chunk_kind='paragraph'`` chunks longer than 120 chars, so furniture-by-
+construction (headers, captions, references) never costs a model call.
+
 It writes one chunk tag ``ROLE3:<value>`` via ``store.add_tag(...,
 pos=ord)`` and leases each chunk in the shared ``chunk_claims`` table
 under artifact ``classify:cascade-v<version>`` (bump ``CLASSIFY_VERSION``
 to re-tag the corpus). Idempotent: the claim excludes chunks already
-carrying a ``ROLE3`` tag.
+carrying a ``ROLE3`` tag. ``run_classify_pass(ref_ids=)`` scopes the sweep
+to named papers — ``precis classify role3 --cites-of <draft> | --topic
+<slug> | --ref-ids <csv>`` drives a targeted single-dossier backfill.
 
-Eval + rationale live in ``scripts/classify/EVAL_RESULTS.md``; the free
-local model scores role3 88% accept-aware / 91% own-precision and junk
-94% discard-precision, so this runs on the cheap ``summarizer`` alias.
-Default-OFF (``PRECIS_CLASSIFY_ENABLED=1`` or ``--only classify``) — a
-1.3M-chunk backfill is a deliberate, node-targeted batch.
+**Why a cascade.** The free local model (``summarizer`` alias) is ~72% on
+the 11-way ``role`` axis — it fails the attribution test (own-work vs
+others') — but 94% at junk and 88% / 91%-own-precision at the 3-way
+``role3`` collapse. Human agreement is ~89%, so ~85-90% is the ceiling;
+the residual is real ambiguity, absorbed by gold ``accept:`` sets and the
+query-time agent. So the cheap model does the coarse high-value calls and
+a stronger model is reserved for the narrow residual. ``ROLE3:own`` is
+the citation-grounding filter: use it as candidate-gen / soft boost and
+verify with the agent — never as a lone hard precision gate.
+
+Axis defs (id + values + prompt + few-shot + ``applies_when``) live in
+``src/precis/data/axes/*.yaml``; gold sets, eval harness, and accuracy in
+``scripts/classify/`` (``gold_set/``, ``eval-classifier``,
+``EVAL_RESULTS.md``; ``scripts/classify/classify --cascade`` is the
+manual dry-run/commit backfill). Full design:
+``docs/design/chunk-classifier-cascade.md``.
+
+Default-OFF: registered unconditionally but gated per-cycle by its
+``service_config`` row (``PRECIS_CLASSIFY_ENABLED`` only seeds the
+deploy-time row; ``--only classify`` forces it) — a 1.3M-chunk backfill
+is a deliberate, node-targeted batch.
 """
 
 from __future__ import annotations

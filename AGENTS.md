@@ -9,7 +9,7 @@ Read this before substantive changes.
 > system map + source-tree map; orient once, follow links for depth.
 > (3) [`CLAUDE.md`](CLAUDE.md) — the lean session router (ship workflow +
 > conventions + pointers), then
-> [`docs/architecture/state-map.md`](docs/architecture/state-map.md) — the
+> the owning package `__init__.py` docstrings (map: [`docs/codebase.md`](docs/codebase.md)) — the
 > present-tense map of the live subsystems you're about to touch. Deep
 > per-kind reference is on demand via skills
 > (`get(kind='skill', id='precis-overview')` for the master kinds table +
@@ -123,7 +123,7 @@ precis-mcp/
       fresh DB.
 - [ ] Docs an LLM reads are refreshed in the same commit, terse per
       `docs/conventions/llm-facing-prose.md`: the relevant
-      `state-map.md` section, and — if the *shape* changed —
+      owning package docstring, and — if the *shape* changed —
       `docs/codebase.md` (bump its `_Verified @ <sha>._` stamp) plus any
       affected product skill.
 - [ ] If CLI surface changed: subcommand has `--help`, an integration
@@ -211,7 +211,7 @@ back-compat with any files staged before the routing landed.
 ## On-demand pointers
 
 - **Orientation** (shape / lifecycle / seams): `docs/codebase.md`
-  (read first; present-state per subsystem → `docs/architecture/state-map.md`)
+  (read first; present-state per subsystem → the owning package's `__init__.py` docstring)
 - **Conventions**: `docs/conventions/`
   (start with `thresholds.md`; LLM-facing docs → `llm-facing-prose.md`)
 - **Decisions** (ADR log): `docs/decisions/`

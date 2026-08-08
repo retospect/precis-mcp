@@ -15,6 +15,27 @@ The legacy ``.acatome`` bundle parser that this package re-exported
 through B6 was deleted in B7. Callers that still need bundle
 parsing should pin to ``precis<0.7``; otherwise migrate to the
 direct ingest path via :func:`precis_add`.
+
+Discovery layer (F20)
+---------------------
+
+Per-chunk KeyBERT keywords supersede the dropped ``ref_segments`` /
+``ref_segment_sentences`` tables (migration ``0003_drop_legacy_segments``;
+ADR 0018 status note): ``chunks.keywords TEXT[]`` (canonical lower-case,
+GIN-indexed) + ``chunks.keywords_meta JSONB`` (versioned envelope of
+short/long pairs + KeyBERT scores), filled by the ``chunk_keywords`` worker
+(:mod:`precis.workers.chunk_keywords`). The claim query re-claims any chunk
+whose ``keywords_meta`` version or ``content_sha`` no longer matches, so
+bumping ``KEYWORDS_VERSION`` lazily re-derives the whole corpus.
+``view='toc'`` DP-clusters the keyword arrays at request time — papers via
+:func:`precis.utils.toc_db.render_from_store` (no precomputed segment
+rows), skills via :mod:`precis.utils.toc` (LRU-memoised; skill files are
+static for the process lifetime). Policy:
+``docs/conventions/discovery-layer-policy.md``.
+
+Hygiene: pysbd sentence splitting in the chunker fallback chain
+(:mod:`precis.ingest.text_chunker`); dehyphenation across line breaks in
+``marker._clean_text``.
 """
 
 from precis.ingest.add import IngestResult

@@ -165,7 +165,7 @@ LLM_OPERATIONS: dict[str, OpDefault] = {
 #: never reaches these; the UI shows them read-only with the reason.
 EXCLUDED_OPERATIONS: dict[str, ExcludedOp] = {
     "fix_gripe": ExcludedOp(
-        "bypasses the router — raw `claude -p` subprocess, not dispatch()"
+        "bypasses the router — agentic `call_claude_agent` chokepoint, not dispatch()"
     ),
     "classify": ExcludedOp(
         "model pinned in code for correctness (local-serving `summarizer` alias)"

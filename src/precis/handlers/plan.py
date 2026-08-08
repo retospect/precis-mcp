@@ -22,7 +22,9 @@ The plan is rendered **whole** every turn (``get(id='<slug>')``) with a
 ``▸`` you-are-here **cursor** — a model-owned pointer stored as
 ``meta.cursor = 'pe<id>'`` on the *plan ref* (not on any chunk). Nodes
 are addressed by the ADR 0036 universal handle ``pe<chunk_id>`` (with
-relative nav ``pe<id>^`` / ``+N`` / ``-lo..hi``). See ``precis-overview``.
+relative nav ``pe<id>^`` / ``+N`` / ``-lo..hi``). Creation requires an
+owning ``project=`` todo, bound via the ``plan-of`` relation. See
+``precis-overview``.
 """
 
 from __future__ import annotations

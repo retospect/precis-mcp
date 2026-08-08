@@ -6,6 +6,24 @@ of ``cad`` (0041) / ``pcb`` (0042). This package is the **pure, numpy-only IR
 core** (§1/§20): cell + scene + ops + probes + validator gate. The relaxer/DFT
 (ASE/MLIP/GPAW) and the file I/O are extras-gated backends added on top; the
 store + handler (the DB layer) wrap this core.
+
+Compute-adjacent seams, each with its own module docstring:
+
+- `relax` — the rented fidelity ladder (``clean``/``emt`` ours; higher rungs
+  extras-gated, GPU-dispatched via the ADR 0044 derived lane).
+- `preflight` — the tier-0 element-agnostic sanity gate in front of any MLIP
+  spend (``PRECIS_STRUCTURE_PREFLIGHT``, default OFF); catches *authoring*
+  faults, never physical verdicts.
+- `cache` — content-addressed relax memoisation; forces are stored
+  label-paired, never canonical-rank-indexed (see ``serialize_forces``).
+- `importers` — pure per-source adapters for external DFT DBs (ADR 0053);
+  the one write path is ``store.structure_import``, keyed on
+  ``(dataset, config_id)``; an external run never serves a compute cache hit
+  and an external design refuses ``edit`` (derive a variant instead).
+- `invariants` — representation-invariant fingerprint (composition ·
+  per-layer · adsorbate site · coordination) powering the round-trip eval;
+  ``handlers/structure.py::guard_energy_comparable`` refuses a
+  cross-method-fingerprint ΔE.
 """
 
 from __future__ import annotations

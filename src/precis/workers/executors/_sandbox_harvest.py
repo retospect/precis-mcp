@@ -5,7 +5,10 @@ Slices 2+3 of the ``sandbox_run`` design (``docs/design/sandbox-run.md``,
 :mod:`precis.workers.executors.claude_docker` after a container exits
 **0**:
 
-* a ``kind='folder'`` ref is minted, ``derived-from`` the job;
+* a ``kind='folder'`` ref is minted, ``derived-from`` the job and
+  ``supersedes``-linked to the same todo's previous build folder, if any
+  (:func:`_link_supersedes_lineage` — each build mints a new folder, the
+  chain is the history);
 * each ``/work/out`` file is projected as a disk-backed ``plaintext`` ref
   parented under that folder — a legible, searchable DB copy (pathological-
   content guard only: size cap, binary skip — not a faithful copy);

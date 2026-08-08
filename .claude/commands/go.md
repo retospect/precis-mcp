@@ -28,7 +28,7 @@ Optional ship message from the user: `$ARGUMENTS`
    concise conventional-commit one-liner describing what this branch changes.
 
 3. **Refresh touched docs (terse, in-place).** For each subsystem the diff
-   changes, re-read its `docs/architecture/state-map.md` section, the
+   changes, re-read the owning package docstring, the
    `docs/codebase.md` invariants, and any affected product skill under
    `src/precis/data/skills/`; update in place — terse, per
    `docs/conventions/llm-facing-prose.md` — **only where the change altered

@@ -11,6 +11,23 @@ PDF viewer pointed at ``/papers/{id}/pdf``, which streams the file from
 (``Ref.slug``) and the ``precis watch`` shard layout
 ``<corpus_dir>/<letter>/<cite_key>.pdf`` — plus the metadata edit /
 triage-lookup / tag / delete affordances, none of which moved.
+
+Chunk anchoring is phrase-first with a page fallback
+(``paper-viewer.js::findInPdf``): jump to the chunk's text when the PDF
+find matches, else to its page, marked visibly approximate (``~p.N``).
+Every chunk selector — ``?chunk=``, the Jump box, TOC clicks — funnels
+through the ONE resolver :func:`_cited_chunk` (bare ord, ``lo..hi`` range,
+or the compound ``pa<ref_id>~N[..M]`` handle).
+
+Sources/Cited tabs render S2's citation graph off ``s2_neighbors``
+(migration 0106; :func:`ensure_s2_neighbors` backfills an old paper
+on-demand at first view), merged against ``paper_bib_entries`` rows
+(``_BibEntryIndex``: held_ref_id → doi → s2_id); a non-held row's Fetch
+button mints the ref and jumps the ``fetch_oa`` queue via
+``Store.requeue_stubs_for_fetch``. The Meta tab carries the reviewed
+toggle (the first writer of ``refs.human_verified_at``), the client-side
+S2 triage prefill, and the backlinks panel (incoming ``links`` edges by
+``dst_ref_id``).
 """
 
 from __future__ import annotations

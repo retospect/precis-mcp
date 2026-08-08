@@ -1,5 +1,8 @@
 """TodoHandler — task / action items with status transitions and tree shape.
 
+Subsystem architecture (facet model, job lanes, planner coroutines,
+guardrails): :mod:`precis.handlers` package docstring.
+
 Numeric-id ref kind. Builds on the shared :class:`NumericRefHandler`
 shape with four first-class extensions:
 
@@ -16,12 +19,14 @@ shape with four first-class extensions:
    old ``level:strategic|tactical`` tags); the guards in
    :mod:`precis.handlers._todo_guards` enforce who can write what.
 
-3. **Tree-aware views** — ``roots``, ``projects``, ``strategic``,
-   ``tree``, ``doable``, ``waiting``, ``blocked``, ``ask-user``.
-   The accepted set is the :class:`TodoView` closed
-   vocabulary; the :data:`_TREE_SEARCH_VIEWS` dispatch table maps each
-   to a renderer in :mod:`precis.handlers._todo_views`. ``projects``
-   lists strategic roots that own a ``meta.workspace``.
+3. **Tree-aware views** — search views ``roots``, ``projects``,
+   ``strategic``, ``doable``, ``waiting``, ``blocked``, ``ask-user``,
+   ``attention`` (the :class:`TodoView` closed vocabulary; the
+   :data:`_TREE_SEARCH_VIEWS` dispatch table maps each to a renderer in
+   :mod:`precis.handlers._todo_views`), plus ``view='tree'`` on ``get``.
+   ``projects`` lists strategic roots that own a ``meta.workspace``;
+   ``attention`` unions ``ask-user:`` leaves, ``child-failed`` parents,
+   and halted todos.
 
 4. **PRIO column + recurring schedule** (Slice 4): ``prio`` is a
    small int (1..10) on ``refs`` driving the doable ORDER BY;
@@ -34,8 +39,8 @@ shape with four first-class extensions:
 List views via ``id='/<view>'`` (legacy flat surface):
     /recent /open /doing /blocked /done /queue
 Tree views via ``view='<name>'`` on search / get:
-    search(kind='todo', view='roots'|'strategic'|'doable'|'waiting'
-                              |'blocked'|'ask-user')
+    search(kind='todo', view='roots'|'projects'|'strategic'|'doable'
+                              |'waiting'|'blocked'|'ask-user'|'attention')
     get(kind='todo', id=N, view='tree')
 
 A ``get(kind='todo', id=N)`` response always includes the walk-up

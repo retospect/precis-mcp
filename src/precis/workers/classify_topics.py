@@ -19,19 +19,30 @@ Tier-2 escalation (a stronger model re-judging low-confidence tier-1 calls) is
 deliberately not implemented yet — see ADR 0060's open questions.
 
 Writes one open tag ``topic:<slug>`` per confirmed topic, plus a closed marker
-tag ``TOPICCASCADE:<version>`` (written regardless of outcome, including zero
-matches) so a processed paper is not re-claimed. Bump
-``CLASSIFY_TOPICS_VERSION`` to force a lazy re-classify of the whole corpus —
-this is also how a *newly added* topic backfills retroactively over papers
-already in the corpus (ADR 0060's "and retroactively, for all the others").
+tag ``TOPICCASCADE:<version>-<hash(sorted enabled slugs)>``
+(:func:`topic_marker_value`; written regardless of outcome, including zero
+matches) so a processed paper is not re-claimed. Bumping
+``CLASSIFY_TOPICS_VERSION`` *or* changing the enabled-topic set changes the
+marker value, lazily re-claiming the corpus — this is also how a *newly
+added* topic backfills retroactively over papers already in the corpus
+(ADR 0060's "and retroactively, for all the others").
+
+The top-level topic list is **closed** — new ``data/topics/*.yaml`` entries
+are added by the operator, never auto-minted (ADR 0047's measured
+folksonomy-drift lesson).
 
 No lease table: like ``paper_glossary``, existence of a current-version marker
 tag is the 'done' check (no separate claims table — the paper corpus is small
 enough, and the LLM call short enough, that a lease isn't needed here).
 
-Default-OFF (``PRECIS_CLASSIFY_TOPICS_ENABLED=1`` or ``--only
-classify_topics``) — a corpus-wide backfill is a deliberate, node-targeted
-batch, like ``classify``/``paper_glossary``. See
+Per-topic gating (ADR 0068): each topic is its own ``service_config`` service
+``topic:<slug>`` (independently flippable from ``/categorizers``), consulted
+*inside* this one pass to filter ``_load_topics()`` to the enabled subset —
+topics don't register their own passes (one pass, one LLM call per paper).
+``classify_topics`` itself remains the global kill-switch: its gate defaults
+on when any ``topic:<slug>`` is enabled; an explicit row overrides.
+``PRECIS_CLASSIFY_TOPICS_ENABLED`` / ``PRECIS_TOPICS_ENABLED`` only seed the
+deploy-time rows; ``--only classify_topics`` forces a run. See
 docs/decisions/0060-topic-dossiers.md + docs/design/topic-dossiers.md.
 """
 

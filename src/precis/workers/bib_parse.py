@@ -6,10 +6,15 @@ reads + outbound LLM/Crossref calls, not a pure ``WorkerHandler``). For
 each claimed paper it:
 
   1. **Detects** bibliography-shaped chunks by *content*, not
-     ``chunk_kind`` (bibliography text commonly lands as
-     ``chunk_kind='paragraph'`` despite the ingest retag pass — a chunk
-     qualifies when most of its non-empty lines look like
-     ``- [N] ...``; ``chunk_kind='references'`` chunks always qualify).
+     ``chunk_kind`` (a chunk qualifies when most of its non-empty lines
+     look like ``- [N] ...``; ``chunk_kind='references'`` chunks always
+     qualify). Deliberate defense-in-depth, not a workaround: the ingest
+     classifier's own retag (``utils/boilerplate.py``, gr196447/gr196690)
+     catches new ingests, but pre-fix chunks are still
+     ``chunk_kind='paragraph'`` corpus-wide — this detector works on that
+     backlog regardless (``bib_retag`` is the mutating remediation). The
+     per-line regex is ``boilerplate.MARKER_LINE_RE``, shared so the two
+     detectors can't drift on what a bibliography line looks like.
   2. **Splits** each qualifying chunk into ``[marker] raw_text`` entries
      and **dedupes** chunk-overlap duplicate markers across the paper
      (first occurrence wins).
@@ -18,12 +23,15 @@ each claimed paper it:
      lines that don't fit go to a SMALL-tier LLM in batches (ADR 0047
      cascade philosophy).
   4. **Matches** each entry to a DOI — local DOI-exact against the
-     paper's own ``s2_neighbors`` rows first (free, no fuzzy/tuple
-     matching), else a Crossref bibliographic query (``safe_get``,
-     backoff, per-entry negative memoization via a non-NULL
-     ``match_conf``), with SMALL-LLM adjudication when two Crossref
-     candidates are close; a matched DOI resolves ``held_ref_id``
-     against ``ref_identifiers``.
+     paper's own ``s2_neighbors`` rows first (free; no fuzzy/tuple
+     matching — ``s2_neighbors`` has no author/journal columns to
+     compare), else a Crossref bibliographic query (``safe_get``,
+     backoff), with SMALL-LLM adjudication when two Crossref candidates
+     are close; a matched DOI resolves ``held_ref_id`` against
+     ``ref_identifiers``. A genuine no-candidates answer is negatively
+     memoized (non-NULL ``match_conf`` doubles as the resolved marker);
+     a Crossref *query failure* deliberately is not — ``match_conf``
+     stays NULL so an outage window can't permanently poison an entry.
 
 The pass **always stamps** ``refs.meta.bib_parse_version`` at the end,
 even when it finds no bibliography — so a no-bibliography paper converges
@@ -33,9 +41,11 @@ discipline as ``paper_glossary``'s ``meta.glossary_version`` /
 ``workers/registry.py``) — the predicate naturally drains the backlog on
 normal worker cadence; ``--only bib_parse`` is just the fast-path burst.
 
-Explicitly NOT in scope (see the proposal): author-year citation styles,
-re-classifying mis-typed bibliography chunks at ingest, any consumer
-(Sources tab / taproot resolution are sibling slices), auto-fetching a
+Consumers (shipped sibling slices): the paper Sources tab reads the rows
+via ``store.list_bib_entries`` (real ``[N]`` markers, unions in entries
+S2 misses); ``bib_mark`` + ``taproot/resolve.py::resolve_citation`` wire
+inline-marker resolution into hub-refine's verify loop. Explicitly NOT in
+scope: author-year citation styles, auto-fetching a
 matched-but-not-held paper.
 """
 

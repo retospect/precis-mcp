@@ -33,6 +33,9 @@ served from here:
   ``mint_review_fanout``, smartdraft-review-status-ui items 1-3), which
   files review-todos, not ledger rows. ``POST /drafts/{ident}/cites/convert``
   dry-runs/applies the taproot living-cite backfill (item 5b).
+* ``POST /drafts/{ident}/title`` — header rename: converges ``refs.title``
+  AND the title heading chunk in one transaction (``store.set_draft_title``)
+  so the name in search results can't drift from the one in the document.
 * ``POST /drafts/{ident}/delete`` — soft-delete the whole draft, gated on
   typing its name (atomic: ref ``deleted_at`` + chunks retired; recoverable).
 * ``GET /c/{handle}`` — resolve a chunk handle → redirect to where it

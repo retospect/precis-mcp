@@ -1,7 +1,7 @@
 # LLM-facing prose — repo-dev docs
 
 **Audience**: anyone writing/editing docs an agent reads to *develop this
-repo* — `CLAUDE.md`, `docs/codebase.md`, `state-map.md`, `glossary.md`,
+repo* — `CLAUDE.md`, `docs/codebase.md`, package `__init__.py` docstrings, `glossary.md`,
 `AGENTS.md`, `docs/design/`, `docs/decisions/`, and files under
 `.claude/{agents,skills,commands}/`.
 
@@ -17,6 +17,12 @@ cluster agent that can only call the seven verbs. This is a deliberate
 are the payload** — name `chunks`, worker names, ADR numbers, migration
 files precisely, with a pointer to the code. Don't apply the product
 cut-list to a dev doc; it deletes the point.
+
+That product surface lives at `src/precis/data/skills/precis-*-help.md`,
+served via `get(kind='skill')`. Entry points: `precis-toolpath-help`
+(canonical call sequences per scenario) and `precis-overview` (master kinds
+table + skill index — it, plus the synthesised `precis-help`, is the
+authoritative kind catalogue; the README lists only a sample).
 
 ## The rule
 
@@ -41,7 +47,7 @@ Duplication is N rot sites for one fact.
 |---|---|---|
 | **Router** | `CLAUDE.md` | what-before-first-tool-call + where everything is |
 | **Orientation** | `docs/codebase.md` | invariants, lifecycle, subsystem map, seams |
-| **Reference** | `state-map.md`, product skills | present-state per subsystem |
+| **Reference** | package docstrings, product skills | present-state per subsystem |
 | **Rationale** | `docs/decisions/` (ADRs) | why a decision, what was rejected |
 | **Vocabulary** | `glossary.md` | coined term → best entry-point file |
 
@@ -51,7 +57,7 @@ rationale in the router, etc.
 ## Present-tense, invariant-biased
 
 Describe what **survives a refactor** (seams, contracts, the append-only
-chunk rule) — not current status (belongs in `state-map.md`) and not the
+chunk rule) — not current status (belongs in the owning package docstring) and not the
 dated story (that's `git log`; there is no CHANGELOG). A doc pinned to
 invariants rots slowly; one pinned to status rots on the next commit.
 

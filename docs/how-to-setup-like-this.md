@@ -29,7 +29,7 @@ link. Duplication = N rot sites for one fact.
 |---|---|---|
 | `CLAUDE.md` | router (loaded every session) | what-before-first-tool-call + where everything is; changes only when the workflow/conventions/subsystem-set change |
 | `docs/codebase.md` | orientation | invariants, lifecycle, subsystem map, seams — the shape that survives refactors. Carries a `_Verified @ <sha>_` stamp; bump on re-verify |
-| `docs/architecture/state-map.md` | present-state | per-subsystem current status (read before touching one) |
+| package `__init__.py` docstrings | present-state | per-subsystem truth + why (map: `docs/codebase.md`) |
 | `docs/decisions/NNNN-*.md` (ADRs) | rationale | why a decision, what was rejected. Numbered; **never delete, only supersede**; `README.md` = index + supersession graph |
 | `docs/architecture/glossary.md` | vocabulary | coined/overloaded term → best entry-point file |
 | `AGENTS.md` | conventions / workflow / Definition-of-Done | the rules that bite |
@@ -37,7 +37,7 @@ link. Duplication = N rot sites for one fact.
 
 **No CHANGELOG** — history is `git log`. **Freshness contract:** update the doc
 in the *same commit* that changes what it describes; a subsystem change updates
-state-map (and codebase.md if the *shape* changed) in that commit.
+the owning package docstring (and codebase.md if the *shape* changed) in that commit.
 
 If the repo has two audiences (e.g. a product runtime + the repo-dev surface),
 say so loudly at the top of `CLAUDE.md` ("two surfaces — don't confuse them")
@@ -280,7 +280,7 @@ broken-link/unindexed/size checks still run every time).
 ## 9. Definition-of-done (put in AGENTS.md)
 
 A change is done when: the gate is green via `scripts/test`; the touched-
-subsystem docs (state-map, codebase.md stamp, affected skills) are updated in the
+subsystem docs (package docstrings, codebase.md stamp, affected skills) are updated in the
 same commit; any dead plan doc is deleted + its refs fixed; residuals persisted
 per §8a and either fixed-in-reach or filed — never spun on.
 

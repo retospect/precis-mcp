@@ -26,8 +26,8 @@ env-base scrub + the trusted-side-only push, so it needs no operator
 ack. A run that can't containerize (feature off, probe-failed, or an
 infra failure mid-run) is fail-closed: it refuses to fall back to
 running full-privilege and unsandboxed unless an operator has
-explicitly set ``PRECIS_FIX_GRIPE_UNSANDBOXED_ACK``
-(``require_container=not _unsandboxed_ack()`` on the chokepoint call —
+explicitly set ``PRECIS_FIX_GRIPE_UNSANDBOXED_ACK`` (gr179498;
+``require_container=not _unsandboxed_ack()`` on the chokepoint call —
 see :class:`~precis.utils.claude_agent.ContainerRequiredError`). Both
 a pre-push hook in every clone AND a host-side branch-name guard on
 the trusted push reject anything not matching ``gripe_*`` (belt and

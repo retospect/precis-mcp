@@ -22,9 +22,22 @@ densities — the left TOC (whole map, thin, quiet runs collapsed), the middle
 same ranking is what an MCP `focus` verb would serialize to text.
 
 This is now the **sole** draft reader: the classic virtual-scroll `/drafts`
-reader was retired and every draft deep link redirects into `/smartdraft`
-(see `docs/architecture/state-map.md`). `routes/drafts.py` remains only as the
+reader was retired and every draft deep link 30x-redirects into `/smartdraft`
+(see the ``precis_web`` package docstring). `routes/drafts.py` remains only as the
 shared editing/export/figure/lifecycle backend this reader reuses.
+Full-document mode (relevance off) is the default and stays O(window), not
+O(N): ±`_FULLDOC_WINDOW` chunks render verbatim, the rest are inert `skel`
+placeholders lazily hydrated on scroll. :func:`focus_index` accepts both the
+universal ``dc<id>`` handle and the legacy base58 form.
+
+Review status: the reader's per-chunk marks read the ``chunk_review``
+watermark ledger (migration 0086) via `routes/drafts.py::
+_review_status_by_chunk` — lens namespace ``flow``/``cites``/``structure``/
+``adversarial``/``toc`` (`precis.quest.review_fanout`) plus ``human`` as the
+fixed point. Fanout is incremental (only stale chunks re-mint) at prio 2,
+and a lens row is written back only by a clean, non-resumed tick that
+concluded ``verdict: done`` (`executors/claude_inproc.py`) — a false
+approval would hide an unreviewed section behind a green ✓.
 """
 
 from __future__ import annotations

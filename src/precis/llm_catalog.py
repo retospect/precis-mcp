@@ -21,8 +21,16 @@ as ``card_combined`` so the card is a vector), ``meta`` = the structured facts:
 
 ``upsert_card`` is idempotent on ``model_id``: first sight inserts + emits the card;
 later sights merge the fresh facts into ``meta`` (``update_ref`` does ``meta || patch``)
-and re-emit the card so a changed capability prose re-embeds. Slice 1 writes facts; the
-review-log (``llm_review`` chunks) + the ``llm_call_log`` tote arrive in slice 3.
+and re-emit the card so a changed capability prose re-embeds.
+
+Slice 3 (the ledger) also lives here: the WORM review log (``llm_review`` chunks,
+typed evidence bands with :data:`PROVENANCE_TRUST` ``observed > measured >
+published`` so bands never blend), the ``llm_tote`` rollup over ``llm_call_log``
+(a live query, not stored), ``record_observed_axes`` (success rate → a
+``reasoning-convergence`` ordinal) and the ``record_eval`` / ``record_benchmark``
+write surfaces. ``meta.endpoints`` (per-provider/quant/window variants pulled by
+the reconcile pass) is machine-maintained and kept separate from the curated
+``meta.offerings`` — reconcile never clobbers a seed.
 """
 
 from __future__ import annotations

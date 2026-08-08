@@ -3,7 +3,7 @@
 > **Two surfaces — don't confuse them.** This repo IS the precis MCP server.
 > The `precis` MCP tools/skills in your session are the PRODUCT's runtime
 > surface — not dev aids. To develop the repo, read: `docs/codebase.md`
-> (orientation) → `docs/architecture/state-map.md` (subsystem status) →
+> (orientation + package map) → owning package `__init__.py` docstrings →
 > `docs/architecture/glossary.md` → `docs/decisions/` (ADRs). Conventions,
 > workflow, definition-of-done: `AGENTS.md`. No CHANGELOG — history is
 > `git log`. Backlog: `docs/backlog/` — one file per item (open work only; delete the file in
@@ -74,7 +74,7 @@
   — raw `httpx…get(url, follow_redirects=True)` is an SSRF.
 - **Skills are runtime docs**: `src/precis/data/skills/` is the agent-facing
   channel served via `get(kind='skill')`.
-- Keep docs true: a subsystem change updates `state-map.md` (and
+- Keep docs true: a subsystem change updates the owning package docstring (and
   `docs/codebase.md` if the shape changed) in the same commit.
 - Always use ssh to git pull/push. Never commit secrets. GitHub Actions
   pinned by commit SHA.

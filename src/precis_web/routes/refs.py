@@ -16,6 +16,16 @@ specific tabs (Tasks) or the Console. Slug kinds (conv / oracle /
 patent / pres) and numeric kinds (memory / gripe) are both addressed
 in the URL by their numeric ``ref_id``; the detail view resolves the
 canonical address (slug when present, else id) for the ``get`` call.
+
+Pathway explorer (``pathway_detail.html.j2``): a client-side energy
+diagram off ``meta.graph`` (:func:`_pathway_graph_payload`, one profile
+per root→leaf path). The CHE U-slider re-levers each node client-side
+(``rel_energy + n_H·U``; gated on ``has_n_h`` so a legacy graph renders
+unchanged). Fork probabilities are never fabricated — a fork is labelled
+only when every outgoing chemical edge carries a trusted barrier. The
+catpath tier ladder (screening → neb → verify) renders a tier chip +
+cross-tier toggle, siblings resolved via ``refines`` links
+(:func:`_pathway_tier_sibling`).
 """
 
 from __future__ import annotations

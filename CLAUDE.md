@@ -4,17 +4,17 @@
 > server. The `precis` MCP tools and `get(kind='skill', id=…)` skills in
 > your session are the **product's** runtime surface, for cluster agents
 > operating precis — **not** dev aids for this repo. To *develop the repo*,
-> navigate: **`docs/codebase.md`** (orientation) → `state-map.md` (subsystem
-> status) → `glossary.md` (terms) → `docs/decisions/` (ADRs). Don't reach
+> navigate: **`docs/codebase.md`** (orientation + package map) → the owning
+> package's `__init__.py` docstring (subsystem truth + why) → `glossary.md`. Don't reach
 > for `get(kind='skill')` to understand the code.
 
 > **Lean router**, loaded every session: ship workflow, conventions that
 > bite, pointers to deeper detail. Read **`docs/codebase.md`** first for the
-> shape of the system; subsystem present-state lives in
-> **`docs/architecture/state-map.md`** (read before touching one).
+> shape of the system; subsystem present-state + rationale live in the
+> **owning package's `__init__.py` docstring** (read before touching one).
 > `AGENTS.md` = conventions/workflow/DoD. No CHANGELOG — history is `git log`.
-> **Keep docs true:** a subsystem change updates `state-map.md` (and, if the
-> *shape* changed, `docs/codebase.md`) in the same commit; this file changes
+> **Keep docs true:** a subsystem change updates the owning package
+> docstring (and, if the *shape* changed, `docs/codebase.md`) in the same commit; this file changes
 > only when the workflow, a convention, or the subsystem *set* changes.
 > Prose house-style: `docs/conventions/llm-facing-prose.md`.
 
@@ -55,8 +55,8 @@ first place (`ALLOW_CHECKOUT_IN_PRIMARY=1` opts out).
 
 ## Subsystem map (detail on demand)
 
-Read `docs/architecture/state-map.md` first; `precis-*-help` skills are the
-per-kind reference.
+Start at `docs/codebase.md`'s package map, then the owning package's
+`__init__.py` docstring; `precis-*-help` skills are the per-kind reference.
 
 - **Todo tree (five slices)** — `kind='todo'` hierarchy: strategic/tactical
   gradient, `auto_check` leaves, `level:recurring` watches, jobs (intent vs
@@ -88,7 +88,7 @@ per-kind reference.
 | Task                             | Read |
 |----------------------------------|------|
 | **Orientation — read first**     | **`docs/codebase.md`** (shape, lifecycle, seams) |
-| Subsystem detail (present-state) | `docs/architecture/state-map.md` |
+| Subsystem detail (present-state + why) | the owning package's `__init__.py` docstring (map: `docs/codebase.md`) |
 | Coined / overloaded terms, project & quest aliases → files| `docs/architecture/glossary.md` |
 | To-do list / what's planned next | `docs/backlog/` (one file per item; generated README index) — **open work only**; when a ship completes an item, *delete* its item file in that same commit (never leave a "done ✅" note — `git log` is the record, like memory's landed-work rule). **No "completed log" file/directory** — a resolved item is proven by `git log` + its regression test; reusable forensics from an incident go to `docs/runbooks/`, never a done-log |
 | Conventions / workflow / DoD     | `AGENTS.md` |

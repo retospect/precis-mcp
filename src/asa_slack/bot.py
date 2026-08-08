@@ -6,9 +6,10 @@ no public endpoint needed, same always-on-daemon shape as the Discord
 bridge). Every conversation is a thread from message 1: asa never posts to
 a channel root, always ``thread_ts = incoming.thread_ts or incoming.ts``.
 
-Unlike the Discord bridge (which hand-rolls its own streaming ``claude -p``
-subprocess), asa-slack calls ``precis.utils.llm.router.dispatch()`` forced
-to ``Tier.BIG`` (sonnet) with a hard kind-allowlist
+Unlike the Discord bridge (which streams via ``dispatch_async`` at
+``Tier.FRONTIER``), asa-slack makes one blocking
+``precis.utils.llm.router.dispatch()`` call per turn, forced to
+``Tier.BIG`` (sonnet) with a hard kind-allowlist
 (``asa_slack.kind_policy``) baked in via ``env_overlay`` — Slack is a
 semi-trusted, multi-user surface, and this is the router's governance
 (budget breaker, route-log, per-turn cost/turn caps) for free.

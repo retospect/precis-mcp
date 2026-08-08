@@ -23,6 +23,11 @@ array and an ``(M, 3) int`` triangle array — already oriented so every
 face normal points outward (enforced by :func:`_orient_outward` via the
 mesh's signed volume, so a hand-winding slip can never ship an inverted
 solid).
+
+The ``/cad`` web viewer tessellates client-side from a ~1 KB recipe via
+``src/precis_web/static/cad-tessellate.js`` — a JS port of this module,
+drift-guarded byte-for-byte by ``tests/test_cad_parity.py`` (node-gated).
+A change here must land in the port in the same commit.
 """
 
 from __future__ import annotations

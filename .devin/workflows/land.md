@@ -22,7 +22,7 @@ The user may pass a ship message after the command; otherwise write one.
    (look at the diff vs `main` if unsure).
 
 3. **Refresh touched docs (terse, in-place).** For each subsystem this
-   branch's diff changes, re-read its `docs/architecture/state-map.md`
+   branch's diff changes, re-read the owning package docstring
    section, the `docs/codebase.md` invariants, and any affected product skill
    under `src/precis/data/skills/`; update in place — terse, per
    `docs/conventions/llm-facing-prose.md` — **only where the change altered

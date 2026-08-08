@@ -19,7 +19,15 @@ and are why the verdict is merely ``suspect`` and the evidence is recorded
 per-signal, so it stays tunable.
 
 Pure: no I/O, no DB. Gates run it inline (``mail_poll``, ``news_poll``,
-``CacheBackedHandler``); tests exercise it directly.
+``CacheBackedHandler`` on every fresh fetch / in-place refetch — covering
+web, news, youtube, perplexity, wolfram, edgar, …), stamping the shared
+:func:`inject_meta` shape ``{verdict, signals, version, tier}`` into
+``meta['inject']``. Response ladder (``CacheBackedHandler._render``):
+``high`` → body withheld, metadata only; ``suspect`` → body under an
+untrusted-data banner; ``clean`` → unchanged. Verdicts gate *rendering*,
+never storage — nothing is deleted. Tier-0 only emits ``suspect``, so
+withholding activates when the corpus-wide model rung lands (slice 2);
+paper/search-hit gating and prompt-seam fencing are later slices.
 """
 
 from __future__ import annotations

@@ -108,7 +108,7 @@ values are from the cluster scan.
 | `PRECIS_PYTHON_ALLOW_EXEC` | Allow `python` kind to exec code | off (refuses) | not set | ✅ Correct — keep off in prod unless a sandbox is guaranteed. |
 
 **Kind gating** (a kind is hidden unless its gate is satisfied). Since the
-capability-universalization (state-map slice 5), the *incidental* env gates
+capability-universalization (§L run-control cutover; see the ``precis.workers`` docstring), the *incidental* env gates
 were dropped: `edgar` is now available on **every** host (its raw-root +
 User-Agent default via `precis.config`), and `patent` gates on the genuinely
 scarce **EPO credentials** via `KindSpec.requires_secret` (vault) — **not**

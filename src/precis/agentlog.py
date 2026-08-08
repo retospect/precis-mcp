@@ -18,7 +18,9 @@ It captures:
 * a ``touched`` **link to every chunk the run wrote or moved**, attached
   lazily by the editing handlers via :func:`touch_from_env` reading
   ``PRECIS_CURRENT_AGENTLOG`` off the subprocess env (same back-door
-  pattern as ``PRECIS_CURRENT_TODO``).
+  pattern as ``PRECIS_CURRENT_TODO``). The hook fires on draft edits,
+  cache-backed fetches (web / websearch / perplexity), and memory writes;
+  ``dream_agent`` ticks open a log of their own.
 
 So a chunk that "looks wrong" walks back through ``chunk_connections``
 to the exact run that produced it, and the run's prompt + transcript

@@ -356,9 +356,9 @@ CADENCES: tuple[Cadence, ...] = (
     # workers/health_digest.py doesn't invent its own.
     Cadence(name="health_digest", interval_s=3600, run=_run_health_digest),
     # §F cycle a: the demand materializer. Host-agnostic like health_digest
-    # — any live worker can win it. DARK unless PRECIS_MATERIALIZE_EMBED=1
-    # (workers/materialize.py); this cadence firing every 5 min is itself
-    # harmless — the pass no-ops until the flag is set.
+    # — any live worker can win it. Default-ON; PRECIS_MATERIALIZE_EMBED=0
+    # opts out (workers/materialize.py::_materialize_enabled); this cadence
+    # firing every 5 min is itself harmless — the pass no-ops when disabled.
     Cadence(name="materialize", interval_s=300, run=_run_materialize),
     # gr192752: the two opus reviewers, migrated off the agent-profile
     # default rotation. Under `--profile all` a long `chase` pass
