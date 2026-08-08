@@ -130,6 +130,15 @@ else
     echo "WARNING: npx not found — skipping tailwind rebuild (committed CSS unchanged)"
 fi
 
+# ── 1c. regenerate doc indexes ───────────────────────────────────────────
+# Backlog/runbook README index blocks + the codebase.md package map derive
+# from the files themselves (docs/README.md §Generated indexes). Best-effort,
+# same policy as the Tailwind prebuild.
+if command -v uv >/dev/null 2>&1; then
+    say "regenerating doc indexes"
+    uv run python scripts/docs-index || echo "WARNING: docs-index failed — shipping committed indexes unchanged"
+fi
+
 # ── 2. commit WIP ───────────────────────────────────────────────────────
 if [[ -n "$(git status --porcelain)" ]]; then
     say "committing WIP"

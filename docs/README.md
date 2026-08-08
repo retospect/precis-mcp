@@ -1,53 +1,67 @@
-# precis-mcp documentation
+# The doc system — how to read it, how to keep it true
 
-The front door to the `docs/` tree. Start with the must-reads, then
-dive into the subdirectory that matches your task.
+One contract, referenced by `CLAUDE.md`, `.windsurfrules`, and `AGENTS.md`
+(tool-specific rules stay in those files; the doc system is defined once,
+here). The main reader and writer is an LLM: keep prose compact, use
+glossary terms, and prefer deleting to archiving — git is the history,
+`docs/` is the present.
 
-## Start here
+## Where truth lives
 
-| If you want to… | Read |
-|-----------------|------|
-| Contribute / change code (conventions, workflow, DoD) | [`../AGENTS.md`](../AGENTS.md) — **canonical** |
-| A narrative system overview | [`architecture.md`](./architecture.md) — the manual |
-| The mission / pitch narrative + corpus facts | [`mission.md`](./mission.md) — positioning, not architecture |
-| The present-tense map of live subsystems | [`../CLAUDE.md`](../CLAUDE.md) |
-| The user-facing intro + install | [`../README.md`](../README.md) |
-| The DB schema (generated, current) | [`design/schema.md`](./design/schema.md) |
-| Why a decision was made | [`decisions/README.md`](./decisions/README.md) — the ADR index |
-| What changed, when | git history (`git log`) — no CHANGELOG file |
-| The active backlog | [`../OPEN-ITEMS.md`](../OPEN-ITEMS.md) |
+| What | Where |
+|---|---|
+| Orientation + package map | `docs/codebase.md` (map is generated — see below) |
+| Subsystem architecture + why | the owning package's `__init__.py` **module docstring** |
+| Cluster topology / what runs where | `deploy/README.md` |
+| Cross-cutting invariants | `docs/conventions/` |
+| Controlled vocabulary | `docs/architecture/glossary.md` (hand-written) |
+| Work items (idea → ready) | `docs/backlog/` — one file per item |
+| Operational procedures | `docs/runbooks/` |
+| History, shipped plans, old decisions | `git log` — nothing else; no CHANGELOG, no archive dirs |
 
-## The subdirectories
+There is no `docs/design/`, `docs/proposals/`, `docs/decisions/`, or
+`OPEN-ITEMS.md` — plans and decisions either live as backlog items (future),
+package docstrings (present truth + rationale), or git history (past).
+*(Consolidation in progress: directories still present are being folded —
+this table is the target and the tie-breaker.)*
 
-- **[`decisions/`](./decisions/)** — Architecture Decision Records,
-  numbered, one per substantive trade-off. **Never deleted**; obsolete
-  ones are marked superseded and kept for history (fully-superseded
-  chains may move to [`archive/`](./decisions/archive/) under ADR 0059,
-  filename + number preserved). The [index](./decisions/README.md)
-  carries the by-topic table + supersession graph.
-- **[`design/`](./design/)** — plan artifacts, one per non-trivial
-  change (schema, new CLI subcommand, new handler, …). **Deleted on
-  ship** once the truth lives in code + the ADR (git holds the record);
-  a plan stays only while it's still load-bearing — referenced by `src/`,
-  a current anchor, or an active ADR/proposal as its design-of-record.
-  Find dead plans with `scripts/docs-orphans`; adjudicate with the
-  `docs-triage` skill. Notable current ones: the generated
-  [`schema.md`](./design/schema.md), the prose
-  [`storage-v2.md`](./design/storage-v2.md), and the visual
-  [`schema-v2.puml`](./design/schema-v2.puml) (conceptual sketch).
-- **[`user-facing/`](./user-facing/)** — external specs for agents and
-  API consumers: the verb-surface migration, the edit protocol,
-  unified addressing, per-kind specs (patent / python / voice), plugin
-  authoring, the paper-ingest path.
-- **[`conventions/`](./conventions/)** — the rules that bite:
-  [`thresholds.md`](./conventions/thresholds.md),
-  [`kind-enablement.md`](./conventions/kind-enablement.md),
-  [`discovery-layer-policy.md`](./conventions/discovery-layer-policy.md).
+## Reading order
 
-## Agent-facing docs
+1. `docs/codebase.md` — shape, lifecycle, seams, package map.
+2. The owning package's `__init__.py` docstring — subsystem detail.
+3. `docs/architecture/glossary.md` — when a term is unfamiliar or overloaded.
+4. `docs/backlog/README.md` — what's planned (index is generated).
 
-The LLM-facing manual is **not** here — it ships as help *skills*
-under [`../src/precis/data/skills/`](../src/precis/data/skills/),
-served at runtime via `get(kind='skill', id='…')`. Start at
-`precis-overview` (kinds table + skill index) or
-`precis-toolpath-help` (canonical call sequences).
+## Rules that keep it true
+
+- **Package docstrings are the architecture record.** A subsystem change
+  updates the owning `__init__.py` docstring in the same commit. Compact
+  them freely; never strip them in a refactor. Their "why it's this way"
+  paragraphs hold rejected-alternatives rationale — condense, don't delete.
+- **Code-true names.** Docs use the names the code uses, always — retrieval
+  breaks otherwise. A pending rename is declared in the glossary and tracked
+  as a backlog item; the doc flips in the same commit as the code rename.
+- **Backlog lifecycle.** An item is a few lines of prose (`# title` + what
+  and why). When it grows a real spec it stays in the same file; when it is
+  buildable, add `status: ready` front-matter (the fixer's pick signal;
+  branch `fix/<slug>`, optional `model:` and `blocked-by:` as before). On
+  ship: fold any surviving truth into the owning docstring, **delete the
+  file** in the same commit.
+- **Delete on ship.** Applies to everything: backlog items, scratch notes,
+  superseded prose. A doc that describes shipped work is a lie waiting to
+  happen.
+- **Cite code by durable anchor** (`path/file.py::Sym`), never by line
+  number. → `docs/conventions/code-anchors.md`.
+
+## Generated indexes
+
+`scripts/docs-index` rewrites the blocks between `<!-- docs-index:begin -->`
+/ `<!-- docs-index:end -->` markers; `scripts/ship` runs it before the WIP
+commit (same pattern as the Tailwind prebuild). Never hand-edit inside the
+markers.
+
+- `docs/backlog/README.md` — slug, `status:`, first prose line.
+- `docs/runbooks/README.md` — slug, first prose line.
+- `docs/codebase.md` package map — import path + docstring first line
+  (PEP 257). A package listed as *(no package docstring yet)* is the nudge
+  to write one.
