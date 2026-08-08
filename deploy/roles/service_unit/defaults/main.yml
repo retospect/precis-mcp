@@ -44,6 +44,17 @@
 service_unit_run_as: deploy
 service_unit_working_dir: /tmp
 service_unit_env: {} #  dict of KEY: value environment pairs
+# EnvironmentFile paths sourced by the unit, in order, IN ADDITION to
+# service_unit_env (Linux/systemd ONLY — launchd has no EnvironmentFile
+# equivalent, so a non-empty list on darwin is a hard error, asserted in
+# tasks/main.yml). Each renders as `EnvironmentFile=-<path>` — the `-`
+# prefix makes the file optional so the unit still starts when it is
+# absent. Lets a satellite unit reuse a capability role's already-rendered
+# env drop-in (e.g. /etc/precis/autocatpath.env, /etc/precis/dft.env) as
+# the single source of truth instead of duplicating PRECIS_NODE / the
+# feature flags inline. Rendered AFTER the Environment= block, so a key in
+# a file wins over the same key in service_unit_env.
+service_unit_env_files: []
 service_unit_description: "precis {{ service_unit_name }}"
 service_unit_log: "/var/log/precis-{{ service_unit_name }}.log"
 

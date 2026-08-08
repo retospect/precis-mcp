@@ -915,6 +915,23 @@ per host: re-run `playbooks/20-precis-worker.yml` /
 profile split below describes pass OWNERSHIP (which env gates what),
 not separate daemons anymore.
 
+**Exception — the GPU/compute lane (spark only).** The GPU node runs ONE
+extra tiny worker alongside its collapsed unit:
+`precis-worker-compute.service`, `--only job_ssh_node`, polling every ~5s
+(`deploy/playbooks/43-precis-worker-compute.yml`, `inference` group). The
+collapsed worker's `run_loop` is a strictly-serial round-robin, so a slow
+pass starves `job_ssh_node` — the submit/poll executor that drives every
+node-pinned detached GPU job (`autocatpath_seed`, dft `gpaw_relax`) — down
+to ~1 claim per multi-minute rotation. The dedicated lane keeps the GPU
+fed at compute-completion speed. Safe alongside the collapsed worker:
+claims are `FOR UPDATE SKIP LOCKED` (no double-claim) and the `gpu`
+resource_slot (capacity=1) still serializes concurrent GPU compute (no
+crash risk); the only shared surface is the unlocked in-flight poll, whose
+worst case is a duplicate cosmetic run_log chunk. Distinct
+`PRECIS_PROCESS=precis-worker-compute` (separate `worker_logs` identity);
+sources the same `/etc/precis/{autocatpath,dft}.env` drops as the
+collapsed unit via `service_unit_env_files`.
+
 * `precis worker --profile=system` runs on every cluster node and
   drives every chunk-level + SQL ref-level pass: `embed`, `summarize`,
   `chunk_keywords`, `chase`, `fetch`, `gp_fetch`, `tag_embeddings`,

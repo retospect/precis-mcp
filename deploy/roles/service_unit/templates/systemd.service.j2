@@ -18,6 +18,9 @@ WorkingDirectory={{ service_unit_working_dir }}
 {% for env_key, env_val in service_unit_env.items() %}
 Environment={{ env_key }}={{ env_val }}
 {% endfor %}
+{% for env_file in service_unit_env_files %}
+EnvironmentFile=-{{ env_file }}
+{% endfor %}
 
 ExecStart={{ service_unit_exec }}
 

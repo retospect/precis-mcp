@@ -1,0 +1,138 @@
+---
+# 43-precis-worker-compute.yml — the dedicated GPU/compute worker lane.
+#
+# WHY THIS EXISTS. The one collapsed `precis worker --profile all` unit per
+# host (20b) runs a SINGLE-THREADED serial round-robin over its handlers
+# (workers/runner.py `run_loop`: `for handler in handlers: ...`). A slow
+# pass (a Semantic-Scholar fetch, an embed batch) blocks the whole rotation,
+# so `job_ssh_node` — the submit/poll executor that drives every node-pinned
+# detached GPU job (autocatpath_seed, precis-dft's gpaw_relax) — only gets a
+# turn once per multi-minute rotation. The GPU then sits idle between seeds
+# not because it is busy but because the one worker thread is elsewhere, so a
+# backlog of autocatpath seeds drains at ~1 seed per rotation instead of ~1
+# per compute-completion (gr192371 / the q164903 drain).
+#
+# WHAT THIS IS. A second, tiny worker on the GPU node running ONLY
+# `--only job_ssh_node`, polling every few seconds. It shares NOTHING with
+# the collapsed worker except the postgres queue: `FOR UPDATE SKIP LOCKED`
+# arbitrates claims (zero double-claim), and the `gpu` resource_slot
+# (capacity=1, reserved at claim via meta.requires — the 47671907 fix) still
+# serializes concurrent GPU compute, so this adds NO crash risk (catpath vs
+# catpath vs dft stay one-at-a-time). The only cross-effect is the unlocked
+# step-0 poll of in-flight jobs, shared with the collapsed worker's rare
+# poll: both call the job_type's `poll` (a status check + idempotent
+# terminalize) — no double GPU launch (submit is claim-path only, row-
+# locked), worst case a duplicate cosmetic run_log/job_summary chunk in the
+# narrow window both catch the same "done" tick. The fast lane almost always
+# wins and terminalizes first, dropping the row out of the other's
+# STATUS:running poll selection.
+#
+# WHY A SEPARATE UNIT, NOT A KNOB. The serial rotation has no per-pass
+# priority; the only way to stop a slow pass starving job_ssh_node is a
+# second scheduling lane. This mirrors the pre-collapse precedent (the
+# cluster ran a second `--profile agent` worker alongside the system one,
+# arbitrated the same way) — the collapse folded the PROFILES onto one unit,
+# but a compute lane is a THROUGHPUT concern, orthogonal to profile.
+#
+# SCOPE / DEPENDENCIES. `inference` group only (the GPU node; topology.yml
+# precis_capabilities.autocatpath / .dft both resolve to it). This playbook does
+# NOT provision — it deliberately rides 20b's work and MUST run after it:
+#   * the worker venv (/opt/precis/venv) is created + kept current by 20b
+#     (running this standalone on an unprovisioned node crash-loops the unit
+#     until 20b runs — acceptable for a satellite lane);
+#   * the feature env drop-ins /etc/precis/autocatpath.env + /etc/precis/dft.env
+#     are rendered by roles/autocatpath + roles/dft — the SAME files the
+#     collapsed worker sources via its precis-worker.service.d/ drop-ins, so
+#     the lane's PRECIS_NODE / PRECIS_AUTOCATPATH_* / PRECIS_DFT_* are
+#     identical to the main worker's by construction, sourced here via
+#     service_unit_env_files (NOT duplicated).
+# Not importing roles/precis_worker is deliberate: doing so would (a) re-run
+# its full provisioning (venv install + the `precis service seed` DB loop) a
+# second time on the GPU node every deploy — 20b already did it back-to-back — and
+# (b) fire that role's install handler, which is hardwired to bounce
+# `precis-worker.service`, not this lane's unit.
+#
+# Run order: imported by BOTH site.yml and redeploy-precis.yml right after
+# 20b. On redeploy the step-2 bounce play force-restarts
+# precis-worker-compute.service with the rest (its `precis-*.service` glob),
+# so it never runs stale code after a venv refresh; site.yml has no such
+# blanket bounce, so the final task below covers that path (see its comment).
+
+- name: Deploy the dedicated GPU/compute worker lane (job_ssh_node only)
+  hosts: inference
+  become: true
+  vars:
+    # Kept in sync with roles/precis_worker/defaults/main.yml — this playbook
+    # deliberately does not import that role (see header), so its defaults are
+    # not in scope. Both are cluster-stable constants (the DSN expression is
+    # the same one every precis-* worker template builds).
+    _compute_venv: /opt/precis/venv
+    _compute_dsn: "postgresql://agent_rw@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
+  tasks:
+    - name: render + load the compute worker lane unit
+      ansible.builtin.import_role:
+        name: service_unit
+      vars:
+        service_unit_name: worker-compute
+        service_unit_run_as: deploy
+        service_unit_working_dir: /tmp
+        service_unit_schedule:
+          mode: keepalive
+        # --only job_ssh_node: this lane runs exactly one pass, the submit/poll
+        # executor. --batch-size 1: one NEW claim per tick (the gpu slot
+        # capacity=1 caps concurrent compute regardless); the step-0 poll of
+        # ALL in-flight handles runs every tick independent of batch-size.
+        # A short idle so a freed gpu slot is re-filled within seconds, not
+        # once per collapsed-worker rotation — the whole point of the lane.
+        service_unit_exec: >-
+          {{ _compute_venv }}/bin/precis worker --only job_ssh_node
+          --batch-size 1
+          --idle-seconds {{ precis_worker_compute_idle_seconds | default(5) }}
+        # The feature env (PRECIS_NODE, PRECIS_AUTOCATPATH_ENABLED /
+        # _ROUTE_NODE, PRECIS_DFT_*) comes from these drop-ins — the exact
+        # files roles/autocatpath + roles/dft render and the collapsed worker
+        # already sources, so no duplication / no drift. `-` (in the template)
+        # keeps them optional: absent → the lane starts with no PRECIS_NODE and
+        # simply claims nothing (safe no-op) rather than failing to boot.
+        service_unit_env_files:
+          - /etc/precis/autocatpath.env
+          - /etc/precis/dft.env
+        # Core daemon env. PRECIS_PROCESS / PRECIS_SOURCE are distinct from the
+        # collapsed worker's `precis-worker` so this lane's worker_logs rows are
+        # separately observable. HOME=/var/lib/precis is load-bearing: the
+        # detached MACE child inherits it and finds the pre-warmed
+        # $HOME/.cache/mace weights (roles/autocatpath pre-seed). PGPASSFILE
+        # points at the pgpass role's file directly (this unit's HOME diverges
+        # from /home/deploy — §L gr171431). precis_shared_env for API-key
+        # parity with every other precis-* unit.
+        service_unit_env: >-
+          {{ precis_shared_env | combine({
+               'HOME': '/var/lib/precis',
+               'PATH': _compute_venv + '/bin:/usr/local/bin:/usr/bin:/bin',
+               'PGPASSFILE': '/home/deploy/.pgpass',
+               'PRECIS_DATABASE_URL': _compute_dsn,
+               'PRECIS_PROCESS': 'precis-worker-compute',
+               'PRECIS_SOURCE': 'precis-worker-compute',
+               'PRECIS_STRUCTURE_PREFLIGHT': '1',
+             }) }}
+
+    # Code-refresh bounce for the site.yml path ONLY. On redeploy, the step-2
+    # bounce play restarts every precis-*.service (glob) gated on
+    # `precis_deploy_changed`, which is set_fact'd in an early play and so is
+    # already defined here — this task then SKIPS, avoiding a double restart.
+    # site.yml never sets that fact, so `is not defined` is true there and this
+    # restarts the lane to pick up a venv code refresh 20b installed (the
+    # service_unit render above only restarts on a UNIT-FILE change, blind to a
+    # code-only refresh — the staleness bug class the collapsed worker avoids
+    # via its install-notify handler, which this lane deliberately doesn't
+    # share; see header).
+    - name: Bounce the compute lane on a code refresh (site.yml path)
+      ansible.builtin.systemd:
+        name: precis-worker-compute
+        state: restarted
+        daemon_reload: true
+      when: precis_deploy_changed is not defined
+      failed_when: false
+  # `precis` family tag so `--tags precis` fans this out with the other
+  # precis-* plays; `precis-worker-compute` for a targeted refresh.
+  tags: [precis-worker-compute, precis]

@@ -281,6 +281,16 @@
 - name: "Refresh /opt/precis/venv          (collapsed worker, --profile all)"
   ansible.builtin.import_playbook: playbooks/20b-precis-worker-collapsed.yml
 
+# Dedicated GPU/compute worker lane on the GPU node — a second tiny
+# `--only job_ssh_node` worker so node-pinned detached GPU jobs (autocatpath
+# seeds, dft gpaw_relax) drain at compute-completion speed instead of once
+# per the collapsed worker's serial rotation. Must follow 20b (reuses its
+# /opt/precis/venv + the autocatpath/dft env drops). The step-2 bounce play
+# force-restarts precis-worker-compute.service with the rest (its
+# `precis-*.service` glob), so it never runs stale code after this refresh.
+- name: "Compute worker lane            (inference, job_ssh_node only)"
+  ansible.builtin.import_playbook: playbooks/43-precis-worker-compute.yml
+
 # §L: the standalone heartbeat timer (role `precis_heartbeat`, playbook
 # 40-precis-heartbeat.yml) is RETIRED — heartbeat is a per-host `heartbeat`
 # worker pass since §A (workers/heartbeat.py), and retire-thin-timers.yml

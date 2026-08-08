@@ -26,6 +26,20 @@
     quiet: true
   when: os_family == "linux"
 
+# service_unit_env_files renders to EnvironmentFile=, which launchd has no
+# equivalent for — silently dropping it on darwin is exactly the "feature
+# absent in prod" bug class, so fail loudly instead. No darwin consumer
+# sets it today (the default is []).
+- name: "service_unit[{{ service_unit_name }}]: env_files is systemd-only"
+  ansible.builtin.assert:
+    that: (service_unit_env_files | length) == 0
+    fail_msg: >-
+      service_unit_env_files is Linux/systemd only (launchd has no
+      EnvironmentFile) — inline the values into service_unit_env for a darwin
+      unit instead. Requested: {{ service_unit_env_files }}.
+    quiet: true
+  when: os_family == "darwin"
+
 # ── macOS: LaunchDaemon ──────────────────────────────────────────────────
 # launchd hits EX_CONFIG (78) when StandardOutPath can't be created; /var/log
 # is root-only on modern macOS, so pre-create the log deploy-owned.

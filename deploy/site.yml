@@ -95,6 +95,13 @@
 - name: "20b — precis worker (collapsed, --profile all, every host)"
   ansible.builtin.import_playbook: playbooks/20b-precis-worker-collapsed.yml
 
+# Dedicated GPU/compute worker lane (inference group) — a second tiny worker
+# running `--only job_ssh_node` so node-pinned detached GPU jobs (autocatpath
+# seeds, dft gpaw_relax) aren't starved behind the collapsed worker's serial
+# rotation. After 20b (needs its venv + the autocatpath/dft env drops).
+- name: "43 — precis compute worker lane (inference, job_ssh_node only)"
+  ansible.builtin.import_playbook: playbooks/43-precis-worker-compute.yml
+
 - name: "38 — precis web tab UI (gateway, tailnet HTTPS)"
   ansible.builtin.import_playbook: playbooks/38-precis-web.yml
 
