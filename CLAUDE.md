@@ -90,7 +90,7 @@ per-kind reference.
 | **Orientation — read first**     | **`docs/codebase.md`** (shape, lifecycle, seams) |
 | Subsystem detail (present-state) | `docs/architecture/state-map.md` |
 | Coined / overloaded terms, project & quest aliases → files| `docs/architecture/glossary.md` |
-| To-do list / what's planned next | `OPEN-ITEMS.md` — **open work only**; when a ship completes an item, *delete* its entry in that same commit (never leave a "done ✅" note — `git log` is the record, like memory's landed-work rule). **No "completed log" file/directory** — a resolved item is proven by `git log` + its regression test; reusable forensics from an incident go to an **ADR** or `docs/runbooks/`, never a done-log |
+| To-do list / what's planned next | `docs/backlog/` (one file per item; generated README index) — **open work only**; when a ship completes an item, *delete* its item file in that same commit (never leave a "done ✅" note — `git log` is the record, like memory's landed-work rule). **No "completed log" file/directory** — a resolved item is proven by `git log` + its regression test; reusable forensics from an incident go to `docs/runbooks/`, never a done-log |
 | Conventions / workflow / DoD     | `AGENTS.md` |
 | Mission / pitch narrative        | `docs/mission.md` (positioning, not architecture) |
 | Master kinds table + recipes     | skills `precis-overview`, `precis-toolpath-help` |
@@ -201,7 +201,7 @@ guardrails (the Agent tool surfaces those descriptions), so this is just the map
   new numbered/templated migration, ADR, proposal, or skill file from the
   existing convention; never invents content), `gripe-filer` (files an
   already-decided finding at a caller-supplied target — gripe vs
-  OPEN-ITEMS.md — with a dedup check; doesn't decide the target itself).
+  docs/backlog/ — with a dedup check; doesn't decide the target itself).
 - **Sonnet** — a *decided* change or bounded op (the *how*, not the *what*):
   `coder`, `test-author`, `reviewer`, `documenter`, `dep-bumper`,
   `cluster-admin`, `forensics`, `root-cause` (read-only code-level root-cause
@@ -210,7 +210,7 @@ guardrails (the Agent tool surfaces those descriptions), so this is just the map
   `housekeeper` (worktree/branch GC via `/workspace-cleanup`), `ready` (the
   ADR 0048 proposal-readiness judge — vets a `docs/proposals/*.md` spec, not
   yet wired into an automated gate), `issue-closer` (post-ship: closes
-  gripes/OPEN-ITEMS entries the shipped commit resolved — spawned from
+  gripes/backlog items the shipped commit resolved — spawned from
   `/land`/`/go`, background/non-blocking).
 - **Opus (main loop)** — the *what/why*: architecture; core API/schema/
   abstraction; CFD/DFT/ML and NOx/catalyst reasoning; mission/voice prose;

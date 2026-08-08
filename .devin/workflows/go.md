@@ -41,5 +41,5 @@ The user may pass a ship message after the command; otherwise write one.
    but failed deploy → first two ✓, deploy ✗).
 
 5. **Residuals + next steps** — same as `/land` steps 7–8 (persist to
-   `OPEN-ITEMS.md`; a precis `gripe`/`todo` write hits PROD, so only with the
+   `docs/backlog/`; a precis `gripe`/`todo` write hits PROD, so only with the
    user's explicit go-ahead; bounded fixes get their own branch + /go cycle).

@@ -16,11 +16,11 @@ Entry point: ``python -m precis.fixer.tick`` (via ``scripts/fixer-tick``).
 
 from __future__ import annotations
 
-from precis.fixer.intake import WorkItem, parse_front_matter, pick_next, ready_proposals
+from precis.fixer.intake import WorkItem, parse_front_matter, pick_next, ready_items
 
 __all__ = [
     "WorkItem",
     "parse_front_matter",
     "pick_next",
-    "ready_proposals",
+    "ready_items",
 ]

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from precis.fixer.intake import WorkItem, parse_front_matter, pick_next, ready_proposals
+from precis.fixer.intake import WorkItem, parse_front_matter, pick_next, ready_items
 
 
 def test_parse_front_matter_basic() -> None:
@@ -30,49 +30,49 @@ def _write(dir_: Path, name: str, text: str) -> None:
     (dir_ / name).write_text(text, encoding="utf-8")
 
 
-def test_ready_proposals_only_ready(tmp_path: Path) -> None:
+def test_ready_items_only_ready(tmp_path: Path) -> None:
     _write(tmp_path, "a-feature.md", "---\nstatus: ready\n---\n\n# A feature\n")
     _write(tmp_path, "b-draft.md", "---\nstatus: draft\n---\n\n# Not yet\n")
     _write(tmp_path, "TEMPLATE.md", "---\nstatus: ready\n---\n\n# template\n")
     _write(tmp_path, "README.md", "---\nstatus: ready\n---\n\n# readme\n")
 
-    items = ready_proposals(tmp_path)
+    items = ready_items(tmp_path)
     slugs = [i.slug for i in items]
     assert slugs == ["a-feature"]
     assert items[0].branch == "fix/a-feature"
     assert items[0].kind == "proposal"
 
 
-def test_ready_proposals_title_fallback_to_heading(tmp_path: Path) -> None:
+def test_ready_items_title_fallback_to_heading(tmp_path: Path) -> None:
     _write(tmp_path, "x.md", "---\nstatus: ready\n---\n\n# The Heading Title\n\nbody\n")
-    (item,) = ready_proposals(tmp_path)
+    (item,) = ready_items(tmp_path)
     assert item.title == "The Heading Title"
 
 
-def test_ready_proposals_title_from_front_matter(tmp_path: Path) -> None:
+def test_ready_items_title_from_front_matter(tmp_path: Path) -> None:
     _write(tmp_path, "x.md", "---\nstatus: ready\ntitle: FM Title\n---\n\n# Other\n")
-    (item,) = ready_proposals(tmp_path)
+    (item,) = ready_items(tmp_path)
     assert item.title == "FM Title"
 
 
-def test_ready_proposals_missing_dir(tmp_path: Path) -> None:
-    assert ready_proposals(tmp_path / "nope") == []
+def test_ready_items_missing_dir(tmp_path: Path) -> None:
+    assert ready_items(tmp_path / "nope") == []
 
 
-def test_ready_proposals_model_and_blocked_by_absent_by_default(tmp_path: Path) -> None:
+def test_ready_items_model_and_blocked_by_absent_by_default(tmp_path: Path) -> None:
     _write(tmp_path, "x.md", "---\nstatus: ready\n---\n\n# X\n")
-    (item,) = ready_proposals(tmp_path)
+    (item,) = ready_items(tmp_path)
     assert item.model is None
     assert item.blocked_by is None
 
 
-def test_ready_proposals_parses_model_and_blocked_by(tmp_path: Path) -> None:
+def test_ready_items_parses_model_and_blocked_by(tmp_path: Path) -> None:
     _write(
         tmp_path,
         "x.md",
         "---\nstatus: ready\nmodel: opus\nblocked-by: some-earlier-thing\n---\n\n# X\n",
     )
-    (item,) = ready_proposals(tmp_path)
+    (item,) = ready_items(tmp_path)
     assert item.model == "opus"
     assert item.blocked_by == "some-earlier-thing"
 

@@ -67,7 +67,7 @@ def main() -> int:
                     "hookEventName": "PostToolUse",
                     "additionalContext": (
                         f"[session-size] Transcript ~{mb}MB — the context is getting large. "
-                        "Persist any residuals (OPEN-ITEMS / gripe / memory), then PROPOSE "
+                        "Persist any residuals (backlog / gripe / memory), then PROPOSE "
                         "`/compact` to the user for a clean-context continuation — a deliberate "
                         "compact beats a silent auto-summarize. (The PreCompact hook reminds on "
                         "persist; raise PRECIS_SESSION_NUDGE_MB to nudge later.)"

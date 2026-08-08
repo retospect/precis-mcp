@@ -2,11 +2,11 @@
 
 Two risky small bits the ADR flagged live here:
 
-* **Proposal-ready convention.** A proposal is a transient ADR-shaped
-  file under ``docs/proposals/*.md`` with a YAML-ish front-matter
-  block; it is *pickable* only when ``status: ready`` (a human ran
-  ``/ready`` in tandem, both keys turned). ``TEMPLATE.md`` and any
-  ``status: draft`` file are ignored.
+* **Ready convention.** A work item is a transient file under
+  ``docs/backlog/*.md`` with a YAML-ish front-matter block; it is
+  *pickable* only when ``status: ready`` (a human ran ``/ready`` in
+  tandem, both keys turned). ``README.md``/``TEMPLATE.md`` and any
+  other ``status:`` value (``idea``, ``draft``, …) are ignored.
 * **Idempotent pick.** The loop re-fires every interval, so it must
   skip an item it has already branched — otherwise it re-clones and
   re-builds the same thing forever. Skip is a ``branch_exists``
@@ -29,7 +29,7 @@ from pathlib import Path
 #: Front-matter fence: a leading ``---`` line, body, closing ``---``.
 _FRONT_MATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 
-#: Filenames under docs/proposals/ that are never work items.
+#: Filenames under docs/backlog/ that are never work items.
 _NON_PROPOSAL_STEMS = frozenset({"template", "readme"})
 
 
@@ -93,16 +93,16 @@ def _title_from_body(text: str, fallback: str) -> str:
     return fallback
 
 
-def ready_proposals(proposals_dir: Path) -> list[WorkItem]:
+def ready_items(backlog_dir: Path) -> list[WorkItem]:
     """All ``status: ready`` proposals, sorted by filename (stable).
 
     A missing directory yields ``[]`` (the MVP may run before any
     proposal exists). ``TEMPLATE.md`` / ``README.md`` are skipped.
     """
-    if not proposals_dir.is_dir():
+    if not backlog_dir.is_dir():
         return []
     items: list[WorkItem] = []
-    for path in sorted(proposals_dir.glob("*.md")):
+    for path in sorted(backlog_dir.glob("*.md")):
         if path.stem.lower() in _NON_PROPOSAL_STEMS:
             continue
         text = path.read_text(encoding="utf-8")
@@ -138,7 +138,7 @@ def pick_next(
     also skipped while its predecessor's branch (``fix/<blocked_by>``)
     still exists — the check is against ``branch_exists`` alone, not
     against the predecessor still being present in ``items`` (it may
-    have already shipped and dropped out of ``ready_proposals``).
+    have already shipped and dropped out of ``ready_items``).
     """
     for item in items:
         if branch_exists(item.branch):

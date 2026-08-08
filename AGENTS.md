@@ -13,7 +13,7 @@ Read this before substantive changes.
 > present-tense map of the live subsystems you're about to touch. Deep
 > per-kind reference is on demand via skills
 > (`get(kind='skill', id='precis-overview')` for the master kinds table +
-> index). Backlog: [`OPEN-ITEMS.md`](OPEN-ITEMS.md).
+> index). Backlog: [`docs/backlog/`](docs/backlog/README.md).
 
 ## Identity
 
@@ -52,7 +52,7 @@ precis-mcp/
   AGENTS.md                  # this file (read first)
   CLAUDE.md                  # present-tense map of the live subsystems
   README.md                  # user-facing intro
-  OPEN-ITEMS.md              # active backlog + planned workstreams
+  docs/backlog/              # active backlog — one file per item, generated index
   BACKLOG/history            # git log — there is no CHANGELOG file
   pyproject.toml             # build, deps, ruff, mypy
   uv.lock                    # pinned dependency graph
@@ -225,4 +225,4 @@ back-compat with any files staged before the routing landed.
   `docs-triage` skill.)
 - **External-facing specs**: `docs/user-facing/`
   (`paper_ingest.md`, kind-spec docs, edit-protocol-spec)
-- **Active backlog**: `OPEN-ITEMS.md`
+- **Active backlog**: `docs/backlog/` (index: `docs/backlog/README.md`)

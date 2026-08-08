@@ -9,8 +9,8 @@ set -euo pipefail
 cd "${CLAUDE_PROJECT_DIR:-$(dirname "$0")/../..}" 2>/dev/null || exit 0
 
 echo "⏳ PreCompact — persist anything that must outlive this context (free text won't):"
-echo "   • residual bugs / next steps → OPEN-ITEMS.md or a gripe/todo (not the transcript)"
-echo "   • a resume pointer for in-flight work (memory / OPEN-ITEMS)"
+echo "   • residual bugs / next steps → a docs/backlog/ item or a gripe/todo (not the transcript)"
+echo "   • a resume pointer for in-flight work (memory / docs/backlog/)"
 
 # Surface hygiene drift so it can be cleaned before context is lost (advisory).
 scripts/memory-lint 2>/dev/null | grep -iE 'issue|DUE|OVER' | sed 's/^/   • memory: /' || true

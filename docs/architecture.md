@@ -125,7 +125,7 @@ ones are superseded). Start at the index:
 per non-trivial change, kept for history) live in
 [`docs/design/`](./design/). The dated change story is the **git
 history** (`git log` — there is no CHANGELOG file); the active backlog
-is [`OPEN-ITEMS.md`](../OPEN-ITEMS.md).
+is [`docs/backlog/`](backlog/README.md).
 
 ## Map of the source
 

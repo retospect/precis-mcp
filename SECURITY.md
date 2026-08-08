@@ -26,10 +26,11 @@ If you discover a security vulnerability, please report it responsibly:
 Some Dependabot alerts are **real but not currently resolvable** because an
 upstream dependency caps the fixed version. These are tracked, risk-assessed,
 and rechecked on a schedule — they are **not** unnoticed. Do **not** attempt a
-lockfile-only bump; it will fail to resolve. The authoritative, machine-parseable
-list (with `Recheck-after:` dates and `Unblock-when:` conditions) is the
-**"⏸️ Snoozed — blocked upstream"** section of [`OPEN-ITEMS.md`](OPEN-ITEMS.md).
+lockfile-only bump; it will fail to resolve. The authoritative list is the
+snoozed items in [`docs/backlog/`](docs/backlog/README.md) (front-matter
+`snooze-until:` + an `Unblock-when` condition, e.g.
+[`pillow-marker-pin`](docs/backlog/pillow-marker-pin.md)).
 
 | Alert | Package | Blocked by | Why tolerable | Recheck |
 | ----- | ------- | ---------- | ------------- | ------- |
-| [#56–#67](https://github.com/retospect/precis-mcp/security/dependabot) (11, mostly high) | `pillow` <12.3.0 heap-OOB / DoS / decompression-bomb bypass | `marker-pdf` (≤2.0.0) hard-pins `pillow<11.0.0`; needed by the `[paper]` OCR/layout extra, so `>=12.3.0` is **unsatisfiable** until marker lifts the cap | precis only feeds Marker/Pillow trusted PDF ingestion behind the `[paper]` extra — none of the specific vectors (PSD/FITS/JPEG2000/TGA/mmap font-loading paths) are reachable from precis's own code | `2026-08-06` (see OPEN-ITEMS.md) |
+| [#56–#67](https://github.com/retospect/precis-mcp/security/dependabot) (11, mostly high) | `pillow` <12.3.0 heap-OOB / DoS / decompression-bomb bypass | `marker-pdf` (≤2.0.0) hard-pins `pillow<11.0.0`; needed by the `[paper]` OCR/layout extra, so `>=12.3.0` is **unsatisfiable** until marker lifts the cap | precis only feeds Marker/Pillow trusted PDF ingestion behind the `[paper]` extra — none of the specific vectors (PSD/FITS/JPEG2000/TGA/mmap font-loading paths) are reachable from precis's own code | `2026-08-06` (see `docs/backlog/pillow-marker-pin.md`) |

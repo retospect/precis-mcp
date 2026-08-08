@@ -6,7 +6,7 @@
 > (orientation) → `docs/architecture/state-map.md` (subsystem status) →
 > `docs/architecture/glossary.md` → `docs/decisions/` (ADRs). Conventions,
 > workflow, definition-of-done: `AGENTS.md`. No CHANGELOG — history is
-> `git log`. Backlog: `OPEN-ITEMS.md` (open work only; delete an entry in
+> `git log`. Backlog: `docs/backlog/` — one file per item (open work only; delete the file in
 > the same commit that completes it).
 
 ## Session workflow (feature branch → ship)

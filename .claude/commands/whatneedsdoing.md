@@ -1,5 +1,5 @@
 ---
-description: One honest "what needs doing" across the two work substrates — repo dev work (OPEN-ITEMS backlog + open gripes + open GitHub PRs + Dependabot alerts) and the prod factory queue (open/doable todos) — plus a repo-hygiene scan (migration-number collisions · orphan design docs · memory-index lint), a prod system-health read (per-host worker-log err/warn), and the latent LLM-confusion signal mined from prod agent transcripts.
+description: One honest "what needs doing" across the two work substrates — repo dev work (docs/backlog/ + open gripes + open GitHub PRs + Dependabot alerts) and the prod factory queue (open/doable todos) — plus a repo-hygiene scan (migration-number collisions · orphan design docs · memory-index lint), a prod system-health read (per-host worker-log err/warn), and the latent LLM-confusion signal mined from prod agent transcripts.
 argument-hint: "[optional focus, e.g. 'dark-factory' or 'drafts']"
 allowed-tools: Read, Bash(grep:*), Bash(ssh:*), Bash(gh:*), Bash(scripts/migration-check:*), Bash(scripts/docs-orphans:*), Bash(scripts/memory-lint:*), Bash(scripts/backlog-lint:*), Bash(scripts/token-review:*), Bash(scripts/db-thrash-review:*), Bash(scripts/skill-search-review:*), Bash(scripts/gripe-gc-review:*), Bash(scripts/fda-grant-review:*), Bash(scripts/nightly:*), Bash(scripts/coderef:*), mcp__precis__get, mcp__precis__search
 ---
@@ -7,7 +7,7 @@ allowed-tools: Read, Bash(grep:*), Bash(ssh:*), Bash(gh:*), Bash(scripts/migrati
 Work lives in **two different substrates** — do not merge them into one flat
 list, that is the trap this view exists to avoid. Optional focus: `$ARGUMENTS`.
 
-- **Repo dev work** — the `OPEN-ITEMS.md` backlog + the `gripe` bug tracker.
+- **Repo dev work** — the `docs/backlog/` backlog + the `gripe` bug tracker.
   These are about *this codebase / product*: MCP-surface bugs, features, infra
   fixes. You act on them by **editing code in a worktree → `/go`**. "Inert"
   here means: real, but no one is building it yet.
@@ -26,8 +26,8 @@ filed yet (step 5, the bug-hunt). Every recurring tool-call error is a fix
 waiting in a skill or the MCP surface; mining it feeds new items into
 substrate 1 (as gripes).
 
-Live backlog headings (repo `OPEN-ITEMS.md`):
-!`grep -nE '^(## |- \*\*|- \[ \])' OPEN-ITEMS.md 2>/dev/null | head -60`
+Live backlog index (generated `docs/backlog/README.md` — one line per item with status):
+!`grep -vE '^(<!--|\s*$)' docs/backlog/README.md 2>/dev/null | head -60`
 
 Live GitHub — open PRs:
 !`gh pr list --state open 2>/dev/null || echo '(gh unavailable or no open PRs)'`
@@ -40,13 +40,16 @@ Live repo hygiene — migration collisions ⋅ orphan design docs ⋅ code ancho
 
 ## Procedure
 
-1. **Repo dev — backlog.** Read `OPEN-ITEMS.md`. Take only *open* items. **Prune
-   done gunk as you go** (same as closing a fixed gripe in step 2): `scripts/backlog-lint`
-   lists items whose *title* carries a done-marker (DONE/RESOLVED/✅/SHIPPED-fully-
-   cut-over) yet still sit in the file — for each, confirm the work is on `main`,
-   then **delete its entry** (git log + the topic memory hold the record). Don't
-   leave it marked "DONE": OPEN-ITEMS is the *active* list, not an archive — a
-   left-in "DONE" bullet is the same append-only rot the docs triage cured. (The
+1. **Repo dev — backlog.** Read the generated `docs/backlog/README.md` index
+   (one line per item with status). Skip any item whose front-matter
+   `snooze-until: YYYY-MM-DD` date is still in the future — a deliberate park,
+   not open work. **Prune done gunk as you go** (same as closing a fixed gripe
+   in step 2): `scripts/backlog-lint` lists items whose *title* carries a
+   done-marker (DONE/RESOLVED/✅/SHIPPED-fully-cut-over) yet whose file still
+   sits in the dir — for each, confirm the work is on `main`, then **delete
+   the item's file** (git log + the topic memory hold the record). Don't leave
+   it marked "DONE": `docs/backlog/` is the *active* list, not an archive — a
+   left-in "DONE" item is the same append-only rot the docs triage cured. (The
    lint excludes partially-open items that merely *mention* something shipped.)
    The dark-factory workstream is active.
 2. **Repo dev — gripes.** `get(kind='gripe', id='/open')` (the bug tracker).
@@ -59,7 +62,7 @@ Live repo hygiene — migration collisions ⋅ orphan design docs ⋅ code ancho
    if it is genuinely unfixed or unverified. Don't let resolved bugs inflate
    the backlog.
 3. **Repo dev — GitHub (PRs + Dependabot).** Declared repo dev work that
-   lives on GitHub, not in `OPEN-ITEMS.md` — the inline previews above are the
+   lives on GitHub, not in `docs/backlog/` — the inline previews above are the
    fresh read; expand them here.
    - **Open PRs:** `gh pr list --state open` (add `--json
      number,title,author,isDraft,reviewDecision,statusCheckRollup` for CI +
@@ -71,10 +74,10 @@ Live repo hygiene — migration collisions ⋅ orphan design docs ⋅ code ancho
      **P0** repo dev work (a dependency bump / patch), fixed here → `/go`. If
      the API 403s it needs a token with security-read scope — say so rather
      than silently reporting "none".
-     - **Honor snoozes.** Read the `## ⏸️ Snoozed` section of `OPEN-ITEMS.md`
-       first. **Suppress** any alert whose `#num` is listed there with a
-       `Recheck-after` date still in the future (a known-held item, not new
-       work) — don't report it. If today ≥ its `Recheck-after`, surface it as
+     - **Honor snoozes.** A snoozed alert lives as a `docs/backlog/` item with
+       `snooze-until: YYYY-MM-DD` front-matter. **Suppress** any alert whose
+       item's date is still in the future (a known-held item, not new work) —
+       don't report it. If today ≥ its `snooze-until`, surface it as
        **recheck due**: re-probe the `Unblock-when` condition, then either act
        (`/go`) or bump the date +2 weeks. This is what keeps a blocked-upstream
        alert (e.g. #44, `transformers` capped by marker-pdf) from re-nagging
@@ -115,7 +118,7 @@ Live repo hygiene — migration collisions ⋅ orphan design docs ⋅ code ancho
    - **Token-review cadence** (`scripts/token-review`) — on **DUE** (last pass
      >7 days ago) run the session-tightness scan: read recent large local
      transcripts for repeated token-waste (context bloat, wrong-tier agents,
-     un-`rtk`'d firehoses, redundant calls), file findings to OPEN-ITEMS /
+     un-`rtk`'d firehoses, redundant calls), file findings to `docs/backlog/` /
      gripes, then append a dated line to `docs/runbooks/token-review.md`. Inside
      the 7-day window it's quiet — skip it.
    - **DB-thrash cadence** (`scripts/db-thrash-review`) — on **DUE** (last pass
@@ -124,7 +127,7 @@ Live repo hygiene — migration collisions ⋅ orphan design docs ⋅ code ancho
      indexes · dead-tuple bloat), interpret outliers by *ratio* (lifetime
      `idx_scan=0` = safe to drop; a small table full-scanned often = throttle the
      caller, not an index; an unindexed fleet-wide GC = single-flight + index),
-     file findings to OPEN-ITEMS/gripes, then append a dated line to
+     file findings to `docs/backlog/`/gripes, then append a dated line to
      `docs/runbooks/db-thrash-review.md`. Inside the 14-day window it's quiet —
      skip it. (This cadence exists because an unindexed GC pegged caspar for
      hours unnoticed; migs 0077/0078.)
@@ -136,7 +139,7 @@ Live repo hygiene — migration collisions ⋅ orphan design docs ⋅ code ancho
      executed queries, then LLM-eval whether each returned menu + the caller's
      selection made sense, and propose "better search bits" (skill H2/vocabulary
      edits, or a matcher change in `src/precis/handlers/skill.py`). File findings
-     to OPEN-ITEMS/gripes, then append a dated line to
+     to `docs/backlog/`/gripes, then append a dated line to
      `docs/runbooks/skill-search-review.md`. Inside the 30-day window it's quiet
      — skip it. (This cadence exists because skill search is agents' only
      discovery fallback when they don't know a slug, yet nothing logs how well it
@@ -167,8 +170,8 @@ Live repo hygiene — migration collisions ⋅ orphan design docs ⋅ code ancho
      in minutes when a host is *actually* locked out — the script also prints any
      open count); this cadence is the proactive drift catch. (This exists because
      a `brew upgrade python` cdhash bump silently broke melchior's grant and
-     dark-ingested for days; see the runbook + OPEN-ITEMS "melchior daemon NAS
-     lockout".)
+     dark-ingested for days; see the runbook + the `docs/backlog/` melchior
+     daemon-NAS-lockout item.)
    - **Nightly build** (`scripts/nightly --check`) — the LOCAL full-suite health
      read (not GitHub). **`✗ RED`** means green main was broken by upstream
      dependency drift (the ship gate can't catch it — no code changed);
@@ -261,7 +264,7 @@ Live repo hygiene — migration collisions ⋅ orphan design docs ⋅ code ancho
      trusting a count:
      - **Demand a real `tool_result`.** Only count a match that appears inside a
        `tool_result` block with `"is_error":true`, tied to a `tool_use.id` — not
-       narration, a prior assistant message, or quoted gripe/OPEN-ITEMS text.
+       narration, a prior assistant message, or quoted gripe/backlog text.
        (`transcript LIKE '%tool_result%<err>%'` is a cheap first cut; confirm by
        walking the stream-json.)
      - **Pull the *real* occurrence timestamps.** `SELECT ref_id, created_at`

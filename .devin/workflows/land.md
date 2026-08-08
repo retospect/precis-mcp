@@ -66,7 +66,7 @@ The user may pass a ship message after the command; otherwise write one.
 
 7. **Follow through on residuals.** A residual is a concrete correctness gap
    surfaced this session (latent bug, incomplete fix) — not a nice-to-have.
-   - **Persist first**: record each in an `OPEN-ITEMS.md` "Residuals" block so
+   - **Persist first**: record each as a `docs/backlog/` item so
      it survives the session. Filing a `gripe`/`todo` via the precis MCP
      **writes PROD** — do that only with the user's explicit go-ahead.
    - **Fix in-reach ones now**: each on a fresh feature branch, then /land

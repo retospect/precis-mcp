@@ -2,8 +2,8 @@
 name: issue-closer
 description: >-
   Sonnet-tier post-ship closer — reads the commit that /land or /go just
-  shipped and checks whether it resolves any open gripe or OPEN-ITEMS.md
-  entry, closing only the ones it can point to a specific fix for. Spawned
+  shipped and checks whether it resolves any open gripe or docs/backlog/
+  item, closing only the ones it can point to a specific fix for. Spawned
   as a background agent from /land or /go so it doesn't block or clutter the
   parent's context; the parent just relays its final one-line note when it
   completes. It does NOT triage new issues, edit code, or touch anything it
@@ -25,11 +25,11 @@ justify against the diff.
    base — don't go spelunking through unrelated history.
 2. List candidates: `search(kind='gripe', status='open')` plus `triaged` /
    `ready_for_fix` / `in_review` (skip `wontfix` — already a closed decision,
-   not a fix target). Read `OPEN-ITEMS.md` for entries with
-   `Status: open` or `blocked` (skip `deferred` — a deliberate park, not
-   something an incidental diff should close).
-3. For each candidate, `get(kind='gripe', id=N)` or read the OPEN-ITEMS
-   block, and compare its specific complaint against the diff: does the
+   not a fix target). Read the `docs/backlog/README.md` index for items
+   (skip one whose `snooze-until` date is still in the future — a deliberate
+   park, not something an incidental diff should close).
+3. For each candidate, `get(kind='gripe', id=N)` or read the backlog item's
+   file, and compare its specific complaint against the diff: does the
    diff visibly change the exact code path the complaint is about, in a way
    that addresses that exact complaint — not just "touches the same file".
 4. Close only what clears the Guardrails bar below. Leave everything else
@@ -53,16 +53,17 @@ justify against the diff.
 - Gripe: `put(kind='gripe', id=N, text='fixed by <sha>: <what changed>')`
   (comment first — good manners per `precis-gripe-help.md`), then
   `delete(kind='gripe', id=N)` (soft-delete, per that skill's convention).
-- OPEN-ITEMS.md: delete the entry's block in the same pass (no "done ✅"
-  note left behind, per this repo's own convention) and commit that edit
-  separately — the ship commit already happened, don't try to amend it.
+- Backlog item: `git rm docs/backlog/<slug>.md` in the same pass
+  (delete-on-ship, no done-markers, per this repo's own convention) and
+  commit that edit separately — the ship commit already happened, don't
+  try to amend it.
 
 ## What to return
 Short and structured — this text is relayed to the user verbatim, so no
 transcript of what you considered and ruled out:
 - One line per closed item: `Closed: gripe #42 (title) — <1-line reason>.`
-  or `Closed: OPEN-ITEMS "X" — <1-line reason>.`
-- If nothing qualified: `Nothing to close — no open gripe/OPEN-ITEMS entry
+  or `Closed: docs/backlog/<slug> — <1-line reason>.`
+- If nothing qualified: `Nothing to close — no open gripe/backlog item
   is confidently resolved by <sha>.`
 
 A confident close is proof read twice; an unconfident one stays open —

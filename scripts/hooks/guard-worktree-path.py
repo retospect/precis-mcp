@@ -23,8 +23,8 @@ alone (return ``None`` → allow, untouched).
 Wired in ``.claude/settings.json`` (PreToolUse, matcher
 ``Edit|Write|MultiEdit|NotebookEdit``). Edit/Write/MultiEdit all key the path
 under ``file_path``; ``NotebookEdit`` uses ``notebook_path`` instead, which
-this hook also inspects. See OPEN-ITEMS.md 'worktree edit-path trap' and the
-``worktree_edit_path_trap`` memory.
+this hook also inspects. See the ``worktree_edit_path_trap`` memory (the
+original backlog write-up lives in git history).
 """
 
 from __future__ import annotations

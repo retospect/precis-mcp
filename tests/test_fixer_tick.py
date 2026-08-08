@@ -40,7 +40,7 @@ from precis.fixer.tick import (
 def _cfg(tmp_path: Path, repo_root: Path, autonomy: Autonomy) -> FixerConfig:
     return FixerConfig(
         repo_root=repo_root,
-        proposals_dir=repo_root / "docs" / "proposals",
+        backlog_dir=repo_root / "docs" / "proposals",
         work_dir=tmp_path / "work",
         claude_bin="claude",
         default_model="claude-sonnet-5",
@@ -167,7 +167,7 @@ def test_run_tick_deletes_local_branch_after_real_ship(
         "_run_script_in_worktree",
         lambda worktree, script, msg: (True, "shipped (fake)"),
     )
-    monkeypatch.setattr(tick_mod, "ready_proposals", lambda proposals_dir: [item])
+    monkeypatch.setattr(tick_mod, "ready_items", lambda backlog_dir: [item])
 
     result = tick_mod.run_tick(cfg)
 
@@ -191,7 +191,7 @@ def test_run_tick_report_mode_leaves_local_branch_in_place(
     monkeypatch.setattr(
         tick_mod, "_quick_gate", lambda cfg, worktree: (True, "gate green (fake)")
     )
-    monkeypatch.setattr(tick_mod, "ready_proposals", lambda proposals_dir: [item])
+    monkeypatch.setattr(tick_mod, "ready_items", lambda backlog_dir: [item])
 
     result = tick_mod.run_tick(cfg)
 

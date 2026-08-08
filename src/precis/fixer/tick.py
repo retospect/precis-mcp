@@ -34,7 +34,7 @@ from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
 
-from precis.fixer.intake import WorkItem, pick_next, ready_proposals
+from precis.fixer.intake import WorkItem, pick_next, ready_items
 from precis.fixer.report import Report, ReportStatus, emit_report
 
 log = logging.getLogger("precis.fixer")
@@ -71,7 +71,7 @@ class Autonomy(StrEnum):
 @dataclass(frozen=True)
 class FixerConfig:
     repo_root: Path
-    proposals_dir: Path
+    backlog_dir: Path
     work_dir: Path
     claude_bin: str
     default_model: str
@@ -88,7 +88,7 @@ class FixerConfig:
         model = os.environ.get("PRECIS_FIXER_CLAUDE_MODEL", "claude-sonnet-5")
         return cls(
             repo_root=repo_root,
-            proposals_dir=repo_root / "docs" / "proposals",
+            backlog_dir=repo_root / "docs" / "backlog",
             work_dir=work_dir,
             claude_bin=os.environ.get("PRECIS_FIXER_CLAUDE_BIN", "claude"),
             default_model=model,
@@ -350,7 +350,7 @@ class TickResult:
 def run_tick(cfg: FixerConfig) -> TickResult:
     """Execute one tick. Returns what happened (for tests + the CLI)."""
     result = TickResult()
-    items = ready_proposals(cfg.proposals_dir)
+    items = ready_items(cfg.backlog_dir)
     item = pick_next(items, lambda b: branch_exists(cfg.repo_root, b))
     if item is None:
         result.notes.append(f"nothing to do ({len(items)} ready, all branched)")

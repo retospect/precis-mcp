@@ -342,7 +342,7 @@ high-traffic ones:
 ## Roadmap
 
 - `book`, `rmk` file handlers. (`tex` and `docx` shipped.)
-- `web` bookmark mode + Wayback enrichment (gripe:3681 phase 2 + 4 — see [`OPEN-ITEMS.md`](OPEN-ITEMS.md)).
+- `web` bookmark mode + Wayback enrichment (gripe:3681 phase 2 + 4 — see [`docs/backlog/`](docs/backlog/README.md)).
 - `voice` kind — STT/TTS bound to transcript refs (see [`docs/user-facing/voice-kind-spec.md`](docs/user-facing/voice-kind-spec.md)).
 - SDK extraction (`precis-core`) once the plugin API has settled.
 

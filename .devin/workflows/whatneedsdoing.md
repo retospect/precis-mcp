@@ -1,11 +1,11 @@
 ---
-description: One honest "what needs doing" across the two work substrates — repo dev work (OPEN-ITEMS backlog + open gripes + GitHub PRs/Dependabot) and the prod factory queue (open/doable todos) — plus repo-hygiene scans, a prod fleet-health read, and LLM-confusion mining from prod transcripts.
+description: One honest "what needs doing" across the two work substrates — repo dev work (docs/backlog/ + open gripes + GitHub PRs/Dependabot) and the prod factory queue (open/doable todos) — plus repo-hygiene scans, a prod fleet-health read, and LLM-confusion mining from prod transcripts.
 ---
 
 Work lives in **two different substrates** — do not merge them into one flat
 list. The user may pass an optional focus (e.g. 'dark-factory') to scope to.
 
-- **Repo dev work** — `OPEN-ITEMS.md` backlog + the `gripe` bug tracker.
+- **Repo dev work** — the `docs/backlog/` backlog + the `gripe` bug tracker.
   About *this codebase*; acted on by editing code on a feature branch → /go.
 - **Prod factory queue** — `kind='todo'` rows in the prod DB, driven by the
   autonomous dispatch/planner loop. Content/ops output, **not code** — they
@@ -19,12 +19,14 @@ suggests needs the user's explicit go-ahead first.
 
 ## Procedure
 
-1. **Repo dev — backlog.** Read `OPEN-ITEMS.md` headings:
+1. **Repo dev — backlog.** Read the generated `docs/backlog/README.md` index
+   (one line per item with status):
 // turbo
-   `grep -nE '^(## |- \*\*|- \[ \])' OPEN-ITEMS.md | head -60`
-   Take only *open* items. Run `scripts/backlog-lint` — for each done-marker
-   title it flags, confirm the work is on `main`, then **delete the entry**
-   (git log holds the record; OPEN-ITEMS is the active list, not an archive).
+   `grep -vE '^(<!--|\s*$)' docs/backlog/README.md | head -60`
+   Skip items whose front-matter `snooze-until: YYYY-MM-DD` date is still in
+   the future. Run `scripts/backlog-lint` — for each done-marker title it
+   flags, confirm the work is on `main`, then **delete the item's file** (git
+   log holds the record; `docs/backlog/` is the active list, not an archive).
 
 2. **Repo dev — gripes.** `get(kind='gripe', id='/open')`. Tracked but not
    auto-worked — flag stale or high-impact ones. If an open gripe's fix has
@@ -38,8 +40,8 @@ suggests needs the user's explicit go-ahead first.
    `gh api "repos/{owner}/{repo}/dependabot/alerts?state=open&per_page=50" --jq '.[] | "\(.security_advisory.severity)\t\(.dependency.package.name)\t#\(.number)\t\(.security_advisory.summary)"'`
    Flag each PR: green+approved (one-action merge), stalled, red CI, or stale
    draft. Rank alerts by severity — `high`/`critical` on the default branch is
-   P0 repo dev work. **Honor snoozes**: suppress any alert listed in
-   `OPEN-ITEMS.md` `## ⏸️ Snoozed` with a future `Recheck-after` date; if due,
+   P0 repo dev work. **Honor snoozes**: suppress any alert whose
+   `docs/backlog/` item has a future `snooze-until: YYYY-MM-DD` date; if due,
    re-probe the `Unblock-when` condition, then act or bump the date +2 weeks.
    If the API 403s, say so — don't report "none".
 
