@@ -7,7 +7,7 @@ than the ASE/OC20 norm.
 
 Status 2026-08-08:
 
-- **cuequivariance accel — DONE / deployed.** Wired into `roles/autocatpath`
+- **cuequivariance accel — shipped + deployed 2026-08-08.** Wired into `roles/autocatpath`
   (install + import-verify, gated to the ML-backend host) and installed on
   spark via playbook 44. Fast path confirmed engaged on a real seed — no
   "Cuequivariance acceleration will be disabled" banner in `stdout.log`.
