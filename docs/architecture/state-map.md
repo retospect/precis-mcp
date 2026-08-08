@@ -141,6 +141,23 @@ for the durable pin of that boundary.
   re-ticked planner is prompted (`planner_prompt.py`, "Re-ticked while
   a sibling is parked") to propose autonomous next steps or escalate to
   `halt:` if the pending answer has become a genuine hard gate.
+* **Draft-bound source pre-render** (`workers/planner_prompt.
+  _render_draft_sources`, gated on the `needs_sources` predicate — a
+  draft bound to the subtree, no anchor/review/backfill shape). The
+  dominant turn-exhaustion class was *fetching, not thinking*: a
+  "research and cite" tick got pointers only and burned the 60-turn
+  ceiling on corpus searches before writing. The variable layer now
+  pre-renders the content such a tick needs: draft state (per-section
+  TOON with citation density, or the full text when the draft fits the
+  8 KB inline cap), the draft's existing citation closure
+  (`backfill.candidates.draft_cited_ref_ids`), and the whole-draft
+  recall roll-up's top candidates (`backfill.workspace.assemble_draft`)
+  each with a verbatim excerpt to cite from — bounded ~14 KB against
+  the ~36 KB cached system prompt, fallback-safe (a render failure
+  degrades to `""`). Direct measure of success: `features->>'exhausted'`
+  (turn-ceiling exit from either agent loop, recorded by
+  `router._record_dispatch`) plus `turns_used` on draft-bound
+  `plan_tick` rows in `llm_call_log`, before/after.
 * **Planner cost guardrails** (`workers/planner_guardrails.check_parent`,
   consulted by `dispatch` before every mint). Four caps, cheapest first:
   per-todo **tick** cap (`meta.tick_count`, `PRECIS_MAX_TICKS` 10 →

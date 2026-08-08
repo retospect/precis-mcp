@@ -210,6 +210,67 @@ def has_plan(ctx: AssemblyContext) -> bool:
     return _project_plan(ctx) is not None
 
 
+def _bound_draft_ref(ctx: AssemblyContext) -> tuple[int, str, str] | None:
+    """The ``(draft_ref_id, ident, title)`` of the draft bound to this
+    tick's project subtree, memoised in extras.
+
+    Mirrors ``precis.workers.planner_prompt.bound_draft``'s recursive
+    ancestry walk (a ``draft-of`` link from the draft onto a node in
+    ``ctx.ref_id``'s ancestry) but also keeps the numeric ``draft_ref_id``
+    — the ``sources`` builder needs the id to query chunks/candidates,
+    not just the display string. ``ident`` is the draft's ``cite_key``
+    slug, falling back to the bare ref_id. Cached under
+    ``extras['draft_ref']`` so the predicate and the builder share one
+    query. ``None`` when there's no store or no draft bound."""
+    if "draft_ref" in ctx.extras:
+        return ctx.extras["draft_ref"]  # type: ignore[no-any-return]
+    result: tuple[int, str, str] | None = None
+    if ctx.store is not None:
+        with ctx.store.pool.connection() as conn:
+            row = conn.execute(
+                """
+                WITH RECURSIVE anc AS (
+                    SELECT ref_id, parent_id FROM refs WHERE ref_id = %s
+                    UNION ALL
+                    SELECT r.ref_id, r.parent_id
+                      FROM refs r JOIN anc a ON r.ref_id = a.parent_id
+                )
+                SELECT l.src_ref_id, dr.title,
+                       (SELECT id_value FROM ref_identifiers ri
+                         WHERE ri.ref_id = l.src_ref_id AND ri.id_kind = 'cite_key'
+                         LIMIT 1) AS slug
+                  FROM links l JOIN refs dr ON dr.ref_id = l.src_ref_id
+                 WHERE l.relation = 'draft-of'
+                   AND l.dst_ref_id IN (SELECT ref_id FROM anc)
+                   AND dr.deleted_at IS NULL
+                 LIMIT 1
+                """,
+                (ctx.ref_id,),
+            ).fetchone()
+        if row is not None:
+            src, title, slug = row
+            result = (int(src), str(slug or src), str(title or ""))
+    ctx.extras["draft_ref"] = result
+    return result
+
+
+def needs_sources(ctx: AssemblyContext) -> bool:
+    """True for a plain draft-bound tick — no anchor, no review, no
+    backfill shape, but a draft bound to the subtree.
+
+    Gates the pre-rendered source-material block (draft state + existing
+    citations + candidate corpus sources) for the plain draft-bound
+    writing/research tick — the anchored / review / backfill tick shapes
+    already carry their own content blocks, and a todo with no bound
+    draft must not inherit a document payload."""
+    return (
+        not has_anchor(ctx)
+        and not has_review(ctx)
+        and not has_backfill(ctx)
+        and _bound_draft_ref(ctx) is not None
+    )
+
+
 #: The named-predicate registry. ``applies_when`` strings resolve here;
 #: an unknown name is a programming error (caught by the totality test),
 #: not a silent always-true.
@@ -220,6 +281,7 @@ PREDICATES: dict[str, Callable[[AssemblyContext], bool]] = {
     "has_backfill": has_backfill,
     "is_patent": is_patent,
     "has_plan": has_plan,
+    "needs_sources": needs_sources,
 }
 
 
@@ -244,4 +306,5 @@ __all__ = [
     "has_review",
     "has_styled_anchor",
     "is_patent",
+    "needs_sources",
 ]

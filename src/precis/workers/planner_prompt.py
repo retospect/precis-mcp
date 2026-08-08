@@ -38,8 +38,9 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from precis.handlers._skill_common import parse_frontmatter
 from precis.utils.prompt import (
@@ -931,6 +932,15 @@ def _render_draft_identity(store: Store, ref_id: int) -> str:
     if resolved is None:
         return ""
     ident, title, _fmt = resolved
+    return _draft_identity_text(ident, title)
+
+
+def _draft_identity_text(ident: str, title: str) -> str:
+    """The rendered ``## Draft`` block for an already-resolved draft —
+    split from :func:`_render_draft_identity` so :func:`_m_draft` can
+    render from the ``_bound_draft_ref`` memo (one ancestry query per
+    tick, shared with the ``needs_sources`` predicate) without a second
+    :func:`bound_draft` round-trip."""
     return (
         f"## Draft\n\n"
         f"You are editing draft **{title}** (`id={ident}`). **This draft is "
@@ -953,6 +963,229 @@ def _render_draft_identity(store: Store, ref_id: int) -> str:
         f"section **into draft `{ident}`** under the relevant `dc<id>` "
         f"heading."
     )
+
+
+#: Sizing (measured 2026-08-07 against the exhausted-tick class, e.g. the
+#: 27 KB / 12-section "Mechanical cartridge" draft): outline mode keeps the
+#: block ~1 KB of draft state + ≤ ~3 KB citations + ~10 KB candidate
+#: excerpts — a bounded ~14 KB against the ~36 KB cached system prompt,
+#: traded for the 60 fetch-turns it replaces. Full draft text rides along
+#: only when the whole draft fits the inline cap.
+_SOURCES_DRAFT_INLINE_CAP = 8_000
+_SOURCES_CANDIDATES_CAP = 12
+_SOURCES_EXCERPT_CAP = 700
+_SOURCES_CITED_CAP = 40
+
+#: Citation handles a section's prose might carry — chunk-level (paper
+#: ``pc``, patent ``pk``, cfp ``qc``, datasheet ``dk``), ref-level (``pa``,
+#: ``pt``, ``cf``, ``da``), and ``fi`` claim-hub cites — used to count a
+#: section's citation density for the draft-state table. Must stay a
+#: superset of what ``draft_cited_ref_ids`` counts, or the ``⚠0`` cell
+#: contradicts the Existing-citations block rendered two sections below.
+_CITE_HANDLE_RE = re.compile(r"\[(?:pc|pk|qc|dk|pa|pt|cf|da|fi)\d+\]")
+
+
+def _clip_title(text: str, cap: int = 60) -> str:
+    """The first line of a chunk's text, comma-safe for a TOON row (commas
+    would break the row parser → swapped for U+201A) and capped for a
+    compact table cell / header."""
+    line = (text or "").strip().splitlines()[0] if (text or "").strip() else ""
+    line = line.replace(",", "‚")
+    if len(line) > cap:
+        line = line[:cap].rstrip() + "…"
+    return line
+
+
+def _draft_section_rows(chunks: list[Any]) -> list[tuple[Any, list[Any]]]:
+    """Pair each top-level section chunk with its subtree (itself + every
+    descendant), in reading order.
+
+    Top-level sections are headings with no parent (mirrors
+    :func:`precis.backfill.workspace._top_level_section_handles`); a
+    heading-less draft falls back to every top-level chunk as its own row.
+    ``chunks`` is already in DFS pre-order (:meth:`Store.reading_order`),
+    so sectioning is slicing at the top-level-heading boundaries — one
+    O(n) pass, no per-chunk ancestry walk. Every chunk lands in exactly
+    one row: a stray top-level paragraph folds into the section it
+    follows in reading order, and chunks before the first heading form a
+    front-matter row keyed by their first chunk (so nothing the block
+    calls "the full draft" is silently dropped)."""
+    idx = {c.chunk_id: i for i, c in enumerate(chunks)}
+    h_idx = [
+        idx[c.chunk_id]
+        for c in chunks
+        if c.chunk_kind == "heading" and c.parent_chunk_id is None
+    ]
+    if not h_idx:
+        top_ids = {c.chunk_id for c in chunks if c.parent_chunk_id is None}
+        tops = [c for c in chunks if c.parent_chunk_id is None]
+        n = len(chunks)
+        rows: list[tuple[Any, list[Any]]] = []
+        for t in tops:
+            start = idx[t.chunk_id]
+            end = start + 1
+            while end < n and chunks[end].chunk_id not in top_ids:
+                end += 1
+            rows.append((t, chunks[start:end]))
+        return rows
+    rows = []
+    if h_idx[0] > 0:
+        rows.append((chunks[0], chunks[: h_idx[0]]))
+    for j, start in enumerate(h_idx):
+        end = h_idx[j + 1] if j + 1 < len(h_idx) else len(chunks)
+        rows.append((chunks[start], chunks[start:end]))
+    return rows
+
+
+def _draft_state_block(chunks: list[Any]) -> str:
+    """The ``### Draft state`` block — a section-by-section TOON table
+    (handle/title/chars/cites), or, when the whole draft fits
+    :data:`_SOURCES_DRAFT_INLINE_CAP`, the full draft text inline so a
+    small draft never makes the agent re-fetch what's already in front of
+    it."""
+    sections = _draft_section_rows(chunks)
+    total_chars = sum(len(c.text or "") for c in chunks)
+    lines = [f"### Draft state — {len(sections)} sections", ""]
+    if not sections:
+        lines.append(
+            "(draft is empty — you are writing its first content; add a "
+            "heading, then paragraphs under it, per the Draft block above)"
+        )
+        return "\n".join(lines)
+    if total_chars <= _SOURCES_DRAFT_INLINE_CAP:
+        for t, subtree in sections:
+            lines.append(f"#### {t.dc} — {_clip_title(t.text)}")
+            lines.append("")
+            for c in subtree:
+                text = (c.text or "").strip()
+                if not text:
+                    continue
+                lines.append(f"**{text}**" if c.chunk_kind == "heading" else text)
+                lines.append("")
+        lines.append("(full draft text above — edit chunks by their dc handle)")
+    else:
+        lines.append(f"sections: [{len(sections)}]{{handle,title,chars,cites}}")
+        for t, subtree in sections:
+            chars = sum(len(c.text or "") for c in subtree)
+            subtree_text = " ".join(c.text or "" for c in subtree)
+            n_cites = len(_CITE_HANDLE_RE.findall(subtree_text))
+            cites_cell = f"✓{n_cites}" if n_cites else "⚠0"
+            lines.append(f"{t.dc},{_clip_title(t.text)},{chars},{cites_cell}")
+        lines.append("(read a section with `get(id='dc<id>')` before writing into it)")
+    return "\n".join(lines)
+
+
+def _existing_citations_block(store: Store, draft_ref_id: int) -> str:
+    """The ``### Existing citations`` block — every source this draft
+    already cites (mined via :func:`~precis.backfill.candidates.
+    draft_cited_ref_ids`, the same Tier-0 dedup closure the backfill sweep
+    uses), so the agent doesn't re-search for a source it already has open
+    elsewhere in the draft."""
+    from precis.backfill.candidates import draft_cited_ref_ids
+    from precis.utils import handle_registry
+    from precis.utils.short_cite import short_cite
+
+    cited_ids = draft_cited_ref_ids(store, draft_ref_id)
+    refs = store.fetch_refs_by_ids(sorted(cited_ids)) if cited_ids else {}
+    rows: list[tuple[str, str, str]] = []
+    for rid, ref in refs.items():
+        if getattr(ref, "deleted_at", None) is not None:
+            continue
+        kind = getattr(ref, "kind", None) or "paper"
+        handle = handle_registry.try_format(kind, rid) or f"{kind}:{rid}"
+        title = " ".join((getattr(ref, "title", None) or "").split())[:90]
+        rows.append((handle, short_cite(ref), title))
+    rows.sort(key=lambda r: r[0])
+    lines = ["### Existing citations — sources this draft already cites", ""]
+    if not rows:
+        lines.append(
+            "(none yet — nothing in this draft is cited; every load-bearing "
+            "claim needs a source)"
+        )
+        return "\n".join(lines)
+    for handle, cite, title in rows[:_SOURCES_CITED_CAP]:
+        lines.append(f"✓ {handle} · {cite} · {title}")
+    if len(rows) > _SOURCES_CITED_CAP:
+        lines.append(f"(… and {len(rows) - _SOURCES_CITED_CAP} more)")
+    return "\n".join(lines)
+
+
+def _candidate_sources_block(store: Store, draft_ref_id: int) -> str:
+    """The ``### Candidate corpus sources`` block — the whole-draft
+    gap-finder roll-up (:func:`~precis.backfill.workspace.assemble_draft`),
+    each candidate rendered WITH its verbatim excerpt so the agent can
+    confirm support and cite straight from this block, no fetch needed."""
+    from precis.backfill.provenance import tier_tag
+    from precis.backfill.workspace import assemble_draft, recall_embedder
+
+    candidates, _cited, _sections, _truncated = assemble_draft(
+        store,
+        recall_embedder(store),
+        draft_ref_id,
+        per_paper=1,
+        section_pool=6,
+        max_candidates=_SOURCES_CANDIDATES_CAP,
+    )
+    lines = ["### Candidate corpus sources — relevant, not yet cited (ranked)", ""]
+    if not candidates:
+        lines.append(
+            "(no uncited candidates found — the corpus may lack sources for "
+            "this draft; use the request-ingestion flow for what you need)"
+        )
+        return "\n".join(lines)
+    for cand in candidates:
+        glyph = "○○" if len(cand.support) > 1 else "○"
+        addr = f"{cand.paper_handle} {cand.chunk_handle}".strip()
+        tier = tier_tag(getattr(cand.ref, "kind", None))
+        lens = "+".join(cand.lenses)
+        if len(cand.support) > 1:
+            where = " · recurs across " + " ".join(cand.support)
+        elif cand.support:
+            where = " · supports " + cand.support[0]
+        else:
+            where = ""
+        title = cand.title[:90] or "(untitled)"
+        lines.append(f"{glyph} {addr} · {tier} · {lens}{where} · {title}")
+        if not cand.is_ref_level:
+            text = " ".join((store.chunk_text_by_id(cand.chunk_id) or "").split())
+            if len(text) > _SOURCES_EXCERPT_CAP:
+                text = text[:_SOURCES_EXCERPT_CAP].rstrip() + "…"
+            if text:
+                lines.append(f"  > {text}")
+    return "\n".join(lines)
+
+
+def _render_draft_sources(store: Store, draft_ref_id: int, ident: str) -> str:
+    """Pre-render the draft's source material — state + existing citations
+    + candidate corpus sources, each with its verbatim excerpt — so a
+    "research and cite" tick can write and cite straight from this block
+    instead of spending its turn budget on corpus searches (gated
+    ``needs_sources``: a plain draft-bound tick, no anchor/review/backfill
+    shape already covering the content).
+
+    ``ident`` names the draft in the block's introduction alongside its
+    numeric id — kept as a parameter (not re-resolved here) so the caller's
+    single :func:`~precis.utils.prompt.predicates._bound_draft_ref` query
+    is the only lookup."""
+    chunks = store.reading_order(draft_ref_id)
+    parts = [
+        f"## Source material for draft `{ident}` (pre-rendered — cite from "
+        "here before you search)",
+        "",
+        "This block is pre-fetched so you can write and cite WITHOUT "
+        "spending turns on corpus searches. Cite a candidate by pasting "
+        "its chunk handle (`[pc<id>]` etc.) after reading its excerpt "
+        "below and confirming it supports your claim. Search the corpus "
+        "only for a claim no candidate covers; request ingestion (see the "
+        "contract above) only for a source the corpus lacks.",
+        "",
+        _draft_state_block(chunks),
+        "",
+        _existing_citations_block(store, draft_ref_id),
+        "",
+        _candidate_sources_block(store, draft_ref_id),
+    ]
+    return "\n".join(parts)
 
 
 #: Soft cap on call-for-proposal section headings surfaced in the
@@ -1589,8 +1822,41 @@ def _m_plan(ctx: AssemblyContext) -> str:
 
 
 def _m_draft(ctx: AssemblyContext) -> str:
+    """Renders from the ``_bound_draft_ref`` memo (populated here, reused
+    by the ``needs_sources`` predicate on the very next module) so a
+    draft-bound tick resolves its draft with one ancestry query, not two."""
+    from precis.utils.prompt.predicates import _bound_draft_ref
+
     assert ctx.store is not None
-    return _render_draft_identity(ctx.store, ctx.ref_id)
+    resolved = _bound_draft_ref(ctx)
+    if resolved is None:
+        return ""
+    _draft_ref_id, ident, title = resolved
+    return _draft_identity_text(ident, title)
+
+
+def _m_sources(ctx: AssemblyContext) -> str:
+    """Pre-rendered source material for a plain draft-bound tick (gated
+    ``needs_sources``, which memoised the resolved draft in
+    ``extras['draft_ref']``): draft state + existing citations + candidate
+    corpus sources, so a "research and cite" tick can write without
+    spending its turn budget on searches. Fallback-safe like
+    :func:`_m_fisheye` — any render failure degrades to ``""``, never
+    breaking the tick."""
+    ref = ctx.extras.get("draft_ref")
+    if not ref:
+        return ""
+    assert ctx.store is not None
+    draft_ref_id, ident, _title = ref
+    try:
+        return _render_draft_sources(ctx.store, draft_ref_id, ident)
+    except Exception:
+        log.debug(
+            "planner sources render failed for draft ref %s",
+            draft_ref_id,
+            exc_info=True,
+        )
+        return ""
 
 
 def _m_requirements(ctx: AssemblyContext) -> str:
@@ -2067,6 +2333,12 @@ _VARIABLE_MODULES: list[Module] = [
     Module(id="requirements", layer=Layer.VARIABLE, build=_m_requirements),
     Module(id="seeds", layer=Layer.VARIABLE, build=_m_seeds),
     Module(id="draft", layer=Layer.VARIABLE, build=_m_draft),
+    Module(
+        id="sources",
+        layer=Layer.VARIABLE,
+        build=_m_sources,
+        applies_when="needs_sources",
+    ),
     Module(
         id="reviewer-persona",
         layer=Layer.VARIABLE,

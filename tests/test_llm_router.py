@@ -3321,6 +3321,55 @@ def test_dispatch_async_records_route_log(monkeypatch: pytest.MonkeyPatch) -> No
     assert recorded["transport"] is Transport.CLAUDE_AGENT
 
 
+@pytest.mark.parametrize(
+    ("stop_reason", "terminal_reason", "exhausted"),
+    [
+        ("max_turns", None, True),  # OSS tools= loop hit the ceiling
+        (None, "max_turns", True),  # claude_agent run hit the ceiling
+        ("stop", None, False),  # clean OSS answer
+        (None, None, False),  # clean one-shot / agent run
+    ],
+)
+def test_record_dispatch_features_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+    stop_reason: str | None,
+    terminal_reason: str | None,
+    exhausted: bool,
+) -> None:
+    """`features.exhausted` marks a turn-ceiling exit from EITHER agent loop
+    (OSS `stop_reason` / claude_agent `terminal_reason`) — the route-log watch
+    for the draft-bound pre-render change reads it."""
+    from precis import route_log
+
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(route_log, "enabled", lambda: True)
+    monkeypatch.setattr(
+        route_log, "record_call", lambda rec: captured.update(features=rec.features)
+    )
+
+    result = LlmResult(
+        text="",
+        cost_usd=None,
+        turns_used=60,
+        model="m",
+        tier=Tier.BIG,
+        stop_reason=stop_reason,
+        terminal_reason=terminal_reason,
+    )
+    router._record_dispatch(
+        LlmRequest(tier=Tier.BIG, prompt="tick", tools_needed=True),
+        result,
+        transport=Transport.CLAUDE_AGENT,
+        duration_ms=1,
+    )
+
+    features = captured["features"]
+    assert isinstance(features, dict)
+    assert features["exhausted"] is exhausted
+    assert features["prompt_chars"] == 4  # request-side features still merged
+
+
 # ── ADR 0066 Phase C: the 4 capability tiers are the only tiers ────────
 
 

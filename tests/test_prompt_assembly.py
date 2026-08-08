@@ -10,6 +10,8 @@ green by this refactor); here we test the new surface.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from precis.dispatch import Hub
@@ -548,3 +550,261 @@ def test_has_plan_and_plan_ledger_block(hub: Hub) -> None:
     ctx2 = _ctx(hub.store, plain.id)
     assert P.has_plan(ctx2) is False
     assert _m_plan(ctx2) == ""
+
+
+# ── pre-rendered source material for a plain draft-bound tick ──────
+
+
+#: Distinctive terms shared with the matching paper chunk below, so the
+#: lexical recall leg (no embedder configured in the test env) finds a
+#: real hit via ``websearch_to_tsquery`` — no ``search_blocks_multi``
+#: monkeypatch needed.
+_SECTION_TEXT = (
+    "Piezo oscillator thermal drift calibration routine for the "
+    "mechanical cartridge assembly."
+)
+_PAPER_CHUNK_TEXT = (
+    "In this study we describe a piezo oscillator thermal drift "
+    "calibration routine for the mechanical cartridge assembly, "
+    "achieving sub-micron repeatability across thermal cycles."
+)
+
+
+def _project_with_draft(draft: DraftHandler, hub: Hub, slug: str) -> tuple[int, int]:
+    """A fresh project + a one-heading draft bound to it (``draft-of``
+    link), the heading's paragraph carrying :data:`_SECTION_TEXT`.
+    Returns ``(project_ref_id, draft_ref_id)``."""
+    proj = hub.store.insert_ref(kind="todo", slug=None, title="Proj").id
+    draft.put(id=slug, title="Doc", project=proj)
+    ref = hub.store.get_ref(kind="draft", id=slug)
+    assert ref is not None
+    title_h = hub.store.reading_order(ref.id)[0].handle
+    draft.put(id=slug, chunk_kind="heading", text="Calibration", at={"after": title_h})
+    intro_h = next(
+        c.handle for c in hub.store.reading_order(ref.id) if c.text == "Calibration"
+    )
+    draft.put(
+        id=slug,
+        chunk_kind="paragraph",
+        text=_SECTION_TEXT,
+        at={"into": intro_h, "last": True},
+    )
+    return proj, ref.id
+
+
+def _paper_with_matching_chunk(hub: Hub, *, slug: str) -> tuple[int, str]:
+    """A real paper ref with one body chunk whose text overlaps
+    :data:`_SECTION_TEXT`'s distinctive terms. Returns ``(paper_ref_id,
+    chunk_text)``."""
+    from precis.store.types import BlockInsert
+
+    paper = hub.store.insert_ref(kind="paper", slug=slug, title="Cartridge Paper")
+    hub.store.insert_blocks(paper.id, [BlockInsert(pos=0, text=_PAPER_CHUNK_TEXT)])
+    return paper.id, _PAPER_CHUNK_TEXT
+
+
+def _bound_todo(hub: Hub, project_ref_id: int, title: str = "tick") -> int:
+    return hub.store.insert_ref(
+        kind="todo", slug=None, title=title, parent_id=project_ref_id
+    ).id
+
+
+def test_planner_sources_block_uncited_draft(draft: DraftHandler, hub: Hub) -> None:
+    """A plain draft-bound tick (no anchor/review/backfill): the
+    pre-rendered source block carries a real candidate — pc handle AND its
+    verbatim excerpt — plus the none-yet citations line (nothing cited)."""
+    from precis.workers.planner_prompt import build_planner_prompts
+
+    proj, _draft_ref_id = _project_with_draft(draft, hub, "src1")
+    _paper_with_matching_chunk(hub, slug="src1-paper")
+    todo = _bound_todo(hub, proj)
+
+    prompts = build_planner_prompts(hub.store, ref_id=todo, model="opus")
+    user = prompts.user
+    assert "## Source material" in user
+    assert "### Candidate corpus sources" in user
+    assert re.search(r"\bpc\d+\b", user), user
+    # the candidate's excerpt rides verbatim, not just its title
+    assert "sub-micron repeatability across thermal cycles" in user
+    assert "### Existing citations" in user
+    assert "(none yet" in user
+
+
+def test_planner_sources_block_cited_draft(draft: DraftHandler, hub: Hub) -> None:
+    """A draft that already cites a paper surfaces it in the existing-
+    citations block, ``✓ pa<id>`` style."""
+    from precis.workers.planner_prompt import build_planner_prompts
+
+    proj, draft_ref_id = _project_with_draft(draft, hub, "src2")
+    cited = hub.store.insert_ref(kind="paper", slug="src2-cited", title="Cited Paper")
+    intro_h = next(
+        c.handle
+        for c in hub.store.reading_order(draft_ref_id)
+        if c.text == "Calibration"
+    )
+    draft.put(
+        id=draft_ref_id,
+        chunk_kind="paragraph",
+        text=f"See prior work paper:{cited.id} for context.",
+        at={"into": intro_h, "last": True},
+    )
+    todo = _bound_todo(hub, proj)
+
+    prompts = build_planner_prompts(hub.store, ref_id=todo, model="opus")
+    assert re.search(r"✓ pa\d+", prompts.user), prompts.user
+
+
+def test_planner_sources_block_absent_when_anchored(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """The anchored tick shape owns its own content (fisheye) — the plain
+    source block must not also ride along."""
+    from precis.workers.planner_prompt import build_planner_prompts
+
+    proj, draft_ref_id = _project_with_draft(draft, hub, "src3")
+    intro_h = next(
+        c.handle
+        for c in hub.store.reading_order(draft_ref_id)
+        if c.text == "Calibration"
+    )
+    todo = _bound_todo(hub, proj)
+    hub.store.stamp_ref_meta(todo, {"anchor": intro_h})
+
+    prompts = build_planner_prompts(hub.store, ref_id=todo, model="opus")
+    assert "## Source material" not in prompts.user
+
+
+def test_planner_sources_block_absent_for_review_todo(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    from precis.workers.planner_prompt import build_planner_prompts
+
+    proj, _draft_ref_id = _project_with_draft(draft, hub, "src4")
+    todo = _bound_todo(hub, proj, title="review it")
+    hub.store.stamp_ref_meta(todo, {"review": "cites"})
+
+    prompts = build_planner_prompts(hub.store, ref_id=todo, model="opus")
+    assert "## Source material" not in prompts.user
+
+
+def test_planner_sources_block_absent_without_bound_draft(hub: Hub) -> None:
+    from precis.workers.planner_prompt import build_planner_prompts
+
+    todo = hub.store.insert_ref(kind="todo", slug=None, title="just do it")
+    prompts = build_planner_prompts(hub.store, ref_id=todo.id, model="opus")
+    assert "## Source material" not in prompts.user
+
+
+#: Placed mid-way through the oversized chunk so a leaked full-text render
+#: (instead of the capped TOON row) is unambiguously detectable.
+_LONG_DRAFT_MARKER = "UNIQUE-MID-CHUNK-MARKER-7f3ac91"
+
+
+def test_planner_sources_block_outline_mode_over_cap(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """A draft over the inline cap renders the capped TOON table, never the
+    oversized chunk's full body text."""
+    from precis.workers.planner_prompt import (
+        _SOURCES_DRAFT_INLINE_CAP,
+        build_planner_prompts,
+    )
+
+    proj = hub.store.insert_ref(kind="todo", slug=None, title="Proj").id
+    draft.put(id="src5", title="Doc", project=proj)
+    ref = hub.store.get_ref(kind="draft", id="src5")
+    assert ref is not None
+    title_h = hub.store.reading_order(ref.id)[0].handle
+    draft.put(id="src5", chunk_kind="heading", text="Body", at={"after": title_h})
+    body_h = next(c.handle for c in hub.store.reading_order(ref.id) if c.text == "Body")
+    big_text = ("filler word " * 700) + _LONG_DRAFT_MARKER
+    assert len(big_text) > _SOURCES_DRAFT_INLINE_CAP
+    draft.put(
+        id="src5",
+        chunk_kind="paragraph",
+        text=big_text,
+        at={"into": body_h, "last": True},
+    )
+    todo = _bound_todo(hub, proj)
+
+    prompts = build_planner_prompts(hub.store, ref_id=todo, model="opus")
+    assert "## Source material" in prompts.user
+    assert "sections: [" in prompts.user
+    assert _LONG_DRAFT_MARKER not in prompts.user
+
+
+def test_planner_sources_block_inline_mode_under_cap(
+    draft: DraftHandler, hub: Hub
+) -> None:
+    """A small draft rides inline: full chunk text + the section header,
+    not the truncated TOON table."""
+    from precis.workers.planner_prompt import build_planner_prompts
+
+    proj, _draft_ref_id = _project_with_draft(draft, hub, "src6")
+    todo = _bound_todo(hub, proj)
+
+    prompts = build_planner_prompts(hub.store, ref_id=todo, model="opus")
+    assert "## Source material" in prompts.user
+    assert "#### dc" in prompts.user
+    assert _SECTION_TEXT in prompts.user
+    assert "sections: [" not in prompts.user
+
+
+def _stub_chunk(cid: int, parent: int | None, kind: str, text: str):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        chunk_id=cid, parent_chunk_id=parent, chunk_kind=kind, text=text, dc=f"dc{cid}"
+    )
+
+
+def test_draft_section_rows_keep_stray_top_level_chunks() -> None:
+    """Every chunk lands in exactly one row: front matter before the first
+    heading forms its own row, and a stray top-level paragraph (written
+    ``at={'after': …}`` instead of ``'into'``) folds into the section it
+    follows — nothing the block calls "the full draft" is dropped."""
+    from precis.workers.planner_prompt import _draft_section_rows
+
+    chunks = [
+        _stub_chunk(1, None, "paragraph", "front matter"),
+        _stub_chunk(2, None, "heading", "Intro"),
+        _stub_chunk(3, 2, "paragraph", "intro body"),
+        _stub_chunk(4, None, "paragraph", "stray after-sibling"),
+        _stub_chunk(5, None, "heading", "Methods"),
+        _stub_chunk(6, 5, "paragraph", "methods body"),
+    ]
+    rows = _draft_section_rows(chunks)
+    covered = sorted(c.chunk_id for _, sub in rows for c in sub)
+    assert covered == [1, 2, 3, 4, 5, 6]
+    assert [t.chunk_id for t, _ in rows] == [1, 2, 5]
+    assert 4 in [c.chunk_id for c in rows[1][1]]
+
+
+def test_draft_state_cites_cell_counts_ref_level_and_hub_handles() -> None:
+    """The per-section cites cell must count ref-level (``[pa…]``) and
+    claim-hub (``[fi…]``) citations, not only chunk-level handles —
+    otherwise it shows ``⚠0`` for a section the Existing-citations block
+    in the same prompt lists as cited."""
+    from precis.workers.planner_prompt import (
+        _SOURCES_DRAFT_INLINE_CAP,
+        _draft_state_block,
+    )
+
+    filler = "x" * (_SOURCES_DRAFT_INLINE_CAP + 1)  # force outline mode
+    chunks = [
+        _stub_chunk(1, None, "heading", "Cited section"),
+        _stub_chunk(2, 1, "paragraph", f"claim [pa42] and hub [fi7]. {filler}"),
+    ]
+    block = _draft_state_block(chunks)
+    assert "✓2" in block
+    assert "⚠0" not in block
+
+
+def test_draft_state_block_empty_draft() -> None:
+    """A chunk-less draft says so instead of rendering a confusing
+    "0 sections / full draft text above" shell."""
+    from precis.workers.planner_prompt import _draft_state_block
+
+    block = _draft_state_block([])
+    assert "draft is empty" in block
+    assert "full draft text" not in block
