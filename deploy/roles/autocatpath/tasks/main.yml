@@ -37,6 +37,38 @@
     or 'Updated' in (autocatpath_install.stdout + autocatpath_install.stderr)
   notify: restart precis-worker (autocatpath)
 
+# cuequivariance GPU accel for MACE. Without it, MACE prints "Cuequivariance
+# acceleration will be disabled." and runs its equivariant tensor-products on a
+# slow fallback — on the GB10 (Grace-Blackwell, aarch64, torch cu130) that made a
+# single seed's relax+NEB take 2.5-3.7 h and blow its ssh_node wall deadline
+# (0 results). The accel wheels exist for this platform
+# (cuequivariance-ops-torch-cu13, aarch64), turning the per-eval cost down toward
+# the minutes-scale seed_job.py assumes. NOT foldable into a precis-mcp extra: the
+# ops wheel is CUDA-13 + aarch64 specific, so it stays a node-scoped install gated
+# to the ML-backend host, not a portable extra. (A cu12 MACE node would instead
+# need cuequivariance-ops-torch-cu12.) A running seed is a fresh subprocess, so the
+# next seed launched after this install picks the accel up — no worker bounce
+# needed for it to take effect, though the shared handler fires anyway.
+- name: Install cuequivariance GPU accel for MACE into the worker venv (ML-backend node only)
+  when: inventory_hostname in (precis_capabilities.autocatpath_mace | default([]))
+  ansible.builtin.shell: |
+    {{ autocatpath_uv_bin }} pip install --python {{ autocatpath_worker_venv }}/bin/python \
+      --constraints /opt/precis/constraints.txt \
+      'cuequivariance-torch==0.11.1' 'cuequivariance-ops-torch-cu13==0.11.1'
+  become: true
+  register: autocatpath_cueq_install
+  changed_when: >-
+    'Installed' in (autocatpath_cueq_install.stdout + autocatpath_cueq_install.stderr)
+    or 'Updated' in (autocatpath_cueq_install.stdout + autocatpath_cueq_install.stderr)
+  notify: restart precis-worker (autocatpath)
+
+- name: Verify cuequivariance GPU accel imports in the worker venv (ML-backend node only)
+  when: inventory_hostname in (precis_capabilities.autocatpath_mace | default([]))
+  ansible.builtin.command:
+    cmd: "{{ autocatpath_worker_venv }}/bin/python -c 'import cuequivariance_torch; print(cuequivariance_torch.__version__)'"
+  become: true
+  changed_when: false
+
 # Pre-seed the MACE-MP-0 weights into the worker's cache. autocatpath's NEB gives
 # each image its own calculator, so the FIRST mace job loads the model N times
 # concurrently — and on a cold cache they race to download it and fail
