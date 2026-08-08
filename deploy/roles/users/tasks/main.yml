@@ -1,37 +1,147 @@
 ---
-# Create system users with fixed UIDs across all nodes.
+# Create system users with fixed UIDs *and GIDs* across all nodes.
 # macOS uses sysadminctl/dscl, Linux uses useradd.
+#
+# Why the ids are pinned and not left to the OS: NFS (both the in-cluster
+# export from the `nfs_servers` group and the NAS) carries *numeric* uid/gid
+# on the wire, so an auto-assigned id means the same file reads as one
+# owner/group on the server and a different one on the client. macOS's default
+# `staff` (20) is `dialout` on Ubuntu — a real group with real members, not a
+# cosmetic mislabel. `system_users[]` in group_vars is the source of truth.
+#
+# ── The renumbering guard ──
+# This role never renumbers an id that is already in use, because neither
+# `usermod -u` nor `groupmod -g` chgrp/chown the files already owned at the
+# old id — it would orphan every one of them. A name can already be taken by
+# a *foreign* account: on a node with the distro's prometheus/grafana packages
+# installed, `prometheus` and `grafana` are Debian *package* users (low system
+# uids) owning /var/lib/prometheus and /var/log/grafana, unrelated to the ids
+# pinned here. Such a host is reported as drift and left strictly alone;
+# remediation is a deliberate chown/chgrp-then-usermod pass, never a side
+# effect of a routine run.
+# Set `users_gid_drift_fatal: true` in host_vars once a host is remediated,
+# so it cannot silently regress.
 
 - name: Fallback — set users_to_create if not already defined
   when: users_to_create is not defined
   ansible.builtin.set_fact:
     users_to_create: "{{ system_users | selectattr('all_nodes', 'equalto', true) | list }}"
 
-- name: Create system users (macOS)
+# Users whose gid this role is allowed to manage. An overlay that has not yet
+# pinned gids simply gets the old auto-assign behaviour rather than a surprise.
+- name: Select the users with a pinned gid
+  ansible.builtin.set_fact:
+    users_with_gid: "{{ users_to_create | selectattr('gid', 'defined') | list }}"
+  tags: [always]
+
+- name: Pin ids (macOS)
   when: os_family == "darwin"
   block:
-    - name: Check if user exists (macOS)
-      ansible.builtin.command: id -u "{{ item.name }}"
-      register: user_check
+    - name: Probe existing account uids (macOS)
+      ansible.builtin.command: dscl . -read /Users/{{ item.name }} UniqueID
+      register: macos_uid_probe
       failed_when: false
       changed_when: false
+      check_mode: false
       loop: "{{ users_to_create }}"
       loop_control:
         label: "{{ item.name }}"
 
+    - name: Probe existing group gids (macOS)
+      ansible.builtin.command: dscl . -read /Groups/{{ item.name }} PrimaryGroupID
+      register: macos_group_probe
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      loop: "{{ users_with_gid }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Identify ids already taken at a different value (macOS)
+      ansible.builtin.set_fact:
+        users_uid_conflict: >-
+          {%- set out = [] -%}
+          {%- for r in macos_uid_probe.results -%}
+            {%- if r.rc == 0 and r.stdout.split()[-1] | int != r.item.uid | int -%}
+              {%- set _ = out.append(r.item.name) -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ out }}
+        users_gid_conflict: >-
+          {%- set out = [] -%}
+          {%- for r in macos_group_probe.results -%}
+            {%- if r.rc == 0 and r.stdout.split()[-1] | int != r.item.gid | int -%}
+              {%- set _ = out.append(r.item.name) -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ out }}
+
+    - name: Create missing pinned groups (macOS)
+      when:
+        - item.rc != 0
+        - item.item.name not in users_uid_conflict
+      ansible.builtin.command: >
+        dseditgroup -o create -i {{ item.item.gid }} -r {{ item.item.name }} {{ item.item.name }}
+      become: true
+      loop: "{{ macos_group_probe.results }}"
+      loop_control:
+        label: "{{ item.item.name }} (gid {{ item.item.gid }})"
+
     - name: Create missing users (macOS)
+      when:
+        - item.rc != 0
+        - item.item.name not in users_uid_conflict
       ansible.builtin.command: >
         sysadminctl -addUser {{ item.item.name }}
         -UID {{ item.item.uid }}
+        {% if item.item.gid is defined %}
+        -GID {{ item.item.gid }}
+        {% endif %}
         -shell {{ item.item.shell | default('/usr/bin/false') }}
         {% if item.item.home | default('') == '/dev/null' or item.item.home | default('') == '' %}
         -home /dev/null
         {% endif %}
-      when: item.rc != 0
       become: true
-      loop: "{{ user_check.results }}"
+      loop: "{{ macos_uid_probe.results }}"
       loop_control:
         label: "{{ item.item.name }}"
+
+    # Existing users predate the gid pin and sit on staff (20). sysadminctl
+    # only takes -GID at creation, so move them with dscl.
+    - name: Probe primary group of existing users (macOS)
+      ansible.builtin.command: dscl . -read /Users/{{ item.name }} PrimaryGroupID
+      register: macos_user_gid_probe
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      loop: "{{ users_with_gid }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Move existing users onto their pinned primary group (macOS)
+      when:
+        - item.rc == 0
+        - item.stdout.split()[-1] | int != item.item.gid | int
+        - item.item.name not in users_uid_conflict
+        - item.item.name not in users_gid_conflict
+      ansible.builtin.command: >
+        dscl . -create /Users/{{ item.item.name }} PrimaryGroupID {{ item.item.gid }}
+      become: true
+      loop: "{{ macos_user_gid_probe.results }}"
+      loop_control:
+        label: "{{ item.item.name }} ({{ item.stdout | default('?') | trim }} → {{ item.item.gid }})"
+
+    # Keep staff as a SUPPLEMENTARY group: the primary move above must not
+    # cost these accounts access to anything already group-staff-writable.
+    - name: Keep staff as a supplementary group (macOS)
+      ansible.builtin.command: >
+        dseditgroup -o edit -a {{ item.name }} -t user staff
+      become: true
+      changed_when: false
+      failed_when: false
+      loop: "{{ users_with_gid | rejectattr('name', 'in', users_uid_conflict) | list }}"
+      loop_control:
+        label: "{{ item.name }}"
 
     - name: Grant SSH access on macOS (com.apple.access_ssh)
       ansible.builtin.command: >
@@ -91,16 +201,103 @@
     mode: "0644"
   become: true
 
-- name: Create system users (Linux)
+- name: Pin ids (Linux)
   when: os_family == "linux"
-  ansible.builtin.user:
-    name: "{{ item.name }}"
-    uid: "{{ item.uid }}"
-    shell: "{{ item.shell | default('/usr/sbin/nologin') }}"
-    create_home: false
-    system: true
-    state: present
-  become: true
-  loop: "{{ users_to_create }}"
-  loop_control:
-    label: "{{ item.name }}"
+  block:
+    - name: Probe existing account uids (Linux)
+      ansible.builtin.command: getent passwd {{ item.name }}
+      register: linux_uid_probe
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      loop: "{{ users_to_create }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Probe existing group gids (Linux)
+      ansible.builtin.command: getent group {{ item.name }}
+      register: linux_group_probe
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      loop: "{{ users_with_gid }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Identify ids already taken at a different value (Linux)
+      ansible.builtin.set_fact:
+        users_uid_conflict: >-
+          {%- set out = [] -%}
+          {%- for r in linux_uid_probe.results -%}
+            {%- if r.rc == 0 and r.stdout.split(':')[2] | int != r.item.uid | int -%}
+              {%- set _ = out.append(r.item.name) -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ out }}
+        users_gid_conflict: >-
+          {%- set out = [] -%}
+          {%- for r in linux_group_probe.results -%}
+            {%- if r.rc == 0 and r.stdout.split(':')[2] | int != r.item.gid | int -%}
+              {%- set _ = out.append(r.item.name) -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ out }}
+
+    # Absent → create at the pinned gid. Present-and-correct → no-op. Present
+    # at another gid → excluded, because `group:` would groupmod it and orphan
+    # every file already owned at the old gid.
+    - name: Create missing pinned groups (Linux)
+      when:
+        - item.rc != 0
+        - item.item.name not in users_uid_conflict
+      ansible.builtin.group:
+        name: "{{ item.item.name }}"
+        gid: "{{ item.item.gid }}"
+        system: true
+        state: present
+      become: true
+      loop: "{{ linux_group_probe.results }}"
+      loop_control:
+        label: "{{ item.item.name }} (gid {{ item.item.gid }})"
+
+    - name: Create system users (Linux)
+      ansible.builtin.user:
+        name: "{{ item.name }}"
+        uid: "{{ item.uid }}"
+        # Primary group by NAME: the group task above has already put it at the
+        # pinned gid wherever that was safe. `groups` is deliberately omitted so
+        # supplementary memberships (e.g. deploy in docker) are left untouched.
+        group: "{{ item.name if (item.gid is defined and item.name not in users_gid_conflict) else omit }}"
+        shell: "{{ item.shell | default('/usr/sbin/nologin') }}"
+        create_home: false
+        system: true
+        state: present
+      become: true
+      # A name already held by a foreign account is never touched: `uid:` here
+      # would usermod it and orphan everything it owns.
+      loop: "{{ users_to_create | rejectattr('name', 'in', users_uid_conflict) | list }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+# ── id drift report ──
+# Non-fatal by default: a host carrying drift must still be deployable.
+- name: Report id drift (pinned id NOT applied)
+  when: (users_uid_conflict | default([]) | length + users_gid_conflict | default([]) | length) > 0
+  ansible.builtin.debug:
+    msg: >-
+      ⚠ ID DRIFT on {{ inventory_hostname }} —
+      uid held by another account: {{ users_uid_conflict | default([]) | join(', ') | default('none', true) }};
+      group at another gid: {{ users_gid_conflict | default([]) | join(', ') | default('none', true) }}.
+      Left strictly alone on purpose: usermod/groupmod do not chown/chgrp the
+      files already owned at the old id. Remediate deliberately (chown/chgrp
+      the owned trees, then renumber), then set users_gid_drift_fatal.
+
+- name: Fail on id drift where the host demands strict parity
+  when:
+    - (users_uid_conflict | default([]) | length + users_gid_conflict | default([]) | length) > 0
+    - users_gid_drift_fatal | default(false) | bool
+  ansible.builtin.fail:
+    msg: >-
+      id drift on {{ inventory_hostname }} with users_gid_drift_fatal set —
+      uid: {{ users_uid_conflict | default([]) | join(', ') }};
+      gid: {{ users_gid_conflict | default([]) | join(', ') }}

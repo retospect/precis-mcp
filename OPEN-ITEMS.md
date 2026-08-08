@@ -10,6 +10,35 @@ tracked separately in `docs/improvement-plan.md` (same delete-on-ship rule).
 
 ---
 
+## 🔧 uid/gid parity — spark's foreign package accounts + the chgrp of already-written files
+
+Status: deferred · Severity: polish · Owner: `deploy/roles/users/tasks/main.yml`,
+`deploy/inventory` overlay `group_vars/all/main.yml` · Test: `00-users.yml`
+reports zero drift and `users_gid_drift_fatal: true` can be set fleet-wide.
+
+`system_users[]` now pins `gid` (rule: **gid == uid**, sole exception
+`deploy: 1001` — what all Linux nodes already have, ~110k files). The role
+creates the group at the pinned gid and moves the user's primary group onto
+it, but **never renumbers an id already in use** — `usermod -u`/`groupmod -g`
+don't chown/chgrp the files owned at the old id. Converged `changed=0` on all
+six nodes 2026-08-08; two residuals:
+
+- **spark carries foreign accounts on our names.** `prometheus` (uid 129,
+  gid 128) and `grafana` (uid 128, gid 127) are Debian *package* users owning
+  `/var/lib/prometheus` (944 files) and `/var/log/grafana` (475); `ollama`'s
+  group sits at 983 vs pinned 805. The guard excludes all three and reports
+  drift, so spark is deployable but not parity-clean. Remediation is a
+  deliberate chown/chgrp-then-renumber pass — decide first whether our 803/804
+  identities and the package's are meant to be the same principal, since
+  `monitoring` is caspar-only and these may simply not belong on spark.
+- **Already-written files keep their old group.** The pin only governs new
+  files. On caspar's export: `gguf` 806:20, `workspace` 813:20, `media`
+  806:812 (gid 812 exists on no node — an orphan from a deleted group). Until
+  chgrp'd, a Linux client reads those as group `dialout`(20). Also the
+  deploy-owned trees on the three Macs (`find -user deploy -group staff`).
+
+---
+
 ## 🔧 Dispatch-review residual not covered by `fair-dispatch-two-currencies.md` (2026-08-08 review)
 
 Status: open · Severity: polish · Owner: `src/precis/workers/nursery.py` · Test: below.
