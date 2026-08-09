@@ -70,6 +70,16 @@ JOB_SUMMARY_KIND = "job_summary"
 #: age alone (``ref_id`` ASC), byte-identical to the pre-6a FIFO claim.
 _DEFAULT_JOB_PRIO = 5
 
+#: How long an ``llm:``-affine job (see :func:`~precis.workers.dispatch.
+#: _served_model_requirement`) waits for a host that actually advertises the
+#: required model before the claim gate gives up on affinity and claims it
+#: host-agnostic anyway (the model is still reachable via the LLM router HTTP
+#: path from any host — co-location is a performance preference, not a
+#: correctness constraint). Set below the nursery dispatch-stall threshold
+#: (15min) so this fallback fires — and the job starts moving — before that
+#: critical alert would ever fire on it.
+LLM_AFFINITY_GRACE_MIN = 10
+
 #: Candidate over-fetch factor for the scarcity re-rank (6d-deferred, §5.3).
 #: The SQL fetches ``limit × this`` rows in prio/age order, then the scarcity
 #: term re-ranks in Python and the top ``limit`` are reserved — so a rare-
@@ -620,15 +630,25 @@ def claim_executor_jobs(
         meta["lease_host"] = lease_host
 
     def _finish_claim(
-        ref_id: int, title: str, meta: dict[str, Any], status_value: str | None
+        ref_id: int,
+        title: str,
+        meta: dict[str, Any],
+        status_value: str | None,
+        created_at: datetime | None = None,
     ) -> tuple[int, str, dict[str, Any]] | None:
         """Reserve resources (if any) + stamp lease identity for one row
         already locked by the caller's ``FOR UPDATE`` select. Returns the
         claimable tuple, or ``None`` if a live resource slot is full / the
-        reservation host is memory-pressured (the row's lock frees at
-        commit either way, so it's retried next cycle). Shared by both the
-        reclaim-only pre-pass and the fresh-work pass below — a reclaimed
-        row and a freshly-queued row go through identical bookkeeping.
+        reservation host is memory-pressured / the row is still within its
+        ``llm:`` affinity grace window on a non-serving host (the row's lock
+        frees at commit either way, so it's retried next cycle). ``created_at``
+        (the row's ``refs.created_at``) is the "queued since" signal for that
+        grace window; ``None`` (genuinely unavailable) reads as age zero — the
+        conservative choice, keeping the row inside the grace window rather
+        than fast-pathing an unknown-age job straight past affinity. Shared by
+        both the reclaim-only pre-pass and the fresh-work pass below — a
+        reclaimed row and a freshly-queued row go through identical
+        bookkeeping.
         """
         if reclaim_stale_running and meta.get("reserved"):
             # A stolen (crash-recovered) job still carries the dead worker's
@@ -654,31 +674,57 @@ def claim_executor_jobs(
         if res_host in pressured:
             return None
         advertised_here = advertised.get(res_host, set())
-        # An ``llm:``-prefixed requirement is a HARD host gate, not a soft
-        # counted reservation: the job drives that served model and cannot run
-        # where the model isn't served. If ``res_host`` doesn't advertise the
-        # slot, skip the claim entirely — the row's lock frees at commit, and it
-        # retries until a host that serves the model picks it up, auto-following
-        # wherever the ``llm:`` slot lives (no hard-coded ``target_node``).
-        # Non-``llm:`` requires (e.g. ``gpu``) keep the soft self-gate below
-        # (unadvertised → dropped, job proceeds). No job carried an ``llm:``
-        # requirement before this gate existed, so nothing regresses; a job
-        # whose model is served *nowhere* waits un-claimed (correct "can't run
-        # without the model" behaviour), the debug line making that visible.
+        # An ``llm:``-prefixed requirement is a soft *affinity*, not a hard
+        # host gate: the job prefers to run where its served model lives, but
+        # the model is also reachable from any host over the LLM router HTTP
+        # path, so co-location is a performance preference, not a
+        # correctness constraint. If ``res_host`` doesn't advertise the
+        # slot, skip the claim for up to ``LLM_AFFINITY_GRACE_MIN`` — giving
+        # a serving host a window to pick it up first, auto-following
+        # wherever the ``llm:`` slot lives (no hard-coded ``target_node``) —
+        # then fall back to claiming it host-agnostic anyway, so a model
+        # served only on a host that runs no executor for this job (a real
+        # incident: ``llm:`` advertised only on a system-profile-only host)
+        # can't strand the job forever. Non-``llm:`` requires (e.g. ``gpu``)
+        # keep the soft self-gate below (unadvertised → dropped, job
+        # proceeds) untouched.
         unserved_llm = sorted(
             res
             for res in requires
             if res.startswith("llm:") and res not in advertised_here
         )
         if unserved_llm:
-            log.debug(
-                "claim: skip job %s on %s — required served model(s) %s not "
-                "advertised there (awaiting the serving host)",
-                ref_id,
-                res_host,
-                unserved_llm,
+            age_min = (
+                (datetime.now(UTC) - created_at).total_seconds() / 60.0
+                if created_at is not None
+                else 0.0
             )
-            return None
+            if age_min <= LLM_AFFINITY_GRACE_MIN:
+                log.debug(
+                    "claim: skip job %s on %s — required served model(s) %s "
+                    "not advertised there (queued %.1fmin, awaiting the "
+                    "serving host, grace %dmin)",
+                    ref_id,
+                    res_host,
+                    unserved_llm,
+                    age_min,
+                    LLM_AFFINITY_GRACE_MIN,
+                )
+                return None
+            log.info(
+                "claim: llm-affinity fallback — job %s queued %.0fmin, "
+                "model(s) %s not served on %s; claiming host-agnostic "
+                "(model reachable via router)",
+                ref_id,
+                age_min,
+                unserved_llm,
+                res_host,
+            )
+            # Fall through: proceed as if the unserved ``llm:`` requirement(s)
+            # weren't present for gating/reservation purposes. No special-
+            # casing needed below — ``reservable`` already filters to
+            # ``res in advertised_here``, so an unserved ``llm:`` resource is
+            # never reserved (there's no slot for it on this host anyway).
         reservable = {
             res: units for res, units in requires.items() if res in advertised_here
         }
@@ -710,7 +756,7 @@ def claim_executor_jobs(
         reclaim_limit = min(2, limit)
         reclaim_rows = conn.execute(
             f"""
-            SELECT r.ref_id, r.title, r.meta
+            SELECT r.ref_id, r.title, r.meta, r.created_at
               FROM refs r
              WHERE r.kind = 'job'
                AND r.deleted_at IS NULL
@@ -760,9 +806,13 @@ def claim_executor_jobs(
                 reclaim_limit,
             ),
         ).fetchall()
-        for rr_ref_id, rr_title, rr_meta in reclaim_rows:
+        for rr_ref_id, rr_title, rr_meta, rr_created_at in reclaim_rows:
             claim = _finish_claim(
-                int(rr_ref_id), str(rr_title), dict(rr_meta or {}), RUNNING
+                int(rr_ref_id),
+                str(rr_title),
+                dict(rr_meta or {}),
+                RUNNING,
+                rr_created_at,
             )
             if claim is not None:
                 claimed.append(claim)
@@ -773,7 +823,7 @@ def claim_executor_jobs(
     # no longer carries the running-row OR-arms (moved above).
     rows = conn.execute(
         f"""
-        SELECT r.ref_id, r.title, r.meta, r.prio
+        SELECT r.ref_id, r.title, r.meta, r.prio, r.created_at
           FROM refs r
          WHERE r.kind = 'job'
            AND r.deleted_at IS NULL
@@ -837,7 +887,7 @@ def claim_executor_jobs(
         if fresh_claimed >= limit:
             break  # scarcity-ranked top ``limit`` reserved; leave the rest locked-free
         ref_id, title, meta = int(r[0]), str(r[1]), dict(r[2] or {})
-        claim = _finish_claim(ref_id, title, meta, QUEUED)
+        claim = _finish_claim(ref_id, title, meta, QUEUED, r[4])
         if claim is not None:
             claimed.append(claim)
             fresh_claimed += 1

@@ -90,6 +90,20 @@ def _free(store: Store, host: str, resource: str) -> int | None:
     return None
 
 
+def _age_job(store: Store, ref_id: int, minutes: float) -> None:
+    """Backdate a job's ``refs.created_at`` so it reads as queued
+    ``minutes`` ago — used to exercise the ``llm:`` affinity grace window
+    (:data:`~precis.workers.executors._common.LLM_AFFINITY_GRACE_MIN`)
+    without actually sleeping in the test."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET created_at = now() - (%s || ' minutes')::interval "
+            "WHERE ref_id = %s",
+            (minutes, ref_id),
+        )
+        conn.commit()
+
+
 # ── low-level reserve / release ──────────────────────────────────────────
 
 
@@ -441,16 +455,21 @@ def test_self_gating_falls_back_when_capability_unadvertised(store: Store) -> No
     assert "reserved" not in rows[0][2]  # nothing reserved (self-gated off)
 
 
-# ── llm:-requirement is a HARD claim veto (unlike the gpu soft-drop above) ──
+# ── llm:-requirement is a TIME-BOUNDED claim affinity (unlike the gpu
+# soft-drop above) ──────────────────────────────────────────────────────
 #
 # Non-``llm:`` requires (``gpu`` etc.) keep the soft self-gate:
 # ``test_self_gating_falls_back_when_capability_unadvertised`` and
 # ``test_autocatpath_seed_on_gpu_less_host_claims_unthrottled`` already pin
 # that an unadvertised non-``llm:`` requirement is dropped and the job still
-# claims. An ``llm:`` requirement is the opposite: the job drives a specific
-# served model, so an unadvertised ``llm:`` slot skips the claim entirely
-# (the row stays queued, retried until a host that serves the model claims
-# it) rather than proceeding unreserved.
+# claims. An ``llm:`` requirement instead prefers a host that serves the
+# model: an unadvertised ``llm:`` slot skips the claim (the row stays
+# queued, retried until a serving host claims it) *while the job is still
+# within* ``LLM_AFFINITY_GRACE_MIN`` of being queued — but past that grace
+# window, the claim falls back to proceeding host-agnostic and unreserved
+# for that slot (gr-incident: a model advertised only on a host that runs
+# no executor for this job type stranded the job forever under the old
+# hard veto).
 
 
 def test_llm_requirement_claimed_on_host_that_advertises_it(store: Store) -> None:
@@ -465,9 +484,10 @@ def test_llm_requirement_claimed_on_host_that_advertises_it(store: Store) -> Non
 def test_llm_requirement_not_claimed_on_host_that_does_not_advertise_it(
     store: Store,
 ) -> None:
-    """No ``llm:qwen-x`` row on this host at all — the claim is skipped
-    (hard veto), unlike an unadvertised ``gpu`` requirement which would
-    still claim, unreserved."""
+    """No ``llm:qwen-x`` row on this host at all, job freshly queued (well
+    within the grace window) — the claim is skipped (affinity preference),
+    unlike an unadvertised ``gpu`` requirement which would still claim,
+    unreserved."""
     jid = _queue_job(store, executor="ex_llm_b", requires={"llm:qwen-x": 1})
     rows = _claim(store, "ex_llm_b", "host_llm_b_no_advert")
     assert rows == []  # not claimed — stays queued
@@ -482,6 +502,68 @@ def test_llm_requirement_not_claimed_on_host_that_does_not_advertise_it(
     store.sync_host_resource_slots("host_llm_b_no_advert", {"llm:qwen-x": 1})
     rows2 = _claim(store, "ex_llm_b", "host_llm_b_no_advert")
     assert [r[0] for r in rows2] == [jid]
+
+
+def test_llm_requirement_fallback_claims_host_agnostic_past_grace(
+    store: Store, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Regression (prod incident): a job whose ``llm:`` requirement is
+    advertised only on a host that never runs this executor (e.g. a
+    system-profile-only host) must not stall forever — past
+    ``LLM_AFFINITY_GRACE_MIN`` it claims host-agnostic and unreserved for
+    that slot, since the model is reachable via the LLM router regardless
+    of co-location."""
+    from precis.workers.executors._common import LLM_AFFINITY_GRACE_MIN
+
+    jid = _queue_job(store, executor="ex_llm_e", requires={"llm:qwen-x": 1})
+    _age_job(store, jid, LLM_AFFINITY_GRACE_MIN + 1)
+    with caplog.at_level("INFO", logger="precis.workers.executors._common"):
+        rows = _claim(store, "ex_llm_e", "host_llm_e_no_advert")
+    assert [r[0] for r in rows] == [jid]
+    assert "reserved" not in rows[0][2]  # nothing to reserve — slot unadvertised
+    with store.pool.connection() as conn:
+        meta_row = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s", (jid,)
+        ).fetchone()
+    assert meta_row is not None
+    assert "reserved" not in meta_row[0]
+    assert any("llm-affinity fallback" in rec.getMessage() for rec in caplog.records)
+
+
+def test_llm_requirement_still_gated_within_grace(store: Store) -> None:
+    """Same unserved-model setup, but the job is younger than the grace
+    window — affinity still wins, claim is skipped (not claimed)."""
+    from precis.workers.executors._common import LLM_AFFINITY_GRACE_MIN
+
+    jid = _queue_job(store, executor="ex_llm_f", requires={"llm:qwen-x": 1})
+    _age_job(store, jid, max(LLM_AFFINITY_GRACE_MIN - 1, 0))
+    rows = _claim(store, "ex_llm_f", "host_llm_f_no_advert")
+    assert rows == []
+    with store.pool.connection() as conn:
+        meta_row = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s", (jid,)
+        ).fetchone()
+    assert meta_row is not None
+    assert "reserved" not in meta_row[0]
+    assert meta_row[0].get("lease_host") is None  # not claimed at all
+
+
+def test_llm_requirement_claimed_with_reservation_regardless_of_age(
+    store: Store,
+) -> None:
+    """When the claiming host DOES advertise the model, it claims with a
+    reservation exactly as before — even for a job old enough that the
+    affinity fallback would otherwise kick in, since the fallback path is
+    only reached when the slot is unadvertised."""
+    from precis.workers.executors._common import LLM_AFFINITY_GRACE_MIN
+
+    store.sync_host_resource_slots("host_llm_g", {"llm:qwen-x": 1})
+    jid = _queue_job(store, executor="ex_llm_g", requires={"llm:qwen-x": 1})
+    _age_job(store, jid, LLM_AFFINITY_GRACE_MIN + 30)
+    rows = _claim(store, "ex_llm_g", "host_llm_g")
+    assert [r[0] for r in rows] == [jid]
+    assert rows[0][2]["reserved"] == {"host": "host_llm_g", "slots": {"llm:qwen-x": 1}}
+    assert _free(store, "host_llm_g", "llm:qwen-x") == 0
 
 
 def test_llm_requirement_target_node_claimable_when_node_advertises(

@@ -212,9 +212,14 @@ def _served_model_requirement(
     The requirement is stamped *only* when that model is actually advertised as
     an ``llm:`` slot on some host; otherwise the job stays host-agnostic
     (byte-identical to before), so a cloud tick or a model served nowhere never
-    gets an unsatisfiable gate. The claim-side ``llm:`` hard veto
-    (``executors/_common._finish_claim``) then restricts the claim to a serving
-    host, auto-following wherever the slot lives.
+    gets an unsatisfiable gate. The claim-side ``llm:`` affinity gate
+    (``executors/_common._finish_claim``) then *prefers* a serving host for up
+    to ``LLM_AFFINITY_GRACE_MIN`` minutes, auto-following wherever the slot
+    lives — then falls back to claiming it host-agnostic anyway, since the
+    model is also reachable from any host over the LLM router HTTP path. That
+    fallback is what keeps a model served only on a host that runs no
+    executor for this job type (e.g. a system-profile-only host) from
+    stranding the job forever.
     """
     if job_type != "plan_tick":
         return None
