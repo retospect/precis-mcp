@@ -119,6 +119,10 @@ def test_now_jobs_running_queued_stalled_and_terminal(store: Any) -> None:
     assert running_row["job_type"] == "struct_relax"
     assert running_row["lease_host"] == "melchior"
     assert running_row["lease_expired"] is False
+    assert running_row["lease_remaining_s"] is not None
+    assert running_row["lease_remaining_s"] > 0
+    assert running_row["lease_relative"].startswith("in ")
+    assert running_row["lease_until_title"]
 
     queued_ids = {j["ref_id"] for j in jobs["queued"]}
     assert fresh_queued.id in queued_ids
@@ -151,6 +155,9 @@ def test_now_jobs_lease_expired_flag(store: Any) -> None:
     jobs = _now_jobs(store)
     row = next(j for j in jobs["running"] if j["ref_id"] == expired.id)
     assert row["lease_expired"] is True
+    assert row["lease_remaining_s"] is not None
+    assert row["lease_remaining_s"] < 0
+    assert row["lease_relative"].endswith(" ago")
 
 
 def test_now_alerts_active_first_then_resolved(store: Any) -> None:

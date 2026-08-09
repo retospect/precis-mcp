@@ -41,6 +41,7 @@ from precis_web.routes.factory import _slots_by_host as _factory_slots_by_host
 from precis_web.timefmt import abs_ts as _abs_ts
 from precis_web.timefmt import age_seconds as _age_seconds
 from precis_web.timefmt import ago as _ago
+from precis_web.timefmt import relative as _relative
 
 router = APIRouter(prefix="/status", tags=["status"])
 
@@ -807,6 +808,11 @@ def _now_jobs(store: Any) -> dict[str, Any]:
                 "job_type": meta.get("job_type"),
                 "lease_host": meta.get("lease_host"),
                 "lease_until": lease_until,
+                # Positive = time left before expiry, negative = already
+                # expired that long ago; None = no lease recorded.
+                "lease_remaining_s": -lease_age if lease_age is not None else None,
+                "lease_relative": _relative(lease_until) if lease_until else None,
+                "lease_until_title": _abs_ts(lease_until) if lease_until else None,
                 "lease_expired": lease_age is not None and lease_age > 0,
                 "since_ago": _ago(since),
             }

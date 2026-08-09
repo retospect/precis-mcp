@@ -8,7 +8,7 @@ import pytest
 
 pytest.importorskip("fastapi")  # keeps the suite skippable without web extra
 
-from precis_web.timefmt import abs_ts, age_seconds, ago
+from precis_web.timefmt import abs_ts, age_seconds, ago, relative
 
 
 def test_ago_buckets() -> None:
@@ -41,6 +41,23 @@ def test_ago_empty_and_unparseable_return_blank() -> None:
 def test_ago_future_clamps_to_zero() -> None:
     future = datetime.now(UTC) + timedelta(hours=1)
     assert ago(future) == "0s ago"
+
+
+def test_relative_future_reads_in_n() -> None:
+    future = datetime.now(UTC) + timedelta(minutes=12)
+    assert relative(future).startswith("in ")
+    assert relative(future).endswith("m")
+
+
+def test_relative_past_reads_n_ago() -> None:
+    past = datetime.now(UTC) - timedelta(minutes=3)
+    assert relative(past).endswith("m ago")
+
+
+def test_relative_empty_and_unparseable_return_blank() -> None:
+    assert relative(None) == ""
+    assert relative("") == ""
+    assert relative("not-a-date") == ""
 
 
 def test_abs_ts_formats_utc() -> None:

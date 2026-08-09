@@ -88,8 +88,9 @@
           </td>
           <td class="px-4 py-2 font-mono text-slate-500">{{ j.job_type or '—' }}</td>
           <td class="px-4 py-2 text-slate-500">{{ j.lease_host or '—' }}</td>
-          <td class="px-4 py-2 {% if j.lease_expired %}text-rose-700 font-semibold{% else %}text-slate-500{% endif %}">
-            {% if j.lease_expired %}lease expired{% elif j.lease_until %}lease until {{ j.lease_until }}{% else %}no lease{% endif %}
+          <td class="px-4 py-2 {% if j.lease_expired %}text-rose-700 font-semibold{% else %}text-slate-500{% endif %}"
+              {% if j.lease_until_title %}title="{{ j.lease_until_title }}"{% endif %}>
+            {% if j.lease_expired %}lease expired {{ j.lease_relative }}{% elif j.lease_until %}lease expires {{ j.lease_relative }}{% else %}no lease{% endif %}
           </td>
           <td class="px-4 py-2 text-right text-slate-400 tabular-nums">since {{ j.since_ago }}</td>
         </tr>
