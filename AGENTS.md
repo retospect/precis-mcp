@@ -73,7 +73,7 @@ precis-mcp/
     conventions/             # cross-cutting invariants (thresholds, naming, …)
     runbooks/                # operational procedures
     reference/               # generated schema doc + diagrams
-    architecture/glossary.md # controlled vocabulary
+    glossary.md               # controlled vocabulary
 ```
 
 ## Workflow — plan first, always

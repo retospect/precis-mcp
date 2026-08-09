@@ -21,7 +21,7 @@ a family stub wasting the draw slot — closed with a stub filter in
 `src/precis/workers/hub_refine.py`, `src/precis/handlers/_patent_ingest.py`,
 `_patent_family.py`, `citation.py`, `src/precis/taproot/hub.py`,
 `src/precis/workers/dream_agent.py`. Terminology ("world-claim" vs "legal
-claim", "worked vs prophetic example") → `docs/architecture/glossary.md`.
+claim", "worked vs prophetic example") → `docs/glossary.md`.
 
 Open (watch items only — no build work):
 

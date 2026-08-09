@@ -14,12 +14,11 @@ glossary terms, and prefer deleting to archiving — git is the history,
 | Subsystem architecture + why | the owning package's `__init__.py` **module docstring** |
 | Cluster topology / what runs where | `deploy/README.md` |
 | Cross-cutting invariants | `docs/conventions/` |
-| Controlled vocabulary | `docs/architecture/glossary.md` (hand-written) |
+| Controlled vocabulary | `docs/glossary.md` (hand-written) |
 | Work items (idea → ready) | `docs/backlog/` — one file per item |
 | Operational procedures | `docs/runbooks/` |
 | Generated reference (schema, config catalog) | `docs/reference/` |
 | Mission / pitch narrative | `docs/mission.md` (positioning, not architecture) |
-| Deck material | `docs/presentations/` (dated snapshots — allowed to age) |
 | History, shipped plans, old decisions | `git log` — nothing else; no CHANGELOG, no archive dirs |
 
 There is no `docs/design/`, `docs/proposals/`, `docs/decisions/`, or
@@ -30,7 +29,7 @@ package docstrings (present truth + rationale), or git history (past).
 
 1. `docs/codebase.md` — shape, lifecycle, seams, package map.
 2. The owning package's `__init__.py` docstring — subsystem detail.
-3. `docs/architecture/glossary.md` — when a term is unfamiliar or overloaded.
+3. `docs/glossary.md` — when a term is unfamiliar or overloaded.
 4. `docs/backlog/README.md` — what's planned (index is generated).
 
 ## Rules that keep it true

@@ -228,7 +228,7 @@ shows up in output and is ambiguous:
 - **lane / dispatch / plan** — internal task-engine words; you address work
   through todos + jobs (`precis-tasks-help`, `precis-dispatch-help`), not these.
 
-(Developers: `docs/architecture/glossary.md` maps every coined/overloaded term to
+(Developers: `docs/glossary.md` maps every coined/overloaded term to
 its source file.)
 
 ## See also

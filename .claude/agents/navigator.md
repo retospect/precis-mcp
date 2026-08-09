@@ -28,7 +28,7 @@ Ignore them for your job. Your tools are code search + file reading.
 1. **Orient first.** Read `docs/codebase.md` (the shape: data model, lifecycle,
    subsystem table, seams). For a named subsystem, read the matching section of
    the owning package's `__init__.py` docstring. For an overloaded term (tier, card, tote,
-   bubble, …) consult `docs/architecture/glossary.md`. For *why* a design is
+   bubble, …) consult `docs/glossary.md`. For *why* a design is
    the way it is, the owning docstring's "why" lines (history: `git log`).
 2. **Search semantically.** Prefer `search_code` (the claude-context index) for
    "where/how" queries — it's a **shared MAIN index**, so call it with the
