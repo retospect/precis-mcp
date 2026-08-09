@@ -56,6 +56,26 @@ the edge when you know the chunk. See `precis-fisheye-help`'s Claims
 group (`fisheye+1hop` on prose that cites a hub) for the read-time
 render of this same evidence.
 
+**Patent evidence grounds in description text, not legal claims.** A
+patent's claims section defines legal scope, not empirical support
+(`docs/architecture/glossary.md`'s world-claim vs legal claim) —
+`hub_refine`'s discovery leg drops legal-claim blocks before they ever
+reach Verify, so the automated corroborator search never surfaces one.
+That's a discovery-side filter, not an attach-time guard: hand-attaching
+via `link()` still means picking a description/abstract passage yourself.
+
+**A prophetic patent example only ever corroborates.** When an evidence
+edge's grounding chunk is a patent paragraph the `patent_example` axis
+tagged `PATENT_EXAMPLE:prophetic` — present/future/modal tense, proposed
+rather than performed (US patent convention) — `attach_evidence`
+mechanically appends a fixed caveat to `meta.caveats`: `"prophetic
+example (proposed, not performed) — corroborates at best"`. It's
+injected at the single evidence-edge choke point, never by the verify
+LLM, so every prophetic-grounded edge carries it regardless of caller. A
+worked example (past tense, actually performed), and any patent chunk
+the axis hasn't tagged, get no caveat — it's a downgrade signal, never a
+hard exclusion.
+
 ## Cite a claim hub — the living citation
 ## What does a bare [fi<id>] cite resolve to?
 

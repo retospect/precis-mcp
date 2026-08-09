@@ -155,6 +155,22 @@ status tags ride on patents whose full text wasn't available at
 ingest: `awaiting-fulltext` and `fulltext-unavailable`. Open tags
 (`topic:photocatalysis`, ...) are always allowed.
 
+**A patent with no body isn't a fetch failure — it's a family stub.**
+When a simple-family sibling of an already-held patent is ingested
+(same invention, no new matter), it's stored biblio-only: a real
+`pt<id>` with title/CPC/applicant metadata but zero description/claim
+chunks, so `view='description'`/`'claims'` and body search come up
+empty. It carries a `same-family-as` link to the family's
+representative — follow that link (`get(id='pt<id>')`'s link list, or
+`search(kind='patent', tags=['family:<id>'])` for every member) to the
+member with the actual text, and read that one instead.
+
+Description paragraphs carry a `PATENT_EXAMPLE:` chunk tag
+(`worked`/`prophetic`/`none`) marking whether an example is narrated
+as actually performed or merely proposed (legal-claim text always
+tags `none`); filter chunk search on it with
+`search(kind='patent', tags=['PATENT_EXAMPLE:worked'])`.
+
 ## Write a note about a patent
 ## I want to put a thought on a patent
 
