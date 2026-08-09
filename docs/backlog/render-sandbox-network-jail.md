@@ -27,7 +27,7 @@ does *not* stop:
    reach every tailnet service directly — bypassing `safe_fetch`
    entirely. This is sharpened by a standing accepted risk: the precis
    web UI is deliberately **unauthenticated** (tailnet-only,
-   single-user — see `docs/improvement-plan.md` "Accepted risks"),
+   single-user — see `docs/conventions/reviewed-non-problems.md` §Accepted risks),
    including `/console`, a generic verb runner. A hostile render
    reaching `precis_web` can therefore *write to prod* without any
    credential. The jail is the compensating control that keeps that

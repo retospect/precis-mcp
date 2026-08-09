@@ -350,7 +350,7 @@ high-traffic ones:
 - [`AGENTS.md`](AGENTS.md) — **start here to contribute or change code.** The canonical guide: conventions, workflow, definition-of-done, ingest guarantees.
 - [`docs/mission.md`](docs/mission.md) — the mission, the pitch narrative, and the current corpus facts (positioning, not architecture — the single source for decks and talks).
 - [`docs/README.md`](docs/README.md) — the documentation landing index (directory-by-directory map).
-- [`docs/architecture.md`](docs/architecture.md) — the system manual: a narrative overview tying the surface, kinds, storage, todo-tree, and workers together.
+- [`docs/codebase.md`](docs/codebase.md) — orientation: invariants, lifecycle, seams, and the generated package map (subsystem detail lives in each package's `__init__.py` docstring).
 - [`docs/reference/schema.md`](docs/reference/schema.md) — the **generated** DB schema diagram (Mermaid ER, produced from the live database — can't drift).
 - [`docs/reference/config-variables.md`](docs/reference/config-variables.md) — the full `PRECIS_*` config catalog: every var, its default, the value deployed to each cluster service, and a correctness assessment.
 - [`docs/user-facing/plugin-authoring.md`](docs/user-facing/plugin-authoring.md) — write a third-party handler.

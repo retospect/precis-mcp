@@ -93,6 +93,16 @@
 - [`graph-locality-framing`](./graph-locality-framing.md) **idea** — `graph-based` (git-only) proposes conditioning an agent's admissible
 - [`harvest-bookmark-concurrency`](./harvest-bookmark-concurrency.md) **idea** — 3e746728 fixed the single-in-flight case, but the loop still advances
 - [`health-watchdog`](./health-watchdog.md) **draft** — §D (the liveness net) of `cluster-scheduling.md`. **Phases 0–2 SHIPPED**:
+- [`improve-ack-scrape-eradication`](./improve-ack-scrape-eradication.md) **idea** — The structured path exists (`Response.ref_id`/`reused`, `Hub.sibling`);
+- [`improve-config-nits`](./improve-config-nits.md) **idea** — rules never fire).
+- [`improve-explicit-cascade-tx`](./improve-explicit-cascade-tx.md) **idea** — `workers/paper_glossary.py`, `store/_blocks_ops.py::
+- [`improve-hnsw-recall-check`](./improve-hnsw-recall-check.md) **idea** — `chunk_embeddings` >1M rows on default build params and default
+- [`improve-meta-filter-convention`](./improve-meta-filter-convention.md) **idea** — 19+ call sites filter on `meta->…` with no GIN/expression index — safe
+- [`improve-query-shapes`](./improve-query-shapes.md) **idea** — N+1 enrichment in `workers/classify.py::_enrich` +
+- [`improve-route-sql-tests`](./improve-route-sql-tests.md) **idea** — Policy: docs/conventions/testing.md. 2026-08-02 audit: of 18 web routes
+- [`improve-split-giant-modules`](./improve-split-giant-modules.md) **idea** — `handlers/draft.py` (2,877 lines): extract the ~9 hint methods →
+- [`improve-store-mixin-guard`](./improve-store-mixin-guard.md) **idea** — `store/store.py::Store` composes 22 mixins on convention alone — add a
+- [`improve-test-coverage-gaps`](./improve-test-coverage-gaps.md) **idea** — From the 2026-08-02 review: (a) `asa_bot` — 6/13 modules untested incl.
 - [`latex-speech-narration`](./latex-speech-narration.md) **idea** — `speakable()` skips math (a spoken "equation" cue, drops inline $…$) — weak
 - [`lint-and-except-debt`](./lint-and-except-debt.md) **idea** — Tighten broad `except Exception` (317 across 141 files; many hide spin
 - [`llm-backend-removal`](./llm-backend-removal.md) **idea** — The fleet-wide anthropic/openai binary switch must be hand-synced with each
@@ -146,6 +156,7 @@
 - [`reaper-liveness-race`](./reaper-liveness-race.md) **idea** — A sibling SessionStart backstop reaped a live session's worktree right after
 - [`remarkable-pairing`](./remarkable-pairing.md) **idea** — The feature is shipped dark; the button stays hidden until pairing: rmapi
 - [`render-sandbox-network-jail`](./render-sandbox-network-jail.md) **draft** — Render code is LLM-authored Python inside a figure chunk; an LLM that
+- [`rerun-codebase-review`](./rerun-codebase-review.md) **idea** — The 2026-08-02 review (core server, workers/ingest, web UI, security,
 - [`retraction-status-downstream`](./retraction-status-downstream.md) **idea** — The fetch-time provenance gate populates `retraction_status` for all three
 - [`review-container-readonly-role`](./review-container-readonly-role.md) **idea** — The DB half shipped (migration 0079 SECURITY DEFINER `file_gripe_readonly`;
 - [`rotate-credentials`](./rotate-credentials.md) **idea** — All have leaked (transcripts, shell history, five on-disk copies since July,
