@@ -49,6 +49,35 @@ def _cites(store: Any, *, src: int, dst: int) -> None:
     store.add_link(src_ref_id=src, dst_ref_id=dst, relation="cites")
 
 
+def _patent(
+    store: Any,
+    *,
+    title: str,
+    year: int | None = None,
+    publication_date: str | None = None,
+) -> int:
+    """A ``patent`` ref with an optional stored ``year`` and an optional
+    ``meta.publication_date`` — mirrors the real ingest shape where a
+    patent's date lives in meta (and, post-fix, also in ``refs.year``)."""
+    slug = f"senpat{next(_slug_counter)}"
+    meta: dict[str, Any] = {}
+    if publication_date is not None:
+        meta["publication_date"] = publication_date
+    ref = store.insert_ref(kind="patent", slug=slug, title=title, year=year, meta=meta)
+    return ref.id
+
+
+def _patent_with_meta(
+    store: Any, *, slug: str, title: str, meta: dict[str, Any], year: int | None = None
+) -> int:
+    """A ``patent`` ref carrying arbitrary ``meta`` (applicants/doc_number/
+    kind_code/family_id) — for the patent-bibliography-line and
+    family-collapse rendering tests, which need fields :func:`_patent`
+    doesn't set."""
+    ref = store.insert_ref(kind="patent", slug=slug, title=title, year=year, meta=meta)
+    return ref.id
+
+
 def _set_retraction_status(store: Any, ref_id: int, status: str) -> None:
     with store.pool.connection() as conn:
         conn.execute(
@@ -104,6 +133,64 @@ def test_derive_evidence_orders_within_group_by_year_then_ref_id(store: Any) -> 
 
     # Earliest year first; NULL year sorts last.
     assert [e.paper_ref_id for e in evidence.originators] == [early, late, no_year]
+
+
+# ── patent-evidence-parity.md: patent refs.year fallback to meta ────────
+#
+# Patent ingest didn't populate ``refs.year`` before the fix in
+# ``_patent_ingest.py`` — every already-ingested patent has ``refs.year
+# IS NULL`` with the real date only in ``meta.publication_date``.
+# ``_fetch_paper_facts`` falls back to that meta date so those patents
+# still interleave correctly against papers with a real ``refs.year``.
+
+
+def test_derive_evidence_interleaves_patent_meta_year_with_paper_years(
+    store: Any,
+) -> None:
+    hub = mint_hub(store, _CLAIM)
+    early_paper = _paper(store, title="Early paper", year=2000)
+    # NULL refs.year, real date only in meta — the un-backfilled shape.
+    mid_patent = _patent(
+        store, title="Mid patent", year=None, publication_date="2005-06-01"
+    )
+    late_paper = _paper(store, title="Late paper", year=2010)
+    for p in (early_paper, mid_patent, late_paper):
+        attach_evidence(store, hub_ref_id=hub, paper_ref_id=p, role="corroborates")
+    # citer isn't itself in S, but forces originator derivation.
+    citer = _paper(store, title="Citer", year=2015)
+    attach_evidence(store, hub_ref_id=hub, paper_ref_id=citer, role="corroborates")
+    _cites(store, src=citer, dst=early_paper)
+    _cites(store, src=citer, dst=mid_patent)
+    _cites(store, src=citer, dst=late_paper)
+
+    evidence = derive_evidence(store, hub)
+
+    # Earliest-first, interleaved by real date: paper 2000, patent 2005
+    # (via meta fallback), paper 2010.
+    assert [e.paper_ref_id for e in evidence.originators] == [
+        early_paper,
+        mid_patent,
+        late_paper,
+    ]
+
+
+def test_derive_evidence_sorts_last_with_neither_year_nor_meta_date(
+    store: Any,
+) -> None:
+    hub = mint_hub(store, _CLAIM)
+    dated = _paper(store, title="Dated", year=2003)
+    undated_patent = _patent(store, title="Undated patent", year=None)
+    for p in (dated, undated_patent):
+        attach_evidence(store, hub_ref_id=hub, paper_ref_id=p, role="corroborates")
+
+    evidence = derive_evidence(store, hub)
+
+    # NULLS LAST semantics preserved when neither refs.year nor a
+    # parseable meta.publication_date exists.
+    assert [e.paper_ref_id for e in evidence.corroborators] == [
+        dated,
+        undated_patent,
+    ]
 
 
 # ── fallback: no intra-set cites held ───────────────────────────────────
@@ -372,6 +459,125 @@ def test_finding_view_evidence_empty_hub(store: Any) -> None:
     resp = handler.get(id=hub, view="evidence")
 
     assert "no evidence edges yet for this claim hub" in resp.body
+
+
+# ── view='evidence' patent rendering (patent-evidence-parity.md Phase 3) ──
+
+
+def test_finding_view_evidence_renders_patent_bibliography_line(store: Any) -> None:
+    """A patent evidence edge renders its full bibliography-style citation
+    (applicant, title, publication number + kind code, year), not a bare
+    title."""
+    handler = _make_handler(store)
+    hub = mint_hub(store, _CLAIM)
+    patent = _patent_with_meta(
+        store,
+        slug="ep1111111b1",
+        title="A widget with improved catalysis",
+        year=2020,
+        meta={
+            "applicants": [{"name": "Acme Corp"}],
+            "doc_number": "1111111",
+            "kind_code": "b1",
+        },
+    )
+    attach_evidence(store, hub_ref_id=hub, paper_ref_id=patent, role="corroborates")
+
+    resp = handler.get(id=hub, view="evidence")
+
+    assert "Acme Corp. A widget with improved catalysis. 1111111B1, 2020." in resp.body
+
+
+def test_finding_view_evidence_collapses_same_family_patents(store: Any) -> None:
+    """Two evidence edges from sibling members of the same patent family
+    collapse to one row, keyed to the family's deterministic (earliest-
+    published) representative; the non-representative sibling's number
+    still surfaces as a "passage in" note."""
+    handler = _make_handler(store)
+    hub = mint_hub(store, _CLAIM)
+    rep = _patent_with_meta(
+        store,
+        slug="ep2222220a1",
+        title="Representative family member",
+        meta={
+            "family_id": "fam-x",
+            "publication_date": "2018-01-01",
+            "doc_number": "2222220",
+            "kind_code": "a1",
+        },
+    )
+    sibling = _patent_with_meta(
+        store,
+        slug="ep2222221b1",
+        title="Later sibling bearing the grounded passage",
+        meta={
+            "family_id": "fam-x",
+            "publication_date": "2020-01-01",
+            "doc_number": "2222221",
+            "kind_code": "b1",
+        },
+    )
+    attach_evidence(store, hub_ref_id=hub, paper_ref_id=rep, role="corroborates")
+    attach_evidence(store, hub_ref_id=hub, paper_ref_id=sibling, role="corroborates")
+
+    resp = handler.get(id=hub, view="evidence")
+
+    assert resp.body.count("2222220A1") == 1
+    assert "Later sibling bearing the grounded passage" not in resp.body
+    assert "passage in EP2222221B1" in resp.body
+
+
+def test_finding_view_evidence_collapses_three_sibling_family_patents(
+    store: Any,
+) -> None:
+    """With THREE grounded siblings of one family on a hub, every non-
+    representative sibling's number surfaces in the collapsed row's note
+    -- not just the first one (a prior version dropped the rest)."""
+    handler = _make_handler(store)
+    hub = mint_hub(store, _CLAIM)
+    rep = _patent_with_meta(
+        store,
+        slug="ep3333330a1",
+        title="Representative family member",
+        meta={
+            "family_id": "fam-y",
+            "publication_date": "2018-01-01",
+            "doc_number": "3333330",
+            "kind_code": "a1",
+        },
+    )
+    sibling_b = _patent_with_meta(
+        store,
+        slug="ep3333331b1",
+        title="Second sibling bearing a grounded passage",
+        meta={
+            "family_id": "fam-y",
+            "publication_date": "2019-01-01",
+            "doc_number": "3333331",
+            "kind_code": "b1",
+        },
+    )
+    sibling_c = _patent_with_meta(
+        store,
+        slug="ep3333332b1",
+        title="Third sibling bearing a grounded passage",
+        meta={
+            "family_id": "fam-y",
+            "publication_date": "2020-01-01",
+            "doc_number": "3333332",
+            "kind_code": "b1",
+        },
+    )
+    attach_evidence(store, hub_ref_id=hub, paper_ref_id=rep, role="corroborates")
+    attach_evidence(store, hub_ref_id=hub, paper_ref_id=sibling_b, role="corroborates")
+    attach_evidence(store, hub_ref_id=hub, paper_ref_id=sibling_c, role="corroborates")
+
+    resp = handler.get(id=hub, view="evidence")
+
+    assert resp.body.count("3333330A1") == 1
+    assert "Second sibling bearing a grounded passage" not in resp.body
+    assert "Third sibling bearing a grounded passage" not in resp.body
+    assert "passage in EP3333331B1, EP3333332B1" in resp.body
 
 
 # ── derive_refines — claim→claim advisory neighbours (migration 0100) ────

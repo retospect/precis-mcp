@@ -9,7 +9,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from precis.export._patent_cite import format_patent_citation, paper_inline_citation
+from precis.export._patent_cite import (
+    format_patent_bibliography_entry,
+    format_patent_citation,
+    paper_inline_citation,
+)
 
 
 class TestFormatPatentCitation:
@@ -68,6 +72,7 @@ class _FakeRef:
     meta: dict[str, Any] = field(default_factory=dict)
     title: str | None = None
     slug: str | None = None
+    year: int | None = None
 
 
 class TestPaperInlineCitation:
@@ -91,6 +96,52 @@ class TestPaperInlineCitation:
     def test_falls_back_to_slug(self) -> None:
         ref = _FakeRef(meta={}, slug="smith2015")
         assert paper_inline_citation(ref) == "smith2015"
+
+
+class TestFormatPatentBibliographyEntry:
+    """docs/backlog/patent-evidence-parity.md Phase 3 — a full prose
+    bibliography line for a patent cited in a context that DOES carry a
+    reference list (unlike the in-text-only ``format_patent_citation``)."""
+
+    def test_full_meta_renders_every_field(self) -> None:
+        ref = _FakeRef(
+            title="A widget with improved catalysis",
+            slug="ep1234567b1",
+            year=2021,
+            meta={
+                "applicants": [{"name": "Acme Corp"}, {"name": "Beta Ltd"}],
+                "doc_number": "1234567",
+                "kind_code": "b1",
+            },
+        )
+        out = format_patent_bibliography_entry(ref)
+        assert (
+            out
+            == "Acme Corp; Beta Ltd. A widget with improved catalysis. 1234567B1, 2021."
+        )
+
+    def test_year_falls_back_to_publication_date(self) -> None:
+        ref = _FakeRef(
+            title="T",
+            meta={
+                "doc_number": "1",
+                "kind_code": "A1",
+                "publication_date": "2019-05-01",
+            },
+        )
+        out = format_patent_bibliography_entry(ref)
+        assert out.endswith(", 2019.")
+
+    def test_degrades_gracefully_on_missing_fields(self) -> None:
+        ref = _FakeRef(title="Only a title")
+        assert format_patent_bibliography_entry(ref) == "Only a title."
+
+    def test_degrades_to_slug_when_completely_bare(self) -> None:
+        ref = _FakeRef(slug="ep9999999a1")
+        assert format_patent_bibliography_entry(ref) == "EP9999999A1."
+
+    def test_never_raises_on_empty_ref(self) -> None:
+        assert format_patent_bibliography_entry(_FakeRef()) == "[patent]."
 
 
 class TestAssembleDocumentPatentMode:

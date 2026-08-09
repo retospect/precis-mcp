@@ -4,15 +4,19 @@ Drives the fetch-as-ingest flow:
 
     parse_docdb_id(slug)
         ↓
-    OpsClient.{biblio,description,claims}(docdb)
+    OpsClient.biblio(docdb)
+        ↓
+    parse_patent(biblio_xml=...) → family_id + priority_claims
+        ↓
+    simple-family stub decision (see below) → STUB or FULL
+        ↓
+    OpsClient.{description,claims}(docdb)  ← FULL path only
         ↓
     write XML to $PRECIS_PATENT_RAW_ROOT/<cc>/<num>/<kind>/*.xml
         ↓
-    parse_patent(...)
-        ↓
     Store.insert_ref('patent', slug=..., title=...)
         ↓
-    Store.insert_blocks([description blocks, claim blocks])
+    Store.insert_blocks([description blocks, claim blocks])  ← FULL path only
         ↓
     fill_embeddings(...)  ← reuses the bundle-side helper
         ↓
@@ -23,6 +27,32 @@ Drives the fetch-as-ingest flow:
 The pipeline is idempotent: re-ingesting an existing slug returns
 the existing ref and skips OPS calls. Force-refresh is a future
 flag; the spec keeps it out of phase 1.
+
+**Patent-family mechanism** (Phase 2,
+docs/backlog/patent-evidence-parity.md). Family identity is EPO-
+authoritative data (the OPS biblio's DOCDB ``family-id`` attribute), not a
+judged identity — so there's no hub-like node, just three light pieces:
+
+1. ``meta['family_id']`` is stored on every patent ref whenever OPS's
+   biblio carries one (:func:`_patent_xml._extract_family_id`); the key is
+   simply absent — never ``null`` — when OPS didn't serve one, so every
+   downstream reader must ``meta.get('family_id')``, never assume presence.
+2. :mod:`precis.handlers._patent_family` is the deterministic read-side
+   helper (family representative = earliest-published ingested member,
+   cite-key-slug tiebreak) — reused by the cites view (Phase 3) and
+   available to hub-refine, not wired into either yet.
+3. **Simple-family stubbing**: a fresh ingest into a family that already
+   has a fully-ingested (non-stub) member is ingested as a **stub** — refs
+   row + full biblio meta, ``meta['family_stub'] = True``, NO description/
+   claim blocks, plus a ``same-family-as`` link to the family's current
+   representative — *iff* its priority-claim set is identical to the
+   representative's (the DOCDB "simple family" test: same invention, no new
+   matter). A differing priority-claim set (CIP/divisional — new matter,
+   often later worked examples) or missing/unparseable priority data on
+   either side always gets a FULL ingest: never stub on uncertainty, since
+   losing worked examples is worse than some duplicate description text.
+   Stubbing only fetches OPS's ``biblio`` endpoint (never ``description``/
+   ``claims``) — no wasted OPS quota on text the ref won't store.
 """
 
 from __future__ import annotations
@@ -39,6 +69,7 @@ from precis.handlers._patent_claims import (
     DESCRIPTION_BLOCK_META,
     claim_block_meta,
 )
+from precis.handlers._patent_family import family_members, family_representative
 from precis.handlers._patent_ops import (
     OpsClientProto,
     OpsNotFound,
@@ -46,10 +77,21 @@ from precis.handlers._patent_ops import (
 from precis.handlers._patent_slug import DocDbId, parse_docdb_id
 from precis.handlers._patent_xml import ParsedPatent, parse_patent
 from precis.ingest.blocks import ParsedBlock, classify_density
-from precis.store import Store, Tag
+from precis.store import Ref, Store, Tag
 from precis.store.types import BlockInsert
 
 log = logging.getLogger(__name__)
+
+#: Link relation from a stubbed patent ref to its family's current
+#: representative (migration 0115). Symmetric, no inverse — see
+#: ``store/types.py``'s ``Relation`` Literal entry for the write-door
+#: FK-vocabulary note.
+SAME_FAMILY_AS_RELATION = "same-family-as"
+
+#: Ref meta flag marking a stub ingest (docstring above) — biblio only, no
+#: description/claim blocks. Absent (never ``False``) on a normal full
+#: ingest, matching the "absent means no" convention ``family_id`` uses.
+FAMILY_STUB_META_KEY = "family_stub"
 
 
 # ---------------------------------------------------------------------------
@@ -129,6 +171,84 @@ def _write_xml(target: Path, xml: bytes) -> None:
     tmp.replace(target)
 
 
+def _year_from_publication_date(publication_date: str | None) -> int | None:
+    """Best-effort ``refs.year`` from a parsed ``YYYY-MM-DD`` publication
+    date — the first-class column ``taproot/seniority.py`` orders evidence
+    by (docs/backlog/patent-evidence-parity.md's "seniority gap" fix).
+    Patent ingest used to omit ``year=`` on ``insert_ref``, so every patent
+    ref sorted last (NULL) regardless of its real publication date.
+
+    Returns ``None`` — never raises — when the date is absent or its
+    leading 4 characters aren't a plausible year: a malformed OPS date
+    string must degrade to "unknown year", not crash ingest.
+    """
+    if not publication_date or len(publication_date) < 4:
+        return None
+    candidate = publication_date[:4]
+    if not candidate.isdigit():
+        return None
+    return int(candidate)
+
+
+def _priority_claim_set(
+    priority_claims: list[dict[str, str]] | None,
+) -> frozenset[tuple[str, str, str]] | None:
+    """Normalise parsed priority claims into a comparable set.
+
+    Each entry becomes ``(country, doc_number, date)`` — uppercased
+    country, ``date`` defaulting to ``""`` when OPS didn't carry one (a
+    missing date still participates in the comparison; it just can't
+    distinguish two claims that share a country + number).
+
+    Returns ``None`` — "priority data missing/unparseable" — for an empty
+    or falsy list, never an empty frozenset, so the simple-family stub
+    decision (:func:`ingest_patent`) can tell "no priority claims on this
+    biblio" apart from "priority claims present but the sets differ": both
+    read as "not equal," but only the former is fine to compare as a
+    *set*, and comparing two ``None``s must never spuriously match.
+    """
+    if not priority_claims:
+        return None
+    return frozenset(
+        (
+            (c.get("country") or "").upper(),
+            c.get("doc_number") or "",
+            c.get("date") or "",
+        )
+        for c in priority_claims
+    )
+
+
+def _find_stub_target(
+    store: Store, *, family_id: str | None, priority_claims: list[dict[str, str]]
+) -> Ref | None:
+    """The family representative to stub this ingest against, or ``None``
+    to force a full ingest.
+
+    ``None`` whenever any of the "never stub on uncertainty" conditions
+    hold: no ``family_id`` on the incoming biblio, no already-ingested
+    *full* (non-stub) family member yet (this is the family's first
+    ingested member — it always gets a full ingest), or either side's
+    priority-claim set is missing/unparseable/different from the
+    representative's. A non-``None`` return means "same DOCDB simple
+    family as the representative" — the caller stubs against it.
+    """
+    if not family_id:
+        return None
+    members = family_members(store, family_id)
+    full_members = [m for m in members if not (m.meta or {}).get(FAMILY_STUB_META_KEY)]
+    if not full_members:
+        return None
+    representative = family_representative(store, family_id)
+    if representative is None:
+        return None
+    new_set = _priority_claim_set(priority_claims)
+    rep_set = _priority_claim_set((representative.meta or {}).get("priority_claims"))
+    if new_set is None or rep_set is None or new_set != rep_set:
+        return None
+    return representative
+
+
 # ---------------------------------------------------------------------------
 # Public entry points
 # ---------------------------------------------------------------------------
@@ -201,10 +321,9 @@ def ingest_patent(
             bytes_fetched=0,
         )
 
-    # Three OPS calls in sequence. We fetch all three on the first
-    # ingest because they're cheap relative to the OAuth handshake
-    # latency. If OPS returns 404 on biblio, we short-circuit — the
-    # patent doesn't exist.
+    # Biblio always fetched first — every downstream decision (title, the
+    # simple-family stub call below) reads it, and if OPS 404s here the
+    # patent doesn't exist at all.
     try:
         biblio_xml = ops.biblio(slug)
     except OpsNotFound as e:
@@ -213,6 +332,73 @@ def ingest_patent(
             next="search(kind='patent', q='...') to find a different one",
         ) from e
 
+    disk_dir = _disk_dir(raw_root, parsed_id)
+
+    # Simple-family stubbing decision (docs/backlog/patent-evidence-
+    # parity.md Phase 2, module docstring above). Only considered for a
+    # genuinely fresh ingest — a ``force`` re-ingest of an existing ref
+    # always takes the full path (explicit caller intent to (re)populate
+    # blocks overrides the heuristic). Deciding from the biblio alone,
+    # before fetching description/claims, means a stub never pays for OPS
+    # full-text quota it's about to throw away.
+    biblio_parsed = parse_patent(biblio_xml=biblio_xml)
+    stub_target = (
+        None
+        if reingest
+        else _find_stub_target(
+            store,
+            family_id=biblio_parsed.family_id,
+            priority_claims=biblio_parsed.priority_claims,
+        )
+    )
+
+    if stub_target is not None:
+        bytes_fetched = len(biblio_xml)
+        _write_xml(disk_dir / "biblio.xml", biblio_xml)
+        # ``has_description=False, has_claims=False`` accurately reflects
+        # that a stub carries no blocks — but with no ``fulltext_retry_at``
+        # (the default), so the fulltext-sweep job never touches it. A
+        # stub is a permanent, deliberate omission, not "OPS hasn't
+        # indexed this yet" — those two must never share the retry queue.
+        meta = _build_meta(
+            biblio_parsed,
+            parsed_id,
+            fair_use_bytes=bytes_fetched,
+            has_description=False,
+            has_claims=False,
+        )
+        meta[FAMILY_STUB_META_KEY] = True
+        with store.tx() as conn:
+            ref = store.insert_ref(
+                kind="patent",
+                slug=slug,
+                title=biblio_parsed.title,
+                provider="epo_ops",
+                meta=meta,
+                year=_year_from_publication_date(biblio_parsed.publication_date),
+                conn=conn,
+            )
+            ref_id = ref.id
+            store.add_link(
+                src_ref_id=ref_id,
+                dst_ref_id=stub_target.id,
+                relation=SAME_FAMILY_AS_RELATION,
+                set_by="system",
+                conn=conn,
+            )
+        _apply_auto_tags(store, ref_id, biblio_parsed, parsed_id)
+        return PatentIngestResult(
+            ref_id=ref_id,
+            slug=slug,
+            docdb=parsed_id,
+            block_count=0,
+            inserted=True,
+            bytes_fetched=bytes_fetched,
+        )
+
+    # Full ingest: fetch description + claims too. We fetch both on the
+    # first ingest because they're cheap relative to the OAuth handshake
+    # latency.
     try:
         description_xml = ops.description(slug)
     except OpsNotFound:
@@ -230,7 +416,6 @@ def ingest_patent(
     # Write each XML to disk before parsing — even if the parser
     # blows up later, we have the original artefacts for forensic
     # re-parse.
-    disk_dir = _disk_dir(raw_root, parsed_id)
     _write_xml(disk_dir / "biblio.xml", biblio_xml)
     if description_xml:
         _write_xml(disk_dir / "description.xml", description_xml)
@@ -333,7 +518,31 @@ def ingest_patent(
             # ``has_claims=false`` from an old stub-ingest to true.
             assert existing is not None  # narrowed by ``reingest``
             ref_id = existing.id
+            if (existing.meta or {}).get(FAMILY_STUB_META_KEY):
+                # A forced re-ingest of a former simple-family STUB just
+                # produced real blocks (the ``block_seeds`` early-return
+                # above already handled "still no content") — clear the
+                # flag explicitly so the shallow merge below doesn't leave
+                # a stale ``family_stub: true`` on a now fully-ingested
+                # ref (``stamp_ref_meta`` only overlays keys present in
+                # ``meta``; it can't unset one on its own).
+                meta[FAMILY_STUB_META_KEY] = False
             store.stamp_ref_meta(ref_id, meta, conn=conn)
+            # ``stamp_ref_meta`` only touches the ``meta`` JSONB, never the
+            # first-class ``refs.year`` column -- so a ref ingested before
+            # the seniority-gap fix (module docstring, docs/backlog/
+            # patent-evidence-parity.md) stayed year=NULL forever, even
+            # through an operator force-reingest meant to repair it.
+            # ``update_paper_fields`` is the sole write path for that
+            # column; a ``None`` year (unparseable/missing publication
+            # date) leaves the existing value untouched via its own
+            # COALESCE.
+            store.update_paper_fields(
+                ref_id,
+                year=_year_from_publication_date(parsed.publication_date),
+                source="patent-reingest",
+                conn=conn,
+            )
         else:
             ref = store.insert_ref(
                 kind="patent",
@@ -341,6 +550,7 @@ def ingest_patent(
                 title=parsed.title,
                 provider="epo_ops",
                 meta=meta,
+                year=_year_from_publication_date(parsed.publication_date),
                 conn=conn,
             )
             ref_id = ref.id
@@ -455,7 +665,6 @@ def _build_meta(
         "doc_number": docdb.number,
         "publication_date": parsed.publication_date,
         "application_date": parsed.application_date,
-        "family_id": parsed.family_id,
         "applicants": parsed.applicants,
         "inventors": parsed.inventors,
         "cpc_classes": parsed.cpc_classes,
@@ -465,6 +674,19 @@ def _build_meta(
         "has_description": has_description,
         "has_claims": has_claims,
     }
+    # ``family_id`` / ``priority_claims`` are absent from meta entirely —
+    # never a ``null`` / ``[]`` placeholder — when OPS's biblio didn't
+    # carry them (design applications, some national-only filings, an
+    # older/degraded OPS response). Every reader (auto-tags,
+    # ``_patent_family.py``, the simple-family stub decision) already
+    # goes through ``meta.get(...)``, so "absent" and "None" read
+    # identically; keeping the key out entirely just keeps the row
+    # compact for the common (both present) case, matching the
+    # ``fulltext_retry_at`` convention below.
+    if parsed.family_id:
+        meta["family_id"] = parsed.family_id
+    if parsed.priority_claims:
+        meta["priority_claims"] = parsed.priority_claims
     # Retry bookkeeping only lands in meta when relevant — keeps the
     # row compact for fully-ingested patents (the common case).
     if fulltext_retry_at is not None:

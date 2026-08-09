@@ -25,7 +25,13 @@ Derivation (taproot.md, locked decision):
    insufficient. A global citation-count fallback is deferred to Phase 3
    (taproot.md's "S2 citation count" path).
 4. Each group orders by ``refs.year`` ascending (earliest first; NULL
-   sorts last), tie-broken by ``ref_id`` ascending.
+   sorts last), tie-broken by ``ref_id`` ascending — publication date is
+   the commensurable seniority date across papers and patents
+   (docs/backlog/patent-evidence-parity.md). ``refs.year`` falls back to
+   the year embedded in ``meta->>'publication_date'`` when NULL (see
+   :func:`_fetch_paper_facts`), so a patent ref ingested before
+   ``_patent_ingest.py`` started populating ``year=`` still interleaves by
+   its real date instead of always sorting last.
 """
 
 from __future__ import annotations
@@ -46,6 +52,15 @@ _SUPPORT_ROLES = ("establishes", "corroborates")
 _CONTRADICTS_ROLE = "contradicts"
 _ALL_ROLES = (*_SUPPORT_ROLES, _CONTRADICTS_ROLE)
 _CITES_RELATION = "cites"
+
+#: Evidence source kinds — mirrors :data:`precis.taproot.hub._EVIDENCE_SRC_KINDS`
+#: (kept as a separate copy here rather than importing the private write-door
+#: constant, same reasoning as :func:`_is_claim_hub`'s docstring). Evidence
+#: edges have attached from a patent source since ``attach_evidence`` grew
+#: patent support (docs/backlog/patent-evidence-parity.md); the evidence
+#: read queries below must accept the same source kinds the write door does,
+#: or a patent's establishes/corroborates edge silently never surfaces here.
+_EVIDENCE_SRC_KINDS = ("paper", "patent")
 
 _UNDETERMINED_NOTE = "seniority undetermined: no intra-set citation edges held"
 
@@ -221,10 +236,12 @@ def _fetch_evidence_rows(
     branch writes) shares the same slug too and would otherwise surface
     the *other hub* (a finding, not a paper) as a contradictor. Both are
     excluded by joining ``refs`` and requiring the stored source endpoint
-    be ``kind='paper'`` — taproot.md decision #2: "endpoint kinds
-    disambiguate." ``establishes``/``corroborates`` have no inverse slug
-    (migrations 0094/0085) so they aren't exposed to the same bug, but
-    they're routed through this one query for uniformity.
+    be one of :data:`_EVIDENCE_SRC_KINDS` (paper/patent) — taproot.md
+    decision #2: "endpoint kinds disambiguate," extended to cover a
+    patent evidence source (``hub.attach_evidence`` accepts one; a hub is
+    neither, so it stays excluded). ``establishes``/``corroborates`` have
+    no inverse slug (migrations 0094/0085) so they aren't exposed to the
+    same bug, but they're routed through this one query for uniformity.
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
@@ -234,10 +251,14 @@ def _fetch_evidence_rows(
             JOIN refs p ON p.ref_id = l.src_ref_id
             WHERE l.dst_ref_id = %(hub)s
               AND l.relation = ANY(%(roles)s)
-              AND p.kind = 'paper'
+              AND p.kind = ANY(%(kinds)s)
               AND p.deleted_at IS NULL
             """,
-            {"hub": hub_ref_id, "roles": list(_ALL_ROLES)},
+            {
+                "hub": hub_ref_id,
+                "roles": list(_ALL_ROLES),
+                "kinds": list(_EVIDENCE_SRC_KINDS),
+            },
         ).fetchall()
     return [(row[0], row[1], row[2], row[3] or {}) for row in rows]
 
@@ -245,13 +266,35 @@ def _fetch_evidence_rows(
 def _fetch_paper_facts(
     store: Any, ref_ids: set[int]
 ) -> dict[int, tuple[str, int | None, str | None]]:
-    """Bulk-fetch ``(title, year, retraction_status)`` per paper ref_id."""
+    """Bulk-fetch ``(title, year, retraction_status)`` per paper ref_id.
+
+    ``year`` falls back to the year embedded in
+    ``meta->>'publication_date'`` (``YYYY-...``) when ``refs.year`` IS
+    NULL — covers already-ingested patents (patent ingest didn't
+    populate ``refs.year`` before the fix in ``_patent_ingest.py``,
+    docs/backlog/patent-evidence-parity.md's "seniority gap" note)
+    without a data backfill. A missing or malformed
+    ``publication_date`` (not a 4-digit year prefix) degrades to NULL,
+    same as no year at all — never raises.
+    """
     if not ref_ids:
         return {}
     with store.pool.connection() as conn:
         rows = conn.execute(
-            "SELECT ref_id, title, year, retraction_status FROM refs "
-            "WHERE ref_id = ANY(%s)",
+            """
+            SELECT ref_id, title,
+                   COALESCE(
+                       year,
+                       CASE
+                           WHEN meta->>'publication_date' ~ '^[0-9]{4}'
+                           THEN substring(meta->>'publication_date' from 1 for 4)::int
+                           ELSE NULL
+                       END
+                   ),
+                   retraction_status
+            FROM refs
+            WHERE ref_id = ANY(%s)
+            """,
             (list(ref_ids),),
         ).fetchall()
     return {row[0]: (row[1], row[2], row[3]) for row in rows}
@@ -507,9 +550,9 @@ def _fetch_evidence_rows_bulk(
     store: Any, hub_ref_ids: list[int]
 ) -> dict[int, list[tuple[int, int | None, str, dict[str, Any]]]]:
     """Bulk twin of :func:`_fetch_evidence_rows` — one query for every hub
-    in ``hub_ref_ids`` instead of one per hub. Same ``p.kind = 'paper'``
-    endpoint-disambiguation guard (see :func:`_fetch_evidence_rows`'s
-    docstring for why that matters)."""
+    in ``hub_ref_ids`` instead of one per hub. Same
+    :data:`_EVIDENCE_SRC_KINDS` endpoint-disambiguation guard (see
+    :func:`_fetch_evidence_rows`'s docstring for why that matters)."""
     out: dict[int, list[tuple[int, int | None, str, dict[str, Any]]]] = {
         h: [] for h in hub_ref_ids
     }
@@ -523,10 +566,14 @@ def _fetch_evidence_rows_bulk(
             JOIN refs p ON p.ref_id = l.src_ref_id
             WHERE l.dst_ref_id = ANY(%(hubs)s)
               AND l.relation = ANY(%(roles)s)
-              AND p.kind = 'paper'
+              AND p.kind = ANY(%(kinds)s)
               AND p.deleted_at IS NULL
             """,
-            {"hubs": hub_ref_ids, "roles": list(_ALL_ROLES)},
+            {
+                "hubs": hub_ref_ids,
+                "roles": list(_ALL_ROLES),
+                "kinds": list(_EVIDENCE_SRC_KINDS),
+            },
         ).fetchall()
     for hub_id, src, src_chunk_id, relation, meta in rows:
         out.setdefault(int(hub_id), []).append(

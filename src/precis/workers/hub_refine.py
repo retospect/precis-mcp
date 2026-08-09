@@ -21,27 +21,42 @@ a blind periodic rescan (the incremental-trigger design,
    — mirrors ``workers/inbound_chase.py``'s claim-query shape.
 2. **Discover** — TWO sources merged into one per-hub candidate list
    (docs/backlog/citation-taproot-resolve.md), citation candidates first
-   so they win the shared per-paper dedup slot:
-   (a) a semantic (embedding-ANN) search over paper body chunks for the
-       claim sentence, top-``PRECIS_TAPROOT_REFINE_TOPK``. Note: *not*
+   so they win the shared per-source dedup slot:
+   (a) a semantic (embedding-ANN) search over paper **and patent** body
+       chunks for the claim sentence, top-``PRECIS_TAPROOT_REFINE_TOPK``
+       (docs/backlog/patent-evidence-parity.md). Note: *not*
        ``taproot.canon.block`` — that ANN is over hub *cards* (dedup against
-       other hubs); this needs paper-*chunk* neighbours, the same
+       other hubs); this needs paper/patent-*chunk* neighbours, the same
        ``store.search_blocks`` engine ``PaperHandler.search`` drives (see
        ``handlers/_paper_search.py``), run in ``mode='semantic'`` so
        ``PRECIS_TAPROOT_REFINE_MIN_SIM`` (an optional cosine-distance floor)
-       means what its name says.
+       means what its name says. The paper leg and the patent leg are two
+       separate ``store.search_blocks`` calls (the mode-dispatched wrapper
+       takes one ``kind=`` string, not a list) merged by score and
+       truncated back to ``topk`` — the per-hub bounded-spend guarantee
+       (below) doesn't grow just because a second kind feeds discovery.
+       **Grounding policy**: a patent's *claims*-section blocks
+       (``chunks.meta['patent_block'] == 'claim'``,
+       ``handlers/_patent_claims.py``) are legal scope, not empirical
+       support, and are dropped before they can ever become a candidate —
+       only description/abstract blocks are eligible. Citation-following
+       (below) stays paper-only; patent citation graphs aren't parsed.
    (b) **citation-following** (:func:`_citation_candidates`): the hub's own
        evidence grounding chunks → ``chunk_citations`` →
        ``taproot.resolve_citation`` → the *held* cited paper → a
        paper-scoped semantic search for its top passage. So a claim reading
        "X is true [34]" is checked against what [34] actually *is*.
-3. **Filter** — drop a candidate paper already carrying a ``corroborates``
-   edge on this hub (the idempotency precheck, done *before* any LLM
-   spend) or already recorded in the hub's rejection memo
-   (``meta['taproot_rejected']`` — a ``supports=no`` verdict from an
+3. **Filter** — drop a candidate source ref (paper or patent) already
+   carrying a ``corroborates`` edge on this hub (the idempotency precheck,
+   done *before* any LLM spend) or already recorded in the hub's rejection
+   memo (``meta['taproot_rejected']`` — a ``supports=no`` verdict from an
    earlier pass, judged once, never re-verified).
 4. **Verify** — ``workers._chase_llm._verify_support_with_caveats`` per
-   surviving candidate.
+   surviving candidate. When the candidate source is a patent, the prompt
+   picks up patent-aware reading rules (background/prior-art recitations
+   attribute knowledge to *others*, not the patentee; a worked example may
+   be prophetic — US present-tense convention — which is a caveat, not a
+   disqualifier).
 5. **Write** — a ``yes``, or a ``partial`` whose caveats *scope* the
    support rather than negate it (``contradicts=false``) → an evidence
    edge via ``taproot.hub.attach_evidence`` (role ``corroborates``, meta
@@ -78,11 +93,14 @@ blocked by a stale lease left over from an earlier finished pass.
 Never a periodic full re-scan: idempotent attach + pre-verify existence
 check + rejection memo + due-set claim query together bound the per-run LLM
 spend to (at most) ``HUBS_PER_PASS x (TOPK + grounded-cite count)`` calls —
-the citation source adds at most one scoped verify per held paper the hub
-*already* grounds a citation against (a small, bounded set), and the shared
-per-paper dedup means a paper reached by both sources is still verified only
-once — in practice far less once memos fill in. See the build ticket's
-"Non-negotiable: it must converge" for the full rationale.
+adding the patent leg to the semantic source doesn't grow this bound: the two
+kind-scoped legs are merged by score and truncated back to ``topk`` before
+Filter→Verify ever runs. The citation source adds at most one scoped verify
+per held paper the hub *already* grounds a citation against (a small, bounded
+set), and the shared per-source dedup means a source reached by both
+discover sources is still verified only once — in practice far less once
+memos fill in. See the build ticket's "Non-negotiable: it must converge" for
+the full rationale.
 
 Ship dark: ``PRECIS_TAPROOT_REFINE_ENABLED`` (default ``"0"``), like every
 other taproot flag. Once claiming work, the pass always verifies with the
@@ -109,6 +127,7 @@ from precis.store.types import Tag
 from precis.taproot.canon import TAPROOT_CLAIM, TAPROOT_NAMESPACE, claim_sha
 from precis.taproot.hub import HUB_ROLES, attach_evidence
 from precis.taproot.resolve import resolve_citation
+from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
 from precis.workers._chase_llm import _verify_support_with_caveats, is_corroborating
 
@@ -393,18 +412,21 @@ def _fetch_hub_info(conn: Connection, ref_id: int) -> tuple[str, dict[str, Any]]
 # ── per-hub refine ─────────────────────────────────────────────────
 
 
-def _attached_paper_ids(conn: Connection, hub_ref_id: int) -> set[int]:
-    """Paper ref_ids already carrying an evidence edge (any ``HUB_ROLES``
-    role) on this hub.
+def _attached_source_ids(conn: Connection, hub_ref_id: int) -> set[int]:
+    """Source ref_ids (paper *or* patent) already carrying an evidence edge
+    (any ``HUB_ROLES`` role) on this hub.
 
-    Hub-refine dedups at the **paper** level — a supporter is a paper, not a
-    passage — so a paper already attached via *any* grounding chunk is
-    skipped before verify. This is load-bearing under the chunk-scoped edge
-    model (evidence edges now carry ``src_chunk_id``): a per-chunk
-    ``_evidence_edge_exists`` check would miss the same paper re-surfaced via
-    a *different* chunk on a later pass and re-verify + re-attach it every
-    run — breaking convergence. One query per hub also collapses the old
-    per-candidate ``_evidence_edge_exists`` connection-per-call N+1.
+    Hub-refine dedups at the **source-ref** level — a supporter is a paper or
+    a patent, not a passage — so a source already attached via *any*
+    grounding chunk is skipped before verify. This is load-bearing under the
+    chunk-scoped edge model (evidence edges now carry ``src_chunk_id``): a
+    per-chunk ``_evidence_edge_exists`` check would miss the same source
+    re-surfaced via a *different* chunk on a later pass and re-verify +
+    re-attach it every run — breaking convergence. One query per hub also
+    collapses the old per-candidate ``_evidence_edge_exists``
+    connection-per-call N+1. ``taproot.hub._EVIDENCE_SRC_KINDS`` already
+    admits both kinds through ``links``, so this query needs no kind filter
+    of its own to cover patent evidence.
     """
     rows = conn.execute(
         "SELECT DISTINCT src_ref_id FROM links "
@@ -419,11 +441,15 @@ class _Candidate:
     """One discover-step candidate passage headed for Filter→Verify→Write.
 
     ``via`` distinguishes the two discover sources: ``"semantic"`` (the
-    corpus-wide ANN, unchanged) and ``"citation"`` (a passage inside a
-    paper the claim's own inline citation points at). ``marker`` /
-    ``from_chunk`` are set only for ``"citation"`` — they carry the
-    citation-miss provenance (which inline marker, in which grounding
-    chunk) recorded when a citation-reached paper fails verify.
+    corpus-wide ANN — now over paper *and* patent body chunks, docs/
+    proposals/patent-evidence-parity.md) and ``"citation"`` (a passage
+    inside a paper the claim's own inline citation points at — patent
+    citation graphs aren't parsed, so this source stays paper-only).
+    ``marker`` / ``from_chunk`` are set only for ``"citation"`` — they
+    carry the citation-miss provenance (which inline marker, in which
+    grounding chunk) recorded when a citation-reached paper fails verify.
+    ``ref`` may be a paper or a patent ref; ``source_ref_id`` names it
+    accordingly rather than assuming paper.
     """
 
     block: Any
@@ -433,7 +459,7 @@ class _Candidate:
     from_chunk: int | None = None
 
     @property
-    def paper_ref_id(self) -> int:
+    def source_ref_id(self) -> int:
         return int(self.ref.id)
 
 
@@ -517,6 +543,30 @@ def _citation_candidates(
     return candidates, unresolved
 
 
+#: Patent legal-claim blocks (``handlers/_patent_claims.py``'s
+#: ``claim_block_meta`` marker) — grounding policy (docs/backlog/
+#: patent-evidence-parity.md): legal scope is not empirical support, so
+#: these never reach Verify. Description/abstract blocks carry no
+#: ``patent_block`` value of ``"claim"`` (description blocks are tagged
+#: ``"description"`` via ``DESCRIPTION_BLOCK_META``; abstract text isn't
+#: currently chunked into a block at all), and a paper block never carries
+#: this key either — so this filter is a no-op on every non-patent-claim
+#: hit.
+_PATENT_CLAIM_BLOCK = "claim"
+
+
+def _drop_patent_claim_blocks(
+    hits: list[tuple[Any, Any, float]],
+) -> list[tuple[Any, Any, float]]:
+    """Filter a ``store.search_blocks`` hit list, dropping patent
+    legal-claim-section blocks so they never become grounding candidates."""
+    return [
+        (block, ref, score)
+        for block, ref, score in hits
+        if block.meta.get("patent_block") != _PATENT_CLAIM_BLOCK
+    ]
+
+
 def _refine_one_hub(
     conn: Connection,
     store: Any,
@@ -528,15 +578,21 @@ def _refine_one_hub(
 ) -> None:
     """Discover + verify + attach corroborators for one hub, then stamp it.
 
-    **Two discover sources, one Filter→Verify→Write tail** (docs/backlog/citation-taproot-resolve.md): the corpus-wide semantic ANN (unchanged)
-    and citation-following (:func:`_citation_candidates`). Both merge into a
-    single per-hub candidate list — **citation candidates first, so they win
-    the slot** — deduped by paper via ONE loop-local ``seen_papers`` set, so
-    a paper surfaced by both sources is verified exactly once. This keeps
-    the module's bounded-spend guarantee (the second source adds at most one
+    **Two discover sources, one Filter→Verify→Write tail** (docs/backlog/
+    citation-taproot-resolve.md): the corpus-wide semantic ANN — now over
+    paper *and* patent body chunks (docs/backlog/patent-evidence-
+    parity.md) — and citation-following (:func:`_citation_
+    candidates`, paper-only). Both merge into a single per-hub candidate
+    list — **citation candidates first, so they win the slot** — deduped by
+    source ref via ONE loop-local ``seen_sources`` set, so a source surfaced
+    by both discover sources is verified exactly once. This keeps the
+    module's bounded-spend guarantee (the citation source adds at most one
     scoped verify per held cited paper the hub already grounds against, so
     the per-hub worst case grows only by the hub's own grounded-citation
-    count, not unboundedly).
+    count, not unboundedly; the patent leg merges into the same
+    already-bounded ``topk`` semantic slot rather than adding one of its
+    own — see :func:`_drop_patent_claim_blocks` for the grounding-policy
+    exclusion of patent legal-claim blocks).
 
     Always writes ``meta.last_refined_at`` + ``meta.last_refined_sha`` on
     the way out (even when the hub's title is blank, or discovery/verify
@@ -564,7 +620,7 @@ def _refine_one_hub(
     stored_sha = meta.get(_META_LAST_REFINED_SHA)
     reopened = stored_sha is not None and stored_sha != new_sha
     rejected: dict[str, Any] = {} if reopened else dict(meta.get(_META_REJECTED) or {})
-    attached = _attached_paper_ids(conn, hub_ref_id)
+    attached = _attached_source_ids(conn, hub_ref_id)
 
     # Citation-miss / unresolved-cite records accumulate across passes
     # (keyed by their record tuple, deduped at persist time). A sha-reopen
@@ -596,8 +652,16 @@ def _refine_one_hub(
         )
         unresolved.extend(new_unresolved)
 
-        # Discover source 2 (existing): corpus-wide semantic ANN.
-        sem_hits = store.search_blocks(
+        # Discover source 2 (existing, now two kind-scoped legs): corpus-wide
+        # semantic ANN over paper chunks, plus a patent leg (docs/backlog/
+        # patent-evidence-parity.md). ``store.search_blocks``'s mode-
+        # dispatched wrapper takes one ``kind=`` string, not a list, so this
+        # is two calls merged by score (ascending cosine distance) and
+        # truncated back to ``topk`` -- the bounded-spend guarantee doesn't
+        # grow with the number of kinds feeding discovery. Patent
+        # legal-claim blocks are dropped before the merge: legal scope is
+        # not empirical support (grounding policy).
+        paper_hits = store.search_blocks(
             q=claim_sentence,
             query_vec=query_vec,
             mode="semantic",
@@ -605,31 +669,43 @@ def _refine_one_hub(
             limit=topk,
             max_distance=min_sim,
         )
+        patent_hits = _drop_patent_claim_blocks(
+            store.search_blocks(
+                q=claim_sentence,
+                query_vec=query_vec,
+                mode="semantic",
+                kind="patent",
+                limit=topk,
+                max_distance=min_sim,
+            )
+        )
+        sem_hits = sorted([*paper_hits, *patent_hits], key=lambda hit: hit[2])[:topk]
         sem_cands = [
             _Candidate(block=block, ref=ref, via="semantic")
             for block, ref, _score in sem_hits
         ]
 
-        seen_papers: set[int] = set()
+        seen_sources: set[int] = set()
         for cand in [*cite_cands, *sem_cands]:
-            paper_ref_id = cand.paper_ref_id
-            if paper_ref_id == hub_ref_id or paper_ref_id in seen_papers:
+            source_ref_id = cand.source_ref_id
+            if source_ref_id == hub_ref_id or source_ref_id in seen_sources:
                 continue
-            seen_papers.add(paper_ref_id)
-            # Precheck BEFORE verify (idempotency + rejection memo): a paper
-            # already an evidence supporter of this hub (any role, any
-            # grounding chunk) or already judged ``no`` must never cost
-            # another LLM call. Paper-level, not chunk-level — see
-            # _attached_paper_ids.
-            if paper_ref_id in attached or str(paper_ref_id) in rejected:
+            seen_sources.add(source_ref_id)
+            # Precheck BEFORE verify (idempotency + rejection memo): a
+            # source ref already an evidence supporter of this hub (any
+            # role, any grounding chunk) or already judged ``no`` must never
+            # cost another LLM call. Source-ref-level, not chunk-level —
+            # see _attached_source_ids.
+            if source_ref_id in attached or str(source_ref_id) in rejected:
                 continue
             block, ref = cand.block, cand.ref
             verification = _verify_support_with_caveats(
                 claim=claim_sentence,
                 scope=scope,
-                target_cite_key=ref.slug or f"ref:{paper_ref_id}",
+                target_cite_key=ref.slug or f"ref:{source_ref_id}",
                 target_chunk_ord=block.pos,
                 target_chunk_text=block.text,
+                source_kind=ref.kind,
             )
             if verification is None:
                 # Transient LLM/dispatch failure — no verdict recorded,
@@ -650,12 +726,14 @@ def _refine_one_hub(
                 attach_evidence(
                     store,
                     hub_ref_id=hub_ref_id,
-                    paper_ref_id=paper_ref_id,
+                    paper_ref_id=source_ref_id,
                     role=_ROLE,
                     meta={
                         "support": supports,
                         "caveats": list(verification.get("caveats") or []),
-                        "source_handle": f"pc{block.id}",
+                        "source_handle": handle_registry.try_format(
+                            ref.kind, block.id, chunk=True
+                        ),
                     },
                     set_by="system",
                     conn=conn,
@@ -680,20 +758,20 @@ def _refine_one_hub(
                     citation_misses.append(
                         {
                             "marker": cand.marker,
-                            "cited_ref": paper_ref_id,
+                            "cited_ref": source_ref_id,
                             "from_chunk": cand.from_chunk,
                         }
                     )
-                rejected[str(paper_ref_id)] = entry
+                rejected[str(source_ref_id)] = entry
             else:
                 # Verdict outside the {yes,partial,no} enum (missing key or
                 # an LLM-schema regression) — neither attach nor memo, so it
                 # retries next cadence; log so the regression isn't invisible.
                 log.warning(
-                    "hub_refine: hub #%d candidate paper #%d got unexpected "
+                    "hub_refine: hub #%d candidate source ref #%d got unexpected "
                     "verify verdict %r -- skipped (retries next cadence)",
                     hub_ref_id,
-                    paper_ref_id,
+                    source_ref_id,
                     supports,
                 )
 

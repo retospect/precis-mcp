@@ -101,6 +101,37 @@ def _seed_paper_chunk(
     return ref.id, chunk_id
 
 
+def _seed_patent_block(
+    store: Any,
+    embedder: Any,
+    *,
+    cite_key: str,
+    text: str,
+    block_meta: dict[str, Any],
+) -> tuple[int, int]:
+    """Mint a patent with one embedded body chunk carrying ``block_meta``
+    (the ``patent_block`` section marker minted by
+    ``handlers/_patent_claims.py`` — ``"description"`` or ``"claim"``).
+    Returns ``(ref_id, chunk_id)``."""
+    ref = store.insert_ref(
+        kind="patent", slug=cite_key, title=f"Test patent {cite_key}", meta={}
+    )
+    store.insert_blocks(ref.id, [BlockInsert(pos=0, text=text, meta=block_meta)])
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT chunk_id FROM chunks WHERE ref_id = %s AND ord = 0", (ref.id,)
+        ).fetchone()
+        assert row is not None
+        chunk_id = int(row[0])
+        conn.execute(
+            "INSERT INTO chunk_embeddings (chunk_id, embedder, vector, status) "
+            "VALUES (%s, %s, %s, 'ok')",
+            (chunk_id, embedder.model, embedder.embed_one(text)),
+        )
+        conn.commit()
+    return ref.id, chunk_id
+
+
 def _hub_meta(store: Any, hub_ref_id: int) -> dict[str, Any]:
     with store.pool.connection() as conn:
         row = conn.execute(
@@ -117,6 +148,18 @@ def _edges_from(store: Any, src: int) -> list[tuple[int, str, dict[str, Any]]]:
             (src,),
         ).fetchall()
     return [(int(r[0]), str(r[1]), dict(r[2] or {})) for r in rows]
+
+
+def _edge_src_chunk_id(store: Any, src: int) -> int | None:
+    """The evidence edge's ``src_chunk_id`` -- ``None`` for a (regression)
+    ref-level edge, an int when the edge is grounded at a specific passage."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT src_chunk_id FROM links WHERE src_ref_id = %s",
+            (src,),
+        ).fetchone()
+    assert row is not None
+    return None if row[0] is None else int(row[0])
 
 
 # ── hub_refine_enabled ───────────────────────────────────────────────
@@ -732,3 +775,136 @@ def test_citation_contradicting_partial_also_records_a_miss(store: Any) -> None:
     assert rejected[str(cited)]["contradicts"] is True
     misses = meta.get("citation_misses") or []
     assert {"marker": 126, "cited_ref": cited, "from_chunk": citing_chunk} in misses
+
+
+# ── patent discovery leg (docs/backlog/patent-evidence-parity.md,
+# Phase 1) ─────────────────────────────────────────────────────────
+#
+# The semantic-ANN discover source now runs a second, patent-scoped leg
+# beside the paper leg (two ``store.search_blocks`` calls, merged by score
+# and truncated back to ``topk`` -- the wrapper takes one ``kind=`` string,
+# not a list). Grounding policy: a patent's *claims*-section blocks are
+# legal scope, not empirical support, and are dropped before Verify ever
+# sees them -- only description/abstract blocks are eligible.
+
+
+def test_patent_description_block_gains_a_verified_corroborator(store: Any) -> None:
+    """A patent whose description block semantically matches the world-claim
+    is discovered via the patent leg and, on a supporting verdict, attaches
+    as an evidence edge exactly like a paper would."""
+    embedder = make_mock_bge_m3()
+    hub = _seed_hub(store, sentence="The catalyst sustains 400C without deactivation.")
+    patent, chunk_id = _seed_patent_block(
+        store,
+        embedder,
+        cite_key="ep1-desc",
+        text="A direct measurement statement from the description.",
+        block_meta={"patent_block": "description"},
+    )
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+        result = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert mock_verify.call_count == 1
+    # The verify prompt is told this candidate's source is a patent.
+    assert mock_verify.call_args.kwargs["source_kind"] == "patent"
+
+    edges = _edges_from(store, patent)
+    assert len(edges) == 1
+    dst, relation, edge_meta = edges[0]
+    assert dst == hub
+    assert relation == "corroborates"
+    assert edge_meta["support"] == "yes"
+    # Patent chunks mint "pk" handles, not the paper "pc" code -- a
+    # mis-kinded handle fails resolve_handle's kind cross-check and the
+    # edge silently degrades to ref-level (no src_chunk_id).
+    assert edge_meta["source_handle"] == f"pk{chunk_id}"
+    # The edge itself is chunk-grounded, not just the meta blob: a
+    # regression back to a mis-kinded handle would leave this NULL.
+    assert _edge_src_chunk_id(store, patent) == chunk_id
+
+
+def test_patent_claims_only_block_yields_no_candidate(store: Any) -> None:
+    """A patent whose ONLY block sits in the claims section is never a
+    grounding candidate -- filtered out of the patent leg's hits before
+    Filter/Verify, even though it semantically matches (it's the only
+    embedded chunk in the corpus, so an unfiltered ANN would surely surface
+    it). Never verified, never attached."""
+    embedder = make_mock_bge_m3()
+    hub = _seed_hub(store, sentence="Claims-only patent probe: sustained turnover.")
+    patent, _chunk_id = _seed_patent_block(
+        store,
+        embedder,
+        cite_key="ep1-claim",
+        text="1. A method comprising sustained turnover at high temperature.",
+        block_meta={
+            "patent_block": "claim",
+            "claim_number": 1,
+            "claim_independent": True,
+        },
+    )
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+        result = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert mock_verify.call_count == 0
+    assert _edges_from(store, patent) == []
+    assert _hub_meta(store, hub).get("last_refined_at") is not None
+
+
+def test_rejected_patent_is_not_reverified_next_pass(store: Any) -> None:
+    """A patent judged ``no`` lands in the rejection memo like a paper would
+    -- the precheck skips it on a re-trigger without a repeat LLM call."""
+    embedder = make_mock_bge_m3()
+    hub = _seed_hub(store, sentence="A patent-rejection-memo convergence probe.")
+    patent, _chunk_id = _seed_patent_block(
+        store,
+        embedder,
+        cite_key="ep1-reject",
+        text="An unrelated description passage.",
+        block_meta={"patent_block": "description"},
+    )
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_NO) as mock_verify:
+        first = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    assert first == {"claimed": 1, "ok": 1, "failed": 0}
+    assert mock_verify.call_count == 1
+    rejected = _hub_meta(store, hub).get("taproot_rejected") or {}
+    assert str(patent) in rejected
+
+    store.add_tag(hub, Tag.closed("TAPROOT_DUE", "1"), set_by="system")
+    with patch(_VERIFY_PATH, return_value=_VERIFY_NO) as mock_verify2:
+        second = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    assert second["claimed"] == 1
+    assert mock_verify2.call_count == 0  # precheck-skipped via the memo
+    assert _edges_from(store, patent) == []
+
+
+def test_attached_patent_is_not_reverified_next_pass(store: Any) -> None:
+    """A patent already carrying a ``corroborates`` edge on this hub (e.g.
+    seeded by ``precis taproot mint``) is precheck-skipped -- the
+    ``_attached_source_ids`` query covers patent sources exactly like
+    papers (``taproot.hub._EVIDENCE_SRC_KINDS`` admits both kinds)."""
+    embedder = make_mock_bge_m3()
+    hub = _seed_hub(store, sentence="A patent already-attached precheck probe.")
+    patent, chunk_id = _seed_patent_block(
+        store,
+        embedder,
+        cite_key="ep1-attached",
+        text="A direct measurement statement from the description.",
+        block_meta={"patent_block": "description"},
+    )
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=patent,
+        role="corroborates",
+        meta={"support": "yes", "caveats": [], "source_handle": f"pc{chunk_id}"},
+        set_by="agent",
+    )
+
+    with patch(_VERIFY_PATH, return_value=_VERIFY_YES) as mock_verify:
+        result = run_hub_refine_pass(store, limit=10, embedder=embedder, topk=8)
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+    assert mock_verify.call_count == 0
+    assert len(_edges_from(store, patent)) == 1  # still exactly one edge

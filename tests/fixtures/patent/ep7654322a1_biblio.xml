@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<exchange-documents xmlns="http://www.epo.org/exchange">
+  <exchange-document country="EP" doc-number="7654322" kind="A1" family-id="012345678">
+    <bibliographic-data>
+      <publication-reference family-id="012345678">
+        <document-id document-id-type="docdb">
+          <country>EP</country>
+          <doc-number>7654322</doc-number>
+          <kind>A1</kind>
+          <date>20210301</date>
+        </document-id>
+      </publication-reference>
+      <application-reference doc-id="987654325">
+        <document-id document-id-type="docdb">
+          <country>EP</country>
+          <doc-number>9876545</doc-number>
+          <kind>A0</kind>
+          <date>20200601</date>
+        </document-id>
+      </application-reference>
+      <priority-claims>
+        <priority-claim sequence="1" kind="national" data-format="epodoc">
+          <document-id document-id-type="epodoc">
+            <country>DE</country>
+            <doc-number>102020101111</doc-number>
+            <date>20200115</date>
+          </document-id>
+        </priority-claim>
+      </priority-claims>
+      <invention-title lang="en">Photocatalytic NOx reduction system - continuation-in-part</invention-title>
+      <classifications-cpc>
+        <classification-cpc>
+          <text>B01J27/24</text>
+        </classification-cpc>
+      </classifications-cpc>
+      <parties>
+        <applicants>
+          <applicant data-format="epodoc" sequence="1">
+            <applicant-name>
+              <name>SIEMENS AG</name>
+            </applicant-name>
+            <residence>
+              <country>DE</country>
+            </residence>
+          </applicant>
+        </applicants>
+      </parties>
+    </bibliographic-data>
+    <abstract lang="en">
+      <p>An improved photocatalytic system with a new co-catalyst layer, new matter over the parent filing.</p>
+    </abstract>
+  </exchange-document>
+</exchange-documents>

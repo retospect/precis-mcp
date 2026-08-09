@@ -5,9 +5,15 @@ sequence (see that module's ``_refine_one_hub``, the reference this mirrors)
 for a caller-supplied slice of claim-hub ``ref_id``s, over a real corpus, but
 performs **zero writes**: no ``attach_evidence``, no ``update_ref``, no
 rejection-memo mutation, no commit. It reuses the exact real read-only
-primitives (``_attached_paper_ids``, ``embed_query``, ``store.search_blocks``,
+primitives (``_attached_source_ids``, ``embed_query``, ``store.search_blocks``,
 ``_verify_support_with_caveats``) so its verdicts are what a live pass would
 have done, not an approximation.
+
+Paper-only for now: mirrors ``_refine_one_hub``'s pre-patent-leg semantic
+search (``kind="paper"``), not the patent-evidence-parity Phase 1 patent
+leg — a divergence from the live pass, tracked for a follow-up rather than
+grown here (docs/backlog/patent-evidence-parity.md is Phase 1 scoped to
+``workers/hub_refine.py`` itself).
 
 This is a **validation harness the builder runs deliberately** (like
 ``precis.taproot.eval_canon``), not something the offline test gate executes.
@@ -30,7 +36,7 @@ from precis.utils.embed_query import embed_query
 from precis.workers._chase_llm import _verify_support_with_caveats, is_corroborating
 from precis.workers.hub_refine import (
     _META_REJECTED,
-    _attached_paper_ids,
+    _attached_source_ids,
     _min_sim_default,
     _topk_default,
 )
@@ -151,7 +157,7 @@ def _fetch_hub_row(conn: Any, ref_id: int) -> tuple[str, dict[str, Any]] | None:
 def _count_existing_edges(conn: Any, hub_ref_id: int) -> int | None:
     """Count of ``corroborates``/``establishes`` evidence edges already
     landed on this hub — context for the report, not used for any
-    decision (that's ``_attached_paper_ids``, the paper-id set)."""
+    decision (that's ``_attached_source_ids``, the source-ref-id set)."""
     row = conn.execute(
         "SELECT count(*) FROM links "
         "WHERE dst_ref_id = %s AND relation IN ('corroborates', 'establishes')",
@@ -184,7 +190,7 @@ def _eval_one_hub(
     claim_sentence = title.strip()
     scope = dict(meta.get("scope") or {})
     rejected: dict[str, Any] = dict(meta.get(_META_REJECTED) or {})
-    attached = _attached_paper_ids(conn, hub_ref_id)
+    attached = _attached_source_ids(conn, hub_ref_id)
     existing_edges = _count_existing_edges(conn, hub_ref_id)
 
     hub_eval = HubEval(

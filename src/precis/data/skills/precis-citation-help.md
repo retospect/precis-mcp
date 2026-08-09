@@ -89,6 +89,12 @@ use any precise value the verifier emits, or stick to conventions
 `rel='cites'` makes the source paper findable via the graph and
 surfaces "who cites me?" on the paper itself.
 
+`source_handle` accepts a **patent** chunk the same way — a `[pk<id>]`
+handle or an explicit `patent:<slug>~N` — validated against the patent
+corpus instead of papers; `link='patent:<slug>'` wires the same `cites`
+edge. A simple-family stub (biblio only, no blocks) is rejected with the
+family's full representative named in the error.
+
 Citation records are write-once. Re-verifying the same claim against a
 different chunk creates a new record; the old one stays as the audit
 trail.

@@ -126,6 +126,7 @@
 - [`paper-writing-pipeline`](./paper-writing-pipeline.md) **idea** — How precis writes and maintains a long document (a `draft`) by absorbing the
 - [`patent-authoring-loop`](./patent-authoring-loop.md) **idea** — Shipped portion: see the `workers/patent_digest.py` and
 - [`patent-drafting-merge`](./patent-drafting-merge.md) **idea** — A patent **is a `draft`** whose **`meta.workspace.doc_type` is `patent`**
+- [`patent-evidence-parity`](./patent-evidence-parity.md) **draft** — Phases 1–3 shipped (hub-refine patent discovery leg with legal-claim-block
 - [`patent-search-parity`](./patent-search-parity.md) **idea** — Papers search well; patents don't. Look for a systemic fix — indexing,
 - [`pathway-frame-capture`](./pathway-frame-capture.md) **draft** — catpath *computes* the reaction motion and then throws it away. `neb.py`'s
 - [`pathway-measures-edit`](./pathway-measures-edit.md) **idea** — The reaction-pathway explorer renders `refs.meta.measures` per state, but

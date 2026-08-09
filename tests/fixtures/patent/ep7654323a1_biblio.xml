@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<exchange-documents xmlns="http://www.epo.org/exchange">
+  <exchange-document country="EP" doc-number="7654323" kind="A1" family-id="012345678">
+    <bibliographic-data>
+      <publication-reference family-id="012345678">
+        <document-id document-id-type="docdb">
+          <country>EP</country>
+          <doc-number>7654323</doc-number>
+          <kind>A1</kind>
+          <date>20210501</date>
+        </document-id>
+      </publication-reference>
+      <application-reference doc-id="987654326">
+        <document-id document-id-type="docdb">
+          <country>EP</country>
+          <doc-number>9876546</doc-number>
+          <kind>A0</kind>
+          <date>20200701</date>
+        </document-id>
+      </application-reference>
+      <invention-title lang="en">Photocatalytic NOx reduction system - unknown priority</invention-title>
+      <classifications-cpc>
+        <classification-cpc>
+          <text>B01J27/24</text>
+        </classification-cpc>
+      </classifications-cpc>
+      <parties>
+        <applicants>
+          <applicant data-format="epodoc" sequence="1">
+            <applicant-name>
+              <name>SIEMENS AG</name>
+            </applicant-name>
+            <residence>
+              <country>DE</country>
+            </residence>
+          </applicant>
+        </applicants>
+      </parties>
+    </bibliographic-data>
+    <abstract lang="en">
+      <p>Same family, but OPS served no priority-claims block for this member.</p>
+    </abstract>
+  </exchange-document>
+</exchange-documents>

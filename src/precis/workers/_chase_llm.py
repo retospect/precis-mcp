@@ -4,7 +4,11 @@ Split out of ``workers/chase.py`` 2026-06-05. These three functions
 are the *only* paths in ``chase`` that issue paid LLM calls:
 
 * :func:`_verify_support_with_caveats` reads the target chunk + claim
-  and records support / caveats / cited-others on the chain entry.
+  and records support / caveats / cited-others on the chain entry. Also
+  the verify hook ``workers/hub_refine.py`` calls for every discover
+  candidate (paper or patent) — always-on there, not ``with_llm``-gated —
+  where ``source_kind="patent"`` swaps in patent-aware reading rules
+  (docs/backlog/patent-evidence-parity.md).
 * :func:`_disambiguate_candidates` resolves multi-cite chunks.
 * :func:`_locate_chunk_in_target` confirms the ANN's chunk pick or
   picks a better one from the shown alternates.
@@ -33,8 +37,30 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+#: Appended into ``_PROMPT_VERIFY`` only when the candidate source is a
+#: patent (docs/backlog/patent-evidence-parity.md) — a patent chunk reads
+#: differently from a paper chunk in three ways the verifier must know
+#: about before it judges support.
+_PATENT_VERIFY_NOTE = """
+PATENT-SPECIFIC READING RULES (the source above is a patent):
+  - Background / prior-art recitations describe what OTHERS did or knew
+    before the invention — they are NOT the patentee's own support for the
+    claim even when the wording sounds affirmative. Do not credit
+    prior-art narration as the patentee's support.
+  - A worked example may be written in the present tense purely as a
+    matter of US patent-drafting convention, even when it was never
+    actually carried out ("prophetic example"). That is a CAVEAT to record
+    (e.g. "example is stated in prophetic present tense, not confirmed as
+    reduced to practice") — not by itself a reason to mark supports="no".
+  - Legal-claim language states legal SCOPE, not an empirical result.
+    Claims-section text is filtered out before you ever see it, but if
+    this chunk otherwise paraphrases claim-style scope language rather
+    than describing an actual composition/process/measurement, treat that
+    as weak-to-no empirical support.
+"""
+
 _PROMPT_VERIFY = """\
-You are verifying whether a source paper chunk supports a specific
+You are verifying whether a source {source_kind} chunk supports a specific
 empirical claim made under a specific experimental setup. Judge support
 for the claim EXACTLY AS STATED — not a looser or more general version.
 
@@ -44,11 +70,11 @@ CLAIM:
 SETUP (structured):
 {scope_json}
 
-SOURCE: paper {target_cite_key}, chunk ord {target_chunk_ord}
+SOURCE: {source_kind} {target_cite_key}, chunk ord {target_chunk_ord}
 
 CHUNK TEXT:
 {target_chunk_text}
-
+{patent_note}
 First decide the chunk's STANCE toward the claim as stated: does it give
 evidence FOR the claim, evidence AGAINST it (an opposite result or
 tendency), or neither (on-topic but doesn't test the claim)?
@@ -104,14 +130,25 @@ def _verify_support_with_caveats(
     target_cite_key: str,
     target_chunk_ord: int,
     target_chunk_text: str,
+    source_kind: str = "paper",
 ) -> dict[str, Any] | None:
-    """Run the verifier LLM hook. Returns the parsed JSON dict or None."""
+    """Run the verifier LLM hook. Returns the parsed JSON dict or None.
+
+    ``source_kind`` names the candidate source ref's kind (``"paper"`` or
+    ``"patent"``) — when it's a patent, :data:`_PATENT_VERIFY_NOTE` is
+    spliced into the prompt so the verifier reads background/prior-art
+    recitations, prophetic worked examples, and legal-claim scope language
+    the way a patent (not a paper) requires (docs/backlog/
+    patent-evidence-parity.md).
+    """
     prompt = _PROMPT_VERIFY.format(
         claim=claim,
         scope_json=json.dumps(scope, sort_keys=True),
+        source_kind=source_kind,
         target_cite_key=target_cite_key,
         target_chunk_ord=target_chunk_ord,
         target_chunk_text=target_chunk_text[:4000],  # cap context cost
+        patent_note=_PATENT_VERIFY_NOTE if source_kind == "patent" else "",
     )
     res = dispatch(LlmRequest(tier=Tier.MEDIUM, prompt=prompt, source="chase:verify"))
     if res.error:

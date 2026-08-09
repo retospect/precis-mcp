@@ -227,6 +227,157 @@ class TestPaperMustExist:
         assert "created citation id=" in resp.body
 
 
+# ── patent sources (docs/backlog/patent-evidence-parity.md Phase 3) ──
+
+
+class TestPatentSource:
+    def test_accepts_full_patent_source_handle_and_wires_cites_link(
+        self, store
+    ) -> None:
+        ref = store.insert_ref(
+            kind="patent",
+            slug="ep1234567b1",
+            title="A widget with improved catalysis",
+            meta={"applicants": [{"name": "Acme Corp"}]},
+        )
+        h = _make_handler(store)
+        resp = h.put(
+            text="The widget improves conversion by 12%",
+            source_handle="patent:ep1234567b1~3",
+            source_quote="conversion improved by 12 percent",
+            verifier_confidence=0.9,
+            link="patent:ep1234567b1",
+            rel="cites",
+        )
+        cid = int(_search(r"id=(\d+)", resp.body).group(1))
+
+        stored = store.get_ref(kind="citation", id=cid)
+        assert stored is not None
+        # Explicit ``kind:`` prefixes aren't handle_registry-parseable (the
+        # ':' defeats the universal-handle grammar), so they store verbatim
+        # -- same pre-existing behavior an explicit 'paper:<slug>' handle
+        # already gets.
+        assert (stored.meta or {})["source_handle"] == "patent:ep1234567b1~3"
+
+        links = store.links_for(cid, direction="out", relation="cites")
+        assert any(link.dst_ref_id == ref.id for link in links)
+
+    def test_universal_patent_chunk_handle_normalizes_and_validates(
+        self, store
+    ) -> None:
+        """A ``pk<id>`` universal chunk handle (ADR 0036) resolves to its
+        patent's slug~ord form *and* is validated against kind='patent',
+        not silently mis-defaulted to 'paper' (the resolved-kind carry-through
+        fix)."""
+        ref = store.insert_ref(
+            kind="patent", slug="ep7654321b1", title="Universal-handle patent"
+        )
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "INSERT INTO chunks (ref_id, ord, text, chunk_kind) "
+                "VALUES (%s, 0, %s, 'paragraph') RETURNING chunk_id",
+                (ref.id, "the claim body text"),
+            ).fetchone()
+            conn.commit()
+        chunk_id = row[0]
+
+        h = _make_handler(store)
+        resp = h.put(
+            text="A claim grounded in a patent chunk",
+            source_handle=f"pk{chunk_id}",
+            source_quote="the claim body text",
+            verifier_confidence=0.9,
+        )
+        cid = int(_search(r"id=(\d+)", resp.body).group(1))
+        stored = store.get_ref(kind="citation", id=cid)
+        assert stored is not None
+        assert (stored.meta or {})["source_handle"] == "ep7654321b1~0"
+
+    def test_universal_handle_of_non_accepted_kind_rejected(self, store) -> None:
+        """A bare universal chunk handle (no ``kind:`` prefix) of a kind
+        outside {paper, patent} — e.g. an EDGAR filing's ``ec<id>`` chunk
+        handle — must not slip past the allowlist just because it resolves.
+        Before the fix, only the explicit ``kind:`` prefix branch enforced
+        _ACCEPTED_SOURCE_KINDS; a bare handle's resolved kind rode through
+        unchecked as ``default_kind``."""
+        ref = store.insert_ref(
+            kind="edgar", slug="0000320193-24-000010", title="An EDGAR filing"
+        )
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "INSERT INTO chunks (ref_id, ord, text, chunk_kind) "
+                "VALUES (%s, 0, %s, 'paragraph') RETURNING chunk_id",
+                (ref.id, "filing body text"),
+            ).fetchone()
+            conn.commit()
+        chunk_id = row[0]
+
+        h = _make_handler(store)
+        with pytest.raises(BadInput) as excinfo:
+            h.put(
+                text="Claim wrongly sourced from an EDGAR chunk",
+                source_handle=f"ec{chunk_id}",
+                source_quote="filing body text",
+                verifier_confidence=0.5,
+            )
+        assert "unsupported source kind" in str(excinfo.value)
+
+    def test_bare_slug_still_defaults_to_paper(self, store) -> None:
+        """A bare (unprefixed) source_handle keeps validating against
+        kind='paper' — backward compatible default."""
+        h = _make_handler(store)
+        with pytest.raises(BadInput) as excinfo:
+            h.put(
+                text="Claim about an unqualified handle",
+                source_handle="not-ingested-anywhere~1",
+                source_quote="q",
+                verifier_confidence=0.5,
+            )
+        assert "paper" in str(excinfo.value)
+
+    def test_stub_patent_source_rejected_naming_representative(self, store) -> None:
+        from precis.handlers._patent_ingest import FAMILY_STUB_META_KEY
+
+        store.insert_ref(
+            kind="patent",
+            slug="ep0000001a1",
+            title="Family representative",
+            meta={"family_id": "fam-cite", "publication_date": "2019-01-01"},
+        )
+        store.insert_ref(
+            kind="patent",
+            slug="ep0000002a1",
+            title="Family stub member",
+            meta={
+                "family_id": "fam-cite",
+                "publication_date": "2020-01-01",
+                FAMILY_STUB_META_KEY: True,
+            },
+        )
+        h = _make_handler(store)
+        with pytest.raises(BadInput) as excinfo:
+            h.put(
+                text="Claim sourced from a stub",
+                source_handle="patent:ep0000002a1~1",
+                source_quote="q",
+                verifier_confidence=0.5,
+            )
+        msg = str(excinfo.value)
+        assert "stub" in msg
+        assert "ep0000001a1" in msg  # names the representative
+
+    def test_unknown_source_kind_rejected(self, store) -> None:
+        h = _make_handler(store)
+        with pytest.raises(BadInput) as excinfo:
+            h.put(
+                text="Claim with a bogus source kind",
+                source_handle="memory:5",
+                source_quote="q",
+                verifier_confidence=0.5,
+            )
+        assert "unsupported source kind" in str(excinfo.value)
+
+
 # ── claim → embeddable card ──────────────────────────────────────────
 
 

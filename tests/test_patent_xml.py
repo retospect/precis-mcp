@@ -66,6 +66,47 @@ class TestBiblio:
         p = parse_patent(biblio_xml=biblio_xml)
         assert p.family_id == "012345678"
 
+    def test_family_id_absent_without_crashing(self) -> None:
+        # No <publication-reference> / <patent-family> at all — degrades
+        # to None, never crashes (docs/backlog/patent-evidence-parity.md
+        # Phase 2: "absent -> no key, no crash").
+        xml = (
+            b'<?xml version="1.0" encoding="UTF-8"?>'
+            b'<exchange-documents xmlns="http://www.epo.org/exchange">'
+            b'<exchange-document country="EP" doc-number="1" kind="A1">'
+            b"<bibliographic-data>"
+            b'<invention-title lang="en">Untitled</invention-title>'
+            b"</bibliographic-data>"
+            b"</exchange-document>"
+            b"</exchange-documents>"
+        )
+        p = parse_patent(biblio_xml=xml)
+        assert p.family_id is None
+        assert p.priority_claims == []
+
+    def test_priority_claims(self, biblio_xml: bytes) -> None:
+        # Fixture has the same priority claim in epodoc and docdb formats
+        # under sequence="1" — deduped to one entry.
+        p = parse_patent(biblio_xml=biblio_xml)
+        assert len(p.priority_claims) == 1
+        assert p.priority_claims[0]["country"] == "DE"
+        assert p.priority_claims[0]["doc_number"] == "102018105678"
+        assert p.priority_claims[0]["date"] == "2018-03-09"
+
+    def test_priority_claims_absent(self) -> None:
+        xml = (
+            b'<?xml version="1.0" encoding="UTF-8"?>'
+            b'<exchange-documents xmlns="http://www.epo.org/exchange">'
+            b'<exchange-document country="EP" doc-number="1" kind="A1">'
+            b"<bibliographic-data>"
+            b'<invention-title lang="en">Untitled</invention-title>'
+            b"</bibliographic-data>"
+            b"</exchange-document>"
+            b"</exchange-documents>"
+        )
+        p = parse_patent(biblio_xml=xml)
+        assert p.priority_claims == []
+
     def test_applicants_deduped(self, biblio_xml: bytes) -> None:
         # Fixture has the same applicant in epodoc and original formats.
         p = parse_patent(biblio_xml=biblio_xml)

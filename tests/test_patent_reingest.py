@@ -132,6 +132,34 @@ def test_per_patent_error_is_isolated(
     assert summary.outcomes[0].error is not None
 
 
+def test_force_reingest_backfills_null_year(
+    store: Store, fake_ops: FakeOpsClient, raw_root: Path
+) -> None:
+    """A force-reingest of a pre-fix patent ref (``refs.year`` NULL,
+    e.g. ingested before the seniority-gap fix) repairs the column from
+    the biblio publication date -- not just fresh inserts."""
+    ref_id = _ingest_then_unmark(store, fake_ops, raw_root)
+    with store.pool.connection() as conn:
+        conn.execute("UPDATE refs SET year = NULL WHERE ref_id = %s", (ref_id,))
+        conn.commit()
+    ref = store.get_ref(kind="patent", id=ref_id)
+    assert ref is not None
+    assert ref.year is None
+
+    ingest_patent(
+        "ep1234567b1",
+        store=store,
+        ops=fake_ops,
+        embedder=MockEmbedder(dim=store.embedding_dim()),
+        raw_root=raw_root,
+        force=True,
+    )
+
+    ref = store.get_ref(kind="patent", id=ref_id)
+    assert ref is not None
+    assert ref.year == 2020
+
+
 def test_limit_caps_attempts(
     store: Store, fake_ops: FakeOpsClient, raw_root: Path
 ) -> None:

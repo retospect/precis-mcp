@@ -13,7 +13,11 @@ import pytest
 
 from precis.embedder import MockEmbedder
 from precis.errors import NotFound
-from precis.handlers._patent_ingest import ingest_patent
+from precis.handlers._patent_ingest import (
+    PatentIngestResult,
+    _year_from_publication_date,
+    ingest_patent,
+)
 from precis.handlers._patent_ops import FakeOpsClient
 from precis.handlers._patent_slug import parse_docdb_id
 from precis.store import Store
@@ -217,6 +221,51 @@ class TestClaimMarking:
         assert not any(t.startswith("applicant:") for t in tags)
         assert not any(t.startswith("cpc:") for t in tags)
         assert not any(t.startswith("ipc:") for t in tags)
+
+
+# ---------------------------------------------------------------------------
+# refs.year (seniority-ordering fix — patent-evidence-parity.md)
+# ---------------------------------------------------------------------------
+
+
+class TestPublicationYear:
+    """``refs.year`` must be populated from ``publication_date`` at ingest
+    so ``taproot/seniority.py`` interleaves patents with papers instead of
+    always sorting them last (a NULL ``year`` always sorts last)."""
+
+    def test_ingest_sets_year_from_publication_date(
+        self,
+        store: Store,
+        fake_ops: FakeOpsClient,
+        raw_root: Path,
+    ) -> None:
+        embedder = MockEmbedder(dim=store.embedding_dim())
+        result = ingest_patent(
+            "ep1234567b1",
+            store=store,
+            ops=fake_ops,
+            embedder=embedder,
+            raw_root=raw_root,
+        )
+        ref = store.get_ref(kind="patent", id="ep1234567b1")
+        assert ref is not None
+        assert ref.meta["publication_date"] == "2020-01-15"
+        assert ref.year == 2020
+        assert result.ref_id == ref.id
+
+    @pytest.mark.parametrize(
+        "publication_date",
+        [None, "", "unknown", "abcd-01-01", "2-01-01"],
+    )
+    def test_year_from_publication_date_degrades_to_none(
+        self, publication_date: str | None
+    ) -> None:
+        # Malformed/absent dates must never crash ingest — they degrade to
+        # an unknown (NULL) year, same as a patent with no date at all.
+        assert _year_from_publication_date(publication_date) is None
+
+    def test_year_from_publication_date_parses_leading_year(self) -> None:
+        assert _year_from_publication_date("2020-01-15") == 2020
 
 
 # ---------------------------------------------------------------------------
@@ -559,3 +608,206 @@ class TestIngestAcceptsDocDbId:
             raw_root=raw_root,
         )
         assert result.slug == "ep1234567b1"
+
+
+# ---------------------------------------------------------------------------
+# family_id absence (patent-evidence-parity.md Phase 2, item 1)
+# ---------------------------------------------------------------------------
+
+
+class TestFamilyIdAbsent:
+    def test_absent_family_id_is_no_key_not_null(
+        self,
+        store: Store,
+        raw_root: Path,
+    ) -> None:
+        # No family-id attribute anywhere on this biblio — degrades to
+        # "no key" (never a stored ``null``), matching the "store nothing"
+        # rule for optional OPS fields.
+        xml = (
+            b'<?xml version="1.0" encoding="UTF-8"?>'
+            b'<exchange-documents xmlns="http://www.epo.org/exchange">'
+            b'<exchange-document country="EP" doc-number="1234567" kind="B1">'
+            b"<bibliographic-data>"
+            b"<publication-reference>"
+            b'<document-id document-id-type="docdb">'
+            b"<country>EP</country><doc-number>1234567</doc-number>"
+            b"<kind>B1</kind><date>20200115</date>"
+            b"</document-id></publication-reference>"
+            b'<invention-title lang="en">No-family patent</invention-title>'
+            b"</bibliographic-data>"
+            b"</exchange-document></exchange-documents>"
+        )
+        ops = FakeOpsClient(biblio={"ep1234567b1": xml})
+        embedder = MockEmbedder(dim=store.embedding_dim())
+        ingest_patent(
+            "ep1234567b1",
+            store=store,
+            ops=ops,
+            embedder=embedder,
+            raw_root=raw_root,
+        )
+        ref = store.get_ref(kind="patent", id="ep1234567b1")
+        assert ref is not None
+        assert "family_id" not in ref.meta
+        assert "priority_claims" not in ref.meta
+
+
+# ---------------------------------------------------------------------------
+# Simple-family stubbing (patent-evidence-parity.md Phase 2, item 3)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def sibling_same_priority_biblio_xml() -> bytes:
+    return (FIXTURES / "ep7654321a1_biblio.xml").read_bytes()
+
+
+@pytest.fixture
+def sibling_diff_priority_biblio_xml() -> bytes:
+    return (FIXTURES / "ep7654322a1_biblio.xml").read_bytes()
+
+
+@pytest.fixture
+def sibling_no_priority_biblio_xml() -> bytes:
+    return (FIXTURES / "ep7654323a1_biblio.xml").read_bytes()
+
+
+class TestSimpleFamilyStubbing:
+    """``ep7654321a1`` / ``ep7654322a1`` / ``ep7654323a1`` all carry the
+    representative's ``family_id`` ("012345678") but differ in how their
+    priority claims compare to ``ep1234567b1`` (the family's only, and
+    therefore first, ingested member)."""
+
+    def _ingest_representative(
+        self, store: Store, fake_ops: FakeOpsClient, raw_root: Path
+    ) -> PatentIngestResult:
+        embedder = MockEmbedder(dim=store.embedding_dim())
+        return ingest_patent(
+            "ep1234567b1",
+            store=store,
+            ops=fake_ops,
+            embedder=embedder,
+            raw_root=raw_root,
+        )
+
+    def test_first_family_member_is_never_stubbed(
+        self,
+        store: Store,
+        fake_ops: FakeOpsClient,
+        raw_root: Path,
+    ) -> None:
+        rep = self._ingest_representative(store, fake_ops, raw_root)
+        assert rep.block_count == 7
+        ref = store.get_ref(kind="patent", id="ep1234567b1")
+        assert ref is not None
+        assert "family_stub" not in ref.meta
+
+    def test_identical_priority_set_ingests_as_stub_linked_to_representative(
+        self,
+        store: Store,
+        fake_ops: FakeOpsClient,
+        sibling_same_priority_biblio_xml: bytes,
+        raw_root: Path,
+    ) -> None:
+        rep = self._ingest_representative(store, fake_ops, raw_root)
+
+        sibling_ops = FakeOpsClient(
+            biblio={"ep7654321a1": sibling_same_priority_biblio_xml}
+        )
+        embedder = MockEmbedder(dim=store.embedding_dim())
+        stub = ingest_patent(
+            "ep7654321a1",
+            store=store,
+            ops=sibling_ops,
+            embedder=embedder,
+            raw_root=raw_root,
+        )
+
+        assert stub.inserted is True
+        assert stub.block_count == 0
+        assert store.count_blocks(stub.ref_id) == 0
+        # Stubbing never fetches description/claims — no wasted OPS quota.
+        endpoints = {call[0] for call in sibling_ops.calls}
+        assert endpoints == {"biblio"}
+
+        stub_ref = store.get_ref(kind="patent", id="ep7654321a1")
+        assert stub_ref is not None
+        assert stub_ref.meta.get("family_stub") is True
+        assert stub_ref.meta.get("family_id") == "012345678"
+        # Full biblio meta still lands on a stub.
+        assert stub_ref.meta.get("applicants")
+        assert stub_ref.meta.get("publication_date") == "2019-08-15"
+
+        links = store.links_for(stub.ref_id, direction="out", relation="same-family-as")
+        assert len(links) == 1
+        assert links[0].dst_ref_id == rep.ref_id
+
+    def test_differing_priority_set_forces_full_ingest(
+        self,
+        store: Store,
+        fake_ops: FakeOpsClient,
+        sibling_diff_priority_biblio_xml: bytes,
+        description_xml: bytes,
+        claims_xml: bytes,
+        raw_root: Path,
+    ) -> None:
+        self._ingest_representative(store, fake_ops, raw_root)
+
+        # CIP/divisional — same family, new-matter priority claim. Must
+        # never stub: worked examples in a genuinely new filing would be
+        # silently lost.
+        sibling_ops = FakeOpsClient(
+            biblio={"ep7654322a1": sibling_diff_priority_biblio_xml},
+            description={"ep7654322a1": description_xml},
+            claims={"ep7654322a1": claims_xml},
+        )
+        embedder = MockEmbedder(dim=store.embedding_dim())
+        result = ingest_patent(
+            "ep7654322a1",
+            store=store,
+            ops=sibling_ops,
+            embedder=embedder,
+            raw_root=raw_root,
+        )
+
+        assert result.block_count == 7
+        ref = store.get_ref(kind="patent", id="ep7654322a1")
+        assert ref is not None
+        assert "family_stub" not in ref.meta
+        assert (
+            store.links_for(result.ref_id, direction="out", relation="same-family-as")
+            == []
+        )
+
+    def test_missing_priority_data_forces_full_ingest(
+        self,
+        store: Store,
+        fake_ops: FakeOpsClient,
+        sibling_no_priority_biblio_xml: bytes,
+        description_xml: bytes,
+        claims_xml: bytes,
+        raw_root: Path,
+    ) -> None:
+        self._ingest_representative(store, fake_ops, raw_root)
+
+        # Same family_id, but OPS served no priority-claims block for this
+        # member — never stub on uncertainty.
+        sibling_ops = FakeOpsClient(
+            biblio={"ep7654323a1": sibling_no_priority_biblio_xml},
+            description={"ep7654323a1": description_xml},
+            claims={"ep7654323a1": claims_xml},
+        )
+        embedder = MockEmbedder(dim=store.embedding_dim())
+        result = ingest_patent(
+            "ep7654323a1",
+            store=store,
+            ops=sibling_ops,
+            embedder=embedder,
+            raw_root=raw_root,
+        )
+
+        assert result.block_count == 7
+        ref = store.get_ref(kind="patent", id="ep7654323a1")
+        assert ref is not None
+        assert "family_stub" not in ref.meta

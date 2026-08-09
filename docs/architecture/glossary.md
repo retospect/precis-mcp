@@ -132,6 +132,19 @@
   hub): the *originator(s)* that first showed a claim `establishes` it; later
   papers that cite them `corroborate`. Derived from the citation graph, not
   hand-set. → `docs/backlog/taproot.md` §"Seniority is derived"
+- **world-claim vs legal claim** — "claim" is overloaded; always use the
+  unique name. A *world-claim* is a taproot claim (a `TAPROOT:claim` finding —
+  a statement about the world). A *legal claim* is a numbered entry in a
+  patent's claims section (legal scope, not an empirical result; the
+  `claims`-section blocks with `claim_number` meta). World-claims ground in
+  patent *description* blocks, never legal-claim blocks.
+  → `src/precis/workers/hub_refine.py`
+- **patent family / family representative** — family identity is authoritative
+  (DOCDB family ID from EPO OPS), so no hub node: `family_id` in ref meta, a
+  deterministic *representative* (earliest-published ingested member), siblings
+  in the same *simple* family ingested as stub refs linked `same-family-as`
+  (new-matter members — CIP/divisional — get full ingest). Cites render one
+  representative per family. → `src/precis/handlers/_patent_family.py`
 - **fisheye** (eye) — a degree-of-interest render: focus one node and get it
   plus its scaled-by-distance surroundings, not a bare chunk (turn-taking
   design, git-only).

@@ -4,7 +4,11 @@ EPO OPS returns variants of the WIPO ST.36 schema (with OPS-specific
 ``ops:`` extensions). Three endpoints feed the handler:
 
 * ``biblio`` — bibliographic metadata: title, abstract, applicants,
-  inventors, dates, classifications.
+  inventors, dates, classifications, DOCDB ``family_id``, and priority
+  claims (docs/backlog/patent-evidence-parity.md Phase 2 — the family
+  identity + priority-claim set ``_patent_ingest.py`` reads to decide
+  simple-family stubbing; see :mod:`precis.handlers._patent_family` for
+  the read-side family-representative helper).
 * ``description`` — patent body, paragraphs in ``<p>`` elements
   inside ``<description>``.
 * ``claims`` — claim text in ``<claim>`` and ``<claim-text>``
@@ -46,6 +50,13 @@ class ParsedPatent:
     inventors: list[dict[str, str]] = field(default_factory=list)
     cpc_classes: list[str] = field(default_factory=list)
     ipc_classes: list[str] = field(default_factory=list)
+    #: One entry per ``<priority-claim>``, ``{"country", "doc_number",
+    #: "date"?}`` — the simple-family stubbing decision
+    #: (``_patent_ingest.py``, docs/backlog/patent-evidence-parity.md
+    #: Phase 2) compares this set across family members before stubbing.
+    #: ``[]`` when the biblio carries none (design applications, some
+    #: national-only filings) — never guessed.
+    priority_claims: list[dict[str, str]] = field(default_factory=list)
     description_paragraphs: list[str] = field(default_factory=list)
     claim_texts: list[str] = field(default_factory=list)
 
@@ -114,6 +125,7 @@ def parse_patent(
     inventors: list[dict[str, str]] = []
     cpc_classes: list[str] = []
     ipc_classes: list[str] = []
+    priority_claims: list[dict[str, str]] = []
     description_paragraphs: list[str] = []
     claim_texts: list[str] = []
 
@@ -129,6 +141,7 @@ def parse_patent(
             inventors = _extract_parties(root, party_kind="inventor")
             cpc_classes = _extract_classifications(root, scheme="cpc")
             ipc_classes = _extract_classifications(root, scheme="ipc")
+            priority_claims = _extract_priority_claims(root)
 
     if description_xml:
         root = _safe_root(description_xml)
@@ -150,6 +163,7 @@ def parse_patent(
         inventors=inventors,
         cpc_classes=cpc_classes,
         ipc_classes=ipc_classes,
+        priority_claims=priority_claims,
         description_paragraphs=description_paragraphs,
         claim_texts=claim_texts,
     )
@@ -240,6 +254,54 @@ def _extract_family_id(root: ET.Element) -> str | None:
         if fid:
             return fid
     return None
+
+
+def _extract_priority_claims(root: ET.Element) -> list[dict[str, str]]:
+    """Extract priority claims as ``[{"country", "doc_number", "date"?}, ...]``.
+
+    OPS structure (typical):
+
+        <priority-claims>
+            <priority-claim sequence="1" kind="national">
+                <document-id document-id-type="epodoc">
+                    <country>DE</country>
+                    <doc-number>102018105678</doc-number>
+                    <date>20180309</date>
+                </document-id>
+            </priority-claim>
+            ...
+        </priority-claims>
+
+    Like ``<applicant>``/``<inventor>``, OPS repeats each priority claim
+    once per ``document-id`` format variant (epodoc/docdb/original) under
+    the same ``sequence`` attribute — we dedupe on ``sequence`` (falling
+    back to the ``(country, doc_number)`` pair when ``sequence`` is
+    absent) so one priority filing isn't multiply counted. ``date`` is
+    omitted from an entry when OPS didn't carry one — the simple-family
+    comparison (``_patent_ingest.py``) treats a missing date as
+    "unparseable" for that entry, never guessing.
+    """
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for claim in _findall(root, "priority-claim"):
+        doc_id = _find(claim, "document-id")
+        if doc_id is None:
+            continue
+        country = _text(_find(doc_id, "country"))
+        number = _text(_find(doc_id, "doc-number"))
+        if not number:
+            continue
+        seq = claim.attrib.get("sequence")
+        key = seq if seq else f"{country}|{number}"
+        if key in seen:
+            continue
+        seen.add(key)
+        entry = {"country": country, "doc_number": number}
+        iso = _format_date(_text(_find(doc_id, "date")))
+        if iso:
+            entry["date"] = iso
+        out.append(entry)
+    return out
 
 
 def _extract_parties(root: ET.Element, *, party_kind: str) -> list[dict[str, str]]:

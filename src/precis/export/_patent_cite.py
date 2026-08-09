@@ -1,10 +1,16 @@
-"""In-text citation strings for ``doc_type=patent`` export (slice 6).
+"""Patent citation strings — in-text (``doc_type=patent`` export, slice 6)
+and bibliography-line (docs/backlog/patent-evidence-parity.md Phase 3).
 
 A patent **specification** cites prior art *in the running text* by number
 ("U.S. Patent No. 2,943,737") with **no bibliography** — unlike a paper,
-which gets ``\\cite`` + a reference list. These formatters render the
-in-text string from a patent (or paper) ref's ``meta``. Pure — no store,
-no I/O. See ``docs/backlog/patent-authoring-loop.md`` (export reconciliation).
+which gets ``\\cite`` + a reference list. :func:`format_patent_citation` /
+:func:`paper_inline_citation` render that in-text string. A context that
+*does* carry a reference list — a paper-mode draft's bibliography, a
+taproot hub's evidence listing — instead wants a full prose line (applicant,
+title, publication number + kind code, year); that's
+:func:`format_patent_bibliography_entry`. All render from a ref's
+``meta``/top-level fields. Pure — no store, no I/O.
+See ``docs/backlog/patent-authoring-loop.md`` (export reconciliation).
 """
 
 from __future__ import annotations
@@ -140,3 +146,45 @@ def paper_inline_citation(ref: Any) -> str:
     if title:
         return f"“{title!s}”"
     return str(getattr(ref, "slug", None) or "")
+
+
+def format_patent_bibliography_entry(ref: Any) -> str:
+    """A patent ref → one prose bibliography-line citation, for a context
+    that DOES carry a reference list (a paper-mode draft's bibliography, a
+    taproot hub's evidence listing) — as opposed to
+    :func:`format_patent_citation` / :func:`paper_inline_citation`, which
+    serve the patent-specification in-text convention (no bibliography at
+    all).
+
+    ``<Applicant(s)>. <Title>. <publication number><kind code>, <year>.``
+    Mirrors the field order of a paper citation (contributor, title,
+    venue/identifier, date) with the patent-side fields
+    :mod:`precis.handlers.patent` ingest actually populates. Every field is
+    independently optional — an OPS biblio may lack applicants, and a ref
+    ingested before the ``publication_date`` → ``refs.year`` backfill
+    (docs/backlog/patent-evidence-parity.md Phase 1) may lack a year —
+    an absent field is silently dropped, never raised on, and a
+    thinly-populated ref still falls back to its slug so the line is never
+    empty.
+    """
+    meta = getattr(ref, "meta", None) or {}
+    applicants = meta.get("applicants") or []
+    applicant = "; ".join(
+        a.get("name", "") for a in applicants if isinstance(a, dict) and a.get("name")
+    )
+    title = str(getattr(ref, "title", None) or "").strip()
+    doc_number = str(meta.get("doc_number") or "").strip()
+    kind_code = str(meta.get("kind_code") or "").strip().upper()
+    number = f"{doc_number}{kind_code}" if doc_number else ""
+    year = getattr(ref, "year", None)
+    if not year:
+        pub_date = meta.get("publication_date")
+        if isinstance(pub_date, str) and pub_date[:4].isdigit():
+            year = pub_date[:4]
+
+    line = ". ".join(s for s in (applicant, title, number) if s)
+    if year:
+        line = f"{line}, {year}" if line else str(year)
+    if not line:
+        line = str(getattr(ref, "slug", None) or "").upper() or "[patent]"
+    return f"{line}."
