@@ -109,18 +109,6 @@ dry-run by default, `APPLY=1` to mutate, DSN from the com.precis.web plist.
    WIP=1 loop re-evaluates one at a time (a duplicate proposal still
    dispatches fresh under the new engine token).
 
-## Open: one USER-RUN prod step
-
-The scorecard-axis swap shipped (below), but quest 164903's stamped
-`rubric_objectives` still name `side_span_margin` — until renamed, the
-frontier ranks on a measure the new summarize contract never populates
-(candidates sit "awaiting", a stall not a corruption). AFTER deploying the
-swap, run `rename_axes_164903.py` (session scratchpad — pipe to melchior
-via `ssh melchior 'cat > /tmp/rename_axes_164903.py' < …`; no SFTP):
-renames the objective key, nulls legacy `side_span_margin`/`trap_depth`
-measures on all candidates, logs a `decision` entry. Dry-run default,
-`APPLY=1` to mutate. Delete this section once run.
-
 ## Residuals
 
 Resolved (2026-08-09, this cycle — kept one commit for context, then prune):
