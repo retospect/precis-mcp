@@ -43,14 +43,17 @@ Status 2026-08-09:
     candidate so the 234 unreaped stale-engine seeds re-dispatch clean on 0.7,
     [[catpath-barrier-trust]]).
 
-- **Deploy is the remaining precis-side step** (NOT done by `/land`;
-  prod-mutating, needs a user go): `scripts/deploy` reinstalls the worker venv
-  from `main` but `redeploy-precis.yml` does **not** include the autocatpath
-  play — the engine bump to 0.7 needs the standalone
-  `ansible-playbook playbooks/44-autocatpath.yml` (`--refresh-package
-  autocatpath` pulls 0.7 into the worker venv). After deploy, confirm a fresh
-  seed lands `result.json` under the wall and check `results.json.neb_schedule`
-  (refined vs skipped) to see the prune actually firing.
+- **Deployed 2026-08-09** (both steps — the engine bump needs two, see
+  [[catpath-dev-deploy]]): `scripts/deploy` shipped the `compute.py` dispatch
+  change (epoch/dtype/best_first) to melchior + all venvs, and
+  `ansible-playbook playbooks/44-autocatpath.yml` pulled **autocatpath 0.7.0**
+  into the spark GPU worker venv (verified `autocatpath.__version__ == 0.7.0`,
+  worker restarted). **Open confirmation:** watch the first fresh seed
+  dispatched on 0.7 — does it land `result.json` *under* the ~3 h wall, and
+  does its `results.json.neb_schedule` list `skipped` edges (proof the prune is
+  firing)? The old-engine seed `auj_2t19` was still running float64 at deploy
+  time and will finish/wall-kill on its own; the epoch re-key re-dispatches the
+  234 stale candidates clean on 0.7.
 
 - **`pose_count` is dead — removed in 0.6.0.** Never consumed by the engine
   (pose diversity comes from `search.seeds` + `bind_reseat_attempts`); old
