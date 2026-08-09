@@ -1989,8 +1989,9 @@ class TestTierConfigMapping:
     """:func:`compute._apply_tier_config` — the tier→catpath-config overlay
     (pure, no store): screening = relax-only ranking (``search.screening``
     + ``template=parked``), verify = the same NEB search over
-    ``template=coadsorbed``, neb = frontier-first NEB scheduling overlay
-    (``search.neb_schedule=best_first``) unless the caller pinned a schedule."""
+    ``template=coadsorbed``, neb = the fast-screening NEB stack overlay
+    (``neb_schedule=best_first`` + ``neb_optimizer=neb-ode`` + ``neb_batched``)
+    unless the caller pinned a schedule."""
 
     _CFG = {"substrate": "NO", "target": "NH3", "search": {"seeds": [0, 1, 2]}}
 
@@ -2012,9 +2013,13 @@ class TestTierConfigMapping:
         assert out["template"] == "coadsorbed"
         assert out["search"] == self._CFG["search"]
 
-    def test_neb_tier_overlays_best_first_schedule(self) -> None:
+    def test_neb_tier_overlays_fast_screening_stack(self) -> None:
         out = compute_mod._apply_tier_config(self._CFG, compute_mod._TIER_NEB)
+        # the fast-screening NEB stack: frontier-first scheduling + neb-ode
+        # optimizer + intra-band batching (autocatpath 0.7/0.8/0.9)
         assert out["search"]["neb_schedule"] == "best_first"
+        assert out["search"]["neb_optimizer"] == "neb-ode"
+        assert out["search"]["neb_batched"] is True
         # other search keys survive the overlay; no template pinned
         assert out["search"]["seeds"] == [0, 1, 2]
         assert "template" not in out
@@ -2156,10 +2161,14 @@ class TestDispatchAutocatpath:
         for _job_id, jmeta in seed_jobs:
             params = jmeta.get("params") or {}
             # the exported slab rides along and the reaction config (neb tier,
-            # best_first overlay) is carried on every seed unit
+            # fast-screening NEB stack overlay) is carried on every seed unit
             assert params["config"] == {
                 **self._RX,
-                "search": {"neb_schedule": "best_first"},
+                "search": {
+                    "neb_schedule": "best_first",
+                    "neb_optimizer": "neb-ode",
+                    "neb_batched": True,
+                },
             }
             assert (
                 isinstance(params["slab_extxyz"], str)
@@ -2193,9 +2202,16 @@ class TestDispatchAutocatpath:
         compute_mod.dispatch_autocatpath(store, sid, self._RX)  # no tier= given
         seed_jobs = self._seed_jobs(store, sid)
         assert seed_jobs
-        # the neb tier overlays frontier-first NEB scheduling; the rest of the
+        # the neb tier overlays the fast-screening NEB stack; the rest of the
         # reaction config is carried through untouched.
-        expected = {**self._RX, "search": {"neb_schedule": "best_first"}}
+        expected = {
+            **self._RX,
+            "search": {
+                "neb_schedule": "best_first",
+                "neb_optimizer": "neb-ode",
+                "neb_batched": True,
+            },
+        }
         for _jid, jmeta in seed_jobs:
             assert jmeta["params"]["config"] == expected
         (agg_id,) = self._agg_todo_ids(store, sid)

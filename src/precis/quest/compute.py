@@ -76,15 +76,32 @@ def _apply_tier_config(config: dict[str, Any], tier: str) -> dict[str, Any]:
       barrier scalar at all (never special-cased here — the harvest side
       just sees an empty/thermo-only summary and lets that flow, see
       :func:`_autocatpath_measures_from_job`).
-    * ``neb`` — the straight-to-NEB refine tier, overlaid with autocatpath
-      0.7's ``search.neb_schedule="best_first"``: relax every endpoint first,
-      then run NEBs frontier-first on the lowest-optimistic-span route and
-      prune any route whose optimistic span (a thermodynamic *lower bound* on
-      its true TS) can't come within ``neb_margin`` of the best refined span.
-      Pruning is provably safe — it can only skip work, never hide a
-      competitive route — so it buys back the NEB cost of far-uphill
-      side-product forks (the seed-wall-overrun lever). An explicit
-      ``search.neb_schedule`` in the caller config wins.
+    * ``neb`` — the straight-to-NEB refine tier, overlaid with autocatpath's
+      fast-screening NEB stack (three ``search`` knobs, each a *default* an
+      explicit caller key overrides; a caller-pinned ``neb_schedule`` suppresses
+      the whole overlay, preserving the "hand-tuned NEB config wins wholesale"
+      contract):
+
+      - ``neb_schedule="best_first"`` (0.7): relax every endpoint first, then
+        run NEBs frontier-first on the lowest-optimistic-span route and prune
+        any route whose optimistic span (a thermodynamic *lower bound* on its
+        true TS) can't come within ``neb_margin`` of the best refined span.
+        Pruning is provably safe — skips work, never hides a competitive route
+        — buying back the NEB cost of far-uphill side-product forks.
+      - ``neb_optimizer="neb-ode"`` (0.8): ASE's adaptive NEBOptimizer in place
+        of dense-Hessian BFGS — benchmarked HERE on Pd(111)+N* at ~5× fewer
+        MLIP evals for the same barrier in the screening regime (the per-seed
+        cost lever; docs/backlog/autocatpath-seed-wall-overruns.md).
+      - ``neb_batched=True`` (0.9, MACE-dtype fix 0.9.1, tether-guard fix
+        0.11): one MLIP forward per step over all interior images instead of a
+        serial loop — GPU-utilisation on a batch-capable backend, physics-
+        identical with a runtime self-check that degrades to serial on any
+        mismatch. Composes with ``neb-ode`` on the single-band path (unlike the
+        inter-band ``neb_pool_size``, which the pipeline doesn't feed yet).
+
+      Together these target the seed-wall overrun: fewer edges NEB'd
+      (best_first), fewer evals per edge (neb-ode), and each eval GPU-saturated
+      (batched).
     * ``verify`` — the same NEB search, but ``template="coadsorbed"`` (drops
       the fragment-parking approximation) AND left exhaustive (no best_first
       overlay): the authoritative final pass re-refines every step, removing
@@ -101,12 +118,21 @@ def _apply_tier_config(config: dict[str, Any], tier: str) -> dict[str, Any]:
         return cfg
     if tier == _TIER_VERIFY:
         return {**config, "template": "coadsorbed"}
-    # neb (or an unrecognized tier): frontier-first NEB scheduling unless the
-    # caller pinned a schedule explicitly.
+    # neb (or an unrecognized tier): the fast-screening NEB stack (best_first
+    # scheduling + neb-ode optimizer + intra-band batching) unless the caller
+    # pinned a schedule explicitly (then the whole hand-tuned NEB config wins).
     search = config.get("search") or {}
     if "neb_schedule" in search:
         return config
-    return {**config, "search": {**search, "neb_schedule": "best_first"}}
+    return {
+        **config,
+        "search": {
+            **search,
+            "neb_schedule": "best_first",
+            "neb_optimizer": "neb-ode",
+            "neb_batched": True,
+        },
+    }
 
 
 @dataclass(frozen=True)
@@ -434,7 +460,11 @@ def _autocatpath_wall_seconds() -> int:
 #: bump still dedup-pins stale jobs, so keep bumping the pin with every
 #: adoption.
 _AUTOCATPATH_VERSION_ENV = "PRECIS_AUTOCATPATH_VERSION"
-_AUTOCATPATH_CACHE_EPOCH = "0.7.0"
+#: Kept in sync with the pyproject ``autocatpath`` pin floor so the
+#: metadata-less fallback re-keys with the primary derivation; the pin bump is
+#: the real re-key lever (:func:`_autocatpath_pinned_version` wins whenever
+#: dist metadata exists, which it always does on a dispatch host).
+_AUTOCATPATH_CACHE_EPOCH = "0.11.0"
 
 #: Precis-side summary-contract revision folded into the idem keys
 #: alongside the engine token: a completed job's reusable artifact
