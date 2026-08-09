@@ -52,7 +52,7 @@ class ClaudeProcessError(RuntimeError):
         self.returncode = returncode
         #: True when this failure is a wall-clock timeout (vs a non-zero exit /
         #: missing binary) — a transient *unavailability* the router classifies
-        #: as ``paused`` (retry), not a semantic error (ADR 0066 §5a).
+        #: as ``paused`` (retry), not a semantic error.
         self.timed_out = timed_out
 
 
@@ -102,7 +102,7 @@ def run_claude(
 
     ``cwd`` runs the subprocess from a specific directory — used by the
     planner tick to spawn from a CLAUDE.md-free neutral cwd so ``claude -p``
-    discovers no ambient project persona (ADR 0051 §12). ``None`` inherits
+    discovers no ambient project persona. ``None`` inherits
     the caller's working directory (today's behaviour).
 
     ``env`` is always COPIED before use, never mutated in place — a caller

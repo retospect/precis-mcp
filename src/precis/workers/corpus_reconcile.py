@@ -6,7 +6,7 @@ the path where it found the file, or ``''`` when it looked and the file was
 absent. The draft reader then reads that ledger (``Store.pdf_missing``) instead
 of re-stat-ing at request time, so "held but missing" (the red ▲) becomes a
 corpus-wide fact — independent of which mounts the *web* process happens to
-have (ADR 0029).
+have.
 
 Pass shape (mirrors ``sweeper`` — a SQL/FS ref-pass, no chunk claim):
 

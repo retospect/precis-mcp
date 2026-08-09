@@ -255,7 +255,7 @@ class TestRunInProcessGroup:
 
     If the batch subprocess is OOM-killed, that detached surya server
     is reparented to init and keeps holding ~19 GB of unified memory —
-    an unbounded leak (ADR 0015). ``_run_in_process_group`` puts the
+    an unbounded leak. ``_run_in_process_group`` puts the
     whole batch in its own process group and unconditionally
     ``killpg``s it on every exit path, so any grandchild orphan dies
     with the batch. This is proven with a synthetic (marker-free)

@@ -1,9 +1,9 @@
 """Taproot Phase 2 — the single write door for claim hubs + evidence edges.
 
 Build ticket: ``docs/backlog/taproot-phase2-hub-node.md``; governance:
-ADR 0073; design: ``docs/backlog/taproot.md`` §"The core model".
+Taproot evidence relations; design: ``docs/backlog/taproot.md`` §"The core model".
 
-**Single write path (open #16, ADR 0073).** Every hub-finding and every
+**Single write path (open #16).** Every hub-finding and every
 ``establishes``/``corroborates``/``contradicts`` evidence edge is written
 through this module. A raw ``INSERT`` / ``store.add_link`` for these
 relations elsewhere bypasses the vocabulary + ``TAPROOT:claim`` guards below
@@ -59,7 +59,7 @@ log = logging.getLogger(__name__)
 HUB_ROLES: frozenset[str] = frozenset({"establishes", "corroborates", "contradicts"})
 
 #: Claim→claim advisory link relations a hub may carry to ANOTHER hub
-#: (migration 0100, ADR 0073 amendment). ``refines`` = "source hub is a
+#: (migration 0100, taproot evidence relations amendment). ``refines`` = "source hub is a
 #: sharper/reworded version of the target hub" — link-don't-merge, NO
 #: evidence flow (each hub keeps its own paper→hub edges). Written through
 #: :func:`link_claims` (the single write door), distinct from the paper→hub
@@ -198,7 +198,7 @@ def mint_hub(
     (:func:`apply_placement`, driven by the canonicalizer over a paper chunk)
     supplies that provenance — this primitive just writes the hub.
 
-    The hub is a ``finding`` (reuse, not a new kind — ADR 0054 precedent):
+    The hub is a ``finding`` (reuse, not a new kind — the argument graph precedent):
     ``claim.sentence`` → ``title`` (list-view scannability) *and* a
     ``finding_body`` chunk at ``ord=0`` (so it embeds + full-text-searches,
     and the card pass emits the ``card_combined`` that :func:`canon.block`
@@ -207,7 +207,7 @@ def mint_hub(
     door is ``FindingHandler.put`` (pub_id dedup + a frontier ``derived-from``);
     taproot dedups upstream via canonicalization, so the hub write is direct.
 
-    Citability (slice F, ADR 0002): the hub also gets a ``pub_id`` written
+    Citability (slice F): the hub also gets a ``pub_id`` written
     to ``ref_identifiers`` — the same 6-char ``[a-z2-7]`` handle
     ``FindingHandler.put`` mints — so agent draft prose can cite it as
     ``[ab12c3]`` and ``precis resolve`` / ``refeye.resolve_link_targets``
@@ -218,7 +218,7 @@ def mint_hub(
     the pub_id is deterministic per canonicalized claim.
 
     **Converge-to-attach on a pub_id collision.** A freshly minted hub's
-    ``card_combined`` chunk + embedding are written *async* (ADR 0007 —
+    ``card_combined`` chunk + embedding are written *async* (the derived queue —
     card_forge/embed run later), so :func:`~precis.taproot.canon.block` can
     return zero candidates for a claim whose hub was just minted but not
     yet embedded. Two findings asserting the identical claim (successive
@@ -586,7 +586,7 @@ def link_claims(
     must differ (a hub can't refine itself).
 
     This is the single write door for claim→claim links, the sibling of
-    :func:`attach_evidence` for paper→hub evidence edges (ADR 0073 open #16).
+    :func:`attach_evidence` for paper→hub evidence edges (open #16).
     Unlike evidence, a claim-link carries **no evidence flow** — the hubs keep
     their own paper→hub edges; the link is surfaced read-only by the fisheye
     Claims ring (:mod:`precis.utils.refeye`). Idempotent: an identical

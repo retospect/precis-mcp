@@ -243,7 +243,7 @@ def add_batch_parser(sub: argparse._SubParsersAction) -> None:
         description=(
             "Internal: ingest a batch of PDFs into the v2 schema and "
             "exit. Memory leaks accumulated inside Marker / surya are "
-            "reclaimed at process exit. See ADR 0015."
+            "reclaimed at process exit. "
         ),
     )
     p.add_argument("pdfs", nargs="+", type=Path)
@@ -361,7 +361,7 @@ def watch(
     extract_blocks_marker`). ``0`` disables the guard. When
     ``subprocess_batch_size > 0``, individual PDFs inside a batch
     child stay unguarded (re-paying Marker's ~15s model load per PDF
-    would defeat ADR 0015's batching); instead the *parent* bounds
+    would defeat marker-leak mitigation's batching); instead the *parent* bounds
     each batch subprocess's wall clock to
     ``len(batch) * marker_timeout_s`` and kills+continues on expiry.
     """
@@ -1160,7 +1160,7 @@ def _run_in_process_group(
     this batch subprocess is OOM-killed, that detached surya server is
     reparented to init (ppid=1) and keeps holding ~19 GB of unified
     memory — an unbounded leak that thrash-locks the host and breaks
-    ADR 0015's per-batch-reclaim assumption (root-caused on spark:
+    Marker-leak mitigation's per-batch-reclaim assumption (root-caused on spark:
     global kernel OOM + NVRM GPU-memory exhaustion). ``start_new_session
     =True`` makes *cmd* (and any grandchildren it spawns, including a
     detached surya) a new session/group leader, so the group id equals
@@ -1174,7 +1174,7 @@ def _run_in_process_group(
 
     ``timeout_s=None`` (the default) blocks forever, unchanged from the
     original behavior. A wedged Marker/torch call inside the batch
-    child can't be interrupted any other way (P2-3) — ADR 0014's lock-
+    child can't be interrupted any other way (P2-3) — PDF metadata write-back's lock-
     file recovery handles the PDF that was in flight when this fires.
     """
     proc = subprocess.Popen(cmd, env=env, start_new_session=True)
@@ -1234,9 +1234,9 @@ def _spawn_batch_subprocess(
     batch's* wall clock to ``len(pdfs) * marker_timeout_s`` rather than
     guarding each PDF inside the child individually — a per-PDF
     subprocess inside the batch child would re-pay Marker's ~15s model
-    load per file, exactly what ADR 0015's batching exists to avoid.
+    load per file, exactly what marker-leak mitigation's batching exists to avoid.
     On expiry the batch's process group is killed and this returns;
-    ADR 0014's lock-file recovery handles the PDF that was in flight.
+    PDF metadata write-back's lock-file recovery handles the PDF that was in flight.
     """
     if not pdfs:
         return
@@ -1284,7 +1284,7 @@ def _spawn_batch_subprocess(
             "precis watch: batch subprocess for %d PDF(s) exceeded its "
             "%.0fs wall-clock budget (marker-timeout-s=%.0f x batch size) "
             "and was killed; the in-flight PDF's lock file is recovered "
-            "per ADR 0014, remaining PDFs retried on the next backfill",
+            "per PDF metadata write-back, remaining PDFs retried on the next backfill",
             len(pdfs),
             batch_timeout_s or 0.0,
             marker_timeout_s or 0.0,

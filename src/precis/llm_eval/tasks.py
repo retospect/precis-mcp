@@ -3,7 +3,7 @@
 A gold set is a JSON list of tasks, each drawn (ideally) from precis's *own*
 workload — "own workload is the benchmark, not academia". The curated,
 version-controlled sets live under ``scripts/llm_eval/gold_set/`` (mirroring the
-ADR-0047 classifier precedent); a small seed ships as package data
+controlled chunk tagging classifier precedent); a small seed ships as package data
 (:func:`default_gold_path`) so ``precis llm eval`` runs out of the box.
 
 Each task is one JSON object::

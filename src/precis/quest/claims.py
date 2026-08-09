@@ -12,7 +12,7 @@ background pass (that's the v1 promotion the design defers). The rung-6d weave
 consumes this function's output directly and does the citation-minting +
 verification itself.
 
-Selector: ``own_chunks`` reads the ``ROLE3:own`` chunk tags ADR 0047's
+Selector: ``own_chunks`` reads the ``ROLE3:own`` chunk tags controlled chunk tagging's
 ``classify`` cascade already writes (``workers/classify.py``) — "the paper's
 own contribution" is exactly the signal claims need, and it's sparse by
 design (most of a paper is background/furniture, not asserted here). A paper
@@ -73,7 +73,7 @@ def own_chunks(store: Any, paper_ref_id: int) -> list[dict[str, Any]]:
 
     Returns ``[{"ord": int, "handle": str, "text": str}, ...]`` in document
     order. ``handle`` is the computed ``pc<chunk_id>`` universal handle
-    (ADR 0036) — chunks carry no stored ``handle`` column, so it's formed
+     — chunks carry no stored ``handle`` column, so it's formed
     from ``chunk_id`` via ``handle_registry.format_handle``. Empty when the
     paper has no ``ROLE3:own`` tags (unclassified, or genuinely no
     own-contribution paragraphs).

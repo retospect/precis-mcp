@@ -11,7 +11,7 @@ Summaries, picked via flags:
   outstanding. Complements ``precis stubs`` (which lists the
   backlog row-by-row); this command answers "how big is the
   backlog?" without dumping it.
-* ``--argument`` — the ADR 0054 argument-graph corpus report (build
+* ``--argument`` — the argument graph argument-graph corpus report (build
   order step 5): inferences resting on a retracted/concerned source
   (``STALE:retracted-premise``), inferences carrying an inherited,
   unaddressed caveat, and open ``contradicts`` edges between
@@ -81,7 +81,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "shows counts per STATUS: value (tracing / established / "
             "multi_candidate / dead_chain). ``--stubs`` shows the "
             "stub paper backlog (PDFs the chase worker wants but "
-            "doesn't have yet). ``--argument`` shows the ADR 0054 "
+            "doesn't have yet). ``--argument`` shows the argument graph "
             "argument-graph corpus report (retracted-source ripple, "
             "unaddressed caveats, open contradictions). Default: print "
             "all sections."
@@ -100,7 +100,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     p.add_argument(
         "--argument",
         action="store_true",
-        help="Show the argument-graph corpus report (ADR 0054).",
+        help="Show the argument-graph corpus report.",
     )
     p.add_argument(
         "--utilization",
@@ -274,7 +274,7 @@ def _query_stubs(store: Store) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# Argument-graph corpus report (ADR 0054 §5, build order step 5)
+# Argument-graph corpus report (build order step 5)
 # ---------------------------------------------------------------------------
 
 
@@ -317,7 +317,7 @@ def _query_argument_caveats(store: Store) -> list[dict[str, Any]]:
     (caveat → premise) edge.
 
     Every caveat is "unaddressed" in v1 — edge-scoped discharge
-    (``meta.addresses``) is phase 2 (ADR 0054 §7/R6), so there is no
+    (``meta.addresses``) is phase 2, so there is no
     "addressed here" bucket to subtract yet; this list is exhaustive of
     every inference carrying an inherited caveat.
     """
@@ -424,9 +424,9 @@ def _query_llm_gaps(store: Store, hours: float) -> list[dict[str, Any]]:
 
 def _query_argument_contradictions(store: Store) -> list[dict[str, Any]]:
     """Open ``contradicts`` edges where both endpoints are argument-graph
-    nodes (finding / kind:lemma / kind:inference) — the surface ADR 0051's
-    blackboard *pulls* (ADR 0054 Consequences: "0054 exposes it, adds no
-    hook"). One row per edge; ``a`` is the ``contradicts`` source.
+    nodes (finding / kind:lemma / kind:inference) — the surface the
+    persona-threads blackboard *pulls* (the argument graph exposes it, adds
+    no hook). One row per edge; ``a`` is the ``contradicts`` source.
     """
     sql = (
         "SELECT a.ref_id, a.title, b.ref_id, b.title "

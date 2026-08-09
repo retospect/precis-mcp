@@ -99,9 +99,8 @@ def propose_fix(req: FixRequest, *, model: str | None = None) -> dict[str, str]:
     """Ask the LLM for corrected field values. Returns only changed fields whose
     names exist on the note (a hallucinated field name is dropped).
 
-    Routes through the ADR 0046 seam (:func:`~precis.utils.llm.router.dispatch`)
-    on the ``MEDIUM`` tier so the ``/factory`` backend switch reaches it
-    (ADR 0046 unit 4b). Under the default ``anthropic`` backend this resolves to
+    Routes through the LLM routing seam (:func:`~precis.utils.llm.router.dispatch`)
+    on the ``MEDIUM`` tier so the ``/factory`` backend switch reaches it. Under the default ``anthropic`` backend this resolves to
     the ``claude_p`` transport — the same one-shot JSON judge the direct call
     used — and ``LlmResult.data`` carries the parsed dict exactly as
     ``ClaudePResult.data`` did; when ``PRECIS_LLM_BACKEND=openai`` the OSS

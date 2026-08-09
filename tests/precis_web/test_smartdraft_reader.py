@@ -71,7 +71,7 @@ class SmartDraftFakeStore(FakeStore):
                 1,
             ),
             _sd_chunk(3, "paragraph", "Second body paragraph about beta topics.", 1),
-            # A table chunk (ADR 0035 §1) — exercises the shared tableEditor
+            # A table chunk — exercises the shared tableEditor
             # grid (gripe 56746) in the smartdraft focus pane.
             _sd_chunk(
                 4,
@@ -80,7 +80,7 @@ class SmartDraftFakeStore(FakeStore):
                 1,
                 meta={"table": {"header": ["A", "B"], "rows": [["1", "2"]]}},
             ),
-            # A blob-backed figure (ADR 0034/0058) — exercises the shared
+            # A blob-backed figure — exercises the shared
             # figure media render + clearance badge (gripe 56668) in the
             # smartdraft focus pane + the Collaborate pane's clearance list.
             _sd_chunk(
@@ -90,7 +90,7 @@ class SmartDraftFakeStore(FakeStore):
                 0,
                 meta={"figure": {"origin": "original"}},
             ),
-            # A registry term (ADR 0052) carrying a dedicated ``abbrev``
+            # A registry term carrying a dedicated ``abbrev``
             # (gripe 56690) — exercises ChunkNode.is_term / term_abbrev and
             # the Collaborate-pane "occurs in N places" backlink rail.
             _sd_chunk(
@@ -175,8 +175,8 @@ class SmartDraftFakeStore(FakeStore):
         return None
 
     def has_chunk_blob(self, chunk_id) -> bool:
-        # The fixture figure (chunk_id=5) is a real blob-backed image (ADR
-        # 0058 medium resolver) — mirrors DraftFakeStore's FIGFIG.
+        # The fixture figure (chunk_id=5) is a real blob-backed image (the
+        # medium resolver) — mirrors DraftFakeStore's FIGFIG.
         return chunk_id == 5
 
 

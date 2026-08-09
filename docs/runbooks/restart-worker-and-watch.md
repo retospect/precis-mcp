@@ -30,4 +30,4 @@ the script prints a warning and exits non-zero for that service.
 
 ## Why this exists
 
-See `OPEN-ITEMS.md` / "Architecture review / compaction / footguns".
+See the related `docs/backlog/` items.

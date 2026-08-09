@@ -1,5 +1,5 @@
 # v2 vocabulary (still version: 1 — never applied, pre-Round-0 edits
-# are free; ADR 0047 §7). Refactored to a pure *epistemic mode* axis:
+# are free). Refactored to a pure *epistemic mode* axis:
 # how does the paper know what it claims? The old theory-dft/theory-md
 # split was method flavor, which now lives in the chunk-level method:
 # axis; the old `characterization` value is absorbed by the two

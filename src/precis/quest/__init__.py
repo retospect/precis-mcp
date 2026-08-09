@@ -17,13 +17,13 @@ Package-level invariants (each enforced where named):
   fabricates a dispatch or picks chemistry (``tick``).
 - **Infra failure is never a physical verdict.** A failed relax or
   autocatpath job retries once then gripes — it is never ``ruled-out:``
-  (``compute``; ADR 0064 §C).
+  (``compute``; dossier-owned-by-process).
 - **Untrusted barriers don't rank.** A pathway with NEB-not-converged /
   adsorbate-detached warnings is excluded from the frontier and can never
   graduate (``compute._pathway_quality`` → ``frontier`` → ``graduate``).
 - **Loop existence is reconciled, not allocated.** ``loop`` guarantees one
   live coordinator per active quest (idempotent re-mint, reboot-orphan reap,
-  failed-rest backoff, ADR 0065); ``allocator`` backs only the manual
+  failed-rest backoff); ``allocator`` backs only the manual
   ``precis quest run`` one-shot.
 - **Human-set knobs the LLM may not tune**: ``meta.rubric_composite`` and
   ``meta.tier_ladder`` (screening→neb→verify) are written at seed time only.

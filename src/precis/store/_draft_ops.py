@@ -1,4 +1,4 @@
-"""Store ops for the editable `draft` kind (ADR 0033).
+"""Store ops for the editable `draft` kind.
 
 Drafts use chunk columns the append-only ingest path never touches —
 `handle` (opaque anchor), `pos` (sibling-scoped fractional order),
@@ -111,14 +111,14 @@ def _remap_intra_draft_xrefs(
 class DraftChunk:
     chunk_id: int
     ref_id: int
-    handle: str  # legacy ADR-0033 base-58 anchor (internal key, retiring)
+    handle: str  # legacy the draft editable-document model base-58 anchor (internal key, retiring)
     chunk_kind: str
     text: str
     pos: str
     parent_chunk_id: int | None
     depth: int
     meta: dict[str, Any] = field(default_factory=dict)
-    #: Owning ref kind — ``'draft'`` (default) or ``'plan'`` (ADR 0051 §2b).
+    #: Owning ref kind — ``'draft'`` (default) or ``'plan'``.
     #: Drives the ``.dc`` handle code so plan chunks render ``pe<id>`` while
     #: drafts stay ``dc<id>``. The chunk *columns* are identical; only the
     #: handle namespace differs.
@@ -126,7 +126,7 @@ class DraftChunk:
 
     @property
     def dc(self) -> str:
-        """ADR 0036 universal handle for this chunk (``dc42`` for a draft,
+        """Universal handle for this chunk (``dc42`` for a draft,
         ``pe42`` for a plan). The agent-facing address; supersedes the legacy
         ``¶<base58>``."""
         return handle_registry.format_handle(self.kind, self.chunk_id, chunk=True)
@@ -145,13 +145,13 @@ class TocEntry:
     keywords: list[str]
     gist: str | None
     chunk_id: int = 0
-    #: Owning ref kind — ``'draft'`` (default) or ``'plan'`` (ADR 0051 §2b);
+    #: Owning ref kind — ``'draft'`` (default) or ``'plan'``;
     #: drives the ``.dc`` handle code (see :class:`DraftChunk`).
     kind: str = "draft"
 
     @property
     def dc(self) -> str:
-        """ADR 0036 universal handle for this heading (``dc42`` draft /
+        """Universal handle for this heading (``dc42`` draft /
         ``pe42`` plan)."""
         return handle_registry.format_handle(self.kind, self.chunk_id, chunk=True)
 
@@ -325,7 +325,7 @@ class DraftMixin:
     def draft_chunk_meta(self, handle: str) -> dict[str, Any]:
         """The raw ``chunks.meta`` JSON for a draft chunk (``{}`` if none).
         Not on :class:`DraftChunk` — read it when re-deriving a table's
-        markdown from its canonical ``meta.table`` (ADR 0035 §1)."""
+        markdown from its canonical ``meta.table``."""
         with self.pool.connection() as conn:
             row = conn.execute(
                 "SELECT meta FROM chunks WHERE handle = %s", (_bare(handle),)
@@ -366,8 +366,8 @@ class DraftMixin:
             return None
         kind, _is_chunk, chunk_id = parsed
         if kind == "cad":
-            # cad node handles (ca<id>) live in cad_nodes, not chunks
-            # (ADR 0041 Amendment 1) — read via get(view=…), not this hover.
+            # cad node handles (ca<id>) live in cad_nodes, not chunks —
+            # read via get(view=…), not this hover.
             return None
         with self.pool.connection() as conn:
             row = conn.execute(
@@ -440,9 +440,9 @@ class DraftMixin:
     def get_draft_chunk(self, handle: str, *, kind: str = "draft") -> DraftChunk | None:
         """A single live-or-retired draft/plan chunk by its address.
 
-        Accepts the ADR 0036 universal handle (``dc<chunk_id>`` draft /
+        Accepts the universal handle (``dc<chunk_id>`` draft /
         ``pe<chunk_id>`` plan — looked up by ``chunk_id``) or the legacy
-        ADR-0033 ``¶<base58>`` / bare base-58 anchor (looked up by
+        The draft editable-document model ``¶<base58>`` / bare base-58 anchor (looked up by
         ``chunks.handle``). ``kind`` sets the handle namespace of the returned
         chunk (so a plan chunk renders ``pe<id>``) and, for a universal-handle
         address, the code prefix that must match."""
@@ -477,7 +477,7 @@ class DraftMixin:
     def draft_relative_chunk_ids(
         self, addr: str, *, kind: str = "draft"
     ) -> list[int] | None:
-        """Resolve an ADR 0036 relative draft/plan handle to target chunk
+        """Resolve a relative draft/plan handle to target chunk
         id(s).
 
         ``dc<id>^N`` walks ``N`` ancestors (via ``parent_chunk_id``);
@@ -840,7 +840,7 @@ class DraftMixin:
             reqs.sort(key=lambda r: _REQUEST_ORDER.get(r["status"], 9))
         return out
 
-    # ---- element→chunk bindings (ADR 0057) ------------------------------
+    # ---- element→chunk bindings ------------------------------
     #
     # A diagram (figure / mermaid) element is bound to the chunk it depicts
     # via a chunk-level ``depicts`` link from the diagram's SOURCE chunk to
@@ -1084,7 +1084,7 @@ class DraftMixin:
         """Citation tokens that resolve to a **live paper we hold** — the
         draft reader's local-vs-external colouring signal.
 
-        ``handles`` are ADR 0036 universal handles (``pc10`` a paper
+        ``handles`` are universal handles (``pc10`` a paper
         *chunk*, ``pa42624`` a paper *record*); ``slugs`` are ``§slug`` /
         ``paper:slug`` cite_keys. Returns the subset of tokens (the
         normalised handle string, or the slug) that point at a live
@@ -1511,7 +1511,7 @@ class DraftMixin:
         kind: str = "draft",
         relation: str = "draft-of",
     ) -> tuple[Any, DraftChunk]:
-        """Create a draft (or ``kind='plan'``, ADR 0051 §2b) ref bound 1:1 to
+        """Create a draft (or ``kind='plan'``) ref bound 1:1 to
         its project, born with a title `heading` chunk so it is never empty.
         ``relation`` is the project-binding link (``draft-of`` for a draft,
         ``plan-of`` for a plan) — each is 1:1 per project, so a project can own
@@ -1993,7 +1993,7 @@ class DraftMixin:
 
         ``split=False`` inserts ``text`` verbatim as a single chunk — used
         by chunks whose text is a derived projection that must not
-        fragment (a ``table``'s markdown render, ADR 0035 §1)."""
+        fragment (a ``table``'s markdown render)."""
         blocks = _split_blocks(text) if split else [text]
         with self.tx() as conn:
             parent, lo, hi = self._resolve_at(conn, ref_id, at)
@@ -2024,7 +2024,7 @@ class DraftMixin:
         at: dict[str, Any] | None = None,
         figure_meta: dict[str, Any] | None = None,
     ) -> DraftChunk:
-        """Add a single ``figure`` chunk (ADR 0034): the caption is the
+        """Add a single ``figure`` chunk: the caption is the
         face (``text`` — embedded, searchable), the image bytes go to
         ``chunk_blobs``, and ``meta.figure`` carries ``origin`` plus any
         provenance (e.g. the third-party ``permission`` paper-trail).
@@ -2072,7 +2072,7 @@ class DraftMixin:
 
     def has_chunk_blob(self, chunk_id: int) -> bool:
         """Cheap existence check for a chunk's blob — ``SELECT 1``, never
-        de-TOASTs the bytes. The figure-source resolver (ADR 0058) calls this
+        de-TOASTs the bytes. The figure-source resolver calls this
         for every figure at reader render time, so it must not pull megabytes."""
         with self.pool.connection() as conn:
             row = conn.execute(
@@ -2092,8 +2092,7 @@ class DraftMixin:
         """Insert or **replace** a chunk's blob (`chunk_blobs` row).
 
         Unlike :meth:`add_figure` (insert-only, at figure creation), this is
-        the render path: a computed figure's image is a *regenerable* artifact
-        (ADR 0035 §3), so re-rendering overwrites the bytes in place keyed on
+        the render path: a computed figure's image is a *regenerable* artifact, so re-rendering overwrites the bytes in place keyed on
         ``chunk_id``. Re-derives ``sha256`` / ``size`` / dims from the bytes."""
         sha = hashlib.sha256(image).hexdigest()
         width, height = _image_dims(image)
@@ -2117,7 +2116,7 @@ class DraftMixin:
                 _do(c)
 
     def figure_render_bundle(self, figure_chunk_id: int) -> dict[str, Any] | None:
-        """Everything the render pass needs for a computed `figure` (ADR 0035):
+        """Everything the render pass needs for a computed `figure`:
         its render recipe (`meta.render`) and, in plotted order, the `meta.table`
         payload + `content_sha` of each data chunk it `plots`.
 
@@ -2154,7 +2153,7 @@ class DraftMixin:
 
     def stamp_render_key(self, figure_chunk_id: int, cached_key: str) -> None:
         """Record a freshly-rendered figure's invalidation key at
-        ``meta.render.cached_key`` (ADR 0035 §3) — a later mark-stale pass
+        ``meta.render.cached_key`` — a later mark-stale pass
         compares it to the recomputed `hash(src, plotted data shas)`."""
         with self.tx() as conn:
             conn.execute(
@@ -2174,7 +2173,7 @@ class DraftMixin:
         """Stamp a figure chunk's `meta.render` recipe (the graph code). Set at
         creation of a computed figure and rewritten on a recipe edit; a rewrite
         clears any prior `cached_key`, so the figure is stale until re-rendered.
-        Logs a `recipe` chunk_event (ADR 0035 §2 — recipe history)."""
+        Logs a `recipe` chunk_event (computed chunks — recipe history)."""
 
         def _do(c: psycopg.Connection) -> None:
             c.execute(
@@ -2222,7 +2221,7 @@ class DraftMixin:
 
     def link_figure_canvas(self, figure_chunk_id: int, canvas_ref_id: int) -> None:
         """Wire a draft figure chunk → a ``kind='figure'`` canvas via a
-        ``has-figure`` link (ADR 0058, the ``canvas`` medium). Chunk→ref edge:
+        ``has-figure`` link (the ``canvas`` medium). Chunk→ref edge:
         the source is the figure *chunk*, the target the whole figure *ref*.
         Idempotent (``add_link`` dedups on the endpoint tuple)."""
         with self.tx() as conn:
@@ -2243,7 +2242,7 @@ class DraftMixin:
 
     def figure_canvas_ref(self, figure_chunk_id: int) -> int | None:
         """The live ``kind='figure'`` canvas ref linked from this figure chunk
-        via ``has-figure`` (ADR 0058), or ``None``. Joins ``refs`` so a
+        via ``has-figure``, or ``None``. Joins ``refs`` so a
         soft-deleted canvas reads as absent (the figure falls back to blob /
         placeholder)."""
         with self.pool.connection() as conn:
@@ -2262,7 +2261,7 @@ class DraftMixin:
 
     def figure_owning_draft(self, canvas_ref_id: int) -> tuple[int, int] | None:
         """The ``(draft_ref_id, anchor_chunk_id)`` that owns this figure canvas
-        via the reverse ``has-figure`` edge (ADR 0058), or ``None``.
+        via the reverse ``has-figure`` edge, or ``None``.
 
         The inverse of :meth:`figure_canvas_ref`: given a ``kind='figure'``
         canvas ref, find the live draft **chunk** whose caption drew it. Used by
@@ -2293,7 +2292,7 @@ class DraftMixin:
         origin: str | None = None,
         source: dict[str, Any] | None = None,
     ) -> DraftChunk | None:
-        """Update a figure chunk's provenance meta in place (ADR 0034):
+        """Update a figure chunk's provenance meta in place:
         replace ``meta.figure.permission`` and/or ``meta.figure.origin``,
         leaving the caption and image bytes untouched (no re-embed). Logs
         an ``edited`` event so the change shows in the chunk's history."""
@@ -2332,7 +2331,7 @@ class DraftMixin:
         return self.get_draft_chunk(handle)
 
     def set_chunk_style(self, handle: str, style: str | None) -> DraftChunk | None:
-        """Set (or clear) a heading chunk's section style (ADR 0037).
+        """Set (or clear) a heading chunk's section style.
 
         Writes ``meta.style`` (a skill slug) in place — metadata-only, so it
         never touches ``text``/``content_sha`` and triggers no re-embed.
@@ -2378,7 +2377,7 @@ class DraftMixin:
         mapped to ``None`` is **removed** (clear a marker), any other value
         set. Metadata-only, so ``text``/``content_sha`` are untouched and no
         re-embed fires. Logs an ``edited`` event. Used by the plan handler's
-        ``status``/``belief`` markers (ADR 0051 §2b). No-op on an empty patch."""
+        ``status``/``belief`` markers. No-op on an empty patch."""
         if not patch:
             return
         with self.tx() as conn:
@@ -2411,7 +2410,7 @@ class DraftMixin:
             )
 
     #: The manufacturing-part attribute bag + hover surfaces that
-    #: :meth:`set_term_attrs` may patch in place (ADR 0052 §2). ``registry``
+    #: :meth:`set_term_attrs` may patch in place. ``registry``
     #: and ``callout`` are structural (set at add-time / re-home) and are not
     #: patched here.
     _TERM_ATTR_KEYS = (
@@ -2425,7 +2424,7 @@ class DraftMixin:
 
     def set_term_attrs(self, handle: str, attrs: dict[str, Any]) -> DraftChunk | None:
         """Patch a ``term`` leaf's attribute bag / hover surfaces in place
-        (ADR 0052) — ``manufacturer``/``mpn``/``url``/``ordering`` and the
+         — ``manufacturer``/``mpn``/``url``/``ordering`` and the
         ``short``/``surface_forms`` surfaces. Metadata-only, so ``text`` and
         the embedding are untouched. A key set to ``None`` clears it; unknown
         keys are ignored. Rejected on a non-``term`` chunk."""
@@ -2613,7 +2612,7 @@ class DraftMixin:
         or ``None``.
 
         Walks ``parent_chunk_id`` from the chunk upward; the chunk itself
-        counts when it is a styled heading. ADR 0037: a section style
+        counts when it is a styled heading. The heading-styles + numbering lock: a section style
         governs the chunks within its heading's subtree, so the editor
         injects the *nearest* enclosing one when working on a chunk.
         Accepts any handle form (``dc<id>`` / ``¶base58`` / bare)."""
@@ -2642,7 +2641,7 @@ class DraftMixin:
     def scaffold_sections(
         self, ref_id: int, sections: list[tuple[str, str | None]]
     ) -> list[str]:
-        """Lay down a genre's standard sections on a draft (ADR 0037 step 4):
+        """Lay down a genre's standard sections on a draft:
         append one ``heading`` per ``(title, style)`` at the top level — after
         any existing top-level chunks (e.g. the auto-minted title) — with
         ``meta.style`` set. Returns the new ``dc`` handles. Used by the
@@ -2736,9 +2735,9 @@ class DraftMixin:
         `prev_text`. The handle (and references to it) survive; derived data
         re-derives on the sha mismatch.
 
-        ``handle`` must be the legacy ADR-0033 base-58 anchor
+        ``handle`` must be the legacy the draft editable-document model base-58 anchor
         (``DraftChunk.handle``, optionally ``¶``-prefixed) — it's looked up
-        via ``chunks.handle``. The ADR-0036 universal ``.dc`` handle
+        via ``chunks.handle``. The universal ``.dc`` handle
         (``dc42``/``pe42``) does NOT work here and raises ``NotFound``.
 
         Optimistic concurrency: pass ``base_sha`` (the ``content_sha`` the
@@ -2749,7 +2748,7 @@ class DraftMixin:
         ``meta_patch`` shallow-merges into ``chunks.meta`` (``meta || patch``,
         NULL-safe) in the same statement — used to update a ``table``'s
         canonical ``meta.table`` alongside its re-derived markdown ``text``
-        atomically (ADR 0035 §1).
+        atomically.
         """
         sha = content_sha(text)
         with self.tx() as conn:
@@ -3505,15 +3504,14 @@ class _AbbrevMixin:
     _children: Any  # provided by DraftMixin
 
     def ensure_glossary_heading(self, ref_id: int) -> str:
-        """Back-compat alias for the glossary registry's home heading (ADR
-        0036). Superseded by :meth:`ensure_registry_heading`; kept for the
+        """Back-compat alias for the glossary registry's home heading. Superseded by :meth:`ensure_registry_heading`; kept for the
         draft-importer and any legacy caller."""
         return self.ensure_registry_heading(ref_id, "glossary")
 
     def ensure_registry_heading(self, ref_id: int, role: str) -> str:
         """``dc<chunk_id>`` handle of the draft's home heading for ``role``
         (``glossary`` / ``parts`` / ``components``), which ``term`` leaves of
-        that registry file under (ADR 0052 §7).
+        that registry file under.
 
         The home is found **by ``meta.registry == role``** — a stable tag that
         survives a heading rename and can't be duplicated by wording (the fix
@@ -3567,8 +3565,7 @@ class _AbbrevMixin:
         return str(created[0].dc)  # dc handle, matching the lookup/adopt paths
 
     def _reconcile_registry_headings(self, ref_id: int, role: str) -> None:
-        """Invariant: at most one registry heading per role per draft (ADR
-        §7). If several carry ``meta.registry == role``, keep the earliest-pos
+        """Invariant: at most one registry heading per role per draft. If several carry ``meta.registry == role``, keep the earliest-pos
         one canonical, reparent every other role heading's children under it,
         and retire the emptied duplicate. The belt is §6's placement-
         independent projection; this is the suspenders."""
@@ -3602,7 +3599,7 @@ class _AbbrevMixin:
 
     def parts_callout_map(self, ref_id: int, role: str = "parts") -> dict[str, int]:
         """``{normalized dc-handle: numeral}`` for an ``assign="render"``
-        registry (ADR §3). The numerals are **display labels derived from
+        registry. The numerals are **display labels derived from
         reading-order position** — not stored — so inserting/reordering a leaf
         renumbers the whole series. Empty for a non-render registry."""
         from precis.draft import registry as _reg
@@ -3691,7 +3688,7 @@ class _AbbrevMixin:
 
     def defined_terms(self, ref_id: int) -> dict[str, Any]:
         """Rich per-**surface** hover records for every registry ``term`` leaf
-        in this draft (ADR 0052 §4) — the generalization of
+        in this draft — the generalization of
         :meth:`defined_abbrevs`. Returns ``{surface: TermEntry}`` where a leaf
         is reachable under each of its string surfaces (``meta.short``, every
         ``meta.surface_forms`` entry, ``meta.mpn``, and ``meta.abbrev``), all
@@ -3760,7 +3757,7 @@ class _AbbrevMixin:
 
     def registry_callouts(self, ref_id: int, role: str) -> list[int]:
         """The assigned ``meta.callout`` values for a registry's live ``term``
-        leaves — the input to the next ``assign="insert"`` callout (ADR §3)."""
+        leaves — the input to the next ``assign="insert"`` callout."""
         with self.pool.connection() as conn:
             rows = conn.execute(
                 "SELECT (meta->>'callout')::int FROM chunks WHERE ref_id = %s "

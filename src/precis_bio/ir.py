@@ -1,4 +1,4 @@
-"""The canonical protein-fold IR (ADR 0056 slice 4).
+"""The canonical protein-fold IR.
 
 One ``ProteinFold`` normalizes the output of *any* structure predictor
 (AlphaFold3 de-novo, ColabFold MSA, …) into a single schema — the protein
@@ -250,7 +250,7 @@ def fold_cache_key(
     mode: str = MODE_DE_NOVO,
     seeds: list[int] | None = None,
 ) -> str:
-    """Content address for a fold (ADR 0056 §6 / ADR 0007).
+    """Content address for a fold.
 
     Same ``(sequence, engine, engine_version, mode, seeds)`` ⇒ same key ⇒ zero
     recompute. The engine *version* (image digest in prod) invalidates the

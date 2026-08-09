@@ -18,7 +18,7 @@ returns ``{claimed, ok, failed}``) rather than the handler base.
 Transport
 ---------
 A tiny stdlib ``urllib`` OpenAI ``/v1/chat/completions`` client,
-identical in shape to ``RemoteEmbedder`` (ADR 0020). It points at the
+identical in shape to ``RemoteEmbedder``. It points at the
 cluster's litellm proxy (the ``summarizer`` alias → Qwen3-Next-80B-A3B
 on llama.cpp). The :class:`Transport` seam keeps the pass
 offline-testable — tests inject a fake that returns canned completions.
@@ -173,7 +173,7 @@ _BRIEF_MAX_WORDS = 15
 
 
 # ---------------------------------------------------------------------------
-# Transport seam + OpenAI chat client (RemoteEmbedder shape, ADR 0020)
+# Transport seam + OpenAI chat client (RemoteEmbedder shape)
 # ---------------------------------------------------------------------------
 
 
@@ -246,8 +246,8 @@ class LlmConfig:
     api_key: str = "dummy"  # loopback litellm has no master_key
     max_tokens: int = 220
     #: Sampling temperature — ``0`` (deterministic) by default, matching the
-    #: hardcoded value this replaces (:mod:`precis.utils.llm.router`'s ADR
-    #: 0066 gen-param passthrough is the only caller that overrides it: a
+    #: hardcoded value this replaces (:mod:`precis.utils.llm.router`'s
+    #: gen-param passthrough is the only caller that overrides it: a
     #: caller-pinned tier default of ``None`` sent through
     #: :func:`LlmClient.complete`'s payload build means "omit the field,
     #: use the provider's own default" rather than a Python-level ``None``
@@ -320,7 +320,7 @@ class LlmClient:
         booking. Absent on the loopback / summarizer path.
 
         Raises on transport error or a malformed response so the pass
-        marks the chunk failed (ADR 0007) and moves on.
+        marks the chunk failed and moves on.
         """
         url = self._config.url.rstrip("/") + "/chat/completions"
         payload: dict[str, Any] = {
@@ -329,7 +329,7 @@ class LlmClient:
             "max_tokens": self._config.max_tokens,
         }
         # `None` omits the field entirely (the provider's own default) — the
-        # ADR 0066 gen-param passthrough's MEDIUM/BIG/FRONTIER-tier default.
+        # Capability tiers + placement chains gen-param passthrough's MEDIUM/BIG/FRONTIER-tier default.
         # The class default (0) reproduces this client's previous hardcoded
         # `"temperature": 0` for every caller that doesn't override it.
         if self._config.temperature is not None:
@@ -530,7 +530,7 @@ HOT_WINDOW_MIN = int(os.environ.get("PRECIS_SUMMARIZE_HOT_WINDOW_MIN", "1440"))
 #: the same population the two priority tiers leave behind.
 _REST_KIND_PRED = "(r.kind <> ALL(ARRAY['conv', 'draft']) OR r.kind IS NULL)"
 
-#: Fresh-claim tiers, in queue order: draft > conv > hot > rest (ADR: the
+#: Fresh-claim tiers, in queue order: draft > conv > hot > rest (the
 #: reader-salience priority). Each is ``(kind_pred, extra_pred, order_by)``
 #: spliced into ``_FRESH_CLAIM_SQL``. The hot tier reorders the rest by
 #: ``last_seen DESC`` inside a recency window; the others keep the
@@ -727,7 +727,7 @@ def _kind_noun(ref_kind: str) -> str:
 #: ``_BRIEF_MAX_WORDS``), so it stays KV-cache-hot on a llama.cpp slot even
 #: across document switches. The document *kind* is deliberately NOT here (it
 #: lives in the doc-header, layer 2) so this prefix never changes between a
-#: paper, a patent and a conversation. A CACHED module (ADR 0038 §4 helper).
+#: paper, a patent and a conversation. A CACHED module (helper).
 _INSTRUCTION_BLOCK = (
     "You summarize a single passage from a larger document, "
     "as a navigation gloss.\n"
@@ -750,7 +750,7 @@ _INSTRUCTION_BLOCK = (
 )
 
 #: Layer 1 — the seven few-shot BRIEF/DETAIL pairs (style only). A CACHED
-#: module (ADR 0038 §4, "examples as a cached module"); kept verbatim.
+#: module; kept verbatim.
 _EXAMPLES_BLOCK = (
     "Seven examples (style only — do NOT summarize these):\n"
     "PASSAGE: We synthesized a cobalt complex bearing pendant amine groups "
@@ -815,7 +815,7 @@ def _doc_header_block(ctx: AssemblyContext) -> str:
     (``system``) group with the instruction/examples because it is stable
     across a document's chunk-ticks and forms the KV-cache prefix llama.cpp
     reuses; the kind lives *here* (not in layer 1) so layer 1 never
-    changes between paper/patent/conv (ADR 0038 §5, Shot 2)."""
+    changes between paper/patent/conv (Shot 2)."""
     claim: _Claimed = ctx.extras["claim"]
     doc_card: str = ctx.extras["doc_card"]
     noun = _kind_noun(claim.ref_kind)
@@ -843,7 +843,7 @@ def _passage_block(ctx: AssemblyContext) -> str:
     return f"{prefix}Passage to summarize:\n{claim.text}"
 
 
-#: The summarizer prompt as an ordered module list (ADR 0038 §2/§4, Shot 2).
+#: The summarizer prompt as an ordered module list (Shot 2).
 #: CACHED (→ ``system``): instruction + examples + doc-header, most-stable
 #: first for llama.cpp longest-prefix reuse. VARIABLE (→ ``user``): the
 #: per-chunk passage block. The :class:`LiteLLMAdapter` packages them.
@@ -872,7 +872,7 @@ _SUMMARIZER_MODULES: list[Module] = [
 
 
 def build_messages(claim: _Claimed, *, doc_card: str) -> list[dict[str, str]]:
-    """Assemble the chat messages for one chunk (ADR 0038 step 2).
+    """Assemble the chat messages for one chunk.
 
     Delegates to the shared prompt assembler + :class:`LiteLLMAdapter`:
     :data:`_SUMMARIZER_MODULES` is resolved into layer-tagged blocks and
@@ -1001,7 +1001,7 @@ def write_chunk_summary(
 def _mark_failed(
     conn: Any, chunk_id: int, *, summarizer: str, error: str, transient: bool = False
 ) -> None:
-    """Record one failure (ADR 0007). Bumps the lease's ``attempts`` and keeps
+    """Record one failure. Bumps the lease's ``attempts`` and keeps
     the claim row (``claimed_at = now()`` = backoff via the cooldown reaper) so
     a transient failure retries. Once ``attempts`` reaches the cap the failure
     is terminal: write a ``failed`` marker to chunk_summaries and DELETE the
@@ -1122,7 +1122,7 @@ def run_llm_summarize_pass(
     """One pass over the LLM-summary queue.
 
     Returns ``{"claimed": N, "ok": K, "failed": F}``. A poison-pill chunk is
-    marked failed and the batch continues (ADR 0007).
+    marked failed and the batch continues.
 
     Three phases, each with its own short transaction(s) so **no DB lock or
     xmin snapshot is held across an LLM call** — the long batch-spanning

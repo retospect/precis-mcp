@@ -1,4 +1,4 @@
-"""CAD web editor routes (ADR 0041 web bundle).
+"""CAD web editor routes (web bundle).
 
 Two layers: fast FakeStore-backed degradation checks (empty list, 404, bad
 export format), and a real-store integration that seeds a design and exercises

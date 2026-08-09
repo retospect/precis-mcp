@@ -1,4 +1,4 @@
-"""Real-PG regression tests for the /drive route's raw SQL (ADR 0045).
+"""Real-PG regression tests for the /drive route's raw SQL.
 
 The FakeStore suite doesn't parse SQL, so the folder-tree / children /
 unfiled / breadcrumb queries are exercised here against the live

@@ -1,4 +1,4 @@
-"""Unit tests for the pure ``structure`` IR kernel (ADR 0043 increment 1).
+"""Unit tests for the pure ``structure`` IR kernel (increment 1).
 
 DB-free: exercises cell/MIC, ops, probes, and the validator gate directly. The
 store + handler (DB layer) are covered separately once they land.
@@ -407,7 +407,7 @@ def test_relax_cell_mode_needs_an_energy_rung() -> None:
         relax(scene, fidelity="clean", cell="inplane")
 
 
-# -- relax (rung 1, ASE-EMT, ADR 0053 T0) -------------------------------------
+# -- relax (rung 1, ASE-EMT) -------------------------------------
 
 
 def _pd_slab() -> Scene:

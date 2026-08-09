@@ -1,4 +1,4 @@
-"""Store ops for the ``cad`` kind (ADR 0041 + Amendment 1).
+"""Store ops for the ``cad`` kind (the CAD analytic IR + Amendment 1).
 
 Storage splits by what is actually a search target:
 
@@ -10,7 +10,7 @@ Storage splits by what is actually a search target:
   embedding search. One vector per design;
 - the **nodes** live in the dedicated ``cad_nodes`` table — structured
   geometry, never embedded. Re-authoring retires the old node rows and
-  the old card, then writes the new set (ADR 0033 soft-delete model).
+  the old card, then writes the new set (soft-delete model).
 
 Mixin assumes the concrete Store provides ``self.pool`` / ``self.tx`` /
 ``self.insert_ref`` / ``self.get_ref``.

@@ -1,4 +1,4 @@
-"""StructureHandler end-to-end against a live store (ADR 0043 increment 2).
+"""StructureHandler end-to-end against a live store (increment 2).
 
 Exercises the DB round-trip: author via put, read the TOC, probe an atom /
 neighbourhood / bonds / the validator, apply an op via edit, and soft-delete.
@@ -37,7 +37,7 @@ def structure(store):
 @pytest.fixture
 def no_local_mlip(monkeypatch):
     """Force the ML relax backend absent so an ``ml`` rung takes the
-    dispatch-to-GPU-node path (ADR 0044) deterministically. The gate container
+    dispatch-to-GPU-node path deterministically. The gate container
     installs ``[dft-ml]`` (Dockerfile ``uv sync --all-extras``), so without
     this the handler would relax inline instead of minting a struct_relax job —
     which is only correct on a host that *has* the backend, not the data hosts
@@ -197,7 +197,7 @@ def test_relax_clean_via_edit(structure):
 
 
 def test_relax_ml_rung_dispatches_without_a_todo(structure, no_local_mlip):
-    """An energy rung with no local backend is *derived compute* (ADR 0044):
+    """An energy rung with no local backend is *derived compute*:
     it dispatches a struct_relax job parented on the structure itself — no
     todo required — instead of raising. (Pre-0044 this rung raised Unsupported
     demanding a parent todo.)"""
@@ -416,7 +416,7 @@ def test_clean_relax_records_a_run(structure):
 
 def test_clean_rung_is_never_cached(structure):
     # clean is instant + pure + energy-free: it records a run but stamps no
-    # cache_key (ADR §23.16), so the cube never grows a clean cache entry.
+    # cache_key, so the cube never grows a clean cache entry.
     structure.put(id="pd_pair", text=_PD)
     structure.edit(id="pd_pair", ops=[{"op": "relax", "fidelity": "clean"}])
     ref = structure.store.get_ref(kind="structure", id="pd_pair")
@@ -761,8 +761,8 @@ def test_energy_rung_mints_a_struct_relax_job_parented_on_the_structure(
     structure, store, no_local_mlip
 ):
     """An energy rung that misses the cache and has no local backend dispatches
-    a struct_relax job to the GPU node (ADR 0043 §23.12) — parented on the
-    *structure*, not a todo (ADR 0044 compute lane) — carrying the content
+    a struct_relax job to the GPU node — parented on the
+    *structure*, not a todo (compute lane) — carrying the content
     address + staged geometry the run-cube write-back needs."""
     structure.put(id="pd_pair", text=_PD)
     ref = structure.store.get_ref(kind="structure", id="pd_pair")
@@ -825,7 +825,7 @@ def test_relax_unknown_cell_mode_is_bad_input(structure):
 def test_energy_rung_with_requester_wires_the_wait(structure, store, no_local_mlip):
     """``requested_by=<todo>`` on the relax op links the todo ``requested`` →
     the job and arms a ``derived_job_succeeded`` auto_check so the intentful
-    caller (a planner tick, a human) blocks on the build (ADR 0044)."""
+    caller (a planner tick, a human) blocks on the build."""
     from precis.dispatch import Hub
     from precis.handlers.todo import TodoHandler
     from tests.conftest import id_of
@@ -854,7 +854,7 @@ def test_energy_rung_with_requester_wires_the_wait(structure, store, no_local_ml
     assert todo_ref.meta["auto_check"] == {"type": "derived_job_succeeded"}
 
 
-# ── T4: provenance guards (ADR 0053 §4, migration 0084) ────────────────────
+# ── T4: provenance guards (migration 0084) ────────────────────
 
 
 def _insert_external_run(

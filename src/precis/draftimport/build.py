@@ -230,7 +230,7 @@ def run_import(
     replace: bool = True,
     set_by: str = "tex-import",
 ) -> ImportResult:
-    """Materialise a LaTeX document as a draft (two-phase), ADR 0036 handles.
+    """Materialise a LaTeX document as a draft (two-phase), universal handles.
 
     Phase 1 creates every chunk in order with de-macroed text:
     * **citations** -> ``[pc<chunk_id>]`` (quote-matched to the exact paper
@@ -415,7 +415,7 @@ def run_import(
             return anchor
 
         # parent is threaded as (base-58 handle for store placement, dc<id>
-        # handle for cross-ref emission — the ADR 0036 agent-facing address).
+        # handle for cross-ref emission — the universal handles agent-facing address).
         def _emit(node: Chunk, parent_handle: str, parent_dc: str) -> None:
             for child in node.children:
                 raw = child.text or ""

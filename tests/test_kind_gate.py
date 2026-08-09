@@ -450,7 +450,7 @@ def test_patent_handler_test_path_unaffected_by_env() -> None:
 def test_requires_secret_gates_on_resolver(monkeypatch) -> None:
     """A kind gated on ``requires_secret`` is hidden when the secret resolves
     nowhere (env/vault/file) and loads once it resolves — the vault-aware
-    parallel of ``requires_env`` (ADR 0055)."""
+    parallel of ``requires_env``."""
     from precis import secrets as _secrets
     from precis.kind_gate import gate
     from precis.protocol import KindSpec

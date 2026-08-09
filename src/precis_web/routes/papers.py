@@ -404,7 +404,7 @@ def _render_detail(
     context: dict[str, Any] = {
         "active_tab": "papers",
         "paper": paper,
-        # Universal handle (ADR 0036, ``pa<ref_id>`` / ``cf<ref_id>``) —
+        # Universal handle (``pa<ref_id>`` / ``cf<ref_id>``) —
         # the address that works regardless of whether a slug is minted.
         "pa_handle": format_handle(ref.kind, ref_id),
         "handle": cite_key or str(ref_id),
@@ -498,7 +498,7 @@ def _render_detail(
     return templates.TemplateResponse(request, "papers/detail.html.j2", context)
 
 
-#: ADR-0032 compound-handle chunk selector: an optional ``pa<ref_id>~``
+#: The skills plugin group compound-handle chunk selector: an optional ``pa<ref_id>~``
 #: prefix (the TOC's own display form, e.g. ``pa1483~13..15``) followed by
 #: a bare ord or an inclusive ``lo..hi`` range. Shared by ``?chunk=``, the
 #: Jump box, and TOC clicks — all funnel through :func:`_cited_chunk`.
@@ -528,7 +528,7 @@ def _cited_chunk(store: Any, ref_id: int, chunk: str | None) -> dict[str, Any] |
         ).fetchone()
     if row is None or not row[1]:
         return None
-    # ``pc<chunk_id>`` — the universal chunk handle (ADR 0036), so the Jump
+    # ``pc<chunk_id>`` — the universal chunk handle, so the Jump
     # card can show the durable pointer alongside the per-paper ``ord`` (a
     # citation / short-code the reader can copy, not just "chunk N").
     return {
@@ -539,7 +539,7 @@ def _cited_chunk(store: Any, ref_id: int, chunk: str | None) -> dict[str, Any] |
     }
 
 
-#: The document family that shares the two-pane reader (ADR: proposal
+#: The document family that shares the two-pane reader (proposal
 #: writing). The ``ref_id``-scoped sidebar endpoints (search / toc /
 #: chunk / pdf) are kind-agnostic, so they accept any family member; the
 #: ``cfp``, ``pres`` and ``datasheet`` readers reuse them. The slug-detail
@@ -723,14 +723,14 @@ async def toc_in_paper(
     ``?lo=&hi=`` restricts the clustering to an ord sub-range — the
     drill-down path: double-clicking a fat cluster re-clusters just that
     range (papers have no heading tree, so hierarchy comes from recursive
-    keyword clustering, ADR-0018/F20). Without both bounds the full body
+    keyword clustering). Without both bounds the full body
     is clustered.
     """
     store = get_store(request)
     ref = _resolve_paper(store, str(ref_id), kinds=_DOC_FAMILY)
     if ref is None:
         return JSONResponse({"segments": []})
-    # ADR 0036: prefix each segment with the universal record handle
+    # prefix each segment with the universal record handle
     # (``pa<id>`` / ``cf<id>``) so the web row mirrors the agent get id.
     handle = format_handle(ref.kind, ref.id)
     scope = _parse_scope(lo, hi)
@@ -797,7 +797,7 @@ async def raw_chunks_in_paper(request: Request, ref_id: int) -> JSONResponse:
 async def chunk_in_paper(request: Request, ref_id: int, sel: str) -> JSONResponse:
     """Resolve a chunk selector → ``{ord, page, text}`` for the sidebar
     "jump to chunk" affordance. ``sel`` accepts a bare ord, an ``lo..hi``
-    range (low end wins), or the ADR-0032 compound handle the TOC itself
+    range (low end wins), or the compound span handle the TOC itself
     displays (``pa<ref_id>~lo..hi``) — anything else, including a compound
     handle naming a different paper, 404s-as-empty (see ``_cited_chunk``,
     which every one of these forms funnels through)."""

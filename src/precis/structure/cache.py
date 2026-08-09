@@ -1,4 +1,4 @@
-"""The run-cube cache key — content-addressed relax memoisation (ADR 0043 §23.16).
+"""The run-cube cache key — content-addressed relax memoisation.
 
 A relax at an energy rung (``ml``/``dft-*``) is expensive; the same geometry at
 the same fidelity / model / params produces the same result. So a relax request
@@ -18,7 +18,7 @@ Why this is correct to cache:
   their bond annotations).
 - ``code_version`` rolls the whole cache forward when the relax algorithm
   changes such that results would differ — bump :data:`RELAX_CODE_VERSION`.
-- The cube is **append-only and never invalidated** (ADR §23.16, decision A2):
+- The cube is **append-only and never invalidated**:
   a new geometry hashes to a new key, so a stale hit is impossible by
   construction.
 

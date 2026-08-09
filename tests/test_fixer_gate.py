@@ -1,4 +1,4 @@
-"""Unit tests for the fixer quick-gate auto-fix (ADR 0048).
+"""Unit tests for the fixer quick-gate auto-fix.
 
 A full opus-built slice was discarded when the quick gate ran
 ``ruff format --check`` on unformatted build output and reported NEEDS_YOU —

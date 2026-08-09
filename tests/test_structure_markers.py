@@ -1,4 +1,4 @@
-"""Eyes + measures + lineage links for the ``structure`` kind (ADR 0043 §6.8/§7).
+"""Eyes + measures + lineage links for the ``structure`` kind.
 
 Increment 1 of the viewer bundle: the write path (eye/measure/unmark/
 remove_measure ops), the versioned persistence (markers survive an edit and

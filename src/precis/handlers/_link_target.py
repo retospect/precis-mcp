@@ -81,7 +81,7 @@ def parse_link_target(target: str, *, store: Store) -> LinkTarget:
             next="link='pa5' (a handle) or 'kind:identifier'",
         )
 
-    # ADR 0036: accept a bare universal handle (``pc40``, ``me73``, …) —
+    # accept a bare universal handle (``pc40``, ``me73``, …) —
     # the form search/list output now emits — and resolve it straight to a
     # LinkTarget so a handle copied out of a result round-trips into
     # link= / unlink= / like= without the agent re-deriving ``kind:slug~pos``.

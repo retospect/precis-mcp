@@ -1,4 +1,4 @@
-"""The design DAG — a flat instance set + a CSG expression (ADR 0041 §3).
+"""The design DAG — a flat instance set + a CSG expression.
 
 A :class:`Design` is the in-memory evaluation layer: it registers placed
 primitive *instances* and composes them with the three boolean ops into a

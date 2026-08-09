@@ -82,7 +82,7 @@ FROM pg_stat_user_tables WHERE n_dead_tup>500 ORDER BY n_dead_tup DESC LIMIT 12;
   dead index (drop, forward migration) · frequent full-enum of a small table
   (throttle the *caller*, e.g. `corpus_reconcile`'s per-host marker) · bloat
   (investigate autovacuum settings).
-- File anything actionable to OPEN-ITEMS / a gripe; fix in-reach ones directly.
+- File anything actionable as a `docs/backlog/` item / a gripe; fix in-reach ones directly.
   Watch for growth-without-retention (an insert-only log table with no GC).
 
 ## Log
@@ -96,7 +96,7 @@ Newest first. One line per completed pass — `**YYYY-MM-DD**` + a terse verdict
   below the 20% threshold). One filing: 4 non-PK secondary indexes with
   lifetime `idx_scan=0` (~127 MB: `llm_call_log_request_hash_idx`,
   `vault_events_name_at_idx`, `chunks_section_path_idx`,
-  `chunks_numerics_idx`) → OPEN-ITEMS entry, verify-before-drop via forward
+  `chunks_numerics_idx`) → a backlog item, verify-before-drop via forward
   migration. Kept (again): `chunks_keywords_gin`, `tag_embeddings_vector_hnsw`.
 - **2026-07-19** — Baseline pass (the review that motivated this runbook).
   Found + fixed: `llm_blob` GC saturating caspar (unindexed hash anti-join, no

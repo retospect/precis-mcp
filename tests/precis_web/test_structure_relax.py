@@ -1,4 +1,4 @@
-"""The run-cube "Relax" button — POST /structure/{slug}/relax (ADR 0044).
+"""The run-cube "Relax" button — POST /structure/{slug}/relax.
 
 The dispatch itself (a struct_relax job parented on the structure, no todo)
 is covered at the handler level in ``tests/test_structure_handler.py``. Here

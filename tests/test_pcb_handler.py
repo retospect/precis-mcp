@@ -1,4 +1,4 @@
-"""PcbHandler end-to-end against a live store (ADR 0042 Slice 1).
+"""PcbHandler end-to-end against a live store.
 
 Exercises the batch authoring path (put with components/nets/connections),
 the netlist TOC, the graph-traversal reads (instance neighbourhood, net
@@ -160,7 +160,7 @@ def test_delete_soft_retires(pcb):
         pcb.get(id="sensor-node")
 
 
-# ── the eyes (ADR 0042 §8) ───────────────────────────────────────────
+# ── the eyes ───────────────────────────────────────────
 # A board with a guaranteed crossing: two signal nets whose airwires form an X.
 _CROSSED = {
     "components": [
@@ -301,7 +301,7 @@ def test_unknown_view_raises(pcb):
         pcb.get(id="sensor-node", view="bogus")
 
 
-# ── auto-place + feasibility (ADR 0042 §9) ───────────────────────────
+# ── auto-place + feasibility ───────────────────────────
 def test_autoplace_reduces_crossings(pcb):
     pcb.put(id="x", args=_CROSSED)  # the X — 1 crossing
     before = pcb.get(id="x", view="crossings")

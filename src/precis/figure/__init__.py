@@ -11,7 +11,7 @@ seed lives in the prompt / ``precis-figure-svg`` skill (prepended to every
 turn prompt), never stored as content. Chat turns persist as
 ``figure_turn`` chunks so a session is resumable.
 
-Since ADR 0057 ``figure`` is the **SVG instance** of the shared diagram
+Since diagram-chunk binding ``figure`` is the **SVG instance** of the shared diagram
 core (:mod:`precis.diagram` — the ``DiagramLang`` port + the generic turn
 loop / context assembler); elements bind to the chunks they depict via
 chunk-level ``depicts`` links.

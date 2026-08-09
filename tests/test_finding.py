@@ -711,7 +711,7 @@ class TestSearchSurfacesHubs:
         assert str(hub_id) not in out_tags.body
 
 
-# ── put(supporters=...) — Taproot claim-hub authoring (ADR 0073) ────────
+# ── put(supporters=...) — Taproot claim-hub authoring ────────
 
 
 class TestPutSupportersHubMint:
@@ -936,7 +936,7 @@ class TestPutAcquisitionMode:
         assert "claim hub fi" in hub.body
 
 
-# ── link(rel=...) — Taproot evidence/refine routing (ADR 0073) ──────────
+# ── link(rel=...) — Taproot evidence/refine routing ──────────
 
 
 class TestLinkTaprootRouting:

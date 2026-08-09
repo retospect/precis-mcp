@@ -1,6 +1,6 @@
 """Assembled-context capture — the INPUT-side twin of ``meta.transcript``.
 
-ADR 0038's :func:`~precis.utils.prompt.assembler.assemble` builds the full
+Prompt assembler's :func:`~precis.utils.prompt.assembler.assemble` builds the full
 prompt input for the planner tick and the structural/deep-tree reviewers;
 :func:`~precis.utils.prompt.persist_assembled_context` (``precis.utils.
 prompt.capture``) writes that block list onto a ref's ``meta`` so a

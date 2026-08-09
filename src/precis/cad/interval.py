@@ -2,7 +2,7 @@
 
 A ray probe reduces every primitive to a set of disjoint closed
 intervals ``[(t_in, t_out), ...]`` (sorted, non-overlapping) along the
-ray where the ray is *inside* the solid. The boolean fold (ADR 0041 §6)
+ray where the ray is *inside* the solid. The boolean fold
 then combines these per-node interval sets with union / subtract /
 intersect to produce the material-vs-void spans the LLM reads.
 

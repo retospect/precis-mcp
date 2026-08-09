@@ -1,6 +1,6 @@
 """Persist the assembled prompt's INPUT alongside the LLM's output.
 
-ADR 0038's :func:`~precis.utils.prompt.assembler.assemble` builds the full
+Prompt assembler's :func:`~precis.utils.prompt.assembler.assemble` builds the full
 input context for every agentic dispatch site (the planner tick, the
 structural/deep-tree reviewers); only the *output* stream was durable —
 ``meta.transcript`` in :mod:`precis.workers.executors.claude_inproc`. This

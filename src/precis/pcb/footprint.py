@@ -1,4 +1,4 @@
-"""Footprint resolution (ADR 0042 §5, Flow B) — lazy, per-selected-part.
+"""Footprint resolution (Flow B) — lazy, per-selected-part.
 
 Footprints are the catalog's expensive half: pad geometry + the pin-name→pad
 map, converted from LCSC via **easyeda2kicad**. We do NOT convert all ~300k
@@ -10,7 +10,7 @@ The fetch is pluggable: ``ensure_footprint(store, lcsc, fetcher=...)`` returns
 the cache row, fetching+caching on a miss. The default fetcher is
 easyeda2kicad (an optional, network-bound dependency — gated like the cad
 exporters); tests inject a fake fetcher. (Phase 2 adds the internal IPC-7351
-land-pattern generator for standard packages — ADR 0042 §5 footprint tiers.)
+land-pattern generator for standard packages — the PCB netlist+placement IR footprint tiers.)
 """
 
 from __future__ import annotations

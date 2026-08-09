@@ -21,7 +21,7 @@ only ever sees one shape (cron). Accepted shapes:
 
 A third shape, ``at`` (an absolute ISO 8601 timestamp), covers the *one-shot*
 case -- "remind me at/in N" -- that used to live on the retired
-``kind='cron'`` (ADR 0061, superseding ADR 0030). Mutually exclusive with
+``kind='cron'`` (superseding the todo/job/finding kind boundary). Mutually exclusive with
 ``cron``/``every``: a schedule either repeats (``cron``) or fires exactly
 once (``at``). ``catch_up`` is the ``at``-only sibling of
 ``backfill_missed`` -- whether an overdue one-shot still fires (``True``,

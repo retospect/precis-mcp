@@ -1,8 +1,8 @@
-"""Byte-equivalence guard for the ADR 0038 step-3 reviewer refactor.
+"""Byte-equivalence guard for the prompt assembler step-3 reviewer refactor.
 
 The two tree reviewers (``structural``, ``deep_review``) were migrated off
 their ``str.format`` templates onto the shared ``utils.prompt`` assembler +
-:class:`ClaudeAgentAdapter` (ADR 0038 step 3). The verbatim-duplicated
+:class:`ClaudeAgentAdapter`. The verbatim-duplicated
 boilerplate — the "Define your abbreviations" paragraph and the "Do not
 address anyone / the only put you may make is a gripe" footer (with its gripe
 carve-out) — was deduped into ONE shared module set reused by both reviewers.

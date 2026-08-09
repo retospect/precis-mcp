@@ -1,4 +1,4 @@
-"""StructureHandler — the atomistic cell + bond-graph kind (ADR 0043).
+"""StructureHandler — the atomistic cell + bond-graph kind.
 
 A ``structure`` design is a slug-addressed ref: a periodic cell (on
 ``refs.meta``) filled with atoms + a bond graph (the ``struct_*`` tables). The
@@ -130,7 +130,7 @@ class _NeedsDispatch:
     input geometry + the canonical / POSCAR-row orderings for the write-back.
 
     ``requester_id`` is the optional todo that *asked for* this relax and
-    wants to block on it (ADR 0044 compute lane). The job parents on the
+    wants to block on it (compute lane). The job parents on the
     structure regardless; when a requester is named, the dispatch also
     writes a ``requested`` link + a ``derived_job_succeeded`` auto_check so
     the todo closes on completion / bubbles on failure.
@@ -220,7 +220,7 @@ def _relax_cache_address(
     scene: Scene, *, fidelity: str, model: str, steps: int, cell_mode: str | None
 ) -> tuple[str, str, list[str]]:
     """The ``(cache_key, structure_sha, canonical_order)`` triple addressing a
-    relax of ``scene`` at this fidelity/model/params (ADR §23.16).
+    relax of ``scene`` at this fidelity/model/params.
 
     Called twice on the dispatch-with-no-local-backend path: once over the
     as-authored scene (the early cache-hit lookup, §23.16) and again over the
@@ -343,7 +343,7 @@ def _payload(text: str | None, args: dict[str, Any] | None) -> dict[str, Any]:
     return {}
 
 
-# ── provenance / method-fingerprint guards (ADR 0053 §4, migration 0084) ──
+# ── provenance / method-fingerprint guards (migration 0084) ──
 #
 # An imported design carries a ``struct_runs`` row with ``provenance =
 # 'external'`` and a ``method`` fingerprint (functional/cutoff/spin/…) —
@@ -397,7 +397,7 @@ def _describe_run_method(run: Mapping[str, Any]) -> str:
 
 
 def _method_key(run: Mapping[str, Any]) -> tuple[str, Any]:
-    """The comparability key for a run's energy (ADR 0053 §4): two runs are
+    """The comparability key for a run's energy: two runs are
     only safely subtracted for a ΔE when this matches — the same computed
     model, or an identical external method fingerprint. Provenance alone
     isn't enough (two 'external' rows from different functionals still
@@ -409,8 +409,7 @@ def _method_key(run: Mapping[str, Any]) -> tuple[str, Any]:
 
 
 def guard_energy_comparable(run_a: Mapping[str, Any], run_b: Mapping[str, Any]) -> None:
-    """Refuse a ΔE across two runs produced by different methods (ADR 0053
-    §4) — mixing functionals/cutoffs, or an external dataset energy against
+    """Refuse a ΔE across two runs produced by different methods — mixing functionals/cutoffs, or an external dataset energy against
     a differently-modeled computed relax, is a category error, not a real
     energy difference.
 
@@ -428,7 +427,7 @@ def guard_energy_comparable(run_a: Mapping[str, Any], run_b: Mapping[str, Any]) 
         )
 
 
-# ── on-demand hydrate from an external catalyst DB (ADR 0053 T6) ──────────
+# ── on-demand hydrate from an external catalyst DB ──────────
 #
 # ``get(kind='structure', source='catalysis-hub', ...)`` is the "quest
 # worker pokes around and pulls real substrates" surface: resolve a config
@@ -476,7 +475,7 @@ def _resolve_catalysis_hub_filters(
 #
 # NB: a ``motivated-by`` relation reading better for this use-case doesn't
 # exist yet — ``links.relation`` FKs against a seeded ``relations`` table
-# (ADR 0043 doesn't touch it), so minting it needs a migration. Deferred;
+# (doesn't touch it), so minting it needs a migration. Deferred;
 # ``cites``/``related-to``/``derived-from`` already cover the "why" today.
 # Free-standing (not a method) so both the TOC (below) and the web detail
 # route (``precis_web/routes/structure.py``) can call it without importing
@@ -513,7 +512,7 @@ class StructureHandler(Handler):
         kind="structure",
         title="Structure",
         description=(
-            "Atomistic cell + bond-graph design (ADR 0043). put creates/replaces "
+            "Atomistic cell + bond-graph design. put creates/replaces "
             "from JSON {cell:{a,b,c,pbc}|{lattice,pbc}, ops:[...]} (cell optional "
             "when ops start with a `slab` bulk template); edit applies "
             "more ops (slab/set_cell/add_atom/set_element/vacancy/displace/add_bond/"
@@ -525,7 +524,7 @@ class StructureHandler(Handler):
             "it against the paper corpus (gr161578); "
             "get(args={'source':'catalysis-hub', 'surface_composition':.., "
             "'facet':.., 'config_id':..}) on-demand hydrates a config from an "
-            "external catalyst DB (ADR 0053) into a cited, read-only design "
+            "external catalyst DB into a cited, read-only design "
             "(a repeat call by config_id is a cache hit, no refetch); "
             "link relates designs (rel='derived-from') or papers that "
             "motivated the design (rel='cites', note='rationale…', "
@@ -573,7 +572,7 @@ class StructureHandler(Handler):
         slug = str(id).strip()
         existing = self.store.get_ref(kind="structure", id=slug)
         if existing is not None and self._external_provenance(existing.id) is not None:
-            # An imported reference config is a read-only mirror (ADR 0053 §5):
+            # An imported reference config is a read-only mirror:
             # `put` targeting its slug would overwrite the geometry in place via
             # structure_save's existing-branch while the external `struct_runs`
             # row keeps describing the old atoms — the same bypass `edit` guards.
@@ -716,7 +715,7 @@ class StructureHandler(Handler):
         title: str | None = None,
     ) -> Response:
         """Branch a **new** design ``to`` from ``id`` with ``ops`` applied, linked
-        ``derived-from`` the parent (ADR 0043 bundle — the instruction-box Apply).
+        ``derived-from`` the parent (bundle — the instruction-box Apply).
 
         The parent is untouched, so a before/after ``view='diff'`` works. Applies
         graph/marker ops only — a relax is a separate compute step, never part of
@@ -811,7 +810,7 @@ class StructureHandler(Handler):
         self, *, source: str, q: str | None, args: dict[str, Any]
     ) -> Response:
         """On-demand hydrate one (or a filtered set of) external config(s)
-        from ``source`` (ADR 0053 T6). First touch: fetch → adapter →
+        from ``source``. First touch: fetch → adapter →
         ``store.structure_import`` (idempotent) → render with a citation
         footer. A caller who names an exact ``config_id=`` gets a
         network-free cache hit when that config is already imported — the
@@ -927,7 +926,7 @@ class StructureHandler(Handler):
     def _render_export(self, view: str, scene: Scene, slug: str) -> Response:
         """Emit the geometry as a file format. POSCAR/extXYZ are pure; CIF
         needs ASE (the optional ``[dft]`` extra) — a missing one is Unsupported
-        with an install hint, not a crash (ADR 0043 §13)."""
+        with an install hint, not a crash."""
         if view == "poscar":
             return Response(body=export.to_poscar(scene))
         if view == "extxyz":
@@ -941,8 +940,7 @@ class StructureHandler(Handler):
         return Response(body=export.to_cif(scene))
 
     def _external_provenance(self, ref_id: int) -> dict[str, Any] | None:
-        """The design's newest external-provenance run, if any (ADR 0053 §4,
-        migration 0084). Non-``None`` means this design mirrors an imported
+        """The design's newest external-provenance run, if any (migration 0084). Non-``None`` means this design mirrors an imported
         dataset entry (OC20/OC22, Materials Project, …) — it must stay a
         faithful, read-only reference; all work branches via ``derive``.
 
@@ -961,8 +959,8 @@ class StructureHandler(Handler):
     def _runs_provenance(
         self, run_ids: list[int]
     ) -> dict[int, tuple[str, dict[str, Any] | None]]:
-        """``{run_id: (provenance, method)}`` for a batch of run ids (ADR
-        0053 §4, migration 0084) — a direct query for the same reason as
+        """``{run_id: (provenance, method)}`` for a batch of run ids
+        (migration 0084) — a direct query for the same reason as
         ``_external_provenance`` above."""
         if not run_ids:
             return {}
@@ -975,8 +973,7 @@ class StructureHandler(Handler):
 
     def _render_runs(self, ref: Any) -> Response:
         """The design's compute history — the fidelity ladder over time (§9),
-        each row labeled with its provenance (``computed`` vs ``external``,
-        ADR 0053 §4) and, for an imported row, its method fingerprint."""
+        each row labeled with its provenance (``computed`` vs ``external``) and, for an imported row, its method fingerprint."""
         runs = self.store.structure_runs(ref.id)
         if not runs:
             return Response(
@@ -1082,7 +1079,7 @@ class StructureHandler(Handler):
         2. a host-metal/adsorbate/facet phrase over ``scene.composition()``
            — ``surface_composition``/``facet`` from an external-provenance
            method fingerprint when this design was hydrated from a catalyst
-           DB (ADR 0053 T6, mirroring the catalysis-hub adapter's fields)
+           DB (mirroring the catalysis-hub adapter's fields)
            and that string names an actual composition element, else a
            heuristic over :data:`_HOST_METAL_ELEMENTS` — **every** recognised
            host metal, not just the top-count one (a bimetallic/alloy host,
@@ -1202,7 +1199,7 @@ class StructureHandler(Handler):
         every outbound link whose target is a paper, regardless of ``rel``).
 
         The reserved virtual ``rel='parent'`` is folder placement
-        (ADR 0045) — a ``refs.parent_id`` write, never a stored link.
+         — a ``refs.parent_id`` write, never a stored link.
         Derivation (``derived-from``) and placement are orthogonal axes.
 
         ``note=`` (add-only, gr161577) attaches a short "designed because…"
@@ -1292,7 +1289,7 @@ class StructureHandler(Handler):
                 "geometry repair has no stress to relax the cell against"
             )
 
-        # Cache-first for the expensive energy rungs (ADR §23.16). The rung-0
+        # Cache-first for the expensive energy rungs. The rung-0
         # ``clean`` repair is instant + pure + energy-free, so it is never
         # cached — it just runs. The key is over the *input* geometry (this
         # scene, after graph ops, before relax mutates it), so capture the
@@ -1401,7 +1398,7 @@ class StructureHandler(Handler):
                 order=order,
                 poscar=export.to_poscar(scene),
                 poscar_labels=_poscar_row_labels(scene),
-                # Optional requesting todo (compute lane, ADR 0044). Accept
+                # Optional requesting todo (compute lane). Accept
                 # the clear ``requested_by`` key; tolerate the legacy
                 # ``parent_id`` spelling from before the lane split.
                 requester_id=_as_int_or_none(
@@ -1423,7 +1420,7 @@ class StructureHandler(Handler):
     def _cache_hit_result(
         self, scene: Scene, *, cache_key: str, structure_sha: str, fidelity: str
     ) -> RelaxResult | None:
-        """The run-cube lookup (ADR §23.16), shared by both cache-check sites
+        """The run-cube lookup, shared by both cache-check sites
         in ``_run_ops``: the early check over the as-authored geometry, and
         the post-preflight re-check over the cleaned geometry (gripe 51393)
         — a design that preflight-cleans onto an already-cached input must
@@ -1522,8 +1519,7 @@ class StructureHandler(Handler):
         )
 
     def _dispatch_relax(self, ref: Any, version: int, nd: _NeedsDispatch) -> Response:
-        """Mint a ``struct_relax`` job for an energy rung with no local backend
-        (ADR 0043 §23.12, ADR 0044). The relaxed geometry lands in the §23.16
+        """Mint a ``struct_relax`` job for an energy rung with no local backend. The relaxed geometry lands in the §23.16
         run-cube on completion, so the next identical relax — on this design or
         any other sharing the input — is a zero-compute cache hit.
 
@@ -1565,7 +1561,7 @@ class StructureHandler(Handler):
         job_resp = hub.sibling("job").put(
             job_type="struct_relax",
             executor="ssh_node",
-            # The build subject owns the job (compute lane, ADR 0044).
+            # The build subject owns the job (compute lane).
             parent_id=ref.id,
             params=params,
             # Collapse re-submits of the *same* relax onto one in-flight job.

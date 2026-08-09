@@ -1,4 +1,4 @@
-"""Evaluate persisted eyes + measures against the live Scene (ADR 0043 §6.8/§7).
+"""Evaluate persisted eyes + measures against the live Scene.
 
 A :class:`~precis.structure.scene.Measure` is *declared intent* — the anchor atom
 labels, an optional goal, a purpose. Its **current** value (a distance in Å, an

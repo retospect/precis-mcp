@@ -100,7 +100,7 @@ def test_dispatch_exports_and_skips_pdf_without_latexmk(hub: Hub) -> None:
 
 
 def test_dispatch_fails_on_uncleared_figure(hub: Hub) -> None:
-    """The clearance gate (ADR 0034 §4): a third-party figure without a
+    """The clearance gate: a third-party figure without a
     granted permission must not ship — the export fails before render."""
     import base64
 

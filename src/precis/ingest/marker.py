@@ -390,7 +390,7 @@ def _marker_extract_subprocess(
 ) -> list[dict[str, Any]]:
     """Run :func:`_marker_extract` in a spawned child, killed if it hangs.
 
-    ADR 0015's subprocess-per-batch isolation fixed the resident-leak
+    Marker-leak mitigation's subprocess-per-batch isolation fixed the resident-leak
     case (dense backfill); it left the *live* watchdog-event path
     exposed to a wedged torch forward pass that never returns control
     to the interpreter — no in-process signal/thread watchdog can
@@ -442,7 +442,7 @@ def extract_blocks_marker(
     # Best-effort cleanup after every ingest. The long-running watcher
     # accumulates tensor refs across consecutive PDFs (Surya layout
     # buffers, transformers cache) and eventually OOMs. Subprocess
-    # isolation (Fix B / ADR 0015) is the structural fix; this is a
+    # isolation (Fix B) is the structural fix; this is a
     # cheap probe layered on top. ~10 ms/PDF.
     _release_marker_caches()
     return merged

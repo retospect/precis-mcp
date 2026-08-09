@@ -1,5 +1,4 @@
-"""scaffold_sections lays down a genre's styled section skeleton (ADR 0037
-step 4): pick a doc_type → its standard headings appear, each meta.style'd."""
+"""scaffold_sections lays down a genre's styled section skeleton: pick a doc_type → its standard headings appear, each meta.style'd."""
 
 from __future__ import annotations
 

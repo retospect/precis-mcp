@@ -1,4 +1,4 @@
-"""PlanHandler — the reasoning-outline kind (ADR 0051 §2b).
+"""PlanHandler — the reasoning-outline kind.
 
 A ``plan`` mirrors ``draft`` on the same chunk-tree substrate but is a
 distinct kind: it renders whole with ``[open]``/``[wip]``/``done:`` markers

@@ -41,7 +41,7 @@ MIGRATION_FILE = MIGRATIONS_DIR / "0001_initial.sql"
 # migration, not an edit to 0001).
 
 # Tables created by the new sealed 0001 (second-greenfield, 2026-06-05
-# per ADR 0019). Cumulative snapshot of the schema after the original
+# per the second greenfield). Cumulative snapshot of the schema after the original
 # 0001-0017 had applied to the cluster master; future tables ship as
 # new forward migrations and extend this set.
 EXPECTED_TABLES = {
@@ -81,7 +81,7 @@ EXPECTED_VIEWS = {
 }
 
 # Seed counts. These match the COPY blocks the greenfield pulled from
-# the cluster master (per ADR 0019). Update only when intentionally
+# the cluster master. Update only when intentionally
 # extending the closed vocabulary in a new forward migration.
 EXPECTED_SEED_COUNTS = {
     "actors": 4,
@@ -105,7 +105,7 @@ def _apply_migration(dsn: str) -> list[tuple[str, str]]:
 
     These tests assert structural invariants of the canonical sealed
     schema — tables, views, seed counts, CHECK constraints. After the
-    second greenfield (ADR 0019) ``0001_initial.sql`` IS the schema;
+    second greenfield ``0001_initial.sql`` IS the schema;
     subsequent forward migrations extend it but the canonical
     invariants live here. To keep the contract narrow, we point
     Migrator at a temp dir containing only ``0001_initial.sql``.

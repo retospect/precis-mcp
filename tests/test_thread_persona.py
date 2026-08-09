@@ -1,4 +1,4 @@
-"""thread_type → persona registry (ADR 0051 §2, slice A2)."""
+"""thread_type → persona registry."""
 
 from __future__ import annotations
 

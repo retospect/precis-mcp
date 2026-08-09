@@ -15,7 +15,7 @@ shells out to ``claude -p`` from this daemon MUST run
 :func:`ensure_oauth_token` on the subprocess env it passes.
 
 Resolution order (first hit wins): an existing env value → the **DB secrets
-vault** (ADR 0055), reached over asa's existing ``PRECIS_DATABASE_URL``. The
+vault**, reached over asa's existing ``PRECIS_DATABASE_URL``. The
 vault is what lets asa run as the plain ``deploy`` user with no ``~/.claude``
 state. The ``~/.claude_oauth_token`` file this used to read first is retired
 fleet-wide — it scattered a live credential in plaintext across service-account

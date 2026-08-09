@@ -1,4 +1,4 @@
-"""Bulk integrals — sampled volume / centroid (ADR 0041 §8)."""
+"""Bulk integrals — sampled volume / centroid."""
 
 from __future__ import annotations
 

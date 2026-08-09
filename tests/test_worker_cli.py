@@ -165,7 +165,7 @@ class TestParser:
 
 
 # ---------------------------------------------------------------------------
-# _resolve_embedder — remote URL threading (regression for ADR 0020 deploy)
+# _resolve_embedder — remote URL threading (regression for embedder-as-service deploy)
 # ---------------------------------------------------------------------------
 
 
@@ -692,7 +692,7 @@ class TestAxisGateDefault:
 # ---------------------------------------------------------------------------
 # classify_topics enabled-slugs (bug: --only classify_topics / the
 # PRECIS_CLASSIFY_TOPICS_ENABLED admin backfill hatches silently classified
-# zero topics once per-topic gating (ADR 0068) landed).
+# zero topics once per-topic gating landed).
 # ---------------------------------------------------------------------------
 
 

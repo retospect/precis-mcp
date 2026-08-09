@@ -1,4 +1,4 @@
-"""Fixer reporting — management by exception (ADR 0048).
+"""Fixer reporting — management by exception.
 
 Three tiers:
 

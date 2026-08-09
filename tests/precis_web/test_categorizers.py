@@ -123,7 +123,7 @@ def test_axis_row_service_mapping() -> None:
 
 
 def test_topic_row_service_mapping() -> None:
-    """Every topic governs its own ``topic:<slug>`` service (ADR 0068) — no
+    """Every topic governs its own ``topic:<slug>`` service — no
     longer the shared ``classify_topics`` service — and carries no
     shared-toggle note."""
     effective: dict[str, dict[str, object]] = {}
@@ -157,7 +157,7 @@ def test_topic_row_includes_passed_through_prompt_preview() -> None:
 
 
 def test_allowed_services_includes_per_topic_and_kill_switch() -> None:
-    """Every topic gets its own ``topic:<slug>`` service (ADR 0068), and the
+    """Every topic gets its own ``topic:<slug>`` service, and the
     shared ``classify_topics`` service is retained as the global
     kill-switch target."""
     allowed = cz._allowed_services()
@@ -521,7 +521,7 @@ def test_axis_row_reports_concurrency(store: Store) -> None:
 def test_toggle_endpoint_accepts_per_topic_service(
     real_client: TestClient, store: Store
 ) -> None:
-    """A ``topic:<slug>`` service (ADR 0068) is a valid, independently
+    """A ``topic:<slug>`` service is a valid, independently
     flippable toggle target."""
 
     def _rows() -> dict[tuple[str, str], int]:

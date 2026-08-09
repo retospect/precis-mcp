@@ -115,7 +115,7 @@ def build_runtime(
         )
         # Bind the store for the secrets resolver + scrub the DSN from the
         # environment (parameter, not env) so subprocess spawns don't inherit
-        # it — see precis/secrets.py::adopt_process_store (ADR 0055).
+        # it — see precis/secrets.py::adopt_process_store.
         from precis import secrets as _secrets
 
         _secrets.adopt_process_store(store)

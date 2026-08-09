@@ -20,8 +20,7 @@ existing seven verbs — **no new verbs**:
 - ``delete``— soft-retire a chunk (`mode='cascade'|'promote'` for a
   heading with children).
 
-Chunks are addressed by the computed ``dc<chunk_id>`` handle (ADR 0036;
-the legacy ``¶<base58>`` still resolves during the transition); the draft
+Chunks are addressed by the computed ``dc<chunk_id>`` handle (the legacy ``¶<base58>`` still resolves during the transition); the draft
 itself by its slug (the universal ``id=``). See ``precis-draft-help``.
 """
 
@@ -64,12 +63,12 @@ from precis.workers.working_set import Extent
 
 log = logging.getLogger(__name__)
 
-# A bare draft chunk address: the ADR 0036 universal handle ``dc<chunk_id>``
-# or the legacy ADR-0033 ``¶<base58>``. Relative navigation (``^`` / ``+N`` /
+# A bare draft chunk address: the universal handle ``dc<chunk_id>``
+# or the legacy the draft editable-document model ``¶<base58>``. Relative navigation (``^`` / ``+N`` /
 # ``-lo..hi``) is parsed separately via ``handle_registry.parse_relative``.
 _CHUNK_ADDR = re.compile(r"^(?:dc(?P<cid>\d+)|¶(?P<h>[A-Za-z0-9]+))$")
 
-#: Recognises a draft chunk address — bare or with an ADR 0036 relative
+#: Recognises a draft chunk address — bare or with a relative-nav
 #: operator (``^``/``+``/``-``/``..``) — used to tell a chunk address from a
 #: draft slug in ``get`` / ``search``.
 _DRAFT_CHUNK_ADDR_RE = re.compile(r"^(?:dc\d+|¶[A-Za-z0-9]+)(?:[+\-^].*|\.\..*)?$")
@@ -209,7 +208,7 @@ def _summarize_job_counts(jobs: tuple[tuple[int, str], ...]) -> str:
     return " / ".join(ordered + extra)
 
 
-#: A figure's origin class (ADR 0034) — drives the clearance gate. ``original``
+#: A figure's origin class — drives the clearance gate. ``original``
 #: is ours; ``own_graph`` is generated from data (ships a data supplement);
 #: ``third_party`` is reused under a publisher permission (carries the paper-trail).
 _FIGURE_ORIGINS = ("original", "own_graph", "third_party")
@@ -224,7 +223,7 @@ _MAGIC_MIME: tuple[tuple[bytes, str], ...] = (
 
 
 #: A 1×1 transparent PNG, the deferred-image placeholder for a computed graph
-#: figure (ADR 0035) — there's always a `chunk_blobs` row so the reader/export
+#: figure — there's always a `chunk_blobs` row so the reader/export
 #: never hit a missing blob; the render pass overwrites it with the real chart.
 _PLACEHOLDER_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
@@ -233,7 +232,7 @@ _PLACEHOLDER_PNG = base64.b64decode(
 
 
 def _looks_like_svg(raw: bytes) -> bool:
-    """True for SVG bytes (ADR 0058 §6, the ``blob``-SVG medium). SVG is
+    """True for SVG bytes (the ``blob``-SVG medium). SVG is
     text/XML, not magic-byte sniffable, so peek at the leading window: a
     ``<svg`` root, or an XML prolog followed by an ``<svg`` element."""
     head = raw.lstrip()
@@ -247,7 +246,7 @@ def _looks_like_svg(raw: bytes) -> bool:
 
 def _sniff_mime(raw: bytes) -> str:
     """Best-effort image mime from magic bytes; WEBP needs the RIFF check;
-    SVG is sniffed from its XML markup (ADR 0058 §6)."""
+    SVG is sniffed from its XML markup."""
     for sig, mime in _MAGIC_MIME:
         if raw.startswith(sig):
             return mime
@@ -260,7 +259,7 @@ def _sniff_mime(raw: bytes) -> str:
 
 def _sanitize_svg_bytes(raw: bytes) -> bytes:
     """Compile-check + sanitize SVG figure bytes before they land in
-    ``chunk_blobs`` (ADR 0058 §6 — SVG is a trust boundary: it can carry
+    ``chunk_blobs`` (the figure medium axis — SVG is a trust boundary: it can carry
     ``<script>`` / ``on*`` handlers / ``javascript:`` hrefs). Reuses the figure
     kind's sanitizer so the rule is single-sourced. Raises ``BadInput`` on
     non-UTF-8 or unparseable markup."""
@@ -333,7 +332,7 @@ class DraftHandler(Handler):
         kind="draft",
         title="Draft",
         description=(
-            "Editable, chunk-native document (ADR 0033). put creates a "
+            "Editable, chunk-native document. put creates a "
             "draft (project=, born with a title heading), forks one "
             "(copy_of=<src-slug>, project=<todo|new-title>: deep-copies "
             "chunks + hierarchy + links into a new draft, source untouched; "
@@ -394,8 +393,7 @@ class DraftHandler(Handler):
         """Folder placement (``rel='parent'``) or a ``serves`` edge.
 
         ``rel='parent'`` is the reserved virtual relation — a
-        ``refs.parent_id`` write into a ``kind='folder'`` container
-        (ADR 0045), never a stored ``links`` row. ``rel='serves'`` goes
+        ``refs.parent_id`` write into a ``kind='folder'`` container, never a stored ``links`` row. ``rel='serves'`` goes
         through the shared ``apply_link_ops`` path (the same one
         paper/structure use), most notably targeting a ``quest:`` ref.
         Every other relation is rejected — cross-references between
@@ -471,7 +469,7 @@ class DraftHandler(Handler):
             return self._render_list()
         s = str(id).strip()
         if _is_draft_chunk_addr(s):
-            # ADR 0051 eye — render this node at a focus extent via ``view=``:
+            # Turn-taking persona threads eye — render this node at a focus extent via ``view=``:
             # the ladder kwd|summary|verbatim|fisheye|fisheye+1hop (labels
             # derived from ``Extent`` so they can't drift from the enum).
             # Exposes the composer one node at a time; ``view='backfill'``
@@ -995,7 +993,7 @@ class DraftHandler(Handler):
             )
 
         # A computed figure (graph): render code + plots links, image deferred
-        # to the render pass (ADR 0035). text= is the caption.
+        # to the render pass. text= is the caption.
         if chunk_kind == "figure" and (render is not None or plots is not None):
             ref = resolve_live_slug_ref(self.store, kind="draft", id=slug)
             return self._add_graph_figure(
@@ -1041,8 +1039,8 @@ class DraftHandler(Handler):
                         next="voices: get(kind='skill', id='precis-audio-help')",
                     ) from exc
                 meta = {**(meta or {}), "voice": _v, "lang": _lg}
-            # A registry ``term`` leaf (glossary / parts / components, ADR
-            # 0052) is stamped with its ``meta.registry`` family, gets its
+            # A registry ``term`` leaf (glossary / parts / components)
+            # is stamped with its ``meta.registry`` family, gets its
             # insert-callout frozen if the policy is ``assign="insert"``, and
             # files under that registry's one home heading unless the caller
             # placed it explicitly.
@@ -1195,8 +1193,7 @@ class DraftHandler(Handler):
     def _prepare_term_meta(
         self, ref_id: int, meta: dict[str, Any] | None
     ) -> tuple[dict[str, Any], str]:
-        """Stamp a registry ``term`` leaf's ``meta`` and return ``(meta, role)``
-        (ADR 0052 §2/§3). Records the ``meta.registry`` family (defaulting to
+        """Stamp a registry ``term`` leaf's ``meta`` and return ``(meta, role)``. Records the ``meta.registry`` family (defaulting to
         the glossary) so the projection + reconcile can find it, and freezes a
         consecutive ``meta.callout`` when the registry's policy is
         ``assign="insert"`` (a BOM item number, stable under later reorder)."""
@@ -1223,7 +1220,7 @@ class DraftHandler(Handler):
         permission: dict[str, Any] | None,
         at: dict[str, Any] | None,
     ) -> Response:
-        """Add a figure chunk with binary payload (ADR 0034). ``text`` is
+        """Add a figure chunk with binary payload. ``text`` is
         the caption; ``image`` is base64 bytes; ``origin`` classes the
         figure for the clearance gate; a ``third_party`` figure must carry
         a ``permission`` paper-trail."""
@@ -1247,7 +1244,7 @@ class DraftHandler(Handler):
             ) from exc
         if not raw:
             raise BadInput("image= decoded to empty bytes")
-        # ADR 0058 §6 — an SVG blob (sniffed, or an explicit image/svg+xml from
+        # The figure medium axis — an SVG blob (sniffed, or an explicit image/svg+xml from
         # a web upload) is sanitized at rest: strip script / on* / javascript:
         # so a pasted or reused SVG can't smuggle active content.
         resolved_mime = (mime or _sniff_mime(raw)).split(";", 1)[0].strip()
@@ -1288,7 +1285,7 @@ class DraftHandler(Handler):
         plots: list[str] | None,
         at: dict[str, Any] | None,
     ) -> Response:
-        """Add a *computed* figure — a graph (ADR 0035): the render code goes to
+        """Add a *computed* figure — a graph: the render code goes to
         ``meta.render``, ``plots`` links the data chunks it renders, and the image
         is **deferred** (a placeholder blob until the render pass fills it).
         ``origin='own_graph'``; the caption is the face (``text``)."""
@@ -1498,7 +1495,7 @@ class DraftHandler(Handler):
             )
         # ``scaffold`` is a draft-level op (paper-writing pipeline rung 4,
         # docs/backlog/paper-writing-pipeline.md §"Document classes"): lays
-        # down a genre's standard section skeleton (ADR 0037 step 4), the
+        # down a genre's standard section skeleton, the
         # same table the web ``/drafts/new`` picker uses — id is the slug
         # (or any handle in the draft), not a single chunk.
         if scaffold is not None:
@@ -1597,7 +1594,7 @@ class DraftHandler(Handler):
                 body=f"recorded {review} review on {_base.dc} @ {sha[:12]}… → {verdict}"
             )
         if permission is not None or origin is not None:
-            # Edit a figure's provenance (ADR 0034) — caption/bytes untouched.
+            # Edit a figure's provenance — caption/bytes untouched.
             if origin is not None and origin not in _FIGURE_ORIGINS:
                 raise BadInput(
                     f"figure origin= must be one of {list(_FIGURE_ORIGINS)}",
@@ -1608,7 +1605,7 @@ class DraftHandler(Handler):
             )
             return Response(body=f"updated figure provenance {c.dc}")
         if style is not None:
-            # Set/clear the heading's section style (ADR 0037). Metadata-only
+            # Set/clear the heading's section style. Metadata-only
             # (meta.style = a skill slug) — no re-embed.
             c = self.store.set_chunk_style(handle, style or None)
             if style:
@@ -1639,7 +1636,7 @@ class DraftHandler(Handler):
             return Response(body=f"set narration on {_base.dc}: voice={_v} lang={_lg}")
         if meta is not None:
             # Patch a registry ``term`` leaf's attribute bag / hover surfaces
-            # in place (ADR 0052): manufacturer / mpn / url / ordering, and the
+            # in place: manufacturer / mpn / url / ordering, and the
             # short / surface_forms surfaces. Metadata-only — no re-embed.
             _reject_dry_run("meta")
             c = self.store.set_term_attrs(handle, meta)
@@ -1919,12 +1916,12 @@ class DraftHandler(Handler):
         names a paper that already grounds one (:func:`~precis.taproot.
         lookup.hubs_grounded_by_paper`). A ``[fi<id>]`` cite (the hub's
         kind+serial handle — the preferred form) is a *living* citation
-        (ADR 0074) — it always resolves to the current derived
+         — it always resolves to the current derived
         originator(s), so it tracks new evidence without another edit,
         unlike a cite frozen on one paper/chunk. A NUDGE, never a
         refusal: the ``[pc<id>]``/``[pa<id>]`` cite stays exactly as valid
         as it was — this only offers a stronger alternative, or the
-        ``[fi<id>>handle]`` pin (ADR 0074 slice A2) to keep citing this
+        ``[fi<id>>handle]`` pin to keep citing this
         exact passage while still riding the living resolution. Scoped to
         the cites actually present in ``text`` (the touched chunk), not
         the whole draft — cheap on the write path. Deduped by
@@ -2124,7 +2121,7 @@ class DraftHandler(Handler):
 
         agentlog.touch_from_env(self.store, chunk_ids=chunk_ids)
 
-    # ── data/table chunks (ADR 0035 §1) ──────────────────────────────
+    # ── data/table chunks ──────────────────────────────
 
     def _put_table(
         self,
@@ -2140,7 +2137,7 @@ class DraftHandler(Handler):
         """Add a ``chunk_kind='table'`` data chunk: canonical ``meta.table``
         + derived markdown ``text``. ``meta.regen`` (provenance/how-to-rebuild)
         and ``meta.caption`` (legend) are stamped verbatim — both inert, no
-        execution (ADR 0035 §1)."""
+        execution."""
         if table is None:
             raise BadInput(
                 "a table chunk requires table={header, rows}",
@@ -2202,7 +2199,7 @@ class DraftHandler(Handler):
         across every string cell via :func:`find_replace_cells`, refusing (chunk
         untouched) on zero matches — mirrors the prose find-replace guard;
         (4) ``caption=``/``regen=`` alone patch metadata only; (5) otherwise a
-        table's ``text=`` is derived, never hand-edited (ADR 0035 §1) — reject.
+        table's ``text=`` is derived, never hand-edited — reject.
         Whichever path fires, the markdown is re-derived from the SAME
         resolved data + caption and persisted through one ``edit_text`` call."""
         if chunk is None or chunk.chunk_kind != "table":
@@ -2559,7 +2556,7 @@ class DraftHandler(Handler):
         return out
 
     def _render_chunk(self, addr: str) -> Response:
-        # ADR 0036 relative navigation: ``dc<id>^N`` (ancestor), ``+N``/``-N``
+        # Universal handles relative navigation: ``dc<id>^N`` (ancestor), ``+N``/``-N``
         # (sibling step), ``-lo..hi`` (signed sibling span — the reading
         # window). Resolved against the draft tree; supersedes the legacy
         # ``-B+A`` reading-order window.
@@ -2608,7 +2605,7 @@ class DraftHandler(Handler):
 
     def _fisheye_affordance(self) -> str:
         """Advertise the neighborhood render on the plain chunk read — the
-        *unprompted-discovery* channel for fisheye (ADR 0051 §6). A process
+        *unprompted-discovery* channel for fisheye. A process
         that just reads a bare chunk learns, at the point of relevance, that
         it can get the node in context without having to already know the
         feature exists or go searching the skill index. Gated to
@@ -2776,7 +2773,7 @@ class DraftHandler(Handler):
             header = f"# {ref.title} — table of contents"
         if not entries:
             return Response(body=f"{header}\n\n(no sub-headings yet)")
-        # TOON table (ADR 0002 — the house format for tabular tool output).
+        # TOON table (TOON output — the house format for tabular tool output).
         # `level` (tree depth) conveys hierarchy since TOON is flat; the
         # stable `¶handle` is the address the agent navigates/edits by.
         # Display §-numbers are positional (computed at render/export, not

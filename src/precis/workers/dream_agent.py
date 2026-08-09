@@ -221,7 +221,7 @@ def run_dream_pass(store: Store) -> BatchResult:
     except Exception:
         log.warning("dream_agent: failed to mark last-real-run", exc_info=True)
 
-    # Routed through the LLM seam (ADR 0046 unit 4b): BIG + tools, so the
+    # Routed through the LLM seam: BIG + tools, so the
     # operator-authored ``llm.chain.big`` (local qwen3-235b → OSS cloud)
     # carries it. ``model=`` keeps the per-pass ``PRECIS_DREAM_AGENT_MODEL``
     # pin (None ⇒ the tier default). Errors fold into ``res.error``.
@@ -353,7 +353,7 @@ def _apply_lens(prompt: str, store: Store) -> tuple[str, str | None]:
     return block + "\n" + prompt, lens_id
 
 
-#: The dream's fisheye eye-draw (ADR 0051): a **kind-diverse** sample of fresh
+#: The dream's fisheye eye-draw: a **kind-diverse** sample of fresh
 #: refs given to the dream as its working set — cross-pollination fuel, patents
 #: included (Reto). ``(kind, extent, count)``. Memories at ``fisheye+1hop`` so
 #: their link neighbourhood (the connections a dream feeds on) rides along.
@@ -445,7 +445,7 @@ def _draw_dream_eyes(store: Store) -> WorkingSet:
 
 def _apply_fisheye(prompt: str, store: Store) -> str:
     """Append a fisheye working-set of fresh, kind-diverse material (memories +
-    papers + patents) for the dream to connect (ADR 0051).
+    papers + patents) for the dream to connect.
 
     Best-effort + flag-gated: default-ON, and any failure (or an empty draw)
     leaves the prompt unchanged — the eye-draw can never fail a dream pass."""

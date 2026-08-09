@@ -54,7 +54,7 @@ def test_put_forwards_parent_id_into_dispatch_payload(
 def test_put_parent_id_accepts_slug_ref_form(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A str parent_id (the polymorphic build-subject case, ADR 0044) is
+    """A str parent_id (the polymorphic build-subject case) is
     forwarded untouched — the handler does the int coercion, not the tool."""
     captured: dict[str, Any] = {}
 

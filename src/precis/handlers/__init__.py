@@ -16,7 +16,7 @@ skills ``precis-tasks-help``, ``precis-dispatch-help``.
 **Facet model (§M, migration 0102).** A todo is one faceted kind — ``tags``
 + ``meta`` — never a family of kinds: the level gradient, the schedule
 shape, and the LLM auto-run tier are all ``meta`` fields. The one boundary
-kept is todo ↔ job (ADR 0030): a job is claimed/leased/executor-run
+kept is todo ↔ job: a job is claimed/leased/executor-run
 (``FOR UPDATE SKIP LOCKED``, ``idem_key``, sweeper, lease-steal); a todo is
 durable intent, never leased. Pinned by ``tests/test_todo_job_boundary.py``.
 
@@ -24,7 +24,7 @@ durable intent, never leased. Pinned by ``tests/test_todo_job_boundary.py``.
 (strategic root) / ``meta.worker_mintable=false`` (tactical) / neither
 (subtask, the worker-mintable default). Ancestry is walked on read; a 1/N
 rotation across strategic roots drives 7-day picks. Reparenting goes
-through the reserved ``parent`` link relation (ADR 0027), not a raw column
+through the reserved ``parent`` link relation, not a raw column
 write.
 
 **auto_check leaves.** ``meta.auto_check`` wait-for-condition evaluators
@@ -34,15 +34,15 @@ live under ``workers/auto_check_evaluators/``: ``paper_ingested``,
 ``all_child_findings_resolved``.
 
 **Recurring (Watches).** ``meta.schedule`` presence *is* recurring — cron /
-``every:`` shorthand, or a one-shot ``at`` (ADR 0061); no separate tag
+``every:`` shorthand, or a one-shot ``at``; no separate tag
 (``level:recurring`` is retired, §M). The schedule worker
 (``workers/schedule/worker.py``) mints one worker-mintable subtask child
 per due tick; a recurring carrying ``meta.deliver={'target': ...}`` instead
 fires ``pg_notify('precis.cron', ...)`` for asa_bot (the retired
-``kind='cron'`` mechanism, folded on by ADR 0061). ``prio`` is an int
+``kind='cron'`` mechanism, folded on by cron-folded-into-recurring). ``prio`` is an int
 column on refs (1..10); the ``PRIO:*`` tag is a back-compat alias.
 
-**Jobs — two lanes by parent kind (ADR 0044).** ``JobHandler.put`` requires
+**Jobs — two lanes by parent kind.** ``JobHandler.put`` requires
 a ``parent_id`` whose kind is in ``JOB_PARENT_KINDS`` (``todo`` /
 ``structure`` / ``cad`` / ``draft`` / ``quest``; plus a coordinator job for
 campaign fan-out). *Intent lane* — parent is a todo: rotation + failure

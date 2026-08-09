@@ -155,7 +155,7 @@ def _format_inbound_rel(relation: str) -> str:
 def _format_target_handle(
     ref_id: int, pos: int | None, chunk_id: int | None, endpoints: dict[int, Ref]
 ) -> str:
-    """Build the ADR 0036 universal handle for the link row's endpoint.
+    """Build the universal handle for the link row's endpoint.
 
     Chunk-level edge (``chunk_id`` set) → the *chunk* handle ``pc<id>`` /
     ``dc<id>`` (the granular, durable address that lets the citation tree
@@ -199,7 +199,7 @@ def _teaser_for(ref: Ref | None) -> str:
     return title
 
 
-#: Kinds whose chunks are addressed in ``get`` by their ADR 0036 chunk
+#: Kinds whose chunks are addressed in ``get`` by their universal handles chunk
 #: handle (``dc<id>``) rather than the paper-family ``slug~ord`` selector.
 #: The draft/plan/figure/mermaid chunk-tree family (see
 #: ``handlers/draft.py`` ``_is_draft_chunk_addr``); everything else

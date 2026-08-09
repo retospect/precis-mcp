@@ -1,7 +1,7 @@
 """Tests for ``precis.workers.chunk_keywords``.
 
 The chunk_keywords worker is F20's replacement for the persistent
-discovery layer (ADR 0018). It runs *after* ``embed:bge-m3`` populates
+discovery layer. It runs *after* ``embed:bge-m3`` populates
 ``chunk_embeddings`` and produces ``chunks.keywords`` (canonical
 TEXT[]) + ``chunks.keywords_meta`` (versioned JSONB) for every body
 chunk above :data:`_MIN_CHUNK_CHARS` that isn't on the skip-kind list.

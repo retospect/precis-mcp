@@ -1,4 +1,4 @@
-"""The shared diagram core is language-generic (ADR 0057, slice 3).
+"""The shared diagram core is language-generic.
 
 The behavioural parity guard for the figure↔core factoring is the full
 existing figure suite (test_figure_turn / _bindings / _svg / _handler /

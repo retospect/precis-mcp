@@ -1,4 +1,4 @@
-"""The ``config`` mini-DSL — compact typed shape specs (ADR 0041 §11).
+"""The ``config`` mini-DSL — compact typed shape specs.
 
 A single string names a primitive and its dimensions in millimetres, e.g.
 

@@ -108,7 +108,7 @@ def test_put_with_valid_auto_check_stores_meta(handler: TodoHandler) -> None:
     assert ref.meta.get("auto_check", {}).get("type") == "time_past"
 
 
-# ── derived_job_succeeded + compute-lane failure bubble (ADR 0044) ──
+# ── derived_job_succeeded + compute-lane failure bubble ──
 
 
 def _requested_job(store: Store, *, status: str) -> tuple[int, int]:
@@ -436,7 +436,7 @@ def test_child_job_succeeded_resolves_when_child_todos_done(
 def test_child_job_succeeded_skips_recurring_watch(
     handler: TodoHandler, store: Store
 ) -> None:
-    """A recurring watch (``meta.schedule`` set, ADR 0061) is never
+    """A recurring watch (``meta.schedule`` set) is never
     auto-closed by its first spawned child job succeeding — it owns its
     own terminal state (cron never resolves; a one-shot self-tags
     STATUS:done). Regression for the 2-day news_poll / cast-watch

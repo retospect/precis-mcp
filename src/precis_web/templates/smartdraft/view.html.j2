@@ -1359,7 +1359,7 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
     }
     // Figure add / clearance-edit forms (drafts/_figures.html.j2, gripe
     // 56668) — the SAME endpoints the classic /drafts reader posts to
-    // (reused as-is, ADR 0034/0058), but their hardcoded redirect target is
+    // (reused as-is), but their hardcoded redirect target is
     // the classic reader (`/drafts/{ident}#c-{handle}`). Intercept just
     // these two inside #sd-content and POST via fetch instead, then refresh
     // the panel in place. The "draw" endpoint (mint + open an SVG canvas,

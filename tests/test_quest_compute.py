@@ -345,7 +345,7 @@ class TestHarvest:
     def test_infra_relax_failure_with_hub_retries_once(
         self, store: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """ADR 0064 §C: given a hub, a candidate's first infra failure gets its
+        """Dossier-owned-by-process: given a hub, a candidate's first infra failure gets its
         relax re-dispatched (via ``dispatch_relax``, same cell), the retry
         counter set to 1, and it is NOT ruled out — this is the actual fix for
         "infra failure laundered into dry"."""
@@ -502,7 +502,7 @@ class TestHarvest:
         47332ad3) exercises the gr191615 amnesty's note-only path (no hub —
         dry preview): it must NOT rule out, same as any autocatpath failure —
         a barrier crash is never a physical verdict on the material, unlike a
-        relax non-convergence (ADR 0064 §C)."""
+        relax non-convergence."""
         qid = self._reaction_quest(store)
         sid = compute_mod.ensure_candidate(
             store, qid, {"name": "Fe", "structure": _SPEC}
@@ -522,7 +522,7 @@ class TestHarvest:
         ``dispatch_autocatpath`` against the quest's reaction config), the
         per-lane counter set to 1, and it is NOT ruled out — the re-dispatch is
         what keeps the loop awaiting instead of reading the crash as a dry
-        tick (ADR 0064 §C)."""
+        tick."""
         qid = self._reaction_quest(store)
         sid = compute_mod.ensure_candidate(
             store, qid, {"name": "Fe", "structure": _SPEC}

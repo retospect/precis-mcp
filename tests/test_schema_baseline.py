@@ -1,4 +1,4 @@
-"""Baseline-snapshot integrity + convergence tests (ADR 0031).
+"""Baseline-snapshot integrity + convergence tests.
 
 Two tiers, matching the guarantee split:
 
@@ -126,7 +126,7 @@ def test_baseline_lag_bounded() -> None:
         f"baseline is {lag} migrations behind head (max {BASELINE_LAG_MAX}) — "
         "regenerate it: run `uv run precis db dump-schema` (in the dev "
         "container, against pg17) and commit the refreshed "
-        "migrations/baseline/schema.sql (ADR 0031)"
+        "migrations/baseline/schema.sql"
     )
 
 

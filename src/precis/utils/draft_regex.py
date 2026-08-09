@@ -31,7 +31,7 @@ MAX_PATTERN_LEN = 1000
 
 #: Chunk kinds whose ``text`` is **not** hand-editable prose, so a
 #: substitution must skip them: a ``table``'s markdown is *derived* from its
-#: canonical ``meta.table`` (editing the text is rejected, ADR 0035 §1), and
+#: canonical ``meta.table`` (editing the text is rejected), and
 #: a ``figure`` is an image blob whose ``text`` is only the caption — but the
 #: caption is provenance-bearing and edited through its own path. Find still
 #: reads them (read-only); substitute leaves them untouched and reports them.

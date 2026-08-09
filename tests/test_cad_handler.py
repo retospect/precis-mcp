@@ -1,4 +1,4 @@
-"""CadHandler end-to-end against a live store (ADR 0041 §11, §12).
+"""CadHandler end-to-end against a live store.
 
 Exercises the full round-trip: author a design via put, read its node
 tree, read a single node, run each probe / analysis view, and soft-delete.

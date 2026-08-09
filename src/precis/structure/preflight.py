@@ -42,7 +42,7 @@ except ImportError:  # ASE not installed — module still imports; using the
     _Calculator = object  # type: ignore[assignment,misc]
     _all_changes = []  # type: ignore[assignment]
 
-# ── element-in-box (ADR: the box is the *MLIP*, not EMT) ───────────────────
+# ── element-in-box (the box is the *MLIP*, not EMT) ────────────────────────
 
 #: MACE-MP-0/medium's element coverage: Z 1-89, excluding the noble gases
 #: (He/Ne/Ar/Kr/Xe/Rn — MACE-MP wasn't trained on them, they don't bond).

@@ -1,4 +1,4 @@
-"""config mini-DSL — parse / build / round-trip tests (ADR 0041 §11)."""
+"""config mini-DSL — parse / build / round-trip tests."""
 
 from __future__ import annotations
 

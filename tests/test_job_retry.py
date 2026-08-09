@@ -101,7 +101,7 @@ def test_retry_with_model_swaps_llm_tag(
 def test_retry_with_select_writes_llm_select(
     todos: TodoHandler, jobs: JobHandler, store: Store
 ) -> None:
-    """select= (ADR 0066 structured selection) writes meta.llm_select
+    """select= (structured selection) writes meta.llm_select
     alongside the child-failed bubble clear."""
     rid = id_of(todos.put(text="planner brief", meta={"llm_tier": "opus"}).body)
     job_id = _fail_first_job(store, jobs, rid)

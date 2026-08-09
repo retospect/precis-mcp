@@ -1,4 +1,4 @@
-"""The prompt assembler + module library (ADR 0038, migration step 1).
+"""The prompt assembler + module library (migration step 1).
 
 Unit tests for the model-agnostic assembler, the claude_agent adapter,
 the named-predicate gate, and the four computed tables; plus DB-backed
@@ -291,7 +291,7 @@ def test_planner_user_no_doc_context_without_anchor(hub: Hub) -> None:
     assert "## doc_context" not in prompts.user
 
 
-# ── draft-section reviewer (ADR 0038 step 3 / Shot 3) ───────────────
+# ── draft-section reviewer (step 3 / Shot 3) ───────────────
 
 
 def _draft_with_section(draft: DraftHandler, hub: Hub, slug: str) -> str:

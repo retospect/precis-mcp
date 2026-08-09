@@ -24,7 +24,7 @@ The job_type module is a pure declaration + helpers:
   conditions at launch (defence in depth for jobs minted by
   ``dispatch`` from a todo, which don't pass through the JobHandler put
   path).
-* ``resolve_sandbox_model`` — model via the ADR 0046 router
+* ``resolve_sandbox_model`` — model via the LLM routing seam router
   (``Tier.FRONTIER``) with a ``PRECIS_SANDBOX_MODEL`` override; never
   a private constant.
 * ``compose_prompt`` — the ``/work/PROMPT.md`` body (task + harvest
@@ -178,7 +178,7 @@ def read_mcp_enabled() -> bool:
 def resolve_sandbox_model() -> str:
     """Model for the container run.
 
-    ``PRECIS_SANDBOX_MODEL`` override wins; otherwise the ADR 0046
+    ``PRECIS_SANDBOX_MODEL`` override wins; otherwise the LLM routing seam
     ``Tier.FRONTIER`` opus pin (``PRECIS_MODEL_OPUS`` /
     ``claude-opus-4-7`` default). Never a private constant.
     """

@@ -1,5 +1,5 @@
 """``embed_batch`` job_type (§F cycle a) — a bounded work order draining
-the SAME derived embed queue the standing ``embed`` pass uses (ADR 0007).
+the SAME derived embed queue the standing ``embed`` pass uses.
 
 Drives ``embed_batch._dispatch`` directly against a minimal fake
 ``DispatchContext`` (only the attributes/callables the dispatcher actually

@@ -1,4 +1,4 @@
-"""``struct_relax`` job_type — the cache↔relax seam (ADR 0043 §23.12 + §23.16).
+"""``struct_relax`` job_type — the cache↔relax seam.
 
 Proves the seam end-to-end *without a cluster*: a stubbed container run (the
 :data:`RUNNER` hook writes a fake ``result.json``) drives the dispatch, which

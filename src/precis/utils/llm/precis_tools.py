@@ -8,7 +8,7 @@ Two adapters, so an open-source model can drive the precis verbs
   built from each verb's signature). Pure over the registry.
 * :func:`runtime_executor` — wrap ``runtime.dispatch(verb, args) -> str`` as the
   loop's ``execute`` callback. ``dispatch`` already renders errors as text and
-  never raises (ADR: MCP expects a string), so a bad call feeds the model a
+  never raises (MCP expects a string), so a bad call feeds the model a
   legible error instead of aborting the run. The dispatcher is injectable so
   this is unit-testable with a fake; the default uses the same process-global
   runtime the MCP server path uses.

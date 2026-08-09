@@ -1269,8 +1269,8 @@ class NumericRefHandler(Handler):
         except (ValueError, TypeError):
             # gr48523-adjacent: agents repeatedly pass a slug/filename-style
             # id (e.g. a local memory-file stem like 'backlog_foo') here —
-            # this kind has no slug column (ADR 0008 dropped slug
-            # normalisation; ADR 0036 computes the handle from the integer
+            # this kind has no slug column (dropped slug
+            # normalisation; the handle registry computes the handle from the integer
             # id, e.g. `me158`). Spell the recovery path explicitly instead
             # of just naming the constraint, so a caller who guessed wrong
             # doesn't have to discover `search` by trial and error.
@@ -1378,7 +1378,7 @@ class NumericRefHandler(Handler):
             target = f"<unknown ref {other_id}>"
         else:
             ident = ref.slug if ref.slug is not None else str(ref.id)
-            # ADR 0036: ref-level link → the record's universal handle.
+            # ref-level link → the record's universal handle.
             # A block-level link keeps the legacy ``kind:slug~pos`` (still
             # valid input); the chunk handle needs the chunk_id, which this
             # static render doesn't have.
@@ -1503,7 +1503,7 @@ class NumericRefHandler(Handler):
             rows.append(
                 {
                     "kind": self.kind,
-                    # ADR 0036: the universal handle (e.g. ``me158``) is the
+                    # the universal handle (e.g. ``me158``) is the
                     # one address form, replacing the bare numeric id.
                     "id": handle_registry.try_format(self.kind, r.id) or str(r.id),
                     "summary": summary,
@@ -1527,7 +1527,7 @@ class NumericRefHandler(Handler):
         Subclasses override to add kind-specific hints (e.g. todo's
         STATUS:doing transition, gripe's append-comment recipe).
         """
-        # ADR 0036: surface the universal handle on create so the agent
+        # surface the universal handle on create so the agent
         # learns the one address form it'll see in output (e.g. ``me158``).
         handle = handle_registry.try_format(self.kind, ref_id)
         ident = handle or f"id={ref_id}"

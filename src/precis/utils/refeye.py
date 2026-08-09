@@ -1,4 +1,4 @@
-"""The reference ring — the ``fisheye+1hop`` extent (ADR 0051 §6, refeye slice).
+"""The reference ring — the ``fisheye+1hop`` extent (refeye slice).
 
 Where the spatial fisheye (``utils.fisheye``) walks the *reading-order* graph —
 "what is physically near this node" — the reference ring walks the **reference

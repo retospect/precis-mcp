@@ -653,7 +653,7 @@ def _triage_dispatch(ctx: Any, spec: Any) -> None:
     verdicts: list[dict[str, Any]] | None = None
     last_err = "no parseable verdicts"
     for attempt in (1, 2):
-        # Routed through the LLM seam (ADR 0046 unit 4b): MEDIUM judge, so
+        # Routed through the LLM seam: MEDIUM judge, so
         # PRECIS_LLM_BACKEND can switch it. Errors fold into res.error.
         res = dispatch(
             LlmRequest(

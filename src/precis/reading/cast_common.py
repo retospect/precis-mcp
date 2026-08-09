@@ -105,7 +105,7 @@ class CastProfile:
     #: idempotency + already-published episodes are undisturbed.
     folder: str  # Drive folder title the cast draft is auto-placed under
     #: (e.g. "Morning brief") so its text (and audio/PDF links) show up in
-    #: /drive alongside the other authored artifacts (ADR 0045).
+    #: /drive alongside the other authored artifacts.
 
 
 CAST_PROFILES: dict[str, CastProfile] = {
@@ -299,7 +299,7 @@ def create_cast_draft(
         return canonical, False
     # File the fresh draft under this cast's Drive folder so its text (and the
     # audio/PDF links the Drive row surfaces) live alongside the other authored
-    # artifacts (ADR 0045). Best-effort: placement never blocks a stored cast.
+    # artifacts. Best-effort: placement never blocks a stored cast.
     folder_id = ensure_cast_folder(store, profile)
     if folder_id is not None:
         try:

@@ -235,7 +235,7 @@ def _fetch_paper_claim_info(
     """``(title, claim_text, identifiers)`` for a paper — ``None`` if gone.
 
     ``claim_text`` is the title, optionally extended with the stored
-    abstract (``meta.abstract``, ADR-agnostic ingest field) when
+    abstract (``meta.abstract``, the generic ingest field) when
     present — the best available stand-in for "the claim(s) Y makes",
     since inbound chase has no single ``finding``-scoped claim the way
     outbound chase does. Used only to lexically/LLM-locate the citing

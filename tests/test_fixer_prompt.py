@@ -1,4 +1,4 @@
-"""Unit tests for the fixer build prompt (ADR 0048).
+"""Unit tests for the fixer build prompt.
 
 The build prompt carries the CLAUDE.md "same-commit map freshness" norm
 into every fixer build — the in-build (soft, contextual) layer of the

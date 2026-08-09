@@ -1,4 +1,4 @@
-"""Unit tests for the fixer persistent per-tick log line (ADR 0048).
+"""Unit tests for the fixer persistent per-tick log line.
 
 ``format_log_line`` is the pure floor of the durable record — a single
 greppable line per tick appended to ``<work_dir>/fixer.log``. The richer

@@ -66,7 +66,7 @@ class PathwayHandler(Handler):
         is_numeric=False,
         role="artifact",
         corpus_role="none",
-        # Own the derived autocatpath_explore compute job (ADR 0044 compute lane),
+        # Own the derived autocatpath_explore compute job (compute lane),
         # so `put` can route the run to the pinned node instead of running it
         # in-process. Requires precis KindSpec.can_own_jobs (>= 8.22).
         can_own_jobs=True,
@@ -214,8 +214,8 @@ class PathwayHandler(Handler):
         existing: Any,
     ) -> Response:
         """Route the compute: ensure the pathway ref exists (status=computing),
-        then mint a `autocatpath_explore` job pinned to `node` (compute lane, ADR
-        0044). The node's ssh_node worker claims it and runs autocatpath there,
+        then mint a `autocatpath_explore` job pinned to `node` (compute lane).
+        The node's ssh_node worker claims it and runs autocatpath there,
         writing the result back onto this ref."""
         seed_meta = {
             "content_key": key,

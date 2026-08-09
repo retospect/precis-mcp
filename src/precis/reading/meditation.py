@@ -369,7 +369,7 @@ def build_meditation(
         # profile. Tests always inject a fake client, so this branch stays out of
         # unit runs and off the cheap MCP import graph.
         #
-        # Folds through the router (ADR 0046) onto the ``claude_agent``
+        # Folds through the router onto the ``claude_agent``
         # transport (direct Anthropic OAuth) instead of holding a raw litellm
         # client, so this cast composer gets the budget breaker + the route-log.
         # ``tools_needed=True`` lands on ``claude_agent`` (free-text final

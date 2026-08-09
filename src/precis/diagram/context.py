@@ -1,4 +1,4 @@
-"""The prepared-context assembler for diagram editing (ADR 0057), generic over
+"""The prepared-context assembler for diagram editing, generic over
 :class:`~precis.diagram.lang.DiagramLang`.
 
 Given a diagram's source chunk, produce the block the model edits *inside*:

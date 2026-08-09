@@ -1,4 +1,4 @@
-"""Slack bridge — receives messages, drives Asa per turn via the ADR-0046
+"""Slack bridge — receives messages, drives Asa per turn via the LLM routing seam
 router, posts back.
 
 Single-instance daemon over Socket Mode (a persistent outbound WebSocket —

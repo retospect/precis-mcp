@@ -22,7 +22,7 @@ __all__ = ["ClaudeFn", "TurnResult", "build_prompt", "run_turn"]
 
 
 def _default_claude(prompt: str) -> dict[str, Any]:
-    # Routed through the LLM seam (ADR 0046 unit 4b): FRONTIER (drawing
+    # Routed through the LLM seam: FRONTIER (drawing
     # wants a capable model), so PRECIS_LLM_BACKEND can switch it. A
     # PRECIS_FIGURE_MODEL pin still wins (None ⇒ the tier default, opus-4.8).
     from precis.utils.llm.router import LlmRequest, Tier, dispatch

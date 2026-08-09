@@ -1,4 +1,4 @@
-"""Tests for the paper→topic-dossier cascade classifier (ADR 0060).
+"""Tests for the paper→topic-dossier cascade classifier.
 
 Pure helpers (tier-0 screen / prompt / parse) run everywhere. The end-to-end
 pass runs against real PG (the ``store`` fixture) with a fake LLM client — no
@@ -115,7 +115,7 @@ class TestPure:
 
 class TestPromptPreview:
     """``prompt_preview`` — the ``/categorizers`` hover popover's source of
-    truth (ADR 0068 follow-up, #5). Must reuse ``_build_prompt``/``_SYS`` so
+    truth (follow-up, #5). Must reuse ``_build_prompt``/``_SYS`` so
     the preview can't drift from the real pass."""
 
     def test_full_taxonomy_preview_has_system_and_user(self) -> None:
@@ -131,7 +131,7 @@ class TestPromptPreview:
 
 
 class TestTopicMarkerValue:
-    """``topic_marker_value`` (ADR 0068) — order-independent, set-sensitive,
+    """``topic_marker_value`` — order-independent, set-sensitive,
     stable digest of the enabled-topic set, keyed under the pass's version."""
 
     def test_order_independent(self) -> None:
@@ -439,7 +439,7 @@ class TestPass:
         assert Tag.open("topic:HealthSpan").value == "topic:healthspan"
 
 
-# ── per-topic gating (ADR 0068) ─────────────────────────────────────────
+# ── per-topic gating ─────────────────────────────────────────
 
 
 class TestPerTopicGating:

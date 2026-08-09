@@ -1,4 +1,4 @@
-"""One tick of the laptop fixer loop (ADR 0048).
+"""One tick of the laptop fixer loop.
 
     pick (ready-gated) → build (Claude, host OAuth) → gate
       → [ship → deploy → look-at-prod → fix-forward]   (autonomy≥ship/full)
@@ -285,7 +285,7 @@ def _look_at_prod(cfg: FixerConfig) -> tuple[bool, str]:
     """Post-deploy check. MVP: cheap ``/readyz`` liveness only.
 
     The full agentic look (load diff-scoped pages, make MCP calls,
-    judge, fix-forward) is deferred — ADR 0048. Until then a liveness
+    judge, fix-forward) is deferred. Until then a liveness
     probe is the honest floor; a red probe blocks the "green" report.
     """
     if not cfg.readyz_url:

@@ -8,15 +8,14 @@ Unifies the two closed-vocabulary tagging families across the corpus:
     ref-level axis (``level: ref`` — the default when the field is
     omitted, mirroring ``role.yaml``'s "ref-level runner ignores this
     file" convention) writes a ref tag in the same ``<ID>``-uppercased
-    namespace. **role3** + **junk** run under the ``classify`` cascade
-    (ADR 0047); every other axis runs under its own ``axis:<id>``
+    namespace. **role3** + **junk** run under the ``classify`` cascade; every other axis runs under its own ``axis:<id>``
     generic-runner service (``cli/worker.py``'s per-axis wiring,
     ``workers/axis_pass.py``) — default-OFF but independently flippable.
   * **Topics** (``src/precis/data/topics/*.yaml``) — paper/patent-level,
     multi-label ``topic:<slug>`` open tags plus a
     ``TOPICCASCADE:<marker>`` marker. All topics share the one
-    ``classify_topics`` pass (ADR 0060), but each topic is independently
-    flippable via its own ``topic:<slug>`` service (ADR 0068): the pass
+    ``classify_topics`` pass, but each topic is independently
+    flippable via its own ``topic:<slug>`` service: the pass
     filters ``_load_topics()`` to the enabled subset and the marker encodes
     that enabled-topic set, so toggling a topic lazily re-sweeps the corpus
     against the new set. ``classify_topics`` itself remains a global
@@ -92,7 +91,7 @@ _CLASSIFY_TOPICS_ENABLED_ENV = "PRECIS_CLASSIFY_TOPICS_ENABLED"
 #: ``default_on`` verdict from (a live ``service_config`` row always wins).
 _AXES_ENABLED_ENV = "PRECIS_AXES_ENABLED"
 
-#: Comma-separated topic slugs ``cli/worker.py``'s per-topic gate (ADR 0068)
+#: Comma-separated topic slugs ``cli/worker.py``'s per-topic gate
 #: seeds its ``default_on`` verdict from — mirrors ``_AXES_ENABLED_ENV``.
 _TOPICS_ENABLED_ENV = "PRECIS_TOPICS_ENABLED"
 
@@ -123,7 +122,7 @@ def _drive_chip_url(tag: str) -> str:
 
 
 def _topic_service(slug: str) -> str:
-    """The per-topic ``service_config`` service name (ADR 0068) — each topic
+    """The per-topic ``service_config`` service name — each topic
     is independently flippable; ``classify_topics`` itself remains the
     retained global kill-switch (see :func:`_allowed_services`)."""
     return f"topic:{slug}"
@@ -221,7 +220,7 @@ def _allowed_services() -> frozenset[str]:
     request so a concurrently-added file doesn't need a worker restart to
     become toggleable. Guards ``POST /categorizers/toggle`` against writing
     an arbitrary ``service_config`` row. ``classify_topics`` is retained as
-    the global kill-switch target (ADR 0068) alongside each topic's own
+    the global kill-switch target alongside each topic's own
     ``topic:<slug>`` service.
     """
     axis_ids = {str(a["id"]) for a in _load_axes()}
@@ -276,7 +275,7 @@ def _effective_state(store: Any) -> dict[str, dict[str, Any]]:
             "overridden": "classify" in overridden,
             "concurrency": resolver.concurrency("classify", default=1),
         },
-        # Retained as the global kill-switch state (ADR 0068) — each topic
+        # Retained as the global kill-switch state — each topic
         # now also carries its own independent ``topic:<slug>`` state below.
         "classify_topics": {
             "enabled": resolver.enabled("classify_topics", default_on=global_topics_on),
@@ -483,7 +482,7 @@ def _paper_patent_total(store: Any) -> int:
 def _topics_marker_done(store: Any, marker_value: str) -> int:
     """Paper+patent refs carrying the current ``TOPICCASCADE:<marker>``
     marker — the ``classify_topics`` pass's coverage of the corpus under the
-    *live enabled-topic set* (ADR 0068 — a toggle changes the marker value,
+    *live enabled-topic set* (per-topic classify gating — a toggle changes the marker value,
     so this recomputes against the new set; same value for every topic row;
     each topic's own hit-count is a separate, per-slug number — see
     :func:`_topic_hit_count`)."""

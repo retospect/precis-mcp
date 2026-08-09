@@ -1,4 +1,4 @@
-"""Unit 4b — the Layer-2 tex fixer selects its model through the ADR 0046
+"""Unit 4b — the Layer-2 tex fixer selects its model through the LLM routing seam
 resolver (BIG / sonnet), byte-identically to the legacy inline read.
 
 DB-free and spawn-free: ``_run_chktex`` is stubbed to force the LLM path and

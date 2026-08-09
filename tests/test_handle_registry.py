@@ -1,4 +1,4 @@
-"""ADR 0036 handle registry — totality + computed-format guards.
+"""Universal handle registry — totality + computed-format guards.
 
 The totality test is the point: a new persistent-ref kind added without a
 2-char code fails here, so coverage is enforced by CI, not manual review
@@ -158,7 +158,7 @@ def test_unknown_kind_and_code_raise() -> None:
         hr.kind_for_code("zz")
 
 
-# --- relative navigation grammar (ADR 0036) -----------------------------
+# --- relative navigation grammar -----------------------------
 
 
 def test_parse_relative_step() -> None:
@@ -193,7 +193,7 @@ def test_parse_relative_rejects_non_relative_and_junk() -> None:
     assert hr.parse_relative("pc10+x") is None  # malformed operator
 
 
-# --- plugin-contributed codes (ADR 0036 — handle_codes entry point) ------
+# --- plugin-contributed codes (universal handles — handle_codes entry point) ------
 
 
 def _fake_eps(monkeypatch: pytest.MonkeyPatch, **codes: dict) -> None:

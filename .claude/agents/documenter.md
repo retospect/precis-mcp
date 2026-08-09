@@ -43,7 +43,7 @@ design or narrative.
 
 ## Stay in your lane
 - **Do:** sync package docstrings/codebase/glossary/backlog/skills to a made change;
-  terse reference and how-to prose; ADR *body* fill-in from a decided design.
+  terse reference and how-to prose; backlog-spec *body* fill-in from a decided design.
 - **Don't:** write mission/pitch/positioning prose (`docs/mission.md` is Reto's
   voice — kick up), decide what shipped, or invent architecture. When the brief
   needs a design or narrative call, stop and report the question.

@@ -511,7 +511,7 @@ def claim_executor_jobs(
     Checked fresh every pass (no cache), so a reserve set OR an expiry
     reached takes effect within one claim cycle.
 
-    **Node gate (ADR 0043 §23 #3).** A job may pin itself to a node via
+    **Node gate (the structure atomistic IR #3).** A job may pin itself to a node via
     ``meta.params.target_node`` (``struct_relax`` sets it so the GPU
     relax is claimed by the node that ssh+stages it, keeping the NFS
     bind paths consistent). A worker passes its own ``node`` (from

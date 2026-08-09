@@ -1,4 +1,4 @@
-"""Phase-1 render isolation (ADR 0035 §3) — the stripped subprocess that runs
+"""Phase-1 render isolation — the stripped subprocess that runs
 untrusted figure code. These tests pin the *security-critical* behaviour: the
 child sees a scrubbed env, a hostile loop is killed on the wall clock, a raising
 render fails cleanly, and a render that produces nothing is reported — never a

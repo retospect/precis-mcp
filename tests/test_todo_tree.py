@@ -25,8 +25,7 @@ def handler(hub: Hub) -> TodoHandler:
 
 
 def _id_of(resp_body: str) -> int:
-    """Parse the created todo's id out of a put-create ack (ADR 0036
-    ``created todo td<id> ...`` handle, or the legacy ``id=N`` form)."""
+    """Parse the created todo's id out of a put-create ack (``created todo td<id> ...`` handle, or the legacy ``id=N`` form)."""
     from tests.conftest import id_of
 
     return id_of(resp_body)
@@ -248,7 +247,7 @@ def test_unknown_source_defaults_to_owner(
 
 
 def test_tag_meta_rejects_deliver(handler: TodoHandler) -> None:
-    """``deliver`` (ADR 0061 push target) must go through put(), not tag()."""
+    """``deliver`` (push target) must go through put(), not tag()."""
     r = handler.put(text="a leaf")
     rid = _id_of(r.body)
     with pytest.raises(BadInput, match="cannot be set via tag"):
@@ -298,7 +297,7 @@ def test_tag_meta_allowlist_keys_still_promote(handler: TodoHandler) -> None:
     assert ref.meta.get("llm_select") == {"placement": "local"}
 
 
-# ── meta.llm_select (ADR 0066 structured selection) ─────────────────
+# ── meta.llm_select (structured selection) ─────────────────
 
 
 def test_llm_select_accepts_a_valid_subset(handler: TodoHandler) -> None:

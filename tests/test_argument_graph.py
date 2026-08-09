@@ -1,4 +1,4 @@
-"""Argument graph, v1 slice (ADR 0054).
+"""Argument graph, v1 slice.
 
 Covers each of the five build-order steps:
 

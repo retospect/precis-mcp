@@ -1,6 +1,6 @@
 """TOC handles are universal handles that round-trip through ``get``.
 
-Regression for the ADR-0036 gap: ``view='toc'`` used to label each
+Regression for the universal handles gap: ``view='toc'`` used to label each
 cluster with the ``kind:slug~pos`` legacy form (``paper:vaswani17~0..8``),
 which the ``get`` id parser rejects on ``:`` — so a copy-pasted drill-in
 hint dead-ended. The renderer now emits the record's universal handle

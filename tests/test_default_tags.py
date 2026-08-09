@@ -14,7 +14,7 @@ Phase 5 of the cold-start token budget design
 - ``tag`` verb gets a suggestion hint without mutation.
 - End-to-end: ``PRECIS_DEFAULT_TAGS`` layered with the ``workspace``
   auto-tag on prose-file kinds (markdown / plaintext / tex) — OQ-17
-  from the design / ADR 0013. Both layers must land on the resulting
+  from the design. Both layers must land on the resulting
   ref: ``workspace`` for file-rooted-ness, defaults for session
   context.
 """
@@ -424,7 +424,7 @@ def test_build_runtime_default_tags_default_empty(monkeypatch) -> None:
 # OQ-17: PRECIS_DEFAULT_TAGS × workspace auto-tag layering on prose-file kinds
 # ---------------------------------------------------------------------------
 #
-# Background (ADR 0013, OQ-17 in OPEN-ITEMS.md): the prose-file handlers
+# Background (OQ-17 in OPEN-ITEMS.md): the prose-file handlers
 # (markdown / plaintext / tex) auto-stamp every ingested ref with the
 # ``workspace`` flag tag — useful so an agent can scope
 # ``search(tags=['workspace'])`` to file-rooted content. Phase 5 added the
@@ -500,7 +500,7 @@ def test_default_tags_layer_with_workspace_on_prose_handlers(
     expected_defaults: tuple[str, ...],
 ) -> None:
     """``workspace`` and ``PRECIS_DEFAULT_TAGS`` layer on every prose-file
-    ``put``. ADR 0013 OQ-17.
+    ``put``. Session-context env vars OQ-17.
 
     Pins the design's tentative contract: a fresh markdown / plaintext /
     tex ref carries the auto-stamped ``workspace`` flag plus every

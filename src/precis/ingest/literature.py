@@ -9,7 +9,7 @@ Public API:
   * :func:`first_author_surname` — display-friendly surname.
 
 The legacy ``make_slug`` helper that lived here was removed during B3a
-of the v2 storage rewrite (per ADR 0008). For human-readable citation
+of the v2 storage rewrite. For human-readable citation
 handles, call :func:`precis.identity.make_cite_key` instead.
 
 A ``build_embedder`` factory used to live here too — chroma + sentence-
@@ -174,9 +174,9 @@ def _ascii_fold(text: str) -> str:
     )
 
 
-# NOTE: ``make_slug`` was removed during B3a per ADR 0008
-# (drop slug; identifiers normalised into ref_identifiers).
-# The replacement is ``precis.identity.make_cite_key`` (per ADR 0006),
+# NOTE: ``make_slug`` was removed during B3a
+# (slug dropped; identifiers normalised into ref_identifiers).
+# The replacement is ``precis.identity.make_cite_key``,
 # which is a different algorithm — ``miller23a`` style rather than
 # ``miller2023dopamine``. Call sites have switched accordingly.
 

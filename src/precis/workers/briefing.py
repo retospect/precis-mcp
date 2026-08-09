@@ -7,7 +7,7 @@ table and a DB-stored prompt, it:
 1. pulls recent ``news`` refs (the last ~26h by default) via
    :meth:`Store.list_refs`;
 2. formats their headlines + sources + links into an LLM context;
-3. asks the FRONTIER reasoning tier (via the LLM router — ADR 0046 — routed
+3. asks the FRONTIER reasoning tier (via the LLM router — the LLM routing seam — routed
    onto ``claude_agent`` / direct Anthropic OAuth, not the litellm proxy) for a
    tight brief;
 4. persists the brief itself as a pinned ``news`` ref slugged
@@ -60,7 +60,7 @@ _BRIEF_MAX_TOKENS = 1200
 # The briefing is a once-a-day call whose US section asks the model to
 # separate operational signal from spectacle — analytically demanding, so it
 # runs on the router's ``FRONTIER`` tier (opus-class reasoning), not the
-# free ``SMALL`` tier the per-chunk glosses use (ADR 0046). A
+# free ``SMALL`` tier the per-chunk glosses use. A
 # ``PRECIS_BRIEFING_MODEL`` override still wins — but it must now name a real
 # model id the ``claude`` CLI accepts (e.g. ``claude-opus-4-8``), not the
 # retired litellm ``claude-opus`` alias: routing folds through
@@ -115,7 +115,7 @@ def _briefing_user_block(ctx: AssemblyContext) -> str:
     return f"Date: {e['date']}. {e['count']} headlines overnight:\n\n{e['context']}"
 
 
-#: The briefing prompt as an ordered module list (ADR 0038 step 2, helper
+#: The briefing prompt as an ordered module list (helper
 #: profile). CACHED (→ ``system``): the editor persona/instruction, stable
 #: across runs. VARIABLE (→ ``user``): the dated headline context. Packaged
 #: by the shared :class:`LiteLLMAdapter`, reusing the summarizer machinery.
@@ -256,7 +256,7 @@ def run_briefing(
         log.info("briefing: no news in the last %dh — nothing to brief", lookback_hours)
         return {"articles": 0, "brief_chars": 0, "ref_id": None}
 
-    # Fold through the router (ADR 0046) instead of holding a raw litellm
+    # Fold through the router instead of holding a raw litellm
     # client — so this cloud-tier call gets the budget breaker + the route-log
     # (llm_call_log starts capturing real data on this pass). tools_needed=True
     # lands on claude_agent (free-text final answer + system prompt honored,

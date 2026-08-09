@@ -7,10 +7,7 @@ tokens chasing a file that moved or was deleted. This test pins the *live*
 docs so a dead relative link fails the gate.
 
 It deliberately checks only markdown **link targets** (`[text](path)`), not
-prose file mentions, and only the live doc set — not
-`docs/decisions/`, which are frozen historical artefacts that may point at
-since-removed files on purpose (the one exception is `docs/decisions/
-README.md` itself, an index that should stay accurate). Also excludes
+prose file mentions. Also excludes
 `src/precis/data/skills/` — those docs use `[text](<placeholder>)` link
 syntax to document call patterns, not real file links, so scanning them
 produces false positives rather than catching real drift. Hermetic: no DB,

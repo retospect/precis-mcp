@@ -1,4 +1,4 @@
-"""``precis worker`` — drive the derived-artifact queue (ADR 0007).
+"""``precis worker`` — drive the derived-artifact queue.
 
 Run continuously to keep ``chunk_embeddings`` and ``chunk_summaries``
 up-to-date as new chunks land. Two modes:
@@ -143,7 +143,7 @@ def _topic_slug_default_on(service: str, topics_env: frozenset[str]) -> bool | N
     service (the caller falls back to the registry/profile default). A
     ``topic:<slug>`` service has no ``ServiceSpec`` of its own (the spec is
     named ``classify_topics``) — this is where the per-topic env seed is
-    read for the per-cycle gate (ADR 0068).
+    read for the per-cycle gate.
     """
     prefix = "topic:"
     if service.startswith(prefix):
@@ -170,7 +170,7 @@ def _classify_topics_enabled_slugs(
     the full taxonomy.
 
     ``--only classify_topics`` and ``PRECIS_CLASSIFY_TOPICS_ENABLED=1`` are
-    the admin full-backfill hatches (ADR 0068 preserved the pre-0068
+    the admin full-backfill hatches (preserved the pre-0068
     meaning): the former always sweeps every topic (a single-pass,
     node-targeted invocation shouldn't be silently narrowed by per-topic
     gates); the latter is the legacy "all topics default-on" env seed, still
@@ -300,7 +300,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         description=(
             "Process chunks that lack a derived artifact (embedding or "
             "summary) and write the result back. Without a separate "
-            "queue table — see ADR 0007 — the worker discovers work by "
+            "queue table — the worker discovers work by "
             "LEFT JOIN-ing chunks against the output tables."
         ),
     )
@@ -504,7 +504,7 @@ def run(args: argparse.Namespace) -> None:
     store = Store.connect(dsn)
     # Wire the secrets vault: bind the store so passes can vault.reveal(), and
     # scrub the DSN from env so the agent subprocesses this worker spawns
-    # (plan_tick, sandbox, claude -p) don't inherit it (secrets-vault, ADR 0055).
+    # (plan_tick, sandbox, claude -p) don't inherit it (secrets-vault).
     from precis import secrets as _secrets
 
     _secrets.adopt_process_store(store)
@@ -662,7 +662,7 @@ def run(args: argparse.Namespace) -> None:
         # chunk_keywords above: the `meta.bib_parse_version` predicate
         # converges, so normal cadence drains the backlog; `--only
         # bib_parse` is the fast-path burst backfill. SMALL-tier LLM via
-        # the router (ADR 0046 dispatch seam) for the messy-line parse
+        # the router (dispatch seam) for the messy-line parse
         # fallback + close-candidate Crossref adjudication; Crossref
         # itself goes through `safe_get` (SSRF guard), not this client.
         if _register("bib_parse"):
@@ -754,8 +754,8 @@ def run(args: argparse.Namespace) -> None:
 
         # Finding-chase pass — same sibling-worker pattern, but for
         # STATUS:tracing/acquiring findings. Default-off LLM hooks via
-        # --with-llm or PRECIS_CHASE_LLM=1. See ADR 0018 §"Worker"
-        # for the sibling-vs-base-class rationale.
+        # --with-llm or PRECIS_CHASE_LLM=1. The sibling-vs-base-class
+        # rationale lives in the ``precis.workers`` package docstring.
         if _register("chase"):
             from precis.workers.chase import (
                 _TAPROOT_CHASE_ENV,
@@ -1151,7 +1151,7 @@ def run(args: argparse.Namespace) -> None:
 
         # job_claude_docker — drains sandbox_run jobs (meta.executor==
         # 'claude_docker') by launching a detached, cgroup-capped
-        # container, polling it by name, and reaping it (ADR 0048).
+        # container, polling it by name, and reaping it.
         # Registered **default-OFF** — only
         # via a `service prio` row (seeded once at deploy from the sandbox
         # hosts' group membership; §L retired PRECIS_SANDBOX_ENABLED as the
@@ -1210,7 +1210,7 @@ def run(args: argparse.Namespace) -> None:
             from precis.utils.llm.router import Tier as _Tier
             from precis.workers.runner import BatchResult as _BatchResult
 
-            # Fold through the router (ADR 0046) — same ``.complete`` contract, but
+            # Fold through the router — same ``.complete`` contract, but
             # the call gets the local-serving ``served_by`` reroute (Phase-2
             # litellm-retire). model=None ⇒ resolve_model(SMALL) =
             # ``PRECIS_SUMMARIZE_MODEL or summarizer`` = the config default, so
@@ -1254,7 +1254,7 @@ def run(args: argparse.Namespace) -> None:
             from precis.utils.llm.router import Tier as _Tier
             from precis.workers.runner import BatchResult as _ClsBatchResult
 
-            # Resolve via the SMALL-tier chain (ADR 0066 `llm.chain.small`)
+            # Resolve via the SMALL-tier chain (`llm.chain.small`)
             # rather than pinning the legacy `summarizer` litellm alias. The
             # chain's rungs (glm-4.7-flash → summarizer) are non-thinking small
             # models, so the empty-return hazard the old pin guarded against no
@@ -1267,7 +1267,7 @@ def run(args: argparse.Namespace) -> None:
                 log_call=True,
                 log_blobs=False,
             )
-            # Tier 2 (ADR 0047 §Tiers): a re-judge-only client bound to the
+            # Tier 2: a re-judge-only client bound to the
             # escalate model — must be a *distinct* client from `_cls_client`
             # (mirrors inject_scan's identical gate/escalate shape), else the
             # "escalate" call silently re-runs the same model twice.
@@ -1358,7 +1358,7 @@ def run(args: argparse.Namespace) -> None:
             from precis.utils.llm.router import Tier as _Tier
             from precis.workers.runner import BatchResult as _PgBatchResult
 
-            # Fold through the router (ADR 0046 dispatch seam) instead of holding
+            # Fold through the router (dispatch seam) instead of holding
             # a raw litellm client — so this pass gets the breaker gate + the
             # local-serving ``served_by`` reroute (Phase-2 litellm-retire). A
             # glossary is a multi-term JSON object, far larger than the 220-token
@@ -1393,8 +1393,8 @@ def run(args: argparse.Namespace) -> None:
 
             ref_passes.append(_paper_glossary_pass)
 
-        # classify_topics — paper→topic-dossier cascade (ADR 0060, per-topic
-        # gating ADR 0068). Tier-0 free keyword screen, tier-1 cheap local
+        # classify_topics — paper→topic-dossier cascade (per-topic
+        # gating per-topic classify gating). Tier-0 free keyword screen, tier-1 cheap local
         # model confirms/expands the candidate set — MULTI-LABEL (a paper can
         # carry several `topic:` tags). Writes `topic:<slug>` open tags + a
         # `TOPICCASCADE:<marker>` marker keyed on the *enabled-topic set*
@@ -1405,7 +1405,7 @@ def run(args: argparse.Namespace) -> None:
         # explicit `classify_topics` row remains a global kill-switch
         # (`_gate_default_on` below). `--only classify_topics` and
         # PRECIS_CLASSIFY_TOPICS_ENABLED=1 are the admin full-taxonomy
-        # backfill hatches (ADR 0068 preserved the pre-0068 meaning): a
+        # backfill hatches (preserved the pre-0068 meaning): a
         # corpus-wide backfill is a deliberate, node-targeted batch, like
         # classify/paper_glossary. See workers/classify_topics.py +
         # docs/decisions/0060-topic-dossiers.md.
@@ -1451,8 +1451,7 @@ def run(args: argparse.Namespace) -> None:
 
             ref_passes.append(_classify_topics_pass)
 
-        # axis — generic ``data/axes/<id>.yaml`` classifier runner (ADR 0047
-        # §3), with prerequisite enforcement: an item is only eligible for
+        # axis — generic ``data/axes/<id>.yaml`` classifier runner, with prerequisite enforcement: an item is only eligible for
         # axis X once it already carries a tag in every namespace X's
         # `prereq:` lists (e.g. `material` waits for `domain`). Purely
         # additive — does not touch `classify` (junk/role3, which keep
@@ -1783,7 +1782,7 @@ def run(args: argparse.Namespace) -> None:
         # injection attempt, escalating ambiguous ones + raising an alert on
         # `high`. Dark behind a `service prio` row (§L retired
         # PRECIS_INJECT_SCAN_ENABLED as the live gate; agent host, where the
-        # local model proxy resolves); routed through the ADR 0046 DispatchClient.
+        # local model proxy resolves); routed through the routing-seam DispatchClient.
         if _register("inject_scan"):
             from precis.utils.llm.router import DispatchClient as _InjDispatchClient
             from precis.utils.llm.router import Tier as _InjTier
@@ -1845,8 +1844,8 @@ def run(args: argparse.Namespace) -> None:
         # on (or is still 404-ing) and tries patents.google.com once.
         # Gated by PRECIS_GP_FETCH=1; the pass itself short-circuits when
         # the env isn't set so it's safe to include in the system profile
-        # even on hosts that shouldn't run it. See ADR-pending /
-        # docs/decisions about external-fetch goodwill.
+        # even on hosts that shouldn't run it (external-fetch goodwill:
+        # off by default, one polite retry).
         if _register("gp_fetch"):
             from precis.workers.fetch_google_patents import run_gp_fetch_pass
             from precis.workers.runner import BatchResult as _BatchResult
@@ -2260,7 +2259,7 @@ def _resolve_embedder(
 
     When a ``store`` is supplied the corpus embedding dimension is passed
     as ``expected_dim`` so a wrong/upgraded remote model fails loudly at
-    the boundary instead of writing incompatible vectors (ADR 0020).
+    the boundary instead of writing incompatible vectors.
     """
     return make_embedder(
         args.embedder,

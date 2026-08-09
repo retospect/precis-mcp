@@ -1,4 +1,4 @@
-"""Compose a whole working set into one context (ADR 0051 §6, deduper).
+"""Compose a whole working set into one context (deduper).
 
 Renders N eyes — possibly across several documents — as **one deduplicated
 context** rather than N independent fisheyes. The core is a per-chunk

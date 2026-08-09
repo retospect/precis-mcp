@@ -206,7 +206,7 @@ def test_automations_lists_tagged_recurrings_with_produced_artifact(
 ) -> None:
     """The Automations panel surfaces recurring (``meta.schedule`` set)
     todos tagged ``automation`` (only), with their subtype, schedule, and
-    the most recent ``derived-into`` artifact (ADR 0061 — folded from the
+    the most recent ``derived-into`` artifact (cron-folded-into-recurring — folded from the
     retired ``kind='cron'``).
 
     A plain (untagged) recurring must not appear; the produced-artifact join

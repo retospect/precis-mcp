@@ -328,7 +328,7 @@ def _transcript_retention_days() -> int:
 
 
 def _gc_transcripts(store: Store) -> int:
-    """Strip ``meta.transcript`` (job refs) and the ADR-0038 input-capture
+    """Strip ``meta.transcript`` (job refs) and the prompt assembler input-capture
     pair ``meta.assembled_context`` / ``meta.assembled_context_at`` — the
     latter lands on a plan_tick's ``kind='job'`` ref or on the digest memory
     a structural/deep-review pass wrote (see
@@ -857,7 +857,7 @@ def _transition_dead_node_orphan_to_failed(
     **exactly**: ``STATUS`` → ``failed``, ``meta.failure_class = 'infra'``,
     then :func:`bubble_job_failure` — so this reads as an infra death to
     every downstream consumer (the quest harvest's ``failure_class``-gated
-    retry-vs-rule-out branch, ADR 0064 §C), never a physical rule-out.
+    retry-vs-rule-out branch), never a physical rule-out.
     Tagged ``reaped:dead-node-orphan`` — distinct from
     :func:`_transition_to_failed`'s ``swept:claim-orphaned`` and
     ``quest/loop.py``'s ``reaped:reboot-orphan`` — so the three recovery

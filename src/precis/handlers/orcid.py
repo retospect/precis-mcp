@@ -1,4 +1,4 @@
-"""OrcidHandler — first-class author identity nodes (ADR 0039).
+"""OrcidHandler — first-class author identity nodes.
 
 ``kind='orcid'`` stores a researcher as a durable, refreshable ref keyed
 on their ORCID iD (slug ``orcid:0000-0002-1825-0097``). Unlike the
@@ -14,7 +14,7 @@ Verbs:
   embed a ``card_combined`` chunk, **link** any works already held in the
   corpus, and report the missing-DOI diff counts. Fetching the missing
   ones is **LLM-gated**, not automatic: pass ``args={'enqueue': N}`` (or
-  ``'all'``) to mint that many fetch stubs (ADR 0039 §4).
+  ``'all'``) to mint that many fetch stubs.
 * ``search(q=…)`` — semantic search over the embedded author cards.
 * ``link`` / ``tag`` — attach ``authored`` / ``authored-by`` edges and
   classification tags.
@@ -60,12 +60,12 @@ from precis.utils.embed_query import embed_query
 # Soft staleness TTL. A node older than this still renders (cached), but
 # carries a "may be stale — refresh" hint; the model decides whether to
 # re-pull (``args={'refresh': true}``). Refresh is on-demand only — there
-# is no background pass (ADR 0039, refresh decision).
+# is no background pass (refresh decision).
 _STALE_AFTER_DAYS = 30
 
 
 def _oi(ref_id: int) -> str:
-    """ADR 0036 ORCID-node handle (e.g. ``oi12``)."""
+    """Universal ORCID-node handle (e.g. ``oi12``)."""
     return handle_registry.format_handle("orcid", ref_id)
 
 
@@ -110,7 +110,7 @@ def enqueue_authored_works(
     *,
     limit: int = 0,
 ) -> dict[str, int]:
-    """The missing-DOI diff (ADR 0039 §4): link held papers; LLM-gated stubs.
+    """The missing-DOI diff: link held papers; LLM-gated stubs.
 
     Always: for each work with a usable identifier (DOI preferred, arXiv
     fallback), resolve against the corpus and on a hit ensure an
@@ -261,7 +261,7 @@ class OrcidHandler(Handler):
 
         # Resolve upstream only on a miss or an explicit refresh. A stale
         # node is *not* auto-refreshed — it renders cached with a hint and
-        # the model decides (refresh decision, ADR 0039).
+        # the model decides (refresh decision).
         works: list[dict[str, Any]] | None = None
         if existing is None or force_refresh:
             record = orcid_api.fetch_record(orcid_id)

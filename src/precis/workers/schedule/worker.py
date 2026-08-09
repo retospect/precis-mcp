@@ -74,7 +74,7 @@ If the process dies hard (OOM, network partition, ``kill -9``),
 Postgres rolls the tx back and releases the lock at the next
 deadlock-check / connection-cleanup cycle. No heartbeat, no TTL
 reaper, no stale-row sweeper. Same property the ingest claim
-(``ingest/claim.py``, ADR 0016) relies on, scaled down to per-row.
+(``ingest/claim.py``) relies on, scaled down to per-row.
 """
 
 from __future__ import annotations

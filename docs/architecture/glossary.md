@@ -31,13 +31,13 @@
 - **bubble** (failure-bubble / `child-failed`) — a failed job tags its parent
   `child-failed:<job_id>`, dropping it from the doable rotation until the owner
   decides retry / switch / give-up. → `src/precis/handlers/_job_bubble.py`
-- **intent lane / compute lane** — the two kinds of job parent (ADR 0044): an
+- **intent lane / compute lane** — the two kinds of job parent (`handlers/job.py`): an
   intent-lane job hangs off a `todo` (enters rotation, bubbles on failure); a
   compute-lane job hangs off a build artifact (structure/cad/draft — derived,
-  content-addressed, cache-fillable). → `docs/decisions/0044-derived-job-lane.md`
+  content-addressed, cache-fillable). → `src/precis/handlers/job.py`
 - **derived job** — a compute-lane job (DFT relax / route / compile): idempotent
   + content-addressed, owned by the artifact, no rotation to enter.
-  → `docs/decisions/0044-derived-job-lane.md`
+  → `src/precis/handlers/job.py`
 - **boot epoch / worker generation** — a uuid4 minted once per worker process
   at startup (`mint_boot_id`), advertised in `host_heartbeat.meta.boot_ids`;
   stamped onto every job claim as `meta.lease_boot_id` so a later successor
@@ -133,7 +133,8 @@
   papers that cite them `corroborate`. Derived from the citation graph, not
   hand-set. → `docs/backlog/taproot.md` §"Seniority is derived"
 - **fisheye** (eye) — a degree-of-interest render: focus one node and get it
-  plus its scaled-by-distance surroundings, not a bare chunk (ADR 0051 §6).
+  plus its scaled-by-distance surroundings, not a bare chunk (turn-taking
+  design, git-only).
   `get(..., view='fisheye'/'fisheye+1hop')`. → `src/precis/utils/fisheye.py`,
   `src/precis/utils/eye_render.py` · skill `precis-fisheye-help`
 - **extent ladder** — the `kwd < summary < verbatim < fisheye < fisheye+1hop`
@@ -160,14 +161,14 @@
   furniture) · `corpus_role` (evidence/spec/none — citability) · `KindSpec.role`
   (artifact/corpus/stream/system — folder placement).
   → `src/precis/data/axes/` · `src/precis/protocol.py`
-- **lane** — job parent lane (intent vs compute, ADR 0044) · morning-brief lane
-  (news/recall/quest). → `docs/decisions/0044-derived-job-lane.md` ·
+- **lane** — job parent lane (intent vs compute) · morning-brief lane
+  (news/recall/quest). → `src/precis/handlers/job.py` ·
   `src/precis/reading/briefing_cast.py`
 - **dispatch** — the `dispatch` worker (mints jobs from doable todos) ·
   `runtime.dispatch` (in-process MCP verb call) · `dispatch(LlmRequest)` (the
   LLM router). → `src/precis/workers/dispatch.py` · `src/precis/runtime/dispatch.py` ·
   `src/precis/utils/llm/router.py`
-- **plan** — the `plan` kind (a thread's reasoning outline, ADR 0051) vs
+- **plan** — the `plan` kind (a thread's reasoning outline) vs
   `plan_tick` (the planner-coroutine job).
   → `src/precis/handlers/plan.py` · `src/precis/workers/job_types/plan_tick.py`
 - **fetch / chase** — `fetch` / `fetch_oa` (acquire a paper PDF) vs the finding-
@@ -240,6 +241,6 @@ current `STATUS`):
 - `161909` — grow atomically-precise structure — switches, boxels, tilings
   (DNA-tile self-assembly yield research).
 - `169855` — keep scientific-literature integrity practices at the frontier;
-  citation/claim-grounding meta-quest, relates to ADR 0047's ROLE3:own filter.
+  citation/claim-grounding meta-quest, relates to the ROLE3:own filter.
 - `169953` — "don't let precis get bamboozled by a bad paper"; evidence-
-  grounding meta-quest, same ADR 0047 relation.
+  grounding meta-quest, same ROLE3 relation.

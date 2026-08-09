@@ -2,7 +2,7 @@
 
 The local grind of the autonomous loop: a tick proposes candidate materials,
 each becomes a `structure` that ``serves`` the quest (the graph *is* the memory
-of explored space), we dispatch its relax on the GPU node (the ADR-0044 derived
+of explored space), we dispatch its relax on the GPU node (the intent-vs-compute job lanes derived
 compute lane, content-addressed so a re-proposed candidate is a cache hit), and
 a later harvest reads the measures back into the logbook. Failed candidates stay
 linked and get a ``ruled-out:`` tag so the proposer never re-treads them; the
@@ -630,7 +630,7 @@ def _ensure_autocatpath_todo(
 
     Uses ``store.insert_ref`` directly rather than ``TodoHandler.put`` —
     same reason the pathway ref just above is a raw ``insert_ref``: this
-    tree's parent is the candidate `structure` ref (compute-lane, ADR 0044),
+    tree's parent is the candidate `structure` ref (compute-lane),
     and ``TodoHandler.put``'s ``check_parent_exists`` guard only accepts
     another ``todo`` as a NEW todo's parent (the human-facing intent tree's
     invariant) — these nodes are internal compute-lane machinery, not part
@@ -1363,7 +1363,7 @@ def _latest_autocatpath_job(
     ⇒ rule the candidate out) — a failed autocatpath job is **always** a
     compute/infra failure: the NEB/barrier run crashed, which says nothing about
     whether the material has a viable pathway. So the harvest treats every autocatpath
-    failure as retry-eligible (ADR 0064 §C) and never rules out on it. Watching both
+    failure as retry-eligible and never rules out on it. Watching both
     shapes matters for two reasons: the retry lane must see failures of the CURRENT
     path (``autocatpath_aggregate``, minted by :func:`dispatch_autocatpath`'s
     seed/aggregate fan-out) — the legacy-only query left it blind to those; and a
@@ -1404,7 +1404,7 @@ def _mark_harvested(store: Store, structure_ref_id: int, upto_run_id: int) -> No
 
 #: How many infra-failure retries a candidate's relax gets before the harvest
 #: stops re-dispatching and files a gripe instead (see ``harvest_measures``).
-#: Not an env dial (ADR 0064 §C) — retry-once-then-gripe is the whole point:
+#: Not an env dial — retry-once-then-gripe is the whole point:
 #: a higher ceiling would let a genuinely wedged executor silently spin.
 _MAX_INFRA_RETRIES = 1
 
@@ -1475,7 +1475,7 @@ def harvest_measures(
     * a candidate whose latest relax job failed with ``failure_class="infra"``
       (container/executor died — not a physical verdict) does NOT rule out —
       otherwise a container hiccup launders into "this material is unstable"
-      in the live dossier. ADR 0064 §C: when ``hub`` is given, the *first*
+      in the live dossier. Dossier-owned-by-process: when ``hub`` is given, the *first*
       infra failure gets re-dispatched once (``meta.quest_infra_retries``
       tracks it) so the candidate goes back to non-terminal and the loop
       *awaits* it instead of drifting dry; a *second* infra failure files a
@@ -1488,7 +1488,7 @@ def harvest_measures(
       (``meta.quest_autocatpath_infra_retries``), but **never** ruled out: a failed
       autocatpath is always a crashed NEB (a compute/infra failure), never a
       physical "no viable pathway" verdict, so — unlike relax non-convergence —
-      it carries no verdict on the material (ADR 0064 §C, barrier-lane mirror).
+      it carries no verdict on the material (barrier-lane mirror).
       A failed legacy ``autocatpath_explore`` job (retired by the seed/aggregate
       fan-out, 47332ad3 — nothing mints one anymore) instead gets a one-shot
       **amnesty**: re-dispatched via the current path with the counter reset to
@@ -1587,7 +1587,7 @@ def harvest_measures(
         # reason (once) — but NOT an infra failure (container/executor died),
         # which carries no verdict on the candidate. An infra failure instead
         # gets retried once (hub given), then gripes on a second occurrence
-        # (ADR 0064 §C) — see the docstring above.
+        # — see the docstring above.
         already_out = any(str(t).startswith("ruled-out:") for t in store.tags_for(s.id))
         relax_job = _latest_relax_job(store, s.id)
         if not already_out and relax_job is not None and relax_job[0] == "failed":
@@ -1629,7 +1629,7 @@ def harvest_measures(
                 ruled_out += 1
                 notes.append(f"ruled-out {handle}")
 
-        # Autocatpath (barrier-lane) infra failure — the ADR 0064 §C mirror of the
+        # Autocatpath (barrier-lane) infra failure — the dossier-owned-by-process mirror of the
         # relax infra branch above, on the *barrier* lane. Unlike relax (where a
         # failed job can be a physical non-convergence verdict → rule out), a
         # failed ``autocatpath_explore`` is ALWAYS a compute/infra failure: the NEB

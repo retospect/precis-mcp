@@ -49,8 +49,7 @@ def test_resolve_oss_tier_falls_to_big_under_anthropic(
 def test_resolve_oss_tier_local_always_runs_big(
     backend: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The ``local`` alias now names ``BIG`` directly (ADR 0066 Phase C
-    retired the location-coupled ``LOCAL_BIG`` tier this used to pin) — a
+    """The ``local`` alias now names ``BIG`` directly (retired the location-coupled ``LOCAL_BIG`` tier this used to pin) — a
     served OSS model still backs it under either backend: tag_tier is
     already BIG under ``openai`` (routes OPENAI_TOOLS) and the ``_resolve_
     oss_tier`` fallback is also BIG under ``anthropic`` (routes claude_agent

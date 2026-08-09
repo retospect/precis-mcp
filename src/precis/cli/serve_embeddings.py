@@ -1,6 +1,6 @@
 """``precis serve-embeddings`` — run the HTTP embedding service.
 
-The server side of ADR 0020. Loads a real (or mock) embedder in-process
+The server side of embedder-as-service. Loads a real (or mock) embedder in-process
 and serves it over the wire schema in :mod:`precis.embedder_wire`, so
 torch-free ``serve`` / ``worker`` processes can embed remotely via
 ``PRECIS_EMBEDDER=remote`` + ``PRECIS_EMBEDDER_URL``.
@@ -41,7 +41,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "Load an embedder in-process and serve it over HTTP "
             "(/healthz, /readyz, /model, /embed, /metrics) for "
             "torch-free serve/worker processes to call via "
-            "PRECIS_EMBEDDER=remote. See ADR 0020."
+            "PRECIS_EMBEDDER=remote. "
         ),
     )
     p.add_argument(
@@ -89,7 +89,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "/embed activity (default: 1800 = 30min); 0 disables (never "
         "unload). The self-probe thread carries the check; /readyz "
         "stays 200 while idle (a lazy reload happens on the next "
-        "/embed). See ADR 0020 / cluster-scheduling.md §F.",
+        "/embed). See embedder-as-service / cluster-scheduling.md §F.",
     )
 
 

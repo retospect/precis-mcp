@@ -1,4 +1,4 @@
-"""The validator gate — cheap rules run before any compute (ADR 0043 §5c/§6.4).
+"""The validator gate — cheap rules run before any compute.
 
 A microsecond pre-commit check that catches the LLM's physically-impossible
 proposals before a relax spends time on them: sub-covalent atomic overlap,

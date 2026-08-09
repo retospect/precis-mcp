@@ -1,4 +1,4 @@
-"""axis_pass — generic ``data/axes/<id>.yaml`` classifier runner (ADR 0047 §3).
+"""axis_pass — generic ``data/axes/<id>.yaml`` classifier runner.
 
 Where ``classify.py`` hardcodes the junk/role3 cascade and
 ``classify_topics.py`` hardcodes the topic-dossier taxonomy, this module
@@ -13,7 +13,7 @@ axis definition:
   ``["paper"]``), no lease table (mirrors ``classify_topics.py``), writes
   ``Tag.closed(NS, value)`` with no ``pos`` -> ``ref_tags``.
 
-**Prerequisite enforcement** (the new piece ADR 0047 §3 asked for and
+**Prerequisite enforcement** (the new piece controlled chunk tagging asked for and
 neither existing pass implements): an item is eligible for axis X only if
 it already carries a tag in the namespace of every axis in X's
 ``prereq:`` list. Gating is keyed to the *prerequisite* axis's own
@@ -87,7 +87,7 @@ _AXES_DIR = Path(__file__).resolve().parent.parent / "data" / "axes"
 _ABSTRACT_CHARS = 2000
 
 #: Axis ids that run under the ``classify`` cascade pass (``junk``-gate ->
-#: ``role3``, ADR 0047) instead of this generic runner — never
+#: ``role3``) instead of this generic runner — never
 #: double-registered by :func:`discover_axis_ids`.
 CASCADE_AXIS_IDS = frozenset({"junk", "role3"})
 

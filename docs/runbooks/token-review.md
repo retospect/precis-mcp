@@ -47,7 +47,7 @@ What "waste" means here, in rough priority:
 ## Output
 
 Each finding becomes durable work, not a transcript note (it must outlive
-compaction): a concrete fix → `OPEN-ITEMS.md`; a systemic-but-unscoped one →
+compaction): a concrete fix → a `docs/backlog/` item; a systemic-but-unscoped one →
 a `gripe`. Then append **one** dated line here summarizing the pass — newest
 first, so the script reads the top:
 
@@ -62,7 +62,7 @@ first, so the script reads the top:
   one session, nudged every time, proceeded every time). Plus a new pattern:
   marathon multi-day sessions compact-thrash (5–7 auto-compacts) and re-Read
   the same governing design doc in full after each compact. Both filed as one
-  OPEN-ITEMS entry (hook coverage/escalation + PreCompact state-note nudge).
+  backlog item (hook coverage/escalation + PreCompact state-note nudge).
   rtk confirmed working; no skill-friction correction loops found.
 - **2026-07-29** — first real pass (sampled 6 large 07-26–07-29 sessions across
   worktrees). Two token-waste patterns found, **both fixed same session** by the

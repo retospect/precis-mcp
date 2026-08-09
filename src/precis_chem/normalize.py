@@ -1,4 +1,4 @@
-"""Engine-agnostic route normalizer — the precis side of slice 2 (ADR 0056 §10).
+"""Engine-agnostic route normalizer — the precis side of slice 2.
 
 The heavy lifting (LinChemIn ``facade`` translate + ``routes_descriptors``) runs
 **inside the engine container**, where ``linchemin``/``rdkit`` are installed

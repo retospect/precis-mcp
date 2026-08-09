@@ -38,7 +38,7 @@ def _clear_cache() -> Any:
     live_config.bust_cache()
 
 
-# ── ADR 0066 Phase B step 2 — operator placement-chain editor ────────────
+# ── capability tiers + placement chains Phase B step 2 — operator placement-chain editor ────────────
 
 
 _VALID_CHAIN_JSON = (

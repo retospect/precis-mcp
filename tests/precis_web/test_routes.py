@@ -1464,7 +1464,7 @@ def test_retry_with_model_passes_model(client, runtime) -> None:
 
 
 def test_retry_with_reasoning_builds_llm_select(client, runtime) -> None:
-    """``reasoning=`` (ADR 0066) builds the same structured ``select`` dict
+    """``reasoning=`` builds the same structured ``select`` dict
     the smartdraft ask does — split into thinking/effort."""
     client.post("/tasks/2/retry", data={"reasoning": "high"}, follow_redirects=False)
     verb, args = runtime.calls[-1]
@@ -3811,7 +3811,7 @@ def test_status_services_tab_host_selector_scopes_page(client) -> None:
 
 
 def test_status_services_tab_renders_llm_chain_editor(client) -> None:
-    """ADR 0066 Phase B step 2 — the placement-chain editor + cloud-throttle
+    """Capability tiers + placement chains Phase B step 2 — the placement-chain editor + cloud-throttle
     toggle render with no operator overrides set (degrade-safe defaults)."""
     resp = client.get("/status?tab=services")
     assert resp.status_code == 200

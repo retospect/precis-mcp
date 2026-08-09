@@ -1,4 +1,4 @@
-"""The adapter registry — ADR 0053 §2's ETL seam for external DFT catalyst DBs.
+"""The adapter registry — external DFT library import's ETL seam for external DFT catalyst DBs.
 
 Format heterogeneity (AQCat25 JSON, Catalysis-Hub REST, OC20 LMDB, NCCR/Zenodo
 tarballs, ...) is absorbed by one **pure adapter per source**, each a plain
@@ -30,7 +30,7 @@ class ExternalId:
 
     Mirrors the ``ref_identifiers`` discipline (AGENTS.md): a re-import of
     the same ``(dataset, config_id)`` updates the existing rows, never
-    duplicates them (ADR 0053 §3).
+    duplicates them.
     """
 
     dataset: str
@@ -39,7 +39,7 @@ class ExternalId:
 
 @dataclass
 class ExternalRun:
-    """The run-cube payload an import pre-fills (ADR 0053 §2/§5/§9).
+    """The run-cube payload an import pre-fills.
 
     Lands as one ``struct_runs`` row alongside the imported ``Scene`` —
     energy + forces + relaxed geometry the source already computed, plus the

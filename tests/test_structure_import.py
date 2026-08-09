@@ -1,7 +1,7 @@
-"""``structure_import`` write-path tests (ADR 0053 §3/§4/§5, T3).
+"""``structure_import`` write-path tests.
 
 Exercises the store method directly against the live test DB — the single
-idempotent write path all three ADR 0053 ingest modes (on-demand hydrate,
+idempotent write path all three external DFT library import ingest modes (on-demand hydrate,
 batch mirror, derivative anchor) funnel through.
 """
 

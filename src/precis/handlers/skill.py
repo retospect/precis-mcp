@@ -425,7 +425,7 @@ class SkillHandler(Handler):
         # (~hundreds of ms on a dozen-chunk skill) and was being
         # re-run on every ``get(kind='skill', id='X/toc')``. The
         # paper handler already cut over to the db-backed renderer
-        # (ADR 0018-superseding F20) but the skill handler still
+        # (F20, the discovery layer's successor) but the skill handler still
         # uses the on-demand path; caching avoids the worst-case
         # cost without a schema change for skills.
         self._toc_cache: dict[tuple[str, tuple[int, int] | None], str] = {}

@@ -588,7 +588,7 @@ async def release(request: Request, host: str = Form(...)) -> RedirectResponse:
     return _redirect(host)
 
 
-#: The four ADR 0066 capability tiers an operator placement-chain can target
+#: The four capability tiers an operator placement-chain can target
 #: (Phase B step 2; Phase C made these the only ``Tier`` members) — keyed by
 #: the ``Tier`` string values.
 _CHAIN_TIERS: dict[str, Tier] = {
@@ -636,7 +636,7 @@ async def set_llm_chain(
     chain_json: str = Form(""),
 ) -> RedirectResponse:
     """Write an operator placement-chain override for one capability tier
-    (ADR 0066 Phase B step 2) — blank ``chain_json`` clears it back to the
+     — blank ``chain_json`` clears it back to the
     default ladder. An unrecognized ``tier`` or malformed JSON is a no-op."""
     store = get_store(request)
     try:
@@ -726,7 +726,7 @@ async def set_llm_op(
 
 
 def _set_cloud_enabled(store: Any, enabled: bool) -> None:
-    """Write the ADR 0066 §5 cloud-throttle dial. ``True`` clears the row
+    """Write the capability tiers + placement chains cloud-throttle dial. ``True`` clears the row
     (back to default-on); only an explicit ``False`` writes ``"false"``."""
     if enabled:
         budget_settings.clear_setting(store, live_config.CLOUD_ENABLED_KEY)

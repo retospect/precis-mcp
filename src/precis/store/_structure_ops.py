@@ -1,4 +1,4 @@
-"""Store ops for the ``structure`` kind (ADR 0043 §4/§12).
+"""Store ops for the ``structure`` kind.
 
 Storage splits by what is a search target (the `cad`/`pcb` pattern):
 
@@ -203,14 +203,14 @@ class StructureMixin:
                 ),
             )
 
-    # -- external import (ADR 0053 §3) -----------------------------------
+    # -- external import -----------------------------------
     def structure_import(
         self,
         scene: Scene,
         run: ExternalRun,
         external_id: ExternalId,
     ) -> int:
-        """The single write path all three ADR 0053 ingest modes funnel
+        """The single write path all three external DFT library import ingest modes funnel
         through (on-demand hydrate, batch mirror, derivative anchor) —
         idempotent on ``external_id``, exactly the ``ref_identifiers``
         "an external ID collapses to one ref" discipline (AGENTS.md).
@@ -429,7 +429,7 @@ class StructureMixin:
             return 0
         return int(ref.meta.get("version", 0))
 
-    # -- compute runs (ADR 0043 §9/§12) ----------------------------------
+    # -- compute runs ----------------------------------
     def structure_record_run(
         self,
         ref_id: int,
@@ -530,7 +530,7 @@ class StructureMixin:
         return [dict(zip(cols, r, strict=True)) for r in rows]
 
     def structure_find_cached_run(self, cache_key: str) -> dict[str, Any] | None:
-        """Look a relax request up in the run-cube cache (ADR §23.16).
+        """Look a relax request up in the run-cube cache.
 
         Returns the newest ``succeeded`` run for ``cache_key`` — its scalar
         envelope, the relaxed ``final_geometry`` (so the caller can write it
@@ -540,7 +540,7 @@ class StructureMixin:
         implied by the index predicate, 0084) — an index predicate only
         changes *how* a query is planned, never *what* it returns, so a
         compute-cache probe must filter it itself or an imported
-        ``provenance='external'`` row (ADR 0053 §4/§5, a different method
+        ``provenance='external'`` row (a different method
         fingerprint) could silently serve as a false hit for a computed
         relax request."""
         with self.pool.connection() as conn:

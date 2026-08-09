@@ -1,4 +1,4 @@
-"""``DatasheetHandler`` — component datasheet kind (ADR 0042 §7).
+"""``DatasheetHandler`` — component datasheet kind.
 
 A ``datasheet`` is an *evidence-role* sibling of
 :class:`~precis.handlers.paper.PaperHandler` — an ingested PDF read through
@@ -8,7 +8,7 @@ from a paper are declared, not duplicated:
 
 * ``corpus_role='evidence'`` — a datasheet *is* citable (unlike a ``cfp``),
   but it lives in its own kind so component datasheets never pollute academic
-  ``search(kind='paper')`` and vice-versa (ADR 0042 §7.1).
+  ``search(kind='paper')`` and vice-versa.
 * **One kind for the whole electronics-doc family** — app-notes / errata /
   reference-manuals ride along via a ``meta`` sub-type; we do **not** mint a
   new kind per genre.
@@ -48,7 +48,7 @@ _DATASHEET_VIEWS: tuple[str, ...] = (
 )
 
 # The electronics-doc sub-genres a datasheet's ``meta.subtype`` may name (one
-# kind for the whole family — ADR 0042 §7). ``datasheet`` is the default.
+# kind for the whole family — the PCB netlist+placement IR). ``datasheet`` is the default.
 # Labels for humans/export live in ``export.latex._DATASHEET_SUBTYPE_LABELS``.
 _DATASHEET_SUBTYPES: frozenset[str] = frozenset(
     {"datasheet", "app-note", "errata", "reference-manual"}
@@ -73,7 +73,7 @@ class DatasheetHandler(PaperHandler):
         kind="datasheet",
         title="Datasheet",
         description=(
-            "Component datasheet (ADR 0042 §7) — a read-only ingested PDF read "
+            "Component datasheet — a read-only ingested PDF read "
             "in the same two-pane reader as a paper (embeddings / keywords / "
             "TOC / in-doc search), addressable by slug. Evidence role: citable "
             "as a part's source, but scoped out of academic paper search. One "

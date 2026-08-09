@@ -128,7 +128,7 @@ class SearchHit:
     # means "no keywords for this hit" — surfaced as an empty cell in
     # ``view='keywords'``. See :func:`_render_keywords_table`.
     keywords: tuple[str, ...] = ()
-    # ADR 0036: the computed universal handle for this hit's chunk (or
+    # the computed universal handle for this hit's chunk (or
     # ref) — ``<type-code><chunk_id|ref_id>`` (e.g. ``pc40``, ``me5``).
     # Preferred over the legacy ``slug~pos`` / ``#ref_id`` form by the
     # renderers. None for a kind with no handle code.
@@ -371,7 +371,7 @@ def _render_toon_table(hits: list[SearchHit]) -> str:
     for hit in hits:
         summary, remaining_words = _derive_toon_summary(hit)
         if hit.uhandle:
-            ident = hit.uhandle  # ADR 0036: universal handle when backfilled
+            ident = hit.uhandle  # universal handle when backfilled
         elif hit.slug:
             ident = f"{hit.slug}~{hit.pos}" if hit.pos is not None else hit.slug
         elif hit.ref_id is not None:
@@ -410,7 +410,7 @@ def _render_keywords_table(hits: list[SearchHit]) -> str:
     rows: list[dict[str, str]] = []
     for hit in hits:
         if hit.uhandle:
-            ident = hit.uhandle  # ADR 0036: universal handle when backfilled
+            ident = hit.uhandle  # universal handle when backfilled
         elif hit.slug:
             ident = f"{hit.slug}~{hit.pos}" if hit.pos is not None else hit.slug
         elif hit.ref_id is not None:
@@ -434,7 +434,7 @@ def _render_hit(rank: int, hit: SearchHit, *, show_label: bool) -> str:
         marker = hit.source or hit.kind
         if marker:
             label = f"  [{marker}]"
-    # ADR 0036: emit the universal handle when known, else the legacy
+    # emit the universal handle when known, else the legacy
     # slug~pos / ref_id form (still resolves on input; un-backfilled rows).
     ident = hit.uhandle or hit.handle
     parts = [f"\n## {rank}. {ident}{label}"]
@@ -534,7 +534,7 @@ def block_hits_to_search_hits(
                 ref_id=getattr(ref, "id", None),
                 dedupe_key=dedupe,
                 keywords=tuple(kw) if kw else (),
-                # ADR 0036: the chunk handle is computed from
+                # the chunk handle is computed from
                 # ``(kind, chunk_id)`` — ``block.id`` is the chunk_id.
                 uhandle=handle_registry.try_format(
                     kind, getattr(block, "id", None), chunk=True
@@ -599,7 +599,7 @@ def ref_hits_to_search_hits(
                 source=source,
                 ref_id=ref_id,
                 dedupe_key=dedupe,
-                # ADR 0036: the record handle is computed from
+                # the record handle is computed from
                 # ``(kind, ref_id)``.
                 uhandle=handle_registry.try_format(kind, ref_id, chunk=False),
             )

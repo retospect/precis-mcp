@@ -240,7 +240,7 @@ def _probe_embedder() -> int | None:
     self-gating) then claims ``embed_batch`` jobs with NO reservation at
     all — the capacity gate silently disappears exactly when the host is
     busiest. The heartbeat re-advertises the instant ``/readyz`` answers
-    again either way. This is bge-m3's slot (ADR 0020's ``precis
+    again either way. This is bge-m3's slot (embedder-as-service's ``precis
     serve-embeddings`` daemon); the ``llm:`` rows for llama-swap-served
     models are advertised separately by :mod:`precis.workers.llm_serving`.
     """

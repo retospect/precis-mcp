@@ -131,8 +131,7 @@ def build_prompt(
 
     The pinned skill (``skills``) carries the full guidance; ``lang``'s inline
     floor (the admonishment + safety + JSON contract) still steers even if the
-    skill fails to load. ``context`` is the element→chunk prepared context
-    (ADR 0057), inserted after the source so the model edits with the linked
+    skill fails to load. ``context`` is the element→chunk prepared context, inserted after the source so the model edits with the linked
     chunk bodies in hand; empty when nothing is bound. ``document_context`` is
     the owning-document Layer-1/Layer-2 block (the diagram-propose design): the
     draft this figure lives in, collapsed, with the instruction's paragraphs
@@ -184,7 +183,7 @@ def run_turn(
     notes = notes_chunk.text if notes_chunk is not None else ""
     bounds = _bounds(lang, ref, current)
 
-    # Element→chunk bindings (ADR 0057): the prepared context + the
+    # Element→chunk bindings: the prepared context + the
     # dangling-binding lint both key off the source chunk's id.
     node_chunk_id = source_chunk.chunk_id if source_chunk is not None else None
     context = (
@@ -290,7 +289,7 @@ def _all_findings(
     bounds: Any,
 ) -> list[Any]:
     """The full lint set: compile + geometry (the language) plus the
-    dangling-binding check (ADR 0057). Empty on an empty source."""
+    dangling-binding check. Empty on an empty source."""
     if not source:
         return []
     findings: list[LintFinding] = lang.lint(source, bounds)
@@ -343,7 +342,7 @@ def _ask_with_heal(
     produced compilable source (the caller keeps the old source either way — a
     broken reply must not overwrite good work). ``links`` is ``None`` when the
     key is absent (bindings untouched) or an explicit list (the full desired
-    binding set, ADR 0057)."""
+    binding set)."""
     data = _safe_call(call, prompt)
     reply = str(data.get("reply") or "").strip()
     vocab_out = _str_or_none(data.get("vocab"))

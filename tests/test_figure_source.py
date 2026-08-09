@@ -1,4 +1,4 @@
-"""Figure source resolver — the medium axis (ADR 0058).
+"""Figure source resolver — the medium axis.
 
 blob / canvas / graph / none, and the medium-aware clearance roll-up.
 """
@@ -170,7 +170,7 @@ def test_clearance_counts_assetless_figures(store: Store, hub: Hub) -> None:
     assert len(summary2.uncleared) == 1
 
 
-# ── export asset (ADR 0058 slice 4) ──────────────────────────────────────
+# ── export asset ──────────────────────────────────────
 
 _PNG_SIG = b"\x89PNG\r\n\x1a\n"
 

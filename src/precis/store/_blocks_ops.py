@@ -1268,7 +1268,7 @@ class BlocksMixin:
     ) -> list[tuple[Block, Ref, float]]:
         """Mode-dispatched block search — one entry point over the three
         ranking strategies, so callers pick a mode instead of choosing a
-        function (ADR 0033-adjacent; the LLM-facing ``search(mode=…)``).
+        function (the draft editable-document model-adjacent; the LLM-facing ``search(mode=…)``).
 
         ``year_from`` / ``year_to`` are inclusive ``refs.year`` bounds for
         the paper publish-date filter; they thread into all three legs.
@@ -1356,7 +1356,7 @@ class BlocksMixin:
             card_kinds=card_kinds,
         )
 
-    # -- relative navigation (ADR 0036) ------------------------------------
+    # -- relative navigation ------------------------------------
 
     #: Kinds whose chunks form a tree (``parent_chunk_id`` + ``pos``) rather
     #: than a flat ``ord`` sequence. Only ``draft`` today; its relative

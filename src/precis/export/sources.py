@@ -14,7 +14,7 @@ The cited-slug set is the exact bibliography set the exporters already compute
 the *same* order the corpus-presence pass uses — authoritative
 ``pdfs.storage_path`` first, then the cite_key convention across every
 configured root (``precis.corpus_layout``), rebasing a foreign-mount path onto
-this node (ADR 0029). No web-package import; pure ``precis``.
+this node. No web-package import; pure ``precis``.
 
 **Per-host caveat.** The corpus is a per-host mount, so the web/CLI process may
 not physically hold every cited PDF. We bundle what resolves locally and

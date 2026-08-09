@@ -4,8 +4,7 @@ Mixin on :class:`precis.store.Store`. Backs slice 1 of
 ``docs/backlog/email-kind.md``. Migration ``0075_email_account.sql`` defines
 the table: one row per mailbox account, with a JSONB ``config`` bag and a
 poll high-water mark (``last_uid`` guarded by ``uidvalidity``). The secret
-(password / OAuth token) is NOT here — ``secret_name`` is a vault key (ADR
-0055); the reader resolves it with :func:`precis.secrets.get_secret`.
+(password / OAuth token) is NOT here — ``secret_name`` is a vault key; the reader resolves it with :func:`precis.secrets.get_secret`.
 """
 
 from __future__ import annotations

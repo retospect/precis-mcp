@@ -455,7 +455,7 @@ def search(
     # surname lands the paper itself rather than other papers' text.
     title: str | None = None,
     author: str | None = None,
-    # ADR 0045: scope results to a folder's placement subtree.
+    # scope results to a folder's placement subtree.
     # Accepts the folder id, 'folder:N', the fo<N> handle, or the
     # folder's (unique) name. Forces the cross-kind fan-out even with
     # a single kind= so hits can be membership-filtered.
@@ -488,7 +488,7 @@ def search(
 
     `page_size` ≤ 100; `page=N` paginates. Omit `kind` (or `'*'`) for
     cross-kind fan-out; `exclude=` skips slugs; `source=` is patent-only;
-    `folder=` scopes to a subtree (ADR 0045).
+    `folder=` scopes to a subtree.
 
     `mode=` `'hybrid'` (default) / `'lexical'` (exact string) /
     `'semantic'` / `'verbatim'` (all query words present as chunk
@@ -737,7 +737,7 @@ def put(
     executor: str | None = None,
     params: dict[str, Any] | None = None,
     idem_key: str | None = None,
-    # job parent (see precis-job-help / ADR 0044): the ref this job hangs off
+    # job parent (see precis-job-help): the ref this job hangs off
     # — a parent todo for the canonical intent→compute path, or the subject
     # artifact (a draft/structure ref) for a derived-compute job. Declared at
     # the verb level so strict-schema MCP clients don't strip it — without it
@@ -759,7 +759,7 @@ def put(
     # a chunk (chunk_kind=, text=) placed by at={first|last|into|before|after}.
     at: dict[str, Any] | None = None,
     project: str | int | None = None,
-    # draft data/table chunk (chunk_kind='table', ADR 0035): canonical data
+    # draft data/table chunk (chunk_kind='table'): canonical data
     # in table={header,rows}; the markdown text is derived. caption= is the
     # legend; regen= records how the data was produced (provenance, inert).
     # table= also accepts a JSON string (same backslash-safe channel as
@@ -768,9 +768,9 @@ def put(
     table: str | dict[str, Any] | None = None,
     caption: str | None = None,
     regen: dict[str, Any] | None = None,
-    # draft figure (chunk_kind='figure'): image=<base64> for an uploaded image
-    # (ADR 0034), or render=<python> + plots=[dc<id>] for a graph computed from
-    # data chunks (ADR 0035) — caption= is the legend either way.
+    # draft figure (chunk_kind='figure'): image=<base64> for an uploaded image,
+    # or render=<python> + plots=[dc<id>] for a graph computed from
+    # data chunks — caption= is the legend either way.
     render: str | None = None,
     plots: list[str] | None = None,
     # conversation (see precis-conv-help):
@@ -1004,7 +1004,7 @@ def edit(
     # which Kokoro voice + language phonemizer speaks this chunk on export.
     voice: str | None = None,
     lang: str | None = None,
-    # draft data/table chunk (chunk_kind='table', ADR 0035): replace the
+    # draft data/table chunk (chunk_kind='table'): replace the
     # canonical data (table={header,rows}) / legend (caption=) / provenance
     # (regen=); the markdown text re-derives. Field-level edits (docs/
     # proposals/draft-table-editing.md item 1) instead of resending the
@@ -1031,7 +1031,7 @@ def edit(
     # 'summary' lays down that genre's standard section skeleton on this
     # draft. Draft-level — id is the slug (or any handle in the draft).
     scaffold: str | None = None,
-    # diagram kinds (mermaid/figure, ADR 0057, see precis-mermaid-help):
+    # diagram kinds (mermaid/figure, see precis-mermaid-help):
     # vocab= rewrites the shared vocabulary doc, notes= the implementation
     # notes doc; viewbox='x y w h' sets the canvas bounds (figure only —
     # mermaid auto-layouts). Each is mutually exclusive with text= on one
@@ -1173,7 +1173,7 @@ def link(
     target: str | None = None,
     mode: str = "add",
     rel: str | None = None,
-    # diagram kinds (mermaid/figure, ADR 0057, see precis-mermaid-help):
+    # diagram kinds (mermaid/figure, see precis-mermaid-help):
     # element=<node/element id> binds it to the chunk it depicts (target=
     # the chunk handle). Declared at the verb level so strict-schema MCP
     # clients don't strip it.

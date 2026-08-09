@@ -8,7 +8,7 @@ only own schema is ``claim_embeddings`` (migration 0101) plus link relations
 ``establishes`` (0094, seeded without an inverse: hubs read evidence via
 ``links_for(direction='in')``) and ``refines`` (0100); ``corroborates`` /
 ``contradicts`` reuse existing slugs, endpoint kinds disambiguate. Design:
-``docs/backlog/taproot.md``; governance: ADR 0073 (+ ADR 0074 pins).
+``docs/backlog/taproot.md``; governance: taproot evidence relations (+ the living citation pins).
 
 Module map (each module's docstring carries its own detail):
 
@@ -38,7 +38,7 @@ Module map (each module's docstring carries its own detail):
   export: derived ``establishes`` originators, falling back to corroborators,
   then in-flight; recomputed every run, so a later-discovered originator or
   hub merge improves the next export with no manual re-cite. Pins
-  (``[pub_id>…]`` replace / ``[pub_id+…]`` supplement, ADR 0074) share one
+  (``[pub_id>…]`` replace / ``[pub_id+…]`` supplement) share one
   ``apply_pin`` across the resolve-token and draft-mentions grammars.
 - :mod:`.trust` — read-time trust ladder for a finding-backed citation:
   ``clean`` < ``abstract`` < ``vouched`` < ``unverified`` < ``unsupported``,

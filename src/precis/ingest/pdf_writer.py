@@ -132,7 +132,7 @@ def patch_pdf_metadata(
             # preserves the signature byte range, but "usually" isn't
             # "always". Strict readers re-validate the trailer and
             # warn on any append. Skip rather than risk it. See
-            # ADR 0014.
+            # PDF metadata write-back.
             return PatchOutcome(pre_hash, None, None, "signed")
 
         try:

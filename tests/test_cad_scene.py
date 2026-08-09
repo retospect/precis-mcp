@@ -1,4 +1,4 @@
-"""Design source parsing + Design building (ADR 0041 §3, §11)."""
+"""Design source parsing + Design building."""
 
 from __future__ import annotations
 

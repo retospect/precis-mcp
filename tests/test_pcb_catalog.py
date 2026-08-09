@@ -1,4 +1,4 @@
-"""Parts catalog (ADR 0042 §5, Slice 2) — normalizer (pure) + import /
+"""Parts catalog — normalizer (pure) + import /
 turnover / selector / footprint cache / auto-stamp / sqlite refresh (DB).
 """
 

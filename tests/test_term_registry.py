@@ -1,4 +1,4 @@
-"""Pure unit tests for the term-registry numbering policy (ADR 0052).
+"""Pure unit tests for the term-registry numbering policy.
 
 No DB — the callout arithmetic lives in :mod:`precis.draft.registry` precisely
 so the two behaviours (insert-stable vs render-spaced) can be pinned in
@@ -54,7 +54,7 @@ def test_render_callouts_are_spaced_and_boundary_aligned() -> None:
 
 def test_render_callouts_recompute_on_reorder() -> None:
     """Unlike insert, render numerals are positional: moving a leaf renumbers
-    the whole series so the spacing stays clean (ADR §3, reorder-safe)."""
+    the whole series so the spacing stays clean (reorder-safe)."""
     pol = R.policy_for("parts")
     before = R.render_callouts(["a", "b", "c"], pol)
     after = R.render_callouts(["b", "a", "c"], pol)  # a and b swapped

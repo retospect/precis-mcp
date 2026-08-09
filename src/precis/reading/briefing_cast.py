@@ -830,7 +830,7 @@ def build_reading_briefing(
         log.info("reading brief: no material in any lane — nothing to compose")
         return None
 
-    # Fold through the router (ADR 0046) instead of holding a raw litellm
+    # Fold through the router instead of holding a raw litellm
     # client — so this cloud-tier call gets the budget breaker + the route-log
     # (llm_call_log starts capturing real data on this pass). tools_needed=True
     # lands on claude_agent (free-text final answer + system prompt honored,

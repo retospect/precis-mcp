@@ -71,16 +71,16 @@ class TestFirstAuthorSurname:
 
 
 # NOTE: The 17-test ``TestMakeSlug`` class that used to live here was
-# removed in B3a. ``make_slug`` was dropped per ADR 0008 (slug retired;
+# removed in B3a. ``make_slug`` was dropped (slug retired;
 # identifiers normalised into ref_identifiers). The behavioural
 # equivalent — author/year/keyword folding — is now covered by
 # ``tests/test_identity.py::test_cite_key_*`` which exercises
 # ``precis.identity.make_cite_key`` (the ``miller23a``-style algorithm
-# per ADR 0006).
+# per the tri-identifier scheme).
 
 
 # Tests for ``build_embedder`` / ``EmbedderUnavailableError`` were
 # removed alongside the helper itself in 2026-06-05: the factory had
 # no production callers (BgeM3Embedder is constructed directly) and
 # the chroma path was dormant. ``test_identity.py`` covers the slug
-# / cite-key helpers that replaced ``make_slug`` per ADR 0008.
+# / cite-key helpers that replaced ``make_slug``.

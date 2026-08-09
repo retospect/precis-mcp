@@ -1,4 +1,4 @@
-"""LaTeX export for the ``draft`` kind — ADR 0033 Tier-B.
+"""LaTeX export for the ``draft`` kind — the Tier-B export path.
 
 A draft lives as ordered ``chunks`` in Postgres (the canonical, editable
 form). *Export* is a one-way resolution pass that renders those chunks
@@ -171,7 +171,7 @@ class RenderResult:
     acronyms: dict[str, str] = field(default_factory=dict)  # short → long
     acronym_keys: dict[str, str] = field(default_factory=dict)  # short → gls key
     warnings: list[str] = field(default_factory=list)
-    #: figure assets to materialise beside main.tex — (relpath, bytes). ADR 0058
+    #: figure assets to materialise beside main.tex — (relpath, bytes). The figure medium axis
     #: slice 4: raster blobs pass through, SVG/canvas figures rasterise to PNG.
     figures: list[tuple[str, bytes]] = field(default_factory=list)
     #: the render pass's :class:`~precis.export._trust_marks.TrustTracker`
@@ -565,7 +565,7 @@ def _render_target(
     **downgraded** to its surface text (or the literal handle) + a
     warning — never a dangling ``\\cref`` (which would compile to a ``??``
     and break determinism / linkcheck)."""
-    # ADR 0036 universal handle: ``[dc41]`` (this draft) → cross-ref;
+    # universal handle: ``[dc41]`` (this draft) → cross-ref;
     # ``[pc10]`` / ``[pa5]`` (a paper) → a citation; a record handle for a
     # thought (``[me5]``) is provenance-only → dropped.
     parsed = handle_registry.parse(tgt)
@@ -610,7 +610,7 @@ def _render_target(
         if surface:
             return f"\\href{{{tgt}}}{{{_encode_unicode(_latex_escape(surface))}}}"
         return f"\\url{{{tgt}}}"
-    # ADR 0036 single-bracket handles (dc/pc/pa) are handled above via
+    # Universal handles single-bracket handles (dc/pc/pa) are handled above via
     # handle_registry.parse(); anything else is provenance-only.
     return ""  # other authoring targets — provenance only
 
@@ -785,8 +785,7 @@ def _render_inline(text: str, ctx: _Ctx) -> str:
 
 
 def _render_table(chunk: Any, ctx: _Ctx, label: str) -> list[str]:
-    """Render a ``chunk_kind='table'`` chunk as a ``longtable`` (ADR 0035
-    §1) — page-breaking, booktabs-ruled, equal-width ``p{}`` columns so long
+    """Render a ``chunk_kind='table'`` chunk as a ``longtable`` — page-breaking, booktabs-ruled, equal-width ``p{}`` columns so long
     cells wrap and the table never overflows the text width. Cells go through
     the same inline grammar as prose (citations / math / abbreviations
     resolve in-cell). Falls back to a plain paragraph if no table is
@@ -914,8 +913,7 @@ def render_body(
 
 
 def _render_figure(c: Any, ctx: _Ctx, label: str) -> list[str]:
-    """Render a ``chunk_kind='figure'`` chunk as a LaTeX ``figure`` float
-    (ADR 0058 slice 4). The image asset is resolved to bytes+ext and recorded
+    """Render a ``chunk_kind='figure'`` chunk as a LaTeX ``figure`` float. The image asset is resolved to bytes+ext and recorded
     on ``ctx.figures`` for the caller to write under ``pics/``; the caption is
     the chunk text. An asset-less figure (should be caught by the clearance
     gate first) emits a visible placeholder + a warning rather than vanishing."""
@@ -1313,7 +1311,7 @@ def export_draft(
     # override. No-op (no row) when nothing was overridden.
     record_override_event(store, ref, rendered.trust)
 
-    # Materialise figure images beside main.tex (ADR 0058 slice 4) — the body
+    # Materialise figure images beside main.tex — the body
     # references them as pics/<dc>.<ext> via \includegraphics.
     if rendered.figures:
         pics_dir = target_dir / "pics"

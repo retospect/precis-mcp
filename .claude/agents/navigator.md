@@ -29,7 +29,7 @@ Ignore them for your job. Your tools are code search + file reading.
    subsystem table, seams). For a named subsystem, read the matching section of
    the owning package's `__init__.py` docstring. For an overloaded term (tier, card, tote,
    bubble, …) consult `docs/architecture/glossary.md`. For *why* a design is
-   the way it is, `docs/decisions/` (ADRs, index in its README).
+   the way it is, the owning docstring's "why" lines (history: `git log`).
 2. **Search semantically.** Prefer `search_code` (the claude-context index) for
    "where/how" queries — it's a **shared MAIN index**, so call it with the
    **main repo path** (`git rev-parse --path-format=absolute --git-common-dir`

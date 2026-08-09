@@ -66,7 +66,7 @@ Stop and ask before:
   extras are part of the public surface; users have install scripts
   that name them.
 - Merging another package into `precis-mcp` (as was done for
-  `acatome-extract`, ADR 0001). Spec in `docs/backlog/`, rationale folded into the owning docstring on ship;
+  `acatome-extract`). Spec in `docs/backlog/`, rationale folded into the owning docstring on ship;
   the owning docstring's "why" lines, do not rush.
 
 ## Ingest thresholds

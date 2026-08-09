@@ -1,4 +1,4 @@
-"""PcbHandler — the electronics / PCB design kind (ADR 0042).
+"""PcbHandler — the electronics / PCB design kind.
 
 A ``pcb`` design is a slug-addressed ref whose graph lives in the dedicated
 ``pcb_*`` tables (components+pins / instances / nets / netconns). The agent
@@ -71,7 +71,7 @@ class PcbHandler(Handler):
         kind="pcb",
         title="PCB",
         description=(
-            "Electronics/PCB design (ADR 0042) — a netlist + placement graph "
+            "Electronics/PCB design — a netlist + placement graph "
             "the LLM authors in batch and reads as a traversable graph, never "
             "pixels. put creates/extends a design (id=slug, args={components:"
             "[{refdes,label,part?,pins:[{name,pad?,tags?}],x?,y?,layer?,roles?}],"
@@ -199,7 +199,7 @@ class PcbHandler(Handler):
         )
         return Response(body=head + "\n" + self._toc(design))
 
-    # ── auto-place (ADR 0042 §9) ─────────────────────────────────────
+    # ── auto-place ─────────────────────────────────────
     def _place_and_store(
         self,
         ref_id: int,
@@ -252,7 +252,7 @@ class PcbHandler(Handler):
             )
         )
 
-    # ── the eyes (ADR 0042 §8) ───────────────────────────────────────
+    # ── the eyes ───────────────────────────────────────
     def _render_view(self, ref_id: int, view: str, args: dict[str, Any]) -> Response:
         if view not in _VIEWS:
             raise BadInput(
@@ -407,7 +407,7 @@ class PcbHandler(Handler):
             )
         )
 
-    # ── exporters (ADR 0042 §6) ──────────────────────────────────────
+    # ── exporters ──────────────────────────────────────
     def _export_model(self, ref_id: int) -> dict[str, Any]:
         """The normalised export IR (placement detail + net membership)."""
         return pcb_export.export_model(

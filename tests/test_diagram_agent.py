@@ -1,5 +1,5 @@
 """The agentic drawer (``precis.diagram.agent``) — L3 of the diagram-propose
-design: a tool-using ``claude_fn`` routed through the ADR-0046 seam. No real
+design: a tool-using ``claude_fn`` routed through the LLM routing seam. No real
 ``claude -p`` here; the seam ``dispatch`` is stubbed.
 """
 

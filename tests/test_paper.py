@@ -266,7 +266,7 @@ class TestOverview:
         _seed_paper(store)
         resp = handler.get(id="wang2020state")
         body = resp.body
-        # ADR 0036: the paper is addressed by its record handle (pa<id>).
+        # the paper is addressed by its record handle (pa<id>).
         assert record_handle(store, "wang2020state") in body
         assert "State of the art in nitrate reduction" in body
         assert "Wang, Q." in body
@@ -318,7 +318,7 @@ class TestViews:
         assert "no abstract" in resp.body
 
     def test_toc(self, store: Store, handler: PaperHandler) -> None:
-        """F20 (ADR 0018 superseded): view='toc' renders a flat
+        """F20 (superseded): view='toc' renders a flat
         per-chunk keyword table — one TOON row per chunk — off the
         ``chunks.keywords`` discovery layer, not a heading hierarchy."""
         _seed_paper(store, blocks=["Block A", "Block B", "Block C"])
@@ -337,7 +337,7 @@ class TestViews:
     def test_toc_is_flat_not_hierarchical(
         self, store: Store, handler: PaperHandler
     ) -> None:
-        """F20 superseded ADR 0018's H1/H2 hierarchy: heading-like
+        """F20 superseded the old persistent discovery layer's H1/H2 hierarchy: heading-like
         blocks no longer produce indented ■-marked sections. Every
         chunk is a flat TOON row — this guards that the hierarchy
         renderer stays retired."""
@@ -361,7 +361,7 @@ class TestViews:
         # Flat: one row per chunk, addressed by handle suffix.
         for pos in range(8):
             assert f"~{pos}" in body
-        # No heading-hierarchy markers from the retired ADR-0018 renderer.
+        # No heading-hierarchy markers from the retired discovery-layer renderer.
         assert "■ INTRODUCTION" not in body
         assert "■ METHODS" not in body
 
@@ -504,7 +504,7 @@ class TestChunks:
         assert f"search(kind='paper', q='your query', scope='{_pa}')" in resp.body
         # Promoted: TOC.
         assert "view='toc'" in resp.body
-        # Forward read is a 5-block span via relative nav (ADR 0036), not a
+        # Forward read is a 5-block span via relative nav, not a
         # bare next-block: ``pc<id>+1..5`` (5 chunks after the one just read).
         assert "+1..5" in resp.body
         # And the bare-block legacy hint is NOT the primary follow-up.

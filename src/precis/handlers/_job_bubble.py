@@ -98,7 +98,7 @@ def bubble_job_failure(
         )
         return
 
-    # Two lanes (ADR 0044). Intent lane: the parent IS a todo — tag it,
+    # Two lanes. Intent lane: the parent IS a todo — tag it,
     # exactly as before. Compute lane: the parent is a build subject
     # (structure / cad / draft), which has no rotation to enter, so the
     # bubble targets the requesting todo(s) reached via the ``requested``
@@ -287,7 +287,7 @@ def _lookup_parent(
 def _requester_todos(
     store: Store, job_id: int, *, conn: Connection | None
 ) -> list[int]:
-    """Live todo ids that ``requested`` this job (ADR 0044 compute lane).
+    """Live todo ids that ``requested`` this job (compute lane).
 
     The edge is stored ``requester todo --requested--> job``, so the
     requesters are the ``src`` of ``requested`` rows landing on this job.

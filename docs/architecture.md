@@ -143,8 +143,8 @@ a kind, or the worker for a pass."
 | `ingest/` | Marker → chunks pipeline (papers/cfp/books/…) |
 | `workers/` | background passes — `embed`, `dispatch`, `nursery`, `review`, `sweeper`, … |
 | `jobs/` | job executors (`fix_gripe`, `plan_tick`, propose jobs) |
-| `embedder*.py` | BGE-M3 wrapper + its HTTP service (ADR 0020) |
-| `cad/` `pcb/` `structure/` | keystone-kind IR + export (ADR 0041/0042/0043) |
+| `embedder*.py` | BGE-M3 wrapper + its HTTP service |
+| `cad/` `pcb/` `structure/` | keystone-kind IR + export |
 | `cli/` | `precis` subcommand modules |
 | `utils/` | leaf helpers — `safe_fetch`, `toc`, `cluster_map`, … |
 | `data/skills/` | the on-demand agent docs (`precis-*-help`) the MCP serves |

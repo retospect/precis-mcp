@@ -1,5 +1,4 @@
-"""``diagram_propose`` job_type — one autonomous diagram draw-with-me turn
-(ADR 0057, slice 5).
+"""``diagram_propose`` job_type — one autonomous diagram draw-with-me turn.
 
 Given a target diagram (a ``figure`` or ``mermaid`` ref), an instruction, and an
 optional set of **seed chunk handles**, this runs one turn of the shared
@@ -8,7 +7,7 @@ optional set of **seed chunk handles**, this runs one turn of the shared
 human applies later), the diagram turn loop **is** the apply mechanism: it
 edits the diagram source in place, reconciles the node→chunk bindings, and
 appends a turn chunk. So a ``diagram_propose`` job **builds or verifies the
-diagram directly**, owned by the diagram artifact (compute lane, ADR 0044 —
+diagram directly**, owned by the diagram artifact (compute lane, the intent-vs-compute job lanes —
 figure/mermaid opt in via ``KindSpec.can_own_jobs``).
 
 The two driving scenarios (design doc §"How a tick builds it"):
@@ -29,7 +28,7 @@ instead of relying on the (still-supported, optional) seed handles. It gates on
 ``PRECIS_MCP_CONFIG`` being present — where the precis MCP tools are unreachable
 it degrades to the single-shot web fn (``_default_claude``) — and honours an
 explicit ``PRECIS_DIAGRAM_AGENTIC=0/1`` override. Either way the call routes
-through the ADR 0046 LLM router, so ``PRECIS_LLM_BACKEND`` switches it and a
+through the LLM router, so ``PRECIS_LLM_BACKEND`` switches it and a
 model failure degrades to a chat-only turn (the loop's ``_safe_call``), never a
 crash.
 """

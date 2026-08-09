@@ -1,4 +1,4 @@
-"""ORCID Public API client (ADR 0039).
+"""ORCID Public API client.
 
 Resolves a researcher iD to a structured record (names, biography,
 keywords, employments with ROR/GRID ids) plus their complete works list
@@ -92,7 +92,7 @@ def _checksum_ok(dashed: str) -> bool:
 
 
 def slug_for(orcid_id: str) -> str:
-    """The ADR 0036 handle slug for an author node: ``orcid:<iD>``."""
+    """The universal handle slug for an author node: ``orcid:<iD>``."""
     return f"orcid:{orcid_id}"
 
 

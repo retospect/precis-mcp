@@ -62,7 +62,7 @@ _DRAFT_DC_RE = re.compile(r"^dc(\d+)(.*)$")
 #: has no whole-ref tag axis. Teach the real move inline.
 _VERB_REDIRECTS: dict[tuple[str, str], str] = {
     # ("draft", "link") moved into DraftHandler.link itself — the verb
-    # now exists for folder placement (ADR 0045), so the prose-ref
+    # now exists for folder placement, so the prose-ref
     # teaching rides on its BadInput for every other relation.
     ("draft", "tag"): (
         "drafts have no whole-ref tag axis; tag the owning project todo "
@@ -247,7 +247,7 @@ class DispatchMixin(RuntimeShape):
                 dict(args),
             )
 
-        # ``folder=`` scope (ADR 0045): any folder-scoped search runs
+        # ``folder=`` scope: any folder-scoped search runs
         # through the cross-kind fan-out — the structured SearchHit
         # stream is what makes subtree post-filtering possible — even
         # when a single ``kind=`` was named (it becomes a one-kind
@@ -367,7 +367,7 @@ class DispatchMixin(RuntimeShape):
         )
 
     def _expand_kind_code(self, kind: str) -> str:
-        """Accept a 2-char handle code as ``kind=`` (ADR 0038 §7).
+        """Accept a 2-char handle code as ``kind=``.
 
         ``kind='dr'`` ≡ ``kind='draft'``, ``kind='pa'`` ≡ ``kind='paper'`` —
         the same registry that legends a handle now also resolves the code
@@ -894,7 +894,7 @@ class DispatchMixin(RuntimeShape):
             args["kind"] = kind
 
     def _maybe_route_draft_chunk(self, args: dict[str, Any], ident: str) -> bool:
-        """ADR 0036: route a draft chunk handle ``dc<id>`` (optionally with a
+        """Universal handles: route a draft chunk handle ``dc<id>`` (optionally with a
         relative operator ``^`` / ``+N`` / ``-lo..hi``) to the draft handler,
         which resolves it (drafts have no slug, so they can't go through the
         generic ``slug~ord`` chunk-handle rewrite). Confirms the base chunk
@@ -923,7 +923,7 @@ class DispatchMixin(RuntimeShape):
         return True
 
     def _maybe_infer_kind_from_relative(self, args: dict[str, Any], ident: str) -> bool:
-        """ADR 0036 relative navigation: route ``pc10+1`` / ``pc10-2..3``.
+        """Relative-handle navigation: route ``pc10+1`` / ``pc10-2..3``.
 
         Resolves the relative chunk handle to its kind + the per-kind chunk
         selector (e.g. ``slug~ord`` for a paper) and rewrites ``args`` so the
@@ -950,7 +950,7 @@ class DispatchMixin(RuntimeShape):
         return True
 
     def _maybe_infer_kind_from_handle(self, args: dict[str, Any], ident: str) -> bool:
-        """ADR 0036 surface dispatch: route a universal handle.
+        """Universal-handle surface dispatch: route a universal handle.
 
         If ``ident`` is a well-formed, resolvable record handle, set
         ``args['kind']`` from its 2-char type code and rewrite
@@ -1046,19 +1046,19 @@ class DispatchMixin(RuntimeShape):
         if ident.startswith("/"):
             return
         if ":" not in ident:
-            # ADR 0036: a draft chunk handle ``dc<id>`` (optionally with a
+            # a draft chunk handle ``dc<id>`` (optionally with a
             # ``-B+A`` reading window) routes to the draft handler, which
             # parses the window. Drafts have no slug, so the generic
             # chunk-handle path below can't rewrite them to ``slug~ord``.
             if self._maybe_route_draft_chunk(args, ident):
                 return
-            # ADR 0036 relative navigation: ``pc10+1`` / ``pc10-2..3`` /
+            # Universal handles relative navigation: ``pc10+1`` / ``pc10-2..3`` /
             # ``pc10^`` resolves against current structure to a per-kind
             # chunk selector. Try this before the absolute-handle path
             # (a relative handle is not a well-formed absolute one).
             if self._maybe_infer_kind_from_relative(args, ident):
                 return
-            # ADR 0036: a universal handle (``<2-char code><decimal id>``)
+            # a universal handle (``<2-char code><decimal id>``)
             # self-identifies — resolve it to (kind, public_id) before the
             # bare-slug fallback, so it isn't mis-read as a slug.
             if self._maybe_infer_kind_from_handle(args, ident):

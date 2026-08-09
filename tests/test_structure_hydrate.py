@@ -1,4 +1,4 @@
-"""On-demand hydrate from an external catalyst DB (ADR 0053 T6).
+"""On-demand hydrate from an external catalyst DB.
 
 ``get(kind='structure', source='catalysis-hub', ...)`` is the "quest worker
 pokes around and pulls real substrates" surface: first touch fetches +

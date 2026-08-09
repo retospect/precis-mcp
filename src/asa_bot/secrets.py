@@ -1,6 +1,6 @@
 """Secrets resolver — read asa_bot's secrets from the precis DB vault.
 
-Mirrors precis-mcp's secrets vault (ADR 0055): values are pgcrypto-encrypted in
+Mirrors precis-mcp's secrets vault: values are pgcrypto-encrypted in
 ``vault.secrets`` and reached through ``vault.reveal(name)``. asa already holds
 a precis DB DSN (for the NOTIFY listener), so it reveals over that connection —
 no new credential.

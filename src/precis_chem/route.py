@@ -1,4 +1,4 @@
-"""RouteHandler — the retrosynthesis ``route`` kind (ADR 0056).
+"""RouteHandler — the retrosynthesis ``route`` kind.
 
 A ``route`` is a slug-addressed authored artifact (like ``structure`` /
 ``cad`` / ``pcb``): a target molecule whose synthetic route-graph
@@ -11,13 +11,13 @@ onto the seven verbs:
   same target+engine was already planned; else runs the engine
   (in-process ``stub``) or mints a ``retrosynth`` compute job pinned to
   ``PRECIS_CHEM_ROUTE_NODE``. ``requested_by=<todo>`` blocks that todo on
-  the job (ADR 0044).
+  the job.
 - ``get``    — list routes, or render one route graph (``id=slug``).
 - ``delete`` — soft-retire a route.
 
 Ships **dark** behind ``PRECIS_CHEM_ENABLED`` (``KindSpec.requires_env``):
 the kind is hidden from the catalogue and the dispatcher until the flag is
-set. See ADR 0056.
+set.
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ class RouteHandler(Handler):
         kind="route",
         title="Route",
         description=(
-            "A retrosynthesis route-graph (precis-chem plugin, ADR 0056). "
+            "A retrosynthesis route-graph (precis-chem plugin). "
             "put(id='<slug>', target='<SMILES>', engine='stub'|'aizynth', "
             "requested_by=<todo>) plans a synthetic route — a content-addressed "
             "cache hit if already planned, else an in-process solve or a minted "
@@ -111,7 +111,7 @@ class RouteHandler(Handler):
 
         existing = self.store.get_ref(kind="route", id=slug)
         # Content-addressed cache hit: same slug already carries a solved route
-        # under this exact key ⇒ zero recompute (ADR 0007 / 0056 §6).
+        # under this exact key ⇒ zero recompute.
         if existing is not None:
             meta = existing.meta or {}
             if meta.get("cache_key") == key and meta.get("route"):
@@ -161,7 +161,7 @@ class RouteHandler(Handler):
 
         node = os.environ.get(ROUTE_NODE_ENV)
         if node:
-            # Compute lane: mint a derived job on the route node (ADR 0044).
+            # Compute lane: mint a derived job on the route node.
             return self._dispatch(ref, params, node, requested_by)
 
         # Slice-0 inline fallback (no route node configured): run the
@@ -189,7 +189,7 @@ class RouteHandler(Handler):
         node: str,
         requested_by: int | str | None,
     ) -> Response:
-        """Mint a ``retrosynth`` job pinned to the route node (ADR 0044).
+        """Mint a ``retrosynth`` job pinned to the route node.
 
         The job is a *derived* compute step: it parents on the **route**, not
         a todo — the artifact owns it (cache-fillable, idempotent). When a
@@ -232,7 +232,7 @@ class RouteHandler(Handler):
         )
 
     def _wire_requester(self, requester_id: int, job_resp_body: str) -> None:
-        """Link the requesting todo to the job + arm its wait (ADR 0044).
+        """Link the requesting todo to the job + arm its wait.
 
         ``requester --requested--> job`` (the edge ``derived_job_succeeded`` +
         the failure-bubble follow), then inject that evaluator as the todo's

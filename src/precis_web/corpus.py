@@ -3,7 +3,7 @@
 A held paper's PDF lives at ``<corpus_root>/<letter>/<cite_key>.pdf`` where
 ``letter`` is the lower-cased first alnum char of the cite_key (else ``_``),
 mirroring ``precis.cli.watch._move_to_corpus``. ``PRECIS_CORPUS_DIR`` may list
-several roots (``:``-separated, ADR 0029) so a per-host NFS mount difference
+several roots (``:``-separated) so a per-host NFS mount difference
 is searched rather than fatal, and a paper may carry several ``cite_key``
 aliases (author-year key + a book's bib key from ``tex-import``) — the fetcher
 files the PDF under whichever it chose, which need not be the display slug, so
@@ -90,7 +90,7 @@ def resolve_pdf_for_ref(
       before it was populated — so a blank value is "unknown", not a real
       path, and we fall through.
     * It is a *single* path recorded on the ingest host; a differently
-      mounted node (ADR 0029) won't find the file there. So when the
+      mounted node won't find the file there. So when the
       recorded path doesn't resolve we still probe the cite_key convention
       across every configured root.
 

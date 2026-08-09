@@ -1,4 +1,4 @@
-"""Batch-mirror a local cathub ``.db`` into ``structure`` refs (ADR 0053 §3).
+"""Batch-mirror a local cathub ``.db`` into ``structure`` refs.
 
 Catalysis-Hub's live channels are all credential-gated now, but a cathub
 ``.db`` file is a self-contained, keyless data package. This is the

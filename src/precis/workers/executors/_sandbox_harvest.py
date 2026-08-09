@@ -130,7 +130,7 @@ def artifact_root() -> Path:
     with ``sandbox-artifacts/`` (the fixed relative key prefix, see
     :func:`artifact_key`) nested beneath it. A bare install still
     resolves; the ops play overrides this one env var per host, exactly
-    like ``PRECIS_CORPUS_DIR`` (ADR 0029).
+    like ``PRECIS_CORPUS_DIR``.
     """
     raw = os.environ.get("PRECIS_SANDBOX_ARTIFACT_ROOT")
     if raw:

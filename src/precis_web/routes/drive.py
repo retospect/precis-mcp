@@ -1,4 +1,4 @@
-"""Drive — the unified seek+manage surface (ADR 0045).
+"""Drive — the unified seek+manage surface.
 
 Grafts Drive's folder tree + CRUD onto the Items cross-kind search/facet/
 presenter engine (``routes/items.py``, kept as the reusable
@@ -13,7 +13,7 @@ state toggle, and the cluster's watch-dir drop-zone info (reused from
 ``/papers-needed`` queue) also carry the acquisition-provenance flag
 group (``ACQUIRE_FLAG_DEFS``, ``routes/flags.py``) alongside the usual
 reading-intent flags. Every mutation still dispatches a verb through the
-runtime — no direct SQL, no surface drift (ADR 0027).
+runtime — no direct SQL, no surface drift.
 
 * ``GET  /drive``                        — the merged list + sidebar.
 * ``GET  /drive/tags/suggest``            — tag-filter autocomplete.
@@ -245,7 +245,7 @@ def _children(store: Any, folder_id: int) -> list[dict[str, Any]]:
 
 def _unfiled(store: Any, artifact_kinds: list[str]) -> list[dict[str, Any]]:
     """Live artifact refs with no parent. Todos are exempt — an
-    unfoldered strategic root is normal, not 'unfiled' (ADR 0045 §5)."""
+    unfoldered strategic root is normal, not 'unfiled'."""
     kinds = [k for k in artifact_kinds if k != "todo"]
     if not kinds:
         return []

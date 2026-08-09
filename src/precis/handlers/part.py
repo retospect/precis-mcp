@@ -1,10 +1,10 @@
-"""PartHandler — the LCSC/JLCPCB catalog kind (ADR 0042 §5).
+"""PartHandler — the LCSC/JLCPCB catalog kind.
 
 A ``part`` is reference data in the ``parts`` catalog table (NOT a ref;
 addressed by its LCSC **C-number**, e.g. ``get(kind='part', id='C25804')``).
 It is **ingest-only** — populated by the ``parts_refresh`` worker from the
 ``jlcparts`` dump (Slice 2), never by ``put``. Selection prefers
-**JLCPCB-assemblable, high-turnover** parts (ADR 0042 §5).
+**JLCPCB-assemblable, high-turnover** parts.
 
 Slice 1 ships read-only access (``get`` one part, ``search`` the catalog) over
 whatever the importer has loaded; the turnover ranking + lazy
@@ -31,7 +31,7 @@ class PartHandler(Handler):
         kind="part",
         title="Part",
         description=(
-            "LCSC/JLCPCB catalog part (ADR 0042 §5) — reference data addressed "
+            "LCSC/JLCPCB catalog part — reference data addressed "
             "by LCSC C-number (get(kind='part', id='C25804')). Ingest-only "
             "(jlcparts dump). search(kind='part', q='0.1uF 0402 X7R') filters "
             "to JLCPCB-assemblable parts and prefers Basic + high-turnover + "
@@ -92,7 +92,7 @@ class PartHandler(Handler):
             )
         q = str(q).strip()
         # JLCPCB-native selector: hard-filter to assemblable parts; rank
-        # Basic-first then turnover (ADR 0042 §5, store.parts_search).
+        # Basic-first then turnover (store.parts_search).
         rows = self.store.parts_search(q, limit=page_size)
         if not rows:
             return Response(

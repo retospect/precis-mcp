@@ -4,16 +4,14 @@
    how gripe 56746 extracted drafts/_editors.html.j2 for the text/table
    editors):
 
-     - ``figure_media(ident, handle, rn, alt)`` — the medium-aware render
-       (ADR 0034/0057/0058): a ``blob``/``graph`` figure → an ``<img>``; a
+     - ``figure_media(ident, handle, rn, alt)`` — the medium-aware render: a ``blob``/``graph`` figure → an ``<img>``; a
        ``canvas`` figure → its script-safe source.svg inline + "open in
        /figure"; ``none`` (no asset yet) → a "create drawing" CTA that mints
        an editable SVG canvas (``POST …/figure/{handle}/draw``). ``rn`` is the
        :class:`precis.utils.figure_source.RenderSpec` (``resolve_figure_source``
        — ``r.figure_render`` / ``n.figure_render``).
      - ``clearance_badge(ident, handle, origin, cleared, permission)`` — the
-       origin chip (original / own_graph / third_party) + the clearance badge
-       (ADR 0034 §4): hover for the publisher-permission paper-trail, click to
+       origin chip (original / own_graph / third_party) + the clearance badge: hover for the publisher-permission paper-trail, click to
        edit it inline. Saves through
        ``POST /drafts/{ident}/figure/{handle}/permission``.
      - ``figure_upload_form(ident, handle)`` — the "+ figure" upload control:
@@ -158,7 +156,7 @@
 {% endmacro %}
 
 {% macro figure_upload_form(ident, handle) %}
-{# Add a figure after ``handle`` (ADR 0034). Bytes upload multipart →
+{# Add a figure after ``handle``. Bytes upload multipart →
    /drafts/{ident}/figure → put(chunk_kind='figure'). A third-party image
    reveals the permission paper-trail (required to clear). #}
 <div x-data="{ figopen: false, org: 'original' }">

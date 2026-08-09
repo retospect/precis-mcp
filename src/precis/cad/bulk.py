@@ -1,4 +1,4 @@
-"""Bulk integrals — volume & centroid (ADR 0041 §8).
+"""Bulk integrals — volume & centroid.
 
 Everything else in the kernel is exact under the rigid-only invariant. The
 bulk integrals are a numerical *quadrature*, but not a 3-D Monte-Carlo dart

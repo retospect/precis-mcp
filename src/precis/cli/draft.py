@@ -1,4 +1,4 @@
-"""``precis draft …`` — operations on the ``draft`` kind (ADR 0033).
+"""``precis draft …`` — operations on the ``draft`` kind.
 
 Subcommands:
 

@@ -1,4 +1,4 @@
-"""edit(style=) sets a heading's section style (ADR 0037).
+"""edit(style=) sets a heading's section style.
 
 A section style is a skill slug stored in ``meta.style`` on a *heading*
 chunk. Setting it is metadata-only (no text change → no re-embed), and it

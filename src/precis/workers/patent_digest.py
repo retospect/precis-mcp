@@ -4,7 +4,7 @@ The claim-writing tick must see **what the prior art already claims** — if
 a scope is already claimed, we cannot claim it. This builds a working set
 of eyes over the related patents' claim chunks and stamps it into the
 writing todo's ``meta.working_set``, which the planner injects (the live
-ADR-0051 §6 reader path, ``PRECIS_PLANNER_FISHEYE``). See
+Turn-taking persona threads reader path, ``PRECIS_PLANNER_FISHEYE``). See
 ``docs/backlog/patent-authoring-loop.md``.
 
 The view is **comprehensive, not a decaying fisheye**: every prior-art
@@ -27,7 +27,7 @@ from precis.utils import handle_registry
 
 #: Extents (working-set reader-shape labels) for the two claim tiers. An
 #: independent claim is verbatim (never compressed); a dependent claim is a
-#: gloss under budget. Both are the ADR-0051 ``Extent`` vocabulary.
+#: gloss under budget. Both are the turn-taking persona threads ``Extent`` vocabulary.
 INDEPENDENT_EXTENT = "verbatim"
 DEPENDENT_EXTENT = "summary"
 
@@ -158,7 +158,7 @@ def related_patent_ref_ids(store: Any, draft_ref_id: int) -> list[int]:
 
 def discover_our_claim_handles(store: Any, draft_ref_id: int) -> list[str]:
     """The draft's own claim chunks — the leaf chunks under a
-    ``patent-claim``-styled section (ADR 0037) — as ``dc…`` handles, in
+    ``patent-claim``-styled section — as ``dc…`` handles, in
     reading order. These ride the digest verbatim so the claim-writing tick
     sees *all our claims so far* alongside the prior art."""
     try:

@@ -1,4 +1,4 @@
-"""Catalysis-Hub adapter (ADR 0053 §2, T5). Pure unit test — fixture only, no network."""
+"""Catalysis-Hub adapter. Pure unit test — fixture only, no network."""
 
 from __future__ import annotations
 

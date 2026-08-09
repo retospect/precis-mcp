@@ -20,7 +20,7 @@ from precis.runtime._shared import RuntimeShape
 #: Used by :meth:`HintsMixin._maybe_add_skill_hint` when
 #: ``precis-{kind}-help`` doesn't exist because the kind was renamed
 #: but the skill kept its broader name (provider-rooted vs.
-#: capability-rooted naming — see ADR 0030 + the rename slice).
+#: capability-rooted naming + the rename slice).
 _KIND_SKILL_ALIASES: dict[str, str] = {
     "perplexity-research": "precis-perplexity-help",
     "perplexity-reasoning": "precis-perplexity-help",

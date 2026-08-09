@@ -1,4 +1,4 @@
-"""Inline reference marker parsing + stripping (ADR 0033 §8)."""
+"""Inline reference marker parsing + stripping."""
 
 from __future__ import annotations
 

@@ -58,7 +58,7 @@ _LAST_ERROR_MAX_CHARS = 1000
 
 #: A ``chunk_claims`` row older than this many minutes is treated as abandoned
 #: (worker crashed/stalled mid-batch) and re-claimed. Only crash recovery
-#: matters here — base-handler failures are terminal (ADR 0007), so they leave
+#: matters here — base-handler failures are terminal, so they leave
 #: no retrying claim. Must exceed the worst-case batch wall-time (the embedder
 #: forward pass); generous is fine since a completed batch deletes its claims.
 _CLAIM_COOLDOWN_MIN = 20
@@ -133,10 +133,10 @@ class WorkerHandler(ABC):
     def _claim_fresh(self, conn: Connection, *, limit: int) -> list[ChunkRow]:
         # A chunk needs work when it has no *current, non-failed* artifact row:
         # no row at all, or a row built against a stale content_sha (re-derive
-        # edited `draft` chunks, ADR 0033 — papers leave content_sha NULL so
+        # edited `draft` chunks, the draft editable-document model — papers leave content_sha NULL so
         # NULL IS DISTINCT FROM NULL never fires). `failed` rows are terminal
         # (a poison chunk must not loop) — they count as "done" until a manual
-        # DELETE, per ADR 0007. The second NOT EXISTS skips chunks already
+        # DELETE. The second NOT EXISTS skips chunks already
         # leased by a live claim. `meta->>'no_index'` excludes ephemeral chunks.
         skip_clause, skip_kinds = self._skip_clause("c")
         sql = f"""
@@ -278,7 +278,7 @@ class WorkerHandler(ABC):
         """
 
     # ------------------------------------------------------------------
-    # Failure marker — see ADR 0007
+    # Failure marker
     # ------------------------------------------------------------------
 
     def write_failed(self, conn: Connection, chunk_id: int, error: str) -> None:
@@ -287,7 +287,7 @@ class WorkerHandler(ABC):
         The marker doubles as the de-claim signal: the chunk now
         has a row for this model, so the next pass's
         ``LEFT JOIN ... WHERE o.chunk_id IS NULL`` skips it.
-        Manual retry is a one-line ``DELETE`` (see ADR 0007).
+        Manual retry is a one-line ``DELETE``.
         """
         truncated = (error or "").strip()
         if len(truncated) > _LAST_ERROR_MAX_CHARS:
@@ -304,7 +304,7 @@ class WorkerHandler(ABC):
         conn.execute(sql, (chunk_id, self.model_name, truncated))
 
     # ------------------------------------------------------------------
-    # Status — for `precis worker --status` and ADR-0007 observability
+    # Status — for `precis worker --status` and the derived queue observability
     # ------------------------------------------------------------------
 
     def status(self, conn: Connection) -> ArtifactStatus:

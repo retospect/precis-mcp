@@ -423,7 +423,7 @@ _GET_RUNNABLE_VERBS = frozenset({"get", "search"})
 
 
 #: ``kind=`` spellings that mean "paper" for the console search override
-#: below — the bare kind and its ADR-0036 2-char handle code. Matched on
+#: below — the bare kind and its universal handles 2-char handle code. Matched on
 #: the raw string the operator typed, before the dispatcher's own
 #: ``kind='pa'`` → ``'paper'`` expansion runs (gripe 162400 repro used
 #: both spellings).
@@ -653,7 +653,7 @@ async def resolve(
 ) -> HTMLResponse | RedirectResponse:
     """Smart-resolve a pasted handle.
 
-    Accepts: universal handles (``pa5``, ``pc579575`` — ADR 0036),
+    Accepts: universal handles (``pa5``, ``pc579575`` — universal handles),
     ``paper:slug``, ``kind:id``, bare cite_keys (``charlier07~374``),
     DOIs (``10.1234/foo``), arXiv ids (``2501.01234``), YouTube ids
     (``dQw4w9WgXcQ``), bare discord handles. Redirects to the canonical

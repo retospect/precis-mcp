@@ -1,4 +1,4 @@
-"""The ratsnest + crossing count (ADR 0042 §8.1, §9) — the pre-routing
+"""The ratsnest + crossing count — the pre-routing
 objective the placer minimizes ("minimize crossed wires").
 
 A *ratsnest* is the set of straight pin-to-pin airwires for every net not yet
@@ -9,7 +9,7 @@ instance's placement (centroid). When real footprint pad offsets land
 Per net we build a **minimum spanning tree** over its placed members (the
 standard shortest ratsnest), then count **genuine crossings** between airwires
 of *different* nets. **Plane nets (gnd / power) are excluded** — they drop to
-the plane through vias, not point-to-point airwires (ADR 0042 §10, the §8.1
+the plane through vias, not point-to-point airwires (the §8.1
 derivation rule), so counting them as a star of crossings would be noise.
 """
 
@@ -89,7 +89,7 @@ def build_airwires(
 def crossings(airwires: list[Airwire]) -> list[tuple[Airwire, Airwire]]:
     """Genuine crossings between airwires of *different* nets.
 
-    O(N²) with an AABB pre-filter (ADR 0042 §12). Same-net wires never count
+    O(N²) with an AABB pre-filter. Same-net wires never count
     (they form a tree); shared-endpoint touches are excluded by
     :func:`precis.pcb.geom.segments_cross`.
     """

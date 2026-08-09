@@ -351,7 +351,7 @@ def export_docx(
 
 
 def _render_figure(doc: Any, store: Any, chunk: Any, ctx: _Ctx) -> None:
-    """Embed a figure image + its caption (ADR 0058 slice 4). Raster blobs
+    """Embed a figure image + its caption. Raster blobs
     embed directly; an SVG (blob-SVG or a linked canvas) arrives pre-rasterised
     to PNG via ``figure_export_asset`` (docx can't consume SVG). An asset-less
     figure degrades to a caption-only paragraph + a warning."""
@@ -383,8 +383,7 @@ def _render_figure(doc: Any, store: Any, chunk: Any, ctx: _Ctx) -> None:
 
 
 def _render_table(doc: Any, chunk: Any, ctx: _Ctx) -> None:
-    """Render a ``chunk_kind='table'`` chunk as a native Word table (ADR
-    0035 §1). The canonical ``meta.table`` is recovered via the shared
+    """Render a ``chunk_kind='table'`` chunk as a native Word table. The canonical ``meta.table`` is recovered via the shared
     :func:`precis.utils.table_data.table_payload`; cells go through the same
     inline grammar as prose so citations / math / abbreviations inside a
     cell resolve identically. Falls back to a plain paragraph when the table
@@ -657,7 +656,7 @@ def _render_target(
         if cm is not None:
             _cite(cm.group("slug"), ctx, paragraph)
         return
-    # ADR 0036 universal handle: ``[pc10]`` / ``[pa5]`` (a paper) and
+    # universal handle: ``[pc10]`` / ``[pa5]`` (a paper) and
     # ``[pt7]`` (a patent) are citations; ``[fi3]`` a finding cite; ``[dc41]``
     # an intra-draft cross-ref; a record handle for a thought (``[me5]``) is
     # provenance-only. The LaTeX exporter resolves these — the docx path used

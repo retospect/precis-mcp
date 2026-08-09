@@ -1,4 +1,4 @@
-"""Boolean CSG fold with node attribution (ADR 0041 §6).
+"""Boolean CSG fold with node attribution.
 
 The eval never computes the merged solid. Instead it folds per-primitive
 results through the boolean ops:
@@ -207,8 +207,8 @@ def _coalesce(spans: list[Span]) -> list[Span]:
     """Merge adjacent runs.
 
     Contiguous *solid* runs fuse into one material span regardless of which
-    primitive provides each sub-run (a fused part reads as one solid - ADR
-    0041 section 3); the surviving feature is the first provider. Adjacent
+    primitive provides each sub-run (a fused part reads as one solid);
+    the surviving feature is the first provider. Adjacent
     *void* runs merge only when attributed to the same blocking node, so two
     touching holes stay distinct.
     """

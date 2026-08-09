@@ -1,6 +1,6 @@
 """Inter-part relations — clearance / interference / translational DOF.
 
-ADR 0041 §7. These operate on the *material* regions of whole components,
+These operate on the *material* regions of whole components,
 not raw primitives, so a shaft sitting in a bored hub reads as the radial
 wall gap (the trap with naive primitive-pair GJK: it ignores that the
 plate has a hole where the shaft sits, and reports a false collision).

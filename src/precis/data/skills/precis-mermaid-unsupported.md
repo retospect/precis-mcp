@@ -22,7 +22,7 @@ reach for them:
 - **block-beta** (block diagram) — unsupported. Instead: a
   `precis-mermaid-flowchart`.
 
-Tracked to fix (engine upgrade / polyfills) in OPEN-ITEMS.md. Everything else
+Tracked to fix (engine upgrade / polyfills) in the repo backlog. Everything else
 — flowchart, sequence, class, state, ER, journey, quadrant, requirement, git
 graph, timeline, xychart, mindmap — renders; see the `precis-mermaid-*`
 skills and `precis-mermaid-help`.

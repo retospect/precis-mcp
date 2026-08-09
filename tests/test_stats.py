@@ -178,7 +178,7 @@ class TestQueryStubs:
         assert rows == [{"state": "awaiting", "count": 1}]
 
 
-# ── argument-graph corpus report (ADR 0054, build order step 5) ────
+# ── argument-graph corpus report (build order step 5) ────
 
 
 def _memory_handler(store) -> MemoryHandler:

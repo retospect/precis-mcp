@@ -20,7 +20,7 @@ Anatomy of a reviewer:
 * **content** — ``context_builder(store) -> dict[str, str]`` returns
   the live tree/context strings (the SQL reads), and ``modules`` is the
   ordered :class:`~precis.utils.prompt.Module` list that renders the
-  prompt (ADR 0038 step 3). The driver assembles those modules against
+  prompt. The driver assembles those modules against
   an :class:`~precis.utils.prompt.AssemblyContext` whose ``extras`` carry
   ``today`` + ``tier_tag`` + everything the context-builder returned, then
   packages the blocks with :class:`~precis.utils.prompt.ClaudeAgentAdapter`.
@@ -93,7 +93,7 @@ _REVIEWER_DISALLOWED_TOOLS: tuple[str, ...] = (
 )
 
 
-# ── shared boilerplate modules (the ADR 0038 step-3 dedup win) ────
+# ── shared boilerplate modules (the prompt assembler step-3 dedup win) ────
 #
 # The two reviewer prompts used to carry VERBATIM-DUPLICATED copies of
 # these two paragraphs. They are authored ONCE here and reused by every
@@ -169,7 +169,7 @@ class Reviewer:
     :class:`~precis.utils.prompt.AssemblyContext` ``extras``.
 
     ``modules`` is the ordered :class:`~precis.utils.prompt.Module` list
-    that renders the prompt (ADR 0038 step 3). Each module's ``build``
+    that renders the prompt. Each module's ``build``
     reads what it needs from ``ctx.extras`` — so the reviewer-specific
     body reads ``today`` + the builder's keys, and the shared
     :data:`_FOOTER_MODULE` reads ``tier_tag``. The context strings come
@@ -180,7 +180,7 @@ class Reviewer:
     tier_tag: str
     gate_env: str
     meta_prefix: str
-    #: The capability tier the call routes through (ADR 0046 unit 4b); the
+    #: The capability tier the call routes through; the
     #: model resolves from it at dispatch time so ``PRECIS_LLM_BACKEND`` /
     #: ``PRECIS_MODEL_*`` can switch it. ``model`` is the pre-resolved id
     #: used only for prompt assembly (token budgeting).
@@ -229,7 +229,7 @@ def run_review_pass(reviewer: Reviewer, store: Store) -> BatchResult:
         return BatchResult(handler=reviewer.name, claimed=0, ok=0, failed=0)
     blocks = _assemble_reviewer_blocks(reviewer, store)
     _system, prompt = ClaudeAgentAdapter.render(blocks)
-    # Routed through the LLM seam (ADR 0046 unit 4b): the reviewer's tier
+    # Routed through the LLM seam: the reviewer's tier
     # resolves the model at dispatch time, so PRECIS_LLM_BACKEND / PRECIS_MODEL_*
     # can switch it. A per-reviewer PRECIS_<NAME>_MODEL still pins one (None ⇒
     # tier default, which equals the old reviewer.model). Errors fold into
@@ -309,7 +309,7 @@ def run_review_pass(reviewer: Reviewer, store: Store) -> BatchResult:
         _raise_empty_pass_alert(store, reviewer)
         return BatchResult(handler=reviewer.name, claimed=1, ok=0, failed=1)
     digest_id = _write_digest(store, reviewer, res.text, res.cost_usd)
-    # The FULL assembled prompt INPUT (ADR 0038), the twin of the
+    # The FULL assembled prompt INPUT, the twin of the
     # ``meta.transcript`` output capture on a plan_tick job ref — reviewers
     # mint no job ref, so the digest memory itself is the closest per-run
     # artifact to attach it to. Never-fatal internally.
@@ -474,7 +474,7 @@ def _write_failure_marker(store: Store, reviewer: Reviewer, error: str | None) -
 
 
 def _assemble_reviewer_blocks(reviewer: Reviewer, store: Store) -> list[Block]:
-    """Assemble ``reviewer.modules`` into ordered blocks (ADR 0038 step 3).
+    """Assemble ``reviewer.modules`` into ordered blocks.
 
     The context-builder's live strings (plus ``today`` and ``tier_tag``)
     ride the :class:`AssemblyContext` ``extras``; every module reads what

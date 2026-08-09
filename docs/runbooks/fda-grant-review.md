@@ -12,7 +12,7 @@ get implicit access. So each cluster daemon that touches the NAS
 interpreter. macOS pins that grant to the binary's **cdhash**, so
 `brew upgrade python@3.12|@3.14` silently invalidates it and every daemon
 starts `EPERM`-ing on the NAS. That is the 2026-07 melchior lockout — watch +
-worker dark for days with no monitor (`OPEN-ITEMS` "melchior daemon NAS
+worker dark for days with no monitor (the backlog item "melchior daemon NAS
 lockout").
 
 Two guards now exist; this runbook is the **second**:

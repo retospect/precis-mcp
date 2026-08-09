@@ -99,7 +99,7 @@ def _lookup_chunk_id(conn: Connection, ref_id: int, ord_: int) -> int | None:
 # ``0001_initial.sql``.
 # ---------------------------------------------------------------------------
 _AGENT_WRITABLE_PREFIXES: frozenset[str] = frozenset({"STATUS", "PRIO", "CONFIDENCE"})
-# STALE: (ADR 0054 §5/R5, argument graph) — the retraction-ripple marker,
+# STALE: (argument graph) — the retraction-ripple marker,
 # recomputed by the link-write hook in ``store._argument_ops``, never
 # author-toggled (``MemoryHandler.tag`` refuses agent add/remove of it).
 _SYSTEM_WRITABLE_PREFIXES: frozenset[str] = frozenset(
@@ -212,7 +212,7 @@ def _row_to_block(row: tuple) -> Block:
     """
     embedding = _coerce_vector(row[6])
     # ``section_path`` lives in its own TEXT[] column on ``chunks``
-    # (v2; ADR 0018). For compatibility with code that still reads
+    # (v2). For compatibility with code that still reads
     # ``block.meta['section_path']`` (oracle entry-title resolver,
     # paper TOC fallback, …), surface the array back into the meta
     # dict so consumers don't have to learn the column split.
@@ -305,9 +305,9 @@ _CHUNKS_COLS_LEN = 14
 #   shape stays stable.
 # - ``slug`` is sourced via a correlated subquery against
 #   ``ref_identifiers`` with ``id_kind='cite_key'``. Every
-#   slug-addressed kind stores its agent-facing slug there per ADR
-#   0008. Numeric kinds (memory/todo/gripe/anki) have no row and slug
-#   comes back ``NULL``.
+#   slug-addressed kind stores its agent-facing slug there (the
+#   slug-as-identifier convention). Numeric kinds (memory/todo/gripe/anki)
+#   have no row and slug comes back ``NULL``.
 # - ``corpus_id`` is gone — the v1 corpus isolation didn't survive
 #   the v2 redesign (single-corpus deployment).
 # - New v2 columns (set_by/authors/year/human_verified_*/

@@ -1,6 +1,6 @@
 """Float64 vec3 + rigid transform (rotate + translate, no scale/shear).
 
-ADR 0041 §2: rigid transforms only. This makes membership *and* distance
+The CAD analytic IR: rigid transforms only. This makes membership *and* distance
 exact everywhere under transform — a probe inverse-transforms into a
 primitive's local frame and every test costs the same as axis-aligned.
 
@@ -24,7 +24,7 @@ from numpy.typing import NDArray
 Vec3 = NDArray[np.float64]
 
 #: Global linear epsilon (mm). Governs touch / coincidence / zero-clearance
-#: tests (ADR 0041 §2). The load-bearing tunable — *not* the unit.
+#: tests. The load-bearing tunable — *not* the unit.
 LINEAR_EPS: float = 1e-6
 
 #: Global angular epsilon (radians) for parallel / coincident-plane tests.

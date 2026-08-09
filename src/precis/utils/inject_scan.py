@@ -37,7 +37,7 @@ from dataclasses import dataclass
 
 #: Bump when the signal set changes — persisted in ``evidence.version`` so a
 #: later pass can tell a stale verdict from a current one and re-scan (the
-#: CLASSIFY_VERSION discipline of the ADR 0047 cascade).
+#: CLASSIFY_VERSION discipline of the controlled chunk tagging cascade).
 TIER0_VERSION = 1
 
 #: Unicode code points that hide or obfuscate text (zero-width joiners, BOM,

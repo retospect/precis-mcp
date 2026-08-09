@@ -1,15 +1,14 @@
-"""Slice-4 schedule + PRIO tests, extended by ADR 0061 (folding the retired
+"""Slice-4 schedule + PRIO tests, extended by cron-folded-into-recurring (folding the retired
 ``kind='cron'`` onto the recurring facet — ``meta.schedule`` presence).
 
 Layers:
 
 * the cron parser + ``every:`` shorthand translator;
-* the one-shot ``at``/``catch_up`` schedule shape + ``one_shot_action``
-  (ADR 0061);
+* the one-shot ``at``/``catch_up`` schedule shape + ``one_shot_action``;
 * the Watches umbrella seed (idempotent on ``meta.builtin``);
 * the per-tick spawn loop (idempotency stamp, collision-skip,
   backfill on/off);
-* the push-delivery tick path (``meta.deliver``, ADR 0061) and the
+* the push-delivery tick path (``meta.deliver``) and the
   one-shot resolve-and-retire path;
 * the PRIO column wiring (``put(prio=N)``, ``tag(prio=N)``; the
   ``PRIO:*`` tag is a plain searchable tag, not a column alias);
@@ -140,7 +139,7 @@ def test_validate_schedule_rejects_bad_backfill_type() -> None:
         validate_schedule({"cron": "0 * * * *", "backfill_missed": "yes"})
 
 
-# ── validator: one-shot `at` shape (ADR 0061) ───────────────────────
+# ── validator: one-shot `at` shape ───────────────────────
 
 
 def test_validate_schedule_accepts_at_shape() -> None:
@@ -208,7 +207,7 @@ def test_ticks_since_empty_when_no_match_in_window() -> None:
     assert ticks_since(last, sched, now=now) == []
 
 
-# ── one_shot_action (ADR 0061) ───────────────────────────────────────
+# ── one_shot_action ───────────────────────────────────────
 
 
 def test_one_shot_action_waits_before_due() -> None:
@@ -305,7 +304,7 @@ def test_put_with_bad_schedule_rejected_at_write_time(
         )
 
 
-# ── put: one-shot `at` schedule + `meta.deliver` (ADR 0061) ─────────
+# ── put: one-shot `at` schedule + `meta.deliver` ─────────
 
 
 def test_put_one_shot_at_schedule_is_canonicalised(
@@ -781,7 +780,7 @@ def test_candidate_one_shot_with_done_excluded(
     assert rid not in _candidate_recurring_ids(store, limit=50)
 
 
-# ── push delivery (ADR 0061 — folded from kind='cron') ──────────────
+# ── push delivery (cron-folded-into-recurring — folded from kind='cron') ──────────────
 
 
 def test_schedule_pass_delivers_instead_of_spawning(
@@ -844,7 +843,7 @@ def test_schedule_pass_deliver_tick_is_idempotent_same_minute(
     assert int(n_row[0]) == 1
 
 
-# ── one-shot `at` resolve-and-retire (ADR 0061) ──────────────────────
+# ── one-shot `at` resolve-and-retire ──────────────────────
 
 
 def test_schedule_pass_fires_due_one_shot_and_retires(

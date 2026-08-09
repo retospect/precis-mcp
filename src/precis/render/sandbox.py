@@ -1,6 +1,6 @@
 """Phase-1 render isolation: run untrusted figure code in a stripped subprocess.
 
-ADR 0035 §3. Render code in a figure chunk is author-supplied Python, and an
+Render code in a figure chunk is author-supplied Python, and an
 LLM that ingests external content can be steered (indirect prompt injection)
 into writing hostile code. The prohibited form is in-process ``exec`` on the
 credential-bearing, every-node system worker — one poisoned render would be

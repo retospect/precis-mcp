@@ -1,4 +1,4 @@
-"""Analytic CAD kernel — unit tests with hand-computed oracles (ADR 0041).
+"""Analytic CAD kernel — unit tests with hand-computed oracles.
 
 Covers the rigid-transform algebra, the interval set algebra, and the
 membership contract (contains / ray_hits / distance / aabb / faces) for

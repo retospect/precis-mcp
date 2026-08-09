@@ -1,6 +1,6 @@
 """Quest cascade — local grind, frontier-model escalation on a signal (4c).
 
-The two-speed cascade of ADR 0047 applied to inquiry. A quest tick runs at the
+The two-speed cascade of controlled chunk tagging applied to inquiry. A quest tick runs at the
 **local / cheap** tier by default (propose, interpret, keep notes current). The
 **frontier** tier is the escalation rung: it fires on a *signal*, not a
 schedule, to review the accumulated evidence, rewrite the dossier, and set the

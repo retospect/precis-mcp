@@ -72,7 +72,7 @@ _SUPPORTED_VIEWS: tuple[str, ...] = (
     "links",
 )
 
-# EPO credentials resolve through the secrets vault (ADR 0055) — the one
+# EPO credentials resolve through the secrets vault — the one
 # genuinely-scarce gate (real credentials). The raw-root is an *incidental*
 # cache dir that any host can create, so it is no longer a required env
 # (factory-console slice 5): it defaults via ``config.patent_raw_root()``.
@@ -469,7 +469,7 @@ class PatentHandler(Handler):
 
         Stable secondary sort on cite_key — matches the spec's
         confirmed tie-break rule. v2 has no ``refs.slug`` column; the
-        cite_key handle comes from ``ref_identifiers`` (ADR 0008), so
+        cite_key handle comes from ``ref_identifiers``, so
         the ORDER BY plumbs through that lookup.
         """
         sql = f"""

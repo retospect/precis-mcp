@@ -224,7 +224,7 @@ class RandomHandler(Handler):
 
 
 def _handle(ref: Any, block: Any) -> str:
-    """Universal handle (ADR 0036) for the picked block.
+    """Universal handle for the picked block.
 
     Returns the computed chunk handle (``pc<chunk_id>``) for a kind with a
     chunk code, falling back to the legacy ``kind:identifier~pos`` for a

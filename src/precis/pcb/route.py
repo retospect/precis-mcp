@@ -1,4 +1,4 @@
-"""Rent the autorouter — Freerouting headless (ADR 0042 §6, §9, §13a).
+"""Rent the autorouter — Freerouting headless.
 
 We **own** the netlist + part-selection + placement IR and **rent** copper
 routing. The v1 router is Freerouting run headless: a Specctra ``.dsn`` (from
@@ -148,7 +148,7 @@ def route_dsn(
 
 @dataclass
 class RoundTripResult:
-    """Outcome of the bounded place↔route loop (ADR 0042 §9)."""
+    """Outcome of the bounded place↔route loop."""
 
     ok: bool
     passes: int

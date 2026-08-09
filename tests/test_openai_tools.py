@@ -357,7 +357,7 @@ def test_loop_transport_error_returns_partial() -> None:
 
 
 def test_loop_timeout_is_flagged_paused() -> None:
-    """A request timeout classifies as unavailability (ADR 0066 §5a) — the
+    """A request timeout classifies as unavailability — the
     loop's ``AgentLoopResult.paused`` rides through to
     ``LlmResult.paused`` at the router seam so a pinned pass backs off and
     retries instead of recording a hard failure."""

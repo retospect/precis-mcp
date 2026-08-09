@@ -697,7 +697,7 @@ def test_put_dispatches_job_when_route_node_set(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A configured route node ⇒ mint an `autocatpath_explore` job parented on
-    the pathway (ADR 0044 compute lane, via `can_own_jobs`), not an inline run."""
+    the pathway (compute lane, via `can_own_jobs`), not an inline run."""
     monkeypatch.setenv("PRECIS_AUTOCATPATH_ROUTE_NODE", "spark")
     hub = Hub(store=pathway_store)
     h = _try(PathwayHandler, hub=hub)

@@ -1,6 +1,6 @@
 """Render orchestration: a computed `figure` chunk → a PNG in `chunk_blobs`.
 
-The glue between the document model and the sandboxed engine (ADR 0035 §2/§3):
+The glue between the document model and the sandboxed engine:
 pull a figure's render recipe (`meta.render.src`) and the `meta.table` data of
 every chunk it `plots`, run the code in the phase-1 sandbox
 (:func:`precis.render.sandbox.render_python`), and on success write the image
@@ -42,7 +42,7 @@ class RenderOutcome:
 
 
 def invalidation_key(input_shas: list[str]) -> str:
-    """`hash(render_src_sha, sorted(plotted_data_shas))` (ADR 0035 §3) — the
+    """`hash(render_src_sha, sorted(plotted_data_shas))` — the
     content-addressed key. Any plotted table's `content_sha` change (or a
     recipe edit) flips it, marking the figure stale."""
     joined = "\n".join(sorted(input_shas))

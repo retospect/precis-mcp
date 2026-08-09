@@ -13,7 +13,7 @@ this module, at their original paths; their redirect target is now the
 Budget sub-tab. A set cap persists to
 ``app_settings`` (migration 0067) and overrides the ``PRECIS_BUDGET_*`` env
 default without a redeploy; "reset" reverts to the env default. Mirrors the
-/secrets editor precedent (ADR 0055) in shape.
+/secrets editor precedent in shape.
 
 ``POST /budget/dream-interval/{set,reset}`` is a near-copy of the same
 pattern for the dream pass's cadence knob (Wave-0 §G,

@@ -1,4 +1,4 @@
-"""ASKCOS v2 Tree-Builder REST plumbing (ADR 0056 slice 3).
+"""ASKCOS v2 Tree-Builder REST plumbing.
 
 Two pure, gate-testable pieces — the request builder + the response path
 extractor — so the *shape* of the ASKCOS call is validated without a running

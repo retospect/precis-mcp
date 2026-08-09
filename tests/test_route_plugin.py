@@ -1,4 +1,4 @@
-"""precis-chem `route` kind + `retrosynth` job (ADR 0056, slice 1).
+"""precis-chem `route` kind + `retrosynth` job.
 
 Covers the pure IR/engine layer (no DB), the handler's inline slice-0 solve
 + content-addressed cache hit, the compute-lane dispatch branch (mint a
@@ -195,7 +195,7 @@ def test_put_second_call_is_cache_hit(
     monkeypatch.setattr(StubEngine, "plan", _counting)
     resp = h.put(id="aspirin", target="CC(=O)O", engine="stub")
     assert "cache hit" in resp.body
-    assert calls["n"] == 0  # zero recompute (ADR 0007)
+    assert calls["n"] == 0  # zero recompute
 
 
 def test_delete_soft_retires(route_store: Store) -> None:
@@ -215,7 +215,7 @@ def test_put_dispatches_job_when_route_node_set(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A configured route node ⇒ mint a retrosynth job parented on the route
-    (ADR 0044 compute lane, via `can_own_jobs`), not an inline solve."""
+    (compute lane, via `can_own_jobs`), not an inline solve."""
     monkeypatch.setenv("PRECIS_CHEM_ROUTE_NODE", "spark")
     # `_try` constructs + registers so self.hub knows `route` (can_own_jobs).
     hub = Hub(store=route_store)

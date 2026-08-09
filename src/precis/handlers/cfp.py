@@ -1,7 +1,7 @@
 """``CfpHandler`` — call-for-proposal / requirements document kind.
 
 A ``cfp`` is a *spec-role* sibling of :class:`~precis.handlers.paper.PaperHandler`
-(ADR: proposal writing). It is an ingested, read-only PDF document — the
+(proposal writing). It is an ingested, read-only PDF document — the
 **identical** Marker → chunks pipeline papers use (``precis add --as cfp``
 / ``inbox/cfp/``) — so it gets embeddings, per-chunk keywords, TOC, and
 in-document search for free. The only differences from a paper are

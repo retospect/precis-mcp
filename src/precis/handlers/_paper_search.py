@@ -100,7 +100,7 @@ def _normalise_exclude_slug(raw: str, *, store: Any) -> str | None:
     cleaned = raw.strip()
     if not cleaned:
         return None
-    # ADR 0036: an exclude entry copied from a hit is now a universal handle
+    # an exclude entry copied from a hit is now a universal handle
     # (``pa5`` / ``pc40``). Resolve it to the owning paper slug (ref-level,
     # coarse) so ``exclude=['pc40']`` drops that paper's blocks.
     if handle_registry.parse(cleaned) is not None:
@@ -449,7 +449,7 @@ class FusedBlockSearch:
 
         scope_ref_id: int | None = None
         if scope is not None:
-            # ADR 0036: ``scope=`` accepts a universal handle (``pa<id>`` /
+            # ``scope=`` accepts a universal handle (``pa<id>`` /
             # ``pc<id>``) — the form output now emits — resolving it to the
             # paper's ref_id; else the legacy slug / DOI path.
             scope_resolved = (
@@ -808,7 +808,7 @@ class PaperSearchResultRenderer:
         table_rows: list[dict[str, str]] = []
         for block, ref, _score in hits:
             slug = ref.slug or "???"
-            # ADR 0036: the computed chunk handle (``pc<chunk_id>``) is the
+            # the computed chunk handle (``pc<chunk_id>``) is the
             # one address form; fall back to the legacy ``slug~pos`` only for
             # a kind with no chunk code.
             handle = (
@@ -852,7 +852,7 @@ class PaperSearchResultRenderer:
         # response shape consistent across kinds.
         nav: list[tuple[str, str]] = []
         if hits:
-            # ADR 0036: point at the top hit by its computed chunk handle.
+            # point at the top hit by its computed chunk handle.
             first_handle = (
                 handle_registry.try_format(hits[0][1].kind, hits[0][0].id, chunk=True)
                 or f"{hits[0][1].slug or '???'}~{hits[0][0].pos}"
@@ -901,7 +901,7 @@ class PaperSearchResultRenderer:
                     )
                 )
             else:
-                # ADR 0036: scope by the top hit's paper record handle.
+                # scope by the top hit's paper record handle.
                 top_handle = (
                     handle_registry.format_handle("paper", hits[0][1].id)
                     if hits

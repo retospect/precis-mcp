@@ -39,7 +39,7 @@ scripts/coderef check --bare <file>      # + UPGRADE nudges: bare file.py:line r
   single file additionally lists bare `file.py:line` refs with the anchor to replace
   each (the authoring nudge — point-of-use, kept out of the tree-wide run so it isn't
   a firehose). Advisory — never a gate — wired into `/whatneedsdoing`'s hygiene wave
-  next to `memory-lint` / `docs-orphans`.
+  next to `memory-lint` / `backlog-lint`.
 
 ## Rules that keep it from rotting — or nagging
 

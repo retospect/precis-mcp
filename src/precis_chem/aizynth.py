@@ -1,4 +1,4 @@
-"""AiZynthFinder container plumbing (ADR 0056 slice 1b).
+"""AiZynthFinder container plumbing.
 
 Two pure, gate-testable pieces — the parser + the argv builder — so the
 container's *shape* is validated without a cluster or a built image (the
@@ -158,7 +158,7 @@ def parse_aizynth_trees(
 
 #: Where the wrapper image expects the policy/stock model files (config.yml +
 #: the referenced ONNX/pickle models) — mounted read-only from the NAS, not
-#: baked into the image (ADR 0056 §5: image = code, weights = mounted data).
+#: baked into the image (image = code, weights = mounted data).
 CONTAINER_MODELS = "/models"
 
 

@@ -24,7 +24,7 @@ class LintFinding:
 
     For SVG, ``kind`` is ``'compile'`` (unparseable), ``'bounds'`` (a shape
     spills past the viewBox), or ``'binding'`` (an element→chunk binding names
-    an ``id`` no element carries — ADR 0057 drift). ``node`` is the offending
+    an ``id`` no element carries — diagram-chunk binding drift). ``node`` is the offending
     element's ``id`` (or its tag when it has none); empty for a whole-document
     compile failure. Other languages reuse ``'compile'`` / ``'binding'`` and
     add their own geometry/topology kinds.
@@ -38,7 +38,7 @@ class LintFinding:
 @dataclass(frozen=True, slots=True)
 class Element:
     """A named, bindable element of a diagram — the anchor a chunk binding
-    attaches to (ADR 0057).
+    attaches to.
 
     ``id`` is the stable source identifier (the join key for a ``depicts``
     binding); ``tag`` a language-native type name (an SVG tag, a mermaid node

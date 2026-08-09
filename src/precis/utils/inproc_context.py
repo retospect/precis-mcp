@@ -6,7 +6,7 @@ the model, the agentlog id — through env vars (``PRECIS_CURRENT_TODO`` &c.),
 which the handlers read back via ``os.environ``. That works because each tick
 is its own OS process, so the env is isolated per tick.
 
-The **OpenAI-backend** tick (``OPENAI_TOOLS`` transport, ADR 0046) has no
+The **OpenAI-backend** tick (``OPENAI_TOOLS`` transport) has no
 subprocess: it drives the precis verbs *in-process* via ``runtime.dispatch``.
 So the env back-doors would resolve against the **worker's** ``os.environ``,
 not the tick's — and worse, ``claude_inproc`` runs claimed jobs in a

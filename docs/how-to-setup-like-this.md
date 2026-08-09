@@ -84,7 +84,7 @@ hand-rolling. Admonish this in `CLAUDE.md`/`AGENTS.md`:
 | `scripts/docs-index` | regenerate backlog/runbook indexes + the codebase package map | wired into ship |
 | `scripts/migration-check` | flag duplicate migration **numbers** across main + all worktrees | advisory in ship when the diff touches migrations; fleet view in `/whatneedsdoing` |
 | `scripts/memory-lint` | broken-link/unindexed + landed-thread scan (a `## Threads` bullet whose cited commits are all in main) + over-budget + reconsolidation-due signal | advisory; `/whatneedsdoing` |
-| `scripts/backlog-lint` | flag done-marked items still sitting in the backlog (`OPEN-ITEMS.md`) | advisory in ship when the diff touches it; `/whatneedsdoing` |
+| `scripts/backlog-lint` | flag done-marked items still sitting in `docs/backlog/` | advisory in ship when the diff touches it; `/whatneedsdoing` |
 | `scripts/token-review` | 7-day cadence nudge for a session-tightness / token-waste review pass (reads `docs/runbooks/token-review.md` `## Log`) | advisory cadence-check only (tier-1 script); the review it triggers is a judgment session; `/whatneedsdoing` |
 | `scripts/nightly` | LOCAL full-suite build; records dated green/red so `--check` surfaces main's health without re-running (catches upstream dep drift the ship gate can't) | run mode + read-only `--check`; result in gitignored `.nightly-status.md`; on `DUE`, `/whatneedsdoing` refreshes it via a background `test-runner` agent (no daemon) |
 
@@ -132,8 +132,8 @@ re-driven from memory each session:
   task-scoped, usually **read-only + cheap-model**, so heavy work doesn't burn
   main context: a `navigator` (codebase orientation), an explore/search agent.
 - **Skills** (`.claude/skills/<name>/SKILL.md`) — a packaged procedure + a
-  trigger description; loaded when the trigger matches. E.g. `docs-triage` (the
-  dead-doc dead-check), an output-discipline skill.
+  trigger description; loaded when the trigger matches. E.g. `docs-triage`
+  (the backlog delete-on-ship verdict), an output-discipline skill.
 - **`settings.json`** — wires the hooks (§4) and permissions.
 
 ---
@@ -152,9 +152,9 @@ re-driven from memory each session:
   (`rtk git …`, `rtk psql …`, `rtk err -- <cmd>`) to filter firehoses to signal
   and tee the full log to disk. Run it manually (the explicit `rtk` is the
   signal a filter is in play); never wrap already-terse or interactive commands.
-- **A `docs-triage` skill + `docs-orphans` detector** — keep `docs/` current-
-  state: the detector surfaces dead plans, the skill packages the per-doc
-  dead-check (see §7).
+- **A `docs-triage` skill + `backlog-lint` detector** — keep the backlog
+  live: the detector flags done-marked items, the skill packages the
+  per-item shipped/stale/snoozed verdict (see §7).
 
 ---
 
@@ -201,14 +201,15 @@ A file-based memory dir with:
   this dir and expects it edited in place, not generated). One bullet per memory
   under a bare-noun section: **Threads** (in-flight — delete on ship) · Runbooks
   · Gotchas · Workflow · Reference. Keep it under a byte budget.
-- **No `ARCHIVE.md`.** Landed work is deleted — the repo git log + ADRs are its
-  record. Memory keeps only live threads + durable knowledge; `memory-lint`
-  flags a `## Threads` bullet whose cited commits all landed in `main`.
+- **No `ARCHIVE.md`.** Landed work is deleted — the repo git log + package
+  docstrings are its record. Memory keeps only live threads + durable
+  knowledge; `memory-lint` flags a `## Threads` bullet whose cited commits
+  all landed in `main`.
 
 **Compaction relocates; it does not shrink by deletion.** Cutting the
 always-loaded index means moving a bullet's detail *down* into its permanent
 topic file — or graduating a matured, stable memory into a permanent home (a
-durable topic file, or a repo doc / ADR / runbook: **make it permanent**) —
+durable topic file, or a repo doc / docstring / runbook: **make it permanent**) —
 keeping only pointer + live status in the index. Delete a bullet only when it's
 **landed transient work** (git log is its record); never drop a durable fact to
 save bytes, and reach for trimming filler words *last*, not first.
@@ -233,16 +234,14 @@ broken-link/unindexed/size checks still run every time).
   applies the tail; regenerate the snapshot at release time only, never
   hand-edit it. (A doc path-link inside a sealed migration means
   you **can't de-ref it → can't delete that doc** — keep it.)
-- **ADR log:** next number, never reuse; the older ADR names its successor and
-  vice-versa; supersede (never retro-edit). Archive a fully-superseded ADR only
-  when a live successor names it (move-not-delete: keep filename + one-line
-  banner + update every referrer same-commit).
-- **Design docs = delete-on-ship.** A plan is a point-in-time doc; when its
-  feature ships the truth moves to code + the ADR, so delete the plan
-  (**delete-default**, "rest in git for the archaeologists"). KEEP only a plan
-  still referenced by `src/`, a current anchor, a sealed migration, or an active
-  ADR/proposal that delegates real build-detail to it. Never delete a doc
-  referenced by live code without fixing that reference in the same commit.
+- **Rationale lives in the owning package docstring.** The "why it's this
+  way" paragraphs (including rejected alternatives) update in the same commit
+  as the subsystem change; condense freely, never strip them in a refactor.
+- **Backlog items = delete-on-ship.** A work item/spec is a point-in-time
+  doc; when it ships the truth moves to code + the owning docstring, so
+  delete the item file in the shipping commit (**delete-default**, "rest in
+  git for the archaeologists"). Never delete a doc referenced by live code
+  without fixing that reference in the same commit.
 - **Never ship red; never commit on main; never bare `git stash`** in a shared
   worktree (use a WIP commit, or `git stash push -u -m <tag>` + `apply <sha>`).
 - **Secrets never in the repo or the transcript** — inject from a vault/env.
@@ -266,13 +265,14 @@ broken-link/unindexed/size checks still run every time).
 
 ## 8a. Active backlog & review
 
-- **One top-level `OPEN-ITEMS.md`** = the current to-do/backlog (distinct from
-  memory, which is durable cross-session knowledge — backlog is *now*).
+- **`docs/backlog/` — one file per item** = the current to-do/backlog
+  (distinct from memory, which is durable cross-session knowledge — backlog
+  is *now*). Generated index; delete-on-ship (§7).
 - **A `/whatneedsdoing`-style command** surveys open threads (backlog + unshipped
   branches + in-flight worktrees + open issues) and, as one step, mines run
   transcripts (§8) for latent tool-friction bugs.
 - **Post-green-ship residual harvest:** bugs the session surfaced but didn't fix →
-  persist to `OPEN-ITEMS.md`/tracker, fix the in-reach ones, file the rest; never
+  persist to `docs/backlog/`/tracker, fix the in-reach ones, file the rest; never
   spin on an unbounded chase.
 
 ---
@@ -281,7 +281,7 @@ broken-link/unindexed/size checks still run every time).
 
 A change is done when: the gate is green via `scripts/test`; the touched-
 subsystem docs (package docstrings, codebase.md stamp, affected skills) are updated in the
-same commit; any dead plan doc is deleted + its refs fixed; residuals persisted
+same commit; any shipped backlog item is deleted + its refs fixed; residuals persisted
 per §8a and either fixed-in-reach or filed — never spun on.
 
 ---

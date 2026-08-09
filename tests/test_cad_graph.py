@@ -1,4 +1,4 @@
-"""Boolean DAG fold + Design — attribution tests (ADR 0041 §3, §6).
+"""Boolean DAG fold + Design — attribution tests.
 
 The headline guarantee: a subtraction is *visible* without a merge — a
 ray through a drilled bore reports ``void`` attributed to the cutter, not

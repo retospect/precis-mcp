@@ -679,8 +679,8 @@ def resolve_deferred(
 ) -> str:
     """Rewrite deferred cross-references once chunk handles are known.
 
-    ``[¶@label]`` (from ``\\ref``/``\\cref``) -> ``[<dc-handle>]`` — the ADR
-    0036 single-bracket handle reference form (``[dc456]``; ``labels`` maps each
+    ``[¶@label]`` (from ``\\ref``/``\\cref``) -> ``[<dc-handle>]`` — the
+    universal-handle single-bracket reference form (``[dc456]``; ``labels`` maps each
     ``\\label`` to the ``dc<chunk_id>`` of the chunk it sits in). A missing label
     (e.g. a ``\\label`` on a dropped figure) degrades to a parenthetical mention
     and is recorded in ``unresolved``. (Glossary terms are *not* deferred — they

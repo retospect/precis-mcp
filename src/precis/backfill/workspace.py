@@ -4,7 +4,7 @@ Given target draft chunks, build the eyes :class:`WorkingSet` — the targets at
 ``fisheye+1hop`` (their neighbourhood + reference ring), the papers they already
 cite as ``summary`` cluster-TOC eyes, and the top recall candidates as
 ``verbatim`` (inferred/transient) chunk eyes — then render it through the
-existing ADR-0051 composer, followed by a plain "candidate sources" list so the
+existing turn-taking persona threads composer, followed by a plain "candidate sources" list so the
 gaps are legible today. Source eyes are stamped with their backfill role in the
 composed render itself — ``★ cited  ← <section>`` on a cited paper, ``○
 candidate`` on a recall hit (:func:`_backfill_marks`) — so the working set is

@@ -1,4 +1,4 @@
-"""The write surface — typed ops the LLM emits (ADR 0043 §5).
+"""The write surface — typed ops the LLM emits.
 
 The LLM edits the *graph* (intent); the framework applies and re-derives. v1 op
 catalog floor: set_cell · add_atom · set_element · vacancy · displace · add_bond ·

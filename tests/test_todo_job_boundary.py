@@ -1,4 +1,4 @@
-"""Pins the one boundary §M leaves standing: todo ↔ job (ADR 0030).
+"""Pins the one boundary §M leaves standing: todo ↔ job.
 
 A ``job`` is claimed/leased/executor-run — ``FOR UPDATE SKIP LOCKED``,
 ``meta.lease_until``, the sweeper, lease-steal, reserve-at-claim slots
@@ -7,7 +7,7 @@ A ``job`` is claimed/leased/executor-run — ``FOR UPDATE SKIP LOCKED``,
 candidate enumeration (:func:`precis.workers.dispatch._candidate_parent_ids`)
 is a plain, lock-free ``SELECT`` — any number of concurrent readers see
 the same candidate set, because nothing about "being a doable/dispatch
-candidate" is a claim. ADR 0030 rules a todo/job merge out explicitly on
+candidate" is a claim. The todo/job/finding kind boundary rules a todo/job merge out explicitly on
 this physical ground: a job is claimed, a todo is not — merging would
 force row-lock contention or two state machines onto one ref.
 
@@ -72,8 +72,7 @@ def test_todo_candidate_enumeration_never_excludes_concurrent_readers(
 
     Unlike the job claim above, holding a read-side lock on the todo row
     from one connection must NOT hide it from a second connection's
-    candidate enumeration: a todo is durable intent, not a leasable unit
-    (ADR 0030). ``_candidate_parent_ids`` issues no ``FOR UPDATE`` at
+    candidate enumeration: a todo is durable intent, not a leasable unit. ``_candidate_parent_ids`` issues no ``FOR UPDATE`` at
     all, so two "workers" independently computing the candidate set see
     the identical todo — there is no lease to contend over."""
     ref = store.insert_ref(

@@ -617,7 +617,7 @@ def _render_universal_handle(
     local: frozenset[str] | None = None,
     callouts: dict[str, str] | None = None,
 ) -> str | None:
-    """An ADR 0036 universal handle (``dc41`` chunk, ``pc10`` paper chunk,
+    """An universal handle (``dc41`` chunk, ``pc10`` paper chunk,
     ``me5`` record, …) → an anchor. The one rule: a handle is a ref to
     something. A chunk navigates via ``/c/<handle>`` (which resolves draft
     AND paper/other chunks) with its quote on hover from
@@ -638,7 +638,7 @@ def _render_universal_handle(
     if is_chunk:
         norm = handle_registry.normalize(handle)
         h = escape(norm)
-        # A render-policy part reference (ADR 0052) shows its **numeral** — the
+        # A render-policy part reference shows its **numeral** — the
         # display label the callout series assigns at render — in place of the
         # verbose handle / ¶ sigil, still hovering the part. Takes precedence
         # over the sigil since the numeral *is* the reference in patent prose.
@@ -724,7 +724,7 @@ _TAG_SPLIT = re.compile(r"(<[^>]+>)")
 
 
 def _term_pop_html(entry: object) -> str:
-    """Inner HTML for a registry surface's ``.pa-pop`` tooltip (ADR 0052 §4).
+    """Inner HTML for a registry surface's ``.pa-pop`` tooltip.
 
     A plain glossary/patent entry (``{definition}`` or a bare ``str``) renders
     just the definition, exactly as before. A manufacturing **part** entry adds
@@ -767,7 +767,7 @@ def _highlight_abbrevs(html: str, terms: dict[str, object]) -> str:
     ``terms`` maps each string surface (an abbreviation ``short``, a part name,
     a ``surface_forms`` alias, or an ``mpn``) to either a bare definition
     ``str`` (a glossary term / inline pair) or a rich ``TermEntry`` dict (a
-    manufacturing part — definition + attribute bag, ADR 0052).
+    manufacturing part — definition + attribute bag).
 
     Operates on the final HTML: splits off ``<…>`` tag runs and only rewrites
     the plain-text runs between them, so a surface that happens to look like
@@ -848,7 +848,7 @@ def linkify_refs(
     ``None`` (every non-draft call site) keeps the uniform ``§``.
 
     ``callouts`` — the draft reader's ``{normalised dc-handle: numeral}`` map
-    for ``assign="render"`` registry parts (ADR 0052 §3): a bare ``[[dc…]]`` /
+    for ``assign="render"`` registry parts: a bare ``[[dc…]]`` /
     ``[dc…]`` reference to such a part renders as its **numeral** (e.g. ``105``)
     instead of the ``¶`` sigil, still hover-previewing the part. ``None`` (every
     non-part reference / call site) is unchanged.
@@ -946,7 +946,7 @@ def _linkify_prose(
         return _md_inline(e) if markdown else e
 
     def _dispatch(m: re.Match[str]) -> str:
-        # Draft bracket forms (ADR 0033 §8) — checked first; their groups
+        # Draft bracket forms — checked first; their groups
         # are consumed before the bare ``kind:ref`` alternatives.
         if m.group("auth") is not None:
             return _render_authoring(

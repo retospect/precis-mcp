@@ -38,7 +38,7 @@ log = logging.getLogger(__name__)
 
 CODE_LEN = 2
 
-#: Entry-point group a plugin advertises its handle codes under (ADR 0036).
+#: Entry-point group a plugin advertises its handle codes under.
 #: Mirrors ``precis.handlers`` / ``precis.skills`` / ``precis.migrations`` so
 #: a plugin's persistent-ref kinds get first-class universal handles without
 #: precis-mcp knowing the kinds. Value points at a module exposing
@@ -93,11 +93,11 @@ KIND_CODES: dict[str, str] = {
     # system / meta
     "skill": "sk",
     "tag": "tg",
-    # CAD designs (ADR 0041)
+    # CAD designs
     "cad": "cd",
-    # Atomistic structures (ADR 0043)
+    # Atomistic structures
     "structure": "st",
-    # electronics / PCB (ADR 0042)
+    # electronics / PCB
     "pcb": "pb",
     "part": "pn",
     "datasheet": "da",
@@ -109,15 +109,15 @@ KIND_CODES: dict[str, str] = {
     # slug entity; per-value sourced facts live in component_spec_values,
     # not a chunk table, so no CHUNK_CODES entry, same as material.
     "component": "cp",
-    # Organizational containers (ADR 0045)
+    # Organizational containers
     "folder": "fo",
-    # reasoning artifacts (ADR 0051 §2b) — the plan is a chunk-tree sibling
+    # reasoning artifacts — the plan is a chunk-tree sibling
     # of the draft, never exported. Record ``po`` (plan) / chunk ``pe`` below.
     "plan": "po",
     # interactive SVG canvas (the figure/sketch kind) — chunk-tree sibling of
     # the draft, never exported. Record ``fg`` / chunk ``fn`` below.
     "figure": "fg",
-    # mermaid diagram (ADR 0057, slice 4) — second instance of the diagram
+    # mermaid diagram — second instance of the diagram
     # core, chunk-tree sibling of the figure, never exported. Record ``mm`` /
     # chunk ``mn`` below.
     "mermaid": "mm",
@@ -145,16 +145,16 @@ CHUNK_CODES: dict[str, str] = {
     "finding": "fb",
     "job": "jc",
     "cad": "ca",
-    # datasheet body chunks (ADR 0042; paper-family)
+    # datasheet body chunks (paper-family)
     "datasheet": "dk",
-    # reasoning artifacts (ADR 0051 §2b) — plan body chunks (``pe<id>``),
+    # reasoning artifacts — plan body chunks (``pe<id>``),
     # the plan's addressable nodes; disjoint from draft's ``dc``.
     "plan": "pe",
     # figure source nodes (``fn<id>``) — a figure's addressable SVG
     # elements/groups; disjoint from draft's ``dc``.
     "figure": "fn",
     # mermaid source nodes (``mn<id>``) — a mermaid diagram's addressable
-    # source chunk; disjoint from figure's ``fn`` (ADR 0057, slice 4).
+    # source chunk; disjoint from figure's ``fn``.
     "mermaid": "mn",
     # quest logbook entries (``ql<id>``) — the append-only WORM ledger rows.
     "quest": "ql",
@@ -176,7 +176,7 @@ _CODE_TO_KIND: dict[str, tuple[str, bool]] = {
 # (yet). The codes still exist for registry completeness + the totality
 # test.
 _FILE_BACKED_KINDS = frozenset({"skill", "python"})
-# ``part`` (ADR 0042) lives in the ``parts`` catalog table, addressed by its
+# ``part`` lives in the ``parts`` catalog table, addressed by its
 # LCSC C-number — not a refs-backed decimal handle. ``pcb`` / ``datasheet``
 # are refs-backed and resolve normally.
 _OTHER_TABLE_KINDS = frozenset({"tag", "part"})
@@ -195,7 +195,7 @@ _DECIMAL_CODES: frozenset[str] = frozenset(
 )
 
 
-# --- plugin-contributed codes (ADR 0036, lazy) ----------------------------
+# --- plugin-contributed codes (lazy) ----------------------------
 # Built-in KIND_CODES / CHUNK_CODES above stay the totality-tested SSOT for
 # precis-mcp's own kinds. Plugins (e.g. precis-chain's service/x402/payment)
 # contribute their refs-backed codes via the entry-point group; we merge
@@ -366,7 +366,7 @@ def is_well_formed(handle: str) -> bool:
     return parse(handle) is not None
 
 
-# --- relative navigation grammar (ADR 0036) -------------------------------
+# --- relative navigation grammar -------------------------------
 # A *relative* handle is a chunk handle plus ONE trailing operator, resolved
 # against current structure (never stored). The store walks it to a target
 # chunk; see ``Store.resolve_relative``.

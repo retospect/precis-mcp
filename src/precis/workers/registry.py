@@ -675,7 +675,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         kind=ServiceKind.JOB,
         requires=frozenset({"embedder"}),
         one_line="Bounded work order draining the derived embed queue "
-        "(ADR 0007) — minted by the materialize cadence, dark by default.",
+        " — minted by the materialize cadence, dark by default.",
         doc_skill="precis-job-help",
     ),
     ServiceSpec(
@@ -800,7 +800,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         enable_env="PRECIS_CLASSIFY_TOPICS_ENABLED",
         uses_model=True,
         cost_sources=("classify_topics",),
-        one_line="Paper→topic-dossier cascade, multi-label `topic:` tags (ADR 0060).",
+        one_line="Paper→topic-dossier cascade, multi-label `topic:` tags.",
         doc_skill="precis-overview",
     ),
     ServiceSpec(
@@ -814,7 +814,7 @@ SERVICES: tuple[ServiceSpec, ...] = (
         cost_sources=("axis",),
         one_line=(
             "Generic data/axes/<id>.yaml classifier w/ prereq enforcement "
-            "(ADR 0047 §3); PRECIS_AXES_ENABLED=<comma ids> picks which run."
+            "; PRECIS_AXES_ENABLED=<comma ids> picks which run."
         ),
         doc_skill="precis-overview",
     ),

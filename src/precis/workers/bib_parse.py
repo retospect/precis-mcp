@@ -20,8 +20,7 @@ each claimed paper it:
      (first occurrence wins).
   3. **Extracts** fields (authors/journal/year/volume/first_page) via a
      regex for the ACS/Wiley ``authors, Journal YEAR, vol, page`` shape;
-     lines that don't fit go to a SMALL-tier LLM in batches (ADR 0047
-     cascade philosophy).
+     lines that don't fit go to a SMALL-tier LLM in batches (cascade philosophy).
   4. **Matches** each entry to a DOI — local DOI-exact against the
      paper's own ``s2_neighbors`` rows first (free; no fuzzy/tuple
      matching — ``s2_neighbors`` has no author/journal columns to

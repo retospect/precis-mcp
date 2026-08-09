@@ -1,6 +1,6 @@
 """source-backfill 8a.3 — the composer overlay (the section link map).
 
-Wires the pure 8a.2 rollup into the ADR-0051 composer as a **post-assembly
+Wires the pure 8a.2 rollup into the turn-taking persona threads composer as a **post-assembly
 overlay**: ``render_link_rollup`` for one doc, and the ``link_map`` gate on
 ``render_working_set`` (default off → byte-identical). Uses ``plan`` docs (a
 DraftMixin tree kind) like the other backfill/composer tests.

@@ -1,4 +1,4 @@
-"""LaTeX export for the draft kind (ADR 0033 Tier-B).
+"""LaTeX export for the draft kind (the Tier-B export path).
 
 Pure-render unit tests for the inline converter / bib / acronym builders
 (no DB), plus an end-to-end ``export_draft`` against real Postgres via
@@ -182,7 +182,7 @@ def test_latex_empty_base_math_gets_a_base() -> None:
 
 
 def test_paper_handle_renders_citation() -> None:
-    # ADR 0036: a paper handle [pc10] / [pa99] → \cite via the cite_key.
+    # a paper handle [pc10] / [pa99] → \cite via the cite_key.
     out, ctx = _inline("see [pc10] here", store=_PaperStore())
     assert r"\cite{kong24}" in out and ctx.cited == ["kong24"]
 
@@ -298,7 +298,7 @@ def test_glsify_plural_no_false_match() -> None:
 
 
 def test_handle_xref_dc_renders_cref() -> None:
-    """ADR 0036 single-bracket [dc<id>] -> \\cref to the in-draft chunk."""
+    """Universal-handle single-bracket [dc<id>] -> \\cref to the in-draft chunk."""
     ctx = latex._Ctx(keymap={}, known_handles={"dc456"})
     out = latex._render_inline("see [dc456] for detail.", ctx)
     assert r"\cref{chunk:dc456}" in out
@@ -836,7 +836,7 @@ def test_export_draft_end_to_end(hub, tmp_path) -> None:
 
 def test_export_draft_embeds_raster_figure(hub, tmp_path) -> None:
     """A raster figure emits a \\includegraphics float and materialises the
-    image under pics/ beside main.tex (ADR 0058 slice 4)."""
+    image under pics/ beside main.tex."""
     from precis.handlers.draft import DraftHandler
 
     store = hub.store
@@ -1000,7 +1000,7 @@ def test_export_renders_itemize_and_enumerate(hub, tmp_path) -> None:
 
 
 def test_export_renders_table_as_longtable(hub, tmp_path) -> None:
-    """A chunk_kind='table' renders as a booktabs longtable (ADR 0035 §1)
+    """A chunk_kind='table' renders as a booktabs longtable
     — header in \\toprule…\\midrule, every row a `&`-joined `\\\\` line, the
     caption a bold lead-in. Replaces the old "dump the pipe markdown" path."""
     from precis.handlers.draft import DraftHandler

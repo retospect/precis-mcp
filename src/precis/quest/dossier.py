@@ -1,7 +1,7 @@
 """Dossier — the living research synthesis a *process* owns.
 
 Slice 4a of the quest layer (``quest-layer`` (git-only) §Two memories),
-generalized per ADR 0064 §B:
+generalized per dossier-owned-by-process:
 a dossier belongs to a **process, never an artifact**. A quest is the process
 that owns one today, but the owner is now **any ref** (``owner_id``) — a
 standing topic review or a paper-writing pipeline can own a dossier by the same
@@ -18,11 +18,11 @@ research cycle**. The dossier doubles as the autonomous loop's *rolling
 context*: each tick reads the compact dossier rather than replaying the whole
 logbook, so context stays bounded.
 
-ADR 0064 §A splits the dossier body into **two chunks**: a **narrative**
+Dossier-owned-by-process splits the dossier body into **two chunks**: a **narrative**
 paragraph (the whole-rewritten prose synthesis, ``edit_text``'d in place each
 tick, stable handle, ``prev_text`` history for free) and one **pinned ledger**
-paragraph (``meta.pinned='ledger'``, set via ``patch_chunk_meta`` — ADR 0051's
-plan-marker precedent, no new chunk_kind, no migration) that survives every
+paragraph (``meta.pinned='ledger'``, set via ``patch_chunk_meta`` — the
+persona-threads plan-marker precedent, no new chunk_kind, no migration) that survives every
 whole-rewrite untouched, mutated only by explicit :func:`append_ledger_entry`
 calls. The ledger holds the *strategic* tried/ruled-out/open ledger (a whole
 abandoned *direction*, not a single ruled-out structure — that per-candidate
@@ -124,7 +124,7 @@ def dossier_ref_id(store: Store, owner_id: int) -> int | None:
     Resolution is via the ``dossier-of`` edge, **not** the denormalized
     ``meta.dossier_of_owner`` back-pointer — so a pre-0064-§B dossier carrying
     only the legacy ``meta.dossier_of_quest`` key resolves identically, with no
-    migration or backfill (ADR 0064 §B). Excludes a soft-deleted dossier draft
+    migration or backfill. Excludes a soft-deleted dossier draft
     — the ``dossier-of`` link row can outlive a ``delete()`` of the draft
     itself, and a caller resolving this id should see "no dossier" rather
     than a tombstoned ref.
@@ -168,9 +168,9 @@ def _owner_title(store: Store, owner_id: int) -> str:
     """The owner ref's title (any kind), used only as the dossier's default name.
 
     A direct ``refs`` read rather than ``store.get_ref(kind=…, id=…)`` — the
-    latter requires a hardcoded ``kind`` (that was the quest coupling ADR 0064
-    §B removes), and the title is only a cosmetic seed, so no ``Store``
-    abstraction is warranted.
+    latter requires a hardcoded ``kind`` (that was the quest coupling
+    dossier-owned-by-process removes), and the title is only a cosmetic
+    seed, so no ``Store`` abstraction is warranted.
     """
     with store.pool.connection() as conn:
         row = conn.execute(
@@ -256,7 +256,7 @@ def update_frontier_tree(store: Store, owner_id: int) -> str:
 def ensure_ledger_chunk(store: Store, owner_id: int) -> str:
     """Return the handle of the owner's pinned ledger chunk.
 
-    Idempotent, and heals a dossier that predates ADR 0064 §A (narrative-only,
+    Idempotent, and heals a dossier that predates dossier-owned-by-process (narrative-only,
     no ledger chunk yet) by creating+pinning one lazily — a live owner grows
     its ledger on its next read/append rather than needing a migration.
     Creates the dossier itself (via :func:`ensure_dossier`) if the owner has
@@ -270,7 +270,7 @@ def ensure_dossier(store: Store, owner_id: int, *, title: str | None = None) -> 
     """Return the owner's dossier ref id, creating a seeded draft if absent.
 
     ``owner_id`` is any ref — a quest today, or any other process that owns a
-    living synthesis (ADR 0064 §B). Idempotent: the ``create_draft`` dup-guard
+    living synthesis. Idempotent: the ``create_draft`` dup-guard
     enforces one dossier per owner, but we look up first so a concurrent/second
     call returns the existing id rather than raising. A fresh dossier is seeded
     with BOTH the narrative body and the pinned ledger; an *existing* dossier
@@ -385,8 +385,7 @@ def rewrite_dossier(store: Store, owner_id: int, markdown: str) -> int:
     Ensures the dossier exists, then edits the narrative body chunk in place
     (``edit_text`` logs ``prev_text``) — ANY pinned chunk (``meta.pinned``
     truthy: the ledger, and the code-regenerated frontier tree — Slice 4c-4)
-    is explicitly excluded, so each survives every rewrite byte-identical
-    (ADR 0064 §A). If somehow there is no narrative chunk yet, one is added.
+    is explicitly excluded, so each survives every rewrite byte-identical. If somehow there is no narrative chunk yet, one is added.
     """
     did = ensure_dossier(store, owner_id)
     chunks = store.reading_order(did)

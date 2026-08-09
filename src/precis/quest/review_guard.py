@@ -32,7 +32,7 @@ from psycopg import Connection
 
 def chunk_anchor_forms(conn: Connection, chunk_id: int) -> list[str]:
     """The anchor strings a change-request todo might carry for this chunk:
-    the ADR-0036 ``dc<id>`` form (what the fanout + personas mint today) plus
+    the universal handles ``dc<id>`` form (what the fanout + personas mint today) plus
     the base58 ``handle`` and its legacy ``¶handle`` variant (older/other
     write paths). Matching all three keeps the "any open request?" guard from
     missing a finding stored under a different anchor convention."""

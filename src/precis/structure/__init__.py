@@ -1,4 +1,4 @@
-"""The ``structure`` kind — a legible atomistic cell + bond-graph IR (ADR 0043).
+"""The ``structure`` kind — a legible atomistic cell + bond-graph IR.
 
 A periodic cell filled with atoms and an explicit bond graph that the LLM reads
 as *structure* (graph + numeric feedback), never pixels — the materials sibling
@@ -10,13 +10,13 @@ store + handler (the DB layer) wrap this core.
 Compute-adjacent seams, each with its own module docstring:
 
 - `relax` — the rented fidelity ladder (``clean``/``emt`` ours; higher rungs
-  extras-gated, GPU-dispatched via the ADR 0044 derived lane).
+  extras-gated, GPU-dispatched via the compute job lane).
 - `preflight` — the tier-0 element-agnostic sanity gate in front of any MLIP
   spend (``PRECIS_STRUCTURE_PREFLIGHT``, default OFF); catches *authoring*
   faults, never physical verdicts.
 - `cache` — content-addressed relax memoisation; forces are stored
   label-paired, never canonical-rank-indexed (see ``serialize_forces``).
-- `importers` — pure per-source adapters for external DFT DBs (ADR 0053);
+- `importers` — pure per-source adapters for external DFT DBs;
   the one write path is ``store.structure_import``, keyed on
   ``(dataset, config_id)``; an external run never serves a compute cache hit
   and an external design refuses ``edit`` (derive a variant instead).

@@ -22,7 +22,7 @@
 - [`backlog-groomer-items-half`](./backlog-groomer-items-half.md) **idea** — The gripe → fix_gripe-todo groomer shipped (`src/precis/workers/
 - [`breaker-gate-resolved-cost`](./breaker-gate-resolved-cost.md) **idea** — `bands._TIER_BANDS[SMALL]=FREE`, so `breaker.gate_tier` never gates SMALL —
 - [`briefing-combine-verify`](./briefing-combine-verify.md) **idea** — The dispatch brake shipped (a succeeded child job blocks re-dispatch of a
-- [`budget-guardrails`](./budget-guardrails.md) **idea** — precis has no aggregate cost ceiling. Per-*call* caps exist and are solid, but
+- [`budget-guardrails`](./budget-guardrails.md) **idea** — Shipped portion: see the `precis.budget` package docstrings
 - [`bundle-pathway-in-tree-plugin`](./bundle-pathway-in-tree-plugin.md) **draft** — `autocatpath` is the **odd one out** among precis's three science plugins. Its
 - [`cad-connectivity-lint`](./cad-connectivity-lint.md) **idea** — From /cad/make-a-spoked-wheel-with-a-mounting-bracket-v2: (1) the spokes
 - [`cad-diagnose-apply-loop`](./cad-diagnose-apply-loop.md) **draft** — CAD "Ask>" (`cad_discuss`) can diagnose a design and describe exact fixes in
@@ -32,7 +32,7 @@
 - [`catalyst-physical-realism`](./catalyst-physical-realism.md) **draft** — The catalyst-discovery pipeline (quest `164903`, autocatpath as the rented
 - [`catpath-desorption-link-kind`](./catpath-desorption-link-kind.md) **idea** — Desorption edges are bookkept like H-reservoir supply edges (ΔE = 0), but a
 - [`centralize-env-vars`](./centralize-env-vars.md) **idea** — 381 unique PRECIS_ strings; PrecisConfig declares 19. Replace ad-hoc
-- [`chem-tools-integration`](./chem-tools-integration.md) **idea** — **precis is already the facade.** The seven verbs (`get / search / put /
+- [`chem-tools-integration`](./chem-tools-integration.md) **idea** — Shipped portion: see the `precis_chem` and `precis_bio` package
 - [`chem-tools-slices`](./chem-tools-slices.md) **idea** — route/protein shipped; deploy, verification, and new-kind slices remain.
 - [`child-job-failure-terminal-state`](./child-job-failure-terminal-state.md) **idea** — `src/precis/workers/auto_check_evaluators/child_job_succeeded.py::evaluate`
 - [`citation-sources-tab`](./citation-sources-tab.md) **draft** — Consumer slice of the citation-resolution work; requires
@@ -44,7 +44,7 @@
 - [`cli-bind-store-audit`](./cli-bind-store-audit.md) **idea** — `precis cast run` never bound the process store, so every `live_config`
 - [`cluster-daemon-user-model`](./cluster-daemon-user-model.md) **idea** — hermes (OAuth/~/.claude state) vs deploy (owns /opt/homebrew + the colima
 - [`cluster-ops-sweeps`](./cluster-ops-sweeps.md) **idea** — Small mechanical ops chores, batched to run in one pass.
-- [`cluster-scheduling`](./cluster-scheduling.md) **draft** — 1. **Postgres is the only coordination substrate.** A claim is a
+- [`cluster-scheduling`](./cluster-scheduling.md) **draft** — **Three cluster-wide singletons** — Postgres (caspar), web (gateway), asa
 - [`component-followons`](./component-followons.md) **idea** — Feature extensions to the shipped component kind (ADR 0071/0072).
 - [`composable-pipeline-kind`](./composable-pipeline-kind.md) **draft** — A growing set of point operations exists (extract chem names from text,
 - [`content-sensitivity-placement`](./content-sensitivity-placement.md) **idea** — this **gates Phase C** of the tier migration)
@@ -58,7 +58,7 @@
 - [`db-role-enforce-pgbouncer`](./db-role-enforce-pgbouncer.md) **idea** — PRECIS_MCP_DB_ROLE_ENFORCE (session-level SET ROLE) is only correct on a
 - [`deploy-verification-guards`](./deploy-verification-guards.md) **idea** — Three post-deploy assertions, one owner (`deploy/redeploy-precis.yml`):
 - [`deploy-watcher-absent-flag`](./deploy-watcher-absent-flag.md) **idea** — A `precis_watch_enabled` flag with `state: absent` would enforce exclusion
-- [`diagram-editing-and-chunk-binding`](./diagram-editing-and-chunk-binding.md) **idea** — Today `figure` (an SVG canvas the model draws *with* the human) is a closed
+- [`diagram-editing-and-chunk-binding`](./diagram-editing-and-chunk-binding.md) **idea** — Shipped portion: see the `precis.diagram` and `precis.mermaid` package
 - [`docs-and-skills-redesign`](./docs-and-skills-redesign.md) **idea** — The substrate SHIPPED (present-state: `src/precis/handlers/skill.py` +
 - [`docs-currency-audit`](./docs-currency-audit.md) **idea** — 136 product skills (`src/precis/data/skills/`) unaudited for currency;
 - [`draft-cite-groundwork-prepass`](./draft-cite-groundwork-prepass.md) **idea** — A cheap-model tick that reads a section's cluster-map working set + its
@@ -67,27 +67,27 @@
 - [`draft-section-styles`](./draft-section-styles.md) **idea** — that section surfaces that skill as the prompt.
 - [`draft-table-editing`](./draft-table-editing.md) **draft** — Two open gripes, filed while fixing a one-character unit-label error
 - [`draft-table-structured-enrichment`](./draft-table-structured-enrichment.md) **draft** — `chunk_kind='table'` draft chunks store canonical data as
-- [`dreaming`](./dreaming.md) **idea** — Status: **proposed** (plan-first artifact; no code landed yet)
+- [`dreaming`](./dreaming.md) **idea** — Shipped portion: see the `precis.workers` package docstring and
 - [`drive-presenter-completeness`](./drive-presenter-completeness.md) **idea** — Drive shipped; the presenter contract totality + kind cleanup remain.
-- [`edgar-kind-spec`](./edgar-kind-spec.md) **idea** — Agents on the cluster search papers and patents; company
+- [`edgar-kind-spec`](./edgar-kind-spec.md) **idea** — Shipped portion (phase 1): see the `src/precis/handlers/edgar.py`
 - [`elsevier-preview-remediation`](./elsevier-preview-remediation.md) **idea** — Signature: `refs.pdf_pages` single-page range against a >100 KB payload —
 - [`email-kind`](./email-kind.md) **idea** — Reto's `rs@retostamm.com` mailbox is mostly newsletters and low-stakes traffic
-- [`embedder-service-and-image-split`](./embedder-service-and-image-split.md) **idea** — Status: **proposed** (plan-first artifact; no code landed yet)
+- [`embedder-service-and-image-split`](./embedder-service-and-image-split.md) **idea** — Shipped portion: see ADR 0020 and the
 - [`endnote-export-validation`](./endnote-export-validation.md) **idea** — Round-trip correctness needs real Word + EndNote + "Update Citations and
 - [`equation-chunk-retirement`](./equation-chunk-retirement.md) **idea** — Decided north star: no dedicated equation kind; math is $…$/$$…$$ in prose,
 - [`eu-llm-providers`](./eu-llm-providers.md) **idea** — Candidates: ShareAI, Eden AI, Orq.ai, Requesty (Frankfurt, GDPR-complete),
-- [`factory-console-and-scheduling`](./factory-console-and-scheduling.md) **idea** — Everything the factory does — every worker pass, compute job, LLM call,
+- [`factory-console-and-scheduling`](./factory-console-and-scheduling.md) **idea** — Shipped portion: see the `precis.workers` package docstring and
 - [`factory-post-auth`](./factory-post-auth.md) **idea** — No auth middleware on any /factory write; sharpest for `POST
 - [`fair-dispatch-two-currencies`](./fair-dispatch-two-currencies.md) **draft** — Review findings (2026-08-08), plus the operator's stated allocation policy.
 - [`figure-kind-slices`](./figure-kind-slices.md) **idea** — Ordered by value: PNG/animated-raster export (a figure_render derived-lane
-- [`finding-chase`](./finding-chase.md) **idea** — **Status**: draft (pre-review), **revised 2026-05-31 for Path B + B-ii**
+- [`finding-chase`](./finding-chase.md) **idea** — Shipped portion: see the `precis.workers` package docstring and
 - [`finding-edit-dry-run-preview`](./finding-edit-dry-run-preview.md) **idea** — The paper/cfp/datasheet dry_run-preview arms shipped; the finding arm was
 - [`fisheye-affordance-generalize`](./fisheye-affordance-generalize.md) **idea** — The `→ view='fisheye'` footer exists only in `DraftHandler._render_chunk`;
 - [`fisheye-level2-focus-verb`](./fisheye-level2-focus-verb.md) **idea** — Level 1 (policy-chosen eyes) is live on planner + dreams; reviewers stay
 - [`fixer-salvage-failed-builds`](./fixer-salvage-failed-builds.md) **draft** — In report mode, `run_tick` only `git push`es the build branch on the OK path
 - [`friction-reflection-enable`](./friction-reflection-enable.md) **idea** — Part A (end-of-run friction footer, `src/precis/utils/friction_reflect.py`)
 - [`goal-kind-plan`](./goal-kind-plan.md) **idea** — Status: **queued** — plan captured for a future implementation slice.
-- [`good-search-coordinator`](./good-search-coordinator.md) **idea** — Tier 1 made a single `search(kind='paper', …)` call fuse many
+- [`good-search-coordinator`](./good-search-coordinator.md) **idea** — Shipped portion: see the `workers/job_types/good_search.py` module
 - [`gpu-cluster-modes`](./gpu-cluster-modes.md) **draft** — Soon there are N DGX Spark units (1 today + 3 incoming). The same hardware
 - [`graph-completeness-findings`](./graph-completeness-findings.md) **idea** — Four still-open findings from the 2026-07-23 graph audit.
 - [`graph-locality-framing`](./graph-locality-framing.md) **idea** — `graph-based` (git-only) proposes conditioning an agent's admissible
@@ -103,10 +103,10 @@
 - [`local-backup-pickup`](./local-backup-pickup.md) **idea** — Make the file-server backup land on this laptop, where Backblaze picks it
 - [`local-first-capacity-valve`](./local-first-capacity-valve.md) **draft** — item 3, which already shipped in code (2026-07-23) — so no `blocked-by`
 - [`local-research-agent`](./local-research-agent.md) **idea** — The smartest local model that fits the big Mac should do the bulk operational
-- [`markup-first-ingest`](./markup-first-ingest.md) **idea** — Status: draft
+- [`markup-first-ingest`](./markup-first-ingest.md) **idea** — Status: draft (built, dark)
 - [`material-off-sample-model`](./material-off-sample-model.md) **idea** — Deferred from ADR 0070. Trust-ordered off-sample read: evaluate a published
 - [`material-units-delegate-calc`](./material-units-delegate-calc.md) **idea** — Decided (Reto, 2026-07-29): `calc` already does pint-backed unit conversion,
-- [`mcp-cold-start-token-budget`](./mcp-cold-start-token-budget.md) **idea** — *Token budget + kind enablement + default-tag injection.*
+- [`mcp-cold-start-token-budget`](./mcp-cold-start-token-budget.md) **idea** — Shipped portion: see `docs/conventions/kind-enablement.md` and the
 - [`medium-chain-tool-transport`](./medium-chain-tool-transport.md) **idea** — Prod `app_settings` `llm.chain.medium` = glm-4.7 over `openai_compat` — a
 - [`memory-lint-extraction-decision`](./memory-lint-extraction-decision.md) **idea** — `scripts/memory-lint --currency` verifies memories against repo ground truth
 - [`merged-chunk-handle-redirect`](./merged-chunk-handle-redirect.md) **idea** — `resolve_handle` follows superseded_by for record handles only; a merged
@@ -124,7 +124,7 @@
 - [`paper-reader-bbox-backfill`](./paper-reader-bbox-backfill.md) **idea** — **Status:** deferred / backlog (not scheduled). Tracked as precis todo
 - [`paper-search-unique-per-paper`](./paper-search-unique-per-paper.md) **idea** — Make one-row-per-paper (best handle + a `more` count of additional hits +
 - [`paper-writing-pipeline`](./paper-writing-pipeline.md) **idea** — How precis writes and maintains a long document (a `draft`) by absorbing the
-- [`patent-authoring-loop`](./patent-authoring-loop.md) **idea** — A patent is written against the prior art, not in a vacuum. The loop:
+- [`patent-authoring-loop`](./patent-authoring-loop.md) **idea** — Shipped portion: see the `workers/patent_digest.py` and
 - [`patent-drafting-merge`](./patent-drafting-merge.md) **idea** — A patent **is a `draft`** whose **`meta.workspace.doc_type` is `patent`**
 - [`patent-search-parity`](./patent-search-parity.md) **idea** — Papers search well; patents don't. Look for a systemic fix — indexing,
 - [`pathway-frame-capture`](./pathway-frame-capture.md) **draft** — catpath *computes* the reaction motion and then throws it away. `neb.py`'s
@@ -136,12 +136,12 @@
 - [`plan-tick-exhaustion-visibility`](./plan-tick-exhaustion-visibility.md) **idea** — ~20% of local ticks hit the 60-turn ceiling, emit ≤2 chars after 256–618 s,
 - [`plan-tick-remeasure`](./plan-tick-remeasure.md) **idea** — The 40% request_chars cut is confirmed; the performance claim rests on one
 - [`plan-tick-spin-autopause`](./plan-tick-spin-autopause.md) **idea** — Auto-pausing (an open tag the doable view excludes) would stop the burn but
-- [`precis-dispatch`](./precis-dispatch.md) **idea** — Status: **draft / for review**
+- [`precis-dispatch`](./precis-dispatch.md) **idea** — Status: design intent, Phase-1 shipped. Consumers: precis-dft (first),
 - [`prod-dead-index-drop`](./prod-dead-index-drop.md) **idea** — `llm_call_log_request_hash_idx` (54 MB), `vault_events_name_at_idx` (31 MB),
 - [`quest-artifacts-in-dossier`](./quest-artifacts-in-dossier.md) **idea** — The converter document should show the pareto front, the specific energy
 - [`quest-loop-activation`](./quest-loop-activation.md) **idea** — All slices shipped; the loop is dormant (quests paused 2026-07-16). Do:
 - [`quest-redispatch-tier`](./quest-redispatch-tier.md) **idea** — A deployed-engine re-score ignores a candidate's own tier-ladder rung: a
-- [`reading-prep-loop`](./reading-prep-loop.md) **idea** — An **adaptive, activity-driven system that preps the human to keep up with
+- [`reading-prep-loop`](./reading-prep-loop.md) **idea** — Shipped portion: see the `src/precis/reading/` module docstrings
 - [`reaper-liveness-race`](./reaper-liveness-race.md) **idea** — A sibling SessionStart backstop reaped a live session's worktree right after
 - [`remarkable-pairing`](./remarkable-pairing.md) **idea** — The feature is shipped dark; the button stays hidden until pairing: rmapi
 - [`render-sandbox-network-jail`](./render-sandbox-network-jail.md) **draft** — Render code is LLM-authored Python inside a figure chunk; an LLM that
@@ -179,7 +179,7 @@
 - [`test-setup-tax`](./test-setup-tax.md) **idea** — The suite is setup-dominated (~340 s fixture setup vs ~120 s test logic;
 - [`tex-layer2-fixer-fate`](./tex-layer2-fixer-fate.md) **idea** — `src/precis/utils/tex_llm_fix.py` (~220 lines) is the chktex LLM-fixer on the
 - [`time-kind`](./time-kind.md) **idea** — No time/date/clock kind exists (`src/precis/handlers/calc.py` is the only
-- [`todo-tree-plan`](./todo-tree-plan.md) **idea** — Status: **queued** — design captured for a future implementation slice.
+- [`todo-tree-plan`](./todo-tree-plan.md) **idea** — Shipped portion: see the `precis.handlers.todo` and `precis.workers`
 - [`token-review-hook-gaps`](./token-review-hook-gaps.md) **idea** — Transcript sample (6 largest sessions) shows the nudges don't move behavior:
 - [`tool-call-ledger`](./tool-call-ledger.md) **idea** — Today's telemetry has no per-tool-call row, so "which verb/kind/arg-shape
 - [`topic-dossiers`](./topic-dossiers.md) **idea** — No new column, no new kind. A synthesized paper gets one link:
@@ -187,7 +187,7 @@
 - [`torch-extras-conflict`](./torch-extras-conflict.md) **idea** — Both extras target spark; uv universal resolution resolves all extras
 - [`trust-taxonomy-followons`](./trust-taxonomy-followons.md) **idea** — Deferred pieces of the taproot trust ladder.
 - [`turbo-fieldflare-eval`](./turbo-fieldflare-eval.md) **idea** — Reto want (youtube:189018): serves a 26B MoE in ~2 GB RAM at ~23 tok/s by
-- [`turn-routing-and-context-dsl`](./turn-routing-and-context-dsl.md) **draft** — Today model selection is a patchwork (ADR 0046 router half-adopted;
+- [`turn-routing-and-context-dsl`](./turn-routing-and-context-dsl.md) **draft** — Model selection is a patchwork and per-turn context assembly is
 - [`uid-gid-parity`](./uid-gid-parity.md) **idea** — `system_users[]` pins **gid == uid with no exceptions**; the role never
 - [`universal-short-codes`](./universal-short-codes.md) **idea** — ADR 0032's base-62 chunk_id encoding is manuscript-only; the verdict was
 - [`untrusted-input-injection-scan`](./untrusted-input-injection-scan.md) **draft** — **Slice 1 SHIPPED**: the pure tier-0 scanner lives at

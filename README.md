@@ -35,19 +35,18 @@ or `id=` and hand back text.
 - **Files under `PRECIS_ROOT` / code** — `markdown`, `plaintext`,
   `tex`, and `python` (symbol- and callgraph-aware repo navigator).
 - **Authored artifacts** — `draft` (chunk-native document that
-  exports to LaTeX/PDF/Word; ADR 0033), `cad` (parametric
-  solid-model design probed analytically, not meshed; ADR 0041),
-  `structure` (atomistic cell + bond graph for DFT/molecular work;
-  ADR 0043), `pcb` (netlist + placement graph → BOM/CPL/DSN +
-  Freerouting; ADR 0042), `folder` (organizational container for
-  the above; ADR 0045).
+  exports to LaTeX/PDF/Word), `cad` (parametric
+  solid-model design probed analytically, not meshed),
+  `structure` (atomistic cell + bond graph for DFT/molecular work),
+  `pcb` (netlist + placement graph → BOM/CPL/DSN + Freerouting), and
+  `folder` (organizational container for the above).
 - **Personal state & knowledge** — `todo` (hierarchical task tree),
   `memory`, `gripe`, `anki` (spaced-repetition cloze cards → AnkiWeb),
   `citation` (verified claim → source quote), `finding`
   (chain-of-evidence over a citation chase), `job` (offline LLM run,
   child of a `todo`).
-- **Identity, comms & audit** — `orcid` (researcher-identity hub;
-  ADR 0039), `cron` (push-notification scheduler; ADR 0030),
+- **Identity, comms & audit** — `orcid` (researcher-identity hub),
+  `cron` (push-notification scheduler),
   `message` (proactive outbound), `alert` (machine-detected ops
   condition), `agentlog` (per-run attribution trail), `provenance`
   (derivation audit).

@@ -38,7 +38,7 @@ When a PDF lands, it goes into the watch inbox →
 ``register_aliases_and_maybe_upgrade`` promotes the stub →
 the chase resumes on the next pass.
 
-Per ADR 0018 this is a sibling worker (plain function), not a
+This is a sibling worker (plain function), not a
 ``WorkerHandler`` subclass — same pattern as
 ``precis.workers.segment_toc`` and ``precis.workers.chase``.
 

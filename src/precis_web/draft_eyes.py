@@ -1,4 +1,4 @@
-"""The draft reader's hand-driven working set (ADR 0051 §6, Level-2 by hand).
+"""The draft reader's hand-driven working set (Level-2 by hand).
 
 The planner and dreams place **eyes** automatically; here the *author* does it in
 the reader. Two markers per paragraph:
@@ -18,7 +18,7 @@ edit. On submit the reader copies it onto the change-request todo as
 (``workers.planner_prompt._m_fisheye`` → ``render_working_set``) instead of the
 single-anchor fisheye.
 
-Everything is addressed by universal handles (ADR 0036): draft chunks as
+Everything is addressed by universal handles: draft chunks as
 ``dc<id>`` (what ``render_working_set``/``render_eye`` parse), ring targets as
 ``pa<id>`` / ``me<id>`` / ….
 """

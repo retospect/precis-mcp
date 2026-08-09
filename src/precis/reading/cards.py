@@ -559,7 +559,7 @@ def _env_int(name: str, default: int) -> int:
 
 
 def _default_client() -> Any:
-    """The production compose client — folds through the router (ADR 0046)
+    """The production compose client — folds through the router
     onto the ``BIG`` reasoning tier (local-first via ``llm.chain.big``) instead
     of holding a raw litellm client, so this cast-authoring pass gets the budget
     breaker + the route-log. This was ``FRONTIER``; card_forge is a background

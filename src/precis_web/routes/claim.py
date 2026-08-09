@@ -1,5 +1,5 @@
 """``/claim/<head>`` full-page view + ``/preview/claim/<head>`` hover fragment
-for a Taproot claim hub (ADR 0051-adjacent). Both resolve the cite head via
+for a Taproot claim hub (turn-taking persona threads-adjacent). Both resolve the cite head via
 :func:`precis_web.claim_render.render_claim_evidence`, which returns ``None``
 when the head isn't a live ``TAPROOT:claim`` hub — rendered as a friendly
 "no claim hub" stub rather than a 404, since a stray ``[fi123]`` cite is an

@@ -196,7 +196,7 @@ def build_prompt(
     """Assemble the discussion prompt: model facts + thread + the question."""
     parts = [
         "You are a CAD design assistant discussing a parametric solid model "
-        "(ADR 0041) with the engineer who is building it. Answer their question. "
+        " with the engineer who is building it. Answer their question. "
         "This is a DISCUSSION — do NOT output a full rewritten design source or a "
         "diff unless they explicitly ask for one; explain in prose, referencing "
         "part and node names and the measured facts below. If they ask how to fix "
@@ -242,7 +242,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     model = os.environ.get("PRECIS_CAD_DISCUSS_MODEL")
     timeout_s = float(os.environ.get("PRECIS_CAD_DISCUSS_TIMEOUT_S", "1800"))
     ctx.append_chunk("job_event", f"discuss: {instruction[:200]}")
-    # Routed through the LLM seam (ADR 0046 unit 4b): read-only agent call on
+    # Routed through the LLM seam: read-only agent call on
     # FRONTIER, so PRECIS_LLM_BACKEND can switch it. Broad except kept +
     # the folded res.error checked.
     try:

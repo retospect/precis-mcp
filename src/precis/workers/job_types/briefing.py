@@ -4,7 +4,7 @@ Wrapper so the morning briefing runs as a precis *job* (driven by a
 recurring (``meta.schedule`` set) todo, typically ``meta.schedule={'cron':'0 6 * * *'}``)
 rather than an OS timer. Deterministic in the sense that it's a plain
 function call, not agentic tool use — the LLM call itself now folds through
-the router (ADR 0046) onto ``claude_agent`` (a ``claude -p`` subprocess,
+the router onto ``claude_agent`` (a ``claude -p`` subprocess,
 direct Anthropic OAuth) rather than the litellm proxy. Registered with a
 plugin ``dispatch`` so ``claude_inproc`` runs it directly.
 

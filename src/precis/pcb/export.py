@@ -1,4 +1,4 @@
-"""Exporters off the placed netlist IR (ADR 0042 §6, §13).
+"""Exporters off the placed netlist IR.
 
 Export is the **only** place the design leaves the relational graph. Every
 exporter is pure (IR in → text/dict out), so each is trivially testable and
@@ -33,7 +33,7 @@ import io
 import re
 from typing import Any
 
-# Default fab/board constants (JLCPCB 4-layer default, ADR 0042 §"Layers").
+# Default fab/board constants (JLCPCB 4-layer default).
 DEFAULT_THICKNESS_MM = 1.6
 DEFAULT_TRACK_UM = 250  # 0.25 mm — JLCPCB economical minimum is 0.127
 DEFAULT_CLEARANCE_UM = 200  # 0.2 mm
@@ -124,7 +124,7 @@ def bom_csv(model: dict[str, Any]) -> str:
 # CPL / pick-and-place
 # ─────────────────────────────────────────────────────────────────────
 def jlc_rotation(rot: float | None, *, bottom: bool = False) -> float:
-    """Convert our internal rotation (**CW from north**, ADR 0042 coordinate
+    """Convert our internal rotation (**CW from north**, the PCB netlist+placement IR coordinate
     frame) to JLCPCB's CPL convention (**CCW positive**, KiCad-aligned). Both
     treat 0° as the part's natural footprint orientation. This is the
     documented CPL footgun — kept in one place so every exporter agrees.
@@ -389,7 +389,7 @@ def mechanical_profile(
     thickness_mm: float = DEFAULT_THICKNESS_MM,
 ) -> dict[str, Any]:
     """Board outline + mounting holes + component height-blocks as a 2.5D
-    profile a ``cad`` enclosure references (ADR 0042 §6, the 0041 bridge).
+    profile a ``cad`` enclosure references (the 0041 bridge).
 
     Outline: an explicit ``outline`` feature's ``geom.path`` if present, else
     the placed-parts bounding box. Holes: ``mounting_hole`` features with a

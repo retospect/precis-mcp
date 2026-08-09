@@ -140,7 +140,7 @@ def claim_chunks_without_keywords(
                 c.keywords IS NULL
              OR (c.keywords_meta->>'version') IS DISTINCT FROM %s
              -- re-derive when the chunk's text changed since the keywords
-             -- were built (edited `draft` chunks, ADR 0033). Papers leave
+             -- were built (edited `draft` chunks). Papers leave
              -- content_sha NULL → NULL-vs-NULL never fires.
              OR (c.keywords_meta->>'content_sha') IS DISTINCT FROM c.content_sha
            )

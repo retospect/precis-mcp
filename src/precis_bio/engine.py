@@ -1,4 +1,4 @@
-"""Structure-prediction engine port + the built-in engines (ADR 0056 slice 4).
+"""Structure-prediction engine port + the built-in engines.
 
 The engine is the swappable leaf behind the ``protein`` kind. A
 :class:`FoldEngine` maps a sequence to a normalized
@@ -127,7 +127,7 @@ def _stub_cif(sequence: str) -> str:
 
 
 class AlphaFold3Engine:
-    """AlphaFold3 adapter — container engine (ADR 0056 slice 4).
+    """AlphaFold3 adapter — container engine.
 
     AF3 runs in the ``alphafold3:ready`` image on the GPU fold node
     (grounded on the real spark install); it is **not** run in-process

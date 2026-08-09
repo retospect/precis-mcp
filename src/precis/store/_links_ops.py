@@ -109,7 +109,7 @@ class LinksMixin:
     soft_delete_ref: Any  # provided by RefsMixin (used by merge_refs)
     # Provided by ArgumentGraphMixin. Called after a retraction / concern
     # edge is added or removed so the argument-graph STALE: flag stays a
-    # pure function of current graph reachability (ADR 0054 §5).
+    # pure function of current graph reachability.
     argument_ripple_retraction: Any
 
     def valid_relations(self, *, refresh: bool = False) -> frozenset[str]:
@@ -267,7 +267,7 @@ class LinksMixin:
             ).fetchone()
             assert fetched is not None
 
-            # Argument-graph retraction push hook (ADR 0054 §5, build order
+            # Argument-graph retraction push hook (build order
             # step 4) — a link-write hook, not a background sweep. Runs
             # inside the same connection/transaction as the INSERT above so
             # the STALE: recompute is atomic with the edge that triggered
@@ -327,7 +327,7 @@ class LinksMixin:
             cur = c.execute(sql, params)
             n = cur.rowcount or 0
 
-            # Argument-graph retraction push hook, remove side (ADR 0054
+            # Argument-graph retraction push hook, remove side (the argument graph
             # §5/R5: "every retraction-edge add *or* remove reruns the
             # bounded walk"). Only fires when the caller named the exact
             # relation removed (the common ``unlink(rel=...)`` shape) — a

@@ -1,5 +1,5 @@
 """``cad_discuss`` job_type — the threaded, read-only conversation about a CAD
-design (ADR 0041 web bundle).
+design (web bundle).
 
 The claude subprocess is stubbed via the module-level ``AGENT`` hook so the
 facts-gather → prompt-build → prose write-back runs offline.

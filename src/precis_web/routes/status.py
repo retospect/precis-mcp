@@ -992,7 +992,7 @@ def _background_anomalies(store: Any) -> dict[str, list[dict[str, Any]]]:
 
 def _automations(store: Any, limit: int = 20) -> list[dict[str, Any]]:
     """Standing automations — recurring todos (``meta.schedule`` set)
-    carrying the ``automation`` tag (ADR 0061 folded the retired
+    carrying the ``automation`` tag (folded the retired
     ``kind='cron'`` push-notification mechanism onto the recurring facet
     + ``meta.deliver``).
 
@@ -1261,7 +1261,7 @@ def _services_ctx(store: Any, host: str) -> dict[str, Any]:
 
 
 def _llm_chain_ctx(store: Any) -> dict[str, Any]:
-    """The ADR 0066 Phase B operator placement-chain editor state — one row
+    """The capability tiers + placement chains Phase B operator placement-chain editor state — one row
     per pure-capability tier (``FRONTIER``/``BIG``/``MEDIUM``/``SMALL``) plus
     the cloud-throttle dial, for the Services sub-tab's chain-editor panel.
 
@@ -1441,7 +1441,7 @@ _TIER_TOOLS: dict[str, bool] = {
 
 
 def _active_routing_ctx(store: Any) -> dict[str, Any]:
-    """The ADR 0066 "what each capability tier routes to *right now*" header for
+    """The capability tiers + placement chains "what each capability tier routes to *right now*" header for
     the Models sub-tab. For each pure-capability tier it resolves the live
     placement chain (:func:`~precis.utils.llm.router.resolve_chain`) and the
     concrete model each rung runs, so an operator sees FRONTIER→opus,
@@ -1518,7 +1518,7 @@ def _active_routing_ctx(store: Any) -> dict[str, Any]:
 
 
 #: Cloud tiers, strongest first — the sort order for the Models sub-tab's
-#: cloud grid (local cards sort served-first, then by model_id). ADR 0066
+#: cloud grid (local cards sort served-first, then by model_id). Capability tiers + placement chains
 #: capability tiers; SMALL routes to a cloud model too (post-Phase-C), so it
 #: ranks after MEDIUM rather than falling into the unranked ``.get(..., 9)``
 #: bucket.
@@ -1572,7 +1572,7 @@ def _llm_card_view(ref: Any) -> dict[str, Any]:
         "id": ref.id,
         "model_id": model_id,
         "tier": tier,
-        # ADR 0066: tier_floor is now capability, not location — the grid
+        # tier_floor is now capability, not location — the grid
         # split is "where a model is sourced" (per _models_ctx's docstring).
         # A card with `served_by` hosts is fleet-served, so it's ALWAYS
         # local regardless of what its model_id looks like. The MODEL-id

@@ -74,7 +74,7 @@ class KindSpec:
     #: notes, jobs, todos — they are not ingested source documents).
     corpus_role: Literal["evidence", "spec", "none"] = "none"
 
-    #: Organizational role (ADR 0045). ``"artifact"`` — an authored
+    #: Organizational role. ``"artifact"`` — an authored
     #: thing (draft, structure, cad, todo, folder): placeable in a
     #: ``kind='folder'`` container via the reserved virtual ``parent``
     #: relation, first-class in the Drive / one-list web surface.
@@ -103,7 +103,7 @@ class KindSpec:
     #: content).
     note_like: bool = False
 
-    #: Compute-lane opt-in (ADR 0044). When True, a ``kind='job'`` may
+    #: Compute-lane opt-in. When True, a ``kind='job'`` may
     #: parent on a ref of this kind — the artifact owns its derived,
     #: cache-fillable build job (relax / route / compile / a autocatpath
     #: pathway run). Lets a *plugin* kind join the compute lane without a
@@ -115,7 +115,7 @@ class KindSpec:
     modes: tuple[str, ...] = ()  # supported mode= values for put
 
     requires_env: tuple[str, ...] = ()  # all must be set or kind is hidden
-    #: Secrets that must resolve (env → DB vault → file, ADR 0055) or the kind
+    #: Secrets that must resolve (env → DB vault → file) or the kind
     #: is hidden. Use this instead of ``requires_env`` for credentials that live
     #: in the secrets vault, so the kind stays available after the env var is
     #: pulled and the value lives only in the DB.

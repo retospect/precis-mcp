@@ -60,7 +60,7 @@ Relation = Literal[
     # soft-deletes the originals. Distinct from `retracts`.
     "supersedes",
     "superseded-by",
-    # Draft kind — migration 0032 (ADR 0033). `draft-of` binds a draft
+    # Draft kind — migration 0032. `draft-of` binds a draft
     # ref 1:1 to its project todo; `snapshot-of` binds a freeze to its
     # draft. Keep in sync with the `relations` seed in 0032.
     "draft-of",
@@ -72,27 +72,27 @@ Relation = Literal[
     # inverse (like `related-to`) — one row per edge, surfaced from
     # either end. Keep in sync with the `relations` seed in 0034.
     "touched",
-    # Computed chunks — migration 0037 (ADR 0035 §2/§4). `plots` binds a
+    # Computed chunks — migration 0037. `plots` binds a
     # figure chunk to each data chunk it renders; the one *reactive* edge
     # (editing the data marks the figure stale). Asymmetric, `plotted-by`
     # inverse. Keep in sync with the `relations` seed in 0037.
     "plots",
     "plotted-by",
-    # ORCID author node — migration 0039_authored_relation (ADR 0039 §3).
+    # ORCID author node — migration 0039_authored_relation.
     # `authored` binds an author (kind='orcid') ref to each paper ref they
     # wrote; ref-level (both *_pos None), with best-effort author-position
     # meta when known. Asymmetric, `authored-by` inverse. Keep in sync with
     # the `relations` seed in 0039_authored_relation.sql.
     "authored",
     "authored-by",
-    # Proposal writing (ADR: proposal-writing). A proposal-project todo
+    # Proposal writing. A proposal-project todo
     # `has-requirement` → the ingested call-for-proposal (`kind='cfp'`);
     # the inverse `requirement-of` lives on the cfp node. The planner
     # follows this edge to inject the requirements into the writing tick.
     # Keep in sync with the `relations` seed in migration 0040.
     "has-requirement",
     "requirement-of",
-    # Derived-job lane — migration 0046 (ADR 0044). A requesting todo
+    # Derived-job lane — migration 0046. A requesting todo
     # `requested` → the derived job (DFT relax / route / compile) it waits
     # on; the job parents on its subject artifact, not the todo, so this
     # link is the only edge back to the intentful requester. The
@@ -100,14 +100,14 @@ Relation = Literal[
     # it. Keep in sync with the `relations` seed in 0046.
     "requested",
     "requested-by",
-    # Datasheet ↔ part linkage — migration 0054 (ADR 0042 §7). A
+    # Datasheet ↔ part linkage — migration 0054. A
     # `datasheet` (evidence-role ingested PDF) `datasheet-of` → the `part`
     # it documents; the inverse `has-datasheet` lets the part surface its
     # doc. Asymmetric, auto-mirrored. Keep in sync with the `relations`
     # seed in 0054_datasheet_of_relation.sql.
     "datasheet-of",
     "has-datasheet",
-    # Plan kind — migration 0056 (ADR 0051 §2b). `plan-of` binds a `plan`
+    # Plan kind — migration 0056. `plan-of` binds a `plan`
     # ref 1:1 to its project todo (the reasoning-outline sibling of the
     # draft's `draft-of`); the inverse `has-plan` lives on the project. A
     # project can own both a draft and its plan without collision. Keep in
@@ -155,15 +155,15 @@ Relation = Literal[
     # Keep in sync with the `relations` seed in 0089_paper_of_relation.sql.
     "paper-of",
     "has-paper",
-    # Argument graph — migration 0080 (ADR 0054). `entails` is the typed
+    # Argument graph — migration 0080. `entails` is the typed
     # logical edge from an inference node (`memory` tagged `kind:inference`)
     # to its conclusion lemma (`memory` tagged `kind:lemma`) — "A logically
     # yields B, asserted not proven." Premises attach to the inference via
     # the reused `derived-from` (inference derived-from each premise); no
-    # new relation needed there (ADR 0054 §2, §Risks R2). `qualifies` is the
+    # new relation needed there. `qualifies` is the
     # caveat → claim-it-bounds edge (a `kind:caveat` memory qualifies the
     # claim it limits); `view='argument'` walks `qualified-by` to surface
-    # inherited caveats, never auto-discharging them (ADR 0054 §7). Keep in
+    # inherited caveats, never auto-discharging them. Keep in
     # sync with the `relations` seed in 0080_argument_graph_relations.sql.
     "entails",
     "entailed-by",
@@ -205,7 +205,7 @@ Relation = Literal[
     # 0095_component_contains.sql.
     "contains",
     "part-of",
-    # Taproot Phase 2 — evidence-edge role (migration 0094, ADR 0073). A
+    # Taproot Phase 2 — evidence-edge role (migration 0094). A
     # `paper` ref `establishes` the `TAPROOT:claim` `finding` hub it originated.
     # The other two evidence roles reuse existing slugs (`corroborates` from
     # 0085, `contradicts` from 0001) — endpoint kinds disambiguate. No
@@ -213,7 +213,7 @@ Relation = Literal[
     # Keep in sync with the `relations` seed in
     # 0094_taproot_evidence_relations.sql.
     "establishes",
-    # Taproot claim→claim advisory link — migration 0100 (ADR 0073 amendment).
+    # Taproot claim→claim advisory link — migration 0100 (amendment).
     # `refines` (sharper claim hub → coarser claim hub) — link-don't-merge: a
     # reworded/sharpened claim is minted as its own hub and linked to the one
     # it refines, NOT merged into it. NOT an evidence edge — no evidence flows;
@@ -309,7 +309,7 @@ _INVERSE_RELATIONS: dict[str, str] = {
     "has-dossier": "dossier-of",
     "paper-of": "has-paper",
     "has-paper": "paper-of",
-    # Argument graph (0080 / ADR 0054).
+    # Argument graph (0080).
     "entails": "entailed-by",
     "entailed-by": "entails",
     "qualifies": "qualified-by",
@@ -339,7 +339,7 @@ class Ref:
     ``migrations/0001_initial.sql``). ``slug`` is populated by a
     correlated subquery against ``ref_identifiers`` with
     ``id_kind='cite_key'`` — the convention every slug-addressed kind
-    uses in v2 per ADR 0008. Numeric kinds (memory/todo/gripe/anki)
+    uses in v2 (the slug column itself was dropped). Numeric kinds (memory/todo/gripe/anki)
     have no ``ref_identifiers`` row so ``slug`` is ``None``.
     """
 
@@ -403,7 +403,7 @@ class Ref:
 
 @dataclass(frozen=True, slots=True)
 class ResolvedHandle:
-    """Result of resolving a universal handle (ADR 0036) to a ref.
+    """Result of resolving a universal handle to a ref.
 
     ``public_id`` is the id the per-kind handler already understands
     (slug for slug kinds, ``str(ref_id)`` for numeric), so the runtime
@@ -950,7 +950,7 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
             "missing-data",
         }
     ),
-    # Argument graph (ADR 0054 §5/R5) — retraction-ripple marker. Set by the
+    # Argument graph — retraction-ripple marker. Set by the
     # write-time link hook (`store._argument_ops`) when an inference is
     # reachable, via the kind-scoped `entailed-from`/`entails` walk, from a
     # premise citing a paper that carries an inbound `retracts` /
@@ -1002,7 +1002,7 @@ _RESERVED_FLAGS: dict[str, str] = {
 _KIND_ALLOWED_AXES: dict[str, frozenset[str]] = {
     # Workflow kinds — STATUS + priority. The planner-coroutine model tier
     # lives on ``meta.llm_tier`` (facet-normalized off the ``LLM:`` axis,
-    # ADR-parallel to §M / migration 0102) — not a tag — so it's no longer
+    # migration 0102) — not a tag — so it's no longer
     # listed here.
     # ``AUDIT`` lets a content-QA audit categorise a change-request todo
     # anchored at a draft chunk (missing-citation / empty-stub / …) so the
@@ -1022,7 +1022,7 @@ _KIND_ALLOWED_AXES: dict[str, frozenset[str]] = {
     # (``confidence-strong``, ``topic-noxrr``). ``DREAM:`` is provenance for
     # agent-authored (dreamed) memories (consolidated survivors + speculative
     # inspirations). ``STALE:`` is the argument-graph retraction-ripple
-    # marker (ADR 0054 §5) — system-set only, see ``_SYSTEM_WRITABLE_PREFIXES``.
+    # marker — system-set only, see ``_SYSTEM_WRITABLE_PREFIXES``.
     "memory": frozenset({"DREAM", "STALE"}),
     # Anki cloze cards carry no closed axes — Anki owns scheduling, so
     # there is no STATUS / EASE / DUE review state here.

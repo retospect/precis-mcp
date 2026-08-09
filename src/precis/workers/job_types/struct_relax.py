@@ -5,7 +5,7 @@ night: the ``structure`` handler's cache-first lookup reads the run-cube
 (``struct_runs`` keyed on ``cache_key``), but nothing *populated* it from an
 async relax. This job_type is that seam.
 
-Per ADR 0043 §23.12 it is a **thin precis-mcp job_type** that runs the
+Per the structure atomistic IR it is a **thin precis-mcp job_type** that runs the
 ``ml``/``gpaw`` relax as a ``code``-executor job over ``ssh_node`` → the GPU
 node → the ``precis-dft`` compute container, and writes the **run-cube** (a
 ``struct_runs`` row + the convergence curve + the relaxed geometry on the row)
@@ -22,7 +22,7 @@ importing its host-side helpers. The one execution boundary (``ssh node
 <container> run …``) is the module-level :data:`RUNNER` hook, swapped for a stub
 in tests so the orchestration + write-back is exercised without a cluster.
 
-**Container runtime.** ADR §23.12 anticipated podman + CDI, but the deployed
+**Container runtime.** The original design anticipated podman + CDI, but the deployed
 spark node runs ``docker`` with the NVIDIA Container Toolkit and the
 ``precis-dft`` image was validated there with ``--gpus all`` — so the default
 matches reality. ``PRECIS_DFT_CONTAINER_CMD`` (``docker`` | ``podman``) flips

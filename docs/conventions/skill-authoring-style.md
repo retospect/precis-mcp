@@ -65,7 +65,7 @@ corpus. Real strings, real files.
 
 - "served from the persistent discovery layer"
 - "pre-computed at ingest, not recomputed on request"
-- "the headline feature of ADR 0018"
+- "the headline feature of the discovery-layer decision"
 - "that's by design" / "by design"
 
 The LLM is not shopping for a skill. It is calling a verb. Reassurance

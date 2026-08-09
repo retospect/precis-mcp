@@ -1,4 +1,4 @@
-"""CAD tab — a browser 3D viewer + edit-by-prompt over the ``cad`` kind (ADR 0041).
+"""CAD tab — a browser 3D viewer + edit-by-prompt over the ``cad`` kind.
 
 The cad kind is otherwise a text/MCP surface: the LLM authors a parametric solid
 as a small design language and *probes* it analytically, never pixels. This route
@@ -262,7 +262,7 @@ def _lineage(store: Any, ref_id: int) -> dict[str, list[dict[str, str]]]:
 
 # Every ``cad_propose`` job for a design — STATUS + its proposal chunk +
 # the originating instruction. Keyed on ``params.cad_ref_id`` (CAD is not on
-# the compute lane yet, ADR 0044), so the query never needs a captured job id.
+# the compute lane yet), so the query never needs a captured job id.
 # The trailing WHERE/ORDER clause is appended per call site.
 _PROPOSAL_SELECT = """
     SELECT r.ref_id,

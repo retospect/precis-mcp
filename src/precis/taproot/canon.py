@@ -23,7 +23,7 @@ the fixture eval scores **zero over-merges** — bar = 0, no exceptions
    it comes back as ``needs_review`` (design #16 of ``taproot.md``) so a
    caller files a ``kind='todo'`` rather than risk fusing distinct claims.
 
-Every model call routes through :mod:`precis.utils.llm.router` (ADR 0046) —
+Every model call routes through :mod:`precis.utils.llm.router` —
 no hardcoded model, no direct subprocess/HTTP. Phase 1 persists nothing: no
 migration, no hub/edge writes — see ``taproot.md`` §"Target + blast radius".
 """

@@ -1,11 +1,11 @@
-"""Per-kind eye render (ADR 0051 §6) — an eye's *neighborhood* depends on its
+"""Per-kind eye render — an eye's *neighborhood* depends on its
 kind, so the ladder generalizes but its shape does not:
 
 - **Tree kinds** (``draft`` / ``plan``): reading-order neighborhood — the
   :func:`precis.utils.fisheye.render_fisheye` span + reference ring.
 - **Doc kinds** (``paper`` / ``patent`` / ``web`` / ``datasheet`` / ``cfp``): a
   long ingested document with no heading tree, so its structure *is* the
-  per-chunk KeyBERT clustering (F20/ADR-0018). The eye renders that dynamic
+  per-chunk KeyBERT clustering (F20). The eye renders that dynamic
   **keyword-cluster TOC** around the eyeball — similar chunks grouped for
   separate exploration:
 
@@ -20,7 +20,7 @@ kind, so the ladder generalizes but its shape does not:
     cluster collapsed to a one-line label. So focusing a chunk opens its
     neighborhood and leaves the rest of the paper as a drillable map.
 
-  Everything is addressed by its universal ``pc<id>`` handle (ADR 0036) — the
+  Everything is addressed by its universal ``pc<id>`` handle — the
   legacy ``slug~pos`` form is never emitted here.
 - **Link kinds** (``memory`` / ``finding`` / …): the ref renders as its note
   (title → gist → body), and at ``fisheye+1hop`` it grows its **link
@@ -31,7 +31,7 @@ kind, so the ladder generalizes but its shape does not:
 
 - **Skill eyes** (``sk:<slug>``): a skill is file-backed, not refs-backed, so
   it has no numeric pk for ``handle_registry.parse``'s decimal grammar
-  (ADR 0036 keeps ``skill`` on its existing slug addressing rather than
+  (keeps ``skill`` on its existing slug addressing rather than
   folding it into the registry — see that module's docstring). A skill eye
   is dispatched on its ``sk:`` prefix ahead of the decimal parse and renders
   straight from the skill corpus (``handlers.skill``'s own accessors —
@@ -156,7 +156,7 @@ def _render_skill_eye(handle: str, ext: Extent) -> str:
 
 
 def _chunk_handle(kind: str, block: Any) -> str:
-    """The block's universal ``pc<id>`` chunk handle (ADR 0036)."""
+    """The block's universal ``pc<id>`` chunk handle."""
     return handle_registry.format_handle(kind, int(block.id), chunk=True)
 
 

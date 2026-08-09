@@ -1,4 +1,4 @@
-"""MermaidHandler — the mermaid diagram kind (migration 0066, ADR 0057).
+"""MermaidHandler — the mermaid diagram kind (migration 0066).
 
 The mermaid instance of the shared diagram core: a slug-addressed ref on the
 ``draft`` chunk-tree substrate (parameterised ``kind='mermaid'``), never
@@ -45,7 +45,6 @@ class MermaidHandler(DiagramHandler):
         note_like=True,
         role="artifact",
         corpus_role="none",
-        # Compute-lane opt-in (ADR 0044): a diagram_propose job (ADR 0057
-        # slice 5) parents on the mermaid it builds/verifies.
+        # Compute-lane opt-in: a diagram_propose job parents on the mermaid it builds/verifies.
         can_own_jobs=True,
     )

@@ -51,7 +51,7 @@
   {% elif body_preview %}
   <p class="text-xs text-slate-600 break-words">{{ body_preview }}</p>
   {% endif %}
-  {# ADR 0052 manufacturing-part rows — a term leaf's attribute bag. Each is
+  {# Term-registry manufacturing-part rows — a term leaf's attribute bag. Each is
      optional; a patent part / glossary term (empty bag) shows none. Guarded
      with `is defined` so the other routes rendering this template are safe. #}
   {% if callout is defined and callout is not none %}

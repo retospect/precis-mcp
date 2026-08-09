@@ -180,7 +180,7 @@ class TestLoadConfig:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Unit 4b: with no bespoke override, claude_model resolves through
-        the ADR 0046 FRONTIER tier — the consolidated opus-4.8 cloud
+        the LLM routing seam FRONTIER tier — the consolidated opus-4.8 cloud
         reasoning default."""
         monkeypatch.setenv("PRECIS_FIX_REPO_DIR", "/tmp/repo")
         monkeypatch.setenv("PRECIS_FIX_WORK_DIR", "/tmp/precis-fix-work")

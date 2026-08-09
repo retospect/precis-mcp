@@ -1,4 +1,4 @@
-"""Parts-catalog normalization (ADR 0042 §5, Flow A).
+"""Parts-catalog normalization (Flow A).
 
 The primary source is the community **jlcparts** dump (yaqwsx/jlcparts) — the
 whole JLCPCB assembly catalog as a daily SQLite/JSON. Everything in it is

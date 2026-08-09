@@ -120,7 +120,7 @@ def _list_due(store: Store, *, now: datetime, limit: int) -> list[tuple[int, str
     ref client-side. Ordering by ``retry_at`` ensures the oldest
     backlog clears first. ``cite_key`` comes from the
     ``ref_identifiers`` lookup the v2 schema uses for all slug-form
-    handles (legacy ``refs.slug`` column is gone — see ADR 0008).
+    handles (legacy ``refs.slug`` column is gone).
     """
     sql = """
         SELECT r.ref_id,
@@ -337,7 +337,7 @@ def _retry_one_ref(
             ParsedBlock(text=txt, embedding=None, density=classify_density(txt))
         )
     # Embeddings are populated lazily by the embed:bge-m3 worker
-    # (ADR 0007 / AGENTS.md ingest-guarantees). The previous
+    # (the derived queue / AGENTS.md ingest-guarantees). The previous
     # synchronous fill_embeddings call blocked the sweep on a model
     # forward pass and diverged from paper-ingest's deferred path.
 

@@ -1,4 +1,4 @@
-"""``precis secret`` — manage the DB secrets vault (ADR 0055).
+"""``precis secret`` — manage the DB secrets vault.
 
 Subcommands:
 

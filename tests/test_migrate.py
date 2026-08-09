@@ -41,7 +41,7 @@ def test_apply_creates_all_tables(fresh_db: str) -> None:
     # v2 schema. v1 tables (blocks/corpuses/density_levels/
     # flag_names/ref_closed_tags/ref_flags/ref_open_tags/system/
     # tag_prefixes) were folded or removed during the v2 redesign;
-    # see ADR 0001 + storage-v2.md.
+    # see the acatome merge + storage-v2.md.
     expected = {
         "_migrations",
         "actors",
@@ -78,7 +78,7 @@ def test_seeds_populated(fresh_db: str) -> None:
     assert {"related-to", "blocks", "contradicts"}.issubset(relations)
     # Acquisition-mode findings / migration 0105 — links.relation FKs
     # to relations(slug), so a fresh DB must seed this alongside the rest
-    # (ADR 0073's `establishes` precedent — the trap this AC guards).
+    # (taproot evidence relations's `establishes` precedent — the trap this AC guards).
     assert "awaits-evidence" in relations
 
 

@@ -1,4 +1,4 @@
-"""``get(kind='memory', id=<inference|lemma>, view='argument')`` (ADR 0054 §3).
+"""``get(kind='memory', id=<inference|lemma>, view='argument')``.
 
 The read-time half of the kind-scoped argument-graph walk (the write-time
 half — the retraction push hook — lives in
@@ -12,10 +12,9 @@ link-write transaction; this one renders through the ordinary
 Kind-scoped exactly like the push hook: only ``finding`` and ``memory``
 tagged the open tag ``kind:lemma`` / ``kind:inference`` count as graph
 nodes, so a premise edge (``derived-from`` *into* a ``kind:inference``) is
-never confused with unrelated ``derived-from`` provenance (ADR 0054 §5/
-§Risks R2).
+never confused with unrelated ``derived-from`` provenance.
 
-Two flag passes, both pure graph walks — no text reading (ADR 0054 §3):
+Two flag passes, both pure graph walks — no text reading:
 
 * **stale-premise** — a premise cites a paper carrying an inbound
   ``retracts`` / ``raises-concern-about`` edge. (The system-set
@@ -24,7 +23,7 @@ Two flag passes, both pure graph walks — no text reading (ADR 0054 §3):
   for arguments built *after* the retraction, before the next ripple.)
 * **inherited-caveat** — a caveat (``memory`` tagged ``kind:caveat``)
   reaches a premise via ``qualified-by``, listed *"inherited — confirm
-  still addressed"* (never auto-discharged — ADR 0054 §7).
+  still addressed"* (never auto-discharged — the argument graph).
 """
 
 from __future__ import annotations
@@ -40,7 +39,7 @@ if TYPE_CHECKING:
     from precis.store.types import Relation
 
 #: Recursion guard — mirrors ``QuestHandler._MAX_TREE_DEPTH``. The
-#: argument graph is sparse by design (ADR 0054 §Risks R1); this is a
+#: argument graph is sparse by design; this is a
 #: defensive cap, not a real ceiling on legitimate chains.
 _MAX_DEPTH = 6
 

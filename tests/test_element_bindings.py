@@ -1,4 +1,4 @@
-"""Element→chunk bindings for diagrams (ADR 0057, slice 1).
+"""Element→chunk bindings for diagrams.
 
 Kind-agnostic chunk-level ``depicts`` links: one link row per (source,
 target, relation) edge, with the depicting element id(s) accumulated in

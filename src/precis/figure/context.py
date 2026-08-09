@@ -1,5 +1,5 @@
 """The ``figure`` (SVG) binding of the generic diagram prepared-context
-assembler (ADR 0057).
+assembler.
 
 The assembler lives in :mod:`precis.diagram.context`, generic over
 :class:`~precis.diagram.lang.DiagramLang`; this is the thin SVG shim so the

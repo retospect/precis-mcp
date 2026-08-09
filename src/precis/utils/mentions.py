@@ -117,7 +117,7 @@ LOW_SIGNAL_KINDS: frozenset[str] = frozenset({"tag", "link"})
 
 
 # ---------------------------------------------------------------------------
-# Draft inline-reference grammar (ADR 0033 §8) — the bracket / sigil forms
+# Draft inline-reference grammar — the bracket / sigil forms
 # layered on top of the bare ``kind:ref`` mentions above. They live here,
 # the grammar SSOT, so both consumers share one definition: the parser
 # (``precis.utils.draft_markup``) and the highlighter
@@ -203,7 +203,7 @@ def parse_pin_suffix(pin: str | None) -> tuple[str | None, list[str]]:
 
 #: Bracketed patent *public number* — country code + serial (+ optional
 #: kind code), e.g. ``[US9927397B1]``, ``[EP1234567A1]``, or the app form
-#: ``[US20210012345A1]``. Distinct from the ADR-0036 handle form
+#: ``[US20210012345A1]``. Distinct from the universal handle form
 #: ``[pt34596]`` (2-char code + trailing digits): a public number carries
 #: trailing letters, so it never matches the handle alternation above and
 #: was silently dropped by the autolinker (gripe #48807). Case-insensitive
@@ -339,7 +339,7 @@ class LinkTarget:
 
 
 def resolve_handle_target(store: Any, token: str) -> LinkTarget | None:
-    """A bare ADR 0036 universal handle (``me5`` a memory, ``dc41`` a draft
+    """A bare universal handle (``me5`` a memory, ``dc41`` a draft
     chunk, ``pc10`` a paper chunk, …) → a live ``LinkTarget`` via the one
     decoder ``store.resolve_handle``. ``None`` if ``token`` is not a
     well-formed / resolvable handle, so the caller falls through to the

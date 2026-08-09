@@ -1,4 +1,4 @@
-"""The LLM routing layer (ADR 0046) — tiers, chains, catalog.
+"""The LLM routing layer — tiers, chains, catalog.
 
 One seam for model selection + transport choice + result normalization:
 every routed call goes through :func:`dispatch` (or :func:`dispatch_async`
@@ -21,7 +21,7 @@ Public surface:
 * :class:`LlmRequest` / :func:`dispatch` — the seam.
 * :class:`LlmResult` + ``result_from_*`` — the normalized result.
 
-Tiers (ADR 0066 Phase C)
+Tiers
 ------------------------
 :class:`Tier` is pure capability: call sites route on what a task needs,
 never where it runs (a served OSS model backs ``BIG`` when the chain routes
@@ -81,7 +81,7 @@ hosted OSS endpoint instead of the busy hardware — unless
 (``llm.model.small`` → ``PRECIS_LOCAL_SMALL_HOSTED_MODEL`` → default
 ``z-ai/glm-4.7-flash``) whenever a call lands on a hosted OSS transport.
 
-Failure semantics (ADR 0066 §5a): a transport exception is classified
+Failure semantics: a transport exception is classified
 (``router._is_unavailability``) — timeout / connection / 5xx / 429 →
 ``paused`` (skip-not-fail: the caller retries next cycle, never parks);
 other 4xx stays ``error``. A claude wall-clock timeout counts as

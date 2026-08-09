@@ -1,9 +1,9 @@
-"""Protein fold → ``structure`` convergence (ADR 0056 slice 4c / ADR 0043).
+"""Protein fold → ``structure`` convergence.
 
 Turn an AlphaFold mmCIF into a ``structure`` :class:`Scene` so a folded protein
 renders in the existing 3D structure viewer (``/structure``) and can be probed
 as an atom graph. Proteins are large + **non-periodic**, so the Scene is a big
-axis-aligned box with PBC off (ADR 0043 "molecule mode") — this is export/view,
+axis-aligned box with PBC off — this is export/view,
 not primary storage: the fold IR stays on ``meta.fold`` of the protein, and the
 structure ref is a derived, on-demand projection.
 
@@ -20,7 +20,7 @@ from precis.structure.cell import Cell
 from precis.structure.scene import Atom, Scene
 
 #: Padding (Å) around the molecule bounding box so a non-periodic cell never
-#: self-images (ADR 0043 molecule mode wants ≥15 Å between periodic copies;
+#: self-images (molecule mode wants ≥15 Å between periodic copies;
 #: with PBC off it just keeps every atom strictly inside (0,1) fractional).
 BOX_PADDING = 15.0
 

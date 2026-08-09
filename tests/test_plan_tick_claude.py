@@ -142,7 +142,7 @@ def test_run_claude_binds_request_and_maps_clean(
 def test_run_claude_threads_select_knobs_onto_the_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``params['select']`` (ADR 0066, threaded by dispatch from
+    """``params['select']`` (threaded by dispatch from
     ``meta.llm_select``) lands on the ``LlmRequest``'s placement/thinking/
     temperature/effort fields."""
     _, seen = _run_claude(
@@ -531,7 +531,7 @@ def test_disable_prose_file_kind_no_draft_is_noop(
     assert overlay == {}
 
 
-# ── neutral cwd + ambient CLAUDE.md scan (ADR 0051 §12) ────────────────
+# ── neutral cwd + ambient CLAUDE.md scan ────────────────
 
 
 def test_neutral_cwd_is_stable_and_empty() -> None:

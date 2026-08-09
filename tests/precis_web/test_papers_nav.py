@@ -191,7 +191,7 @@ def test_chunk_endpoint_accepts_range_selector(client) -> None:
 
 
 def test_chunk_endpoint_accepts_compound_handle(client) -> None:
-    """The ADR-0032 compound handle the TOC displays (``pa<id>~lo..hi``)
+    """The compound span handle the TOC displays (``pa<id>~lo..hi``)
     must also route — the widened ``str`` param, not just the ``N..M``
     the old ``int`` typing at least tolerated for a bare ord."""
     resp = client.get("/papers/10/chunk/pa10~3..5")

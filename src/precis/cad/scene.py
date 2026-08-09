@@ -1,4 +1,4 @@
-"""Design source ↔ scene spec ↔ live :class:`Design` (ADR 0041 §3, §11).
+"""Design source ↔ scene spec ↔ live :class:`Design`.
 
 The MCP ``put`` surface only carries ``id`` / ``text`` / ``mode`` (no
 arbitrary kwargs), so a CAD design is *authored as text*: a small
@@ -117,7 +117,7 @@ def parse_source(text: str) -> SceneSpec:
         low = line.lower()
         if low.startswith("desc:") or low.startswith("use:"):
             # free-text design intent — folded into the one search card so
-            # designs are findable by purpose, not just geometry (ADR 0041
+            # designs are findable by purpose, not just geometry (the CAD analytic IR
             # Amendment 1). `desc:` = what it is; `use:` = what it's for.
             key = "description" if low.startswith("desc:") else "use"
             val = line.split(":", 1)[1].strip()

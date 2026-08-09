@@ -1,4 +1,4 @@
-"""``/secrets`` — the secrets-vault editor (ADR 0055).
+"""``/secrets`` — the secrets-vault editor.
 
 Reads **`vault.list()` only** (name + masked hint + updated_at): the page never
 decrypts, never holds ciphertext, and cannot reveal a plaintext even if the

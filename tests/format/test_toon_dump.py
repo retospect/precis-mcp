@@ -56,7 +56,7 @@ class TestHeaderAndRows:
         assert out == "{a\tb}\n1\t2\n3\t4\n5\t6"
 
     def test_dict_argument_treated_as_one_row_table(self):
-        # ADR 0002 lists JSON as the canonical single-record format,
+        # TOON output lists JSON as the canonical single-record format,
         # but `dump` accepting a bare dict as syntactic sugar avoids
         # forcing every caller to wrap in `[...]`. The shape is the
         # same as a one-row list.

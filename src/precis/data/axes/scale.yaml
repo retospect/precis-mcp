@@ -1,5 +1,5 @@
 # v2 vocabulary (still version: 1 — the axis has never been applied,
-# so pre-Round-0 edits are free; see ADR 0047 §7). Replaces the fuzzy
+# so pre-Round-0 edits are free). Replaces the fuzzy
 # named regimes (nano/meso/micro/bulk — "meso" invited drift) with
 # explicit decade buckets: a value names the decade floor of the
 # characteristic length, so every definition is a half-open range

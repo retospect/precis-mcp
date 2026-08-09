@@ -1,4 +1,4 @@
-"""Structures tab — a browser view over the ``structure`` kind (ADR 0043).
+"""Structures tab — a browser view over the ``structure`` kind.
 
 The structure kind is otherwise a text/MCP surface: the LLM authors atoms +
 bonds as typed ops and reads them as an ASCII graph, never pixels (that is the
@@ -14,7 +14,7 @@ compute history.
 * ``POST /structure/{slug}/relax`` — the run-cube "Relax" button: run a
   chosen rung (clean/ml/dft) with default params. An energy rung with no
   local backend dispatches a ``struct_relax`` job to the GPU node, parented
-  on the structure — no todo required (ADR 0044).
+  on the structure — no todo required.
 
 The 3D view is interactive: atoms are coloured by element and clickable (label /
 element / position / coordination / constraint), and the **authoritative** bond
@@ -56,7 +56,7 @@ log = logging.getLogger(__name__)
 _LIST_LIMIT = 100
 
 #: CPK / Jmol-ish element colours (hex) so the 3D view + legend read like a
-#: chemist expects. Covers the ADR 0043 §3 palette + common neighbours; unknown
+#: chemist expects. Covers the structure atomistic IR palette + common neighbours; unknown
 #: elements fall back to a loud pink so a typo is obvious, not silently grey.
 _CPK: dict[str, str] = {
     "H": "#e6e6e6", "He": "#d9ffff", "B": "#ffb5b5", "C": "#404040",
@@ -135,7 +135,7 @@ def _list_rows(store: Any) -> list[dict[str, Any]]:
 
 def _pending_jobs(store: Any, ref_id: int) -> list[dict[str, Any]]:
     """In-flight ``struct_relax`` jobs for this design — the compute-lane jobs
-    (ADR 0044) parented on the structure whose ``STATUS`` is not yet
+     parented on the structure whose ``STATUS`` is not yet
     ``succeeded`` (a succeeded relax has sunk a ``struct_runs`` row, so it shows
     in :func:`_run_rows` instead). This is what makes a just-dispatched relax
     *visible* before the GPU node finishes — the run-cube has no row yet."""
@@ -665,7 +665,7 @@ async def structure_apply(
 
 #: Fidelity rungs offered by the run-cube "Relax" button, cheap → correct.
 #: ``clean`` repairs geometry locally (instant); ``ml``/``dft`` with no local
-#: backend dispatch a ``struct_relax`` job to the GPU node (ADR 0044 — no todo
+#: backend dispatch a ``struct_relax`` job to the GPU node (the intent-vs-compute job lanes — no todo
 #: needed). Default params otherwise (steps/model at the op defaults).
 _RELAX_RUNGS: tuple[str, ...] = ("clean", "ml", "dft")
 
@@ -676,7 +676,7 @@ async def structure_relax(
 ) -> Any:
     """Run a relax at the chosen rung with default params. A local rung runs
     inline; an energy rung with no local backend dispatches a ``struct_relax``
-    job to the GPU node (parented on the structure — no todo, ADR 0044) and
+    job to the GPU node (parented on the structure — no todo) and
     returns immediately. The run-cube panel polls the result."""
     fidelity = fidelity.strip() or "dft"
     if fidelity not in _RELAX_RUNGS:

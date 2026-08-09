@@ -1,4 +1,4 @@
-"""The turn's working set — eyes + cursor, snapshot per tick (ADR 0051 §6/§15).
+"""The turn's working set — eyes + cursor, snapshot per tick.
 
 A **thread** curates its own context by placing **eyes** on nodes. An eye is
 a point on two orthogonal axes (§6):

@@ -1,4 +1,4 @@
-"""ADR 0046 unit-4b piece ① — the ``/factory`` live LLM switch (read side).
+"""The LLM routing seam unit-4b piece ① — the ``/factory`` live LLM switch (read side).
 
 ``resolve_backend`` / ``resolve_model`` layer an ``app_settings`` DB override
 over the env default, so an operator flips the fleet's backend or a per-tier
@@ -101,10 +101,10 @@ def test_model_key_uses_tier_value() -> None:
     assert live_config.model_key(Tier.MEDIUM) == "llm.model.medium"
 
 
-# ── reader: chain override (ADR 0066 §4, Phase A) ───────────────────────
+# ── reader: chain override ───────────────────────
 
 
-# ── reader: cloud throttle (ADR 0066 §5) ────────────────────────────────
+# ── reader: cloud throttle ────────────────────────────────
 
 
 def test_cloud_enabled_default_true_without_store(
@@ -320,7 +320,7 @@ def test_resolve_model_keeps_small_override_under_anthropic_backend(
 def test_resolve_model_big_override_is_cloud_bound_and_dropped(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """ADR 0066 Phase C: BIG joined the cloud-bound tier set — it no longer
+    """Capability tiers + placement chains Phase C: BIG joined the cloud-bound tier set — it no longer
     has a location-coupled LOCAL_BIG analogue whose override was always
     non-claude and thus always honored. An OSS `llm.model.big` override under
     the default ANTHROPIC backend is now INCOHERENT and gets dropped, exactly

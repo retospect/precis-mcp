@@ -412,7 +412,7 @@ def test_two_findings_same_claim_without_pre_embedding_converge_to_one_hub(
 ) -> None:
     """The real (previously data-losing) race: finding A's bridge mints a
     hub for claim X. That hub's ``card_combined`` chunk gets embedded only
-    later, async, by card_forge/embed (ADR 0007) — deliberately NOT
+    later, async, by card_forge/embed — deliberately NOT
     simulated here (contrast ``test_reestablished_finding_does_not_duplicate_
     hub_or_edge`` above, which inserts the embedding by hand). So when
     finding B's bridge runs for the SAME claim X before that embed lands,

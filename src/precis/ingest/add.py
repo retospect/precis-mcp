@@ -317,7 +317,7 @@ def precis_add(
 
         # Claim before the expensive work. Advisory lock auto-releases
         # if this host dies, so no stale-claim cleanup is needed.
-        # See ADR 0016. If ``store.dsn`` is None (unit-test path that
+        # If ``store.dsn`` is None (unit-test path that
         # builds Store from a pre-made pool), we degrade to no-claim
         # — single-host correctness is preserved by the file-system
         # mutex used by ``_PdfHandler._enqueue``.
@@ -444,7 +444,7 @@ def _ingest_pdf(
 
         # Write-back: patch the on-disk file with the resolved canonical
         # metadata so a re-ingest from a clean DB still finds the right
-        # DOI via embedded metadata (see ADR 0014). Honours
+        # DOI via embedded metadata. Honours
         # ``PRECIS_PATCH_PDFS=0`` off-switch.
         paper = _maybe_patch_pdf(input.pdf_path, paper)
 

@@ -78,7 +78,7 @@ _NAV_LIMIT = 50
 #: ``refs`` → papers this one cites; ``cites`` → papers citing it.
 _NAV_PREFIXES = ("refs", "cites")
 
-#: Author-navigation prefixes (ADR 0039 §5) — the bridge into
+#: Author-navigation prefixes — the bridge into
 #: ``kind='orcid'`` and the outbound frontier for author-network BFS.
 #: ``authors:<paper-id>`` → that paper's authors (each carrying their
 #: ORCID + hIndex + affiliations, senior author flagged by position);
@@ -248,7 +248,7 @@ class SemanticScholarHandler(CacheBackedHandler):
         return self._fetch_search(key)
 
     def _fetch_paper_authors(self, key: str, ident: str) -> FetchResult:
-        """List a paper's authors (ADR 0039 §5) — the bridge into ORCID.
+        """List a paper's authors — the bridge into ORCID.
 
         Surfaces each author's ORCID (the key for kind='orcid'), hIndex,
         and affiliations, and flags the **senior (last) author** by
@@ -287,7 +287,7 @@ class SemanticScholarHandler(CacheBackedHandler):
         )
 
     def _fetch_author_papers(self, key: str, ident: str) -> FetchResult:
-        """List an author's top papers (ADR 0039 §5) — the BFS frontier."""
+        """List an author's top papers — the BFS frontier."""
         author_id = ident.strip()
         url = f"{_S2_AUTHOR_BASE}/{author_id}/papers"
         data = self._s2_get_json(

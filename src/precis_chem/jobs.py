@@ -1,12 +1,12 @@
-"""The ``retrosynth`` job_type — plan a route on the compute lane (ADR 0056).
+"""The ``retrosynth`` job_type — plan a route on the compute lane.
 
-A *derived* compute-lane job (ADR 0044): it parents on the ``route`` ref
+A *derived* compute-lane job: it parents on the ``route`` ref
 (via ``KindSpec.can_own_jobs``), is content-addressed (``cache_key``), and
 runs off the request path. It reuses the ``ssh_node`` executor — the same
 one ``struct_relax`` uses to run a container on a pinned node — routed by
 ``params.target_node`` (``PRECIS_CHEM_ROUTE_NODE``).
 
-The dispatch branches on the engine's **transport** (ADR 0056 §4):
+The dispatch branches on the engine's **transport**:
 
 * **inprocess** (``stub``) — runs inside the dispatch, writes the route back.
 * **container** (``aizynth``) — run through the ``RUNNER``/``STAGER`` hooks: the
@@ -187,7 +187,7 @@ _PARAMS_SCHEMA: dict[str, Any] = {
         # content address, so a model bump invalidates the cache.
         "engine": {"type": "string"},
         "engine_version": {"type": "string"},
-        # The content address (ADR 0007) — same key ⇒ zero recompute.
+        # The content address — same key ⇒ zero recompute.
         "cache_key": {"type": "string"},
         "max_steps": {"type": "integer"},
         # The node this plan pins itself to (the claim gate): only that node's

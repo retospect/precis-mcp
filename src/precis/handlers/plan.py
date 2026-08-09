@@ -1,4 +1,4 @@
-"""PlanHandler — the reasoning-outline kind (ADR 0051 §2b).
+"""PlanHandler — the reasoning-outline kind.
 
 A ``plan`` is a slug-addressed ref whose body chunks are a hierarchical
 **todo-list + reasoning notes** — the *forward* facet of a thread's
@@ -21,7 +21,7 @@ A plan node carries only its text plus two markers in ``meta``:
 The plan is rendered **whole** every turn (``get(id='<slug>')``) with a
 ``▸`` you-are-here **cursor** — a model-owned pointer stored as
 ``meta.cursor = 'pe<id>'`` on the *plan ref* (not on any chunk). Nodes
-are addressed by the ADR 0036 universal handle ``pe<chunk_id>`` (with
+are addressed by the universal handle ``pe<chunk_id>`` (with
 relative nav ``pe<id>^`` / ``+N`` / ``-lo..hi``). Creation requires an
 owning ``project=`` todo, bound via the ``plan-of`` relation. See
 ``precis-overview``.
@@ -46,7 +46,7 @@ from precis.utils import handle_registry
 
 log = logging.getLogger(__name__)
 
-#: A bare plan-chunk address — the ADR 0036 universal handle ``pe<chunk_id>``,
+#: A bare plan-chunk address — the universal handle ``pe<chunk_id>``,
 #: optionally with a relative operator (``^`` / ``+`` / ``-`` / ``..``). Used
 #: to tell a chunk address from a plan slug in ``get`` / ``edit`` / ``delete``.
 _PLAN_CHUNK_ADDR_RE = re.compile(r"^pe\d+(?:[+\-^].*|\.\..*)?$")
@@ -81,7 +81,7 @@ class PlanHandler(Handler):
         kind="plan",
         title="Plan",
         description=(
-            "A thread's reasoning outline (ADR 0051 §2b) — a hierarchical "
+            "A thread's reasoning outline — a hierarchical "
             "todo-list + notes on the draft chunk-tree substrate, rendered "
             "whole and NEVER exported. put creates a plan (project=, title=) "
             "or adds a node (chunk_kind=, text=, at={first|last|into|before|"
@@ -109,7 +109,7 @@ class PlanHandler(Handler):
             raise InitError("plan: store required")
         self.store = hub.store
 
-    # ── link: placement only (ADR 0045) ─────────────────────────────
+    # ── link: placement only ─────────────────────────────
 
     def link(  # type: ignore[override]
         self,
@@ -122,7 +122,7 @@ class PlanHandler(Handler):
     ) -> Response:
         """Folder placement via the reserved virtual ``rel='parent'`` — the
         only accepted relation (a ``refs.parent_id`` write into a
-        ``kind='folder'`` container, ADR 0045), mirroring draft."""
+        ``kind='folder'`` container), mirroring draft."""
         from precis.handlers._placement import RESERVED_PARENT_REL, place_ref
 
         if rel == RESERVED_PARENT_REL:
@@ -462,8 +462,7 @@ class PlanHandler(Handler):
         )
 
     def _render_outline(self, slug: str, ref: Any) -> Response:
-        """Whole-tree render with status markers + the ▸ cursor (ADR 0051
-        §2b). One line per node: ``{indent}{marker} {handle} {gloss}``.
+        """Whole-tree render with status markers + the ▸ cursor. One line per node: ``{indent}{marker} {handle} {gloss}``.
 
         The cursor is ``meta.cursor`` on the plan ref; cold-start (unset)
         falls back to the first ``open`` todo node in reading order. The
@@ -499,7 +498,7 @@ class PlanHandler(Handler):
         return Response(body="\n".join(lines))
 
     def _render_chunk(self, addr: str) -> Response:
-        """One node verbatim + a small relative window (ADR 0036 relative
+        """One node verbatim + a small relative window (relative
         nav: ``pe<id>^`` ancestor / ``+N`` step / ``-lo..hi`` span)."""
         rel = handle_registry.parse_relative(addr)
         if rel is not None:

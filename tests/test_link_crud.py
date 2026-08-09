@@ -648,7 +648,7 @@ class TestMemoryHandlerLinksView:
         new_id = id_of(m.body)
         out = memory_handler.get(id=new_id, view="links")
         assert "outbound" in out.body
-        # ADR 0036: a ref-level link renders the target's record handle.
+        # a ref-level link renders the target's record handle.
         paper_ref = store.get_ref(kind="paper", id="wang2020state")
         assert paper_ref is not None
         assert f"→ {handle_registry.format_handle('paper', paper_ref.id)}" in out.body

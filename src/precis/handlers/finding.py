@@ -189,7 +189,7 @@ class FindingHandler(NumericRefHandler):
         descriptor; the chase worker grounds it once a stub lands a PDF.
         See :meth:`_put_acquiring`.
 
-        **Hub mode** (ADR 0073) — pass ``supporters=`` instead of
+        **Hub mode** — pass ``supporters=`` instead of
         ``cited_in=``/``wants=`` to mint/converge a Taproot claim hub.
 
         Existing-id ``put`` is rejected (mutate via tag/link/delete
@@ -203,7 +203,7 @@ class FindingHandler(NumericRefHandler):
 
         body_text = body if body is not None else text
 
-        # --- Taproot hub-mint mode (ADR 0073) ---
+        # --- Taproot hub-mint mode ---
         # A finding born with paper ``supporters=`` (and no ``cited_in``) is a
         # claim HUB, not a chase target: route through the single write door
         # (``taproot/hub.py`` via ``seed_claim_hub``), which mints/converges the
@@ -832,7 +832,7 @@ class FindingHandler(NumericRefHandler):
 
         When the source resolves to a ``TAPROOT:claim`` hub and ``rel`` is a
         Taproot relation, route through the single write door
-        (``taproot/hub.py``) rather than a raw ``add_link`` — ADR 0073: a raw
+        (``taproot/hub.py``) rather than a raw ``add_link`` — taproot evidence relations: a raw
         insert for these relations bypasses the role + ``TAPROOT:claim`` guards
         and is a defect.
 
@@ -1768,7 +1768,7 @@ class FindingHandler(NumericRefHandler):
                 target = self._fetch_ref_any_kind(link.dst_ref_id)
                 legacy = target.slug or f"ref:{link.dst_ref_id}"
                 pos = link.dst_pos
-                # ADR 0036: ref-level → record universal handle; block-level
+                # ref-level → record universal handle; block-level
                 # keeps the legacy ``slug~pos`` (chunk_id unavailable here).
                 if pos is None:
                     addr = handle_registry.try_format(target.kind, target.id) or legacy

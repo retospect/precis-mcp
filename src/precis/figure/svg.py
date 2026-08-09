@@ -16,8 +16,8 @@ Three jobs, each a mechanical fact about a string of SVG:
   auto-lints fed back into the turn loop.
 - :func:`lint_svg` — the compile check plus the *out-of-bounds* lint:
   every measurable shape whose bbox spills past the ``viewBox`` is a
-  finding. These are the only two mechanically-detectable lints (ADR:
-  conventions are the model's job via the vocab, not a checker).
+  finding. These are the only two mechanically-detectable lints
+  (conventions are the model's job via the vocab, not a checker).
 
 Everything is namespace-agnostic — SVG may be authored bare (no
 ``xmlns``, tags like ``rect``) or fully namespaced
@@ -88,7 +88,7 @@ class SvgError(ValueError):
 # ``LintFinding`` and ``Element`` are the shared diagram value types — they
 # live in ``precis.diagram.lang`` and are imported/re-exported above so the
 # long-standing ``from precis.figure.svg import LintFinding, Element`` keeps
-# working (this module is the SVG *instance* of the diagram core, ADR 0057).
+# working (this module is the SVG *instance* of the diagram core).
 
 
 def _localname(tag: str) -> str:
@@ -304,7 +304,7 @@ def lint_svg(
 
 def elements(svg: str) -> list[Element]:
     """Every element carrying a stable ``id=`` — the bindable anchors of the
-    figure (ADR 0057). Returns ``[]`` on an unparseable document (the caller
+    figure. Returns ``[]`` on an unparseable document (the caller
     already compile-checks). Order is document order."""
     try:
         root = _parse(svg)
@@ -320,7 +320,7 @@ def elements(svg: str) -> list[Element]:
 
 def lint_bindings(svg: str, bound_ids: set[str]) -> list[LintFinding]:
     """A ``'binding'`` finding for each bound element id absent from the
-    source — the dangling-binding drift check (ADR 0057). Empty when every
+    source — the dangling-binding drift check. Empty when every
     binding still resolves to a live element (or nothing is bound)."""
     if not bound_ids:
         return []
@@ -404,7 +404,7 @@ def _points_bbox(raw: str) -> tuple[float, float, float, float] | None:
     return (min(xs), min(ys), max(xs), max(ys))
 
 
-# ── the SVG instance of the diagram core (ADR 0057, slice 3) ──────────────
+# ── the SVG instance of the diagram core ──────────────
 #
 # ``SvgLang`` binds the pure SVG mechanics above (+ the SVG-specific prompt
 # fragments) to the ``DiagramLang`` port, so the generic draw-with-me loop in

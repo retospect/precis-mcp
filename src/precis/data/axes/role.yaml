@@ -1,4 +1,4 @@
-# The first chunk-level axis (ADR 0047). `level`, `applies_to_kinds`,
+# The first chunk-level axis. `level`, `applies_to_kinds`,
 # `select`, and `context` are new fields the chunk_tag pass reads;
 # the ref-level runner ignores this file (level != ref).
 #
@@ -22,7 +22,7 @@ applies_when:
   always: true
 cost_tier: small
 # Context packet supplied with the chunk text (part of the axis
-# contract — changing it is a version bump, per ADR 0047 §2):
+# contract — changing it is a version bump):
 #   section_path      the chunk's heading trail, when the PDF parse has it
 #   position          relative position in the document (ord / total)
 #   title             the paper's title

@@ -35,7 +35,7 @@ class Hint:
 
 def merged_redirect_hint(old: str, new: str) -> Hint:
     """Non-breaking nudge after a merged/superseded ref transparently
-    redirected to its live survivor (ADR 0036 handle outliving a dedup)."""
+    redirected to its live survivor (handle outliving a dedup)."""
     return Hint(
         text=(
             f"{old} was merged into {new} — it still resolved, but please "

@@ -1,4 +1,4 @@
-"""The eyes — the probe ladder (ADR 0041 §6).
+"""The eyes — the probe ladder.
 
 > A probe is a parametric path through space; membership along it is
 > interval arithmetic.
@@ -9,7 +9,7 @@ axis + radius`` at any orientation. Each test inverse-transforms into the
 relevant frame, so an angled probe costs what an axis-aligned one does.
 
 Results are returned as structured dataclasses; the handler renders them
-into the TOON tables of ADR 0041 §11. ``ray`` delegates straight to the
+into the CAD kind's TOON tables. ``ray`` delegates straight to the
 DAG fold (``Design.ray``); the void-attribution there is what makes a
 drilled bore read as a bore.
 """
@@ -109,7 +109,7 @@ def probe_ray(
     design: Design, o: Vec3, d: Vec3, *, component: str | None = None
 ) -> RayResult:
     """Material-vs-void intervals along a ray, each void attributed to the
-    node that removed it (ADR 0041 §6)."""
+    node that removed it."""
     o = as_vec3(o)
     d = as_vec3(d)
     spans: list[Span] = design.ray(o, d, component=component)
@@ -162,7 +162,7 @@ def probe_arc(
     samples: int = 1440,
     component: str | None = None,
 ) -> ArcResult:
-    """March an arc in θ → angular intervals (ADR 0041 §6).
+    """March an arc in θ → angular intervals.
 
     The instrument for radial features (bolt circles, gear teeth) that the
     linear ray is blind to. Marched at ``samples`` resolution with the
@@ -242,8 +242,7 @@ def probe_section_z(
 ) -> SectionResult:
     """Section the design with a ``z = const`` plane → per-instance loops.
 
-    v1 supports the axis-perpendicular plane (the dominant case, ADR 0041
-    §11 example). Each contributing instance contributes one
+    v1 supports the axis-perpendicular plane (the dominant case, the CAD analytic IR example). Each contributing instance contributes one
     feature-attributed loop; additive instances are ``outer`` loops,
     subtractive ones ``hole`` loops. General-orientation section planes are
     a fast-follow.
@@ -336,7 +335,7 @@ class DraftFace:
 
 
 def probe_draft(design: Design, pull: Vec3, *, min_deg: float = 1.0) -> list[DraftFace]:
-    """Per-face draft against a pull direction (ADR 0041 §6).
+    """Per-face draft against a pull direction.
 
     ``draft_deg`` is the angle between the face and the pull-perpendicular
     plane: a vertical wall (normal ⟂ pull) is 0° draft — a release

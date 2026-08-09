@@ -3,7 +3,7 @@
 ``run_scheduler_pass`` claims each due cadence's lease and fires its work
 in-process; an undue cadence (or a lost lease) is a dark no-op. Tests inject
 unique-named cadences (the lease table is a global on the shared DB) and also
-exercise the *real* ``cron_tick`` cadence end to end — which, post-ADR-0061,
+exercise the *real* ``cron_tick`` cadence end to end — which, post-cron-folded-into-recurring,
 drives ``run_schedule_pass`` (the retired ``kind='cron'`` engine's replacement,
 shared with the launchd ``precis cron tick`` timer and the default worker
 rotation).
@@ -64,7 +64,7 @@ def test_multiple_cadences_are_independent(store) -> None:
 
 def test_cron_tick_cadence_fires_a_due_one_shot(store) -> None:
     """The real ``cron_tick`` cadence resolves a due one-shot recurring —
-    end-to-end cover for ``run_schedule_pass`` (ADR 0061's replacement for the
+    end-to-end cover for ``run_schedule_pass`` (cron-folded-into-recurring's replacement for the
     retired ``kind='cron'`` engine, shared here with the §15i decentralized
     scheduler pass)."""
     ref = store.insert_ref(

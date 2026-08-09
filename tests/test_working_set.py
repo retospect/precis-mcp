@@ -1,4 +1,4 @@
-"""Working-set data model + snapshot round-trip (ADR 0051 §6/§15, phase B)."""
+"""Working-set data model + snapshot round-trip."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Store ops for the ``pcb`` kind (ADR 0042).
+"""Store ops for the ``pcb`` kind.
 
 The design is a slug-addressed ``refs`` row (``kind='pcb'``) keeping **one**
 ``card_combined`` chunk for intent-search; the graph lives in the dedicated
@@ -60,7 +60,7 @@ class PcbMixin:
         """Create-or-extend a design, batch. Returns ``(ref, created, counts)``.
 
         Each *component* dict creates a component TYPE + its pins + **one**
-        instance (the 1:1 convenience, ADR 0042 §4 A4): keys ``refdes`` (req),
+        instance (the 1:1 convenience): keys ``refdes`` (req),
         ``label``, ``part``/``part_lcsc``, ``footprint``, ``courtyard``,
         ``centroid``, ``height_mm``, ``x``, ``y``, ``rot``, ``layer``,
         ``fixed``, ``roles``, ``note``, and ``pins`` (a list of
@@ -205,7 +205,7 @@ class PcbMixin:
         footprint = c.get("footprint")
         height_mm = c.get("height_mm")
         courtyard = c.get("courtyard")
-        # Auto-stamp from the catalog (ADR 0042 §5): if a C-number is given but
+        # Auto-stamp from the catalog: if a C-number is given but
         # the snapshot fields are not, copy them from parts / part_footprints so
         # the design is self-contained even if the catalog later churns.
         if part_lcsc and (footprint is None or height_mm is None or courtyard is None):
@@ -373,7 +373,7 @@ class PcbMixin:
     def _pcb_insert_feature(
         self, conn: Connection, ref_id: int, f: dict[str, Any]
     ) -> None:
-        """A non-electrical placed feature (ADR 0042 §4): mounting hole /
+        """A non-electrical placed feature: mounting hole /
         fiducial / testpoint / keepout / outline. ``geom`` carries the shape
         (hole ``diameter``, outline ``path`` of [x,y] points, keepout poly) in
         mm — read by the mechanical exporter (the 0041 bridge, §6)."""
@@ -435,7 +435,7 @@ class PcbMixin:
 
     def _pcb_pin_id(self, conn: Connection, component_id: int, name: str) -> int:
         """Resolve a pin by name within a component; create it ad-hoc if absent
-        (ADR 0042 §4 — pins may be created during logical wiring)."""
+        (the PCB netlist+placement IR — pins may be created during logical wiring)."""
         row = conn.execute(
             "SELECT pin_id FROM pcb_pins "
             "WHERE component_id = %s AND name = %s AND retired_at IS NULL",
@@ -524,7 +524,7 @@ class PcbMixin:
 
     def pcb_instance_neighbors(self, ref_id: int, refdes: str) -> dict[str, Any] | None:
         """The graph hop from one component instance: its pins, the net on each
-        pin, and the neighbouring instances on those nets (ADR 0042 §8.2)."""
+        pin, and the neighbouring instances on those nets."""
         with self.pool.connection() as conn:
             inst = conn.execute(
                 "SELECT instance_id, component_id FROM pcb_instances "
@@ -563,7 +563,7 @@ class PcbMixin:
         return {"refdes": refdes, "pins": pins}
 
     def pcb_net_members(self, ref_id: int, name: str) -> dict[str, Any] | None:
-        """A net's members: every (refdes, pin) on it (ADR 0042 §8.1)."""
+        """A net's members: every (refdes, pin) on it."""
         with self.pool.connection() as conn:
             net = conn.execute(
                 "SELECT net_id, net_class, est_current_a, width_mm FROM pcb_nets "
@@ -592,7 +592,7 @@ class PcbMixin:
         }
 
     def pcb_graph(self, ref_id: int) -> dict[str, Any]:
-        """The whole design as the *eyes* (ADR 0042 §8) consume it: placed
+        """The whole design as the *eyes* consume it: placed
         instances, nets with their (refdes, pin) members, and the unconnected
         pins. Pure data — the analysis lives in :mod:`precis.pcb`."""
         with self.pool.connection() as conn:
@@ -670,7 +670,7 @@ class PcbMixin:
         *,
         meta: dict[str, Any] | None = None,
     ) -> int:
-        """Write new `(x, y)` for instances by refdes (ADR 0042 §9 placer).
+        """Write new `(x, y)` for instances by refdes (placer).
 
         Never moves a `fixed` instance (guarded in SQL too). Optionally stamps
         a placement summary onto `refs.meta`. Returns the rows moved."""
@@ -691,7 +691,7 @@ class PcbMixin:
         return moved
 
     def pcb_measures_list(self, ref_id: int) -> list[dict[str, Any]]:
-        """Live measures of a design (ADR 0042 §8.3)."""
+        """Live measures of a design."""
         with self.pool.connection() as conn:
             return [
                 {
@@ -712,7 +712,7 @@ class PcbMixin:
             ]
 
     def pcb_features_list(self, ref_id: int) -> list[dict[str, Any]]:
-        """Live non-electrical features of a design (ADR 0042 §4, §6) — the
+        """Live non-electrical features of a design — the
         board outline + mounting holes the mechanical exporter / the 0041
         enclosure bridge consume."""
         with self.pool.connection() as conn:
@@ -761,7 +761,7 @@ class PcbMixin:
             for r in rows
         }
 
-    # -- parts catalog (ADR 0042 §5) ------------------------------------
+    # -- parts catalog ------------------------------------
     def parts_import(self, rows: list[dict[str, Any]]) -> dict[str, int]:
         """Upsert normalized catalog rows (:func:`precis.pcb.catalog.
         normalize_jlcparts_row`) + update the turnover signal. Returns
@@ -770,7 +770,7 @@ class PcbMixin:
         Upsert (not the atomic swap) keeps the table live and the FK-free
         ``part_footprints`` / ``part_availability`` caches intact; the
         staging + atomic-swap is the scale lever for the full ~300k dump
-        (ADR 0042 §5 — "drop-index trick optional at our row count")."""
+        (the PCB netlist+placement IR — "drop-index trick optional at our row count")."""
         counts = {"upserted": 0, "restocked": 0}
         with self.tx() as conn:
             for r in rows:
@@ -849,7 +849,7 @@ class PcbMixin:
         return restocked
 
     def parts_search(self, q: str, *, limit: int = 20) -> list[dict[str, Any]]:
-        """The JLCPCB-native selector (ADR 0042 §5): hard-filter to assemblable
+        """The JLCPCB-native selector: hard-filter to assemblable
         parts; rank Basic-first then **turnover** (restock frequency + healthy
         EWMA stock) — prefer parts that keep being available, not the last reel.
         """

@@ -1,4 +1,4 @@
-"""Exact STEP export via OpenCASCADE (ADR 0041 §10, the ``[cad-step]`` extra).
+"""Exact STEP export via OpenCASCADE (the ``[cad-step]`` extra).
 
 A mesh kernel (manifold3d / OpenSCAD) cannot emit STEP — STEP is a
 boundary-representation interchange carrying *exact* surfaces. This
@@ -191,8 +191,7 @@ def _node_shape(o: Any, node: NodeSpec) -> Any:
 def _component_shapes(o: Any, spec: SceneSpec) -> list[tuple[str, Any]]:
     """Fold each component into its own OCCT solid, **without** fusing
     across components. STEP carries multiple solids natively, so an
-    assembly travels as separate named bodies in the one file (ADR 0041
-    §10) — exactly what a downstream CAD tool wants."""
+    assembly travels as separate named bodies in the one file — exactly what a downstream CAD tool wants."""
     by_comp: dict[str, list[NodeSpec]] = {}
     for node in spec.nodes:
         by_comp.setdefault(node.component, []).append(node)

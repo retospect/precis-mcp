@@ -3,8 +3,7 @@
 > Positioning, not architecture. This is the single source for pitch
 > decks, talks, and the project's "why" — copy from here rather than
 > re-inventing the prose each time. For how the system is *built*, see
-> `docs/design/`; for the "why this way" decisions, see
-> `docs/decisions/`. Keep the **Facts** section honest: it goes stale,
+> `docs/codebase.md` + the package docstrings (rationale lives there too). Keep the **Facts** section honest: it goes stale,
 > so refresh it with the query at the bottom before quoting numbers.
 
 ## Mission

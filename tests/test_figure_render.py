@@ -1,4 +1,4 @@
-"""Render orchestration (ADR 0035 §2/§3): a computed `figure` chunk —
+"""Render orchestration: a computed `figure` chunk —
 `meta.render` recipe + `plots`-linked data — rendered to a PNG in `chunk_blobs`.
 
 The non-matplotlib cases prove the *wiring* (bundle → engine → blob → key) and

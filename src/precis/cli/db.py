@@ -8,7 +8,7 @@ can create a scratch database on.
 The snapshot is the migration chain compiled to one file. Fresh
 installs load it in one shot instead of replaying every numbered
 migration; existing databases are untouched and migrate forward as
-always. See ``precis.store.schema_dump`` and ADR 0031.
+always. See ``precis.store.schema_dump`` and the dual-track baseline snapshot.
 """
 
 from __future__ import annotations

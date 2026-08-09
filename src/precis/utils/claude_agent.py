@@ -80,8 +80,8 @@ _extract_cost_usd = extract_cost_usd
 
 # Default model: the router's FRONTIER tier (opus-4.8). This is the
 # agentic/reasoning shape — reviewers, dream, follow-up "ask & think" —
-# so it consolidates on the strong model rather than sonnet (ADR 0046
-# unit 4b; the reasoning tier is where the stronger model earns its keep,
+# so it consolidates on the strong model rather than sonnet (the reasoning
+# tier is where the stronger model earns its keep,
 # and 4-7/4-8 are the same price). A caller can still pin a model via the
 # ``model=`` arg or ``PRECIS_CLAUDE_AGENT_MODEL``. Resolved lazily inside
 # :func:`call_claude_agent` because ``router`` imports this module.
@@ -260,8 +260,7 @@ def call_claude_agent(
             subprocess only; the (dark) container path doesn't forward it yet.
         cwd: Working directory for the subprocess (threaded to
             :func:`run_claude`). The planner tick passes a CLAUDE.md-free
-            neutral cwd so ``claude -p`` discovers no ambient project persona
-            (ADR 0051 §12). ``None`` inherits the caller's cwd.
+            neutral cwd so ``claude -p`` discovers no ambient project persona. ``None`` inherits the caller's cwd.
         env_base: When given, :func:`_prepare_agent_env` builds the
             subprocess env from a COPY of ``env_base`` instead of
             ``os.environ`` — DB-isolated / restricted-env callers (fix_gripe's
@@ -359,7 +358,7 @@ def call_claude_agent(
         from precis import secrets as _secrets
 
         # ``adopt_process_store`` scrubs ``PRECIS_DATABASE_URL`` from
-        # ``os.environ`` at worker boot (ADR 0059) precisely so host ``claude
+        # ``os.environ`` at worker boot precisely so host ``claude
         # -p`` spawns don't inherit the DSN — so ``proc_env`` (a copy of the
         # scrubbed environ) no longer carries it. The container is an isolation
         # boundary that *does* need DB access: re-inject the captured DSN so the

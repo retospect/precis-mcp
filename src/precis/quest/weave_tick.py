@@ -223,7 +223,7 @@ def weave_tick(
     # ``place_papers``' own ``handle`` field is the *legacy* ``¶`` anchor
     # (test_placement.py's docstring note) — ``weave_section`` in turn
     # calls ``render_eye``, which only resolves the universal ``dc<id>``
-    # handle (ADR 0036), so this rebuilds it from ``section_chunk_id``
+    # handle, so this rebuilds it from ``section_chunk_id``
     # rather than passing the legacy one through.
     sections: dict[int, dict[str, Any]] = {}
     for pid, rows in placements.items():

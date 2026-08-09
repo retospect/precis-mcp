@@ -97,7 +97,7 @@ def ensure_abstract_card(conn: Any, ref_id: int, *, set_by: str, abstract: str) 
 
     ``ord`` goes one below the ref's lowest existing ``ord`` (cards are
     negative; ``-1`` when the ref has no chunks at all yet). Embedding is
-    left unset (NULL) for the embed worker to fill (ADR 0007 — this module
+    left unset (NULL) for the embed worker to fill (the derived queue — this module
     never calls ``fill_embeddings`` directly). Must run inside a
     transaction (``conn``).
     """

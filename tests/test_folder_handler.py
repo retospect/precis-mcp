@@ -1,4 +1,4 @@
-"""FolderHandler + placement tests (ADR 0045).
+"""FolderHandler + placement tests.
 
 Exercises the container kind end-to-end against a live store: create /
 list / open / tree, nesting with cycle rejection, placing artifacts via
@@ -156,7 +156,7 @@ def test_strategic_root_placed_in_folder_stays_a_root(
     assert "placed" in resp.body
     ref = store.get_ref(kind="todo", id=root)
     assert ref is not None and ref.parent_id == fid
-    # still a strategic root for the views (ADR 0045 §4)
+    # still a strategic root for the views
     from precis.handlers._todo_views import render_roots
 
     assert "Build the platform." in render_roots(store).body
@@ -216,7 +216,7 @@ def test_tree_view_renders_subtree(folder: FolderHandler, store) -> None:
     assert "(2 items)" in tree.body
 
 
-# ── folder= search scope (ADR 0045 §6) ─────────────────────────────
+# ── folder= search scope ─────────────────────────────
 
 
 @pytest.fixture

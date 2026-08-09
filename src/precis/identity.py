@@ -470,7 +470,7 @@ def make_taproot_hub_paper_id(
 def make_pub_id(paper_id: str) -> str:
     """6-character base32 lowercase handle derived from ``paper_id``.
 
-    Formula (locked, ADR 0002 §"pub_id"):
+    Formula (locked):
 
     .. code-block:: python
 

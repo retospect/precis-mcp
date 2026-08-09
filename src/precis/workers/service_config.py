@@ -19,7 +19,7 @@ console) drive.
 
 ``concurrency`` (migration 0091) is a second live knob resolved the same
 way as ``prio`` (exact-host-over-``*``, TTL-cached): the in-pass thread-pool
-width a cloud-calling categorizer (``classify``, ADR 0047) fans its per-row
+width a cloud-calling categorizer (``classify``) fans its per-row
 LLM cascade across. ``NULL``/no row -> 1 (today's serial behaviour, so an
 empty table is unchanged); :func:`set_service_concurrency` is its write side.
 

@@ -57,7 +57,7 @@ is a *priced* estimate from :mod:`precis.budget.pricing`, not money
 that left an account. Counting it made the caps fill up at ~$0.35 a
 planner tick as passes moved onto local hardware — and a tripped cap
 then stopped the local work too, idling machines we want busy. That
-is a gate doing harm rather than nothing. The ADR 0066 §5 breaker
+is a gate doing harm rather than nothing. The capability tiers + placement chains breaker
 already drew this line (``_rung_is_cloud`` keeps a tripped $ cap from
 starving a local rung); these caps just never learned it. Same
 classifier, one definition: ``router._placement_of``.

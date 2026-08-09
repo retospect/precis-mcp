@@ -21,7 +21,7 @@ Drives the fetch-as-ingest flow (spec § "Mental model"):
     return EdgarIngestResult
 
 Embeddings are populated **lazily** by the ``embed:bge-m3`` derived-queue
-worker (ADR 0007) — never synchronously in the verb (spec § Divergences
+worker — never synchronously in the verb (spec § Divergences
 item 6). The pipeline is idempotent on the accession slug: re-ingesting
 an existing filing returns the existing ref and skips SEC calls.
 """
@@ -118,7 +118,7 @@ def ingest_filing(
         client:    Live or fake EDGAR client (``EdgarClientProto``).
         embedder:  Accepted for signature compatibility but unused —
                    embeddings are populated lazily by the derived-queue
-                   worker (ADR 0007). Callers may pass ``None``.
+                   worker. Callers may pass ``None``.
         raw_root:  Directory where raw artefacts land on disk
                    (``$PRECIS_EDGAR_RAW_ROOT``).
 

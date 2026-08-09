@@ -1,5 +1,4 @@
-# version stays 1 — never applied, pre-Round-0 edits are free (ADR 0047
-# §7). 2026-07-25: added `unknown` (a paper that DOES study transport
+# version stays 1 — never applied, pre-Round-0 edits are free. 2026-07-25: added `unknown` (a paper that DOES study transport
 # but whose abstract doesn't pin the geometry had nowhere to go but
 # `n-a`, which means the opposite — "doesn't study transport"); and
 # gated `applies_when.tags_any` on PROPERTY:electrical|multi so the pass

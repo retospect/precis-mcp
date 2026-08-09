@@ -145,7 +145,7 @@ class CitationHandler(NumericRefHandler):
                     "'collins06~7' or 'collins06~5..8'"
                 ),
             )
-        # ADR 0036: accept a universal chunk handle (``pc<id>``) — the form
+        # accept a universal chunk handle (``pc<id>``) — the form
         # search output now emits — and normalize it to the canonical
         # ``slug~ord`` form so paper validation and storage stay unchanged.
         sh = str(source_handle).strip()

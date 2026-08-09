@@ -1,5 +1,5 @@
 """The academic (sci-*) section styles load as skills and inject into the
-editor prompt (ADR 0037/0038 — extends the patent step-3 work to papers)."""
+editor prompt (the heading-styles + numbering lock/0038 — extends the patent step-3 work to papers)."""
 
 from __future__ import annotations
 

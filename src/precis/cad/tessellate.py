@@ -1,4 +1,4 @@
-"""Analytic primitive → triangle mesh (ADR 0041 §10, export only).
+"""Analytic primitive → triangle mesh (export only).
 
 The probe / relate layers never mesh — they work on the exact analytic
 IR. *Export* is the one place we tessellate, and because we own the

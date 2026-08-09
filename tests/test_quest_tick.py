@@ -99,7 +99,7 @@ class TestDossier:
         assert dossier_ref_id(store, qid) is None
 
 
-# ── the pinned ledger (ADR 0064 §A) ─────────────────────────────────────
+# ── the pinned ledger ─────────────────────────────────────
 
 
 class TestDossierLedger:
@@ -131,7 +131,7 @@ class TestDossierLedger:
     ) -> None:
         from precis.quest import dossier as dossier_mod
 
-        qid = _mk_quest(store, "A striving with a pre-ADR-0064 dossier")
+        qid = _mk_quest(store, "A striving with a pre-dossier-owned-by-process dossier")
         # Build the dossier the OLD way — a single narrative chunk, no pinned
         # ledger — the shape a live prod quest is in pre-migration.
         qref = store.get_ref(kind="quest", id=qid)
@@ -202,11 +202,11 @@ class TestDossierLedger:
         assert append_ledger_entry(store, qid, "open", "   ") is False
 
 
-# ── owner generalization (ADR 0064 §B) ──────────────────────────────────
+# ── owner generalization ──────────────────────────────────
 
 
 class TestDossierOwnerGeneralization:
-    """The dossier owner is any process, not just a quest (ADR 0064 §B).
+    """The dossier owner is any process, not just a quest.
     The coupling was Python only; the ``dossier-of`` edge is already
     owner-agnostic."""
 
@@ -398,7 +398,7 @@ class TestQuestTick:
     def test_ledger_add_is_pinned_and_survives_a_later_rewrite(
         self, store: Any
     ) -> None:
-        # ADR 0064 §A: a model-emitted `ledger_add` is applied BEFORE the
+        # a model-emitted `ledger_add` is applied BEFORE the
         # dossier rewrite, so it's pinned even though this same tick also
         # whole-rewrites the narrative — and it must still be there after a
         # SUBSEQUENT rewrite too (the loop-breaker the whole feature is for).

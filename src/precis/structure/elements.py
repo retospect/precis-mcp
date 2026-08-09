@@ -1,8 +1,8 @@
-"""Element data for the atomistic IR (ADR 0043).
+"""Element data for the atomistic IR.
 
 A small, curated table — covalent radii (for bond detection + the
 overlap/validator gate) and a nominal maximum valence (for the
-over-coordination check). The v1 palette is Pd / Cu / C / H (ADR 0043 §3);
+over-coordination check). The v1 palette is Pd / Cu / C / H;
 a handful of common neighbours are included so molecule mode is usable, and
 unknown elements fall back to a permissive default rather than erroring — the
 IR holds *any* element; only the relaxer is palette-restricted in v1.

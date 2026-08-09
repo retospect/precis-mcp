@@ -1,6 +1,6 @@
 """ssh_node executor — claim a job and run it on a remote node.
 
-Sibling of :mod:`claude_inproc` / :mod:`coordinator` (ADR 0017): a
+Sibling of :mod:`claude_inproc` / :mod:`coordinator`: a
 ``run_ssh_node_pass`` function the CLI registers as a ``RefPass``.
 Where ``claude_inproc`` spawns ``claude -p`` locally, ``ssh_node`` hands
 the job to its plugin, which typically shells out to

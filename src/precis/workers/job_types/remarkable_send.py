@@ -81,7 +81,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         )
         return
 
-    # Figure clearance gate (ADR 0034 §4) — same as draft_export: an
+    # Figure clearance gate — same as draft_export: an
     # uncleared figure must not ship.
     from precis.utils.figure_clearance import draft_figure_clearance
 

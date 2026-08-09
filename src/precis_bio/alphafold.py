@@ -1,4 +1,4 @@
-"""AlphaFold3 container plumbing (ADR 0056 slice 4).
+"""AlphaFold3 container plumbing.
 
 Three pure, gate-testable pieces — the input builder, the ``docker run`` argv
 builder, and the output parser — so the container's *shape* is validated
@@ -93,7 +93,7 @@ def build_fold_argv(
     the output tree writable, and (when given) a persistent XLA cache to skip
     the ~5-10 min recompile. The command line mirrors ``run_alphafold3.sh`` on
     spark verbatim; ``models_dir`` is required (the weights are mounted, never
-    baked — ADR 0056 §5).
+    baked — chemistry tool-packs).
 
     ``mem_limit`` (a docker size string like ``"100g"``, from
     ``PRECIS_FOLD_MEM_LIMIT``) caps the container's memory so an AF3 XLA-compile

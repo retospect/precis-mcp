@@ -1,4 +1,4 @@
-"""Argument-graph retraction ripple (ADR 0054 §5). Mixin on
+"""Argument-graph retraction ripple. Mixin on
 :class:`precis.store.Store`.
 
 The kind-scoped walk that backs both build-order steps 3 (the
@@ -11,11 +11,11 @@ retraction push hook). Two node kinds are "walkable":
 A *premise* is an outbound link from a walkable node to the paper it cites
 (any relation — ``cites`` for a hand-authored lemma, the finding's own
 ``derived-from`` chain hop). An *inference* attaches to its premises via
-``derived-from`` (inference → premise, reused per ADR 0054 §2) and to its
+``derived-from`` (inference → premise, reused per the argument graph) and to its
 conclusion lemma via ``entails``. Kind-scoping (only finding/kind:lemma/
 kind:inference nodes count) is what keeps this walk from confusing a
 premise edge with unrelated ``derived-from`` provenance (chase hops,
-summary distillation) — ADR 0054 §5/§Risks R2.
+summary distillation) — the argument graph R2.
 
 Public entry point: :meth:`ArgumentGraphMixin.argument_ripple_retraction`,
 called from ``_links_ops.add_link`` / ``remove_link`` whenever a
@@ -26,7 +26,7 @@ forward from the affected ref to the set of candidate inferences, then
 independently re-derives each candidate's staleness from current
 reachability and sets/clears ``STALE:retracted-premise`` to match — so
 removing the last retracting edge clears the flag while a second
-still-reaching retraction keeps it (ADR 0054 §5/R5).
+still-reaching retraction keeps it.
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ RETRACTION_RELATIONS: frozenset[str] = _SRC_IS_DISTRUSTED | _DST_IS_DISTRUSTED
 _STALE_TAG = Tag.closed("STALE", "retracted-premise")
 
 #: Bound on the forward/backward walk depth — the argument graph is sparse
-#: by design (ADR 0054 §Risks R1); this is a defensive cap against a
+#: by design; this is a defensive cap against a
 #: pathological cycle slipping past the visited-set guard, not a real
 #: ceiling on legitimate chains.
 _MAX_WALK_DEPTH = 12
@@ -134,7 +134,7 @@ def _premises_citing(conn: Connection, ref_id: int) -> list[int]:
 def _inferences_derived_from(conn: Connection, premise_ref_id: int) -> list[int]:
     """kind:inference memories with an outbound ``derived-from`` to
     ``premise_ref_id`` (the "inference was produced from this premise"
-    edge — ADR 0054 §2)."""
+    edge — the argument graph)."""
     rows = conn.execute(
         "SELECT DISTINCT l.src_ref_id FROM links l "
         "JOIN refs r ON r.ref_id = l.src_ref_id AND r.deleted_at IS NULL "
@@ -276,7 +276,7 @@ def is_inference_stale(
 
 
 class ArgumentGraphMixin:
-    """Retraction-ripple recompute for the argument graph (ADR 0054 §5)."""
+    """Retraction-ripple recompute for the argument graph."""
 
     pool: ConnectionPool
 
@@ -294,7 +294,7 @@ class ArgumentGraphMixin:
 
         Called on *both* creation and removal of a retraction/concern
         edge — the walk is a pure function of current graph state, so
-        the same call recomputes correctly either way (ADR 0054 §5/R5).
+        the same call recomputes correctly either way.
         Returns the set of inference ref_ids visited (mainly for tests).
         """
         candidates = _reachable_inferences_from(conn, distrusted_ref_id)

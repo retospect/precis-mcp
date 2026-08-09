@@ -1,5 +1,5 @@
 """The LLM routing seam — one place where model selection, transport
-choice, and result normalization live (ADR 0046).
+choice, and result normalization live.
 
 Before this module, model selection was scattered across ~a-dozen
 independent ``os.environ.get(...)`` reads, three different transports
@@ -15,7 +15,7 @@ Four pieces:
   web-set ``app_settings`` override (the ``/factory`` live switch,
   :mod:`precis.utils.llm.live_config`) → the *existing* env var → the
   compiled default, so a caller with no override row resolves byte-for-byte
-  to the model it uses today (ADR 0046 §"Resolver"). :func:`resolve_backend`
+  to the model it uses today. :func:`resolve_backend`
   layers the same DB tier over ``PRECIS_LLM_BACKEND``.
 * :func:`select_transport` — the pure (tier, tools) → transport choice.
 * :class:`LlmProvider` + the adapter classes + :func:`dispatch` — the
@@ -40,7 +40,7 @@ profile rides ``BIG`` / ``FRONTIER`` on the ``claude_agent`` transport
 
 **OSS tool-calling lands on** :data:`Transport.OPENAI_TOOLS` — an
 open-source model driving the precis verbs over the OpenAI ``tools=``
-wire (:class:`OpenAIToolsProvider`), the ADR 0024 loop rebuilt behind
+wire (:class:`OpenAIToolsProvider`), the in-process litellm tool loop rebuilt behind
 the provider port. It serves a served local model on the ``BIG`` tier
 and, when ``PRECIS_LLM_BACKEND=openai``, the tool-using cloud tiers.
 """
@@ -81,7 +81,7 @@ class Tier(StrEnum):
 
     A tier bundles a capability level with a tool-use expectation, and
     maps onto both a concrete model (via :func:`resolve_model`) and a
-    transport (via :func:`select_transport`). ADR 0066 Phase C retired the
+    transport (via :func:`select_transport`). Capability tiers + placement chains Phase C retired the
     original five location-coupled members (``local-small``/``local-big``/
     ``cloud-small``/``cloud-mid``/``cloud-super``) in favor of these four
     pure-capability tiers — every call site now routes on *what a task
@@ -107,7 +107,7 @@ class Tier(StrEnum):
     SMALL = "small"
 
 
-#: ADR 0066 Phase C retired these five location-coupled tier strings from the
+#: Capability tiers + placement chains Phase C retired these five location-coupled tier strings from the
 #: enum. A *stored* value written before this ship (a quest's
 #: ``meta.loop.tier``, an already-baked ``quest_tick`` job's
 #: ``meta.params.tier``, a route-log ``llm_call_log.tier`` row, …) can still
@@ -125,7 +125,7 @@ _LEGACY_TIER_ALIASES: dict[str, Tier] = {
 
 def tier_from_str(value: str, *, default: Tier = Tier.MEDIUM) -> Tier:
     """Resolve ``value`` to a :class:`Tier` — a live capability-tier string,
-    or one of the five ADR 0066 Phase C retired legacy strings (see
+    or one of the five retired legacy strings (see
     :data:`_LEGACY_TIER_ALIASES`) — without ever raising. Anything else
     unrecognized (a typo, a future/unknown value) logs and falls back to
     ``default`` (``MEDIUM``) rather than crash-looping the caller. Callers
@@ -167,9 +167,8 @@ class Transport(StrEnum):
       OpenAI ``tools=`` wire, in-process (:mod:`precis.utils.llm.openai_tools`
       + :mod:`precis.utils.llm.precis_tools`). Serves both a served local
       model backing the ``BIG`` tier and the ``OPENAI`` backend's tool-using
-      cloud calls — same wire, different base url. Implements the ADR 0024
-      loop that was prototyped-then-reversed onto ``claude`` (ADR 0046
-      §"Next step").
+      cloud calls — same wire, different base url. Implements the in-process litellm tool
+      loop that was prototyped-then-reversed onto ``claude``.
     """
 
     CLAUDE_AGENT = "claude_agent"
@@ -224,8 +223,8 @@ class Backend(StrEnum):
 # default all resolve through here). 4-7 and 4-8 are the same price, so there
 # is no cost reason to stay on 4-7 and the reasoning/agentic work is exactly
 # where the stronger model earns its keep. ``claude_p``'s legacy suffix-less
-# ``claude-haiku-4-5`` default is folded onto the dated pin here (same family
-# — see ADR 0046 §"Resolver").
+# ``claude-haiku-4-5`` default is folded onto the dated pin here (same
+# family).
 _TIER_MODEL: dict[Tier, tuple[str, str]] = {
     Tier.FRONTIER: ("PRECIS_MODEL_OPUS", "claude-opus-4-8"),
     Tier.BIG: ("PRECIS_MODEL_SONNET", "claude-sonnet-5"),
@@ -289,7 +288,7 @@ def resolve_model(tier: Tier, backend: Backend | None = None) -> str:
     return os.environ.get(env_var, default)
 
 
-#: Per-tier ``(thinking, temperature)`` default — ADR 0066 gen-param
+#: Per-tier ``(thinking, temperature)`` default — capability tiers + placement chains gen-param
 #: passthrough (:attr:`LlmRequest.thinking` / :attr:`LlmRequest.temperature`).
 #: ``SMALL`` (the categorizer/classifier rung) gets thinking
 #: **off** + temperature **0.0**: a per-chunk gloss/inject-scan must not spend
@@ -330,10 +329,10 @@ def _tier_gen_defaults(tier: Tier) -> tuple[bool, float | None]:
 # This is the ONE ordered source the dispatcher (plan_tick), the closed-vocab
 # guards, and the web model-pickers key on, so the tier map and the dropdown
 # never drift. ``local`` is the cluster's served OSS tier (``qwen-heavy`` +
-# tools), reachable now that ADR 0046's ``OPENAI_TOOLS`` loop drives the verbs
+# tools), reachable now that LLM routing seam's ``OPENAI_TOOLS`` loop drives the verbs
 # in-process — a planner tick runs on it just like the cloud tiers.
 #
-# ADR 0066 Phase C: ``local`` now pins ``BIG`` directly (the location-coupled
+# ``local`` now pins ``BIG`` directly (the location-coupled
 # ``LOCAL_BIG`` tier is retired) — a served OSS model still backs it when the
 # backend/chain routes there (:func:`select_transport` / a served_by slot);
 # the legacy {opus, sonnet, haiku} aliases are otherwise unchanged.
@@ -401,7 +400,7 @@ def planner_model_choices() -> list[dict[str, Any]]:
     ``model`` is rung 0 of the LIVE placement chain (:func:`resolve_chain`) —
     the same resolver :func:`dispatch` walks — not the bare
     :func:`resolve_model` tier default, so an operator ``llm.chain.<tier>``
-    override (e.g. ADR 0066's BIG-routes-local-first chain) shows up here
+    override (e.g. the BIG-routes-local-first chain) shows up here
     instead of a stale cloud label. ``tools_needed`` is ``True`` for every
     tier but ``SMALL``: FRONTIER/BIG/MEDIUM feed planner ticks (tool-using
     agentic dispatch), so the picker must mirror the chain a tool-needing call
@@ -514,7 +513,7 @@ def rung_knobs(rung: Rung) -> dict[str, Any]:
       deployed llama.cpp/llama-swap build); ``effort`` unsupported (no
       OpenRouter-style ``reasoning.effort`` on a bare local completion call).
     * ``OPENAI_COMPAT`` — ``temperature`` (max ``2.0``), ``thinking`` (the
-      ADR 0066 toggle, honored via :func:`openrouter_routing`'s
+      capability tiers + placement chains toggle, honored via :func:`openrouter_routing`'s
       ``reasoning.enabled``), ``effort`` (``reasoning.effort``, same
       function) — the OpenRouter-fronted completion wire honors all three.
     * ``OPENAI_TOOLS`` — ``temperature`` (max ``2.0``); ``thinking`` only when
@@ -854,8 +853,7 @@ def transport_for_profile(profile: Profile, tier: Tier) -> Transport:
 
     An ``AGENT`` profile needs tools; a ``HELPER`` profile does not — so
     this is :func:`select_transport` with ``tools_needed`` derived from
-    the profile. Kept thin so the profile→router alignment is explicit
-    (ADR 0046 §"Alignment with Profile").
+    the profile. Kept thin so the profile→router alignment is explicit.
     """
     from precis.utils.prompt.model import Profile as _Profile
 
@@ -1090,7 +1088,7 @@ class LlmRequest:
     #: cap must use a local/openai-compat tier instead. ``None`` (the default)
     #: leaves ``claude_agent`` output untruncated, as before this knob existed.
     max_tokens: int | None = None
-    #: Reasoning + sampling passthrough (ADR 0066 gen-param knobs). ``None`` on
+    #: Reasoning + sampling passthrough (gen-param knobs). ``None`` on
     #: either ⇒ :func:`dispatch` resolves the tier default (:func:`_tier_gen_defaults`):
     #: ``SMALL`` (a categorizer/classifier — per-chunk gloss,
     #: inject-scan) wants thinking **off** + temperature **0.0**, so it never
@@ -1183,8 +1181,7 @@ class LlmRequest:
     #: inherit the worker env unchanged.
     env_overlay: dict[str, str] | None = None
     #: Working directory for the ``claude_agent`` subprocess — a CLAUDE.md-free
-    #: neutral cwd so ``claude -p`` discovers no ambient project persona (ADR
-    #: 0051 §12). Ignored by the other transports. ``None`` ⇒ the worker's cwd.
+    #: neutral cwd so ``claude -p`` discovers no ambient project persona. Ignored by the other transports. ``None`` ⇒ the worker's cwd.
     cwd: str | Path | None = None
     #: Real-time progress callback, awaited once per parsed ``stream-json``
     #: event as a ``claude_agent`` run streams (asa_bot's Discord "thinking…"
@@ -1341,7 +1338,7 @@ class OpenAICompatProvider:
 class OpenAIToolsProvider:
     """An OSS model driving the precis verbs over the OpenAI ``tools=`` wire.
 
-    The ADR 0024 in-process tool loop, rebuilt behind the provider port:
+    The in-process tool loop, rebuilt behind the provider port:
     :func:`~precis.utils.llm.openai_tools.run_tool_loop` drives a hosted or
     local OSS backend (``PRECIS_LLM_BASE_URL``, vault key) through a
     tool-calling conversation, executing each call in-process via
@@ -1503,7 +1500,7 @@ def _failover_ladder(tier: Tier, *, tools_needed: bool, backend: Backend) -> lis
 
 def _default_chain(tier: Tier, *, tools_needed: bool, backend: Backend) -> list[Rung]:
     """The rung list for a tier with **no operator chain override** — the
-    behaviour-preserving default under ADR 0066 Phase B's always-on chain.
+    behaviour-preserving default under capability tiers + placement chains Phase B's always-on chain.
 
     The built-in OSS→claude safety-net ladder (:func:`_failover_ladder`) is
     opt-in via ``PRECIS_LLM_FAILOVER``. Without it a tier resolves to a
@@ -1523,10 +1520,10 @@ def _default_chain(tier: Tier, *, tools_needed: bool, backend: Backend) -> list[
 
 def resolve_chain(tier: Tier, *, tools_needed: bool, backend: Backend) -> list[Rung]:
     """The rung list :func:`dispatch` / :func:`dispatch_async` actually walk —
-    an operator-owned ``app_settings`` chain override (ADR 0066 §4) layered in
+    an operator-owned ``app_settings`` chain override layered in
     front of the compiled default (:func:`_default_chain`).
 
-    **ADR 0066 Phase B — the chain is the always-on resolution path.** An
+    **capability tiers + placement chains Phase B — the chain is the always-on resolution path.** An
     ``llm.chain.<tier>`` override is honoured *regardless of*
     ``PRECIS_LLM_FAILOVER``, so the operator chain editor's rows are actually
     read (Phase A wired this call inside ``if _failover_enabled():``, which
@@ -1652,7 +1649,7 @@ def _placement_of(rung: Rung) -> str:
     :func:`_rung_is_cloud`, recorded on :attr:`LlmResult.placement` and
     ``llm_call_log.placement`` so the cost caps can tell spend from utilisation.
 
-    One classifier, two consumers: the ADR 0066 §5 cloud-throttle prunes on
+    One classifier, two consumers: the capability tiers + placement chains cloud-throttle prunes on
     ``_rung_is_cloud`` and the planner's dollar caps exclude on this. A second,
     independent notion of "is this local" is exactly how the caps drifted before.
     """
@@ -1661,7 +1658,7 @@ def _placement_of(rung: Rung) -> str:
 
 def _rung_is_cloud(rung: Rung) -> bool:
     """Classify a chain rung as cloud (hits a cloud API) vs local, for the
-    ADR 0066 §5 throttle's cloud-rung pruning.
+    capability tiers + placement chains throttle's cloud-rung pruning.
 
     An operator chain rung carries an explicit ``placement`` label
     (``"cloud"`` / ``"local"``, written by the chain editor) — authoritative
@@ -1692,7 +1689,7 @@ def _rung_is_cloud(rung: Rung) -> bool:
 
 def _apply_cloud_throttle(chain: list[Rung]) -> list[Rung]:
     """Prune cloud rungs from ``chain`` when the operator has disabled cloud
-    (``llm.cloud_enabled = false``, ADR 0066 §5) — a no-op returning ``chain``
+    (``llm.cloud_enabled = false``) — a no-op returning ``chain``
     unchanged while cloud is on (the default), so dispatch stays byte-identical
     until an operator flips the dial.
 
@@ -1864,7 +1861,7 @@ def dispatch(req: LlmRequest) -> LlmResult:
     on but no base url set, cloud calls fall back to ``claude`` rather than
     POST to a phantom endpoint — the ships-dark safety net.
 
-    Routing walks a per-tier **chain** (:func:`resolve_chain`, ADR 0066
+    Routing walks a per-tier **chain** (:func:`resolve_chain`, capability tiers + placement chains
     Phase B — always-on): an operator ``llm.chain.<tier>`` override, else the
     default (a single primary rung, or — with ``PRECIS_LLM_FAILOVER`` on — the
     built-in OSS→claude auto-failover ladder). A multi-rung chain is wrapped in
@@ -1894,7 +1891,7 @@ def dispatch(req: LlmRequest) -> LlmResult:
         model = _op_model or resolve_model(req.tier, backend=backend)
     else:
         model = req.model or resolve_model(req.tier, backend=backend)
-    # ADR 0066 gen-param passthrough: resolve the tier's (thinking, temperature)
+    # Capability tiers + placement chains gen-param passthrough: resolve the tier's (thinking, temperature)
     # default (_tier_gen_defaults) unless the caller already pinned one
     # explicitly. Reassigning `req` itself here (rather than threading two
     # extra locals through the rest of this function) means every downstream
@@ -1912,7 +1909,7 @@ def dispatch(req: LlmRequest) -> LlmResult:
     # Resolve the transport *before* the breaker, so the gate can key on the
     # resource actually spent: the claude-OAuth transports draw subscription
     # quota (gated on the snapshot), everything else paid spends real dollars.
-    # ADR 0066 Phase B: the chain is the always-on resolution path, so an
+    # the chain is the always-on resolution path, so an
     # operator ``llm.chain.<tier>`` override is honoured regardless of
     # PRECIS_LLM_FAILOVER (the editor's rows are actually read). With no
     # override this collapses to today's path (single primary rung, or the
@@ -1937,7 +1934,7 @@ def dispatch(req: LlmRequest) -> LlmResult:
             paused=False,
         )
     ladder = _placed_ladder
-    # Cloud-throttle (ADR 0066 §5): with cloud disabled, prune the chain's
+    # Cloud-throttle: with cloud disabled, prune the chain's
     # cloud rungs → local. A cloud-only tier (FRONTIER) prunes to empty and
     # pauses (skip-not-fail), never silently degrading to a local model. No-op
     # while cloud is on (the default) — byte-identical to above.
@@ -2188,7 +2185,7 @@ async def _dispatch_claude_agent_async(req: LlmRequest, model: str) -> LlmResult
 async def dispatch_async(req: LlmRequest) -> LlmResult:
     """Async twin of :func:`dispatch`, for a caller that needs the real-time
     ``on_event`` stream (asa_bot's Discord bridge, Phase 3 of the
-    router-migration plan — ADR 0046 follow-up).
+    router-migration plan — the LLM routing seam follow-up).
 
     Mirrors :func:`dispatch`'s gate sequence — backend fallback, transport
     resolution, the budget breaker, window admission, the local-serving slot —
@@ -2222,8 +2219,7 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
     if backend is Backend.OPENAI and not os.environ.get("PRECIS_LLM_BASE_URL"):
         backend = Backend.ANTHROPIC
     model = req.model or resolve_model(req.tier, backend=backend)
-    # Resolve the primary transport through the always-on chain (ADR 0066
-    # Phase B), same as sync dispatch — the streaming decision keys on rung 0.
+    # Resolve the primary transport through the always-on chain, same as sync dispatch — the streaming decision keys on rung 0.
     ladder = resolve_chain(req.tier, tools_needed=req.tools_needed, backend=backend)
     # Structured placement filter — strict parity with sync dispatch: an
     # emptied nonempty chain is an explicit error result, not a silent
@@ -2398,7 +2394,7 @@ class DispatchClient:
     tier: Tier = Tier.SMALL
     model: str | None = None
     max_tokens: int | None = None
-    #: ADR 0066 gen-param passthrough (see :attr:`LlmRequest.thinking` /
+    #: Capability tiers + placement chains gen-param passthrough (see :attr:`LlmRequest.thinking` /
     #: ``.temperature``) — ``None`` (the default) leaves the tier's own
     #: default in force, so a bare ``DispatchClient`` (``tier=SMALL``) gets
     #: thinking-off/temperature-0 with zero caller change.
@@ -2570,7 +2566,7 @@ def _record_dispatch(
 def _is_unavailability(exc: BaseException) -> bool:
     """Classify a caught transport exception: unavailability (skip-and-retry,
     :attr:`LlmResult.paused`) vs. a genuine semantic failure (:attr:`LlmResult.error`
-    only) that will never succeed on retry — ADR 0066 §5a "Failure & congestion
+    only) that will never succeed on retry — capability tiers + placement chains "Failure & congestion
     semantics" ("a todo that can't run right now waits and retries; it does not
     park").
 
@@ -2626,7 +2622,7 @@ def _dispatch_local(req: LlmRequest, model: str) -> LlmResult:
     # env default so a migrated direct-``LlmClient`` pass keeps its budget.
     if req.max_tokens is not None:
         cfg = replace(cfg, max_tokens=req.max_tokens)
-    # ADR 0066 gen-param passthrough: unlike `max_tokens` above, `None` here
+    # Capability tiers + placement chains gen-param passthrough: unlike `max_tokens` above, `None` here
     # is a meaningful *resolved* value (the MEDIUM/BIG/FRONTIER-tier default —
     # "omit temperature, let the provider pick"), not "caller didn't ask to
     # override" — `dispatch` always resolves `req.temperature` to a concrete
@@ -2663,7 +2659,7 @@ def _dispatch_local(req: LlmRequest, model: str) -> LlmResult:
         # A transport-level timeout / connection failure / 5xx-or-429 is
         # unavailability, not a genuine failure — flag it `paused` so a pinned
         # pass backs off and retries instead of recording a dispatch failure
-        # that can park the todo (ADR 0066 §5a).
+        # that can park the todo.
         return LlmResult(
             text="",
             cost_usd=None,
@@ -2683,7 +2679,7 @@ def openrouter_routing(
     thinking: bool | None = None,
 ) -> dict[str, Any]:
     """Translate a booked ``meta.endpoints`` variant → the OpenRouter request-body
-    block that pins it (gripe 162624), composed with the ADR 0066 gen-param
+    block that pins it (gripe 162624), composed with the capability tiers + placement chains gen-param
     ``reasoning`` toggle.
 
     Emits ``provider:{order:[<slug>], quantizations:[<quant>],
@@ -2797,7 +2793,7 @@ def _dispatch_openai_compat(req: LlmRequest, model: str) -> LlmResult:
     )
     if req.max_tokens is not None:
         cfg = replace(cfg, max_tokens=req.max_tokens)
-    # ADR 0066 gen-param passthrough — see the matching comment in
+    # Capability tiers + placement chains gen-param passthrough — see the matching comment in
     # _dispatch_local (`None` is a meaningful resolved value here, not
     # "unset", so the override is unconditional). Unlike the local path, the
     # hosted OpenRouter wire's no-thinking directive IS confirmed (its
@@ -2893,7 +2889,7 @@ def run_oss_tool_loop(
     rather than raising. Imports the loop + bridge lazily so the router stays
     DB-free.
 
-    ``temperature``/``thinking`` are the ADR 0066 gen-param passthrough
+    ``temperature``/``thinking`` are the capability tiers + placement chains gen-param passthrough
     (:attr:`LlmRequest.temperature` / :attr:`.thinking`, already tier-resolved
     by :func:`dispatch`). ``temperature`` threads straight onto the client —
     ``None`` (the ``MEDIUM``/``BIG``/``FRONTIER`` tier default)
@@ -3043,7 +3039,7 @@ def _error_result(exc: ClaudeProcessError, *, model: str, tier: Tier) -> LlmResu
         interrupted=rc is not None and rc >= 128,
         # A wall-clock timeout is a transient unavailability → paused (retry),
         # so a claude-only rung (e.g. FRONTIER) waits rather than parking the
-        # todo (ADR 0066 §5a). A non-timeout ClaudeProcessError (non-zero exit /
+        # todo. A non-timeout ClaudeProcessError (non-zero exit /
         # missing binary) stays a semantic error, as before.
         paused=getattr(exc, "timed_out", False),
     )

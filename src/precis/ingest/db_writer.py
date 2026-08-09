@@ -120,7 +120,7 @@ class PaperToWrite:
     # PDF's Info dict to embed the resolved DOI. Each entry becomes an
     # extra ``ref_identifiers`` row of kind ``pdf_sha256`` pointing at
     # this ref, so re-ingesting *either* byte sequence short-circuits
-    # the fast path. See ADR 0014.
+    # the fast path.
     pdf_sha256_aliases: list[str] = field(default_factory=list)
 
     # External IDs (any combination; missing ones are skipped)
@@ -550,7 +550,7 @@ def register_aliases_and_maybe_upgrade(
             "VALUES (%s, %s, %s, %s) ON CONFLICT (id_kind, id_value) DO NOTHING",
             ("content_hash", paper.content_hash, existing_ref_id, paper.provider),
         )
-    # Historical aliases the patch-write-back path collected (ADR 0014).
+    # Historical aliases the patch-write-back path collected.
     for alias in paper.pdf_sha256_aliases:
         if not alias or alias == paper.pdf_sha256:
             continue

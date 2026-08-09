@@ -1,4 +1,4 @@
-"""Tests for the generic axis classifier runner (ADR 0047 §3, ``workers/axis_pass.py``).
+"""Tests for the generic axis classifier runner (``workers/axis_pass.py``).
 
 DB-backed (real ``refs``/``chunks``/``ref_tags``/``chunk_tags`` via the
 ``store`` fixture) with a fake LLM client — no network. Exercises real axis
@@ -513,7 +513,7 @@ def test_dispatch_raise_on_ref_level_axis_is_not_reclaimed_next_sweep(
 
 class TestPromptPreview:
     """``prompt_preview`` — the ``/categorizers`` hover popover's source of
-    truth (#5, follows ADR 0068's per-topic control). Must reuse
+    truth (#5, follows per-topic classify gating's per-topic control). Must reuse
     ``_build_ref_prompt``/``_build_chunk_prompt`` so the preview can't drift
     from what the pass actually sends."""
 

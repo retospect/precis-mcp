@@ -139,7 +139,7 @@ def _deep_context(store: Store) -> dict[str, str]:
 
 
 def _deep_body(ctx: AssemblyContext) -> str:
-    """The deep-reviewer-specific body (ADR 0038 step 3).
+    """The deep-reviewer-specific body.
 
     Everything up to the shared abbreviations + footer blocks: the header,
     the drill-in note, both live-data sections (read from ``ctx.extras``),
@@ -198,7 +198,7 @@ continuity; asa-bot's preamble surfaces recent memories so a good
 narrative gets quoted back in chat."""
 
 
-#: The deep-review prompt as an ordered module list (ADR 0038 step 3):
+#: The deep-review prompt as an ordered module list:
 #: the reviewer-specific body, then the two SHARED trailing blocks
 #: (abbreviations + only-put-is-a-gripe footer) authored once in
 #: :mod:`precis.workers.review`.
@@ -268,7 +268,7 @@ def _build_prompt(store: Store) -> str:
     return _review_build_prompt(DEEP_REVIEW, store)
 
 
-# The reviewer routes through the LLM seam (ADR 0046 unit 4b), so tests
+# The reviewer routes through the LLM seam, so tests
 # patch ``precis.utils.llm.router.call_claude_agent`` (the wrapper the
 # provider calls) rather than this module — no late re-export needed.
 

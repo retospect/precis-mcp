@@ -61,7 +61,7 @@ class TestPure:
                 cost_usd=None,
             )
 
-        # propose_fix routes through the ADR 0046 router (unit 4b); stub the
+        # propose_fix routes through the LLM routing seam router (unit 4b); stub the
         # subprocess helper the MEDIUM/claude_p transport wraps, so the
         # real dispatch → ClaudePProvider → result_from_claude_p path runs and
         # LlmResult.data carries the parsed dict.

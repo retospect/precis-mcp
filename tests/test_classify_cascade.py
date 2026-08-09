@@ -1,4 +1,4 @@
-"""Tests for the ADR 0047 chunk-tag classifier cascade (``workers/classify.py``).
+"""Tests for the controlled chunk tagging chunk-tag classifier cascade (``workers/classify.py``).
 
 DB-backed (real ``chunks``/``chunk_tags`` via the ``store`` fixture) with a
 fake LLM client — no network. Covers the escalate-client wiring: the Tier 2

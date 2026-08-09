@@ -20,8 +20,8 @@ Discovery layer (F20)
 ---------------------
 
 Per-chunk KeyBERT keywords supersede the dropped ``ref_segments`` /
-``ref_segment_sentences`` tables (migration ``0003_drop_legacy_segments``;
-ADR 0018 status note): ``chunks.keywords TEXT[]`` (canonical lower-case,
+``ref_segment_sentences`` tables (migration
+``0003_drop_legacy_segments``): ``chunks.keywords TEXT[]`` (canonical lower-case,
 GIN-indexed) + ``chunks.keywords_meta JSONB`` (versioned envelope of
 short/long pairs + KeyBERT scores), filled by the ``chunk_keywords`` worker
 (:mod:`precis.workers.chunk_keywords`). The claim query re-claims any chunk

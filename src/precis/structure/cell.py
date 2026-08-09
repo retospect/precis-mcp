@@ -1,4 +1,4 @@
-"""The periodic cell — lattice + per-axis PBC (ADR 0043 §3).
+"""The periodic cell — lattice + per-axis PBC.
 
 The cell is three lattice vectors ``a, b, c`` (rows of a 3×3 matrix, Å) plus a
 per-axis ``pbc`` flag triple. Crystals tile by **pure translation** (PBC), never
@@ -8,7 +8,7 @@ fractional↔Cartesian and the **minimum-image convention** (MIC) live.
 The MIC search is *exact for any cell shape* (including triclinic): it reduces
 the fractional delta per periodic axis and then checks the 3×3×3 block of
 surrounding images, returning both the nearest distance and the integer image
-offset on ``j`` (the ``to_jimage`` of ADR 0043 §4.1).
+offset on ``j`` (the ``to_jimage`` of the structure atomistic IR).
 """
 
 from __future__ import annotations
@@ -64,7 +64,7 @@ class Cell:
     def wrap(self, frac: np.ndarray) -> np.ndarray:
         """Wrap a fractional position into ``[0,1)`` on periodic axes only.
 
-        Implements ADR 0043 §3's "place-outside-wraps-inside": a position given
+        Implements the structure atomistic IR's "place-outside-wraps-inside": a position given
         outside the cell lands inside, in the right place.
         """
         f = np.asarray(frac, dtype=float).copy()

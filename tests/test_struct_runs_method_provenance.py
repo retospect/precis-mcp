@@ -1,6 +1,6 @@
 """0084_struct_runs_method_provenance.sql — provenance/method columns land on
 a fresh DB, external rows are distinguishable from computed ones, and the
-cache-hit index no longer matches an external row (ADR 0053 §4)."""
+cache-hit index no longer matches an external row."""
 
 from __future__ import annotations
 

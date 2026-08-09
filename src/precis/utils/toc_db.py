@@ -26,7 +26,7 @@ Output shape — TOON table, always ``(handle, keywords)``::
     Next: drill a cluster for finer structure           (optional)
       get(kind='paper', id='pa5~15..29', view='toc')
 
-The ``handle`` is the record's ADR-0036 universal handle (``pa<id>``),
+The ``handle`` is the record's universal handle (``pa<id>``),
 so every row + drill-in hint is a copy-pasteable ``get`` id. The
 legacy ``slug~pos`` form is NOT emitted here — a cite-key slug
 (``vaswani17``) round-trips on input, but the kind-prefixed
@@ -50,7 +50,7 @@ re-clusters the sub-range into sub-groups whenever it can still split
 (≥ ``2 * _MIN_CLUSTER_SIZE`` chunks), targeting a shallow branching
 factor (``_DRILL_GROUP_SIZE``) instead of the log-scaled top-level
 table. Papers have no heading tree, so this recursive keyword
-clustering *is* the hierarchy (ADR-0018/F20). Only a range too small
+clustering *is* the hierarchy. Only a range too small
 to split further shows one row per chunk. For the actual chunk text,
 call ``get(...)`` without ``view='toc'``.
 """
@@ -121,7 +121,7 @@ def render_from_store(
 ) -> str:
     """Render the TOC body for ``ref_id``, optionally scoped to a range.
 
-    ``handle`` is the record's universal handle (``pa<id>``, ADR 0036);
+    ``handle`` is the record's universal handle (``pa<id>``);
     every rendered row + drill-in hint prefixes it so the output is a
     copy-pasteable ``get`` id. ``scope`` restricts to body chunks inside
     the inclusive ``(lo, hi)`` position range. Without it, the full body
@@ -330,7 +330,7 @@ def _should_cluster(n: int, scope: tuple[int, int] | None) -> bool:
     scannable leaf (``> 2 * _DRILL_GROUP_SIZE``), so double-clicking a
     group walks a hierarchy instead of flattening to singletons (the
     23-chunk sub-range that motivated this; papers have no heading tree,
-    so hierarchy is recursive keyword clustering, ADR-0018/F20). Below
+    so hierarchy is recursive keyword clustering). Below
     that a drilled range is its own leaf — show its chunks directly.
     """
     if scope is None:

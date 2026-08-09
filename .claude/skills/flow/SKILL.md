@@ -28,15 +28,16 @@ manufacture ceremony for a small change.
    guidance already uses; `flow` doesn't add a new bar.
 
 2. **Spec.** For anything architectural, multi-file, ambiguous, or where more
-   than one reasonable approach exists — write it down before coding. Mint a
-   `docs/proposals/*.md` via the `scaffold` agent (numbering/boilerplate,
-   never content) and fill in the actual decision yourself; this is the Plan
-   this repo's plan-mode workflow already produces — put it in a proposal
-   file when the work will span more than one session, so it survives
-   compaction.
+   than one reasonable approach exists — write it down before coding. The
+   item lives in `docs/backlog/<slug>.md`: start as an idea (a few lines),
+   grow the spec **in the same file** (front-matter `status: draft` per
+   `docs/backlog/TEMPLATE.md`; mint via the `scaffold` agent —
+   boilerplate, never content). Put the plan there when the work will span
+   more than one session, so it survives compaction.
 
-3. **Spec review.** Spawn `ready` against the proposal before marking it
-   `status: ready`. Iterate on blockers; advisories are your call. Skip this
+3. **Spec review.** Spawn `ready` against the `docs/backlog/` spec before
+   flipping `status: draft` → `ready` (the fixer's pick signal; branch
+   `fix/<slug>`). Iterate on blockers; advisories are your call. Skip this
    for a spec you and the user finalized together in conversation (e.g. via
    `ExitPlanMode`) — `ready` exists for specs nobody adversarially checked yet.
 
@@ -46,8 +47,10 @@ manufacture ceremony for a small change.
    (sonnet) per the Agent-sizing table in `CLAUDE.md` — that table, not this
    skill, is the authority on tiering.
 
-5. **Ship.** `/land` (ship only) or `/go` (ship + deploy). As of this
-   session, **both already own the next two stages internally** — do not
+5. **Ship.** `/land` (ship only) or `/go` (ship + deploy). On ship, fold
+   surviving truth into the owning package docstring and **delete the
+   backlog item** in the same commit (`docs/README.md` §Backlog lifecycle).
+   **Both commands already own the next two stages internally** — do not
    spawn `reviewer` or `issue-closer` yourself before calling one of these:
    - **Code review** is size/risk-gated inside `/land`/`/go` (their own
      "Review risky diffs before shipping" step) — it fires automatically on a
@@ -56,8 +59,8 @@ manufacture ceremony for a small change.
      (e.g. mid-session, before you're ready to land).
    - **Closing resolved issues** is a background `issue-closer` spawn inside
      `/land`/`/go`, after a green ship — it checks the shipped diff against
-     open gripes/`OPEN-ITEMS.md` and closes what it's confident this ship
-     fixed, then relays a one-line note. Nothing else to do here.
+     open gripes/`docs/backlog/` items and closes what it's confident this
+     ship fixed, then relays a one-line note. Nothing else to do here.
 
 6. **Report.** `/land`/`/go`'s own closing steps (residual harvest, then
    summarize-and-handoff) already tell the user what shipped and what's left.

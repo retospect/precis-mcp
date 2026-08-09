@@ -11,7 +11,7 @@ v2 schema notes:
 - ``refs.id`` was renamed to ``refs.ref_id``; ``_REFS_COLS`` aliases
   it back to ``id`` so callers' tuple shape stays stable.
 - ``refs.slug`` was removed; slugs live in ``ref_identifiers`` with
-  ``id_kind='cite_key'`` per ADR 0008. ``insert_ref`` writes the
+  ``id_kind='cite_key'`` (slug-as-identifier). ``insert_ref`` writes the
   identifier row when ``slug is not None``; ``get_ref`` /
   ``fetch_ref_ids_by_slugs`` JOIN through ``ref_identifiers`` for
   slug lookups.
@@ -196,11 +196,11 @@ class RefsMixin:
             row = c.execute(insert_sql, insert_params).fetchone()
             assert row is not None
             ref_id = int(row[0])
-            # ADR 0036: no handle minting — a universal handle is computed
+            # no handle minting — a universal handle is computed
             # from ``(kind, ref_id)`` on demand (handle_registry.format_handle),
             # never stored.
             if slug is not None:
-                # Routing decision (ADR 0008 + plan): every slug-addressed
+                # Routing decision: every slug-addressed
                 # kind uses id_kind='cite_key' uniformly so the
                 # correlated subquery in ``_REFS_COLS`` resolves with a
                 # single predicate.
@@ -228,7 +228,7 @@ class RefsMixin:
     def resolve_handle(
         self, handle: str, *, conn: Connection | None = None
     ) -> ResolvedHandle | None:
-        """Resolve a universal handle (ADR 0036) to its ref or chunk.
+        """Resolve a universal handle to its ref or chunk.
 
         The handle is computed, not stored: its 2-char type code selects a
         table + kind and the decimal body is the row's primary key. A record
@@ -238,7 +238,7 @@ class RefsMixin:
         ``td5`` must really be a todo). Returns ``None`` for anything that is
         not a well-formed, live, kind-matching handle, so the caller falls
         through to legacy id resolution untouched — including the file-backed
-        (``sk``/``py``) and other-table (``tg``) codes, the legacy ADR-0033
+        (``sk``/``py``) and other-table (``tg``) codes, the legacy the draft editable-document model
         draft ``¶`` chunk handles, plain slugs, and bare numerics.
         """
         parsed = handle_registry.parse(handle)
@@ -259,7 +259,7 @@ class RefsMixin:
             row = c.execute(sql, (pk,)).fetchone()
             if row is None:
                 # Merged / superseded? Follow ``meta.superseded_by`` to the
-                # live survivor and redirect there transparently (ADR 0036
+                # live survivor and redirect there transparently (universal handles
                 # handles outlive a dedup merge). ``redirected_from`` carries
                 # the original handle so the caller can nudge the agent.
                 survivor = self.follow_supersede(pk, conn=c)
@@ -1050,7 +1050,7 @@ class RefsMixin:
     def folder_subtree_ids(self, root_ref_id: int) -> set[int]:
         """All live ref_ids in the placement subtree under ``root_ref_id``.
 
-        Inclusive of the root. The ADR 0045 ``folder=`` search scope:
+        Inclusive of the root. The folder placement roles ``folder=`` search scope:
         a recursive CTE over the indexed ``parent_id`` column, so
         "everything under folder X" is one cheap walk (the corpus is
         ~14k refs; folder trees are shallow by policy).

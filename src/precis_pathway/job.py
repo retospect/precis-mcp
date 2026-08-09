@@ -3,7 +3,7 @@ the pinned compute node and write the result back onto its `pathway` ref.
 
 This is the routing seam (slice 1). The `pathway` handler mints one of these
 jobs (`meta.executor='ssh_node'`, `meta.params.target_node=<node>`, parented on
-the pathway ref via the compute lane, ADR 0044). The `ssh_node` worker pass on
+the pathway ref via the compute lane). The `ssh_node` worker pass on
 that node — and only that node, per the target_node claim gate — claims it and
 invokes `dispatch()` here, which runs autocatpath **in-process** (autocatpath +
 the ML backend are installed in that node's worker venv, via the

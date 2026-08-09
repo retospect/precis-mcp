@@ -34,7 +34,7 @@
       <div class="text-amber-700">⚠ [{{ f.kind }}] {{ f.message }}</div>
       {% endfor %}
     </div>
-    {# ── element → chunk bindings (ADR 0057) ── #}
+    {# ── element → chunk bindings ── #}
     <div id="fig-bindings" class="mt-2 flex flex-wrap gap-1 text-[11px]{% if not bindings %} hidden{% endif %}">
       {% for b in bindings %}
       <span class="inline-flex items-center gap-1 rounded bg-sky-50 border border-sky-200 px-1.5 py-0.5 text-sky-800"
@@ -152,7 +152,7 @@
           div.textContent = '⚠ [' + f.kind + '] ' + f.message;
           lints.appendChild(div);
         });
-        // Refresh the element→chunk binding chips (ADR 0057).
+        // Refresh the element→chunk binding chips.
         if (Array.isArray(d.bindings)) {
           binds.innerHTML = '';
           binds.classList.toggle('hidden', d.bindings.length === 0);

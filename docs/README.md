@@ -22,8 +22,6 @@ glossary terms, and prefer deleting to archiving — git is the history,
 There is no `docs/design/`, `docs/proposals/`, `docs/decisions/`, or
 `OPEN-ITEMS.md` — plans and decisions either live as backlog items (future),
 package docstrings (present truth + rationale), or git history (past).
-*(Consolidation in progress: directories still present are being folded —
-this table is the target and the tie-breaker.)*
 
 ## Reading order
 

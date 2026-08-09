@@ -51,7 +51,7 @@ def _idem_lock_key(idem: str) -> int:
 _JOB_SUMMARY_KIND = "job_summary"
 _JOB_EVENT_KIND = "job_event"
 
-# A job's parent is polymorphic (ADR 0044). ``todo`` is the intent lane
+# A job's parent is polymorphic. ``todo`` is the intent lane
 # (rotation + ``child-failed`` bubble); the artifact kinds are the compute
 # lane — a derived, cache-fillable build step (DFT relax / route / mesh /
 # compile) owned by its subject ref, not a task. Behaviour branches on the
@@ -66,7 +66,7 @@ JOB_PARENT_KINDS: frozenset[str] = frozenset(
     {"todo", "structure", "cad", "draft", "quest"}
 )
 
-#: ADR 0044 extension (good-search-coordinator §Substrate fixes #3): a
+#: The intent-vs-compute job lanes extension (good-search-coordinator §Substrate fixes #3): a
 #: ``kind='job'`` parent is additionally allowed, but ONLY when that
 #: parent job is itself a coordinator (``meta.executor ==
 #: 'coordinator'``) — a campaign's fan-out children hang under the
@@ -109,7 +109,7 @@ class JobHandler(NumericRefHandler):
 
     def _plugin_owner_kinds(self) -> frozenset[str]:
         """Kinds that opted into owning compute-lane jobs via
-        ``KindSpec.can_own_jobs`` (ADR 0044 plugin extension). Lets a
+        ``KindSpec.can_own_jobs`` (plugin extension). Lets a
         plugin kind (e.g. autocatpath's ``pathway``) own its derived build
         job without a core edit to :data:`JOB_PARENT_KINDS`. Empty when
         the hub isn't reachable (defensive — falls back to built-ins)."""
@@ -154,8 +154,8 @@ class JobHandler(NumericRefHandler):
         # dispatch worker re-mints a fresh attempt. ``model='sonnet'``
         # additionally swaps the parent's ``meta.llm_tier`` first, which
         # is what the next tick dispatches with; ``select={...}`` does the
-        # same for the optional structured ``meta.llm_select`` sibling
-        # (ADR 0066). Handled before the generic ``id is not None`` /
+        # same for the optional structured ``meta.llm_select`` sibling.
+        # Handled before the generic ``id is not None`` /
         # ``mode`` rejections below.
         if mode == "retry":
             return self._retry_job(id=id, model=model, select=select)
@@ -277,7 +277,7 @@ class JobHandler(NumericRefHandler):
 
         # ── tree-position guard (Slice 5: jobs hang off an owner ref) ──
         # Every new job must declare a parent: a ``todo`` (intent lane —
-        # rotation + the ``child-failed`` bubble) or, per ADR 0044, the
+        # rotation + the ``child-failed`` bubble) or, the
         # subject artifact it builds (compute lane — DFT relax / route /
         # compile, owned by the structure/cad/draft, not a task). Orphan
         # jobs are a leftover from the pre-tree v1 substrate. The check
@@ -306,7 +306,7 @@ class JobHandler(NumericRefHandler):
             ) from exc
         # Resolve + kind-check the parent. Accepts a todo, a build
         # subject (:data:`JOB_PARENT_KINDS`), or a coordinator job
-        # (the ADR 0044 extension — see
+        # (the intent-vs-compute job lanes extension — see
         # :data:`_JOB_PARENT_KINDS_WITH_COORDINATOR`); the returned kind
         # is what the failure-bubble later branches on. Same
         # NotFound/BadInput shape as the todo-tree guard for missing /
@@ -328,7 +328,7 @@ class JobHandler(NumericRefHandler):
                 raise BadInput(
                     f"parent_id={parent_int} is a job with executor="
                     f"{parent_executor!r}; a job may only parent on a "
-                    "coordinator job (ADR 0044 extension); ordinary jobs "
+                    "coordinator job (extension); ordinary jobs "
                     "don't own child trees",
                     next=(
                         "parent the child on the coordinator job that owns "
@@ -458,7 +458,7 @@ class JobHandler(NumericRefHandler):
         knob.
 
         ``select`` (optional) is the structured ``meta.llm_select`` sibling
-        (ADR 0066) — placement/thinking/effort/temperature — validated by
+         — placement/thinking/effort/temperature — validated by
         :func:`~precis.handlers._todo_guards.check_llm_select_meta` and
         written onto the parent alongside ``llm_tier`` when a ``model``
         change also lands. When ``model`` is given but ``select`` isn't,

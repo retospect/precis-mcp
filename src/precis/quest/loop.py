@@ -73,7 +73,7 @@ from precis.quest.tick import quest_loop_enabled
 
 log = logging.getLogger(__name__)
 
-#: Default LLM tier for the coordinator loop's review/propose call. ADR 0066
+#: Default LLM tier for the coordinator loop's review/propose call. Capability tiers + placement chains
 #: Phase C retired the location-coupled ``local-big`` tier — a served OSS
 #: model still backs ``big`` when the backend/chain routes there.
 _DEFAULT_TIER = "big"
@@ -88,7 +88,7 @@ _DEFAULT_NODE_ENV = "PRECIS_QUEST_LOOP_NODE"
 _ORPHAN_GRACE_ENV = "PRECIS_QUEST_LOOP_ORPHAN_GRACE_S"
 _DEFAULT_ORPHAN_GRACE_S = 600
 
-#: RC1 (ADR 0065) — a loop that rested on real *failure* (STATUS:failed,
+#: RC1 — a loop that rested on real *failure* (STATUS:failed,
 #: distinct from a reboot-orphan's ``cancelled`` or a dry/punt/RC2 rest's
 #: ``succeeded``) is not re-minted immediately: it backs off for an
 #: exponentially-growing window keyed on how many consecutive failed rests
@@ -132,7 +132,7 @@ def _env_int(name: str, default: int) -> int:
 def _failed_rest_cooldown_active(
     store: Any, quest_id: int, *, base_s: int, max_s: int
 ) -> bool:
-    """RC1 (ADR 0065): is ``quest_id``'s loop inside its failed-rest backoff?
+    """RC1: is ``quest_id``'s loop inside its failed-rest backoff?
 
     Reads the quest's ``quest_tick:<id>`` coordinator loops most-recent-first.
     The **most recent** loop's terminal STATUS is the rest-reason discriminator
@@ -342,7 +342,7 @@ def reconcile_quest_loops(
     before the ensure: a reboot-orphaned loop (non-terminal, lease provably
     expired) is cancelled so its idem no longer blocks the re-mint below, and
     the quest self-heals in this pass. A quest whose most-recent loop rested
-    ``failed`` (RC1, ADR 0065) is instead held out of the re-mint for an
+    ``failed`` (RC1) is instead held out of the re-mint for an
     escalating cooldown (:func:`_failed_rest_cooldown_active`). Returns a summary
     dict: ``cooled`` (quests cooled to dormant), ``reaped`` (orphaned loops
     cancelled this pass), ``backoff`` (active quests whose re-mint was skipped

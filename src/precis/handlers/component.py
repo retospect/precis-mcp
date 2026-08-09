@@ -899,7 +899,7 @@ class ComponentHandler(Handler):
         """Recursively flatten the assembly tree rooted at ``ref_id`` to
         ``(leaf_ref_id, effective qty)`` pairs, multiplying qty down each
         path. A component with no ``contains`` children is a leaf by
-        definition — the PCB-leaf boundary (ADR 0071): a PCBA is one line
+        definition — the PCB-leaf boundary: a PCBA is one line
         item here, the rollup never descends into its internals."""
         children = self.store.component_contains_children(ref_id)
         if not children:

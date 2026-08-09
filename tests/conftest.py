@@ -675,7 +675,7 @@ def id_of(body: str) -> int:
     future trailer reword (Slice-3 ack changes, etc.) is a one-line
     fix instead of a sweep.
 
-    ADR 0036: the create-ack now reads ``created <kind> <handle>.``
+    Universal handles: the create-ack now reads ``created <kind> <handle>.``
     (e.g. ``created memory me158.``). Prefer the first record handle in
     the ack's leading line; fall back to the legacy ``id=N`` form (still
     used by update/tag acks and code-less kinds).
@@ -691,7 +691,7 @@ def id_of(body: str) -> int:
 
 
 def record_handle(store: Store, slug: str, *, kind: str = "paper") -> str:
-    """The ADR 0036 universal record handle (e.g. ``pa123``) for a
+    """The universal record handle (e.g. ``pa123``) for a
     slug-addressed ref — the form output now emits for the record itself."""
     from precis.utils import handle_registry
 
@@ -701,7 +701,7 @@ def record_handle(store: Store, slug: str, *, kind: str = "paper") -> str:
 
 
 def chunk_handle(store: Store, slug: str, *, kind: str = "paper", ord: int = 0) -> str:
-    """The ADR 0036 universal chunk handle (e.g. ``pc40``) for a
+    """The universal chunk handle (e.g. ``pc40``) for a
     slug-addressed ref's body chunk at ``ord``.
 
     The cutover replaced the legacy ``slug~pos`` in search/read output with

@@ -1,4 +1,4 @@
-"""Pure unit tests for the PCB eyes (ADR 0042 §8) — geometry, ratsnest +
+"""Pure unit tests for the PCB eyes — geometry, ratsnest +
 crossing count, DRC-lite, signal trace, measures. No DB.
 """
 

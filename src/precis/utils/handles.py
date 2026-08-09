@@ -1,4 +1,4 @@
-"""Opaque chunk handles for drafts (ADR 0033 §1).
+"""Opaque chunk handles for drafts.
 
 A draft chunk's only exposed anchor is a minted, fixed-length, opaque
 **handle**: a random 6-character base-58 string (Bitcoin alphabet,

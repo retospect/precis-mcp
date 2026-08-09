@@ -94,7 +94,7 @@ def _run_cron_tick(store: Any, batch_size: int) -> None:
     """Fire due schedule ticks — the §15i cadence, run in-process.
 
     Historically fired the retired ``kind='cron'`` engine
-    (:func:`precis.cli.cron.fire_due_cron`); ADR 0061 folded that push
+    (:func:`precis.cli.cron.fire_due_cron`); the cron-into-recurring fold moved that push
     mechanism onto recurring todos (``meta.schedule`` set — ``meta.deliver``
     + one-shot ``meta.schedule.at``), so this cadence now shares
     :func:`precis.workers.schedule.worker.run_schedule_pass` with the

@@ -28,8 +28,8 @@ from asa_bot.secrets import reveal_secret
 class SlackConfig:
     """Slack app credentials + behavioral knobs.
 
-    asa resolves each token independently via env → precis DB vault (ADR
-    0055) → file, mirroring ``asa_bot.config.load_discord_token`` — see
+    asa resolves each token independently via env → precis DB vault →
+    file, mirroring ``asa_bot.config.load_discord_token`` — see
     :func:`load_slack_tokens`.
     """
 

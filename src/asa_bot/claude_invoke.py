@@ -5,7 +5,7 @@ assistant text + per-turn metadata (stop_reason, token counts).
 Streams progress events out so the Discord progress indicator can
 update.
 
-Phase 3 of the router-migration plan (ADR 0046 follow-up): this used
+Phase 3 of the router-migration plan (follow-up): this used
 to hand-roll ``asyncio.create_subprocess_exec`` directly; it now builds
 a :class:`~precis.utils.llm.router.LlmRequest` and calls
 :func:`~precis.utils.llm.router.dispatch_async`, which streams through

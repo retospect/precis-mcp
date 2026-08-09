@@ -106,7 +106,7 @@ meaningful, so don't skip them from keyword extraction.
 
 ## See also
 
-- ADR 0018 — original (superseded) discovery-layer rationale
+- the persistent-discovery-layer decision (git-only) — original, superseded rationale
 - `storage-v2` (git-only) §"Discovery layer" — F20-amended schema
 - `src/precis/workers/chunk_keywords.py` — the worker (module header
   is the canonical algorithm reference)

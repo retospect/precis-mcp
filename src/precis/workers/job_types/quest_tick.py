@@ -4,7 +4,7 @@ One coordinator job per quest drives the autonomous loop **indefinitely and
 event-driven** (no cron): each active slice
 
 1. **harvests** finished sims (barriers → the frontier),
-2. runs the **LLM review + propose** step (local model via the ADR-0046 router
+2. runs the **LLM review + propose** step (local model via the LLM routing seam router
    at ``tier``) — which rewrites the dossier, does the **lit-search**, and emits
    the next batch of candidate catalysts,
 3. **materialises + dispatches** those candidates' barrier/relax sims, then

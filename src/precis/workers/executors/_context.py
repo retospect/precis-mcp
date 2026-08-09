@@ -93,7 +93,7 @@ class DispatchContext:
 
         The coordinator fan-out primitive (good-search design §Gaps 1):
         a campaign slice spawns triage / verify children under itself
-        (``parent_id = self.ref_id``, riding the ADR 0044 job-parent
+        (``parent_id = self.ref_id``, riding the intent-vs-compute job lanes job-parent
         extension — the parent must therefore be a *coordinator* job or
         ``JobHandler.put`` rejects) and later observes their terminal
         status on resume. Routed through :meth:`JobHandler.put` so

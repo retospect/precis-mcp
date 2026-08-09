@@ -215,7 +215,7 @@ def _load_card_forge() -> JobTypeSpec:
 
 def _load_struct_relax() -> JobTypeSpec:
     # Energy-rung relax on the GPU node via ssh_node; sinks to the §23.16
-    # run-cube (ADR 0043 §23.12). Runs via plugin dispatch.
+    # run-cube. Runs via plugin dispatch.
     from precis.workers.job_types import struct_relax
 
     return struct_relax.SPEC
@@ -239,7 +239,7 @@ def _load_cad_propose() -> JobTypeSpec:
 
 def _load_diagram_propose() -> JobTypeSpec:
     # One figure/mermaid draw-with-me turn against the model — builds/verifies
-    # the diagram from seeds and reconciles node→chunk bindings (ADR 0057).
+    # the diagram from seeds and reconciles node→chunk bindings.
     from precis.workers.job_types import diagram_propose
 
     return diagram_propose.SPEC
@@ -255,7 +255,7 @@ def _load_cad_discuss() -> JobTypeSpec:
 
 def _load_sandbox_run() -> JobTypeSpec:
     # Open-ended coding task in a throwaway container, run by the
-    # claude_docker poll executor (ADR 0048).
+    # claude_docker poll executor.
     # The executor pass is gated on PRECIS_SANDBOX_ENABLED, but the
     # job_type registers unconditionally so put/dispatch validation and
     # error messages work everywhere (a put on a non-sandbox host is

@@ -1,5 +1,5 @@
 """Layer-1 + Layer-2 document context for the draw-with-me loop (the
-diagram-propose design, extending ADR 0057).
+diagram-propose design, extending diagram-chunk binding).
 
 A figure is usually *part of a document*. When it is, the drawer should open
 with the owning draft in front of it — not guess from the figure title. This
@@ -140,7 +140,7 @@ def owning_document(store: Any, figure_ref_id: int) -> tuple[int, int] | None:
     """Resolve ``(draft_ref_id, anchor_chunk_id)`` for a figure, or ``None``.
 
     Defensive: a store without :meth:`figure_owning_draft` (a fake, or a build
-    predating ADR 0058) or a free-standing figure both read as ``None`` — the
+    predating the figure medium axis) or a free-standing figure both read as ``None`` — the
     caller then supplies no document context and the loop behaves as before.
     """
     fn = getattr(store, "figure_owning_draft", None)
@@ -214,8 +214,7 @@ def pick_paragraphs(
 
 
 def _default_expand(store: Any, handle: str) -> str:
-    """Fisheye a draft chunk via the canonical renderer (verbatim + neighbours,
-    ADR 0051 §6). Imported lazily so this module stays import-cheap and testable
+    """Fisheye a draft chunk via the canonical renderer (verbatim + neighbours). Imported lazily so this module stays import-cheap and testable
     without the eye-render stack."""
     from precis.utils.eye_render import render_eye
 

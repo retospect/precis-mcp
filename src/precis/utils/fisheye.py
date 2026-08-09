@@ -1,4 +1,4 @@
-"""The fisheye neighborhood render (ADR 0051 §6).
+"""The fisheye neighborhood render.
 
 The extent ladder separates *how much of the target* from *how much of the
 surroundings* (§ C0). The content-only rungs render the node **alone** —

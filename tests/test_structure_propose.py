@@ -1,4 +1,4 @@
-"""``structure_propose`` job_type — the propose-only LLM edit (ADR 0043 bundle).
+"""``structure_propose`` job_type — the propose-only LLM edit (bundle).
 
 The claude subprocess is stubbed via the module-level ``AGENT`` hook so the
 prompt-build → parse → dry-run → job_result write-back runs offline.

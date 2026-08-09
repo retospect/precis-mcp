@@ -28,7 +28,7 @@ _OTHER_ERR = (
     '{"type":"result","subtype":"error_during_execution","is_error":true,'
     '"result":"boom"}'
 )
-# The --max-budget-usd cap plan_tick now sets (ADR 0046): a trailing result
+# The --max-budget-usd cap plan_tick now sets: a trailing result
 # event whose subtype names the budget exhaustion. Like max_turns, it is a
 # *resumable* exhaustion — the tick did work and a fresh one continues.
 _BUDGET = (
@@ -54,7 +54,7 @@ def test_stream_terminal_reason_other_error_passthrough() -> None:
     assert stream_terminal_reason(_OTHER_ERR) == "error_during_execution"
 
 
-# ── _resume_reason: budget exhaustion is resumable (ADR 0046) ──────────
+# ── _resume_reason: budget exhaustion is resumable ──────────
 
 
 def test_resume_reason_max_turns() -> None:
@@ -197,7 +197,7 @@ def test_wall_clock_timeout_resumes_without_bubbling(store: Store) -> None:
 
 
 def test_budget_exhaustion_resumes_without_bubbling(store: Store) -> None:
-    """A --max-budget-usd cutoff (ADR 0046) is a resumable exhaustion, handled
+    """A --max-budget-usd cutoff is a resumable exhaustion, handled
     exactly like max-turns: STATUS:succeeded, no bubble, streak ticks up, and
     the audit reads 'resumed (hit budget…)'."""
     parent_id = _mk_parent(store)

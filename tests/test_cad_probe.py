@@ -1,4 +1,4 @@
-"""Probe ladder — point / ray / arc / section / draft (ADR 0041 §6, §11).
+"""Probe ladder — point / ray / arc / section / draft.
 
 Exercised against the canonical flange: a Ø50×8 plate, a Ø16 centre bore,
 and six Ø5 bolt holes on an r=18 polar circle.

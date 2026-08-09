@@ -1,4 +1,4 @@
-"""CadHandler — the parametric solid-model kind (ADR 0041).
+"""CadHandler — the parametric solid-model kind.
 
 A ``cad`` design is a slug-addressed ref whose body is a flat node set
 (one ``cad_node`` chunk per element). The agent authors it as a small
@@ -91,7 +91,7 @@ class CadHandler(Handler):
         kind="cad",
         title="CAD",
         description=(
-            "Parametric solid-model design (ADR 0041). put creates/replaces a "
+            "Parametric solid-model design. put creates/replaces a "
             "design from a text source (one node per line: '<name> <add|cut|"
             "intersect> <config> [@x,y,z] [rot:..] [polar:nNrR|linear:..]', "
             "config e.g. cyl:r3h12 box:w40d20h10); get lists designs, shows a "
@@ -120,7 +120,7 @@ class CadHandler(Handler):
         self.store = hub.store
         self.embedder = hub.embedder
 
-    # ── link: placement only (ADR 0045) ─────────────────────────────
+    # ── link: placement only ─────────────────────────────
 
     def link(  # type: ignore[override]
         self,
@@ -135,7 +135,7 @@ class CadHandler(Handler):
 
         CAD designs have no stored-link surface (yet) — the only
         accepted relation is ``parent``, a ``refs.parent_id`` write
-        into a ``kind='folder'`` container (ADR 0045).
+        into a ``kind='folder'`` container.
         """
         from precis.handlers._placement import RESERVED_PARENT_REL, place_ref
 
@@ -400,7 +400,7 @@ class CadHandler(Handler):
         page_size: int,
     ) -> list[Any]:
         """The shared leg behind search() and search_hits(): a fused search
-        over the per-design ``card_combined`` chunks (ADR 0041 Amendment 1)."""
+        over the per-design ``card_combined`` chunks."""
         if not (q and q.strip()):
             return []
         if (mode or "").strip().lower() == "lexical":

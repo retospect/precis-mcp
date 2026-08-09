@@ -178,7 +178,7 @@ class Config:
 def load_discord_token(cfg: DiscordConfig) -> str:
     """Resolve the Discord bot token: env → precis DB vault → file.
 
-    Vault reveal (precis ADR 0055) is best-effort — it returns None when the
+    Vault reveal (precis the secrets vault) is best-effort — it returns None when the
     vault is unavailable, so the file path stays the fallback.
     """
     env_val = os.environ.get(cfg.token_env)

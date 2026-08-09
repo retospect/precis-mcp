@@ -1,4 +1,4 @@
-"""Fractional indexing + handle minting (ADR 0033 §§1–2)."""
+"""Fractional indexing + handle minting (the draft editable-document model–2)."""
 
 from __future__ import annotations
 

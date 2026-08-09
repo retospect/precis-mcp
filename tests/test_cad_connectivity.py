@@ -1,4 +1,4 @@
-"""Assembly connectivity graph (ADR 0041 §7).
+"""Assembly connectivity graph.
 
 Who touches whom, the connected bodies parts weld into, a contact path
 between two parts, and — the headline — the *post-cut* correctness that

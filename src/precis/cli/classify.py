@@ -1,5 +1,5 @@
 """``precis classify {role3,topics}`` — targeted-scope drivers for the two
-ADR 0047 / ADR 0060 chunk/paper classifier cascades (``workers/classify.py``,
+Controlled chunk tagging chunk/paper classifier cascades (``workers/classify.py``,
 ``workers/classify_topics.py``).
 
 The worker passes (``--only classify`` / ``--only classify_topics``) sweep the
@@ -86,7 +86,7 @@ def add_parser(subparsers: Any) -> None:
 
     t = csub.add_parser(
         "topics",
-        help="Run the tier-0/tier-1 topic-dossier cascade (ADR 0060) over a "
+        help="Run the tier-0/tier-1 topic-dossier cascade over a "
         "specific set of papers, or --all for the global sweep.",
     )
     _add_scope_args(t, include_all=True)
@@ -140,7 +140,7 @@ def _cmd_role3(store: Store, args: argparse.Namespace) -> None:
         print("classify role3: no papers matched scope")
         return
 
-    # Mirrors cli/worker.py's `classify` pass wiring exactly (ADR 0046
+    # Mirrors cli/worker.py's `classify` pass wiring exactly (the LLM routing seam
     # dispatch seam + the Tier 2 escalate-client shape).
     client = DispatchClient(
         tier=Tier.SMALL,
@@ -200,9 +200,9 @@ def _cmd_topics(store: Store, args: argparse.Namespace) -> None:
 
     # Admin CLI: always sweeps the FULL taxonomy (a deliberate, node-targeted
     # full backfill) — unlike cli/worker.py's rotation `classify_topics` pass,
-    # which filters through per-topic `service_config` gates (ADR 0068).
-    # Shares the dispatch seam (ADR 0046). No escalate client — tier 2 is
-    # unimplemented for topics (ADR 0060's open questions).
+    # which filters through per-topic `service_config` gates.
+    # Shares the dispatch seam. No escalate client — tier 2 is
+    # unimplemented for topics (a topic-dossiers open question).
     client = DispatchClient(
         tier=Tier.SMALL,
         model=os.environ.get("PRECIS_CLASSIFY_TOPICS_MODEL") or "summarizer",

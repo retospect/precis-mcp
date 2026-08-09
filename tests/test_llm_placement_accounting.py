@@ -8,8 +8,7 @@ the ceiling kept filling (~$0.35 a planner tick), and when it tripped it stopped
 the *local* work too. A budget gate that idles a machine you already paid for is
 doing harm, not nothing.
 
-Migration 0112 records `placement`, and the caps exclude `'local'`. The ADR 0066
-§5 breaker already drew this line via `_rung_is_cloud`; these tests pin that the
+Migration 0112 records `placement`, and the caps exclude `'local'`. The capability tiers + placement chains breaker already drew this line via `_rung_is_cloud`; these tests pin that the
 two never drift apart again.
 """
 

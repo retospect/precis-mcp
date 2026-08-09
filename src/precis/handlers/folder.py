@@ -1,9 +1,9 @@
-"""FolderHandler — the organizational container kind (ADR 0045).
+"""FolderHandler — the organizational container kind.
 
 A folder is a plain numeric ref: ``title`` is the name, children are
 the live refs whose ``parent_id`` points at it — the same column the
 todo tree uses (migration 0013 put ``parent_id`` on every ref; only
-todo used it until ADR 0045). No new tables: subtree reads are a
+todo used it until folder placement roles). No new tables: subtree reads are a
 recursive CTE over the indexed column, a move is one column write.
 
 Containment is single-parent and shallow by policy (1-2 levels,
@@ -12,7 +12,7 @@ artifact kinds only — ``KindSpec.role == 'artifact'``). Corpus kinds
 alert, job, …) reach folders only by promotion into an authored note.
 
 The placement surface is the reserved virtual ``parent`` relation
-(ADR 0027, generalized): each placeable handler intercepts
+(generalized): each placeable handler intercepts
 ``rel='parent'`` and routes to :mod:`precis.handlers._placement`.
 """
 
@@ -47,7 +47,7 @@ class FolderHandler(NumericRefHandler):
         kind="folder",
         title="Folder",
         description=(
-            "Organizational container (ADR 0045) for authored artifacts "
+            "Organizational container for authored artifacts "
             "(draft, structure, cad, todo roots, other folders). "
             "put(text='<name>') creates one (nest it with link(id=N, "
             "target='folder:M', rel='parent')); get lists the folder tree; "

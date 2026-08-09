@@ -88,7 +88,7 @@ def search_slug_refs(
     ]
     for ref, rank in hits:
         preview = (ref.title[:140] + "…") if len(ref.title) > 140 else ref.title
-        # ADR 0036: the record's universal handle (e.g. ``or123``) is the
+        # the record's universal handle (e.g. ``or123``) is the
         # address; it self-identifies the kind.
         handle = handle_registry.try_format(kind, ref.id) or f"{kind} {ref.slug}"
         lines.append(f"\n## {handle}  (rank={rank:.2f})\n{preview}")
@@ -172,7 +172,7 @@ def render_slug_ref_list(
         preview = (
             (r.title[:preview_len] + "…") if len(r.title) > preview_len else r.title
         )
-        # ADR 0036: lead each row with the record handle (the address); keep
+        # lead each row with the record handle (the address); keep
         # the slug/path too — it's the human key for browsing (esp. files).
         handle = handle_registry.try_format(kind, r.id) or "?"
         slug = r.slug or "?"
@@ -259,7 +259,7 @@ def resolve_live_slug_ref(
             f"{kind!r} has no {slug!r} list view — it is addressed by slug/handle",
             next=next_hint or f"search(kind={kind!r}, q='...') to find refs",
         )
-    # ADR 0036: accept the universal record handle (e.g. ``or123``) — the
+    # accept the universal record handle (e.g. ``or123``) — the
     # form output now emits — resolving it by ref_id; else the slug path.
     parsed = handle_registry.parse(slug)
     if parsed is not None and parsed[0] == kind and not parsed[1]:

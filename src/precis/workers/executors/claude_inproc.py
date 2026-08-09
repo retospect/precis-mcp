@@ -1,6 +1,6 @@
 """claude_inproc executor — claim a job and dispatch to its job_type.
 
-Sibling-worker shape (per ADR 0017): no ``WorkerHandler`` subclass,
+Sibling-worker shape: no ``WorkerHandler`` subclass,
 just a ``run_claude_inproc_pass`` function the CLI registers as a
 ``RefPass``. Each pass:
 
@@ -955,13 +955,13 @@ def _resume_reason(outcome: Any, raw_stream: str) -> str | None:
     Three exhaustions are resumable (the coroutine was cut off mid-flight,
     a fresh tick continues): the ``--max-turns`` ceiling (a trailing
     ``error_max_turns`` result event), the ``--max-budget-usd`` cap (a
-    trailing budget result event — plan_tick sets this cap, ADR 0046), and
+    trailing budget result event — plan_tick sets this cap), and
     the wall-clock timeout (the process was killed, so there's no result
     event — detected by the ``PlanTickOutcome`` timeout sentinel exit code).
     Each is bounded by the same per-parent streak cap so a tick that *always*
     runs out escalates (and splits) instead of looping forever.
 
-    A non-claude transport (the in-process OSS ``tools=`` tick, ADR 0046
+    A non-claude transport (the in-process OSS ``tools=`` tick, the LLM routing seam
     unit-4b) emits no stream-json for the parse below, so it sets an explicit
     ``outcome.resume_reason`` instead — honored verbatim here. The claude path
     leaves it ``None`` (the field defaults so), so its classification is the

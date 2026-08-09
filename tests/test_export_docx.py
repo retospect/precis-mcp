@@ -148,7 +148,7 @@ def test_docx_embeds_figure_image(
     draft: DraftHandler, hub: Hub, tmp_path: Path
 ) -> None:
     """A canvas figure rasterises to PNG and embeds as an inline image + an
-    italic caption paragraph (ADR 0058 slice 4). Uses a canvas (SVG→PNG via
+    italic caption paragraph. Uses a canvas (SVG→PNG via
     resvg) so the embedded raster is one python-docx accepts."""
     pytest.importorskip("resvg_py")
     from precis.handlers.figure import FigureHandler
@@ -350,7 +350,7 @@ def test_latex_cite_command_is_folded(
 def test_handle_form_citation_resolves(
     draft: DraftHandler, hub: Hub, tmp_path: Path
 ) -> None:
-    """A draft that cites a paper by ADR-0036 handle (``[pa<ref_id>]``, the
+    """A draft that cites a paper by universal handle (``[pa<ref_id>]``, the
     form every LaTeX-imported draft uses) must produce a numbered mark +
     References entry — NOT render as nothing. Regression: the docx exporter
     used to drop handle citations entirely (the LaTeX/PDF path resolved them),
@@ -562,7 +562,7 @@ def test_export_renders_list_styles(
 
 
 def test_export_renders_table(draft: DraftHandler, hub: Hub, tmp_path: Path) -> None:
-    """A chunk_kind='table' becomes a native Word table (ADR 0035 §1):
+    """A chunk_kind='table' becomes a native Word table:
     header row bold, one body row per data row, cells via the inline grammar.
     The derived pipe markdown is not dumped as a paragraph."""
     pid = int(

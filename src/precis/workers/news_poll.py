@@ -327,7 +327,7 @@ def run_news_pass(
             # NewsHandler._slug_for — NOT the title, which collides across
             # distinct articles sharing a headline and would clobber via
             # put_cache_entry's (kind, slug) replace. The article's handle
-            # (ADR 0036) is its identity; URL/guid are metadata.
+            # is its identity; URL/guid are metadata.
             slug = slug_from_text(key or guid_id or title, max_len=72) or "news-article"
             # Tier-0 injection scan at the gate: feed bodies (soon Mastodon /
             # Reddit RSS too) are attacker-writable text headed for LLM

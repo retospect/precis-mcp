@@ -1,4 +1,4 @@
-"""CAD export (ADR 0041 §10): pure OpenSCAD text, manifold3d mesh
+"""CAD export: pure OpenSCAD text, manifold3d mesh
 (STL/3MF), and exact OpenCASCADE STEP. The two kernel-backed routes are
 optional extras, so their tests skip cleanly when the backend is absent."""
 

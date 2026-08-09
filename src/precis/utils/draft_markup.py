@@ -1,4 +1,4 @@
-"""Inline reference markers in draft prose (ADR 0033 §8).
+"""Inline reference markers in draft prose.
 
 Draft chunk text is markdown-ish: prose, ``$…$`` math, and inline
 references. Two surfaces consume the *same* grammar (DRY, mirroring how
@@ -19,7 +19,7 @@ Reference forms:
 * ``[[<handle>]]``           — **the** reference form: a handle is a ref to
                                *something* (``dc41`` a draft chunk, ``me5`` a
                                memory, ``pc10`` a paper chunk, …), resolved by
-                               the one ADR 0036 decoder ``store.resolve_handle``.
+                               the one universal handles decoder ``store.resolve_handle``.
 * ``[text](<handle>)``       — same, with display text.
 * ``[§<paper>~<n>]``         — paper **citation** (cite_key-keyed; exports to
                                a cite + bibliography — the one non-handle
@@ -107,7 +107,7 @@ def parse_references(text: str) -> list[Reference]:
 
 def strip_markers(text: str) -> str:
     """Markers reduced to the surface words they carry, for embedding /
-    search (ADR 0033 §8): display links keep their text, bare refs and
+    search: display links keep their text, bare refs and
     authoring links are dropped. A pure function of *this* chunk's text —
     so ``content_sha`` over the source fully determines the embed input.
     """
@@ -154,7 +154,7 @@ def resolve_draft_handle(
 
 
 def resolve_universal_handle(store: Any, token: str) -> LinkTarget | None:
-    """A bare ADR 0036 universal handle (``dc41`` a draft chunk, ``me5`` a
+    """A bare universal handle (``dc41`` a draft chunk, ``me5`` a
     memory, ``pc10`` a paper chunk, …) → a live ``LinkTarget`` via the one
     decoder ``store.resolve_handle``. The simple, uniform rule the LLM
     relies on: *a handle is a ref to something*. Delegates to the shared
@@ -167,7 +167,7 @@ def _resolve_reference(store: Any, ref: Reference) -> LinkTarget | None:
     """One parsed bracket reference → a live ``LinkTarget`` (or ``None``).
 
     A handle-shaped target (``[[dc41]]`` / ``[label](me5)``) resolves
-    through the universal ADR 0036 decoder first — one rule, any kind.
+    through the universal handles decoder first — one rule, any kind.
     ``WEB`` is external (no graph edge); the legacy ``¶`` (XREF), ``§``
     (CITE), and bare ``kind:id`` (AUTHORING, via
     :func:`mentions.resolve_link_targets`) forms still resolve during the

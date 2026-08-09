@@ -1,4 +1,4 @@
-"""``/datasheets`` — component-datasheet reader (ADR 0042 §7).
+"""``/datasheets`` — component-datasheet reader.
 
 A ``datasheet`` is an *evidence-role* sibling of ``paper`` (same Marker →
 chunks ingest + two-pane reader), so this router is deliberately thin: it

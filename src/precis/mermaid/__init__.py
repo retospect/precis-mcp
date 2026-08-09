@@ -1,5 +1,4 @@
-"""The ``mermaid`` diagram kind — a second instance of the shared diagram core
-(ADR 0057, slice 4).
+"""The ``mermaid`` diagram kind — a second instance of the shared diagram core.
 
 A mermaid diagram is edited through the identical draw-with-me loop as a
 ``figure`` (``precis.diagram.turn``), with its nodes bindable to the corpus

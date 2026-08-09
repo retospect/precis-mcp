@@ -8,7 +8,7 @@ of the effective tier's placement chain (:func:`_tick_transport`):
   tools, OAuth Max subscription) *through the router*
   (:func:`_run_claude_tick`) — ``bypassPermissions`` + env-back-door context;
 * an ``openai_tools`` rung drives the precis verbs in-process over the OSS
-  ``tools=`` loop (:func:`_run_oss_tick`, ADR 0024/0046), binding context in
+  ``tools=`` loop (:func:`_run_oss_tick`), binding context in
   a ContextVar. ``llm.chain.big`` is such a chain (local qwen3-235b → OSS
   cloud), so steering this operation to BIG moves both the model *and* the
   harness onto local hardware.
@@ -135,7 +135,7 @@ PARAMS_SCHEMA: dict[str, Any] = {
         },
         "select": {
             "type": "object",
-            "description": "Optional structured selection (ADR 0066), threaded "
+            "description": "Optional structured selection, threaded "
             "from the parent's meta.llm_select at dispatch time — placement "
             "('local'/'cloud'), thinking (bool), effort "
             "('low'/'medium'/'high'), temperature (0..2). Read defensively: a "
@@ -200,8 +200,7 @@ def _apply_decompose_mode(prompts: Any, params: dict[str, Any]) -> Any:
     ``params.decompose`` is set — a no-op otherwise.
 
     Only the variable user layer changes; the cached system prompt is
-    returned byte-identical so the Anthropic prompt-cache prefix (ADR
-    0038 §1 / 0051 §12) still hits across a decompose tick."""
+    returned byte-identical so the Anthropic prompt-cache prefix still hits across a decompose tick."""
     if not params.get("decompose"):
         return prompts
     from precis.workers.planner_prompt import PlannerPrompts
@@ -285,7 +284,7 @@ def run(
     prompts = build_planner_prompts(store, ref_id=parent_ref_id, model=model)
     prompts = _apply_decompose_mode(prompts, params)
 
-    # The FULL assembled prompt INPUT (ADR 0038), the twin of the
+    # The FULL assembled prompt INPUT, the twin of the
     # ``meta.transcript`` output capture in ``claude_inproc`` — lets a
     # debugging surface show "what the LLM actually saw last time" on this
     # job ref. ``getattr`` tolerates a bare stand-in prompts object (tests
@@ -538,7 +537,7 @@ def _run_claude_tick(
     binds, so the tick's runtime context (parent todo / model / workspace /
     agentlog id / draft kind-gate) is threaded via ``env_overlay`` the subprocess
     (and its MCP server) inherits, and the run happens from a CLAUDE.md-free
-    neutral cwd (ADR 0051 §12) so no ambient project persona is prepended outside
+    neutral cwd so no ambient project persona is prepended outside
     the assembler.
 
     ``call_claude_agent`` defaults to ``--permission-mode bypassPermissions`` —
@@ -557,7 +556,7 @@ def _run_claude_tick(
             "plan_tick: PRECIS_MCP_CONFIG unset; the claude tick can't call back "
             "via MCP — children/yield/done won't land"
         )
-    # ADR 0051 §12 — run from a neutral cwd so `claude -p` discovers no project
+    # Turn-taking persona threads — run from a neutral cwd so `claude -p` discovers no project
     # CLAUDE.md, and surface any ambient one (user file or up the cwd tree) that
     # would still be prepended outside the assembler and bust the cache prefix.
     cwd = _neutral_cwd()
@@ -565,7 +564,7 @@ def _run_claude_tick(
     if ambient:
         log.warning(
             "plan_tick: ambient CLAUDE.md would contaminate the persona floor "
-            "outside the assembler (ADR 0051 §12) — remove it on agent hosts: %s",
+            "outside the assembler — remove it on agent hosts: %s",
             ambient,
         )
     env_overlay = _tick_env_overlay(
@@ -803,14 +802,14 @@ def _disable_prose_file_kind(
     overlay["PRECIS_KINDS_DISABLED"] = f"{existing},{entry}" if existing else entry
 
 
-#: Process-wide neutral cwd for the claude tick (ADR 0051 §12). Lazily created,
+#: Process-wide neutral cwd for the claude tick. Lazily created,
 #: reused across ticks (an empty dir needs no per-tick churn).
 _NEUTRAL_CWD: str | None = None
 
 
 def _neutral_cwd() -> str:
     """A stable, empty working directory the claude tick runs in so ``claude
-    -p``'s *project* ``CLAUDE.md`` auto-discovery finds nothing (ADR 0051 §12).
+    -p``'s *project* ``CLAUDE.md`` auto-discovery finds nothing.
 
     The turn-taker must own the entire system prompt: a tick's rendered system
     prompt has to equal the assembler's bytes. Running from the daemon's cwd lets
@@ -830,7 +829,7 @@ def _neutral_cwd() -> str:
 
 def _ambient_claude_md_paths(cwd: str) -> list[str]:
     """Every ``CLAUDE.md`` ``claude -p`` could auto-discover for a run in ``cwd``
-    and prepend outside the assembler (ADR 0051 §12): the user file
+    and prepend outside the assembler: the user file
     ``~/.claude/CLAUDE.md`` plus any project ``CLAUDE.md`` from ``cwd`` up to the
     filesystem root. An empty list means a clean persona environment — the
     rendered system prompt is exactly the assembler's bytes."""
@@ -945,7 +944,7 @@ def _resolve_oss_tier(model: str) -> Tier:
     (``llm.chain.big``, an ``openai_tools`` cloud rung — see
     :mod:`precis.utils.llm.live_config`) drives a served local model through
     the in-process tools loop, so the tick runs on the capability the cluster
-    actually has. Model selection stays in the ADR 0046 resolver; the
+    actually has. Model selection stays in the LLM routing seam resolver; the
     tools-loop guarantee is chain-carried through :func:`~precis.utils.llm.router.dispatch`.
     """
     tag_tier = _TIER_BY_ALIAS.get(model, Tier.FRONTIER)

@@ -28,8 +28,7 @@ replay.
 
 This is a dual-track scheme (Rails ``schema.rb`` / Ecto
 ``structure.sql``), **not** a third greenfield: the numbered migrations
-stay sealed in the tree as the upgrade path for existing databases. See
-ADR 0031.
+stay sealed in the tree as the upgrade path for existing databases.
 """
 
 from __future__ import annotations
@@ -51,8 +50,8 @@ from precis.store.migrate import (
 log = logging.getLogger(__name__)
 
 #: Reference-vocabulary tables whose *data* is part of the schema
-#: contract and must ride along in the baseline. Mirrors the set ADR
-#: 0019 dumped by hand for the second-greenfield ``0001_initial.sql``.
+#: contract and must ride along in the baseline. Mirrors the set the
+#: second greenfield dumped by hand for ``0001_initial.sql``.
 SEED_TABLES: tuple[str, ...] = (
     "actors",
     "kinds",
@@ -206,7 +205,7 @@ def _assemble(schema_ddl: str, seed_data: str, ledger: str, *, head: str) -> str
         "-- `precis migrate` loads this instead of replaying every numbered\n"
         "-- migration, then applies any migrations added since this snapshot\n"
         "-- as a normal tail. The numbered migrations stay sealed in the tree\n"
-        "-- as the upgrade path for existing databases (ADR 0031). This is NOT\n"
+        "-- as the upgrade path for existing databases. This is NOT\n"
         "-- a greenfield — nothing is deleted.\n"
         "--\n"
         "-- Extensions (pg_dump --schema=public omits them):\n"

@@ -1,4 +1,4 @@
-"""The reference ring — ``fisheye+1hop`` (ADR 0051 §6, refeye slice). Exercised
+"""The reference ring — ``fisheye+1hop`` (refeye slice). Exercised
 against a real ``plan`` section that cites a paper, mentions a memory (outbound),
 and has a memory linked to it (inbound), plus the fisheye HOP1 wiring."""
 

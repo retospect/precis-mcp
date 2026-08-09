@@ -1,4 +1,4 @@
-"""precis-bio `protein` kind + `fold` job (ADR 0056, slice 4).
+"""precis-bio `protein` kind + `fold` job.
 
 Covers the pure IR/engine layer (no DB, no GPU), the AF3 container plumbing
 (input JSON / argv / output parser), the handler's inline slice-0 fold +
@@ -333,7 +333,7 @@ def test_put_second_call_is_cache_hit(
     monkeypatch.setattr(StubFoldEngine, "fold", _counting)
     resp = h.put(id="p", sequence="ACDE", engine="stub")
     assert "cache hit" in resp.body
-    assert calls["n"] == 0  # zero recompute (ADR 0007)
+    assert calls["n"] == 0  # zero recompute
 
 
 def test_delete_soft_retires(protein_store: Store) -> None:
@@ -353,7 +353,7 @@ def test_put_dispatches_job_when_fold_node_set(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A configured fold node ⇒ mint a fold job parented on the protein
-    (ADR 0044 compute lane, via `can_own_jobs`), not an inline fold."""
+    (compute lane, via `can_own_jobs`), not an inline fold."""
     monkeypatch.setenv("PRECIS_FOLD_NODE", "spark")
     hub = Hub(store=protein_store)
     h = _try(ProteinHandler, hub=hub)

@@ -372,7 +372,7 @@ def test_user_prompt_surfaces_anchor_chunk(hub: Hub, store: Store) -> None:
 def test_planner_prompt_carries_fisheye_ring_on_anchor(
     hub: Hub, store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ADR 0051 Level-1: an anchored section gets a fisheye+1hop block — its
+    """Persona-threads Level-1: an anchored section gets a fisheye+1hop block — its
     reference ring (here a cited paper) — that the planner otherwise lacks.
     Default-ON; PRECIS_PLANNER_FISHEYE=0 removes it."""
     from precis.handlers.draft import DraftHandler

@@ -1,4 +1,4 @@
-"""Draft store ops — create / add / reading-order (ADR 0033, Phase 3b)."""
+"""Draft store ops — create / add / reading-order."""
 
 from __future__ import annotations
 
@@ -330,7 +330,7 @@ def test_edit_text_invalidates_embedding_and_summary_cascade(store: Store) -> No
     new_sha, emb_sha, summ_sha = chunks_row[0], emb_row[0], summ_row[0]
     assert new_sha != old_sha
     # The chunk row is still in place (in-place edit, not delete+insert —
-    # the ADR 0035 "computed chunks" model), but its content_sha has moved
+    # the computed chunks "computed chunks" model), but its content_sha has moved
     # on from the embedding/summary rows still on file — the derived rows
     # are now stale and the worker will re-derive them.
     assert emb_sha == old_sha

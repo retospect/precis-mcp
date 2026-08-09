@@ -1,4 +1,4 @@
-"""The draft reader's hand-driven working set (ADR 0051 §6) — pen/eye marks,
+"""The draft reader's hand-driven working set — pen/eye marks,
 sticky-with-TTL storage on the draft ref meta, the *around here* ring promotion,
 and the planner render that consumes ``meta.working_set``."""
 

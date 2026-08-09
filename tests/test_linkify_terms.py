@@ -1,4 +1,4 @@
-"""Reader-side rendering for the ADR 0052 term registry — the rich ``.pa-pop``
+"""Reader-side rendering for the structured term registry — the rich ``.pa-pop``
 hover rows and the ``assign="render"`` numeral substitution. Pure string
 rendering (no DB)."""
 

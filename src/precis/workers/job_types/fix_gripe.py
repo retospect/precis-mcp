@@ -129,7 +129,7 @@ def load_config_from_env() -> FixGripeConfig:
         default_repo_dir=default_repo,
         work_dir=Path(work_dir_raw).resolve(),
         claude_bin=os.environ.get("PRECIS_FIX_CLAUDE_BIN", "claude"),
-        # Model selection via the ADR 0046 resolver's FRONTIER tier
+        # Model selection via the LLM routing seam resolver's FRONTIER tier
         # (``PRECIS_MODEL_OPUS`` / ``claude-opus-4-8`` — the consolidated cloud
         # reasoning tier the planner + reviewers + dream share). The bespoke
         # ``PRECIS_FIX_CLAUDE_MODEL`` override still wins so a deployment can pin
@@ -750,7 +750,7 @@ def _restricted_env(cwd: Path) -> dict[str, str]:
             out[k] = v
     out["PWD"] = str(cwd)
     # Inject ANTHROPIC_API_KEY from the vault when it isn't in the env (secrets
-    # vault, ADR 0055) so the in-container `claude -p --bare` still authenticates
+    # vault) so the in-container `claude -p --bare` still authenticates
     # once the key is pulled from the environment. Best-effort.
     if "ANTHROPIC_API_KEY" not in out:
         try:

@@ -50,7 +50,7 @@ def _roots(meta: dict[str, Any]) -> tuple[str, str]:
 
 def _structure_handle(refs: dict[str, Any], state: Any) -> str:
     """``structure_refs`` maps state -> `structure` ref_id (int); render the
-    universal handle (``st<ref_id>``, ADR 0036) an agent can hand straight to
+    universal handle (``st<ref_id>``) an agent can hand straight to
     ``get(kind='structure', id=...)``. Blank when this state has no ingested
     structure (older pathway, preview-only run, or a skipped bad geometry)."""
     ref_id = refs.get(state)

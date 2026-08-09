@@ -1,6 +1,6 @@
 """The assembler — select + order modules into layer-tagged blocks.
 
-``assemble(modules, ctx)`` is model-agnostic (ADR 0038 §3): it walks an
+``assemble(modules, ctx)`` is model-agnostic: it walks an
 ordered module list, drops any whose ``applies_when`` predicate is false
 or whose ``build`` yields nothing, and returns the surviving
 :class:`Block` list in declaration order. An **adapter**
@@ -29,7 +29,7 @@ def assemble(modules: Sequence[Module], ctx: AssemblyContext) -> list[Block]:
     For each module, in order:
 
     1. If ``applies_when`` is set and its predicate is false → skip
-       (capability *and* data gated together, ADR 0038 §8).
+       (capability *and* data gated together).
     2. Call ``build(ctx)``; a falsy result drops the module (the common
        "nothing to say this tick" case — e.g. no children yet).
     3. Otherwise emit a :class:`Block` carrying the module's id + layer.

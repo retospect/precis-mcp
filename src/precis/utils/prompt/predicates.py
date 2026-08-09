@@ -1,4 +1,4 @@
-"""Named ``applies_when`` predicates for conditional modules (ADR 0038 §8).
+"""Named ``applies_when`` predicates for conditional modules.
 
 A module names a predicate; the assembler includes it only when the
 predicate returns true, gating its *capability* and its *data* together
@@ -47,7 +47,7 @@ def has_anchor(ctx: AssemblyContext) -> bool:
 
 
 def has_styled_anchor(ctx: AssemblyContext) -> bool:
-    """True when the anchored chunk sits inside a styled section (ADR 0037).
+    """True when the anchored chunk sits inside a styled section.
 
     Gates loading the section-style skill body."""
     handle = _anchor_handle(ctx)
@@ -87,8 +87,7 @@ def _review_kind(ctx: AssemblyContext) -> str | None:
 def has_review(ctx: AssemblyContext) -> bool:
     """True when this tick is a draft-section review (``meta.review`` set).
 
-    Gates the reviewer-persona + section-under-review blocks (ADR 0038
-    step 3 / Shot 3): when set, the planner tick reviews the anchored
+    Gates the reviewer-persona + section-under-review blocks (step 3 / Shot 3): when set, the planner tick reviews the anchored
     section and files anchored change requests instead of editing."""
     return _review_kind(ctx) is not None
 
@@ -161,7 +160,7 @@ def has_backfill(ctx: AssemblyContext) -> bool:
 
 def _project_plan(ctx: AssemblyContext) -> tuple[int, str] | None:
     """The ``(plan_ref_id, slug)`` of the ``plan`` bound to this tick's
-    project subtree (a ``plan-of`` link, ADR 0051 §2b), memoised.
+    project subtree (a ``plan-of`` link), memoised.
 
     Walks the ancestry up from ``ref_id`` for a ``plan-of`` edge into the
     subtree — the same shape as ``planner_prompt.bound_draft`` for the
@@ -200,7 +199,7 @@ def _project_plan(ctx: AssemblyContext) -> tuple[int, str] | None:
 
 
 def has_plan(ctx: AssemblyContext) -> bool:
-    """True when this tick's project owns a ``plan`` (ADR 0051 §2b) — its
+    """True when this tick's project owns a ``plan`` — its
     reasoning / decision ledger.
 
     Gates the plan-outline injection block so a tick reads the recorded

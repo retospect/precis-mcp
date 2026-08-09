@@ -1,5 +1,5 @@
 """``DiagramHandler`` — the MCP surface (get/put/edit/delete/link) shared by
-every diagram kind (ADR 0057, slice 4 factoring).
+every diagram kind (slice 4 factoring).
 
 A diagram kind is a slug-addressed ref on the ``draft`` chunk-tree substrate
 (the :class:`~precis.store._draft_ops.DraftMixin` ops, parameterised by the
@@ -397,7 +397,7 @@ class DiagramHandler(Handler):
         self.store.soft_delete_ref(ref.id)
         return Response(body=f"retired {self.LANG.kind} {ref.slug}")
 
-    # ── link: folder placement (ADR 0045) + element→chunk binding (0057) ──
+    # ── link: folder placement + element→chunk binding (0057) ──
 
     def link(  # type: ignore[override]
         self,
@@ -424,7 +424,7 @@ class DiagramHandler(Handler):
         raise BadInput(
             f"{self.LANG.kind} link supports rel='parent' (folder placement) or "
             f"element=<{self.LANG.element_noun} id> + target=<chunk handle> "
-            "(bind it to the chunk it depicts, ADR 0057)",
+            "(bind it to the chunk it depicts)",
             next=f"link(kind='{self.LANG.kind}', id='<slug>', element='x', target='dc42')",
         )
 

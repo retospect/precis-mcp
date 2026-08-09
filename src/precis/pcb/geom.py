@@ -1,4 +1,4 @@
-"""Pure 2D geometry for the PCB eyes (ADR 0042 §8) — segment crossing and
+"""Pure 2D geometry for the PCB eyes — segment crossing and
 distance. No dependencies; unit-testable in isolation.
 """
 
@@ -46,7 +46,7 @@ def segments_cross(
 
     Shared-endpoint and collinear/touch-only cases return False — for the
     ratsnest crossing metric we want genuine X-crossings, not wires that
-    merely meet at a pin. (ADR 0042 §8.1.)
+    merely meet at a pin.
     """
     if shares_endpoint(p1, p2, p3, p4):
         return False
@@ -73,5 +73,5 @@ def bboxes_disjoint(
     a: tuple[float, float, float, float], b: tuple[float, float, float, float]
 ) -> bool:
     """True if two AABBs cannot overlap — the cheap pre-filter before the
-    exact segment-cross test (ADR 0042 §12)."""
+    exact segment-cross test."""
     return a[2] < b[0] or b[2] < a[0] or a[3] < b[1] or b[3] < a[1]

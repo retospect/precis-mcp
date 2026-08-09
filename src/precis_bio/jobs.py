@@ -1,12 +1,12 @@
-"""The ``fold`` job_type — predict a structure on the compute lane (ADR 0056).
+"""The ``fold`` job_type — predict a structure on the compute lane.
 
-A *derived* compute-lane job (ADR 0044): it parents on the ``protein`` ref
+A *derived* compute-lane job: it parents on the ``protein`` ref
 (via ``KindSpec.can_own_jobs``), is content-addressed (``cache_key``), and
 runs off the request path. It reuses the ``ssh_node`` executor — the same one
 ``struct_relax`` / ``retrosynth`` use to run a container on a pinned node —
 routed by ``params.target_node`` (``PRECIS_FOLD_NODE``).
 
-The dispatch branches on the engine's **transport** (ADR 0056 §4):
+The dispatch branches on the engine's **transport**:
 
 * **inprocess** (``stub``) — runs inside the dispatch, writes the fold back.
 * **container** (``alphafold3``) — run through the ``RUNNER``/``STAGER`` hooks:
@@ -93,7 +93,7 @@ _PARAMS_SCHEMA: dict[str, Any] = {
         "engine_version": {"type": "string"},
         "mode": {"type": "string"},
         "seeds": {"type": "array", "items": {"type": "integer"}},
-        # The content address (ADR 0007) — same key ⇒ zero recompute.
+        # The content address — same key ⇒ zero recompute.
         "cache_key": {"type": "string"},
         # The node this fold pins itself to (the claim gate): only that node's
         # worker claims it. NULL ⇒ any node (used only by the in-process stub).

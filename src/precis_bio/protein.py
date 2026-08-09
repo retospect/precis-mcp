@@ -1,4 +1,4 @@
-"""ProteinHandler — the structure-prediction ``protein`` kind (ADR 0056).
+"""ProteinHandler — the structure-prediction ``protein`` kind.
 
 A ``protein`` is a slug-addressed authored artifact (like ``structure`` /
 ``route``): a sequence whose predicted structure (``meta.fold``) is folded by
@@ -10,14 +10,14 @@ seven verbs:
   ``engine=stub|alphafold3``). Returns a content-addressed **cache hit** if the
   same sequence+engine was already folded; else runs the engine (in-process
   ``stub``) or mints a ``fold`` compute job pinned to ``PRECIS_FOLD_NODE``.
-  ``requested_by=<todo>`` blocks that todo on the job (ADR 0044).
+  ``requested_by=<todo>`` blocks that todo on the job.
 - ``get``    — list proteins, render one fold summary (``id=slug``), or return
   the raw mmCIF structure (``view='cif'``).
 - ``delete`` — soft-retire a protein.
 
 Ships **dark** behind ``PRECIS_BIO_ENABLED`` (``KindSpec.requires_env``): the
 kind is hidden from the catalogue and the dispatcher until the flag is set.
-See ADR 0056.
+
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ class ProteinHandler(Handler):
         kind="protein",
         title="Protein",
         description=(
-            "A predicted protein structure (precis-bio plugin, ADR 0056). "
+            "A predicted protein structure (precis-bio plugin). "
             "put(id='<slug>', sequence='<AA>', engine='stub'|'alphafold3', "
             "requested_by=<todo>) folds a sequence — a content-addressed cache "
             "hit if already folded, else an in-process stub or a minted fold "
@@ -117,7 +117,7 @@ class ProteinHandler(Handler):
 
         existing = self.store.get_ref(kind="protein", id=slug)
         # Content-addressed cache hit: same slug already carries a fold under
-        # this exact key ⇒ zero recompute (ADR 0007 / 0056 §6).
+        # this exact key ⇒ zero recompute.
         if existing is not None:
             meta = existing.meta or {}
             if meta.get("cache_key") == key and meta.get("fold"):
@@ -160,7 +160,7 @@ class ProteinHandler(Handler):
 
         node = os.environ.get(FOLD_NODE_ENV)
         if node:
-            # Compute lane: mint a derived job on the fold node (ADR 0044).
+            # Compute lane: mint a derived job on the fold node.
             return self._dispatch(ref, params, node, requested_by)
 
         # Slice-0 inline fallback (no fold node configured): run the in-process
@@ -188,7 +188,7 @@ class ProteinHandler(Handler):
         node: str,
         requested_by: int | str | None,
     ) -> Response:
-        """Mint a ``fold`` job pinned to the fold node (ADR 0044).
+        """Mint a ``fold`` job pinned to the fold node.
 
         The job is a *derived* compute step: it parents on the **protein**, not
         a todo — the artifact owns it (cache-fillable, idempotent). When a
@@ -231,7 +231,7 @@ class ProteinHandler(Handler):
         )
 
     def _wire_requester(self, requester_id: int, job_resp_body: str) -> None:
-        """Link the requesting todo to the job + arm its wait (ADR 0044).
+        """Link the requesting todo to the job + arm its wait.
 
         ``requester --requested--> job`` + inject a ``derived_job_succeeded``
         auto_check when the todo has none. Idempotent. Copied from
@@ -307,7 +307,7 @@ class ProteinHandler(Handler):
     _BOND_DETECT_MAX = 600
 
     def _converge_structure(self, ref: Any, fold: ProteinFold) -> Response:
-        """Project a fold's mmCIF into a derived ``structure`` ref (ADR 0043) so
+        """Project a fold's mmCIF into a derived ``structure`` ref so
         it renders in the 3D viewer. Content-slugged (``<protein>-fold``) +
         idempotent — a second call is a cache hit. Links protein↔structure via
         the ``has-fold-structure`` relation (asymmetric, DB-mirrored inverse).

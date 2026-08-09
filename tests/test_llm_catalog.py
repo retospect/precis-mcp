@@ -513,7 +513,7 @@ class TestSeed:
         assert len(model_ids) >= 3
         cards = store.list_refs(kind="llm", limit=100)
         floors = {(c.meta or {}).get("tier_floor") for c in cards}
-        # ADR 0066 Phase C: the seed emits only the four capability tier_floor
+        # the seed emits only the four capability tier_floor
         # values — the legacy location-coupled values (now retired from the
         # ``Tier`` enum itself) are gone from freshly-seeded cards. Checked as
         # raw strings since the legacy enum members no longer exist to import.

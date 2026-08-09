@@ -1,6 +1,6 @@
 """``type='derived_job_succeeded'`` — wait for a requested build to land.
 
-The compute-lane twin of ``child_job_succeeded`` (ADR 0044). A derived
+The compute-lane twin of ``child_job_succeeded``. A derived
 job (DFT relax / route / mesh / compile) parents on its *subject
 artifact*, not on the requesting todo — so the requester cannot find it
 by walking children. It finds it by the ``requested`` link instead

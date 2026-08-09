@@ -24,8 +24,8 @@ durable: reference it by locator and stop.** Do not restate its content in
 either block, and specifically do not do it framed as "here's what I saved,
 don't re-carry it" — narrating a fact in order to tell the next session not
 to carry it *is* carrying it, at full token cost. If a claim now lives in
-`docs/backlog/`, a `todo`/`gripe`, an ADR, or any on-disk note, the pointer
-(slug / id / path) is the entire job; the bytes are on disk. This is
+`docs/backlog/`, a `todo`/`gripe`, a docstring, or any on-disk note, the
+pointer (slug / id / path) is the entire job; the bytes are on disk. This is
 the single most common way both blocks bloat — one durable locator replaces
 a paragraph.
 
@@ -56,7 +56,7 @@ it, then let it shape the whole handoff:
 - **Interpret it against real state first.** Resolve vague or playful phrasing
   ("do the factory with the flubber") to concrete artifacts before you write
   anything — the matching worktree, `docs/backlog/` item, `kind='todo'` /
-  memory thread, design doc or ADR. Use the tools you have (git, Read/Grep,
+  memory thread. Use the tools you have (git, Read/Grep,
   `precis get`/`search`) to pin it down. If you genuinely can't map it to
   anything, say so and ask rather than inventing a target.
 - **Let it bias what's kept and what's queued.** The steer sets the destination;
@@ -93,7 +93,7 @@ it, then let it shape the whole handoff:
 3. **Anchor to durable artifacts.** The recovery prompt must point at things
    that survive compaction, not at "as we discussed": the worktree path +
    branch, the files touched, the relevant `docs/backlog/` item, any
-   `kind='todo'` / `gripe` ids, the design doc or ADR in play. If a next step
+   `kind='todo'` / `gripe` ids. If a next step
    isn't persisted anywhere durable and matters, note that gap to the user (they
    may want it in `docs/backlog/` or a todo before compacting).
 
@@ -133,7 +133,7 @@ it, then let it shape the whole handoff:
    2. <concrete step>
    3. <…>
 
-   **Re-read to reground:** <files / docs/backlog/ item / todo ids / ADR / docs>.
+   **Re-read to reground:** <files / docs/backlog/ item / todo ids / docs>.
    **Watch out:** <any gotcha, gate quirk, or in-flight sibling worktree that bites>.
 
    Start by reading the "Re-read to reground" pointers, then do step 1.

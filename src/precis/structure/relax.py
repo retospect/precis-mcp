@@ -1,14 +1,14 @@
-"""The relax surface — a rented fidelity ladder (ADR 0043 §9).
+"""The relax surface — a rented fidelity ladder.
 
 `relax` is one verb with a ``fidelity`` rung: ``clean`` (rung 0) is **ours and
 always available** — a pure geometric repair that pushes sub-covalent / overlapping
 atoms apart toward their equilibrium bond length ("fix the stupid bonds", the
-"put bonds in, relax, it fixes itself" of §8.1). ``emt`` (rung 1, ADR 0053) is
+"put bonds in, relax, it fixes itself" of §8.1). ``emt`` (rung 1) is
 also **ours** — a torch-free ASE-EMT relax gated only behind the light
 ``[dft]`` extra (numpy + ASE, no MLIP), whose closed element coverage happens
 to be exactly the fcc catalytic metals a Pd/Cu/Ni screen needs. Every rung
 above that is a **rented backend** (``ff``/``xtb``/``ml``/``dft-fast``/
-``dft-tight``, ADR §9 table) gated behind the ``[dft-ml]`` / ``[dft-gpaw]``
+``dft-tight``) gated behind the ``[dft-ml]`` / ``[dft-gpaw]``
 extras — calling one without its backend raises :class:`RelaxUnsupported`,
 surfaced as ``Unsupported`` at the handler, never a crash.
 
@@ -86,10 +86,10 @@ def estimate_forces_emt(scene: Scene) -> dict[str, list[float]] | None:
 
 @dataclass
 class RelaxResult:
-    """The convergence envelope of a relax (ADR §9/§22-D).
+    """The convergence envelope of a relax.
 
     ``energy``/``max_force`` are ``None`` for the rung-0 ``clean`` geometry
-    repair — it has no potential energy, "undefined until it is" (ADR §6 q9).
+    repair — it has no potential energy, "undefined until it is".
     ``curve`` is the per-step convergence trace (max force for an energy rung;
     the max atomic move for rung 0).
     """
@@ -116,7 +116,7 @@ class RelaxResult:
     forces_source: str | None = (
         None  # 'emt' (rung 1, or the clean estimate) or an MLIP name
     )
-    # ── run-cube cache plumbing (ADR §23.16) — populated by the *handler*, not
+    # ── run-cube cache plumbing — populated by the *handler*, not
     # the pure compute: the content address of this relax, and, on a cache hit,
     # the fact that no compute ran. ``relax()`` itself never sets these.
     from_cache: bool = False
@@ -370,7 +370,7 @@ def _relax_ml(
     """Rung 3: relax on a machine-learned interatomic potential (ASE + MLIP).
 
     Real energies + forces — the cheap-but-physical rung that fixes a hand-built
-    geometry before any DFT is spent (ADR §9). Honours the ``fixed`` bitmask via
+    geometry before any DFT is spent. Honours the ``fixed`` bitmask via
     per-atom Cartesian constraints, records the per-step force convergence curve,
     and writes the relaxed geometry back onto the Scene. Fully ``[dft-ml]``-gated:
     a missing ASE/MLIP raises :class:`RelaxUnsupported`.

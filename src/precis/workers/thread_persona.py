@@ -1,8 +1,8 @@
-"""Thread-type → persona registry (ADR 0051 §2, slice A2).
+"""Thread-type → persona registry.
 
 A **thread type** (``write-document``, ``review``, ``dream``, ``triage``,
 …) is fronted by a **persona** — a skill carrying ``flavor: persona`` that
-states *how the thread works*. Per ADR 0051 §2 the persona is the **first
+states *how the thread works*. The persona is the **first
 block** of the prompt and a **floor**: it never ages out, never demotes,
 and its cache segment only changes when the thread type does.
 
@@ -15,7 +15,7 @@ This module is the registry that generalizes two one-offs in
 
 into one table ``thread_type → PersonaSpec``. It also carries, per thread
 type, the extra verbs the persona may reach beyond the synthesis base
-(ADR 0051 §6c) — recorded here now, *enforced* later (the curated verb
+ — recorded here now, *enforced* later (the curated verb
 surface lands with the fisheye phase).
 
 **Scope of slice A2 (behavior-preserving).** Today the cached layer is
@@ -26,7 +26,7 @@ the *variable* layer. A2 introduces this registry and routes the cached
 (``write-document`` → ``precis-tasks-help``) reproduces today's bytes
 exactly, and the reviewer's variable-layer path is untouched. Forking a
 distinct cache prefix per thread type — the persona-first cache island of
-ADR 0051 §5 — is deferred to the render-loop slice (B), where the cached
+Turn-taking persona threads — is deferred to the render-loop slice (B), where the cached
 layer is re-assembled per tick and can legibly select the floor persona
 from the tick's ``thread_type``. Converting a review into a *separately
 spawned* thread (§2: a review is not a mid-thread persona swap) is deferred
@@ -52,12 +52,12 @@ class PersonaSpec:
     first, decay-exempt block.
 
     ``known_skills`` — skills this thread type is known to want, pre-loaded
-    into the floor alongside the persona (ADR 0051 §2). Empty today; the
+    into the floor alongside the persona. Empty today; the
     write-document floor already carries the operational manual as its
     persona.
 
     ``extension_verbs`` — verbs this persona may reach beyond the synthesis
-    base surface (ADR 0051 §6c: ``+link``/``+tag``/``+supersede``/
+    base surface (``+link``/``+tag``/``+supersede``/
     ``+flag-claim``/…). Recorded now for the registry's completeness;
     enforcement arrives with the curated 7-verb surface (phase C/E). Until
     then the full verb kit stays exposed, so this is latent metadata and
@@ -99,7 +99,7 @@ def persona_for(thread_type: str | None) -> PersonaSpec:
 
 
 def resolve_thread_type(*, has_review: bool = False, is_dream: bool = False) -> str:
-    """Classify a tick into a thread type from coarse signals (ADR 0051 §2).
+    """Classify a tick into a thread type from coarse signals.
 
     Pure and signal-based so it is unit-testable and decoupled from the
     store: the caller passes the signals it already computed (a

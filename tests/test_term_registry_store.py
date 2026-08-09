@@ -1,4 +1,4 @@
-"""Store-level tests for the ADR 0052 term registry — ``defined_terms``,
+"""Store-level tests for the structured term registry — ``defined_terms``,
 ``ensure_registry_heading`` (lookup / adopt / reconcile), and
 ``parts_callout_map``. Real Postgres (the ``hub`` fixture)."""
 
@@ -165,7 +165,7 @@ def test_registry_heading_adopts_legacy_text_heading(
 
 def test_registry_heading_reconciles_duplicates(draft: DraftHandler, hub: Hub) -> None:
     """Two role-tagged headings fold to one; the straggler's leaves reparent
-    under the earliest-pos canonical (ADR §7 suspenders)."""
+    under the earliest-pos canonical (belt-and-suspenders reconcile)."""
     ref_id = _mk(hub, draft)
     first = hub.store.add_chunks(
         ref_id=ref_id,

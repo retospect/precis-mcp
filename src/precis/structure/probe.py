@@ -1,4 +1,4 @@
-"""The read surface — exact, in-memory probes over the Scene (ADR 0043 §6).
+"""The read surface — exact, in-memory probes over the Scene.
 
 These are *reads* (the Read category of §6): idempotent queries that return
 numbers for the LLM, computed against the hydrated Scene with no DB round-trip.
@@ -77,7 +77,7 @@ def angle(scene: Scene, a: str, b: str, c: str) -> float:
 def detect_bonds(scene: Scene, tolerance: float = 1.2) -> list[Bond]:
     """Auto-detect bonds from geometry (covalent cutoff), marked ``inferred``.
 
-    ADR 0043 Open-Q2: the LLM always sees the best image of reality — bonds are
+    The structure atomistic IR Open-Q2: the LLM always sees the best image of reality — bonds are
     auto-detected, never withheld, and tagged ``inferred`` so they're marked, not
     hidden. Each unordered pair is emitted once with its MIC image offset.
     """

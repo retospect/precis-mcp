@@ -1,4 +1,4 @@
-"""Smoke test for the ``/secrets`` vault editor (ADR 0055).
+"""Smoke test for the ``/secrets`` vault editor.
 
 Closes the OPEN-ITEMS polish item "``/secrets`` web smoke test" — the route
 was previously covered only by app-boot import. Exercises the three affordances

@@ -56,9 +56,9 @@ is far lower than the cost of shipping a masking patch.
 ## Where durable findings go
 
 A root cause worth remembering beyond this fix — a pattern likely to recur, an
-incident worth a runbook — lands in an **ADR** (`docs/decisions/`) or
+incident worth a runbook — lands in the owning package docstring's "why" lines or
 `docs/runbooks/`. It never goes in a "completed log": this repo has no
-done-log by design (see `OPEN-ITEMS.md`'s "no completed log" rule and
+done-log by design (see `docs/README.md`'s delete-on-ship rule and
 memory's landed-work convention) — `git log` plus the regression test is
 already the record that the bug is fixed.
 

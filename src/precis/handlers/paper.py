@@ -79,7 +79,7 @@ log = logging.getLogger(__name__)
 
 
 def _pa(ref: Ref) -> str:
-    """ADR 0036 document record handle (e.g. ``pa123`` / ``cf123``).
+    """Universal document-record handle (e.g. ``pa123`` / ``cf123``).
 
     Reads the code from ``ref.kind`` so the handle follows the ref's
     actual kind — paper refs render ``pa<id>``, cfp refs render
@@ -1562,7 +1562,7 @@ class PaperHandler(Handler):
             lines.append(banner)
             lines.append("")
         for b in blocks:
-            # ADR 0036: head each chunk with its computed handle (``pc<id>``);
+            # head each chunk with its computed handle (``pc<id>``);
             # the legacy ``slug~pos`` stays only for a kind with no chunk code.
             b_handle = (
                 handle_registry.try_format(ref.kind, b.id, chunk=True)
@@ -1651,7 +1651,7 @@ class PaperHandler(Handler):
         if hi + 1 < total:
             span = 5 if single_block else (hi - lo + 1)
             n_next = min(span, total - 1 - hi)
-            # ADR 0036: forward read via relative navigation off the last
+            # forward read via relative navigation off the last
             # chunk's handle (``pc<id>+1..N``) — self-identifying, no kind=.
             last = blocks[-1]
             last_h = handle_registry.try_format(ref.kind, last.id, chunk=True)
@@ -1834,7 +1834,7 @@ class PaperHandler(Handler):
         body = render_from_store(
             store=self.store,
             ref_id=ref.id,
-            # ADR 0036: emit the universal record handle (``pa<id>``) so
+            # emit the universal record handle (``pa<id>``) so
             # every row + drill-in hint is a copy-pasteable get id. The
             # legacy ``kind:slug~pos`` form was unparseable on input.
             handle=_pa(ref),

@@ -156,7 +156,7 @@ def test_no_merge_into_held_flag_without_chunks(store: Store) -> None:
     Ingest writes pdfs → refs.pdf_sha256 → chunks in one atomic tx
     (``write_paper``), so a real, freshly-ingested paper never shows this
     state to another transaction — chunks don't lag the held-flag (only
-    embeddings do, per ADR 0007, which the guard doesn't require). A
+    embeddings do, which the guard doesn't require). A
     sha-without-chunks ref is therefore a bad/partial import (e.g. a PDF
     Marker couldn't parse), and folding a stub into it would assert we
     have content we don't. Declining is the truthful choice; if that ref

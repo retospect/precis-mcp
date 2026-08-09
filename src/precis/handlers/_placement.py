@@ -1,9 +1,9 @@
-"""Shared folder-placement helpers (ADR 0045).
+"""Shared folder-placement helpers.
 
 Placement is the *extrinsic* organization axis: an artifact ref sits
 in at most one ``kind='folder'`` container via ``refs.parent_id`` —
 the same column the todo tree uses, addressed through the same
-reserved virtual ``parent`` relation (ADR 0027, generalized here).
+reserved virtual ``parent`` relation (generalized here).
 Each placeable handler's ``link()`` intercepts ``rel='parent'`` and
 routes to :func:`place_ref`; every other relation falls through to
 the stored-link machinery unchanged.
@@ -32,7 +32,7 @@ from precis.utils import handle_registry
 if TYPE_CHECKING:
     from precis.store import Ref, Store
 
-#: The reserved virtual relation (ADR 0027). Never in the ``Relation``
+#: The reserved virtual relation. Never in the ``Relation``
 #: vocabulary or the ``relations`` table — a façade over
 #: ``refs.parent_id``, intercepted per-kind before vocabulary
 #: validation.

@@ -8,7 +8,7 @@ This module is the **read** side: a small TTL-cached layer the router's
 :func:`~precis.utils.llm.router.resolve_backend` /
 :func:`~precis.utils.llm.router.resolve_model` /
 :func:`~precis.utils.llm.router.resolve_chain` consult *before* env (or, for
-the chain, before the compiled failover ladder — ADR 0066 §4, Phase A).
+the chain, before the compiled failover ladder — capability tiers + placement chains, Phase A).
 
 Resolution order (per key): **app_settings DB row → env default → compiled
 default**. Ships **dark**: with no store bound (tests, DB-free CLI) or no row
@@ -45,14 +45,14 @@ MODEL_KEY_PREFIX = "llm.model."
 #: app_settings key prefix for a per-tier chain override: ``llm.chain.<tier>``
 #: (e.g. ``llm.chain.frontier``), a JSON-encoded list of rung dicts
 #: ``{"placement": "cloud"|"local", "model": <str>, "transport": <str>}``
-#: (ADR 0066 §4). Same suffix vocabulary as :data:`MODEL_KEY_PREFIX`.
+#:. Same suffix vocabulary as :data:`MODEL_KEY_PREFIX`.
 CHAIN_KEY_PREFIX = "llm.chain."
 #: app_settings key prefix for a per-operation override (JSON
 #: ``{"tier": <str>?, "model": <str>?}``) — ``llm.op.<source>``
 #: (per-operation model routing). Kept in sync with
 #: :data:`precis.utils.llm.operations.OP_KEY_PREFIX` (the writer's mirror).
 OP_KEY_PREFIX = "llm.op."
-#: app_settings key for the cloud-throttle dial (ADR 0066 §5). ``"false"`` (or
+#: app_settings key for the cloud-throttle dial. ``"false"`` (or
 #: ``0``/``no``/``off``) forces every tier's chain to skip its cloud rungs →
 #: drop to whatever local rung the chain has; a tier left with no rung
 #: (``FRONTIER`` always; ``BIG``/``MEDIUM`` too until an operator chain gives
@@ -165,7 +165,7 @@ def op_override(source: str) -> dict | None:
 
 
 def cloud_enabled() -> bool:
-    """Whether cloud rungs are currently enabled (ADR 0066 §5 throttle).
+    """Whether cloud rungs are currently enabled (throttle).
 
     Defaults to ``True`` — cloud on — so with no ``llm.cloud_enabled`` row (or
     no store bound) dispatch is byte-identical to before the throttle existed.

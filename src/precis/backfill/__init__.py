@@ -21,7 +21,7 @@ Built (read-only workspace — FIND + WORKSPACE, no auto-weave):
   (``candidates._hub_supporter_ref_ids``, Build 2 §G1) — otherwise a paper
   already backing a cited hub would re-surface as a false "gap" once
   ``[pc]``/``[pa]`` cites backfill to ``[fi]``.
-- **Workspace**: the eyes working set rendered through the ADR-0051 composer
+- **Workspace**: the eyes working set rendered through the turn-taking persona threads composer
   with folded-in ``★ cited`` / ``○ candidate`` source roles + a ✓/⚠
   grounding block (:func:`workspace.assemble` /
   :func:`workspace.render_backfill`). Section-scoped:

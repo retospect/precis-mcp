@@ -79,7 +79,7 @@ class PrecisConfig(BaseSettings):
       (heavy; requires the optional `paper` extra). In-process.
     - ``"remote"``: an HTTP client (`RemoteEmbedder`) to a
       ``precis serve-embeddings`` service — no local model load, no
-      `torch`. Requires ``PRECIS_EMBEDDER_URL`` (ADR 0020).
+      `torch`. Requires ``PRECIS_EMBEDDER_URL``.
     """
 
     embedder_url: str | None = None

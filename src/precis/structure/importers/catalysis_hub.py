@@ -1,4 +1,4 @@
-"""Catalysis-Hub adapter — ADR 0053 §2's first per-source normaliser.
+"""Catalysis-Hub adapter — external DFT library import's first per-source normaliser.
 
 Catalysis-Hub (SUNCAT) publishes DFT surface-reaction data (adsorption +
 reaction energies over Pd/Cu/Ni/Pt facets — exactly the catalyst quest's
@@ -26,7 +26,7 @@ Catalysis-Hub/``cathub`` schema as of this writing, hand-verified against
 the public schema docs — **not** exercised against a live query in this
 slice (T5 is offline-only, no network in the test gate). Verify against a
 live ``https://api.catalysis-hub.org/graphql`` introspection before the
-batch-import CLI (ADR 0053 §11 step 3) depends on it.
+batch-import CLI depends on it.
 """
 
 from __future__ import annotations
@@ -161,7 +161,7 @@ def adapter(raw: object) -> tuple[Scene, ExternalRun, ExternalId]:
       Hub's public schema does not, today, so they land as ``None``).
     * ``ExternalId`` — ``dataset='catalysis-hub'``, ``config_id`` = the
       system's ``uniqueId`` (falls back to its numeric ``id``) — the
-      idempotent collapse key (ADR 0053 §3).
+      idempotent collapse key.
     """
     assert isinstance(raw, dict), (
         f"catalysis-hub adapter expects a dict record, got {type(raw)}"

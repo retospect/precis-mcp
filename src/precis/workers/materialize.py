@@ -16,7 +16,7 @@ the standing ``embed`` pass has lost its rotation slot in
 → ``embed_batch`` → ``job_inproc`` path is now the only thing draining
 the embed queue in prod. Rollback: set ``PRECIS_MATERIALIZE_EMBED=0``
 fleet-wide and run ``precis worker --only embed`` on any node (or revert
-the ship) — the chunk queue is derived (ADR 0007), so an outage delays
+the ship) — the chunk queue is derived, so an outage delays
 embeddings, never loses them.
 
 **One small table, not a rewrite, for a second backlog source.**

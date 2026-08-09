@@ -76,7 +76,7 @@ def _docs(store: Any, ref_id: int) -> tuple[str, str, str, list[str]]:
 
 
 def _bindings(store: Any, ref_id: int) -> list[dict[str, Any]]:
-    """Element→chunk bindings of a figure's source node (ADR 0057), for the
+    """Element→chunk bindings of a figure's source node, for the
     chips row. Empty when the figure has no source yet or nothing is bound."""
     for c in store.reading_order(ref_id, kind="figure"):
         if c.chunk_kind == "figure_node":

@@ -158,7 +158,7 @@ def ingest_patent(
                       ``OpsClientProto``.
         embedder:     Accepted for signature compatibility but unused.
                       Embeddings are now populated lazily by the
-                      ``embed:bge-m3`` worker (ADR 0007 derived-queue);
+                      ``embed:bge-m3`` worker (derived-queue);
                       synchronous embed during ingest blocked the verb
                       and diverged from paper-ingest. Callers may pass
                       ``None``; existing callers keep working.
@@ -273,7 +273,7 @@ def ingest_patent(
         block_metas.append(claim_block_meta(txt, claim_idx + 1))
 
     # Embeddings are populated lazily by the embed:bge-m3 worker
-    # (ADR 0007 / AGENTS.md ingest-guarantees). Patent ingest used
+    # (the derived queue / AGENTS.md ingest-guarantees). Patent ingest used
     # to call ``fill_embeddings`` inline here; the synchronous path
     # blocked the verb and diverged from the paper-ingest flow.
 

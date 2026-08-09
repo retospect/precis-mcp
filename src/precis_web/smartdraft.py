@@ -123,8 +123,8 @@ class ChunkNode:
     #: draft_table_editor`` — gripe 56746) in the focus pane.
     table: dict[str, Any] | None = None
     #: Medium-aware render spec for a ``chunk_kind='figure'`` chunk
-    #: (:func:`precis.utils.figure_source.resolve_figure_source`, ADR
-    #: 0034/0057/0058), else ``None``. Feeds the shared ``draft_figures.
+    #: (:func:`precis.utils.figure_source.resolve_figure_source`),
+    #: else ``None``. Feeds the shared ``draft_figures.
     #: figure_media`` macro (gripe 56668) in the focus pane.
     figure_render: RenderSpec | None = None
     #: ``meta.figure.origin`` (``original``/``own_graph``/``third_party``) —
@@ -137,7 +137,7 @@ class ChunkNode:
     #: ``meta.figure.permission`` — the third-party publisher paper-trail
     #: (publisher / permission_id / status / dates / …), else ``None``.
     figure_permission: dict[str, Any] | None = None
-    #: ``meta.short`` for a ``chunk_kind='term'`` leaf (ADR 0052) — the
+    #: ``meta.short`` for a ``chunk_kind='term'`` leaf — the
     #: term's primary label (may itself be the long descriptive form, e.g.
     #: ``'stereolithography'``). ``None`` for a non-term chunk.
     term_short: str | None = None
@@ -146,7 +146,7 @@ class ChunkNode:
     #: or a term without one.
     term_abbrev: str | None = None
     #: ``meta.surface_forms`` — extra aliases the leaf also hover-resolves
-    #: under (ADR 0052 §4). Empty for a non-term chunk.
+    #: under. Empty for a non-term chunk.
     term_surface_forms: list[str] = field(default_factory=list)
     #: Grounding provenance for a ``chunk_kind='paragraph'`` node —
     #: ``"sourced"`` / ``"pending"`` / ``"unsourced"``

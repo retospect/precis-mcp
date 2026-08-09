@@ -7,7 +7,7 @@ means the two sides cannot drift.
 
 Deliberately dependency-light — stdlib dataclasses + plain dict
 (de)serialisation, no pydantic, no torch. The serve/worker images that
-carry the client must stay tiny (ADR 0021), so nothing heavy is
+carry the client must stay tiny, so nothing heavy is
 importable from this module.
 
 JSON is the v1 transport. ``msgpack`` for the float payload is a
@@ -113,7 +113,7 @@ class ModelInfo:
     """Identity of the model the service is serving.
 
     The client asserts ``dim`` and ``model`` against the corpus's
-    embedder-table contract before its first encode (ADR 0020) so a
+    embedder-table contract before its first encode so a
     wrong/upgraded model fails loud instead of silently writing
     incompatible vectors.
     """

@@ -1,15 +1,15 @@
-"""Prompt assembler + module library (ADR 0038).
+"""Prompt assembler + module library.
 
 One assembler + one module library, so the editor/planner, the
 reviewers, the summarizer, and the judges share a cacheable, inspectable
 prompt surface instead of ~8 hand-rolled concatenation sites.
 
-Pipeline (ADR 0038 §3)::
+Pipeline::
 
     assemble(modules, ctx) -> [Block]        # model-agnostic
     adapter.render([Block]) -> messages|prompt  # model-specific, owns caching
 
-Migration is "build one first, then fold in" (ADR 0038 §Migration): step 1
+Migration is "build one first, then fold in": step 1
 is ``workers/planner_prompt.py`` (the agent profile, ``claude_agent``
 adapter); the summarizer, reviewers, and the rest fold in afterwards.
 

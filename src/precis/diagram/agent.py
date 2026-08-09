@@ -10,7 +10,7 @@ find and bind its own sources instead of being handed them.
 
 Transport (Reto, 2026-07-15): **``claude -p`` + MCP tools through the
 ``call_claude_agent`` wrapper**, reached via ``dispatch(tools_needed=True)`` so
-the ADR-0046 LLM seam still owns model / backend selection. The in-process
+the LLM seam still owns model / backend selection. The in-process
 ``runtime.dispatch`` bridge (no MCP socket) is the convergence target, deferred
 behind the same seam.
 
@@ -121,7 +121,7 @@ def build_agentic_claude_fn(
 ) -> ClaudeFn:
     """A tool-using ``claude_fn`` for :func:`precis.diagram.turn.run_turn`.
 
-    Routes through the ADR-0046 seam (``dispatch(LlmRequest(tools_needed=True,
+    Routes through the LLM routing seam (``dispatch(LlmRequest(tools_needed=True,
     …))``) exactly as the structural / deep reviewers do, so backend + model
     selection stays central. ``mcp_config='auto'`` resolves ``PRECIS_MCP_CONFIG``
     (tool-less if unset). The returned fn prepends the tool-use preamble, runs

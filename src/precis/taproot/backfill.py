@@ -559,7 +559,7 @@ def _plan_group(
 
     # Resolve supporters first — an unresolvable handle means we can't
     # ground the claim, so skip the group rather than mint an evidence-less
-    # hub (mirrors seed_claim_hub's paper-sourced invariant, ADR 0073).
+    # hub (mirrors seed_claim_hub's paper-sourced invariant).
     supporters: list[tuple[str, int]] = []
     unresolved: list[str] = []
     for handle in group.handles:

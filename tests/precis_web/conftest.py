@@ -178,7 +178,7 @@ class FakeStore(_FakeStoreBase):
         #: {ref_id: Scene} — the pathway-explorer's per-state ``structure_load``
         #: fake (tests/precis_web/test_pathway_detail.py builds real
         #: ``precis.structure.Scene`` objects via ``apply_ops``, same as the
-        #: real store's in-memory working object, ADR 0043 §12). A ref_id not
+        #: real store's in-memory working object). A ref_id not
         #: seeded here degrades the same as a real store's dangling structure
         #: ref — the route treats a ``structure_load`` failure as "no
         #: geometry linked", never a 500.
@@ -547,7 +547,7 @@ class FakeStore(_FakeStoreBase):
         # by (bare) handle.
         return {}
 
-    # Figure medium resolver (ADR 0058) — safe defaults; DraftFakeStore
+    # Figure medium resolver — safe defaults; DraftFakeStore
     # overrides for its blob-backed figure fixtures.
     def has_chunk_blob(self, chunk_id) -> bool:
         return False
@@ -593,7 +593,7 @@ class FakeStore(_FakeStoreBase):
         return None
 
     def resolve_handle(self, handle: str, *, conn: Any = None):
-        """Decode a universal handle (ADR 0036) against the fixture pools.
+        """Decode a universal handle against the fixture pools.
 
         Record handles (``pa10``) resolve via the per-kind pool; chunk
         handles (``pc…``) via ``self.chunk_handles`` (``chunk_id ->

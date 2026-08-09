@@ -1,4 +1,4 @@
-"""DRC-lite, proximity, signal-trace, and measure evaluation (ADR 0042 §8).
+"""DRC-lite, proximity, signal-trace, and measure evaluation.
 
 Pure folds over the graph dict the store hands up
 (:meth:`precis.store._pcb_ops.PcbMixin.pcb_graph`):
@@ -20,7 +20,7 @@ from precis.pcb.geom import Point, dist
 _POWER_CLASSES = frozenset({"power", "pwr"})
 _CAP_HINTS = ("nf", "uf", "µf", "pf", "cap")
 
-# ── measure direction (ADR 0042 §8.3) ────────────────────────────────
+# ── measure direction ────────────────────────────────
 # pcb_measures.direction: min|max|target|keep_above|keep_below. It decides
 # which side of `goal` is "ok" — the evaluator AND the placer's penalty must
 # agree, so both go through measure_bound().
@@ -58,8 +58,7 @@ def _is_cap(label: str | None) -> bool:
 
 
 def drc_lite(graph: dict[str, Any]) -> list[dict[str, str]]:
-    """Basic electrical sanity the LLM should see *before* the router
-    (ADR 0042 §8.1). Each finding: ``{severity, code, where, message}``."""
+    """Basic electrical sanity the LLM should see *before* the router. Each finding: ``{severity, code, where, message}``."""
     out: list[dict[str, str]] = []
 
     # 1. unconnected pins
@@ -105,7 +104,7 @@ def drc_lite(graph: dict[str, Any]) -> list[dict[str, str]]:
 
 
 def proximity(graph: dict[str, Any], a: str, b: str) -> dict[str, Any]:
-    """Centre-to-centre gap between two placed instances (ADR 0042 §8.1).
+    """Centre-to-centre gap between two placed instances.
 
     v1 reports centroid distance; courtyard-edge gap lands with footprint
     dims (Slice 2)."""
@@ -129,7 +128,7 @@ def trace(
     graph: dict[str, Any], start_net: str, *, max_hops: int = 32
 ) -> dict[str, Any]:
     """Follow a signal from a net, hopping through **2-pin pass-throughs**
-    (series R / C / ferrite) onto the next net (ADR 0042 §8.2).
+    (series R / C / ferrite) onto the next net.
 
     Returns ``{path:[{net, via}], ends:[...]}``. A multi-pin component (a mux,
     an MCU) is a *terminus* of the automatic walk — the LLM supplies the
@@ -193,7 +192,7 @@ def _judge(values: list[float], bound: str, goal: Any) -> tuple[float, bool]:
 def evaluate_measures(
     graph: dict[str, Any], measures: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    """Evaluate stored measures against the current placement (ADR 0042 §8.3).
+    """Evaluate stored measures against the current placement.
 
     v1 covers the placement-geometry metrics — ``separation``, ``proximity``
     (pairwise gaps), ``height`` — over operands that name instances or roles.

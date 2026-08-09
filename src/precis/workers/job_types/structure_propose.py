@@ -1,5 +1,5 @@
 """``structure_propose`` job_type — an LLM turns a natural-language instruction
-into **proposed structure ops**, without applying them (ADR 0043 viewer bundle).
+into **proposed structure ops**, without applying them (viewer bundle).
 
 The web "Further instructions" box mints one of these under a todo. It runs on
 the agent-profile worker (which has ``claude`` auth) and its whole deliverable is
@@ -95,7 +95,7 @@ def _scene_digest(slug: str, scene: Any) -> str:
 def build_prompt(slug: str, scene: Any, instruction: str) -> str:
     """Assemble the propose-only directive prompt (no tools, JSON-only reply)."""
     return (
-        "You are editing an atomistic structure design (ADR 0043). You will "
+        "You are editing an atomistic structure design. You will "
         "PROPOSE a sequence of typed ops that carry out the instruction below. "
         "You are NOT applying anything — output a proposal only.\n\n"
         f"# Current design\n{_scene_digest(slug, scene)}\n\n"
@@ -170,7 +170,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     prompt = build_prompt(slug, scene, instruction)
     model = os.environ.get("PRECIS_STRUCTURE_PROPOSE_MODEL")
     ctx.append_chunk("job_event", f"propose: {instruction[:200]}")
-    # Routed through the LLM seam (ADR 0046 unit 4b): tool-less agent call on
+    # Routed through the LLM seam: tool-less agent call on
     # BIG (sonnet). The structure round-trip eval
     # (docs/runbooks/structure-roundtrip-eval.md) showed sonnet TIES opus on this
     # mechanical describe→build step at ~½ the cost — so the *build* runs mid-tier

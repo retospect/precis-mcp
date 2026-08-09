@@ -1,4 +1,4 @@
-"""Byte-equivalence guard for the ADR 0038 step-2 prompt refactor.
+"""Byte-equivalence guard for the prompt assembler step-2 prompt refactor.
 
 ``llm_summarize.build_messages`` (and ``briefing``'s summarize prompt) were
 folded onto the shared ``utils.prompt`` assembler + the new

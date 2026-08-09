@@ -1,4 +1,4 @@
-"""Draft figures — image blobs in the DB + provenance meta (ADR 0034)."""
+"""Draft figures — image blobs in the DB + provenance meta."""
 
 from __future__ import annotations
 
@@ -101,7 +101,7 @@ def test_blob_row_count_and_size(store: Store) -> None:
     assert row == (len(_PNG), "image/png")
 
 
-# ── clearance gate (ADR 0034 §4) ─────────────────────────────────────
+# ── clearance gate ─────────────────────────────────────
 
 
 def test_figure_status_rules() -> None:
@@ -306,7 +306,7 @@ def test_edit_bad_origin_rejected(draft: DraftHandler, hub: Hub) -> None:
         draft.edit(id=f"¶{fig.handle}", origin="bogus")
 
 
-# ── blob-SVG figures (ADR 0058 §6 — sniff + sanitize at rest) ─────────────
+# ── blob-SVG figures (the figure medium axis — sniff + sanitize at rest) ─────────────
 
 _SVG_HOSTILE = (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'

@@ -1,12 +1,10 @@
 """claude_docker executor — launch a container, poll it, reap by name.
 
-Sibling of :mod:`claude_inproc` / :mod:`ssh_node` / :mod:`coordinator`
-(ADR 0017): a ``run_claude_docker_pass`` function the CLI registers as a
+Sibling of :mod:`claude_inproc` / :mod:`ssh_node` / :mod:`coordinator`: a ``run_claude_docker_pass`` function the CLI registers as a
 ``RefPass`` — but **only where ``PRECIS_SANDBOX_ENABLED=1``** (mirrors
 ``classify`` default-OFF), so the pass never runs on a non-sandbox host.
 
-Unlike the blocking executors, this one is **detached + poll** (ADR 0044
-compute-lane shape / the ComputeBackend seam): each tick is a cheap
+Unlike the blocking executors, this one is **detached + poll** (compute-lane shape / the ComputeBackend seam): each tick is a cheap
 ``inspect`` + heartbeat, the heavy work is out-of-process in the
 container. That makes it a good round-robin citizen inside the existing
 per-node worker — no new daemon.
@@ -701,7 +699,7 @@ def _launch_build(
         return
     # podman passes the token by KEY only (value inherited from this process's
     # env, never argv). Populate env from the vault when it's not already there
-    # so the key-only inheritance works post-cutover (secrets vault, ADR 0055).
+    # so the key-only inheritance works post-cutover (secrets vault).
     os.environ.setdefault("CLAUDE_CODE_OAUTH_TOKEN", _oauth)
 
     wall_seconds = int(params["wall_seconds"])

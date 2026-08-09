@@ -1,4 +1,4 @@
-"""Catalysis-Hub **local `.db`** reader — ADR 0053 §3's batch-mirror ingress.
+"""Catalysis-Hub **local `.db`** reader — external DFT library import's batch-mirror ingress.
 
 Catalysis-Hub's *live* channels are all credential-gated as of late-2025 (the
 GraphQL API wants an ``X-API-Key``; the "public" ``apiuser`` Postgres password
@@ -212,7 +212,7 @@ def batch_import(
     product_contains: list[str] | None = None,
     limit: int | None = None,
 ) -> ImportSummary:
-    """Mine a local cathub ``.db`` into ``structure`` refs (ADR 0053 batch mirror).
+    """Mine a local cathub ``.db`` into ``structure`` refs (batch mirror).
 
     Each product config is normalised by the shared ``catalysis-hub`` adapter and
     written through :meth:`store.structure_import`, which is idempotent on

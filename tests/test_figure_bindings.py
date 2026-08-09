@@ -1,4 +1,4 @@
-"""Figure element→chunk bindings + prepared context (ADR 0057, slice 2).
+"""Figure element→chunk bindings + prepared context.
 
 The pure SVG helpers (elements / coords / dangling lint), the context
 assembler, the turn `links` reconcile, and the handler link(element=) surface.

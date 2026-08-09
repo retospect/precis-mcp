@@ -145,7 +145,7 @@ class Account:
         )
 
     def resolve_secret(self, *, store: Store) -> str:
-        """Reveal the account password/token from the vault (ADR 0055)."""
+        """Reveal the account password/token from the vault."""
         from precis.secrets import require_secret
 
         return require_secret(self.secret_name, store=store)

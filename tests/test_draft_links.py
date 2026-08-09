@@ -1,5 +1,5 @@
 """Draft autolinker — materialise the superset of references a draft's
-chunks carry as ``related-to`` graph edges (ADR 0033 §8).
+chunks carry as ``related-to`` graph edges.
 
 Mirrors the note autolinker: ``kind:ref`` mentions, ``¶`` cross-refs, and
 ``§`` citations resolve to live links; removing a reference drops its

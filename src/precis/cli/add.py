@@ -16,7 +16,7 @@ Exit codes:
 * 2 — usage error (e.g. file missing, no DSN).
 * 3 — pipeline error (lookup miss, marker failure).
 * 4 — skipped: another host holds the advisory-lock claim
-  on this PDF's content. See ADR 0016.
+  on this PDF's content.
 """
 
 from __future__ import annotations

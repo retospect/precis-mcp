@@ -26,7 +26,7 @@ def handler(hub: Hub) -> MemoryHandler:
 
 def test_create_returns_id(handler: MemoryHandler) -> None:
     r = handler.put(text="my first memory")
-    # ADR 0036: the ack now surfaces the universal handle (``me<id>``).
+    # the ack now surfaces the universal handle (``me<id>``).
     assert "created memory me" in r.body
 
 

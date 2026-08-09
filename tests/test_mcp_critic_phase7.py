@@ -418,7 +418,7 @@ class TestDegenerateRangeTrailer:
     def test_single_block_next_is_single_step(self, store: Store) -> None:
         h = PaperHandler(hub=Hub(store=store))
         _seed_paper(store, n_blocks=4)
-        # ADR 0036: reading ~0..2 leaves a single next block → the forward
+        # reading ~0..2 leaves a single next block → the forward
         # hint is a relative single step ``pc<id>+1``, not a degenerate
         # ``+1..1`` range (the old footgun was ``~3..3`` over ``~3``).
         resp = h.get(id="wang2020state~0..2")
@@ -496,7 +496,7 @@ class TestSigilKindInference:
                 "at": {"last": True},
             },
         )
-        # ADR 0036: the put-ack carries the chunk's ``dc<id>`` handle.
+        # the put-ack carries the chunk's ``dc<id>`` handle.
         return re.search(r"(dc\d+)", add).group(1)  # type: ignore[union-attr]
 
     def test_paragraph_sigil_reads_chunk_without_kind(

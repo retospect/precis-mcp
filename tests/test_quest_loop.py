@@ -361,7 +361,7 @@ class TestReapOrphanedLoop:
 
 
 class TestFailedRestBackoff:
-    """RC1 (ADR 0065): a loop that rested ``STATUS:failed`` is held out of the
+    """RC1: a loop that rested ``STATUS:failed`` is held out of the
     re-mint for an escalating cooldown (``BASE * 2^(n-1)`` capped at ``MAX``,
     ``n`` = trailing failed-rest count); ``cancelled`` (reboot) / ``succeeded``
     (dry/punt/RC2) / non-terminal tops are not failed rests and re-mint now."""

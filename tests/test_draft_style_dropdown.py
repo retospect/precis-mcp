@@ -1,5 +1,5 @@
 """The per-heading style picker's data path: the genre (doc_type) scopes
-which section styles are offered (ADR 0037)."""
+which section styles are offered."""
 
 from __future__ import annotations
 

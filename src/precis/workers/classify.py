@@ -302,8 +302,8 @@ def run_classify_pass(
     backfill / tests, mirroring ``classify_topics``); ``None`` sweeps the
     whole corpus (unchanged behaviour).
 
-    ``concurrency`` (live via ``service_config.concurrency``, ADR-adjacent
-    to slice 2 — see ``workers/service_config.py``) is the thread-pool width
+    ``concurrency`` (live via ``service_config.concurrency`` — see
+    ``workers/service_config.py``) is the thread-pool width
     the per-row LLM cascade (:func:`_classify_row`) fans out across. Each
     call in the cascade is a blocking cloud round-trip and touches no DB
     connection, so it is safe to run off the main thread; the claim, the

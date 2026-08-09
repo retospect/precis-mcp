@@ -1,5 +1,5 @@
 # v2 vocabulary (still version: 1 — the axis has never been applied,
-# so pre-Round-0 edits are free; see ADR 0047 §7). Widened 2026-07-25
+# so pre-Round-0 edits are free). Widened 2026-07-25
 # beyond the original carbon-only focus: the corpus is dominated by
 # catalysis (Pd/doped-metal NOx→NH3 + CO2-electro), MOF, and molecular-
 # electronics work that all fell to `other`. Added `metal` (the single
@@ -7,7 +7,7 @@
 # `2d-material`. Carbon buckets kept (nanobud is a primary target). A
 # `carbon-nanostructure-hybrids` superclass may split off later; further
 # classes (biomolecule, semiconductor) join by mining, not pre-emptive
-# invention (ADR 0047 §5).
+# invention.
 
 id: material
 version: 1

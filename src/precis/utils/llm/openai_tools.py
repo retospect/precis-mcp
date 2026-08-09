@@ -1,11 +1,11 @@
 """OpenAI ``tools=`` agent loop — the OSS path to driving precis tools.
 
-This backs the ``OPENAI_TOOLS`` transport (ADR 0024/0046): an open-source
+This backs the ``OPENAI_TOOLS`` transport: an open-source
 model driving the precis verbs over the OpenAI ``/v1/chat/completions``
 ``tools=`` wire, so agentic work (planner ticks, reviewers) can run off a
-hosted or local OSS backend instead of the ``claude -p`` binary. ADR 0024
-prototyped an in-process litellm-with-``tools=`` loop and reversed it onto
-``claude``; this is that loop, rebuilt behind the router's provider port.
+hosted or local OSS backend instead of the ``claude -p`` binary. An earlier
+pass prototyped an in-process litellm-with-``tools=`` loop and reversed it
+onto ``claude``; this is that loop, rebuilt behind the router's provider port.
 
 Three precis-agnostic seams keep it testable with no live model, network,
 or DB:
@@ -186,7 +186,7 @@ class ToolChatClient:
         self._timeout = timeout
         self._max_tokens = max_tokens
         #: ``None`` omits ``temperature`` from the wire entirely (the
-        #: provider's own default) — the ADR 0066 gen-param passthrough's
+        #: provider's own default) — the capability tiers + placement chains gen-param passthrough's
         #: MEDIUM/BIG/FRONTIER-tier default, threaded in by
         #: :func:`~precis.utils.llm.router.run_oss_tool_loop`. The class
         #: default (``0.0``) reproduces this client's previous unconditional
@@ -286,7 +286,7 @@ class AgentLoopResult:
     #: ``True`` when ``error`` is a transport *unavailability* (a request
     #: timeout, connection failure, or HTTP 5xx/429) rather than a genuine
     #: semantic failure (a malformed/unauthorized 4xx request) — mirrors
-    #: :attr:`~precis.utils.llm.router.LlmResult.paused` (ADR 0066 §5a), which
+    #: :attr:`~precis.utils.llm.router.LlmResult.paused`, which
     #: :func:`~precis.utils.llm.router._dispatch_openai_tools` threads this
     #: onto so a pinned pass backs off and retries instead of recording a
     #: dispatch failure that can park the todo. ``False`` (the default) for a
@@ -349,7 +349,7 @@ def run_tool_loop(
         try:
             turn = client.chat(messages, tools=tools_param)
         except (RuntimeError, OSError) as exc:
-            # Classify via the router's shared taxonomy (ADR 0066 §5a): a
+            # Classify via the router's shared taxonomy: a
             # timeout / connection failure / 5xx-or-429 is unavailability
             # (skip-and-retry), a 4xx-non-429 is a genuine semantic failure.
             # Local import — `router` is the module that calls into this loop

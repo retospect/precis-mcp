@@ -37,7 +37,7 @@ per-kind *detail* readers are untouched. ``/`` redirects to ``/drive``.
 
 **System (`/status?tab=health|services|models|budget|now`)** —
 ``routes/status.py::index`` dispatches on ``tab=``: health strip, the old
-``/factory`` service tables + per-tier chain editor (ADR 0066), the ``llm``
+``/factory`` service tables + per-tier chain editor, the ``llm``
 catalog cards + live-routing header, the budget cap/pause controls, and
 **Now** — a live view (htmx-polled fragment, ``GET /status/now``) of what
 each worker process is doing this instant (``precis.workers.activity`` via

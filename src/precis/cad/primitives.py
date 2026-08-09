@@ -1,4 +1,4 @@
-"""Analytic primitives + the membership contract (ADR 0041 §4).
+"""Analytic primitives + the membership contract.
 
 Every admitted primitive answers, **exact under rigid transform**, the
 card the LLM's "eyes" depend on:
@@ -13,7 +13,7 @@ Primitives store geometry in a canonical *local* frame; a
 :class:`Placed` binds a primitive to a rigid :class:`~precis.cad.vec.Transform`
 and answers the same queries in world coordinates by inverse-transforming
 the inputs (distances and the ray parameter ``t`` are preserved because
-the transform is rigid — ADR 0041 §2).
+the transform is rigid).
 
 ``section`` (plane ∩ solid → loops) is part of the contract but lands in
 the section-probe step; it is intentionally absent here.
@@ -253,7 +253,7 @@ class CircularFrustum(Primitive):
 
     Radius varies linearly: ``r(z) = rb + (rt - rb)·z/h``. ``rb == rt`` is
     a cylinder, ``rt == 0`` a cone, ``0 < rt < rb`` a truncated cone. The
-    side-face slant *is* the draft angle (ADR 0041 §4).
+    side-face slant *is* the draft angle.
     """
 
     rb: float
@@ -479,7 +479,7 @@ def _ngon(n: int, r: float) -> list[tuple[float, float]]:
 class HalfSpace(Primitive):
     """A half-space: material where ``(p - point)·normal <= 0``.
 
-    The analytic chamfer (ADR 0041 §4) — a planar bevel composes as a
+    The analytic chamfer — a planar bevel composes as a
     half-space cut via ``subtract`` / ``intersect``. Unbounded, so its
     AABB carries ``±inf``.
     """

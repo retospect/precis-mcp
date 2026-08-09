@@ -1,4 +1,4 @@
-"""Pure unit tests for the PCB placer + route-feasibility (ADR 0042 §9).
+"""Pure unit tests for the PCB placer + route-feasibility.
 No DB.
 """
 

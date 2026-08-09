@@ -5,8 +5,8 @@ precis cluster on any set of hosts. It is deliberately **cluster-agnostic**:
 nothing here names a real machine, address, or secret. Everything specific to
 *your* cluster lives in a small local overlay that this repo never sees.
 
-Design-of-record: [`docs/design/factory-console-and-scheduling.md`](../docs/design/factory-console-and-scheduling.md)
-§15 (convergence) and §16 (two-phase build). This directory is **slice 12a** —
+Design-of-record: [`docs/backlog/factory-console-and-scheduling.md`](../docs/backlog/factory-console-and-scheduling.md)
+(open scope; shipped portion in the `precis.workers` docstring + git history). This directory is **slice 12a** —
 the repo rationalization, **complete since 2026-07-19**: `scripts/deploy` runs
 from this tree by default, and it is the authoritative deploy path. The only
 per-cluster piece is the gitignored local overlay (`deploy/inventory/` +

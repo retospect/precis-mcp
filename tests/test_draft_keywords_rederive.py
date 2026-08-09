@@ -1,5 +1,4 @@
-"""Edited draft chunks re-derive keywords too — gated on embed freshness
-(ADR 0033 §4). KeyBERT uses the chunk's embedding, so keywords must
+"""Edited draft chunks re-derive keywords too — gated on embed freshness. KeyBERT uses the chunk's embedding, so keywords must
 wait for embed to refresh after an edit before re-deriving."""
 
 from __future__ import annotations

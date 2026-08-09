@@ -48,10 +48,11 @@ suggests needs the user's explicit go-ahead first.
 4. **Repo hygiene (bunched advisory scans).** Diagnosis bunched; each fix is
    its own branch→ship.
 // turbo
-   `scripts/migration-check --quiet; echo '— docs —'; scripts/docs-orphans | sed -n '1,2p;/^ORPHAN/,/^ADR-linked/p'; echo '— anchors —'; scripts/coderef check docs | tail -6; echo '— memory —'; scripts/memory-lint; echo '— backlog —'; scripts/backlog-lint | head -1; echo '— tokens —'; scripts/token-review; echo '— db-thrash —'; scripts/db-thrash-review; echo '— nightly —'; scripts/nightly --check`
+   `scripts/migration-check --quiet; echo '— anchors —'; scripts/coderef check docs | tail -6; echo '— memory —'; scripts/memory-lint; echo '— backlog —'; scripts/backlog-lint | head -1; echo '— tokens —'; scripts/token-review; echo '— db-thrash —'; scripts/db-thrash-review; echo '— nightly —'; scripts/nightly --check`
    - **Migration collisions** — renumber the *unshipped* file above main's max.
-   - **Orphan design docs** — candidates for the `docs-triage` skill;
-     load-bearing ones (src/anchor/sealed-migration refs) stay.
+   - **Backlog gunk** — done-marked items: candidates for the `docs-triage`
+     skill (verify shipped, then delete). Stale generated indexes
+     (backlog/runbooks READMEs, codebase package map) → `scripts/docs-index`.
    - **Code anchors** — each `✗` = a doc cites a `file.py::Qual.name` that no
      longer resolves; fix the anchor (or leave if the code was removed).
    - **Memory index** — broken links/landed threads are quick fixes; on

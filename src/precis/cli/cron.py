@@ -9,7 +9,7 @@ manual/ad-hoc tick, delegating to
 implementation shared with the scheduler pass's ``_run_cron_tick`` and the
 default worker rotation's ``schedule`` pass — one engine, several triggers,
 no drift. Historically this drove the now-retired ``kind='cron'`` engine
-directly; ADR 0061 (superseding ADR 0030) folded that push-notification
+directly; the cron-into-recurring fold retired that engine and folded its push-notification
 mechanism onto recurring todos (``meta.schedule`` set — ``meta.deliver`` for
 the push target, one-shot ``meta.schedule.at`` for "remind me in/at").
 

@@ -2,7 +2,7 @@
 
 Slice 4a of the quest layer (``quest-layer`` (git-only) §The autonomous
 research loop). This is the **skeleton** of the loop: a single, in-process,
-structured LLM step routed through the ADR-0046 seam (``dispatch(LlmRequest)``)
+structured LLM step routed through the LLM routing seam (``dispatch(LlmRequest)``)
 that reads the quest's rolling context — its striving statement, the current
 dossier, the slice-3 gaps + momentum, and the recent logbook tail — and returns
 two things:
@@ -113,7 +113,7 @@ class QuestTickOutcome:
     searches_run: int = 0
     papers_linked: int = 0
     hypotheses_deduped: int = 0
-    # ADR 0064 §A pinned ledger — applied (non-deduped) `ledger_add` entries
+    # Dossier-owned-by-process pinned ledger — applied (non-deduped) `ledger_add` entries
     # this tick. An engagement signal for the coordinator's punt-vs-genuine-
     # dry split (:mod:`precis.workers.job_types.quest_tick`): a tick that only
     # pinned a ledger direction still counted as "the model engaged".
@@ -333,7 +333,7 @@ def _frontier_summary(store: Store, quest_id: int, *, fr: Any | None = None) -> 
 def _ledger_constraints(ledger_text: str) -> str:
     """Bullet lines from the pinned ledger's Tried + Ruled-out sections.
 
-    This is ADR 0064 §A's structural "do not re-propose" constraint —
+    This is dossier-owned-by-process's structural "do not re-propose" constraint —
     strategic *directions* the ledger has pinned as tried/dead, distinct from
     :func:`_ruled_out_handles`'s per-candidate `structure` tags. The Open
     section is a to-do list, not a constraint, so it's excluded.
@@ -1171,7 +1171,7 @@ def run_quest_tick(
     # Ledger — pin any tried/ruled-out/open *directions* the model wants to
     # survive the whole-rewrite below. Applied BEFORE `rewrite_dossier` so a
     # same-tick rule-out is pinned even if the fresh narrative drops it
-    # (ADR 0064 §A — the structural fix for the autocatpath dead-3-days spin).
+    # (dossier-owned-by-process — the structural fix for the autocatpath dead-3-days spin).
     ledger_added = 0
     for e in payload.get("ledger_add") or []:
         if not isinstance(e, dict):

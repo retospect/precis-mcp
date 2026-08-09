@@ -1,4 +1,4 @@
-"""Storage/relation foundation for computed figures (ADR 0035 §2/§3):
+"""Storage/relation foundation for computed figures:
 
 - the `plots` chunk→chunk relation (migration 0037) — a figure chunk renders
   a data chunk, addressable as the reactive recompute edge;

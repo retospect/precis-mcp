@@ -804,7 +804,7 @@ class CacheBackedHandler(Handler):
         """Format the cost trailer with a qualitative cost band.
 
         The band word (``free`` / ``cheap`` / ``expensive``) is the uniform
-        cost affordance (ADR: budget-guardrails Piece A) — a lesser model gets
+        cost affordance (budget-guardrails Piece A) — a lesser model gets
         a feel for the lane without doing dollar arithmetic. It's *information
         + permission*, never prohibition: only the breaker ever refuses.
 
@@ -1137,7 +1137,7 @@ class CacheBackedHandler(Handler):
             # already cost money. A *down* embedder must not throw that
             # work away: store the blocks un-embedded (``embedding=None``)
             # and let the ``embed:bge-m3`` worker backfill the vectors on
-            # its next pass (ADR 0007 — embeddings are a worker job, not an
+            # its next pass (the derived queue — embeddings are a worker job, not an
             # ingest-time requirement). Lexical search works immediately;
             # semantic hits light up once the worker catches up. This is
             # the same degrade-to-lexical contract search verbs already

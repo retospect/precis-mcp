@@ -1,4 +1,4 @@
-"""DatasheetHandler — the evidence-role sibling of PaperHandler (ADR 0042 §7).
+"""DatasheetHandler — the evidence-role sibling of PaperHandler.
 
 Verifies the *declared* differences from paper (corpus_role, no put,
 restricted views, handle code) plus the datasheet-of relation wiring, without

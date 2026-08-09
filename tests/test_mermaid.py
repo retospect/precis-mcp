@@ -1,4 +1,4 @@
-"""The `mermaid` kind (ADR 0057, slice 4).
+"""The `mermaid` kind.
 
 The node extractor / sanitize / bindings are pure Python and always run;
 the mermaidx-backed compile check is guarded with ``importorskip`` so the

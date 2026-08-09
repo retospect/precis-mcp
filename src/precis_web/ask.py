@@ -153,7 +153,7 @@ def generate_answer(prompt: str, *, store: Store, conv_ref_id: int) -> AgentResu
     run on the conv ref's ``ref_events`` for per-host telemetry.
     """
     cfg = _resolve_config()
-    # Routed through the LLM seam (ADR 0046 unit 4b) so PRECIS_LLM_BACKEND can
+    # Routed through the LLM seam so PRECIS_LLM_BACKEND can
     # switch the follow-up onto an OSS model. The AgentResult-returning /
     # ClaudeAgentError-raising contract is preserved so the route is untouched:
     # dispatch folds failures into res.error, which we re-raise.

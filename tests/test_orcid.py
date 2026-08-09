@@ -1,4 +1,4 @@
-"""ADR 0039 — ORCID author node, LLM-gated enqueue, and S2 author nav.
+"""The orcid author kind — ORCID author node, LLM-gated enqueue, and S2 author nav.
 
 Split into:
 
@@ -225,7 +225,7 @@ class _FakeStore:
 
 def test_enqueue_links_held_unconditionally_counts_missing() -> None:
     # limit=0 (the resolve-time default): held papers are linked, missing
-    # ones are only *counted* — no stubs minted (LLM-gated, ADR 0039 §4).
+    # ones are only *counted* — no stubs minted (LLM-gated).
     store = _FakeStore(held={"10.1/held": 7})
     works = [
         {"doi": "10.1/held", "title": "Held", "year": 2020},

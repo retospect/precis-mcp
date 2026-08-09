@@ -1,5 +1,5 @@
 """Data/table chunks — canonical ``meta.table`` JSON and its derived
-markdown projection (ADR 0035 §1, build step 1).
+markdown projection (build step 1).
 
 A ``chunk_kind='table'`` draft chunk is the single source of truth for a
 small dataset: the canonical data lives in ``meta.table = {header, rows}``

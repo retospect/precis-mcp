@@ -613,7 +613,7 @@ class PlaintextHandler(Handler):
         ``workspace`` flag. The runtime also layers
         ``PRECIS_DEFAULT_TAGS`` into this list via
         :meth:`PrecisRuntime._apply_default_tags_policy` before the
-        handler runs (see ADR 0013 / OQ-17), so an operator-stated
+        handler runs (see session-context env vars / OQ-17), so an operator-stated
         session-context tag set lands on every prose-file ref
         without per-call wiring on the agent side.
         """

@@ -1,4 +1,4 @@
-"""Fisheye neighborhood render (ADR 0051 §6) — assembly over reading_order +
+"""Fisheye neighborhood render — assembly over reading_order +
 block_views, exercised against a real ``plan`` chunk tree."""
 
 from __future__ import annotations

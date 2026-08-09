@@ -1,4 +1,4 @@
-"""Geometry export — what a structure *ultimately emits* (ADR 0043 §13).
+"""Geometry export — what a structure *ultimately emits*.
 
 The output side of the IR. Two formats are **hand-written, pure, zero-dependency**
 (they're simple and the most-used): **VASP POSCAR** (the DFT-engine lingua

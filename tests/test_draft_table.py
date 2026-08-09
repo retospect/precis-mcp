@@ -1,4 +1,4 @@
-"""Data/table chunks (ADR 0035 §1, build step 1) — canonical ``meta.table``
+"""Data/table chunks (build step 1) — canonical ``meta.table``
 JSON + derived markdown ``text``, inert ``meta.regen``. No execution."""
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ def _proj(hub: Hub) -> int:
 
 def _table_chunk(hub: Hub, slug: str) -> Any:
     """The draft's table chunk — carries both ``.dc`` (the agent-facing
-    ADR-0036 ``dc<id>`` address) and ``.handle`` (the legacy base-58 anchor
+    Universal handles ``dc<id>`` address) and ``.handle`` (the legacy base-58 anchor
     the low-level store ops still key on)."""
     ref = hub.store.get_ref(kind="draft", id=slug)
     order = hub.store.reading_order(ref.id)

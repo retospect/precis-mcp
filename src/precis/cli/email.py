@@ -15,7 +15,7 @@ Subcommands:
 * ``scan`` — run one ``inject_scan`` tick now (model-score the tier-0-flagged
   backlog + quarantine ladder). Needs the local model proxy; ops-side tool.
 
-The password/token itself lives in the secrets vault (ADR 0055); this table
+The password/token itself lives in the secrets vault; this table
 holds only its vault key. Send (SMTP) is a later slice; this is read config.
 """
 

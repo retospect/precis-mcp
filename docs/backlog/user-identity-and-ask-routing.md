@@ -156,7 +156,7 @@ Should `user:<username>` validate against a registry?
 ## 5. Migration plan
 
 - **No migration for `asking-reto`** (zero prod rows).
-- **`user:elmsfeuer`:** ✅ canonical handle is `elmsfeuer`, so the 44
+- **`user:elmsfeuer`:** the canonical handle is `elmsfeuer`, so the 44
   rows already match — **nothing to migrate**.
 - **Bare `reto` tag (1 row):** a tiny forward migration renames it to
   `user:elmsfeuer` (or just drops it). This is the only DB write the

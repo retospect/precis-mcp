@@ -1,11 +1,11 @@
-"""Retrosynthesis engine port + the built-in engines (ADR 0056 §4).
+"""Retrosynthesis engine port + the built-in engines.
 
 The engine is the swappable leaf behind the ``route`` kind. A
 :class:`RetrosynthEngine` maps a target SMILES to a normalized
 :class:`~precis_chem.ir.RouteGraph`; adding AiZynthFinder / ASKCOS is a
 new adapter, never a change to the kind or the verb surface.
 
-Three **transports** (ADR 0056 §4) — how the engine actually runs. The
+Three **transports** — how the engine actually runs. The
 ``retrosynth`` job dispatches on this, not on the engine name:
 
 * **inprocess** — runs in the worker/handler process. The deterministic
@@ -108,7 +108,7 @@ class StubEngine:
 
 
 class AiZynthEngine:
-    """AiZynthFinder adapter — container engine (ADR 0056 slice 1b/2).
+    """AiZynthFinder adapter — container engine.
 
     AiZynth runs in a wrapper container built on the compute node
     (``docker/aizynth``); it is **not** run in-process (containerizing keeps
@@ -183,7 +183,7 @@ ASKCOS_ENDPOINT_ENV = "PRECIS_ASKCOS_URL"
 
 
 class AskcosEngine:
-    """ASKCOS v2 adapter — **service** engine (ADR 0056 slice 3).
+    """ASKCOS v2 adapter — **service** engine.
 
     ASKCOS v2 is a multi-service platform with a Tree-Builder REST API (not a
     CLI), so it is a *service*: the ``retrosynth`` job POSTs the target to the
@@ -222,7 +222,7 @@ class AskcosEngine:
 
 
 #: Registry of built-in engines by name. Plugins/extras extend this later; a
-#: future OSS-backend switch (ADR 0046 analogue) would resolve here.
+#: future OSS-backend switch (analogue) would resolve here.
 _ENGINES: dict[str, type] = {
     StubEngine.name: StubEngine,
     AiZynthEngine.name: AiZynthEngine,

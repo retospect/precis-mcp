@@ -1,6 +1,6 @@
 """Output format registry — TOON, JSON, ASCII table.
 
-ADR 0002 picked TOON (Token-Oriented Object Notation) for tabular
+TOON output picked TOON (Token-Oriented Object Notation) for tabular
 agent-facing output and JSON for nested / single-record responses.
 This package ships the serialisers and the dispatch table that
 the CLI's ``--format`` flag — and any in-process caller — uses to

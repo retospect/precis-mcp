@@ -171,7 +171,7 @@ pathway `meta`. This is the concrete "how" for the risk
   regenerable, so set a retention/GC policy (mirror `llm_blob` / `worker_logs`
   GC) + a "regenerate on miss" path rather than unbounded growth. Cap or TTL —
   open.
-- **Cutover interaction — RESOLVED**: bundling shipped (ADR 0069); the glue
+- **Cutover interaction (settled)**: bundling shipped (ADR 0069); the glue
   edits target `src/precis_pathway/`. Science edits (`neb.py`/`relax.py`)
   stay in the catpath repo.
 - **Per-seed capture — DECIDED** (resolves the `/ready` blocker that treated

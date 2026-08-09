@@ -350,7 +350,7 @@ class BgeM3Embedder:
 
 
 # ---------------------------------------------------------------------------
-# Remote — HTTP client to a `precis serve-embeddings` service (ADR 0020).
+# Remote — HTTP client to a `precis serve-embeddings` service.
 # ---------------------------------------------------------------------------
 
 
@@ -382,7 +382,7 @@ def _urllib_transport(
     """Default :data:`Transport` — a stdlib ``urllib`` round-trip.
 
     No third-party HTTP dep, so the torch-free serve/worker images stay
-    tiny (ADR 0021). Returns ``(status, parsed_json)``. HTTP error
+    tiny. Returns ``(status, parsed_json)``. HTTP error
     statuses (``4xx`` / ``5xx``) are returned as a status code with
     their body parsed, so the caller's retry policy can branch on
     ``429`` / ``5xx``. Connection-level failures (refused, timeout,
@@ -423,7 +423,7 @@ class RemoteEmbedder:
     supplied (the corpus's embedding dimension), asserts the served
     model's ``dim`` matches — the boundary check that turns a
     wrong/upgraded model into a loud failure instead of silent vector
-    corruption (ADR 0020).
+    corruption.
     """
 
     def __init__(

@@ -1,4 +1,4 @@
-"""DraftHandler — the verb surface over the draft store ops (ADR 0033)."""
+"""DraftHandler — the verb surface over the draft store ops."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from precis.store.store import Store
 
 
 def _dc(body: str) -> str:
-    """Extract the ADR 0036 ``dc<id>`` handle from a draft response."""
+    """Extract the universal handles ``dc<id>`` handle from a draft response."""
     m = re.search(r"dc\d+", body)
     assert m is not None, f"no dc handle in {body!r}"
     return m.group(0)
@@ -388,7 +388,7 @@ def test_explicit_outline_view_matches_default_render(
 def test_chunk_view_fisheye_routes_to_render_eye_not_silent_degrade(
     draft: DraftHandler, hub: Hub
 ) -> None:
-    """``view=`` is the sole door onto the ADR 0051 focus ladder on a draft
+    """``view=`` is the sole door onto the turn-taking persona threads focus ladder on a draft
     chunk. It used to fall through to the lone-chunk render (silent degrade)
     when the label wasn't a recognised whole-chunk view; now a ladder label
     routes to ``render_eye`` and anything unknown raises."""
@@ -542,7 +542,7 @@ def test_reading_window(draft: DraftHandler, hub: Hub) -> None:
     )
     order = _order(hub, "nt")  # T, a, b, c
     mid = order[2].dc  # "b"
-    # ADR 0036 sibling span (supersedes the legacy -B+A window): 1 before,
+    # Universal handles sibling span (supersedes the legacy -B+A window): 1 before,
     # 1 after → a, b, c.
     body = draft.get(id=f"{mid}-1..1").body
     assert "a" in body and "b" in body and "c" in body
@@ -560,7 +560,7 @@ def _dc_of(hub: Hub, text: str) -> str:
 def test_relative_navigation_sibling_ancestor_span(
     draft: DraftHandler, hub: Hub
 ) -> None:
-    """ADR 0036 relative nav over the draft tree: ^ (ancestor), +N/-N
+    """Relative nav over the draft tree: ^ (ancestor), +N/-N
     (sibling step), -lo..hi (sibling span)."""
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
@@ -631,7 +631,7 @@ def test_toc_view_headings_only_numbered_and_subtree(
 
 def test_edit_base_sha_blocks_stale_overwrite(draft: DraftHandler, hub: Hub) -> None:
     """Optimistic concurrency: an edit carrying a base_sha that no longer
-    matches the chunk's content_sha is rejected (ADR 0033 — don't clobber
+    matches the chunk's content_sha is rejected (the draft editable-document model — don't clobber
     a change that landed since the caller last read)."""
     from precis.errors import BadInput
     from precis.store._draft_ops import content_sha
@@ -707,7 +707,7 @@ def test_edit_rejects_too_short_sha(draft: DraftHandler, hub: Hub) -> None:
 
 def test_abbrev_loop_hint_define_and_silence(draft: DraftHandler, hub: Hub) -> None:
     """Writing an undefined acronym hints the LLM; defining a term
-    (meta.short) and marking not_abbrev both clear it (ADR 0033)."""
+    (meta.short) and marking not_abbrev both clear it."""
     proj = _proj(hub)
     draft.put(id="nt", title="T", project=proj)
     title_h = _order(hub, "nt")[0].handle
@@ -1099,7 +1099,7 @@ def test_no_promote_hint_when_already_a_term(draft: DraftHandler, hub: Hub) -> N
 def test_draft_link_verb_redirects_to_prose(hub: Hub) -> None:
     """A non-placement draft link still teaches the markdown-ref model.
 
-    The link verb exists on drafts now (folder placement, ADR 0045);
+    The link verb exists on drafts now (folder placement);
     any other relation raises with both the placement recipe and the
     embed-a-handle-in-prose teaching (formerly a runtime verb
     redirect on the unsupported-verb path).

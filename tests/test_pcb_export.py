@@ -1,4 +1,4 @@
-"""Exporters + Freerouting round-trip (ADR 0042 §6, Slice 6).
+"""Exporters + Freerouting round-trip.
 
 Pure exporter coverage (BOM grouping, CPL coordinate/rotation conversion,
 KiCad netlist, Specctra DSN structure, the mechanical 0041-bridge profile),

@@ -1,4 +1,4 @@
-"""Per-kind eye render (ADR 0051 §6) — the ladder generalizes, the neighborhood
+"""Per-kind eye render — the ladder generalizes, the neighborhood
 shape is kind-specific: memory = link graph (by relation), paper/patent/web =
 the dynamic keyword-cluster fisheye (pc-addressed), draft/plan = the
 reading-order fisheye."""
@@ -119,7 +119,7 @@ def test_cluster_map_is_pc_addressed_with_no_verbatim() -> None:
     ]
     out = _cluster_map("paper", cluster_blocks(blocks))
     assert "clusters" in out
-    assert "pc300" in out  # lead chunk handle, universal (ADR 0036)
+    assert "pc300" in out  # lead chunk handle, universal
     assert "BODYTEXT0" not in out  # a whole-doc eye never spills verbatim text
     assert "~" not in out  # never the legacy slug~pos form
 

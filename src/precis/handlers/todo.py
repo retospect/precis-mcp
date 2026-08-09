@@ -66,7 +66,7 @@ from precis.store.types import BlockInsert
 from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
 
-#: Chunk kind holding a todo's optional details body (ADR-parallel to
+#: Chunk kind holding a todo's optional details body (parallel to
 #: ``memory_body``, migration 0050). The task line stays in ``refs.title``
 #: (a good header already); the body is extra prose read on ``get`` and
 #: embedded + keyworded for free. Additive — most todos never set one.
@@ -412,7 +412,7 @@ class TodoHandler(NumericRefHandler):
                         "backfill_missed": parsed.backfill_missed,
                     }
                 meta = {**meta, "schedule": schedule_out}
-        # ``meta.deliver`` (ADR 0061) marks a recurring (or its ticks) for
+        # ``meta.deliver`` marks a recurring (or its ticks) for
         # push delivery — a synthetic prompt fired at asa_bot instead of
         # (or alongside) minting a doable-queue subtask.
         if meta is not None and "deliver" in meta:
@@ -947,7 +947,7 @@ class TodoHandler(NumericRefHandler):
             )
         new_parent = parse_link_target(target, store=self.store)
         new_parent_id = new_parent.ref_id
-        # ADR 0045: a *folder* target is placement, not tree surgery —
+        # a *folder* target is placement, not tree surgery —
         # legal only for strategic roots (folder = where; the
         # scheduling tree stays todo-rooted below it). The kind-aware
         # root predicate (``todo_root_sql``) keeps a folder-parented
@@ -1018,8 +1018,8 @@ class TodoHandler(NumericRefHandler):
         # dropped in favour of the synthesized section.
         if rest.startswith("(no links)"):
             rest = ""
-        # The parent may be a todo (tree) or a folder (placement, ADR
-        # 0044) — render the actual kind so the handle round-trips.
+        # The parent may be a todo (tree) or a folder (placement) —
+        # render the actual kind so the handle round-trips.
         parent_ref = self.store.fetch_refs_by_ids({ref.parent_id}).get(ref.parent_id)
         parent_kind = parent_ref.kind if parent_ref is not None else "todo"
         parts = [
@@ -1065,7 +1065,7 @@ class TodoHandler(NumericRefHandler):
 
     def _render_create_ack(self, ref_id: int) -> Response:
         parent = self._pending_parent_id
-        # ADR 0036: surface the universal handle (``td<id>``) in the ack.
+        # surface the universal handle (``td<id>``) in the ack.
         handle = handle_registry.try_format(self.kind, ref_id) or f"id={ref_id}"
         body = f"created {self.kind} {handle} (STATUS:open)"
         if parent is not None:

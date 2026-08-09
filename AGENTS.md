@@ -3,15 +3,12 @@
 Source of truth for anyone (human or agent) evolving this package.
 Read this before substantive changes.
 
-> **Getting acquainted — read in this order:** (1) **this file** — the
-> contract: conventions, workflow, definition-of-done. (2)
-> [`docs/architecture.md`](docs/architecture.md) — a thin, link-heavy
-> system map + source-tree map; orient once, follow links for depth.
-> (3) [`CLAUDE.md`](CLAUDE.md) — the lean session router (ship workflow +
-> conventions + pointers), then
-> the owning package `__init__.py` docstrings (map: [`docs/codebase.md`](docs/codebase.md)) — the
-> present-tense map of the live subsystems you're about to touch. Deep
-> per-kind reference is on demand via skills
+> **Getting acquainted — read in this order** (per
+> [`docs/README.md`](docs/README.md), the doc-system contract): (1) **this
+> file** — conventions, workflow, definition-of-done. (2)
+> [`docs/codebase.md`](docs/codebase.md) — shape, lifecycle, seams, package
+> map. (3) the owning package `__init__.py` docstrings — present-tense
+> subsystem truth + why. Deep per-kind reference is on demand via skills
 > (`get(kind='skill', id='precis-overview')` for the master kinds table +
 > index). Backlog: [`docs/backlog/`](docs/backlog/README.md).
 
@@ -42,7 +39,7 @@ Read this before substantive changes.
   bootstraps from the generated `migrations/baseline/schema.sql` snapshot
   (the chain compiled to one file) and applies only the tail; existing
   DBs migrate forward as always. Regenerate the snapshot with
-  `scripts/bump` / `precis db dump-schema` — never hand-edit it. ADR 0031.
+  `scripts/bump` / `precis db dump-schema` — never hand-edit it.
 - **CLI entry-point**: `precis = precis.cli:main` (subcommand-driven).
 
 ## Repository shape
@@ -50,13 +47,11 @@ Read this before substantive changes.
 ```
 precis-mcp/
   AGENTS.md                  # this file (read first)
-  CLAUDE.md                  # present-tense map of the live subsystems
+  CLAUDE.md                  # lean session router (workflow + conventions + pointers)
   README.md                  # user-facing intro
-  docs/backlog/              # active backlog — one file per item, generated index
-  BACKLOG/history            # git log — there is no CHANGELOG file
   pyproject.toml             # build, deps, ruff, mypy
   uv.lock                    # pinned dependency graph
-  src/precis/                # (fuller module map: docs/architecture.md)
+  src/precis/                # (package map: docs/codebase.md)
     server.py                # MCP stdio entry — thin FastMCP wrapper
     runtime.py               # server runtime (verb dispatch)
     dispatch.py              # handler registration + flat dispatch table + hub
@@ -67,16 +62,18 @@ precis-mcp/
     ingest/                  # Marker → chunks pipeline
     workers/                 # background passes (embed, dispatch, nursery, …)
     jobs/                    # job executors (fix_gripe, plan_tick, …)
-    embedder*.py             # BGE-M3 wrapper + HTTP service (ADR 0020)
+    embedder*.py             # BGE-M3 wrapper + HTTP service
     cad/ pcb/ structure/     # keystone-kind IR + export
     cli/                     # subcommand modules
     utils/                   # safe_fetch, toc, cluster_map, …
     data/skills/             # on-demand agent docs (precis-*-help)
   tests/                     # pytest suite (mirrors src/ layout)
-  docs/
-    conventions/             # how-to rules (thresholds, naming, …)
-    decisions/               # ADR-style log of substantive choices
-    design/                  # plan artefacts; one per non-trivial change
+  docs/                      # (contract: docs/README.md)
+    backlog/                 # active work — one file per item, delete-on-ship
+    conventions/             # cross-cutting invariants (thresholds, naming, …)
+    runbooks/                # operational procedures
+    reference/               # generated schema doc + diagrams
+    architecture/glossary.md # controlled vocabulary
     user-facing/             # external docs (kind specs, ingest paths)
 ```
 
@@ -145,11 +142,11 @@ precis-mcp/
   and ``chunk_summaries`` rows by construction.
 - **Don't bypass `uv`.** Bare `pip`, `pytest`, `mypy` invocations are
   not reproducible.
-- **Don't introduce a new top-level dependency** without an ADR
-  explaining why an existing dep is insufficient.
+- **Don't introduce a new top-level dependency** without recording why an
+  existing dep is insufficient (the owning package docstring's "why" lines).
 - **Don't claim done without the smoke test in §Definition-of-done.**
-- **Don't edit a decision log entry retroactively** — supersede with a
-  new entry that names the predecessor.
+- **Don't strip docstring rationale in a refactor** — the "why it's this
+  way" paragraphs are the architecture record; condense, never delete.
 - **Don't commit secrets.** `.env`, `*.pem`, DSNs with passwords belong
   outside the tree (use `~/.secrets/` or a secret manager).
 
@@ -174,9 +171,8 @@ A successful `precis add <input>` MUST result in:
   `chunks.keywords_meta JSONB`) populated per-chunk by the
   `chunk_keywords` worker (`precis worker --only chunk_keywords`, or
   the default round-robin). This is the F20 successor to the dropped
-  `ref_segments` / `ref_segment_sentences` tables (see ADR 0018
-  status note): the paper TOC view (`view='toc'`) now DP-clusters
-  these keyword arrays at request time
+  `ref_segments` / `ref_segment_sentences` tables: the paper TOC view
+  (`view='toc'`) now DP-clusters these keyword arrays at request time
   (`src/precis/utils/toc_db.py`) — no precomputed segment rows.
 
 Idempotency: re-running `precis add` against the same input MUST NOT
@@ -218,13 +214,8 @@ back-compat with any files staged before the routing landed.
   (start with `thresholds.md`; LLM-facing docs → `llm-facing-prose.md`)
 - **Decisions**: the owning package docstring's "why" lines
   (history + superseded alternatives: `git log`)
-- **Plans**: `docs/design/`
-  (one file per non-trivial change; **delete on ship** once the truth
-  lives in code + the ADR — git holds the record. Keep only a plan still
-  referenced by `src/`, a current anchor, or an active ADR/proposal as
-  its design-of-record; that reference is what makes it load-bearing.
-  Find dead plans with `scripts/docs-orphans`; adjudicate with the
-  `docs-triage` skill.)
+- **Plans / specs**: `docs/backlog/` (index: `docs/backlog/README.md`) —
+  one file per item, spec grows in the same file, **delete on ship**
+  (lifecycle: `docs/README.md`; triage: the `docs-triage` skill)
 - **External-facing specs**: `docs/user-facing/`
   (`paper_ingest.md`, kind-spec docs, edit-protocol-spec)
-- **Active backlog**: `docs/backlog/` (index: `docs/backlog/README.md`)

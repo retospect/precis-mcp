@@ -16,8 +16,7 @@ planner tick and quota refresh 401'd once dispatch recovered. Any code that
 shells out to ``claude -p`` from a daemon MUST run :func:`ensure_oauth_token`
 on the subprocess env it passes.
 
-**The vault is the only store.** Resolution is env → ``vault.reveal`` (ADR
-0055) → ``get_secret``'s own ``~/.secrets/pw/<NAME>`` bootstrap file. The
+**The vault is the only store.** Resolution is env → ``vault.reveal`` → ``get_secret``'s own ``~/.secrets/pw/<NAME>`` bootstrap file. The
 per-user ``~/.claude_oauth_token`` this module used to read *first* is retired:
 it put a live, long-lived credential in plaintext under every service account's
 home on every node (a 2026-08-07 fleet sweep found five copies across two

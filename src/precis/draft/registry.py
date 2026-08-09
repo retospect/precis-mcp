@@ -1,6 +1,6 @@
 """Term-registry policy — the one knob that keeps three registries on one leaf.
 
-ADR 0052: the abbreviation **glossary**, the patent **drawings/parts**
+The structured term registry: the abbreviation **glossary**, the patent **drawings/parts**
 registry, and a manufacturing **components/BOM** table are one abstraction — a
 family of named ``chunk_kind='term'`` leaves, discriminated by ``meta.registry``
 and separated by exactly two axes: content richness (the optional attribute bag)
@@ -11,7 +11,7 @@ web) so the callout arithmetic is unit-testable in isolation.
 The numbering policy collapses "taken as they go, stable" (a BOM item number
 should not move when the table is re-sorted) and "assigned nicely at the end,
 spaced" (patent reference numerals, ``100, 105, 110 …``) into a single 3-field
-object — the difference is *data*, not two code paths (ADR §3):
+object — the difference is *data*, not two code paths:
 
 * ``assign="insert"`` — the callout is **frozen into ``meta.callout`` at
   add-time**, consecutive, and stable under reorder (``components``).
@@ -31,7 +31,7 @@ T = TypeVar("T")
 
 
 class TermEntry(TypedDict, total=False):
-    """The hover record for one registry surface (ADR 0052 §4). ``definition``
+    """The hover record for one registry surface. ``definition``
     is always present; the rest of the **attribute bag** is populated only for a
     manufacturing part (absent ⇒ the leaf renders as spare as a patent part).
 
@@ -69,7 +69,7 @@ class NumberingPolicy:
 
 
 #: The registry families (``meta.registry`` values) and their numbering policy.
-#: The discriminator does double duty (ADR §2): routes a leaf to its one home
+#: The discriminator does double duty: routes a leaf to its one home
 #: heading and selects which derived table it projects into.
 REGISTRY_POLICY: dict[str, NumberingPolicy] = {
     "glossary": NumberingPolicy(start=0, step=0, assign="none"),
@@ -81,7 +81,7 @@ REGISTRY_POLICY: dict[str, NumberingPolicy] = {
 DEFAULT_REGISTRY = "glossary"
 
 #: Section-style slug → the registry its ``term`` leaves belong to. The policy
-#: binds to the section style via this map (ADR §5), so the style — not each
+#: binds to the section style via this map, so the style — not each
 #: heading — carries the numbering behaviour.
 SECTION_STYLE_REGISTRY: dict[str, str] = {
     "patent-image-part": "parts",
@@ -90,7 +90,7 @@ SECTION_STYLE_REGISTRY: dict[str, str] = {
 }
 
 #: Legacy home-heading titles to **adopt** (stamp ``meta.registry`` on) rather
-#: than mint a duplicate when a role-tagged heading is absent (ADR §7). Matched
+#: than mint a duplicate when a role-tagged heading is absent. Matched
 #: case-insensitively against a heading's trimmed text.
 LEGACY_HEADING_ALIASES: dict[str, frozenset[str]] = {
     "glossary": frozenset(
@@ -147,5 +147,5 @@ def render_callouts(ordered: Sequence[T], policy: NumberingPolicy) -> dict[T, in
     """Spaced numerals derived from reading-order position for an
     ``assign="render"`` registry: the i-th item (0-based) → ``start + i*step``.
     Recomputed every render, so inserting/reordering a leaf renumbers the whole
-    series and the spacing stays clean and boundary-aligned (ADR §3)."""
+    series and the spacing stays clean and boundary-aligned."""
     return {item: policy.start + i * policy.step for i, item in enumerate(ordered)}

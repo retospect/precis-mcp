@@ -222,7 +222,7 @@ class _GlbBuilder:
 
     def to_glb(self) -> bytes:
         gltf: dict[str, Any] = {
-            "asset": {"version": "2.0", "generator": "precis cad (ADR 0041)"},
+            "asset": {"version": "2.0", "generator": "precis cad"},
             "scene": 0,
             "scenes": [{"nodes": list(range(len(self.nodes)))}],
             "nodes": self.nodes,

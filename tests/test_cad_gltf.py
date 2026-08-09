@@ -1,4 +1,4 @@
-"""IR → glTF writer (ADR 0041 web bundle). Pure — no store, no heavy kernel."""
+"""IR → glTF writer (web bundle). Pure — no store, no heavy kernel."""
 
 from __future__ import annotations
 

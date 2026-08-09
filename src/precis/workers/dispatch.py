@@ -655,7 +655,7 @@ def _claim_and_dispatch(store: Store, parent_id: int) -> tuple[int, bool]:
         # else plan_tick crashes on a missing params['model'].
         if llm_tier and job_type == "plan_tick":
             params.setdefault("model", str(llm_tier))
-            # ``meta.llm_select`` (ADR 0066 structured selection, optional
+            # ``meta.llm_select`` (structured selection, optional
             # sibling of ``llm_tier``) rides along as ``params['select']`` —
             # plan_tick reads it defensively (a corrupt/malformed dict can't
             # crash a tick), so a plain dict is threaded through as-is.

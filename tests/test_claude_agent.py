@@ -551,8 +551,7 @@ def test_container_executor_on_wraps_in_podman(monkeypatch, stub_bin: Path) -> N
 
 def test_container_reinjects_scrubbed_dsn(monkeypatch, stub_bin: Path) -> None:
     """Regression (spark review retry-storm, 2026-07-19). The worker scrubs
-    ``PRECIS_DATABASE_URL`` from ``os.environ`` at boot (``adopt_process_store``,
-    ADR 0059), so the container's by-key ``--env PRECIS_DATABASE_URL`` would
+    ``PRECIS_DATABASE_URL`` from ``os.environ`` at boot (``adopt_process_store``), so the container's by-key ``--env PRECIS_DATABASE_URL`` would
     inherit nothing → the entrypoint aborts "PRECIS_DATABASE_URL not set" and
     every agentic pass fails 1. The container path must re-inject the captured
     (adopted) DSN into the subprocess env docker inherits from — by KEY, so the

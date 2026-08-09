@@ -322,7 +322,7 @@ def is_owner(source: str | None = None) -> bool:
 
 
 def todo_root_sql(alias: str) -> str:
-    """SQL predicate: the ``alias`` row is a todo-tree *root* (ADR 0045).
+    """SQL predicate: the ``alias`` row is a todo-tree *root*.
 
     A root's parent is not a todo: either ``parent_id IS NULL`` (the
     classic shape) or the parent is a ``kind='folder'`` container —
@@ -379,7 +379,7 @@ def check_job_parent_exists(
 ) -> tuple[int, str]:
     """Resolve a job's ``parent_id`` to a live ref of an allowed kind.
 
-    A job's parent is polymorphic (ADR 0044): a ``todo`` (the *intent*
+    A job's parent is polymorphic: a ``todo`` (the *intent*
     lane — rotation + the ``child-failed`` bubble) or an artifact such
     as ``structure`` / ``cad`` / ``draft`` (the *compute* lane — an
     idempotent, cache-fillable build step whose owner is the artifact,
@@ -540,7 +540,7 @@ def _depth_of(store: Store, ref_id: int) -> int:
 
     Implemented as a recursive CTE walking up ``parent_id``. Cheap
     even at the depth cap (10 rows, one index lookup per). The walk
-    counts **todo ancestors only** (ADR 0045): a folder above the
+    counts **todo ancestors only**: a folder above the
     strategic root is placement, not tree depth, so folder levels
     never consume the MAX_DEPTH budget.
     """
@@ -652,7 +652,7 @@ def check_facets_on_tag(meta: dict[str, Any] | None) -> None:
 
 #: The closed set of keys ``tag(meta=...)`` is allowed to promote.
 #: ``tag()`` is a post-creation *mutation* surface, not a general meta
-#: bag — anything not on this list (notably ``deliver``, the ADR 0061
+#: bag — anything not on this list (notably ``deliver``, the cron-folded-into-recurring
 #: push-notification target, and ``workspace``, the sandbox root) must
 #: go through ``put()``/``create()``, which run their own validation.
 #: Reject the whole call rather than silently dropping an unpromotable
@@ -943,7 +943,7 @@ def check_schedule_in_meta(meta: dict[str, object] | None):
     return validate_schedule(spec)
 
 
-# ── deliver (ADR 0061 — folded from kind='cron') ───────────────────
+# ── deliver (cron-folded-into-recurring — folded from kind='cron') ───────────────────
 
 
 def check_deliver_in_meta(meta: dict[str, object] | None) -> dict[str, str] | None:
@@ -954,8 +954,8 @@ def check_deliver_in_meta(meta: dict[str, object] | None) -> dict[str, str] | No
     **push** delivery —
     a synthetic prompt fired at asa_bot via ``pg_notify('precis.cron', ...)``
     — instead of (or as well as, for a folder-level automation) minting a
-    subtask into the doable queue. This is the delivery-address field ADR
-    0061 folds the retired ``kind='cron'`` push mechanism onto.
+    subtask into the doable queue. This is the delivery-address field the
+    retired ``kind='cron'`` push mechanism was folded onto.
 
     Returns ``None`` when no deliver target is set. Raises
     :class:`BadInput` on a malformed shape.

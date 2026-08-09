@@ -8,7 +8,7 @@ rather than reimplement the moving-target cloud protocol in Python, and
 because a bundled binary needs no Python client that breaks on the next
 sync-protocol bump.
 
-Auth — the device credential lives in the secrets vault (ADR 0055) or the
+Auth — the device credential lives in the secrets vault or the
 environment, never in plaintext ``app_settings``:
 
 * ``REMARKABLE_RMAPI_CONFIG`` — the body of an ``rmapi`` config file

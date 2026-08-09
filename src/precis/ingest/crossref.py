@@ -31,7 +31,7 @@ def lookup_crossref(doi: str, mailto: str = "") -> dict[str, Any] | None:
 
 
 def orcids_for_doi(doi: str, mailto: str = "") -> list[dict[str, Any]]:
-    """Extract author ORCIDs inline in a DOI's Crossref record (ADR 0039 §2).
+    """Extract author ORCIDs inline in a DOI's Crossref record.
 
     Returns a list of ``{"orcid": "0000-...", "name": "Given Family",
     "position": i, "n_authors": N}`` for each author whose Crossref entry

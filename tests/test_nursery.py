@@ -511,7 +511,7 @@ def test_quest_loop_failing_detector_flags_repeatedly_failing_loop(
 ) -> None:
     """A quest whose ``quest_tick`` loop rests ``STATUS:failed`` more than
     QUEST_LOOP_FAIL_24H times in 24h surfaces as a ``quest-loop-failing``
-    finding (RC1, ADR 0065)."""
+    finding (RC1)."""
     q = store.insert_ref(kind="quest", slug=None, title="Stuck quest\nmore")
     _mint_quest_loops(store, q.id, QUEST_LOOP_FAIL_24H + 2, status="failed")
 

@@ -3,19 +3,16 @@
 > **Two surfaces — don't confuse them.** This repo **is** the precis MCP
 > server. The `precis` MCP tools and `get(kind='skill', id=…)` skills in
 > your session are the **product's** runtime surface, for cluster agents
-> operating precis — **not** dev aids for this repo. To *develop the repo*,
-> navigate: **`docs/codebase.md`** (orientation + package map) → the owning
-> package's `__init__.py` docstring (subsystem truth + why) → `glossary.md`. Don't reach
-> for `get(kind='skill')` to understand the code.
+> operating precis — **not** dev aids for this repo. Don't reach for
+> `get(kind='skill')` to understand the code.
 
 > **Lean router**, loaded every session: ship workflow, conventions that
-> bite, pointers to deeper detail. Read **`docs/codebase.md`** first for the
-> shape of the system; subsystem present-state + rationale live in the
-> **owning package's `__init__.py` docstring** (read before touching one).
-> `AGENTS.md` = conventions/workflow/DoD. No CHANGELOG — history is `git log`.
-> **Keep docs true:** a subsystem change updates the owning package
-> docstring (and, if the *shape* changed, `docs/codebase.md`) in the same commit; this file changes
-> only when the workflow, a convention, or the subsystem *set* changes.
+> bite, pointers. **The doc system — where truth lives, how to keep it
+> true — is defined once, in `docs/README.md`; defer to it.** Reading order:
+> `docs/codebase.md` → the owning package's `__init__.py` docstring →
+> `docs/architecture/glossary.md` → `docs/backlog/README.md`.
+> `AGENTS.md` = conventions/workflow/DoD. This file changes only when the
+> workflow, a convention, or the subsystem *set* changes.
 > Prose house-style: `docs/conventions/llm-facing-prose.md`.
 
 ## Session workflow (worktree → ship)
@@ -60,7 +57,7 @@ Start at `docs/codebase.md`'s package map, then the owning package's
 
 - **Todo tree (five slices)** — `kind='todo'` hierarchy: strategic/tactical
   gradient, `auto_check` leaves, `level:recurring` watches, jobs (intent vs
-  compute lane, ADR 0044), planner coroutines, views, projects.
+  compute lane), planner coroutines, views, projects.
   → skills `precis-tasks-help`, `precis-dispatch-help`.
 - **Review tiers** — `nursery` (SQL, per-minute, only `critical` alerts:
   worker-restart / dead-worker / dispatch-stall), `structural` +
@@ -68,13 +65,12 @@ Start at `docs/codebase.md`'s package map, then the owning package's
 - **Workers** — two profiles (`system` every node, `agent` on melchior),
   four LaunchDaemons; passes (`cast_audio`, `card_forge`, `sweeper`,
   `corpus_reconcile`, `paper_reconcile`, `fetch`/`chase` backoff);
-  `claude_agent` dispatch + switchable LLM router (ADR 0046).
+  `claude_agent` dispatch + switchable LLM router.
 - **Discovery layer (F20)** — per-chunk KeyBERT (`chunks.keywords`),
-  `view='toc'`; ADR 0018 superseded.
-  → `docs/conventions/discovery-layer-policy.md`.
-- **Chunk-tag classifier (ADR 0047)** — cascade regex → `role3` local →
-  optional escalate; `ROLE3:own` = citation-grounding filter, default-OFF.
-  → `chunk-classifier-cascade` (git-only).
+  `view='toc'`. → `docs/conventions/discovery-layer-policy.md`.
+- **Chunk-tag classifier** — cascade regex → `role3` local → optional
+  escalate; `ROLE3:own` = citation-grounding filter, default-OFF.
+  → `src/precis/workers/classify.py`.
 - **Live affordances** — `folder`, `plan`, `figure`, `mermaid`, `gripe`,
   `anki`, `concept`, `quest`, `llm`, `alert`, `agentlog`, `job`/sandbox,
   `structure`, `citation`, `cfp`, `email` (live IMAP browse, read-only;
@@ -90,13 +86,13 @@ Start at `docs/codebase.md`'s package map, then the owning package's
 | **Orientation — read first**     | **`docs/codebase.md`** (shape, lifecycle, seams) |
 | Subsystem detail (present-state + why) | the owning package's `__init__.py` docstring (map: `docs/codebase.md`) |
 | Coined / overloaded terms, project & quest aliases → files| `docs/architecture/glossary.md` |
-| To-do list / what's planned next | `docs/backlog/` (one file per item; generated README index) — **open work only**; when a ship completes an item, *delete* its item file in that same commit (never leave a "done ✅" note — `git log` is the record, like memory's landed-work rule). **No "completed log" file/directory** — a resolved item is proven by `git log` + its regression test; reusable forensics from an incident go to `docs/runbooks/`, never a done-log |
+| To-do list / what's planned next | `docs/backlog/` (one file per item; generated README index) — open work only, delete-on-ship per `docs/README.md`; reusable forensics from an incident go to `docs/runbooks/`, never a done-log |
 | Conventions / workflow / DoD     | `AGENTS.md` |
 | Mission / pitch narrative        | `docs/mission.md` (positioning, not architecture) |
 | Master kinds table + recipes     | skills `precis-overview`, `precis-toolpath-help` |
 | Dated history                    | `git log` (no CHANGELOG) |
 | Replicate this repo's setup elsewhere | `docs/how-to-setup-like-this.md` (portable scaffolding brief) |
-| Full schema (prose / visual)     | `storage-v2` (git-only) (F20-amended); `schema-v2.svg` |
+| Full schema (prose / visual)     | `docs/reference/schema.md` (generated); `docs/reference/schema-v2.svg` |
 | Worker queue pattern             | the `precis.workers` package docstring |
 | Ingest pipeline                  | `src/precis/ingest/{marker,pipeline,text_chunker,db_writer}.py` |
 | Worker code                      | `src/precis/workers/` |
@@ -107,11 +103,11 @@ Start at `docs/codebase.md`'s package map, then the owning package's
 ## Conventions that bite
 
 - **Forward-only migrations.** Never edit a sealed `*.sql` under
-  `src/precis/migrations/` — ship a new forward migration to fix bugs
-  (ADR 0005). A fresh DB loads the `migrations/baseline/schema.sql`
-  snapshot then applies only the tail. Regenerate the snapshot with
-  `scripts/bump` / `precis db dump-schema` — never hand-edit it
-  (release-time only; it's checked against the files). Dual-track (ADR 0031).
+  `src/precis/migrations/` — ship a new forward migration to fix bugs.
+  A fresh DB loads the `migrations/baseline/schema.sql` snapshot then
+  applies only the tail. Regenerate the snapshot with `scripts/bump` /
+  `precis db dump-schema` — never hand-edit it (release-time only; it's
+  checked against the files).
 - **`uv` for everything.** Bare `pip`/`pytest`/`mypy` aren't reproducible.
 - **Run tests via `scripts/test`, never a bare pytest.** →
   `docs/conventions/testing.md` for the why + `--impacted` testmon details.
@@ -159,7 +155,7 @@ Start at `docs/codebase.md`'s package map, then the owning package's
 - **Bug intake → triage via the `bug` skill** before coding a fix — masked
   root cause (obvious fix would hide a deeper defect)? Dispatch `root-cause`
   first, patch after.
-- **Embeddings populated by the worker, not ingest** (ADR 0007): ingest
+- **Embeddings populated by the worker, not ingest**: ingest
   stores chunks `embedding IS NULL`; `embed:bge-m3` fills them. Don't call
   `fill_embeddings` from the ingest path.
 - **Don't mutate body chunks.** `chunks` is append-only for body rows
@@ -176,7 +172,7 @@ Start at `docs/codebase.md`'s package map, then the owning package's
   resolving, drift-checking).
 - If another branch left trivial drift (needs `ruff`), just fix it.
 - **Commit messages: one-line subject only, no body.** `git log` (no
-  CHANGELOG) is already the record and ADRs/docs carry the "why" — a
+  CHANGELOG) is already the record and package docstrings carry the "why" — a
   multi-paragraph body or bullet list is pure token overhead to draft.
   `/land`/`/go` already ask for a "concise one-line, conventional-commit-style
   summary"; hold to the same bar committing outside that flow too — subject
@@ -191,13 +187,13 @@ that fits; each agent def in `.claude/agents/` carries its own remit and
 guardrails (the Agent tool surfaces those descriptions), so this is just the map.
 
 - **Script (no model)** — a *deterministic* chore: hygiene scans (`memory-lint`,
-  `migration-check`, `docs-orphans`, `backlog-lint`) and the cadence nudges that
+  `migration-check`, `backlog-lint`) and the cadence nudges that
   only decide *when* a judgment pass is due (`token-review`, the 7-day
   session-tightness clock).
 - **Haiku** — mechanical, needs a model: `navigator`, `extract`, `test-runner`,
   `tidy`, `cluster-ops`, `cmd-runner` (generic one-off deterministic-command
   runner — the long-tail sibling to `test-runner`/`tidy`), `scaffold` (mints a
-  new numbered/templated migration, ADR, proposal, or skill file from the
+  new numbered/templated migration, backlog item, or skill file from the
   existing convention; never invents content), `gripe-filer` (files an
   already-decided finding at a caller-supplied target — gripe vs
   docs/backlog/ — with a dedup check; doesn't decide the target itself).

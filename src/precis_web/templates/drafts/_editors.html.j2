@@ -490,7 +490,7 @@ function draftEdit(ident, handle, baseSha, editable, isHeading) {
   };
 }
 
-// Structured grid editor for a chunk_kind='table' block (ADR 0035 §1). The
+// Structured grid editor for a chunk_kind='table' block. The
 // derived pipe-markdown text has no free-text edit path, so tables are edited
 // as {header, rows, caption} and POSTed to /drafts/<id>/table. `seed` is the
 // recovered table ({header, rows, caption}); on save we dispatch the same

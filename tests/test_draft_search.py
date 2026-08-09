@@ -19,7 +19,7 @@ def _proj(hub: Hub, text: str = "Project root") -> int:
 
 
 def _handle_of(put_body: str) -> str:
-    # ADR 0036: the put-ack carries the chunk's universal handle ``dc<id>``.
+    # the put-ack carries the chunk's universal handle ``dc<id>``.
     import re
 
     m = re.search(r"dc\d+", put_body)
@@ -139,7 +139,7 @@ def test_headings_only(draft: DraftHandler, hub: Hub) -> None:
 
 def test_semantic_mode_runs(draft: DraftHandler, hub: Hub) -> None:
     # hub fixture carries a MockEmbedder; embed the draft so the semantic
-    # leg has vectors (put() doesn't embed — ADR 0007).
+    # leg has vectors (put() doesn't embed — the derived queue).
     assert isinstance(hub.embedder, MockEmbedder)
     _seed_draft(draft, hub, slug="d1")
     _embed_draft(hub.store, "d1")

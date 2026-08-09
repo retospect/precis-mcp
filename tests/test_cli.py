@@ -89,7 +89,7 @@ def test_serve_passes_through_network_transport_flags(
 def test_cron_tick_dry_run_flag_is_gone(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Post-ADR-0061, ``precis cron tick`` delegates to the shared
+    """Post-cron-folded-into-recurring, ``precis cron tick`` delegates to the shared
     ``run_schedule_pass`` engine, which has no preview mode (it's
     idempotent per-tick, so a live run is always safe to repeat). A
     ``--dry-run`` flag that argparse still accepted but the tick body never
@@ -118,7 +118,7 @@ def test_migrate_dry_run_against_fresh_db(
     # --from-scratch ignores the baseline snapshot and replays the full
     # numbered chain, so 0001_initial shows up as pending. Without it a
     # fresh DB bootstraps from migrations/baseline/schema.sql and only the
-    # post-snapshot tail is pending (ADR 0031).
+    # post-snapshot tail is pending.
     monkeypatch.setattr(
         sys,
         "argv",
@@ -143,7 +143,7 @@ def test_migrate_applies_pending(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # --from-scratch: replay the whole numbered chain (not the baseline
-    # snapshot + tail), so 0001_initial is among the applied set (ADR 0031).
+    # snapshot + tail), so 0001_initial is among the applied set.
     monkeypatch.setattr(
         sys,
         "argv",

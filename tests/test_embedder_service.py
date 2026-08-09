@@ -4,7 +4,7 @@ Boots the real :class:`EmbedderService` on an ephemeral loopback port
 with a :class:`MockEmbedder` (no torch, no weights) and drives it with
 :class:`RemoteEmbedder` over the *default* urllib transport — so the
 JSON wire, the HTTP routes, and the boundary check are all exercised
-together. This is the CI contract test ADR 0020 calls for: the two
+together. This is the CI contract test embedder-as-service calls for: the two
 sides cannot drift without it going red.
 """
 

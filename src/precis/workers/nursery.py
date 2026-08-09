@@ -16,7 +16,7 @@ finding rows):
 * **stale claims** — leaves carrying ``claimed-by:<x>`` for more
   than ``STALE_CLAIM_HOURS=3`` without a status change. The
   claim's age is read from ``ref_tags.created_at`` — the same
-  source ADR 0016 uses for the ingest claim TTL.
+  source the ingest advisory-lock claim TTL uses.
 * **long waits** — leaves carrying ``waiting-for:*`` for more than
   ``LONG_WAIT_DAYS=7``.
 * **stuck doable** — open leaves with no claim, no waiting tag, and
@@ -36,7 +36,7 @@ finding rows):
   "succeeds" every tick but never converges).
 * **quest-loop failing** — a quest whose ``quest_tick`` coordinator loop has
   rested ``STATUS:failed`` more than ``QUEST_LOOP_FAIL_24H`` times in 24h
-  (RC1, ADR 0065). The reconciler now backs the re-mint off on an escalating
+  (RC1). The reconciler now backs the re-mint off on an escalating
   cooldown, but a persistent break (bad config, dead endpoint) keeps failing at
   the ceiling cadence — this surfaces it so a human fixes or abandons the quest
   rather than letting it burn compute invisibly. The re-mint spin sibling of
@@ -145,7 +145,7 @@ PLAN_TICK_REMINT_24H = 16
 
 #: A quest whose ``quest_tick`` coordinator loop has rested ``STATUS:failed``
 #: more than this many times in 24h is stuck on a persistent break — the
-#: reconciler's RC1 backoff (ADR 0065) throttles the re-mint to a 30 min → 6 h
+#: reconciler's RC1 backoff throttles the re-mint to a 30 min → 6 h
 #: cadence, so a quest still crossing this threshold is failing at (or near) the
 #: ceiling and needs a human. A healthy quest loop rests ``succeeded`` (dry /
 #: punt), never ``failed``; a couple of transient failures in a day is
@@ -393,7 +393,7 @@ def _detect_orphans(store: Store) -> list[Finding]:
                  WHERE r.kind = 'todo' AND r.deleted_at IS NULL
             ),
             roots AS (
-                -- ADR 0045: the root is the topmost *todo* — a folder
+                -- folder placement roles: the root is the topmost *todo* — a folder
                 -- parent above it is placement, not tree membership.
                 SELECT DISTINCT ON (w.ref_id) w.ref_id AS leaf_id,
                        w.root_id,
@@ -840,7 +840,7 @@ def _detect_quest_loop_failures(store: Store) -> list[Finding]:
     A quest's coordinator loop rests ``failed`` only after ``_max_tick_failures``
     consecutive hard failures (``workers/job_types/quest_tick.py``) — a
     persistent break, not a transient blip (``paused`` states don't count). The
-    reconciler's RC1 backoff (ADR 0065, ``quest/loop.py``) now spaces the re-mint
+    reconciler's RC1 backoff (``quest/loop.py``) now spaces the re-mint
     out to a 30 min → 6 h cadence instead of every worker pass, but it cannot
     *fix* the break — so a genuinely-broken quest keeps failing at the ceiling
     cadence. This counts distinct ``quest_tick`` loops per quest that became
@@ -882,7 +882,7 @@ def _detect_quest_loop_failures(store: Store) -> list[Finding]:
                 f"quest #{int(r[0])}'s quest_tick loop rested STATUS:failed "
                 f"{int(r[2])}× in 24h (> {QUEST_LOOP_FAIL_24H}, last "
                 f"{_hours_since(r[3]):.0f}h ago) — a persistent break the RC1 "
-                "backoff (ADR 0065) is throttling but can't fix: check the "
+                "backoff is throttling but can't fix: check the "
                 "loop's job_summary / job_event chunks for the failing tick "
                 "(bad tier/endpoint config, a code error, or spark down), then "
                 "fix the cause or pause the quest"
@@ -1461,7 +1461,7 @@ def _detect_dispatch_stalls(store: Store) -> list[Finding]:
                 "check melchior's agent worker (`launchctl kickstart -k "
                 "system/com.precis.worker.agent`) + `claude` OAuth; longer term, "
                 "run the agent profile on a second host or wire local-model "
-                "tool-calling (ADR 0024/0046) so execution isn't single-homed."
+                "tool-calling so execution isn't single-homed."
             ),
         )
     ]

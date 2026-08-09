@@ -22,7 +22,7 @@ from precis.workers.corpus_reconcile import (
 def test_rebase_onto_local_crosses_mount_prefix(tmp_path: Path) -> None:
     """An absolute ``storage_path`` written by a differently-mounted host
     resolves here by re-anchoring its ``/papers/…`` suffix under the local
-    corpus root's own ``papers`` dir (ADR 0029: Macs /opt/nas, Linux /nas)."""
+    corpus root's own ``papers`` dir (Macs /opt/nas, Linux /nas)."""
     # This node mounts the NAS at ``tmp_path`` → corpus root ``.../papers/corpus``.
     local_root = tmp_path / "papers" / "corpus"
     (local_root / "i").mkdir(parents=True)

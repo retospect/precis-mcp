@@ -51,7 +51,7 @@ def test_cited_chunk_returns_text_and_page() -> None:
     assert range_result["ord"] == 3  # range uses the 'from' ord
 
 
-# ── ADR-0032 compound handle (``pa<ref_id>~lo..hi``, slice 1) ────────
+# ── the compound span handle (``pa<ref_id>~lo..hi``, slice 1) ──────────────
 
 
 def test_cited_chunk_accepts_compound_handle_for_same_paper() -> None:

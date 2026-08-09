@@ -6,7 +6,7 @@ it mints a ``good_search`` coordinator campaign
 handle the caller polls. This module owns that submit path so
 ``handlers/paper.py`` stays a thin dispatch.
 
-Per the design doc (§Parenting, ADR 0044): the campaign job rides the
+Per the design doc (§Parenting): the campaign job rides the
 intent lane — a bare interactive ``good=True`` parents it on an
 auto-minted lightweight ephemeral todo carrying
 ``meta.auto_check={'type': 'child_job_succeeded'}``. Because the

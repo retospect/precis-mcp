@@ -415,7 +415,7 @@ def test_covid19_IS_linkified_known_acceptable_false_positive() -> None:
     assert "/r/paper/covid19" in out
 
 
-# --- Draft superset grammar (ADR 0033 §8) -----------------------------------
+# --- Draft superset grammar -----------------------------------
 # The same filter highlights the bracket / sigil forms a draft chunk may
 # carry, in addition to the bare ``kind:ref`` mentions above.
 
@@ -567,7 +567,7 @@ def test_display_link_target_is_escaped_no_attribute_breakout() -> None:
     assert 'onclick="alert(1)"' not in out
 
 
-# --- Reader rendering: markdown subset + compact sigils (ADR 0033) -----------
+# --- Reader rendering: markdown subset + compact sigils -----------
 
 
 def test_markdown_bold_rendered_when_enabled() -> None:
@@ -761,7 +761,7 @@ def test_abbrev_highlight_wraps_known_tokens() -> None:
         )
     )
     assert out.count('<abbr class="pa"') == 2  # two standalone PEI, not PEINE
-    # The definition rides in a .pa-def span inside .pa-pop (ADR 0052 rich
+    # The definition rides in a .pa-def span inside .pa-pop (rich
     # hover — a part additionally shows MPN/manufacturer/datasheet rows).
     assert '<span class="pa-pop"><span class="pa-def">polyethyleneimine</span>' in out
     assert "title=" not in out  # no native tooltip (that was the lag)

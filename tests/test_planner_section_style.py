@@ -1,4 +1,4 @@
-"""The planner injects the nearest enclosing section style (ADR 0037/0038).
+"""The planner injects the nearest enclosing section style.
 
 `store.section_style_for` walks parent_chunk_id to the nearest styled
 heading; `_render_section_style` resolves a change-request's `meta.anchor`,

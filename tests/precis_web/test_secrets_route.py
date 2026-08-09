@@ -1,4 +1,4 @@
-"""Smoke tests for the /secrets vault editor route (ADR 0055).
+"""Smoke tests for the /secrets vault editor route.
 
 Fake-store route tests via the shared ``client`` fixture: the masked inventory
 renders, the write-only set form wires through, and a blank submit is a no-op

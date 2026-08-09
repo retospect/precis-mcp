@@ -1,4 +1,4 @@
-"""classify_topics — paper→topic dossier cascade classifier (ADR 0060).
+"""classify_topics — paper→topic dossier cascade classifier.
 
 Self-contained ref-pass (shaped like ``classify`` / ``paper_glossary`` — DB
 reads + an outbound LLM call, not a pure ``WorkerHandler``). For each claimed
@@ -16,7 +16,7 @@ reads + an outbound LLM call, not a pure ``WorkerHandler``). For each claimed
      paper that is also a health-biomarker paper).
 
 Tier-2 escalation (a stronger model re-judging low-confidence tier-1 calls) is
-deliberately not implemented yet — see ADR 0060's open questions.
+deliberately not implemented yet's open questions.
 
 Writes one open tag ``topic:<slug>`` per confirmed topic, plus a closed marker
 tag ``TOPICCASCADE:<version>-<hash(sorted enabled slugs)>``
@@ -25,17 +25,17 @@ matches) so a processed paper is not re-claimed. Bumping
 ``CLASSIFY_TOPICS_VERSION`` *or* changing the enabled-topic set changes the
 marker value, lazily re-claiming the corpus — this is also how a *newly
 added* topic backfills retroactively over papers already in the corpus
-(ADR 0060's "and retroactively, for all the others").
+(topic dossiers: "and retroactively, for all the others").
 
 The top-level topic list is **closed** — new ``data/topics/*.yaml`` entries
-are added by the operator, never auto-minted (ADR 0047's measured
+are added by the operator, never auto-minted (controlled chunk tagging's measured
 folksonomy-drift lesson).
 
 No lease table: like ``paper_glossary``, existence of a current-version marker
 tag is the 'done' check (no separate claims table — the paper corpus is small
 enough, and the LLM call short enough, that a lease isn't needed here).
 
-Per-topic gating (ADR 0068): each topic is its own ``service_config`` service
+Per-topic gating: each topic is its own ``service_config`` service
 ``topic:<slug>`` (independently flippable from ``/categorizers``), consulted
 *inside* this one pass to filter ``_load_topics()`` to the enabled subset —
 topics don't register their own passes (one pass, one LLM call per paper).
@@ -99,7 +99,7 @@ def all_topic_slugs() -> list[str]:
 
 
 def topic_marker_value(enabled_slugs: Iterable[str]) -> str:
-    """Done-marker value encoding the enabled-topic SET (ADR 0068 backfill).
+    """Done-marker value encoding the enabled-topic SET (backfill).
 
     Order-independent, set-sensitive: a change to the enabled set changes the
     value, so ``_claim`` re-claims the corpus lazily against the new set.
@@ -241,7 +241,7 @@ def _claim(
     Existence of a fresh ``TOPICCASCADE`` ref tag carrying ``marker_value`` is
     the 'done' marker (no separate lease table, mirroring
     ``paper_glossary``); idempotent + re-claimable by changing the marker
-    (a version bump, or — ADR 0068 — a change to the enabled-topic set).
+    (a version bump, or — per-topic classify gating — a change to the enabled-topic set).
     Also excludes a ref currently under an unexpired claim-time attempt
     lease (:mod:`precis.workers.ref_lease`, gr172740/173317 — a
     persistently-failing ref must not be re-fetched and re-LLM'd every
@@ -316,7 +316,7 @@ def run_classify_topics_pass(
 ) -> dict[str, Any]:
     """One claim → tier0 → tier1 → write cycle. Returns
     ``{claimed, ok, failed, dist}``. ``enabled_slugs`` restricts classification
-    to that topic subset (ADR 0068 per-topic gating) — ``None`` classifies
+    to that topic subset (per-topic gating) — ``None`` classifies
     against the full taxonomy (back-compat for CLI/tests); an empty list
     short-circuits to a no-op. ``ref_ids`` optionally restricts the sweep to
     specific papers (targeted backfill / tests); ``None`` sweeps the whole

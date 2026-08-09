@@ -1,4 +1,4 @@
-"""Coordinator-parented child jobs (ADR 0044 extension) + ``ctx.spawn_child``.
+"""Coordinator-parented child jobs (extension) + ``ctx.spawn_child``.
 
 good-search-coordinator §Substrate fixes #3 / §Gaps 1: a ``kind='job'``
 may parent on another job, but ONLY when that parent is itself a
@@ -100,7 +100,7 @@ def campaign(todos: TodoHandler, store: Store) -> tuple[int, int]:
     return todo_id, coord_id
 
 
-# ── put(kind='job', parent_id=<job>) — the ADR 0044 extension ──────
+# ── put(kind='job', parent_id=<job>) — the intent-vs-compute job lanes extension ──────
 
 
 class TestCoordinatorJobParent:

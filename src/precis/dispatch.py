@@ -741,7 +741,7 @@ def boot(
         _gated(DraftHandler)
         _gated(PlanHandler)
         _gated(FigureHandler)
-        # mermaid — the second instance of the diagram core (ADR 0057). A
+        # mermaid — the second instance of the diagram core. A
         # first-class kind (like figure): registered unconditionally; its
         # mermaidx engine is lazy-imported, so a build without the [mermaid]
         # extra still advertises the kind and degrades validation/render
@@ -880,7 +880,7 @@ def boot(
 
         _gated(SemanticScholarHandler)
 
-        # ORCID — durable author-identity node (ADR 0039). Resolves an
+        # ORCID — durable author-identity node. Resolves an
         # iD via the ORCID Public API, stores a refreshable link hub,
         # links works already held, and reports the missing ones (fetching
         # is LLM-gated via args={'enqueue': N}). The handler raises

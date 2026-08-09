@@ -1,4 +1,4 @@
-"""The canonical retrosynthesis route-graph IR (ADR 0056 §2).
+"""The canonical retrosynthesis route-graph IR.
 
 One ``RouteGraph`` normalizes the output of *any* planner (AiZynthFinder,
 ASKCOS, …) into a single schema — "swap the engine, keep the IR". Pure
@@ -216,7 +216,7 @@ def cache_key(
     stock: str = "",
     max_steps: int = 0,
 ) -> str:
-    """Content address for a route plan (ADR 0056 §6 / ADR 0007).
+    """Content address for a route plan.
 
     Same ``(target, engine, engine_version, stock snapshot, depth)`` ⇒ same
     key ⇒ zero recompute. The engine *version* (an image digest in prod)

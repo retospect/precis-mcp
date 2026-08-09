@@ -34,7 +34,7 @@ ALLOWED_KINDS: frozenset[str] = frozenset(
 
 #: Every kind known to this precis-mcp build (see
 #: ``get(kind='skill', id='precis-help')`` for the live roster — last
-#: cross-checked 2026-07-22, ADR 0060). Kept as an explicit list rather
+#: cross-checked 2026-07-22). Kept as an explicit list rather
 #: than a live registry read so the allowlist is computed at import time:
 #: ``KNOWN_KINDS - ALLOWED_KINDS`` is the disabled set. This means a kind
 #: added to the registry but never added here stays *enabled* for Slack —

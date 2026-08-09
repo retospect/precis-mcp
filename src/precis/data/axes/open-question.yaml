@@ -1,4 +1,4 @@
-# Cross-cutting experiment-planning axis (ADR 0047): "continue where
+# Cross-cutting experiment-planning axis: "continue where
 # the previous work left off". Deliberately orthogonal to role: —
 # leads live in future-work AND limitation AND negative results AND
 # "no study has yet addressed X" motivation chunks; a single-select

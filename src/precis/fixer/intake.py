@@ -1,6 +1,6 @@
 """Fixer intake: what's ready to build, and which one is next.
 
-Two risky small bits the ADR flagged live here:
+Two risky small bits flagged at design time live here:
 
 * **Ready convention.** A work item is a transient file under
   ``docs/backlog/*.md`` with a YAML-ish front-matter block; it is
@@ -13,8 +13,7 @@ Two risky small bits the ADR flagged live here:
   predicate (local branch / worktree / remote head), injected so the
   pure pick logic stays unit-testable.
 
-Gripe intake exists but is **off by default** at the MVP (ADR 0048:
-gripes surface for human promotion until the ``ready``-on-gripes dial
+Gripe intake exists but is **off by default** at the MVP (gripes surface for human promotion until the ``ready``-on-gripes dial
 is turned up); it is included here so the queue is one normalized
 list once enabled.
 """

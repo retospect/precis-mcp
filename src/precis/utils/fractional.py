@@ -1,4 +1,4 @@
-"""Fractional indexing for sibling-scoped chunk ordering (ADR 0033 §2).
+"""Fractional indexing for sibling-scoped chunk ordering.
 
 A draft chunk's reading position among its siblings is a string `pos`
 over a base-62, ASCII-ordered alphabet, compared lexicographically.

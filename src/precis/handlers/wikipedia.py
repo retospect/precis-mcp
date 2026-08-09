@@ -189,7 +189,7 @@ class WikipediaHandler(CacheBackedHandler):
         return FetchResult(
             title=resolved_title,
             # One block; the base-class auto-chunker splits it at
-            # ~800 chars and the embed worker vectorizes per ADR 0007
+            # ~800 chars and the embed worker vectorizes per the derived queue
             # (ingest writes embedding NULL; the worker fills it).
             body_blocks=[BlockInsert(pos=0, text=body)],
             cost_usd=None,  # free, bandwidth only

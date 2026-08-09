@@ -751,7 +751,7 @@ def _coerce_verdict(data: dict[str, Any] | None, hits: list[SearchHit]) -> Judge
 
 def make_llm_judge_fn(*, tier: Any = None) -> JudgeFn:
     """The real LLM judge — one bounded MEDIUM-tier JSON call per entry,
-    routed through the switchable router (ADR 0046)."""
+    routed through the switchable router."""
     from precis.utils.llm.router import LlmRequest, Tier, dispatch
 
     resolved_tier = tier if tier is not None else Tier.MEDIUM

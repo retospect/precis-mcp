@@ -1,6 +1,6 @@
 """Background work: worker passes, scheduler cadences, and job executors.
 
-Derived-queue core (ADR 0007)
+Derived-queue core
 -----------------------------
 The worker's "queue" is the data itself: a chunk that has no row in
 ``chunk_embeddings`` for embedder ``bge-m3`` *needs* to be embedded.
@@ -35,12 +35,12 @@ Three pass shapes share the one ``run_loop`` rotation (``runner.py``):
 * **Chunk passes** — :class:`WorkerHandler` subclasses per the contract
   above (``embed``, ``summarize``, ``chunk_keywords``).
 * **Ref-passes** — self-contained claim/compute/write closures over
-  ``refs`` (ADR 0017 sibling-worker shape): ``classify``, ``bib_parse``,
+  ``refs`` (sibling-worker shape): ``classify``, ``bib_parse``,
   ``bib_mark``, ``chase``, ``fetch``, ``hub_refine``, ``nursery``,
   ``sweeper``, ``heartbeat``, ``corpus_reconcile``, ``paper_reconcile``,
   ``openalex_enrich``, ``llm_summarize``, … (roster: ``registry.py``).
 * **Executor passes** — drain ``kind='job'`` rows (:mod:`.executors`).
-  The ``dispatch`` pass is the intent→compute bridge (ADR 0044): it walks
+  The ``dispatch`` pass is the intent→compute bridge: it walks
   open todos with ``meta.executor`` and mints one child ``kind='job'``
   per, stamping ``prio`` from the parent so urgency flows down the DAG.
 
@@ -91,7 +91,7 @@ row defaults OFF. The no-row baseline also ANDs
 ``--profile all`` union can't default-on e.g. ``job_claude_inproc`` where
 ``PRECIS_MCP_CONFIG`` is absent (gr193672). Per-item env seeds remain for
 ``axis:<id>`` (``PRECIS_AXES_ENABLED``) and ``topic:<slug>``
-(``PRECIS_TOPICS_ENABLED``, ADR 0068). Two more knobs on the same table:
+(``PRECIS_TOPICS_ENABLED``). Two more knobs on the same table:
 ``concurrency`` (in-pass thread-pool width for ``classify``'s per-row
 cascade, hard-capped by ``PRECIS_CLASSIFY_MAX_CONCURRENCY``) and reserve
 mode (a ``service='reserve'`` pseudo-row with ``expires_at``, checked
@@ -182,14 +182,14 @@ Bibliography + classifiers (pointers)
 ``bib_mark`` extracts inline ``[N]`` usage into ``chunk_citations``, and
 ``bib_retag`` is the manual, corpus-mutating remediation for mis-typed
 bibliography chunks — each module's docstring is the record. The
-chunk-tag cascade (ADR 0047) lives in ``classify.py``; the generic axis
-runner in ``axis_pass.py``; the paper→topic cascade (ADR 0060) in
+chunk-tag cascade lives in ``classify.py``; the generic axis
+runner in ``axis_pass.py``; the paper→topic cascade in
 ``classify_topics.py``.
 
 Agentic dispatch
 ----------------
 Reviewers, ``dream_agent``, and the executors route LLM work through the
-switchable router (``utils/llm/``, ADR 0046): ``dispatch(LlmRequest)``
+switchable router (``utils/llm/``): ``dispatch(LlmRequest)``
 over a transport registry where ``claude -p`` (``utils/claude_agent.py``)
 is one adapter among peers — backend, per-tier model, and placement
 chains are live-switchable via ``app_settings``. When

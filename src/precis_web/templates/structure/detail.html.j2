@@ -95,7 +95,7 @@
         <span class="text-xs font-normal text-slate-400">— the fidelity ladder (§9) · cache keys (§23.16)</span>
       </h2>
       {# Relax button — default params; an energy rung with no local backend
-         dispatches to the GPU node (ADR 0044, no todo needed). #}
+         dispatches to the GPU node (no todo needed). #}
       <form method="post" action="/structure/{{ slug }}/relax" class="ml-auto flex items-center gap-1">
         <select name="fidelity"
                 class="rounded border border-slate-300 px-1.5 py-0.5 text-xs bg-white"
@@ -110,7 +110,7 @@
       </form>
     </div>
 
-    {# ── live in-flight jobs (ADR 0044 compute lane) — a dispatched relax has
+    {# ── live in-flight jobs (compute lane) — a dispatched relax has
        no struct_runs row until the GPU node finishes, so surface the job here
        and poll until it lands. #}
     <div id="sv-runs-live" data-slug="{{ slug }}" data-run-count="{{ run_count }}"
@@ -718,7 +718,7 @@
 </script>
 
 <script>
-// Run-cube live status — a dispatched relax (ADR 0044 compute lane) has no
+// Run-cube live status — a dispatched relax (compute lane) has no
 // struct_runs row until the GPU node finishes, so poll the in-flight jobs and
 // reload once a run lands. Only runs when the page rendered a pending job.
 (function () {

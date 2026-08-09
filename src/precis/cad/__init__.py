@@ -1,4 +1,4 @@
-"""Analytic-IR CAD kernel (ADR 0041).
+"""Analytic-IR CAD kernel.
 
 A small, self-contained analytic geometry kernel: rigid-transform-only
 primitives (frustum / sphere / torus / half-space-chamfer) that answer
@@ -8,7 +8,7 @@ computing the merged solid.
 
 This package deliberately imports **nothing** from the rest of precis
 (no DB, no handler, no store) so it stays unit-testable in isolation and
-swappable behind the same node-list (ADR 0041 §9). Units are
+swappable behind the same node-list. Units are
 millimetres, ``float64`` throughout.
 """
 

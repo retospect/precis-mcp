@@ -1,6 +1,6 @@
 """run_finding_chase_pass — sibling worker that advances finding chains.
 
-Per ADR 0018, ref-level workers are sibling functions, not
+Ref-level workers are sibling functions, not
 ``WorkerHandler`` subclasses. This module follows the same shape as
 ``precis.workers.segment_toc``:
 

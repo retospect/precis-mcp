@@ -3,9 +3,10 @@
 > **Living document.** Prioritized quality/best-practices program from the
 > 2026-08-02 six-dimension review (core server, workers/ingest, web UI,
 > security, DB layer, tests) verified @ `f2a517f1`. **Maintain like
-> OPEN-ITEMS.md:** when an item ships, *delete* it here in the same commit
+> `docs/backlog/`:** when an item ships, *delete* it here in the same commit
 > (`git log` is the record). An item that becomes active work may graduate
-> to OPEN-ITEMS.md or a gripe — leave a one-line pointer, don't duplicate.
+> to a `docs/backlog/` item or a gripe — leave a one-line pointer, don't
+> duplicate.
 > Re-run the full review when this file is mostly empty or ~6 months stale.
 > Cite code by durable anchor (`file.py::symbol`), not line numbers
 > (`docs/conventions/code-anchors.md`).

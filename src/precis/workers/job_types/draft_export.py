@@ -127,7 +127,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         ctx.record_failure(f"draft_export: no draft {slug!r}")
         return
 
-    # Figure clearance gate (ADR 0034 §4): an uncleared figure must not
+    # Figure clearance gate: an uncleared figure must not
     # ship, so it fails the export — the way a bare ``\cite`` fails review.
     from precis.utils.figure_clearance import draft_figure_clearance
 

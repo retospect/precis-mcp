@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 
 
 def _h(ref_id: int | str, kind: str = "todo") -> str:
-    """ADR 0036 universal handle for a todo/job row (e.g. ``td158``)."""
+    """Universal handle for a todo/job row (e.g. ``td158``)."""
     return handle_registry.format_handle(kind, int(ref_id))
 
 
@@ -598,7 +598,7 @@ def _watches_panel_rows(store: Store) -> list[dict[str, Any]]:
     * ``id`` — the recurring's ref id
     * ``title`` — for display
     * ``cron`` — the canonical cron string, or ``at:<iso>`` for a
-      one-shot (ADR 0061), or ``None`` when folder
+      one-shot, or ``None`` when folder
     * ``deliver`` — the push-delivery target (``meta.deliver.target``),
       or ``None`` for a queue-mode recurring
     * ``last_tick`` — ISO timestamp of the most recent ``spawn`` OR

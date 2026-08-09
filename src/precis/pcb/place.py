@@ -1,4 +1,4 @@
-"""Auto-kinda-place + route-feasibility estimate (ADR 0042 §9).
+"""Auto-kinda-place + route-feasibility estimate.
 
 Continuous (no-grid) placement that **minimizes the crossing count** Slice 4
 measures — plus ratsnest length and the `soft` measures — by force-directed
@@ -16,7 +16,7 @@ part are re-penalised — O(deg·W) per iteration instead of the O(W²) full
 rebuild, which at route-round-trip iteration counts (1500→4500) is the
 difference between sub-second and minutes inside one MCP call.
 
-The actual place↔route round-trip against Freerouting (ADR 0042 §9, §13a) is
+The actual place↔route round-trip against Freerouting is
 wired in Slice 6 (the export/router integration); this module is the placer +
 the H/V route-*feasibility* estimate it hands the LLM in the meantime.
 """
@@ -277,7 +277,7 @@ def autoplace(
 
 
 def route_feasibility(airwires: list[ratsnest.Airwire]) -> dict[str, float | int]:
-    """A coarse H/V routability estimate (ADR 0042 §9) — NOT real routing.
+    """A coarse H/V routability estimate — NOT real routing.
 
     Assign each airwire to the horizontal or vertical signal layer by its
     dominant direction, then count the **residual same-layer crossings** — each

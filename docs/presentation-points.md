@@ -39,11 +39,11 @@ worktree → ship, but the *check* is free.
 
 - **Migration collisions** — `scripts/migration-check` (two worktrees about to
   collide on the same migration number).
-- **Orphan design docs** — `scripts/docs-orphans` (a plan doc left behind after
+- **Backlog gunk** — `scripts/backlog-lint` (an item left behind after
   its feature shipped → `docs-triage`).
 - **Code anchors** — `scripts/coderef check docs` (a doc cites a `file.py::Sym`
   that no longer resolves).
-- **Backlog done-gunk** — `scripts/backlog-lint` (an OPEN-ITEMS entry whose
+- **Backlog done-gunk** — `scripts/backlog-lint` (a `docs/backlog/` item whose
   title says DONE but still sits in the active list).
 
 ## The through-line (the actual presentation point)

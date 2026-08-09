@@ -1,4 +1,4 @@
-"""Computed context tables (ADR 0038 §6/§6a), rendered as TOON.
+"""Computed context tables, rendered as TOON.
 
 These are *computed modules*: each builder queries live state (or a fixed
 verb/kind list) and returns a TOON table via the canonical
@@ -7,11 +7,11 @@ Four tables; three cached, one variable:
 
 * :func:`tools_table` (cached) — the verb surface, with examples.
 * :func:`kinds_table` (cached) — the code↔name legend for reading
-  handles *and* choosing ``kind=`` (ADR 0038 §7).
+  handles *and* choosing ``kind=``.
 * :func:`doc_context_table` (variable) — the working set around an
   anchor: the window (ancestors ``^``, siblings ``±N``) + references,
   with a ``how`` disclosure column mapped onto already-computed gloss /
-  keywords / text (ADR 0038 §6a).
+  keywords / text.
 * :func:`glossary_table` (variable) — a draft's active abbreviations.
 
 Each builder returns ``""`` when it has nothing to say, so the assembler
@@ -39,8 +39,7 @@ def _table(label: str, rows: list[dict[str, str]], schema: list[str]) -> str:
 
 # ── cached: tools + kinds ─────────────────────────────────────────────
 
-#: The agent-profile verb surface. Examples are part of the table (ADR
-#: 0038 §6, "tools{verb,example,what}: examples included"). Cached — the
+#: The agent-profile verb surface. Examples are part of the table. Cached — the
 #: same across every tick of every agent.
 _TOOLS: list[dict[str, str]] = [
     {
@@ -86,7 +85,7 @@ def tools_table() -> str:
 
 
 #: Curated kinds the planner/editor actually sees — *not* the full ~24
-#: registry (ADR 0038 §6 "model sees scoped; server uses full"). Codes
+#: registry. Codes
 #: are pulled from the handle registry so the legend can never drift from
 #: the SSOT (a test asserts this). ``chunk`` names the addressable-chunk
 #: code where one exists.
@@ -112,8 +111,7 @@ def kinds_table() -> str:
 
     The single legend for **reading handles** (``dc41`` → a draft chunk)
     *and* **choosing ``kind=``** — ``kind=`` accepts the record ``code``
-    *or* the long ``name`` (``kind='dr'`` ≡ ``kind='draft'``, ADR 0038
-    §7). Chunk codes (``dc``/``pc``) are address-only — you ``get``/
+    *or* the long ``name`` (``kind='dr'`` ≡ ``kind='draft'``). Chunk codes (``dc``/``pc``) are address-only — you ``get``/
     ``edit`` them but can't ``put(kind='dc', …)``."""
     rows: list[dict[str, str]] = []
     for kind, has_chunk, what, ops in _KIND_ROWS:
@@ -150,7 +148,7 @@ def _disclosure(views: dict[str, dict[str, str]], handle: str) -> tuple[str, str
     """Pick the cheapest faithful disclosure for a neighbour row.
 
     gist (the ``llm-v1`` BRIEF) → keywords (KeyBERT) → empty. Maps onto
-    data the summarizer / keyword workers already computed (ADR 0038 §6a),
+    data the summarizer / keyword workers already computed,
     so the table costs no new compute."""
     v = views.get(handle, {})
     summary = (v.get("summary") or "").strip()
@@ -172,7 +170,7 @@ def doc_context_table(store: Store, anchor: str) -> str:
     parent, ``gist``/``keywords`` for neighbours, ``gist`` for refs.
     Returns ``""`` when the anchor chunk no longer exists.
 
-    Two handle forms are in play (ADR 0033 vs 0036): the stored base-58
+    Two handle forms are in play: the stored base-58
     ``chunks.handle`` (what ``block_views`` / ``chunk_connections`` key
     on) and the computed ``dc<chunk_id>`` universal handle (what relative
     nav consumes and what the agent should write in prose). We resolve
@@ -252,7 +250,7 @@ def doc_context_table(store: Store, anchor: str) -> str:
 #: Total / per-chunk character budgets for the section-under-review dump.
 #: A reviewer must read the actual prose, so this is verbatim (not gist) —
 #: but bounded so a huge section degrades to a head with a truncation note
-#: rather than blowing the context (ADR 0038 §6 "bounded; log truncation").
+#: rather than blowing the context.
 _SECTION_TOTAL_CAP = 8000
 _SECTION_PER_CHUNK_CAP = 700
 
@@ -302,8 +300,7 @@ def section_review_block(store: Store, anchor: str) -> str:
 def glossary_table(store: Store, draft_ref_id: int) -> str:
     """A draft's active abbreviations as a ``term/short/long`` table.
 
-    The reusable computed-module form of the glossary (ADR 0038 §6,
-    region-scoped in context; the full registry is only used by the
+    The reusable computed-module form of the glossary (region-scoped in context; the full registry is only used by the
     off-model linkify pass). Returns ``""`` when the draft has no terms."""
     terms = store.draft_terms(draft_ref_id)  # {handle: (short, long)}
     rows = [

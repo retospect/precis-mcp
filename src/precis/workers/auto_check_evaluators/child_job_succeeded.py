@@ -38,7 +38,7 @@ for three cases, which this module refuses to resolve:
    guardrail (``handlers/_todo_guards.check_status_done_artifact``),
    which the auto-resolver bypasses by writing the tag directly.
 
-3. **Recurring watches** (``meta.schedule`` set). A schedule-driven watch (ADR 0061)
+3. **Recurring watches** (``meta.schedule`` set). A schedule-driven watch
    spawns one child job per tick and owns its own terminal state (a
    one-shot self-tags ``STATUS:done`` on resolve; a cron never
    resolves). Left unguarded, the *first* spawned child job to succeed
@@ -88,7 +88,7 @@ def _parent_is_planner_coroutine(conn: Connection, ref_id: int) -> bool:
 def _parent_is_recurring_watch(conn: Connection, ref_id: int) -> bool:
     """True when the parent carries ``meta.schedule``.
 
-    Such a todo is a schedule-driven watch (cron or one-shot, ADR 0061) —
+    Such a todo is a schedule-driven watch (cron or one-shot) —
     the schedule worker owns its terminal state (a one-shot self-tags
     ``STATUS:done`` on resolve; a cron never resolves at all).
     ``child_job_succeeded`` must never close it: the *first* spawned

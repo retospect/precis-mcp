@@ -292,7 +292,7 @@ def test_cross_kind_search_forwards_exclude_to_supporting_kinds(
             ),
         ],
     )
-    # ADR 0036 cutover: search output addresses the paper hit by its
+    # Universal handles cutover: search output addresses the paper hit by its
     # computed chunk handle (``pc<chunk_id>``), not the legacy ``slug~pos``.
     paper_handle = handle_registry.format_handle("paper", blocks[0].id, chunk=True)
     # Memory with the same query word — proves the merge actually
@@ -1374,7 +1374,7 @@ def test_search_error_path_survives_fastmcp_convert_result(
     # The FastMCP tool path resolves its runtime via precis.tools.core's own
     # lazy build_runtime() — NOT server._runtime — so without this it would
     # run the search against the configured (prod) DB. Point it at the test
-    # runtime too. (ADR 0036 exposed this: the search now selects refs.handle.)
+    # runtime too. (exposed this: the search now selects refs.handle.)
     _saved_core_rt = _tools_core._runtime
     _tools_core._runtime = runtime_with_store
     try:
@@ -1624,7 +1624,7 @@ def test_paper_search_preview_strips_image_markers(store: Store) -> None:
     out = handler.search(q="photocatalytic")
     body = out.body
 
-    # The search hit MUST be present (this is the path under test). ADR 0036:
+    # The search hit MUST be present (this is the path under test). Universal handles:
     # the hit is addressed by its computed chunk handle (``pc<chunk_id>``),
     # not the slug — assert whichever of the two seeded blocks matched.
     from tests.conftest import chunk_handle

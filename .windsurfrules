@@ -2,12 +2,11 @@
 
 > **Two surfaces — don't confuse them.** This repo IS the precis MCP server.
 > The `precis` MCP tools/skills in your session are the PRODUCT's runtime
-> surface — not dev aids. To develop the repo, read: `docs/codebase.md`
-> (orientation + package map) → owning package `__init__.py` docstrings →
-> `docs/architecture/glossary.md`. Conventions,
-> workflow, definition-of-done: `AGENTS.md`. No CHANGELOG — history is
-> `git log`. Backlog: `docs/backlog/` — one file per item (open work only; delete the file in
-> the same commit that completes it).
+> surface — not dev aids. The doc system (where truth lives, reading order,
+> how to keep it true) is defined once in `docs/README.md` — defer to it:
+> `docs/codebase.md` → owning package `__init__.py` docstrings →
+> `docs/architecture/glossary.md` → `docs/backlog/README.md`. Conventions,
+> workflow, definition-of-done: `AGENTS.md`.
 
 ## Session workflow (feature branch → ship)
 
@@ -41,8 +40,8 @@
 - **Never `git commit` on `main`.** Work on a feature branch; `scripts/ship`
   is the only path to main.
 - **Never edit a sealed migration** (`src/precis/migrations/*.sql` already on
-  origin/main) or `migrations/baseline/*` — forward-only (ADR 0005); ship a
-  NEW migration. Baseline regenerates via `scripts/bump`, never by hand.
+  origin/main) or `migrations/baseline/*` — forward-only; ship a NEW
+  migration. Baseline regenerates via `scripts/bump`, never by hand.
 - **Prod SQL is read-only by default.** `scripts/prod-psql "SELECT …"` for
   peeking at precis_prod; it connects as write-capable `agent_rw`, so any
   INSERT/UPDATE/DELETE/DDL needs the user's explicit go-ahead.
@@ -69,7 +68,7 @@
   psql (dev pgvector at 127.0.0.1:5432, user postgres); never reaches prod.
 - **Don't mutate body chunks** (`ord >= 0` rows are append-only): to
   "update", DELETE + INSERT so the embedding/summary cascade re-runs.
-- **Embeddings fill via the worker, not ingest** (ADR 0007).
+- **Embeddings fill via the worker, not ingest.**
 - **Outbound HTTP through `safe_fetch`** (`src/precis/utils/safe_fetch.py`)
   — raw `httpx…get(url, follow_redirects=True)` is an SSRF.
 - **Skills are runtime docs**: `src/precis/data/skills/` is the agent-facing

@@ -384,7 +384,7 @@ def run_runner(args: argparse.Namespace) -> None:
     dsn = resolve_dsn(args.database_url, cfg=cfg)
     store = Store.connect(dsn)
     try:
-        # EPO creds live in the secrets vault now (ADR 0055); resolve them
+        # EPO creds live in the secrets vault now; resolve them
         # through get_secret (env → vault → file) with the connected store so
         # the vault leg is reachable. Without them OPS calls would fail
         # immediately with auth errors, so validate before doing any work.
@@ -477,7 +477,7 @@ def run_fulltext_sweep_cli(args: argparse.Namespace) -> None:
     dsn = resolve_dsn(args.database_url, cfg=cfg)
     store = Store.connect(dsn)
     try:
-        # EPO creds live in the secrets vault now (ADR 0055); resolve them
+        # EPO creds live in the secrets vault now; resolve them
         # through get_secret (env → vault → file) with the connected store so
         # the vault leg is reachable. Without them OPS calls would fail
         # immediately with auth errors, so validate before doing any work.
@@ -619,7 +619,7 @@ def run_reingest_cli(args: argparse.Namespace) -> None:
     dsn = resolve_dsn(args.database_url, cfg=cfg)
     store = Store.connect(dsn)
     try:
-        # EPO creds live in the secrets vault now (ADR 0055); resolve them
+        # EPO creds live in the secrets vault now; resolve them
         # through get_secret (env → vault → file) with the connected store so
         # the vault leg is reachable. Without them OPS calls would fail
         # immediately with auth errors, so validate before doing any work.

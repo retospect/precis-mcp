@@ -1,4 +1,4 @@
-"""IR types + adapter registry (ADR 0053 §2). Pure unit tests, no DB/network."""
+"""IR types + adapter registry. Pure unit tests, no DB/network."""
 
 from __future__ import annotations
 

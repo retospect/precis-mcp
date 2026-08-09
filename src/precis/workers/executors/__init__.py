@@ -28,7 +28,7 @@ The lanes
   rotation long enough to trip host-dark). A reclaimed row that already
   carries a handle is re-adopted, never re-submitted.
 * ``claude_docker`` — runs ``sandbox_run`` as a detached container on a
-  sandbox host: launch, poll by name, reap (ADR 0048). A reclaimed row
+  sandbox host: launch, poll by name, reap. A reclaimed row
   carrying ``meta.container`` is re-adopted by name-match, never
   relaunched.
 * ``job_inproc`` — the generic bounded in-proc lane: one job per pass
@@ -116,7 +116,7 @@ EXECUTOR_PROVIDES: dict[str, frozenset[str]] = {
     "ssh_node": frozenset({"has_gpaw"}),
     # ``claude_docker`` runs a ``sandbox_run`` job as a detached,
     # cgroup-capped container on an ``agent_sandbox_host`` — launch,
-    # poll by name, reap (ADR 0048). The
+    # poll by name, reap. The
     # pass is registered only where ``PRECIS_SANDBOX_ENABLED=1`` (the
     # sandbox hosts), so this capability set is only *satisfiable*
     # there; a data host without podman + the OAuth token can't run it.

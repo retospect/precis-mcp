@@ -75,7 +75,7 @@ def attempt_llm_fix(
     # Layer 1 already ran upstream; the remaining errors are by
     # definition not mechanically fixable. Ask sonnet.
     claude_bin = os.environ.get("PRECIS_CLAUDE_BIN", "claude")
-    # Model selection via the ADR 0046 resolver's BIG tier
+    # Model selection via the LLM routing seam resolver's BIG tier
     # (``PRECIS_MODEL_SONNET`` / ``claude-sonnet-5``) — byte-identical to
     # the previous inline read.
     sonnet_model = resolve_model(Tier.BIG)

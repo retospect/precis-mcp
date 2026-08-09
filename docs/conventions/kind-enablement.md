@@ -45,7 +45,7 @@ class FooHandler(Handler):
 ## Secrets: `requires_secret` (vault-resolved credentials)
 
 For a credential rather than a plain env var — an API key or token that
-resolves through the secrets vault (ADR 0055) — declare it in the sibling
+resolves through the secrets vault — declare it in the sibling
 `requires_secret` tuple instead of `requires_env`. The gate checks each name
 via `secrets.is_available` (env → vault) before `__init__`, and an unresolved
 secret surfaces on the `Kinds unavailable:` banner with a `missing secret …`

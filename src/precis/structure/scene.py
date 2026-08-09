@@ -1,6 +1,6 @@
 """The in-memory working object — a cell filled with atoms + a bond graph.
 
-ADR 0043 §12 evaluation model: a design is *kilobytes*, so it is hydrated once
+The structure atomistic IR evaluation model: a design is *kilobytes*, so it is hydrated once
 into this small object and **all probes run against it in memory** — PG is the
 system-of-record, never the per-probe compute path. The Scene is the
 ``(ref, version)`` working object; the store layer (increment 2) loads/saves it
@@ -54,7 +54,7 @@ class Bond:
 
 @dataclass
 class Measure:
-    """A persisted eye or measure (ADR 0043 §6.8 / §7), re-evaluated on read.
+    """A persisted eye or measure, re-evaluated on read.
 
     Two shapes over one row (``struct_measures``), discriminated by ``kind``:
 
@@ -92,10 +92,10 @@ class Scene:
     cell: Cell
     atoms: dict[str, Atom] = field(default_factory=dict)
     bonds: list[Bond] = field(default_factory=list)
-    #: Persisted eyes + measures (ADR 0043 §6.8/§7), re-evaluated on read.
+    #: Persisted eyes + measures, re-evaluated on read.
     measures: list[Measure] = field(default_factory=list)
     #: Per-element never-recycled high-water mark, seeded from the store on load
-    #: so a label survives a vacancy (ADR 0043 §12 no-recycle). The store
+    #: so a label survives a vacancy (no-recycle). The store
     #: persists it on ``refs.meta`` (the dedicated counter table is a forward
     #: optimisation).
     label_hi: dict[str, int] = field(default_factory=dict)

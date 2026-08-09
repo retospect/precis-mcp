@@ -1,4 +1,4 @@
-"""Run-cube cache-key unit tests (ADR 0043 §23.16).
+"""Run-cube cache-key unit tests.
 
 Pure, DB-free: the content address is label- and bond-independent, the cache
 key is sensitive to fidelity / model / params / code version, and a relaxed

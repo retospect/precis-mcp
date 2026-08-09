@@ -1,4 +1,4 @@
-"""Mermaid tab — the diagram you draw *with* the model (ADR 0057, slice 4).
+"""Mermaid tab — the diagram you draw *with* the model.
 
 The ``mermaid`` kind is otherwise a text/MCP surface (put/get/edit). This route
 is the human affordance on the same data: a 2-pane editor — the rendered

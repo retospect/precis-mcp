@@ -1,7 +1,7 @@
 ---
-description: One honest "what needs doing" across the two work substrates — repo dev work (docs/backlog/ + open gripes + open GitHub PRs + Dependabot alerts) and the prod factory queue (open/doable todos) — plus a repo-hygiene scan (migration-number collisions · orphan design docs · memory-index lint), a prod system-health read (per-host worker-log err/warn), and the latent LLM-confusion signal mined from prod agent transcripts.
+description: One honest "what needs doing" across the two work substrates — repo dev work (docs/backlog/ + open gripes + open GitHub PRs + Dependabot alerts) and the prod factory queue (open/doable todos) — plus a repo-hygiene scan (migration-number collisions · backlog lint · generated-index freshness · memory-index lint), a prod system-health read (per-host worker-log err/warn), and the latent LLM-confusion signal mined from prod agent transcripts.
 argument-hint: "[optional focus, e.g. 'dark-factory' or 'drafts']"
-allowed-tools: Read, Bash(grep:*), Bash(ssh:*), Bash(gh:*), Bash(scripts/migration-check:*), Bash(scripts/docs-orphans:*), Bash(scripts/memory-lint:*), Bash(scripts/backlog-lint:*), Bash(scripts/token-review:*), Bash(scripts/db-thrash-review:*), Bash(scripts/skill-search-review:*), Bash(scripts/gripe-gc-review:*), Bash(scripts/fda-grant-review:*), Bash(scripts/nightly:*), Bash(scripts/coderef:*), mcp__precis__get, mcp__precis__search
+allowed-tools: Read, Bash(grep:*), Bash(ssh:*), Bash(gh:*), Bash(scripts/migration-check:*), Bash(scripts/docs-index:*), Bash(scripts/memory-lint:*), Bash(scripts/backlog-lint:*), Bash(scripts/token-review:*), Bash(scripts/db-thrash-review:*), Bash(scripts/skill-search-review:*), Bash(scripts/gripe-gc-review:*), Bash(scripts/fda-grant-review:*), Bash(scripts/nightly:*), Bash(scripts/coderef:*), mcp__precis__get, mcp__precis__search
 ---
 
 Work lives in **two different substrates** — do not merge them into one flat
@@ -35,8 +35,8 @@ Live GitHub — open PRs:
 Live GitHub — open Dependabot alerts (severity ⋅ package ⋅ #num ⋅ summary):
 !`gh api "repos/{owner}/{repo}/dependabot/alerts?state=open&per_page=50" --jq '.[] | "\(.security_advisory.severity)\t\(.dependency.package.name)\t#\(.number)\t\(.security_advisory.summary)"' 2>/dev/null || echo '(dependabot API unavailable — needs a token with repo security-read)'`
 
-Live repo hygiene — migration collisions ⋅ orphan design docs ⋅ code anchors ⋅ memory index ⋅ done-gunk ⋅ token-review cadence ⋅ db-thrash cadence ⋅ skill-search cadence ⋅ gripe-gc cadence ⋅ fda-grant cadence ⋅ nightly build:
-!`scripts/migration-check --quiet 2>&1 || true; echo '— docs —'; scripts/docs-orphans 2>&1 | sed -n '1,2p;/^ORPHAN/,/^ADR-linked/p' || true; echo '— code anchors —'; scripts/coderef check docs 2>&1 | tail -6 || true; echo '— memory —'; scripts/memory-lint 2>&1 || true; echo '— backlog —'; scripts/backlog-lint 2>&1 | head -1 || true; echo '— tokens —'; scripts/token-review 2>&1 || true; echo '— db-thrash —'; scripts/db-thrash-review 2>&1 || true; echo '— skill-search —'; scripts/skill-search-review 2>&1 || true; echo '— gripe-gc —'; scripts/gripe-gc-review 2>&1 || true; echo '— fda-grant —'; scripts/fda-grant-review 2>&1 || true; echo '— nightly —'; scripts/nightly --check 2>&1 || true`
+Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅ backlog done-gunk ⋅ token-review cadence ⋅ db-thrash cadence ⋅ skill-search cadence ⋅ gripe-gc cadence ⋅ fda-grant cadence ⋅ nightly build:
+!`scripts/migration-check --quiet 2>&1 || true; echo '— code anchors —'; scripts/coderef check docs 2>&1 | tail -6 || true; echo '— memory —'; scripts/memory-lint 2>&1 || true; echo '— backlog —'; scripts/backlog-lint 2>&1 | head -1 || true; echo '— tokens —'; scripts/token-review 2>&1 || true; echo '— db-thrash —'; scripts/db-thrash-review 2>&1 || true; echo '— skill-search —'; scripts/skill-search-review 2>&1 || true; echo '— gripe-gc —'; scripts/gripe-gc-review 2>&1 || true; echo '— fda-grant —'; scripts/fda-grant-review 2>&1 || true; echo '— nightly —'; scripts/nightly --check 2>&1 || true`
 
 ## Procedure
 
@@ -88,9 +88,11 @@ Live repo hygiene — migration collisions ⋅ orphan design docs ⋅ code ancho
    - **Migration collisions** (`scripts/migration-check`) — a flagged number =
      two worktrees will collide on ship; renumber the **unshipped** one above
      main's max. (Known live case: the `email` worktree's `0074`.)
-   - **Orphan design docs** (`scripts/docs-orphans`) — ORPHAN / ADR-linked
-     buckets are candidates for the `docs-triage` skill; load-bearing ones (src
-     / anchor / sealed-migration refs) are fine, leave them.
+   - **Backlog gunk** (`scripts/backlog-lint`) — done-marked items are
+     candidates for the `docs-triage` skill: verify shipped, then delete.
+     Generated indexes (`docs/backlog/README.md`, `docs/runbooks/README.md`,
+     the `docs/codebase.md` package map) regenerate via `scripts/docs-index`
+     at ship — run it if an index looks stale.
    - **Code anchors** (`scripts/coderef check docs`, drift-only) — each `✗` = a
      doc cites a `file.py::Qual.name` whose symbol no longer resolves (renamed/
      removed → fix the anchor, or if the code was deliberately removed leave it).
@@ -105,7 +107,7 @@ Live repo hygiene — migration collisions ⋅ orphan design docs ⋅ code ancho
      `scripts/memory-lint --currency` for the per-claim ledger (gone kebab
      branch/worktree naming unshipped work · repo path missing on main), then
      judgment-resolve each suspect — **adjust** the anchor, **kill** the memory,
-     or **promote** a decision to an ADR/doc — plus the compact+delete-landed
+     or **promote** a decision to a docstring/doc — plus the compact+delete-landed
      pass, then append a dated line to `memory_consolidation_log.md`; on "done
      today", skip the heavy pass (**once/day at most** — constant re-auditing
      churns without benefit). The same `scripts/memory-lint` call also runs a

@@ -1,4 +1,4 @@
-"""Unit tests for the fixer intake (ADR 0048).
+"""Unit tests for the fixer intake.
 
 The two risky small bits: the proposal-ready convention (only
 ``status: ready`` files, skip TEMPLATE/README) and the idempotent pick

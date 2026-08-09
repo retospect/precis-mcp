@@ -1,4 +1,4 @@
-"""Figure clearance — is a draft's figure cleared to ship? (ADR 0034 §4)
+"""Figure clearance — is a draft's figure cleared to ship?
 
 One source of truth for the rule, shared by the web reader (a top
 warning / an all-clear note) and the export job (a hard gate — an
@@ -8,7 +8,7 @@ The rule by ``origin``:
 
 * ``original``    — ours; always cleared.
 * ``own_graph``   — generated from data; cleared (the data-supplement
-  check arrives with the graph recipe — ADR 0035 — so it is optimistic
+  check arrives with the graph recipe — computed chunks — so it is optimistic
   until ``figure_data`` exists).
 * ``third_party`` — reused under a publisher permission: cleared iff the
   permission is **granted** and **not past ``expires_at``**.
@@ -74,7 +74,7 @@ class ClearanceSummary:
 def draft_figure_clearance(store: Any, ref_id: int) -> ClearanceSummary:
     """Walk a draft's figure chunks and roll up their clearance.
 
-    Clearance is ``origin × medium`` (ADR 0058): the per-figure verdict comes
+    Clearance is ``origin × medium``: the per-figure verdict comes
     from the source resolver, so an **asset-less** figure (no blob, no canvas,
     no recipe) counts as *uncleared* ("no image yet") instead of silently
     shipping — while a real blob / drawn canvas stays cleared per its origin.

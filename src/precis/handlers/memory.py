@@ -109,11 +109,11 @@ class MemoryHandler(NumericRefHandler):
     #: can pick up an explicit ``title=`` the base ``put`` signature drops.
     _pending_title: str | None = None
 
-    #: Same trick as ``_pending_title`` for the argument-graph fields (ADR
-    #: 0054 §3/build order step 2) — ``meta.rule`` (the operator label,
+    #: Same trick as ``_pending_title`` for the argument-graph fields —
+    #: ``meta.rule`` (the operator label,
     #: e.g. ``'and-intro'``) and ``meta.warrant`` (free-text "why this step
     #: holds") on a ``kind:inference`` memory. Author assertions, never
-    #: validated by precis (ADR 0054 §3).
+    #: validated by precis.
     _pending_rule: str | None = None
     _pending_warrant: str | None = None
 
@@ -161,7 +161,7 @@ class MemoryHandler(NumericRefHandler):
         )
         return Response(body=f"{header}\n{self._render_hits_table(refs)}")
 
-    # ── get: default single-ref + view='argument' (ADR 0054 §3) ─────
+    # ── get: default single-ref + view='argument' ─────
 
     def get(  # type: ignore[override]
         self,
@@ -218,7 +218,7 @@ class MemoryHandler(NumericRefHandler):
         easier to navigate, so pass one. The body lands in a ``memory_body``
         chunk (embedded + keyworded); ``refs.title`` carries the header.
 
-        ``rule=`` / ``warrant=`` (ADR 0054 §3, the argument graph) label a
+        ``rule=`` / ``warrant=`` (the argument graph) label a
         ``kind:inference`` memory's reasoning step — ``rule`` the operator
         (e.g. ``'and-intro'``, ``'modus-ponens'``, free text allowed),
         ``warrant`` free-text prose for *why* the step holds. Author
@@ -279,7 +279,7 @@ class MemoryHandler(NumericRefHandler):
         target = parse_link_target(link, store=self.store) if link is not None else None
         relation = validate_relation(rel)
 
-        # meta.rule / meta.warrant (ADR 0054 §3) — stamped at create time
+        # meta.rule / meta.warrant — stamped at create time
         # when the D3-shortcut kwargs were passed; omitted keys entirely
         # when absent (an inference gains them incrementally via edit()
         # too, so a rule-first / warrant-later authoring order works).
@@ -370,7 +370,7 @@ class MemoryHandler(NumericRefHandler):
         **_kw: Any,
     ) -> Response:
         """In-place rewrite of a memory's body prose, and/or its argument-graph
-        ``meta.rule`` / ``meta.warrant`` (ADR 0054 §3).
+        ``meta.rule`` / ``meta.warrant``.
 
         Only ``mode='replace'`` is supported. ``text=`` carries the new body;
         ``title=`` optionally updates the header (omit to keep the existing
@@ -479,7 +479,7 @@ class MemoryHandler(NumericRefHandler):
     ) -> Response:
         """Add/remove tags — same as the base, except ``STALE:`` is refused.
 
-        ``STALE:retracted-premise`` (ADR 0054 §5/R5) is a system-set,
+        ``STALE:retracted-premise`` is a system-set,
         derived flag: the retraction-ripple hook recomputes and
         sets/clears it on every retraction-edge add or remove. An author
         `tag(add=['STALE:...'])` or `tag(remove=['STALE:...'])` would fight
@@ -496,7 +496,7 @@ class MemoryHandler(NumericRefHandler):
                     next=(
                         "STALE:retracted-premise is derived and recomputed "
                         "automatically by the retraction-ripple hook "
-                        "(ADR 0054 §5) whenever a retracts/raises-concern-about "
+                        " whenever a retracts/raises-concern-about "
                         "edge is added or removed — see get(kind='memory', "
                         "id=N, view='argument') to read it, not tag() to set it"
                     ),
@@ -523,7 +523,7 @@ class MemoryHandler(NumericRefHandler):
         if title:
             header += f": {title}"
         out = [header, "", self._body_text(ref)]
-        # meta.rule / meta.warrant (ADR 0054 §3) — a kind:inference memory's
+        # meta.rule / meta.warrant — a kind:inference memory's
         # reasoning-step label + free-text justification, rendered right
         # after the body so a proof-tree reader sees the operator + the
         # "why" without a separate call.

@@ -1,5 +1,5 @@
 """``cad_propose`` job_type — an LLM turns a natural-language instruction into a
-**proposed CAD design source**, without applying it (ADR 0041 web editor bundle).
+**proposed CAD design source**, without applying it (web editor bundle).
 
 The web "Further instructions" box mints one of these under a todo. It runs on
 the agent-profile worker (which has ``claude`` auth) and its whole deliverable is
@@ -69,7 +69,7 @@ _DSL_CRIB = (
 def build_prompt(slug: str, source: str, instruction: str) -> str:
     """Assemble the propose-only directive prompt (no tools, JSON-only reply)."""
     return (
-        "You are editing a parametric CAD design (ADR 0041). You will PROPOSE a "
+        "You are editing a parametric CAD design. You will PROPOSE a "
         "complete rewritten design source that carries out the instruction below. "
         "You are NOT applying anything — output a proposal only.\n\n"
         f"# Current design {slug!r}\n{source}\n\n"
@@ -151,7 +151,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     # (plan_tick / fix_gripe = 1800s). Override with PRECIS_CAD_PROPOSE_TIMEOUT_S.
     timeout_s = float(os.environ.get("PRECIS_CAD_PROPOSE_TIMEOUT_S", "1800"))
     ctx.append_chunk("job_event", f"propose: {instruction[:200]}")
-    # Routed through the LLM seam (ADR 0046 unit 4b): tool-less agent call
+    # Routed through the LLM seam: tool-less agent call
     # (mcp_config=None) on FRONTIER, so PRECIS_LLM_BACKEND can switch it.
     # The broad except is kept and the folded res.error is checked too.
     try:

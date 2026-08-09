@@ -35,7 +35,7 @@ from precis.utils.mentions import resolve_handle_ref, resolve_handle_target
 __all__ = ["resolve_hub_ref_id", "resolve_paper_ref_id", "seed_claim_hub"]
 
 
-#: Supporter refs must be one of these kinds (ADR 0073 / hub.py open #15:
+#: Supporter refs must be one of these kinds (taproot evidence relations / hub.py open #15:
 #: only paper-sourced claims get evidence). ``patent`` is included alongside
 #: ``paper`` — both are citable primary-source documents in this corpus.
 _SUPPORTER_KINDS: frozenset[str] = frozenset({"paper", "patent"})

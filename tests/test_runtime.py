@@ -452,7 +452,7 @@ def test_cross_kind_tag_filter_requires_all_listed_tags(
     assert "with-one-tag" not in out
 
 
-# ── kind= accepts a handle code (ADR 0038 §7) ──────────────────────
+# ── kind= accepts a handle code ──────────────────────
 
 
 def test_expand_kind_code_record(runtime: PrecisRuntime) -> None:

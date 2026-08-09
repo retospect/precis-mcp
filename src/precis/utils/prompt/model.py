@@ -1,4 +1,4 @@
-"""Core types for the prompt assembler (ADR 0038).
+"""Core types for the prompt assembler.
 
 A prompt is a list of **modules** grouped into two cache layers. Each
 module yields zero or one **block** of text at assembly time; the
@@ -9,7 +9,7 @@ This module holds the value types only — no store access, no rendering
 logic — so it imports cleanly from anywhere (``tables``, ``assembler``,
 ``adapters``, and the per-site module lists all depend on it).
 
-Two module kinds (ADR 0038 §2):
+Two module kinds:
 
 * **Static** — body is a constant string (mechanics, the planner
   contract, a persona). Modelled as a :class:`Module` whose ``build``
@@ -35,7 +35,7 @@ if TYPE_CHECKING:
 
 
 class Layer(StrEnum):
-    """Cache-volatility layer — *is* the prompt-cache boundary (ADR 0038 §1).
+    """Cache-volatility layer — *is* the prompt-cache boundary.
 
     ``CACHED`` blocks are static across ticks (mechanics, tools, kinds,
     the skill menu, examples) → one long cache prefix. ``VARIABLE``
@@ -50,7 +50,7 @@ class Layer(StrEnum):
 
 
 class Profile(StrEnum):
-    """Which module *set* a site emits (ADR 0038 §4).
+    """Which module *set* a site emits.
 
     ``AGENT`` — autonomous, tools, multi-turn: persona + mechanics +
     tools + kinds + skill-menu + doc_context (+ glossary). The planner,
@@ -95,7 +95,7 @@ class Module:
     the module (the common "no anchor on this tick → no doc_context"
     case). ``layer`` tags the result. ``applies_when`` names an optional
     predicate (see :mod:`precis.utils.prompt.predicates`); when set and
-    false, the module is skipped *without* calling ``build`` — the ADR §8
+    false, the module is skipped *without* calling ``build`` — the
     "gate capability and data together" mechanism.
 
     ``required`` inverts the assembler's default resilience: a module

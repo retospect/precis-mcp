@@ -973,7 +973,7 @@ def seed_default_cards(store: Store) -> list[tuple[str, int, bool]]:
 
     results: list[tuple[str, int, bool]] = []
     seen_models: set[str] = set()
-    # ADR 0066 Phase C: seed one card per capability tier (FRONTIER/BIG/MEDIUM/
+    # seed one card per capability tier (FRONTIER/BIG/MEDIUM/
     # SMALL) — the location-coupled LOCAL_BIG tier (qwen-heavy, the local rung
     # backing BIG) is retired; a served OSS model still backs BIG when the
     # backend/chain routes there. The `seen_models` guard stays as a

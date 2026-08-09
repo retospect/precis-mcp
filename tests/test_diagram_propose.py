@@ -1,4 +1,4 @@
-"""``diagram_propose`` job_type — one autonomous diagram turn (ADR 0057, slice 5).
+"""``diagram_propose`` job_type — one autonomous diagram turn.
 
 The model call (the figure/mermaid turn shim → the LLM router) is stubbed by
 monkeypatching ``precis.utils.llm.router.dispatch``, so the resolve → compose

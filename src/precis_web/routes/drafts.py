@@ -1,5 +1,4 @@
-"""Drafts — shared library + backend endpoint host for the ``draft`` kind
-(ADR 0033). The classic per-block virtual-scroll reader page this module
+"""Drafts — shared library + backend endpoint host for the ``draft`` kind. The classic per-block virtual-scroll reader page this module
 used to serve is retired: ``/smartdraft/{ident}`` (``routes/smartdraft.py``)
 is the sole draft reader now, and imports several of this module's helpers
 (``_doc_state``, ``_review_status_by_chunk``, ``_ref_chips``,
@@ -18,7 +17,7 @@ served from here:
 * ``GET /drafts/{ident}`` / ``GET /draft/{ident}`` — 307 redirects into
   ``/smartdraft/{ident}``.
 * ``POST /drafts/{ident}/marks`` / ``/request-ws`` — the hand-driven working
-  set (ADR 0051 §6, see ``precis_web.draft_eyes``): toggle pen/eye markers on
+  set (see ``precis_web.draft_eyes``): toggle pen/eye markers on
   paragraphs and file a change request carrying the whole set
   (``meta.working_set``) so the planner tick edits the pens grounded in the
   eyes instead of a single anchor. (The classic reader's ``/around``
@@ -110,7 +109,7 @@ from precis.utils.authors import (
 )
 
 # Planner tiers a change-request / review can run on, via ``meta.llm_tier``.
-# Single-sourced from the router's planner alias map (ADR 0046) so the
+# Single-sourced from the router's planner alias map so the
 # accepted set — the cloud triad plus the cluster's ``local`` qwen tier — never
 # drifts from ``Tag.parse_strict`` or the ``planner_models()`` dropdown.
 from precis.utils.llm.router import PLANNER_MODEL_ALIASES as _PLANNER_MODELS
@@ -135,7 +134,7 @@ log = logging.getLogger(__name__)
 #: whole-draft ``string_agg`` + Schwartz-Hearst scan plus the registry
 #: ``term`` leaves; on the on-demand row path it would otherwise re-run for
 #: every block hydrated. Keyed by the draft's version token, so any chunk
-#: edit invalidates it. Tiny LRU. The value is the rich ADR 0052 map
+#: edit invalidates it. Tiny LRU. The value is the rich the structured term registry map
 #: (``{surface: TermEntry|str}``) that :func:`linkify._highlight_abbrevs`
 #: renders as a hover — a bare definition for a glossary/patent term, a rich
 #: card (MPN / manufacturer / datasheet) for a manufacturing part.
@@ -144,7 +143,7 @@ _ABBREV_CACHE_MAX = 64
 
 
 def _abbrevs_cached(store: Any, ref_id: int, version: int) -> dict[str, Any]:
-    """Whole-draft term/abbreviation map (rich records, ADR 0052), memoised
+    """Whole-draft term/abbreviation map (rich records), memoised
     per (draft, version) so the per-row hydrate path doesn't re-scan the whole
     draft each time. Falls back to the plain ``{short: str}`` map for a store
     that predates :meth:`defined_terms` (older FakeStore in tests)."""
@@ -315,7 +314,7 @@ def _ref_chips(
     for ref in draft_markup.parse_references(text):
         if ref.cls == draft_markup.XREF:
             h = ref.target.lstrip("¶")
-            # A ``¶handle`` may itself be an ADR 0036 universal handle (e.g.
+            # A ``¶handle`` may itself be an universal handle (e.g.
             # a paper chunk ``pc10``) — parse it lexically (no DB) so the
             # chip carries its real kind, not a generic placeholder.
             parsed = handle_registry.parse(h)
@@ -484,7 +483,7 @@ def _paper_pdf_missing(store: Any, ident: str) -> bool:
     and the corpus-presence ledger says no node holds a fresh copy
     (``Store.pdf_missing``) — a corpus-wide DB read, so the marker no longer
     depends on which corpus roots *this* web process happens to mount
-    (ADR 0029; the ``corpus_reconcile`` worker keeps the ledger current).
+    (the ``corpus_reconcile`` worker keeps the ledger current).
 
     A stub (no ``pdf_sha256``, queued for fetch) is a known state, not an
     anomaly, so it stays unflagged; so does a paper the ledger has never
@@ -776,9 +775,9 @@ def _section_styles_for(store: Any, ref: Any) -> list[tuple[str, str]]:
 def _chunk_addr(store: Any, handle: str) -> str | None:
     """Canonical ``dc<chunk_id>`` address for a posted draft-chunk handle.
 
-    The reader posts the bare ``chunks.handle`` (the ADR-0033 base-58
+    The reader posts the bare ``chunks.handle`` (the draft editable-document model base-58
     anchor, e.g. ``u9QG86``) — which ``get_draft_chunk`` resolves but
-    ``edit(kind='draft')`` rejects (its guard only accepts the ADR-0036
+    ``edit(kind='draft')`` rejects (its guard only accepts the universal handles
     ``dc<chunk_id>`` / legacy ``¶<base58>`` form). Resolve the chunk and
     hand back the ``dc`` address so the per-heading style / list-kind
     forms reach the handler. ``None`` when the handle resolves to no
@@ -1014,7 +1013,7 @@ async def new_draft(
                 cfp_ident,
             )
 
-    # 2b) scaffold the genre's standard sections (ADR 0037 step 4): append
+    # 2b) scaffold the genre's standard sections: append
     #     styled headings for the picked doc_type, so the author lands on a
     #     skeleton to fill and each section's style skill fires as they
     #     write. Best-effort — never fail draft creation on the scaffold.
@@ -1373,7 +1372,7 @@ async def pdf(request: Request, ident: str) -> Response:
 
 @router.get("/drafts/blob/{handle}")
 async def chunk_blob(request: Request, handle: str) -> Response:
-    """Raw bytes for a figure chunk's image (ADR 0034) — the ``<img>``
+    """Raw bytes for a figure chunk's image — the ``<img>``
     ``src`` the reader points at. 404 when the chunk carries no blob. The
     handle is globally unique, so no draft ident is needed."""
     store = get_store(request)
@@ -1424,8 +1423,8 @@ def _marks_view(store: Any, marks: dict[str, Any]) -> dict[str, Any]:
 
 @router.post("/drafts/{ident}/marks")
 async def edit_marks(request: Request, ident: str) -> JSONResponse:
-    """Toggle a pen/eye on draft chunks in the reader's sticky working set (ADR
-    0051 §6, hand-driven). Body ``{op:'pen'|'eye'|'clear', handles:[dc…],
+    """Toggle a pen/eye on draft chunks in the reader's sticky working set
+    (hand-driven). Body ``{op:'pen'|'eye'|'clear', handles:[dc…],
     on?:bool, extent?:str}``. Penning auto-opens an eye; ``clear`` wipes. Returns
     the stored marks so the client re-syncs its glyph sets."""
     try:
@@ -1515,7 +1514,7 @@ async def request_change_ws(request: Request, ident: str) -> JSONResponse:
     **nothing pinned**, it falls back to anchoring on the caller's current focus
     (``anchor``) so the ask still works on the current para + its fisheye. Body
     ``{text, model, anchor?, placement?, reasoning?, temperature?}`` — the last
-    three are the optional structured selection (ADR 0066), threaded onto
+    three are the optional structured selection, threaded onto
     ``meta.llm_select`` alongside the ``model`` alias's ``meta.llm_tier``."""
     try:
         payload = await request.json()
@@ -1666,7 +1665,7 @@ def _coerce_cell(value: Any) -> Scalar:
 @router.post("/drafts/{ident}/table")
 async def edit_table_inline(request: Request, ident: str) -> JSONResponse:
     """Direct (non-LLM) structured edit of a data-table chunk — the grid
-    editor's save (ADR 0035 §1). The browser posts JSON
+    editor's save. The browser posts JSON
     ``{handle, base_sha, header:[…], rows:[[…]], caption}``; cells arrive as
     strings and are coerced back to JSON scalars (numbers stay numbers). The
     write goes through the ``edit`` verb so the strict ``normalize_table``
@@ -2392,8 +2391,8 @@ async def add_figure(
     required_credit: str = Form(""),
     source_paper: str = Form(""),
 ) -> Response:
-    """Upload an image as a figure chunk inserted after ``handle`` (ADR
-    0034). Bytes are base64'd and routed through the ``put`` verb so the
+    """Upload an image as a figure chunk inserted after ``handle``. Bytes
+    are base64'd and routed through the ``put`` verb so the
     DraftHandler's figure validation (caption / origin / third-party needs
     permission) is single-sourced with the MCP surface. A ``third_party``
     figure's permission paper-trail comes from the inline form fields."""
@@ -2451,7 +2450,7 @@ async def edit_figure_permission(
     required_credit: str = Form(""),
     source_paper: str = Form(""),
 ) -> Response:
-    """Edit an existing figure's provenance (ADR 0034) — the click-to-edit
+    """Edit an existing figure's provenance — the click-to-edit
     behind the clearance badge. Routes through the ``edit`` verb so figure
     validation stays single-sourced; only ``meta.figure`` changes (caption
     and image bytes are untouched)."""
@@ -2484,7 +2483,7 @@ async def edit_figure_permission(
 
 @router.post("/drafts/{ident}/figure/{handle}/draw")
 async def create_figure_drawing(request: Request, ident: str, handle: str) -> Response:
-    """Turn an asset-less figure into an editable SVG canvas (ADR 0058, the
+    """Turn an asset-less figure into an editable SVG canvas (the
     ``canvas`` medium): mint a ``kind='figure'`` seeded from the caption,
     parented on the draft's project, wire the ``has-figure`` link (chunk→ref),
     and drop the user into the ``/figure`` editor. Idempotent — a figure that
@@ -2610,7 +2609,7 @@ async def preview_chunk(request: Request, handle: str) -> HTMLResponse:
     quote = "\n".join(lines[:20]) + ("\n…" if len(lines) > 20 else "")
     if len(quote) > 1600:
         quote = quote[:1600].rstrip() + "…"
-    # A manufacturing part (ADR 0052) hovers its attribute bag — MPN /
+    # A manufacturing part hovers its attribute bag — MPN /
     # manufacturer / datasheet / callout — from its ``term`` leaf's meta, so a
     # ``[[dc…]]`` part reference in prose shows the rich card. Absent for a
     # patent part / glossary term (empty bag) — the plain quote renders.

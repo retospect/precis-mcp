@@ -1,4 +1,4 @@
-"""precis-chem — the chemistry / protein tool-pack (ADR 0056).
+"""precis-chem — the chemistry / protein tool-pack.
 
 A first-party **plugin** on the precis substrate: it snaps in through the
 three plugin entry-point groups (``precis.handlers`` /
@@ -7,7 +7,7 @@ precis-mcp ``pyproject.toml``, so ``dispatch.py`` and the core kind
 catalogue stay untouched. It rides the two seams shipped for exactly
 this (``KindSpec.can_own_jobs`` + the open relation vocabulary). Each
 external tool = a **kind** (the legible IR the LLM reads) + a
-**job_type** (the heavy engine, off the request path on the ADR 0044
+**job_type** (the heavy engine, off the request path on the intent-vs-compute job lanes
 compute lane) — never a broker MCP server. Engines run on Linux compute
 nodes only (Macs orchestrate); wrapper images build on-demand per node
 (``docker/``, ``podman build``, no registry), model weights mount from
@@ -31,7 +31,8 @@ reader shared by all engines. Transports (inprocess / container /
 service) + engine adapters: :mod:`precis_chem.engine`. Known gap: the
 read-time inverse-relation rewrite doesn't know plugin relations
 (gripe 160213) — keep plugin relations symmetric or query the stored
-direction. Rationale + rejected alternatives: ADR 0056.
+direction. Rationale + rejected alternatives: git-only ADR
+0056-chemistry-tool-packs-plugin-route-kind.
 """
 
 from __future__ import annotations

@@ -209,7 +209,7 @@ def test_missing_app_id_raises_upstream(
 
 
 def test_kind_spec_declares_env_requirement() -> None:
-    # WOLFRAM_APP_ID now resolves through the secrets vault (ADR 0055).
+    # WOLFRAM_APP_ID now resolves through the secrets vault.
     assert MathHandler.spec.requires_secret == ("WOLFRAM_APP_ID",)
 
 

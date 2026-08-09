@@ -421,7 +421,7 @@ class SearchMixin(RuntimeShape):
         mode = args.get("mode")
         mode_lexical = isinstance(mode, str) and mode.strip().lower() == "lexical"
 
-        # ``folder=`` scope (ADR 0045): resolve the folder's live
+        # ``folder=`` scope: resolve the folder's live
         # placement subtree once; hits outside it are dropped after
         # each kind's stream returns (handlers stay scope-blind — the
         # SearchHit.ref_id is enough to filter at the dispatch layer).

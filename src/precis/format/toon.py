@@ -10,8 +10,8 @@ The format we emit is the flat homogeneous-rows shape from
 That's TOON's tabular-section form, the part that gives the
 ~40 % token saving over JSON on lists of homogeneous records.
 We deliberately do *not* implement TOON's hierarchical syntax
-(nested objects, length-prefixed sub-arrays); ADR 0002 routes
-those through JSON instead.
+(nested objects, length-prefixed sub-arrays); those route
+through JSON instead.
 
 The audience is an LLM, not a parser. The dump rules are tuned
 for token frugality and human-/agent-readability rather than
@@ -76,7 +76,7 @@ def dump(
         scalar types (``None``, ``bool``, ``int``, ``float``,
         ``str``) or convertible via ``str()``.
     sep
-        Column delimiter. Defaults to ``"\\t"`` per ADR 0002.
+        Column delimiter. Defaults to ``"\\t"``.
     schema
         Optional explicit column order. When supplied:
 

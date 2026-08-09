@@ -1,6 +1,6 @@
 """Document-class scaffolding — genre briefs, section styles, skeletons.
 
-ADR 0037 step 4: picking a document genre (``doc_type``) at draft creation
+The heading-styles + numbering lock step 4: picking a document genre (``doc_type``) at draft creation
 lays down a styled section skeleton to fill, and folds a standing-guidance
 line into the project brief so the planner writes in the right register.
 Shared by the web ``/drafts/new`` form (``precis_web.routes.drafts``) and
@@ -88,7 +88,7 @@ DOC_TYPE_BRIEF: dict[str, str] = {d["value"]: d["brief"] for d in DOC_TYPES}
 
 #: Section styles offered in the per-heading "style ▾" dropdown, keyed by
 #: ``doc_type``. Each ``(slug, label)`` sets ``meta.style`` on the heading
-#: (ADR 0037; the slug is a section-style skill served by ``get(kind=
+#: (the slug is a section-style skill served by ``get(kind=
 #: 'skill')``). The picker is scoped to the genre so the menu stays short;
 #: the scaffold normally sets these, this is the manual override.
 _SCI_SECTION = [
@@ -142,7 +142,7 @@ SECTION_STYLES: dict[str, list[tuple[str, str]]] = {
 
 
 #: The standard section skeleton laid down when a draft of this ``doc_type``
-#: is created (ADR 0037 step 4): an ordered list of ``(heading, style)``.
+#: is created: an ordered list of ``(heading, style)``.
 #: The new-draft flow appends these as styled headings after the title, so
 #: picking a genre yields a styled skeleton to fill (each section's style
 #: skill then fires when editing under it). Empty/absent → no scaffold.

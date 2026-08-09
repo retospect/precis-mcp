@@ -1,4 +1,4 @@
-"""Edited draft chunks re-derive via the content_sha claim (ADR 0033 §4)."""
+"""Edited draft chunks re-derive via the content_sha claim."""
 
 from __future__ import annotations
 

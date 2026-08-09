@@ -1,4 +1,4 @@
-"""Adapters — package assembled blocks for one runner (ADR 0038 §3).
+"""Adapters — package assembled blocks for one runner.
 
 The assembler is model-agnostic; the **adapter owns packaging and
 caching**. Each runner gets one:
@@ -11,7 +11,7 @@ caching**. Each runner gets one:
   chat ``messages`` list. ``CACHED`` blocks form the leading ``system``
   message (the stable KV-cache **prefix** llama.cpp reuses across a
   document's chunks); ``VARIABLE`` blocks form the trailing ``user``
-  message (the per-tick tail). Migration step 2 (ADR 0038 §Migration)
+  message (the per-tick tail). Migration step 2
   folds ``llm_summarize`` + ``briefing`` onto it.
 
 Adapters preserve block order *within* a layer (authored intent) and
@@ -46,7 +46,7 @@ class ClaudeAgentAdapter:
 
 
 class LiteLLMAdapter:
-    """Render blocks into an OpenAI chat ``messages`` list (ADR 0038 §3/§4).
+    """Render blocks into an OpenAI chat ``messages`` list.
 
     The helper-profile adapter for the litellm ``summarizer`` alias
     (``llm_summarize``, ``briefing`` — Shot 2). It mirrors

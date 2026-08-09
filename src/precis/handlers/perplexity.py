@@ -170,7 +170,7 @@ class _PerplexityBase(CacheBackedHandler):
     @staticmethod
     def _api_key() -> str:
         # Resolves env → vault.reveal → ~/.secrets/pw file (secrets vault,
-        # ADR 0055). Env-override-wins keeps behaviour identical until the
+        # The secrets vault). Env-override-wins keeps behaviour identical until the
         # value is moved into the vault and pulled from the environment.
         from precis import secrets as _secrets
 

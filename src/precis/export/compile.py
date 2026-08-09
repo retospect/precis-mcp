@@ -1,4 +1,4 @@
-"""Compile an exported LaTeX project to PDF — ADR 0033 Tier-B.
+"""Compile an exported LaTeX project to PDF — the draft kind's Tier-B export.
 
 A thin, deterministic wrapper over ``latexmk``: one command runs every
 pass (pdflatex reruns + biber + makeglossaries, wired by the copied

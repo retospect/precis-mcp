@@ -63,7 +63,7 @@ log = logging.getLogger(__name__)
 
 
 #: The thread **persona** rides first in the cached system prompt verbatim
-#: (ADR 0051 §2) — the floor that states how the thread works. Selected per
+#: — the floor that states how the thread works. Selected per
 #: thread type from :data:`~precis.workers.thread_persona.THREAD_PERSONAS`;
 #: the default ``write-document`` persona is the operational manual
 #: ``precis-tasks-help``, so the cached floor is byte-identical to the
@@ -137,7 +137,7 @@ def _build_system_prompt(store: Store) -> str:
     """Build the stable, cache-friendly system prompt.
 
     Pinned skill + skill index + tools + kinds + planner contract — the
-    cached layer (ADR 0038 §1). Assembled from :data:`_CACHED_MODULES`
+    cached layer. Assembled from :data:`_CACHED_MODULES`
     via the shared assembler so the planner shares one prompt surface
     with the editor/reviewers (migration step 1). No timestamps, no
     per-tick ids, no body text — the prefix stays long-lived so the
@@ -148,7 +148,7 @@ def _build_system_prompt(store: Store) -> str:
 
 
 def _load_skill_verbatim(skill_id: str, store: Store | None = None) -> str:
-    """Return the verbatim body of a skill (the persona floor, ADR 0051 §2).
+    """Return the verbatim body of a skill (the persona floor).
 
     ``store`` is accepted for a uniform module-builder signature but
     unused — skills are file-backed (loaded via importlib). A load failure
@@ -203,7 +203,7 @@ def _build_skill_index(store: Store | None = None) -> str:
         fm = parse_frontmatter(raw)
         if fm.status not in (None, "active"):
             continue
-        # Personas (ADR 0051 §2) are pinned as a thread's floor, not
+        # Personas are pinned as a thread's floor, not
         # on-demand reference docs — keep them out of the discovery menu.
         if fm.flavor == "persona":
             continue
@@ -651,7 +651,7 @@ def _build_user_prompt(store: Store, *, ref_id: int, model: str) -> str:
     Saves thousands of tokens per re-tick.
 
     Assembled from :data:`_VARIABLE_MODULES` via the shared assembler
-    (ADR 0038 migration step 1). Each block keeps its prior text — the
+    (migration step 1). Each block keeps its prior text — the
     optional ones self-gate by returning ``""``, which the assembler
     drops — and a new ``doc_context`` table rides after the anchor when
     one is set.
@@ -771,7 +771,7 @@ def _render_patent_authoring(store: Store, ref_id: int) -> str:
 
 
 def _render_plan_ledger(store: Store, plan_ref_id: int, slug: str) -> str:
-    """Inject the project's ``plan`` (ADR 0051 §2b) — its reasoning /
+    """Inject the project's ``plan`` — its reasoning /
     decision ledger — so a tick respects recorded decisions without having
     to fetch it. For a patent this is the freedom-to-operate scoping ledger:
     what was declined or narrowed, and why (``docs/backlog/patent-authoring-loop.md``). One line per node, capped for the flow."""
@@ -1197,7 +1197,7 @@ def _render_requirements(store: Store, ref_id: int) -> str:
     """Inject the call-for-proposal a proposal project must satisfy.
 
     A proposal-project root carries a ``has-requirement`` link to the
-    ingested ``kind='cfp'`` document (ADR: proposal-writing). We walk
+    ingested ``kind='cfp'`` document (proposal writing). We walk
     parents up from ``ref_id`` (the link sits on the project root) and,
     when one is found, render a ``## Proposal requirements`` block: the
     CFP's slug (so the planner can read it in full) plus its section
@@ -1472,8 +1472,7 @@ def _render_heading_intent(store: Store, anchor_handle: str) -> str:
 
 
 def _render_section_style(store: Store, ref_id: int) -> str:
-    """Inject the section-style skill for the chunk this tick is anchored to
-    (ADR 0037/0038).
+    """Inject the section-style skill for the chunk this tick is anchored to.
 
     When the change-request's ``meta.anchor`` points at a draft chunk, find
     the nearest enclosing styled heading (``store.section_style_for``) and
@@ -1743,7 +1742,7 @@ def _load_child_summaries(store: Store, ref_id: int) -> str:
     return "\n".join(parts).strip()
 
 
-# ── module library (ADR 0038) ─────────────────────────────────────
+# ── module library ─────────────────────────────────────
 #
 # The planner's blocks expressed as assembler modules. Each builder is a
 # thin ``(ctx) -> str`` wrapper over the ``_render_*`` / ``_build_*``
@@ -1755,7 +1754,7 @@ def _load_child_summaries(store: Store, ref_id: int) -> str:
 
 
 def _m_persona(ctx: AssemblyContext) -> str:
-    """The thread's persona floor (ADR 0051 §2) — first cached block.
+    """The thread's persona floor — first cached block.
 
     Selects the persona skill from the registry by the tick's
     ``thread_type`` (``extras['thread_type']``); absent — as in the current
@@ -1884,7 +1883,7 @@ def _m_anchor(ctx: AssemblyContext) -> str:
 
 
 def _m_doc_context(ctx: AssemblyContext) -> str:
-    """The new ``doc_context`` TOON table (ADR 0038 §6). Gated on
+    """The new ``doc_context`` TOON table. Gated on
     ``has_anchor``, which memoises the resolved handle in ``extras``."""
     assert ctx.store is not None
     anchor = ctx.extras.get("anchor")
@@ -1905,7 +1904,7 @@ def _m_heading_intent(ctx: AssemblyContext) -> str:
 
 
 def _planner_fisheye_enabled() -> bool:
-    """The planner fisheye is the first live ADR-0051 integration (Level 1) —
+    """The planner fisheye is the first live turn-taking persona threads integration (Level 1) —
     default-ON, one env var (`PRECIS_PLANNER_FISHEYE=0`) turns it off cluster-wide
     without a redeploy if it ever misbehaves on prod."""
     return os.environ.get("PRECIS_PLANNER_FISHEYE", "1").strip().lower() not in (
@@ -1917,7 +1916,7 @@ def _planner_fisheye_enabled() -> bool:
 
 
 def _render_reader_working_set(store: Store, ref_id: int) -> str:
-    """Render a hand-curated working set (ADR 0051 §6) the draft reader attached
+    """Render a hand-curated working set the draft reader attached
     to this change-request as ``meta.working_set`` — the author's **eyes** (pens
     + context + promoted ring targets) composed into one deduplicated context,
     plus the **edit-these-at-a-minimum** pen hint. Empty when the tick carries no
@@ -1962,7 +1961,7 @@ def _render_reader_working_set(store: Store, ref_id: int) -> str:
 
 
 def _m_fisheye(ctx: AssemblyContext) -> str:
-    """A `fisheye+1hop` over the anchored section (ADR 0051 §6) — its
+    """A `fisheye+1hop` over the anchored section — its
     neighborhood **plus the reference ring** (cited papers/patents + linked
     notes) the planner otherwise never sees. Complements the whole-draft body
     (that is every section; this is the anchor's locale + what it points at).
@@ -2022,7 +2021,7 @@ def _m_children(ctx: AssemblyContext) -> str:
     return _render_children_status(ctx.store, ctx.ref_id)
 
 
-#: Persona loaded when a tick is a draft-section review (ADR 0038 step 3).
+#: Persona loaded when a tick is a draft-section review.
 _REVIEW_PERSONA_SKILL: str = "precis-draft-reviewer"
 
 #: Opt-in persona for a review-todo that carries ``meta.author=true`` on an
@@ -2080,7 +2079,7 @@ def _load_review_persona(lens: str | None, author: bool) -> str:
 def _m_reviewer_persona(ctx: AssemblyContext) -> str:
     """Inject the reviewer stance for a review tick (gated on ``has_review``).
 
-    Specialises the persona in the variable layer (ADR 0038 §5) so the
+    Specialises the persona in the variable layer so the
     cached planner contract stays genre-agnostic: a review-todo overrides
     the default plan-this-todo stance with review-this-section. Also picks
     between the read-only reviewer and the opt-in grounded-authoring

@@ -16,28 +16,21 @@ sub-questions at end. _Verified @ b3c2136f._
 
 ## Framing
 
-A document is a `quest` (a perpetual striving — "keep the definitive living
-review of X current", never `done`). The quest owns the document as its
-**dossier** `draft` (`dossier-of`) and a WORM **logbook** (`quest_log`). The
-coordinator loop, dossier link, typed logbook, and weekly recurring tick are
-reused (`src/precis/quest/`, `precis-quest-help`). The paper-writing tick is a
-**new tick body** with a **phase state machine** —
-`vocabulary → scaffold → integrate → maintain` — because a tick that runs the
-wrong phase for its inputs **dry-spins** (the autocatpath failure mode). A phase
-with unmet inputs parks on a **`blocked-by` todo + `auto_check` leaf**
-(`tag_present`/`discord_reply_received`) that auto-clears when the input lands
-(`workers/auto_check.py` flip + `dispatch.py` re-admission) — **no new quest
-state.** Caveat: evaluators read the DB, not the filesystem, so the vocabulary
-gate watches a DB signal (`tag_present(topic:X)`), not "the YAML file exists."
+A document is a `quest`; the quest owns the document as its **dossier**
+`draft` (`dossier-of`) + a WORM logbook — coordinator loop, dossier
+link, typed logbook, weekly tick all reused (`src/precis/quest/`). The
+paper-writing tick is a **new tick body** with a **phase state
+machine** — `vocabulary → scaffold → integrate → maintain` — because a
+tick running the wrong phase dry-spins (the autocatpath failure mode).
+A phase with unmet inputs parks on a `blocked-by` todo + `auto_check`
+leaf that auto-clears when the input lands — no new quest state.
+Caveat: evaluators read the DB, so the vocabulary gate watches
+`tag_present(topic:X)`, not "the YAML file exists."
 
-Two regimes, one loop:
-
-- **Make** — no structure; placement has no anchor.
-- **Maintain** — solid structure + embedded chunks; search surfaces placement.
-
-**Make is the degenerate case where the residual is 100% of the corpus** — the
-scaffold's body sections come from clustering that residual, so one integrate
-machinery serves both.
+Two regimes, one loop: **Make** (no structure; placement has no
+anchor) and **Maintain** (solid structure; search surfaces placement).
+Make is the degenerate case where the residual is 100% of the corpus —
+one integrate machinery serves both.
 
 ## The memoization spine
 

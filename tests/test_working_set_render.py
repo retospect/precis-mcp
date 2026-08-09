@@ -1,4 +1,4 @@
-"""The deduper — compose a working set into one context (ADR 0051 §6). Multiple
+"""The deduper — compose a working set into one context. Multiple
 eyes on one document render its overlap ONCE (multi-focus fisheye); rings merge
 by ref; small gaps bridge, large gaps collapse to a marker; the cursor's
 document leads."""

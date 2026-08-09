@@ -280,7 +280,7 @@ def test_run_oss_max_turns_maps_resumable(monkeypatch: pytest.MonkeyPatch) -> No
 def test_run_oss_threads_select_temperature_and_thinking(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``params['select']`` (ADR 0066) rides through ``LlmRequest`` and the
+    """``params['select']`` rides through ``LlmRequest`` and the
     real ``dispatch`` onto the OSS loop's ``temperature``/``thinking``
     kwargs."""
     _outcome, seen = _run_oss(

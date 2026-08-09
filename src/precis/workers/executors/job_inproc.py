@@ -2,7 +2,7 @@
 in the worker pass (§F cycle a, ``docs/backlog/cluster-scheduling.md``
 §F).
 
-Sibling of ``claude_inproc``/``ssh_node`` (ADR 0017), but deliberately the
+Sibling of ``claude_inproc``/``ssh_node``, but deliberately the
 thinnest of the three:
 
 * **No submit/poll.** An in-proc run can't be detached — the claiming

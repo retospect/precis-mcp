@@ -24,7 +24,7 @@ separate from `[pc]` groups — a kind switch breaks contiguity), and each
 a fetched `[pa]`'s **default** action (no `--ref-level`) is now a re-ground,
 not the slice-1 `reground-needed` no-op. Contract:
 
-- **Grounding-chunk suggestion (open #3, RESOLVED — reuse chase's locate).**
+- **Grounding-chunk suggestion (open #3, settled — reuse chase's locate).**
   Read the cited paper's body chunks `(chunk_id, ord, text)`; a deterministic
   lexical pick (unigram overlap with the span, mirroring
   `chase._select_target_chunk`) proposes the best passage, then

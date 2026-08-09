@@ -1,4 +1,4 @@
-"""Word counting for draft documents (ADR: proposal writing).
+"""Word counting for draft documents (proposal writing).
 
 A proposal section usually carries a word limit (min/max) imposed by the
 call-for-proposal. The planner stamps that limit on the section heading

@@ -1,6 +1,6 @@
 """FigureHandler — the interactive SVG-canvas kind (migration 0057).
 
-A ``figure`` is the **SVG instance** of the shared diagram core (ADR 0057): a
+A ``figure`` is the **SVG instance** of the shared diagram core: a
 slug-addressed ref on the ``draft`` chunk-tree substrate (the DraftMixin ops,
 parameterised ``kind='figure'``), never exported (``corpus_role='none'``). The
 whole MCP surface (get / put / edit / delete / link, incl. the element→chunk
@@ -48,7 +48,6 @@ class FigureHandler(DiagramHandler):
         note_like=True,
         role="artifact",
         corpus_role="none",
-        # Compute-lane opt-in (ADR 0044): a diagram_propose job (ADR 0057
-        # slice 5) parents on the figure it builds/verifies.
+        # Compute-lane opt-in: a diagram_propose job parents on the figure it builds/verifies.
         can_own_jobs=True,
     )

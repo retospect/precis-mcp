@@ -1,4 +1,4 @@
-"""Inter-part relations — clearance / interference / DOF (ADR 0041 §7).
+"""Inter-part relations — clearance / interference / DOF.
 
 The headline case is the shaft↔bore gap: clearance must be measured to the
 *subtracted* bore wall, not report a false collision against the un-bored

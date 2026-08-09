@@ -1,4 +1,4 @@
-"""The laptop fixer loop (ADR 0048).
+"""The laptop fixer loop.
 
 A git-world CI scheduler that closes the dark-factory loop: pick a
 ready work item, build it with ``claude`` in an isolated worktree,
@@ -6,7 +6,7 @@ gate it, and — at higher autonomy — ship + deploy + look at prod +
 fix-forward, reporting by exception.
 
 This is the **repo-dev** lane's scheduler. It deliberately does *not*
-ride precis dispatch (which is content-only, ADR 0030/0048); precis
+ride precis dispatch (which is content-only); precis
 is touched only as a source (gripes) and sink (status). The proven
 ``/go`` core (``scripts/ship`` + ``scripts/deploy``) is the deploy
 heart; this package is the autonomous intake + verify-and-fix wrap.

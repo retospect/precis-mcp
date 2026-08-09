@@ -297,7 +297,7 @@ def _job_actions(store: Any, ref: Any, tags: list[Any]) -> dict[str, Any]:
             status = s[len("STATUS:") :]
             break
 
-    # A job hangs off an owner ref via ``refs.parent_id`` (ADR 0044). Retry
+    # A job hangs off an owner ref via ``refs.parent_id``. Retry
     # only re-dispatches through the *intent* lane (a ``kind='todo'``
     # parent); a compute-lane job owned by a build subject, or a legacy
     # orphan with no parent, can't be re-minted this way.

@@ -1,4 +1,4 @@
-"""Tests for :mod:`precis.utils.llm.router` — the routing seam (ADR 0046).
+"""Tests for :mod:`precis.utils.llm.router` — the routing seam.
 
 DB-free and network-free: the tier→model table is pure env reads, the
 transport selection is a pure function, and dispatch is exercised by
@@ -40,7 +40,7 @@ from precis.utils.llm.router import (
     transport_for_profile,
 )
 
-# ── tier_from_str: stored-value degrade over the ADR 0066 Phase C removal ──
+# ── tier_from_str: stored-value degrade over the capability tiers + placement chains Phase C removal ──
 
 
 @pytest.mark.parametrize(
@@ -125,7 +125,7 @@ def test_tier_table_is_total() -> None:
     # The import-time assert already guards this; make it an explicit test
     # so a future tier without a resolver row fails loudly here too. The 4
     # capability tiers (FRONTIER/BIG/MEDIUM/SMALL) are the only Tier members
-    # since ADR 0066 Phase C retired the 5 location-coupled legacy ones.
+    # since capability tiers + placement chains Phase C retired the 5 location-coupled legacy ones.
     assert set(router._TIER_MODEL) == set(Tier)
     assert len(Tier) == 4
 
@@ -453,7 +453,7 @@ def test_dispatch_local_threads_max_tokens(
     assert seen["max_tokens"] == 220
 
 
-# ── ADR 0066 gen-param passthrough: per-tier thinking/temperature defaults ──
+# ── capability tiers + placement chains gen-param passthrough: per-tier thinking/temperature defaults ──
 
 
 @pytest.mark.parametrize(
@@ -720,7 +720,7 @@ def test_dispatch_big_tools_routes_to_tools_loop_under_openai_backend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """BIG + tools_needed under the OPENAI backend runs the OSS tools loop —
-    the ADR 0024 loop, not a NotImplementedError. (ADR 0066 Phase C retired
+    the in-process litellm tool loop, not a NotImplementedError. (retired
     the LOCAL_BIG tier, which pinned this transport unconditionally
     regardless of backend; BIG now takes this path only when the backend/
     chain routes it there — see the backend-routing table below for the
@@ -879,7 +879,7 @@ def test_openai_tools_threads_tool_calls(monkeypatch: pytest.MonkeyPatch) -> Non
 def test_openai_tools_threads_loop_paused(monkeypatch: pytest.MonkeyPatch) -> None:
     """The loop's own unavailability classification (set where the exception
     is actually caught, inside `run_tool_loop`) rides through to
-    `LlmResult.paused` — ADR 0066 §5a."""
+    `LlmResult.paused` — capability tiers + placement chains"""
     from precis.utils.llm.openai_tools import AgentLoopResult
     from precis.utils.llm.router import LlmRequest, Tier, _dispatch_openai_tools
 
@@ -1057,7 +1057,7 @@ def test_dispatch_client_threads_thinking_and_temperature(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """DispatchClient's thinking/temperature fields reach the LlmRequest
-    dispatch resolves, same as max_tokens (ADR 0066 gen-param passthrough)."""
+    dispatch resolves, same as max_tokens (gen-param passthrough)."""
     import precis.workers.llm_summarize as summ
     from precis.utils.llm.router import DispatchClient
 
@@ -1220,7 +1220,7 @@ def test_dispatch_folds_transport_error(monkeypatch: pytest.MonkeyPatch) -> None
     assert out.cost_usd is None
 
 
-# ── unavailability vs. semantic-error classification (ADR 0066 §5a) ────
+# ── unavailability vs. semantic-error classification ────
 #
 # "A todo that can't run right now waits and retries; it does not park."
 # `_is_unavailability` sorts a caught transport exception into `paused=True`
@@ -1252,8 +1252,7 @@ def test_is_unavailability_table(exc: BaseException, expected: bool) -> None:
 
 def test_error_result_claude_timeout_is_paused() -> None:
     """A claude wall-clock timeout → paused (retry), so a claude-only rung
-    (e.g. FRONTIER, no local fallback) waits rather than parking the todo
-    (ADR 0066 §5a). A non-timeout ClaudeProcessError stays a semantic error."""
+    (e.g. FRONTIER, no local fallback) waits rather than parking the todo. A non-timeout ClaudeProcessError stays a semantic error."""
     from precis.utils._claude_subprocess import ClaudeProcessError
     from precis.utils.llm.router import _error_result
 
@@ -1443,7 +1442,7 @@ def test_dispatch_openai_compat_thinking_off_disables_reasoning(
 ) -> None:
     """SMALL's thinking-off tier default reaches the wire as OpenRouter's
     documented ``reasoning.enabled: false`` switch, plus temperature 0.0 —
-    the confirmed half of the ADR 0066 no-thinking directive."""
+    the confirmed half of the capability tiers + placement chains no-thinking directive."""
     import precis.secrets as secrets
     import precis.workers.llm_summarize as summ
 
@@ -1917,8 +1916,7 @@ def test_failover_all_unavailable_returns_paused(
 ) -> None:
     """Every rung raises unavailability (a timeout) — the ladder exhausts and
     returns the last rung's result, which must still carry ``paused=True`` so
-    the caller backs off and retries rather than recording a hard failure
-    (ADR 0066 §5a)."""
+    the caller backs off and retries rather than recording a hard failure."""
     primary = _FakeProv(_paused("primary timed out after 120.0s"))
     fallback = _FakeProv(_paused("fallback timed out after 600.0s"))
     monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_TOOLS, primary)
@@ -2016,7 +2014,7 @@ def test_failover_ladder_anthropic_has_no_fallback() -> None:
 def test_claude_default_big_resolves_sonnet_ignoring_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """ADR 0066 Phase C retired the LOCAL_BIG/_LOCAL_ESCALATION_TIER
+    """Capability tiers + placement chains Phase C retired the LOCAL_BIG/_LOCAL_ESCALATION_TIER
     indirection that used to reroute a local tier's claude-fallback rung
     through its cloud analogue (LOCAL_BIG → CLOUD_MID) because LOCAL_BIG's
     own _TIER_MODEL default was an OSS alias ("qwen-heavy"), not a claude id.
@@ -2078,7 +2076,7 @@ def test_dispatch_failover_flag_falls_back_to_claude(
 def test_dispatch_failover_all_rungs_timeout_is_paused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """End to end (ADR 0066 §5a): SMALL's ladder has no claude fallback
+    """End to end: SMALL's ladder has no claude fallback
     (see ``test_failover_ladder_small_has_no_claude_rung``), so its one
     OSS rung timing out exhausts the ladder — the result must still come back
     ``paused=True``, not a plain error that can park the caller's todo."""
@@ -2137,9 +2135,9 @@ def test_dispatch_failover_all_rungs_4xx_stays_error_not_paused(
     assert out.error is not None and "401" in out.error
 
 
-# ── resolve_chain: the chain-override layer (ADR 0066 §4 / §Phase B) ─────
+# ── resolve_chain: the chain-override layer (capability tiers + placement chains / §Phase B) ─────
 #
-# ADR 0066 Phase B: the chain is the always-on resolution path. With no
+# the chain is the always-on resolution path. With no
 # ``llm.chain.<tier>`` row set, resolve_chain == _default_chain — a single
 # primary rung by default, or the built-in _failover_ladder when
 # PRECIS_LLM_FAILOVER is on. An operator override is read regardless of the
@@ -2482,7 +2480,7 @@ def test_dispatch_single_rung_chain_override_honors_pinned_model(
     assert compat.model_seen == "z-ai/glm-4.7"  # the chain's pin, not haiku
 
 
-# ── cloud throttle (ADR 0066 §5): prune cloud rungs when disabled ───────
+# ── cloud throttle: prune cloud rungs when disabled ───────
 
 
 def test_rung_is_cloud_classification(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2646,7 +2644,7 @@ def test_dispatch_cloud_throttle_drops_to_local_rung(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Throttle on + an operator chain with a local rung → the cloud rung is
-    pruned and the local rung runs, keeping the tier flowing (ADR 0066 §5)."""
+    pruned and the local rung runs, keeping the tier flowing."""
     monkeypatch.setattr("precis.utils.llm.live_config.cloud_enabled", lambda: False)
     monkeypatch.setattr(
         "precis.utils.llm.live_config.chain_override",
@@ -3465,7 +3463,7 @@ def test_record_dispatch_features_exhausted(
     assert features["prompt_chars"] == 4  # request-side features still merged
 
 
-# ── ADR 0066 Phase C: the 4 capability tiers are the only tiers ────────
+# ── capability tiers + placement chains Phase C: the 4 capability tiers are the only tiers ────────
 
 
 def test_new_aliases_resolve_to_new_tiers() -> None:
@@ -3483,7 +3481,7 @@ def test_dispatch_client_default_tier_is_small() -> None:
 
 
 def test_cloud_aliases_and_local_alias_resolve_to_capability_tiers() -> None:
-    """ADR 0066 Phase C: the three cloud legacy aliases (opus/sonnet/haiku)
+    """Capability tiers + placement chains Phase C: the three cloud legacy aliases (opus/sonnet/haiku)
     resolve through the capability tiers, and `local` now pins BIG directly —
     the location-coupled LOCAL_BIG tier this alias used to pin is retired; a
     served OSS model still backs BIG when the backend/chain routes there."""

@@ -1,4 +1,4 @@
-"""Drafts tab routes (ADR 0033, Tier-A web viewer/editor).
+"""Drafts tab routes (Tier-A web viewer/editor).
 
 Self-contained: a draft-aware fake store (chunks / TOC / links) wrapped
 in the conftest ``FakeRuntime`` + a TestClient — no Postgres. Exercises
@@ -41,7 +41,7 @@ def _chunk(
         parent_chunk_id=parent_chunk_id,
         ref_id=ref_id,
         meta=meta,
-        # the universal dc<id> handle (ADR 0036) — smartdraft's ?focus=
+        # the universal dc<id> handle — smartdraft's ?focus=
         # anchor scheme, distinct from `handle`'s base-58 DOM key.
         dc=handle_registry.format_handle("draft", chunk_id, chunk=True),
     )
@@ -114,7 +114,7 @@ class DraftFakeStore(FakeStore):
                 chunk_id=2,
                 parent_chunk_id=1,
             ),
-            # a figure (ADR 0034) — origin chip + <img> from /drafts/blob
+            # a figure — origin chip + <img> from /drafts/blob
             _chunk(
                 "FIGFIG",
                 "figure",
@@ -144,7 +144,7 @@ class DraftFakeStore(FakeStore):
                     }
                 },
             ),
-            # a data table (ADR 0035 §1) — canonical meta.table + caption,
+            # a data table — canonical meta.table + caption,
             # rendered as a real <table> (not the derived pipe markdown).
             _chunk(
                 "TBLTBL",
@@ -295,7 +295,7 @@ class DraftFakeStore(FakeStore):
         return None
 
     def has_chunk_blob(self, chunk_id) -> bool:
-        # Both fixture figures are real blob-backed images (ADR 0058 medium
+        # Both fixture figures are real blob-backed images (medium
         # resolver): FIGFIG (original) + FIGTPF (third-party granted).
         return any(
             c.chunk_id == chunk_id and c.chunk_kind == "figure" for c in self._chunks
@@ -943,7 +943,7 @@ def test_remarkable_send_400s_without_credential(
     assert r.status_code == 400
 
 
-# ── hand-driven working set: pen/eye marks + request-ws (ADR 0051 §6) ──
+# ── hand-driven working set: pen/eye marks + request-ws ──
 
 
 class WsFakeStore(DraftFakeStore):

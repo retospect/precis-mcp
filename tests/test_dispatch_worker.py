@@ -264,7 +264,7 @@ def test_plan_tick_synthesizes_model_with_explicit_executor(
 def test_plan_tick_threads_llm_select_into_job_params(
     handler: TodoHandler, store: Store
 ) -> None:
-    """``meta.llm_select`` (ADR 0066 structured selection, an optional
+    """``meta.llm_select`` (structured selection, an optional
     sibling of ``llm_tier``) rides along onto the minted job's
     ``params['select']`` unchanged."""
     select = {"placement": "local", "thinking": True, "effort": "high"}
