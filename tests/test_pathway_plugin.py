@@ -252,90 +252,66 @@ def test_summarize_stamps_a_non_null_p_side() -> None:
     assert summarize(art)["P_side"] == 0.12
 
 
-def test_selectivity_scalars_lifts_side_margin_and_worst_product() -> None:
+def test_selectivity_scalars_lifts_selectivity_margin_and_worst_product() -> None:
     """`_selectivity_scalars` (the piece `summarize` folds in) reads catpath
-    >=0.5.2's ``results.selectivity`` section: the side-span margin (eV,
-    maximize) plus the naming context of the most competitive side product."""
+    >=0.6.0's engine scorecard (``results.score``) for the ranking margins,
+    but still reads ``results.selectivity.most_competitive_side_product``
+    for the naming context."""
     from precis_pathway._dispatch_common import _selectivity_scalars
 
     out = _selectivity_scalars(
         {
-            "selectivity": {
-                "side_span_margin_eV": 0.35,
-                "most_competitive_side_product": "N2O*",
-            }
+            "selectivity": {"most_competitive_side_product": "N2O*"},
+            "score": {"selectivity": {"margin_eV": 0.35}},
         }
     )
-    assert out["side_span_margin"] == 0.35
+    assert out["selectivity_margin"] == 0.35
     assert out["side_worst"] == "N2O*"
 
 
 def test_selectivity_scalars_absent_margin_is_skipped_not_fabricated() -> None:
-    """A `None`/missing ``side_span_margin_eV`` never stamps a fabricated
-    0.0 — the key is simply absent, same convention as `summarize`'s
-    null-``P_side`` handling."""
+    """A `None`/missing ``score.selectivity.margin_eV`` never stamps a
+    fabricated 0.0 — the key is simply absent, same convention as
+    `summarize`'s null-``P_side`` handling."""
     from precis_pathway._dispatch_common import _selectivity_scalars
 
     out = _selectivity_scalars(
         {
-            "selectivity": {
-                "side_span_margin_eV": None,
-                "most_competitive_side_product": "N2O*",
-            }
+            "selectivity": {"most_competitive_side_product": "N2O*"},
+            "score": {"selectivity": {"margin_eV": None}},
         }
     )
-    assert "side_span_margin" not in out
+    assert "selectivity_margin" not in out
     assert out["side_worst"] == "N2O*"
 
 
-def test_selectivity_scalars_trap_depth_is_the_deepest_flagged_trap() -> None:
-    """`results.traps` — ``trap_depth`` is the deepest FLAGGED (``trap: true``)
-    state's escape climb beyond the best route's span; an unflagged state
-    (however deep) is ignored, and the worst flagged state's name rides
-    along as ``trap_worst``."""
+def test_selectivity_scalars_trap_margin_from_scorecard() -> None:
+    """`score.trap.margin_eV` — best-route span minus the worst OFF-route
+    state's escape climb; the worst state's name rides along as
+    ``trap_worst``."""
     from precis_pathway._dispatch_common import _selectivity_scalars
 
-    out = _selectivity_scalars(
-        {
-            "traps": {
-                "span_best_path_eV": 1.2,
-                "states": [
-                    {"state": "O*", "escape_eV": 1.9, "via": "x", "trap": True},
-                    {"state": "N*", "escape_eV": 1.0, "via": "y", "trap": False},
-                ],
-            }
-        }
-    )
-    assert out["trap_depth"] == 0.7
+    out = _selectivity_scalars({"score": {"trap": {"margin_eV": -0.7, "worst": "O*"}}})
+    assert out["trap_margin"] == -0.7
     assert out["trap_worst"] == "O*"
 
 
-def test_selectivity_scalars_no_flagged_traps_is_an_honest_zero() -> None:
-    """All states `trap: false` — the report ran and flagged nothing, so
-    `trap_depth` is an honest 0.0 (not absent), and `trap_worst` is absent
-    (no state to name)."""
+def test_selectivity_scalars_no_off_route_states_is_absent_not_zero() -> None:
+    """No off-route states -> ``score.trap.margin_eV`` is ``None`` — the
+    key is absent, not a fabricated 0.0, and `trap_worst` is likewise
+    absent (no state to name)."""
     from precis_pathway._dispatch_common import _selectivity_scalars
 
-    out = _selectivity_scalars(
-        {
-            "traps": {
-                "span_best_path_eV": 1.2,
-                "states": [
-                    {"state": "O*", "escape_eV": 1.9, "via": "x", "trap": False},
-                    {"state": "N*", "escape_eV": 1.0, "via": "y", "trap": False},
-                ],
-            }
-        }
-    )
-    assert out["trap_depth"] == 0.0
+    out = _selectivity_scalars({"score": {"trap": {"margin_eV": None, "worst": None}}})
+    assert "trap_margin" not in out
     assert "trap_worst" not in out
 
 
-def test_selectivity_scalars_poison_margin_is_the_worst_screened_species() -> None:
-    """`results.poisons` — ``poison_margin`` is the most-negative
-    ``delta_vs_substrate.mean`` across screened species (worst = outcompetes
-    the substrate hardest), and ``poison_verdicts`` carries every species'
-    verdict string, not just the worst one's."""
+def test_selectivity_scalars_poison_margin_from_scorecard() -> None:
+    """`score.poison.margin_eV` is the ranking scalar (worst screened
+    species' mean ``delta_vs_substrate``); ``poison_verdicts`` still comes
+    from ``results.poisons.species``, carrying every species' verdict
+    string, not just the worst one's."""
     from precis_pathway._dispatch_common import _selectivity_scalars
 
     out = _selectivity_scalars(
@@ -349,17 +325,18 @@ def test_selectivity_scalars_poison_margin_is_the_worst_screened_species() -> No
                     },
                     "H2O": {"delta_vs_substrate": {"mean": 0.3}, "verdict": "weak"},
                 }
-            }
+            },
+            "score": {"poison": {"margin_eV": -0.42}},
         }
     )
     assert out["poison_margin"] == -0.42
     assert out["poison_verdicts"] == {"CO": "blocks", "H2O": "weak"}
 
 
-def test_selectivity_scalars_old_engine_artifact_yields_nothing() -> None:
-    """An artifact off a pre-0.5.2 engine has none of the three sections —
-    `_selectivity_scalars` must return an empty dict, not raise or fabricate
-    keys, so `summarize` stays a no-op addition for old artifacts."""
+def test_selectivity_scalars_no_score_yields_nothing() -> None:
+    """An artifact off a pre-0.6.0 engine has no ``score`` section —
+    `_selectivity_scalars` must return an empty dict, not raise, fabricate
+    keys, or fall back to a hand-computed span-based measure."""
     from precis_pathway._dispatch_common import _selectivity_scalars
 
     assert _selectivity_scalars({"nodes": [], "edges": []}) == {}
@@ -367,8 +344,7 @@ def test_selectivity_scalars_old_engine_artifact_yields_nothing() -> None:
 
 def test_selectivity_scalars_lifts_score_context_strings() -> None:
     """The 0.6.0 scorecard's `limiting_factor` + `worst_problem` ride out as
-    naming context — strings only; the score section's numeric axes are NOT
-    lifted (the ranking scalars stay the span-based 0.5.2 lifts)."""
+    naming context alongside the numeric margins."""
     from precis_pathway._dispatch_common import _selectivity_scalars
 
     out = _selectivity_scalars(
@@ -382,7 +358,7 @@ def test_selectivity_scalars_lifts_score_context_strings() -> None:
     )
     assert out["limiting_factor"] == "trap"
     assert out["worst_problem"].startswith("NH3+O needs")
-    assert "trap" not in out  # numeric axes never lifted from score
+    assert out["trap_margin"] == -0.64
     # a malformed score section (non-string fields) lifts nothing
     assert _selectivity_scalars({"score": {"limiting_factor": 3}}) == {}
 

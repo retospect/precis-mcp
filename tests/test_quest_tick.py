@@ -772,13 +772,13 @@ class TestReactionContext:
             store, qid, {"name": "Champion candidate", "structure": _tick_spec("Fe")}
         )
         assert candidate is not None
-        # The default rubric now declares side_span_margin/poison_margin too
+        # The default rubric now declares selectivity_margin/poison_margin too
         # (catalyst_seed.RUBRIC_OBJECTIVES) — a candidate missing a declared
         # objective is `unevaluated` and can never be the champion, so stamp
         # the full objective vector.
         store.stamp_ref_meta(
             candidate,
-            {"barrier": 0.42, "side_span_margin": 0.3, "poison_margin": 0.15},
+            {"barrier": 0.42, "selectivity_margin": 0.3, "poison_margin": 0.15},
         )
         store.structure_record_run(
             candidate,

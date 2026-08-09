@@ -39,7 +39,9 @@ Status 2026-08-09:
     candidate carries no honest-absence caveat. An explicit
     `search.neb_schedule` in the reaction config wins.
   - Pin bumped `autocatpath>=0.4` → `>=0.7` (`catalyst` + `catalyst-gpu`);
-    **`_AUTOCATPATH_CACHE_EPOCH` `0.4.0` → `0.7.0`** (mandatory — re-keys every
+    **`_AUTOCATPATH_CACHE_EPOCH` `0.4.0` → `0.7.0`** (was mandatory then;
+    since 2026-08-09 the token derives from the pyproject pin floor — the
+    pin bump alone re-keys, no hand-bump — re-keys every
     candidate so the 234 unreaped stale-engine seeds re-dispatch clean on 0.7,
     [[catpath-barrier-trust]]).
 

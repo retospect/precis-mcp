@@ -81,11 +81,13 @@ computed** — no new relax/NEB, closed-form optima, no search.
   fractions ∝ `exp(−ΔEa/kT)`; `null` = insufficient data — a fork with any
   missing or untrustworthy competitor barrier is never scored), and `T`
   (default **298.15 K**).
-- engine >= 0.5.2 also carries `meta.results.selectivity` (best
-  side-product route's span vs the best product route's —
-  `side_span_margin_eV` > 0 means every side product is harder to reach),
-  `results.traps` (per-state cheapest escape vs the best route's span;
-  `trap: true` = a self-poisoning resting state), and `results.poisons`
+- engine >= 0.6.0 also carries `meta.results.score` (the four-axis
+  scorecard) — `selectivity_margin_eV` > 0 means side products are
+  kinetically disfavored at the worst branch point, `trap.margin_eV` > 0
+  means the worst off-route state can't outcompete the best route's span
+  — alongside the raw `results.traps` (per-state cheapest escape vs the
+  best route's span; `trap: true` = a self-poisoning resting state) and
+  `results.poisons`
   (per-species clean-slab `E_ads` vs the substrate's; verdict
   `blocks`/`competitive`/`weak` — the site-competition screen, config
   `poisons: ["CO"]`).

@@ -43,7 +43,7 @@ class TestSeedCatalystQuest:
         assert _objectives_for(store, qid) == [
             ("barrier", "min"),
             ("energy", "min"),
-            ("side_span_margin", "max"),
+            ("selectivity_margin", "max"),
             ("poison_margin", "max"),
         ]
         # the ceiling promotes a low-barrier design to needs-experiment

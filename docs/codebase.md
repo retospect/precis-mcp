@@ -11,7 +11,7 @@
 > **Reader:** an agent (or human) about to *edit this repo*. Internals —
 > table names, worker names, ADR numbers — are the payload here; name them.
 >
-> _Verified @ `c5d03fdc`._
+> _Verified @ `d5348b97`._
 
 ## What precis is
 

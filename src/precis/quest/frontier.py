@@ -500,9 +500,13 @@ def _candidate_from_structure(store: Store, s: Any) -> Candidate:
             "P_side",
             # selectivity/poisoning scalars — measured over the same
             # untrusted pathway, so they are excluded with it
+            "selectivity_margin",
+            "trap_margin",
+            "poison_margin",
+            # legacy 0.5.2-era keys — may still sit on candidates measured
+            # pre-swap, before the engine-scorecard rename
             "side_span_margin",
             "trap_depth",
-            "poison_margin",
         ):
             excluded = measures.pop(k, None)
             if excluded is not None:

@@ -109,39 +109,57 @@ dry-run by default, `APPLY=1` to mutate, DSN from the com.precis.web plist.
    WIP=1 loop re-evaluates one at a time (a duplicate proposal still
    dispatches fresh under the new engine token).
 
+## Open: one USER-RUN prod step
+
+The scorecard-axis swap shipped (below), but quest 164903's stamped
+`rubric_objectives` still name `side_span_margin` — until renamed, the
+frontier ranks on a measure the new summarize contract never populates
+(candidates sit "awaiting", a stall not a corruption). AFTER deploying the
+swap, run `rename_axes_164903.py` (session scratchpad — pipe to melchior
+via `ssh melchior 'cat > /tmp/rename_axes_164903.py' < …`; no SFTP):
+renames the objective key, nulls legacy `side_span_margin`/`trap_depth`
+measures on all candidates, logs a `decision` entry. Dry-run default,
+`APPLY=1` to mutate. Delete this section once run.
+
 ## Residuals
 
-- **0.6.0 scorecard scalars not adopted as ranking axes.** The rubric's
-  `side_span_margin` stays the 0.5.2 route-span definition; 0.6.0's
-  `score.selectivity.margin_eV` (branch-point climb margin — a sharper
-  local measure) and `score.trap.margin_eV` (sign-flipped vs our
-  `trap_depth`, and excludes on-route states) are candidates to replace
-  them. Swapping means renaming keys in prod quest meta + the reset
-  nulling list — a deliberate follow-up, not a drive-by.
+Resolved (2026-08-09, this cycle — kept one commit for context, then prune):
 
-- **`PRECIS_AUTOCATPATH_VERSION` is exported by no deploy role** (verified
-  2026-08-08 — repo-wide grep hits only compute.py). The engine-token env
-  override is dead wiring; today the code-constant
-  `compute._AUTOCATPATH_CACHE_EPOCH` must be bumped alongside every
-  autocatpath pin bump or stale jobs dedup-pin the new engine (the
-  qu164903 trap, memory `catpath-barrier-trust`). Durable fix: template
-  the installed version into the worker env in the `autocatpath` role
-  (memory `env-config-vs-cli-arg-gap` is the same failure class), or
-  drop the env and derive the token from
-  `importlib.metadata.version("autocatpath")` at dispatch time.
-- **CHE electro pass-through was dead on the fan-out path** until this
-  item's `analyze()` delegation — if any prod pathway claims U_L/… values
-  from before this deploy, they came from the legacy monolith path only.
-- **Tier ladder semantics shift under 0.5.x's coadsorbed default**
-  (`compute._apply_tier_config`): the `neb` rung leaves `template` absent,
-  which now resolves to coadsorbed — semantically identical to the
-  `verify` rung (only the content keys differ, absent vs explicit). The
-  ladder degrades to screening(parked) → neb(=verify) → verify(re-run).
-  Decide: pin `template: "parked"` on the neb rung to preserve the cheap
-  middle rung, or collapse verify. Irrelevant for qu164903 (pre-ladder,
-  ladder off → straight-to-neb identity config), so not blocking this
-  ship; matters for the next `seed_catalyst_quest` (default
-  `tier_ladder=True`).
+- ~~0.6.0 scorecard scalars not adopted as ranking axes~~ — swapped:
+  `selectivity_margin` (max) ← `score.selectivity.margin_eV` (worst
+  branch-point margin), `trap_margin` (max, diagnostic-not-default-axis) ←
+  `score.trap.margin_eV`, `poison_margin` (name kept, same semantic) ←
+  `score.poison.margin_eV`; hand-computed span-based lifts deleted, no
+  pre-0.6 fallback. Legacy keys ride `_AUTOCATPATH_MEASURE_KEYS` (resets
+  clear them) + the frontier untrusted-exclusion list. NEW:
+  `compute._AUTOCATPATH_SUMMARY_REV` folds precis's summarize-contract rev
+  into both idem keys — a summarize schema change now re-keys completed
+  jobs (closes the same dedup-pin gap as the engine token, for the precis
+  side). Prod: the user-run rename script above.
+
+- ~~CHE electro pre-deploy provenance~~ — audited on prod: ZERO refs of any
+  kind carry `U_L` (top-level, `meta.measures`, or `meta.summary`), pre- or
+  post-deploy. The dead pass-through never produced a misleading value
+  because no prod config exercises the electro lever at all. Nothing to
+  annotate.
+
+- ~~`PRECIS_AUTOCATPATH_VERSION` dead wiring~~ — the engine token is now
+  DERIVED from the `autocatpath` floor pin in precis's own dist metadata
+  (`compute._autocatpath_pinned_version`, normalized `0.7` → `0.7.0` so
+  adoption re-keyed nothing); the pin bump every engine adoption already
+  makes is the one re-key lever, no separate epoch hand-bump. Env stays as
+  ops override, constant as no-metadata fallback. Caveat that remains: the
+  token tracks the *pin* — adopting an engine without bumping the pin
+  still dedup-pins stale jobs.
+- ~~Tier ladder neb≡verify degeneracy~~ — resolved by the 0.7 integration
+  (`5fe235bc`), not by this repo's earlier "pin parked on neb" idea: neb
+  now overlays `search.neb_schedule="best_first"` (frontier-first, prunes
+  far-uphill routes — provably-safe skip) while verify stays exhaustive,
+  so the rungs are genuinely distinct in cost again. Pinning
+  `template="parked"` on neb was REJECTED: side-product rejoin + N–N
+  coupling need coadsorbed, so a parked middle rung would blind the
+  selectivity/poisoning axes precisely on the rung that ranks candidates.
+  `parked` stays screening-only.
 
 ## Dossier decision (operator asked: compact vs wipe-and-restart)
 

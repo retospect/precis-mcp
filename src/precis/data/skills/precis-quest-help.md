@@ -227,7 +227,7 @@ an energy + step-count cost that feeds the tote). A candidate whose relax
 fails is `ruled-out:`-tagged so the proposer never re-treads it. The
 converged candidates form a **Pareto frontier** over the quest's
 objective vector (override via `meta.rubric_objectives`; the catalyst
-default ranks barrier min · energy min · `side_span_margin` max
+default ranks barrier min · energy min · `selectivity_margin` max
 (side-product selectivity) · `poison_margin` max (site-competition
 resistance — needs `reaction_config.poisons`, e.g. `["CO"]`)), shown by
 `view='frontier'`. The loop dispatches **one proposal per tick**

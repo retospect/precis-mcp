@@ -8,14 +8,16 @@ a `quest` whose meta wires the whole loop:
   reads it and co-dispatches a autocatpath barrier eval with every candidate's relax.
 * ``meta.rubric_objectives`` — the measured axes that actually land **today**:
   the autocatpath ``barrier`` (min), the relax ``energy`` (min, the stability
-  proxy), and — catpath >= 0.5.2 — the selectivity/poisoning pair
-  ``side_span_margin`` (max: best side-product route's span minus the best
-  product route's — the "relative barrier for the side product") and
-  ``poison_margin`` (max: worst screened poison's ``delta_vs_substrate`` —
-  extrinsic poisoning resistance; needs ``reaction_config.poisons``).
-  ``trap_depth`` (min, intrinsic self-poisoning) is harvested + displayed
-  but deliberately NOT a default Pareto axis — five axes make domination
-  too weak; opt in per quest via ``rubric_objectives``. ``formation_e`` is a
+  proxy), and — catpath >= 0.6.0's engine scorecard (``results_json.score``)
+  — the selectivity/poisoning pair ``selectivity_margin`` (max: the worst
+  branch-point margin — side climb minus the competing main-route climb at
+  the same fork) and ``poison_margin`` (max: worst screened poison's
+  ``delta_vs_substrate`` — extrinsic poisoning resistance; needs
+  ``reaction_config.poisons``). ``trap_margin`` (max: best-route span minus
+  the worst off-route state's escape climb; intrinsic self-poisoning; absent
+  when there are no off-route states) is harvested + displayed but
+  deliberately NOT a default Pareto axis — five axes make domination too
+  weak; opt in per quest via ``rubric_objectives``. ``formation_e`` is a
   future refinement — declaring an objective nothing produces would leave
   every candidate *unevaluated* (an empty frontier).
 * ``meta.graduation`` — the in-silico ceiling that promotes a good design to a
@@ -82,12 +84,12 @@ REACTION_CONFIG: dict[str, Any] = {
 }
 
 #: Rank on the four measured axes: barrier + relax energy (min) and the
-#: catpath >= 0.5.2 selectivity/poisoning pair (max) — see the module
-#: docstring for why trap_depth is deliberately not a fifth axis.
+#: catpath >= 0.6.0 engine-scorecard selectivity/poisoning pair (max) — see
+#: the module docstring for why trap_margin is deliberately not a fifth axis.
 RUBRIC_OBJECTIVES: list[dict[str, str]] = [
     {"key": "barrier", "sense": "min"},
     {"key": "energy", "sense": "min"},
-    {"key": "side_span_margin", "sense": "max"},
+    {"key": "selectivity_margin", "sense": "max"},
     {"key": "poison_margin", "sense": "max"},
 ]
 

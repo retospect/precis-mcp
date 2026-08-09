@@ -34,11 +34,11 @@ Package-level invariants (each enforced where named):
   (``PRECIS_QUEST_MAX_PROPOSALS``, default 1) caps materialise/dispatch per
   tick; the coordinator's per-quest backpressure holds the next tick until
   that proposal's sims land. Extra proposals stay ``hypothesis`` leads.
-- **The bad energies are part of the score** (catpath >= 0.5.2):
-  ``side_span_margin`` (max), ``poison_margin`` (max), ``trap_depth``
-  (harvested diagnostic) ride the barrier's harvest + trust gate
-  (``compute._AUTOCATPATH_SELECTIVITY_KEYS``); the default rubric ranks on
-  barrier/energy/side_span_margin/poison_margin, and ``reaction_config.
-  poisons`` must screen at least one species or ``poison_margin`` is an
-  objective nothing produces (empty-frontier trap).
+- **The bad energies are part of the score** (catpath >= 0.6.0 engine
+  scorecard): ``selectivity_margin`` (max), ``poison_margin`` (max),
+  ``trap_margin`` (harvested diagnostic) ride the barrier's harvest + trust
+  gate (``compute._AUTOCATPATH_SELECTIVITY_KEYS``); the default rubric ranks
+  on barrier/energy/selectivity_margin/poison_margin, and
+  ``reaction_config.poisons`` must screen at least one species or
+  ``poison_margin`` is an objective nothing produces (empty-frontier trap).
 """

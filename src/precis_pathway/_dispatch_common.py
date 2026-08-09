@@ -43,69 +43,66 @@ _ELECTRO_KEYS: tuple[str, ...] = (
 
 
 def _selectivity_scalars(results: dict[str, Any]) -> dict[str, Any]:
-    """Selectivity / poisoning scalars off catpath >=0.5.2's ``results_json``.
+    """Selectivity / poisoning scalars off catpath >=0.6.0's engine scorecard
+    (``results_json.score`` — ``pipeline._assemble_score``). Each margin can
+    be ``None`` (no side branches / no poisons config / no off-route states),
+    so every lift stays conditional — absent, not fabricated. No fallback to
+    a hand-computed span-based measure when ``score`` is missing (a pre-0.6
+    artifact simply yields no selectivity measures).
 
-    Three ranking scalars plus their naming context — each section absent on
-    an older engine's artifact, so every lift is conditional:
+    * ``selectivity_margin`` (eV, maximize) — ``score.selectivity.margin_eV``:
+      the worst branch-point margin (side climb minus the competing main-
+      route climb at the same fork); positive = side products are
+      kinetically disfavored everywhere routes diverge.
+    * ``trap_margin`` (eV, maximize) — ``score.trap.margin_eV``: best-route
+      span minus the worst OFF-route state's escape climb (excludes on-route
+      and required states); negative = that off-route state accumulates
+      (self-poisoning).
+    * ``poison_margin`` (eV, maximize) — ``score.poison.margin_eV``: worst
+      screened poison's mean ``delta_vs_substrate``; negative = that poison
+      outcompetes the substrate for vacant sites. Same semantic as before,
+      now engine-computed instead of hand-lifted from ``results.poisons``.
 
-    * ``side_span_margin`` (eV, maximize) — ``selectivity.side_span_margin_eV``:
-      best side-product route's energetic span minus the best product route's;
-      positive = every side product is harder to reach than the product.
-    * ``trap_depth`` (eV, minimize, >= 0) — deepest flagged kinetic trap's
-      escape climb beyond the best route's span (``results.traps``); 0.0 when
-      the report ran and flagged nothing (an honest "no self-poisoning").
-    * ``poison_margin`` (eV, maximize) — worst screened poison's
-      ``delta_vs_substrate`` (``results.poisons``); negative = that poison
-      outcompetes the substrate for vacant sites.
-
-    Plus, from the engine's four-axis scorecard (``results.score``, >= 0.6.0):
-    ``limiting_factor`` (which axis has the smallest margin) and
-    ``worst_problem`` (its one-line statement) — pure naming context for the
-    tick prompt / literature step, never measures.
+    Plus, from the same scorecard: ``limiting_factor`` (which axis has the
+    smallest margin) and ``worst_problem`` (its one-line statement) — pure
+    naming context for the tick prompt / literature step, never measures.
     """
     out: dict[str, Any] = {}
     sel = results.get("selectivity")
     if isinstance(sel, dict):
-        v = _finite_num(sel.get("side_span_margin_eV"))
-        if v is not None:
-            out["side_span_margin"] = v
         worst = sel.get("most_competitive_side_product")
         if isinstance(worst, str) and worst:
             out["side_worst"] = worst
-    traps = results.get("traps")
-    if isinstance(traps, dict):
-        span_ref = _finite_num(traps.get("span_best_path_eV"))
-        rows = traps.get("states")
-        if span_ref is not None and isinstance(rows, list):
-            depth, worst_state = 0.0, None
-            for r in rows:
-                if not (isinstance(r, dict) and r.get("trap")):
-                    continue
-                esc = _finite_num(r.get("escape_eV"))
-                if esc is not None and esc - span_ref > depth:
-                    depth, worst_state = esc - span_ref, r.get("state")
-            out["trap_depth"] = round(depth, 4)
-            if isinstance(worst_state, str) and worst_state:
-                out["trap_worst"] = worst_state
     poisons = results.get("poisons")
     if isinstance(poisons, dict) and isinstance(poisons.get("species"), dict):
-        margin: float | None = None
         verdicts: dict[str, str] = {}
         for sp, d in poisons["species"].items():
             if not isinstance(d, dict):
                 continue
-            delta = d.get("delta_vs_substrate")
-            v = _finite_num(delta.get("mean")) if isinstance(delta, dict) else None
-            if v is not None and (margin is None or v < margin):
-                margin = v
             if isinstance(d.get("verdict"), str):
                 verdicts[str(sp)] = d["verdict"]
-        if margin is not None:
-            out["poison_margin"] = round(margin, 4)
         if verdicts:
             out["poison_verdicts"] = verdicts
     score = results.get("score")
     if isinstance(score, dict):
+        sel_block = score.get("selectivity")
+        if isinstance(sel_block, dict):
+            v = _finite_num(sel_block.get("margin_eV"))
+            if v is not None:
+                out["selectivity_margin"] = v
+        trap_block = score.get("trap")
+        if isinstance(trap_block, dict):
+            v = _finite_num(trap_block.get("margin_eV"))
+            if v is not None:
+                out["trap_margin"] = v
+            worst_state = trap_block.get("worst")
+            if isinstance(worst_state, str) and worst_state:
+                out["trap_worst"] = worst_state
+        poison_block = score.get("poison")
+        if isinstance(poison_block, dict):
+            v = _finite_num(poison_block.get("margin_eV"))
+            if v is not None:
+                out["poison_margin"] = v
         for k in ("limiting_factor", "worst_problem"):
             v2 = score.get(k)
             if isinstance(v2, str) and v2:

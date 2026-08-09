@@ -10,6 +10,7 @@ against real PG (the ``store`` fixture).
 
 from __future__ import annotations
 
+import importlib.metadata
 import re
 from types import SimpleNamespace
 from typing import Any
@@ -973,7 +974,7 @@ class TestGeneralizedFrontier:
         """The barrier's untrusted-value preservation (``flags[f"{k}_
         untrusted_value"]``) extends to the three selectivity/poisoning
         scalars — measured over the SAME untrusted pathway as the barrier, so
-        `side_span_margin`/`trap_depth`/`poison_margin` are popped out of
+        `selectivity_margin`/`trap_margin`/`poison_margin` are popped out of
         `measures` and their raw value preserved as a flag, exactly like
         `barrier`."""
         qid = _mk_quest(store, "A striving")
@@ -986,17 +987,36 @@ class TestGeneralizedFrontier:
             {
                 "barrier": 0.4,
                 "barrier_trusted": False,
-                "side_span_margin": 0.35,
-                "trap_depth": 0.7,
+                "selectivity_margin": 0.35,
+                "trap_margin": 0.7,
                 "poison_margin": -0.42,
             },
         )
         c = _cand(store, sid)
-        for k in ("side_span_margin", "trap_depth", "poison_margin"):
+        for k in ("selectivity_margin", "trap_margin", "poison_margin"):
             assert k not in c.measures
-        assert c.flags["side_span_margin_untrusted_value"] == 0.35
-        assert c.flags["trap_depth_untrusted_value"] == 0.7
+        assert c.flags["selectivity_margin_untrusted_value"] == 0.35
+        assert c.flags["trap_margin_untrusted_value"] == 0.7
         assert c.flags["poison_margin_untrusted_value"] == -0.42
+
+    def test_untrusted_barrier_also_excludes_legacy_selectivity_measure(
+        self, store: Any
+    ) -> None:
+        """A candidate measured pre-swap can still carry the legacy
+        `side_span_margin` key — it must be excluded from ranking on an
+        untrusted pathway exactly like the current-name scalars."""
+        qid = _mk_quest(store, "A striving")
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Pd", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.stamp_ref_meta(
+            sid,
+            {"barrier": 0.4, "barrier_trusted": False, "side_span_margin": 0.35},
+        )
+        c = _cand(store, sid)
+        assert "side_span_margin" not in c.measures
+        assert c.flags["side_span_margin_untrusted_value"] == 0.35
 
     def test_selectivity_naming_context_is_flags_only_never_a_measure(
         self, store: Any
@@ -1321,8 +1341,8 @@ def test_measures_from_job_lifts_selectivity_scalars_and_context_uncoerced() -> 
     meta = {
         "result": {
             "barrier": 0.4,
-            "side_span_margin": 0.35,
-            "trap_depth": 0.7,
+            "selectivity_margin": 0.35,
+            "trap_margin": -0.7,
             "poison_margin": -0.42,
             "side_worst": "N2O*",
             "trap_worst": "O*",
@@ -1333,8 +1353,8 @@ def test_measures_from_job_lifts_selectivity_scalars_and_context_uncoerced() -> 
     }
     out = compute_mod._autocatpath_measures_from_job(meta)
     assert out["barrier"] == 0.4
-    assert out["side_span_margin"] == 0.35
-    assert out["trap_depth"] == 0.7
+    assert out["selectivity_margin"] == 0.35
+    assert out["trap_margin"] == -0.7
     assert out["poison_margin"] == -0.42
     assert out["side_worst"] == "N2O*"
     assert isinstance(out["side_worst"], str)
@@ -1343,6 +1363,9 @@ def test_measures_from_job_lifts_selectivity_scalars_and_context_uncoerced() -> 
     assert isinstance(out["poison_verdicts"], dict)
     assert out["limiting_factor"] == "poison"
     assert out["worst_problem"].startswith("CO binds")
+    # legacy 0.5.2-era keys are NOT lifted as measures anymore
+    assert "side_span_margin" not in out
+    assert "trap_depth" not in out
 
 
 # ── autocatpath harvest: barrier → candidate meta → frontier (Slice 3) ────
@@ -1858,8 +1881,67 @@ class TestAutocatpathContentKey:
     _RX = {"substrate": "NO", "target": "NH3", "network": "ammonia"}
     _SLAB = 'Lattice="1 0 0 0 1 0 0 0 1"\nPd 0 0 0\n'
 
-    def test_engine_token_defaults_to_cache_epoch(self, monkeypatch: Any) -> None:
+    @pytest.fixture(autouse=True)
+    def _reset_pin_cache(self) -> Any:
+        compute_mod._autocatpath_pinned_version.cache_clear()
+        yield
+        compute_mod._autocatpath_pinned_version.cache_clear()
+
+    def test_engine_token_derives_from_dist_pin(self, monkeypatch: Any) -> None:
+        """With no env override the token is the ``autocatpath`` floor pin from
+        precis's own dist metadata — the same-commit pin bump every engine
+        adoption already makes is the ONE re-key lever (no hand-bumped epoch)."""
         monkeypatch.delenv(compute_mod._AUTOCATPATH_VERSION_ENV, raising=False)
+        derived = compute_mod._autocatpath_pinned_version()
+        assert derived is not None, "test venv should carry the autocatpath pin"
+        assert len(derived.split(".")) >= 3  # normalized to >= 3 components
+        assert compute_mod._autocatpath_engine_token() == derived
+
+    def test_pinned_version_normalizes_two_component_floor(
+        self, monkeypatch: Any
+    ) -> None:
+        """``>=0.7`` normalizes to ``0.7.0`` — byte-identical to the hand-bumped
+        epoch it replaced, so shipping the derivation re-keyed nothing."""
+        monkeypatch.setattr(
+            importlib.metadata,
+            "requires",
+            lambda name: ['autocatpath>=0.7; extra == "catalyst"'],
+        )
+        assert compute_mod._autocatpath_pinned_version() == "0.7.0"
+
+    def test_pinned_version_reads_extras_form(self, monkeypatch: Any) -> None:
+        monkeypatch.setattr(
+            importlib.metadata,
+            "requires",
+            lambda name: ['autocatpath[mace]>=0.8.1; extra == "catalyst-gpu"'],
+        )
+        assert compute_mod._autocatpath_pinned_version() == "0.8.1"
+
+    def test_pinned_version_takes_highest_of_divergent_floors(
+        self, monkeypatch: Any
+    ) -> None:
+        """The pin appears once per extra; if the floors ever diverge the
+        HIGHEST must win — first-match-wins would silently under-key (the
+        dedup-pin trap this derivation exists to close)."""
+        monkeypatch.setattr(
+            importlib.metadata,
+            "requires",
+            lambda name: [
+                'autocatpath>=0.7; extra == "catalyst"',
+                'autocatpath[mace]>=0.8; extra == "catalyst-gpu"',
+            ],
+        )
+        assert compute_mod._autocatpath_pinned_version() == "0.8.0"
+
+    def test_engine_token_falls_back_to_cache_epoch(self, monkeypatch: Any) -> None:
+        """No dist metadata (e.g. a source tree run outside any install) →
+        the code-constant fallback, never a crash."""
+        monkeypatch.delenv(compute_mod._AUTOCATPATH_VERSION_ENV, raising=False)
+
+        def _missing(name: str) -> list[str]:
+            raise importlib.metadata.PackageNotFoundError(name)
+
+        monkeypatch.setattr(importlib.metadata, "requires", _missing)
         assert (
             compute_mod._autocatpath_engine_token()
             == compute_mod._AUTOCATPATH_CACHE_EPOCH
@@ -1881,6 +1963,26 @@ class TestAutocatpathContentKey:
         monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "0.4.0")
         new = compute_mod._autocatpath_content_key(self._RX, self._SLAB)
         assert old != new
+
+    def test_key_changes_with_summary_rev(self, monkeypatch: Any) -> None:
+        """A precis-side summary-contract revision bump (:data:`compute_mod.
+        _AUTOCATPATH_SUMMARY_REV`) re-keys both the base and per-seed idem
+        keys even with the engine token held fixed — a completed job's
+        artifact reflects the OLD summarize() output shape and must not
+        dedupe onto a fresh dispatch under the new contract."""
+        monkeypatch.setenv(compute_mod._AUTOCATPATH_VERSION_ENV, "0.7.0")
+        monkeypatch.setattr(compute_mod, "_AUTOCATPATH_SUMMARY_REV", "s2")
+        old_base = compute_mod._autocatpath_content_key(self._RX, self._SLAB)
+        old_seed = compute_mod._autocatpath_seed_content_key(
+            self._RX, self._SLAB, seed=0, model_index=0
+        )
+        monkeypatch.setattr(compute_mod, "_AUTOCATPATH_SUMMARY_REV", "s3")
+        new_base = compute_mod._autocatpath_content_key(self._RX, self._SLAB)
+        new_seed = compute_mod._autocatpath_seed_content_key(
+            self._RX, self._SLAB, seed=0, model_index=0
+        )
+        assert old_base != new_base
+        assert old_seed != new_seed
 
 
 class TestTierConfigMapping:
@@ -2221,6 +2323,9 @@ class TestDispatchAutocatpath:
                 "barrier_neb_failed": 3,
                 "energy": -179.6,
                 "quest_autocatpath_harvested_upto": 42,
+                # legacy 0.5.2-era selectivity key — may still sit on a
+                # candidate measured before the scorecard swap
+                "side_span_margin": 0.35,
             },
         )
         store.add_tag(sid, Tag.open("ruled-out:preflight"), set_by="system")
@@ -2232,6 +2337,7 @@ class TestDispatchAutocatpath:
         meta = store.fetch_refs_by_ids({sid})[sid].meta
         assert meta.get("barrier") is None  # stale barrier nulled
         assert meta.get("barrier_trusted") is None
+        assert meta.get("side_span_margin") is None  # legacy key nulled too
         assert meta.get("energy") == -179.6  # relax lane untouched
         # bookmark PRESERVED — nulling it to 0 would re-harvest the stale
         # completed job and re-stamp the barrier this reset just cleared.

@@ -22,10 +22,13 @@ tests monkeypatch to avoid real compute.
 
 from __future__ import annotations
 
+import functools
 import hashlib
+import importlib.metadata
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -418,23 +421,87 @@ def _autocatpath_wall_seconds() -> int:
 #: candidates were pinned on autocatpath 0.1.1's desorption false-positives (102
 #: phantom "detached" warnings → barrier_trusted=false) and never re-scored on
 #: 0.4.0, which relaxes the same geometries cleanly (0 detached, trusted).
-#: NOTE (verified 2026-08-08): no deploy role actually exports
-#: ``PRECIS_AUTOCATPATH_VERSION`` — the env override exists for ops, but in
-#: practice ``_AUTOCATPATH_CACHE_EPOCH`` is THE lever: bump it in the same
-#: commit that bumps the ``autocatpath`` pin, and every candidate re-keys so
-#: the new engine re-evaluates instead of deduping onto stale jobs (see
-#: docs/backlog/autocatpath-060-selectivity-objectives.md for the wiring
-#: residual).
+#: The token is DERIVED from the ``autocatpath`` floor pin in precis's own
+#: dist metadata (:func:`_autocatpath_pinned_version`), because every engine
+#: adoption already bumps that pin in the same commit — one lever, no
+#: separate hand-bump to forget (the 0.4.0/0.6.0/0.7.0 adoptions each had to
+#: remember this constant; see
+#: docs/backlog/autocatpath-060-selectivity-objectives.md). The env var stays
+#: as an ops escape hatch (force a re-key without a ship); the constant is a
+#: last-resort fallback for a venv with no precis dist metadata. Remaining
+#: caveat (unchanged from before): the token tracks the *pin*, not what
+#: spark's GPU venv actually runs — an engine release adopted without a pin
+#: bump still dedup-pins stale jobs, so keep bumping the pin with every
+#: adoption.
 _AUTOCATPATH_VERSION_ENV = "PRECIS_AUTOCATPATH_VERSION"
 _AUTOCATPATH_CACHE_EPOCH = "0.7.0"
 
+#: Precis-side summary-contract revision folded into the idem keys
+#: alongside the engine token: a completed job's reusable artifact
+#: includes the scalar summary stamped by _dispatch_common.summarize, so
+#: when THAT contract changes (new/renamed measure keys) completed jobs
+#: are stale for harvest even on the same engine. Bump on any
+#: summarize() output-schema change. s2 = engine-scorecard margins
+#: (selectivity_margin/trap_margin/poison_margin off results.score)
+#: replacing the 0.5.2 span-based lifts.
+_AUTOCATPATH_SUMMARY_REV = "s2"
+
+#: Matches the ``autocatpath`` requirement (any extras) in dist metadata,
+#: e.g. ``autocatpath>=0.7; extra == "catalyst"`` / ``autocatpath[mace]>=0.7``.
+_AUTOCATPATH_REQ_RE = re.compile(r"^autocatpath\s*(?:\[[^]]*\])?\s*[<>=!~(]")
+
+
+@functools.cache
+def _autocatpath_pinned_version() -> str | None:
+    """Floor of the ``autocatpath`` pin in the installed ``precis-mcp`` dist
+    metadata, normalized to three components (``0.7`` → ``0.7.0`` — keeps the
+    derived token byte-identical to the hand-bumped epochs it replaces, so
+    adopting this derivation re-keys nothing). Extras-marked requirements are
+    listed in metadata regardless of which extras a venv installed, so this
+    works on dispatch hosts that never install the engine itself (compute
+    keeps its no-``autocatpath``-import rule). ``None`` when precis isn't
+    installed as a dist or carries no ``>=`` pin."""
+    try:
+        reqs = importlib.metadata.requires("precis-mcp") or []
+    except importlib.metadata.PackageNotFoundError:
+        return None
+    floors: list[str] = []
+    for req in reqs:
+        if not _AUTOCATPATH_REQ_RE.match(req):
+            continue
+        m = re.search(r">=\s*([0-9][0-9A-Za-z.]*)", req.split(";", 1)[0])
+        if not m:
+            continue
+        parts = m.group(1).split(".")
+        while len(parts) < 3:
+            parts.append("0")
+        floors.append(".".join(parts))
+    if not floors:
+        return None
+
+    # The pin appears once per extra (catalyst, catalyst-gpu); if they ever
+    # diverge, the HIGHEST floor is the one that must re-key (under-keying is
+    # the dedup-pin trap this whole derivation exists to close).
+    def _floor_key(v: str) -> tuple[int, ...]:
+        out = []
+        for p in v.split("."):
+            d = re.match(r"\d+", p)
+            out.append(int(d.group()) if d else 0)
+        return tuple(out)
+
+    return max(floors, key=_floor_key)
+
 
 def _autocatpath_engine_token() -> str:
-    """Engine-version component of the idem key — the deployed version pinned by
-    the ansible role (``PRECIS_AUTOCATPATH_VERSION``), else the code-constant
-    cache epoch. A change in this value re-keys every (config, slab) pair, so a
+    """Engine-version component of the idem key: ``PRECIS_AUTOCATPATH_VERSION``
+    env override if set, else the pin-derived version, else the code-constant
+    fallback. A change in this value re-keys every (config, slab) pair, so a
     new engine build re-evaluates candidates instead of reusing stale results."""
-    return os.environ.get(_AUTOCATPATH_VERSION_ENV) or _AUTOCATPATH_CACHE_EPOCH
+    return (
+        os.environ.get(_AUTOCATPATH_VERSION_ENV)
+        or _autocatpath_pinned_version()
+        or _AUTOCATPATH_CACHE_EPOCH
+    )
 
 
 def _autocatpath_content_key(config: dict[str, Any], slab_extxyz: str) -> str:
@@ -448,6 +515,8 @@ def _autocatpath_content_key(config: dict[str, Any], slab_extxyz: str) -> str:
     """
     payload = (
         _autocatpath_engine_token()
+        + "+"
+        + _AUTOCATPATH_SUMMARY_REV
         + "\n"
         + _canonical_spec(config)
         + "\n"
@@ -469,6 +538,8 @@ def _autocatpath_seed_content_key(
     """
     payload = (
         _autocatpath_engine_token()
+        + "+"
+        + _AUTOCATPATH_SUMMARY_REV
         + "\n"
         + _canonical_spec(config)
         + "\n"
@@ -940,17 +1011,18 @@ _AUTOCATPATH_SPAN_KEYS: tuple[str, ...] = ("span",)
 #: onto the candidate — it stays a job-meta-only diagnostic.
 _AUTOCATPATH_ELECTRO_KEYS: tuple[str, ...] = ("U_L", "U_opt", "span_at_Uopt", "P_side")
 
-#: Selectivity / poisoning scalars (catpath >= 0.5.2 artifacts;
-#: ``precis_pathway._dispatch_common._selectivity_scalars`` derives them onto
-#: the job meta). Ranking measures like the barrier: ``side_span_margin``
-#: (eV, maximize — best side-product route's span minus the best product
-#: route's), ``trap_depth`` (eV, minimize — deepest flagged kinetic trap's
-#: escape climb beyond the best route's span; 0.0 = report ran, no traps),
-#: ``poison_margin`` (eV, maximize — worst screened poison's
-#: ``delta_vs_substrate``).
+#: Selectivity / poisoning scalars (catpath >= 0.6.0 engine scorecard,
+#: ``results_json.score``; ``precis_pathway._dispatch_common._selectivity_scalars``
+#: derives them onto the job meta). Ranking measures like the barrier:
+#: ``selectivity_margin`` (eV, maximize — worst branch-point margin: side
+#: climb minus the competing main-route climb at the same fork),
+#: ``trap_margin`` (eV, maximize — best-route span minus the worst
+#: OFF-route state's escape climb; absent when there are no off-route
+#: states), ``poison_margin`` (eV, maximize — worst screened poison's
+#: ``delta_vs_substrate``, engine-computed).
 _AUTOCATPATH_SELECTIVITY_KEYS: tuple[str, ...] = (
-    "side_span_margin",
-    "trap_depth",
+    "selectivity_margin",
+    "trap_margin",
     "poison_margin",
 )
 #: Naming context riding alongside the scalars — never measures (strings /
@@ -1873,6 +1945,10 @@ _AUTOCATPATH_MEASURE_KEYS: tuple[str, ...] = (
     # selectivity/poisoning scalars + context — same engine, same staleness
     *_AUTOCATPATH_SELECTIVITY_KEYS,
     *_AUTOCATPATH_SELECTIVITY_CONTEXT_KEYS,
+    # legacy 0.5.2-era keys — still on prod candidates measured before the
+    # scorecard swap; resets must clear them too
+    "side_span_margin",
+    "trap_depth",
 )
 
 
