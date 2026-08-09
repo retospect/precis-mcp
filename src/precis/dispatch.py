@@ -495,9 +495,9 @@ def _load_plugins(hub: Hub) -> None:
     :class:`~precis.protocol.KindSpec` ClassVar, accept
     ``*, hub: Hub`` in ``__init__``, and raise
     :class:`InitError` from ``__init__`` when it can't usefully run.
-    See ``docs/user-facing/plugin-authoring.md`` for the full write-up; the
-    canonical minimal example is
-    :class:`precis.handlers.calc.CalcHandler`.
+    The canonical minimal example is :class:`precis.handlers.calc.CalcHandler`
+    (~40 lines, stateless); the richest first-party example is the
+    ``precis_chem`` plugin package (entry points in ``pyproject.toml``).
 
     Failure semantics are deliberately **wider** than :func:`_try`:
     built-in handlers are trusted code, so a stray ``RuntimeError``
@@ -609,8 +609,6 @@ def boot(
     ``self.hub.embed_one(...)`` etc. without each one needing its
     own copy of the dependency wiring.
 
-    See ``docs/user-facing/seven-verb-surface-migration.md`` D7/D8 for the design
-    rationale and rejected alternatives.
     """
     # If a store is wired but no embedder was provided, fall back to
     # the deterministic mock at the right dim. Doing this here —
@@ -950,8 +948,8 @@ def boot(
 
         _gated(EdgarHandler)
 
-    # Third-party plugins load last. See ``docs/user-facing/plugin-authoring.md``
-    # and :func:`_load_plugins` for the contract and failure modes.
+    # Third-party plugins load last. See :func:`_load_plugins` for the
+    # contract and failure modes.
     # Built-ins win on kind-name collisions because they register
     # first; a plugin attempting to claim an already-registered kind
     # is logged and skipped.

@@ -84,8 +84,7 @@ def build_runtime(
     :func:`precis.dispatch._try` (swallows ``InitError`` + missing
     optional deps), and populates the flat dispatch table. The
     returned :class:`Hub` carries the store / embedder / hints; the
-    runtime is a thin wrapper around it. See
-    ``docs/user-facing/seven-verb-surface-migration.md`` D7/D8.
+    runtime is a thin wrapper around it.
     """
     from precis.config import load_config
     from precis.dispatch import boot

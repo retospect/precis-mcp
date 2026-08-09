@@ -18,7 +18,6 @@ glossary terms, and prefer deleting to archiving — git is the history,
 | Work items (idea → ready) | `docs/backlog/` — one file per item |
 | Operational procedures | `docs/runbooks/` |
 | Generated reference (schema, config catalog) | `docs/reference/` |
-| External-consumer specs (kind specs, plugin authoring) | `docs/user-facing/` |
 | Mission / pitch narrative | `docs/mission.md` (positioning, not architecture) |
 | Deck material | `docs/presentations/` (dated snapshots — allowed to age) |
 | History, shipped plans, old decisions | `git log` — nothing else; no CHANGELOG, no archive dirs |

@@ -74,7 +74,6 @@ precis-mcp/
     runbooks/                # operational procedures
     reference/               # generated schema doc + diagrams
     architecture/glossary.md # controlled vocabulary
-    user-facing/             # external docs (kind specs, ingest paths)
 ```
 
 ## Workflow — plan first, always
@@ -217,5 +216,3 @@ back-compat with any files staged before the routing landed.
 - **Plans / specs**: `docs/backlog/` (index: `docs/backlog/README.md`) —
   one file per item, spec grows in the same file, **delete on ship**
   (lifecycle: `docs/README.md`; triage: the `docs-triage` skill)
-- **External-facing specs**: `docs/user-facing/`
-  (`paper_ingest.md`, kind-spec docs, edit-protocol-spec)

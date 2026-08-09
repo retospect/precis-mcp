@@ -7,8 +7,7 @@ indexable definition: the module itself, classes, functions, methods,
 async variants thereof, and nested classes).
 
 Line numbers are **1-indexed and inclusive on both ends** to match the
-unified addressing convention (see `docs/user-facing/file-kinds-unified-addressing.md
-§ Line-number convention`). Python's `ast` module already returns
+unified addressing convention for file-rooted kinds. Python's `ast` module already returns
 1-indexed `lineno` and `end_lineno` so no conversion is needed.
 
 Qualnames are dotted paths — `precis.registry.Registry.get` for a

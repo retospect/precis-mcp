@@ -1,7 +1,7 @@
 # `edgar` — read-only SEC EDGAR filings kind
 
-> Modelled on the `patent` kind (EPO OPS); read
-> `docs/user-facing/patent-kind-spec.md` first — this file keeps only
+> Modelled on the `patent` kind (EPO OPS); read the
+> `precis.handlers.patent` docstrings first — this file keeps only
 > the open phase-2 scope and the decided divergences that bound it.
 
 Shipped portion (phase 1): see the `src/precis/handlers/edgar.py`

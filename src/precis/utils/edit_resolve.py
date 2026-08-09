@@ -1,9 +1,9 @@
 """Anchored edit resolver — pure, no I/O.
 
 Implements the ``mode='edit'`` / ``mode='insert'`` primitives shared
-across every R/W file kind. The resolution algorithm is the core of
-``docs/user-facing/edit-protocol-spec.md``: content selects, anchors disambiguate,
-``match`` policy validates uniqueness.
+across every R/W file kind. The resolution algorithm:
+content selects, anchors disambiguate, ``match`` policy validates
+uniqueness.
 
 Three responsibilities:
 

@@ -55,6 +55,7 @@
 - [`cron-recurring-backfill`](./cron-recurring-backfill.md) **idea** — ADR 0061 retired kind='cron' in code; the data half
 - [`daily-cost-ceiling-tuning`](./daily-cost-ceiling-tuning.md) **idea** — Deploy-var tuning (Reto), not code: the deployed cap is $50 and an observed
 - [`dark-factory-followups`](./dark-factory-followups.md) **idea** — Ship/deploy loop is live; these workflow additions remain.
+- [`dark-features-activation`](./dark-features-activation.md) **idea** — Shipped-dark features whose flip steps live in no other backlog item or
 - [`db-role-enforce-pgbouncer`](./db-role-enforce-pgbouncer.md) **idea** — PRECIS_MCP_DB_ROLE_ENFORCE (session-level SET ROLE) is only correct on a
 - [`deploy-verification-guards`](./deploy-verification-guards.md) **idea** — Three post-deploy assertions, one owner (`deploy/redeploy-precis.yml`):
 - [`deploy-watcher-absent-flag`](./deploy-watcher-absent-flag.md) **idea** — A `precis_watch_enabled` flag with `state: absent` would enforce exclusion
@@ -137,6 +138,7 @@
 - [`patent-authoring-loop`](./patent-authoring-loop.md) **idea** — Shipped portion: see the `workers/patent_digest.py` and
 - [`patent-drafting-merge`](./patent-drafting-merge.md) **idea** — A patent **is a `draft`** whose **`meta.workspace.doc_type` is `patent`**
 - [`patent-evidence-parity`](./patent-evidence-parity.md) **draft** — All five phases shipped. Phases 1–3: hub-refine patent discovery leg with
+- [`patent-kind-followons`](./patent-kind-followons.md) **idea** — From the shipped patent-kind spec (git-only); truth in the
 - [`patent-search-parity`](./patent-search-parity.md) **idea** — Papers search well; patents don't. Look for a systemic fix — indexing,
 - [`pathway-frame-capture`](./pathway-frame-capture.md) **draft** — catpath *computes* the reaction motion and then throws it away. `neb.py`'s
 - [`pathway-measures-edit`](./pathway-measures-edit.md) **idea** — The reaction-pathway explorer renders `refs.meta.measures` per state, but
@@ -163,6 +165,7 @@
 - [`router-coverage-and-downshift`](./router-coverage-and-downshift.md) **idea** — Reto: all LLM traffic through the precis router, then push "stupid work" down
 - [`runtime-source-introspection`](./runtime-source-introspection.md) **draft** — Precis-mcp currently cannot introspect its own implementation while running.
 - [`schema-reconcile-acls`](./schema-reconcile-acls.md) **idea** — migra diffs don't emit GRANTs, so a reconciled new table ends up owned by
+- [`search-future-filters`](./search-future-filters.md) **idea** — pushed down to both lex and sem CTEs in `search_blocks_fused`, so
 - [`serverinfo-title`](./serverinfo-title.md) **idea** — MCP spec 2025-06-18 §A1 recommends a serverInfo.title; FastMCP(...) takes no
 - [`service-seed-from-registry`](./service-seed-from-registry.md) **idea** — The deploy seed enables passes from a hardcoded 4-service list; role-gated
 - [`sim-harness`](./sim-harness.md) **draft** — Slice 1 SHIPPED: `precis sim list/ingest/verify` as plain CLI verbs
@@ -205,6 +208,7 @@
 - [`untrusted-input-injection-scan`](./untrusted-input-injection-scan.md) **draft** — **Slice 1 SHIPPED**: the pure tier-0 scanner lives at
 - [`user-identity-and-ask-routing`](./user-identity-and-ask-routing.md) **idea** — places, while the live DB refers to the same person as
 - [`vault-reveal-cache`](./vault-reveal-cache.md) **idea** — vault.events shows ~15 reveals/minute against a `_CACHE_TTL_SECONDS = 60`
+- [`voice-kind-spec`](./voice-kind-spec.md) **idea** — Agents on the cluster need two voice capabilities that don't exist yet:
 - [`web-quest-editor`](./web-quest-editor.md) **idea** — Create/reprioritize the hierarchical quest tree from precis_web (with
 - [`windows-ci-residuals`](./windows-ci-residuals.md) **idea** — (1) Watch `tests/test_render_sandbox.py::test_no_output_is_reported` — a real
 

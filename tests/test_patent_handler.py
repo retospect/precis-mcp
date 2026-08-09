@@ -352,7 +352,7 @@ class TestSearchSourceKwarg:
     """``source=`` picks which leg(s) run.  ``'remote'`` also dedupes
     OPS hits against the local store so the agent sees only patents
     it hasn't fetched yet — the natural prior-art sweep mode.
-    See ``docs/user-facing/search-future-filters.md`` §7.
+    See ``docs/backlog/search-future-filters.md`` §7.
     """
 
     def test_source_invalid_raises(self, handler: PatentHandler) -> None:

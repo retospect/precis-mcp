@@ -188,13 +188,12 @@ The policy for *adding* a var (the three-tier scheme) is
 
 - **Seven verbs, one `kind=`**. The whole surface is
   `get`/`search`/`put`/`edit`/`delete`/`tag`/`link`. No per-kind
-  bespoke tools. See
-  [`docs/user-facing/seven-verb-surface-migration.md`](docs/user-facing/seven-verb-surface-migration.md).
+  bespoke tools.
 - **Content-anchored edits.** `edit(find=..., before=..., after=...)`
   resolves by literal content match; unique/first/all/nth policy;
   fuzzy nearest-line hint on not-found. Pure resolver in
   `precis.utils.edit_resolve`; ships for `markdown`, `plaintext`, and
-  `python`. See [`docs/user-facing/edit-protocol-spec.md`](docs/user-facing/edit-protocol-spec.md).
+  `python`.
 - **Hybrid search.** Lexical `tsvector` + semantic `pgvector` (bge-m3)
   with Reciprocal Rank Fusion. Block-level; paper chunks, markdown
   paragraphs, Perplexity answers, web pages all searchable.
@@ -248,13 +247,13 @@ The policy for *adding* a var (the three-tier scheme) is
 - **In-tree handlers, entry-point plugins.** Core kinds are
   hand-ordered in `precis.dispatch.boot()`. Third-party kinds can
   register themselves via the `precis.handlers` entry-point group
-  without forking — see
-  [`docs/user-facing/plugin-authoring.md`](docs/user-facing/plugin-authoring.md).
+  without forking — the contract lives in the `precis.dispatch`
+  docstrings; `src/precis_chem/` is the richest first-party example.
 
 ## Extending
 
-Write a plugin handler in 3 steps — see the one-pager at
-[`docs/user-facing/plugin-authoring.md`](docs/user-facing/plugin-authoring.md) and the
+Write a plugin handler in 3 steps — the contract is documented in the
+`precis.dispatch` docstrings (`_load_plugins`), with the
 canonical tiny example in
 [`src/precis/handlers/calc.py`](src/precis/handlers/calc.py).
 
@@ -342,7 +341,7 @@ high-traffic ones:
 
 - `book`, `rmk` file handlers. (`tex` and `docx` shipped.)
 - `web` bookmark mode + Wayback enrichment (gripe:3681 phase 2 + 4 — see [`docs/backlog/`](docs/backlog/README.md)).
-- `voice` kind — STT/TTS bound to transcript refs (see [`docs/user-facing/voice-kind-spec.md`](docs/user-facing/voice-kind-spec.md)).
+- `voice` kind — STT/TTS bound to transcript refs (spec: [`docs/backlog/voice-kind-spec.md`](docs/backlog/voice-kind-spec.md)).
 - SDK extraction (`precis-core`) once the plugin API has settled.
 
 ## Documentation
@@ -353,13 +352,6 @@ high-traffic ones:
 - [`docs/codebase.md`](docs/codebase.md) — orientation: invariants, lifecycle, seams, and the generated package map (subsystem detail lives in each package's `__init__.py` docstring).
 - [`docs/reference/schema.md`](docs/reference/schema.md) — the **generated** DB schema diagram (Mermaid ER, produced from the live database — can't drift).
 - [`docs/reference/config-variables.md`](docs/reference/config-variables.md) — the full `PRECIS_*` config catalog: every var, its default, the value deployed to each cluster service, and a correctness assessment.
-- [`docs/user-facing/plugin-authoring.md`](docs/user-facing/plugin-authoring.md) — write a third-party handler.
-- [`docs/user-facing/seven-verb-surface-migration.md`](docs/user-facing/seven-verb-surface-migration.md) — verb surface design rationale.
-- [`docs/user-facing/edit-protocol-spec.md`](docs/user-facing/edit-protocol-spec.md) — anchored edits across file kinds.
-- [`docs/user-facing/file-kinds-unified-addressing.md`](docs/user-facing/file-kinds-unified-addressing.md) — the `slug~SELECTOR` address grammar.
-- [`docs/user-facing/python-kind-spec.md`](docs/user-facing/python-kind-spec.md) — python navigator design.
-- [`docs/user-facing/patent-kind-spec.md`](docs/user-facing/patent-kind-spec.md) — EPO OPS integration.
-- [`docs/user-facing/paper_ingest.md`](docs/user-facing/paper_ingest.md) — `.acatome` bundle ingest path.
 - [`docs/reference/schema.md`](docs/reference/schema.md) — generated schema (full ER view: `schema-v2.svg`).
 - [`src/precis/data/skills/precis-citation-help.md`](src/precis/data/skills/precis-citation-help.md) — `citation` kind + verifier-workflow agent surface.
 - [`src/precis/data/skills/precis-toc-help.md`](src/precis/data/skills/precis-toc-help.md) — TOC machinery (segments, sentences, matryoshka keywords).

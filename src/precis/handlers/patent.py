@@ -1,6 +1,6 @@
 """``PatentHandler`` — read-only patent kind backed by EPO OPS.
 
-Phase 1 surface (deferred items in ``docs/user-facing/patent-kind-spec.md``):
+Phase 1 surface (deferred items: ``docs/backlog/patent-kind-followons.md``):
 
 - ``search(q=..., tags=..., scope=..., page_size=...)`` — merged local +
   remote OPS hits with ``[local]`` markers.
@@ -237,7 +237,7 @@ class PatentHandler(Handler):
         # filters out hits whose DOCDB id is already in the local
         # store, so the agent sees only patents it hasn't fetched yet
         # — the natural "prior-art sweep" mode. See
-        # ``docs/user-facing/search-future-filters.md`` §7.
+        # ``docs/backlog/search-future-filters.md`` §7.
         if source not in ("both", "local", "remote"):
             raise BadInput(
                 f"invalid source={source!r} - expected 'both', 'local', or 'remote'",
