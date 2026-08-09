@@ -1,0 +1,181 @@
+{# Now sub-tab fragment — GET /status/now, htmx-polled every 10s.
+
+   Centerpiece is the host activity strip: each worker process's CURRENT
+   pass (or idle), straight from host_heartbeat.meta.activity
+   (precis.workers.activity). Born of the 2026-08-09 fetch_oa
+   monopolization postmortem — a long, log-silent pass otherwise looks
+   identical to a dead worker short of `py-spy dump`. Below that, the
+   kind='job' STATUS lanes (running / queued / recent-terminal) and
+   active alerts round out "what is the cluster doing right now". #}
+
+{# ── summary strip ───────────────────────────────────────────── #}
+<div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+  <div class="rounded-lg border border-slate-200 bg-white p-4">
+    <div class="text-xs uppercase tracking-wide text-slate-400">Running</div>
+    <div class="mt-1 text-2xl font-semibold">{{ jobs.running_count }}</div>
+  </div>
+  <div class="rounded-lg border border-slate-200 bg-white p-4">
+    <div class="text-xs uppercase tracking-wide text-slate-400">Queued</div>
+    <div class="mt-1 text-2xl font-semibold">{{ jobs.queued_count }}</div>
+  </div>
+  <div class="rounded-lg border {% if jobs.stalled_count %}border-amber-300 bg-amber-50{% else %}border-slate-200 bg-white{% endif %} p-4">
+    <div class="text-xs uppercase tracking-wide text-slate-400">Stalled</div>
+    <div class="mt-1 text-2xl font-semibold {% if jobs.stalled_count %}text-amber-700{% endif %}">{{ jobs.stalled_count }}</div>
+  </div>
+  <div class="rounded-lg border {% if alerts.active %}border-rose-300 bg-rose-50{% else %}border-slate-200 bg-white{% endif %} p-4">
+    <div class="text-xs uppercase tracking-wide text-slate-400">Active alerts</div>
+    <div class="mt-1 text-2xl font-semibold {% if alerts.active %}text-rose-700{% endif %}">{{ alerts.active|length }}</div>
+  </div>
+</div>
+
+{# ── host activity — the centerpiece ─────────────────────────── #}
+<section class="mb-6">
+  <h2 class="text-sm font-semibold mb-2">Worker activity</h2>
+  {% if not now_hosts %}
+  <p class="text-xs text-slate-500 rounded-lg border border-slate-200 bg-white px-4 py-3">
+    No heartbeats yet.
+  </p>
+  {% else %}
+  <div class="flex flex-wrap gap-2">
+    {% for h in now_hosts %}
+    <div class="rounded-lg border {% if h.stale %}border-slate-200 bg-slate-50{% else %}border-emerald-200 bg-emerald-50{% endif %} px-3 py-2 text-xs min-w-[220px]">
+      <div class="flex items-center gap-2">
+        <span class="font-mono font-semibold text-slate-800">{{ h.host }}</span>
+        {% if h.stale %}<span class="text-slate-400">● stale</span>{% else %}<span class="text-emerald-700">● live</span>{% endif %}
+        <span class="text-slate-400">{{ h.ago }}</span>
+      </div>
+      {% if not h.processes %}
+      <div class="text-slate-400 mt-1">no activity reported</div>
+      {% else %}
+      <div class="mt-1 space-y-1">
+        {% for p in h.processes %}
+        <div class="rounded {% if p.idle %}bg-white/70 border border-slate-200{% else %}bg-sky-100 border border-sky-300{% endif %} px-1.5 py-1">
+          <div class="font-mono text-slate-700">{{ p.process }}</div>
+          {% if p.idle %}
+          <div class="text-slate-500">idle{% if p.last_pass %} · last <span class="font-mono">{{ p.last_pass }}</span> {{ p.finished_ago }}{% endif %}</div>
+          {% else %}
+          <div class="text-sky-800">
+            <span class="font-mono font-semibold">{{ p.pass_name }}</span>
+            <span class="text-sky-600">· running {{ '%.1f'|format(p.running_minutes) }}m</span>
+          </div>
+          {% if p.detail %}
+          <div class="text-slate-500 truncate" title="{{ p.detail }}">{{ p.detail }}</div>
+          {% endif %}
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+</section>
+
+{# ── running jobs ─────────────────────────────────────────────── #}
+<section class="mb-6">
+  <h2 class="text-sm font-semibold mb-2">Running jobs</h2>
+  {% if not jobs.running %}
+  <p class="text-xs text-slate-500 rounded-lg border border-slate-200 bg-white px-4 py-3">Nothing running.</p>
+  {% else %}
+  <div class="rounded-lg border border-slate-200 bg-white overflow-hidden">
+    <table class="w-full text-sm">
+      <tbody class="divide-y divide-slate-100">
+        {% for j in jobs.running %}
+        <tr class="hover:bg-slate-50 {% if j.lease_expired %}bg-rose-50{% endif %}">
+          <td class="px-4 py-2">
+            <a class="text-slate-700 hover:underline truncate" href="/refs/job/{{ j.ref_id }}">#{{ j.ref_id }} {{ j.title }}</a>
+          </td>
+          <td class="px-4 py-2 font-mono text-slate-500">{{ j.job_type or '—' }}</td>
+          <td class="px-4 py-2 text-slate-500">{{ j.lease_host or '—' }}</td>
+          <td class="px-4 py-2 {% if j.lease_expired %}text-rose-700 font-semibold{% else %}text-slate-500{% endif %}">
+            {% if j.lease_expired %}lease expired{% elif j.lease_until %}lease until {{ j.lease_until }}{% else %}no lease{% endif %}
+          </td>
+          <td class="px-4 py-2 text-right text-slate-400 tabular-nums">since {{ j.since_ago }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>
+
+{# ── queued jobs ──────────────────────────────────────────────── #}
+<section class="mb-6">
+  <h2 class="text-sm font-semibold mb-2">Queued jobs</h2>
+  {% if not jobs.queued %}
+  <p class="text-xs text-slate-500 rounded-lg border border-slate-200 bg-white px-4 py-3">Queue is empty.</p>
+  {% else %}
+  <div class="rounded-lg border border-slate-200 bg-white overflow-hidden">
+    <table class="w-full text-sm">
+      <tbody class="divide-y divide-slate-100">
+        {% for j in jobs.queued %}
+        <tr class="hover:bg-slate-50 {% if j.stalled %}bg-amber-50{% endif %}">
+          <td class="px-4 py-2">
+            <a class="text-slate-700 hover:underline truncate" href="/refs/job/{{ j.ref_id }}">#{{ j.ref_id }} {{ j.title }}</a>
+          </td>
+          <td class="px-4 py-2 font-mono text-slate-500">{{ j.job_type or '—' }}</td>
+          <td class="px-4 py-2 text-right {% if j.stalled %}text-amber-700 font-semibold{% else %}text-slate-400{% endif %} tabular-nums">
+            {% if j.stalled %}stalled · {% endif %}queued {{ j.age_ago }}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>
+
+{# ── recent terminal ──────────────────────────────────────────── #}
+<section class="mb-6">
+  <h2 class="text-sm font-semibold mb-2">Recent terminal
+    <span class="font-normal text-xs text-slate-400">(last {{ jobs.terminal|length }})</span>
+  </h2>
+  {% if not jobs.terminal %}
+  <p class="text-xs text-slate-500 rounded-lg border border-slate-200 bg-white px-4 py-3">No terminal jobs yet.</p>
+  {% else %}
+  <div class="rounded-lg border border-slate-200 bg-white overflow-hidden">
+    <table class="w-full text-sm">
+      <tbody class="divide-y divide-slate-100">
+        {% for j in jobs.terminal %}
+        <tr class="hover:bg-slate-50">
+          <td class="px-4 py-2">
+            <a class="text-slate-700 hover:underline truncate" href="/refs/job/{{ j.ref_id }}">#{{ j.ref_id }} {{ j.title }}</a>
+          </td>
+          <td class="px-4 py-2 font-mono {% if j.status == 'failed' %}text-rose-700{% elif j.status == 'cancelled' %}text-slate-500{% else %}text-emerald-700{% endif %}">{{ j.status }}</td>
+          <td class="px-4 py-2 text-right text-slate-400 tabular-nums">{{ j.when_ago }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>
+
+{# ── alerts ───────────────────────────────────────────────────── #}
+<section>
+  <h2 class="text-sm font-semibold mb-2">Alerts</h2>
+  {% if not alerts.active and not alerts.recent %}
+  <div class="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700">
+    <span class="inline-block w-2 h-2 rounded-full mr-1 align-middle bg-emerald-500"></span>
+    No alerts.
+  </div>
+  {% else %}
+  <ul class="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100">
+    {% for a in alerts.active %}
+    <li class="px-4 py-2 text-xs flex items-center gap-2 bg-rose-50">
+      <span class="inline-block w-2 h-2 rounded-full bg-rose-500"></span>
+      <a class="text-slate-700 hover:underline truncate" href="/refs/alert/{{ a.ref_id }}">#{{ a.ref_id }} {{ a.title }}</a>
+      <span class="ml-auto text-slate-400">{{ a.when }}</span>
+    </li>
+    {% endfor %}
+    {% for a in alerts.recent %}
+    <li class="px-4 py-2 text-xs flex items-center gap-2 text-slate-400">
+      <span class="inline-block w-2 h-2 rounded-full bg-slate-300"></span>
+      <a class="text-slate-500 hover:underline truncate" href="/refs/alert/{{ a.ref_id }}">#{{ a.ref_id }} {{ a.title }}</a>
+      <span class="ml-auto">resolved {{ a.when }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</section>

@@ -239,3 +239,53 @@ def test_run_loop_no_gate_runs_everything() -> None:
         ref_passes=[_alpha_pass, _beta_pass],
     )
     assert calls == ["alpha", "beta"]
+
+
+def test_run_loop_stamps_activity_around_each_ref_pass(monkeypatch) -> None:
+    """``run_loop`` wraps each ref-pass call with
+    ``activity.set_pass``/``activity.clear`` (precis.workers.activity) — a
+    long, log-silent pass is otherwise indistinguishable from a dead
+    worker (the 2026-08-09 fetch_oa monopolization)."""
+    from precis.workers import activity
+
+    monkeypatch.setattr(activity, "_state", {})
+    seen_mid_pass: dict[str, object] = {}
+
+    def _alpha_pass(batch_size: int) -> BatchResult:
+        # Snapshot activity state WHILE the pass is "running" — this is
+        # exactly what the heartbeat thread reads concurrently in prod.
+        seen_mid_pass.update(activity.snapshot())
+        return BatchResult("alpha", 0, 0, 0)
+
+    run_loop(
+        handlers=[],
+        store=None,  # type: ignore[arg-type]
+        once=True,
+        ref_passes=[_alpha_pass],
+    )
+
+    assert seen_mid_pass.get("pass") == "_alpha_pass"
+    # cleared after the pass returns.
+    assert activity.snapshot().get("idle") is True
+    assert activity.snapshot().get("last_pass") == "_alpha_pass"
+
+
+def test_run_loop_clears_activity_even_when_a_pass_raises(monkeypatch) -> None:
+    """A raising ref-pass must still clear activity (the ``finally``) — a
+    poison pass must not leave a stale "running" stamp forever."""
+    from precis.workers import activity
+
+    monkeypatch.setattr(activity, "_state", {})
+
+    def _boom_pass(batch_size: int) -> BatchResult:
+        raise RuntimeError("boom")
+
+    run_loop(
+        handlers=[],
+        store=None,  # type: ignore[arg-type]
+        once=True,
+        ref_passes=[_boom_pass],
+    )
+
+    assert activity.snapshot().get("idle") is True
+    assert activity.snapshot().get("last_pass") == "_boom_pass"

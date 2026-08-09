@@ -35,12 +35,16 @@ Drive replaced (``/items``, ``/papers``, ``/drafts``, ``/papers-needed``,
 ``/refs/{oracle,patent}``, ``/cfp``) 307-redirects to a Drive preset;
 per-kind *detail* readers are untouched. ``/`` redirects to ``/drive``.
 
-**System (`/status?tab=health|services|models|budget`)** —
+**System (`/status?tab=health|services|models|budget|now`)** —
 ``routes/status.py::index`` dispatches on ``tab=``: health strip, the old
 ``/factory`` service tables + per-tier chain editor (ADR 0066), the ``llm``
-catalog cards + live-routing header, and the budget cap/pause controls.
-``/factory`` and ``/budget`` GETs redirect into their sub-tab; their POST
-write routes are unchanged.
+catalog cards + live-routing header, the budget cap/pause controls, and
+**Now** — a live view (htmx-polled fragment, ``GET /status/now``) of what
+each worker process is doing this instant (``precis.workers.activity`` via
+``host_heartbeat.meta.activity``) alongside the ``kind='job'`` running /
+queued / recent-terminal lanes and active alerts. ``/factory`` and
+``/budget`` GETs redirect into their sub-tab; their POST write routes are
+unchanged.
 
 **Gripes workbench (`/gripes`)** — ``routes/gripes.py``: list grouped by
 ``STATUS`` (closed vocab ``open → triaged → ready_for_fix → in_review →

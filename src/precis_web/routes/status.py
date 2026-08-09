@@ -20,9 +20,12 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
 from precis import health_checks
+from precis.alerts import STATE_OPEN, STATE_RESOLVED
+from precis.workers.executors._common import QUEUED, RUNNING, STATUS_NAMESPACE, TERMINAL
 from precis.workers.registry import SERVICES, ServiceKind
 from precis.workers.service_config import ALL_HOSTS, DEFAULT_PRIO
 from precis_web.deps import get_store, get_web_config, templates
+from precis_web.routes.alerts import _rows as _alert_rows
 from precis_web.routes.factory import _ALL, _CATEGORY_ORDER
 from precis_web.routes.factory import _activity as _factory_activity
 from precis_web.routes.factory import _config_rows as _factory_config_rows
@@ -49,7 +52,7 @@ router = APIRouter(prefix="/status", tags=["status"])
 #: fast as each formerly-standalone route. `/factory` and `/budget`
 #: now just redirect here (their POST endpoints stay mounted at their
 #: original paths — only the write path's redirect target moved).
-_TABS = ("health", "services", "budget", "models")
+_TABS = ("health", "services", "budget", "models", "now")
 
 log = logging.getLogger(__name__)
 
@@ -668,6 +671,226 @@ def _liveness(store: Any) -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+# ── Now sub-tab: live worker activity + job lanes + alerts ─────────
+#
+# Answers "what is the cluster doing THIS INSTANT" — the 2026-08-09
+# fetch_oa monopolization postmortem (a long, log-silent pass that looked
+# indistinguishable from a dead worker short of ``py-spy dump``) is what
+# this exists to make visible without SSH. See ``precis.workers.activity``
+# for the write side.
+
+#: A queued ``kind='job'`` older than this is flagged stalled — long
+#: enough to ride out a normal claim-queue depth, short enough to catch a
+#: dispatch problem before an operator would otherwise notice.
+_STALLED_QUEUE_AFTER_S = 900  # 15 min
+
+#: How many recently-resolved alerts the Now tab shows, dimmed, below the
+#: active ones (mirrors ``/alerts``'s own history-tail sizing intent, just
+#: much shorter — this is a glance, not a browse).
+_NOW_RECENT_ALERTS_LIMIT = 10
+
+#: How many terminal (succeeded/failed/cancelled) jobs the Now tab shows.
+_NOW_RECENT_TERMINAL_LIMIT = 20
+
+
+def _now_hosts(store: Any) -> list[dict[str, Any]]:
+    """Per-host live activity: each process's current pass (or idle),
+    straight from ``host_heartbeat.meta.activity`` — the centerpiece of
+    the Now tab. A host with no ``activity`` key yet (pre-first-pass, or
+    a heartbeat-only reporter) still renders with an empty process list.
+    """
+    with _connect(store) as conn:
+        rows = conn.execute(
+            "SELECT host, ts, load1, meta FROM host_heartbeat ORDER BY host"
+        ).fetchall()
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        age = _age_seconds(r[1])
+        meta = r[3] or {}
+        activity: dict[str, Any] = meta.get("activity") or {}
+        processes: list[dict[str, Any]] = []
+        for process, state in sorted(activity.items()):
+            state = state or {}
+            if state.get("idle"):
+                processes.append(
+                    {
+                        "process": process,
+                        "idle": True,
+                        "last_pass": state.get("last_pass"),
+                        "finished_ago": _ago(state.get("finished")),
+                    }
+                )
+            else:
+                processes.append(
+                    {
+                        "process": process,
+                        "idle": False,
+                        "pass_name": state.get("pass"),
+                        "running_ago": _ago(state.get("since")),
+                        "running_minutes": (_age_seconds(state.get("since")) or 0.0)
+                        / 60.0,
+                        "detail": state.get("detail"),
+                    }
+                )
+        out.append(
+            {
+                "host": r[0],
+                "ago": _ago(r[1]),
+                "stale": age is None or age > _STALE_AFTER_S,
+                "load1": float(r[2]) if r[2] is not None else None,
+                "processes": processes,
+            }
+        )
+    return out
+
+
+def _now_jobs(store: Any) -> dict[str, Any]:
+    """Job STATUS-lane snapshot: running (with lease countdown), queued
+    (flagging stalled), and the last N terminal transitions.
+
+    ``kind='job'`` rows carry at most one ``STATUS:`` tag at a time
+    (``executors._common.set_status`` replaces the prefix, never
+    appends), so the join below returns each job's current status plus
+    exactly when it was set (``ref_tags.created_at`` — the STATUS-tag
+    timestamp).
+    """
+    with _connect(store) as conn:
+        running_rows = conn.execute(
+            """
+            SELECT r.ref_id, r.title, r.meta, rt.created_at
+              FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE r.kind = 'job' AND r.deleted_at IS NULL
+               AND t.namespace = %s AND t.value = %s
+             ORDER BY rt.created_at DESC
+            """,
+            (STATUS_NAMESPACE, RUNNING),
+        ).fetchall()
+        queued_rows = conn.execute(
+            """
+            SELECT r.ref_id, r.title, r.meta, r.created_at
+              FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE r.kind = 'job' AND r.deleted_at IS NULL
+               AND t.namespace = %s AND t.value = %s
+             ORDER BY r.created_at ASC
+            """,
+            (STATUS_NAMESPACE, QUEUED),
+        ).fetchall()
+        terminal_rows = conn.execute(
+            """
+            SELECT r.ref_id, r.title, t.value, rt.created_at
+              FROM refs r
+              JOIN ref_tags rt ON rt.ref_id = r.ref_id
+              JOIN tags t ON t.tag_id = rt.tag_id
+             WHERE r.kind = 'job' AND r.deleted_at IS NULL
+               AND t.namespace = %s AND t.value = ANY(%s)
+             ORDER BY rt.created_at DESC
+             LIMIT %s
+            """,
+            (STATUS_NAMESPACE, list(TERMINAL), _NOW_RECENT_TERMINAL_LIMIT),
+        ).fetchall()
+
+    running: list[dict[str, Any]] = []
+    for ref_id, title, meta, since in running_rows:
+        meta = meta or {}
+        lease_until = meta.get("lease_until")
+        lease_age = _age_seconds(lease_until) if lease_until else None
+        running.append(
+            {
+                "ref_id": int(ref_id),
+                "title": title,
+                "job_type": meta.get("job_type"),
+                "lease_host": meta.get("lease_host"),
+                "lease_until": lease_until,
+                "lease_expired": lease_age is not None and lease_age > 0,
+                "since_ago": _ago(since),
+            }
+        )
+
+    queued: list[dict[str, Any]] = []
+    for ref_id, title, meta, created_at in queued_rows:
+        meta = meta or {}
+        age = _age_seconds(created_at)
+        queued.append(
+            {
+                "ref_id": int(ref_id),
+                "title": title,
+                "job_type": meta.get("job_type"),
+                "age_ago": _ago(created_at),
+                "stalled": age is not None and age > _STALLED_QUEUE_AFTER_S,
+            }
+        )
+
+    terminal = [
+        {
+            "ref_id": int(ref_id),
+            "title": title,
+            "status": status,
+            "when_ago": _ago(when),
+        }
+        for ref_id, title, status, when in terminal_rows
+    ]
+
+    return {
+        "running": running,
+        "queued": queued,
+        "terminal": terminal,
+        "running_count": len(running),
+        "queued_count": len(queued),
+        "stalled_count": sum(1 for q in queued if q["stalled"]),
+    }
+
+
+def _now_alerts(store: Any) -> dict[str, Any]:
+    """Active alerts first, then a short dimmed tail of recently-resolved
+    ones — reuses ``/alerts``'s own row-shaping helper (:func:`_alert_rows`)
+    so the two views can never drift on what "open" means."""
+    active = [
+        {
+            "ref_id": a["ref_id"],
+            "title": a["title"],
+            "state": "active",
+            "when": a["last_seen"],
+        }
+        for a in _alert_rows(store, state_tag=STATE_OPEN, limit=None)
+    ]
+    recent = [
+        {
+            "ref_id": a["ref_id"],
+            "title": a["title"],
+            "state": "resolved",
+            "when": a["last_seen"],
+        }
+        for a in _alert_rows(
+            store, state_tag=STATE_RESOLVED, limit=_NOW_RECENT_ALERTS_LIMIT
+        )
+    ]
+    return {"active": active, "recent": recent}
+
+
+def _now_ctx(store: Any) -> dict[str, Any]:
+    """Assemble the Now tab's fragment context — each section degrades to
+    empty on its own query failure (:func:`_safe`), same as every other
+    sub-tab."""
+    jobs = _safe(lambda: _now_jobs(store)) or {
+        "running": [],
+        "queued": [],
+        "terminal": [],
+        "running_count": 0,
+        "queued_count": 0,
+        "stalled_count": 0,
+    }
+    alerts = _safe(lambda: _now_alerts(store)) or {"active": [], "recent": []}
+    return {
+        "now_hosts": _safe(lambda: _now_hosts(store)) or [],
+        "jobs": jobs,
+        "alerts": alerts,
+    }
 
 
 #: A single (ref_id, source) above this many ref_events in 24h is a
@@ -1469,6 +1692,12 @@ async def index(
         ctx.update(_services_ctx(store, host))
     elif tab == "models":
         ctx.update(_models_ctx(store))
+    elif tab == "now":
+        # No section query on the initial page load — the template's pane
+        # is a bare htmx shell (same lazy-fragment shape as ``backlog``
+        # below), so this route stays cheap regardless of which sub-tab a
+        # deep link lands on.
+        pass
     else:
         ctx.update(_budget_ctx(store))
     return templates.TemplateResponse(request, "status.html.j2", ctx)
@@ -1490,3 +1719,21 @@ async def backlog_fragment(request: Request) -> HTMLResponse:
         "_status_backlog.html.j2",
         {"backlog": _safe(lambda: _backlog_counts(store)) or {}},
     )
+
+
+@router.get("/now", response_class=HTMLResponse)
+async def now_fragment(request: Request) -> HTMLResponse:
+    """Live worker-activity + job-lane + alert snapshot (htmx fragment).
+
+    Polled every 10s by the Now sub-tab's pane (``hx-trigger="load, every
+    10s"``) — see :func:`_now_ctx` for the assembled sections and the
+    module docstring's "Now" note for why this exists.
+    """
+    store = get_store(request)
+    with store.pool.connection() as conn:
+        token = _request_conn.set(conn)
+        try:
+            ctx = _now_ctx(store)
+        finally:
+            _request_conn.reset(token)
+    return templates.TemplateResponse(request, "_status_now.html.j2", ctx)

@@ -106,6 +106,7 @@ from precis.alerts import raise_alert as _raise_alert
 from precis.alerts import resolve_stale_alerts as _resolve_alerts
 from precis.ingest.fetch_sidecar import read_sidecar, sidecar_path, write_sidecar
 from precis.store._stub_predicate import stub_predicate_sql
+from precis.workers import activity
 
 log = logging.getLogger(__name__)
 
@@ -1624,7 +1625,13 @@ def run_oa_fetch_pass(
 
     ok = 0
     failed = 0
-    for stub in stubs:
+    total = len(stubs)
+    for i, stub in enumerate(stubs, start=1):
+        # gr191337-style monopolization is exactly what this pass is prone
+        # to (up to ~11 network legs per stub, each capped at
+        # ``_DOWNLOAD_TIMEOUT_S``) — a per-stub progress stamp is the whole
+        # point of ``precis.workers.activity`` (see its module docstring).
+        activity.note(f"stub {i}/{total} ref_id={stub.ref_id} doi={stub.doi or '-'}")
         try:
             # Retraction gate — cheapest possible check, ahead of every
             # other leg (including the markup-first pass): a retracted

@@ -3892,6 +3892,31 @@ def test_status_health_tab_renders_with_no_reserve_or_errors(client) -> None:
     assert "Machines" in resp.text
 
 
+def test_status_now_tab_renders_lazy_shell(client) -> None:
+    """``?tab=now`` renders the sub-tab nav + an htmx shell — the real
+    content is a lazy-loaded fragment (``GET /status/now``), same pattern
+    as the Health tab's backlog panel."""
+    resp = client.get("/status?tab=now")
+    assert resp.status_code == 200
+    assert 'href="/status?tab=now"' in resp.text
+    assert 'hx-get="/status/now"' in resp.text
+    assert "every 10s" in resp.text
+
+
+def test_status_now_fragment_renders_empty_state(client) -> None:
+    """``GET /status/now`` returns 200 with every section's empty state
+    under the fake store (no real Postgres — see ``test_status_now.py``
+    for the SQL-shape tests)."""
+    resp = client.get("/status/now")
+    assert resp.status_code == 200
+    assert "Worker activity" in resp.text
+    assert "Running jobs" in resp.text
+    assert "Queued jobs" in resp.text
+    assert "Recent terminal" in resp.text
+    assert "Alerts" in resp.text
+    assert "No alerts." in resp.text
+
+
 def test_status_budget_tab_renders_tote_and_caps(client) -> None:
     """``?tab=budget`` renders the retired Budget page's content."""
     resp = client.get("/status?tab=budget")

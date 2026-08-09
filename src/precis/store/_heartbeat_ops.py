@@ -85,16 +85,23 @@ class HeartbeatMixin:
 
         Re-running for the same ``host`` overwrites the previous row
         (latest-snapshot semantics) and bumps ``ts`` so staleness is
-        always measured from the most recent report — EXCEPT
-        ``meta.boot_ids`` (the worker boot epoch),
-        which is nested-merged instead of replaced: a host can run more
-        than one worker process (melchior runs both ``system`` and
-        ``agent``), each advertising its own boot_id under the SAME
-        ``host_heartbeat`` row (PK is ``host``, not ``(host, process)``),
-        so a full ``meta`` replace by process A's beat would silently wipe
-        process B's last-advertised boot_id. Merging old + new
-        ``boot_ids`` (new entry wins per-process key) keeps every live
-        process's generation visible regardless of write order.
+        always measured from the most recent report — EXCEPT two keys
+        that are nested-merged instead of replaced, because a host can run
+        more than one worker process (melchior runs both ``system`` and
+        ``agent``), each advertising its own per-process entry under the
+        SAME ``host_heartbeat`` row (PK is ``host``, not ``(host,
+        process)``), so a full ``meta`` replace by process A's beat would
+        silently wipe process B's entry:
+
+        - ``meta.boot_ids`` (§H boot epoch, compute-lane-lease-epoch.md) —
+          each process's minted boot_id.
+        - ``meta.activity`` (:mod:`precis.workers.activity`) — each
+          process's live pass/idle snapshot, published by the ``Now``
+          Status sub-tab.
+
+        Both merge new-wins-per-process-key (old ∪ new, new overrides on a
+        shared key), keeping every live process's own entry visible
+        regardless of write order.
         """
         sql = (
             "INSERT INTO host_heartbeat "
@@ -106,7 +113,10 @@ class HeartbeatMixin:
             "meta = EXCLUDED.meta || jsonb_build_object("
             "  'boot_ids',"
             "  COALESCE(host_heartbeat.meta->'boot_ids', '{}'::jsonb)"
-            "    || COALESCE(EXCLUDED.meta->'boot_ids', '{}'::jsonb)"
+            "    || COALESCE(EXCLUDED.meta->'boot_ids', '{}'::jsonb),"
+            "  'activity',"
+            "  COALESCE(host_heartbeat.meta->'activity', '{}'::jsonb)"
+            "    || COALESCE(EXCLUDED.meta->'activity', '{}'::jsonb)"
             ")"
         )
         params = (

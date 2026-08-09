@@ -6,6 +6,7 @@ in-process timestamp, honoring ``PRECIS_HEARTBEAT_INTERVAL_SECONDS``.
 
 from __future__ import annotations
 
+from precis.workers import activity
 from precis.workers import heartbeat as hb
 
 
@@ -135,3 +136,64 @@ def test_mint_boot_id_no_warning_with_process_set(monkeypatch, caplog) -> None:
         rec for rec in caplog.records if "epoch reclaim disabled" in rec.getMessage()
     ]
     assert warnings == []
+
+
+# ── Live activity publishing (precis.workers.activity) ──────────────
+
+
+def _reset_activity(monkeypatch) -> None:
+    monkeypatch.setattr(activity, "_state", {})
+
+
+def test_beat_publishes_active_pass_under_own_process(store, monkeypatch) -> None:
+    """A beat fired while a pass is active stamps
+    ``host_heartbeat.meta.activity[<process>]`` with that pass's snapshot."""
+    _reset_throttle(monkeypatch)
+    _reset_activity(monkeypatch)
+    monkeypatch.setenv("PRECIS_PROCESS", "precis-worker")
+    activity.set_pass("fetch_oa")
+    activity.note("stub 3/10")
+
+    hb.run_heartbeat_pass(store, host="test-host-activity-1")
+
+    rows = {row.host: row for row in store.recent_heartbeats()}
+    published = rows["test-host-activity-1"].meta["activity"]["precis-worker"]
+    assert published["pass"] == "fetch_oa"
+    assert published["detail"] == "stub 3/10"
+
+
+def test_beat_omits_activity_key_when_snapshot_is_empty(store, monkeypatch) -> None:
+    """Pre-first-pass (empty ``activity.snapshot()``), the beat must not
+    write an ``activity`` key at all — avoids writing noise."""
+    _reset_throttle(monkeypatch)
+    _reset_activity(monkeypatch)
+    monkeypatch.setenv("PRECIS_PROCESS", "precis-worker")
+    assert activity.snapshot() == {}
+
+    hb.run_heartbeat_pass(store, host="test-host-activity-2")
+
+    rows = {row.host: row for row in store.recent_heartbeats()}
+    assert "activity" not in rows["test-host-activity-2"].meta
+
+
+def test_activity_merges_across_two_processes_on_one_host(store, monkeypatch) -> None:
+    """Same multi-process concern as boot_ids: melchior running both
+    ``system`` and ``agent`` must not have one process's beat wipe the
+    other's last-published activity."""
+    _reset_throttle(monkeypatch)
+    _reset_activity(monkeypatch)
+
+    monkeypatch.setenv("PRECIS_PROCESS", "precis-worker")
+    activity.set_pass("chase")
+    hb.run_heartbeat_pass(store, host="test-host-activity-3")
+
+    _reset_throttle(monkeypatch)
+    monkeypatch.setenv("PRECIS_PROCESS", "precis-worker-agent")
+    monkeypatch.setattr(activity, "_state", {})
+    activity.set_pass("job_claude_inproc")
+    hb.run_heartbeat_pass(store, host="test-host-activity-3")
+
+    rows = {row.host: row for row in store.recent_heartbeats()}
+    published = rows["test-host-activity-3"].meta["activity"]
+    assert published["precis-worker"]["pass"] == "chase"
+    assert published["precis-worker-agent"]["pass"] == "job_claude_inproc"

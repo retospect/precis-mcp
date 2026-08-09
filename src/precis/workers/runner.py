@@ -28,6 +28,7 @@ from dataclasses import dataclass
 
 from precis.embedder import EmbedderUnavailable
 from precis.store import Store
+from precis.workers import activity
 from precis.workers.base import WorkerHandler
 
 log = logging.getLogger(__name__)
@@ -237,11 +238,14 @@ def run_loop(
                     # this cycle; not counted as work so the loop can
                     # still idle-sleep when everything else is drained.
                     continue
+            activity.set_pass(ref_pass.__name__)
             try:
                 result = ref_pass(batch_size)
             except Exception:
                 log.exception("worker: ref-pass raised; continuing")
                 continue
+            finally:
+                activity.clear()
             log.info(
                 "worker: %s claimed=%d ok=%d failed=%d",
                 result.handler,

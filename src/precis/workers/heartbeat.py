@@ -57,6 +57,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from precis.store import Store
 
+from precis.workers import activity
 from precis.workers.runner import BatchResult
 
 log = logging.getLogger(__name__)
@@ -529,6 +530,17 @@ def _collect_and_upsert(
     # (never clobbered) with any other process's entry on the same host row
     # by record_heartbeat's nested-merge SQL — see _heartbeat_ops.py.
     meta.update(_own_boot_ids_meta())
+    # Live activity (2026-08-09 fetch_oa monopolization postmortem): this
+    # process's own {process: snapshot} entry, keyed by the SAME
+    # PRECIS_PROCESS source _own_boot_ids_meta uses above — so a host
+    # running more than one profile (melchior: system + agent) nested-
+    # merges per-process, same as boot_ids (see record_heartbeat's UPSERT).
+    # Skipped entirely pre-first-pass (empty snapshot) to avoid writing
+    # noise, and when there's no process name to key it under.
+    activity_snapshot = activity.snapshot()
+    process = _resolve_process_name_for_boot()
+    if activity_snapshot and process:
+        meta["activity"] = {process: activity_snapshot}
 
     store.record_heartbeat(
         host,

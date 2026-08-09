@@ -53,6 +53,13 @@ can't flap a false host-dark alert; the in-rotation ``heartbeat`` pass
 stays as an idempotent backstop, deliberately NOT lease-based — it is the
 liveness signal the lease machinery is judged by).
 
+``run_loop`` also stamps :mod:`.activity` around each ref-pass call
+(``set_pass`` before, ``clear`` in a ``finally``) — a long, log-silent pass
+(the 2026-08-09 ``fetch_oa`` monopolization) otherwise looks identical to a
+dead worker from the outside. ``heartbeat.py`` publishes the snapshot into
+``host_heartbeat.meta.activity``; the web Status page's **Now** sub-tab
+renders it.
+
 Profiles + service registry
 ---------------------------
 ``--profile system`` (every node) / ``agent`` (the OAuth + MCP-config
