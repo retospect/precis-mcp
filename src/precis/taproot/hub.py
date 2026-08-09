@@ -16,6 +16,12 @@ Four functions:
 2. :func:`attach_evidence` — write one ``paper --role--> hub`` edge, ``role``
    in :data:`HUB_ROLES`, guarding the target is actually a claim hub and the
    source is a paper/patent ref (:data:`_EVIDENCE_SRC_KINDS` backstop).
+   Also the single choke point for the deterministic prophetic-example
+   caveat (patent-evidence-parity phase 4): a patent source whose grounding
+   chunk carries ``PATENT_EXAMPLE:prophetic`` (``data/axes/
+   patent_example.yaml``) gets :data:`PROPHETIC_EXAMPLE_CAVEAT` appended to
+   ``meta.caveats`` here, mechanically — never via the verify LLM prompt,
+   which is unchanged.
 3. :func:`apply_placement` — bridge a :class:`~precis.taproot.canon.Placement`
    (the canonicalizer's verdict) to the writes above; a ``needs_review``
    placement files a ``kind='todo'`` (via an injected ``todo_fn``) and never
@@ -166,6 +172,45 @@ def _grounding_chunk_ord(
             (paper_ref_id, candidate),
         ).fetchone()
     return candidate if row is not None else None
+
+
+#: The chunk-classifier axis (``data/axes/patent_example.yaml``) that tags a
+#: patent description paragraph ``worked`` / ``prophetic`` / ``none`` — see
+#: that file's header for the US tense-of-performance convention.
+_PATENT_EXAMPLE_NS = "PATENT_EXAMPLE"
+_PATENT_EXAMPLE_PROPHETIC = "prophetic"
+
+#: Fixed, deterministic caveat text appended to an evidence edge whose
+#: grounding chunk is a patent paragraph the ``patent_example`` axis tagged
+#: ``prophetic`` (patent-evidence-parity phase 4, docs/backlog/patent-
+#: evidence-parity.md). Mechanical injection only — this never touches the
+#: taproot verify LLM prompt; an unclassified chunk (axis hasn't run yet)
+#: or a ``worked``/``none`` tag gets no caveat at all.
+PROPHETIC_EXAMPLE_CAVEAT = (
+    "prophetic example (proposed, not performed) — corroborates at best"
+)
+
+
+def _prophetic_caveat(c: Any, *, ref_id: int, ord_: int | None) -> str | None:
+    """:data:`PROPHETIC_EXAMPLE_CAVEAT` iff the grounding chunk
+    ``(ref_id, ord_)`` carries ``PATENT_EXAMPLE:prophetic`` — else ``None``.
+
+    Reads ``chunk_tags`` directly (not ``v_chunk_tags_all``): the axis is
+    chunk-level, so only the chunk's own tag counts, never an inherited
+    ref-level tag. ``ord_ is None`` (a ref-level edge — no grounding chunk
+    was resolved) always yields ``None``; there is no "the chunk" to check.
+    """
+    if ord_ is None:
+        return None
+    row = c.execute(
+        "SELECT 1 FROM chunk_tags ct "
+        "JOIN tags t ON t.tag_id = ct.tag_id "
+        "JOIN chunks ch ON ch.chunk_id = ct.chunk_id "
+        "WHERE ch.ref_id = %s AND ch.ord = %s "
+        "AND t.namespace = %s AND t.value = %s",
+        (ref_id, ord_, _PATENT_EXAMPLE_NS, _PATENT_EXAMPLE_PROPHETIC),
+    ).fetchone()
+    return PROPHETIC_EXAMPLE_CAVEAT if row is not None else None
 
 
 def _is_claim_hub(store: Any, ref_id: int, *, conn: Any) -> bool:
@@ -549,12 +594,29 @@ def attach_evidence(
         # edge is pc<id>-granular. Falls back to a ref-level (pa<id>) edge
         # when no chunk was named or it can't be resolved to this paper.
         src_pos = _grounding_chunk_ord(store, paper_ref_id=paper_ref_id, meta=meta)
+        # Deterministic prophetic-example caveat (patent-evidence-parity
+        # phase 4): a patent source whose grounding chunk the
+        # ``patent_example`` axis tagged ``prophetic`` gets the fixed
+        # caveat appended here, mechanically — never via the verify LLM.
+        # This is the single choke point every evidence-edge write
+        # (``workers/chase.py``'s forward bridge AND intermediate-hop
+        # attach, ``workers/hub_refine.py``'s discovery attach) funnels
+        # through, so it's checked once, here, rather than at each caller.
+        edge_meta = meta
+        if src.kind == "patent":
+            caveat = _prophetic_caveat(c, ref_id=paper_ref_id, ord_=src_pos)
+            if caveat is not None:
+                edge_meta = dict(meta or {})
+                caveats = list(edge_meta.get("caveats") or [])
+                if caveat not in caveats:
+                    caveats.append(caveat)
+                edge_meta["caveats"] = caveats
         store.add_link(
             src_ref_id=paper_ref_id,
             src_pos=src_pos,
             dst_ref_id=hub_ref_id,
             relation=validated,
-            meta=meta,
+            meta=edge_meta,
             set_by=set_by,
             conn=c,
         )

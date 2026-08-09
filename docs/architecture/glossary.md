@@ -139,6 +139,13 @@
   `claims`-section blocks with `claim_number` meta). World-claims ground in
   patent *description* blocks, never legal-claim blocks.
   → `src/precis/workers/hub_refine.py`
+- **worked vs prophetic example** — patent-example evidentiary weight (US
+  convention, tense-of-performance test): a *worked* example narrates an
+  experiment in past tense as actually performed; a *prophetic* example
+  describes it in present/future/modal voice as merely doable. Chunk-level
+  classifier axis (`worked`/`prophetic`/`none`); a prophetic supporting
+  block earns a fixed evidence-edge caveat ("corroborates at best"), never
+  a hard exclusion. → `src/precis/data/axes/patent_example.yaml`
 - **patent family / family representative** — family identity is authoritative
   (DOCDB family ID from EPO OPS), so no hub node: `family_id` in ref meta, a
   deterministic *representative* (earliest-published ingested member), siblings

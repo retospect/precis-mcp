@@ -75,6 +75,57 @@ def test_apply_fisheye_noop_on_empty_corpus(store: Store) -> None:
     assert _apply_fisheye("D", store) == "D"
 
 
+def test_apply_fisheye_skips_family_stub_patents(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A family-stub patent (biblio-only, no body chunks) is not drawn into
+    the fisheye — it would waste the dream's one patent slot on a
+    near-empty summary. A non-stub patent still is."""
+    monkeypatch.delenv("PRECIS_DREAM_FISHEYE", raising=False)
+    store.insert_ref(
+        kind="patent",
+        slug="stubpat",
+        title="A Stub Family Patent",
+        meta={"family_stub": True},
+    )
+    store.insert_ref(
+        kind="patent",
+        slug="realpat",
+        title="A Real Patent",
+        meta={},
+    )
+
+    out = _apply_fisheye("DREAM DIRECTIVE", store)
+    assert "A Real Patent" in out
+    assert "A Stub Family Patent" not in out
+
+
+def test_apply_fisheye_degrades_gracefully_when_only_stubs_exist(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When every recent patent is a family stub, the draw simply comes up
+    short on patents (no crash, no spurious near-empty entry)."""
+    monkeypatch.delenv("PRECIS_DREAM_FISHEYE", raising=False)
+    store.insert_ref(
+        kind="patent",
+        slug="stubpat1",
+        title="Stub Patent One",
+        meta={"family_stub": True},
+    )
+    store.insert_ref(
+        kind="patent",
+        slug="stubpat2",
+        title="Stub Patent Two",
+        meta={"family_stub": True},
+    )
+    store.insert_ref(kind="memory", slug=None, title="a recent dreamable note")
+
+    out = _apply_fisheye("DREAM DIRECTIVE", store)
+    assert "Stub Patent One" not in out
+    assert "Stub Patent Two" not in out
+    assert "a recent dreamable note" in out
+
+
 def test_apply_quest_anchor_injects_block_naming_active_quest(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

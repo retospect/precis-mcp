@@ -20,13 +20,14 @@ from precis.identity import make_pub_id, make_taproot_hub_paper_id
 from precis.store.types import Tag
 from precis.taproot.canon import CanonicalClaim, Placement
 from precis.taproot.hub import (
+    PROPHETIC_EXAMPLE_CAVEAT,
     apply_placement,
     attach_evidence,
     link_claims,
     mint_hub,
     refine_claim_sentence,
 )
-from tests.workers._helpers import seed_ref
+from tests.workers._helpers import seed_chunk, seed_ref
 
 _PUB_ID_RE = re.compile(r"^[a-z2-7]{6}$")
 
@@ -63,6 +64,16 @@ def _edge(store: Any, src: int, dst: int) -> str | None:
             (src, dst),
         ).fetchone()
     return row[0] if row else None
+
+
+def _link_meta(store: Any, src: int, dst: int) -> dict[str, Any]:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta FROM links WHERE src_ref_id = %s AND dst_ref_id = %s",
+            (src, dst),
+        ).fetchone()
+    assert row is not None
+    return dict(row[0] or {})
 
 
 def _pub_id(store: Any, ref_id: int) -> str | None:
@@ -402,6 +413,116 @@ def test_attach_evidence_rejects_non_claim_target(store: Any) -> None:
     # A non-finding ref is never a hub.
     with pytest.raises(BadInput):
         attach_evidence(store, hub_ref_id=paper, paper_ref_id=paper, role="establishes")
+
+
+# ── attach_evidence — deterministic prophetic-example caveat ───────────
+# (patent-evidence-parity phase 4: PATENT_EXAMPLE:prophetic on the
+# grounding chunk -> a fixed caveat appended in attach_evidence itself,
+# mechanically, never via the verify LLM.)
+
+
+def _tag_chunk(store: Any, ref_id: int, ord_: int, ns: str, value: str) -> None:
+    with store.pool.connection() as conn:
+        store.add_tag(
+            ref_id, Tag.closed(ns, value), set_by="system", pos=ord_, conn=conn
+        )
+        conn.commit()
+
+
+def test_attach_evidence_appends_prophetic_caveat_for_patent_source(
+    store: Any,
+) -> None:
+    hub = mint_hub(store, _CLAIM)
+    patent = seed_ref(store, title="EP1 prophetic probe", kind="patent")
+    seed_chunk(store, ref_id=patent, text="the mixture is stirred", ord=0)
+    _tag_chunk(store, patent, 0, "PATENT_EXAMPLE", "prophetic")
+
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=patent,
+        role="corroborates",
+        meta={"support": "yes", "caveats": [], "source_handle": f"ref{patent}~0"},
+    )
+
+    meta = _link_meta(store, patent, hub)
+    assert meta["caveats"] == [PROPHETIC_EXAMPLE_CAVEAT]
+
+
+def test_attach_evidence_no_caveat_for_worked_patent_chunk(store: Any) -> None:
+    hub = mint_hub(store, _CLAIM)
+    patent = seed_ref(store, title="EP1 worked probe", kind="patent")
+    seed_chunk(store, ref_id=patent, text="the mixture was stirred", ord=0)
+    _tag_chunk(store, patent, 0, "PATENT_EXAMPLE", "worked")
+
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=patent,
+        role="corroborates",
+        meta={"support": "yes", "caveats": [], "source_handle": f"ref{patent}~0"},
+    )
+
+    assert _link_meta(store, patent, hub)["caveats"] == []
+
+
+def test_attach_evidence_no_caveat_for_untagged_patent_chunk(store: Any) -> None:
+    """The classifier is async — an as-yet-unclassified chunk gets NO
+    caveat, same as ``worked``/``none``: silence is the default."""
+    hub = mint_hub(store, _CLAIM)
+    patent = seed_ref(store, title="EP1 untagged probe", kind="patent")
+    seed_chunk(store, ref_id=patent, text="an unclassified description passage", ord=0)
+
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=patent,
+        role="corroborates",
+        meta={"support": "yes", "caveats": [], "source_handle": f"ref{patent}~0"},
+    )
+
+    assert _link_meta(store, patent, hub)["caveats"] == []
+
+
+def test_attach_evidence_no_caveat_for_paper_source(store: Any) -> None:
+    """A paper-source edge is untouched -- the caveat lookup is patent-only
+    (a ``PATENT_EXAMPLE`` tag never even exists on a paper chunk)."""
+    hub = mint_hub(store, _CLAIM)
+    paper = seed_ref(store, title="Collins 2006", kind="paper")
+    seed_chunk(store, ref_id=paper, text="a paper body paragraph", ord=0)
+
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=paper,
+        role="corroborates",
+        meta={"support": "yes", "caveats": [], "source_handle": f"ref{paper}~0"},
+    )
+
+    assert _link_meta(store, paper, hub)["caveats"] == []
+
+
+def test_attach_evidence_prophetic_caveat_not_duplicated(store: Any) -> None:
+    """Re-verify (or a verdict that already independently named the same
+    caveat) never doubles it up."""
+    hub = mint_hub(store, _CLAIM)
+    patent = seed_ref(store, title="EP1 dedup probe", kind="patent")
+    seed_chunk(store, ref_id=patent, text="the catalyst may be prepared by", ord=0)
+    _tag_chunk(store, patent, 0, "PATENT_EXAMPLE", "prophetic")
+
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=patent,
+        role="corroborates",
+        meta={
+            "support": "yes",
+            "caveats": [PROPHETIC_EXAMPLE_CAVEAT],
+            "source_handle": f"ref{patent}~0",
+        },
+    )
+
+    assert _link_meta(store, patent, hub)["caveats"] == [PROPHETIC_EXAMPLE_CAVEAT]
 
 
 # ── apply_placement — routes every place() action ───────────────────────

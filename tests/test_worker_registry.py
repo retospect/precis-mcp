@@ -291,7 +291,7 @@ def test_service_names_are_unique() -> None:
 
 
 def test_discover_axis_ids_excludes_cascade_axes_and_lookup_tables() -> None:
-    """The 10 axes the generic runner drives — everything with an ``id:``
+    """The axes the generic runner drives — everything with an ``id:``
     except ``junk``/``role3`` (owned by the ``classify`` cascade instead)
     and ``journal_domains.yaml`` (a lookup table, no ``id:`` field)."""
     from precis.workers.axis_pass import CASCADE_AXIS_IDS, discover_axis_ids
@@ -302,6 +302,7 @@ def test_discover_axis_ids_excludes_cascade_axes_and_lookup_tables() -> None:
         "open-question",
         "domain",
         "material",
+        "patent_example",
         "property",
         "scale",
         "dim",

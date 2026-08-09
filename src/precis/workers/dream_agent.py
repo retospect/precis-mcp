@@ -70,6 +70,7 @@ import secrets
 from pathlib import Path
 from typing import Any
 
+from precis.handlers._patent_ingest import FAMILY_STUB_META_KEY
 from precis.store import Store
 from precis.utils import handle_registry
 from precis.utils.dream_seed import load_lenses, render_lens_block
@@ -376,14 +377,28 @@ def _dream_fisheye_enabled() -> bool:
 
 
 def _recent_ref_ids(store: Store, kind: str, limit: int) -> list[int]:
-    """The most-recently-touched live refs of ``kind`` (the recency draw)."""
+    """The most-recently-touched live refs of ``kind`` (the recency draw).
+
+    Over-fetches (3x) and drops family-stub refs (``meta[FAMILY_STUB_META_KEY]``
+    truthy) so a stub landing in the window doesn't shrink the draw below
+    ``limit`` — a family stub is biblio-only by design (no body chunks), so
+    drawing one would waste the dream's one patent slot on a near-empty
+    summary. Only patents carry the key; harmless no-op for other kinds.
+    """
     with store.pool.connection() as conn:
         rows = conn.execute(
-            "SELECT ref_id FROM refs WHERE kind = %s AND deleted_at IS NULL "
+            "SELECT ref_id, meta FROM refs WHERE kind = %s AND deleted_at IS NULL "
             "ORDER BY updated_at DESC LIMIT %s",
-            (kind, limit),
+            (kind, limit * 3),
         ).fetchall()
-    return [int(r[0]) for r in rows]
+    ids: list[int] = []
+    for ref_id, meta in rows:
+        if isinstance(meta, dict) and meta.get(FAMILY_STUB_META_KEY):
+            continue
+        ids.append(int(ref_id))
+        if len(ids) >= limit:
+            break
+    return ids
 
 
 def _draft_cite_eye_count() -> int:

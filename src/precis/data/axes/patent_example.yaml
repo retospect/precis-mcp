@@ -1,0 +1,80 @@
+# US patent convention: an example written in PAST tense, narrated as
+# something the applicant actually did ("the catalyst was heated…", "a
+# yield of 82% was obtained"), is a WORKED example. One written in
+# present/future tense or modal voice ("the mixture is stirred…", "the
+# catalyst may be prepared by…") is a PROPHETIC example — proposed, never
+# performed. A prophetic example is weaker evidence for a taproot
+# world-claim: it corroborates at best, never establishes (see
+# ``workers/hub_refine.py`` / ``taproot/hub.py::attach_evidence``, which
+# append a deterministic caveat off this tag — no LLM re-judgment there).
+#
+# The load-bearing test is tense-of-performance: was the example narrated
+# as DONE, or as DOABLE? Everything that is not itself an example/
+# embodiment paragraph (background, definitions, legal boilerplate, claim
+# language, summary of invention) is `none`.
+#
+# `applies_when` has no chunk-meta predicate today (only `domain_in` /
+# `tags_any` / `always` — see `workers/axis_pass.py`), so this axis cannot
+# be gated on `chunks.meta['patent_block'] == 'description'` at claim
+# time. Legal-claim blocks (``patent_block: claim``) are left to the
+# `none` value instead — the model reliably reads "wherein"/multi-part
+# claim syntax as non-example prose (see the boilerplate example below).
+id: patent_example
+level: chunk
+applies_to_kinds: [patent]
+version: 1
+question: "Is this patent paragraph a worked example, a prophetic example, or not an example at all?"
+select: one
+values: [worked, prophetic, none]
+default_unknown: none
+applies_when:
+  always: true
+cost_tier: small
+context: [position]
+prompt: |
+  Classify this paragraph from a patent's description section into ONE
+  bucket, by whether it narrates an example as PERFORMED or as PROPOSED:
+
+  - worked     : a concrete example or experiment narrated in PAST tense
+                 as something the applicant actually carried out —
+                 specific quantities, conditions, and a measured or
+                 observed result ("the mixture was heated to 80 C for 2
+                 h, giving a yield of 82%"). Test: could you cite this as
+                 work that was actually done?
+  - prophetic  : an example or embodiment described in PRESENT or FUTURE
+                 tense, or modal voice, as something that MAY or COULD be
+                 done, with no past-tense performance reported ("the
+                 mixture is stirred until dissolution", "the catalyst may
+                 be prepared by combining…", "one skilled in the art will
+                 recognize that X could be substituted"). Test: is this
+                 doable, not done?
+  - none       : not an example paragraph at all — field background,
+                 definitions, summary of the invention, legal claim
+                 language ("wherein… is configured to…"), or any other
+                 prose that never narrates a specific example.
+
+  The load-bearing test is tense-of-performance, not subject matter: a
+  paragraph can describe the exact same chemistry twice, once as
+  something that WAS done (worked) and once as something that COULD be
+  done (prophetic) — only the tense decides.
+
+  Return JSON: {"value": "worked"} or {"value": "prophetic"} or {"value": "none"}.
+examples:
+  - text: "Example 3: The catalyst was heated to 400 C under flowing H2 for 4 h, then cooled and tested, giving a NOx conversion of 82% at 250 C."
+    value: worked
+    why: "past tense, specific conditions, a measured result"
+  - text: "The mixture is stirred at room temperature until the solid dissolves, and the product is obtained by filtration."
+    value: prophetic
+    why: "present tense, no reported performance or measured result"
+  - text: "In one embodiment, the catalyst may be prepared by impregnating the support with a solution of the metal salt, followed by calcination."
+    value: prophetic
+    why: "modal voice — proposed, not narrated as performed"
+  - text: "Selective catalytic reduction (SCR) catalysts are widely used to reduce NOx emissions from diesel exhaust streams."
+    value: none
+    why: "field background, not an example"
+  - text: "wherein the support comprises a zeolite having a silica-to-alumina ratio of at least 20."
+    value: none
+    why: "legal claim language, not an example"
+  - text: "Twelve samples were prepared according to Example 1 and aged at 800 C for 16 h; the aged samples retained at least 90% of their fresh activity."
+    value: worked
+    why: "past tense, a batch of samples, a measured retention result"

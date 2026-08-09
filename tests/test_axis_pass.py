@@ -3,9 +3,10 @@
 DB-backed (real ``refs``/``chunks``/``ref_tags``/``chunk_tags`` via the
 ``store`` fixture) with a fake LLM client — no network. Exercises real axis
 YAMLs already in ``data/axes/``: ``domain`` (ref-level, no prereq),
-``material`` (ref-level, ``prereq: [domain]``) and ``role3`` (chunk-level,
+``material`` (ref-level, ``prereq: [domain]``), ``role3`` (chunk-level,
 no prereq) — so the prereq-gate test pins the real, shipped
-``material``-waits-for-``domain`` relationship rather than a synthetic one.
+``material``-waits-for-``domain`` relationship rather than a synthetic one —
+and ``patent_example`` (chunk-level, ``applies_to_kinds: [patent]``).
 """
 
 from __future__ import annotations
@@ -287,6 +288,52 @@ def test_chunk_level_idempotent_and_version_bump(store: Any) -> None:
     assert bumped == {"claimed": 1, "ok": 1, "failed": 0, "dist": {"background": 1}}
     assert _chunk_tag(store, ref_id, 0, "ROLE3") == "background"
     assert _chunk_tag(store, ref_id, 0, "ROLE3CASCADE") == "2"
+
+
+# ── chunk-level axis over patents (patent_example) ──────────────────────
+
+
+def test_patent_example_axis_writes_chunk_tags_on_a_patent(store: Any) -> None:
+    """``patent_example`` (patent-evidence-parity phase 4) is a plain
+    chunk-level axis over ``applies_to_kinds: [patent]`` — no prereq, no
+    ``applies_when`` gate (no chunk-meta predicate exists to scope it to
+    description blocks, per the axis YAML's own header note)."""
+    ref_id = seed_ref(store, title="A patent about catalysts", kind="patent")
+    seed_chunk(store, ref_id=ref_id, text=_LONG_PARA, ord=0)
+    client = _FakeClient("prophetic")
+
+    result = run_axis_pass(
+        store,
+        dispatch=client,
+        axis_id="patent_example",
+        batch_size=10,
+        ref_ids=[ref_id],
+    )
+
+    assert result == {"claimed": 1, "ok": 1, "failed": 0, "dist": {"prophetic": 1}}
+    assert _chunk_tag(store, ref_id, 0, "PATENT_EXAMPLE") == "prophetic"
+    assert _chunk_tag(store, ref_id, 0, "PATENT_EXAMPLECASCADE") == "1"
+    assert _ref_tag(store, ref_id, "PATENT_EXAMPLE") is None  # not written at ref level
+
+
+def test_patent_example_axis_never_claims_a_paper(store: Any) -> None:
+    """``applies_to_kinds: [patent]`` — a paper chunk is never eligible,
+    even though it satisfies every other claim predicate."""
+    ref_id = seed_ref(store, title="A paper about catalysts", kind="paper")
+    seed_chunk(store, ref_id=ref_id, text=_LONG_PARA, ord=0)
+    client = _FakeClient("worked")
+
+    result = run_axis_pass(
+        store,
+        dispatch=client,
+        axis_id="patent_example",
+        batch_size=10,
+        ref_ids=[ref_id],
+    )
+
+    assert result == {"claimed": 0, "ok": 0, "failed": 0}
+    assert client.calls == []
+    assert _chunk_tag(store, ref_id, 0, "PATENT_EXAMPLE") is None
 
 
 # ── failure path stays retryable ────────────────────────────────────────
