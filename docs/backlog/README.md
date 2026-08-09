@@ -8,7 +8,8 @@
 - [`agent-worker-silent-outage`](./agent-worker-silent-outage.md) **idea** — melchior `com.precis.worker-agent` was SIGKILL'd and stayed dead ~4 days
 - [`anchored-edit-abstraction`](./anchored-edit-abstraction.md) **idea** — Corrected premise (2026-07-23): only plaintext.py and python.py implement
 - [`anki-card-quality`](./anki-card-quality.md) **idea** — Dedup definitional clozes across cards — one combined cloze per concept (the
-- [`argument-graph`](./argument-graph.md) **idea** — Slice of record for [ADR 0054](../decisions/0054-argument-graph-lemmas-inferences-reasoning-shadow.md).
+- [`argument-graph`](./argument-graph.md) **idea** — Slice of record for ADR 0054 (git-only ADR).
+- [`artifact-kinds-orphan-tables`](./artifact-kinds-orphan-tables.md) **idea** — Both exist in the baseline schema (and `artifact_kinds` is in
 - [`asa-oauth-cutover`](./asa-oauth-cutover.md) **idea** — asa_bot's vault fallback shipped (mirrors precis's `utils/claude_oauth`); the
 - [`asa-outbound-durability`](./asa-outbound-durability.md) **idea** — Two asa incident residuals: stranded outbound queue rows and dark conv capture.
 - [`asa-slack-smoke`](./asa-slack-smoke.md) **idea** — Code shipped + deployed + connected (`com.asa.slack` on melchior); remaining

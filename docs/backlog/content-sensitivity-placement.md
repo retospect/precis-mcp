@@ -1,7 +1,7 @@
 # Content sensitivity → placement constraint
 
 - **Status**: proposed — **stub / requirements capture, not yet a design**
-- **Owner**: carved out of [ADR 0066](../decisions/0066-capability-tiers-and-placement-chains.md) §6
+- **Owner**: carved out of ADR 0066 (git-only ADR) §6
 - **Refs**: memory `backlog_proprietary_local_only`; ADR 0066 (Rollout gate —
   this **gates Phase C** of the tier migration)
 

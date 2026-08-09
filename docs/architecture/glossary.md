@@ -108,12 +108,14 @@
   → `src/precis/workers/nursery.py`
 - **keystone kind** — a kind that owns a legible IR and rents the heavy kernel
   only at export (cad/pcb/structure); the LLM traverses a graph, never pixels.
-  → `docs/decisions/0041-cad-kind-analytic-ir.md` (also 0042, 0043)
+  → `src/precis/handlers/pcb.py` · `src/precis/structure/__init__.py`
 - **emits_card / "a card is a vector"** — a `KindSpec` flag: the kind emits a
   `card_combined` chunk (ord=-1) so the ref itself embeds + searches.
   → `src/precis/protocol.py` (`KindSpec.emits_card`)
-- **handle** — a terse per-kind pointer (`qu`/`dc`/`pc`/`me`… + id) that resolves
-  to a ref or chunk. → `src/precis/handlers/_numeric_ref.py` · `src/precis/runtime/dispatch.py`
+- **handle** — the one kind-agnostic address for any record or chunk: a 2-char
+  type code + the row's decimal id (`pa5`, `pc10`, `td42`). Computed, never
+  stored — a pure function of `(kind, id)`, so no minting or backfill; resolves
+  without a `kind=`. → `src/precis/utils/handle_registry.py`
 - **admit** — the pre-flight fit-check that refuses a (context, model) pairing
   too big for the model's window, with the numbers. → `src/precis/utils/llm/admit.py`
 - **taproot** — the evidence-grounded claim graph: unify a claim into one hub

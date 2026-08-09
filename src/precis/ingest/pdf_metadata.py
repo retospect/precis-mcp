@@ -16,10 +16,13 @@ substantial diffs vs. the upstream module:
 
 2. **PDF enrichment workflow gone.** ``write_pdf_metadata()``,
    ``enrich_single_pdf()``, ``enrich_pdfs()`` and the supporting
-   exiftool / backup helpers are dropped. v2 stores extracted
-   metadata as DB rows; we don't patch the PDF file in place.
-   ``EnrichmentResult`` and the JSONL audit-log writer go with
-   them.
+   exiftool / backup helpers are dropped. ``EnrichmentResult`` and
+   the JSONL audit-log writer go with them. (Write-back later
+   returned as :mod:`precis.ingest.pdf_writer`: after ingest the
+   resolved DOI / title / authors are patched into the PDF's Info
+   dict + XMP so a re-dropped file self-identifies — external
+   readers see correct metadata, and a from-scratch re-ingest
+   round-trips without re-paying the lookup cascade.)
 
 What survives is the *extraction* subset: parse a PDF, find DOI
 candidates from filename / embedded metadata / sidecar / pdf2doi,

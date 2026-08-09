@@ -1,6 +1,6 @@
 # Design — the argument graph (reasoning shadow beside a draft)
 
-Slice of record for [ADR 0054](../decisions/0054-argument-graph-lemmas-inferences-reasoning-shadow.md).
+Slice of record for ADR 0054 (git-only ADR).
 This doc is the build plan + the **skill sketches**. The ADR owns the
 *decisions*; this owns *what ships and in what order*.
 

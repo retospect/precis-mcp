@@ -27,9 +27,10 @@ TRIGGERS = {
         "New migration — forward-only (never edit a sealed file); regen the "
         "baseline snapshot at release time, not per-feature."
     ),
-    "docs/decisions/": (
-        "New/edited ADR — update docs/decisions/README.md (topic table + "
-        "supersession graph); the older ADR names its successor and vice-versa."
+    "docs/backlog/": (
+        "Backlog touched — if this ship completes an item, DELETE its file in "
+        "the same commit and fold surviving truth into the owning package "
+        "docstring (docs/README.md)."
     ),
     "src/precis/data/skills/": (
         "New/edited skill — if it adds a kind, update the precis-overview kinds "

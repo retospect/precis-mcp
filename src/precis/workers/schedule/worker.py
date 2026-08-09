@@ -1,6 +1,15 @@
 """Schedule worker — Slice 4 of ``docs/backlog/todo-tree-plan.md``, extended
-by ADR 0061 to also fire **push delivery** (the retired ``kind='cron'``
-mechanism, folded onto the recurring facet).
+to also fire **push delivery** (the retired ``kind='cron'`` mechanism,
+folded onto the recurring facet).
+
+Why cron folded in: cron was push-notify (pg_notify → asa_bot) while
+recurring todos are pull-into-queue — mechanically different, but two
+mental models for "a thing that happens on a schedule" cost more than
+the difference is worth. Anyone scheduling a reminder first had to pick
+between two kinds, each with its own put-shape, views, and skill, over
+data that mostly duplicated (a schedule + a fire history). Both
+behaviours are now fields on one recurring todo: ``meta.deliver`` makes
+a due tick push instead of minting a subtask.
 
 Walks every ``todo`` whose ``meta.schedule`` is non-null (§M facet
 normalization: this presence check IS "recurring" — the old
@@ -18,7 +27,7 @@ Two schedule shapes, two tick actions
   a due tick fires a push notify (:func:`_fire_delivery_conn`) instead of
   minting a subtask — the tick's action *is* the delivery, matching how
   the retired cron kind never touched the todo queue either.
-* ``meta.schedule.at`` (one-shot) — a single absolute fire time (ADR 0061's
+* ``meta.schedule.at`` (one-shot) — a single absolute fire time (the
   "remind me in/at" case). :func:`_process_one_shot` decides fire / wait /
   expire and, once resolved, tags the recurring root ``STATUS:done`` so it
   never re-fires — a one-shot is a recurring (``meta.schedule`` set) node
@@ -325,7 +334,7 @@ def _spawn_due_ticks(
     (child insert, delivery notify, event append, STATUS tag) shares
     the tx; commit happens when the outer ``with store.tx()`` exits.
 
-    Branches on the schedule shape (ADR 0061):
+    Branches on the schedule shape:
 
     * ``schedule.at`` set — one-shot; delegates to
       :func:`_process_one_shot`.
@@ -385,7 +394,7 @@ def _process_one_shot(
     *,
     now: datetime,
 ) -> tuple[int, int]:
-    """Resolve a one-shot ``meta.schedule.at`` recurring (ADR 0061).
+    """Resolve a one-shot ``meta.schedule.at`` recurring.
 
     A one-shot is a recurring (``meta.schedule`` set) node whose schedule
     fires exactly once: this decides fire / wait / expire via
@@ -479,7 +488,7 @@ def _deliver_stamp_exists_conn(conn: Any, rec_id: int, stamp: str) -> bool:
 def _fire_delivery_conn(
     conn: Any, rec: dict[str, Any], *, stamp: str, target: str, store: Store
 ) -> None:
-    """Fire the push-delivery notify + stamp the tick (ADR 0061).
+    """Fire the push-delivery notify + stamp the tick.
 
     Emits the *exact* wire payload the retired ``kind='cron'`` fired —
     ``pg_notify('precis.cron', {cron_id, payload, target})`` — so asa_bot's

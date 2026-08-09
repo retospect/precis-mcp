@@ -1,7 +1,14 @@
-"""DraftHandler — the editable document kind (ADR 0033).
+"""DraftHandler — the editable document kind.
 
 A `draft` is a slug-addressed ref whose body chunks are mutable in
-structure (reorder/reparent) and text. The handler wraps the
+structure (reorder/reparent) and text — the one deliberate exception
+to the append-only body-chunk invariant. The document lives IN the
+chunk store so all chunk infra (embed, keywords, search, TOC, windows)
+works on it for free; safety comes from four orthogonal columns:
+addresses are the immutable ``chunk_id`` (hierarchy in
+``parent_chunk_id``, order in fractional ``pos``), so a move never
+touches text, and a text edit bumps ``content_sha`` so derived rows
+re-derive instead of going stale. The handler wraps the
 :class:`~precis.store._draft_ops.DraftMixin` store ops behind the
 existing seven verbs — **no new verbs**:
 

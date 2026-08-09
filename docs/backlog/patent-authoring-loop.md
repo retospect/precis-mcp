@@ -5,8 +5,8 @@
 > [`patent-drafting-merge.md`](patent-drafting-merge.md). That doc says
 > **what a patent draft *is*** — a `draft` with `doc_type=patent`, whose
 > claims / parts / prior-art are managed chunks in styled sections
-> ([ADR 0037](../decisions/0037-heading-styles-and-numbering-lock.md),
-> [ADR 0033](../decisions/0033-draft-chunks-editable-document.md)). This
+> (ADR 0037 (git-only ADR),
+> ADR 0033 (git-only ADR)). This
 > doc says **how the agent *writes* one** — the iterative prior-art
 > sweep, the freedom-to-operate claims view, and the scoping-decision
 > ledger. Read `patent-drafting-merge.md` first; this does not restate

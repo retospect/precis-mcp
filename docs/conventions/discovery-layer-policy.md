@@ -5,7 +5,7 @@
 > (migration `0003_drop_legacy_segments.sql`); the `segment_toc`
 > worker and its version-column invalidation are gone. Discovery is
 > now **per-chunk KeyBERT** stored directly on `chunks`. See
-> [ADR 0018](../decisions/0018-persistent-discovery-layer.md) (status
+> the persistent-discovery-layer decision (git-only, superseded; status
 > note) and `src/precis/workers/chunk_keywords.py`. The read/write
 > and boilerplate-skip policy below is the current discipline.
 

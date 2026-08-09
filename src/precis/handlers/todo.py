@@ -896,6 +896,13 @@ class TodoHandler(NumericRefHandler):
         Reads round-trip: ``get(kind='todo', id=N, view='links')``
         synthesizes the ``parent`` edge from the column, so a client
         that sets the edge via ``link`` sees it back via ``link``.
+
+        Why a reserved relation, not a new verb or a real ``links``
+        row: ``link`` already means "connect A to B" (no new surface
+        to learn), and ``refs.parent_id`` stays the single source of
+        truth — tree views, the ON DELETE cascade, and every guard
+        key off the column; a mirrored links row would duplicate
+        state and need a sync trigger.
         """
         if rel == _RESERVED_PARENT_REL:
             return self._reparent(id=id, target=target, mode=mode)

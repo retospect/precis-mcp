@@ -353,7 +353,6 @@ high-traffic ones:
 - [`docs/README.md`](docs/README.md) — the documentation landing index (directory-by-directory map).
 - [`docs/architecture.md`](docs/architecture.md) — the system manual: a narrative overview tying the surface, kinds, storage, todo-tree, and workers together.
 - [`docs/reference/schema.md`](docs/reference/schema.md) — the **generated** DB schema diagram (Mermaid ER, produced from the live database — can't drift).
-- [`docs/decisions/README.md`](docs/decisions/README.md) — the ADR index (one record per decision; supersession graph). The individual ADRs live in [`docs/decisions/`](docs/decisions/).
 - [`docs/reference/config-variables.md`](docs/reference/config-variables.md) — the full `PRECIS_*` config catalog: every var, its default, the value deployed to each cluster service, and a correctness assessment.
 - [`docs/user-facing/plugin-authoring.md`](docs/user-facing/plugin-authoring.md) — write a third-party handler.
 - [`docs/user-facing/seven-verb-surface-migration.md`](docs/user-facing/seven-verb-surface-migration.md) — verb surface design rationale.
@@ -363,8 +362,6 @@ high-traffic ones:
 - [`docs/user-facing/patent-kind-spec.md`](docs/user-facing/patent-kind-spec.md) — EPO OPS integration.
 - [`docs/user-facing/paper_ingest.md`](docs/user-facing/paper_ingest.md) — `.acatome` bundle ingest path.
 - [`docs/reference/schema.md`](docs/reference/schema.md) — generated schema (full ER view: `schema-v2.svg`).
-- [`docs/decisions/0026-precis-web-surface.md`](docs/decisions/0026-precis-web-surface.md) — the `precis web` browser UI (Tasks / Papers / Conversations / Console / Status).
-- [`docs/decisions/0029-multi-root-corpus-pdf.md`](docs/decisions/0029-multi-root-corpus-pdf.md) — why `PRECIS_CORPUS_DIR` accepts a list of roots.
 - [`src/precis/data/skills/precis-citation-help.md`](src/precis/data/skills/precis-citation-help.md) — `citation` kind + verifier-workflow agent surface.
 - [`src/precis/data/skills/precis-toc-help.md`](src/precis/data/skills/precis-toc-help.md) — TOC machinery (segments, sentences, matryoshka keywords).
 - Git history (`git log`) — what shipped in each phase (no CHANGELOG file).

@@ -43,8 +43,10 @@ def corpus_roots_from_env(env: dict[str, str] | None = None) -> tuple[Path, ...]
     """Every corpus root to search, primary first — the pure-``precis``
     twin of ``WebConfig.corpus_dirs`` for the worker passes.
 
-    ``PRECIS_CORPUS_DIR`` may name a single root or an ``os.pathsep``-list
-    (per-host NFS mounts differ, ADR 0029). Falls back to
+    ``PRECIS_CORPUS_DIR`` may name a single root or an ``os.pathsep``-list:
+    the shared NFS export surfaces at a different mount prefix per host, so
+    each node lists every root it might see and resolution tries them in
+    order — a mount-path difference stops being a 404. Falls back to
     :data:`DEFAULT_CORPUS` when unset so a bare install still resolves.
     """
     src = os.environ if env is None else env
@@ -61,7 +63,7 @@ def rebase_onto_local(stored: str, corpus_dirs: tuple[Path, ...]) -> Path | None
     """Rebase an absolute ``storage_path`` onto this node's own NAS mount.
 
     The corpus lives on one shared NFS export mounted at a *different*
-    prefix per OS (ADR 0029): the Macs see ``/opt/nas/botshome/papers/…``,
+    prefix per OS: the Macs see ``/opt/nas/botshome/papers/…``,
     the Linux node ``/nas/botshome/papers/…``. A ``storage_path`` written
     by another host is therefore a valid path on the *wrong* prefix here.
     We split on the common ``/papers/`` pivot and re-anchor the suffix under

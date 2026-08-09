@@ -5,7 +5,9 @@ Derived-queue core (ADR 0007)
 The worker's "queue" is the data itself: a chunk that has no row in
 ``chunk_embeddings`` for embedder ``bge-m3`` *needs* to be embedded.
 No separate ``block_jobs`` / queue table — derived artifact tables
-double as the work-tracking surface.
+double as the work-tracking surface. Ingest writes rows and returns;
+it never enqueues or blocks on derived work (a worker outage delays
+embeddings, never loses them — the missing row IS the queue entry).
 
 Each :class:`WorkerHandler` owns one ``(output_table, model)`` pair
 and exposes a uniform contract:

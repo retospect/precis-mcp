@@ -82,7 +82,7 @@ precis-mcp/
 
 ## Workflow — plan first, always
 
-1. Read this file and any pointer in `docs/decisions/` relevant to the
+1. Read this file and the owning package's `__init__.py` docstring for the
    area you are touching.
 2. For any non-trivial change (schema change, new CLI subcommand, new
    handler, multi-package coordination): produce
@@ -102,15 +102,16 @@ precis-mcp/
 7. Bump version (`uv version X.Y.Z`) for any user-visible change. The
    dated change story is the git history — there is no CHANGELOG file;
    write a clear conventional-commit message instead.
-8. Update `docs/decisions/` with a new ADR if you made a substantive
-   trade-off (one new file per decision; never edit a sealed ADR).
+8. Fold the "why" of any substantive trade-off into the owning package
+   docstring in the same commit (compact; never delete a refused
+   alternative — condense it).
 
 ## Definition of done (any user-visible PR)
 
 - [ ] Spec in `docs/backlog/<slug>.md` exists and was reviewed (deleted in
       the shipping commit).
-- [ ] Decision log entry in `docs/decisions/` if a non-obvious trade-off
-      was made.
+- [ ] The owning package docstring carries the "why" if a non-obvious
+      trade-off was made.
 - [ ] Version bumped (`uv version`) and a clear commit message written
       (no CHANGELOG file — git history is the record).
 - [ ] `uv run ruff check .` passes.
@@ -215,8 +216,8 @@ back-compat with any files staged before the routing landed.
   (read first; present-state per subsystem → the owning package's `__init__.py` docstring)
 - **Conventions**: `docs/conventions/`
   (start with `thresholds.md`; LLM-facing docs → `llm-facing-prose.md`)
-- **Decisions** (ADR log): `docs/decisions/`
-  (sorted by number; never delete, only supersede)
+- **Decisions**: the owning package docstring's "why" lines
+  (history + superseded alternatives: `git log`)
 - **Plans**: `docs/design/`
   (one file per non-trivial change; **delete on ship** once the truth
   lives in code + the ADR — git holds the record. Keep only a plan still

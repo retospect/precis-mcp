@@ -1,9 +1,11 @@
 """Postgres advisory-lock based work claims for multi-host ingest.
 
 Replaces the v2's filesystem-based ``.processing/*.lock`` mechanism
-(see ADR 0014) with a database-backed claim that's correct across
-hosts. Used by ``precis_add`` to ensure that at most one host runs
-the expensive Marker pipeline on any given PDF content (keyed by
+with a database-backed claim that's correct across hosts — file-lock
+semantics over a shared SMB inbox are unreliable, and stale-lock
+recovery would need heartbeats the DB gives for free. Used by
+``precis_add`` to ensure that at most one host runs the
+expensive Marker pipeline on any given PDF content (keyed by
 ``pdf_sha256``), even when multiple hosts share an SMB-mounted
 ``/inbox``.
 

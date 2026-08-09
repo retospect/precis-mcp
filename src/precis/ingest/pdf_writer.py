@@ -12,7 +12,7 @@ Why this is safe (reversing the B4b removal):
   the same ``ref_id``, so a re-ingest of *either* byte sequence
   short-circuits in the fast path. The hash-drift problem that
   motivated removing write-back in B4b is neutralised by the alias
-  model. See ADR 0014.
+  model.
 
 * Save uses ``incremental=True`` so the existing PDF bytes are not
   rewritten — pymupdf appends an update section. This keeps risk

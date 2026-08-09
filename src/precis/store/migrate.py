@@ -11,7 +11,16 @@ correctly (e.g. ``0001_initial.sql``, ``0002_add_xxx.sql``). The
 can both ship a ``0001_*.sql`` without collision.
 
 Refuses to run if a previously-applied migration's checksum no
-longer matches its file (someone edited a sealed migration).
+longer matches its file (someone edited a sealed migration —
+forward-only exists because deployed DBs already ran the old bytes;
+editing history desyncs them silently, so a new file is the only fix).
+
+Dual-track baseline: on a truly-fresh DB (no ``_migrations`` table)
+the runner loads ``migrations/baseline/schema.sql`` — the chain
+compiled to one file, self-stamping the ledger — then applies only
+the post-snapshot tail; existing DBs migrate forward as always. The
+snapshot is a generated release artifact: regenerate via
+``scripts/bump`` / ``precis db dump-schema``, never by hand.
 
 Plugin migrations are discovered via the ``precis.migrations``
 entry-point group. Each entry resolves to a directory containing

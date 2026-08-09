@@ -1,4 +1,13 @@
-"""classify — chunk-axis classifier pass (ADR 0047, cascade).
+"""classify — chunk-axis classifier pass (the controlled-tagging cascade).
+
+**Why a closed faceted vocabulary, not folksonomy.** Facet tags only
+buy retrieval precision when the values are few, curated, and applied
+by one consistent machine tagger; free minting drifted in prod (the
+open tag namespace grew ~2,700 distinct values, half used exactly
+once, with facet mixing like ``interest:`` vs ``topic:`` for the same
+concept). So axis vocabularies are closed YAML defs, a value edit is
+a deliberate curation step, and this pass is the sole writer of its
+namespace.
 
 Self-contained ref-pass (shaped like ``llm_summarize``, not a
 ``WorkerHandler`` subclass: it needs DB JOINs + an outbound LLM call).

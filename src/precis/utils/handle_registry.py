@@ -1,4 +1,4 @@
-"""Universal handle registry — the SSOT for ADR 0036 handles.
+"""Universal handle registry — the SSOT for universal handles.
 
 A *handle* is the one address form for every persistent ref and every
 addressable body chunk: a 2-char lowercase **type code** + the row's
@@ -9,9 +9,10 @@ ASCII, variable length, self-delimiting (letters = type, digits = id).
 **Computed, not stored.** A handle is a pure function of ``(kind, id)`` —
 no handle column, no minting, no backfill, no migration.
 :func:`format_handle` formats; ``Store.resolve_handle`` decodes the
-prefix to a table + kind
-and does a primary-key lookup. See
-``docs/decisions/0036-universal-handles.md`` ("Final design").
+prefix to a table + kind and does a primary-key lookup, validating the
+prefix against the row's kind (typo guard). This replaced a zoo of
+per-kind address forms (cite_key, ``pub_id``, ``slug~pos``, bare
+numeric ids) with one grammar an agent can recognise on sight.
 
 Two kinds are *file-backed* (``skill`` → ``sk``, ``python`` → ``py``) and
 one lives in its own table (``tag`` → ``tg``); they carry codes for

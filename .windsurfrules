@@ -4,7 +4,7 @@
 > The `precis` MCP tools/skills in your session are the PRODUCT's runtime
 > surface — not dev aids. To develop the repo, read: `docs/codebase.md`
 > (orientation + package map) → owning package `__init__.py` docstrings →
-> `docs/architecture/glossary.md` → `docs/decisions/` (ADRs). Conventions,
+> `docs/architecture/glossary.md`. Conventions,
 > workflow, definition-of-done: `AGENTS.md`. No CHANGELOG — history is
 > `git log`. Backlog: `docs/backlog/` — one file per item (open work only; delete the file in
 > the same commit that completes it).

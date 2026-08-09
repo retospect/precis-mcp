@@ -30,7 +30,7 @@ link. Duplication = N rot sites for one fact.
 | `CLAUDE.md` | router (loaded every session) | what-before-first-tool-call + where everything is; changes only when the workflow/conventions/subsystem-set change |
 | `docs/codebase.md` | orientation | invariants, lifecycle, subsystem map, seams — the shape that survives refactors. Carries a `_Verified @ <sha>_` stamp; bump on re-verify |
 | package `__init__.py` docstrings | present-state | per-subsystem truth + why (map: `docs/codebase.md`) |
-| `docs/decisions/NNNN-*.md` (ADRs) | rationale | why a decision, what was rejected. Numbered; **never delete, only supersede**; `README.md` = index + supersession graph |
+| package `__init__.py` "why" lines | rationale | why a decision, what was rejected — lives beside the code it justifies; git is the history |
 | `docs/architecture/glossary.md` | vocabulary | coined/overloaded term → best entry-point file |
 | `AGENTS.md` | conventions / workflow / Definition-of-Done | the rules that bite |
 | `docs/backlog/*.md` | work items + specs | one per item; **delete-on-ship** (see §7) |

@@ -27,8 +27,8 @@ import pytest
 # Repo root: this file is <root>/tests/test_doc_pointers.py
 ROOT = Path(__file__).resolve().parent.parent
 
-_FROZEN_DIRS = ("docs/decisions/",)
-_FROZEN_EXEMPT = {"docs/decisions/README.md"}
+_FROZEN_DIRS: tuple[str, ...] = ()
+_FROZEN_EXEMPT: set[str] = set()
 
 
 def _live_docs() -> list[str]:
@@ -51,8 +51,7 @@ def _live_docs() -> list[str]:
 
 
 # The live acquaintance path — every current-state doc a fresh agent might
-# read to orient. Frozen historical docs (docs/decisions/, pending deletion)
-# are excluded on purpose; see module docstring.
+# read to orient.
 LIVE_DOCS = _live_docs()
 
 # [text](target) — capture the target.

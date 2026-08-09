@@ -6,7 +6,7 @@
 > chunk — a draft `dc…` chunk, a paper chunk, a memory — so the LLM edits
 > the diagram inside a *prepared context* that lists every element, its
 > coordinates/topology, and the linked chunk's text. Decisions are recorded
-> in [ADR 0057](../decisions/0057-diagram-chunk-binding-and-mermaid.md);
+> in ADR 0057 (git-only ADR);
 > this file is the full picture the slices reference. Keep it true —
 > update it in the commit that changes what it describes.
 

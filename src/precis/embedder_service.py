@@ -1,16 +1,24 @@
-"""HTTP embedding service — the server side of ADR 0020.
+"""HTTP embedding service — one warm model instance per node.
 
 Wraps an in-process :class:`precis.embedder.BgeM3Embedder` (or any
 `Embedder`) behind the wire schema in :mod:`precis.embedder_wire`, so
 torch-free ``serve`` / ``worker`` processes can embed over HTTP via
 :class:`precis.embedder.RemoteEmbedder`.
 
+Why a separate service: bge-m3 is ~2 GB resident with a multi-second
+cold load, and in-process copies in serve, every worker, and every
+ingest subprocess duplicated that RAM (and forced a serve-startup
+warmup hack). One shared always-warm instance per node lets callers
+ship no torch at all, and makes the model contract explicit —
+``RemoteEmbedder`` fetches ``/model`` and asserts the served dim
+matches the corpus's embedding dimension before its first encode.
+
 Deliberately stdlib-only (``http.server``): the embedder image's only
 heavy dependency is ``sentence-transformers``; the service adds no web
 framework on top. A ``ThreadingHTTPServer`` plus a bounded admission
 semaphore gives backpressure — when the in-flight ceiling is hit, the
 service returns ``429`` + ``Retry-After`` rather than queueing
-unboundedly, and the client's backoff (ADR 0020) does the rest.
+unboundedly, and ``RemoteEmbedder``'s backoff does the rest.
 
 Endpoints (paths from :mod:`precis.embedder_wire`):
 

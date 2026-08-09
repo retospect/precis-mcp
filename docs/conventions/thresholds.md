@@ -67,7 +67,7 @@ Stop and ask before:
   that name them.
 - Merging another package into `precis-mcp` (as was done for
   `acatome-extract`, ADR 0001). Spec in `docs/backlog/`, rationale folded into the owning docstring on ship;
-  `docs/decisions/`, do not rush.
+  the owning docstring's "why" lines, do not rush.
 
 ## Ingest thresholds
 
@@ -98,5 +98,5 @@ Stop and ask before:
    description of what would change.
 3. Offer 2–4 alternatives via an `ask_user_question` block.
 4. Do not proceed until the user names the choice.
-5. Record the resolution in `docs/decisions/` if the resolution is
+5. Record the resolution in the owning package docstring if it is
    non-obvious.

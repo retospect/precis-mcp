@@ -13,14 +13,14 @@ applied; no further schema work needed.
 - [`extract-once.md`](git-only: extract-once) — establishes the stub-vs-real
   merge mechanic (`ref_identifiers` collapse on re-ingest)
 **Related ADRs**:
-- [0006 — tri-identifier scheme](../decisions/0006-tri-identifier-scheme.md)
+- 0006 — tri-identifier scheme (git-only ADR)
   (we ride `cite_key` as the LaTeX/BibTeX handle)
-- [0007 — derived queue, no jobs table](../decisions/0007-derived-queue-no-block-jobs.md)
-- [0008 — drop slug, `cite_key` is canonical human form](../decisions/0008-drop-slug-identifier-normalisation.md)
-- [0017 — derived-queue family + `artifact_kinds` registry](../decisions/0017-derived-queue-family.md)
+- 0007 — derived queue, no jobs table (git-only ADR)
+- 0008 — drop slug, `cite_key` is canonical human form (git-only ADR)
+- 0017 — derived-queue family + `artifact_kinds` registry (git-only ADR)
   (substrate tables `ref_artifacts` + `artifact_kinds` are valid;
   §4 WorkerHandler refactor superseded — see 0018)
-- [0018 — persistent discovery layer + sibling ref-level workers](../decisions/0018-persistent-discovery-layer.md)
+- 0018 — persistent discovery layer + sibling ref-level workers (git-only ADR)
   (the chase worker follows `run_paper_segments_pass`, not a base-class
   subclass)
 **Shipped neighbour**:
@@ -265,10 +265,10 @@ or `precis stats`.
 
 ADR 0007 established the chunk-level derived queue
 (`chunk_embeddings`, `chunk_summaries`).
-[ADR 0017](../decisions/0017-derived-queue-family.md) introduced
+ADR 0017 (git-only ADR) introduced
 the substrate for untyped per-ref / per-link / per-pdf derived
 state (`*_artifacts` tables + `artifact_kinds` registry).
-[ADR 0018](../decisions/0018-persistent-discovery-layer.md)
+ADR 0018 (git-only ADR)
 shipped the first ref-level *consumer* (`run_paper_segments_pass`)
 and explicitly chose the **sibling-worker** pattern over the
 parameterised `WorkerHandler` base class originally proposed in

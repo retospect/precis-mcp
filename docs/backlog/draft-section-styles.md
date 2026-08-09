@@ -1,7 +1,7 @@
 # Draft section styles — catalogue & drafts
 
 > Status: **proposal** (2026-06-22). Companion to
-> [ADR 0037](../decisions/0037-heading-styles-and-numbering-lock.md). This
+> ADR 0037 (git-only ADR). This
 > file defines the **section styles** (= skills) we want and drafts their
 > bodies, across four genres — patents, research papers, review papers,
 > animation scripts, books — plus shared cross-genre styles and silent

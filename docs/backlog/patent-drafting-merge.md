@@ -1,10 +1,10 @@
 # Patent drafting — a genre over the draft model
 
 > Status: **proposal** (rewritten 2026-06-22). Patent drafting is an
-> **application of [ADR 0037](../decisions/0037-heading-styles-and-numbering-lock.md)**
+> **application of ADR 0037 (git-only ADR)**
 > (self-contained heading styles = skills, behavior styles, numbering
-> lock) over the [ADR 0033](../decisions/0033-draft-chunks-editable-document.md)
-> editable-document model and [ADR 0034](../decisions/0034-figure-assets-and-permission-provenance.md)
+> lock) over the ADR 0033 (git-only ADR)
+> editable-document model and ADR 0034 (git-only ADR)
 > figure assets. **There is no `patent` document kind, no `patent-*`
 > kind family, and no `.patent.yaml` side-store.**
 >

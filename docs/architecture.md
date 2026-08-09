@@ -65,7 +65,7 @@ Plugin (third-party) kinds:
 ## Storage
 
 PostgreSQL + `pgvector` is the system of record (ADR
-[0010](./decisions/0010-postgres-pgvector-system-of-record.md)); raw
+the system-of-record choice); raw
 `psycopg 3`, no ORM. The substrate is `refs` (one row per addressable
 thing) + append-only `chunks` (body blocks) + a unified `tags` /
 `links` graph, with derived artifacts (`chunk_embeddings`,
@@ -106,26 +106,24 @@ Two `precis worker` profiles (`--profile=system` everywhere,
 daemons drive every derived-artifact pass (embed, summarize,
 chunk_keywords, chase, fetch, dispatch, sweeper, nursery, …). The
 derived-queue pattern is ADRs
-[0007](./decisions/0007-derived-queue-no-block-jobs.md) /
-[0017](./decisions/0017-derived-queue-family.md); the live pass list
+the derived-queue pattern (see the `precis.workers` docstring); the live pass list
 is in [`CLAUDE.md`](../CLAUDE.md).
 
 ## The web surface
 
 `precis web` is a browsable UI (Tasks / Papers / Console /
 Conversations / Status) over the handler layer — ADR
-[0026](./decisions/0026-precis-web-surface.md). Source under
+the `precis_web` package docstring. Source under
 [`src/precis_web/`](../src/precis_web/).
 
 ## Decisions & history
 
-Substantive trade-offs are recorded as ADRs, never deleted (obsolete
-ones are superseded). Start at the index:
-[`docs/decisions/README.md`](./decisions/README.md). Design plans (one
-per non-trivial change, kept for history) live in
-[`docs/backlog/`](./backlog/). The dated change story is the **git
-history** (`git log` — there is no CHANGELOG file); the active backlog
-is [`docs/backlog/`](backlog/README.md).
+Substantive trade-offs are recorded as compact "why" lines in the owning
+package's `__init__.py` docstring (superseded alternatives live in
+`git log` — the historical ADR set was folded there 2026-08). Specs for
+unshipped work live in [`docs/backlog/`](./backlog/) — one file per item,
+deleted in the commit that ships it. The dated change story is the **git
+history** (`git log` — there is no CHANGELOG file).
 
 ## Map of the source
 

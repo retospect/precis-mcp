@@ -6,7 +6,7 @@ title: Turn-as-job routing (delegate-on-confidence) + context curation — WIP d
 # Turn-as-job routing + context curation
 
 > **WIP design conversation.** The settled decisions are recorded in
-> [ADR 0051](../decisions/0051-turn-taking-persona-threads-and-blackboard-convergence.md);
+> ADR 0051 (git-only ADR);
 > this doc keeps the fuller reasoning and the still-open issues. Parts
 > that turn out to be co-dependent: **(0)** who the thread *is* (persona)
 > and how its context is ordered for the cache, **(1)** how a turn is

@@ -48,7 +48,7 @@ Duplication is N rot sites for one fact.
 | **Router** | `CLAUDE.md` | what-before-first-tool-call + where everything is |
 | **Orientation** | `docs/codebase.md` | invariants, lifecycle, subsystem map, seams |
 | **Reference** | package docstrings, product skills | present-state per subsystem |
-| **Rationale** | `docs/decisions/` (ADRs) | why a decision, what was rejected |
+| **Rationale** | the owning package docstring's "why" lines | why a decision, what was rejected |
 | **Vocabulary** | `glossary.md` | coined term → best entry-point file |
 
 Put a fact in the wrong altitude and it rots: status in the orientation doc,

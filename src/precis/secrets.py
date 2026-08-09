@@ -1,6 +1,13 @@
 """Secrets resolver — the thin Python wrapper over the DB secrets vault.
 
-ADR 0055. Postgres is the authority: values are pgcrypto-encrypted in
+Why DB-resident (not env vars or an external vault service): env reads
+scatter across call sites and leak ambiently — a worker spawning
+``claude -p``/ansible/ruff hands every child the whole environment —
+and env can't scope per role or per name; a dedicated vault service is
+new infra to run when Postgres is already the audited, cluster-wide
+system of record every process holds a connection to.
+
+Postgres is the authority: values are pgcrypto-encrypted in
 ``vault.secrets`` and reached only through the ``vault.*`` SECURITY DEFINER
 functions (list / mask / reveal / set_secret / delete_secret — reveal is the
 sole decrypt path and always writes an audit row; there is deliberately no
@@ -11,7 +18,8 @@ share (ciphertext + function source that only *names* the key). Physical
 backups (``pg_basebackup`` / WAL) copy the key file; the guarantee is
 logical-dump-only. Trust model v1 (migration 0059): the functions are
 granted to PUBLIC — holding a DSN *is* the boundary; the per-role split +
-per-name ACL are designed in ADR 0055 and deferrable one-liners. The
+per-name ACL (a ``vault.acl`` table) are designed and deferrable
+one-liners. The
 secrets TCB is therefore every package imported into a DSN-holding process:
 keep those processes to hash-pinned, audited deps, and push heavy/untrusted
 code out-of-process (:func:`adopt_process_store` scrubs the DSN from env so

@@ -97,8 +97,7 @@ Start at `docs/codebase.md`'s package map, then the owning package's
 | Dated history                    | `git log` (no CHANGELOG) |
 | Replicate this repo's setup elsewhere | `docs/how-to-setup-like-this.md` (portable scaffolding brief) |
 | Full schema (prose / visual)     | `storage-v2` (git-only) (F20-amended); `schema-v2.svg` |
-| Worker queue pattern             | `docs/decisions/0007-derived-queue-no-block-jobs.md`, `0017` |
-| ADR index + supersession graph   | `docs/decisions/README.md` |
+| Worker queue pattern             | the `precis.workers` package docstring |
 | Ingest pipeline                  | `src/precis/ingest/{marker,pipeline,text_chunker,db_writer}.py` |
 | Worker code                      | `src/precis/workers/` |
 | Web UI                           | `src/precis_web/` |
