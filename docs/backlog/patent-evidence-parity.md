@@ -33,9 +33,6 @@ Open:
   (`_patent_xml.py`) was built from the ST.36 shape without a live-OPS
   sample; a shape mismatch degrades safely to full ingest (never stubs),
   but the first real stub decision deserves a glance.
-- **Before any reingest backfill:** gripe 200503 — `precis jobs
-  reingest-patents` lacks a stub exclusion; a bulk run would un-stub every
-  family stub and burn OPS quota.
 
 Explicitly not in scope (unchanged from the shipped design): patent
 authoring/FTO (→ `patent-authoring-loop.md`), new patent sources beyond
